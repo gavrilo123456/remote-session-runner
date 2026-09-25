@@ -343,8 +343,7 @@ mailbox/
 │   ├── req-42.json          # client writes the immutable request
 │   └── req-42.ready         # client writes this last to publish it
 ├── outbox/
-│   ├── req-42.json          # Runner's response, matched by request_id
-│   └── req-42.conflict.json # only if that ID is reused for different content
+│   └── req-42.json          # Runner's response, matched by request_id
 └── events/
     └── cmd-19.ndjson       # optional full events for a command
 ```
@@ -371,7 +370,7 @@ The caller supplies a unique `request_id` that matches the filename. A session-c
 
 After the client writes `inbox/req-42.json`, it writes `inbox/req-42.ready`. The importer ignores JSON files without a matching marker, validates the filename and content, and records either accepted local intent or a rejection receipt in local SQLite before removing the inbox pair. The importer uses the same validation and local-intent path as the Unix-socket API. No new dispatcher or executor is created.
 
-The client reads `outbox/req-42.json` until `request_state` is terminal. Runner writes a temporary response and atomically replaces the visible file, so readers never see a partial JSON document. A completed command response has this shape:
+The client reads `outbox/req-42.json` until `request_state` is terminal. Each distinct operation uses a new ID; an identical retry reuses its original ID. Runner writes a temporary response and atomically replaces the visible file, so readers never see a partial JSON document. A completed command response has this shape:
 
 ```json
 {
@@ -401,7 +400,7 @@ The client reads `outbox/req-42.json` until `request_state` is terminal. Runner 
 
 Mailbox operations are limited to sessions controlled through the local control plane. They cannot attach to or mutate a session created through the direct remote HTTPS API.
 
-The same `request_id` and identical canonical request must return the original resource and result. Reusing an ID with different content is rejected without replacing the original response; the importer writes `outbox/<request_id>.conflict.json` with `request_state: rejected` and an `idempotency_conflict` error. A crash after SQLite commit but before response publication must regenerate the response from SQLite without submitting a second command. Inbox files are transient; outbox and event files are bounded projections with configured retention. SQLite remains the lasting record, and a later status request can retrieve a retained session or command after its response file has been cleaned up. Request ID mappings remain valid for at least the documented retry window.
+The same `request_id` and identical canonical request must return the original resource and result. Reusing an ID with different content returns `request_state: rejected` and an `idempotency_conflict` error in the matching outbox file; it never submits a second command. The error identifies any original resource so it remains retrievable through a new status request. A crash after SQLite commit but before response publication must regenerate the response from SQLite without submitting a second command. Inbox files are transient; outbox and event files are bounded projections with configured retention. SQLite remains the lasting record, and a later status request can retrieve a retained session or command after its response file has been cleaned up. Request ID mappings remain valid for at least the documented retry window.
 
 An event reader uses newline-terminated NDJSON records and the last `sequence` it has seen; it ignores an incomplete trailing line while the file is being updated. Small stdout and stderr values may appear inline in the response, while larger output is read from the bounded event file. An `output_truncated` field reports when the configured command output limit has been reached.
 
@@ -426,8 +425,9 @@ The initial release is ready for controlled use when it can demonstrate all of t
 - local and remote sessions use the same CLI commands, resource model, states, events, idempotency, and persistent-shell behavior;
 - the Mac Execution Router sends an explicit `local` target to `runner-locald` and an explicit `remote` target to the SSH bridge;
 - the local API has no remote credential or network access;
-- a file-only client can create a session, submit a command using its `session_id`, and read a response matched by `request_id` with the resulting `command_id`;
+- a file-only client can create a local or queued-remote session, submit a command using its `session_id`, and read a response matched by `request_id` with the resulting `command_id`;
 - a repeated identical file request returns the same resource, while changed content under the same `request_id` is rejected without running a second command;
+- the mailbox ignores unmarked or unsafe request files, publishes complete JSON responses atomically, and cleans up transient files under its retention policy;
 - mailbox responses distinguish request acceptance from command success or failure, survive importer restarts, and never claim that queued remote work has already been accepted by `runnerd`;
 - every command is durable in its target’s authoritative store before it starts;
 - two sequential commands share variables, current directory, and virtual-environment state in a local session and in a remote session;
