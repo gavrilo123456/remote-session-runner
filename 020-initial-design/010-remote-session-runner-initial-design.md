@@ -190,7 +190,7 @@ This is the normal path. `requested` means local intent is durable but the targe
 
 Before execution, a queued command can become `cancelled` by cancellation or closure, or `rejected` if its session becomes unusable. A running command can enter `cancelling` and end `cancelled`, `timed_out`, or `lost`; a completion race can still produce its actual `succeeded` or `failed` result. These are terminal outcomes, not steps after `running` in every case.
 
-Queued session and command resource IDs are allocated before the first dispatch and propagated unchanged to the authoritative executor. Direct clients use stable idempotency keys, whether the resource ID is caller-supplied or returned by `runnerd`. Commands also have idempotency data. Repeating the same mutation must return the original accepted resource; reusing an identifier for a different mutation is a conflict.
+Queued session and command resource IDs are allocated before the first dispatch and propagated unchanged to the authoritative executor. Direct clients use stable idempotency keys, whether the resource ID is caller-supplied or returned by `runnerd`. Commands also have idempotency data. Within the documented idempotency-retention window, repeating the same mutation must return the original accepted resource; reusing an identifier for a different mutation is a conflict. After its record expires, the executor cannot recognize a forgotten key, so a direct client must not retry an uncertain mutation from that period as if it were guaranteed idempotent.
 
 For a queued remote request, local intent has a separate `delivery_state`: `recorded`, `dispatching`, `uncertain`, `accepted`, `reconciled`, or terminal `not_delivered` with a reason. This is not the remote command's execution state. Until `runnerd` confirms acceptance, the local API reports `request_state: accepted` and the delivery state, but does not present a local `command_state: queued` as if it were authoritative remote acceptance. Once accepted, `command_state` comes from `runnerd` and may be marked stale while its events are mirrored. A definitely undelivered intent can be rejected or cancelled locally without inventing a remote command state; uncertain dispatch cannot. Local-target commands become authoritative when `runner-locald` commits their acceptance.
 
@@ -206,7 +206,7 @@ For a queued remote request, local intent has a separate `delivery_state`: `reco
 6. For remote sessions, the Router resumes from its last event sequence and mirrors remote events to local SQLite. For local sessions, `runner-locald` writes events directly to local SQLite.
 7. Local clients use the same status and event interfaces for both targets. If the Mac disconnects after remote acceptance, the remote command may continue and will reconcile later.
 
-If SSH fails after a mutation may have reached `runnerd`, the Router keeps the same stable resource ID and idempotency key. It queries or retries that exact mutation, never creates a replacement command with a new ID, and does not dispatch the next command in the session until the remote state and event cursor are reconciled. The local view reports delivery uncertainty rather than a confirmed command failure.
+If SSH fails after a mutation may have reached `runnerd`, the Router keeps the same stable resource ID and idempotency key. It queries or retries that exact mutation, never creates a replacement command with a new ID, and does not dispatch the next command in the session until the remote state is confirmed and either its event cursor is reconciled or an irrecoverable event gap is durably recorded. The local view reports delivery uncertainty rather than a confirmed command failure.
 
 ### 7.2 Local execution target
 
@@ -230,6 +230,8 @@ Local execution is intentional, visible in the CLI and session metadata, and ava
 6. The caller closes the session, or the service closes it at its idle or maximum-lifetime limit.
 
 An accepted direct command continues after its client disconnects by default; the client can reconnect with its command ID and event cursor. The direct HTTPS API accepts `remote` sessions only. This retains a clear network and ownership boundary while preserving the same CLI commands and resource semantics as local sessions.
+
+The direct event endpoint replays retained events after the requested cursor. If the requested range has expired or contains an irrecoverable gap, it returns a structured `event_history_unavailable` result with `output_complete: false`, an `output_unavailable_reason` such as `retention_expired` or `remote_event_gap`, and the earliest available sequence when one exists; it must not silently start a successful stream after the gap. While command metadata is retained, `Read command` still returns the terminal command state and reports the same incomplete-output reason after event expiry. A direct client can therefore distinguish a missing log from an empty one.
 
 ### 7.4 File mailbox flow
 
@@ -265,7 +267,7 @@ Within local SQLite, the Local Control API owns request-intent records, the Rout
 
 Both databases use WAL mode and transactional updates. A command state transition and its command event are committed in the same transaction. A session state transition and its lifecycle record are likewise committed together, even though the PoC reads session status through snapshots rather than an event stream.
 
-Each command-event sequence starts at 1 and increases monotonically within that command. Consumers store the last sequence they processed and ask for all later events when reconnecting. The remote command-event mirror de-duplicates by `(command_id, remote_sequence)` and advances its cursor in the same transaction as inserting a contiguous event; gaps are fetched before dispatching the next command in that session. A slow event consumer must not stop command execution; storage and bounded subscriber buffers provide backpressure.
+Each command-event sequence starts at 1 and increases monotonically within that command. Consumers store the last sequence they processed and ask for all later events when reconnecting. The remote command-event mirror de-duplicates by `(command_id, remote_sequence)` and advances its cursor in the same transaction as inserting a contiguous event; gaps are fetched before dispatching the next command in that session. If the remote terminal outcome is independently confirmed but an event gap is irrecoverable, the Router records the missing range and incomplete-output reason durably, then may dispatch the next command without pretending the mirror is contiguous. Each command has its own event cursor. A slow event consumer must not stop command execution; storage and bounded subscriber buffers provide backpressure.
 
 Mailbox responses and event files are read-only projections of these records. For local sessions, they come from authoritative local events; for remote sessions, they come from the local mirror after the Dispatcher has reconciled it. Responses for remote work show the last remote update and a stale/reconciling indicator when appropriate. A missing or deleted response file does not erase the underlying request or command.
 
@@ -312,7 +314,7 @@ The PoC deployment targets one trusted Mac user and one remote Linux host.
 | Retention | Command metadata and idempotency records for at least 90 days on both authorities; output for 30 days on both, all configurable without shortening the retry-safety window |
 | Mailbox files | Imported inbox and ACK pairs removed after durable recording; abandoned drafts after 24 hours; terminal responses 24 hours after ACK or 7 days without ACK, all configurable |
 
-The Mac services are managed with `launchd`; they are the Local Control API (including the Mailbox Adapter), the Execution Router and Dispatcher, and `runner-locald`, all using the configured Mac account for the PoC. The Linux service is managed with `systemd`. Both sides need structured logs, readiness/liveness checks, a doctor command, and documented backup and restore steps. The Mailbox Adapter cleans up abandoned drafts, limits inline output in response JSON, and serves full bounded output through per-command events. Request-ID and idempotency-key mappings remain available for at least the 90-day command-metadata retention period on both hosts; the Router must not automatically resubmit a remote mutation after its remote idempotency record expires. The shorter remote retention defaults in the detailed v2 source are superseded by this baseline; a remote event lost before mirroring follows the incomplete-output rule.
+The Mac services are managed with `launchd`; they are the Local Control API (including the Mailbox Adapter), the Execution Router and Dispatcher, and `runner-locald`, all using the configured Mac account for the PoC. The Linux service is managed with `systemd`. Both sides need structured logs, readiness/liveness checks, a doctor command, and documented backup and restore steps. The Mailbox Adapter cleans up abandoned drafts, limits inline output in response JSON, and serves full bounded output through per-command events. Request-ID and idempotency-key mappings remain available for at least the 90-day command-metadata retention period on both hosts; the Router must not automatically resubmit a remote mutation after its remote idempotency record expires, and direct clients have no duplicate-prevention guarantee for retries after expiry. The shorter remote retention defaults in the detailed v2 source are superseded by this baseline; a remote event lost before mirroring follows the incomplete-output rule.
 
 ## 11. Initial interface shape
 
@@ -333,7 +335,7 @@ The local Unix-socket API and file mailbox expose local and queued-remote forms 
 
 The target appears only in `Create session` or a one-off `run` request that creates an ephemeral session. `Submit command` inherits the target from its session. The local API may create `local` or `remote` sessions; the direct HTTPS API creates `remote` sessions only. A target is never inferred or automatically changed after creation.
 
-The CLI connection profile selects the local Unix socket or remote HTTPS endpoint independently of the execution target. Local socket plus `remote` means queued remote execution; HTTPS plus `remote` means direct remote execution. Only the local socket can select `local`.
+The CLI connection profile selects the local Unix socket or remote HTTPS endpoint independently of the execution target. Local socket plus `remote` means queued remote execution; HTTPS plus `remote` means direct remote execution. Only the local socket can select `local`. Every CLI invocation selects its endpoint explicitly or through a named/default connection profile; the CLI must not infer ingress from an opaque session or command ID. The examples use explicit flags so later commands cannot accidentally address the other ingress.
 
 Illustrative CLI shape (names and flags are to be finalized with the API contract):
 
@@ -341,12 +343,12 @@ Illustrative CLI shape (names and flags are to be finalized with the API contrac
 runner --endpoint local session create --target local --profile mac-workstation
 runner --endpoint local session create --target remote --profile linux-sandbox
 runner --endpoint remote session create --target remote --profile linux-sandbox
-runner exec SESSION_ID -- 'pwd'
-runner events COMMAND_ID --follow
-runner session close SESSION_ID
+runner --endpoint local exec SESSION_ID -- 'pwd'
+runner --endpoint local events COMMAND_ID --follow
+runner --endpoint local session close SESSION_ID
 ```
 
-The same `exec`, `events`, and `close` operations work after either session-creation command. Status output always displays the session target, host class, source mode, and effective isolation policy.
+The same `exec`, `events`, and `close` operations work after either session-creation command, using `--endpoint remote` for direct sessions. Status output always displays the session target, host class, source mode, and effective isolation policy.
 
 ### File mailbox contract
 
@@ -366,13 +368,26 @@ mailbox/
     └── req-42.ready         # client writes this last to publish the ACK
 ```
 
-The caller supplies a unique `request_id` for each file exchange, matching its inbox and outbox filenames. Every mutation also carries an `idempotency_key` that remains stable across retries with new request IDs. A session-creation request includes the execution target; a later command request contains the returned `session_id` and no target override. For example:
+The caller supplies a unique `request_id` for each file exchange, matching its inbox and outbox filenames. Every mutation also carries an `idempotency_key` that remains stable across retries with new request IDs. The mailbox operation strings and additional required fields are:
+
+| `operation` | Required fields beyond `request_id` and a mutation's `idempotency_key` |
+| --- | --- |
+| `create_session` | `environment`, `execution_target.kind`, `execution_target.profile` |
+| `get_session` | `session_id` |
+| `submit_command` | `session_id`, `script` |
+| `get_command` | `command_id` |
+| `cancel_command` | `command_id` |
+| `close_session` | `session_id` |
+| `run` | `environment`, `execution_target.kind`, `execution_target.profile`, `script` |
+
+`environment` names a configured, approved runtime. `create_session` and `run` may additionally include `source`, limits, and policy fields; omitted `source` means an empty workspace. A session-creation request includes the execution target; a later command request contains the returned `session_id` and no target override. For queued remote creation, use `"execution_target": {"kind": "remote", "profile": "linux-sandbox"}` through the same mailbox. For example:
 
 ```json
 {
   "request_id": "req-session-41",
   "idempotency_key": "create-session-41",
   "operation": "create_session",
+  "environment": "approved-dev",
   "execution_target": {"kind": "local", "profile": "mac-workstation"},
   "source": {"mode": "empty"}
 }
@@ -456,7 +471,7 @@ For a response with no command-event cursor, such as session creation or a rejec
 
 Mailbox operations are limited to sessions controlled through the local control plane. They cannot attach to or mutate a session created through the direct remote HTTPS API.
 
-For a mutation, the same `idempotency_key` and identical canonical payload must return the original resource and available retained result without rerunning it when the retry has a new `request_id`. If output retention has expired, that new exchange returns the original resource and terminal metadata with `output_complete: false` and `output_unavailable_reason: retention_expired`, not a new execution or a fabricated full log. The same key with changed payload returns `request_state: rejected` and `idempotency_conflict` in **that new request ID's** outbox file; it never submits a second command or overwrites the original response. A `request_id` is single-use: re-publishing it, whether with identical or changed content, is ignored or quarantined and cannot alter its immutable terminal response. A client whose original outbox file has expired retries with a fresh `request_id` and the same `idempotency_key`. Canonical mutation hashing excludes the per-exchange `request_id`. A crash after SQLite commit but before response publication must regenerate the original response from SQLite while its underlying result is retained, without submitting a second command. Inbox files are transient; outbox and event files are bounded projections. SQLite remains the lasting record, and a later status request can retrieve a retained session or command after its response file has been cleaned up. Request-ID and idempotency-key mappings remain valid for at least the documented retry window.
+Within the documented idempotency-retention window, the same `idempotency_key` and identical canonical payload must return the original resource and available retained result without rerunning it when the retry has a new `request_id`. If output retention has expired but the idempotency record remains, that new exchange returns the original resource and terminal metadata with `output_complete: false` and `output_unavailable_reason: retention_expired`, not a new execution or a fabricated full log. The same retained key with changed payload returns `request_state: rejected` and `idempotency_conflict` in **that new request ID's** outbox file; it never submits a second command or overwrites the original response. A `request_id` is single-use while its mapping is retained: re-publishing it, whether with identical or changed content, is ignored or quarantined and cannot alter its immutable terminal response. A client whose original outbox file has expired retries with a fresh `request_id` and the same `idempotency_key` only within that window. Canonical mutation hashing excludes the per-exchange `request_id`. A crash after SQLite commit but before response publication must regenerate the original response from SQLite while its underlying result is retained, without submitting a second command. Inbox files are transient; outbox and event files are bounded projections. SQLite remains the lasting record, and a later status request can retrieve a retained session or command after its response file has been cleaned up. Request-ID and idempotency-key mappings remain valid for at least the documented retry window; after expiry a direct or file-only client must not assume an old key still prevents duplicate execution.
 
 After a valid ACK, Runner removes the terminal outbox response after a 24-hour grace period. Without an ACK, it removes the response seven days after terminal publication. A per-command event file may be referenced by several request responses, including status snapshots of an active command, so one ACK cannot delete it while another response or the running command still needs it. Runner removes the event file only after the command is terminal and every referencing response has reached its cleanup deadline; a later status request may regenerate retained events from SQLite. These durations are configurable. Cleanup occurs only after the ACK has been committed to SQLite, and an importer restart safely reprocesses an unconsumed ACK pair.
 
@@ -485,20 +500,20 @@ The PoC is ready for controlled demonstration when it can show all of the follow
 - the Mac Execution Router sends an explicit `local` target to `runner-locald` and an explicit `remote` target to the SSH bridge;
 - the Local Control API does not load remote credentials or initiate remote connections; only the Router and Dispatcher perform remote transport;
 - a file-only client can create a local or queued-remote session, submit a command using its `session_id`, and read a response matched by `request_id` with the resulting `command_id`;
-- a retry with a new `request_id` and the same `idempotency_key` and payload returns the original resource, while changed payload under that key is rejected in the new request's outbox without overwriting the original response or running a second command;
-- remote idempotency records outlive the local retry window, and a retry after their expiry cannot silently create a second remote execution;
+- within the idempotency-retention window, a retry with a new `request_id` and the same `idempotency_key` and payload returns the original resource, while changed payload under that key is rejected in the new request's outbox without overwriting the original response or running a second command;
+- remote idempotency records cover the documented retry window; the Router never automatically resubmits after their expiry, and direct or file-only clients are told that duplicate prevention is not guaranteed beyond that window;
 - the mailbox ignores unmarked or unsafe request files, publishes complete JSON responses atomically, and cleans up transient files under its retention policy;
 - mailbox responses distinguish request acceptance from command success or failure, status snapshots from command completion, and an indeterminate remote mutation from a confirmed rejection; they survive importer restarts and never claim that queued remote work has already been accepted by `runnerd`;
 - queued remote responses expose a separate delivery state and never label local intent as an authoritative remote `command_state`; definitely undelivered work has a terminal non-execution reason;
 - a completed command response reports `output_complete: true` only after all retained events through `final_event_sequence` are available; irrecoverable gaps instead report `output_complete: false` and a reason, distinct from intentional `output_truncated`;
 - every command response with `available_event_sequence > 0` advertises an event file, even when stdout/stderr fit inline; a status request after output expiry reports `retention_expired` rather than a full log;
-- ordinary UTF-8 output is readable directly in the event file, binary output survives without lossy conversion, and the output cap cannot leave the shell blocked on an undrained pipe;
+- valid UTF-8 output chunks are readable directly in the event file; chunks split across a UTF-8 character boundary or containing binary data use lossless base64, and the output cap cannot leave the shell blocked on an undrained pipe;
 - a file-only client can acknowledge a terminal response revision; ACKs are idempotent, do not alter execution state, and trigger cleanup only after durable recording;
 - acknowledged and unacknowledged responses follow their respective cleanup deadlines, while a shared command event file remains available to other active responses;
 - every command is durable in its target’s authoritative store before it starts;
 - two sequential commands share variables, current directory, and virtual-environment state in a local session and in a remote session;
 - only one command runs in a session at a time;
-- client and dispatcher reconnects replay ordered events without duplicating execution while the events remain retained and contiguous; missing or expired events are reported as incomplete with a reason;
+- client and dispatcher reconnects replay ordered events without duplicating execution while the events remain retained and contiguous; missing or expired events are reported as incomplete with a reason, and a durably recorded irrecoverable mirror gap does not deadlock later queued commands;
 - a direct client cannot mutate another controller’s session;
 - the direct remote API cannot create or mutate a local Mac session;
 - a session target cannot change, and a target failure never falls back to the other target;
@@ -528,7 +543,7 @@ The PoC is ready for controlled demonstration when it can show all of the follow
 | --- | --- |
 | Remote execution is exposed too broadly | Restrict direct access to private networks, require verified identity, authorize every operation, and maintain audit records. |
 | A reconnect repeats a command | Use stable resource IDs, idempotency keys, request hashes, and durable event cursors; reconcile uncertain remote outcomes before submitting later session commands. |
-| A late remote retry runs again after the remote idempotency record expires | Keep remote idempotency records through the Mac's retry window and stop automatic resubmission when that guarantee cannot be proven. |
+| A late remote retry runs again after the remote idempotency record expires | Keep remote idempotency records through the documented retry window, stop automatic Router resubmission afterward, and warn direct and file-only clients that an old key no longer guarantees deduplication. |
 | A partial or repeated file request runs unexpectedly | Import only after the completed JSON and `.ready` marker, validate filenames and content, and commit the request ID and idempotency key before removing inbox files. Retry from SQLite after a crash. |
 | A conflicting retry overwrites the original mailbox result | Give each exchange a new `request_id` and retain one immutable terminal response per ID; reject a changed payload under the same idempotency key in the new exchange's outbox. |
 | Mailbox files become a second inconsistent history | Keep SQLite authoritative, regenerate responses from it, and clean up bounded outbox and event projections. |
