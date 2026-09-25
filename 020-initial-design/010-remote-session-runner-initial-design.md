@@ -498,7 +498,7 @@ The PoC is ready for controlled demonstration when it can show all of the follow
 - every command is durable in its target’s authoritative store before it starts;
 - two sequential commands share variables, current directory, and virtual-environment state in a local session and in a remote session;
 - only one command runs in a session at a time;
-- client and dispatcher reconnects replay complete ordered events without duplicating execution;
+- client and dispatcher reconnects replay ordered events without duplicating execution while the events remain retained and contiguous; missing or expired events are reported as incomplete with a reason;
 - a direct client cannot mutate another controller’s session;
 - the direct remote API cannot create or mutate a local Mac session;
 - a session target cannot change, and a target failure never falls back to the other target;
