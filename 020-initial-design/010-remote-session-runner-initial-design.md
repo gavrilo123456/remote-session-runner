@@ -144,7 +144,7 @@ Environment → Session → Command → Command Event
 
 | Resource | Meaning |
 | --- | --- |
-| Environment | A named, approved runtime definition: image or base system, limits, mounts, repository policy, and allowed settings. |
+| Environment | A named, approved runtime definition: compatible target kind/profile, image or base system, limits, mounts, repository policy, and allowed settings. |
 | Session | A temporary workspace with one owner/controller, one immutable execution target, one runtime instance, and one shell state. |
 | Command | A script submitted to a session. Commands receive an ordinal number and execute one at a time. |
 | Command event | A durable, ordered record of acceptance, lifecycle changes, stdout, stderr, completion, or error details. |
@@ -177,6 +177,8 @@ The target belongs to the session request, not to individual commands:
 | Effective capabilities | The created session returns its target, host class, isolation level, source mode, and enforced limits. |
 
 Every command inherits its session target. The command API has no target override, and target selection is never inferred from command text, network availability, or a failure. A `local_worktree` session starts in an explicitly selected existing directory accessible to the execution account; it can modify uncommitted files only where that account has OS permission, and it records that it is non-portable. The selected directory is a starting location, not a filesystem boundary. If a session requests a Git repository, the chosen revision is resolved and recorded as an exact commit. Local and remote sessions share API behavior, but the available programs and command results depend on macOS or Linux and the chosen environment.
+
+Each environment declares which execution-target kinds and profiles it supports. `create_session` and `run` reject an incompatible environment/target/profile combination before authoritative session acceptance, with a structured `environment_target_mismatch` reason; the local ingress may reject a known mismatch before recording intent. The session response includes the resolved environment name alongside its target and effective capabilities.
 
 ### Session states
 
@@ -498,6 +500,7 @@ The PoC is ready for controlled demonstration when it can show all of the follow
 - local and remote sessions use the same CLI commands, resource model, states, event identities/types/order, idempotency, and persistent-shell behavior; the mailbox's output-payload rendering is an explicit interface projection;
 - command events replay from a per-command sequence, while session lifecycle changes are durably recorded and read as session-status snapshots in the PoC;
 - the Mac Execution Router sends an explicit `local` target to `runner-locald` and an explicit `remote` target to the SSH bridge;
+- an environment incompatible with the selected target kind or profile is rejected before a session can execute;
 - the Local Control API does not load remote credentials or initiate remote connections; only the Router and Dispatcher perform remote transport;
 - a file-only client can create a local or queued-remote session, submit a command using its `session_id`, and read a response matched by `request_id` with the resulting `command_id`;
 - within the idempotency-retention window, a retry with a new `request_id` and the same `idempotency_key` and payload returns the original resource, while changed payload under that key is rejected in the new request's outbox without overwriting the original response or running a second command;
