@@ -1,0 +1,7 @@
+{
+  "cases": [
+    { "name": "ack complete command response", "document": { "request_id": "req-3", "response_revision": 4, "available_event_sequence": 4 } },
+    { "name": "ack expired output cursor zero", "document": { "request_id": "req-10", "response_revision": 8, "available_event_sequence": 0 } },
+    { "name": "ack without command cursor", "document": { "request_id": "req-2", "response_revision": 2 } }
+  ]
+}

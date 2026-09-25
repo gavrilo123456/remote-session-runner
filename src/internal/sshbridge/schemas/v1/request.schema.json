@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/src/internal/sshbridge/schemas/v1/request.schema.json",
+  "title": "Remote Session Runner v1 SSH bridge request frame",
+  "type": "object",
+  "properties": {
+    "protocol_version": { "const": 1 },
+    "request_id": { "type": "string", "minLength": 1 },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "hello",
+        "create_or_resume_session",
+        "get_session",
+        "submit_or_resume_command",
+        "get_command",
+        "stream_command_events",
+        "cancel_command",
+        "close_session",
+        "run_or_resume_job",
+        "get_job",
+        "ping"
+      ]
+    },
+    "resource_id": { "type": "string", "minLength": 1 },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "payload": { "type": "object" }
+  },
+  "required": ["protocol_version", "request_id", "operation", "payload"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "hello" } }, "required": ["operation"] },
+      "then": { "properties": { "payload": { "maxProperties": 0 } }, "not": { "anyOf": [{ "required": ["resource_id"] }, { "required": ["idempotency_key"] }] } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "create_or_resume_session" } }, "required": ["operation"] },
+      "then": {
+        "required": ["resource_id", "idempotency_key"],
+        "properties": { "payload": { "required": ["environment", "execution_target"], "properties": { "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/$defs/executionTarget" } } } }
+      }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "get_session" } }, "required": ["operation"] },
+      "then": { "properties": { "payload": { "required": ["session_id"], "properties": { "session_id": { "type": "string", "minLength": 1 } } } }, "not": { "anyOf": [{ "required": ["resource_id"] }, { "required": ["idempotency_key"] }] } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "submit_or_resume_command" } }, "required": ["operation"] },
+      "then": {
+        "required": ["resource_id", "idempotency_key"],
+        "properties": { "payload": { "required": ["session_id", "intent_ordinal", "script"], "properties": { "session_id": { "type": "string", "minLength": 1 }, "intent_ordinal": { "type": "integer", "minimum": 1 }, "script": { "type": "string" } } } }
+      }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "get_command" } }, "required": ["operation"] },
+      "then": { "properties": { "payload": { "required": ["command_id"], "properties": { "command_id": { "type": "string", "minLength": 1 } } } }, "not": { "anyOf": [{ "required": ["resource_id"] }, { "required": ["idempotency_key"] }] } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "stream_command_events" } }, "required": ["operation"] },
+      "then": { "properties": { "payload": { "required": ["command_id", "after_sequence"], "properties": { "command_id": { "type": "string", "minLength": 1 }, "after_sequence": { "type": "integer", "minimum": 0 } } } }, "not": { "anyOf": [{ "required": ["resource_id"] }, { "required": ["idempotency_key"] }] } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "cancel_command" } }, "required": ["operation"] },
+      "then": { "required": ["resource_id", "idempotency_key"], "properties": { "payload": { "required": ["command_id"], "properties": { "command_id": { "type": "string", "minLength": 1 } } } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "close_session" } }, "required": ["operation"] },
+      "then": { "required": ["resource_id", "idempotency_key"], "properties": { "payload": { "required": ["session_id"], "properties": { "session_id": { "type": "string", "minLength": 1 } } } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "run_or_resume_job" } }, "required": ["operation"] },
+      "then": {
+        "required": ["resource_id", "idempotency_key"],
+        "properties": { "payload": { "required": ["environment", "execution_target", "script"], "properties": { "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/$defs/executionTarget" }, "script": { "type": "string" } } } }
+      }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "get_job" } }, "required": ["operation"] },
+      "then": { "properties": { "payload": { "required": ["job_id"], "properties": { "job_id": { "type": "string", "minLength": 1 } } } }, "not": { "anyOf": [{ "required": ["resource_id"] }, { "required": ["idempotency_key"] }] } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "ping" } }, "required": ["operation"] },
+      "then": { "properties": { "payload": { "maxProperties": 0 } }, "not": { "anyOf": [{ "required": ["resource_id"] }, { "required": ["idempotency_key"] }] } }
+    }
+  ],
+  "$defs": {
+    "executionTarget": {
+      "type": "object",
+      "properties": { "kind": { "type": "string", "enum": ["local", "remote"] }, "profile": { "type": "string", "minLength": 1 } },
+      "required": ["kind", "profile"],
+      "additionalProperties": false
+    }
+  }
+}

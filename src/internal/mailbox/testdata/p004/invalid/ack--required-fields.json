@@ -1,0 +1,7 @@
+{
+  "cases": [
+    { "name": "missing terminal revision", "document": { "request_id": "req-bad" } },
+    { "name": "negative cursor", "document": { "request_id": "req-bad", "response_revision": 1, "available_event_sequence": -1 } },
+    { "name": "unknown member", "document": { "request_id": "req-bad", "response_revision": 1, "cleanup": true } }
+  ]
+}

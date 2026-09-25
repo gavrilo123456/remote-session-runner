@@ -1,0 +1,9 @@
+{
+  "cases": [
+    { "name": "UTF-8 byte count uses bytes", "document": { "command_id": "cmd-1", "sequence": 2, "type": "stdout", "timestamp": "2026-09-25T12:00:00Z", "encoding": "utf8", "text": "é", "byte_count": 1 } },
+    { "name": "base64 byte count mismatches", "document": { "command_id": "cmd-1", "sequence": 2, "type": "stdout", "timestamp": "2026-09-25T12:00:00Z", "encoding": "base64", "data_base64": "AP8=", "byte_count": 1 } },
+    { "name": "output has no encoding", "document": { "command_id": "cmd-1", "sequence": 2, "type": "stdout", "timestamp": "2026-09-25T12:00:00Z", "text": "hi", "byte_count": 2 } },
+    { "name": "non-output event cannot carry bytes", "document": { "command_id": "cmd-1", "sequence": 1, "type": "command_queued", "timestamp": "2026-09-25T12:00:00Z", "encoding": "utf8", "text": "", "byte_count": 1 } },
+    { "name": "queued event starts at sequence one", "document": { "command_id": "cmd-1", "sequence": 2, "type": "command_queued", "timestamp": "2026-09-25T12:00:00Z" } }
+  ]
+}

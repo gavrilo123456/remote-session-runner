@@ -1,0 +1,13 @@
+{
+  "cases": [
+    { "name": "accepted mailbox receipt only", "document": { "request_id": "req-1", "operation": "create_session", "request_state": "accepted", "response_revision": 1, "delivery_state": "recorded", "session_id": "session-1" } },
+    { "name": "ready session snapshot", "document": { "request_id": "req-2", "operation": "get_session", "request_state": "complete", "response_revision": 2, "session_id": "session-1", "session_state": "ready" } },
+    { "name": "terminal command with published events", "document": { "request_id": "req-3", "operation": "submit_command", "request_state": "complete", "response_revision": 4, "session_id": "session-1", "command_id": "cmd-3", "command_state": "succeeded", "exit_code": 0, "final_event_sequence": 4, "available_event_sequence": 4, "output_complete": true, "output_truncated": false, "events_file": "events/cmd-3.ndjson" } },
+    { "name": "active command as-of snapshot", "document": { "request_id": "req-4", "operation": "get_command", "request_state": "complete", "response_revision": 1, "command_id": "cmd-3", "command_state": "running", "available_event_sequence": 2, "output_complete": false, "output_truncated": false, "events_file": "events/cmd-3.ndjson" } },
+    { "name": "never-delivered command has no target state", "document": { "request_id": "req-5", "operation": "submit_command", "request_state": "rejected", "response_revision": 2, "delivery_state": "not_delivered", "command_id": "cmd-5", "error": { "code": "runtime_unavailable", "message": "bridge unavailable before delivery", "retryable": true } } },
+    { "name": "never-delivered read remains a local snapshot", "document": { "request_id": "req-6", "operation": "get_command", "request_state": "complete", "response_revision": 3, "delivery_state": "not_delivered", "command_id": "cmd-5" } },
+    { "name": "indeterminate remote delivery", "document": { "request_id": "req-7", "operation": "run", "request_state": "indeterminate", "response_revision": 3, "delivery_state": "uncertain", "job_id": "job-7" } },
+    { "name": "never-created session closure", "document": { "request_id": "req-8", "operation": "close_session", "request_state": "complete", "response_revision": 2, "delivery_state": "not_delivered", "session_id": "session-8", "teardown_outcome": "not_created" } },
+    { "name": "structured request rejection", "document": { "request_id": "req-9", "operation": "run", "request_state": "rejected", "response_revision": 1, "error": { "code": "environment_target_mismatch", "message": "environment does not allow this target", "retryable": false } } }
+  ]
+}

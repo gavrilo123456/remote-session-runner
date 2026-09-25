@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/src/internal/sshbridge/schemas/v1/reply.schema.json",
+  "title": "Remote Session Runner v1 SSH bridge reply frame",
+  "type": "object",
+  "properties": {
+    "protocol_version": { "const": 1 },
+    "request_id": { "type": "string", "minLength": 1 },
+    "response_type": { "type": "string", "enum": ["hello", "result", "error", "event", "stream_end"] },
+    "payload": { "type": "object" }
+  },
+  "required": ["protocol_version", "request_id", "response_type", "payload"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "response_type": { "const": "hello" } }, "required": ["response_type"] },
+      "then": { "properties": { "payload": { "properties": { "supported_protocol_version": { "const": 1 } }, "required": ["supported_protocol_version"], "additionalProperties": false } } }
+    },
+    {
+      "if": { "properties": { "response_type": { "const": "result" } }, "required": ["response_type"] },
+      "then": { "properties": { "payload": { "minProperties": 1 } } }
+    },
+    {
+      "if": { "properties": { "response_type": { "const": "error" } }, "required": ["response_type"] },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "code": { "type": "string", "enum": ["invalid_request", "environment_target_mismatch", "environment_forbidden", "controller_mismatch", "session_not_ready", "idempotency_conflict", "resource_not_found", "quota_exceeded", "runtime_unavailable", "transport_uncertain", "event_history_unavailable", "retention_expired"] },
+              "message": { "type": "string", "minLength": 1 },
+              "retryable": { "type": "boolean" },
+              "resource_id": { "type": "string", "minLength": 1 },
+              "details": { "type": "object" }
+            },
+            "required": ["code", "message", "retryable"],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "response_type": { "const": "event" } }, "required": ["response_type"] },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "command_id": { "type": "string", "minLength": 1 },
+              "sequence": { "type": "integer", "minimum": 1 },
+              "type": { "type": "string", "enum": ["command_queued", "command_started", "stdout", "stderr", "output_truncated", "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost"] },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "ordinal": { "type": "integer", "minimum": 1 },
+              "encoding": { "const": "base64" },
+              "data_base64": { "type": "string", "maxLength": 21848, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" },
+              "byte_count": { "type": "integer", "minimum": 1, "maximum": 16384 },
+              "exit_code": { "type": "integer" }
+            },
+            "required": ["command_id", "sequence", "type", "timestamp"],
+            "additionalProperties": false,
+            "allOf": [
+              { "if": { "properties": { "type": { "const": "command_queued" } }, "required": ["type"] }, "then": { "properties": { "sequence": { "const": 1 } } } },
+              { "if": { "properties": { "type": { "enum": ["stdout", "stderr"] } }, "required": ["type"] }, "then": { "required": ["encoding", "data_base64", "byte_count"] }, "else": { "not": { "anyOf": [{ "required": ["encoding"] }, { "required": ["data_base64"] }, { "required": ["byte_count"] }] } } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "response_type": { "const": "stream_end" } }, "required": ["response_type"] },
+      "then": { "properties": { "payload": { "properties": { "last_sequence": { "type": "integer", "minimum": 0 } }, "required": ["last_sequence"], "additionalProperties": false } } }
+    }
+  ]
+}

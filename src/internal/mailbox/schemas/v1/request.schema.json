@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/src/internal/mailbox/schemas/v1/request.schema.json",
+  "title": "Remote Session Runner v1 mailbox request",
+  "oneOf": [
+    { "$ref": "#/$defs/createSession" },
+    { "$ref": "#/$defs/getSession" },
+    { "$ref": "#/$defs/submitCommand" },
+    { "$ref": "#/$defs/getCommand" },
+    { "$ref": "#/$defs/cancelCommand" },
+    { "$ref": "#/$defs/closeSession" },
+    { "$ref": "#/$defs/run" }
+  ],
+  "$defs": {
+    "executionTarget": {
+      "type": "object",
+      "properties": { "kind": { "type": "string", "enum": ["local", "remote"] }, "profile": { "type": "string", "minLength": 1 } },
+      "required": ["kind", "profile"],
+      "additionalProperties": false
+    },
+    "createSession": {
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 }, "idempotency_key": { "type": "string", "minLength": 1 }, "operation": { "const": "create_session" },
+        "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/$defs/executionTarget" },
+        "source": { "type": "object" }, "limits": { "type": "object" }, "policy": { "type": "object" }
+      },
+      "required": ["request_id", "idempotency_key", "operation", "environment", "execution_target"],
+      "additionalProperties": false
+    },
+    "getSession": {
+      "type": "object",
+      "properties": { "request_id": { "type": "string", "minLength": 1 }, "operation": { "const": "get_session" }, "session_id": { "type": "string", "minLength": 1 } },
+      "required": ["request_id", "operation", "session_id"],
+      "additionalProperties": false
+    },
+    "submitCommand": {
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 }, "idempotency_key": { "type": "string", "minLength": 1 }, "operation": { "const": "submit_command" },
+        "session_id": { "type": "string", "minLength": 1 }, "script": { "type": "string" }, "timeout_seconds": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["request_id", "idempotency_key", "operation", "session_id", "script"],
+      "additionalProperties": false
+    },
+    "getCommand": {
+      "type": "object",
+      "properties": { "request_id": { "type": "string", "minLength": 1 }, "operation": { "const": "get_command" }, "command_id": { "type": "string", "minLength": 1 } },
+      "required": ["request_id", "operation", "command_id"],
+      "additionalProperties": false
+    },
+    "cancelCommand": {
+      "type": "object",
+      "properties": { "request_id": { "type": "string", "minLength": 1 }, "idempotency_key": { "type": "string", "minLength": 1 }, "operation": { "const": "cancel_command" }, "command_id": { "type": "string", "minLength": 1 } },
+      "required": ["request_id", "idempotency_key", "operation", "command_id"],
+      "additionalProperties": false
+    },
+    "closeSession": {
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 }, "idempotency_key": { "type": "string", "minLength": 1 }, "operation": { "const": "close_session" },
+        "session_id": { "type": "string", "minLength": 1 }, "close_policy": { "type": "object" }
+      },
+      "required": ["request_id", "idempotency_key", "operation", "session_id"],
+      "additionalProperties": false
+    },
+    "run": {
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 }, "idempotency_key": { "type": "string", "minLength": 1 }, "operation": { "const": "run" },
+        "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/$defs/executionTarget" }, "script": { "type": "string" },
+        "timeout_seconds": { "type": "integer", "minimum": 1 }, "source": { "type": "object" }, "limits": { "type": "object" }, "policy": { "type": "object" }
+      },
+      "required": ["request_id", "idempotency_key", "operation", "environment", "execution_target", "script"],
+      "additionalProperties": false
+    }
+  }
+}

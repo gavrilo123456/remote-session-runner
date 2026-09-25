@@ -1,0 +1,10 @@
+{
+  "cases": [
+    { "name": "unsupported major", "document": { "protocol_version": 2, "request_id": "r-v2", "operation": "submit_or_resume_command", "resource_id": "cmd-2", "idempotency_key": "submit-2", "payload": { "session_id": "session-1", "intent_ordinal": 1, "script": "pwd" } } },
+    { "name": "missing required request id", "document": { "protocol_version": 1, "operation": "ping", "payload": {} } },
+    { "name": "mutation missing idempotency key", "document": { "protocol_version": 1, "request_id": "r-submit", "operation": "submit_or_resume_command", "resource_id": "cmd-2", "payload": { "session_id": "session-1", "intent_ordinal": 1, "script": "pwd" } } },
+    { "name": "submit missing script", "document": { "protocol_version": 1, "request_id": "r-submit", "operation": "submit_or_resume_command", "resource_id": "cmd-2", "idempotency_key": "submit-2", "payload": { "session_id": "session-1", "intent_ordinal": 1 } } },
+    { "name": "unknown operation", "document": { "protocol_version": 1, "request_id": "r-shell", "operation": "run_shell", "payload": {} } },
+    { "name": "caller cannot set controller identity", "document": { "protocol_version": 1, "request_id": "r-submit", "operation": "submit_or_resume_command", "resource_id": "cmd-2", "idempotency_key": "submit-2", "controller_id": "caller-controlled", "payload": { "session_id": "session-1", "intent_ordinal": 1, "script": "pwd" } } }
+  ]
+}

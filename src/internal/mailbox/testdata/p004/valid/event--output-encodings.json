@@ -1,0 +1,7 @@
+{
+  "cases": [
+    { "name": "UTF-8 chunk", "document": { "command_id": "cmd-3", "sequence": 3, "type": "stdout", "timestamp": "2026-09-25T12:00:00Z", "encoding": "utf8", "text": "/workspace\n", "byte_count": 11 } },
+    { "name": "binary chunk", "document": { "command_id": "cmd-3", "sequence": 4, "type": "stderr", "timestamp": "2026-09-25T12:00:01Z", "encoding": "base64", "data_base64": "AP8=", "byte_count": 2 } },
+    { "name": "non-output event keeps metadata", "document": { "command_id": "cmd-3", "sequence": 1, "type": "command_queued", "timestamp": "2026-09-25T12:00:00Z", "ordinal": 1 } }
+  ]
+}

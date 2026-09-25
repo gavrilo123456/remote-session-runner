@@ -1,0 +1,9 @@
+{
+  "cases": [
+    { "name": "hello version", "document": { "protocol_version": 1, "request_id": "r-hello", "response_type": "hello", "payload": { "supported_protocol_version": 1 } } },
+    { "name": "resource result", "document": { "protocol_version": 1, "request_id": "r-get-session", "response_type": "result", "payload": { "session_id": "session-1", "session_state": "ready" } } },
+    { "name": "structured error", "document": { "protocol_version": 1, "request_id": "r-get-command", "response_type": "error", "payload": { "code": "resource_not_found", "message": "command does not exist", "retryable": false } } },
+    { "name": "base64 output event", "document": { "protocol_version": 1, "request_id": "r-events", "response_type": "event", "payload": { "command_id": "cmd-19", "sequence": 3, "type": "stdout", "timestamp": "2026-09-25T12:00:00Z", "encoding": "base64", "data_base64": "AP8=", "byte_count": 2 } } },
+    { "name": "event stream terminator", "document": { "protocol_version": 1, "request_id": "r-events", "response_type": "stream_end", "payload": { "last_sequence": 3 } } }
+  ]
+}

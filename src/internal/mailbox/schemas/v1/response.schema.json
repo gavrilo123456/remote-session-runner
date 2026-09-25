@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/src/internal/mailbox/schemas/v1/response.schema.json",
+  "title": "Remote Session Runner v1 mailbox response",
+  "type": "object",
+  "properties": {
+    "request_id": { "type": "string", "minLength": 1 },
+    "operation": { "type": "string", "enum": ["create_session", "get_session", "submit_command", "get_command", "cancel_command", "close_session", "run"] },
+    "request_state": { "type": "string", "enum": ["accepted", "complete", "rejected", "indeterminate"] },
+    "response_revision": { "type": "integer", "minimum": 1 },
+    "delivery_state": { "type": "string", "enum": ["recorded", "dispatching", "uncertain", "accepted", "reconciled", "not_delivered"] },
+    "session_id": { "type": "string", "minLength": 1 },
+    "session_state": { "type": "string", "enum": ["requested", "creating", "ready", "busy", "closing", "closed", "expired", "failed", "lost"] },
+    "command_id": { "type": "string", "minLength": 1 },
+    "command_state": { "type": "string", "enum": ["queued", "running", "cancelling", "succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] },
+    "job_id": { "type": "string", "minLength": 1 },
+    "job_phase": { "type": "string", "enum": ["creating_session", "accepting_command", "awaiting_command", "closing_session", "complete", "failed", "lost"] },
+    "exit_code": { "type": "integer" },
+    "final_event_sequence": { "type": "integer", "minimum": 1 },
+    "available_event_sequence": { "type": "integer", "minimum": 0 },
+    "output_complete": { "type": "boolean" },
+    "output_truncated": { "type": "boolean" },
+    "stdout": { "type": "string" },
+    "stderr": { "type": "string" },
+    "output_unavailable_reason": { "type": "string", "enum": ["capture_boundary_unconfirmed", "remote_event_gap", "retention_expired"] },
+    "events_file": { "type": "string", "pattern": "^events/[^/]+\\.ndjson$" },
+    "teardown_outcome": { "type": "string", "enum": ["closed", "not_created", "lost"] },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "enum": ["invalid_request", "environment_target_mismatch", "environment_forbidden", "controller_mismatch", "session_not_ready", "idempotency_conflict", "resource_not_found", "quota_exceeded", "runtime_unavailable", "transport_uncertain", "event_history_unavailable", "retention_expired"] },
+        "message": { "type": "string", "minLength": 1 }, "retryable": { "type": "boolean" }, "resource_id": { "type": "string", "minLength": 1 }, "details": { "type": "object" }
+      },
+      "required": ["code", "message", "retryable"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["request_id", "operation", "request_state", "response_revision"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "request_state": { "const": "rejected" } }, "required": ["request_state"] },
+      "then": { "required": ["error"] }
+    },
+    {
+      "if": { "properties": { "request_state": { "const": "accepted" } }, "required": ["request_state"] },
+      "then": { "not": { "anyOf": [{ "required": ["session_state"] }, { "required": ["command_state"] }, { "required": ["job_phase"] }] } }
+    },
+    {
+      "if": { "properties": { "request_state": { "const": "indeterminate" } }, "required": ["request_state"] },
+      "then": { "properties": { "delivery_state": { "const": "uncertain" } }, "required": ["delivery_state"] }
+    },
+    {
+      "if": { "properties": { "delivery_state": { "const": "not_delivered" } }, "required": ["delivery_state"] },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["session_state"] }, { "required": ["command_state"] }, { "required": ["job_phase"] },
+            { "required": ["final_event_sequence"] }, { "required": ["events_file"] },
+            { "properties": { "available_event_sequence": { "minimum": 1 } }, "required": ["available_event_sequence"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": { "properties": { "available_event_sequence": { "minimum": 1 } }, "required": ["available_event_sequence"] },
+      "then": { "required": ["command_id", "events_file"] }
+    },
+    {
+      "if": { "required": ["events_file"] },
+      "then": { "properties": { "available_event_sequence": { "minimum": 1 } }, "required": ["available_event_sequence", "command_id"] }
+    },
+    {
+      "if": { "properties": { "output_complete": { "const": true } }, "required": ["output_complete"] },
+      "then": { "properties": { "available_event_sequence": { "minimum": 1 } }, "required": ["command_id", "available_event_sequence", "events_file"] }
+    },
+    {
+      "if": { "properties": { "command_state": { "enum": ["succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] } }, "required": ["command_state"] },
+      "then": { "required": ["final_event_sequence"] }
+    },
+    {
+      "if": { "required": ["session_state"] },
+      "then": { "required": ["session_id"] }
+    },
+    {
+      "if": { "required": ["command_state"] },
+      "then": { "required": ["command_id", "output_complete", "output_truncated"] }
+    },
+    {
+      "if": { "required": ["job_phase"] },
+      "then": { "required": ["job_id"] }
+    },
+    {
+      "if": { "properties": { "command_state": { "enum": ["succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] }, "output_complete": { "const": false } }, "required": ["command_state", "output_complete"] },
+      "then": { "required": ["output_unavailable_reason"] }
+    }
+  ]
+}

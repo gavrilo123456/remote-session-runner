@@ -1,0 +1,11 @@
+{
+  "cases": [
+    { "name": "create session", "document": { "request_id": "req-101", "idempotency_key": "create-101", "operation": "create_session", "environment": "mac-dev", "execution_target": { "kind": "local", "profile": "mac-workstation" }, "source": { "mode": "empty" } } },
+    { "name": "get session", "document": { "request_id": "req-102", "operation": "get_session", "session_id": "session-101" } },
+    { "name": "submit command", "document": { "request_id": "req-103", "idempotency_key": "submit-103", "operation": "submit_command", "session_id": "session-101", "script": "pwd", "timeout_seconds": 30 } },
+    { "name": "get command", "document": { "request_id": "req-104", "operation": "get_command", "command_id": "cmd-103" } },
+    { "name": "cancel command", "document": { "request_id": "req-105", "idempotency_key": "cancel-103", "operation": "cancel_command", "command_id": "cmd-103" } },
+    { "name": "close session", "document": { "request_id": "req-106", "idempotency_key": "close-101", "operation": "close_session", "session_id": "session-101" } },
+    { "name": "run", "document": { "request_id": "req-107", "idempotency_key": "run-107", "operation": "run", "environment": "linux-dev", "execution_target": { "kind": "remote", "profile": "linux-host" }, "script": "pwd", "source": { "mode": "empty" } } }
+  ]
+}

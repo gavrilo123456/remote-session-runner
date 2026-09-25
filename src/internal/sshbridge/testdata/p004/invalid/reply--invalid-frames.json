@@ -1,0 +1,9 @@
+{
+  "cases": [
+    { "name": "unsupported reply major", "document": { "protocol_version": 2, "request_id": "r-v2", "response_type": "hello", "payload": { "supported_protocol_version": 2 } } },
+    { "name": "unknown response type", "document": { "protocol_version": 1, "request_id": "r-bad", "response_type": "raw", "payload": {} } },
+    { "name": "error misses retryable", "document": { "protocol_version": 1, "request_id": "r-error", "response_type": "error", "payload": { "code": "resource_not_found", "message": "missing" } } },
+    { "name": "queued event sequence must be one", "document": { "protocol_version": 1, "request_id": "r-event", "response_type": "event", "payload": { "command_id": "cmd-1", "sequence": 2, "type": "command_queued", "timestamp": "2026-09-25T12:00:00Z" } } },
+    { "name": "output event requires bytes and count", "document": { "protocol_version": 1, "request_id": "r-event", "response_type": "event", "payload": { "command_id": "cmd-1", "sequence": 3, "type": "stdout", "timestamp": "2026-09-25T12:00:00Z", "encoding": "base64", "data_base64": "AP8=" } } }
+  ]
+}

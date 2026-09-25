@@ -1,2 +1,2 @@
-// Package sshbridge will hold the restricted SSH bridge adapter.
+// Package sshbridge holds the restricted SSH bridge adapter and its v1 wire contract.
 package sshbridge

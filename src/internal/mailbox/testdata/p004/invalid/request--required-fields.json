@@ -1,0 +1,9 @@
+{
+  "cases": [
+    { "name": "mutation misses idempotency key", "document": { "request_id": "req-bad", "operation": "submit_command", "session_id": "session-1", "script": "pwd" } },
+    { "name": "create target misses profile", "document": { "request_id": "req-bad", "idempotency_key": "create-bad", "operation": "create_session", "environment": "mac-dev", "execution_target": { "kind": "local" } } },
+    { "name": "submit misses script", "document": { "request_id": "req-bad", "idempotency_key": "submit-bad", "operation": "submit_command", "session_id": "session-1" } },
+    { "name": "read cannot carry mutation key", "document": { "request_id": "req-bad", "idempotency_key": "get-bad", "operation": "get_session", "session_id": "session-1" } },
+    { "name": "target cannot be overridden on submit", "document": { "request_id": "req-bad", "idempotency_key": "submit-bad", "operation": "submit_command", "session_id": "session-1", "script": "pwd", "execution_target": { "kind": "remote", "profile": "linux-host" } } }
+  ]
+}

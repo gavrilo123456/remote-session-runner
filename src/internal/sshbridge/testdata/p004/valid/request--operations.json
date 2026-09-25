@@ -1,0 +1,15 @@
+{
+  "cases": [
+    { "name": "hello control frame", "document": { "protocol_version": 1, "request_id": "r-hello", "operation": "hello", "payload": {} } },
+    { "name": "create session", "document": { "protocol_version": 1, "request_id": "r-create", "operation": "create_or_resume_session", "resource_id": "session-1", "idempotency_key": "create-1", "payload": { "environment": "mac-dev", "execution_target": { "kind": "local", "profile": "mac-workstation" }, "source": { "mode": "empty" } } } },
+    { "name": "get session", "document": { "protocol_version": 1, "request_id": "r-get-session", "operation": "get_session", "payload": { "session_id": "session-1" } } },
+    { "name": "submit command", "document": { "protocol_version": 1, "request_id": "bridge-42", "operation": "submit_or_resume_command", "resource_id": "cmd-19", "idempotency_key": "submit-42", "payload": { "session_id": "session-7", "intent_ordinal": 1, "script": "pwd" } } },
+    { "name": "get command", "document": { "protocol_version": 1, "request_id": "r-get-command", "operation": "get_command", "payload": { "command_id": "cmd-19" } } },
+    { "name": "stream command events", "document": { "protocol_version": 1, "request_id": "r-events", "operation": "stream_command_events", "payload": { "command_id": "cmd-19", "after_sequence": 2 } } },
+    { "name": "cancel command", "document": { "protocol_version": 1, "request_id": "r-cancel", "operation": "cancel_command", "resource_id": "cmd-19", "idempotency_key": "cancel-19", "payload": { "command_id": "cmd-19" } } },
+    { "name": "close session", "document": { "protocol_version": 1, "request_id": "r-close", "operation": "close_session", "resource_id": "session-1", "idempotency_key": "close-1", "payload": { "session_id": "session-1" } } },
+    { "name": "run job", "document": { "protocol_version": 1, "request_id": "r-run", "operation": "run_or_resume_job", "resource_id": "job-1", "idempotency_key": "run-1", "payload": { "environment": "linux-dev", "execution_target": { "kind": "remote", "profile": "linux-host" }, "script": "pwd" } } },
+    { "name": "get job", "document": { "protocol_version": 1, "request_id": "r-get-job", "operation": "get_job", "payload": { "job_id": "job-1" } } },
+    { "name": "ping", "document": { "protocol_version": 1, "request_id": "r-ping", "operation": "ping", "payload": {} } }
+  ]
+}
