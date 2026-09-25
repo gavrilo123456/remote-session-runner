@@ -483,7 +483,7 @@ The PoC is ready for controlled demonstration when it can show all of the follow
 - local and remote sessions use the same CLI commands, resource model, states, events, idempotency, and persistent-shell behavior;
 - command events replay from a per-command sequence, while session lifecycle changes are durably recorded and read as session-status snapshots in the PoC;
 - the Mac Execution Router sends an explicit `local` target to `runner-locald` and an explicit `remote` target to the SSH bridge;
-- the local API has no remote credential or network access;
+- the Local Control API does not load remote credentials or initiate remote connections; only the Router and Dispatcher perform remote transport;
 - a file-only client can create a local or queued-remote session, submit a command using its `session_id`, and read a response matched by `request_id` with the resulting `command_id`;
 - a retry with a new `request_id` and the same `idempotency_key` and payload returns the original resource, while changed payload under that key is rejected in the new request's outbox without overwriting the original response or running a second command;
 - remote idempotency records outlive the local retry window, and a retry after their expiry cannot silently create a second remote execution;
