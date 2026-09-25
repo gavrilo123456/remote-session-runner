@@ -1,0 +1,162 @@
+[
+  {
+    "case": "local socket creates local session",
+    "ingress": "local_unix_socket",
+    "method": "post",
+    "path": "/v1/sessions",
+    "request": { "environment": "mac-dev", "execution_target": { "kind": "local", "profile": "mac-workstation" }, "source": { "mode": "empty" } },
+    "target_kind": "local",
+    "expected_scope": "local_intent",
+    "status": 202,
+    "response": { "resource_id": "sess-local-1", "session_id": "sess-local-1", "intent_id": "intent-local-1", "acceptance_scope": "local_intent", "execution_target": { "kind": "local", "profile": "mac-workstation" }, "known_state": { "delivery_state": "recorded" } }
+  },
+  {
+    "case": "local socket queues remote session",
+    "ingress": "local_unix_socket",
+    "method": "post",
+    "path": "/v1/sessions",
+    "request": { "environment": "linux-dev", "execution_target": { "kind": "remote", "profile": "linux-host" }, "source": { "mode": "empty" } },
+    "target_kind": "remote",
+    "expected_scope": "local_intent",
+    "status": 202,
+    "response": { "resource_id": "sess-queued-1", "session_id": "sess-queued-1", "intent_id": "intent-queued-1", "acceptance_scope": "local_intent", "execution_target": { "kind": "remote", "profile": "linux-host" }, "known_state": { "delivery_state": "recorded" } }
+  },
+  {
+    "case": "direct HTTPS accepts remote session",
+    "ingress": "direct_https",
+    "method": "post",
+    "path": "/v1/sessions",
+    "request": { "environment": "linux-dev", "execution_target": { "kind": "remote", "profile": "linux-host" }, "source": { "mode": "empty" } },
+    "target_kind": "remote",
+    "expected_scope": "target_authority",
+    "status": 202,
+    "response": { "resource_id": "sess-direct-1", "session_id": "sess-direct-1", "acceptance_scope": "target_authority", "execution_target": { "kind": "remote", "profile": "linux-host" }, "known_state": { "session_state": "creating" } }
+  },
+  {
+    "case": "local socket records remote command intent without authority state",
+    "ingress": "local_unix_socket",
+    "method": "post",
+    "path": "/v1/sessions/{session_id}/commands",
+    "request": { "script": "pwd" },
+    "target_kind": "remote",
+    "expected_scope": "local_intent",
+    "status": 202,
+    "response": { "resource_id": "cmd-queued-1", "command_id": "cmd-queued-1", "session_id": "sess-queued-1", "intent_id": "intent-command-1", "acceptance_scope": "local_intent", "execution_target": { "kind": "remote", "profile": "linux-host" }, "known_state": { "delivery_state": "recorded" } }
+  },
+  {
+    "case": "direct HTTPS accepts remote command",
+    "ingress": "direct_https",
+    "method": "post",
+    "path": "/v1/sessions/{session_id}/commands",
+    "request": { "script": "pwd", "timeout_seconds": 30 },
+    "target_kind": "remote",
+    "expected_scope": "target_authority",
+    "status": 202,
+    "response": { "resource_id": "cmd-direct-1", "command_id": "cmd-direct-1", "session_id": "sess-direct-1", "acceptance_scope": "target_authority", "execution_target": { "kind": "remote", "profile": "linux-host" }, "known_state": { "command_state": "queued" } }
+  },
+  {
+    "case": "local socket creates queued remote job with stable IDs",
+    "ingress": "local_unix_socket",
+    "method": "post",
+    "path": "/v1/jobs",
+    "request": { "environment": "linux-dev", "execution_target": { "kind": "remote", "profile": "linux-host" }, "source": { "mode": "empty" }, "script": "pwd" },
+    "target_kind": "remote",
+    "expected_scope": "local_intent",
+    "status": 202,
+    "response": { "resource_id": "job-queued-1", "job_id": "job-queued-1", "session_id": "sess-job-queued-1", "command_id": "cmd-job-queued-1", "intent_id": "intent-job-1", "acceptance_scope": "local_intent", "execution_target": { "kind": "remote", "profile": "linux-host" }, "known_state": { "delivery_state": "recorded" } }
+  },
+  {
+    "case": "direct HTTPS accepts remote job",
+    "ingress": "direct_https",
+    "method": "post",
+    "path": "/v1/jobs",
+    "request": { "environment": "linux-dev", "execution_target": { "kind": "remote", "profile": "linux-host" }, "source": { "mode": "empty" }, "script": "pwd" },
+    "target_kind": "remote",
+    "expected_scope": "target_authority",
+    "status": 202,
+    "response": { "resource_id": "job-direct-1", "job_id": "job-direct-1", "session_id": "sess-job-direct-1", "command_id": "cmd-job-direct-1", "acceptance_scope": "target_authority", "execution_target": { "kind": "remote", "profile": "linux-host" }, "known_state": { "job_phase": "creating_session" } }
+  },
+  {
+    "case": "local socket accepts queued remote cancellation request",
+    "ingress": "local_unix_socket",
+    "method": "post",
+    "path": "/v1/commands/{command_id}/cancel",
+    "target_kind": "remote",
+    "expected_scope": "local_intent",
+    "status": 202,
+    "response": { "resource_id": "cmd-cancel-1", "command_id": "cmd-cancel-1", "session_id": "sess-queued-1", "intent_id": "intent-cancel-1", "acceptance_scope": "local_intent", "execution_target": { "kind": "remote", "profile": "linux-host" }, "known_state": { "delivery_state": "recorded" } }
+  },
+  {
+    "case": "direct HTTPS accepts session close request",
+    "ingress": "direct_https",
+    "method": "delete",
+    "path": "/v1/sessions/{session_id}",
+    "target_kind": "remote",
+    "expected_scope": "target_authority",
+    "status": 202,
+    "response": { "resource_id": "sess-direct-1", "session_id": "sess-direct-1", "acceptance_scope": "target_authority", "execution_target": { "kind": "remote", "profile": "linux-host" }, "known_state": { "session_state": "closing" } }
+  },
+  {
+    "case": "direct HTTPS reads authoritative session snapshot",
+    "ingress": "direct_https",
+    "method": "get",
+    "path": "/v1/sessions/{session_id}",
+    "target_kind": "remote",
+    "status": 200,
+    "response": { "view": "authority", "is_stale": false, "resource": { "session_id": "sess-direct-1", "session_state": "ready", "execution_target": { "kind": "remote", "profile": "linux-host" }, "authority": "remote", "controller": { "controller_type": "direct_mtls", "controller_id": "tomasz.walczuk" }, "observed_at": "2026-09-25T12:00:00Z", "environment": "linux-dev", "source": { "mode": "empty" }, "capabilities": { "host_class": "linux-host", "isolation": "os-user", "effective_account": "ubuntu", "service_limits": {} } } }
+  },
+  {
+    "case": "local socket reads a queued remote projection",
+    "ingress": "local_unix_socket",
+    "method": "get",
+    "path": "/v1/sessions/{session_id}",
+    "target_kind": "remote",
+    "status": 200,
+    "response": { "view": "projection", "is_stale": true, "resource": { "session_id": "sess-queued-1", "session_state": "ready", "execution_target": { "kind": "remote", "profile": "linux-host" }, "authority": "remote", "controller": { "controller_type": "queued_mac", "controller_id": "tomasz.walczuk" }, "observed_at": "2026-09-25T12:00:00Z", "environment": "linux-dev", "source": { "mode": "empty" }, "capabilities": { "host_class": "linux-host", "isolation": "os-user", "effective_account": "ubuntu", "service_limits": {} }, "is_stale": true } }
+  },
+  {
+    "case": "direct HTTPS reads command output status",
+    "ingress": "direct_https",
+    "method": "get",
+    "path": "/v1/commands/{command_id}",
+    "target_kind": "remote",
+    "status": 200,
+    "response": { "view": "authority", "is_stale": false, "resource": { "command_id": "cmd-direct-1", "session_id": "sess-direct-1", "ordinal": 1, "command_state": "succeeded", "exit_code": 0, "final_event_sequence": 3, "output_complete": true, "output_truncated": false, "execution_target": { "kind": "remote", "profile": "linux-host" }, "authority": "remote", "controller": { "controller_type": "direct_mtls", "controller_id": "tomasz.walczuk" }, "observed_at": "2026-09-25T12:00:03Z", "environment": "linux-dev", "source": { "mode": "empty" }, "capabilities": { "host_class": "linux-host", "isolation": "os-user", "effective_account": "ubuntu", "service_limits": {} } } }
+  },
+  {
+    "case": "direct HTTPS reads job command result and teardown",
+    "ingress": "direct_https",
+    "method": "get",
+    "path": "/v1/jobs/{job_id}",
+    "target_kind": "remote",
+    "status": 200,
+    "response": { "view": "authority", "is_stale": false, "resource": { "observed_at": "2026-09-25T12:00:04Z", "job_id": "job-direct-1", "session_id": "sess-job-direct-1", "command_id": "cmd-job-direct-1", "phase": "complete", "command_state": "succeeded", "exit_code": 0, "final_event_sequence": 3, "output_complete": true, "output_truncated": false, "teardown_state": "closed", "execution_target": { "kind": "remote", "profile": "linux-host" }, "authority": "remote", "controller": { "controller_type": "direct_mtls", "controller_id": "tomasz.walczuk" }, "environment": "linux-dev", "source": { "mode": "empty" }, "capabilities": { "host_class": "linux-host", "isolation": "os-user", "effective_account": "ubuntu", "service_limits": {} } } }
+  },
+  {
+    "case": "local socket reads never-delivered session without session state",
+    "ingress": "local_unix_socket",
+    "method": "get",
+    "path": "/v1/sessions/{session_id}",
+    "target_kind": "remote",
+    "status": 200,
+    "response": { "view": "local_intent", "is_stale": false, "resource": { "session_id": "sess-not-delivered-1", "execution_target": { "kind": "remote", "profile": "linux-host" }, "controller": { "controller_type": "local_user", "controller_id": "tomasz.walczuk" }, "observed_at": "2026-09-25T12:05:00Z", "environment": "linux-dev", "source": { "mode": "empty" }, "delivery_state": "not_delivered", "reason": "remote session was not created" } }
+  },
+  {
+    "case": "local socket reads never-delivered command without command state",
+    "ingress": "local_unix_socket",
+    "method": "get",
+    "path": "/v1/commands/{command_id}",
+    "target_kind": "remote",
+    "status": 200,
+    "response": { "view": "local_intent", "is_stale": false, "resource": { "command_id": "cmd-not-delivered-1", "session_id": "sess-not-delivered-1", "execution_target": { "kind": "remote", "profile": "linux-host" }, "controller": { "controller_type": "local_user", "controller_id": "tomasz.walczuk" }, "observed_at": "2026-09-25T12:05:01Z", "environment": "linux-dev", "source": { "mode": "empty" }, "delivery_state": "not_delivered", "reason": "command was never sent" } }
+  },
+  {
+    "case": "local socket reads never-delivered job without fabricated phase or teardown",
+    "ingress": "local_unix_socket",
+    "method": "get",
+    "path": "/v1/jobs/{job_id}",
+    "target_kind": "remote",
+    "status": 200,
+    "response": { "view": "local_intent", "is_stale": false, "resource": { "job_id": "job-not-delivered-1", "session_id": "sess-job-not-delivered-1", "command_id": "cmd-job-not-delivered-1", "execution_target": { "kind": "remote", "profile": "linux-host" }, "controller": { "controller_type": "local_user", "controller_id": "tomasz.walczuk" }, "observed_at": "2026-09-25T12:05:02Z", "environment": "linux-dev", "source": { "mode": "empty" }, "delivery_state": "not_delivered", "reason": "job was never sent" } }
+  }
+]

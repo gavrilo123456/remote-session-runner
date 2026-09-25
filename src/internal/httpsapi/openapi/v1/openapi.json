@@ -1,0 +1,352 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Remote Session Runner API",
+    "version": "1.0.0",
+    "description": "Versioned HTTP/JSON contract. The public HTTPS server is Linux remote authority and requires mutual TLS. The same paths are available through the owner-only Mac Unix socket described by x-runner-local-unix-socket; that socket authenticates through OS ownership, not HTTP TLS."
+  },
+  "servers": [
+    { "url": "https://129.151.232.40:8443", "description": "Direct Linux HTTPS API; TLS 1.3 and mapped-client-certificate mTLS are mandatory." }
+  ],
+  "security": [{ "mutualTLS": [] }],
+  "x-runner-limits": {
+    "max_serialized_request_bytes": 1048576,
+    "max_script_utf8_bytes": 131072,
+    "enforced_before_acceptance": true
+  },
+  "x-runner-local-unix-socket": {
+    "socket_path": "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock",
+    "transport": "HTTP over AF_UNIX",
+    "same_paths_and_json_contract": true,
+    "authentication": "Owner-only socket and the connected process account; no HTTP client certificate is used.",
+    "account": "tomasz.walczuk",
+    "controller": { "controller_type": "local_user", "controller_id": "tomasz.walczuk" },
+    "allowed_execution_target_kinds": ["local", "remote"],
+    "mutation_acceptance_scope": "local_intent",
+    "queued_remote_intent_has_no_authoritative_state": true
+  },
+  "paths": {
+    "/v1/sessions": {
+      "post": {
+        "operationId": "createSession",
+        "summary": "Accept a session creation request",
+        "description": "Returns after the local intent or target-authority transaction commits. Direct HTTPS accepts remote targets only. A local-socket remote target is a queued local intent until Linux confirms acceptance.",
+        "x-runner-direct-target-kinds": ["remote"],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "$ref": "#/components/requestBodies/CreateSession" },
+        "responses": {
+          "202": { "$ref": "#/components/responses/SessionAccepted" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/InvalidRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}": {
+      "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+      "get": {
+        "operationId": "getSession",
+        "summary": "Read a session snapshot",
+        "responses": {
+          "200": { "$ref": "#/components/responses/SessionRead" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "operationId": "closeSession",
+        "summary": "Request session close",
+        "description": "Closes through the same ingress/controller that created the session. A response acknowledges the close request; it does not claim teardown is complete.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "202": { "$ref": "#/components/responses/CloseAccepted" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/commands": {
+      "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+      "post": {
+        "operationId": "submitCommand",
+        "summary": "Accept a command for the session's immutable target",
+        "description": "The request has no execution_target field. The command always inherits the target and controller fixed when the session was created. Local-socket acceptance is a local intent; direct HTTPS acceptance is target authority.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "$ref": "#/components/requestBodies/SubmitCommand" },
+        "responses": {
+          "202": { "$ref": "#/components/responses/CommandAccepted" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/InvalidRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/commands/{command_id}": {
+      "parameters": [{ "$ref": "#/components/parameters/CommandId" }],
+      "get": {
+        "operationId": "getCommand",
+        "summary": "Read command state and output completeness",
+        "responses": {
+          "200": { "$ref": "#/components/responses/CommandRead" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/v1/commands/{command_id}/events": {
+      "parameters": [{ "$ref": "#/components/parameters/CommandId" }],
+      "get": {
+        "operationId": "getCommandEvents",
+        "summary": "Replay or follow retained command events",
+        "description": "Returns ordered NDJSON events. A gap or expired requested range is an error, never a successful partial stream. Response headers identify authority versus projection and staleness.",
+        "parameters": [
+          { "name": "after", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 0, "default": 0 } },
+          { "name": "follow", "in": "query", "required": false, "schema": { "type": "boolean", "default": false } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Events" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "410": { "$ref": "#/components/responses/EventHistoryUnavailable" }
+        }
+      }
+    },
+    "/v1/commands/{command_id}/cancel": {
+      "parameters": [{ "$ref": "#/components/parameters/CommandId" }],
+      "post": {
+        "operationId": "cancelCommand",
+        "summary": "Request command cancellation",
+        "description": "Cancellation is an idempotent request, not a promise of a cancelled terminal state. The response reports the currently known command state.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "202": { "$ref": "#/components/responses/CommandAccepted" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs": {
+      "post": {
+        "operationId": "createJob",
+        "summary": "Accept a one-off job",
+        "description": "Creates one ephemeral session, submits exactly one command, observes it, and requests close. The local ingress allocates stable job/session/command IDs in its intent; direct HTTPS accepts remote targets only.",
+        "x-runner-direct-target-kinds": ["remote"],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "$ref": "#/components/requestBodies/CreateJob" },
+        "responses": {
+          "202": { "$ref": "#/components/responses/JobAccepted" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/InvalidRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}": {
+      "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+      "get": {
+        "operationId": "getJob",
+        "summary": "Read job command outcome and teardown progress",
+        "responses": {
+          "200": { "$ref": "#/components/responses/JobRead" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": { "mutualTLS": { "type": "mutualTLS", "description": "Direct HTTPS requires TLS 1.3, trusted client certificate, and explicit certificate-to-principal mapping." } },
+    "parameters": {
+      "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } },
+      "SessionId": { "name": "session_id", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1 } },
+      "CommandId": { "name": "command_id", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1 } },
+      "JobId": { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1 } }
+    },
+    "requestBodies": {
+      "CreateSession": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateSessionRequest" } } } },
+      "SubmitCommand": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmitCommandRequest" } } } },
+      "CreateJob": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateJobRequest" } } } }
+    },
+    "responses": {
+      "SessionAccepted": { "description": "Session intent or target-authority acceptance.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionAcceptance" } } } },
+      "CommandAccepted": { "description": "Command or cancellation intent acceptance.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommandAcceptance" } } } },
+      "CloseAccepted": { "description": "Close request accepted; teardown may still be in progress.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CloseAcceptance" } } } },
+      "JobAccepted": { "description": "Stable one-off job, session, and command identities accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAcceptance" } } } },
+      "SessionRead": { "description": "As-of snapshot, marked as authority or projection.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionReadResponse" } } } },
+      "CommandRead": { "description": "As-of snapshot with terminal and output-completeness metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommandReadResponse" } } } },
+      "JobRead": { "description": "As-of job snapshot or retained local intent status, without inventing target state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobReadResponse" } } } },
+      "Events": { "description": "Ordered command-event records; replay/follow handoff must be gap-free.", "headers": { "X-Runner-View": { "$ref": "#/components/headers/View" }, "X-Runner-Stale": { "$ref": "#/components/headers/Stale" } }, "content": { "application/x-ndjson": { "schema": { "$ref": "../../../domain/schemas/v1/command-event.schema.json" } } } },
+      "EventHistoryUnavailable": { "description": "Requested event range expired or contains an irrecoverable gap.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "code": "event_history_unavailable", "message": "Requested event history is unavailable", "retryable": false, "resource_id": "cmd-1", "details": { "output_complete": false, "output_unavailable_reason": "retention_expired", "earliest_available_sequence": 12 } } } } },
+      "Conflict": { "description": "Idempotency key reused with a different canonical request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "Forbidden": { "description": "Caller is not the controller for this resource.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "NotFound": { "description": "Resource does not exist or is not visible to this controller.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "InvalidRequest": { "description": "Invalid input or target/environment combination.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "Unavailable": { "description": "Store or runtime unavailable before acceptance; same key/ID may be retried within its guarantee window.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+    },
+    "headers": {
+      "View": { "description": "Whether the response reflects authority or a Mac projection.", "required": true, "schema": { "type": "string", "enum": ["authority", "projection"] } },
+      "Stale": { "description": "Whether a projection may lag target authority.", "required": true, "schema": { "type": "boolean" } }
+    },
+    "schemas": {
+      "ExecutionTarget": { "$ref": "../../../domain/schemas/v1/execution-target.schema.json" },
+      "Source": { "$ref": "../../../domain/schemas/v1/source.schema.json" },
+      "SessionResource": { "$ref": "../../../domain/schemas/v1/session.schema.json" },
+      "CommandResource": { "$ref": "../../../domain/schemas/v1/command.schema.json" },
+      "CommandEvent": { "$ref": "../../../domain/schemas/v1/command-event.schema.json" },
+      "ErrorEnvelope": { "$ref": "../../../domain/schemas/v1/error.schema.json" },
+      "CreateSessionRequest": {
+        "type": "object",
+        "properties": { "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "source": { "$ref": "#/components/schemas/Source" }, "limits": { "type": "object" }, "policy": { "type": "object" } },
+        "required": ["environment", "execution_target"],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": { "execution_target": { "properties": { "kind": { "const": "remote" } }, "required": ["kind"] } },
+              "required": ["execution_target"]
+            },
+            "then": { "properties": { "source": { "not": { "properties": { "mode": { "const": "local_worktree" } }, "required": ["mode"] } } } }
+          }
+        ]
+      },
+      "SubmitCommandRequest": {
+        "type": "object",
+        "properties": { "script": { "type": "string", "description": "UTF-8 shell script; at most 131072 UTF-8 bytes.", "x-runner-max-utf8-bytes": 131072 }, "timeout_seconds": { "type": "integer", "minimum": 1 } },
+        "required": ["script"],
+        "additionalProperties": false
+      },
+      "CreateJobRequest": {
+        "type": "object",
+        "properties": { "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "source": { "$ref": "#/components/schemas/Source" }, "script": { "type": "string", "description": "UTF-8 shell script; at most 131072 UTF-8 bytes.", "x-runner-max-utf8-bytes": 131072 }, "timeout_seconds": { "type": "integer", "minimum": 1 }, "limits": { "type": "object" }, "policy": { "type": "object" } },
+        "required": ["environment", "execution_target", "script"],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": { "execution_target": { "properties": { "kind": { "const": "remote" } }, "required": ["kind"] } },
+              "required": ["execution_target"]
+            },
+            "then": { "properties": { "source": { "not": { "properties": { "mode": { "const": "local_worktree" } }, "required": ["mode"] } } } }
+          }
+        ]
+      },
+      "AcceptanceScope": { "type": "string", "enum": ["local_intent", "target_authority"] },
+      "KnownState": {
+        "type": "object",
+        "properties": {
+          "delivery_state": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/deliveryState" },
+          "session_state": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/sessionState" },
+          "command_state": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/commandState" },
+          "job_phase": { "type": "string", "enum": ["creating_session", "accepting_command", "awaiting_command", "closing_session", "complete", "failed", "lost"] }
+        },
+        "minProperties": 1,
+        "additionalProperties": false
+      },
+      "SessionAcceptance": {
+        "type": "object",
+        "properties": { "resource_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1, "description": "Equal to resource_id for this response." }, "intent_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" } },
+        "required": ["resource_id", "session_id", "acceptance_scope", "execution_target", "known_state"],
+        "additionalProperties": false
+      },
+      "CommandAcceptance": {
+        "type": "object",
+        "properties": { "resource_id": { "type": "string", "minLength": 1 }, "command_id": { "type": "string", "minLength": 1, "description": "Equal to resource_id for this response." }, "session_id": { "type": "string", "minLength": 1 }, "intent_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" } },
+        "required": ["resource_id", "command_id", "session_id", "acceptance_scope", "execution_target", "known_state"],
+        "additionalProperties": false
+      },
+      "CloseAcceptance": {
+        "type": "object",
+        "properties": { "resource_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" } },
+        "required": ["resource_id", "session_id", "acceptance_scope", "execution_target", "known_state"],
+        "additionalProperties": false
+      },
+      "JobAcceptance": {
+        "type": "object",
+        "properties": { "resource_id": { "type": "string", "minLength": 1, "description": "Equal to job_id for this response." }, "job_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "command_id": { "type": "string", "minLength": 1 }, "intent_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" } },
+        "required": ["resource_id", "job_id", "session_id", "command_id", "acceptance_scope", "execution_target", "known_state"],
+        "additionalProperties": false
+      },
+      "SessionIntentResource": {
+        "type": "object",
+        "properties": {
+          "session_id": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" },
+          "controller": { "type": "object", "properties": { "controller_type": { "type": "string" }, "controller_id": { "type": "string" } }, "required": ["controller_type", "controller_id"], "additionalProperties": false },
+          "observed_at": { "type": "string", "format": "date-time" }, "environment": { "type": "string", "minLength": 1 }, "source": { "$ref": "#/components/schemas/Source" },
+          "delivery_state": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/deliveryState" }, "reason": { "type": "string" }
+        },
+        "required": ["session_id", "execution_target", "controller", "observed_at", "environment", "source", "delivery_state"],
+        "additionalProperties": false
+      },
+      "CommandIntentResource": {
+        "type": "object",
+        "properties": {
+          "command_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" },
+          "controller": { "type": "object", "properties": { "controller_type": { "type": "string" }, "controller_id": { "type": "string" } }, "required": ["controller_type", "controller_id"], "additionalProperties": false },
+          "observed_at": { "type": "string", "format": "date-time" }, "environment": { "type": "string", "minLength": 1 }, "source": { "$ref": "#/components/schemas/Source" },
+          "delivery_state": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/deliveryState" }, "reason": { "type": "string" }
+        },
+        "required": ["command_id", "session_id", "execution_target", "controller", "observed_at", "environment", "source", "delivery_state"],
+        "additionalProperties": false
+      },
+      "JobIntentResource": {
+        "type": "object",
+        "properties": {
+          "job_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "command_id": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" },
+          "controller": { "type": "object", "properties": { "controller_type": { "type": "string" }, "controller_id": { "type": "string" } }, "required": ["controller_type", "controller_id"], "additionalProperties": false },
+          "observed_at": { "type": "string", "format": "date-time" }, "environment": { "type": "string", "minLength": 1 }, "source": { "$ref": "#/components/schemas/Source" },
+          "delivery_state": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/deliveryState" }, "reason": { "type": "string" }
+        },
+        "required": ["job_id", "session_id", "command_id", "execution_target", "controller", "observed_at", "environment", "source", "delivery_state"],
+        "additionalProperties": false
+      },
+      "SessionReadResponse": {
+        "type": "object", "properties": { "view": { "type": "string", "enum": ["authority", "projection", "local_intent"] }, "is_stale": { "type": "boolean" }, "resource": { "oneOf": [{ "$ref": "#/components/schemas/SessionResource" }, { "$ref": "#/components/schemas/SessionIntentResource" }] } },
+        "required": ["view", "is_stale", "resource"], "additionalProperties": false
+      },
+      "CommandReadResponse": {
+        "type": "object", "properties": { "view": { "type": "string", "enum": ["authority", "projection", "local_intent"] }, "is_stale": { "type": "boolean" }, "resource": { "oneOf": [{ "$ref": "#/components/schemas/CommandResource" }, { "$ref": "#/components/schemas/CommandIntentResource" }] } },
+        "required": ["view", "is_stale", "resource"], "additionalProperties": false
+      },
+      "JobResource": {
+        "type": "object",
+        "properties": {
+          "job_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "command_id": { "type": "string", "minLength": 1 },
+          "phase": { "type": "string", "enum": ["creating_session", "accepting_command", "awaiting_command", "closing_session", "complete", "failed", "lost"] },
+          "command_state": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/commandState" }, "exit_code": { "type": "integer" }, "final_event_sequence": { "type": "integer", "minimum": 1 },
+          "output_complete": { "type": "boolean" }, "output_truncated": { "type": "boolean" }, "output_unavailable_reason": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/outputUnavailableReason" },
+          "teardown_state": { "type": "string", "enum": ["pending", "closed", "failed", "lost", "not_created"] },
+          "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "authority": { "type": "string", "enum": ["local", "remote"] },
+          "controller": { "type": "object", "properties": { "controller_type": { "type": "string" }, "controller_id": { "type": "string" } }, "required": ["controller_type", "controller_id"], "additionalProperties": false },
+          "observed_at": { "type": "string", "format": "date-time" }, "environment": { "type": "string", "minLength": 1 }, "source": { "$ref": "#/components/schemas/Source" },
+          "capabilities": { "type": "object", "properties": { "host_class": { "type": "string" }, "isolation": { "const": "os-user" }, "effective_account": { "type": "string" }, "service_limits": { "type": "object" } }, "required": ["host_class", "isolation", "effective_account", "service_limits"], "additionalProperties": false }
+        },
+        "required": ["job_id", "session_id", "command_id", "phase", "output_complete", "output_truncated", "teardown_state", "execution_target", "authority", "controller", "observed_at", "environment", "source", "capabilities"],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": { "properties": { "command_state": { "enum": ["succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] } }, "required": ["command_state"] },
+            "then": { "required": ["final_event_sequence"] }
+          },
+          {
+            "if": { "properties": { "command_state": { "enum": ["succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] }, "output_complete": { "const": false } }, "required": ["command_state", "output_complete"] },
+            "then": { "required": ["output_unavailable_reason"] }
+          }
+        ]
+      },
+      "JobReadResponse": {
+        "type": "object",
+        "properties": { "view": { "type": "string", "enum": ["authority", "projection", "local_intent"] }, "is_stale": { "type": "boolean" }, "resource": { "oneOf": [{ "$ref": "#/components/schemas/JobResource" }, { "$ref": "#/components/schemas/JobIntentResource" }] } },
+        "required": ["view", "is_stale", "resource"],
+        "additionalProperties": false
+      }
+    }
+  }
+}

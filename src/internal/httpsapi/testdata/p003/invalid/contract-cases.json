@@ -1,0 +1,38 @@
+[
+  {
+    "case": "direct HTTPS rejects local session target",
+    "violation": "ingress_target",
+    "ingress": "direct_https",
+    "method": "post",
+    "path": "/v1/sessions",
+    "request": { "environment": "mac-dev", "execution_target": { "kind": "local", "profile": "mac-workstation" }, "source": { "mode": "empty" } },
+    "target_kind": "local"
+  },
+  {
+    "case": "direct HTTPS rejects local one-off target",
+    "violation": "ingress_target",
+    "ingress": "direct_https",
+    "method": "post",
+    "path": "/v1/jobs",
+    "request": { "environment": "mac-dev", "execution_target": { "kind": "local", "profile": "mac-workstation" }, "source": { "mode": "empty" }, "script": "pwd" },
+    "target_kind": "local"
+  },
+  {
+    "case": "command request cannot override immutable session target",
+    "violation": "request_schema",
+    "ingress": "local_unix_socket",
+    "method": "post",
+    "path": "/v1/sessions/{session_id}/commands",
+    "request": { "script": "pwd", "execution_target": { "kind": "local", "profile": "mac-workstation" } },
+    "target_kind": "remote"
+  },
+  {
+    "case": "remote session request cannot use a local worktree source",
+    "violation": "request_schema",
+    "ingress": "local_unix_socket",
+    "method": "post",
+    "path": "/v1/sessions",
+    "request": { "environment": "linux-dev", "execution_target": { "kind": "remote", "profile": "linux-host" }, "source": { "mode": "local_worktree", "path": "/Users/tomasz.walczuk/work", "portable": false } },
+    "target_kind": "remote"
+  }
+]
