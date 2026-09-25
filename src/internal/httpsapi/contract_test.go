@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"remote-session-runner/src/internal/domain"
 )
 
 //go:embed openapi/v1/openapi.json testdata/p003/valid/contract-cases.json testdata/p003/invalid/contract-cases.json
@@ -330,7 +331,9 @@ func TestP003OpenAPIRoutesAndSecurity(t *testing.T) {
 		t.Fatal("event route must document 410 event_history_unavailable")
 	}
 	limits := p003Object(t, document["x-runner-limits"], "Runner API limits")
-	if limits["max_serialized_request_bytes"] != json.Number("1048576") || limits["max_script_utf8_bytes"] != json.Number("131072") || limits["enforced_before_acceptance"] != true {
+	wantRequestLimit := json.Number(fmt.Sprint(domain.MaxSerializedRequestBytes))
+	wantScriptLimit := json.Number(fmt.Sprint(domain.MaxScriptUTF8Bytes))
+	if limits["max_serialized_request_bytes"] != wantRequestLimit || limits["max_script_utf8_bytes"] != wantScriptLimit || limits["enforced_before_acceptance"] != true {
 		t.Fatalf("API limits mismatch: %#v", limits)
 	}
 }
@@ -480,8 +483,8 @@ func p003ValidateRequestLimits(value any) error {
 	if err != nil {
 		return fmt.Errorf("serialize request: %w", err)
 	}
-	if len(data) > 1_048_576 {
-		return fmt.Errorf("serialized request is %d bytes, limit is 1048576", len(data))
+	if err := domain.ValidateSerializedRequest(data); err != nil {
+		return err
 	}
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -489,24 +492,24 @@ func p003ValidateRequestLimits(value any) error {
 	}
 	if script, exists := object["script"]; exists {
 		text, ok := script.(string)
-		if ok && len([]byte(text)) > 131_072 {
-			return fmt.Errorf("script is %d UTF-8 bytes, limit is 131072", len([]byte(text)))
+		if ok {
+			return domain.ValidateScriptUTF8(text)
 		}
 	}
 	return nil
 }
 
 func TestP003WireLimitBoundaries(t *testing.T) {
-	if err := p003ValidateRequestLimits(map[string]any{"script": strings.Repeat("x", 131_072)}); err != nil {
+	if err := p003ValidateRequestLimits(map[string]any{"script": strings.Repeat("x", domain.MaxScriptUTF8Bytes)}); err != nil {
 		t.Fatalf("script at 131072-byte limit rejected: %v", err)
 	}
-	if err := p003ValidateRequestLimits(map[string]any{"script": strings.Repeat("x", 131_073)}); err == nil {
+	if err := p003ValidateRequestLimits(map[string]any{"script": strings.Repeat("x", domain.MaxScriptUTF8Bytes+1)}); err == nil {
 		t.Fatal("script one byte above the UTF-8 byte limit was accepted")
 	}
-	if err := p003ValidateRequestLimits(map[string]any{"script": strings.Repeat("🧪", 32_768)}); err != nil {
+	if err := p003ValidateRequestLimits(map[string]any{"script": strings.Repeat("🧪", domain.MaxScriptUTF8Bytes/4)}); err != nil {
 		t.Fatalf("four-byte UTF-8 script at exact byte limit rejected: %v", err)
 	}
-	if err := p003ValidateRequestLimits(map[string]any{"script": strings.Repeat("🧪", 32_769)}); err == nil {
+	if err := p003ValidateRequestLimits(map[string]any{"script": strings.Repeat("🧪", domain.MaxScriptUTF8Bytes/4+1)}); err == nil {
 		t.Fatal("four-byte UTF-8 script above the byte limit was accepted")
 	}
 	bodyAtLimit := map[string]any{"environment": "linux-dev", "execution_target": map[string]any{"kind": "remote", "profile": "linux-host"}, "policy": map[string]any{"opaque": ""}}
@@ -514,11 +517,11 @@ func TestP003WireLimitBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bodyAtLimit["policy"].(map[string]any)["opaque"] = strings.Repeat("x", 1_048_576-len(emptyBody))
+	bodyAtLimit["policy"].(map[string]any)["opaque"] = strings.Repeat("x", domain.MaxSerializedRequestBytes-len(emptyBody))
 	if err := p003ValidateRequestLimits(bodyAtLimit); err != nil {
 		t.Fatalf("serialized request at exact 1 MiB limit rejected: %v", err)
 	}
-	bodyAtLimit["policy"].(map[string]any)["opaque"] = strings.Repeat("x", 1_048_577-len(emptyBody))
+	bodyAtLimit["policy"].(map[string]any)["opaque"] = strings.Repeat("x", domain.MaxSerializedRequestBytes+1-len(emptyBody))
 	if err := p003ValidateRequestLimits(bodyAtLimit); err == nil {
 		t.Fatal("serialized request above the 1 MiB limit was accepted")
 	}

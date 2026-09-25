@@ -118,8 +118,8 @@ func DefaultServiceLimits() ServiceLimits {
 	return ServiceLimits{
 		ActiveSessionsPerHost:  20,
 		RunningCommandsPerHost: 4,
-		SerializedRequestBytes: 1 << 20,
-		ScriptBytesPerRequest:  128 << 10,
+		SerializedRequestBytes: MaxSerializedRequestBytes,
+		ScriptBytesPerRequest:  MaxScriptUTF8Bytes,
 		CommandTimeout:         30 * time.Minute,
 		IdleTimeout:            30 * time.Minute,
 		SessionMaxLifetime:     4 * time.Hour,
