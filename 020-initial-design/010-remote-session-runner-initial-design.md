@@ -2,17 +2,17 @@
 
 **Status:** Proof-of-concept initial design baseline<br>
 **Source:** [Detailed design v2](../010-initial-idea/020-md/runner_remote_execution_detailed_design_v2.md)  
-**Purpose:** Define the smallest practical architecture for safely running stateful commands through local macOS sessions and isolated remote Linux environments.
+**Purpose:** Define the smallest practical architecture for running stateful commands through local macOS and remote Linux sessions with explicit authority, permissions, and failure reporting.
 
 ## 1. Summary
 
-Remote Session Runner lets a developer use either a local macOS session or a remote Linux sandbox through one consistent command experience. A caller creates a session, selects its execution target, sends one or more commands, watches their output, and can reconnect later. Commands in the same session run in order in one long-lived shell, so the working directory, exported variables, functions, aliases, and activated environments can survive from one command to the next.
+Remote Session Runner lets a developer use either a local macOS session or a remote Linux host session through one consistent command experience. A caller creates a session, selects its execution target, sends one or more commands, watches their output, and can reconnect later. Commands in the same session run in order in one long-lived shell, so the working directory, exported variables, functions, aliases, and activated environments can survive from one command to the next.
 
 The design separates **how a request enters** from **where it executes**.
 
 - **Queued local control plane:** a macOS-local API accepts work and records it locally. Its execution router sends the work either to the local execution service or to the remote host.
 - **File mailbox:** a file-only client, including an LLM without shell or API tools, can place a request in an owner-only local inbox and read a matching response from an outbox. The Local Control API imports it through the same request path.
-- **Direct remote API:** an authenticated client calls the remote HTTPS API for immediate execution in a remote sandbox.
+- **Direct remote API:** an authenticated client calls the remote HTTPS API for immediate execution on the Linux host.
 - **Execution target:** a session is explicitly created for either `local` or `remote`; the target cannot change during that session.
 
 Local and remote targets use the same session, command, event, state-machine, idempotency, and streaming contracts. They share one execution-engine code path, while using target-specific runtime adapters and service instances on their respective hosts.
@@ -27,13 +27,13 @@ One-shot remote SSH commands are awkward for iterative work. They do not natural
 
 The PoC provides a small Mac-plus-Linux-host system that:
 
-- runs commands in an explicit local session or an isolated remote sandbox;
+- runs commands in an explicit local or remote host session;
 - supports delayed local submission, local execution, and direct remote submission;
 - accepts structured file requests and returns correlated file responses for clients without CLI or API access;
 - persists accepted commands before execution and stores output events before publishing them;
 - keeps state within one session while its shell remains alive;
 - lets clients disconnect and resume from an event sequence number; and
-- gives operators clear control over identity, access, resource limits, retention, and failure recovery.
+- gives operators clear control over identity, access, service-level limits, retention, and failure recovery.
 
 ## 3. Scope
 
@@ -44,7 +44,7 @@ The PoC provides a small Mac-plus-Linux-host system that:
 - local macOS sessions through the same CLI, session, command, event, and persistent-shell model as remote sessions;
 - direct remote HTTPS submission;
 - remote sessions, commands, and ordered events;
-- one target runtime and one persistent Bash process per active session; remote sessions use an isolated sandbox;
+- one target host-process runtime and one persistent Bash process per active session;
 - command stdout, stderr, lifecycle, and completion-event streaming with replay; session status through snapshots;
 - cancellation, command timeouts, idle timeouts, and maximum session lifetime;
 - exact Git revision preparation on the selected local or remote host;
@@ -61,9 +61,9 @@ The PoC provides a small Mac-plus-Linux-host system that:
 - bidirectional synchronisation of uncommitted local files; an explicitly selected local worktree is supported only for a local session;
 - port forwarding;
 - multi-host scheduling; and
-- a claim of hostile-code isolation beyond the selected sandbox runtime.
+- container/VM isolation, hostile-code containment, and per-session CPU, memory, PID, disk, network, or filesystem confinement.
 
-The initial remote container baseline isolates normal development workloads. For this PoC, the initial local target, Mac services, shell, and child processes run as `tomasz.walczuk` and have that user's actual macOS permissions. Runner adds no second per-command filesystem permission layer, and selecting a workspace does not confine a command to it. A VM or microVM runtime remains a future decision if the threat model requires stronger isolation.
+For this PoC, Mac services, shells, and child processes run as `tomasz.walczuk`; Linux `runnerd`, remote agents, shells, and child processes run directly as `ubuntu`. Each command has that account's actual host OS permissions. Runner adds no per-command filesystem permission layer, and selecting a workspace does not confine a command to it. These are trusted development commands; do not run hostile or untrusted code on either host. Container, VM, or microVM isolation remains a future decision if the threat model requires it.
 
 ## 4. Design principles
 
@@ -95,7 +95,7 @@ flowchart LR
     HTTPS[HTTPS API]
     RD["runnerd<br/>Shared Execution Engine"]
     RDB[(Remote SQLite)]
-    RT[Sandbox Runtime]
+    RT[Linux Host-Process Adapter]
     AGENT["Remote Session Agent<br/>Persistent Bash"]
 
     C -->|local or queued request| LAPI
@@ -129,10 +129,10 @@ flowchart LR
 | SSH Bridge | Linux host | A restricted forced-command adapter from the dispatcher to `runnerd`. |
 | HTTPS API | Linux host | Authenticates direct clients and exposes the public remote API. |
 | `runnerd` | Linux host | The remote instance of the shared execution engine: authorization, persistence, scheduling, session lifecycle, and event publication. |
-| Sandbox Runtime | Linux host | Creates and removes the container or equivalent isolated environment and applies limits and mounts. |
-| Session Agent | Local process or remote sandbox | Owns the long-lived Bash process, runs commands serially, and captures output. |
+| Linux Host-Process Adapter | Linux host | Creates a private workspace, starts and tracks the agent/process group as `ubuntu`, and performs best-effort teardown under that account. It does not confine filesystem or network access. |
+| Session Agent | Local or remote host process | Owns the long-lived Bash process, runs commands serially, and captures output. |
 
-`runner-locald` and `runnerd` are separate service **instances** because they execute on different machines, but they are not separate execution implementations. They use the same shared `ExecutionService` and session-agent protocol, with a macOS process adapter or a Linux sandbox adapter. The macOS Execution Router is the single local worker that decides the path; a remote service never reaches back into the Mac.
+`runner-locald` and `runnerd` are separate service **instances** because they execute on different machines, but they are not separate execution implementations. They use the same shared `ExecutionService` and session-agent protocol, with a macOS or Linux host-process adapter. The macOS Execution Router is the single local worker that decides the path; a remote service never reaches back into the Mac.
 
 ## 6. Core model
 
@@ -144,7 +144,7 @@ Environment → Session → Command → Command Event
 
 | Resource | Meaning |
 | --- | --- |
-| Environment | A named, approved runtime definition: compatible target kind/profile, image or base system, limits, mounts, repository policy, and allowed settings. |
+| Environment | A named, approved host-process definition: compatible target kind/profile, base host system, supported service-level limits, repository/source policy, and allowed settings. |
 | Session | A temporary workspace with one owner/controller, one immutable execution target, one runtime instance, and one shell state. |
 | Command | A script submitted to a session. Commands receive an ordinal number and execute one at a time. |
 | Command event | A durable, ordered record of acceptance, lifecycle changes, stdout, stderr, completion, or error details. |
@@ -172,9 +172,9 @@ The target belongs to the session request, not to individual commands:
 | Field | Rule |
 | --- | --- |
 | `execution_target.kind` | Required: `local` or `remote`. It is immutable after session creation. |
-| `execution_target.profile` | Identifies the allowed target environment, such as `mac-workstation` or `linux-sandbox`. |
+| `execution_target.profile` | Identifies the allowed target environment, such as `mac-workstation` or `linux-host`. |
 | `source.mode` | Optional: `empty`, a verified `git_revision`, or an explicitly selected `local_worktree`. The latter is local-only. |
-| Effective capabilities | The created session returns its target, host class, isolation level, source mode, and enforced limits. |
+| Effective capabilities | The created session returns its target, host class, `os-user` permission boundary, source mode, and limits actually enforced. Neither host profile advertises filesystem/network isolation. |
 
 Every command inherits its session target. The command API has no target override, and target selection is never inferred from command text, network availability, or a failure. A `local_worktree` session starts in an explicitly selected existing directory accessible to the execution account; it can modify uncommitted files only where that account has OS permission, and it records that it is non-portable. The selected directory is a starting location, not a filesystem boundary. If a session requests a Git repository, the chosen revision is resolved and recorded as an exact commit. Local and remote sessions share API behavior, but the available programs and command results depend on macOS or Linux and the chosen environment.
 
@@ -225,7 +225,7 @@ Local execution is intentional, visible in the CLI and session metadata, and ava
 ### 7.3 Direct remote mode
 
 1. The caller authenticates to the HTTPS API and creates a session.
-2. `runnerd` authorizes the environment, creates the sandbox and persistent shell, and marks the session ready.
+2. `runnerd` authorizes the environment, prepares a Linux workspace, starts the host-process agent and persistent shell as `ubuntu`, and marks the session ready.
 3. The caller submits a command. `runnerd` persists it before scheduling it.
 4. The caller follows NDJSON events immediately or disconnects.
 5. A later request resumes event delivery after a supplied sequence number.
@@ -277,24 +277,25 @@ The mailbox records each terminal response revision, final and available event s
 
 ## 9. Security and isolation baseline
 
-Remote Session Runner is a privileged code-execution system. Local and remote targets share the same user experience, but they must not be described as equally isolated. The initial design therefore uses these boundaries:
+Remote Session Runner is a code-execution system. Local and remote targets share the same user experience but inherit different host accounts and OS permissions. Neither target has a per-session sandbox in this PoC. The initial design therefore uses these boundaries:
 
 | Area | Initial control |
 | --- | --- |
 | Local API | Owner-only Unix-domain socket in an owner-only directory. |
 | File mailbox | Owner-only directory and files; accept regular request and ACK files with validated safe names, reject symlinks and oversized input, and bind every imported request to the local owner. Remote HTTPS clients have no access to this path. |
-| Local target | Available only through the owner's local control plane. For the PoC, the local services, shell, and descendants use one configured macOS account. Its OS permissions govern what commands can access. Runner adds no command-level filesystem allowlist or sandbox; the effective account and local-user isolation class are visible in session metadata. |
+| Local target | Available only through the owner's local control plane. For the PoC, the local services, shell, and descendants use one configured macOS account. Its OS permissions govern what commands can access. Runner adds no command-level filesystem allowlist or sandbox; the effective account and `os-user` permission boundary are visible in session metadata. |
 | Dispatcher transport | SSH public-key authentication, strict `known_hosts` verification, and a restricted forced command. |
-| Direct API | TLS verification and mTLS by default on a private network; short-lived bearer tokens are a possible controlled alternative. It accepts remote targets only. |
+| Direct API | The selected PoC endpoint is the Linux host's public `129.151.232.40:8443`, enabled only after its real-host gates pass. In-process TLS 1.3 requires a server certificate with that IP in its SAN, a trusted client certificate, and an explicit client-certificate-to-principal mapping for every operation. No bearer-token or unauthenticated direct access is enabled. Record the host/cloud firewall and source-address policy, restricting sources where practical; mTLS remains mandatory even with a firewall. It accepts remote targets only. |
 | Authorization | The authenticated principal is checked against the requested environment and session controller. |
-| Sandbox | Non-root, unprivileged runtime, no privileged mode, no container-runtime socket, explicit mounts, and CPU, memory, process, disk, network, output, and time limits. |
-| Repository access | Remote-side, read-only credentials kept outside the command environment; exact commit verification before use. |
+| Remote target | `runnerd`, agent, Bash, and children run directly as `ubuntu` on Linux. The workspace is a starting directory, not a filesystem boundary; commands inherit `ubuntu`'s OS access, including network and other readable files. No CPU, memory, PID, disk, network, mount, or privilege isolation is claimed. Unsupported requested policies reject before acceptance. |
+| Service limits | The scheduler enforces host session/command counts; Runner enforces command timeout, script/request/output sizes, bounded queues, and retention. These are service controls, not host resource isolation or a guarantee against untrusted code. |
+| Repository access | Host-side Git preparation resolves and records an exact commit. Credentials are not injected into scripts, session environments, or workspaces. As command processes use the same OS account as the host service, Runner does not claim that same-account host-stored credentials are inaccessible to a command. |
 | Secrets and command data | Do not inject credential values into scripts or audit logs. Arbitrary caller scripts and stdout/stderr can nevertheless contain secrets, so command records, events, and mailbox responses are sensitive data protected by OS permissions and retention; Runner does not promise automatic redaction. |
 | Audit | Record principal, ingress, environment, resource identifiers, outcome, timestamps, and security-relevant actions; do not record secrets, raw scripts, or command output in audit logs. |
 
-Direct exposure to the public internet is not part of this baseline. It requires a dedicated threat assessment and deployment decision.
+Public exposure is an explicit PoC risk acceptance, not a production deployment recommendation or a claim that direct host-process execution is safe for untrusted code. The direct API must fail closed on untrusted/expired certificates and unmapped identities, use a verified server certificate at clients, and pass real network/security tests before demonstration. Owner-only directories exclude other OS users, not commands running under that same owner. Local code as `tomasz.walczuk` may access same-user Dispatcher/SSH files; remote code as `ubuntu` may access same-user `runnerd` TLS/bridge/Git credentials or alter same-account state. mTLS authenticates clients but does not isolate executed commands from the host service.
 
-The local profile must reject a requested policy it cannot enforce. It must not silently claim the remote sandbox's mount, network, privilege, or resource restrictions. A `local_worktree` path sets the initial working directory; it neither grants access beyond the configured account's OS permissions nor confines a command to that directory. The PoC relies on that account's OS permissions and does not add a separate Runner permission model for local commands.
+Both host-process profiles reject a requested policy they cannot enforce. Neither advertises per-session mount, network, privilege, CPU, memory, PID, or disk controls. A `local_worktree` or remote workspace path sets the initial working directory; it neither grants access beyond the account's OS permissions nor confines a command to that directory. The PoC relies on host account OS permissions and does not add a separate Runner permission model for commands.
 
 The mailbox treats JSON as untrusted input. It validates its schema, target, session ownership, script size, and source path shape before creating local intent; local filesystem access itself is decided by the execution account's OS permissions. Response files may contain command output and therefore use the same owner-only permissions and retention controls as the local event store.
 
@@ -304,7 +305,7 @@ The PoC deployment targets one trusted Mac user and one remote Linux host.
 
 | Dimension | Initial baseline |
 | --- | --- |
-| Execution targets | `local` on the owner’s Mac through `runner-locald`; `remote` in a Linux sandbox through `runnerd` |
+| Execution targets | `local` on the owner’s Mac through `runner-locald`; `remote` directly as `ubuntu` on the Linux host through `runnerd` |
 | Active sessions | Up to 20 per execution host, configurable |
 | Concurrent commands | Maximum 4 per execution host by default; one per session |
 | Idle timeout | 30 minutes |
@@ -330,7 +331,7 @@ The exact OpenAPI and bridge protocol are implementation artifacts, but the init
 | Read command | Check command state, exit code, timestamps, and output summary. |
 | Stream events | Replay command events from that command's `after_sequence` and optionally continue with live events. |
 | Cancel command | Request cancellation through the session’s controlling ingress. |
-| Close session | End the shell and sandbox with an explicit close policy. |
+| Close session | End the shell and tracked host processes with an explicit close policy. |
 | One-off job | Compatibility operation that creates an ephemeral session, runs one command, and closes it. |
 
 The local Unix-socket API and file mailbox expose local and queued-remote forms of these operations. The remote HTTPS API exposes the direct remote form. All three interfaces share resource identities, state meanings, error codes, event types, and per-command event ordering. The mailbox event file uses the readable output-payload projection described below, so its output fields are not identical to the transport event payloads.
@@ -343,14 +344,14 @@ Illustrative CLI shape (names and flags are to be finalized with the API contrac
 
 ```text
 runner --endpoint local session create --target local --profile mac-workstation --environment mac-dev
-runner --endpoint local session create --target remote --profile linux-sandbox --environment linux-dev
-runner --endpoint remote session create --target remote --profile linux-sandbox --environment linux-dev
+runner --endpoint local session create --target remote --profile linux-host --environment linux-dev
+runner --endpoint remote session create --target remote --profile linux-host --environment linux-dev
 runner --endpoint local exec SESSION_ID -- 'pwd'
 runner --endpoint local events COMMAND_ID --follow
 runner --endpoint local session close SESSION_ID
 ```
 
-The same `exec`, `events`, and `close` operations work after either session-creation command, using `--endpoint remote` for direct sessions. Status output always displays the session target, host class, source mode, and effective isolation policy.
+The same `exec`, `events`, and `close` operations work after either session-creation command, using `--endpoint remote` for direct sessions. Status output always displays the session target, host class, source mode, `os-user` boundary, and actually enforced limits.
 
 ### File mailbox contract
 
@@ -382,7 +383,7 @@ The caller supplies a unique `request_id` for each file exchange, matching its i
 | `close_session` | `session_id` |
 | `run` | `environment`, `execution_target.kind`, `execution_target.profile`, `script` |
 
-`environment` names a configured, approved runtime. `create_session` and `run` may additionally include `source`, limits, and policy fields; omitted `source` means an empty workspace. A session-creation request includes the execution target; a later command request contains the returned `session_id` and no target override. For queued remote creation, use `"execution_target": {"kind": "remote", "profile": "linux-sandbox"}` through the same mailbox. For example:
+`environment` names a configured, approved runtime. `create_session` and `run` may additionally include `source`, limits, and policy fields; omitted `source` means an empty workspace. A session-creation request includes the execution target; a later command request contains the returned `session_id` and no target override. For queued remote creation, use `"execution_target": {"kind": "remote", "profile": "linux-host"}` through the same mailbox. For example:
 
 ```json
 {
@@ -487,7 +488,7 @@ The work should proceed in working vertical slices rather than build every layer
 | --- | --- | --- |
 | 0. Domain contracts | Shared environment, immutable execution-target, session, command, event, error, and idempotency types. | State-transition, target-immutability, and idempotency tests pass. |
 | 1. Shared execution engine | Shared `ExecutionService`, local and remote stores, scheduler rules, event replay, and fake runtime. | Integration tests create either target, serialize commands, and replay events through the same contract suite. |
-| 2. Local and remote runtimes | `runner-locald` and local session agent under the configured Mac account; remote sandbox adapter, repository preparation, and remote session agent. | The same two-command suite proves persistent state on both targets; a permission test shows local children have the configured account's OS access. |
+| 2. Local and remote runtimes | `runner-locald` and local session agent under the configured Mac account; Linux host-process adapter, repository preparation, and remote session agent as `ubuntu`. | The same two-command suite proves persistent state on both targets; permission tests show children inherit each host account's OS access and unsupported isolation policies reject. |
 | 3. SSH bridge | Restricted bridge, embedded SSH client, strict host verification, and reconnect logic. | Local client creates a session, reconnects, and replays results over SSH. |
 | 4. Local ingress and queued routing | Local API, file mailbox, local SQLite, Execution Router and Dispatcher, local routing, remote event mirroring, and compatible one-off jobs. | A file-only client creates a session, submits a command, distinguishes complete from incomplete output, and acknowledges the correlated terminal response; one Router routes explicit targets without fallback. |
 | 5. Direct HTTPS | HTTPS adapter, identity mapping, authorization, NDJSON, and direct CLI profile. | Queued and direct clients pass the same contract suite. |
@@ -522,29 +523,29 @@ The PoC is ready for controlled demonstration when it can show all of the follow
 - a session target cannot change, and a target failure never falls back to the other target;
 - cancellation, timeout, output limit, shell death, and service restart have explicit, tested outcomes; known surviving processes are stopped where possible, cleanup failures are reported, and queued commands do not run in a replacement shell;
 - the PoC close default prevents commands still queued at the authoritative executor from starting, requests cancellation of work that began before close was processed, preserves a racing command's actual terminal result, and confirms teardown before reporting `closed`;
-- a remote sandbox cannot access privileged runtime control interfaces, while local command processes run under the configured macOS account and accurately report that OS permissions, not a worktree path or Runner allowlist, are their access boundary; and
+- remote command processes run as `ubuntu` with that account's OS permissions, while local command processes run as `tomasz.walczuk` with that account's OS permissions; neither workspace path is confinement, unsupported isolation policies reject, and process cleanup limitations are reported; and
 - the deployment has health checks, logs, auditable security events, retention, and recovery instructions.
 
 ## 14. Decisions to validate before implementation
 
 | Decision | Candidate baseline | Evidence needed |
 | --- | --- | --- |
-| Isolation runtime | Rootless container first; VM or microVM if required | Threat model, platform support, and escape-risk review. |
+| Host-process runtime | Direct Bash/agent execution as `ubuntu` on Linux and `tomasz.walczuk` on Mac; no container in this PoC | Verify process identities, permissions, unsupported-policy rejection, and best-effort cleanup; require a future design for hostile code. |
 | Local runtime policy | One configured macOS account for local services and commands in the PoC; OS permissions govern access, with no Runner-specific filesystem allowlist | Verify the daemon, shell, and descendants use the account and that commands observe its OS permissions. |
 | Local source mode | Empty workspace or exact Git commit; explicitly selected existing `local_worktree` only when accessible to the execution account | Reproducibility, OS-permission, provenance, and cleanup tests. |
 | Remote reconciliation deadline | 24 hours before an unresolved mailbox mutation becomes `indeterminate`, configurable | Disconnect and delayed-reconnect tests prove no false success, false rejection, or duplicate execution. |
-| Direct API identity | mTLS first; short-lived bearer token only where needed | Identity lifecycle, rotation, audit, and client usability review. |
-| TLS termination | In-process Go TLS or trusted reverse proxy | Identity propagation and operational ownership. |
+| Direct API identity | Mandatory mTLS with explicit certificate-to-principal mapping; no bearer tokens in this PoC | Identity lifecycle, rotation, audit, fail-closed negative tests, and client usability review. |
+| TLS termination | In-process Go TLS with a server certificate covering public IP `129.151.232.40` | Verify the IP SAN, client/server chains, and deployment ownership. |
 | Internal bridge protocol | HTTP over Unix socket or framed RPC | Streaming behavior, implementation simplicity, and testing results. |
-| Persistent volumes | Named approved volumes only | Data retention, cleanup, backup, and cross-session safety. |
+| Persistent volumes | Not supported by the host-process PoC profile; reject requests requiring mounts or volumes | Explicit capability and negative-policy tests; a future profile needs a separate lifecycle/security design. |
 | Output storage evolution | SQLite first; files or object storage later | Volume, retention, query, and recovery measurements. |
-| Public network exposure | Not in baseline | Dedicated threat assessment and operational controls. |
+| Public network exposure | PoC direct endpoint `129.151.232.40:8443`, subject to real host configuration | Verify mTLS, firewall/source policy, fail-closed identity mapping, and network/security tests before use; no unauthenticated or bearer-only path. |
 
 ## 15. Main risks and mitigations
 
 | Risk | Mitigation in the initial design |
 | --- | --- |
-| Remote execution is exposed too broadly | Restrict direct access to private networks, require verified identity, authorize every operation, and maintain audit records. |
+| Remote execution is exposed too broadly | Require mTLS and client-cert principal mapping on the public endpoint, restrict source addresses where practical, authorize every operation, and maintain audit records. No bearer-only or unauthenticated access. This does not make same-`ubuntu` command code safe for untrusted workloads. |
 | A reconnect repeats a command | Use stable resource IDs, idempotency keys, request hashes, and durable event cursors; reconcile uncertain remote outcomes before submitting later session commands. |
 | A late remote retry runs again after the remote idempotency record expires | Keep remote idempotency records through the documented retry window, stop automatic Router resubmission afterward, and warn direct and file-only clients that an old key no longer guarantees deduplication. |
 | A partial or repeated file request runs unexpectedly | Import only after the completed JSON and `.ready` marker, validate filenames and content, and commit the request ID and idempotency key before removing inbox files. Retry from SQLite after a crash. |
@@ -555,10 +556,10 @@ The PoC is ready for controlled demonstration when it can show all of the follow
 | A timeout or service crash leaves an unseen process running | Close or mark the session lost, stop known surviving session processes where possible, and report cleanup failures. |
 | A command runs on the wrong machine | Make the target immutable and visible, require explicit selection, and prohibit automatic fallback. |
 | Local and remote views diverge | Make each target’s executor authoritative; reconcile the local projection only for remote sessions from remote event sequence numbers. |
-| Local behavior silently weakens remote safeguards | Advertise target capabilities, reject unsupported local policies, and report the configured execution account and its OS-permission boundary. A worktree selection is not confinement. |
+| Host-process execution is mistaken for isolation | Advertise actual per-host capabilities, reject unsupported policies on both hosts, and report the execution accounts and OS-permission boundaries. A workspace selection is not confinement. |
 | Scripts or output disclose secrets through retained records | Treat command payloads, events, and mailbox responses as sensitive, enforce OS permissions and retention, and never promise automatic redaction of arbitrary content. |
 | Slow log consumers consume unbounded memory | Persist events, use bounded subscriptions, enforce output limits, and apply retention. |
-| Sandbox escape or host damage | Use an unprivileged runtime, controlled mounts, explicit resource policy, and choose a stronger runtime if the threat model needs it. |
+| A command damages its host | Limit PoC use to trusted code and rely on the selected host account's OS permissions. Runner service ceilings and best-effort process teardown do not contain hostile code; use a separately designed container/VM profile if that becomes a requirement. |
 
 ## 16. Source material
 
