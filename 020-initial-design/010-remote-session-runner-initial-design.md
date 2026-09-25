@@ -340,9 +340,9 @@ The CLI connection profile selects the local Unix socket or remote HTTPS endpoin
 Illustrative CLI shape (names and flags are to be finalized with the API contract):
 
 ```text
-runner --endpoint local session create --target local --profile mac-workstation
-runner --endpoint local session create --target remote --profile linux-sandbox
-runner --endpoint remote session create --target remote --profile linux-sandbox
+runner --endpoint local session create --target local --profile mac-workstation --environment mac-dev
+runner --endpoint local session create --target remote --profile linux-sandbox --environment linux-dev
+runner --endpoint remote session create --target remote --profile linux-sandbox --environment linux-dev
 runner --endpoint local exec SESSION_ID -- 'pwd'
 runner --endpoint local events COMMAND_ID --follow
 runner --endpoint local session close SESSION_ID
@@ -387,7 +387,7 @@ The caller supplies a unique `request_id` for each file exchange, matching its i
   "request_id": "req-session-41",
   "idempotency_key": "create-session-41",
   "operation": "create_session",
-  "environment": "approved-dev",
+  "environment": "mac-dev",
   "execution_target": {"kind": "local", "profile": "mac-workstation"},
   "source": {"mode": "empty"}
 }
@@ -559,4 +559,4 @@ The PoC is ready for controlled demonstration when it can show all of the follow
 
 ## 16. Source material
 
-This initial design condenses the detailed architecture proposal in [Runner Dual-Ingress Stateful Remote Execution System v2](../010-initial-idea/020-md/runner_remote_execution_detailed_design_v2.md). It extends that remote proposal with a first-version local execution target, one macOS Execution Router and Dispatcher, a local instance of the shared execution engine, and a file mailbox for clients without CLI or API access. The detailed source covers the remote protocol, schema, deployment, and tests; its remote-only details must be updated to include the local target and mailbox before implementation.
+This initial design condenses the detailed architecture proposal in [Runner Dual-Ingress Stateful Remote Execution System v2](../010-initial-idea/020-md/runner_remote_execution_detailed_design_v2.md). It extends that remote proposal with a first-version local execution target, one macOS Execution Router and Dispatcher, a local instance of the shared execution engine, and a file mailbox for clients without CLI or API access. For this PoC, this initial design takes precedence wherever the two documents conflict. Detailed v2 remains reference material for the remote protocol, schema, deployment, and tests, but is not directly implementable unchanged: its remote-only authority and controller assumptions, schemas, and operational/test cases must be updated for the local executor, mailbox, event projection, retention, and recovery rules before implementation.
