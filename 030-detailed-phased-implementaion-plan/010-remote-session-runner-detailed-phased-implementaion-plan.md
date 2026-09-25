@@ -2,13 +2,13 @@
 
 **Status:** implementation plan. At plan creation, this repository contains designs but no Runner code or executable Runner tests.<br>
 **Authority:** the [initial design](../020-initial-design/010-remote-session-runner-initial-design.md) defines PoC scope; the [detailed design](../030-detailed-design/010-remote-session-runner-detailed-design.md) defines contracts, failure behavior, and test IDs. The older remote-only v2 proposal is reference material only where compatible.<br>
-**Target:** one restricted-account macOS workstation and one Linux sandbox host; a shared Go execution core with target-specific runtime adapters.<br>
+**Target:** one macOS workstation using `tomasz.walczuk` for local services/commands and one Linux sandbox host using `ubuntu` for host services; a shared Go execution core with target-specific runtime adapters. Local commands have the Mac user's actual OS permissions, not a separate Runner restriction.<br>
 **Linux development test host:** from the local workstation, use `ssh -o IdentitiesOnly=yes remote-session-runner`. Access was verified on 2026-09-25 as `ubuntu` on `oracle-yuta-konopka-ubuntu-micro-02` (Ubuntu 20.04.6 LTS). Use this host for Linux and two-host development tests, and record its current identity in each host-test evidence file. SSH access alone does not pass the rootless-runtime, forced-command, mTLS, or other host gates. Do not use this ordinary development host for destructive physical power-cut tests unless it is explicitly made disposable and approved for that purpose.<br>
 **Size:** 148 serial phases, each budgeted for roughly **60–120 minutes of Luna-class agent hands-on implementation and verification** with its prerequisites already available (about 148–296 hands-on hours total). This is a planning estimate, not a deadline. External host provisioning, approvals, waiting, and physical power testing are excluded. A phase that proves too large must be split before it is treated as complete.
 
 ## 1. Mandatory per-phase working protocol
 
-Before `P001`, create `040-implementation-evidence/000-preimplementation-decisions.md` and record the concrete restricted Mac account/paths; the Linux development test host above and its rootless-runtime feasibility (including required disk/network controls); and the chosen SSH/mTLS identities and protocol. Define each actual environment, not just its name: allowed target-kind/profile pairs, base image or local base system, an explicit allow/deny policy for each source mode (`empty`, `git_revision`, `local_worktree`) including approved repository aliases and local-worktree paths where applicable, approved mounts/volumes (or an explicit prohibition), effective enforceable limits, and controller identities authorized to create and control it. The illustrative `mac-dev`/`linux-dev` names in the detailed design are not defaults. Review and commit this prerequisite note in a **separate, non-phase commit**, then start `P001` from a clean worktree and record that prerequisite commit hash in its preflight. Use these committed decisions as input to `P006` validation and `P010` registry/configuration; neither phase may fill gaps by guessing. These are the initial design's pre-implementation choices, not proof that deployment already works; the later named host gates must still pass. If a required choice is unresolved or the proposed baseline is infeasible, resolve it or amend the design and plan before implementation starts.
+Before `P001`, create `040-implementation-evidence/000-preimplementation-decisions.md` and record the selected Mac and Linux accounts and service-owned paths; the Linux development test host above and its rootless-runtime feasibility (including required disk/network controls); and the chosen SSH/mTLS identities and protocol. Define each actual environment, not just its name: allowed target-kind/profile pairs, base image or local base system, an explicit allow/deny policy for each source mode (`empty`, `git_revision`, `local_worktree`) including approved repository aliases and the local-worktree access rule where applicable, approved mounts/volumes (or an explicit prohibition), effective enforceable limits, and controller identities authorized to create and control it. A local-worktree path is governed by the selected Mac account's OS permissions, not a Runner filesystem allowlist. The illustrative `mac-dev`/`linux-dev` names in the detailed design are not defaults. Review and commit this prerequisite note in a **separate, non-phase commit**, then start `P001` from a clean worktree and record that prerequisite commit hash in its preflight. Use these committed decisions as input to `P006` validation and `P010` registry/configuration; neither phase may fill gaps by guessing. These are the initial design's pre-implementation choices, not proof that deployment already works; the later named host gates must still pass. If a required choice is unresolved or the proposed baseline is infeasible, resolve it or amend the design and plan before implementation starts.
 
 ### 1.1 Reload context before **every** phase
 
@@ -36,7 +36,7 @@ Every row inherits §1's fresh-context, 60–120-minute sizing, automated-test, 
 
 | Phase | Bounded deliverable | Focused exit gate |
 | --- | --- | --- |
-| `P001` | Add Go module, six `cmd/` stubs, package skeleton, pinned tool versions, `Makefile`, and hermetic fixture helper; no behavior yet. | `go test ./...`, `go vet ./...`, help/version smoke. |
+| `P001` | Put `go.mod` at repository root and all Go source under `src/`, including six `src/cmd/` stubs and the package skeleton; add pinned tool versions, `Makefile`, and hermetic fixture helper; no behavior yet. | From repository root: `go test ./...`, `go vet ./...`, help/version smoke. |
 | `P002` | Freeze v1 resource, state, error, and command-event schemas with golden fixtures. | Valid/invalid schema and error-envelope tests; §§3–4. |
 | `P003` | Freeze v1 Unix-socket/HTTPS OpenAPI routes, `202` scopes, read/event/job responses, and target rules. | Route and local/direct contract fixture tests; §4. |
 | `P004` | Freeze versioned SSH-bridge and mailbox request/response/ACK wire schemas. | Round-trip, required-field, and unsupported-major fixtures; §§4.1, 9. |
@@ -73,7 +73,7 @@ Every row inherits §1's fresh-context, 60–120-minute sizing, automated-test, 
 
 ### Stage 2 — agent and actual target runtimes (detailed design §§6–7, 10–11, 14)
 
-The restricted Mac account and designated Linux host/profile must exist before their real-host gates. A fake adapter cannot certify either. Use the same persistent-shell contract cases on both targets.
+The selected Mac account and designated Linux host/profile must exist before their real-host gates. A fake adapter cannot certify either. Use the same persistent-shell contract cases on both targets.
 
 | Phase | Bounded deliverable | Focused exit gate |
 | --- | --- | --- |
@@ -84,7 +84,7 @@ The restricted Mac account and designated Linux host/profile must exist before t
 | `P034` | Add 100 MiB combined output cap, exactly one truncation event, continued drain, and bounded buffers. | Full `O-02` slow-reader/large-output test. |
 | `P035` | Add signal/timeout initiation and confirmed-stop vs `lost` decision. | `R-03` process-interrupt subset; no false cancelled terminal. |
 | `P036` | Add descendant inspection/cleanup and retained capacity for uncertain stop/EOF. | `R-03` process/child subset; no replacement shell or extra slot. |
-| `P037` | Add macOS process adapter under configured restricted account. | Real Mac UID/allowed-denied OS access subset of `P-MAC-01`. |
+| `P037` | Add macOS process adapter under the configured `tomasz.walczuk` account. | Real Mac UID and OS-permission behavior subset of `P-MAC-01`; do not claim worktree confinement. |
 | `P038` | Add local `empty`, exact `git_revision`, and explicit `local_worktree` source/provenance. | Real Mac `P-MAC-02`; uncommitted files visible only for chosen worktree. |
 | `P039` | Add Linux runtime-profile preflight/doctor on intended rootless Podman host. | Record non-root, mount, socket, CPU/memory/PID/disk/network feasibility. Keep persistent-volume profiles disabled until lifecycle tests exist. If the only remote profile cannot enforce required controls, stop: amend the design/plan for another tested runtime/profile; disabling it alone is not `PASS`. |
 | `P040` | Add Linux sandbox prepare/start/inspect/cleanup with session/generation labels and non-root agent. | Real Linux launch/teardown subset of `P-LNX-01`. |

@@ -69,7 +69,7 @@ flowchart LR
 | `internal/domain`, `internal/execution` | Shared types, validation, state transitions, scheduler rules, `ExecutionService`, event contract, and runtime/clock/store interfaces. No HTTP, SSH, SQLite, or Podman imports in domain types. |
 | `internal/{localapi,mailbox,dispatcher,httpsapi,sshbridge,store,runtime}` | Adapters around the shared core. An import-boundary test prevents ingress packages from bypassing their assigned store/transport interfaces. |
 
-The Mac components use the same configured account for the PoC. This is a behavior separation, not an OS-enforced credential boundary between those Mac processes: the API MUST not load SSH credentials or initiate remote connections, but another process under the same account could have the account's OS access. The Linux service does not call back into the Mac.
+The Mac components use the same configured account for the PoC: `tomasz.walczuk`. The Linux host services use `ubuntu`; the sandbox agent still runs unprivileged and non-root inside the selected rootless runtime. This is a behavior separation, not an OS-enforced credential boundary between those Mac processes: the API MUST not load SSH credentials or initiate remote connections, but another process under the same account could have the account's OS access. The Linux service does not call back into the Mac. With Go source under `src/`, the package paths shown above are relative to `src/`; `go.mod` remains at repository root so the plan's root-level Go test/vet commands work.
 
 ## 3. Domain model and identifiers
 
@@ -390,7 +390,7 @@ Imported request/ACK pairs are removed after durable recording; abandoned unmark
 | Repository credentials | Configured read-only credentials remain host-side during Git preparation and are not injected into the session shell. Exact commit is recorded before `ready`. |
 | Logging and audit | Structured logs and audit records contain IDs, principal, ingress, timing, state, and reason codes; not raw scripts, credentials, or command output. At minimum, record allowed create/submit/cancel/close actions and authorization denials with action, principal, ingress, resource ID when known, outcome, and timestamp. Arbitrary scripts/output can themselves contain secrets, so event stores/mailbox/backup require OS protection and retention; no automatic redaction promise. |
 
-The local `local_worktree` path is validated as an existing directory and recorded for provenance; it is **not** a chroot or access limit. Requests for remote-only mount, network, or privilege restrictions are rejected by the local profile if macOS cannot enforce them. Effective capabilities returned to the caller are the source of truth. A permission test must run the shell and a child process under the configured account and show they have exactly its OS access, including denial where that account is restricted.
+The local `local_worktree` path is validated as an existing directory and recorded for provenance; it is **not** a chroot or access limit. Requests for remote-only mount, network, or privilege restrictions are rejected by the local profile if macOS cannot enforce them. Effective capabilities returned to the caller are the source of truth. A permission test must run the shell and a child process under the configured account and show they have exactly its OS access, including any configured denial.
 
 ## 11. Recovery, ambiguity, and shutdown
 
@@ -437,7 +437,7 @@ Keep one explicit config per host with owner-restricted permissions. The example
 
 ```yaml
 mac:
-  account: runner-poc
+  account: tomasz.walczuk
   api_socket: /path/owned-by-runner/local.sock
   locald_socket: /path/owned-by-runner/locald.sock
   sqlite: /path/owned-by-runner/local.db
@@ -541,7 +541,7 @@ Test seams in shared code are `Clock`, `AuthorityStore`, `Runtime`, `RemoteTrans
 | `R-01` | Real Bash shared two-command suite, local process and Linux sandbox. | `cd`, exported/non-exported variables, functions, aliases, `umask`, and virtual-environment activation survive within a session; second command has same shell generation. |
 | `R-02` | Real Bash suite: nonzero exit, stdout/stderr interleave, delayed pipe readers around a two-command boundary, `exit`, `exec`, reserved-FD sabotage, and background child retaining a pipe. | Normal nonzero leaves safe session ready; completion control cannot outrun captured bytes, terminal event follows both pipe EOFs, and no bytes enter the next command; unsafe boundary loses/closes session without a replacement shell or later queued execution. |
 | `R-03` | Cancel/timeout/close races with descendants and Mac intents pending/uncertain dispatch, including four occupied host command slots and a child that holds an output pipe past stop grace. | Definitely undelivered intents become `not_delivered`; uncertain remote send is never falsely rejected; queued-at-authority work never starts after close; racing running result preserved; a fifth command cannot start during delayed stop; unproven stop/EOF yields `lost`, one terminal loss event, incomplete output, and retained capacity rather than `cancelled`/`timed_out`. |
-| `P-MAC-01` | macOS runner using restricted configured account and a test worktree. | Daemon, shell, and child UID match account; allowed/denied filesystem access matches OS permissions; worktree is start directory, not claimed confinement. |
+| `P-MAC-01` | macOS runner using the configured `tomasz.walczuk` account and a test worktree. | Daemon, shell, and child UID match account; filesystem access matches that account's OS permissions, including any configured denial; worktree is start directory, not claimed confinement. |
 | `P-MAC-02` | macOS empty, exact Git revision, and local worktree source fixtures. | Correct effective source/path/provenance; uncommitted local files visible only for selected local worktree; no remote sync. |
 | `P-LNX-01` | Linux rootless runtime test host. | Non-root UID, approved mounts only, no runtime socket, enforceable CPU/memory/PID/disk/network limits, session label/generation, and complete teardown. Unsupported policy disables profile. |
 | `P-LNX-02` | Linux Git fixture with a moving branch and read-only credential. | Resolved exact commit recorded before ready; command environment cannot read host credential; no unintended Git hooks/host writes. |
@@ -591,7 +591,7 @@ No slice may introduce an alternate execution core for local commands or move re
 ## 17. Validation gates and remaining choices
 
 1. **Rootless runtime feasibility:** verify the proposed Podman profile on the intended Linux host, including disk/network controls and teardown. If a required control is unavailable, either choose another runtime/profile with the same tested contract or mark that profile unavailable; do not claim enforcement from configuration alone.
-2. **Mac account and local profile:** select the actual restricted account, owned paths, and limits macOS can enforce. Run `P-MAC-01` and document effective capabilities; do not add a separate Runner filesystem permission layer to this PoC.
+2. **Mac account and local profile:** use the selected `tomasz.walczuk` account, choose owner-only service paths, and determine which limits macOS can actually enforce. Run `P-MAC-01` and document effective capabilities; local commands inherit this account's full OS permissions and Runner adds no separate filesystem permission layer to this PoC.
 3. **TLS/SSH deployment:** provision private-network certificates, controller mapping, dispatcher key, and pinned host key; run `P-NET-01`/`P-NET-02`. Public exposure needs a separate design and threat review.
 4. **Environment registry:** name real `mac-dev`/`linux-dev` (or replacement) definitions, compatible target profiles, source policies, and authorization. The illustrative names in this document do not authorize a runtime by themselves.
 5. **Protocol/schema freeze:** version the REST/bridge/mailbox schemas, error catalog, and canonical request hashing before implementation. Contract tests must include cross-version rejection/compatibility and the exact output/ACK fields.

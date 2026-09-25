@@ -63,7 +63,7 @@ The PoC provides a small Mac-plus-Linux-host system that:
 - multi-host scheduling; and
 - a claim of hostile-code isolation beyond the selected sandbox runtime.
 
-The initial remote container baseline isolates normal development workloads. The initial local target runs commands under a configured macOS execution account. Every local shell and child process has that account's operating-system permissions: a broadly privileged account permits broad access, while a restricted account limits access. Runner adds no second per-command filesystem permission layer, and selecting a workspace does not confine a command to it. A VM or microVM runtime remains a future decision if the threat model requires stronger isolation.
+The initial remote container baseline isolates normal development workloads. For this PoC, the initial local target, Mac services, shell, and child processes run as `tomasz.walczuk` and have that user's actual macOS permissions. Runner adds no second per-command filesystem permission layer, and selecting a workspace does not confine a command to it. A VM or microVM runtime remains a future decision if the threat model requires stronger isolation.
 
 ## 4. Design principles
 
