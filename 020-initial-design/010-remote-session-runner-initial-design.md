@@ -248,7 +248,7 @@ A stateful command is written to a protected script and sourced by the existing 
 
 If cancellation, timeout, shell death, or runtime corruption leaves the process tree uncertain, the service closes or marks the complete session lost rather than reusing an unsafe shell. It attempts to stop known descendants and reports any cleanup failure.
 
-The PoC `close_session` default cancels queued commands without running them, requests cancellation of an active command, and waits for shell/runtime teardown. Undelivered local intents get a known `not_delivered` outcome; already accepted commands take their terminal state from the target executor. If an active command finishes during that race, its actual terminal result is preserved. The session becomes `closed` only after teardown is confirmed; an uncertain cleanup is reported as `lost`, or as an indeterminate mailbox result while remote authority cannot be reached.
+The PoC `close_session` default cancels undelivered local intents and commands still queued when the authoritative executor processes close, requests cancellation of any command already running at that point, and waits for shell/runtime teardown. A command may start before a remote close reaches the executor; it is then treated as active and may have side effects. Undelivered local intents get a known `not_delivered` outcome; already accepted commands take their terminal state from the target executor. If an active command finishes during that race, its actual terminal result is preserved. The session becomes `closed` only after teardown is confirmed; an uncertain cleanup is reported as `lost`, or as an indeterminate mailbox result while remote authority cannot be reached.
 
 ## 8. Persistence and consistency
 
@@ -329,7 +329,7 @@ The exact OpenAPI and bridge protocol are implementation artifacts, but the init
 | Close session | End the shell and sandbox with an explicit close policy. |
 | One-off job | Compatibility operation that creates an ephemeral session, runs one command, and closes it. |
 
-The local Unix-socket API and file mailbox expose local and queued-remote forms of these operations. The remote HTTPS API exposes the direct remote form. All three interfaces share the same resource names, state meanings, error codes, and event schema.
+The local Unix-socket API and file mailbox expose local and queued-remote forms of these operations. The remote HTTPS API exposes the direct remote form. All three interfaces share resource identities, state meanings, error codes, event types, and per-command event ordering. The mailbox event file uses the readable output-payload projection described below, so its output fields are not identical to the transport event payloads.
 
 The target appears only in `Create session` or a one-off `run` request that creates an ephemeral session. `Submit command` inherits the target from its session. The local API may create `local` or `remote` sessions; the direct HTTPS API creates `remote` sessions only. A target is never inferred or automatically changed after creation.
 
@@ -480,7 +480,7 @@ The work should proceed in working vertical slices rather than build every layer
 
 The PoC is ready for controlled demonstration when it can show all of the following:
 
-- local and remote sessions use the same CLI commands, resource model, states, events, idempotency, and persistent-shell behavior;
+- local and remote sessions use the same CLI commands, resource model, states, event identities/types/order, idempotency, and persistent-shell behavior; the mailbox's output-payload rendering is an explicit interface projection;
 - command events replay from a per-command sequence, while session lifecycle changes are durably recorded and read as session-status snapshots in the PoC;
 - the Mac Execution Router sends an explicit `local` target to `runner-locald` and an explicit `remote` target to the SSH bridge;
 - the Local Control API does not load remote credentials or initiate remote connections; only the Router and Dispatcher perform remote transport;
@@ -503,7 +503,7 @@ The PoC is ready for controlled demonstration when it can show all of the follow
 - the direct remote API cannot create or mutate a local Mac session;
 - a session target cannot change, and a target failure never falls back to the other target;
 - cancellation, timeout, output limit, shell death, and service restart have explicit, tested outcomes; known surviving processes are stopped where possible, cleanup failures are reported, and queued commands do not run in a replacement shell;
-- the PoC close default stops queued work without executing it, requests cancellation of active work, preserves a racing command's actual terminal result, and confirms teardown before reporting `closed`;
+- the PoC close default prevents commands still queued at the authoritative executor from starting, requests cancellation of work that began before close was processed, preserves a racing command's actual terminal result, and confirms teardown before reporting `closed`;
 - a remote sandbox cannot access privileged runtime control interfaces, while local command processes run under the configured macOS account and accurately report that OS permissions, not a worktree path or Runner allowlist, are their access boundary; and
 - the deployment has health checks, logs, auditable security events, retention, and recovery instructions.
 
