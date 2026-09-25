@@ -3,29 +3,29 @@
 **Status:** implementation plan. At plan creation, this repository contains designs but no Runner code or executable Runner tests.<br>
 **Authority:** the [initial design](../020-initial-design/010-remote-session-runner-initial-design.md) defines PoC scope; the [detailed design](../030-detailed-design/010-remote-session-runner-detailed-design.md) defines contracts, failure behavior, and test IDs. The older remote-only v2 proposal is reference material only where compatible.<br>
 **Target:** one restricted-account macOS workstation and one Linux sandbox host; a shared Go execution core with target-specific runtime adapters.<br>
-**Size:** 147 serial phases, each budgeted for roughly **60–120 minutes of Luna-class agent hands-on implementation and verification** with its prerequisites already available (about 147–294 hands-on hours total). This is a planning estimate, not a deadline. External host provisioning, approvals, waiting, and physical power testing are excluded. A phase that proves too large must be split before it is treated as complete.
+**Size:** 148 serial phases, each budgeted for roughly **60–120 minutes of Luna-class agent hands-on implementation and verification** with its prerequisites already available (about 148–296 hands-on hours total). This is a planning estimate, not a deadline. External host provisioning, approvals, waiting, and physical power testing are excluded. A phase that proves too large must be split before it is treated as complete.
 
 ## 1. Mandatory per-phase working protocol
 
-Before `P001`, record the concrete restricted Mac account/paths, Linux host and rootless-runtime feasibility (including required disk/network controls), environment/profile names, and chosen SSH/mTLS identities/protocol in a reviewed design-decision note. These are the initial design's pre-implementation choices, not proof that deployment already works; the later named host gates must still pass. If the proposed baseline is infeasible, amend the design and plan before implementation starts.
+Before `P001`, record the concrete restricted Mac account/paths, Linux host and rootless-runtime feasibility (including required disk/network controls), environment/profile names, and chosen SSH/mTLS identities/protocol in `040-implementation-evidence/000-preimplementation-decisions.md`. Review and commit this prerequisite note in a **separate, non-phase commit**, then start `P001` from a clean worktree and record that prerequisite commit hash in its preflight. These are the initial design's pre-implementation choices, not proof that deployment already works; the later named host gates must still pass. If the proposed baseline is infeasible, amend the design and plan before implementation starts.
 
 ### 1.1 Reload context before **every** phase
 
-Before editing code in `Pnnn`, freshly read from disk **through end-of-file**: (1) this entire current plan, (2) the entire current initial design, and (3) the entire current detailed design. Read in chunks if a tool truncates output. Neither a previous phase's read nor a conversation summary counts. Then read current `README.md`, applicable `AGENTS.md`/repo instructions if present, current Git status and HEAD, the prior phase's committed evidence and diff, and **all current code, tests, schemas, migrations, configuration, and deployment files relevant to this phase**. Search first, then open the chosen files completely; follow newly discovered dependencies. Revisit the sections and test IDs named in the row as a focus, not as a substitute for the full design reads. Use the older v2 source only for a specific compatible detail.
+Before editing code in `Pnnn`, freshly read from disk **through end-of-file**: (1) this entire current plan, (2) the entire current initial design, and (3) the entire current detailed design. Read in chunks if a tool truncates output. Neither a previous phase's read nor a conversation summary counts. Then read current `README.md`, applicable `AGENTS.md`/repo instructions if present, the committed pre-implementation decision note, current Git status and HEAD, the prior phase's committed evidence and diff (for `P001`, the decision commit), and **all current code, tests, schemas, migrations, configuration, and deployment files relevant to this phase**. Search first, then open the chosen files completely; follow newly discovered dependencies. Revisit the sections and test IDs named in the row as a focus, not as a substitute for the full design reads. Use the older v2 source only for a specific compatible detail.
 
-Before coding, create/update `040-implementation-evidence/Pnnn.md` with pre-phase HEAD, design/plan blob revisions, complete file-read inventory, target execution machine, planned test gate, prerequisites, and unresolved assumptions. In `P001`, creating that evidence directory is part of the first edit. If context is compacted, the agent restarts, or a design changes during the phase, repeat the full reads and update the record **before continuing**. Resolve conflicting contracts in the design/plan explicitly; do not invent PoC behavior in code.
+Before coding, create/update `040-implementation-evidence/Pnnn.md` with pre-phase HEAD, design/plan blob revisions, complete file-read inventory, target execution machine, planned test gate, prerequisites, and unresolved assumptions. The pre-`P001` decision commit has already created that evidence directory. If context is compacted, the agent restarts, or a design changes during the phase, repeat the full reads and update the record **before continuing**. Resolve conflicting contracts in the design/plan explicitly; do not invent PoC behavior in code.
 
 ### 1.2 Serial PASS, evidence, and commit gate
 
-The only implementation order is `P001 → P002 → ... → P147`. `Pnnn+1` **must not start** until `Pnnn` has: its exact deliverable; its focused automated assertions; the full currently available hermetic suite; its named real-process/host suite on the specified machine; `go vet ./...` once Go exists; race-enabled tests for concurrency changes; `git diff --check`; inspected diff; an evidence record marked `PASS`; **one non-empty, phase-scoped commit**; and a clean post-commit worktree. A skipped or unavailable test is `NOT RUN`, not `PASS`. No parallel coding of future phases is allowed. Read-only review is fine, but it cannot advance a future phase's gate.
+The only implementation order is `P001 → P002 → ... → P148`. `Pnnn+1` **must not start** until `Pnnn` has: its exact deliverable; its focused automated assertions; the full currently available hermetic suite; its named real-process/host suite on the specified machine; `go vet ./...` once Go exists; race-enabled tests for concurrency changes; `git diff --check`; inspected diff; an evidence record marked `PASS`; **one non-empty, phase-scoped commit**; and a clean post-commit worktree. A skipped or unavailable test is `NOT RUN`, not `PASS`. No parallel coding of future phases is allowed. Read-only review is fine, but it cannot advance a future phase's gate.
 
-Tests should carry detailed-design IDs (`D-01`, `M-03`, etc.) in names or metadata. `make test` runs `go test ./...` without live-host dependencies; add `make test-mac`, `make test-linux`, `make test-twohost`, `make test-soak`, and `make test-powerloss` only when their real fixtures exist. Run focused tests first, then the full currently available hermetic suite. Add/update a prior-schema migration fixture with **every** migration, and rerun the `D-12` import-graph check when packages or imports change. Record exact commands, exit codes, execution machine/OS/runtime, fixture/profile, observed results, limitations, base commit, and next phase in the evidence file. The resulting commit hash is recorded in the **next** phase's preflight, since a commit cannot contain its own hash; `P147` reports its final hash in the post-commit handoff. Commit format: `phase(Pnnn): <one deliverable>`.
+Tests should carry detailed-design IDs (`D-01`, `M-03`, etc.) in names or metadata. `make test` runs `go test ./...` without live-host dependencies; add `make test-mac`, `make test-linux`, `make test-twohost`, `make test-soak`, and `make test-powerloss` only when their real fixtures exist. Run focused tests first, then the full currently available hermetic suite. Add/update a prior-schema migration fixture with **every** migration, and rerun the `D-12` import-graph check when packages or imports change. Record exact commands, exit codes, execution machine/OS/runtime, fixture/profile, observed results, limitations, base commit, and next phase in the evidence file. The resulting commit hash is recorded in the **next** phase's preflight, since a commit cannot contain its own hash; `P148` reports its final hash in the post-commit handoff. Commit format: `phase(Pnnn): <one deliverable>`.
 
 If a required test fails, a required host is unavailable, or a phase exceeds a safe 1–2-hour coding slice, stop. Do not mark it complete, skip it, commit failing work as a successful phase, or start the next phase. Split oversized scope into smaller serial phases through a reviewed plan amendment, then renumber downstream rows/ledger before resuming. Required accounts, certificates, keys, runtime profiles, and test hosts are prerequisites, never fake test results. Material design changes are reviewed and committed separately before affected phase work resumes.
 
 ### 1.3 What each test tier proves
 
-Hermetic tests prove rules, transactions, and fake-adapter behavior, not Mac account permissions, Linux limit enforcement, SSH/mTLS deployment, two-host reconnect, performance, or physical power-loss durability. A row naming a real host is incomplete until that host-class test passes and its evidence identifies the machine. A software kill or VM hard-off is not a physical host power cut. At `P142`, either pass `P-STORE-01` on disposable representative storage **or**, if physical testing is unavailable, obtain explicit user approval for a software-crash-only durability claim. A `FAIL` is never relabeled `NOT RUN` or waived into PoC acceptance: fix and retest the failed critical gate, or change the design/scope through a separate reviewed decision. Under the unavailable/approved path `P-STORE-01` remains `NOT RUN`/unverified; `P143`–`P147` may finish only with that limited claim prominently stated. Later code/config changes affecting acceptance, SQLite/WAL sync, event persistence, or recovery invalidate prior power-loss evidence; rerun `P-STORE-01` on both representative hosts before claiming physical survival, or revert to the explicitly limited claim only if testing is then unavailable rather than failed. No phase may assert an untested physical-durability guarantee.
+Hermetic tests prove rules, transactions, and fake-adapter behavior, not Mac account permissions, Linux limit enforcement, SSH/mTLS deployment, two-host reconnect, performance, or physical power-loss durability. A row naming a real host is incomplete until that host-class test passes and its evidence identifies the machine. A software kill or VM hard-off is not a physical host power cut. At `P143`, record Mac and Linux `P-STORE-01` results **separately**. Claim physical power-loss survival only if both representative hosts pass. If testing is unavailable on either host, preserve any other host's `PASS`, mark the unavailable host `NOT RUN` and the combined physical claim **unverified**, and obtain explicit user approval for a software-crash-only claim. A `FAIL` on either host is never relabeled `NOT RUN` or waived into PoC acceptance: fix and retest the failed critical gate, or change the design/scope through a separate reviewed decision. Under the unavailable/approved path, `P144`–`P148` may finish only with the host-specific limitation prominently stated. Later code/config changes affecting acceptance, SQLite/WAL sync, event persistence, or recovery invalidate prior power-loss evidence; rerun affected host tests before claiming physical survival, or revert to the explicitly limited claim only if testing is then unavailable rather than failed. No phase may assert an untested physical-durability guarantee.
 
 ## 2. Serial implementation phases
 
@@ -102,7 +102,7 @@ The real SSH key, pinned host key, forced-command account, and two-host connecti
 
 | Phase | Bounded deliverable | Focused exit gate |
 | --- | --- | --- |
-| `P049` | Add versioned NDJSON bridge framing/`hello`/`ping`, 1 MiB decoded-record rejection, and server-side key-to-controller mapping. | Major/additive protocol, oversize-pre-forward, and forged-controller subset of `D-14`; frame fuzz. |
+| `P049` | Add byte-bounded versioned NDJSON framing/`hello`/`ping` and server-side key-to-controller mapping; reject a frame over 1 MiB **before JSON decoding**. | Major/additive protocol, no-newline oversize/pre-decode/no-forward/no-unbounded-allocation, and forged-controller subset of `D-14`; frame fuzz. |
 | `P050` | Forward bridge create/read session through private `runnerd` with no shell logic. | Bridge session request/reply/retry fixtures. |
 | `P051` | Forward bridge submit/read command with stable IDs/keys. | Bridge command fixtures; no SSH-exit-as-command-exit. |
 | `P052` | Forward bridge run/get-job with stable job IDs/keys. | Remote authoritative one-off/job-read fixtures; never-delivered Mac intent reads belong to Mac ingress. |
@@ -178,19 +178,20 @@ Provision private-network server/client certificates, CA trust, controller mappi
 | `P108` | Add direct HTTPS submit/read command using the shared service and 128 KiB UTF-8 script limit. | Oversize leaves no command/event; full `I-05` with direct pre-ready rejection; direct `I-01` command subset and wrong-controller denial. |
 | `P109` | Add direct HTTPS keyed cancel/close and error/exit mapping. | Same-key replay/changed-close-policy conflict; direct `I-01` lifecycle subset; shell failure distinct from transport failure. |
 | `P110` | Add direct HTTPS run/get-job using shared one-off coordinator. | Direct `I-04` subset; oversize body/script leaves no job; teardown failure remains visible. |
-| `P111` | Run common Unix/HTTPS contract and one-off restart/never-delivered fixtures. | Full `I-01` and `I-04`; no second script or fabricated queued job state. |
+| `P111` | Run common Unix/HTTPS resource-operation contract and one-off restart/never-delivered fixtures. | `I-01` resource-operation subset and full `I-04`; no second script or fabricated queued job state. |
 | `P112` | Run direct-HTTPS mutation-wide idempotency matrix under mapped controller identities. | Create/submit/cancel/close/run same-key replay and changed-payload conflict; no second execution or cross-controller leak. |
 | `P113` | Add direct HTTPS event replay, cursor/expiry errors, and bounded stream framing. | `I-03` direct replay subset; no successful partial expired range. |
 | `P114` | Add direct HTTPS live follow/overflow and resumable cursor behavior. | Direct `I-03` live subset; no handoff gap. |
 | `P115` | Run three-path replay/follow and direct/mailbox gap/capture/expiry matrix. | Full `I-03` and `O-03`; no successful partial output history. |
-| `P116` | Add real two-host client server-name checks and controller denial across read/events/mutations. | Full `P-NET-02`, including wrong/expired certs and cross-controller denial. |
-| `P117` | Add reusable Unix-socket and HTTPS client library with explicit endpoint, typed resource/error results, and cursor-aware event interface. | Unit contract tests for both transports; IDs never infer ingress. |
-| `P118` | Add CLI endpoint profiles, explicit `--endpoint`, create/status, default readiness wait, and `--no-wait` over the shared client library. | CLI create subset; pending ID survives wait timeout. |
-| `P119` | Add CLI `exec`/`events`, cursor follow, nonzero/transport distinction, and completeness display. | `P-CLI-01` exec/events subset. |
-| `P120` | Add CLI `cancel`/`close`/`run`, retaining explicit endpoint/profile rules. | `P-CLI-01` lifecycle/job subset; teardown failure visible. |
-| `P121` | Validate post-90-day key-expiry warnings in direct responses, CLI, and file responses, with Router retry stopped. | Full `D-09`; no client or Router claims deduplication after the guarantee window. |
-| `P122` | Exercise direct disconnect/replay during Mac SSH outage and later mirror catch-up. | Full real two-host `P-NET-03`; no rerun or falsely fresh projection. |
-| `P123` | Run common CLI smoke on local, queued-remote, and direct-remote routes. | Full real-host `P-CLI-01`; same verbs, explicit endpoint, truthful target/errors. |
+| `P116` | Run the complete shared Unix/HTTPS API contract, including event identity/type parity now that both event endpoints exist. | Full `I-01`: create/submit/read/cancel/close/run, target/controller/error/event semantics on both adapters. |
+| `P117` | Add real two-host client server-name checks and controller denial across read/events/mutations. | Full `P-NET-02`, including wrong/expired certs and cross-controller denial. |
+| `P118` | Add reusable Unix-socket and HTTPS client library with explicit endpoint, typed resource/error results, and cursor-aware event interface. | Unit contract tests for both transports; IDs never infer ingress. |
+| `P119` | Add CLI endpoint profiles, explicit `--endpoint`, create/status, default readiness wait, and `--no-wait` over the shared client library. | CLI create subset; pending ID survives wait timeout. |
+| `P120` | Add CLI `exec`/`events`, cursor follow, nonzero/transport distinction, and completeness display. | `P-CLI-01` exec/events subset. |
+| `P121` | Add CLI `cancel`/`close`/`run`, retaining explicit endpoint/profile rules. | `P-CLI-01` lifecycle/job subset; teardown failure visible. |
+| `P122` | Validate post-90-day key-expiry warnings in direct responses, CLI, and file responses, with Router retry stopped. | Full `D-09`; no client or Router claims deduplication after the guarantee window. |
+| `P123` | Exercise direct disconnect/replay during Mac SSH outage and later mirror catch-up. | Full real two-host `P-NET-03`; no rerun or falsely fresh projection. |
+| `P124` | Run common CLI smoke on local, queued-remote, and direct-remote routes. | Full real-host `P-CLI-01`; same verbs, explicit endpoint, truthful target/errors. |
 
 ### Stage 6 — services, recovery, and qualification (detailed design §§10–17)
 
@@ -198,34 +199,34 @@ Service files are versioned with code. Host, soak, backup, and power tests need 
 
 | Phase | Bounded deliverable | Focused exit gate |
 | --- | --- | --- |
-| `P124` | Add macOS `launchd` definitions for Mac ingress/Router/locald and owner-only paths. | Real Mac start/stop/restart and socket/mailbox mode smoke. |
-| `P125` | Add Linux `systemd` definitions for runnerd and forced-command deployment notes. | Real Linux start/stop/restart; invalid sandbox profile not ready. |
-| `P126` | Add structured authorization/action audit, excluding raw scripts/output/credential values. | Full `I-07` across local, mailbox, direct and denial paths. |
-| `P127` | Add component liveness/readiness and `doctor` with degraded Router status. | Full `P-OPS-01`; Mac ingress accepts durable intent during SSH/Linux outage. |
-| `P128` | Add bounded operational counters and threshold logging. | Counters for slots, queue, dispatch, gaps, truncation, storage, cleanup, mailbox backlog. |
-| `P129` | Implement shared graceful-shutdown coordinator: stop acceptance/dispatch, bounded drain, normal cancellation, event/audit flush, and resumable stream close. | Fake-clock/fake-runtime shutdown-order and drain-deadline tests; no new work after drain begins. |
-| `P130` | Wire signal-driven graceful shutdown into Mac API/Router/locald and launchd stop path. | Real Mac process test: accepted work drains or cancels truthfully; event/audit flush and resumable cursors survive restart. |
-| `P131` | Wire signal-driven graceful shutdown into runnerd and Linux systemd stop path. | Real Linux process/sandbox test: no false terminal outcome, orphaned work, or unflushed event/audit. |
-| `P132` | Add named phase-barrier kill/restart harness, captured DB snapshots, and result assertions. | Harness self-tests for deterministic Mac API/Router/executor/agent/Bash barriers. |
-| `P133` | Exercise Mac API and Router kill/restart with queued, accepted, and uncertain intents. | `F-01` ingress/Router subset; no duplicate execution or false rejection. |
-| `P134` | Exercise locald/runnerd/agent/Bash death with known surviving child. | `F-01` executor/shell subset; no reattachment or replacement shell. |
-| `P135` | Exercise four occupied slots and delayed stop/EOF on both hosts. | `R-03`/`F-01` capacity subset; fifth start waits, residual capacity retained. |
-| `P136` | Exercise unattributed orphan/profile block and rerun pending/uncertain Mac races with residual slots. | Full real-host `R-03` and `F-01`; no unsafe new work or replacement shell. |
-| `P137` | Inject full/locked SQLite and failed runtime cleanup on each authority. | Full `F-03`; no pre-commit execution, conservative post-start state. |
-| `P138` | Add Mac WAL-aware online backup/restore rehearsal with service stop and generation bump. | `F-04` Mac subset; main-DB-only copy forbidden. |
-| `P139` | Add Linux backup/restore rehearsal and Mac/Linux ID reconciliation before dispatch. | Full `F-04` on both authorities; old shells never reattach. |
-| `P140` | Run reference-host 20-session/four-slot and bounded slow-subscriber soak. | `F-05` quota/memory subset with measured environment. |
-| `P141` | Measure persisted-output visibility and long-load stability on reference hosts. | Full `F-05`; predeclare normal-load workload/statistic, meet the 500 ms visibility target, and report measurements/misses. An unmet target blocks `PASS`. |
-| `P142` | On each authority's representative disposable storage run abrupt physical power cuts, or, only if testing is unavailable, document explicit user-approved software-crash-only limitation. | `P-STORE-01` only if both physical tests pass; unavailable is `NOT RUN` with approved limited claim; a failed critical test blocks the PoC. |
-| `P143` | Rerun full hermetic, prior-schema migration, race, parser-fuzz/property, and static-boundary suites; reconcile every §14 ID to evidence. | Full `D-12` on the complete package graph and full `D-14` on the final schema/protocol/config; no mandatory hermetic failure/skip; publish machine-labeled coverage matrix. |
-| `P144` | Rerun actual Mac account/local runtime and mailbox service suites after final code changes. | `P-MAC-*`, Mac `R-*`, local API/mailbox operational gates current. |
-| `P145` | Rerun actual Linux sandbox, exact-Git, service, and limit suites after final changes. | `P-LNX-*`, Linux `R-*`, rootless/teardown operational gates current. |
-| `P146` | Rerun two-host SSH, mTLS, reconnect, file-only mailbox, and CLI suites. | `P-NET-*`, `P-MBX-01`, `P-CLI-01` current on named hosts. |
-| `P147` | Audit all phase evidence and detailed-design §15; produce controlled-PoC handoff. | Every mandatory ID has correct-machine evidence; clean commit/worktree; approved power limitation stated. |
+| `P125` | Add macOS `launchd` definitions for Mac ingress/Router/locald and owner-only paths. | Real Mac start/stop/restart and socket/mailbox mode smoke. |
+| `P126` | Add Linux `systemd` definitions for runnerd and forced-command deployment notes. | Real Linux start/stop/restart; invalid sandbox profile not ready. |
+| `P127` | Add structured authorization/action audit, excluding raw scripts/output/credential values. | Full `I-07` across local, mailbox, direct and denial paths. |
+| `P128` | Add component liveness/readiness and `doctor` with degraded Router status. | Full `P-OPS-01`; Mac ingress accepts durable intent during SSH/Linux outage. |
+| `P129` | Add bounded operational counters and threshold logging. | Counters for slots, queue, dispatch, gaps, truncation, storage, cleanup, mailbox backlog. |
+| `P130` | Implement shared graceful-shutdown coordinator: stop acceptance/dispatch, bounded drain, normal cancellation, event/audit flush, and resumable stream close. | Fake-clock/fake-runtime shutdown-order and drain-deadline tests; no new work after drain begins. |
+| `P131` | Wire signal-driven graceful shutdown into Mac API/Router/locald and launchd stop path. | Real Mac process test: accepted work drains or cancels truthfully; event/audit flush and resumable cursors survive restart. |
+| `P132` | Wire signal-driven graceful shutdown into runnerd and Linux systemd stop path. | Real Linux process/sandbox test: no false terminal outcome, orphaned work, or unflushed event/audit. |
+| `P133` | Add named phase-barrier kill/restart harness, captured DB snapshots, and result assertions. | Harness self-tests for deterministic Mac API/Router/executor/agent/Bash barriers. |
+| `P134` | Exercise Mac API and Router kill/restart with queued, accepted, and uncertain intents. | `F-01` ingress/Router subset; no duplicate execution or false rejection. |
+| `P135` | Exercise locald/runnerd/agent/Bash death with known surviving child. | `F-01` executor/shell subset; no reattachment or replacement shell. |
+| `P136` | Exercise four occupied slots and delayed stop/EOF on both hosts. | `R-03`/`F-01` capacity subset; fifth start waits, residual capacity retained. |
+| `P137` | Exercise unattributed orphan/profile block and rerun pending/uncertain Mac races with residual slots. | Full real-host `R-03` and `F-01`; no unsafe new work or replacement shell. |
+| `P138` | Inject full/locked SQLite and failed runtime cleanup on each authority. | Full `F-03`; no pre-commit execution, conservative post-start state. |
+| `P139` | Add Mac WAL-aware online backup/restore rehearsal with service stop and generation bump. | `F-04` Mac subset; main-DB-only copy forbidden. |
+| `P140` | Add Linux backup/restore rehearsal and Mac/Linux ID reconciliation before dispatch. | Full `F-04` on both authorities; old shells never reattach. |
+| `P141` | Run reference-host 20-session/four-slot and bounded slow-subscriber soak. | `F-05` quota/memory subset with measured environment. |
+| `P142` | Measure persisted-output visibility and long-load stability on reference hosts. | Full `F-05`; predeclare normal-load workload/statistic, meet the 500 ms visibility target, and report measurements/misses. An unmet target blocks `PASS`. |
+| `P143` | On each authority's representative disposable storage run abrupt physical power cuts; when either host test is unavailable, document explicit user-approved software-crash-only limitation. | `P-STORE-01`: record per-host `PASS`/`NOT RUN`/`FAIL`; physical claim passes only if both hosts pass, is unverified if either is `NOT RUN`, and blocks PoC if either fails. |
+| `P144` | Rerun full hermetic, prior-schema migration, race, parser-fuzz/property, and static-boundary suites; reconcile every §14 ID to evidence. | Full `D-12` on the complete package graph and full `D-14` on the final schema/protocol/config; no mandatory hermetic failure/skip; publish machine-labeled coverage matrix. |
+| `P145` | Rerun actual Mac account/local runtime and mailbox service suites after final code changes. | `P-MAC-*`, Mac `R-*`, local API/mailbox operational gates current. |
+| `P146` | Rerun actual Linux sandbox, exact-Git, service, and limit suites after final changes. | `P-LNX-*`, Linux `R-*`, rootless/teardown operational gates current. |
+| `P147` | Rerun two-host SSH, mTLS, reconnect, file-only mailbox, and CLI suites. | `P-NET-*`, `P-MBX-01`, `P-CLI-01` current on named hosts. |
+| `P148` | Audit all phase evidence and detailed-design §15; produce controlled-PoC handoff. | Every mandatory ID has correct-machine evidence; clean commit/worktree; approved power limitation stated. |
 
 ## 3. Full test ownership and coverage ledger
 
-The full-owner phase must pass the **entire** detailed-design §14 case, including all named adapters, crashes, and host conditions; earlier rows may prove only a subset. The owner records exact command, execution machine, result, and evidence path. Full hermetic and actual-host suites are rerun across `P143`–`P146`. A newly added package also reruns `D-12` before its phase commits.
+The full-owner phase must pass the **entire** detailed-design §14 case, including all named adapters, crashes, and host conditions; earlier rows may prove only a subset. The owner records exact command, execution machine, result, and evidence path. Full hermetic and actual-host suites are rerun across `P144`–`P147`. A newly added package also reruns `D-12` before its phase commits.
 
 | Detailed-design ID | First full owner | Detailed-design ID | First full owner |
 | --- | --- | --- | --- |
@@ -233,14 +234,14 @@ The full-owner phase must pass the **entire** detailed-design §14 case, includi
 | `D-03` | `P075` | `D-04` | `P021` |
 | `D-05` | `P096` | `D-06` | `P070` |
 | `D-07` | `P074` | `D-08` | `P075` |
-| `D-09` | `P121` | `D-10` | `P069` |
-| `D-11` | `P027` | `D-12` | `P143`, rerun each package phase |
-| `D-13` | `P023` | `D-14` | `P143`, extend each migration phase |
+| `D-09` | `P122` | `D-10` | `P069` |
+| `D-11` | `P027` | `D-12` | `P144`, rerun each package phase |
+| `D-13` | `P023` | `D-14` | `P144`, extend each migration phase |
 | `D-15` | `P029` | `D-16` | `P080` |
-| `D-17` | `P029` | `I-01` | `P111` |
+| `D-17` | `P029` | `I-01` | `P116` |
 | `I-02` | `P095` | `I-03` | `P115` |
 | `I-04` | `P111` | `I-05` | `P108` |
-| `I-06` | `P105` | `I-07` | `P126` |
+| `I-06` | `P105` | `I-07` | `P127` |
 | `M-01` | `P081` | `M-02` | `P099` |
 | `M-03` | `P088` | `M-04` | `P097` |
 | `M-05` | `P095` | `M-06` | `P091` |
@@ -248,18 +249,18 @@ The full-owner phase must pass the **entire** detailed-design §14 case, includi
 | `M-09` | `P097` | `M-10` | `P101` |
 | `O-01` | `P085` | `O-02` | `P034` |
 | `O-03` | `P115` | `R-01` | `P044` |
-| `R-02` | `P044` | `R-03` | `P136` |
+| `R-02` | `P044` | `R-03` | `P137` |
 | `P-MAC-01` | `P062` | `P-MAC-02` | `P062` |
 | `P-LNX-01` | `P043` | `P-LNX-02` | `P045` |
-| `P-NET-01` | `P056` | `P-NET-02` | `P116` |
-| `P-NET-03` | `P122` | `P-CLI-01` | `P123` |
-| `P-MBX-01` | `P104` | `P-STORE-01` | `P142` only for physical claim |
-| `F-01` | `P136` | `F-02` | `P103` |
-| `F-03` | `P137` | `F-04` | `P139` |
-| `F-05` | `P141` | `P-OPS-01` | `P127` |
+| `P-NET-01` | `P056` | `P-NET-02` | `P117` |
+| `P-NET-03` | `P123` | `P-CLI-01` | `P124` |
+| `P-MBX-01` | `P104` | `P-STORE-01` | `P143` only for physical claim |
+| `F-01` | `P137` | `F-02` | `P103` |
+| `F-03` | `P138` | `F-04` | `P140` |
+| `F-05` | `P142` | `P-OPS-01` | `P128` |
 
-This ledger is a checklist, not a claim that tests exist or passed now. At `P143`–`P147`, reconcile it with detailed-design §15 and initial-design acceptance criteria. Parser fuzz/property tests cover JSON/NDJSON, IDs, paths, base64, bounds, cursors, and hashes in their corresponding phases. Race tests cover subscribers, scheduler, leases, mailbox replacement, and reconciliation. No host-dependent result is green from a fake or a skipped test. Under an approved limited-durability path, `P-STORE-01` stays `NOT RUN` and outside the claim; it is never shown as a passing test.
+This ledger is a checklist, not a claim that tests exist or passed now. At `P144`–`P148`, reconcile it with detailed-design §15 and initial-design acceptance criteria. Parser fuzz/property tests cover JSON/NDJSON, IDs, paths, base64, bounds, cursors, and hashes in their corresponding phases. Race tests cover subscribers, scheduler, leases, mailbox replacement, and reconciliation. No host-dependent result is green from a fake or a skipped test. Under an approved limited-durability path, preserve each host's actual `P-STORE-01` result; the combined physical claim remains unverified unless both hosts pass.
 
 ## 4. Completion and handoff
 
-The implementation is ready for a controlled PoC demonstration only after `P001`–`P147` individually pass and are committed in order, the worktree is clean, detailed-design §15 has current machine-labeled evidence, and every mandatory actual-host gate passes. If `P142` took the approved limited path, the handoff must say **physical power-loss survival is unverified**. Elapsed time, a failed or skipped gate, a missing host, or an incomplete commit never starts the next phase.
+The implementation is ready for a controlled PoC demonstration only after `P001`–`P148` individually pass and are committed in order, the worktree is clean, detailed-design §15 has current machine-labeled evidence, and every mandatory actual-host gate passes. If `P143` took the approved limited path, the handoff must say **physical power-loss survival is unverified**. Elapsed time, a failed or skipped gate, a missing host, or an incomplete commit never starts the next phase.
