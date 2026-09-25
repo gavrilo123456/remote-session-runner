@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/schemas/v1/execution-target.schema.json",
+  "title": "Remote Session Runner v1 execution target",
+  "type": "object",
+  "properties": {
+    "kind": { "type": "string", "enum": ["local", "remote"] },
+    "profile": { "type": "string", "minLength": 1 }
+  },
+  "required": ["kind", "profile"],
+  "additionalProperties": false
+}

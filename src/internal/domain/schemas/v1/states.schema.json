@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/schemas/v1/states.schema.json",
+  "title": "Remote Session Runner v1 state vocabulary",
+  "type": "object",
+  "properties": {
+    "session": { "$ref": "#/$defs/sessionState" },
+    "command": { "$ref": "#/$defs/commandState" },
+    "delivery": { "$ref": "#/$defs/deliveryState" },
+    "mailbox": { "$ref": "#/$defs/mailboxExchangeState" }
+  },
+  "required": ["session", "command", "delivery", "mailbox"],
+  "additionalProperties": false,
+  "$defs": {
+    "sessionState": {
+      "type": "string",
+      "enum": ["requested", "creating", "ready", "busy", "closing", "closed", "expired", "failed", "lost"]
+    },
+    "commandState": {
+      "type": "string",
+      "enum": ["queued", "running", "cancelling", "succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"]
+    },
+    "deliveryState": {
+      "type": "string",
+      "enum": ["recorded", "dispatching", "uncertain", "accepted", "reconciled", "not_delivered"]
+    },
+    "mailboxExchangeState": {
+      "type": "string",
+      "enum": ["accepted", "complete", "rejected", "indeterminate"]
+    },
+    "eventType": {
+      "type": "string",
+      "enum": ["command_queued", "command_started", "stdout", "stderr", "output_truncated", "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost"]
+    },
+    "outputUnavailableReason": {
+      "type": "string",
+      "enum": ["capture_boundary_unconfirmed", "remote_event_gap", "retention_expired"]
+    },
+    "errorCode": {
+      "type": "string",
+      "enum": ["invalid_request", "environment_target_mismatch", "environment_forbidden", "controller_mismatch", "session_not_ready", "idempotency_conflict", "resource_not_found", "quota_exceeded", "runtime_unavailable", "transport_uncertain", "event_history_unavailable", "retention_expired"]
+    }
+  }
+}

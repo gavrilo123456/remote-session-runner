@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/schemas/v1/command.schema.json",
+  "title": "Remote Session Runner v1 command resource",
+  "type": "object",
+  "properties": {
+    "command_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "ordinal": { "type": "integer", "minimum": 1 },
+    "command_state": { "$ref": "states.schema.json#/$defs/commandState" },
+    "exit_code": { "type": "integer" },
+    "final_event_sequence": { "type": "integer", "minimum": 1 },
+    "output_complete": { "type": "boolean" },
+    "output_truncated": { "type": "boolean" },
+    "output_unavailable_reason": { "$ref": "states.schema.json#/$defs/outputUnavailableReason" },
+    "execution_target": { "$ref": "execution-target.schema.json" },
+    "authority": { "type": "string", "enum": ["local", "remote"] },
+    "controller": {
+      "type": "object",
+      "properties": {
+        "controller_type": { "type": "string", "minLength": 1 },
+        "controller_id": { "type": "string", "minLength": 1 }
+      },
+      "required": ["controller_type", "controller_id"],
+      "additionalProperties": false
+    },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "environment": { "type": "string", "minLength": 1 },
+    "source": { "$ref": "source.schema.json" },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "host_class": { "type": "string", "minLength": 1 },
+        "isolation": { "const": "os-user" },
+        "effective_account": { "type": "string", "minLength": 1 },
+        "service_limits": { "type": "object" }
+      },
+      "required": ["host_class", "isolation", "effective_account", "service_limits"],
+      "additionalProperties": false
+    },
+    "is_stale": { "type": "boolean" }
+  },
+  "required": ["command_id", "session_id", "command_state", "output_complete", "output_truncated", "execution_target", "authority", "controller", "observed_at", "environment", "source", "capabilities"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": { "command_state": { "enum": ["succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] } },
+        "required": ["command_state"]
+      },
+      "then": { "required": ["final_event_sequence"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "command_state": { "enum": ["succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] },
+          "output_complete": { "const": false }
+        },
+        "required": ["command_state", "output_complete"]
+      },
+      "then": { "required": ["output_unavailable_reason"] }
+    },
+    {
+      "if": { "properties": { "execution_target": { "properties": { "kind": { "const": "local" } }, "required": ["kind"] } }, "required": ["execution_target"] },
+      "then": { "properties": { "authority": { "const": "local" }, "capabilities": { "properties": { "effective_account": { "const": "tomasz.walczuk" } } } } }
+    },
+    {
+      "if": { "properties": { "execution_target": { "properties": { "kind": { "const": "remote" } }, "required": ["kind"] } }, "required": ["execution_target"] },
+      "then": { "properties": { "authority": { "const": "remote" }, "capabilities": { "properties": { "effective_account": { "const": "ubuntu" } } } } }
+    },
+    {
+      "if": { "properties": { "execution_target": { "properties": { "kind": { "const": "remote" } }, "required": ["kind"] } }, "required": ["execution_target"] },
+      "then": { "properties": { "source": { "not": { "properties": { "mode": { "const": "local_worktree" } }, "required": ["mode"] } } } }
+    }
+  ]
+}

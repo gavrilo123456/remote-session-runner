@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/schemas/v1/source.schema.json",
+  "title": "Remote Session Runner v1 effective source",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": { "mode": { "const": "empty" } },
+      "required": ["mode"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "mode": { "const": "git_revision" },
+        "repository_alias": { "type": "string", "minLength": 1 },
+        "requested_revision": { "type": "string", "minLength": 1 },
+        "resolved_commit": { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" }
+      },
+      "required": ["mode", "repository_alias", "requested_revision"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "mode": { "const": "local_worktree" },
+        "path": { "type": "string", "pattern": "^/", "minLength": 1 },
+        "canonical_path": { "type": "string", "pattern": "^/", "minLength": 1 },
+        "portable": { "const": false }
+      },
+      "required": ["mode", "path", "portable"],
+      "additionalProperties": false
+    }
+  ]
+}

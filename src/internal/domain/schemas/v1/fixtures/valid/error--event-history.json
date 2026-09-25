@@ -1,0 +1,1 @@
+{"code":"event_history_unavailable","message":"requested event range is unavailable","retryable":false,"resource_id":"cmd-1","details":{"output_complete":false,"output_unavailable_reason":"remote_event_gap","earliest_available_sequence":4}}

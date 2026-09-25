@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/schemas/v1/error.schema.json",
+  "title": "Remote Session Runner v1 structured error envelope",
+  "type": "object",
+  "properties": {
+    "code": { "$ref": "states.schema.json#/$defs/errorCode" },
+    "message": { "type": "string", "minLength": 1 },
+    "retryable": { "type": "boolean" },
+    "resource_id": { "type": "string", "minLength": 1 },
+    "details": { "type": "object" }
+  },
+  "required": ["code", "message", "retryable"],
+  "additionalProperties": false
+}

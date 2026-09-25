@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/schemas/v1/command-event.schema.json",
+  "title": "Remote Session Runner v1 command event",
+  "type": "object",
+  "properties": {
+    "command_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "type": { "$ref": "states.schema.json#/$defs/eventType" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "ordinal": { "type": "integer", "minimum": 1 },
+    "encoding": { "type": "string" },
+    "data_base64": { "type": "string", "contentEncoding": "base64", "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" },
+    "byte_count": { "type": "integer", "minimum": 1 },
+    "exit_code": { "type": "integer" }
+  },
+  "required": ["command_id", "sequence", "type", "timestamp"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "command_queued" } }, "required": ["type"] },
+      "then": { "properties": { "sequence": { "const": 1 } } }
+    },
+    {
+      "if": { "properties": { "type": { "enum": ["stdout", "stderr"] } }, "required": ["type"] },
+      "then": {
+        "properties": { "encoding": { "const": "base64" } },
+        "required": ["encoding", "data_base64", "byte_count"]
+      },
+      "else": {
+        "not": { "anyOf": [{ "required": ["encoding"] }, { "required": ["data_base64"] }, { "required": ["byte_count"] }] }
+      }
+    }
+  ]
+}
