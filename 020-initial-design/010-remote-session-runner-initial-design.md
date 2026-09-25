@@ -84,7 +84,7 @@ The initial remote container baseline isolates normal development workloads. The
 flowchart LR
     C[CLI or SDK]
     FC[File-only client]
-    MB["Mailbox<br/>inbox and outbox"]
+    MB["File Mailbox<br/>requests, responses, events, ACKs"]
     LAPI["Local Control API<br/>macOS Unix socket"]
     LDB[(Local SQLite)]
     ROUTER["Execution Router<br/>and Dispatcher"]
@@ -227,8 +227,9 @@ The direct HTTPS API accepts `remote` sessions only. This retains a clear networ
 1. A file-only client writes a request JSON file with a unique `request_id`, then writes a matching `.ready` marker last. The importer reads only marked requests.
 2. The Mailbox Adapter validates the request and commits it through the Local Control API's ordinary local-intent path. It writes a response with the same `request_id`; `accepted` means the Mac recorded the request, not that the remote executor has accepted it.
 3. The existing Execution Router sends the request to `runner-locald` or through SSH to `runnerd`, according to the target selected when the session was created.
-4. The adapter refreshes the response from local SQLite as the session or command changes. A file-only client reads the response at a predictable path until the request is `complete` or `rejected`.
-5. Optional per-command NDJSON event files expose persisted output and status events in sequence order. The response includes their path and the resulting `session_id` and `command_id`.
+4. The adapter refreshes the response from local SQLite as the session or command changes. For a command, it publishes the final `complete` response only after its terminal event and all preceding output are available in the file projection.
+5. A file-only client reads the response until `complete` or `rejected`, then reads any event file through the advertised final sequence. After consuming the final result, it writes an ACK file identifying the exact response revision and final event sequence.
+6. Runner records the ACK and later removes the response and event files under the mailbox retention policy. A missing ACK never delays command completion or keeps files forever.
 
 The mailbox is another local ingress, not another execution worker or source of truth. A direct remote HTTPS request never reaches the Mac inbox.
 
@@ -257,6 +258,8 @@ Each command event has a monotonically increasing sequence number. Consumers sto
 
 Mailbox responses and event files are read-only projections of these records. For local sessions, they come from authoritative local events; for remote sessions, they come from the local mirror after the Dispatcher has reconciled it. Responses for remote work show the last remote update and a stale/reconciling indicator when appropriate. A missing or deleted response file does not erase the underlying request or command.
 
+The mailbox records each terminal response revision, final event sequence, and client acknowledgment in local SQLite. On restart it can regenerate the same response or event projection. A queued remote command cannot be marked complete in the mailbox until the remote terminal event has been mirrored and its output has been materialized locally.
+
 ## 9. Security and isolation baseline
 
 Remote Session Runner is a privileged code-execution system. Local and remote targets share the same user experience, but they must not be described as equally isolated. The initial design therefore uses these boundaries:
@@ -264,7 +267,7 @@ Remote Session Runner is a privileged code-execution system. Local and remote ta
 | Area | Initial control |
 | --- | --- |
 | Local API | Owner-only Unix-domain socket in an owner-only directory. |
-| File mailbox | Owner-only directory and files; accept regular files with validated safe names, reject symlinks and oversized requests, and bind every imported request to the local owner. Remote HTTPS clients have no access to this path. |
+| File mailbox | Owner-only directory and files; accept regular request and ACK files with validated safe names, reject symlinks and oversized input, and bind every imported request to the local owner. Remote HTTPS clients have no access to this path. |
 | Local target | Available only through the owner’s local control plane. It runs under the selected local user/profile and visibly reports its local-user isolation class. |
 | Dispatcher transport | SSH public-key authentication, strict `known_hosts` verification, and a restricted forced command. |
 | Direct API | TLS verification and mTLS by default on a private network; short-lived bearer tokens are a possible controlled alternative. It accepts remote targets only. |
@@ -295,9 +298,9 @@ The first deployment targets one trusted Mac user and one remote Linux host.
 | Output limit | 100 MiB per command across stdout and stderr |
 | Event availability | Persisted output normally visible within 500 ms under normal local load |
 | Retention | Command metadata for 90 days; output for 30 days, both configurable |
-| Mailbox files | Inbox pairs removed after durable import or rejection; outbox and event files have bounded configurable retention |
+| Mailbox files | Imported inbox and ACK pairs removed after durable recording; abandoned drafts after 24 hours; terminal responses 24 hours after ACK or 7 days without ACK, all configurable |
 
-The Mac services are managed with `launchd`; they are the Local Control API (including the Mailbox Adapter), the Execution Router and Dispatcher, and `runner-locald`. The Linux service is managed with `systemd`. Both sides need structured logs, readiness/liveness checks, a doctor command, and documented backup and restore steps. The Mailbox Adapter cleans up abandoned drafts, limits inline output in response JSON, and serves full bounded output through per-command events.
+The Mac services are managed with `launchd`; they are the Local Control API (including the Mailbox Adapter), the Execution Router and Dispatcher, and `runner-locald`. The Linux service is managed with `systemd`. Both sides need structured logs, readiness/liveness checks, a doctor command, and documented backup and restore steps. The Mailbox Adapter cleans up abandoned drafts, limits inline output in response JSON, and serves full bounded output through per-command events. Request-ID mappings remain available for at least the 90-day command-metadata retention period, so retrying an expired mailbox response does not submit a duplicate command.
 
 ## 11. Initial interface shape
 
@@ -344,8 +347,11 @@ mailbox/
 │   └── req-42.ready         # client writes this last to publish it
 ├── outbox/
 │   └── req-42.json          # Runner's response, matched by request_id
-└── events/
-    └── cmd-19.ndjson       # optional full events for a command
+├── events/
+│   └── cmd-19.ndjson       # full retained output when not all output is inline
+└── acks/
+    ├── req-42.json          # client confirms reading the final response
+    └── req-42.ready         # client writes this last to publish the ACK
 ```
 
 The caller supplies a unique `request_id` that matches the filename. A session-creation request includes the execution target; a later command request contains the returned `session_id` and no target override. For example:
@@ -370,17 +376,21 @@ The caller supplies a unique `request_id` that matches the filename. A session-c
 
 After the client writes `inbox/req-42.json`, it writes `inbox/req-42.ready`. The importer ignores JSON files without a matching marker, validates the filename and content, and records either accepted local intent or a rejection receipt in local SQLite before removing the inbox pair. The importer uses the same validation and local-intent path as the Unix-socket API. No new dispatcher or executor is created.
 
-The client reads `outbox/req-42.json` until `request_state` is terminal. Each distinct operation uses a new ID; an identical retry reuses its original ID. Runner writes a temporary response and atomically replaces the visible file, so readers never see a partial JSON document. A completed command response has this shape:
+The client reads `outbox/req-42.json` until `request_state` is terminal. Each distinct operation uses a new ID; an identical retry reuses its original ID. Runner increases `response_revision` on each response update, stores the terminal revision, and writes a temporary response before atomically replacing the visible file, so readers never see a partial JSON document. A completed command response has this shape:
 
 ```json
 {
   "request_id": "req-42",
   "operation": "submit_command",
   "request_state": "complete",
+  "response_revision": 3,
   "session_id": "session-7",
   "command_id": "cmd-19",
   "command_state": "succeeded",
   "exit_code": 0,
+  "final_event_sequence": 37,
+  "output_complete": true,
+  "output_truncated": false,
   "stdout": "/workspace\n",
   "stderr": "",
   "events_file": "events/cmd-19.ndjson"
@@ -395,12 +405,29 @@ The client reads `outbox/req-42.json` until `request_state` is terminal. Each di
 | `request_state: complete` | This file operation has reached its result. For a command, inspect `command_state` and `exit_code`; for session creation, inspect `session_state` and `session_id`. |
 | `request_state: rejected` | The file request failed validation, authorization, or an idempotency conflict; inspect the structured error. |
 | `events/<command_id>.ndjson` | Optional, ordered command events derived from durable local or mirrored remote events. Each line carries `command_id` and `sequence`. |
+| `acks/<request_id>.json` plus `.ready` | The client claims it read the exact terminal response revision and all required events. Runner records the ACK, then removes the ACK pair. |
 
 `request_state` describes the mailbox exchange, while `session_state` and `command_state` describe execution. A shell command that exits with code 1 therefore has `request_state: complete` and `command_state: failed`. Session creation completes when the session becomes ready or reaches a creation failure; later session changes are read through a new `get_session` request. The mailbox also supports `get_command`, `cancel_command`, `close_session`, and a one-off `run` request that creates an ephemeral session with an explicit target.
 
+For a command, Runner first persists the terminal event and all preceding output. The Mailbox Adapter then writes complete event records through `final_event_sequence` (including the terminal event), flushes the event file when one is needed, and only then atomically publishes the final response with `request_state: complete` and `output_complete: true`. For queued remote work, this waits for the remote terminal event to reach the local mirror. Until then the response stays nonterminal and may show a stale/reconciling indicator. `output_complete` means all **retained** output is available; `output_truncated: true` reports bytes discarded at the configured output cap. If there is no `events_file`, the bounded `stdout` and `stderr` fields contain all retained output. If there is an event file, those fields may be previews and the file carries the full retained stream.
+
+The client reads the terminal response and, if present, all newline-terminated event records through `final_event_sequence`. It then writes an ACK JSON file and publishes it with a matching `.ready` marker:
+
+```json
+{
+  "request_id": "req-42",
+  "response_revision": 3,
+  "final_event_sequence": 37
+}
+```
+
+For a response without command events, such as session creation or a rejected request, the ACK omits `final_event_sequence`. Runner validates the ACK against the stored terminal response revision and final sequence, records `acknowledged_at` durably, and removes the ACK pair. An ACK is an assertion of receipt, not proof that the LLM understood the answer. It controls file cleanup only; it does not change command or session state.
+
 Mailbox operations are limited to sessions controlled through the local control plane. They cannot attach to or mutate a session created through the direct remote HTTPS API.
 
-The same `request_id` and identical canonical request must return the original resource and result. Reusing an ID with different content returns `request_state: rejected` and an `idempotency_conflict` error in the matching outbox file; it never submits a second command. The error identifies any original resource so it remains retrievable through a new status request. A crash after SQLite commit but before response publication must regenerate the response from SQLite without submitting a second command. Inbox files are transient; outbox and event files are bounded projections with configured retention. SQLite remains the lasting record, and a later status request can retrieve a retained session or command after its response file has been cleaned up. Request ID mappings remain valid for at least the documented retry window.
+The same `request_id` and identical canonical request must return the original resource and available retained result without rerunning it. Reusing an ID with different content returns `request_state: rejected` and an `idempotency_conflict` error in the matching outbox file; it never submits a second command. The error identifies any original resource so it remains retrievable through a new status request. A crash after SQLite commit but before response publication must regenerate the response from SQLite without submitting a second command. Inbox files are transient; outbox and event files are bounded projections. SQLite remains the lasting record, and a later status request can retrieve a retained session or command after its response file has been cleaned up. Request ID mappings remain valid for at least the documented retry window.
+
+After a valid ACK, Runner removes the terminal outbox response after a 24-hour grace period. Without an ACK, it removes the response seven days after terminal publication. A per-command event file may be referenced by several request responses, so one ACK cannot delete it while another active response still needs it. Runner removes the event file only after every referencing response has reached its cleanup deadline; a later status request may regenerate retained events from SQLite. These durations are configurable. Cleanup occurs only after the ACK has been committed to SQLite, and an importer restart safely reprocesses an unconsumed ACK pair.
 
 An event reader uses newline-terminated NDJSON records and the last `sequence` it has seen; it ignores an incomplete trailing line while the file is being updated. Small stdout and stderr values may appear inline in the response, while larger output is read from the bounded event file. An `output_truncated` field reports when the configured command output limit has been reached.
 
@@ -414,7 +441,7 @@ The work should proceed in working vertical slices rather than build every layer
 | 1. Shared execution engine | Shared `ExecutionService`, local and remote stores, scheduler rules, event replay, and fake runtime. | Integration tests create either target, serialize commands, and replay events through the same contract suite. |
 | 2. Local and remote runtimes | `runner-locald` with local session agent and workspace policy; remote sandbox adapter, repository preparation, and remote session agent. | The same two-command acceptance suite proves persistent variables and working directory for both targets. |
 | 3. SSH bridge | Restricted bridge, embedded SSH client, strict host verification, and reconnect logic. | Local client creates a session, reconnects, and replays results over SSH. |
-| 4. Local ingress and queued routing | Local API, file mailbox, local SQLite, Execution Router and Dispatcher, local routing, remote event mirroring, and compatible one-off jobs. | A file-only client creates a session, submits a command, and reads its correlated result; one Router routes explicit local and remote targets without fallback. |
+| 4. Local ingress and queued routing | Local API, file mailbox, local SQLite, Execution Router and Dispatcher, local routing, remote event mirroring, and compatible one-off jobs. | A file-only client creates a session, submits a command, reads complete correlated output, and acknowledges the terminal response; one Router routes explicit targets without fallback. |
 | 5. Direct HTTPS | HTTPS adapter, identity mapping, authorization, NDJSON, and direct CLI profile. | Queued and direct clients pass the same contract suite. |
 | 6. Operations | Recovery, retention, backups, metrics, alerts, and service hardening. | Failure scenarios have documented, tested outcomes without duplicate execution. |
 
@@ -429,6 +456,9 @@ The initial release is ready for controlled use when it can demonstrate all of t
 - a repeated identical file request returns the same resource, while changed content under the same `request_id` is rejected without running a second command;
 - the mailbox ignores unmarked or unsafe request files, publishes complete JSON responses atomically, and cleans up transient files under its retention policy;
 - mailbox responses distinguish request acceptance from command success or failure, survive importer restarts, and never claim that queued remote work has already been accepted by `runnerd`;
+- a terminal mailbox response is published only after all retained events through `final_event_sequence` are available, and it reports `output_complete` and `output_truncated` accurately;
+- a file-only client can acknowledge a terminal response revision; ACKs are idempotent, do not alter execution state, and trigger cleanup only after durable recording;
+- acknowledged and unacknowledged responses follow their respective cleanup deadlines, while a shared command event file remains available to other active responses;
 - every command is durable in its target’s authoritative store before it starts;
 - two sequential commands share variables, current directory, and virtual-environment state in a local session and in a remote session;
 - only one command runs in a session at a time;
@@ -462,6 +492,8 @@ The initial release is ready for controlled use when it can demonstrate all of t
 | A reconnect repeats a command | Use stable IDs, request hashes, idempotency records, and durable event cursors. |
 | A partial or repeated file request runs unexpectedly | Import only after the `.ready` marker, validate filenames and content, and commit the request ID before removing inbox files. Retry from SQLite after a crash. |
 | Mailbox files become a second inconsistent history | Keep SQLite authoritative, regenerate responses from it, and clean up bounded outbox and event projections. |
+| A final response appears before all output is readable | Materialize events through the terminal sequence before atomically publishing `complete`; retain a stale nonterminal response while a remote mirror is behind. |
+| An unread result is deleted or one ACK removes shared events | Require a matching final-revision ACK for early cleanup, retain unacknowledged results until their deadline, and account for all responses referencing a command event file. |
 | A timeout leaves shell state unsafe | Close the whole session when process state cannot be trusted. |
 | A command runs on the wrong machine | Make the target immutable and visible, require explicit selection, and prohibit automatic fallback. |
 | Local and remote views diverge | Make each target’s executor authoritative; reconcile the local projection only for remote sessions from remote event sequence numbers. |
