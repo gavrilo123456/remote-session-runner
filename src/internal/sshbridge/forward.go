@@ -93,6 +93,10 @@ func (f *RunnerdForwarder) Handle(ctx context.Context, controller domain.Control
 		return f.createSession(ctx, controller, request)
 	case OperationGetSession:
 		return f.getSession(ctx, controller, request)
+	case OperationSubmitOrResumeCommand:
+		return f.submitCommand(ctx, controller, request)
+	case OperationGetCommand:
+		return f.getCommand(ctx, controller, request)
 	default:
 		return ReplyFrame{}, fmt.Errorf("%w: %s", ErrOperationUnsupported, request.Operation)
 	}
@@ -120,6 +124,17 @@ type bridgeGetSessionPayload struct {
 	SessionID string `json:"session_id"`
 }
 
+type bridgeSubmitCommandPayload struct {
+	SessionID      string `json:"session_id"`
+	IntentOrdinal  int64  `json:"intent_ordinal"`
+	Script         string `json:"script"`
+	TimeoutSeconds int64  `json:"timeout_seconds,omitempty"`
+}
+
+type bridgeGetCommandPayload struct {
+	CommandID string `json:"command_id"`
+}
+
 type privateCreateSessionRequest struct {
 	SessionID       string           `json:"session_id"`
 	IdempotencyKey  string           `json:"idempotency_key"`
@@ -130,6 +145,17 @@ type privateCreateSessionRequest struct {
 	Source          json.RawMessage  `json:"source,omitempty"`
 	Limits          json.RawMessage  `json:"limits,omitempty"`
 	Isolation       json.RawMessage  `json:"isolation,omitempty"`
+}
+
+type privateSubmitCommandRequest struct {
+	CommandID      string           `json:"command_id"`
+	SessionID      string           `json:"session_id"`
+	IdempotencyKey string           `json:"idempotency_key"`
+	RequestID      string           `json:"request_id,omitempty"`
+	Controller     bridgeController `json:"controller"`
+	Script         string           `json:"script"`
+	TimeoutSeconds int64            `json:"timeout_seconds,omitempty"`
+	IntentOrdinal  int64            `json:"intent_ordinal,omitempty"`
 }
 
 func (f *RunnerdForwarder) createSession(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
@@ -164,6 +190,42 @@ func (f *RunnerdForwarder) getSession(ctx context.Context, controller domain.Con
 	query.Set("controller_type", string(controller.Type()))
 	query.Set("controller_id", string(controller.ID()))
 	return f.doJSON(ctx, request.RequestID, http.MethodGet, "/internal/v1/sessions/"+url.PathEscape(payload.SessionID), query, nil)
+}
+
+func (f *RunnerdForwarder) submitCommand(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
+	payload, err := decodeBridgePayload[bridgeSubmitCommandPayload](request.Payload)
+	if err != nil {
+		return ReplyFrame{}, err
+	}
+	if strings.TrimSpace(payload.SessionID) == "" || payload.IntentOrdinal < 1 {
+		return ReplyFrame{}, fmt.Errorf("%w: submit payload requires session_id and positive intent_ordinal", ErrInvalidFrame)
+	}
+	if err := domain.ValidateScriptUTF8(payload.Script); err != nil {
+		return ReplyFrame{}, fmt.Errorf("%w: %v", ErrInvalidFrame, err)
+	}
+	body, err := json.Marshal(privateSubmitCommandRequest{
+		CommandID: request.ResourceID, SessionID: payload.SessionID, IdempotencyKey: request.IdempotencyKey,
+		RequestID: request.RequestID, Controller: bridgeController{Type: string(controller.Type()), ID: string(controller.ID())},
+		Script: payload.Script, TimeoutSeconds: payload.TimeoutSeconds, IntentOrdinal: payload.IntentOrdinal,
+	})
+	if err != nil {
+		return ReplyFrame{}, fmt.Errorf("%w: submit request: %v", ErrInvalidFrame, err)
+	}
+	return f.doJSON(ctx, request.RequestID, http.MethodPost, "/internal/v1/sessions/"+url.PathEscape(payload.SessionID)+"/commands", nil, body)
+}
+
+func (f *RunnerdForwarder) getCommand(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
+	payload, err := decodeBridgePayload[bridgeGetCommandPayload](request.Payload)
+	if err != nil {
+		return ReplyFrame{}, err
+	}
+	if strings.TrimSpace(payload.CommandID) == "" {
+		return ReplyFrame{}, fmt.Errorf("%w: get_command requires command_id", ErrInvalidFrame)
+	}
+	query := url.Values{}
+	query.Set("controller_type", string(controller.Type()))
+	query.Set("controller_id", string(controller.ID()))
+	return f.doJSON(ctx, request.RequestID, http.MethodGet, "/internal/v1/commands/"+url.PathEscape(payload.CommandID), query, nil)
 }
 
 func decodeBridgePayload[T any](raw json.RawMessage) (T, error) {

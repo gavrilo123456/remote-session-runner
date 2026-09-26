@@ -211,6 +211,101 @@ func TestP050UnixSocketClientForwardsOnlyToPrivateSocket(t *testing.T) {
 	}
 }
 
+func TestP051ForwardSubmitReadCommandAndStableRetry(t *testing.T) {
+	controller := p049Controller(t)
+	var mu sync.Mutex
+	var submitBodies [][]byte
+	var commandQueries []url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && request.URL.Path == "/internal/v1/sessions/session-1/commands" {
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("read submit body: %v", err)
+			}
+			mu.Lock()
+			submitBodies = append(submitBodies, body)
+			mu.Unlock()
+			var input map[string]any
+			if err := json.Unmarshal(body, &input); err != nil {
+				t.Fatalf("decode submit body: %v", err)
+			}
+			if input["command_id"] != "command-1" || input["session_id"] != "session-1" || input["idempotency_key"] != "command-key" || input["script"] != "printf hi" {
+				t.Errorf("submit identity/script = %#v", input)
+			}
+			mapped, ok := input["controller"].(map[string]any)
+			if !ok || mapped["controller_type"] != string(controller.Type()) || mapped["controller_id"] != string(controller.ID()) {
+				t.Errorf("submit controller = %#v", input["controller"])
+			}
+			writer.WriteHeader(http.StatusAccepted)
+			_, _ = writer.Write([]byte(`{"command_id":"command-1","session_id":"session-1","command_state":"failed","exit_code":1,"script_byte_count":10,"output_complete":true,"output_truncated":false}`))
+			return
+		}
+		if request.Method == http.MethodGet && request.URL.Path == "/internal/v1/commands/command-1" {
+			mu.Lock()
+			commandQueries = append(commandQueries, request.URL.Query())
+			mu.Unlock()
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"command_id":"command-1","session_id":"session-1","command_state":"failed","exit_code":1,"script_byte_count":10,"output_complete":true,"output_truncated":false}`))
+			return
+		}
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+	forwarder, err := NewRunnerdForwarder(ForwarderOptions{Client: server.Client(), BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	submit := RequestFrame{
+		ProtocolVersion: ProtocolVersion, RequestID: "command-exchange-1", Operation: OperationSubmitOrResumeCommand,
+		ResourceID: "command-1", IdempotencyKey: "command-key",
+		Payload: json.RawMessage(`{"session_id":"session-1","intent_ordinal":1,"script":"printf hi","timeout_seconds":5}`),
+	}
+	first, err := forwarder.Handle(context.Background(), controller, submit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := forwarder.Handle(context.Background(), controller, submit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ResponseType != "result" || second.ResponseType != "result" || !strings.Contains(string(first.Payload), `"exit_code":1`) {
+		t.Fatalf("submit replies = %+v, %+v", first, second)
+	}
+	mu.Lock()
+	if len(submitBodies) != 2 || string(submitBodies[0]) != string(submitBodies[1]) {
+		t.Fatalf("submit retry bodies = %q and %q", submitBodies[0], submitBodies[1])
+	}
+	mu.Unlock()
+
+	read, err := forwarder.Handle(context.Background(), controller, RequestFrame{
+		ProtocolVersion: ProtocolVersion, RequestID: "command-exchange-2", Operation: OperationGetCommand,
+		Payload: json.RawMessage(`{"command_id":"command-1"}`),
+	})
+	if err != nil || read.ResponseType != "result" || !strings.Contains(string(read.Payload), `"command_state":"failed"`) {
+		t.Fatalf("read command reply = %+v, %v", read, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commandQueries) != 1 || commandQueries[0].Get("controller_type") != string(controller.Type()) || commandQueries[0].Get("controller_id") != string(controller.ID()) {
+		t.Fatalf("command controller query = %#v", commandQueries)
+	}
+}
+
+func TestP051SubmitRejectsOversizeScriptBeforeForwarding(t *testing.T) {
+	forwarder, err := NewRunnerdForwarder(ForwarderOptions{Client: http.DefaultClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = forwarder.Handle(context.Background(), p049Controller(t), RequestFrame{
+		ProtocolVersion: ProtocolVersion, RequestID: "oversize", Operation: OperationSubmitOrResumeCommand,
+		ResourceID: "command-1", IdempotencyKey: "key-1",
+		Payload: json.RawMessage(`{"session_id":"session-1","intent_ordinal":1,"script":"` + strings.Repeat("x", domain.MaxScriptUTF8Bytes+1) + `"}`),
+	})
+	if !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("oversize script error = %v", err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
