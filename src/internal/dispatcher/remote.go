@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -27,6 +28,8 @@ var (
 	ErrRemotePayload             = errors.New("remote bridge payload cannot be built")
 	ErrRemoteNotReconciled       = errors.New("remote intent remains uncertain after reconciliation")
 	ErrRemoteUncertaintyDeadline = errors.New("remote uncertainty deadline expired")
+	ErrRemoteSessionNotReady     = errors.New("remote session is not ready for command dispatch")
+	ErrRemoteSessionCreateFailed = errors.New("remote session creation failed")
 )
 
 // RemoteUncertaintyWindow is the bounded period in which the dispatcher may
@@ -49,6 +52,8 @@ type RemoteDriver struct {
 	owner         string
 	leaseDuration time.Duration
 	now           func() time.Time
+	sessionMu     sync.RWMutex
+	sessionStates map[domain.SessionID]domain.SessionState
 }
 
 // NewRemoteDriver constructs a lease-owning remote driver.
@@ -62,7 +67,7 @@ func NewRemoteDriverWithClock(authority *store.AuthorityStore, caller RemoteCall
 	if authority == nil || caller == nil || owner == "" || len(owner) > 256 || strings.IndexByte(owner, 0) >= 0 || leaseDuration <= 0 || now == nil {
 		return nil, ErrRemoteDriverConfiguration
 	}
-	return &RemoteDriver{authority: authority, caller: caller, owner: owner, leaseDuration: leaseDuration, now: now}, nil
+	return &RemoteDriver{authority: authority, caller: caller, owner: owner, leaseDuration: leaseDuration, now: now, sessionStates: make(map[domain.SessionID]domain.SessionState)}, nil
 }
 
 // DispatchNext selects the earliest eligible remote intent and delivers it
@@ -79,7 +84,14 @@ func (d *RemoteDriver) DispatchNext(ctx context.Context) (store.LocalIntentRecor
 		if candidate.Target.Kind() != domain.TargetKindRemote || !supportedRemoteOperation(candidate.Operation) {
 			continue
 		}
-		return d.dispatchIntent(ctx, candidate.IntentID)
+		record, reply, dispatchErr := d.dispatchIntent(ctx, candidate.IntentID)
+		if errors.Is(dispatchErr, ErrRemoteSessionNotReady) {
+			continue
+		}
+		if errors.Is(dispatchErr, ErrRemoteSessionCreateFailed) {
+			continue
+		}
+		return record, reply, dispatchErr
 	}
 	return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, ErrNoRemoteDispatchWork
 }
@@ -139,6 +151,11 @@ func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) 
 	}
 	switch outcome {
 	case reconcileAccepted:
+		if intent.Operation == operationCreateSession {
+			if err := d.observeRemoteSessionState(intent, reply); err != nil {
+				return intent, reply, err
+			}
+		}
 		accepted, transitionErr := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentAccepted, "remote_reconciled_target_found")
 		if transitionErr != nil {
 			return intent, reply, transitionErr
@@ -175,10 +192,120 @@ func (d *RemoteDriver) uncertaintyDeadline(ctx context.Context, intent store.Loc
 	return start.UTC().Add(RemoteUncertaintyWindow), nil
 }
 
+// ensureRemoteSubmitReady gates every remote submit mutation on the durable
+// create intent and the target's current session state. A missing or
+// in-progress create is a wait, never permission to send a command early.
+func (d *RemoteDriver) ensureRemoteSubmitReady(ctx context.Context, intent store.LocalIntentRecord) (store.LocalIntentRecord, error) {
+	create, err := d.authority.GetLocalIntentByResource(ctx, operationCreateSession, string(intent.SessionID), intent.Controller)
+	if err != nil {
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			// A command may target a pre-existing session whose create intent is
+			// outside this authority store. Preserve that established path; the
+			// early-create gate applies when this controller has a recorded
+			// create intent to observe.
+			return intent, nil
+		}
+		return intent, err
+	}
+	switch create.DeliveryState {
+	case store.LocalIntentNotDelivered:
+		return intent, fmt.Errorf("%w: create intent %s is not delivered", ErrRemoteSessionCreateFailed, create.IntentID)
+	case store.LocalIntentAccepted, store.LocalIntentReconciled:
+		// Continue with the target state check below.
+	default:
+		return intent, fmt.Errorf("%w: create intent state %s", ErrRemoteSessionNotReady, create.DeliveryState)
+	}
+
+	state, known := d.cachedRemoteSessionState(create.SessionID)
+	if known && state.IsTerminal() {
+		return intent, fmt.Errorf("%w: session %s is %s", ErrRemoteSessionCreateFailed, create.SessionID, state)
+	}
+	if !known || state != domain.SessionStateReady {
+		refreshed, refreshErr := d.refreshRemoteSessionState(ctx, create)
+		if refreshErr != nil {
+			// A read that cannot prove readiness is still a wait. The command
+			// remains recorded and no target mutation is attempted.
+			if errors.Is(refreshErr, ErrRemoteSessionCreateFailed) {
+				return intent, refreshErr
+			}
+			return intent, fmt.Errorf("%w: %v", ErrRemoteSessionNotReady, refreshErr)
+		}
+		state = refreshed
+	}
+	if state == domain.SessionStateReady {
+		return intent, nil
+	}
+	if state.IsTerminal() {
+		return intent, fmt.Errorf("%w: session %s is %s", ErrRemoteSessionCreateFailed, create.SessionID, state)
+	}
+	return intent, fmt.Errorf("%w: session %s is %s", ErrRemoteSessionNotReady, create.SessionID, state)
+}
+
+func (d *RemoteDriver) markRemoteSubmitNotDelivered(ctx context.Context, intent store.LocalIntentRecord, reason string, cause error) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
+	if intent.DeliveryState == store.LocalIntentRecorded {
+		updated, err := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentNotDelivered, reason)
+		if err != nil {
+			return intent, sshbridge.ReplyFrame{}, err
+		}
+		return updated, sshbridge.ReplyFrame{}, cause
+	}
+	return intent, sshbridge.ReplyFrame{}, cause
+}
+
+func (d *RemoteDriver) cachedRemoteSessionState(sessionID domain.SessionID) (domain.SessionState, bool) {
+	d.sessionMu.RLock()
+	state, ok := d.sessionStates[sessionID]
+	d.sessionMu.RUnlock()
+	return state, ok
+}
+
+func (d *RemoteDriver) rememberRemoteSessionState(sessionID domain.SessionID, state domain.SessionState) {
+	d.sessionMu.Lock()
+	d.sessionStates[sessionID] = state
+	d.sessionMu.Unlock()
+}
+
+func (d *RemoteDriver) observeRemoteSessionState(intent store.LocalIntentRecord, reply sshbridge.ReplyFrame) error {
+	state, present, err := remoteSessionStateFromResult(reply.Payload)
+	if err != nil {
+		return err
+	}
+	if present {
+		d.rememberRemoteSessionState(intent.SessionID, state)
+	}
+	return nil
+}
+
+func (d *RemoteDriver) refreshRemoteSessionState(ctx context.Context, create store.LocalIntentRecord) (domain.SessionState, error) {
+	frame, err := readinessFrameForCreateIntent(create)
+	if err != nil {
+		return "", err
+	}
+	reply, callErr := d.caller.Call(ctx, frame)
+	if callErr != nil {
+		return "", callErr
+	}
+	state, err := validateRemoteSessionReadReply(create, frame, reply)
+	if err != nil {
+		return "", err
+	}
+	d.rememberRemoteSessionState(create.SessionID, state)
+	return state, nil
+}
+
 func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
 	intent, err := d.authority.GetLocalIntent(ctx, id)
 	if err != nil {
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, err
+	}
+	if intent.Operation == operationSubmitCommand {
+		ready, readinessErr := d.ensureRemoteSubmitReady(ctx, intent)
+		if readinessErr != nil {
+			if errors.Is(readinessErr, ErrRemoteSessionCreateFailed) {
+				return d.markRemoteSubmitNotDelivered(ctx, ready, "remote_session_create_failed", readinessErr)
+			}
+			return ready, sshbridge.ReplyFrame{}, readinessErr
+		}
 	}
 	frame, err := frameForRemoteIntent(intent)
 	if err != nil {
@@ -215,6 +342,15 @@ func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (
 			return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, fmt.Errorf("%w; transition: %v", err, transitionErr)
 		}
 		return claimed, reply, err
+	}
+	if intent.Operation == operationCreateSession {
+		if err := d.observeRemoteSessionState(intent, reply); err != nil {
+			_, transitionErr := d.authority.TransitionLocalIntent(ctx, claimed.IntentID, store.LocalIntentUncertain, "remote_response_uncertain")
+			if transitionErr != nil {
+				return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, fmt.Errorf("%w; transition: %v", err, transitionErr)
+			}
+			return claimed, reply, err
+		}
 	}
 	accepted, err := d.authority.TransitionLocalIntent(ctx, claimed.IntentID, store.LocalIntentAccepted, "remote_target_accepted")
 	if err != nil {
@@ -285,6 +421,84 @@ func readFrameForRemoteIntent(intent store.LocalIntentRecord) (sshbridge.Request
 	value, _ := json.Marshal(resourceID)
 	payload, _ := json.Marshal(map[string]json.RawMessage{resourceField: value})
 	return sshbridge.RequestFrame{ProtocolVersion: sshbridge.ProtocolVersion, RequestID: string(intent.IntentID) + "/reconcile", Operation: operation, Payload: payload}, nil
+}
+
+func readinessFrameForCreateIntent(intent store.LocalIntentRecord) (sshbridge.RequestFrame, error) {
+	frame, err := readFrameForRemoteIntent(intent)
+	if err != nil {
+		return sshbridge.RequestFrame{}, err
+	}
+	frame.RequestID = string(intent.IntentID) + "/readiness"
+	frame.ResourceID = intent.ResourceID
+	return frame, nil
+}
+
+func remoteSessionStateFromResult(payload []byte) (domain.SessionState, bool, error) {
+	var object map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	if err := decoder.Decode(&object); err != nil || object == nil {
+		return "", false, fmt.Errorf("%w: session result object", ErrRemoteResponse)
+	}
+	raw, ok := object["session_state"]
+	if !ok {
+		return "", false, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil || !domain.SessionState(value).Valid() {
+		return "", false, fmt.Errorf("%w: invalid session_state", ErrRemoteResponse)
+	}
+	return domain.SessionState(value), true, nil
+}
+
+func validateRemoteSessionReadReply(create store.LocalIntentRecord, frame sshbridge.RequestFrame, reply sshbridge.ReplyFrame) (domain.SessionState, error) {
+	if reply.ProtocolVersion != sshbridge.ProtocolVersion || reply.RequestID != frame.RequestID {
+		return "", fmt.Errorf("%w: readiness protocol or request identity mismatch", ErrRemoteSessionNotReady)
+	}
+	if reply.ResponseType == "error" {
+		var payload sshbridge.ErrorPayload
+		decoder := json.NewDecoder(bytes.NewReader(reply.Payload))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&payload); err != nil {
+			return "", fmt.Errorf("%w: readiness error payload: %v", ErrRemoteSessionNotReady, err)
+		}
+		if payload.Code == "resource_not_found" {
+			return "", fmt.Errorf("%w: session resource not found", ErrRemoteSessionCreateFailed)
+		}
+		return "", fmt.Errorf("%w: %s", ErrRemoteSessionNotReady, payload.Message)
+	}
+	if reply.ResponseType != "result" {
+		return "", fmt.Errorf("%w: readiness response type %q", ErrRemoteSessionNotReady, reply.ResponseType)
+	}
+	var object map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(reply.Payload))
+	if err := decoder.Decode(&object); err != nil || object == nil {
+		return "", fmt.Errorf("%w: readiness result object", ErrRemoteSessionNotReady)
+	}
+	readString := func(name, expected string) error {
+		var value string
+		raw, ok := object[name]
+		if !ok || json.Unmarshal(raw, &value) != nil || value != expected {
+			return fmt.Errorf("%w: %s mismatch", ErrRemoteSessionNotReady, name)
+		}
+		return nil
+	}
+	if err := readString("session_id", string(create.SessionID)); err != nil {
+		return "", err
+	}
+	if err := readString("environment", create.Environment); err != nil {
+		return "", err
+	}
+	if err := validateRemoteTarget(object); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrRemoteSessionNotReady, err)
+	}
+	state, present, err := remoteSessionStateFromResult(reply.Payload)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrRemoteSessionNotReady, err)
+	}
+	if !present {
+		return "", fmt.Errorf("%w: session_state missing", ErrRemoteSessionNotReady)
+	}
+	return state, nil
 }
 
 func bridgePayloadForIntent(intent store.LocalIntentRecord) (json.RawMessage, error) {
