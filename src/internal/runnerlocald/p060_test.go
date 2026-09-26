@@ -31,6 +31,14 @@ func (*p060FakeRuntime) ExecuteCommand(context.Context, execution.RuntimeCommand
 	return execution.RuntimeCommandResult{Stdout: []byte("p060-output\n"), ExitCode: 0}, nil
 }
 
+func (*p060FakeRuntime) CancelCommand(context.Context, execution.RuntimeCommandRequest) (execution.RuntimeCommandStopResult, error) {
+	return execution.RuntimeCommandStopResult{Confirmed: true}, nil
+}
+
+func (*p060FakeRuntime) StopSession(context.Context, store.SessionRecord) (bool, error) {
+	return true, nil
+}
+
 func TestP060AcceptIntentReloadsCommittedBytesAndRejectsForgedPayload(t *testing.T) {
 	authority, service := newP060Service(t)
 	socketPath := p060SocketPath(t)

@@ -83,7 +83,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runner-locald: construct execution service: %v\n", err)
 		return 1
 	}
-	server, err := NewPrivateServer(PrivateServerOptions{Authority: authority, Service: service, SocketPath: settings.LocalDSocket})
+	owner, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, domain.ControllerID(settings.Account))
+	if err != nil {
+		fmt.Fprintf(stderr, "runner-locald: owner controller: %v\n", err)
+		return 1
+	}
+	server, err := NewPrivateServer(PrivateServerOptions{Authority: authority, Service: service, Owner: owner, SocketPath: settings.LocalDSocket})
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: construct private API: %v\n", err)
 		return 1
