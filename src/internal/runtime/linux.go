@@ -17,10 +17,11 @@ import (
 )
 
 var (
-	ErrLinuxRuntimePlatform = errors.New("linux process runtime requires Linux")
-	ErrLinuxRuntimeAccount  = errors.New("linux process runtime account mismatch")
-	ErrLinuxRuntimePath     = errors.New("linux process runtime service path is not owner-only")
-	ErrLinuxProfileNotReady = errors.New("linux process profile is not ready")
+	ErrLinuxRuntimePlatform  = errors.New("linux process runtime requires Linux")
+	ErrLinuxRuntimeAccount   = errors.New("linux process runtime account mismatch")
+	ErrLinuxRuntimePath      = errors.New("linux process runtime service path is not owner-only")
+	ErrLinuxRuntimeOwnership = errors.New("linux process runtime ownership is unresolved")
+	ErrLinuxProfileNotReady  = errors.New("linux process profile is not ready")
 )
 
 const (
@@ -291,6 +292,107 @@ func (a *LinuxProcessAdapter) CapacityRetained(sessionID string) (bool, error) {
 		return false, err
 	}
 	return shell.CapacityRetained(), nil
+}
+
+// LinuxReconciliationResult records conservative handling of a process found
+// after an executor restart. Existing shells are never reattached, even when
+// their session/generation labels match; they are quarantined and cleaned up
+// under the configured account instead.
+type LinuxReconciliationResult struct {
+	SessionID        string
+	Generation       string
+	PID              int
+	Quarantined      bool
+	Reattached       bool
+	CleanupConfirmed bool
+	CapacityRetained bool
+	Remaining        []DescendantProcess
+	Reason           string
+}
+
+// ReconcileProcess quarantines a known process from a previous adapter
+// incarnation. It signals the process group and observed descendants with a
+// bounded TERM/KILL sequence. Unconfirmed residuals retain capacity.
+func (a *LinuxProcessAdapter) ReconcileProcess(ctx context.Context, record LinuxProcessRecord, expectedGeneration string, grace time.Duration) (LinuxReconciliationResult, error) {
+	result := LinuxReconciliationResult{SessionID: record.SessionID, Generation: record.Generation, PID: record.PID, Reattached: false}
+	if a == nil {
+		return result, ErrLinuxRuntimeOwnership
+	}
+	if ctx == nil {
+		return result, fmt.Errorf("%w: nil context", ErrLinuxRuntimeOwnership)
+	}
+	if record.PID <= 0 {
+		return result, fmt.Errorf("%w: invalid PID %d", ErrLinuxRuntimeOwnership, record.PID)
+	}
+	observed, err := inspectLinuxPID(record.PID)
+	if err != nil {
+		if !linuxProcessExists(record.PID) {
+			result.Reason = "process already absent; no shell reattached"
+			result.CleanupConfirmed = true
+			return result, nil
+		}
+		result.CapacityRetained = true
+		result.Reason = "process identity could not be inspected"
+		return result, fmt.Errorf("%w: inspect PID %d: %v", ErrLinuxRuntimeOwnership, record.PID, err)
+	}
+	if observed.UID != a.accountUID() || observed.Username != a.account.Username {
+		result.CapacityRetained = true
+		result.Reason = "process belongs to a different OS account"
+		return result, fmt.Errorf("%w: PID %d is uid=%d user=%q", ErrLinuxRuntimeOwnership, record.PID, observed.UID, observed.Username)
+	}
+	result.Quarantined = true
+	if expectedGeneration == "" || record.Generation != expectedGeneration {
+		result.Reason = "generation mismatch after executor restart; shell reattachment is forbidden"
+	} else {
+		result.Reason = "executor restart; shell reattachment is forbidden"
+	}
+	group := record.ProcessGroupID
+	if group <= 0 {
+		group, _ = syscall.Getpgid(record.PID)
+	}
+	if group <= 0 {
+		group = record.PID
+	}
+	if err := signalProcessGroup(group, syscall.SIGTERM); err != nil {
+		result.CapacityRetained = true
+		return result, fmt.Errorf("%w: signal quarantined process group: %v", ErrLinuxRuntimeOwnership, err)
+	}
+	if grace <= 0 {
+		grace = 500 * time.Millisecond
+	}
+	if linuxWaitProcessGone(ctx, record.PID, grace) {
+		result.CleanupConfirmed = true
+		return result, nil
+	}
+	_ = signalProcessGroup(group, syscall.SIGKILL)
+	if linuxWaitProcessGone(ctx, record.PID, 100*time.Millisecond) {
+		result.CleanupConfirmed = true
+		return result, nil
+	}
+	result.Remaining, _ = inspectProcessDescendants(record.PID)
+	result.CapacityRetained = true
+	return result, nil
+}
+
+func linuxProcessExists(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+func linuxWaitProcessGone(ctx context.Context, pid int, duration time.Duration) bool {
+	deadline := time.NewTimer(duration)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if !linuxProcessExists(pid) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return !linuxProcessExists(pid)
+		case <-ticker.C:
+		}
+	}
 }
 
 // Cleanup closes the shell and removes only this adapter's owned workspace.
