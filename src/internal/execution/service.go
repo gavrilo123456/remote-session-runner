@@ -2,6 +2,9 @@ package execution
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -271,6 +274,27 @@ type CloseSessionResult struct {
 	Duplicate bool
 }
 
+// RunJobRequest supplies the already-validated immutable P024 job acceptance
+// plus the effective policy inputs needed to create its ephemeral session.
+// The same request can be replayed after a process restart; stable IDs and
+// derived step keys make each underlying mutation idempotent.
+type RunJobRequest struct {
+	Acceptance           store.JobAcceptance
+	RequestedLimits      domain.RequestedLimits
+	Isolation            domain.IsolationRequirements
+	MaxActiveSessions    int
+	IdempotencyRetention time.Duration
+}
+
+// RunJobResult is the durable job snapshot plus the latest shared-service
+// session and command snapshots. P025 stops at awaiting_command; P026 adds
+// teardown and final-result advancement.
+type RunJobResult struct {
+	Job     store.JobRecord
+	Session store.SessionRecord
+	Command store.CommandRecord
+}
+
 // Service is the shared execution orchestration core. It performs policy
 // validation before the store's creating transaction and never starts a
 // runtime before that transaction commits.
@@ -457,23 +481,51 @@ func (s *Service) SubmitCommand(ctx context.Context, request SubmitCommandReques
 	if duplicate {
 		return result, nil
 	}
+	return s.ResumeCommand(ctx, accepted.CommandID, request.Controller)
+}
+
+// ResumeCommand continues an accepted queued command using its durable script
+// bytes. A queued command is started at most once by the scheduler; a running
+// command is returned without being sourced again, which is the conservative
+// restart boundary until runtime reconciliation is available in P027.
+func (s *Service) ResumeCommand(ctx context.Context, commandID domain.CommandID, controller domain.ControllerIdentity) (SubmitCommandResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return SubmitCommandResult{}, ErrExecutionServiceConfiguration
+	}
+	command, err := s.store.GetCommand(ctx, commandID)
+	if err != nil {
+		return SubmitCommandResult{}, err
+	}
+	session, err := s.store.GetSession(ctx, command.SessionID)
+	if err != nil {
+		return SubmitCommandResult{}, err
+	}
+	if session.Controller.Type() != controller.Type() || session.Controller.ID() != controller.ID() {
+		return SubmitCommandResult{}, ErrSessionController
+	}
+	if command.State.IsTerminal() || command.State == domain.CommandStateRunning || command.State == domain.CommandStateCancelling {
+		return SubmitCommandResult{Command: command}, nil
+	}
+	if command.State != domain.CommandStateQueued {
+		return SubmitCommandResult{}, fmt.Errorf("%w: current command state %q", ErrCommandNotReady, command.State)
+	}
 	started, startErr := s.store.StartNextEligibleCommand(ctx, store.DefaultRunningCommandLimit)
 	if startErr != nil {
 		if errors.Is(startErr, store.ErrCommandSlotsFull) || errors.Is(startErr, store.ErrCommandNotEligible) {
-			return result, nil
+			return SubmitCommandResult{Command: command}, nil
 		}
-		return result, startErr
+		return SubmitCommandResult{Command: command}, startErr
 	}
-	if started.CommandID != accepted.CommandID {
-		return result, nil
+	if started.CommandID != command.CommandID {
+		return SubmitCommandResult{Command: command}, nil
+	}
+	currentSession, err := s.store.GetSession(ctx, command.SessionID)
+	if err != nil {
+		return SubmitCommandResult{Command: started}, err
 	}
 	commandRuntime, ok := s.runtime.(CommandRuntime)
 	if !ok {
-		return s.finishCommandFailure(ctx, session, started, ErrCommandTransport, "command_transport_failed")
-	}
-	currentSession, err := s.store.GetSession(ctx, request.SessionID)
-	if err != nil {
-		return result, err
+		return s.finishCommandFailure(ctx, currentSession, started, ErrCommandTransport, "command_transport_failed")
 	}
 	runtimeResult, runtimeErr := commandRuntime.ExecuteCommand(ctx, RuntimeCommandRequest{Session: currentSession, Command: started})
 	if runtimeErr != nil {
@@ -513,10 +565,272 @@ func (s *Service) SubmitCommand(ctx context.Context, request SubmitCommandReques
 		OutputComplete: true,
 	}, domain.SessionStateReady, "command_completed", true)
 	if err != nil {
-		return result, err
+		return SubmitCommandResult{Command: started}, err
 	}
-	result.Command = completed
-	return result, nil
+	return SubmitCommandResult{Command: completed}, nil
+}
+
+// RunJob accepts a durable one-off row and advances it through session
+// creation and exactly one command. It deliberately leaves teardown and final
+// result classification to P026. Recalling this method after a restart reads
+// the stored phase and resumes the same stable resources.
+func (s *Service) RunJob(ctx context.Context, request RunJobRequest) (RunJobResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil || s.resolver == nil {
+		return RunJobResult{}, ErrExecutionServiceConfiguration
+	}
+	job, _, err := s.store.AcceptJob(ctx, request.Acceptance)
+	if err != nil {
+		return RunJobResult{}, err
+	}
+	return s.resumeJob(ctx, request, job)
+}
+
+// ResumeJob reloads one previously accepted one-off job and advances it with
+// its immutable controller/target/source/script values. Callers must present
+// the same controller namespace; policy options are included in the derived
+// step hash, so changing them under a stable job is rejected by idempotency.
+func (s *Service) ResumeJob(ctx context.Context, id domain.JobID, controller domain.ControllerIdentity, options RunJobRequest) (RunJobResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil || s.resolver == nil {
+		return RunJobResult{}, ErrExecutionServiceConfiguration
+	}
+	job, err := s.store.GetJob(ctx, id)
+	if err != nil {
+		return RunJobResult{}, err
+	}
+	if job.Controller.Type() != controller.Type() || job.Controller.ID() != controller.ID() {
+		return RunJobResult{}, ErrSessionController
+	}
+	options.Acceptance = store.JobAcceptance{
+		JobID:                job.JobID,
+		SessionID:            job.SessionID,
+		CommandID:            job.CommandID,
+		Controller:           job.Controller,
+		IdempotencyKey:       job.IdempotencyKey,
+		RequestHash:          job.RequestHash,
+		Environment:          job.Environment,
+		Target:               job.Target,
+		Source:               job.Source,
+		Script:               string(job.ScriptBytes),
+		CanonicalPayload:     job.CanonicalPayload,
+		IdempotencyRetention: options.IdempotencyRetention,
+	}
+	return s.resumeJob(ctx, options, job)
+}
+
+func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job store.JobRecord) (RunJobResult, error) {
+	result := RunJobResult{Job: job}
+	for {
+		switch job.Phase {
+		case store.JobPhaseCreatingSession:
+			createHash, err := oneOffCreateHash(job, request)
+			if err != nil {
+				return result, err
+			}
+			created, createErr := s.CreateSession(ctx, CreateSessionRequest{
+				SessionID:            job.SessionID,
+				IdempotencyKey:       jobStepKey(job.JobID, "create_session"),
+				RequestHash:          createHash,
+				Environment:          job.Environment,
+				Target:               job.Target,
+				Controller:           job.Controller,
+				Source:               job.Source,
+				RequestedLimits:      request.RequestedLimits,
+				Isolation:            request.Isolation,
+				MaxActiveSessions:    request.MaxActiveSessions,
+				IdempotencyRetention: request.IdempotencyRetention,
+			})
+			if createErr != nil {
+				if created.Session.SessionID != "" {
+					result.Session = created.Session
+					if created.Session.State == domain.SessionStateLost {
+						job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseCreatingSession, NextPhase: store.JobPhaseLost})
+					} else if created.Session.State == domain.SessionStateFailed {
+						job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseCreatingSession, NextPhase: store.JobPhaseFailed})
+					}
+					if err != nil {
+						return result, err
+					}
+					result.Job = job
+				}
+				return result, createErr
+			}
+			result.Session = created.Session
+			if created.Session.State == domain.SessionStateLost {
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseCreatingSession, NextPhase: store.JobPhaseLost})
+				if err != nil {
+					return result, err
+				}
+				result.Job = job
+				return result, nil
+			}
+			if created.Session.State == domain.SessionStateFailed {
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseCreatingSession, NextPhase: store.JobPhaseFailed})
+				if err != nil {
+					return result, err
+				}
+				result.Job = job
+				return result, nil
+			}
+			if created.Session.State != domain.SessionStateReady && created.Session.State != domain.SessionStateBusy {
+				return result, fmt.Errorf("%w: one-off session state %q", ErrSessionNotReady, created.Session.State)
+			}
+			job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseCreatingSession, NextPhase: store.JobPhaseAcceptingCommand})
+			if err != nil {
+				return result, err
+			}
+			result.Job = job
+			continue
+
+		case store.JobPhaseAcceptingCommand:
+			session, err := s.store.GetSession(ctx, job.SessionID)
+			if err != nil {
+				return result, err
+			}
+			result.Session = session
+			if session.State == domain.SessionStateFailed || session.State == domain.SessionStateLost {
+				next := store.JobPhaseFailed
+				if session.State == domain.SessionStateLost {
+					next = store.JobPhaseLost
+				}
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAcceptingCommand, NextPhase: next})
+				if err != nil {
+					return result, err
+				}
+				result.Job = job
+				return result, nil
+			}
+			if session.State != domain.SessionStateReady && session.State != domain.SessionStateBusy {
+				return result, fmt.Errorf("%w: one-off session state %q", ErrSessionNotReady, session.State)
+			}
+			commandHash, err := oneOffCommandHash(job, session.Limits.CommandTimeout)
+			if err != nil {
+				return result, err
+			}
+			accepted, commandErr := s.SubmitCommand(ctx, SubmitCommandRequest{
+				CommandID:            job.CommandID,
+				SessionID:            job.SessionID,
+				Controller:           job.Controller,
+				IdempotencyKey:       jobStepKey(job.JobID, "submit_command"),
+				RequestHash:          commandHash,
+				Script:               string(job.ScriptBytes),
+				Timeout:              session.Limits.CommandTimeout,
+				IdempotencyRetention: request.IdempotencyRetention,
+			})
+			if commandErr == nil && accepted.Command.State == domain.CommandStateQueued {
+				accepted, commandErr = s.ResumeCommand(ctx, job.CommandID, job.Controller)
+			}
+			if accepted.Command.CommandID != "" {
+				result.Command = accepted.Command
+			}
+			next := store.JobPhaseAwaitingCommand
+			if accepted.Command.State == domain.CommandStateLost || commandErr != nil && accepted.Command.State == domain.CommandStateLost {
+				next = store.JobPhaseLost
+			}
+			if accepted.Command.CommandID != "" {
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAcceptingCommand, NextPhase: next, Command: &accepted.Command})
+				if err != nil {
+					return result, err
+				}
+				result.Job = job
+			}
+			if commandErr != nil {
+				return result, commandErr
+			}
+			return result, nil
+
+		case store.JobPhaseAwaitingCommand:
+			session, err := s.store.GetSession(ctx, job.SessionID)
+			if err != nil {
+				return result, err
+			}
+			result.Session = session
+			command, err := s.store.GetCommand(ctx, job.CommandID)
+			if err != nil {
+				return result, err
+			}
+			if !command.State.IsTerminal() {
+				resumed, resumeErr := s.ResumeCommand(ctx, job.CommandID, job.Controller)
+				if resumed.Command.CommandID != "" {
+					command = resumed.Command
+				}
+				if resumeErr != nil && command.State != domain.CommandStateLost {
+					return result, resumeErr
+				}
+				if resumeErr != nil {
+					result.Command = command
+					job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAwaitingCommand, NextPhase: store.JobPhaseLost, Command: &command})
+					if err != nil {
+						return result, err
+					}
+					result.Job = job
+					return result, resumeErr
+				}
+			}
+			result.Command = command
+			next := store.JobPhaseAwaitingCommand
+			if command.State == domain.CommandStateLost || session.State == domain.SessionStateLost {
+				next = store.JobPhaseLost
+			}
+			job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAwaitingCommand, NextPhase: next, Command: &command})
+			if err != nil {
+				return result, err
+			}
+			result.Job = job
+			return result, nil
+
+		default:
+			return result, nil
+		}
+	}
+}
+
+func jobStepKey(jobID domain.JobID, step string) string {
+	digest := sha256.Sum256([]byte(string(jobID) + "\x00" + step))
+	return "job-step-" + hex.EncodeToString(digest[:])
+}
+
+func oneOffCreateHash(job store.JobRecord, request RunJobRequest) (domain.CanonicalHash, error) {
+	payload := map[string]any{
+		"operation":        "create_session",
+		"session_id":       string(job.SessionID),
+		"environment":      job.Environment,
+		"execution_target": map[string]any{"kind": string(job.Target.Kind()), "profile": job.Target.Profile()},
+		"source":           oneOffSourcePayload(job.Source),
+		"requested_limits": request.RequestedLimits,
+		"isolation":        request.Isolation,
+	}
+	return oneOffHash("create_session", payload)
+}
+
+func oneOffCommandHash(job store.JobRecord, timeout time.Duration) (domain.CanonicalHash, error) {
+	return oneOffHash("submit_command", map[string]any{
+		"operation":  "submit_command",
+		"session_id": string(job.SessionID),
+		"script":     string(job.ScriptBytes),
+		"timeout_ns": timeout.Nanoseconds(),
+	})
+}
+
+func oneOffHash(operation string, payload map[string]any) (domain.CanonicalHash, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return domain.CanonicalHash{}, fmt.Errorf("canonical one-off %s request: %w", operation, err)
+	}
+	return domain.HashMutationRequestJSON(operation, raw, domain.CanonicalizationOptions{})
+}
+
+func oneOffSourcePayload(source domain.Source) map[string]any {
+	payload := map[string]any{"mode": string(source.Mode())}
+	if source.RepositoryAlias() != "" {
+		payload["repository_alias"] = source.RepositoryAlias()
+	}
+	if source.RequestedRevision() != "" {
+		payload["requested_revision"] = source.RequestedRevision()
+	}
+	if source.Path() != "" {
+		payload["path"] = source.Path()
+	}
+	return payload
 }
 
 func (s *Service) finishCommandFailure(ctx context.Context, session store.SessionRecord, command store.CommandRecord, cause error, reason string) (SubmitCommandResult, error) {

@@ -18,6 +18,7 @@ var (
 	ErrInvalidJob        = errors.New("invalid job")
 	ErrJobNotFound       = errors.New("job not found")
 	ErrJobExists         = errors.New("job already exists")
+	ErrJobPhaseConflict  = errors.New("job phase conflict")
 	ErrJobPayloadCorrupt = errors.New("job payload is corrupt")
 )
 
@@ -113,6 +114,15 @@ type JobRecord struct {
 	UpdatedAt               time.Time
 }
 
+// JobCheckpoint advances one coordinator phase. Command is optional while a
+// session is being created; when present its durable snapshot is copied into
+// the job row so a restart can inspect the same outcome without re-running it.
+type JobCheckpoint struct {
+	ExpectedPhase JobPhase
+	NextPhase     JobPhase
+	Command       *CommandRecord
+}
+
 // AcceptJob atomically binds one run key/hash to a stable job/session/command
 // tuple and stores the complete canonical request before runtime work. A
 // same-key/same-payload retry returns the original row without another job;
@@ -173,6 +183,78 @@ func (s *AuthorityStore) GetJob(ctx context.Context, id domain.JobID) (JobRecord
 	}
 	defer connection.Close()
 	return readJobOnConnection(ctx, connection, validatedID)
+}
+
+// CheckpointJob durably records a one-off coordinator phase after the
+// underlying session or command transaction has committed. Repeating an
+// already-applied checkpoint is harmless; an unexpected current phase is a
+// conflict so a stale worker cannot move a job backward or overwrite a newer
+// command outcome.
+func (s *AuthorityStore) CheckpointJob(ctx context.Context, id domain.JobID, checkpoint JobCheckpoint) (JobRecord, error) {
+	validatedID, err := domain.NewJobID(string(id))
+	if err != nil {
+		return JobRecord{}, err
+	}
+	if !checkpoint.NextPhase.Valid() {
+		return JobRecord{}, fmt.Errorf("%w: next phase %q", ErrInvalidJob, checkpoint.NextPhase)
+	}
+	if checkpoint.ExpectedPhase != "" && !checkpoint.ExpectedPhase.Valid() {
+		return JobRecord{}, fmt.Errorf("%w: expected phase %q", ErrInvalidJob, checkpoint.ExpectedPhase)
+	}
+	if checkpoint.Command != nil {
+		if checkpoint.Command.SessionID == "" || checkpoint.Command.CommandID == "" || !checkpoint.Command.State.Valid() {
+			return JobRecord{}, fmt.Errorf("%w: checkpoint command metadata", ErrInvalidJob)
+		}
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (JobRecord, error) {
+		var currentPhase string
+		var sessionID, commandID string
+		if err := connection.QueryRowContext(ctx, "SELECT phase, session_id, command_id FROM exec_jobs WHERE job_id = ?", string(validatedID)).Scan(&currentPhase, &sessionID, &commandID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return JobRecord{}, ErrJobNotFound
+			}
+			return JobRecord{}, fmt.Errorf("read job checkpoint: %w", err)
+		}
+		current := JobPhase(currentPhase)
+		if !current.Valid() {
+			return JobRecord{}, fmt.Errorf("%w: current phase %q", ErrJobPayloadCorrupt, current)
+		}
+		if current == checkpoint.NextPhase {
+			if checkpoint.ExpectedPhase != "" && current != checkpoint.ExpectedPhase {
+				return JobRecord{}, fmt.Errorf("%w: current %q, expected %q", ErrJobPhaseConflict, current, checkpoint.ExpectedPhase)
+			}
+			if checkpoint.Command == nil {
+				return readJobOnConnection(ctx, connection, validatedID)
+			}
+		}
+		if checkpoint.ExpectedPhase != "" && current != checkpoint.ExpectedPhase {
+			return JobRecord{}, fmt.Errorf("%w: current %q, expected %q", ErrJobPhaseConflict, current, checkpoint.ExpectedPhase)
+		}
+		args := []any{string(checkpoint.NextPhase), formatStoredTime(now)}
+		set := "phase = ?, updated_at = ?"
+		if checkpoint.Command != nil {
+			if string(checkpoint.Command.SessionID) != sessionID || string(checkpoint.Command.CommandID) != commandID {
+				return JobRecord{}, fmt.Errorf("%w: checkpoint command identity", ErrInvalidJob)
+			}
+			var exitCode any
+			if checkpoint.Command.ExitCode != nil {
+				exitCode = *checkpoint.Command.ExitCode
+			}
+			var finalSequence any
+			if checkpoint.Command.FinalEventSequence != nil {
+				finalSequence = *checkpoint.Command.FinalEventSequence
+			}
+			set += ", command_state = ?, exit_code = ?, final_event_sequence = ?, output_truncated = ?, output_complete = ?"
+			args = append(args, string(checkpoint.Command.State), exitCode, finalSequence,
+				boolToSQLite(checkpoint.Command.OutputTruncated), boolToSQLite(checkpoint.Command.OutputComplete))
+		}
+		args = append(args, string(validatedID))
+		if _, err := connection.ExecContext(ctx, "UPDATE exec_jobs SET "+set+" WHERE job_id = ?", args...); err != nil {
+			return JobRecord{}, fmt.Errorf("checkpoint job: %w", err)
+		}
+		return readJobOnConnection(ctx, connection, validatedID)
+	})
 }
 
 func validateJobAcceptance(input JobAcceptance) (JobAcceptance, error) {
