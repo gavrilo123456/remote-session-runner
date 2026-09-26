@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 10
+	CurrentSchemaVersion = 11
 )
 
 var (
@@ -63,6 +63,9 @@ var localIdempotencySQL string
 
 //go:embed migrations/0010_remote_event_mirror.sql
 var remoteEventMirrorSQL string
+
+//go:embed migrations/0011_remote_event_gaps.sql
+var remoteEventGapsSQL string
 
 type migration struct {
 	version int
@@ -110,6 +113,10 @@ var migrations = []migration{{
 	version: 10,
 	name:    "remote_event_mirror",
 	sql:     remoteEventMirrorSQL,
+}, {
+	version: 11,
+	name:    "remote_event_gaps",
+	sql:     remoteEventGapsSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
