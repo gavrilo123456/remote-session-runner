@@ -33,32 +33,34 @@ var (
 	ErrLocalIntentNotFound       = errors.New("local intent not found")
 	ErrLocalIntentPayloadCorrupt = errors.New("local intent payload is corrupt")
 	ErrLocalIntentTransition     = errors.New("invalid local intent transition")
+	ErrLocalIdempotencyCorrupt   = errors.New("local idempotency record is corrupt")
 )
 
 // LocalIntentCreate is the complete immutable request recorded by Mac local
 // ingress. The request payload and script bytes are copied into SQLite in the
 // same transaction as the intent identity and its initial lifecycle row.
 type LocalIntentCreate struct {
-	IntentID       domain.IntentID
-	Operation      string
-	ResourceID     string
-	SessionID      domain.SessionID
-	CommandID      domain.CommandID
-	JobID          domain.JobID
-	Target         domain.ExecutionTarget
-	Environment    string
-	Controller     domain.ControllerIdentity
-	Source         domain.Source
-	RequestHash    domain.CanonicalHash
-	IdempotencyKey string
-	PayloadJSON    []byte
-	ScriptBytes    []byte
-	IntentOrdinal  *int64
-	DeliveryState  LocalIntentDeliveryState
-	Reason         string
-	LeaseOwner     string
-	LeaseExpiresAt *time.Time
-	AttemptCount   int
+	IntentID             domain.IntentID
+	Operation            string
+	ResourceID           string
+	SessionID            domain.SessionID
+	CommandID            domain.CommandID
+	JobID                domain.JobID
+	Target               domain.ExecutionTarget
+	Environment          string
+	Controller           domain.ControllerIdentity
+	Source               domain.Source
+	RequestHash          domain.CanonicalHash
+	IdempotencyKey       string
+	IdempotencyRetention time.Duration
+	PayloadJSON          []byte
+	ScriptBytes          []byte
+	IntentOrdinal        *int64
+	DeliveryState        LocalIntentDeliveryState
+	Reason               string
+	LeaseOwner           string
+	LeaseExpiresAt       *time.Time
+	AttemptCount         int
 }
 
 // LocalIntentRecord is a durable local-intent snapshot. PayloadJSON and
@@ -89,14 +91,41 @@ const (
 
 // CreateLocalIntent durably records one Mac-local request and its initial
 // lifecycle event. It does not dispatch to a target or claim target
-// acceptance.
+// acceptance. A retained same-key retry returns the original intent.
 func (s *AuthorityStore) CreateLocalIntent(ctx context.Context, input LocalIntentCreate) (LocalIntentRecord, error) {
+	record, _, err := s.AcceptLocalIntent(ctx, input)
+	return record, err
+}
+
+// AcceptLocalIntent records or resumes a Mac-local request in one immediate
+// transaction. duplicate is true only when an unexpired key/hash binding
+// returned an already committed intent.
+func (s *AuthorityStore) AcceptLocalIntent(ctx context.Context, input LocalIntentCreate) (record LocalIntentRecord, duplicate bool, err error) {
 	validated, err := validateLocalIntentCreate(input)
 	if err != nil {
-		return LocalIntentRecord{}, err
+		return LocalIntentRecord{}, false, err
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+		existing, found, lookupErr := lookupLocalIdempotencyOnConnection(ctx, connection, validated.Controller, validated.Operation, validated.IdempotencyKey, now)
+		if lookupErr != nil {
+			return LocalIntentRecord{}, lookupErr
+		}
+		if found {
+			if domain.CompareIdempotency(existing.Hash, validated.RequestHash) == domain.IdempotencyConflict {
+				return LocalIntentRecord{}, ErrIdempotencyConflict
+			}
+			existingID, err := domain.NewIntentID(existing.IntentID)
+			if err != nil {
+				return LocalIntentRecord{}, fmt.Errorf("%w: intent ID: %v", ErrLocalIdempotencyCorrupt, err)
+			}
+			record, err := readLocalIntentOnConnection(ctx, connection, existingID)
+			if err != nil {
+				return LocalIntentRecord{}, fmt.Errorf("read idempotent local intent: %w", err)
+			}
+			duplicate = true
+			return record, nil
+		}
 		if err := insertLocalIntentOnConnection(ctx, connection, validated, now); err != nil {
 			return LocalIntentRecord{}, err
 		}
@@ -110,8 +139,15 @@ VALUES (?, 1, NULL, ?, ?, ?)
 `, string(validated.IntentID), string(initialState), validated.Reason, formatStoredTime(now)); err != nil {
 			return LocalIntentRecord{}, fmt.Errorf("insert local intent lifecycle: %w", err)
 		}
+		if err := insertLocalIdempotencyOnConnection(ctx, connection, validated, now); err != nil {
+			return LocalIntentRecord{}, err
+		}
 		return readLocalIntentOnConnection(ctx, connection, validated.IntentID)
 	})
+	if err != nil {
+		return LocalIntentRecord{}, false, err
+	}
+	return result, duplicate, nil
 }
 
 // GetLocalIntent reloads an intent and validates all immutable bytes before
@@ -266,6 +302,14 @@ func validateLocalIntentCreate(input LocalIntentCreate) (LocalIntentCreate, erro
 	if _, _, err := validateIdempotencyOperationKey(input.Operation, input.IdempotencyKey); err != nil {
 		return LocalIntentCreate{}, fmt.Errorf("%w: idempotency: %v", ErrInvalidLocalIntent, err)
 	}
+	retention := input.IdempotencyRetention
+	if retention == 0 {
+		retention = DefaultSessionIdempotencyRetention
+	}
+	if retention < 0 {
+		return LocalIntentCreate{}, fmt.Errorf("%w: idempotency retention must not be negative", ErrInvalidLocalIntent)
+	}
+	validated.IdempotencyRetention = retention
 	if input.AttemptCount < 0 {
 		return LocalIntentCreate{}, fmt.Errorf("%w: negative attempt count", ErrInvalidLocalIntent)
 	}
@@ -453,6 +497,83 @@ INSERT INTO local_intents (
 		return fmt.Errorf("insert local intent: %w", err)
 	}
 	return nil
+}
+
+type localIdempotencyBinding struct {
+	Controller domain.ControllerIdentity
+	Operation  string
+	Key        string
+	Hash       domain.CanonicalHash
+	IntentID   string
+	ResourceID string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+}
+
+func insertLocalIdempotencyOnConnection(ctx context.Context, connection *sql.Conn, input LocalIntentCreate, now time.Time) error {
+	if input.IdempotencyRetention <= 0 {
+		return fmt.Errorf("%w: idempotency retention must be positive", ErrInvalidLocalIntent)
+	}
+	if _, err := connection.ExecContext(ctx, `
+INSERT INTO local_idempotency (
+ controller_type, controller_id, operation, idempotency_key,
+ request_hash_version, request_hash, intent_id, resource_id, created_at, expires_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, string(input.Controller.Type()), string(input.Controller.ID()), input.Operation, input.IdempotencyKey,
+		input.RequestHash.Version(), input.RequestHash.SHA256(), string(input.IntentID), input.ResourceID,
+		formatStoredTime(now), formatStoredTime(now.Add(input.IdempotencyRetention))); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return ErrIdempotencyConflict
+		}
+		return fmt.Errorf("insert local idempotency: %w", err)
+	}
+	return nil
+}
+
+func lookupLocalIdempotencyOnConnection(ctx context.Context, connection *sql.Conn, controller domain.ControllerIdentity, operation, key string, now time.Time) (localIdempotencyBinding, bool, error) {
+	var binding localIdempotencyBinding
+	var hashVersion int
+	var controllerTypeText, controllerID, operationText, keyText, intentID, resourceID, createdAt, expiresAt string
+	var digestBytes []byte
+	if err := connection.QueryRowContext(ctx, `
+SELECT controller_type, controller_id, operation, idempotency_key,
+       request_hash_version, request_hash, intent_id, resource_id, created_at, expires_at
+FROM local_idempotency
+WHERE controller_type = ? AND controller_id = ? AND operation = ? AND idempotency_key = ?
+`, string(controller.Type()), string(controller.ID()), operation, key).Scan(&controllerTypeText, &controllerID, &operationText, &keyText, &hashVersion, &digestBytes, &intentID, &resourceID, &createdAt, &expiresAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return localIdempotencyBinding{}, false, nil
+		}
+		return localIdempotencyBinding{}, false, fmt.Errorf("lookup local idempotency: %w", err)
+	}
+	binding.Controller, _ = domain.NewControllerIdentity(domain.ControllerType(controllerTypeText), domain.ControllerID(controllerID))
+	binding.Operation, binding.Key, binding.IntentID, binding.ResourceID = operationText, keyText, intentID, resourceID
+	requestHash, err := domain.NewCanonicalHash(uint16(hashVersion), digestBytes)
+	if err != nil {
+		return localIdempotencyBinding{}, false, fmt.Errorf("%w: request hash: %v", ErrLocalIdempotencyCorrupt, err)
+	}
+	binding.Hash = requestHash
+	binding.CreatedAt, err = parseStoredTime(createdAt)
+	if err != nil {
+		return localIdempotencyBinding{}, false, fmt.Errorf("%w: created_at: %v", ErrLocalIdempotencyCorrupt, err)
+	}
+	binding.ExpiresAt, err = parseStoredTime(expiresAt)
+	if err != nil {
+		return localIdempotencyBinding{}, false, fmt.Errorf("%w: expires_at: %v", ErrLocalIdempotencyCorrupt, err)
+	}
+	if binding.IntentID == "" || binding.ResourceID == "" || !validLocalIntentOperation(binding.Operation) || binding.Controller.Type() == "" || binding.Controller.ID() == "" {
+		return localIdempotencyBinding{}, false, fmt.Errorf("%w: identity fields", ErrLocalIdempotencyCorrupt)
+	}
+	if !now.Before(binding.ExpiresAt) {
+		if _, err := connection.ExecContext(ctx, `
+DELETE FROM local_idempotency
+WHERE controller_type = ? AND controller_id = ? AND operation = ? AND idempotency_key = ?
+`, string(controller.Type()), string(controller.ID()), operation, key); err != nil {
+			return localIdempotencyBinding{}, false, fmt.Errorf("expire local idempotency: %w", err)
+		}
+		return localIdempotencyBinding{}, false, nil
+	}
+	return binding, true, nil
 }
 
 func readLocalIntentOnConnection(ctx context.Context, connection *sql.Conn, id domain.IntentID) (LocalIntentRecord, error) {
