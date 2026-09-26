@@ -231,8 +231,18 @@ func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) 
 	case request.Method == http.MethodPost && request.URL.Path == "/v1/sessions":
 		s.handleCreateSession(response, request)
 	case request.Method == http.MethodPost:
+		if commandID, ok := commandCancelPath(request.URL.Path); ok {
+			s.handleCancelCommand(response, request, commandID)
+			return
+		}
 		if sessionID, ok := sessionCommandPath(request.URL.Path); ok {
 			s.handleSubmitCommand(response, request, sessionID)
+			return
+		}
+		writeError(response, http.StatusNotFound, "resource_not_found", "local API route not found")
+	case request.Method == http.MethodDelete:
+		if sessionID, ok := sessionResourcePath(request.URL.Path); ok {
+			s.handleCloseSession(response, request, sessionID)
 			return
 		}
 		writeError(response, http.StatusNotFound, "resource_not_found", "local API route not found")
@@ -260,6 +270,25 @@ type commandAcceptance struct {
 	AcceptanceScope string         `json:"acceptance_scope"`
 	ExecutionTarget targetResponse `json:"execution_target"`
 	KnownState      knownState     `json:"known_state"`
+}
+
+type closeAcceptance struct {
+	ResourceID      string         `json:"resource_id"`
+	SessionID       string         `json:"session_id"`
+	IntentID        string         `json:"intent_id,omitempty"`
+	AcceptanceScope string         `json:"acceptance_scope"`
+	ExecutionTarget targetResponse `json:"execution_target"`
+	KnownState      knownState     `json:"known_state"`
+}
+
+type cancelCommandRequest struct {
+	CommandID string `json:"command_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type closeSessionRequest struct {
+	SessionID string `json:"session_id,omitempty"`
+	Policy    string `json:"policy,omitempty"`
 }
 
 type commandRead struct {
@@ -421,6 +450,214 @@ func (s *Server) handleSubmitCommand(response http.ResponseWriter, request *http
 		AcceptanceScope: "local_intent", ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
 	})
+}
+
+func (s *Server) handleCancelCommand(response http.ResponseWriter, request *http.Request, rawCommandID string) {
+	if strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
+		writeError(response, http.StatusBadRequest, "invalid_request", "Idempotency-Key is required")
+		return
+	}
+	commandIDText, err := url.PathUnescape(rawCommandID)
+	if err != nil || commandIDText == "" || strings.Contains(commandIDText, "/") {
+		writeError(response, http.StatusBadRequest, "invalid_request", "invalid command path")
+		return
+	}
+	commandID, err := domain.NewCommandID(commandIDText)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	body, err := s.readBody(request)
+	if err != nil {
+		status, code := requestReadError(err)
+		writeError(response, status, code, err.Error())
+		return
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		body = []byte("{}")
+	}
+	var input cancelCommandRequest
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", "malformed or unsupported cancel request JSON")
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body contains multiple JSON values")
+		return
+	}
+	if input.CommandID != "" && input.CommandID != commandIDText {
+		writeError(response, http.StatusBadRequest, "invalid_request", "command path and body command_id differ")
+		return
+	}
+	reason := strings.TrimSpace(input.Reason)
+	if len(reason) > 256 || strings.IndexByte(reason, 0) >= 0 {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "reason is invalid")
+		return
+	}
+	submitIntent, err := s.authority.GetLocalIntentByResource(request.Context(), "submit_command", commandIDText, s.owner)
+	if err != nil {
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			writeError(response, http.StatusNotFound, "command_not_found", "local command intent was not found")
+			return
+		}
+		status, code := statusForStoreError(err)
+		if code == "session_not_found" {
+			code = "command_not_found"
+		}
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	payload := map[string]any{"command_id": commandIDText}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	payloadJSON, hash, ok := s.canonicalLocalMutation(response, "cancel_command", payload)
+	if !ok {
+		return
+	}
+	intentID, err := newOpaqueID("intent-")
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
+		return
+	}
+	record, _, err := s.authority.AcceptLocalIntent(request.Context(), store.LocalIntentCreate{
+		IntentID: domain.IntentID(intentID), Operation: "cancel_command", ResourceID: commandIDText,
+		SessionID: submitIntent.SessionID, CommandID: commandID, Target: submitIntent.Target,
+		Environment: submitIntent.Environment, Controller: s.owner, Source: submitIntent.Source,
+		RequestHash: hash, IdempotencyKey: request.Header.Get("Idempotency-Key"), PayloadJSON: payloadJSON,
+		DeliveryState: store.LocalIntentRecorded,
+	})
+	if err != nil {
+		status, code := statusForStoreError(err)
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	writeJSON(response, http.StatusAccepted, commandAcceptance{
+		ResourceID: string(record.CommandID), CommandID: string(record.CommandID), SessionID: string(record.SessionID), IntentID: string(record.IntentID),
+		AcceptanceScope: "local_intent", ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
+		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
+	})
+}
+
+func (s *Server) handleCloseSession(response http.ResponseWriter, request *http.Request, rawSessionID string) {
+	if strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
+		writeError(response, http.StatusBadRequest, "invalid_request", "Idempotency-Key is required")
+		return
+	}
+	sessionIDText, err := url.PathUnescape(rawSessionID)
+	if err != nil || sessionIDText == "" || strings.Contains(sessionIDText, "/") {
+		writeError(response, http.StatusBadRequest, "invalid_request", "invalid session path")
+		return
+	}
+	sessionID, err := domain.NewSessionID(sessionIDText)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	query := request.URL.Query()
+	for key := range query {
+		if key != "mode" || len(query[key]) != 1 {
+			writeError(response, http.StatusBadRequest, "invalid_request", "unsupported or repeated close query parameter")
+			return
+		}
+	}
+	body, err := s.readBody(request)
+	if err != nil {
+		status, code := requestReadError(err)
+		writeError(response, status, code, err.Error())
+		return
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		body = []byte("{}")
+	}
+	var input closeSessionRequest
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", "malformed or unsupported close request JSON")
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body contains multiple JSON values")
+		return
+	}
+	if input.SessionID != "" && input.SessionID != sessionIDText {
+		writeError(response, http.StatusBadRequest, "invalid_request", "session path and body session_id differ")
+		return
+	}
+	policy := strings.TrimSpace(input.Policy)
+	if queryPolicy := strings.TrimSpace(query.Get("mode")); queryPolicy != "" {
+		if policy != "" && policy != queryPolicy {
+			writeError(response, http.StatusUnprocessableEntity, "invalid_request", "close mode and policy differ")
+			return
+		}
+		policy = queryPolicy
+	}
+	if policy == "" {
+		policy = "cancel"
+	}
+	if len(policy) > 64 || strings.IndexByte(policy, 0) >= 0 {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "close policy is invalid")
+		return
+	}
+	createIntent, err := s.authority.GetLocalIntentByResource(request.Context(), "create_session", sessionIDText, s.owner)
+	if err != nil {
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			writeError(response, http.StatusNotFound, "session_not_found", "local session intent was not found")
+			return
+		}
+		status, code := statusForStoreError(err)
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	payloadJSON, hash, ok := s.canonicalLocalMutation(response, "close_session", map[string]any{"session_id": sessionIDText, "policy": policy})
+	if !ok {
+		return
+	}
+	intentID, err := newOpaqueID("intent-")
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
+		return
+	}
+	record, _, err := s.authority.AcceptLocalIntent(request.Context(), store.LocalIntentCreate{
+		IntentID: domain.IntentID(intentID), Operation: "close_session", ResourceID: sessionIDText,
+		SessionID: sessionID, Target: createIntent.Target, Environment: createIntent.Environment,
+		Controller: s.owner, Source: createIntent.Source, RequestHash: hash,
+		IdempotencyKey: request.Header.Get("Idempotency-Key"), PayloadJSON: payloadJSON, DeliveryState: store.LocalIntentRecorded,
+	})
+	if err != nil {
+		status, code := statusForStoreError(err)
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	writeJSON(response, http.StatusAccepted, closeAcceptance{
+		ResourceID: string(record.SessionID), SessionID: string(record.SessionID), IntentID: string(record.IntentID),
+		AcceptanceScope: "local_intent", ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
+		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
+	})
+}
+
+func (s *Server) canonicalLocalMutation(response http.ResponseWriter, operation string, payload map[string]any) ([]byte, domain.CanonicalHash, bool) {
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "could not encode mutation request")
+		return nil, domain.CanonicalHash{}, false
+	}
+	canonical, err := domain.CanonicalizeMutationRequestJSON(operation, payloadJSON, domain.CanonicalizationOptions{})
+	if err != nil || int64(len(canonical)) > s.maxBodyBytes {
+		writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "canonical mutation request exceeds the configured body limit")
+		return nil, domain.CanonicalHash{}, false
+	}
+	hash, err := domain.HashMutationRequestJSON(operation, canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
+		return nil, domain.CanonicalHash{}, false
+	}
+	return canonical, hash, true
 }
 
 func (s *Server) handleGetCommand(response http.ResponseWriter, request *http.Request) {
@@ -656,6 +893,30 @@ func sessionCommandPath(path string) (string, bool) {
 	return raw, true
 }
 
+func commandCancelPath(path string) (string, bool) {
+	const prefix = "/v1/commands/"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, "/cancel") {
+		return "", false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, prefix), "/cancel")
+	if raw == "" || strings.Contains(raw, "/") {
+		return "", false
+	}
+	return raw, true
+}
+
+func sessionResourcePath(path string) (string, bool) {
+	const prefix = "/v1/sessions/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	raw := strings.TrimPrefix(path, prefix)
+	if raw == "" || strings.Contains(raw, "/") {
+		return "", false
+	}
+	return raw, true
+}
+
 func parseTimeoutSeconds(raw json.RawMessage) (int64, bool, error) {
 	if len(raw) == 0 {
 		return 0, false, nil
@@ -826,6 +1087,13 @@ func (s *Server) readBody(request *http.Request) ([]byte, error) {
 		return nil, err
 	}
 	return body, nil
+}
+
+func requestReadError(err error) (int, string) {
+	if errors.Is(err, domain.ErrSerializedInputTooLarge) {
+		return http.StatusRequestEntityTooLarge, "request_too_large"
+	}
+	return http.StatusBadRequest, "invalid_request"
 }
 
 func parseSource(input *sourceRequest) (domain.Source, error) {
