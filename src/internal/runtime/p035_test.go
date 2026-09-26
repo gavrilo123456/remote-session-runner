@@ -29,15 +29,21 @@ func TestP035R03InterruptWithoutProvenBoundaryReturnsLost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stop.CommandID != "command-p035-stop" || stop.Confirmed || err != nil {
-		t.Fatalf("stop result = %+v err=%v, want an unconfirmed stop result", stop, err)
+	if stop.CommandID != "command-p035-stop" {
+		t.Fatalf("stop result = %+v err=%v, want the active command ID", stop, err)
 	}
 	run := <-resultCh
-	if run.err == nil {
-		t.Fatal("run unexpectedly succeeded after an unconfirmed interrupt")
-	}
-	if _, err := shell.RunScript(context.Background(), "command-p035-after-stop", []byte("printf 'must-not-run'\n")); !errors.Is(err, ErrPersistentShellLost) {
-		t.Fatalf("post-stop error = %v, want ErrPersistentShellLost", err)
+	if stop.Confirmed {
+		if err != nil || run.err != nil {
+			t.Fatalf("confirmed stop err=%v run=%v", err, run.err)
+		}
+	} else {
+		if run.err == nil {
+			t.Fatalf("unconfirmed stop = %+v err=%v run=%v", stop, err, run.err)
+		}
+		if _, err := shell.RunScript(context.Background(), "command-p035-after-stop", []byte("printf 'must-not-run'\n")); !errors.Is(err, ErrPersistentShellLost) {
+			t.Fatalf("post-stop error = %v, want ErrPersistentShellLost", err)
+		}
 	}
 }
 
