@@ -169,6 +169,16 @@ func TestP046LinuxPrivateCreateReadUsesUbuntuRuntime(t *testing.T) {
 	if process.Username != hostruntime.LinuxHostAccount || process.UID <= 0 {
 		t.Fatalf("Linux process identity = %+v", process)
 	}
+	// Establish one clean command boundary before the adapter cleanup. The
+	// P046 API gate is create/read; this direct no-op only proves the ready
+	// agent can be closed through the existing P040 lifecycle contract.
+	shell, err := adapter.Shell(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := shell.RunScript(context.Background(), "p046-cleanup", []byte(":")); err != nil {
+		t.Fatal(err)
+	}
 	if err := adapter.Cleanup(sessionID); err != nil {
 		t.Fatal(err)
 	}
