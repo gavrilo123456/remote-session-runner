@@ -61,7 +61,10 @@ func (r *LinuxSessionRuntime) StartAgent(ctx context.Context, request execution.
 	if !ok || prepared.Generation != request.RuntimeGeneration || prepared.Generation != request.Prepared.RuntimeGeneration {
 		return execution.RuntimeStarted{}, fmt.Errorf("%w: prepared runtime generation mismatch", execution.ErrRuntimeHandshake)
 	}
-	if err := r.adapter.StartAgent(ctx, prepared); err != nil {
+	// The Bash agent is a durable session resource. It must not inherit the
+	// private HTTP request context, which is canceled as soon as create returns;
+	// cleanup and later lifecycle phases own its shutdown explicitly.
+	if err := r.adapter.StartAgent(context.WithoutCancel(ctx), prepared); err != nil {
 		return execution.RuntimeStarted{}, err
 	}
 	return execution.RuntimeStarted{RuntimeGeneration: prepared.Generation}, nil
