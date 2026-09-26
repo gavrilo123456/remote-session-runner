@@ -20,16 +20,17 @@ import (
 )
 
 var (
-	ErrRemoteDriverConfiguration = errors.New("remote dispatcher configuration is invalid")
-	ErrNoRemoteDispatchWork      = errors.New("no eligible remote dispatch work")
-	ErrRemoteRejected            = errors.New("remote authority rejected local intent")
-	ErrRemoteUncertain           = errors.New("remote authority acceptance is uncertain")
-	ErrRemoteResponse            = errors.New("remote bridge response is invalid")
-	ErrRemotePayload             = errors.New("remote bridge payload cannot be built")
-	ErrRemoteNotReconciled       = errors.New("remote intent remains uncertain after reconciliation")
-	ErrRemoteUncertaintyDeadline = errors.New("remote uncertainty deadline expired")
-	ErrRemoteSessionNotReady     = errors.New("remote session is not ready for command dispatch")
-	ErrRemoteSessionCreateFailed = errors.New("remote session creation failed")
+	ErrRemoteDriverConfiguration     = errors.New("remote dispatcher configuration is invalid")
+	ErrNoRemoteDispatchWork          = errors.New("no eligible remote dispatch work")
+	ErrRemoteRejected                = errors.New("remote authority rejected local intent")
+	ErrRemoteUncertain               = errors.New("remote authority acceptance is uncertain")
+	ErrRemoteResponse                = errors.New("remote bridge response is invalid")
+	ErrRemotePayload                 = errors.New("remote bridge payload cannot be built")
+	ErrRemoteNotReconciled           = errors.New("remote intent remains uncertain after reconciliation")
+	ErrRemoteUncertaintyDeadline     = errors.New("remote uncertainty deadline expired")
+	ErrRemoteSessionNotReady         = errors.New("remote session is not ready for command dispatch")
+	ErrRemoteSessionCreateFailed     = errors.New("remote session creation failed")
+	ErrRemoteCancelledBeforeDelivery = errors.New("remote intent was superseded before target delivery")
 )
 
 // RemoteUncertaintyWindow is the bounded period in which the dispatcher may
@@ -89,6 +90,9 @@ func (d *RemoteDriver) DispatchNext(ctx context.Context) (store.LocalIntentRecor
 			continue
 		}
 		if errors.Is(dispatchErr, ErrRemoteSessionCreateFailed) {
+			continue
+		}
+		if errors.Is(dispatchErr, ErrRemoteCancelledBeforeDelivery) {
 			continue
 		}
 		return record, reply, dispatchErr
@@ -298,6 +302,10 @@ func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (
 	if err != nil {
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, err
 	}
+	guarded, guardErr := d.guardRemoteIntentBeforeDelivery(ctx, intent)
+	if guardErr != nil {
+		return guarded, sshbridge.ReplyFrame{}, guardErr
+	}
 	if intent.Operation == operationSubmitCommand {
 		ready, readinessErr := d.ensureRemoteSubmitReady(ctx, intent)
 		if readinessErr != nil {
@@ -357,6 +365,124 @@ func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, err
 	}
 	return accepted, reply, nil
+}
+
+// guardRemoteIntentBeforeDelivery applies local desired-state controls before
+// any target mutation. A recorded predecessor has never crossed the bridge,
+// so a recorded cancel/close can prove that predecessor not-delivered and
+// unblock later ordinals without inventing remote state.
+func (d *RemoteDriver) guardRemoteIntentBeforeDelivery(ctx context.Context, intent store.LocalIntentRecord) (store.LocalIntentRecord, error) {
+	if intent.DeliveryState != store.LocalIntentRecorded {
+		return intent, nil
+	}
+	markNotDelivered := func(id domain.IntentID, reason string) (store.LocalIntentRecord, error) {
+		return d.authority.TransitionLocalIntent(ctx, id, store.LocalIntentNotDelivered, reason)
+	}
+	activeControl := func(control store.LocalIntentRecord) bool {
+		return control.DeliveryState != store.LocalIntentNotDelivered
+	}
+
+	switch intent.Operation {
+	case operationCreateSession:
+		closeIntent, err := d.authority.GetLocalIntentByResource(ctx, operationCloseSession, string(intent.SessionID), intent.Controller)
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			return intent, nil
+		}
+		if err != nil {
+			return intent, err
+		}
+		if activeControl(closeIntent) {
+			updated, transitionErr := markNotDelivered(intent.IntentID, "closed_before_dispatch")
+			if transitionErr != nil {
+				return intent, transitionErr
+			}
+			return updated, fmt.Errorf("%w: close requested", ErrRemoteCancelledBeforeDelivery)
+		}
+	case operationSubmitCommand:
+		controlFound := false
+		controlReason := "cancelled_before_dispatch"
+		cancelIntent, err := d.authority.GetLocalIntentByResource(ctx, operationCancelCommand, string(intent.CommandID), intent.Controller)
+		if err == nil {
+			controlFound = activeControl(cancelIntent)
+		} else if !errors.Is(err, store.ErrLocalIntentNotFound) {
+			return intent, err
+		}
+		if !controlFound {
+			closeIntent, closeErr := d.authority.GetLocalIntentByResource(ctx, operationCloseSession, string(intent.SessionID), intent.Controller)
+			if closeErr == nil {
+				controlFound = activeControl(closeIntent)
+				controlReason = "closed_before_dispatch"
+			} else if !errors.Is(closeErr, store.ErrLocalIntentNotFound) {
+				return intent, closeErr
+			}
+		}
+		if controlFound {
+			updated, transitionErr := markNotDelivered(intent.IntentID, controlReason)
+			if transitionErr != nil {
+				return intent, transitionErr
+			}
+			return updated, fmt.Errorf("%w: control intent exists", ErrRemoteCancelledBeforeDelivery)
+		}
+	case operationCancelCommand:
+		submitIntent, err := d.authority.GetLocalIntentByResource(ctx, operationSubmitCommand, string(intent.CommandID), intent.Controller)
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			updated, transitionErr := markNotDelivered(intent.IntentID, "command_not_delivered")
+			if transitionErr != nil {
+				return intent, transitionErr
+			}
+			return updated, fmt.Errorf("%w: submit intent missing", ErrRemoteCancelledBeforeDelivery)
+		}
+		if err != nil {
+			return intent, err
+		}
+		if submitIntent.DeliveryState == store.LocalIntentRecorded {
+			if _, transitionErr := markNotDelivered(submitIntent.IntentID, "cancelled_before_dispatch"); transitionErr != nil {
+				return intent, transitionErr
+			}
+			updated, transitionErr := markNotDelivered(intent.IntentID, "command_not_delivered")
+			if transitionErr != nil {
+				return intent, transitionErr
+			}
+			return updated, fmt.Errorf("%w: submit intent was recorded only", ErrRemoteCancelledBeforeDelivery)
+		}
+		if submitIntent.DeliveryState == store.LocalIntentNotDelivered {
+			updated, transitionErr := markNotDelivered(intent.IntentID, "command_not_delivered")
+			if transitionErr != nil {
+				return intent, transitionErr
+			}
+			return updated, fmt.Errorf("%w: submit intent was not delivered", ErrRemoteCancelledBeforeDelivery)
+		}
+	case operationCloseSession:
+		createIntent, err := d.authority.GetLocalIntentByResource(ctx, operationCreateSession, string(intent.SessionID), intent.Controller)
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			updated, transitionErr := markNotDelivered(intent.IntentID, "session_not_delivered")
+			if transitionErr != nil {
+				return intent, transitionErr
+			}
+			return updated, fmt.Errorf("%w: create intent missing", ErrRemoteCancelledBeforeDelivery)
+		}
+		if err != nil {
+			return intent, err
+		}
+		if createIntent.DeliveryState == store.LocalIntentRecorded {
+			if _, transitionErr := markNotDelivered(createIntent.IntentID, "closed_before_dispatch"); transitionErr != nil {
+				return intent, transitionErr
+			}
+			updated, transitionErr := markNotDelivered(intent.IntentID, "session_not_delivered")
+			if transitionErr != nil {
+				return intent, transitionErr
+			}
+			return updated, fmt.Errorf("%w: create intent was recorded only", ErrRemoteCancelledBeforeDelivery)
+		}
+		if createIntent.DeliveryState == store.LocalIntentNotDelivered {
+			updated, transitionErr := markNotDelivered(intent.IntentID, "session_not_delivered")
+			if transitionErr != nil {
+				return intent, transitionErr
+			}
+			return updated, fmt.Errorf("%w: create intent was not delivered", ErrRemoteCancelledBeforeDelivery)
+		}
+	}
+	return intent, nil
 }
 
 func supportedRemoteOperation(operation string) bool {
