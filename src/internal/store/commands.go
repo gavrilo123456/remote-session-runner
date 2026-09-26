@@ -340,7 +340,7 @@ func (s *AuthorityStore) CompleteRunningCommand(ctx context.Context, input Comma
 	if !input.NextState.IsTerminal() {
 		return CommandRecord{}, fmt.Errorf("%w: completion state %q is not terminal", ErrCommandTransition, input.NextState)
 	}
-	if nextSessionState != domain.SessionStateReady && nextSessionState != domain.SessionStateLost {
+	if nextSessionState != domain.SessionStateReady && nextSessionState != domain.SessionStateClosing && nextSessionState != domain.SessionStateLost {
 		return CommandRecord{}, fmt.Errorf("%w: completion session state %q is invalid", ErrCommandTransition, nextSessionState)
 	}
 	if _, err := validateLifecycleReason(sessionReason); err != nil {
@@ -383,8 +383,14 @@ WHERE command_id = ?
 `, string(input.NextState), exitCode, sequence, boolToSQLite(input.OutputComplete), boolToSQLite(input.OutputTruncated), formatStoredTime(now), string(commandID)); err != nil {
 			return CommandRecord{}, fmt.Errorf("persist completed command: %w", err)
 		}
-		if err := transitionSessionOnConnection(ctx, connection, command.SessionID, nextSessionState, sessionReason, now); err != nil {
-			return CommandRecord{}, err
+		var sessionState string
+		if err := connection.QueryRowContext(ctx, "SELECT state FROM exec_sessions WHERE session_id = ?", string(command.SessionID)).Scan(&sessionState); err != nil {
+			return CommandRecord{}, fmt.Errorf("read completed command session: %w", err)
+		}
+		if domain.SessionState(sessionState) != nextSessionState {
+			if err := transitionSessionOnConnection(ctx, connection, command.SessionID, nextSessionState, sessionReason, now); err != nil {
+				return CommandRecord{}, err
+			}
 		}
 		if releaseSlot {
 			result, err := connection.ExecContext(ctx, `
@@ -550,6 +556,57 @@ func (s *AuthorityStore) GetCommand(ctx context.Context, id domain.CommandID) (C
 	}
 	defer connection.Close()
 	return readCommandOnConnection(ctx, connection, validatedID)
+}
+
+// ListSessionCommands returns authoritative commands in ordinal order. It is
+// used by close orchestration to cancel queued work before teardown.
+func (s *AuthorityStore) ListSessionCommands(ctx context.Context, id domain.SessionID) ([]CommandRecord, error) {
+	validatedID, err := domain.NewSessionID(string(id))
+	if err != nil {
+		return nil, err
+	}
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire session command connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := readSessionOnConnection(ctx, connection, validatedID); err != nil {
+		return nil, err
+	}
+	rows, err := connection.QueryContext(ctx, `
+SELECT command_id FROM exec_commands WHERE session_id = ? ORDER BY ordinal
+`, string(validatedID))
+	if err != nil {
+		return nil, fmt.Errorf("query session commands: %w", err)
+	}
+	defer rows.Close()
+	var commandIDs []domain.CommandID
+	for rows.Next() {
+		var commandID string
+		if err := rows.Scan(&commandID); err != nil {
+			return nil, fmt.Errorf("scan session command: %w", err)
+		}
+		validatedCommandID, err := domain.NewCommandID(commandID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid session command ID: %w", err)
+		}
+		commandIDs = append(commandIDs, validatedCommandID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session commands: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close session commands: %w", err)
+	}
+	commands := make([]CommandRecord, 0, len(commandIDs))
+	for _, commandID := range commandIDs {
+		command, err := readCommandOnConnection(ctx, connection, commandID)
+		if err != nil {
+			return nil, err
+		}
+		commands = append(commands, command)
+	}
+	return commands, nil
 }
 
 // ListCommandEvents returns the durable event prefix in sequence order.

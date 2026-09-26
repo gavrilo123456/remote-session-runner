@@ -21,11 +21,17 @@ type p020FakeRuntime struct {
 	cleanupErr    error
 	commandErr    error
 	commandResult RuntimeCommandResult
+	cancelErr     error
+	cancelResult  RuntimeCommandStopResult
+	stopErr       error
+	stopConfirmed bool
 	generation    string
 	prepareCall   int
 	startCall     int
 	cleanupCall   int
 	commandCall   int
+	cancelCall    int
+	stopCall      int
 	prepareSaw    domain.SessionState
 }
 
@@ -56,6 +62,16 @@ func (r *p020FakeRuntime) Cleanup(context.Context, RuntimeCleanupRequest) error 
 func (r *p020FakeRuntime) ExecuteCommand(context.Context, RuntimeCommandRequest) (RuntimeCommandResult, error) {
 	r.commandCall++
 	return r.commandResult, r.commandErr
+}
+
+func (r *p020FakeRuntime) CancelCommand(context.Context, RuntimeCommandRequest) (RuntimeCommandStopResult, error) {
+	r.cancelCall++
+	return r.cancelResult, r.cancelErr
+}
+
+func (r *p020FakeRuntime) StopSession(context.Context, store.SessionRecord) (bool, error) {
+	r.stopCall++
+	return r.stopConfirmed, r.stopErr
 }
 
 func requestSessionForP020(_ context.Context, record store.SessionRecord) (store.SessionRecord, error) {

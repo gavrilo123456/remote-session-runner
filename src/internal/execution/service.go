@@ -31,12 +31,18 @@ var (
 	// ErrSessionNotReady means a direct command was submitted before the
 	// authoritative session reached ready or busy.
 	ErrSessionNotReady = errors.New("session is not ready for commands")
+	// ErrCommandNotReady means a command cannot accept the requested lifecycle
+	// operation in its current state.
+	ErrCommandNotReady = errors.New("command is not ready for this operation")
 	// ErrCommandTransport means the command runtime could not report a command
 	// outcome. The command is recorded as lost; this is not a shell exit code.
 	ErrCommandTransport = errors.New("command transport failed")
 	// ErrShellExited means the persistent shell crossed an unsafe boundary.
 	// The command and session are recorded as lost rather than recreated.
 	ErrShellExited = errors.New("persistent shell exited")
+	// ErrStopUnconfirmed means cancellation or close could not prove that the
+	// runtime stopped. The affected slot and/or session remains lost.
+	ErrStopUnconfirmed = errors.New("runtime stop was not confirmed")
 )
 
 // Clock is the small wall-clock seam shared by service orchestration and fake
@@ -162,6 +168,21 @@ type CommandRuntime interface {
 	ExecuteCommand(context.Context, RuntimeCommandRequest) (RuntimeCommandResult, error)
 }
 
+// RuntimeCommandStopResult reports the bounded stop boundary for cancel and
+// close. Output is persisted before the command terminal transition.
+type RuntimeCommandStopResult struct {
+	Stdout    []byte
+	Stderr    []byte
+	Confirmed bool
+}
+
+// RuntimeCommandControl is optional in P021's fake runtime and is used by
+// P022 to model cancellation without coupling the service to OS signals.
+type RuntimeCommandControl interface {
+	CancelCommand(context.Context, RuntimeCommandRequest) (RuntimeCommandStopResult, error)
+	StopSession(context.Context, store.SessionRecord) (bool, error)
+}
+
 // EventPublisher receives committed session lifecycle records. Publication
 // occurs after the store transaction; a publisher failure cannot roll back an
 // authoritative state transition.
@@ -216,15 +237,50 @@ type SubmitCommandResult struct {
 	Duplicate bool
 }
 
+// CancelCommandRequest identifies a keyed cancellation mutation.
+type CancelCommandRequest struct {
+	CommandID            domain.CommandID
+	Controller           domain.ControllerIdentity
+	IdempotencyKey       string
+	RequestHash          domain.CanonicalHash
+	IdempotencyRetention time.Duration
+}
+
+// CancelCommandResult contains the command snapshot after the cancellation
+// request or its terminal race winner.
+type CancelCommandResult struct {
+	Command   store.CommandRecord
+	Duplicate bool
+}
+
+// CloseSessionRequest identifies a keyed session close policy. The policy is
+// represented in the canonical request hash, so changing it under one key is
+// an idempotency conflict.
+type CloseSessionRequest struct {
+	SessionID            domain.SessionID
+	Controller           domain.ControllerIdentity
+	IdempotencyKey       string
+	RequestHash          domain.CanonicalHash
+	Policy               string
+	IdempotencyRetention time.Duration
+}
+
+// CloseSessionResult contains the final or lost session snapshot.
+type CloseSessionResult struct {
+	Session   store.SessionRecord
+	Duplicate bool
+}
+
 // Service is the shared execution orchestration core. It performs policy
 // validation before the store's creating transaction and never starts a
 // runtime before that transaction commits.
 type Service struct {
-	store     *store.AuthorityStore
-	runtime   SessionRuntime
-	resolver  EnvironmentResolver
-	clock     Clock
-	publisher EventPublisher
+	store      *store.AuthorityStore
+	runtime    SessionRuntime
+	resolver   EnvironmentResolver
+	clock      Clock
+	publisher  EventPublisher
+	mutationMu sync.Mutex
 }
 
 // ExecutionService is the design-level name for Service.
@@ -477,6 +533,204 @@ func (s *Service) finishCommandFailure(ctx context.Context, session store.Sessio
 		return SubmitCommandResult{Command: completed}, fmt.Errorf("%w: %v", ErrShellExited, cause)
 	}
 	return SubmitCommandResult{Command: completed}, fmt.Errorf("%w: %v", ErrCommandTransport, cause)
+}
+
+// CancelCommand records a keyed cancellation request and applies it to queued
+// or running work. A queued command is terminal without a runtime call; a
+// running command enters cancelling first and only becomes cancelled after a
+// confirmed stop/output boundary. Otherwise it becomes lost and retains its
+// durable slot.
+func (s *Service) CancelCommand(ctx context.Context, request CancelCommandRequest) (CancelCommandResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return CancelCommandResult{}, ErrExecutionServiceConfiguration
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	command, err := s.store.GetCommand(ctx, request.CommandID)
+	if err != nil {
+		return CancelCommandResult{}, err
+	}
+	session, err := s.store.GetSession(ctx, command.SessionID)
+	if err != nil {
+		return CancelCommandResult{}, err
+	}
+	if session.Controller.Type() != request.Controller.Type() || session.Controller.ID() != request.Controller.ID() {
+		return CancelCommandResult{}, ErrSessionController
+	}
+	_, duplicate, err := s.store.EnsureIdempotency(ctx, request.Controller, "cancel_command", request.IdempotencyKey, request.RequestHash, string(command.CommandID), request.IdempotencyRetention)
+	if err != nil {
+		return CancelCommandResult{}, err
+	}
+	if duplicate || command.State.IsTerminal() {
+		return CancelCommandResult{Command: command, Duplicate: duplicate}, nil
+	}
+	if command.State == domain.CommandStateQueued {
+		cancelled, err := s.store.TransitionCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateCancelled, OutputComplete: true})
+		if err != nil {
+			return CancelCommandResult{}, err
+		}
+		return CancelCommandResult{Command: cancelled}, nil
+	}
+	if command.State != domain.CommandStateRunning && command.State != domain.CommandStateCancelling {
+		return CancelCommandResult{}, fmt.Errorf("%w: current command state %q", ErrCommandNotReady, command.State)
+	}
+	if command.State == domain.CommandStateRunning {
+		if _, err := s.store.TransitionCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateCancelling}); err != nil {
+			return CancelCommandResult{}, err
+		}
+		command.State = domain.CommandStateCancelling
+	}
+	control, ok := s.runtime.(RuntimeCommandControl)
+	if !ok {
+		return s.finishCancelledCommand(ctx, session, command, RuntimeCommandStopResult{}, ErrStopUnconfirmed)
+	}
+	stopped, stopErr := control.CancelCommand(ctx, RuntimeCommandRequest{Session: session, Command: command})
+	if stopErr != nil {
+		return s.finishCancelledCommand(ctx, session, command, stopped, stopErr)
+	}
+	return s.finishCancelledCommand(ctx, session, command, stopped, nil)
+}
+
+func (s *Service) finishCancelledCommand(ctx context.Context, session store.SessionRecord, command store.CommandRecord, stopped RuntimeCommandStopResult, stopErr error) (CancelCommandResult, error) {
+	if err := s.appendStopOutput(ctx, command.CommandID, stopped); err != nil {
+		stopErr = err
+		stopped.Confirmed = false
+	}
+	next := domain.CommandStateCancelled
+	nextSession := domain.SessionStateReady
+	reason := "command_cancelled"
+	release := true
+	resultErr := stopErr
+	if stopErr != nil || !stopped.Confirmed {
+		next = domain.CommandStateLost
+		nextSession = domain.SessionStateLost
+		reason = "command_stop_unconfirmed"
+		release = false
+		if resultErr == nil {
+			resultErr = ErrStopUnconfirmed
+		}
+	}
+	completed, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: next, OutputComplete: stopped.Confirmed}, nextSession, reason, release)
+	if err != nil {
+		return CancelCommandResult{Command: command}, err
+	}
+	result := CancelCommandResult{Command: completed}
+	if resultErr != nil {
+		return result, fmt.Errorf("%w: %v", ErrStopUnconfirmed, resultErr)
+	}
+	return result, nil
+}
+
+// CloseSession blocks new dispatch, terminally cancels queued commands, asks
+// the runtime to stop active work, and closes only after cleanup is confirmed.
+// An unconfirmed stop transitions the session to lost and preserves live
+// command slots.
+func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest) (CloseSessionResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return CloseSessionResult{}, ErrExecutionServiceConfiguration
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	session, err := s.store.GetSession(ctx, request.SessionID)
+	if err != nil {
+		return CloseSessionResult{}, err
+	}
+	if session.Controller.Type() != request.Controller.Type() || session.Controller.ID() != request.Controller.ID() {
+		return CloseSessionResult{}, ErrSessionController
+	}
+	_, duplicate, err := s.store.EnsureIdempotency(ctx, request.Controller, "close_session", request.IdempotencyKey, request.RequestHash, string(session.SessionID), request.IdempotencyRetention)
+	if err != nil {
+		return CloseSessionResult{}, err
+	}
+	if duplicate || session.State.IsTerminal() {
+		return CloseSessionResult{Session: session, Duplicate: duplicate}, nil
+	}
+	commands, err := s.store.ListSessionCommands(ctx, session.SessionID)
+	if err != nil {
+		return CloseSessionResult{}, err
+	}
+	if _, err := s.store.TransitionSession(ctx, session.SessionID, domain.SessionStateClosing, "close_requested"); err != nil {
+		return CloseSessionResult{}, err
+	}
+	closing, err := s.store.GetSession(ctx, session.SessionID)
+	if err != nil {
+		return CloseSessionResult{}, err
+	}
+	control, hasControl := s.runtime.(RuntimeCommandControl)
+	for _, command := range commands {
+		switch command.State {
+		case domain.CommandStateQueued:
+			if _, err := s.store.TransitionCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateCancelled, OutputComplete: true}); err != nil {
+				return CloseSessionResult{}, err
+			}
+		case domain.CommandStateRunning, domain.CommandStateCancelling:
+			if command.State == domain.CommandStateRunning {
+				if _, err := s.store.TransitionCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateCancelling}); err != nil {
+					return CloseSessionResult{}, err
+				}
+				command.State = domain.CommandStateCancelling
+			}
+			if !hasControl {
+				_, _ = s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateLost, OutputComplete: false}, domain.SessionStateClosing, "close_stop_unconfirmed", false)
+				return s.markClosingLost(ctx, closing, ErrStopUnconfirmed)
+			}
+			stopped, stopErr := control.CancelCommand(ctx, RuntimeCommandRequest{Session: closing, Command: command})
+			if err := s.appendStopOutput(ctx, command.CommandID, stopped); err != nil {
+				stopErr = err
+				stopped.Confirmed = false
+			}
+			if stopErr != nil || !stopped.Confirmed {
+				_, _ = s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateLost, OutputComplete: false}, domain.SessionStateClosing, "close_stop_unconfirmed", false)
+				return s.markClosingLost(ctx, closing, fmt.Errorf("%w: %v", ErrStopUnconfirmed, stopErr))
+			}
+			if _, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateCancelled, OutputComplete: true}, domain.SessionStateClosing, "close_command_cancelled", true); err != nil {
+				return CloseSessionResult{}, err
+			}
+		}
+	}
+	if hasControl {
+		confirmed, stopErr := control.StopSession(ctx, closing)
+		if stopErr != nil || !confirmed {
+			if stopErr == nil {
+				stopErr = ErrStopUnconfirmed
+			}
+			return s.markClosingLost(ctx, closing, stopErr)
+		}
+	}
+	closed, err := s.store.TransitionSession(ctx, session.SessionID, domain.SessionStateClosed, "runtime_closed")
+	if err != nil {
+		return CloseSessionResult{}, err
+	}
+	if err := s.store.ConfirmSessionCleanup(ctx, session.SessionID); err != nil {
+		return CloseSessionResult{}, err
+	}
+	return CloseSessionResult{Session: closed}, nil
+}
+
+func (s *Service) markClosingLost(ctx context.Context, session store.SessionRecord, cause error) (CloseSessionResult, error) {
+	lost, err := s.store.TransitionSession(ctx, session.SessionID, domain.SessionStateLost, "runtime_cleanup_unconfirmed")
+	if err != nil {
+		return CloseSessionResult{}, err
+	}
+	return CloseSessionResult{Session: lost}, fmt.Errorf("%w: %v", ErrStopUnconfirmed, cause)
+}
+
+func (s *Service) appendStopOutput(ctx context.Context, commandID domain.CommandID, stopped RuntimeCommandStopResult) error {
+	for _, output := range []struct {
+		typ  string
+		data []byte
+	}{
+		{typ: "stdout", data: stopped.Stdout},
+		{typ: "stderr", data: stopped.Stderr},
+	} {
+		if len(output.data) == 0 {
+			continue
+		}
+		if _, err := s.store.AppendCommandEvent(ctx, store.CommandEventAppend{CommandID: commandID, Type: output.typ, Payload: output.data, ByteCount: int64(len(output.data))}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetSession returns an as-of authoritative snapshot after checking the
