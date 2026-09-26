@@ -3,6 +3,8 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +25,7 @@ var (
 	ErrRemoteUncertain           = errors.New("remote authority acceptance is uncertain")
 	ErrRemoteResponse            = errors.New("remote bridge response is invalid")
 	ErrRemotePayload             = errors.New("remote bridge payload cannot be built")
+	ErrRemoteNotReconciled       = errors.New("remote intent remains uncertain after reconciliation")
 )
 
 // RemoteCaller is the identity-preserving bridge operation used by the remote
@@ -84,6 +87,52 @@ func (d *RemoteDriver) DispatchIntent(ctx context.Context, id domain.IntentID) (
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, fmt.Errorf("%w: operation %s", ErrRemotePayload, intent.Operation)
 	}
 	return d.dispatchIntent(ctx, intent.IntentID)
+}
+
+// ReconcileIntent queries the target authority for an intent that may have
+// crossed the bridge before the response was lost. It never resubmits the
+// mutation. A matching target resource becomes accepted; an explicit
+// resource_not_found result becomes proven not_delivered; every other outcome
+// remains uncertain for a later retry or deadline decision.
+func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
+	if d == nil || d.authority == nil || d.caller == nil {
+		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, ErrRemoteDriverConfiguration
+	}
+	intent, err := d.authority.GetLocalIntent(ctx, id)
+	if err != nil {
+		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, err
+	}
+	if intent.Target.Kind() != domain.TargetKindRemote || (intent.DeliveryState != store.LocalIntentDispatching && intent.DeliveryState != store.LocalIntentUncertain) {
+		return intent, sshbridge.ReplyFrame{}, nil
+	}
+	frame, err := readFrameForRemoteIntent(intent)
+	if err != nil {
+		return intent, sshbridge.ReplyFrame{}, err
+	}
+	reply, callErr := d.caller.Call(ctx, frame)
+	if callErr != nil {
+		return intent, sshbridge.ReplyFrame{}, fmt.Errorf("%w: read transport: %v", ErrRemoteNotReconciled, callErr)
+	}
+	outcome, err := reconcileRemoteReply(intent, frame, reply)
+	if err != nil {
+		return intent, reply, err
+	}
+	switch outcome {
+	case reconcileAccepted:
+		accepted, transitionErr := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentAccepted, "remote_reconciled_target_found")
+		if transitionErr != nil {
+			return intent, reply, transitionErr
+		}
+		return accepted, reply, nil
+	case reconcileNotDelivered:
+		notDelivered, transitionErr := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentNotDelivered, "remote_reconciled_not_found")
+		if transitionErr != nil {
+			return intent, reply, transitionErr
+		}
+		return notDelivered, reply, nil
+	default:
+		return intent, reply, ErrRemoteNotReconciled
+	}
 }
 
 func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
@@ -171,6 +220,31 @@ func frameForRemoteIntent(intent store.LocalIntentRecord) (sshbridge.RequestFram
 		IdempotencyKey:  intent.IdempotencyKey,
 		Payload:         payload,
 	}, nil
+}
+
+func readFrameForRemoteIntent(intent store.LocalIntentRecord) (sshbridge.RequestFrame, error) {
+	var operation sshbridge.Operation
+	var resourceField string
+	var resourceID string
+	switch intent.Operation {
+	case operationCreateSession, operationCloseSession:
+		operation = sshbridge.OperationGetSession
+		resourceField = "session_id"
+		resourceID = string(intent.SessionID)
+	case operationSubmitCommand, operationCancelCommand:
+		operation = sshbridge.OperationGetCommand
+		resourceField = "command_id"
+		resourceID = string(intent.CommandID)
+	case "run":
+		operation = sshbridge.OperationGetJob
+		resourceField = "job_id"
+		resourceID = string(intent.JobID)
+	default:
+		return sshbridge.RequestFrame{}, fmt.Errorf("%w: unsupported reconciliation operation %q", ErrRemotePayload, intent.Operation)
+	}
+	value, _ := json.Marshal(resourceID)
+	payload, _ := json.Marshal(map[string]json.RawMessage{resourceField: value})
+	return sshbridge.RequestFrame{ProtocolVersion: sshbridge.ProtocolVersion, RequestID: string(intent.IntentID) + "/reconcile", Operation: operation, Payload: payload}, nil
 }
 
 func bridgePayloadForIntent(intent store.LocalIntentRecord) (json.RawMessage, error) {
@@ -306,6 +380,114 @@ func validateRemoteReply(intent store.LocalIntentRecord, frame sshbridge.Request
 		if raw, ok := object["ordinal"]; !ok || json.Unmarshal(raw, &ordinal) != nil || ordinal != *intent.IntentOrdinal {
 			return fmt.Errorf("%w: command ordinal mismatch", ErrRemoteResponse)
 		}
+	}
+	return nil
+}
+
+type reconcileResult string
+
+const (
+	reconcileAccepted     reconcileResult = "accepted"
+	reconcileNotDelivered reconcileResult = "not_delivered"
+)
+
+func reconcileRemoteReply(intent store.LocalIntentRecord, frame sshbridge.RequestFrame, reply sshbridge.ReplyFrame) (reconcileResult, error) {
+	if reply.ProtocolVersion != sshbridge.ProtocolVersion || reply.RequestID != frame.RequestID {
+		return "", fmt.Errorf("%w: reconciliation protocol or request identity mismatch", ErrRemoteNotReconciled)
+	}
+	if reply.ResponseType == "error" {
+		var payload sshbridge.ErrorPayload
+		decoder := json.NewDecoder(bytes.NewReader(reply.Payload))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&payload); err != nil {
+			return "", fmt.Errorf("%w: reconciliation error payload: %v", ErrRemoteNotReconciled, err)
+		}
+		if payload.Code == "resource_not_found" {
+			return reconcileNotDelivered, nil
+		}
+		return "", fmt.Errorf("%w: %s", ErrRemoteNotReconciled, payload.Message)
+	}
+	if reply.ResponseType != "result" {
+		return "", fmt.Errorf("%w: reconciliation response type %q", ErrRemoteNotReconciled, reply.ResponseType)
+	}
+	var object map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(reply.Payload))
+	if err := decoder.Decode(&object); err != nil || object == nil {
+		return "", fmt.Errorf("%w: reconciliation result object", ErrRemoteNotReconciled)
+	}
+	if err := validateReconciledResource(intent, object); err != nil {
+		return "", err
+	}
+	return reconcileAccepted, nil
+}
+
+func validateReconciledResource(intent store.LocalIntentRecord, object map[string]json.RawMessage) error {
+	readString := func(name, expected string) error {
+		var value string
+		raw, ok := object[name]
+		if !ok || json.Unmarshal(raw, &value) != nil || value != expected {
+			return fmt.Errorf("%w: %s mismatch", ErrRemoteNotReconciled, name)
+		}
+		return nil
+	}
+	switch intent.Operation {
+	case operationCreateSession:
+		if err := readString("session_id", string(intent.SessionID)); err != nil {
+			return err
+		}
+		if err := readString("environment", intent.Environment); err != nil {
+			return err
+		}
+		return validateRemoteTarget(object)
+	case operationSubmitCommand:
+		if err := readString("command_id", string(intent.CommandID)); err != nil {
+			return err
+		}
+		if err := readString("session_id", string(intent.SessionID)); err != nil {
+			return err
+		}
+		if intent.IntentOrdinal == nil {
+			return fmt.Errorf("%w: missing local command ordinal", ErrRemoteNotReconciled)
+		}
+		var ordinal int64
+		if raw, ok := object["ordinal"]; !ok || json.Unmarshal(raw, &ordinal) != nil || ordinal != *intent.IntentOrdinal {
+			return fmt.Errorf("%w: ordinal mismatch", ErrRemoteNotReconciled)
+		}
+		var scriptHash string
+		digest := sha256.Sum256(intent.ScriptBytes)
+		expectedHash := hex.EncodeToString(digest[:])
+		if raw, ok := object["script_sha256"]; !ok || json.Unmarshal(raw, &scriptHash) != nil || scriptHash != expectedHash {
+			return fmt.Errorf("%w: script hash mismatch", ErrRemoteNotReconciled)
+		}
+		return nil
+	case operationCancelCommand:
+		return readString("command_id", string(intent.CommandID))
+	case operationCloseSession:
+		return readString("session_id", string(intent.SessionID))
+	case "run":
+		if err := readString("job_id", string(intent.JobID)); err != nil {
+			return err
+		}
+		if err := readString("session_id", string(intent.SessionID)); err != nil {
+			return err
+		}
+		if err := readString("command_id", string(intent.CommandID)); err != nil {
+			return err
+		}
+		return validateRemoteTarget(object)
+	default:
+		return fmt.Errorf("%w: operation %s", ErrRemoteNotReconciled, intent.Operation)
+	}
+}
+
+func validateRemoteTarget(object map[string]json.RawMessage) error {
+	var target struct {
+		Kind    string `json:"kind"`
+		Profile string `json:"profile"`
+	}
+	raw, ok := object["execution_target"]
+	if !ok || json.Unmarshal(raw, &target) != nil || target.Kind != string(domain.TargetKindRemote) || target.Profile == "" {
+		return fmt.Errorf("%w: execution target mismatch", ErrRemoteNotReconciled)
 	}
 	return nil
 }
