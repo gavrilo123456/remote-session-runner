@@ -57,7 +57,7 @@
     },
     {
       "if": { "properties": { "operation": { "const": "stream_command_events" } }, "required": ["operation"] },
-      "then": { "properties": { "payload": { "required": ["command_id", "after_sequence"], "properties": { "command_id": { "type": "string", "minLength": 1 }, "after_sequence": { "type": "integer", "minimum": 0 } } } }, "not": { "anyOf": [{ "required": ["resource_id"] }, { "required": ["idempotency_key"] }] } }
+      "then": { "properties": { "payload": { "required": ["command_id", "after_sequence"], "properties": { "command_id": { "type": "string", "minLength": 1 }, "after_sequence": { "type": "integer", "minimum": 0 }, "follow": { "type": "boolean" } } } }, "not": { "anyOf": [{ "required": ["resource_id"] }, { "required": ["idempotency_key"] }] } }
     },
     {
       "if": { "properties": { "operation": { "const": "cancel_command" } }, "required": ["operation"] },

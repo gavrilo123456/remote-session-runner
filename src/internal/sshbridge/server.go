@@ -42,8 +42,8 @@ func NewServer(options ServerOptions) (*Server, error) {
 }
 
 // Serve processes newline-delimited requests until EOF or context cancellation.
-// hello and ping are answered locally. A non-handshake operation is rejected in
-// P049 when no handler is installed; later bridge phases install forwarding.
+// hello and ping are answered locally; installed handlers forward the remaining
+// operations, including multi-frame event streams.
 func (s *Server) Serve(ctx context.Context, authenticatedKey string, reader io.Reader, writer io.Writer) error {
 	if s == nil || reader == nil || writer == nil {
 		return ErrInvalidFrame
@@ -73,6 +73,31 @@ func (s *Server) Serve(ctx context.Context, authenticatedKey string, reader io.R
 		default:
 			if s.handler == nil {
 				reply = errorReply(request.RequestID, fmt.Errorf("%w: %s", ErrOperationUnsupported, request.Operation))
+			} else if request.Operation == OperationStreamCommandEvents {
+				streamer, ok := s.handler.(StreamRequestHandler)
+				if !ok {
+					reply = errorReply(request.RequestID, fmt.Errorf("%w: %s", ErrOperationUnsupported, request.Operation))
+					if err := Encode(writer, reply); err != nil {
+						return err
+					}
+					continue
+				}
+				wrote := false
+				err := streamer.Stream(ctx, controller, request, func(streamReply ReplyFrame) error {
+					if err := Encode(writer, streamReply); err != nil {
+						return err
+					}
+					wrote = true
+					return nil
+				})
+				if err != nil {
+					if wrote {
+						return err
+					}
+					reply = errorReply(request.RequestID, err)
+				} else {
+					continue
+				}
 			} else {
 				reply, err = s.handler.Handle(ctx, controller, request)
 				if err != nil {

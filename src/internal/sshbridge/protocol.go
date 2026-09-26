@@ -325,8 +325,14 @@ func errorReply(requestID string, err error) ReplyFrame {
 }
 
 // RequestHandler receives non-handshake operations after framing and
-// authenticated controller mapping. P050+ adapters provide the forwarding
-// implementation; P049 intentionally does not forward any operation.
+// authenticated controller mapping. Streaming operations use the optional
+// StreamRequestHandler interface below.
 type RequestHandler interface {
 	Handle(context.Context, domain.ControllerIdentity, RequestFrame) (ReplyFrame, error)
+}
+
+// StreamRequestHandler handles an operation that can produce multiple reply
+// frames. The callback is called in wire order.
+type StreamRequestHandler interface {
+	Stream(context.Context, domain.ControllerIdentity, RequestFrame, func(ReplyFrame) error) error
 }

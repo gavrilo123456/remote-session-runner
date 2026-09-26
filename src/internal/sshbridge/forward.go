@@ -1,8 +1,10 @@
 package sshbridge
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,12 +13,18 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"remote-session-runner/src/internal/domain"
 )
 
 const defaultPrivateResponseBytes int64 = domain.MaxSerializedRequestBytes
+
+const bridgeMaxOutputChunkBytes = 16 << 10
+
+const maxBridgeEventLineBytes = domain.MaxSerializedFrameBytes
 
 var (
 	ErrForwarderConfiguration = errors.New("SSH bridge forwarder configuration is invalid")
@@ -31,7 +39,7 @@ type ForwarderOptions struct {
 	MaxResponseBytes int64
 }
 
-// RunnerdForwarder forwards the bridge operations implemented through P053.
+// RunnerdForwarder forwards the bridge operations implemented through P054.
 type RunnerdForwarder struct {
 	client           *http.Client
 	baseURL          string
@@ -83,8 +91,8 @@ func NewUnixSocketForwarder(socketPath string) (*RunnerdForwarder, error) {
 	return NewRunnerdForwarder(ForwarderOptions{Client: client})
 }
 
-// Handle implements RequestHandler for the bridge forwarding subset completed
-// through P052.
+// Handle implements RequestHandler for non-streaming bridge operations through
+// P054. Event streaming is exposed through StreamRequestHandler.
 func (f *RunnerdForwarder) Handle(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
 	if f == nil || f.client == nil {
 		return ReplyFrame{}, ErrForwarderConfiguration
@@ -106,6 +114,8 @@ func (f *RunnerdForwarder) Handle(ctx context.Context, controller domain.Control
 		return f.cancelCommand(ctx, controller, request)
 	case OperationCloseSession:
 		return f.closeSession(ctx, controller, request)
+	case OperationStreamCommandEvents:
+		return ReplyFrame{}, fmt.Errorf("%w: %s requires streaming dispatch", ErrOperationUnsupported, request.Operation)
 	default:
 		return ReplyFrame{}, fmt.Errorf("%w: %s", ErrOperationUnsupported, request.Operation)
 	}
@@ -158,6 +168,12 @@ type bridgeRunJobPayload struct {
 
 type bridgeGetJobPayload struct {
 	JobID string `json:"job_id"`
+}
+
+type bridgeStreamEventsPayload struct {
+	CommandID     string `json:"command_id"`
+	AfterSequence int64  `json:"after_sequence"`
+	Follow        bool   `json:"follow,omitempty"`
 }
 
 type bridgeCancelCommandPayload struct {
@@ -385,6 +401,174 @@ func (f *RunnerdForwarder) closeSession(ctx context.Context, controller domain.C
 	return f.doJSON(ctx, request.RequestID, http.MethodDelete, "/internal/v1/sessions/"+url.PathEscape(payload.SessionID), nil, body)
 }
 
+type privateCommandEvent struct {
+	CommandID  string    `json:"command_id"`
+	Sequence   int64     `json:"sequence"`
+	Type       string    `json:"type"`
+	OccurredAt time.Time `json:"occurred_at"`
+	ByteCount  int64     `json:"byte_count"`
+	DataBase64 string    `json:"data_base64,omitempty"`
+}
+
+// Stream forwards private runnerd event NDJSON as bounded bridge event frames.
+// Reconnects use the supplied cursor and never allocate or mutate resources.
+func (f *RunnerdForwarder) Stream(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame, send func(ReplyFrame) error) error {
+	if f == nil || f.client == nil || send == nil {
+		return ErrForwarderConfiguration
+	}
+	payload, err := decodeBridgePayload[bridgeStreamEventsPayload](request.Payload)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.AfterSequence < 0 {
+		return fmt.Errorf("%w: stream requires command_id and non-negative after_sequence", ErrInvalidFrame)
+	}
+	query := url.Values{}
+	query.Set("controller_type", string(controller.Type()))
+	query.Set("controller_id", string(controller.ID()))
+	query.Set("after", strconv.FormatInt(payload.AfterSequence, 10))
+	if payload.Follow {
+		query.Set("follow", "true")
+	}
+	target := f.baseURL + "/internal/v1/commands/" + url.PathEscape(payload.CommandID) + "/events?" + query.Encode()
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return fmt.Errorf("%w: private event request: %v", ErrPrivateResponse, err)
+	}
+	response, err := f.client.Do(httpRequest)
+	if err != nil {
+		return send(transportUncertainReply(request.RequestID, err))
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return send(privateErrorReply(request.RequestID, response.StatusCode, readPrivateErrorBody(response.Body, f.maxResponseBytes)))
+	}
+	reader := bufio.NewReader(response.Body)
+	lastSequence := payload.AfterSequence
+	for {
+		line, readErr := readBoundedLine(reader, maxBridgeEventLineBytes)
+		if len(line) != 0 {
+			event, decodeErr := decodePrivateEvent(line)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			if event.CommandID != payload.CommandID || event.Sequence != lastSequence+1 {
+				return send(eventHistoryUnavailableReply(request.RequestID, payload.CommandID, lastSequence, "private event sequence is not contiguous"))
+			}
+			frame, frameErr := bridgeEventReply(request.RequestID, event)
+			if frameErr != nil {
+				return frameErr
+			}
+			if err := send(frame); err != nil {
+				return err
+			}
+			lastSequence = event.Sequence
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return fmt.Errorf("%w: event stream read: %v", ErrPrivateResponse, readErr)
+		}
+	}
+	return send(streamEndReply(request.RequestID, lastSequence))
+}
+
+func decodePrivateEvent(raw []byte) (privateCommandEvent, error) {
+	var event privateCommandEvent
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&event); err != nil {
+		return privateCommandEvent{}, fmt.Errorf("%w: event JSON: %v", ErrPrivateResponse, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return privateCommandEvent{}, fmt.Errorf("%w: event trailing JSON", ErrPrivateResponse)
+	}
+	if strings.TrimSpace(event.CommandID) == "" || event.Sequence < 1 || strings.TrimSpace(event.Type) == "" || event.OccurredAt.IsZero() {
+		return privateCommandEvent{}, fmt.Errorf("%w: event envelope is incomplete", ErrPrivateResponse)
+	}
+	if event.ByteCount < 0 {
+		return privateCommandEvent{}, fmt.Errorf("%w: event byte count is negative", ErrPrivateResponse)
+	}
+	if event.Type == "stdout" || event.Type == "stderr" {
+		if event.DataBase64 == "" {
+			return privateCommandEvent{}, fmt.Errorf("%w: output event has no data", ErrPrivateResponse)
+		}
+		data, err := base64.StdEncoding.DecodeString(event.DataBase64)
+		if err != nil || len(data) > bridgeMaxOutputChunkBytes || int64(len(data)) != event.ByteCount {
+			return privateCommandEvent{}, fmt.Errorf("%w: output event exceeds chunk or byte-count bounds", ErrPrivateResponse)
+		}
+	} else if event.DataBase64 != "" || event.ByteCount != 0 {
+		return privateCommandEvent{}, fmt.Errorf("%w: non-output event carries output bytes", ErrPrivateResponse)
+	}
+	return event, nil
+}
+
+func bridgeEventReply(requestID string, event privateCommandEvent) (ReplyFrame, error) {
+	payload := map[string]any{
+		"command_id": event.CommandID, "sequence": event.Sequence, "type": event.Type,
+		"timestamp": event.OccurredAt.UTC().Format(time.RFC3339Nano),
+	}
+	if event.Type == "stdout" || event.Type == "stderr" {
+		payload["encoding"] = "base64"
+		payload["data_base64"] = event.DataBase64
+		payload["byte_count"] = event.ByteCount
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ReplyFrame{}, fmt.Errorf("%w: event reply: %v", ErrPrivateResponse, err)
+	}
+	return ReplyFrame{ProtocolVersion: ProtocolVersion, RequestID: requestID, ResponseType: "event", Payload: raw}, nil
+}
+
+func streamEndReply(requestID string, lastSequence int64) ReplyFrame {
+	payload, _ := json.Marshal(map[string]int64{"last_sequence": lastSequence})
+	return ReplyFrame{ProtocolVersion: ProtocolVersion, RequestID: requestID, ResponseType: "stream_end", Payload: payload}
+}
+
+func eventHistoryUnavailableReply(requestID, resourceID string, lastSequence int64, message string) ReplyFrame {
+	payload, _ := json.Marshal(ErrorPayload{Code: "event_history_unavailable", Message: message, Retryable: false, ResourceID: resourceID, Details: map[string]any{"last_sequence": lastSequence}})
+	return ReplyFrame{ProtocolVersion: ProtocolVersion, RequestID: requestID, ResponseType: "error", Payload: payload}
+}
+
+func readPrivateErrorBody(body io.Reader, limit int64) []byte {
+	if limit <= 0 {
+		limit = defaultPrivateResponseBytes
+	}
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil || int64(len(data)) > limit {
+		return nil
+	}
+	return data
+}
+
+func readBoundedLine(reader *bufio.Reader, limit int64) ([]byte, error) {
+	line := make([]byte, 0, 4096)
+	for {
+		part, err := reader.ReadSlice('\n')
+		if len(part) != 0 {
+			if int64(len(line)+len(part)) > limit+1 {
+				return nil, fmt.Errorf("%w: event line exceeds %d bytes", ErrPrivateResponse, limit)
+			}
+			line = append(line, part...)
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			if len(line) == 0 {
+				return nil, io.EOF
+			}
+			return line, io.EOF
+		}
+		if err != nil {
+			return nil, err
+		}
+		return line[:len(line)-1], nil
+	}
+}
+
 func decodeBridgePayload[T any](raw json.RawMessage) (T, error) {
 	var value T
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -476,6 +660,8 @@ func privateErrorReply(requestID string, status int, raw []byte) ReplyFrame {
 	case http.StatusBadGateway, http.StatusGatewayTimeout:
 		code = "transport_uncertain"
 		retryable = true
+	case http.StatusGone, http.StatusRequestedRangeNotSatisfiable:
+		code = "event_history_unavailable"
 	}
 	message := fmt.Sprintf("runnerd private API returned HTTP %d", status)
 	var private map[string]string

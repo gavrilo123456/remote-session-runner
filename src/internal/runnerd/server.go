@@ -791,6 +791,22 @@ func (s *PrivateServer) handleCommandEvents(response http.ResponseWriter, reques
 		writePrivateError(response, privateStatusForError(err), err.Error())
 		return
 	}
+	var replay []store.CommandEventRecord
+	var subscription *store.CommandEventSubscription
+	if !follow {
+		replay, err = s.service.ReplayCommandEvents(request.Context(), id, controller, after)
+		if err != nil {
+			writePrivateError(response, privateStatusForError(err), err.Error())
+			return
+		}
+	} else {
+		subscription, err = s.service.SubscribeCommandEvents(request.Context(), id, controller, after, 256)
+		if err != nil {
+			writePrivateError(response, privateStatusForError(err), err.Error())
+			return
+		}
+		defer subscription.Close()
+	}
 	response.Header().Set("Content-Type", "application/x-ndjson")
 	response.WriteHeader(http.StatusOK)
 	flusher, _ := response.(http.Flusher)
@@ -808,22 +824,13 @@ func (s *PrivateServer) handleCommandEvents(response http.ResponseWriter, reques
 		return nil
 	}
 	if !follow {
-		events, err := s.service.ReplayCommandEvents(request.Context(), id, controller, after)
-		if err != nil {
-			return
-		}
-		for _, event := range events {
+		for _, event := range replay {
 			if err := writeEvent(event); err != nil {
 				return
 			}
 		}
 		return
 	}
-	subscription, err := s.service.SubscribeCommandEvents(request.Context(), id, controller, after, 256)
-	if err != nil {
-		return
-	}
-	defer subscription.Close()
 	for {
 		select {
 		case event, ok := <-subscription.Events():
@@ -1202,6 +1209,8 @@ func privateStatusForError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, execution.ErrRuntimeUnavailable):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, store.ErrCommandReplayGap):
+		return http.StatusRequestedRangeNotSatisfiable
 	case errors.Is(err, domain.ErrEnvironmentTargetMismatch), errors.Is(err, domain.ErrEnvironmentSourceMismatch), errors.Is(err, domain.ErrControllerMismatch), errors.Is(err, domain.ErrUnsupportedIsolationRequirement), errors.Is(err, domain.ErrLimitExceedsServiceCeiling), errors.Is(err, domain.ErrInvalidRequestedLimits), errors.Is(err, store.ErrInvalidJob), errors.Is(err, execution.ErrSessionNotReady), errors.Is(err, execution.ErrCommandNotReady), errors.Is(err, store.ErrCommandSessionState):
 		return http.StatusBadRequest
 	default:
