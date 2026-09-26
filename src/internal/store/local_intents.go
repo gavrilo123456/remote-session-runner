@@ -173,6 +173,37 @@ func (s *AuthorityStore) GetLocalIntent(ctx context.Context, id domain.IntentID)
 	})
 }
 
+// GetLocalIntentByResource returns the immutable intent for one controller's
+// resource and operation. Resource IDs are stable API identifiers; callers do
+// not need to expose the internal intent ID to read a local projection.
+func (s *AuthorityStore) GetLocalIntentByResource(ctx context.Context, operation, resourceID string, controller domain.ControllerIdentity) (LocalIntentRecord, error) {
+	if operation == "" || resourceID == "" {
+		return LocalIntentRecord{}, fmt.Errorf("%w: operation and resource ID are required", ErrInvalidLocalIntent)
+	}
+	if _, err := domain.NewControllerIdentity(controller.Type(), controller.ID()); err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("%w: controller: %v", ErrInvalidLocalIntent, err)
+	}
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+		var intentID string
+		err := connection.QueryRowContext(ctx, `
+SELECT intent_id FROM local_intents
+WHERE operation = ? AND resource_id = ? AND controller_type = ? AND controller_id = ?
+ORDER BY created_at DESC, intent_id DESC LIMIT 1
+`, operation, resourceID, string(controller.Type()), string(controller.ID())).Scan(&intentID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return LocalIntentRecord{}, ErrLocalIntentNotFound
+		}
+		if err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("lookup local intent by resource: %w", err)
+		}
+		id, err := domain.NewIntentID(intentID)
+		if err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("%w: intent ID: %v", ErrLocalIntentPayloadCorrupt, err)
+		}
+		return readLocalIntentOnConnection(ctx, connection, id)
+	})
+}
+
 // ValidateLocalIntentPayload verifies the persisted immutable payload without
 // exposing it to a caller that only needs a durability check.
 func (s *AuthorityStore) ValidateLocalIntentPayload(ctx context.Context, id domain.IntentID) error {
