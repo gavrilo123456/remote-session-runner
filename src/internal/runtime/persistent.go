@@ -37,6 +37,8 @@ type PersistentShellOptions struct {
 	Descriptors           ReservedDescriptors
 	OutputBoundaryTimeout time.Duration
 	MaxOutputBytes        int64
+	ProcessInspector      ProcessInspector
+	DescendantKiller      DescendantKiller
 }
 
 // PersistentShellResult is the result of one sourced script. The shell itself
@@ -57,6 +59,25 @@ type PersistentShellStopResult struct {
 	CommandID string
 	Confirmed bool
 }
+
+// DescendantProcess is a best-effort process-tree observation under the
+// account running the session. It is lifecycle evidence, not confinement.
+type DescendantProcess struct {
+	PID     int
+	Parent  int
+	Command string
+}
+
+// DescendantCleanupResult records whether all observed descendants stopped.
+type DescendantCleanupResult struct {
+	Confirmed bool
+	Remaining []DescendantProcess
+}
+
+// ProcessInspector and DescendantKiller are injectable host seams for
+// hermetic lifecycle tests. Defaults use the host process table and signals.
+type ProcessInspector func(rootPID int) ([]DescendantProcess, error)
+type DescendantKiller func(rootPID int, signal syscall.Signal) int
 
 const (
 	// MaxOutputChunkBytes is the raw-byte ceiling for one agent output chunk.
@@ -101,22 +122,25 @@ func NewPersistentBash(ctx context.Context, options PersistentBashOptions) (*Per
 // PersistentShell owns one long-lived Bash process. Calls to RunScript are
 // serialized so a script and its control frame cannot overlap another command.
 type PersistentShell struct {
-	mu              sync.Mutex
-	stateMu         sync.Mutex
-	cmd             *exec.Cmd
-	stdin           io.WriteCloser
-	control         io.ReadCloser
-	parser          *ControlParser
-	workspace       string
-	removeOnClose   bool
-	boundaryTimeout time.Duration
-	maxOutputBytes  int64
-	closed          bool
-	lost            bool
-	activeCommand   string
-	activeDone      chan struct{}
-	cancelRequested bool
-	stopConfirmed   bool
+	mu                 sync.Mutex
+	stateMu            sync.Mutex
+	cmd                *exec.Cmd
+	stdin              io.WriteCloser
+	control            io.ReadCloser
+	parser             *ControlParser
+	workspace          string
+	removeOnClose      bool
+	boundaryTimeout    time.Duration
+	maxOutputBytes     int64
+	closed             bool
+	lost               bool
+	activeCommand      string
+	activeDone         chan struct{}
+	cancelRequested    bool
+	stopConfirmed      bool
+	cleanupConfirmed   bool
+	inspectDescendants ProcessInspector
+	killDescendants    DescendantKiller
 }
 
 // StartPersistentShell starts one Bash process with a dedicated control-write
@@ -217,7 +241,15 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 	_ = devNull.Close()
 	_ = controlWrite.Close()
 	_ = stdinReader.Close()
-	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, parser: parser, workspace: workspace, removeOnClose: removeOnClose, boundaryTimeout: boundaryTimeout, maxOutputBytes: maxOutputBytes}, nil
+	inspector := options.ProcessInspector
+	if inspector == nil {
+		inspector = inspectProcessDescendants
+	}
+	killer := options.DescendantKiller
+	if killer == nil {
+		killer = signalDescendants
+	}
+	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, parser: parser, workspace: workspace, removeOnClose: removeOnClose, boundaryTimeout: boundaryTimeout, maxOutputBytes: maxOutputBytes, inspectDescendants: inspector, killDescendants: killer}, nil
 }
 
 // RunScript atomically materializes a private script, sources it in the
@@ -252,7 +284,7 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	s.stateMu.Unlock()
 	defer func() {
 		s.stateMu.Lock()
-		if s.cancelRequested && runErr == nil && !s.lost && s.cmd.ProcessState == nil {
+		if s.cancelRequested && runErr == nil && !s.lost && s.processAlive() {
 			s.stopConfirmed = true
 		}
 		close(activeDone)
@@ -419,6 +451,12 @@ func (s *PersistentShell) CancelCurrentCommand(ctx context.Context, grace time.D
 		s.stateMu.Lock()
 		confirmed := s.stopConfirmed
 		s.stateMu.Unlock()
+		if confirmed && !s.processAlive() {
+			s.mu.Lock()
+			s.lost = true
+			s.mu.Unlock()
+			return PersistentShellStopResult{CommandID: commandID}, ErrPersistentShellLost
+		}
 		return PersistentShellStopResult{CommandID: commandID, Confirmed: confirmed}, nil
 	case <-ctx.Done():
 		return PersistentShellStopResult{CommandID: commandID}, ctx.Err()
@@ -431,7 +469,7 @@ func (s *PersistentShell) CancelCurrentCommand(ctx context.Context, grace time.D
 			s.stateMu.Lock()
 			confirmed := s.stopConfirmed
 			s.stateMu.Unlock()
-			if confirmed {
+			if confirmed && s.processAlive() {
 				return PersistentShellStopResult{CommandID: commandID, Confirmed: true}, nil
 			}
 			return PersistentShellStopResult{CommandID: commandID, Confirmed: false}, ErrPersistentShellLost
@@ -441,34 +479,57 @@ func (s *PersistentShell) CancelCurrentCommand(ctx context.Context, grace time.D
 	}
 }
 
+func (s *PersistentShell) processAlive() bool {
+	if s == nil || s.cmd == nil || s.cmd.Process == nil || s.cmd.ProcessState != nil {
+		return false
+	}
+	return s.cmd.Process.Signal(syscall.Signal(0)) == nil
+}
+
 func signalDescendants(rootPID int, signal syscall.Signal) int {
-	output, err := exec.Command("ps", "-axo", "pid=,ppid=").Output()
+	descendants, err := inspectProcessDescendants(rootPID)
 	if err != nil {
 		return 0
 	}
-	children := make(map[int][]int)
+	count := 0
+	for _, descendant := range descendants {
+		if syscall.Kill(descendant.PID, signal) == nil {
+			count++
+		}
+	}
+	return count
+}
+
+func inspectProcessDescendants(rootPID int) ([]DescendantProcess, error) {
+	output, err := exec.Command("ps", "-axo", "pid=,ppid=,command=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("%w: inspect descendants: %v", ErrPersistentShellCommand, err)
+	}
+	type process struct {
+		pid, parent int
+		command     string
+	}
+	children := make(map[int][]process)
 	for _, line := range strings.Split(string(output), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 2 {
+		if len(fields) < 2 {
 			continue
 		}
 		pid, pidErr := strconv.Atoi(fields[0])
 		parent, parentErr := strconv.Atoi(fields[1])
 		if pidErr == nil && parentErr == nil {
-			children[parent] = append(children[parent], pid)
+			children[parent] = append(children[parent], process{pid: pid, parent: parent, command: strings.Join(fields[2:], " ")})
 		}
 	}
-	queue := append([]int(nil), children[rootPID]...)
-	count := 0
+	queue := append([]process(nil), children[rootPID]...)
+	result := make([]DescendantProcess, 0, len(queue))
 	for len(queue) > 0 {
-		pid := queue[0]
+		current := queue[0]
 		queue = queue[1:]
-		queue = append(queue, children[pid]...)
-		if syscall.Kill(pid, signal) == nil {
-			count++
-		}
+		result = append(result, DescendantProcess{PID: current.pid, Parent: current.parent, Command: current.command})
+		queue = append(queue, children[current.pid]...)
 	}
-	return count
+	return result, nil
 }
 
 func signalProcessGroup(pid int, signal syscall.Signal) error {
@@ -481,6 +542,76 @@ func signalProcessGroup(pid int, signal syscall.Signal) error {
 // StopCommand is an adapter-friendly alias for CancelCurrentCommand.
 func (s *PersistentShell) StopCommand(ctx context.Context, grace time.Duration) (PersistentShellStopResult, error) {
 	return s.CancelCurrentCommand(ctx, grace)
+}
+
+// InspectDescendants returns the current descendants of the persistent Bash.
+func (s *PersistentShell) InspectDescendants() ([]DescendantProcess, error) {
+	if s == nil || s.cmd == nil || s.cmd.Process == nil {
+		return nil, ErrPersistentShellClosed
+	}
+	return s.inspectDescendants(s.cmd.Process.Pid)
+}
+
+// CleanupDescendants sends bounded TERM/KILL signals to observed descendants.
+// A false result retains capacity until a later reconciliation pass.
+func (s *PersistentShell) CleanupDescendants(ctx context.Context, grace time.Duration) (DescendantCleanupResult, error) {
+	if s == nil {
+		return DescendantCleanupResult{}, ErrPersistentShellClosed
+	}
+	if ctx == nil {
+		return DescendantCleanupResult{}, fmt.Errorf("%w: nil context", ErrPersistentShellCommand)
+	}
+	if grace <= 0 {
+		grace = 500 * time.Millisecond
+	}
+	if descendants, err := s.InspectDescendants(); err != nil {
+		return DescendantCleanupResult{}, err
+	} else if len(descendants) == 0 {
+		s.stateMu.Lock()
+		s.cleanupConfirmed = true
+		s.stateMu.Unlock()
+		return DescendantCleanupResult{Confirmed: true}, nil
+	}
+	_ = s.killDescendants(s.cmd.Process.Pid, syscall.SIGTERM)
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	for {
+		remaining, err := s.InspectDescendants()
+		if err != nil {
+			return DescendantCleanupResult{}, err
+		}
+		if len(remaining) == 0 {
+			s.stateMu.Lock()
+			s.cleanupConfirmed = true
+			s.stateMu.Unlock()
+			return DescendantCleanupResult{Confirmed: true}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return DescendantCleanupResult{Remaining: remaining}, ctx.Err()
+		case <-deadline.C:
+			_ = s.killDescendants(s.cmd.Process.Pid, syscall.SIGKILL)
+			remaining, _ = s.InspectDescendants()
+			confirmed := len(remaining) == 0
+			s.stateMu.Lock()
+			s.cleanupConfirmed = confirmed
+			s.stateMu.Unlock()
+			return DescendantCleanupResult{Confirmed: confirmed, Remaining: remaining}, nil
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// CapacityRetained reports whether uncertain runtime resources remain
+// reserved until cleanup/reconciliation proves the descendants are gone.
+func (s *PersistentShell) CapacityRetained() bool {
+	if s == nil {
+		return false
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.lost && !s.cleanupConfirmed
 }
 
 func waitForOutputBoundary(stdoutDone, stderrDone <-chan outputDrainResult, timeout time.Duration, stdoutRead, stderrRead *os.File) (outputDrainResult, outputDrainResult, error) {
