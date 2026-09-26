@@ -139,7 +139,7 @@ func TestP045LinuxExactGitRevisionAndCredentialBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := shell.RunScript(context.Background(), "command-p045-source", []byte("printf '%s|' \"$(git rev-parse HEAD)\"\ncat tracked.txt\nif env | grep -F 'p045-secret' >/dev/null; then exit 41; fi\nprintf ready\n"))
+	result, err := shell.RunScript(context.Background(), "command-p045-source", []byte("printf '%s|' \"$(git rev-parse HEAD)\"\ncat tracked.txt\nprintf '\\n'\nif env | grep -F 'p045-secret' >/dev/null; then exit 41; fi\nprintf ready\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
