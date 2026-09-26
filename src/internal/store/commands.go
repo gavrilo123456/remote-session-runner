@@ -25,16 +25,20 @@ var (
 	ErrCommandEvent = errors.New("invalid command event")
 )
 
+const submitCommandOperation = "submit_command"
+
 // CommandAcceptance is the authoritative command-acceptance input. P015 adds
 // the reusable idempotency lookup; this phase still persists the canonical
 // request hash with the command row.
 type CommandAcceptance struct {
-	CommandID     domain.CommandID
-	SessionID     domain.SessionID
-	RequestHash   domain.CanonicalHash
-	Script        string
-	Timeout       time.Duration
-	IntentOrdinal int64
+	CommandID            domain.CommandID
+	SessionID            domain.SessionID
+	RequestHash          domain.CanonicalHash
+	IdempotencyKey       string
+	IdempotencyRetention time.Duration
+	Script               string
+	Timeout              time.Duration
+	IntentOrdinal        int64
 }
 
 // CommandRecord is the authoritative command snapshot. ScriptBytes is the
@@ -70,20 +74,47 @@ type CommandEventRecord struct {
 // AcceptCommand atomically allocates the next authoritative session ordinal,
 // inserts the immutable queued command, and inserts event sequence 1. It does
 // not call a scheduler or start a runtime.
-func (s *AuthorityStore) AcceptCommand(ctx context.Context, input CommandAcceptance) (CommandRecord, error) {
+func (s *AuthorityStore) AcceptCommand(ctx context.Context, input CommandAcceptance) (record CommandRecord, duplicate bool, err error) {
 	validated, err := validateCommandAcceptance(input)
 	if err != nil {
-		return CommandRecord{}, err
+		return CommandRecord{}, false, err
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
-		var sessionState string
+	returnRecord, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+		var sessionState, controllerType, controllerID string
 		if err := connection.QueryRowContext(ctx,
-			"SELECT state FROM exec_sessions WHERE session_id = ?", string(validated.SessionID)).Scan(&sessionState); err != nil {
+			"SELECT state, controller_type, controller_id FROM exec_sessions WHERE session_id = ?", string(validated.SessionID)).Scan(&sessionState, &controllerType, &controllerID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return CommandRecord{}, ErrSessionNotFound
 			}
 			return CommandRecord{}, fmt.Errorf("read command session: %w", err)
+		}
+		controllerIDValue, err := domain.NewControllerID(controllerID)
+		if err != nil {
+			return CommandRecord{}, fmt.Errorf("read command controller: %w", err)
+		}
+		controller, err := domain.NewControllerIdentity(domain.ControllerType(controllerType), controllerIDValue)
+		if err != nil {
+			return CommandRecord{}, fmt.Errorf("read command controller: %w", err)
+		}
+		existing, found, err := lookupIdempotencyOnConnection(ctx, connection, controller, submitCommandOperation, validated.IdempotencyKey, now)
+		if err != nil {
+			return CommandRecord{}, err
+		}
+		if found {
+			if domain.CompareIdempotency(existing.Hash, validated.RequestHash) == domain.IdempotencyConflict {
+				return CommandRecord{}, ErrIdempotencyConflict
+			}
+			existingID, err := domain.NewCommandID(existing.ResourceID)
+			if err != nil {
+				return CommandRecord{}, fmt.Errorf("read idempotent command ID: %w", err)
+			}
+			record, err := readCommandOnConnection(ctx, connection, existingID)
+			if err != nil {
+				return CommandRecord{}, fmt.Errorf("read idempotent command: %w", err)
+			}
+			duplicate = true
+			return record, nil
 		}
 		if sessionState != string(domain.SessionStateReady) && sessionState != string(domain.SessionStateBusy) {
 			return CommandRecord{}, fmt.Errorf("%w: current state %q", ErrCommandSessionState, sessionState)
@@ -118,8 +149,20 @@ VALUES (?, 1, 'command_queued', X'', 0, ?)
 `, string(validated.CommandID), formatStoredTime(now)); err != nil {
 			return CommandRecord{}, fmt.Errorf("insert queued command event: %w", err)
 		}
+		idempotencyInput, err := validateIdempotencyInput(controller, submitCommandOperation, validated.IdempotencyKey, validated.RequestHash, string(validated.CommandID), validated.IdempotencyRetention)
+		if err != nil {
+			return CommandRecord{}, err
+		}
+		idempotencyInput.CreatedAt, idempotencyInput.ExpiresAt = now, now.Add(validated.IdempotencyRetention)
+		if err := recordIdempotencyOnConnection(ctx, connection, idempotencyInput); err != nil {
+			return CommandRecord{}, err
+		}
 		return readCommandOnConnection(ctx, connection, validated.CommandID)
 	})
+	if err != nil {
+		return CommandRecord{}, false, err
+	}
+	return returnRecord, duplicate, nil
 }
 
 // GetCommand returns an authoritative command and verifies its durable script
@@ -204,13 +247,23 @@ func validateCommandAcceptance(input CommandAcceptance) (CommandAcceptance, erro
 	if err := domain.ValidateScriptUTF8(input.Script); err != nil {
 		return CommandAcceptance{}, fmt.Errorf("%w: %w", ErrInvalidCommand, err)
 	}
+	if _, _, err := validateIdempotencyOperationKey(submitCommandOperation, input.IdempotencyKey); err != nil {
+		return CommandAcceptance{}, err
+	}
+	retention := input.IdempotencyRetention
+	if retention == 0 {
+		retention = DefaultSessionIdempotencyRetention
+	}
+	if retention < 0 {
+		return CommandAcceptance{}, fmt.Errorf("%w: idempotency retention must not be negative", ErrInvalidCommand)
+	}
 	if input.Timeout <= 0 {
 		return CommandAcceptance{}, fmt.Errorf("%w: timeout must be positive", ErrInvalidCommand)
 	}
 	if input.IntentOrdinal < 0 {
 		return CommandAcceptance{}, fmt.Errorf("%w: intent ordinal must not be negative", ErrInvalidCommand)
 	}
-	return CommandAcceptance{CommandID: commandID, SessionID: sessionID, RequestHash: hash, Script: input.Script, Timeout: input.Timeout, IntentOrdinal: input.IntentOrdinal}, nil
+	return CommandAcceptance{CommandID: commandID, SessionID: sessionID, RequestHash: hash, IdempotencyKey: input.IdempotencyKey, IdempotencyRetention: retention, Script: input.Script, Timeout: input.Timeout, IntentOrdinal: input.IntentOrdinal}, nil
 }
 
 func readCommandOnConnection(ctx context.Context, connection *sql.Conn, id domain.CommandID) (CommandRecord, error) {

@@ -34,13 +34,14 @@ func TestP014AcceptCommandCommitsExactScriptAndQueuedEvent(t *testing.T) {
 	}
 	script := "printf 'é\\n'; printf '\\000\\377'"
 	hash := p014Hash(t, `{"operation":"submit_command","session_id":"session-p014-1","script":"printf 'é\\n'; printf '\\000\\377'"}`)
-	accepted, err := store.AcceptCommand(context.Background(), CommandAcceptance{
-		CommandID:     domain.CommandID("command-p014-1"),
-		SessionID:     created.SessionID,
-		RequestHash:   hash,
-		Script:        script,
-		Timeout:       30 * time.Second,
-		IntentOrdinal: 7,
+	accepted, _, err := store.AcceptCommand(context.Background(), CommandAcceptance{
+		CommandID:      domain.CommandID("command-p014-1"),
+		SessionID:      created.SessionID,
+		RequestHash:    hash,
+		IdempotencyKey: "key-p014-command-1",
+		Script:         script,
+		Timeout:        30 * time.Second,
+		IntentOrdinal:  7,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -101,17 +102,17 @@ func TestP014RejectsInvalidOrOversizedScriptBeforeInsert(t *testing.T) {
 	if _, err := store.TransitionSession(context.Background(), created.SessionID, domain.SessionStateReady, "agent_ready"); err != nil {
 		t.Fatal(err)
 	}
-	base := CommandAcceptance{SessionID: created.SessionID, RequestHash: p014Hash(t, `{"operation":"submit_command","session_id":"session-p014-reject","script":"x"}`), Timeout: time.Second}
+	base := CommandAcceptance{SessionID: created.SessionID, IdempotencyKey: "key-p014-reject-command", RequestHash: p014Hash(t, `{"operation":"submit_command","session_id":"session-p014-reject","script":"x"}`), Timeout: time.Second}
 	invalid := base
 	invalid.CommandID = "command-p014-invalid"
 	invalid.Script = string([]byte{0xff})
-	if _, err := store.AcceptCommand(context.Background(), invalid); !errors.Is(err, domain.ErrScriptInvalidUTF8) {
+	if _, _, err := store.AcceptCommand(context.Background(), invalid); !errors.Is(err, domain.ErrScriptInvalidUTF8) {
 		t.Fatalf("invalid UTF-8 error = %v", err)
 	}
 	oversized := base
 	oversized.CommandID = "command-p014-large"
 	oversized.Script = string(make([]byte, domain.MaxScriptUTF8Bytes+1))
-	if _, err := store.AcceptCommand(context.Background(), oversized); !errors.Is(err, domain.ErrScriptTooLarge) {
+	if _, _, err := store.AcceptCommand(context.Background(), oversized); !errors.Is(err, domain.ErrScriptTooLarge) {
 		t.Fatalf("oversized script error = %v", err)
 	}
 	var count int
@@ -142,12 +143,17 @@ func TestP014CorruptScriptIsRejectedAndDuplicateInsertRollsBack(t *testing.T) {
 	if _, err := store.TransitionSession(context.Background(), created.SessionID, domain.SessionStateReady, "agent_ready"); err != nil {
 		t.Fatal(err)
 	}
-	input := CommandAcceptance{CommandID: "command-p014-corrupt", SessionID: created.SessionID, RequestHash: p014Hash(t, `{"operation":"submit_command","session_id":"session-p014-corrupt","script":"echo ok"}`), Script: "echo ok", Timeout: time.Second}
-	accepted, err := store.AcceptCommand(context.Background(), input)
+	input := CommandAcceptance{CommandID: "command-p014-corrupt", SessionID: created.SessionID, IdempotencyKey: "key-p014-corrupt-command", RequestHash: p014Hash(t, `{"operation":"submit_command","session_id":"session-p014-corrupt","script":"echo ok"}`), Script: "echo ok", Timeout: time.Second}
+	accepted, duplicate, err := store.AcceptCommand(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AcceptCommand(context.Background(), input); err == nil {
+	if duplicate {
+		t.Fatal("first command reported duplicate")
+	}
+	conflictingID := input
+	conflictingID.IdempotencyKey = "key-p014-corrupt-command-2"
+	if _, _, err := store.AcceptCommand(context.Background(), conflictingID); err == nil {
 		t.Fatal("duplicate command ID unexpectedly succeeded")
 	}
 	var eventCount int

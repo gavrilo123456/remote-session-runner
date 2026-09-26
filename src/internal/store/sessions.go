@@ -23,7 +23,7 @@ var (
 	ErrInvalidSession = errors.New("invalid session record")
 	// ErrSessionLifecycle means the persisted lifecycle history is inconsistent.
 	ErrSessionLifecycle = errors.New("session lifecycle history is inconsistent")
-	// ErrIdempotencyKey means the create idempotency key is malformed.
+	// ErrIdempotencyKey means a mutation idempotency key is malformed.
 	ErrIdempotencyKey = errors.New("invalid idempotency key")
 	// ErrIdempotencyConflict means a retained key was reused for another request.
 	ErrIdempotencyConflict = errors.New("idempotency conflict")
@@ -146,16 +146,20 @@ func (s *AuthorityStore) AcceptSessionCreate(ctx context.Context, input SessionC
 	now := s.now().UTC()
 	expiresAt := now.Add(validated.IdempotencyRetention)
 	record, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
-		if existing, found, err := findSessionIdempotency(ctx, connection, validated.SessionCreate.Controller, validated.IdempotencyKey, now); err != nil {
+		if existing, found, err := lookupIdempotencyOnConnection(ctx, connection, validated.SessionCreate.Controller, createSessionOperation, validated.IdempotencyKey, now); err != nil {
 			return SessionRecord{}, err
 		} else if found {
 			if domain.CompareIdempotency(existing.Hash, validated.RequestHash) == domain.IdempotencyConflict {
 				return SessionRecord{}, ErrIdempotencyConflict
 			}
-			if _, err := readReservationOnConnection(ctx, connection, existing.ResourceID); err != nil {
+			existingSessionID, err := domain.NewSessionID(existing.ResourceID)
+			if err != nil {
+				return SessionRecord{}, fmt.Errorf("read idempotent session ID: %w", err)
+			}
+			if _, err := readReservationOnConnection(ctx, connection, existingSessionID); err != nil {
 				return SessionRecord{}, fmt.Errorf("read idempotent session reservation: %w", err)
 			}
-			existingRecord, err := readSessionOnConnection(ctx, connection, existing.ResourceID)
+			existingRecord, err := readSessionOnConnection(ctx, connection, existingSessionID)
 			if err != nil {
 				return SessionRecord{}, fmt.Errorf("read idempotent session: %w", err)
 			}
@@ -479,50 +483,6 @@ func validateSessionAcceptance(input SessionCreateAcceptance) (SessionCreateAcce
 	}, nil
 }
 
-type sessionIdempotencyRecord struct {
-	Hash       domain.CanonicalHash
-	ResourceID domain.SessionID
-}
-
-func findSessionIdempotency(ctx context.Context, connection *sql.Conn, controller domain.ControllerIdentity, key string, now time.Time) (sessionIdempotencyRecord, bool, error) {
-	var version int
-	var digest []byte
-	var resourceID, expiresAt string
-	err := connection.QueryRowContext(ctx, `
-SELECT canonical_hash_version, canonical_hash, resource_id, expires_at
-FROM exec_idempotency
-WHERE controller_type = ? AND controller_id = ? AND operation = ? AND idempotency_key = ?
-`, string(controller.Type()), string(controller.ID()), createSessionOperation, key).Scan(&version, &digest, &resourceID, &expiresAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return sessionIdempotencyRecord{}, false, nil
-	}
-	if err != nil {
-		return sessionIdempotencyRecord{}, false, fmt.Errorf("lookup session idempotency: %w", err)
-	}
-	expiry, err := parseStoredTime(expiresAt)
-	if err != nil {
-		return sessionIdempotencyRecord{}, false, fmt.Errorf("%w: idempotency expiry: %v", ErrSessionLifecycle, err)
-	}
-	if !now.Before(expiry) {
-		if _, err := connection.ExecContext(ctx, `
-DELETE FROM exec_idempotency
-WHERE controller_type = ? AND controller_id = ? AND operation = ? AND idempotency_key = ?
-`, string(controller.Type()), string(controller.ID()), createSessionOperation, key); err != nil {
-			return sessionIdempotencyRecord{}, false, fmt.Errorf("expire session idempotency: %w", err)
-		}
-		return sessionIdempotencyRecord{}, false, nil
-	}
-	hash, err := domain.NewCanonicalHash(uint16(version), digest)
-	if err != nil {
-		return sessionIdempotencyRecord{}, false, fmt.Errorf("%w: stored idempotency hash: %v", ErrSessionLifecycle, err)
-	}
-	validatedResourceID, err := domain.NewSessionID(resourceID)
-	if err != nil {
-		return sessionIdempotencyRecord{}, false, fmt.Errorf("%w: stored idempotency resource: %v", ErrSessionLifecycle, err)
-	}
-	return sessionIdempotencyRecord{Hash: hash, ResourceID: validatedResourceID}, true, nil
-}
-
 func ensureSessionCapacity(ctx context.Context, connection *sql.Conn, maxActive int) error {
 	var count int
 	if err := connection.QueryRowContext(ctx, `
@@ -581,14 +541,13 @@ VALUES (?, ?, ?)
 		return fmt.Errorf("insert session capacity reservation: %w", err)
 	}
 	if idempotencyKey != "" {
-		if _, err := connection.ExecContext(ctx, `
-INSERT INTO exec_idempotency (
-    controller_type, controller_id, operation, idempotency_key,
-    canonical_hash_version, canonical_hash, resource_id, created_at, expires_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, string(validated.Controller.Type()), string(validated.Controller.ID()), createSessionOperation, idempotencyKey,
-			requestHash.Version(), requestHash.SHA256(), string(validated.SessionID), formatStoredTime(now), formatStoredTime(idempotencyExpiresAt)); err != nil {
-			return fmt.Errorf("insert session idempotency: %w", err)
+		input, err := validateIdempotencyInput(validated.Controller, createSessionOperation, idempotencyKey, requestHash, string(validated.SessionID), idempotencyExpiresAt.Sub(now))
+		if err != nil {
+			return err
+		}
+		input.CreatedAt, input.ExpiresAt = now, idempotencyExpiresAt
+		if err := recordIdempotencyOnConnection(ctx, connection, input); err != nil {
+			return err
 		}
 	}
 	return nil
