@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -234,6 +236,8 @@ func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) 
 			return
 		}
 		writeError(response, http.StatusNotFound, "resource_not_found", "local API route not found")
+	case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/events") && strings.HasPrefix(request.URL.Path, "/v1/commands/"):
+		s.handleCommandEvents(response, request)
 	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/commands/"):
 		s.handleGetCommand(response, request)
 	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/sessions/"):
@@ -262,6 +266,20 @@ type commandRead struct {
 	View     string                `json:"view"`
 	IsStale  bool                  `json:"is_stale"`
 	Resource commandIntentResource `json:"resource"`
+}
+
+// localAPICommandEvent is the public v1 event shape. Output payloads are
+// always base64 encoded so arbitrary command bytes survive the JSON stream;
+// lifecycle events carry only the common identity fields.
+type localAPICommandEvent struct {
+	CommandID  string    `json:"command_id"`
+	Sequence   int64     `json:"sequence"`
+	Type       string    `json:"type"`
+	Timestamp  time.Time `json:"timestamp"`
+	Ordinal    int64     `json:"ordinal,omitempty"`
+	Encoding   string    `json:"encoding,omitempty"`
+	DataBase64 string    `json:"data_base64,omitempty"`
+	ByteCount  int64     `json:"byte_count,omitempty"`
 }
 
 type commandIntentResource struct {
@@ -435,6 +453,185 @@ func (s *Server) handleGetCommand(response http.ResponseWriter, request *http.Re
 		return
 	}
 	writeJSON(response, http.StatusOK, commandRead{View: "local_intent", IsStale: false, Resource: commandIntentResourceFromRecord(record)})
+}
+
+func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http.Request) {
+	commandID, err := commandEventsPathID(request.URL.Path)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	query := request.URL.Query()
+	for key := range query {
+		if key != "after" && key != "follow" {
+			writeError(response, http.StatusBadRequest, "invalid_request", "unsupported event query parameter")
+			return
+		}
+		if len(query[key]) != 1 {
+			writeError(response, http.StatusBadRequest, "invalid_request", "event query parameter must occur once")
+			return
+		}
+	}
+	after, err := parseLocalEventCursor(query.Get("after"))
+	if err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	follow, err := parseLocalEventFollow(query.Get("follow"))
+	if err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	intent, err := s.authority.GetLocalIntentByResource(request.Context(), "submit_command", string(commandID), s.owner)
+	if err != nil {
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			writeError(response, http.StatusNotFound, "command_not_found", "local command intent was not found")
+			return
+		}
+		status, code := statusForCommandEventError(err)
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	// Remote queued commands have no local authority event stream. Their
+	// durable events are exposed only after the later remote mirror phases.
+	if intent.Target.Kind() != domain.TargetKindLocal {
+		writeError(response, http.StatusConflict, "events_unavailable", "remote command events are not available in the local authority")
+		return
+	}
+	command, err := s.authority.GetCommand(request.Context(), commandID)
+	if err != nil {
+		status, code := statusForCommandEventError(err)
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	session, err := s.authority.GetSession(request.Context(), command.SessionID)
+	if err != nil {
+		status, code := statusForCommandEventError(err)
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	if command.SessionID != intent.SessionID || session.Target.Kind() != domain.TargetKindLocal || session.Controller.Type() != s.owner.Type() || session.Controller.ID() != s.owner.ID() ||
+		domain.CompareIdempotency(command.RequestHash, intent.RequestHash) != domain.IdempotencySamePayload || !bytes.Equal(command.ScriptBytes, intent.ScriptBytes) {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "local authority command does not match its accepted intent")
+		return
+	}
+	if !follow {
+		events, err := s.authority.ReplayCommandEvents(request.Context(), commandID, after)
+		if err != nil {
+			status, code := statusForCommandEventError(err)
+			writeError(response, status, code, sanitizeError(err))
+			return
+		}
+		response.Header().Set("Content-Type", "application/x-ndjson")
+		response.WriteHeader(http.StatusOK)
+		for _, event := range events {
+			if err := writeLocalAPIEvent(response, event, command.Ordinal); err != nil {
+				return
+			}
+		}
+		return
+	}
+	subscription, err := s.authority.SubscribeCommandEvents(request.Context(), commandID, after, 256)
+	if err != nil {
+		status, code := statusForCommandEventError(err)
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	defer subscription.Close()
+	response.Header().Set("Content-Type", "application/x-ndjson")
+	response.WriteHeader(http.StatusOK)
+	flusher, _ := response.(http.Flusher)
+	for {
+		select {
+		case event, ok := <-subscription.Events():
+			if !ok {
+				return
+			}
+			if err := writeLocalAPIEvent(response, event, command.Ordinal); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if isTerminalLocalAPIEvent(event.Type) {
+				return
+			}
+		case <-subscription.Errors():
+			return
+		case <-request.Context().Done():
+			return
+		}
+	}
+}
+
+func commandEventsPathID(path string) (domain.CommandID, error) {
+	const prefix = "/v1/commands/"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, "/events") {
+		return "", errors.New("invalid command events path")
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(path, prefix), "/events")
+	idText, err := url.PathUnescape(raw)
+	if err != nil || idText == "" || strings.Contains(idText, "/") {
+		return "", errors.New("invalid command events path")
+	}
+	return domain.NewCommandID(idText)
+}
+
+func parseLocalEventCursor(value string) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	cursor, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || cursor < 0 {
+		return 0, errors.New("invalid event cursor")
+	}
+	return cursor, nil
+}
+
+func parseLocalEventFollow(value string) (bool, error) {
+	switch value {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, errors.New("follow must be true or false")
+	}
+}
+
+func writeLocalAPIEvent(response http.ResponseWriter, event store.CommandEventRecord, ordinal int64) error {
+	value := localAPICommandEvent{CommandID: string(event.CommandID), Sequence: event.Sequence, Type: event.Type, Timestamp: event.OccurredAt.UTC()}
+	if event.Type == "command_queued" {
+		value.Ordinal = ordinal
+	}
+	if event.Type == "stdout" || event.Type == "stderr" {
+		value.Encoding = "base64"
+		value.DataBase64 = base64.StdEncoding.EncodeToString(event.Payload)
+		value.ByteCount = event.ByteCount
+	}
+	return json.NewEncoder(response).Encode(value)
+}
+
+func isTerminalLocalAPIEvent(eventType string) bool {
+	switch eventType {
+	case "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost":
+		return true
+	default:
+		return false
+	}
+}
+
+func statusForCommandEventError(err error) (int, string) {
+	switch {
+	case errors.Is(err, store.ErrCommandNotFound), errors.Is(err, store.ErrSessionNotFound):
+		return http.StatusNotFound, "command_not_found"
+	case errors.Is(err, store.ErrCommandReplayGap):
+		return http.StatusRequestedRangeNotSatisfiable, "event_history_unavailable"
+	case errors.Is(err, store.ErrCommandEvent), errors.Is(err, store.ErrCommandPayloadCorrupt), errors.Is(err, store.ErrLocalIntentPayloadCorrupt):
+		return http.StatusServiceUnavailable, "database_unavailable"
+	default:
+		return statusForStoreError(err)
+	}
 }
 
 func commandIntentResourceFromRecord(record store.LocalIntentRecord) commandIntentResource {
