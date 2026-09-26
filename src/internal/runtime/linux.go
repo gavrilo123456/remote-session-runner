@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"remote-session-runner/src/internal/domain"
 )
 
 var (
@@ -292,6 +294,89 @@ func (a *LinuxProcessAdapter) CapacityRetained(sessionID string) (bool, error) {
 		return false, err
 	}
 	return shell.CapacityRetained(), nil
+}
+
+// Capabilities returns the profile's truthful host boundary. Runner service
+// ceilings are supplied by the environment registry, so this adapter does not
+// invent per-session resource controls.
+func (a *LinuxProcessAdapter) Capabilities() LinuxProfileCapabilities {
+	account := LinuxHostAccount
+	if a != nil && a.account != nil && a.account.Username != "" {
+		account = a.account.Username
+	}
+	return linuxHostCapabilities(account)
+}
+
+// ValidateIsolation rejects every per-session host control unavailable to the
+// trusted host-process PoC. It is deliberately shared with domain's error
+// catalog so callers receive the same policy meaning before acceptance.
+func ValidateLinuxIsolationRequirements(requirements domain.IsolationRequirements) error {
+	names := linuxIsolationNames(requirements)
+	if len(names) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", domain.ErrUnsupportedIsolationRequirement, names)
+}
+
+// ValidateIsolation is the adapter-facing spelling used by runtime callers.
+func (a *LinuxProcessAdapter) ValidateIsolation(requirements domain.IsolationRequirements) error {
+	return ValidateLinuxIsolationRequirements(requirements)
+}
+
+// LinuxRuntimeStatus reports the current process identity and retained-capacity
+// state alongside truthful capabilities. A status report never claims a
+// workspace or process group is a security boundary.
+type LinuxRuntimeStatus struct {
+	SessionID        string
+	Generation       string
+	Capabilities     LinuxProfileCapabilities
+	Process          LinuxProcessRecord
+	CapacityRetained bool
+	Ready            bool
+}
+
+func (a *LinuxProcessAdapter) Status(sessionID string) (LinuxRuntimeStatus, error) {
+	record, err := a.Inspect(sessionID)
+	if err != nil {
+		return LinuxRuntimeStatus{SessionID: sessionID, Capabilities: a.Capabilities()}, err
+	}
+	retained, err := a.CapacityRetained(sessionID)
+	if err != nil {
+		return LinuxRuntimeStatus{SessionID: sessionID, Capabilities: a.Capabilities(), Process: record}, err
+	}
+	return LinuxRuntimeStatus{SessionID: record.SessionID, Generation: record.Generation, Capabilities: a.Capabilities(), Process: record, CapacityRetained: retained, Ready: !retained}, nil
+}
+
+func linuxIsolationNames(requirements domain.IsolationRequirements) []string {
+	names := make([]string, 0, 9)
+	if requirements.FilesystemBoundary {
+		names = append(names, "filesystem")
+	}
+	if requirements.CPUControl {
+		names = append(names, "cpu")
+	}
+	if requirements.MemoryControl {
+		names = append(names, "memory")
+	}
+	if requirements.PIDControl {
+		names = append(names, "pid")
+	}
+	if requirements.DiskControl {
+		names = append(names, "disk")
+	}
+	if requirements.NetworkControl {
+		names = append(names, "network")
+	}
+	if requirements.Mounts {
+		names = append(names, "mounts")
+	}
+	if requirements.Volumes {
+		names = append(names, "volumes")
+	}
+	if requirements.PrivilegeControl {
+		names = append(names, "privilege")
+	}
+	return names
 }
 
 // LinuxReconciliationResult records conservative handling of a process found
