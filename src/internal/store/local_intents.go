@@ -34,6 +34,10 @@ var (
 	ErrLocalIntentPayloadCorrupt = errors.New("local intent payload is corrupt")
 	ErrLocalIntentTransition     = errors.New("invalid local intent transition")
 	ErrLocalIdempotencyCorrupt   = errors.New("local idempotency record is corrupt")
+	ErrNoEligibleLocalIntent     = errors.New("no eligible local intent")
+	ErrLocalIntentLeaseHeld      = errors.New("local intent lease is held")
+	ErrLocalIntentLeaseLost      = errors.New("local intent lease is lost")
+	ErrInvalidLocalIntentLease   = errors.New("invalid local intent lease")
 )
 
 // LocalIntentCreate is the complete immutable request recorded by Mac local
@@ -125,6 +129,13 @@ func (s *AuthorityStore) AcceptLocalIntent(ctx context.Context, input LocalInten
 			}
 			duplicate = true
 			return record, nil
+		}
+		if validated.Operation == localIntentSubmitCommandOperation && validated.IntentOrdinal == nil {
+			ordinal, err := nextLocalIntentOrdinalOnConnection(ctx, connection, validated.SessionID)
+			if err != nil {
+				return LocalIntentRecord{}, err
+			}
+			validated.IntentOrdinal = &ordinal
 		}
 		if err := insertLocalIntentOnConnection(ctx, connection, validated, now); err != nil {
 			return LocalIntentRecord{}, err
@@ -268,6 +279,258 @@ VALUES (?, ?, ?, ?, ?, ?)
 		}
 		return readLocalIntentOnConnection(ctx, connection, validatedID)
 	})
+}
+
+// ClaimLocalIntent claims one eligible recorded intent for owner and assigns
+// a bounded lease. The claim, state transition, attempt increment, and
+// lifecycle row commit together.
+func (s *AuthorityStore) ClaimLocalIntent(ctx context.Context, id domain.IntentID, owner string, leaseDuration time.Duration) (LocalIntentRecord, error) {
+	validatedID, err := domain.NewIntentID(string(id))
+	if err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("%w: intent ID: %v", ErrInvalidLocalIntent, err)
+	}
+	if err := validateLeaseRequest(owner, leaseDuration); err != nil {
+		return LocalIntentRecord{}, err
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+		return claimLocalIntentOnConnection(ctx, connection, validatedID, owner, leaseDuration, now)
+	})
+}
+
+// ClaimNextLocalIntent claims the earliest eligible recorded intent. Earlier
+// unsettled command intents in a session keep later ordinals blocked.
+func (s *AuthorityStore) ClaimNextLocalIntent(ctx context.Context, owner string, leaseDuration time.Duration) (LocalIntentRecord, error) {
+	if err := validateLeaseRequest(owner, leaseDuration); err != nil {
+		return LocalIntentRecord{}, err
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+		id, err := findNextEligibleLocalIntentOnConnection(ctx, connection, now)
+		if err != nil {
+			return LocalIntentRecord{}, err
+		}
+		return claimLocalIntentOnConnection(ctx, connection, id, owner, leaseDuration, now)
+	})
+}
+
+// RenewLocalIntentLease extends an unexpired lease owned by owner. Lease
+// renewal does not create a lifecycle state entry because the delivery state
+// and immutable request remain unchanged.
+func (s *AuthorityStore) RenewLocalIntentLease(ctx context.Context, id domain.IntentID, owner string, leaseDuration time.Duration) (LocalIntentRecord, error) {
+	validatedID, err := domain.NewIntentID(string(id))
+	if err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("%w: intent ID: %v", ErrInvalidLocalIntent, err)
+	}
+	if err := validateLeaseRequest(owner, leaseDuration); err != nil {
+		return LocalIntentRecord{}, err
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+		current, err := readLocalIntentOnConnection(ctx, connection, validatedID)
+		if err != nil {
+			return LocalIntentRecord{}, err
+		}
+		if current.DeliveryState != LocalIntentDispatching && current.DeliveryState != LocalIntentUncertain {
+			return LocalIntentRecord{}, ErrLocalIntentLeaseLost
+		}
+		if current.LeaseOwner != owner || current.LeaseExpiresAt == nil || !now.Before(*current.LeaseExpiresAt) {
+			return LocalIntentRecord{}, ErrLocalIntentLeaseLost
+		}
+		if _, err := connection.ExecContext(ctx, `
+UPDATE local_intents SET lease_expires_at = ?, updated_at = ? WHERE intent_id = ? AND lease_owner = ?
+`, formatStoredTime(now.Add(leaseDuration)), formatStoredTime(now), string(validatedID), owner); err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("renew local intent lease: %w", err)
+		}
+		return readLocalIntentOnConnection(ctx, connection, validatedID)
+	})
+}
+
+// ListEligibleLocalIntents returns recorded intents that can be claimed now,
+// ordered by session intent ordinal and then creation identity.
+func (s *AuthorityStore) ListEligibleLocalIntents(ctx context.Context, limit int) ([]LocalIntentRecord, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		return nil, fmt.Errorf("%w: eligibility limit exceeds 1000", ErrInvalidLocalIntent)
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LocalIntentRecord, error) {
+		rows, err := connection.QueryContext(ctx, eligibleLocalIntentQuery+" LIMIT ?", formatStoredTime(now), limit)
+		if err != nil {
+			return nil, fmt.Errorf("list eligible local intents: %w", err)
+		}
+		defer rows.Close()
+		return readLocalIntentRows(ctx, connection, rows)
+	})
+}
+
+// ListRecoverableLocalIntents returns intents whose dispatch/reconciliation
+// lease has expired. It reports candidates for recovery and never silently
+// changes an uncertain dispatch back to recorded.
+func (s *AuthorityStore) ListRecoverableLocalIntents(ctx context.Context, limit int) ([]LocalIntentRecord, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		return nil, fmt.Errorf("%w: recovery limit exceeds 1000", ErrInvalidLocalIntent)
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LocalIntentRecord, error) {
+		rows, err := connection.QueryContext(ctx, `
+SELECT intent_id FROM local_intents
+WHERE delivery_state IN ('dispatching', 'uncertain')
+  AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+ORDER BY lease_expires_at, created_at, intent_id
+LIMIT ?
+`, formatStoredTime(now), limit)
+		if err != nil {
+			return nil, fmt.Errorf("list recoverable local intents: %w", err)
+		}
+		defer rows.Close()
+		return readLocalIntentRows(ctx, connection, rows)
+	})
+}
+
+const eligibleLocalIntentWhere = `
+WHERE li.delivery_state = 'recorded'
+  AND (li.lease_expires_at IS NULL OR li.lease_expires_at <= ?)
+  AND (
+      li.operation <> 'submit_command'
+      OR li.intent_ordinal IS NULL
+      OR NOT EXISTS (
+          SELECT 1 FROM local_intents AS prior
+          WHERE prior.session_id = li.session_id
+            AND prior.operation = 'submit_command'
+            AND prior.intent_ordinal IS NOT NULL
+            AND prior.intent_ordinal < li.intent_ordinal
+            AND prior.delivery_state NOT IN ('reconciled', 'not_delivered')
+      )
+  )`
+
+const eligibleLocalIntentQuery = `SELECT li.intent_id FROM local_intents AS li` + eligibleLocalIntentWhere + `
+ORDER BY (li.intent_ordinal IS NULL), li.intent_ordinal, li.created_at, li.intent_id`
+
+func findNextEligibleLocalIntentOnConnection(ctx context.Context, connection *sql.Conn, now time.Time) (domain.IntentID, error) {
+	var value string
+	if err := connection.QueryRowContext(ctx, eligibleLocalIntentQuery+" LIMIT 1", formatStoredTime(now)).Scan(&value); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNoEligibleLocalIntent
+		}
+		return "", fmt.Errorf("find eligible local intent: %w", err)
+	}
+	id, err := domain.NewIntentID(value)
+	if err != nil {
+		return "", fmt.Errorf("%w: eligible intent ID: %v", ErrLocalIntentPayloadCorrupt, err)
+	}
+	return id, nil
+}
+
+func claimLocalIntentOnConnection(ctx context.Context, connection *sql.Conn, id domain.IntentID, owner string, leaseDuration time.Duration, now time.Time) (LocalIntentRecord, error) {
+	current, err := readLocalIntentOnConnection(ctx, connection, id)
+	if err != nil {
+		return LocalIntentRecord{}, err
+	}
+	if current.DeliveryState != LocalIntentRecorded {
+		return LocalIntentRecord{}, ErrNoEligibleLocalIntent
+	}
+	if current.LeaseExpiresAt != nil && now.Before(*current.LeaseExpiresAt) {
+		return LocalIntentRecord{}, ErrLocalIntentLeaseHeld
+	}
+	if !localIntentIsEligibleOnConnection(ctx, connection, id, now) {
+		return LocalIntentRecord{}, ErrNoEligibleLocalIntent
+	}
+	if _, err := connection.ExecContext(ctx, `
+UPDATE local_intents
+SET delivery_state = 'dispatching', lease_owner = ?, lease_expires_at = ?, attempt_count = attempt_count + 1,
+    reason = 'lease_claimed', updated_at = ?
+WHERE intent_id = ? AND delivery_state = 'recorded'
+`, owner, formatStoredTime(now.Add(leaseDuration)), formatStoredTime(now), string(id)); err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("claim local intent: %w", err)
+	}
+	if err := appendLocalIntentLifecycleOnConnection(ctx, connection, id, LocalIntentDispatching, "lease_claimed", now); err != nil {
+		return LocalIntentRecord{}, err
+	}
+	return readLocalIntentOnConnection(ctx, connection, id)
+}
+
+func localIntentIsEligibleOnConnection(ctx context.Context, connection *sql.Conn, id domain.IntentID, now time.Time) bool {
+	var value string
+	err := connection.QueryRowContext(ctx, `SELECT li.intent_id FROM local_intents AS li`+eligibleLocalIntentWhere+` AND li.intent_id = ? LIMIT 1`, formatStoredTime(now), string(id)).Scan(&value)
+	return err == nil && value == string(id)
+}
+
+func appendLocalIntentLifecycleOnConnection(ctx context.Context, connection *sql.Conn, id domain.IntentID, next LocalIntentDeliveryState, reason string, now time.Time) error {
+	var sequence int64
+	if err := connection.QueryRowContext(ctx, `SELECT COALESCE(MAX(lifecycle_sequence), 0) + 1 FROM local_intent_lifecycle WHERE intent_id = ?`, string(id)).Scan(&sequence); err != nil {
+		return fmt.Errorf("allocate local intent lifecycle sequence: %w", err)
+	}
+	var previous string
+	if err := connection.QueryRowContext(ctx, `SELECT new_state FROM local_intent_lifecycle WHERE intent_id = ? ORDER BY lifecycle_sequence DESC LIMIT 1`, string(id)).Scan(&previous); err != nil {
+		return fmt.Errorf("read local intent lifecycle predecessor: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, `
+INSERT INTO local_intent_lifecycle (intent_id, lifecycle_sequence, previous_state, new_state, reason, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, string(id), sequence, previous, string(next), reason, formatStoredTime(now)); err != nil {
+		return fmt.Errorf("insert local intent lifecycle: %w", err)
+	}
+	return nil
+}
+
+func readLocalIntentRows(ctx context.Context, connection *sql.Conn, rows *sql.Rows) ([]LocalIntentRecord, error) {
+	ids := make([]domain.IntentID, 0)
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, fmt.Errorf("scan local intent candidate: %w", err)
+		}
+		id, err := domain.NewIntentID(value)
+		if err != nil {
+			return nil, fmt.Errorf("%w: candidate ID: %v", ErrLocalIntentPayloadCorrupt, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate local intent candidates: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close local intent candidates: %w", err)
+	}
+	result := make([]LocalIntentRecord, 0, len(ids))
+	for _, id := range ids {
+		record, err := readLocalIntentOnConnection(ctx, connection, id)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, record)
+	}
+	return result, nil
+}
+
+func nextLocalIntentOrdinalOnConnection(ctx context.Context, connection *sql.Conn, sessionID domain.SessionID) (int64, error) {
+	var maximum sql.NullInt64
+	if err := connection.QueryRowContext(ctx, `SELECT MAX(intent_ordinal) FROM local_intents WHERE operation = 'submit_command' AND session_id = ?`, string(sessionID)).Scan(&maximum); err != nil {
+		return 0, fmt.Errorf("read local intent ordinal: %w", err)
+	}
+	if !maximum.Valid {
+		return 1, nil
+	}
+	if maximum.Int64 == int64(^uint64(0)>>1) {
+		return 0, fmt.Errorf("%w: intent ordinal exhausted", ErrInvalidLocalIntent)
+	}
+	return maximum.Int64 + 1, nil
+}
+
+func validateLeaseRequest(owner string, leaseDuration time.Duration) error {
+	if owner == "" || len(owner) > 256 || strings.IndexByte(owner, 0) >= 0 {
+		return fmt.Errorf("%w: owner must be 1..256 bytes and contain no NUL", ErrInvalidLocalIntentLease)
+	}
+	if leaseDuration <= 0 {
+		return fmt.Errorf("%w: duration must be positive", ErrInvalidLocalIntentLease)
+	}
+	return nil
 }
 
 func validateLocalIntentCreate(input LocalIntentCreate) (LocalIntentCreate, error) {
