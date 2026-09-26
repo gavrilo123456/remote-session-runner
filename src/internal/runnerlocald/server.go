@@ -308,6 +308,29 @@ func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalInte
 		}
 		base.SessionState = string(result.Session.State)
 		base.Duplicate = result.Duplicate
+	case "run":
+		result, err := s.service.RunJob(ctx, execution.RunJobRequest{
+			Acceptance: store.JobAcceptance{
+				JobID: intent.JobID, SessionID: intent.SessionID, CommandID: intent.CommandID,
+				Controller: intent.Controller, IdempotencyKey: intent.IdempotencyKey,
+				RequestHash: intent.RequestHash, Environment: intent.Environment, Target: intent.Target,
+				Source: intent.Source, Script: string(intent.ScriptBytes), CanonicalPayload: intent.PayloadJSON,
+				IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+			},
+			RequestedLimits: payload.RequestedLimits, Isolation: payload.Isolation,
+			MaxActiveSessions:    store.DefaultActiveSessionLimit,
+			IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+		})
+		if err != nil {
+			return intentAcceptanceResponse{}, err
+		}
+		base.JobPhase = string(result.Job.Phase)
+		if result.Session.SessionID != "" {
+			base.SessionState = string(result.Session.State)
+		}
+		if result.Command.CommandID != "" {
+			base.CommandState = string(result.Command.State)
+		}
 	default:
 		return intentAcceptanceResponse{}, fmt.Errorf("%w: operation %q is not wired", ErrIntentRequest, intent.Operation)
 	}

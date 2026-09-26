@@ -165,7 +165,7 @@ func (d *LocalDriver) dispatchClaimed(ctx context.Context, id domain.IntentID) (
 
 func supportedLocalOperation(operation string) bool {
 	switch operation {
-	case operationCreateSession, operationSubmitCommand, operationCancelCommand, operationCloseSession:
+	case operationCreateSession, operationSubmitCommand, operationCancelCommand, operationCloseSession, "run":
 		return true
 	default:
 		return false

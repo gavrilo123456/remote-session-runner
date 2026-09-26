@@ -18,9 +18,10 @@ import (
 )
 
 type p068FakeAcceptor struct {
-	mu       sync.Mutex
-	requests []AcceptIntentRequest
-	err      error
+	mu        sync.Mutex
+	requests  []AcceptIntentRequest
+	err       error
+	operation string
 }
 
 func (f *p068FakeAcceptor) AcceptIntent(_ context.Context, request AcceptIntentRequest) (IntentAcceptance, error) {
@@ -30,7 +31,16 @@ func (f *p068FakeAcceptor) AcceptIntent(_ context.Context, request AcceptIntentR
 	if f.err != nil {
 		return IntentAcceptance{}, f.err
 	}
-	return IntentAcceptance{IntentID: string(request.IntentID), Operation: "submit_command", ResourceID: "command-" + strings.TrimPrefix(string(request.IntentID), "intent-"), AcceptanceScope: "target_authority", ExecutionTarget: TargetAcceptance{Kind: "local", Profile: "mac-workstation"}}, nil
+	operation := f.operation
+	if operation == "" {
+		operation = "submit_command"
+	}
+	resourcePrefix := "command-"
+	if operation == "run" {
+		resourcePrefix = "job-"
+	}
+	resourceID := resourcePrefix + strings.TrimPrefix(string(request.IntentID), "intent-")
+	return IntentAcceptance{IntentID: string(request.IntentID), Operation: operation, ResourceID: resourceID, AcceptanceScope: "target_authority", ExecutionTarget: TargetAcceptance{Kind: "local", Profile: "mac-workstation"}}, nil
 }
 
 func TestP068LocalDriverClaimsAndSendsIdentityOnly(t *testing.T) {
@@ -66,14 +76,10 @@ func TestP068LocalDriverClaimsAndSendsIdentityOnly(t *testing.T) {
 	}
 }
 
-func TestP068LocalDriverDoesNotClaimRemoteOrRunIntents(t *testing.T) {
+func TestP068LocalDriverDoesNotClaimRemoteIntents(t *testing.T) {
 	authority := p068Authority(t)
 	remote := p068SubmitIntent(t, "intent-p068-remote", "session-p068-remote", "command-p068-remote", domain.TargetKindRemote, "echo remote")
 	if _, err := authority.CreateLocalIntent(context.Background(), remote); err != nil {
-		t.Fatal(err)
-	}
-	localRun := p068RunIntent(t, "intent-p068-run", "job-p068-run", domain.TargetKindLocal)
-	if _, err := authority.CreateLocalIntent(context.Background(), localRun); err != nil {
 		t.Fatal(err)
 	}
 	fake := &p068FakeAcceptor{}
@@ -84,14 +90,12 @@ func TestP068LocalDriverDoesNotClaimRemoteOrRunIntents(t *testing.T) {
 	if _, _, err := driver.DispatchNext(context.Background()); !errors.Is(err, ErrNoLocalDispatchWork) {
 		t.Fatalf("dispatch unsupported work = %v, want ErrNoLocalDispatchWork", err)
 	}
-	for _, id := range []domain.IntentID{remote.IntentID, localRun.IntentID} {
-		current, err := authority.GetLocalIntent(context.Background(), id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if current.DeliveryState != store.LocalIntentRecorded {
-			t.Fatalf("unsupported intent %s state = %s", id, current.DeliveryState)
-		}
+	current, err := authority.GetLocalIntent(context.Background(), remote.IntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.DeliveryState != store.LocalIntentRecorded {
+		t.Fatalf("unsupported intent %s state = %s", remote.IntentID, current.DeliveryState)
 	}
 	if len(fake.requests) != 0 {
 		t.Fatalf("unsupported work reached locald: %+v", fake.requests)
