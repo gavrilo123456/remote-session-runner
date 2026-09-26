@@ -342,7 +342,7 @@ func (f *RunnerdForwarder) runJob(ctx context.Context, controller domain.Control
 	if err != nil {
 		return ReplyFrame{}, fmt.Errorf("%w: run request: %v", ErrInvalidFrame, err)
 	}
-	return f.doJSON(ctx, request.RequestID, http.MethodPost, "/internal/v1/jobs", nil, body)
+	return f.doJSONAllowJobOutcome(ctx, request.RequestID, http.MethodPost, "/internal/v1/jobs", nil, body)
 }
 
 func (f *RunnerdForwarder) getJob(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
@@ -587,6 +587,14 @@ func decodeBridgePayload[T any](raw json.RawMessage) (T, error) {
 }
 
 func (f *RunnerdForwarder) doJSON(ctx context.Context, requestID, method, route string, query url.Values, body []byte) (ReplyFrame, error) {
+	return f.doJSONWithOptions(ctx, requestID, method, route, query, body, false)
+}
+
+func (f *RunnerdForwarder) doJSONAllowJobOutcome(ctx context.Context, requestID, method, route string, query url.Values, body []byte) (ReplyFrame, error) {
+	return f.doJSONWithOptions(ctx, requestID, method, route, query, body, true)
+}
+
+func (f *RunnerdForwarder) doJSONWithOptions(ctx context.Context, requestID, method, route string, query url.Values, body []byte, allowJobOutcome bool) (ReplyFrame, error) {
 	target := f.baseURL + route
 	if len(query) != 0 {
 		target += "?" + query.Encode()
@@ -615,12 +623,29 @@ func (f *RunnerdForwarder) doJSON(ctx context.Context, requestID, method, route 
 		return ReplyFrame{}, fmt.Errorf("%w: response exceeds %d bytes", ErrPrivateResponse, f.maxResponseBytes)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		if allowJobOutcome && isJobOutcomeResponse(responseBody) {
+			return ReplyFrame{ProtocolVersion: ProtocolVersion, RequestID: requestID, ResponseType: "result", Payload: json.RawMessage(responseBody)}, nil
+		}
 		return privateErrorReply(requestID, response.StatusCode, responseBody), nil
 	}
 	if err := validateJSONObject(responseBody); err != nil {
 		return ReplyFrame{}, fmt.Errorf("%w: %v", ErrPrivateResponse, err)
 	}
 	return ReplyFrame{ProtocolVersion: ProtocolVersion, RequestID: requestID, ResponseType: "result", Payload: json.RawMessage(responseBody)}, nil
+}
+
+func isJobOutcomeResponse(raw []byte) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return false
+	}
+	for _, field := range []string{"job_id", "session_id", "command_id", "job_phase", "teardown_state"} {
+		value, ok := object[field]
+		if !ok || len(value) == 0 || string(value) == "null" {
+			return false
+		}
+	}
+	return true
 }
 
 func validateJSONObject(raw []byte) error {

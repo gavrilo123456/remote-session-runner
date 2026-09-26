@@ -322,6 +322,20 @@ func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalInte
 			IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
 		})
 		if err != nil {
+			if result.Job.JobID != "" {
+				base.JobPhase = string(result.Job.Phase)
+				if result.Session.SessionID != "" {
+					base.SessionState = string(result.Session.State)
+				}
+				if result.Command.CommandID != "" {
+					base.CommandState = string(result.Command.State)
+				}
+				// The target job row is durable even when command teardown is
+				// lost. A 202 acceptance keeps the Mac intent accepted so a
+				// later read/resume observes that outcome instead of claiming
+				// that the job was never delivered.
+				return base, nil
+			}
 			return intentAcceptanceResponse{}, err
 		}
 		base.JobPhase = string(result.Job.Phase)

@@ -345,6 +345,12 @@ type jobRead struct {
 	Resource jobIntentResource `json:"resource"`
 }
 
+type jobAuthorityRead struct {
+	View     string                `json:"view"`
+	IsStale  bool                  `json:"is_stale"`
+	Resource jobProjectionResource `json:"resource"`
+}
+
 type jobProjectionRead struct {
 	View     string                `json:"view"`
 	IsStale  bool                  `json:"is_stale"`
@@ -1468,6 +1474,18 @@ func (s *Server) handleGetJob(response http.ResponseWriter, request *http.Reques
 			return
 		}
 	}
+	if record.Target.Kind() == domain.TargetKindLocal && (record.DeliveryState == store.LocalIntentAccepted || record.DeliveryState == store.LocalIntentReconciled) {
+		job, jobErr := s.authority.GetJob(request.Context(), jobID)
+		if jobErr == nil {
+			writeJSON(response, http.StatusOK, jobAuthorityRead{View: "authority", IsStale: false, Resource: jobAuthorityResourceFromRecord(job)})
+			return
+		}
+		if !errors.Is(jobErr, store.ErrJobNotFound) {
+			status, code := statusForStoreError(jobErr)
+			writeError(response, status, code, sanitizeError(jobErr))
+			return
+		}
+	}
 	writeJSON(response, http.StatusOK, jobRead{View: "local_intent", IsStale: false, Resource: jobIntentResourceFromRecord(record)})
 }
 
@@ -1615,6 +1633,23 @@ func jobProjectionResourceFromProjection(projection store.RemoteJobProjection) j
 		ExecutionTarget: targetResponse{Kind: string(projection.Target.Kind()), Profile: projection.Target.Profile()}, Authority: "remote",
 		Controller: controllerView{Type: string(projection.Controller.Type()), ID: string(projection.Controller.ID())}, ObservedAt: projection.ObservedAt.UTC(),
 		Environment: projection.Environment, Source: sourceResponseFromDomain(projection.Source), Capabilities: capabilitiesResponseFromProjection(projection.Capabilities), IsStale: projection.IsStale,
+	}
+}
+
+func jobAuthorityResourceFromRecord(record store.JobRecord) jobProjectionResource {
+	var commandState *string
+	if record.CommandState != nil {
+		value := string(*record.CommandState)
+		commandState = &value
+	}
+	return jobProjectionResource{
+		JobID: string(record.JobID), SessionID: string(record.SessionID), CommandID: string(record.CommandID), JobPhase: string(record.Phase),
+		CommandState: commandState, ExitCode: record.ExitCode, FinalEventSequence: record.FinalEventSequence,
+		OutputComplete: record.OutputComplete, OutputTruncated: record.OutputTruncated, OutputUnavailableReason: record.OutputUnavailableReason,
+		TeardownState: string(record.TeardownState), TeardownReason: record.TeardownReason,
+		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()}, Authority: "local",
+		Controller: controllerView{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())}, ObservedAt: record.UpdatedAt.UTC(),
+		Environment: record.Environment, Source: sourceResponseFromDomain(record.Source), Capabilities: capabilitiesResponse{HostClass: record.Target.Profile(), Isolation: string(domain.IsolationOSUser), EffectiveAccount: string(record.Controller.ID()), ServiceLimits: map[string]any{}},
 	}
 }
 
