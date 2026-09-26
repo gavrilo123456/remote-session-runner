@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -113,6 +114,175 @@ type LinuxProcessProfile struct {
 
 // LinuxProfile is a concise alias for callers that use the profile name.
 type LinuxProfile = LinuxProcessProfile
+
+// LinuxPrepared is the immutable session/generation ownership record created
+// before a Bash process starts. OwnedWorkspace is always true for this P040
+// adapter; later source modes must add an explicit non-owned record instead of
+// reusing this cleanup path.
+type LinuxPrepared struct {
+	SessionID      string
+	Generation     string
+	Workspace      string
+	OwnedWorkspace bool
+	OwnerUID       int
+	OwnerAccount   string
+}
+
+// LinuxProcessAdapter owns Linux host-process sessions for the configured
+// account. It uses the shared PersistentShell implementation and does not
+// add a second command engine or claim workspace confinement.
+type LinuxProcessAdapter struct {
+	mu       sync.Mutex
+	options  LinuxRuntimeOptions
+	account  *user.User
+	sessions map[string]*PersistentShell
+	prepared map[string]LinuxPrepared
+}
+
+// NewLinuxProcessAdapter constructs the real Linux process adapter after
+// checking that the current host account is the selected ubuntu account. The
+// owner-only service/workspace root is checked when Prepare is called.
+func NewLinuxProcessAdapter(options LinuxRuntimeOptions) (*LinuxProcessAdapter, error) {
+	if runtime.GOOS != "linux" {
+		return nil, ErrLinuxRuntimePlatform
+	}
+	if options.Account == "" {
+		options.Account = LinuxHostAccount
+	}
+	current, err := user.Current()
+	if err != nil {
+		return nil, fmt.Errorf("%w: current user: %v", ErrLinuxRuntimeAccount, err)
+	}
+	if current.Username != options.Account || options.Account != LinuxHostAccount {
+		return nil, fmt.Errorf("%w: configured=%q current=%q", ErrLinuxRuntimeAccount, options.Account, current.Username)
+	}
+	profile := newLinuxProcessProfile(options, defaultLinuxProfileHooks())
+	return &LinuxProcessAdapter{options: profile.options, account: current, sessions: make(map[string]*PersistentShell), prepared: make(map[string]LinuxPrepared)}, nil
+}
+
+// Prepare creates a private owner-only workspace without starting Bash.
+func (a *LinuxProcessAdapter) Prepare(_ context.Context, sessionID, generation string) (LinuxPrepared, error) {
+	if a == nil {
+		return LinuxPrepared{}, ErrLinuxRuntimeAccount
+	}
+	if sessionID == "" || generation == "" {
+		return LinuxPrepared{}, fmt.Errorf("%w: empty session or generation", ErrLinuxRuntimeAccount)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, exists := a.prepared[sessionID]; exists {
+		return LinuxPrepared{}, fmt.Errorf("%w: session already prepared", ErrLinuxRuntimeAccount)
+	}
+	root := checkLinuxServicePath(a.options.WorkspaceRoot, a.accountUID())
+	if root.Error != "" {
+		return LinuxPrepared{}, fmt.Errorf("%w: %s", ErrLinuxRuntimePath, root.Error)
+	}
+	workspace, err := os.MkdirTemp(a.options.WorkspaceRoot, "session-")
+	if err != nil {
+		return LinuxPrepared{}, fmt.Errorf("%w: create workspace: %v", ErrLinuxRuntimePath, err)
+	}
+	if err := os.Chmod(workspace, 0o700); err != nil {
+		_ = os.RemoveAll(workspace)
+		return LinuxPrepared{}, fmt.Errorf("%w: workspace mode: %v", ErrLinuxRuntimePath, err)
+	}
+	prepared := LinuxPrepared{SessionID: sessionID, Generation: generation, Workspace: workspace, OwnedWorkspace: true, OwnerUID: a.accountUID(), OwnerAccount: a.account.Username}
+	a.prepared[sessionID] = prepared
+	return prepared, nil
+}
+
+// StartAgent starts one shared persistent Bash for a prepared session.
+func (a *LinuxProcessAdapter) StartAgent(ctx context.Context, prepared LinuxPrepared) error {
+	if a == nil {
+		return ErrLinuxRuntimeAccount
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, exists := a.sessions[prepared.SessionID]; exists {
+		return fmt.Errorf("%w: session already started", ErrLinuxRuntimeAccount)
+	}
+	if a.prepared[prepared.SessionID] != prepared {
+		return fmt.Errorf("%w: preparation mismatch", ErrLinuxRuntimeAccount)
+	}
+	shell, err := StartPersistentShell(ctx, PersistentShellOptions{SessionID: prepared.SessionID, Generation: prepared.Generation, ShellPath: a.options.ShellPath, Workspace: prepared.Workspace})
+	if err != nil {
+		return err
+	}
+	a.sessions[prepared.SessionID] = shell
+	return nil
+}
+
+// Shell returns the shared persistent Bash for a started session.
+func (a *LinuxProcessAdapter) Shell(sessionID string) (*PersistentShell, error) {
+	if a == nil {
+		return nil, ErrLinuxRuntimeAccount
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	shell := a.sessions[sessionID]
+	if shell == nil {
+		return nil, ErrLinuxRuntimeAccount
+	}
+	return shell, nil
+}
+
+// Inspect reports the session/generation-owned Bash process identity.
+func (a *LinuxProcessAdapter) Inspect(sessionID string) (LinuxProcessRecord, error) {
+	if a == nil {
+		return LinuxProcessRecord{}, ErrLinuxRuntimeAccount
+	}
+	a.mu.Lock()
+	shell := a.sessions[sessionID]
+	prepared := a.prepared[sessionID]
+	a.mu.Unlock()
+	if shell == nil || prepared.SessionID == "" || shell.cmd == nil || shell.cmd.Process == nil {
+		return LinuxProcessRecord{}, ErrLinuxRuntimeAccount
+	}
+	record, err := inspectLinuxPID(shell.cmd.Process.Pid)
+	if err != nil {
+		return LinuxProcessRecord{}, err
+	}
+	record.SessionID = prepared.SessionID
+	record.Generation = prepared.Generation
+	record.Workspace = prepared.Workspace
+	if record.UID != prepared.OwnerUID || record.Username != prepared.OwnerAccount {
+		return LinuxProcessRecord{}, fmt.Errorf("%w: process uid=%d user=%q expected uid=%d user=%q", ErrLinuxRuntimeAccount, record.UID, record.Username, prepared.OwnerUID, prepared.OwnerAccount)
+	}
+	return record, nil
+}
+
+// Cleanup closes the shell and removes only this adapter's owned workspace.
+func (a *LinuxProcessAdapter) Cleanup(sessionID string) error {
+	if a == nil {
+		return ErrLinuxRuntimeAccount
+	}
+	a.mu.Lock()
+	shell := a.sessions[sessionID]
+	prepared := a.prepared[sessionID]
+	delete(a.sessions, sessionID)
+	delete(a.prepared, sessionID)
+	a.mu.Unlock()
+	if shell == nil {
+		if prepared.SessionID == "" {
+			return ErrLinuxRuntimeAccount
+		}
+		if prepared.OwnedWorkspace {
+			return os.RemoveAll(prepared.Workspace)
+		}
+		return nil
+	}
+	if err := shell.Close(); err != nil {
+		return err
+	}
+	if prepared.OwnedWorkspace {
+		return os.RemoveAll(prepared.Workspace)
+	}
+	return nil
+}
+
+func (a *LinuxProcessAdapter) accountUID() int {
+	uid, _ := strconv.Atoi(a.account.Uid)
+	return uid
+}
 
 // NewLinuxProcessProfile validates the selected account and constructs the
 // real Linux profile. The doctor performs the host checks; construction never
@@ -311,10 +481,13 @@ func inspectLinuxPID(pid int) (LinuxProcessRecord, error) {
 
 // LinuxProcessRecord is the public form of one host process-table observation.
 type LinuxProcessRecord struct {
-	PID      int
-	UID      int
-	Username string
-	Command  string
+	SessionID  string
+	Generation string
+	Workspace  string
+	PID        int
+	UID        int
+	Username   string
+	Command    string
 }
 
 func linuxHostCapabilities(account string) LinuxProfileCapabilities {
