@@ -20,17 +20,20 @@ var (
 	ErrPersistentShellClosed  = errors.New("persistent shell is closed")
 	ErrPersistentShellCommand = errors.New("persistent shell command failed")
 	ErrPersistentShellExited  = errors.New("persistent shell exited")
+	ErrPersistentShellLost    = errors.New("persistent shell is lost")
+	ErrOutputBoundary         = errors.New("command output boundary is unconfirmed")
 )
 
 // PersistentShellOptions controls the real Bash process used for one session.
 // Workspace is private to the session when omitted; a supplied workspace is
 // used as-is and must already be owned by the caller's account.
 type PersistentShellOptions struct {
-	SessionID   string
-	Generation  string
-	ShellPath   string
-	Workspace   string
-	Descriptors ReservedDescriptors
+	SessionID             string
+	Generation            string
+	ShellPath             string
+	Workspace             string
+	Descriptors           ReservedDescriptors
+	OutputBoundaryTimeout time.Duration
 }
 
 // PersistentShellResult is the result of one sourced script. The shell itself
@@ -86,14 +89,16 @@ func NewPersistentBash(ctx context.Context, options PersistentBashOptions) (*Per
 // PersistentShell owns one long-lived Bash process. Calls to RunScript are
 // serialized so a script and its control frame cannot overlap another command.
 type PersistentShell struct {
-	mu            sync.Mutex
-	cmd           *exec.Cmd
-	stdin         io.WriteCloser
-	control       io.ReadCloser
-	parser        *ControlParser
-	workspace     string
-	removeOnClose bool
-	closed        bool
+	mu              sync.Mutex
+	cmd             *exec.Cmd
+	stdin           io.WriteCloser
+	control         io.ReadCloser
+	parser          *ControlParser
+	workspace       string
+	removeOnClose   bool
+	boundaryTimeout time.Duration
+	closed          bool
+	lost            bool
 }
 
 // StartPersistentShell starts one Bash process with a dedicated control-write
@@ -133,6 +138,10 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 			_ = os.RemoveAll(workspace)
 		}
 		return nil, fmt.Errorf("%w: protect workspace: %v", ErrPersistentShellCommand, err)
+	}
+	boundaryTimeout := options.OutputBoundaryTimeout
+	if boundaryTimeout <= 0 {
+		boundaryTimeout = time.Second
 	}
 
 	controlRead, controlWrite, err := os.Pipe()
@@ -185,7 +194,7 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 	_ = devNull.Close()
 	_ = controlWrite.Close()
 	_ = stdinReader.Close()
-	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, parser: parser, workspace: workspace, removeOnClose: removeOnClose}, nil
+	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, parser: parser, workspace: workspace, removeOnClose: removeOnClose, boundaryTimeout: boundaryTimeout}, nil
 }
 
 // RunScript atomically materializes a private script, sources it in the
@@ -198,6 +207,9 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	defer s.mu.Unlock()
 	if s.closed {
 		return PersistentShellResult{}, ErrPersistentShellClosed
+	}
+	if s.lost {
+		return PersistentShellResult{}, ErrPersistentShellLost
 	}
 	if ctx == nil {
 		return PersistentShellResult{}, fmt.Errorf("%w: nil context", ErrPersistentShellCommand)
@@ -279,20 +291,25 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	defer os.Remove(wrapperPath)
 
 	if _, err := io.WriteString(s.stdin, "source "+shellQuote(wrapperPath)+"\n"); err != nil {
+		s.lost = true
 		return PersistentShellResult{}, fmt.Errorf("%w: write command: %v", ErrPersistentShellCommand, err)
 	}
 	gotStarted, err := s.parser.Read(s.control)
 	if err != nil {
+		s.lost = true
 		return PersistentShellResult{}, fmt.Errorf("%w: read start: %v: %w", ErrPersistentShellExited, err, ErrPersistentShellCommand)
 	}
 	if gotStarted.Type != FrameTypeCommandStarted || gotStarted.CommandID != commandID {
+		s.lost = true
 		return PersistentShellResult{}, fmt.Errorf("%w: unexpected start frame %+v", ErrPersistentShellCommand, gotStarted)
 	}
 	gotComplete, err := s.parser.Read(s.control)
 	if err != nil {
+		s.lost = true
 		return PersistentShellResult{}, fmt.Errorf("%w: read completion: %v: %w", ErrPersistentShellExited, err, ErrPersistentShellCommand)
 	}
 	if gotComplete.Type != FrameTypeCommandComplete || gotComplete.CommandID != commandID || gotComplete.ExitCode == nil {
+		s.lost = true
 		return PersistentShellResult{}, fmt.Errorf("%w: unexpected completion frame %+v", ErrPersistentShellCommand, gotComplete)
 	}
 	// The shell closes its command-scoped FIFO writers when source returns. The
@@ -300,12 +317,17 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	// drainers, establishing the P032 output boundary for this precursor.
 	_ = stdoutKeepalive.Close()
 	_ = stderrKeepalive.Close()
-	stdoutResult := <-stdoutDone
-	stderrResult := <-stderrDone
+	stdoutResult, stderrResult, drainErr := waitForOutputBoundary(stdoutDone, stderrDone, s.boundaryTimeout, stdoutRead, stderrRead)
+	if drainErr != nil {
+		s.lost = true
+		return PersistentShellResult{}, drainErr
+	}
 	if stdoutResult.err != nil {
+		s.lost = true
 		return PersistentShellResult{}, stdoutResult.err
 	}
 	if stderrResult.err != nil {
+		s.lost = true
 		return PersistentShellResult{}, stderrResult.err
 	}
 	chunks := append(stdoutResult.chunks, stderrResult.chunks...)
@@ -313,6 +335,26 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	stdout := chunksBytes(chunks, OutputStreamStdout)
 	stderr := chunksBytes(chunks, OutputStreamStderr)
 	return PersistentShellResult{CommandStarted: gotStarted, CommandComplete: gotComplete, Stdout: stdout, Stderr: stderr, Chunks: chunks}, nil
+}
+
+func waitForOutputBoundary(stdoutDone, stderrDone <-chan outputDrainResult, timeout time.Duration, stdoutRead, stderrRead *os.File) (outputDrainResult, outputDrainResult, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var stdoutResult, stderrResult outputDrainResult
+	stdoutReady, stderrReady := false, false
+	for !stdoutReady || !stderrReady {
+		select {
+		case stdoutResult = <-stdoutDone:
+			stdoutReady = true
+		case stderrResult = <-stderrDone:
+			stderrReady = true
+		case <-timer.C:
+			_ = stdoutRead.Close()
+			_ = stderrRead.Close()
+			return outputDrainResult{}, outputDrainResult{}, fmt.Errorf("%w: timed out after %s", ErrOutputBoundary, timeout)
+		}
+	}
+	return stdoutResult, stderrResult, nil
 }
 
 // Close closes the command channel and waits for the one Bash process. It
