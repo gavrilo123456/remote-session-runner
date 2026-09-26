@@ -27,6 +27,12 @@ var (
 	ErrCommandOrderCorrupt = errors.New("authoritative command order is corrupt")
 	// ErrCommandNotEligible means no queued command can run for the session.
 	ErrCommandNotEligible = errors.New("no eligible command")
+	// ErrCommandTerminal means a terminal command cannot receive another event.
+	ErrCommandTerminal = errors.New("command is already terminal")
+	// ErrCommandReplayGap means a requested event range is not contiguous.
+	ErrCommandReplayGap = errors.New("command event replay has a gap")
+	// ErrCommandTransition means a command state/event transaction is invalid.
+	ErrCommandTransition = errors.New("invalid command state transition")
 )
 
 const submitCommandOperation = "submit_command"
@@ -73,6 +79,25 @@ type CommandEventRecord struct {
 	Payload    []byte
 	ByteCount  int64
 	OccurredAt time.Time
+}
+
+// CommandEventAppend is one raw event appended after command acceptance.
+// Output payloads retain exact bytes and require a matching positive count.
+type CommandEventAppend struct {
+	CommandID domain.CommandID
+	Type      string
+	Payload   []byte
+	ByteCount int64
+}
+
+// CommandTransition describes one atomic command state/event transition.
+// Terminal transitions set the final event sequence and output completeness.
+type CommandTransition struct {
+	CommandID       domain.CommandID
+	NextState       domain.CommandState
+	ExitCode        *int
+	OutputComplete  bool
+	OutputTruncated bool
 }
 
 // AcceptCommand atomically allocates the next authoritative session ordinal,
@@ -165,6 +190,132 @@ VALUES (?, 1, 'command_queued', X'', 0, ?)
 		return CommandRecord{}, false, err
 	}
 	return returnRecord, duplicate, nil
+}
+
+// AppendCommandEvent appends one non-lifecycle output event after the latest
+// contiguous event. It shares the command write transaction and refuses any
+// append after a terminal state.
+func (s *AuthorityStore) AppendCommandEvent(ctx context.Context, input CommandEventAppend) (CommandEventRecord, error) {
+	commandID, err := domain.NewCommandID(string(input.CommandID))
+	if err != nil {
+		return CommandEventRecord{}, err
+	}
+	if !validCommandEventType(input.Type) || input.Type == "command_queued" || input.Type == "command_started" || isTerminalCommandEvent(input.Type) {
+		return CommandEventRecord{}, fmt.Errorf("%w: event type %q", ErrCommandEvent, input.Type)
+	}
+	if input.Type == "stdout" || input.Type == "stderr" {
+		if input.ByteCount <= 0 || int64(len(input.Payload)) != input.ByteCount {
+			return CommandEventRecord{}, fmt.Errorf("%w: output byte count does not match payload", ErrCommandEvent)
+		}
+	} else if len(input.Payload) != 0 || input.ByteCount != 0 {
+		return CommandEventRecord{}, fmt.Errorf("%w: non-output event carries bytes", ErrCommandEvent)
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandEventRecord, error) {
+		command, err := readCommandOnConnection(ctx, connection, commandID)
+		if err != nil {
+			return CommandEventRecord{}, err
+		}
+		if command.State.IsTerminal() {
+			return CommandEventRecord{}, ErrCommandTerminal
+		}
+		if command.State != domain.CommandStateRunning && command.State != domain.CommandStateCancelling {
+			return CommandEventRecord{}, fmt.Errorf("%w: output event while command is %q", ErrCommandTransition, command.State)
+		}
+		sequence, err := nextEventSequenceOnConnection(ctx, connection, commandID)
+		if err != nil {
+			return CommandEventRecord{}, err
+		}
+		if err := insertCommandEventOnConnection(ctx, connection, commandID, sequence, input.Type, input.Payload, input.ByteCount, now); err != nil {
+			return CommandEventRecord{}, err
+		}
+		return CommandEventRecord{CommandID: commandID, Sequence: sequence, Type: input.Type, Payload: append([]byte(nil), input.Payload...), ByteCount: input.ByteCount, OccurredAt: now}, nil
+	})
+}
+
+// TransitionCommand atomically validates a D-01 command transition, appends
+// its lifecycle/terminal event, and updates terminal metadata. The internal
+// cancelling state is persisted without a separate v1 wire event; its later
+// terminal transition appends the event that closes the command stream.
+func (s *AuthorityStore) TransitionCommand(ctx context.Context, input CommandTransition) (CommandRecord, error) {
+	commandID, err := domain.NewCommandID(string(input.CommandID))
+	if err != nil {
+		return CommandRecord{}, err
+	}
+	if !input.NextState.Valid() {
+		return CommandRecord{}, fmt.Errorf("%w: invalid next state %q", ErrCommandTransition, input.NextState)
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+		var currentValue string
+		if err := connection.QueryRowContext(ctx, "SELECT state FROM exec_commands WHERE command_id = ?", string(commandID)).Scan(&currentValue); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return CommandRecord{}, ErrCommandNotFound
+			}
+			return CommandRecord{}, fmt.Errorf("read command state: %w", err)
+		}
+		current := domain.CommandState(currentValue)
+		if err := domain.ValidateCommandTransition(current, input.NextState); err != nil {
+			return CommandRecord{}, fmt.Errorf("%w: %v", ErrCommandTransition, err)
+		}
+		if input.NextState == domain.CommandStateCancelling {
+			if _, err := connection.ExecContext(ctx, "UPDATE exec_commands SET state = ?, updated_at = ? WHERE command_id = ?", string(input.NextState), formatStoredTime(now), string(commandID)); err != nil {
+				return CommandRecord{}, fmt.Errorf("persist cancelling state: %w", err)
+			}
+			return readCommandOnConnection(ctx, connection, commandID)
+		}
+		eventType, ok := commandEventTypeForState(input.NextState)
+		if !ok {
+			return CommandRecord{}, fmt.Errorf("%w: no event type for state %q", ErrCommandTransition, input.NextState)
+		}
+		sequence, err := nextEventSequenceOnConnection(ctx, connection, commandID)
+		if err != nil {
+			return CommandRecord{}, err
+		}
+		if err := insertCommandEventOnConnection(ctx, connection, commandID, sequence, eventType, nil, 0, now); err != nil {
+			return CommandRecord{}, err
+		}
+		if input.NextState.IsTerminal() {
+			var exitCode any
+			if input.ExitCode != nil {
+				exitCode = *input.ExitCode
+			}
+			if _, err := connection.ExecContext(ctx, `
+UPDATE exec_commands
+SET state = ?, exit_code = ?, final_event_sequence = ?, output_complete = ?, output_truncated = ?, updated_at = ?
+WHERE command_id = ?
+`, string(input.NextState), exitCode, sequence, boolToSQLite(input.OutputComplete), boolToSQLite(input.OutputTruncated), formatStoredTime(now), string(commandID)); err != nil {
+				return CommandRecord{}, fmt.Errorf("persist terminal command: %w", err)
+			}
+		} else {
+			if _, err := connection.ExecContext(ctx, "UPDATE exec_commands SET state = ?, updated_at = ? WHERE command_id = ?", string(input.NextState), formatStoredTime(now), string(commandID)); err != nil {
+				return CommandRecord{}, fmt.Errorf("persist command state: %w", err)
+			}
+		}
+		return readCommandOnConnection(ctx, connection, commandID)
+	})
+}
+
+// ReplayCommandEvents returns a contiguous event range after afterSequence.
+// A caller may request a cursor beyond the current tail and receive an empty
+// range; any missing sequence inside the advertised range is an error.
+func (s *AuthorityStore) ReplayCommandEvents(ctx context.Context, id domain.CommandID, afterSequence int64) ([]CommandEventRecord, error) {
+	validatedID, err := domain.NewCommandID(string(id))
+	if err != nil {
+		return nil, err
+	}
+	if afterSequence < 0 {
+		return nil, fmt.Errorf("%w: negative cursor", ErrCommandReplayGap)
+	}
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire replay connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := readCommandOnConnection(ctx, connection, validatedID); err != nil {
+		return nil, err
+	}
+	return readCommandEventsOnConnection(ctx, connection, validatedID, afterSequence)
 }
 
 // NextEligibleCommand returns the oldest queued command that may be started
@@ -288,26 +439,37 @@ func (s *AuthorityStore) ListCommandEvents(ctx context.Context, id domain.Comman
 	if _, err := readCommandOnConnection(ctx, connection, validatedID); err != nil {
 		return nil, err
 	}
+	return readCommandEventsOnConnection(ctx, connection, validatedID, -1)
+}
+
+func readCommandEventsOnConnection(ctx context.Context, connection *sql.Conn, expectedCommandID domain.CommandID, afterSequence int64) ([]CommandEventRecord, error) {
 	rows, err := connection.QueryContext(ctx, `
 SELECT command_id, sequence, event_type, payload, byte_count, occurred_at
-FROM exec_command_events WHERE command_id = ? ORDER BY sequence
-`, string(validatedID))
+FROM exec_command_events WHERE command_id = ? AND sequence > ? ORDER BY sequence
+`, string(expectedCommandID), afterSequence)
 	if err != nil {
 		return nil, fmt.Errorf("query command events: %w", err)
 	}
 	defer rows.Close()
 	var events []CommandEventRecord
+	expected := afterSequence + 1
+	if afterSequence < 0 {
+		expected = 1
+	}
 	for rows.Next() {
 		var event CommandEventRecord
-		var commandID, eventType, occurredAt string
+		var storedCommandID, eventType, occurredAt string
 		var payload []byte
-		if err := rows.Scan(&commandID, &event.Sequence, &eventType, &payload, &event.ByteCount, &occurredAt); err != nil {
+		if err := rows.Scan(&storedCommandID, &event.Sequence, &eventType, &payload, &event.ByteCount, &occurredAt); err != nil {
 			return nil, fmt.Errorf("scan command event: %w", err)
 		}
-		if commandID != string(validatedID) || !validCommandEventType(eventType) || event.Sequence < 1 || event.ByteCount < 0 {
-			return nil, fmt.Errorf("%w: command=%q sequence=%d type=%q", ErrCommandEvent, commandID, event.Sequence, eventType)
+		if storedCommandID != string(expectedCommandID) || !validCommandEventType(eventType) || event.Sequence != expected {
+			return nil, fmt.Errorf("%w: expected sequence %d, got command=%q sequence=%d type=%q", ErrCommandReplayGap, expected, storedCommandID, event.Sequence, eventType)
 		}
-		event.CommandID = validatedID
+		if err := validateStoredCommandEvent(eventType, event.Sequence, payload, event.ByteCount); err != nil {
+			return nil, err
+		}
+		event.CommandID = expectedCommandID
 		event.Type = eventType
 		event.Payload = append([]byte(nil), payload...)
 		event.OccurredAt, err = parseStoredTime(occurredAt)
@@ -315,14 +477,96 @@ FROM exec_command_events WHERE command_id = ? ORDER BY sequence
 			return nil, fmt.Errorf("%w: event timestamp: %v", ErrCommandEvent, err)
 		}
 		events = append(events, event)
+		expected++
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate command events: %w", err)
 	}
-	if len(events) == 0 {
+	if len(events) == 0 && afterSequence < 0 {
 		return nil, fmt.Errorf("%w: no events", ErrCommandEvent)
 	}
 	return events, nil
+}
+
+func nextEventSequenceOnConnection(ctx context.Context, connection *sql.Conn, commandID domain.CommandID) (int64, error) {
+	events, err := readCommandEventsOnConnection(ctx, connection, commandID, -1)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(events) + 1), nil
+}
+
+func insertCommandEventOnConnection(ctx context.Context, connection *sql.Conn, commandID domain.CommandID, sequence int64, eventType string, payload []byte, byteCount int64, occurredAt time.Time) error {
+	if err := validateStoredCommandEvent(eventType, sequence, payload, byteCount); err != nil {
+		return err
+	}
+	if payload == nil {
+		payload = []byte{}
+	}
+	if _, err := connection.ExecContext(ctx, `
+INSERT INTO exec_command_events (command_id, sequence, event_type, payload, byte_count, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, string(commandID), sequence, eventType, payload, byteCount, formatStoredTime(occurredAt)); err != nil {
+		return fmt.Errorf("insert command event: %w", err)
+	}
+	return nil
+}
+
+func validateStoredCommandEvent(eventType string, sequence int64, payload []byte, byteCount int64) error {
+	if !validCommandEventType(eventType) || sequence < 1 || byteCount < 0 {
+		return fmt.Errorf("%w: sequence=%d type=%q", ErrCommandEvent, sequence, eventType)
+	}
+	if sequence == 1 && eventType != "command_queued" {
+		return fmt.Errorf("%w: sequence one must be command_queued", ErrCommandEvent)
+	}
+	if sequence > 1 && eventType == "command_queued" {
+		return fmt.Errorf("%w: command_queued must be sequence one", ErrCommandEvent)
+	}
+	if eventType == "stdout" || eventType == "stderr" {
+		if byteCount <= 0 || int64(len(payload)) != byteCount {
+			return fmt.Errorf("%w: output byte count does not match payload", ErrCommandEvent)
+		}
+	} else if len(payload) != 0 || byteCount != 0 {
+		return fmt.Errorf("%w: non-output event carries bytes", ErrCommandEvent)
+	}
+	return nil
+}
+
+func isTerminalCommandEvent(eventType string) bool {
+	switch eventType {
+	case "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandEventTypeForState(state domain.CommandState) (string, bool) {
+	switch state {
+	case domain.CommandStateRunning:
+		return "command_started", true
+	case domain.CommandStateSucceeded:
+		return "command_succeeded", true
+	case domain.CommandStateFailed:
+		return "command_failed", true
+	case domain.CommandStateCancelled:
+		return "command_cancelled", true
+	case domain.CommandStateTimedOut:
+		return "command_timed_out", true
+	case domain.CommandStateRejected:
+		return "command_rejected", true
+	case domain.CommandStateLost:
+		return "command_lost", true
+	default:
+		return "", false
+	}
+}
+
+func boolToSQLite(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func validateCommandAcceptance(input CommandAcceptance) (CommandAcceptance, error) {
