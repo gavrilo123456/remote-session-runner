@@ -230,6 +230,8 @@ func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) 
 	switch {
 	case request.Method == http.MethodPost && request.URL.Path == "/v1/sessions":
 		s.handleCreateSession(response, request)
+	case request.Method == http.MethodPost && request.URL.Path == "/v1/jobs":
+		s.handleCreateJob(response, request)
 	case request.Method == http.MethodPost:
 		if commandID, ok := commandCancelPath(request.URL.Path); ok {
 			s.handleCancelCommand(response, request, commandID)
@@ -252,6 +254,8 @@ func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) 
 		s.handleGetCommand(response, request)
 	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/sessions/"):
 		s.handleGetSession(response, request)
+	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/jobs/"):
+		s.handleGetJob(response, request)
 	default:
 		writeError(response, http.StatusNotFound, "resource_not_found", "local API route not found")
 	}
@@ -289,6 +293,46 @@ type cancelCommandRequest struct {
 type closeSessionRequest struct {
 	SessionID string `json:"session_id,omitempty"`
 	Policy    string `json:"policy,omitempty"`
+}
+
+type createJobRequest struct {
+	Environment     string          `json:"environment"`
+	ExecutionTarget targetRequest   `json:"execution_target"`
+	Source          *sourceRequest  `json:"source,omitempty"`
+	Script          *string         `json:"script"`
+	TimeoutSeconds  json.RawMessage `json:"timeout_seconds,omitempty"`
+	Limits          json.RawMessage `json:"limits,omitempty"`
+	Policy          json.RawMessage `json:"policy,omitempty"`
+}
+
+type jobAcceptance struct {
+	ResourceID      string         `json:"resource_id"`
+	JobID           string         `json:"job_id"`
+	SessionID       string         `json:"session_id"`
+	CommandID       string         `json:"command_id"`
+	IntentID        string         `json:"intent_id,omitempty"`
+	AcceptanceScope string         `json:"acceptance_scope"`
+	ExecutionTarget targetResponse `json:"execution_target"`
+	KnownState      knownState     `json:"known_state"`
+}
+
+type jobRead struct {
+	View     string            `json:"view"`
+	IsStale  bool              `json:"is_stale"`
+	Resource jobIntentResource `json:"resource"`
+}
+
+type jobIntentResource struct {
+	JobID           string         `json:"job_id"`
+	SessionID       string         `json:"session_id"`
+	CommandID       string         `json:"command_id"`
+	ExecutionTarget targetResponse `json:"execution_target"`
+	Controller      controllerView `json:"controller"`
+	ObservedAt      time.Time      `json:"observed_at"`
+	Environment     string         `json:"environment"`
+	Source          sourceResponse `json:"source"`
+	DeliveryState   string         `json:"delivery_state"`
+	Reason          string         `json:"reason,omitempty"`
 }
 
 type commandRead struct {
@@ -660,6 +704,24 @@ func (s *Server) canonicalLocalMutation(response http.ResponseWriter, operation 
 	return canonical, hash, true
 }
 
+func (s *Server) canonicalLocalBody(response http.ResponseWriter, operation string, body []byte) ([]byte, domain.CanonicalHash, bool) {
+	canonical, err := domain.CanonicalizeMutationRequestJSON(operation, body, domain.CanonicalizationOptions{})
+	if err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "canonical request is invalid")
+		return nil, domain.CanonicalHash{}, false
+	}
+	if int64(len(canonical)) > s.maxBodyBytes {
+		writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "canonical request exceeds the configured body limit")
+		return nil, domain.CanonicalHash{}, false
+	}
+	hash, err := domain.HashMutationRequestJSON(operation, canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
+		return nil, domain.CanonicalHash{}, false
+	}
+	return canonical, hash, true
+}
+
 func (s *Server) handleGetCommand(response http.ResponseWriter, request *http.Request) {
 	if len(request.URL.Query()) != 0 {
 		writeError(response, http.StatusBadRequest, "invalid_request", "controller query parameters are not accepted")
@@ -881,6 +943,16 @@ func commandIntentResourceFromRecord(record store.LocalIntentRecord) commandInte
 	}
 }
 
+func jobIntentResourceFromRecord(record store.LocalIntentRecord) jobIntentResource {
+	return jobIntentResource{
+		JobID: string(record.JobID), SessionID: string(record.SessionID), CommandID: string(record.CommandID),
+		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
+		Controller:      controllerView{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())},
+		ObservedAt:      record.UpdatedAt.UTC(), Environment: record.Environment,
+		Source: sourceResponseFromDomain(record.Source), DeliveryState: string(record.DeliveryState), Reason: record.Reason,
+	}
+}
+
 func sessionCommandPath(path string) (string, bool) {
 	const prefix = "/v1/sessions/"
 	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, "/commands") {
@@ -907,6 +979,18 @@ func commandCancelPath(path string) (string, bool) {
 
 func sessionResourcePath(path string) (string, bool) {
 	const prefix = "/v1/sessions/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	raw := strings.TrimPrefix(path, prefix)
+	if raw == "" || strings.Contains(raw, "/") {
+		return "", false
+	}
+	return raw, true
+}
+
+func jobResourcePath(path string) (string, bool) {
+	const prefix = "/v1/jobs/"
 	if !strings.HasPrefix(path, prefix) {
 		return "", false
 	}
@@ -1044,6 +1128,167 @@ func (s *Server) handleCreateSession(response http.ResponseWriter, request *http
 		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
 	})
 	_ = duplicate // The stable response identity is the durable idempotency result.
+}
+
+func (s *Server) handleCreateJob(response http.ResponseWriter, request *http.Request) {
+	key := request.Header.Get("Idempotency-Key")
+	if strings.TrimSpace(key) == "" {
+		writeError(response, http.StatusBadRequest, "invalid_request", "Idempotency-Key is required")
+		return
+	}
+	body, err := s.readBody(request)
+	if err != nil {
+		status, code := requestReadError(err)
+		writeError(response, status, code, err.Error())
+		return
+	}
+	var input createJobRequest
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", "malformed or unsupported job request JSON")
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body contains multiple JSON values")
+		return
+	}
+	if err := validateObjectField(input.Limits, "limits"); err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return
+	}
+	if err := validateObjectField(input.Policy, "policy"); err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(input.Environment) == "" || strings.IndexByte(input.Environment, 0) >= 0 {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "environment is required")
+		return
+	}
+	if input.Script == nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", "script is required")
+		return
+	}
+	script := *input.Script
+	if err := domain.ValidateScriptUTF8(script); err != nil {
+		if errors.Is(err, domain.ErrScriptTooLarge) {
+			writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", err.Error())
+		} else {
+			writeError(response, http.StatusBadRequest, "invalid_script", err.Error())
+		}
+		return
+	}
+	if _, _, err := parseTimeoutSeconds(input.TimeoutSeconds); err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return
+	}
+	target, err := domain.NewExecutionTarget(domain.TargetKind(input.ExecutionTarget.Kind), input.ExecutionTarget.Profile)
+	if err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return
+	}
+	source, err := parseSource(input.Source)
+	if err != nil {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return
+	}
+	if target.Kind() == domain.TargetKindRemote && source.Mode() == domain.SourceModeLocalWorktree {
+		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "remote jobs cannot use a local_worktree source")
+		return
+	}
+	canonical, hash, ok := s.canonicalLocalBody(response, "run", body)
+	if !ok {
+		return
+	}
+	jobIDText, err := newOpaqueID("job-")
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate job identity")
+		return
+	}
+	sessionIDText, err := newOpaqueID("sess-")
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate session identity")
+		return
+	}
+	commandIDText, err := newOpaqueID("cmd-")
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate command identity")
+		return
+	}
+	intentID, err := newOpaqueID("intent-")
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
+		return
+	}
+	jobID, err := domain.NewJobID(jobIDText)
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not validate job identity")
+		return
+	}
+	sessionID, err := domain.NewSessionID(sessionIDText)
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not validate session identity")
+		return
+	}
+	commandID, err := domain.NewCommandID(commandIDText)
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not validate command identity")
+		return
+	}
+	record, _, err := s.authority.AcceptLocalIntent(request.Context(), store.LocalIntentCreate{
+		IntentID: domain.IntentID(intentID), Operation: "run", ResourceID: jobIDText,
+		SessionID: sessionID, CommandID: commandID, JobID: jobID, Target: target,
+		Environment: strings.TrimSpace(input.Environment), Controller: s.owner, Source: source,
+		RequestHash: hash, IdempotencyKey: key, PayloadJSON: canonical, ScriptBytes: []byte(script),
+		DeliveryState: store.LocalIntentRecorded,
+	})
+	if err != nil {
+		status, code := statusForStoreError(err)
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	writeJSON(response, http.StatusAccepted, jobAcceptance{
+		ResourceID: string(record.JobID), JobID: string(record.JobID), SessionID: string(record.SessionID), CommandID: string(record.CommandID), IntentID: string(record.IntentID),
+		AcceptanceScope: "local_intent", ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
+		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
+	})
+}
+
+func (s *Server) handleGetJob(response http.ResponseWriter, request *http.Request) {
+	if len(request.URL.Query()) != 0 {
+		writeError(response, http.StatusBadRequest, "invalid_request", "controller query parameters are not accepted")
+		return
+	}
+	rawID, ok := jobResourcePath(request.URL.Path)
+	if !ok {
+		writeError(response, http.StatusBadRequest, "invalid_request", "invalid job path")
+		return
+	}
+	idText, err := url.PathUnescape(rawID)
+	if err != nil || idText == "" || strings.Contains(idText, "/") {
+		writeError(response, http.StatusBadRequest, "invalid_request", "invalid job path")
+		return
+	}
+	jobID, err := domain.NewJobID(idText)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	record, err := s.authority.GetLocalIntentByResource(request.Context(), "run", string(jobID), s.owner)
+	if err != nil {
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			writeError(response, http.StatusNotFound, "job_not_found", "local job intent was not found")
+			return
+		}
+		status, code := statusForStoreError(err)
+		if code == "session_not_found" {
+			code = "job_not_found"
+		}
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	writeJSON(response, http.StatusOK, jobRead{View: "local_intent", IsStale: false, Resource: jobIntentResourceFromRecord(record)})
 }
 
 func (s *Server) handleGetSession(response http.ResponseWriter, request *http.Request) {
