@@ -340,6 +340,11 @@ func (a *LinuxProcessAdapter) ReconcileProcess(ctx context.Context, record Linux
 		result.Reason = "process belongs to a different OS account"
 		return result, fmt.Errorf("%w: PID %d is uid=%d user=%q", ErrLinuxRuntimeOwnership, record.PID, observed.UID, observed.Username)
 	}
+	if record.UID != 0 && record.UID != observed.UID || record.Username != "" && record.Username != observed.Username {
+		result.CapacityRetained = true
+		result.Reason = "persisted process identity does not match the live process"
+		return result, fmt.Errorf("%w: recorded uid=%d user=%q, observed uid=%d user=%q", ErrLinuxRuntimeOwnership, record.UID, record.Username, observed.UID, observed.Username)
+	}
 	result.Quarantined = true
 	if expectedGeneration == "" || record.Generation != expectedGeneration {
 		result.Reason = "generation mismatch after executor restart; shell reattachment is forbidden"
