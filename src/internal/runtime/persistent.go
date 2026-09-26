@@ -8,8 +8,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
 )
 
 var (
@@ -36,6 +40,30 @@ type PersistentShellResult struct {
 	CommandComplete ControlFrame
 	Stdout          []byte
 	Stderr          []byte
+	Chunks          []OutputChunk
+}
+
+const (
+	// MaxOutputChunkBytes is the raw-byte ceiling for one agent output chunk.
+	MaxOutputChunkBytes = 16 * 1024
+	// OutputFlushInterval is the normal-load upper bound for a partial chunk.
+	OutputFlushInterval = 50 * time.Millisecond
+)
+
+// OutputStream identifies the command-scoped raw byte pipe.
+type OutputStream string
+
+const (
+	OutputStreamStdout OutputStream = "stdout"
+	OutputStreamStderr OutputStream = "stderr"
+)
+
+// OutputChunk is a raw byte chunk drained from one command pipe. Data is never
+// converted through a text encoding or merged with the other stream.
+type OutputChunk struct {
+	Sequence uint64
+	Stream   OutputStream
+	Data     []byte
 }
 
 // PersistentBash is the agent-facing name for the same one-process runtime.
@@ -185,14 +213,16 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	if err != nil {
 		return PersistentShellResult{}, err
 	}
-	stdoutPath, err := writePrivateSynced(s.workspace, "stdout-*.bin", nil)
+	stdoutPath, stdoutRead, stdoutKeepalive, err := createOutputFIFO(s.workspace, "stdout-*.fifo")
 	if err != nil {
 		_ = os.Remove(scriptPath)
 		return PersistentShellResult{}, err
 	}
-	stderrPath, err := writePrivateSynced(s.workspace, "stderr-*.bin", nil)
+	stderrPath, stderrRead, stderrKeepalive, err := createOutputFIFO(s.workspace, "stderr-*.fifo")
 	if err != nil {
 		_ = os.Remove(scriptPath)
+		_ = stdoutRead.Close()
+		_ = stdoutKeepalive.Close()
 		_ = os.Remove(stdoutPath)
 		return PersistentShellResult{}, err
 	}
@@ -200,7 +230,16 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 		_ = os.Remove(scriptPath)
 		_ = os.Remove(stdoutPath)
 		_ = os.Remove(stderrPath)
+		_ = stdoutRead.Close()
+		_ = stderrRead.Close()
+		_ = stdoutKeepalive.Close()
+		_ = stderrKeepalive.Close()
 	}()
+	stdoutDone := make(chan outputDrainResult, 1)
+	stderrDone := make(chan outputDrainResult, 1)
+	var sequence atomic.Uint64
+	go func() { stdoutDone <- drainOutputFIFO(ctx, stdoutRead, OutputStreamStdout, &sequence) }()
+	go func() { stderrDone <- drainOutputFIFO(ctx, stderrRead, OutputStreamStderr, &sequence) }()
 
 	started := ControlFrame{Version: ControlProtocolVersion, Type: FrameTypeCommandStarted, SessionID: s.parser.sessionID, CommandID: commandID, Generation: s.parser.generation}
 	if err := started.Validate(); err != nil {
@@ -256,15 +295,24 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	if gotComplete.Type != FrameTypeCommandComplete || gotComplete.CommandID != commandID || gotComplete.ExitCode == nil {
 		return PersistentShellResult{}, fmt.Errorf("%w: unexpected completion frame %+v", ErrPersistentShellCommand, gotComplete)
 	}
-	stdout, err := os.ReadFile(stdoutPath)
-	if err != nil {
-		return PersistentShellResult{}, fmt.Errorf("%w: read stdout: %v", ErrPersistentShellCommand, err)
+	// The shell closes its command-scoped FIFO writers when source returns. The
+	// parent keepalive writers are then closed to make EOF observable to both
+	// drainers, establishing the P032 output boundary for this precursor.
+	_ = stdoutKeepalive.Close()
+	_ = stderrKeepalive.Close()
+	stdoutResult := <-stdoutDone
+	stderrResult := <-stderrDone
+	if stdoutResult.err != nil {
+		return PersistentShellResult{}, stdoutResult.err
 	}
-	stderr, err := os.ReadFile(stderrPath)
-	if err != nil {
-		return PersistentShellResult{}, fmt.Errorf("%w: read stderr: %v", ErrPersistentShellCommand, err)
+	if stderrResult.err != nil {
+		return PersistentShellResult{}, stderrResult.err
 	}
-	return PersistentShellResult{CommandStarted: gotStarted, CommandComplete: gotComplete, Stdout: stdout, Stderr: stderr}, nil
+	chunks := append(stdoutResult.chunks, stderrResult.chunks...)
+	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].Sequence < chunks[j].Sequence })
+	stdout := chunksBytes(chunks, OutputStreamStdout)
+	stderr := chunksBytes(chunks, OutputStreamStderr)
+	return PersistentShellResult{CommandStarted: gotStarted, CommandComplete: gotComplete, Stdout: stdout, Stderr: stderr, Chunks: chunks}, nil
 }
 
 // Close closes the command channel and waits for the one Bash process. It
@@ -348,4 +396,95 @@ func writePrivateFileHandle(file *os.File, data []byte) error {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+type outputDrainResult struct {
+	chunks []OutputChunk
+	err    error
+}
+
+func createOutputFIFO(dir, pattern string) (string, *os.File, *os.File, error) {
+	file, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("%w: create output fifo: %v", ErrPersistentShellCommand, err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", nil, nil, fmt.Errorf("%w: close output fifo placeholder: %v", ErrPersistentShellCommand, err)
+	}
+	if err := os.Remove(path); err != nil {
+		return "", nil, nil, fmt.Errorf("%w: remove output fifo placeholder: %v", ErrPersistentShellCommand, err)
+	}
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		return "", nil, nil, fmt.Errorf("%w: create output fifo: %v", ErrPersistentShellCommand, err)
+	}
+	read, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0o600)
+	if err != nil {
+		_ = os.Remove(path)
+		return "", nil, nil, fmt.Errorf("%w: open output fifo: %v", ErrPersistentShellCommand, err)
+	}
+	keepalive, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0o600)
+	if err != nil {
+		_ = read.Close()
+		_ = os.Remove(path)
+		return "", nil, nil, fmt.Errorf("%w: keep output fifo open: %v", ErrPersistentShellCommand, err)
+	}
+	return path, read, keepalive, nil
+}
+
+func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, sequence *atomic.Uint64) outputDrainResult {
+	var result outputDrainResult
+	buffer := make([]byte, MaxOutputChunkBytes)
+	pending := make([]byte, 0, MaxOutputChunkBytes)
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		data := append([]byte(nil), pending...)
+		result.chunks = append(result.chunks, OutputChunk{Sequence: sequence.Add(1), Stream: stream, Data: data})
+		pending = pending[:0]
+	}
+	ticker := time.NewTicker(OutputFlushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			result.err = ctx.Err()
+			return result
+		case <-ticker.C:
+			flush()
+		default:
+		}
+		n, err := file.Read(buffer)
+		if n > 0 {
+			pending = append(pending, buffer[:n]...)
+			for len(pending) >= MaxOutputChunkBytes {
+				data := append([]byte(nil), pending[:MaxOutputChunkBytes]...)
+				result.chunks = append(result.chunks, OutputChunk{Sequence: sequence.Add(1), Stream: stream, Data: data})
+				pending = pending[MaxOutputChunkBytes:]
+			}
+		}
+		if err == io.EOF {
+			flush()
+			return result
+		}
+		if err != nil && !errors.Is(err, syscall.EAGAIN) && !errors.Is(err, syscall.EWOULDBLOCK) {
+			result.err = fmt.Errorf("%w: drain %s: %v", ErrPersistentShellCommand, stream, err)
+			return result
+		}
+		if n == 0 || errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func chunksBytes(chunks []OutputChunk, stream OutputStream) []byte {
+	var result []byte
+	for _, chunk := range chunks {
+		if chunk.Stream == stream {
+			result = append(result, chunk.Data...)
+		}
+	}
+	return result
 }
