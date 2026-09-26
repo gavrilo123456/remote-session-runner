@@ -1179,6 +1179,53 @@ func (s *Service) GetSession(ctx context.Context, id domain.SessionID, controlle
 	return record, nil
 }
 
+// GetCommand returns an authoritative command snapshot after checking the
+// immutable controller of its parent session. Command reads therefore use the
+// same ownership rule as session reads and cannot disclose another controller's
+// script metadata or output cursor.
+func (s *Service) GetCommand(ctx context.Context, id domain.CommandID, controller domain.ControllerIdentity) (store.CommandRecord, error) {
+	if s == nil || s.store == nil {
+		return store.CommandRecord{}, ErrExecutionServiceConfiguration
+	}
+	command, err := s.store.GetCommand(ctx, id)
+	if err != nil {
+		return store.CommandRecord{}, err
+	}
+	session, err := s.store.GetSession(ctx, command.SessionID)
+	if err != nil {
+		return store.CommandRecord{}, err
+	}
+	if session.Controller.Type() != controller.Type() || session.Controller.ID() != controller.ID() {
+		return store.CommandRecord{}, ErrSessionController
+	}
+	return command, nil
+}
+
+// ReplayCommandEvents returns the durable contiguous event range for a
+// controller-owned command. The store remains responsible for gap and
+// retention semantics; this method only applies command ownership.
+func (s *Service) ReplayCommandEvents(ctx context.Context, id domain.CommandID, controller domain.ControllerIdentity, afterSequence int64) ([]store.CommandEventRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, ErrExecutionServiceConfiguration
+	}
+	if _, err := s.GetCommand(ctx, id, controller); err != nil {
+		return nil, err
+	}
+	return s.store.ReplayCommandEvents(ctx, id, afterSequence)
+}
+
+// SubscribeCommandEvents registers a durable replay/live handoff after the
+// same controller check used by command reads.
+func (s *Service) SubscribeCommandEvents(ctx context.Context, id domain.CommandID, controller domain.ControllerIdentity, afterSequence int64, capacity int) (*store.CommandEventSubscription, error) {
+	if s == nil || s.store == nil {
+		return nil, ErrExecutionServiceConfiguration
+	}
+	if _, err := s.GetCommand(ctx, id, controller); err != nil {
+		return nil, err
+	}
+	return s.store.SubscribeCommandEvents(ctx, id, afterSequence, capacity)
+}
+
 func (s *Service) publishLatestLifecycle(ctx context.Context, id domain.SessionID) {
 	if s.publisher == nil {
 		return

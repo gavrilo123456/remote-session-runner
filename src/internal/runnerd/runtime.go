@@ -85,3 +85,30 @@ func (r *LinuxSessionRuntime) Cleanup(_ context.Context, request execution.Runti
 	}
 	return err
 }
+
+// ExecuteCommand sources the already durable script through the adapter's
+// persistent Bash. The command bytes come from SQLite, never from a second API
+// execution path, and the request context only bounds this one command.
+func (r *LinuxSessionRuntime) ExecuteCommand(ctx context.Context, request execution.RuntimeCommandRequest) (execution.RuntimeCommandResult, error) {
+	if r == nil || r.adapter == nil {
+		return execution.RuntimeCommandResult{}, execution.ErrRuntimeUnavailable
+	}
+	shell, err := r.adapter.Shell(string(request.Session.SessionID))
+	if err != nil {
+		return execution.RuntimeCommandResult{}, err
+	}
+	result, err := shell.RunScript(ctx, string(request.Command.CommandID), request.Command.ScriptBytes)
+	if err != nil {
+		return execution.RuntimeCommandResult{}, err
+	}
+	exitCode := 0
+	if result.CommandComplete.ExitCode != nil {
+		exitCode = *result.CommandComplete.ExitCode
+	}
+	return execution.RuntimeCommandResult{
+		Stdout:      result.Stdout,
+		Stderr:      result.Stderr,
+		ExitCode:    exitCode,
+		ShellExited: false,
+	}, nil
+}

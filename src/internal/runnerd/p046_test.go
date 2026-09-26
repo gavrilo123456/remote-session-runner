@@ -2,6 +2,7 @@ package runnerd
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"remote-session-runner/src/internal/domain"
@@ -18,7 +20,10 @@ import (
 	"remote-session-runner/src/internal/testfixture"
 )
 
-type p046FakeRuntime struct{ generation string }
+type p046FakeRuntime struct {
+	generation   string
+	commandCalls int
+}
 
 func (r *p046FakeRuntime) Prepare(context.Context, execution.RuntimePrepareRequest) (execution.RuntimePrepared, error) {
 	return execution.RuntimePrepared{RuntimeGeneration: r.generation}, nil
@@ -29,6 +34,11 @@ func (r *p046FakeRuntime) StartAgent(context.Context, execution.RuntimeStartRequ
 }
 
 func (*p046FakeRuntime) Cleanup(context.Context, execution.RuntimeCleanupRequest) error { return nil }
+
+func (r *p046FakeRuntime) ExecuteCommand(context.Context, execution.RuntimeCommandRequest) (execution.RuntimeCommandResult, error) {
+	r.commandCalls++
+	return execution.RuntimeCommandResult{Stdout: []byte("p047-output\n"), ExitCode: 0}, nil
+}
 
 func TestP046PrivateCreateReadOwnerOnlySocket(t *testing.T) {
 	service, authority := newP046Service(t, &p046FakeRuntime{generation: "p046-fake-generation"})
@@ -182,6 +192,242 @@ func TestP046LinuxPrivateCreateReadUsesUbuntuRuntime(t *testing.T) {
 	if err := adapter.Cleanup(sessionID); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestP047PrivateSubmitReadEventsAndReplayAfterServerRestart(t *testing.T) {
+	runtimeAdapter := &p046FakeRuntime{generation: "p047-generation"}
+	service, authority := newP046Service(t, runtimeAdapter)
+	startServer := func() (*PrivateServer, chan error) {
+		socketPath := filepath.Join(p046SocketParent(t), "runnerd.sock")
+		server, err := NewPrivateServer(PrivateServerOptions{Service: service, SocketPath: socketPath})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := server.Listen(); err != nil {
+			t.Fatal(err)
+		}
+		serveErr := make(chan error, 1)
+		go func() { serveErr <- server.Serve() }()
+		return server, serveErr
+	}
+	server, serveErr := startServer()
+	client := p046UnixClient(server.SocketPath())
+	firstServerClosed := false
+	defer func() {
+		if firstServerClosed {
+			return
+		}
+		_ = server.Close(context.Background())
+		if err := <-serveErr; err != nil {
+			t.Error(err)
+		}
+	}()
+
+	createBody := []byte(`{"session_id":"p047-session","idempotency_key":"p047-create","environment":"linux-dev","execution_target":{"kind":"remote","profile":"linux-host"},"controller":{"controller_type":"queued_mac","controller_id":"tomasz.walczuk"},"source":{"mode":"empty"}}`)
+	create := p046DoJSON(t, client, http.MethodPost, "http://runnerd/internal/v1/sessions", createBody)
+	if create.StatusCode != http.StatusAccepted {
+		t.Fatalf("P047 create status = %d, body = %s", create.StatusCode, p046ReadBody(t, create))
+	}
+	_ = p046ReadBody(t, create)
+
+	commandBody := []byte(`{"command_id":"p047-command","session_id":"p047-session","idempotency_key":"p047-submit","controller":{"controller_type":"queued_mac","controller_id":"tomasz.walczuk"},"script":"printf p047"}`)
+	submit := p046DoJSON(t, client, http.MethodPost, "http://runnerd/internal/v1/sessions/p047-session/commands", commandBody)
+	if submit.StatusCode != http.StatusAccepted {
+		t.Fatalf("P047 submit status = %d, body = %s", submit.StatusCode, p046ReadBody(t, submit))
+	}
+	var submitted commandResponse
+	p046DecodeJSON(t, submit, &submitted)
+	if submitted.CommandState != string(domain.CommandStateSucceeded) || submitted.ScriptByteCount != len("printf p047") || submitted.ScriptSHA256 == "" {
+		t.Fatalf("P047 submit response = %+v", submitted)
+	}
+
+	read := p046DoJSON(t, client, http.MethodGet, "http://runnerd/internal/v1/commands/p047-command?controller_type=queued_mac&controller_id=tomasz.walczuk", nil)
+	if read.StatusCode != http.StatusOK {
+		t.Fatalf("P047 command read status = %d, body = %s", read.StatusCode, p046ReadBody(t, read))
+	}
+	var readCommand commandResponse
+	p046DecodeJSON(t, read, &readCommand)
+	if readCommand.ScriptSHA256 != submitted.ScriptSHA256 || readCommand.CommandState != string(domain.CommandStateSucceeded) {
+		t.Fatalf("P047 command read = %+v, submit = %+v", readCommand, submitted)
+	}
+
+	events := p046DoJSON(t, client, http.MethodGet, "http://runnerd/internal/v1/commands/p047-command/events?controller_type=queued_mac&controller_id=tomasz.walczuk&after=0", nil)
+	if events.StatusCode != http.StatusOK {
+		t.Fatalf("P047 events status = %d, body = %s", events.StatusCode, p046ReadBody(t, events))
+	}
+	eventBytes, err := io.ReadAll(events.Body)
+	events.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"command_queued", "command_started", "stdout", "command_succeeded", "cDA0Ny1vdXRwdXQK"} {
+		if !strings.Contains(string(eventBytes), expected) {
+			t.Fatalf("P047 events missing %q: %s", expected, eventBytes)
+		}
+	}
+
+	duplicate := p046DoJSON(t, client, http.MethodPost, "http://runnerd/internal/v1/sessions/p047-session/commands", commandBody)
+	if duplicate.StatusCode != http.StatusAccepted {
+		t.Fatalf("P047 duplicate status = %d, body = %s", duplicate.StatusCode, p046ReadBody(t, duplicate))
+	}
+	var duplicateCommand commandResponse
+	p046DecodeJSON(t, duplicate, &duplicateCommand)
+	if !duplicateCommand.Duplicate || duplicateCommand.ScriptSHA256 != submitted.ScriptSHA256 {
+		t.Fatalf("P047 duplicate response = %+v", duplicateCommand)
+	}
+
+	if err := server.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serveErr; err != nil {
+		t.Fatal(err)
+	}
+	firstServerClosed = true
+	// A fresh service/runtime instance shares the same authority. The retained
+	// idempotency row returns the exact command and script metadata without a
+	// second runtime execution.
+	newRuntime := &p046FakeRuntime{generation: "p047-new-generation"}
+	newService, err := execution.NewExecutionService(authority, newRuntime, mustP047Registry(t), execution.RealClock{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service = newService
+	server, serveErr = startServer()
+	client = p046UnixClient(server.SocketPath())
+	defer func() {
+		_ = server.Close(context.Background())
+		if err := <-serveErr; err != nil {
+			t.Error(err)
+		}
+	}()
+	replayed := p046DoJSON(t, client, http.MethodPost, "http://runnerd/internal/v1/sessions/p047-session/commands", commandBody)
+	if replayed.StatusCode != http.StatusAccepted {
+		t.Fatalf("P047 restart replay status = %d, body = %s", replayed.StatusCode, p046ReadBody(t, replayed))
+	}
+	var replayedCommand commandResponse
+	p046DecodeJSON(t, replayed, &replayedCommand)
+	if !replayedCommand.Duplicate || replayedCommand.ScriptSHA256 != submitted.ScriptSHA256 || newRuntime.commandCalls != 0 {
+		t.Fatalf("P047 restart replay response = %+v", replayedCommand)
+	}
+}
+
+func TestP047LinuxPrivateSubmitReadEventsUsesUbuntuRuntime(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("real Linux host-process gate runs on Ubuntu")
+	}
+	fixture := testfixture.New(t)
+	workspaceRoot := filepath.Join(fixture.Path(), "workspaces")
+	if err := os.Mkdir(workspaceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := hostruntime.NewLinuxProcessAdapter(hostruntime.LinuxRuntimeOptions{
+		Account:       hostruntime.LinuxHostAccount,
+		WorkspaceRoot: workspaceRoot,
+		ShellPath:     "/usr/bin/bash",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeAdapter, err := NewLinuxSessionRuntime(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, _ := newP046Service(t, runtimeAdapter)
+	socketParent := p046SocketParent(t)
+	socketPath := filepath.Join(socketParent, "runnerd.sock")
+	server, err := NewPrivateServer(PrivateServerOptions{Service: service, SocketPath: socketPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve() }()
+	defer func() {
+		_ = server.Close(context.Background())
+		if err := <-serveErr; err != nil {
+			t.Error(err)
+		}
+		if err := adapter.Cleanup("p047-linux-session"); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	client := p046UnixClient(socketPath)
+	createBody := []byte(`{"session_id":"p047-linux-session","idempotency_key":"p047-linux-create","environment":"linux-dev","execution_target":{"kind":"remote","profile":"linux-host"},"controller":{"controller_type":"direct_mtls","controller_id":"tomasz.walczuk"},"source":{"mode":"empty"}}`)
+	create := p046DoJSON(t, client, http.MethodPost, "http://runnerd/internal/v1/sessions", createBody)
+	if create.StatusCode != http.StatusAccepted {
+		t.Fatalf("P047 Linux create status = %d, body = %s", create.StatusCode, p046ReadBody(t, create))
+	}
+	var created sessionResponse
+	p046DecodeJSON(t, create, &created)
+	if created.SessionState != string(domain.SessionStateReady) || created.RuntimeGeneration == "" {
+		t.Fatalf("P047 Linux create response = %+v", created)
+	}
+	process, err := adapter.Inspect("p047-linux-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process.Username != hostruntime.LinuxHostAccount || process.UID <= 0 {
+		t.Fatalf("P047 Linux process identity = %+v", process)
+	}
+
+	commandBody := []byte(`{"command_id":"p047-linux-command","session_id":"p047-linux-session","idempotency_key":"p047-linux-submit","controller":{"controller_type":"direct_mtls","controller_id":"tomasz.walczuk"},"script":"printf p047-linux"}`)
+	submit := p046DoJSON(t, client, http.MethodPost, "http://runnerd/internal/v1/sessions/p047-linux-session/commands", commandBody)
+	if submit.StatusCode != http.StatusAccepted {
+		t.Fatalf("P047 Linux submit status = %d, body = %s", submit.StatusCode, p046ReadBody(t, submit))
+	}
+	var submitted commandResponse
+	p046DecodeJSON(t, submit, &submitted)
+	if submitted.CommandState != string(domain.CommandStateSucceeded) || submitted.ExitCode == nil || *submitted.ExitCode != 0 || !submitted.OutputComplete {
+		t.Fatalf("P047 Linux submit response = %+v", submitted)
+	}
+
+	events := p046DoJSON(t, client, http.MethodGet, "http://runnerd/internal/v1/commands/p047-linux-command/events?controller_type=direct_mtls&controller_id=tomasz.walczuk&after=0", nil)
+	if events.StatusCode != http.StatusOK {
+		t.Fatalf("P047 Linux events status = %d, body = %s", events.StatusCode, p046ReadBody(t, events))
+	}
+	eventBytes, err := io.ReadAll(events.Body)
+	events.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedOutput := base64.StdEncoding.EncodeToString([]byte("p047-linux"))
+	for _, expected := range []string{"command_queued", "command_started", "stdout", "command_succeeded", expectedOutput} {
+		if !strings.Contains(string(eventBytes), expected) {
+			t.Fatalf("P047 Linux events missing %q: %s", expected, eventBytes)
+		}
+	}
+}
+
+func mustP047Registry(t *testing.T) *execution.EnvironmentRegistry {
+	t.Helper()
+	target, err := domain.NewExecutionTarget(domain.TargetKindRemote, "linux-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := domain.NewControllerID("tomasz.walczuk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := domain.NewControllerIdentity(domain.ControllerTypeQueuedMac, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := domain.NewEnvironment(domain.EnvironmentSpec{
+		Name: "linux-dev", HostClass: "Ubuntu Linux host", EffectiveAccount: "ubuntu",
+		AllowedTargets: []domain.ExecutionTarget{target}, AllowedSourceModes: []domain.SourceMode{domain.SourceModeEmpty},
+		AllowedControllers: []domain.ControllerIdentity{controller}, ServiceLimits: domain.DefaultServiceLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := execution.NewEnvironmentRegistry(environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
 }
 
 func newP046Service(t *testing.T, runtimeAdapter execution.SessionRuntime) (*execution.Service, *store.AuthorityStore) {

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -259,6 +261,28 @@ type sourceResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	if commandPathPrefix(request.URL.Path) != "" {
+		prefix := commandPathPrefix(request.URL.Path)
+		remainder := strings.TrimPrefix(request.URL.Path, prefix+"/")
+		parts := strings.Split(remainder, "/")
+		if len(parts) == 2 && parts[1] == "commands" && request.Method == http.MethodPost {
+			s.handleSubmitCommand(response, request, parts[0])
+			return
+		}
+	}
+	if commandResourcePathPrefix(request.URL.Path) != "" {
+		prefix := commandResourcePathPrefix(request.URL.Path)
+		remainder := strings.TrimPrefix(request.URL.Path, prefix+"/")
+		parts := strings.Split(remainder, "/")
+		if len(parts) == 1 && request.Method == http.MethodGet {
+			s.handleGetCommand(response, request, parts[0])
+			return
+		}
+		if len(parts) == 2 && parts[1] == "events" && request.Method == http.MethodGet {
+			s.handleCommandEvents(response, request, parts[0])
+			return
+		}
+	}
 	if isSessionCollectionPath(request.URL.Path) {
 		if request.Method != http.MethodPost {
 			writePrivateError(response, http.StatusMethodNotAllowed, "method not allowed")
@@ -276,6 +300,259 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	writePrivateError(response, http.StatusNotFound, "route not found")
+}
+
+type submitCommandRequest struct {
+	CommandID      string            `json:"command_id"`
+	SessionID      string            `json:"session_id"`
+	IdempotencyKey string            `json:"idempotency_key"`
+	RequestID      string            `json:"request_id,omitempty"`
+	Controller     controllerRequest `json:"controller"`
+	Script         string            `json:"script"`
+	TimeoutSeconds int64             `json:"timeout_seconds,omitempty"`
+	IntentOrdinal  int64             `json:"intent_ordinal,omitempty"`
+}
+
+type commandResponse struct {
+	CommandID               string `json:"command_id"`
+	SessionID               string `json:"session_id"`
+	Ordinal                 int64  `json:"ordinal"`
+	CommandState            string `json:"command_state"`
+	ExitCode                *int   `json:"exit_code,omitempty"`
+	FinalEventSequence      *int64 `json:"final_event_sequence,omitempty"`
+	OutputComplete          bool   `json:"output_complete"`
+	OutputTruncated         bool   `json:"output_truncated"`
+	OutputUnavailableReason string `json:"output_unavailable_reason,omitempty"`
+	ScriptByteCount         int    `json:"script_byte_count"`
+	ScriptSHA256            string `json:"script_sha256"`
+	Duplicate               bool   `json:"duplicate,omitempty"`
+}
+
+type commandEventResponse struct {
+	CommandID  string    `json:"command_id"`
+	Sequence   int64     `json:"sequence"`
+	Type       string    `json:"type"`
+	OccurredAt time.Time `json:"occurred_at"`
+	ByteCount  int64     `json:"byte_count"`
+	DataBase64 string    `json:"data_base64,omitempty"`
+}
+
+func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, request *http.Request, pathSessionID string) {
+	if request.Body == nil {
+		writePrivateError(response, http.StatusBadRequest, "request body is required")
+		return
+	}
+	limited := http.MaxBytesReader(response, request.Body, s.maxBodyBytes)
+	defer limited.Close()
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("read request body: %v", err))
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var input submitCommandRequest
+	if err := decoder.Decode(&input); err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("invalid request JSON: %v", err))
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writePrivateError(response, http.StatusBadRequest, "request body contains multiple JSON values")
+		return
+	}
+	if input.CommandID == "" || input.SessionID == "" || input.IdempotencyKey == "" {
+		writePrivateError(response, http.StatusBadRequest, "command_id, session_id, and idempotency_key are required")
+		return
+	}
+	if pathSessionID != input.SessionID {
+		writePrivateError(response, http.StatusBadRequest, "session path and body session_id differ")
+		return
+	}
+	commandID, err := domain.NewCommandID(input.CommandID)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	sessionID, err := domain.NewSessionID(input.SessionID)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	controller, err := controllerFromRequest(input.Controller)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	if input.TimeoutSeconds < 0 || input.IntentOrdinal < 0 {
+		writePrivateError(response, http.StatusBadRequest, "timeout_seconds and intent_ordinal must not be negative")
+		return
+	}
+	if err := domain.ValidateScriptUTF8(input.Script); err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	hash, err := domain.HashMutationRequestJSON("submit_command", body, domain.CanonicalizationOptions{})
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
+		return
+	}
+	result, serviceErr := s.service.SubmitCommand(request.Context(), execution.SubmitCommandRequest{
+		CommandID:            commandID,
+		SessionID:            sessionID,
+		Controller:           controller,
+		IdempotencyKey:       input.IdempotencyKey,
+		RequestHash:          hash,
+		Script:               input.Script,
+		Timeout:              secondsDuration(input.TimeoutSeconds),
+		IntentOrdinal:        input.IntentOrdinal,
+		IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	})
+	if serviceErr != nil {
+		status := privateStatusForError(serviceErr)
+		if result.Command.CommandID != "" {
+			writeJSON(response, status, commandResponseFromRecord(result.Command, result.Duplicate))
+			return
+		}
+		writePrivateError(response, status, serviceErr.Error())
+		return
+	}
+	writeJSON(response, http.StatusAccepted, commandResponseFromRecord(result.Command, result.Duplicate))
+}
+
+func controllerFromRequest(input controllerRequest) (domain.ControllerIdentity, error) {
+	id, err := domain.NewControllerID(input.ID)
+	if err != nil {
+		return domain.ControllerIdentity{}, err
+	}
+	return domain.NewControllerIdentity(domain.ControllerType(input.Type), id)
+}
+
+func (s *PrivateServer) handleGetCommand(response http.ResponseWriter, request *http.Request, rawID string) {
+	id, err := domain.NewCommandID(rawID)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	controller, err := controllerFromQuery(request)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	command, err := s.service.GetCommand(request.Context(), id, controller)
+	if err != nil {
+		writePrivateError(response, privateStatusForError(err), err.Error())
+		return
+	}
+	writeJSON(response, http.StatusOK, commandResponseFromRecord(command, false))
+}
+
+func (s *PrivateServer) handleCommandEvents(response http.ResponseWriter, request *http.Request, rawID string) {
+	id, err := domain.NewCommandID(rawID)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	controller, err := controllerFromQuery(request)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	after, err := parseEventCursor(request.URL.Query().Get("after"))
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	follow := request.URL.Query().Get("follow") == "true"
+	if _, err := s.service.GetCommand(request.Context(), id, controller); err != nil {
+		writePrivateError(response, privateStatusForError(err), err.Error())
+		return
+	}
+	response.Header().Set("Content-Type", "application/x-ndjson")
+	response.WriteHeader(http.StatusOK)
+	flusher, _ := response.(http.Flusher)
+	writeEvent := func(event store.CommandEventRecord) error {
+		value := commandEventResponse{CommandID: string(event.CommandID), Sequence: event.Sequence, Type: event.Type, OccurredAt: event.OccurredAt.UTC(), ByteCount: event.ByteCount}
+		if event.Type == "stdout" || event.Type == "stderr" {
+			value.DataBase64 = base64.StdEncoding.EncodeToString(event.Payload)
+		}
+		if err := json.NewEncoder(response).Encode(value); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
+	if !follow {
+		events, err := s.service.ReplayCommandEvents(request.Context(), id, controller, after)
+		if err != nil {
+			return
+		}
+		for _, event := range events {
+			if err := writeEvent(event); err != nil {
+				return
+			}
+		}
+		return
+	}
+	subscription, err := s.service.SubscribeCommandEvents(request.Context(), id, controller, after, 256)
+	if err != nil {
+		return
+	}
+	defer subscription.Close()
+	for {
+		select {
+		case event, ok := <-subscription.Events():
+			if !ok {
+				return
+			}
+			if err := writeEvent(event); err != nil || isTerminalCommandEvent(event.Type) {
+				return
+			}
+		case <-subscription.Errors():
+			return
+		case <-request.Context().Done():
+			return
+		}
+	}
+}
+
+func parseEventCursor(value string) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	cursor, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || cursor < 0 {
+		return 0, fmt.Errorf("invalid event cursor")
+	}
+	return cursor, nil
+}
+
+func isTerminalCommandEvent(eventType string) bool {
+	switch eventType {
+	case "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandResponseFromRecord(record store.CommandRecord, duplicate bool) commandResponse {
+	return commandResponse{
+		CommandID:               string(record.CommandID),
+		SessionID:               string(record.SessionID),
+		Ordinal:                 record.Ordinal,
+		CommandState:            string(record.State),
+		ExitCode:                record.ExitCode,
+		FinalEventSequence:      record.FinalEventSequence,
+		OutputComplete:          record.OutputComplete,
+		OutputTruncated:         record.OutputTruncated,
+		OutputUnavailableReason: record.OutputUnavailableReason,
+		ScriptByteCount:         len(record.ScriptBytes),
+		ScriptSHA256:            hex.EncodeToString(record.ScriptSHA256),
+		Duplicate:               duplicate,
+	}
 }
 
 func (s *PrivateServer) handleCreateSession(response http.ResponseWriter, request *http.Request) {
@@ -403,6 +680,24 @@ func (s *PrivateServer) handleGetSession(response http.ResponseWriter, request *
 
 func isSessionCollectionPath(path string) bool {
 	return path == privateSessionsPath || path == privateSessionsAliasPath
+}
+
+func commandPathPrefix(path string) string {
+	for _, prefix := range []string{privateSessionsPath, privateSessionsAliasPath} {
+		if strings.HasPrefix(path, prefix+"/") {
+			return prefix
+		}
+	}
+	return ""
+}
+
+func commandResourcePathPrefix(path string) string {
+	for _, prefix := range []string{"/internal/v1/commands", "/v1/commands"} {
+		if strings.HasPrefix(path, prefix+"/") {
+			return prefix
+		}
+	}
+	return ""
 }
 
 func sessionPathPrefix(path string) string {
