@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 7
+	CurrentSchemaVersion = 8
 )
 
 var (
@@ -54,6 +54,9 @@ var execJobsSQL string
 
 //go:embed migrations/0007_retention_gc.sql
 var retentionGCSQL string
+
+//go:embed migrations/0008_local_intents.sql
+var localIntentsSQL string
 
 type migration struct {
 	version int
@@ -89,6 +92,10 @@ var migrations = []migration{{
 	version: 7,
 	name:    "retention_gc",
 	sql:     retentionGCSQL,
+}, {
+	version: 8,
+	name:    "local_intents",
+	sql:     localIntentsSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
