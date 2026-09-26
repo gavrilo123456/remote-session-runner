@@ -28,6 +28,15 @@ var (
 	// ErrSessionController means a caller tried to read a session it does not
 	// control in the authority's controller namespace.
 	ErrSessionController = errors.New("session controller mismatch")
+	// ErrSessionNotReady means a direct command was submitted before the
+	// authoritative session reached ready or busy.
+	ErrSessionNotReady = errors.New("session is not ready for commands")
+	// ErrCommandTransport means the command runtime could not report a command
+	// outcome. The command is recorded as lost; this is not a shell exit code.
+	ErrCommandTransport = errors.New("command transport failed")
+	// ErrShellExited means the persistent shell crossed an unsafe boundary.
+	// The command and session are recorded as lost rather than recreated.
+	ErrShellExited = errors.New("persistent shell exited")
 )
 
 // Clock is the small wall-clock seam shared by service orchestration and fake
@@ -129,6 +138,30 @@ type SessionRuntime interface {
 	Cleanup(context.Context, RuntimeCleanupRequest) error
 }
 
+// RuntimeCommandRequest identifies one durably started command for the
+// command-capable portion of a runtime adapter.
+type RuntimeCommandRequest struct {
+	Session store.SessionRecord
+	Command store.CommandRecord
+}
+
+// RuntimeCommandResult is the fake/target runtime's captured result. Output
+// is raw bytes and is persisted before terminal completion. ShellExited marks
+// an unsafe persistent-shell boundary, distinct from a normal nonzero exit.
+type RuntimeCommandResult struct {
+	Stdout      []byte
+	Stderr      []byte
+	ExitCode    int
+	ShellExited bool
+}
+
+// CommandRuntime is implemented by a command-capable SessionRuntime. It is a
+// separate optional interface so P020's create-only fake remains valid while
+// later adapters add command execution.
+type CommandRuntime interface {
+	ExecuteCommand(context.Context, RuntimeCommandRequest) (RuntimeCommandResult, error)
+}
+
 // EventPublisher receives committed session lifecycle records. Publication
 // occurs after the store transaction; a publisher failure cannot roll back an
 // authoritative state transition.
@@ -157,6 +190,29 @@ type CreateSessionRequest struct {
 // request reused a retained idempotency record.
 type CreateSessionResult struct {
 	Session   store.SessionRecord
+	Duplicate bool
+}
+
+// SubmitCommandRequest is the shared service input for an authoritative
+// command. The stable command ID, key, and canonical hash are reused on
+// retries; the session target is inherited from the stored session.
+type SubmitCommandRequest struct {
+	CommandID            domain.CommandID
+	SessionID            domain.SessionID
+	Controller           domain.ControllerIdentity
+	IdempotencyKey       string
+	RequestHash          domain.CanonicalHash
+	Script               string
+	Timeout              time.Duration
+	IntentOrdinal        int64
+	IdempotencyRetention time.Duration
+}
+
+// SubmitCommandResult contains the authoritative command snapshot. A queued
+// result can remain queued when another command/session owns the scheduler;
+// no runtime call is made until this command is durably started.
+type SubmitCommandResult struct {
+	Command   store.CommandRecord
 	Duplicate bool
 }
 
@@ -294,6 +350,133 @@ func (s *Service) finishRuntimeFailure(ctx context.Context, result CreateSession
 		return result, fmt.Errorf("%w: %v; cleanup: %v", ErrRuntimeUnavailable, cause, cleanupErr)
 	}
 	return result, fmt.Errorf("%w: %v", ErrRuntimeUnavailable, cause)
+}
+
+// SubmitCommand accepts one script, starts it only after the durable scheduler
+// transaction commits, persists raw stdout/stderr events, and records one
+// terminal outcome. A normal nonzero exit is a failed command with a ready
+// session; a transport error or shell exit is a lost command/session and is
+// returned as a distinct service error.
+func (s *Service) SubmitCommand(ctx context.Context, request SubmitCommandRequest) (SubmitCommandResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return SubmitCommandResult{}, ErrExecutionServiceConfiguration
+	}
+	session, err := s.store.GetSession(ctx, request.SessionID)
+	if err != nil {
+		return SubmitCommandResult{}, err
+	}
+	if session.Controller.Type() != request.Controller.Type() || session.Controller.ID() != request.Controller.ID() {
+		return SubmitCommandResult{}, ErrSessionController
+	}
+	if session.State != domain.SessionStateReady && session.State != domain.SessionStateBusy {
+		return SubmitCommandResult{}, fmt.Errorf("%w: current state %q", ErrSessionNotReady, session.State)
+	}
+	if err := domain.ValidateScriptUTF8(request.Script); err != nil {
+		return SubmitCommandResult{}, err
+	}
+	timeout := request.Timeout
+	if timeout == 0 {
+		timeout = session.Limits.CommandTimeout
+	}
+	if timeout <= 0 {
+		return SubmitCommandResult{}, domain.ErrInvalidRequestedLimits
+	}
+	if timeout > session.Limits.CommandTimeout {
+		return SubmitCommandResult{}, fmt.Errorf("%w: command timeout", domain.ErrLimitExceedsServiceCeiling)
+	}
+	accepted, duplicate, err := s.store.AcceptCommand(ctx, store.CommandAcceptance{
+		CommandID:            request.CommandID,
+		SessionID:            request.SessionID,
+		RequestHash:          request.RequestHash,
+		IdempotencyKey:       request.IdempotencyKey,
+		IdempotencyRetention: request.IdempotencyRetention,
+		Script:               request.Script,
+		Timeout:              timeout,
+		IntentOrdinal:        request.IntentOrdinal,
+	})
+	if err != nil {
+		return SubmitCommandResult{}, err
+	}
+	result := SubmitCommandResult{Command: accepted, Duplicate: duplicate}
+	if duplicate {
+		return result, nil
+	}
+	started, startErr := s.store.StartNextEligibleCommand(ctx, store.DefaultRunningCommandLimit)
+	if startErr != nil {
+		if errors.Is(startErr, store.ErrCommandSlotsFull) || errors.Is(startErr, store.ErrCommandNotEligible) {
+			return result, nil
+		}
+		return result, startErr
+	}
+	if started.CommandID != accepted.CommandID {
+		return result, nil
+	}
+	commandRuntime, ok := s.runtime.(CommandRuntime)
+	if !ok {
+		return s.finishCommandFailure(ctx, session, started, ErrCommandTransport, "command_transport_failed")
+	}
+	currentSession, err := s.store.GetSession(ctx, request.SessionID)
+	if err != nil {
+		return result, err
+	}
+	runtimeResult, runtimeErr := commandRuntime.ExecuteCommand(ctx, RuntimeCommandRequest{Session: currentSession, Command: started})
+	if runtimeErr != nil {
+		return s.finishCommandFailure(ctx, currentSession, started, runtimeErr, "command_transport_failed")
+	}
+	for _, output := range []struct {
+		eventType string
+		payload   []byte
+	}{
+		{eventType: "stdout", payload: runtimeResult.Stdout},
+		{eventType: "stderr", payload: runtimeResult.Stderr},
+	} {
+		if len(output.payload) == 0 {
+			continue
+		}
+		if _, err := s.store.AppendCommandEvent(ctx, store.CommandEventAppend{
+			CommandID: started.CommandID,
+			Type:      output.eventType,
+			Payload:   output.payload,
+			ByteCount: int64(len(output.payload)),
+		}); err != nil {
+			return s.finishCommandFailure(ctx, currentSession, started, err, "command_output_persistence_failed")
+		}
+	}
+	if runtimeResult.ShellExited {
+		return s.finishCommandFailure(ctx, currentSession, started, ErrShellExited, "shell_exited")
+	}
+	nextState := domain.CommandStateSucceeded
+	if runtimeResult.ExitCode != 0 {
+		nextState = domain.CommandStateFailed
+	}
+	exitCode := runtimeResult.ExitCode
+	completed, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{
+		CommandID:      started.CommandID,
+		NextState:      nextState,
+		ExitCode:       &exitCode,
+		OutputComplete: true,
+	}, domain.SessionStateReady, "command_completed", true)
+	if err != nil {
+		return result, err
+	}
+	result.Command = completed
+	return result, nil
+}
+
+func (s *Service) finishCommandFailure(ctx context.Context, session store.SessionRecord, command store.CommandRecord, cause error, reason string) (SubmitCommandResult, error) {
+	completed, transitionErr := s.store.CompleteRunningCommand(ctx, store.CommandTransition{
+		CommandID:      command.CommandID,
+		NextState:      domain.CommandStateLost,
+		OutputComplete: false,
+	}, domain.SessionStateLost, reason, false)
+	if transitionErr != nil {
+		return SubmitCommandResult{Command: command}, fmt.Errorf("%w: record lost command: %v", ErrCommandTransport, transitionErr)
+	}
+	_ = session
+	if errors.Is(cause, ErrShellExited) {
+		return SubmitCommandResult{Command: completed}, fmt.Errorf("%w: %v", ErrShellExited, cause)
+	}
+	return SubmitCommandResult{Command: completed}, fmt.Errorf("%w: %v", ErrCommandTransport, cause)
 }
 
 // GetSession returns an as-of authoritative snapshot after checking the

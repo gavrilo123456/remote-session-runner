@@ -327,6 +327,102 @@ WHERE command_id = ?
 	return record, nil
 }
 
+// CompleteRunningCommand appends one terminal event, updates terminal output
+// metadata, transitions the owning busy session, and optionally confirms and
+// releases the command slot in one SQLite transaction. A normal succeeded or
+// failed completion releases its slot; a lost completion deliberately retains
+// capacity until a later runtime inspection proves the stop boundary.
+func (s *AuthorityStore) CompleteRunningCommand(ctx context.Context, input CommandTransition, nextSessionState domain.SessionState, sessionReason string, releaseSlot bool) (CommandRecord, error) {
+	commandID, err := domain.NewCommandID(string(input.CommandID))
+	if err != nil {
+		return CommandRecord{}, err
+	}
+	if !input.NextState.IsTerminal() {
+		return CommandRecord{}, fmt.Errorf("%w: completion state %q is not terminal", ErrCommandTransition, input.NextState)
+	}
+	if nextSessionState != domain.SessionStateReady && nextSessionState != domain.SessionStateLost {
+		return CommandRecord{}, fmt.Errorf("%w: completion session state %q is invalid", ErrCommandTransition, nextSessionState)
+	}
+	if _, err := validateLifecycleReason(sessionReason); err != nil {
+		return CommandRecord{}, err
+	}
+	s.commandEventsMu.Lock()
+	defer s.commandEventsMu.Unlock()
+	now := s.now().UTC()
+	var publishedEvent *CommandEventRecord
+	record, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+		command, err := readCommandOnConnection(ctx, connection, commandID)
+		if err != nil {
+			return CommandRecord{}, err
+		}
+		if command.State != domain.CommandStateRunning && command.State != domain.CommandStateCancelling {
+			return CommandRecord{}, fmt.Errorf("%w: command is %q", ErrCommandTransition, command.State)
+		}
+		if err := domain.ValidateCommandTransition(command.State, input.NextState); err != nil {
+			return CommandRecord{}, fmt.Errorf("%w: %v", ErrCommandTransition, err)
+		}
+		sequence, err := nextEventSequenceOnConnection(ctx, connection, commandID)
+		if err != nil {
+			return CommandRecord{}, err
+		}
+		eventType, ok := commandEventTypeForState(input.NextState)
+		if !ok {
+			return CommandRecord{}, fmt.Errorf("%w: no event type for state %q", ErrCommandTransition, input.NextState)
+		}
+		if err := insertCommandEventOnConnection(ctx, connection, commandID, sequence, eventType, nil, 0, now); err != nil {
+			return CommandRecord{}, err
+		}
+		var exitCode any
+		if input.ExitCode != nil {
+			exitCode = *input.ExitCode
+		}
+		if _, err := connection.ExecContext(ctx, `
+UPDATE exec_commands
+SET state = ?, exit_code = ?, final_event_sequence = ?, output_complete = ?, output_truncated = ?, updated_at = ?
+WHERE command_id = ?
+`, string(input.NextState), exitCode, sequence, boolToSQLite(input.OutputComplete), boolToSQLite(input.OutputTruncated), formatStoredTime(now), string(commandID)); err != nil {
+			return CommandRecord{}, fmt.Errorf("persist completed command: %w", err)
+		}
+		if err := transitionSessionOnConnection(ctx, connection, command.SessionID, nextSessionState, sessionReason, now); err != nil {
+			return CommandRecord{}, err
+		}
+		if releaseSlot {
+			result, err := connection.ExecContext(ctx, `
+UPDATE exec_command_slots
+SET stop_confirmed_at = ?, released_at = ?
+WHERE command_id = ? AND stop_confirmed_at IS NULL
+`, formatStoredTime(now), formatStoredTime(now), string(commandID))
+			if err != nil {
+				return CommandRecord{}, fmt.Errorf("release completed command slot: %w", err)
+			}
+			changed, err := result.RowsAffected()
+			if err != nil {
+				return CommandRecord{}, fmt.Errorf("read completed slot release: %w", err)
+			}
+			if changed == 0 {
+				var ignored string
+				if err := connection.QueryRowContext(ctx, "SELECT command_id FROM exec_command_slots WHERE command_id = ?", string(commandID)).Scan(&ignored); err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return CommandRecord{}, ErrCommandSlotNotFound
+					}
+					return CommandRecord{}, fmt.Errorf("check completed command slot: %w", err)
+				}
+				return CommandRecord{}, ErrCommandSlotNotReleasable
+			}
+		}
+		event := CommandEventRecord{CommandID: commandID, Sequence: sequence, Type: eventType, Payload: []byte{}, ByteCount: 0, OccurredAt: now}
+		publishedEvent = &event
+		return readCommandOnConnection(ctx, connection, commandID)
+	})
+	if err != nil {
+		return CommandRecord{}, err
+	}
+	if publishedEvent != nil {
+		s.publishCommandEvent(*publishedEvent)
+	}
+	return record, nil
+}
+
 // ReplayCommandEvents returns a contiguous event range after afterSequence.
 // A caller may request a cursor beyond the current tail and receive an empty
 // range; any missing sequence inside the advertised range is an error.

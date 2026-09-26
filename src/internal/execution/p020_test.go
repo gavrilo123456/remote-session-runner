@@ -16,14 +16,17 @@ type p020Clock struct{ now time.Time }
 func (c *p020Clock) Now() time.Time { return c.now }
 
 type p020FakeRuntime struct {
-	prepareErr  error
-	startErr    error
-	cleanupErr  error
-	generation  string
-	prepareCall int
-	startCall   int
-	cleanupCall int
-	prepareSaw  domain.SessionState
+	prepareErr    error
+	startErr      error
+	cleanupErr    error
+	commandErr    error
+	commandResult RuntimeCommandResult
+	generation    string
+	prepareCall   int
+	startCall     int
+	cleanupCall   int
+	commandCall   int
+	prepareSaw    domain.SessionState
 }
 
 func (r *p020FakeRuntime) Prepare(ctx context.Context, request RuntimePrepareRequest) (RuntimePrepared, error) {
@@ -48,6 +51,11 @@ func (r *p020FakeRuntime) StartAgent(context.Context, RuntimeStartRequest) (Runt
 func (r *p020FakeRuntime) Cleanup(context.Context, RuntimeCleanupRequest) error {
 	r.cleanupCall++
 	return r.cleanupErr
+}
+
+func (r *p020FakeRuntime) ExecuteCommand(context.Context, RuntimeCommandRequest) (RuntimeCommandResult, error) {
+	r.commandCall++
+	return r.commandResult, r.commandErr
 }
 
 func requestSessionForP020(_ context.Context, record store.SessionRecord) (store.SessionRecord, error) {
