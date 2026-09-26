@@ -1,7 +1,6 @@
 package sshbridge
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -182,28 +181,6 @@ type requestHandlerFunc func(context.Context, domain.ControllerIdentity, Request
 
 func (f requestHandlerFunc) Handle(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
 	return f(ctx, controller, request)
-}
-
-func (d *Decoder) DecodeReply() (ReplyFrame, error) {
-	var frame []byte
-	for {
-		part, err := d.reader.ReadSlice('\n')
-		frame = append(frame, part...)
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		if errors.Is(err, io.EOF) && len(frame) == 0 {
-			return ReplyFrame{}, io.EOF
-		}
-		if err != nil && !errors.Is(err, io.EOF) {
-			return ReplyFrame{}, err
-		}
-		break
-	}
-	if len(frame) > 0 && frame[len(frame)-1] == '\n' {
-		frame = frame[:len(frame)-1]
-	}
-	return decodeReplyBytes(frame)
 }
 
 func decodeReplyBytes(raw []byte) (ReplyFrame, error) {

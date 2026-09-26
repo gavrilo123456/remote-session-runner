@@ -303,6 +303,95 @@ func Encode(writer io.Writer, reply ReplyFrame) error {
 	return nil
 }
 
+// EncodeRequest writes one bounded newline-terminated request frame. The
+// request is validated before any bytes reach a transport, so a rejected
+// mutation cannot be mistaken for a remote delivery attempt.
+func EncodeRequest(writer io.Writer, request RequestFrame) error {
+	if err := validateRequest(request); err != nil {
+		return err
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("%w: marshal request: %v", ErrInvalidFrame, err)
+	}
+	if err := domain.ValidateSerializedFrame(data); err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	for len(data) != 0 {
+		n, writeErr := writer.Write(data)
+		if writeErr != nil {
+			return writeErr
+		}
+		if n <= 0 || n > len(data) {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
+}
+
+// DecodeReply reads one bounded newline-delimited bridge reply. Reply
+// validation mirrors the request envelope rules and rejects unknown fields.
+func (d *Decoder) DecodeReply() (ReplyFrame, error) {
+	frame := make([]byte, 0, d.max+1)
+	for {
+		part, err := d.reader.ReadSlice('\n')
+		if len(part) != 0 {
+			if len(frame)+len(part) > d.max+1 {
+				return ReplyFrame{}, fmt.Errorf("%w: reply exceeds %d bytes", ErrFrameTooLarge, d.max)
+			}
+			frame = append(frame, part...)
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			if len(frame) == 0 {
+				return ReplyFrame{}, io.EOF
+			}
+			break
+		}
+		if err != nil {
+			return ReplyFrame{}, err
+		}
+		break
+	}
+	if len(frame) > 0 && frame[len(frame)-1] == '\n' {
+		frame = frame[:len(frame)-1]
+		if len(frame) > 0 && frame[len(frame)-1] == '\r' {
+			frame = frame[:len(frame)-1]
+		}
+	}
+	if err := domain.ValidateSerializedFrame(frame); err != nil {
+		return ReplyFrame{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(frame))
+	decoder.DisallowUnknownFields()
+	var reply ReplyFrame
+	if err := decoder.Decode(&reply); err != nil {
+		return ReplyFrame{}, fmt.Errorf("%w: reply decode: %v", ErrInvalidFrame, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return ReplyFrame{}, fmt.Errorf("%w: multiple JSON values", ErrInvalidFrame)
+		}
+		return ReplyFrame{}, fmt.Errorf("%w: trailing JSON: %v", ErrInvalidFrame, err)
+	}
+	if reply.ProtocolVersion != ProtocolVersion {
+		return ReplyFrame{}, fmt.Errorf("%w: reply version %d", ErrUnsupportedProtocol, reply.ProtocolVersion)
+	}
+	if strings.TrimSpace(reply.RequestID) == "" || strings.TrimSpace(reply.ResponseType) == "" {
+		return ReplyFrame{}, fmt.Errorf("%w: reply envelope is incomplete", ErrInvalidFrame)
+	}
+	var payload map[string]json.RawMessage
+	if len(reply.Payload) == 0 || json.Unmarshal(reply.Payload, &payload) != nil || payload == nil {
+		return ReplyFrame{}, fmt.Errorf("%w: reply payload must be an object", ErrInvalidFrame)
+	}
+	return reply, nil
+}
+
 func helloReply(requestID string) ReplyFrame {
 	return ReplyFrame{ProtocolVersion: ProtocolVersion, RequestID: requestID, ResponseType: "hello", Payload: json.RawMessage(`{"supported_protocol_version":1}`)}
 }
