@@ -34,16 +34,19 @@ type PersistentShellOptions struct {
 	Workspace             string
 	Descriptors           ReservedDescriptors
 	OutputBoundaryTimeout time.Duration
+	MaxOutputBytes        int64
 }
 
 // PersistentShellResult is the result of one sourced script. The shell itself
 // remains alive after a normal command, so state changes survive the next run.
 type PersistentShellResult struct {
-	CommandStarted  ControlFrame
-	CommandComplete ControlFrame
-	Stdout          []byte
-	Stderr          []byte
-	Chunks          []OutputChunk
+	CommandStarted         ControlFrame
+	CommandComplete        ControlFrame
+	Stdout                 []byte
+	Stderr                 []byte
+	Chunks                 []OutputChunk
+	OutputTruncated        bool
+	OutputTruncationEvents int
 }
 
 const (
@@ -97,6 +100,7 @@ type PersistentShell struct {
 	workspace       string
 	removeOnClose   bool
 	boundaryTimeout time.Duration
+	maxOutputBytes  int64
 	closed          bool
 	lost            bool
 }
@@ -142,6 +146,10 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 	boundaryTimeout := options.OutputBoundaryTimeout
 	if boundaryTimeout <= 0 {
 		boundaryTimeout = time.Second
+	}
+	maxOutputBytes := options.MaxOutputBytes
+	if maxOutputBytes <= 0 {
+		maxOutputBytes = 100 * 1024 * 1024
 	}
 
 	controlRead, controlWrite, err := os.Pipe()
@@ -194,7 +202,7 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 	_ = devNull.Close()
 	_ = controlWrite.Close()
 	_ = stdinReader.Close()
-	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, parser: parser, workspace: workspace, removeOnClose: removeOnClose, boundaryTimeout: boundaryTimeout}, nil
+	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, parser: parser, workspace: workspace, removeOnClose: removeOnClose, boundaryTimeout: boundaryTimeout, maxOutputBytes: maxOutputBytes}, nil
 }
 
 // RunScript atomically materializes a private script, sources it in the
@@ -250,8 +258,9 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	stdoutDone := make(chan outputDrainResult, 1)
 	stderrDone := make(chan outputDrainResult, 1)
 	var sequence atomic.Uint64
-	go func() { stdoutDone <- drainOutputFIFO(ctx, stdoutRead, OutputStreamStdout, &sequence) }()
-	go func() { stderrDone <- drainOutputFIFO(ctx, stderrRead, OutputStreamStderr, &sequence) }()
+	limiter := &outputLimiter{max: s.maxOutputBytes}
+	go func() { stdoutDone <- drainOutputFIFO(ctx, stdoutRead, OutputStreamStdout, &sequence, limiter) }()
+	go func() { stderrDone <- drainOutputFIFO(ctx, stderrRead, OutputStreamStderr, &sequence, limiter) }()
 
 	started := ControlFrame{Version: ControlProtocolVersion, Type: FrameTypeCommandStarted, SessionID: s.parser.sessionID, CommandID: commandID, Generation: s.parser.generation}
 	if err := started.Validate(); err != nil {
@@ -334,7 +343,7 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].Sequence < chunks[j].Sequence })
 	stdout := chunksBytes(chunks, OutputStreamStdout)
 	stderr := chunksBytes(chunks, OutputStreamStderr)
-	return PersistentShellResult{CommandStarted: gotStarted, CommandComplete: gotComplete, Stdout: stdout, Stderr: stderr, Chunks: chunks}, nil
+	return PersistentShellResult{CommandStarted: gotStarted, CommandComplete: gotComplete, Stdout: stdout, Stderr: stderr, Chunks: chunks, OutputTruncated: limiter.wasTruncated(), OutputTruncationEvents: limiter.truncationEvents()}, nil
 }
 
 func waitForOutputBoundary(stdoutDone, stderrDone <-chan outputDrainResult, timeout time.Duration, stdoutRead, stderrRead *os.File) (outputDrainResult, outputDrainResult, error) {
@@ -475,7 +484,7 @@ func createOutputFIFO(dir, pattern string) (string, *os.File, *os.File, error) {
 	return path, read, keepalive, nil
 }
 
-func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, sequence *atomic.Uint64) outputDrainResult {
+func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, sequence *atomic.Uint64, limiter *outputLimiter) outputDrainResult {
 	var result outputDrainResult
 	buffer := make([]byte, MaxOutputChunkBytes)
 	pending := make([]byte, 0, MaxOutputChunkBytes)
@@ -500,7 +509,7 @@ func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, se
 		}
 		n, err := file.Read(buffer)
 		if n > 0 {
-			pending = append(pending, buffer[:n]...)
+			pending = append(pending, limiter.retain(buffer[:n])...)
 			for len(pending) >= MaxOutputChunkBytes {
 				data := append([]byte(nil), pending[:MaxOutputChunkBytes]...)
 				result.chunks = append(result.chunks, OutputChunk{Sequence: sequence.Add(1), Stream: stream, Data: data})
@@ -519,6 +528,51 @@ func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, se
 			time.Sleep(time.Millisecond)
 		}
 	}
+}
+
+type outputLimiter struct {
+	mu              sync.Mutex
+	max             int64
+	retained        int64
+	truncated       bool
+	truncationCount int
+}
+
+func (l *outputLimiter) retain(data []byte) []byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	remaining := l.max - l.retained
+	if remaining <= 0 {
+		l.markTruncated()
+		return nil
+	}
+	if int64(len(data)) > remaining {
+		allowed := append([]byte(nil), data[:remaining]...)
+		l.retained += remaining
+		l.markTruncated()
+		return allowed
+	}
+	l.retained += int64(len(data))
+	return data
+}
+
+func (l *outputLimiter) markTruncated() {
+	if !l.truncated {
+		l.truncated = true
+		l.truncationCount = 1
+	}
+}
+
+func (l *outputLimiter) wasTruncated() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.truncated
+}
+
+func (l *outputLimiter) truncationEvents() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.truncationCount
 }
 
 func chunksBytes(chunks []OutputChunk, stream OutputStream) []byte {
