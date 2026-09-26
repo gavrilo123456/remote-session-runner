@@ -23,12 +23,30 @@ var (
 	ErrInvalidSession = errors.New("invalid session record")
 	// ErrSessionLifecycle means the persisted lifecycle history is inconsistent.
 	ErrSessionLifecycle = errors.New("session lifecycle history is inconsistent")
+	// ErrIdempotencyKey means the create idempotency key is malformed.
+	ErrIdempotencyKey = errors.New("invalid idempotency key")
+	// ErrIdempotencyConflict means a retained key was reused for another request.
+	ErrIdempotencyConflict = errors.New("idempotency conflict")
+	// ErrSessionCapacityExceeded means no host session reservation is available.
+	ErrSessionCapacityExceeded = errors.New("session capacity exceeded")
+	// ErrSessionReservationNotFound means no reservation exists for a session.
+	ErrSessionReservationNotFound = errors.New("session capacity reservation not found")
+)
+
+const (
+	// DefaultActiveSessionLimit is the selected PoC reservation ceiling per
+	// authority host.
+	DefaultActiveSessionLimit = 20
+	// DefaultSessionIdempotencyRetention is the minimum retained create-key
+	// window selected by the PoC design.
+	DefaultSessionIdempotencyRetention = 90 * 24 * time.Hour
+	createSessionOperation             = "create_session"
+	reservationHostKey                 = "authority"
 )
 
 // SessionCreate contains the immutable and effective values recorded when an
-// authority accepts a new session. Runtime startup and capacity reservation
-// are later-phase responsibilities; P012 records the session in creating
-// state before those actions occur.
+// authority accepts a new session. The P013 acceptance boundary adds the
+// idempotency record and capacity reservation before any runtime action.
 type SessionCreate struct {
 	SessionID         domain.SessionID
 	Target            domain.ExecutionTarget
@@ -94,51 +112,87 @@ func NewAuthorityStoreWithClock(db *sql.DB, now func() time.Time) (*AuthoritySto
 	return &AuthorityStore{db: db, now: now}, nil
 }
 
-// CreateSession atomically inserts the session and its initial creating
-// lifecycle record. It does not start a runtime or reserve a host slot.
+// SessionCreateAcceptance contains the authoritative create request and the
+// stable idempotency data supplied by its controller. MaxActiveSessions and
+// IdempotencyRetention use the selected PoC defaults when zero.
+type SessionCreateAcceptance struct {
+	SessionCreate        SessionCreate
+	IdempotencyKey       string
+	RequestHash          domain.CanonicalHash
+	MaxActiveSessions    int
+	IdempotencyRetention time.Duration
+}
+
+// SessionReservation is the durable host-capacity reservation for a session.
+// A reservation remains live until both cleanup and release timestamps are
+// recorded by a later confirmed-teardown transaction.
+type SessionReservation struct {
+	SessionID          domain.SessionID
+	HostKey            string
+	ReservedAt         time.Time
+	CleanupConfirmedAt *time.Time
+	ReleasedAt         *time.Time
+}
+
+// AcceptSessionCreate atomically accepts a new session, its create idempotency
+// record, lifecycle sequence 1, and one host-capacity reservation. A duplicate
+// same-key/same-hash request returns the original session with duplicate=true;
+// a changed hash conflicts. No runtime is started by this store method.
+func (s *AuthorityStore) AcceptSessionCreate(ctx context.Context, input SessionCreateAcceptance) (record SessionRecord, duplicate bool, err error) {
+	validated, err := validateSessionAcceptance(input)
+	if err != nil {
+		return SessionRecord{}, false, err
+	}
+	now := s.now().UTC()
+	expiresAt := now.Add(validated.IdempotencyRetention)
+	record, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+		if existing, found, err := findSessionIdempotency(ctx, connection, validated.SessionCreate.Controller, validated.IdempotencyKey, now); err != nil {
+			return SessionRecord{}, err
+		} else if found {
+			if domain.CompareIdempotency(existing.Hash, validated.RequestHash) == domain.IdempotencyConflict {
+				return SessionRecord{}, ErrIdempotencyConflict
+			}
+			if _, err := readReservationOnConnection(ctx, connection, existing.ResourceID); err != nil {
+				return SessionRecord{}, fmt.Errorf("read idempotent session reservation: %w", err)
+			}
+			existingRecord, err := readSessionOnConnection(ctx, connection, existing.ResourceID)
+			if err != nil {
+				return SessionRecord{}, fmt.Errorf("read idempotent session: %w", err)
+			}
+			duplicate = true
+			return existingRecord, nil
+		}
+
+		if err := ensureSessionCapacity(ctx, connection, validated.MaxActiveSessions); err != nil {
+			return SessionRecord{}, err
+		}
+		if err := insertSessionAcceptance(ctx, connection, validated.SessionCreate, validated.IdempotencyKey, validated.RequestHash, expiresAt, now); err != nil {
+			return SessionRecord{}, err
+		}
+		return readSessionOnConnection(ctx, connection, validated.SessionCreate.SessionID)
+	})
+	if err != nil {
+		return SessionRecord{}, false, err
+	}
+	return record, duplicate, nil
+}
+
+// CreateSession atomically inserts the session, lifecycle sequence 1, and a
+// host-capacity reservation. It is retained as the P012 fixture-compatible
+// non-idempotent constructor; production-shaped acceptance uses
+// AcceptSessionCreate above.
 func (s *AuthorityStore) CreateSession(ctx context.Context, input SessionCreate) (SessionRecord, error) {
 	validated, err := validateSessionCreate(input)
 	if err != nil {
 		return SessionRecord{}, err
 	}
 	now := s.now().UTC()
-	expiresAt := now.Add(validated.Limits.SessionMaxLifetime)
 	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
-		var existing int
-		err := connection.QueryRowContext(ctx,
-			"SELECT 1 FROM exec_sessions WHERE session_id = ?", string(validated.SessionID)).Scan(&existing)
-		if err == nil {
-			return SessionRecord{}, ErrSessionExists
+		if err := ensureSessionCapacity(ctx, connection, DefaultActiveSessionLimit); err != nil {
+			return SessionRecord{}, err
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return SessionRecord{}, fmt.Errorf("check session identity: %w", err)
-		}
-
-		_, err = connection.ExecContext(ctx, `
-INSERT INTO exec_sessions (
-    session_id, target_kind, target_profile, environment,
-    controller_type, controller_id,
-    source_mode, source_repository_alias, source_requested_revision, source_path,
-    source_resolved_revision, runtime_generation, state,
-    command_timeout_ns, idle_timeout_ns, session_max_lifetime_ns, output_bytes_per_command,
-    created_at, updated_at, expires_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`,
-			string(validated.SessionID), string(validated.Target.Kind()), validated.Target.Profile(), validated.Environment,
-			string(validated.Controller.Type()), string(validated.Controller.ID()),
-			string(validated.Source.Mode()), validated.Source.RepositoryAlias(), validated.Source.RequestedRevision(), validated.Source.Path(),
-			validated.ResolvedRevision, validated.RuntimeGeneration, string(domain.SessionStateCreating),
-			int64(validated.Limits.CommandTimeout), int64(validated.Limits.IdleTimeout), int64(validated.Limits.SessionMaxLifetime), validated.Limits.OutputBytesPerCommand,
-			formatStoredTime(now), formatStoredTime(now), formatStoredTime(expiresAt),
-		)
-		if err != nil {
-			return SessionRecord{}, fmt.Errorf("insert session: %w", err)
-		}
-		if _, err := connection.ExecContext(ctx, `
-INSERT INTO exec_session_lifecycle (session_id, lifecycle_sequence, previous_state, new_state, reason, occurred_at)
-VALUES (?, 1, NULL, ?, ?, ?)
-`, string(validated.SessionID), string(domain.SessionStateCreating), validated.Reason, formatStoredTime(now)); err != nil {
-			return SessionRecord{}, fmt.Errorf("insert initial session lifecycle: %w", err)
+		if err := insertSessionAcceptance(ctx, connection, validated, "", domain.CanonicalHash{}, time.Time{}, now); err != nil {
+			return SessionRecord{}, err
 		}
 		return readSessionOnConnection(ctx, connection, validated.SessionID)
 	})
@@ -156,6 +210,77 @@ func (s *AuthorityStore) GetSession(ctx context.Context, id domain.SessionID) (S
 	}
 	defer connection.Close()
 	return readSessionOnConnection(ctx, connection, validatedID)
+}
+
+// CountLiveSessionReservations returns reservations whose cleanup has not
+// been durably confirmed. It is the admission count used by create
+// acceptance, and therefore includes creating, failed, or lost sessions until
+// a later cleanup confirmation releases them.
+func (s *AuthorityStore) CountLiveSessionReservations(ctx context.Context) (int, error) {
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("acquire reservation connection: %w", err)
+	}
+	defer connection.Close()
+	var count int
+	if err := connection.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM exec_capacity_reservations
+WHERE host_key = ? AND cleanup_confirmed_at IS NULL
+`, reservationHostKey).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count live session reservations: %w", err)
+	}
+	return count, nil
+}
+
+// GetSessionReservation reads the durable reservation for one session.
+func (s *AuthorityStore) GetSessionReservation(ctx context.Context, id domain.SessionID) (SessionReservation, error) {
+	validatedID, err := domain.NewSessionID(string(id))
+	if err != nil {
+		return SessionReservation{}, err
+	}
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return SessionReservation{}, fmt.Errorf("acquire reservation connection: %w", err)
+	}
+	defer connection.Close()
+	return readReservationOnConnection(ctx, connection, validatedID)
+}
+
+// ConfirmSessionCleanup records the only event that releases a session slot.
+// It is idempotent so a reconciler retry cannot double-release capacity.
+func (s *AuthorityStore) ConfirmSessionCleanup(ctx context.Context, id domain.SessionID) error {
+	validatedID, err := domain.NewSessionID(string(id))
+	if err != nil {
+		return err
+	}
+	now := s.now().UTC()
+	_, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+		result, err := connection.ExecContext(ctx, `
+UPDATE exec_capacity_reservations
+SET cleanup_confirmed_at = ?, released_at = ?
+WHERE session_id = ? AND cleanup_confirmed_at IS NULL
+`, formatStoredTime(now), formatStoredTime(now), string(validatedID))
+		if err != nil {
+			return struct{}{}, fmt.Errorf("confirm session cleanup: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return struct{}{}, fmt.Errorf("read cleanup result: %w", err)
+		}
+		if changed > 0 {
+			return struct{}{}, nil
+		}
+		var ignored string
+		if err := connection.QueryRowContext(ctx,
+			"SELECT session_id FROM exec_capacity_reservations WHERE session_id = ?", string(validatedID)).Scan(&ignored); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return struct{}{}, ErrSessionReservationNotFound
+			}
+			return struct{}{}, fmt.Errorf("check session reservation: %w", err)
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 // TransitionSession atomically validates a D-01 edge, updates the current
@@ -317,6 +442,195 @@ func validateSessionCreate(input SessionCreate) (SessionCreate, error) {
 		Limits:            input.Limits,
 		Reason:            reason,
 	}, nil
+}
+
+func validateSessionAcceptance(input SessionCreateAcceptance) (SessionCreateAcceptance, error) {
+	session, err := validateSessionCreate(input.SessionCreate)
+	if err != nil {
+		return SessionCreateAcceptance{}, err
+	}
+	if input.IdempotencyKey == "" || len(input.IdempotencyKey) > 256 || strings.IndexByte(input.IdempotencyKey, 0) >= 0 {
+		return SessionCreateAcceptance{}, fmt.Errorf("%w: key must be 1..256 bytes and contain no NUL", ErrIdempotencyKey)
+	}
+	hash, err := domain.NewCanonicalHash(input.RequestHash.Version(), input.RequestHash.SHA256())
+	if err != nil {
+		return SessionCreateAcceptance{}, fmt.Errorf("%w: request hash: %v", ErrInvalidSession, err)
+	}
+	maxActive := input.MaxActiveSessions
+	if maxActive == 0 {
+		maxActive = DefaultActiveSessionLimit
+	}
+	if maxActive < 1 {
+		return SessionCreateAcceptance{}, fmt.Errorf("%w: maximum active sessions must be positive", ErrInvalidSession)
+	}
+	retention := input.IdempotencyRetention
+	if retention == 0 {
+		retention = DefaultSessionIdempotencyRetention
+	}
+	if retention < 0 {
+		return SessionCreateAcceptance{}, fmt.Errorf("%w: idempotency retention must not be negative", ErrInvalidSession)
+	}
+	return SessionCreateAcceptance{
+		SessionCreate:        session,
+		IdempotencyKey:       input.IdempotencyKey,
+		RequestHash:          hash,
+		MaxActiveSessions:    maxActive,
+		IdempotencyRetention: retention,
+	}, nil
+}
+
+type sessionIdempotencyRecord struct {
+	Hash       domain.CanonicalHash
+	ResourceID domain.SessionID
+}
+
+func findSessionIdempotency(ctx context.Context, connection *sql.Conn, controller domain.ControllerIdentity, key string, now time.Time) (sessionIdempotencyRecord, bool, error) {
+	var version int
+	var digest []byte
+	var resourceID, expiresAt string
+	err := connection.QueryRowContext(ctx, `
+SELECT canonical_hash_version, canonical_hash, resource_id, expires_at
+FROM exec_idempotency
+WHERE controller_type = ? AND controller_id = ? AND operation = ? AND idempotency_key = ?
+`, string(controller.Type()), string(controller.ID()), createSessionOperation, key).Scan(&version, &digest, &resourceID, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sessionIdempotencyRecord{}, false, nil
+	}
+	if err != nil {
+		return sessionIdempotencyRecord{}, false, fmt.Errorf("lookup session idempotency: %w", err)
+	}
+	expiry, err := parseStoredTime(expiresAt)
+	if err != nil {
+		return sessionIdempotencyRecord{}, false, fmt.Errorf("%w: idempotency expiry: %v", ErrSessionLifecycle, err)
+	}
+	if !now.Before(expiry) {
+		if _, err := connection.ExecContext(ctx, `
+DELETE FROM exec_idempotency
+WHERE controller_type = ? AND controller_id = ? AND operation = ? AND idempotency_key = ?
+`, string(controller.Type()), string(controller.ID()), createSessionOperation, key); err != nil {
+			return sessionIdempotencyRecord{}, false, fmt.Errorf("expire session idempotency: %w", err)
+		}
+		return sessionIdempotencyRecord{}, false, nil
+	}
+	hash, err := domain.NewCanonicalHash(uint16(version), digest)
+	if err != nil {
+		return sessionIdempotencyRecord{}, false, fmt.Errorf("%w: stored idempotency hash: %v", ErrSessionLifecycle, err)
+	}
+	validatedResourceID, err := domain.NewSessionID(resourceID)
+	if err != nil {
+		return sessionIdempotencyRecord{}, false, fmt.Errorf("%w: stored idempotency resource: %v", ErrSessionLifecycle, err)
+	}
+	return sessionIdempotencyRecord{Hash: hash, ResourceID: validatedResourceID}, true, nil
+}
+
+func ensureSessionCapacity(ctx context.Context, connection *sql.Conn, maxActive int) error {
+	var count int
+	if err := connection.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM exec_capacity_reservations
+WHERE host_key = ? AND cleanup_confirmed_at IS NULL
+`, reservationHostKey).Scan(&count); err != nil {
+		return fmt.Errorf("count session capacity: %w", err)
+	}
+	if count >= maxActive {
+		return fmt.Errorf("%w: %d live reservations, limit %d", ErrSessionCapacityExceeded, count, maxActive)
+	}
+	return nil
+}
+
+func insertSessionAcceptance(ctx context.Context, connection *sql.Conn, validated SessionCreate, idempotencyKey string, requestHash domain.CanonicalHash, idempotencyExpiresAt, now time.Time) error {
+	var existing int
+	err := connection.QueryRowContext(ctx,
+		"SELECT 1 FROM exec_sessions WHERE session_id = ?", string(validated.SessionID)).Scan(&existing)
+	if err == nil {
+		return ErrSessionExists
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check session identity: %w", err)
+	}
+
+	expiresAt := now.Add(validated.Limits.SessionMaxLifetime)
+	if _, err = connection.ExecContext(ctx, `
+INSERT INTO exec_sessions (
+    session_id, target_kind, target_profile, environment,
+    controller_type, controller_id,
+    source_mode, source_repository_alias, source_requested_revision, source_path,
+    source_resolved_revision, runtime_generation, state,
+    command_timeout_ns, idle_timeout_ns, session_max_lifetime_ns, output_bytes_per_command,
+    created_at, updated_at, expires_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`,
+		string(validated.SessionID), string(validated.Target.Kind()), validated.Target.Profile(), validated.Environment,
+		string(validated.Controller.Type()), string(validated.Controller.ID()),
+		string(validated.Source.Mode()), validated.Source.RepositoryAlias(), validated.Source.RequestedRevision(), validated.Source.Path(),
+		validated.ResolvedRevision, validated.RuntimeGeneration, string(domain.SessionStateCreating),
+		int64(validated.Limits.CommandTimeout), int64(validated.Limits.IdleTimeout), int64(validated.Limits.SessionMaxLifetime), validated.Limits.OutputBytesPerCommand,
+		formatStoredTime(now), formatStoredTime(now), formatStoredTime(expiresAt),
+	); err != nil {
+		return fmt.Errorf("insert session: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, `
+INSERT INTO exec_session_lifecycle (session_id, lifecycle_sequence, previous_state, new_state, reason, occurred_at)
+VALUES (?, 1, NULL, ?, ?, ?)
+`, string(validated.SessionID), string(domain.SessionStateCreating), validated.Reason, formatStoredTime(now)); err != nil {
+		return fmt.Errorf("insert initial session lifecycle: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, `
+INSERT INTO exec_capacity_reservations (session_id, host_key, reserved_at)
+VALUES (?, ?, ?)
+`, string(validated.SessionID), reservationHostKey, formatStoredTime(now)); err != nil {
+		return fmt.Errorf("insert session capacity reservation: %w", err)
+	}
+	if idempotencyKey != "" {
+		if _, err := connection.ExecContext(ctx, `
+INSERT INTO exec_idempotency (
+    controller_type, controller_id, operation, idempotency_key,
+    canonical_hash_version, canonical_hash, resource_id, created_at, expires_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, string(validated.Controller.Type()), string(validated.Controller.ID()), createSessionOperation, idempotencyKey,
+			requestHash.Version(), requestHash.SHA256(), string(validated.SessionID), formatStoredTime(now), formatStoredTime(idempotencyExpiresAt)); err != nil {
+			return fmt.Errorf("insert session idempotency: %w", err)
+		}
+	}
+	return nil
+}
+
+func readReservationOnConnection(ctx context.Context, connection *sql.Conn, id domain.SessionID) (SessionReservation, error) {
+	var reservation SessionReservation
+	var sessionID, hostKey, reservedAt string
+	var cleanupConfirmedAt, releasedAt sql.NullString
+	if err := connection.QueryRowContext(ctx, `
+SELECT session_id, host_key, reserved_at, cleanup_confirmed_at, released_at
+FROM exec_capacity_reservations WHERE session_id = ?
+`, string(id)).Scan(&sessionID, &hostKey, &reservedAt, &cleanupConfirmedAt, &releasedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SessionReservation{}, ErrSessionReservationNotFound
+		}
+		return SessionReservation{}, fmt.Errorf("read session reservation: %w", err)
+	}
+	validatedID, err := domain.NewSessionID(sessionID)
+	if err != nil {
+		return SessionReservation{}, fmt.Errorf("%w: reservation session ID: %v", ErrSessionLifecycle, err)
+	}
+	reservation.SessionID = validatedID
+	reservation.HostKey = hostKey
+	if reservation.ReservedAt, err = parseStoredTime(reservedAt); err != nil {
+		return SessionReservation{}, fmt.Errorf("%w: reservation time: %v", ErrSessionLifecycle, err)
+	}
+	if cleanupConfirmedAt.Valid {
+		value, err := parseStoredTime(cleanupConfirmedAt.String)
+		if err != nil {
+			return SessionReservation{}, fmt.Errorf("%w: cleanup time: %v", ErrSessionLifecycle, err)
+		}
+		reservation.CleanupConfirmedAt = &value
+	}
+	if releasedAt.Valid {
+		value, err := parseStoredTime(releasedAt.String)
+		if err != nil {
+			return SessionReservation{}, fmt.Errorf("%w: release time: %v", ErrSessionLifecycle, err)
+		}
+		reservation.ReleasedAt = &value
+	}
+	return reservation, nil
 }
 
 func normalizeSource(source domain.Source) (domain.Source, error) {

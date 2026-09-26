@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 2
+	CurrentSchemaVersion = 3
 )
 
 var (
@@ -40,6 +40,9 @@ var schemaMigrationsSQL string
 //go:embed migrations/0002_exec_sessions.sql
 var execSessionsSQL string
 
+//go:embed migrations/0003_session_acceptance.sql
+var sessionAcceptanceSQL string
+
 type migration struct {
 	version int
 	name    string
@@ -54,6 +57,10 @@ var migrations = []migration{{
 	version: 2,
 	name:    "exec_sessions",
 	sql:     execSessionsSQL,
+}, {
+	version: 3,
+	name:    "session_acceptance",
+	sql:     sessionAcceptanceSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
