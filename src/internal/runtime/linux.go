@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -23,6 +24,7 @@ var (
 	ErrLinuxRuntimeAccount   = errors.New("linux process runtime account mismatch")
 	ErrLinuxRuntimePath      = errors.New("linux process runtime service path is not owner-only")
 	ErrLinuxRuntimeOwnership = errors.New("linux process runtime ownership is unresolved")
+	ErrLinuxRuntimeSource    = errors.New("linux process runtime source is invalid")
 	ErrLinuxProfileNotReady  = errors.New("linux process profile is not ready")
 )
 
@@ -35,10 +37,49 @@ const (
 // Linux host-process profile. A path is a start/service directory, never a
 // filesystem boundary for commands running as the same account.
 type LinuxRuntimeOptions struct {
-	Account       string
-	ServiceRoot   string
-	WorkspaceRoot string
-	ShellPath     string
+	Account           string
+	ServiceRoot       string
+	WorkspaceRoot     string
+	ShellPath         string
+	RepositoryAliases map[string]LinuxRepositoryAlias
+}
+
+// LinuxRepositoryAlias is an approved host-side repository location. Location
+// may be an absolute local repository path or an HTTPS URL. CredentialReference
+// is an optional owner-only file used only by Git preparation; its contents are
+// never copied into the session workspace or exported to the session shell.
+type LinuxRepositoryAlias struct {
+	Location            string
+	CredentialReference string
+}
+
+// LinuxSourceRequest selects the source materialized by the Linux adapter.
+// The environment policy must approve the alias before this adapter is called.
+type LinuxSourceRequest struct {
+	Mode              domain.SourceMode
+	RepositoryAlias   string
+	RequestedRevision string
+}
+
+// LinuxResolvedSource records the effective source after host-side Git
+// preparation. A git revision is always represented by its exact commit.
+type LinuxResolvedSource struct {
+	Mode             domain.SourceMode
+	RepositoryAlias  string
+	CanonicalPath    string
+	ResolvedRevision string
+	Portable         bool
+}
+
+func copyLinuxRepositoryAliases(aliases map[string]LinuxRepositoryAlias) map[string]LinuxRepositoryAlias {
+	if len(aliases) == 0 {
+		return nil
+	}
+	copy := make(map[string]LinuxRepositoryAlias, len(aliases))
+	for name, alias := range aliases {
+		copy[name] = alias
+	}
+	return copy
 }
 
 // LinuxProfileCapabilities contains only controls that this host-process
@@ -118,14 +159,14 @@ type LinuxProcessProfile struct {
 // LinuxProfile is a concise alias for callers that use the profile name.
 type LinuxProfile = LinuxProcessProfile
 
-// LinuxPrepared is the immutable session/generation ownership record created
-// before a Bash process starts. OwnedWorkspace is always true for this P040
-// adapter; later source modes must add an explicit non-owned record instead of
-// reusing this cleanup path.
+// LinuxPrepared is the immutable session/generation/source ownership record
+// created before a Bash process starts. Git source workspaces are owned by the
+// adapter and cleaned up through the same path as empty workspaces.
 type LinuxPrepared struct {
 	SessionID      string
 	Generation     string
 	Workspace      string
+	Source         LinuxResolvedSource
 	OwnedWorkspace bool
 	OwnerUID       int
 	OwnerAccount   string
@@ -159,22 +200,35 @@ func NewLinuxProcessAdapter(options LinuxRuntimeOptions) (*LinuxProcessAdapter, 
 	if current.Username != options.Account || options.Account != LinuxHostAccount {
 		return nil, fmt.Errorf("%w: configured=%q current=%q", ErrLinuxRuntimeAccount, options.Account, current.Username)
 	}
+	options.RepositoryAliases = copyLinuxRepositoryAliases(options.RepositoryAliases)
 	profile := newLinuxProcessProfile(options, defaultLinuxProfileHooks())
 	return &LinuxProcessAdapter{options: profile.options, account: current, sessions: make(map[string]*PersistentShell), prepared: make(map[string]LinuxPrepared)}, nil
 }
 
-// Prepare creates a private owner-only workspace without starting Bash.
-func (a *LinuxProcessAdapter) Prepare(_ context.Context, sessionID, generation string) (LinuxPrepared, error) {
+// Prepare creates a private owner-only empty workspace without starting Bash.
+func (a *LinuxProcessAdapter) Prepare(ctx context.Context, sessionID, generation string) (LinuxPrepared, error) {
+	return a.PrepareSource(ctx, sessionID, generation, LinuxSourceRequest{Mode: domain.SourceModeEmpty})
+}
+
+// PrepareSource resolves and materializes an approved Linux source without
+// starting Bash. Git workspaces are detached at one exact commit and Git hooks
+// are disabled for every preparation command. A host-side credential reference
+// is consumed only by Git's temporary askpass helper and is never put in the
+// persistent session environment.
+func (a *LinuxProcessAdapter) PrepareSource(ctx context.Context, sessionID, generation string, source LinuxSourceRequest) (LinuxPrepared, error) {
 	if a == nil {
 		return LinuxPrepared{}, ErrLinuxRuntimeAccount
 	}
+	if ctx == nil {
+		return LinuxPrepared{}, fmt.Errorf("%w: nil context", ErrLinuxRuntimeSource)
+	}
 	if sessionID == "" || generation == "" {
-		return LinuxPrepared{}, fmt.Errorf("%w: empty session or generation", ErrLinuxRuntimeAccount)
+		return LinuxPrepared{}, fmt.Errorf("%w: empty session or generation", ErrLinuxRuntimeSource)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if _, exists := a.prepared[sessionID]; exists {
-		return LinuxPrepared{}, fmt.Errorf("%w: session already prepared", ErrLinuxRuntimeAccount)
+		return LinuxPrepared{}, fmt.Errorf("%w: session already prepared", ErrLinuxRuntimeSource)
 	}
 	root := checkLinuxServicePath(a.options.WorkspaceRoot, a.accountUID())
 	if root.Error != "" {
@@ -188,9 +242,166 @@ func (a *LinuxProcessAdapter) Prepare(_ context.Context, sessionID, generation s
 		_ = os.RemoveAll(workspace)
 		return LinuxPrepared{}, fmt.Errorf("%w: workspace mode: %v", ErrLinuxRuntimePath, err)
 	}
-	prepared := LinuxPrepared{SessionID: sessionID, Generation: generation, Workspace: workspace, OwnedWorkspace: true, OwnerUID: a.accountUID(), OwnerAccount: a.account.Username}
+	prepared := LinuxPrepared{
+		SessionID:      sessionID,
+		Generation:     generation,
+		Workspace:      workspace,
+		OwnedWorkspace: true,
+		OwnerUID:       a.accountUID(),
+		OwnerAccount:   a.account.Username,
+	}
+	switch source.Mode {
+	case domain.SourceModeEmpty:
+		prepared.Source = LinuxResolvedSource{Mode: domain.SourceModeEmpty, CanonicalPath: workspace, Portable: true}
+	case domain.SourceModeGitRevision:
+		resolved, err := a.prepareLinuxGitSource(ctx, workspace, source)
+		if err != nil {
+			_ = os.RemoveAll(workspace)
+			return LinuxPrepared{}, err
+		}
+		prepared.Source = resolved
+	default:
+		_ = os.RemoveAll(workspace)
+		return LinuxPrepared{}, fmt.Errorf("%w: source mode %q is not supported on Linux", ErrLinuxRuntimeSource, source.Mode)
+	}
 	a.prepared[sessionID] = prepared
 	return prepared, nil
+}
+
+func (a *LinuxProcessAdapter) prepareLinuxGitSource(ctx context.Context, workspace string, source LinuxSourceRequest) (LinuxResolvedSource, error) {
+	if source.RepositoryAlias == "" || source.RequestedRevision == "" || strings.IndexByte(source.RequestedRevision, 0) >= 0 || len(source.RequestedRevision) > 256 {
+		return LinuxResolvedSource{}, fmt.Errorf("%w: git_revision requires bounded alias and revision", ErrLinuxRuntimeSource)
+	}
+	alias, ok := a.options.RepositoryAliases[source.RepositoryAlias]
+	if !ok {
+		return LinuxResolvedSource{}, fmt.Errorf("%w: unknown repository alias %q", ErrLinuxRuntimeSource, source.RepositoryAlias)
+	}
+	location, localPath, err := validateLinuxRepositoryLocation(alias.Location)
+	if err != nil {
+		return LinuxResolvedSource{}, err
+	}
+	if err := validateLinuxCredentialReference(alias.CredentialReference); err != nil {
+		return LinuxResolvedSource{}, err
+	}
+	credential := alias.CredentialReference
+	var resolved string
+	if localPath != "" {
+		bytes, err := runLinuxGit(ctx, localPath, credential, "rev-parse", "--verify", "--end-of-options", source.RequestedRevision+"^{commit}")
+		if err != nil {
+			return LinuxResolvedSource{}, fmt.Errorf("%w: resolve revision: %v", ErrLinuxRuntimeSource, err)
+		}
+		resolved = strings.TrimSpace(string(bytes))
+	}
+	if _, err := runLinuxGit(ctx, "", credential, "clone", "--no-local", "--no-checkout", "--template=/dev/null", "--", location, workspace); err != nil {
+		return LinuxResolvedSource{}, fmt.Errorf("%w: clone repository: %v", ErrLinuxRuntimeSource, err)
+	}
+	if resolved == "" {
+		bytes, err := runLinuxGit(ctx, workspace, credential, "rev-parse", "--verify", "--end-of-options", source.RequestedRevision+"^{commit}")
+		if err != nil {
+			bytes, err = runLinuxGit(ctx, workspace, credential, "rev-parse", "--verify", "--end-of-options", "origin/"+source.RequestedRevision+"^{commit}")
+		}
+		if err != nil {
+			return LinuxResolvedSource{}, fmt.Errorf("%w: resolve cloned revision: %v", ErrLinuxRuntimeSource, err)
+		}
+		resolved = strings.TrimSpace(string(bytes))
+	}
+	if len(resolved) != 40 || strings.Trim(resolved, "0123456789abcdef") != "" {
+		return LinuxResolvedSource{}, fmt.Errorf("%w: Git returned invalid resolved revision", ErrLinuxRuntimeSource)
+	}
+	if _, err := runLinuxGit(ctx, workspace, credential, "checkout", "--detach", "--force", resolved); err != nil {
+		return LinuxResolvedSource{}, fmt.Errorf("%w: checkout resolved revision: %v", ErrLinuxRuntimeSource, err)
+	}
+	if _, err := runLinuxGit(ctx, workspace, "", "config", "core.hooksPath", "/dev/null"); err != nil {
+		return LinuxResolvedSource{}, fmt.Errorf("%w: persist hook policy: %v", ErrLinuxRuntimeSource, err)
+	}
+	actualBytes, err := runLinuxGit(ctx, workspace, "", "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || strings.TrimSpace(string(actualBytes)) != resolved {
+		return LinuxResolvedSource{}, fmt.Errorf("%w: checked-out revision mismatch", ErrLinuxRuntimeSource)
+	}
+	return LinuxResolvedSource{Mode: domain.SourceModeGitRevision, RepositoryAlias: source.RepositoryAlias, CanonicalPath: workspace, ResolvedRevision: resolved, Portable: true}, nil
+}
+
+func validateLinuxRepositoryLocation(location string) (string, string, error) {
+	if location == "" || strings.IndexByte(location, 0) >= 0 {
+		return "", "", fmt.Errorf("%w: repository location is empty or contains NUL", ErrLinuxRuntimeSource)
+	}
+	if filepath.IsAbs(location) {
+		canonical, err := filepath.EvalSymlinks(location)
+		if err != nil {
+			return "", "", fmt.Errorf("%w: repository path: %v", ErrLinuxRuntimeSource, err)
+		}
+		info, err := os.Stat(canonical)
+		if err != nil || !info.IsDir() {
+			return "", "", fmt.Errorf("%w: local repository is not a directory", ErrLinuxRuntimeSource)
+		}
+		return canonical, canonical, nil
+	}
+	parsed, err := url.Parse(location)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+		return "", "", fmt.Errorf("%w: repository alias must be an absolute local path or HTTPS URL", ErrLinuxRuntimeSource)
+	}
+	return location, "", nil
+}
+
+func validateLinuxCredentialReference(path string) error {
+	if path == "" {
+		return nil
+	}
+	if !filepath.IsAbs(path) || strings.IndexByte(path, 0) >= 0 {
+		return fmt.Errorf("%w: credential reference must be an absolute path", ErrLinuxRuntimeSource)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%w: credential reference must be an owner-only regular file", ErrLinuxRuntimeSource)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("%w: credential reference is unreadable", ErrLinuxRuntimeSource)
+	}
+	_ = file.Close()
+	return nil
+}
+
+func runLinuxGit(ctx context.Context, directory, credentialReference string, args ...string) ([]byte, error) {
+	gitArgs := append([]string{"-c", "core.hooksPath=/dev/null"}, args...)
+	if directory != "" {
+		gitArgs = append([]string{"-C", directory, "-c", "core.hooksPath=/dev/null"}, args...)
+	}
+	command := exec.CommandContext(ctx, "git", gitArgs...)
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_TERMINAL_PROMPT=0")
+	if credentialReference != "" {
+		askpass, err := writeLinuxAskpass(credentialReference)
+		if err != nil {
+			return nil, err
+		}
+		defer os.Remove(askpass)
+		command.Env = append(command.Env, "GIT_ASKPASS="+askpass)
+	}
+	return command.CombinedOutput()
+}
+
+func writeLinuxAskpass(credentialReference string) (string, error) {
+	file, err := os.CreateTemp("", "remote-session-runner-git-askpass-")
+	if err != nil {
+		return "", fmt.Errorf("%w: create temporary credential helper: %v", ErrLinuxRuntimeSource, err)
+	}
+	path := file.Name()
+	if err := file.Chmod(0o700); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("%w: protect temporary credential helper: %v", ErrLinuxRuntimeSource, err)
+	}
+	content := "#!/bin/sh\ncase \"$1\" in\n  *Username*) sed -n 's/^username=//p' " + shellQuote(credentialReference) + " | head -n 1 ;;\n  *Password*) sed -n 's/^password=//p' " + shellQuote(credentialReference) + " | head -n 1 ;;\n  *) exit 1 ;;\nesac\n"
+	if _, err := file.WriteString(content); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("%w: write temporary credential helper: %v", ErrLinuxRuntimeSource, err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("%w: close temporary credential helper: %v", ErrLinuxRuntimeSource, err)
+	}
+	return path, nil
 }
 
 // StartAgent starts one shared persistent Bash for a prepared session.
