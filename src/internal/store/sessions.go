@@ -341,6 +341,78 @@ VALUES (?, ?, ?, ?, ?, ?)
 	})
 }
 
+// CompleteSessionCreation records the runtime handshake (when available) and
+// completes the authoritative creating transition in one transaction. A
+// ready session must have a non-empty runtime generation; failed and lost
+// outcomes may retain a generation observed during partial startup.
+func (s *AuthorityStore) CompleteSessionCreation(ctx context.Context, id domain.SessionID, next domain.SessionState, runtimeGeneration, resolvedRevision, reason string) (SessionRecord, error) {
+	validatedID, err := domain.NewSessionID(string(id))
+	if err != nil {
+		return SessionRecord{}, err
+	}
+	if next != domain.SessionStateReady && next != domain.SessionStateFailed && next != domain.SessionStateLost {
+		return SessionRecord{}, fmt.Errorf("%w: creation cannot complete as %q", domain.ErrIllegalSessionTransition, next)
+	}
+	if len(runtimeGeneration) > 256 || strings.IndexByte(runtimeGeneration, 0) >= 0 {
+		return SessionRecord{}, fmt.Errorf("%w: runtime generation is invalid", ErrInvalidSession)
+	}
+	if strings.IndexByte(resolvedRevision, 0) >= 0 || len(resolvedRevision) > 256 {
+		return SessionRecord{}, fmt.Errorf("%w: resolved revision is invalid", ErrInvalidSession)
+	}
+	if next == domain.SessionStateReady && runtimeGeneration == "" {
+		return SessionRecord{}, fmt.Errorf("%w: ready session requires runtime generation", ErrInvalidSession)
+	}
+	if reason == "" {
+		return SessionRecord{}, ErrInvalidSession
+	}
+	if _, err := validateLifecycleReason(reason); err != nil {
+		return SessionRecord{}, err
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+		var currentValue, currentGeneration, currentRevision string
+		if err := connection.QueryRowContext(ctx, `
+SELECT state, runtime_generation, source_resolved_revision
+FROM exec_sessions WHERE session_id = ?
+`, string(validatedID)).Scan(&currentValue, &currentGeneration, &currentRevision); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return SessionRecord{}, ErrSessionNotFound
+			}
+			return SessionRecord{}, fmt.Errorf("read creation session: %w", err)
+		}
+		current := domain.SessionState(currentValue)
+		if err := domain.ValidateSessionTransition(current, next); err != nil {
+			return SessionRecord{}, err
+		}
+		if runtimeGeneration == "" {
+			runtimeGeneration = currentGeneration
+		}
+		if resolvedRevision == "" {
+			resolvedRevision = currentRevision
+		}
+		var sequence int64
+		if err := connection.QueryRowContext(ctx,
+			"SELECT COALESCE(MAX(lifecycle_sequence), 0) + 1 FROM exec_session_lifecycle WHERE session_id = ?",
+			string(validatedID)).Scan(&sequence); err != nil {
+			return SessionRecord{}, fmt.Errorf("read creation lifecycle sequence: %w", err)
+		}
+		if _, err := connection.ExecContext(ctx, `
+UPDATE exec_sessions
+SET state = ?, runtime_generation = ?, source_resolved_revision = ?, updated_at = ?
+WHERE session_id = ? AND state = ?
+`, string(next), runtimeGeneration, resolvedRevision, formatStoredTime(now), string(validatedID), currentValue); err != nil {
+			return SessionRecord{}, fmt.Errorf("complete session creation: %w", err)
+		}
+		if _, err := connection.ExecContext(ctx, `
+INSERT INTO exec_session_lifecycle (session_id, lifecycle_sequence, previous_state, new_state, reason, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, string(validatedID), sequence, currentValue, string(next), reason, formatStoredTime(now)); err != nil {
+			return SessionRecord{}, fmt.Errorf("insert creation lifecycle: %w", err)
+		}
+		return readSessionOnConnection(ctx, connection, validatedID)
+	})
+}
+
 // ListSessionLifecycle returns lifecycle records in durable sequence order.
 func (s *AuthorityStore) ListSessionLifecycle(ctx context.Context, id domain.SessionID) ([]SessionLifecycleRecord, error) {
 	validatedID, err := domain.NewSessionID(string(id))
