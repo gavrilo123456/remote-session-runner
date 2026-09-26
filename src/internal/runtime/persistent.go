@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ var (
 	ErrPersistentShellExited  = errors.New("persistent shell exited")
 	ErrPersistentShellLost    = errors.New("persistent shell is lost")
 	ErrOutputBoundary         = errors.New("command output boundary is unconfirmed")
+	ErrNoActiveCommand        = errors.New("no active persistent-shell command")
 )
 
 // PersistentShellOptions controls the real Bash process used for one session.
@@ -47,6 +49,13 @@ type PersistentShellResult struct {
 	Chunks                 []OutputChunk
 	OutputTruncated        bool
 	OutputTruncationEvents int
+}
+
+// PersistentShellStopResult reports whether an interrupt reached a clean
+// command boundary. A false result means the shell must be treated as lost.
+type PersistentShellStopResult struct {
+	CommandID string
+	Confirmed bool
 }
 
 const (
@@ -93,6 +102,7 @@ func NewPersistentBash(ctx context.Context, options PersistentBashOptions) (*Per
 // serialized so a script and its control frame cannot overlap another command.
 type PersistentShell struct {
 	mu              sync.Mutex
+	stateMu         sync.Mutex
 	cmd             *exec.Cmd
 	stdin           io.WriteCloser
 	control         io.ReadCloser
@@ -103,6 +113,10 @@ type PersistentShell struct {
 	maxOutputBytes  int64
 	closed          bool
 	lost            bool
+	activeCommand   string
+	activeDone      chan struct{}
+	cancelRequested bool
+	stopConfirmed   bool
 }
 
 // StartPersistentShell starts one Bash process with a dedicated control-write
@@ -182,6 +196,7 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 
 	cmd := exec.CommandContext(ctx, shellPath, "--noprofile", "--norc", "-s")
 	cmd.Dir = workspace
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdin = stdinReader
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
@@ -207,7 +222,7 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 
 // RunScript atomically materializes a private script, sources it in the
 // existing Bash process, and waits for its dedicated control completion.
-func (s *PersistentShell) RunScript(ctx context.Context, commandID string, script []byte) (PersistentShellResult, error) {
+func (s *PersistentShell) RunScript(ctx context.Context, commandID string, script []byte) (result PersistentShellResult, runErr error) {
 	if s == nil {
 		return PersistentShellResult{}, ErrPersistentShellClosed
 	}
@@ -228,6 +243,23 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	if err := ctx.Err(); err != nil {
 		return PersistentShellResult{}, err
 	}
+	s.stateMu.Lock()
+	s.activeCommand = commandID
+	s.activeDone = make(chan struct{})
+	s.cancelRequested = false
+	s.stopConfirmed = false
+	activeDone := s.activeDone
+	s.stateMu.Unlock()
+	defer func() {
+		s.stateMu.Lock()
+		if s.cancelRequested && runErr == nil && !s.lost && s.cmd.ProcessState == nil {
+			s.stopConfirmed = true
+		}
+		close(activeDone)
+		s.activeCommand = ""
+		s.activeDone = nil
+		s.stateMu.Unlock()
+	}()
 
 	scriptPath, err := writePrivateSynced(s.workspace, "script-*.sh", script)
 	if err != nil {
@@ -271,8 +303,11 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 		return PersistentShellResult{}, err
 	}
 	wrapper := startedWire + "\n" +
+		"runner_interrupt=0\n" +
+		"trap 'runner_interrupt=1' INT\n" +
 		"source " + shellQuote(scriptPath) + " >" + shellQuote(stdoutPath) + " 2>" + shellQuote(stderrPath) + "\n" +
 		"runner_status=$?\n" +
+		"trap - INT\n" +
 		"\n" +
 		"if [ \"$runner_status\" -gt 127 ]; then runner_status=$((runner_status-256)); fi\n" +
 		"case \"$runner_status\" in -*) ;; *) ;; esac\n"
@@ -344,6 +379,108 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	stdout := chunksBytes(chunks, OutputStreamStdout)
 	stderr := chunksBytes(chunks, OutputStreamStderr)
 	return PersistentShellResult{CommandStarted: gotStarted, CommandComplete: gotComplete, Stdout: stdout, Stderr: stderr, Chunks: chunks, OutputTruncated: limiter.wasTruncated(), OutputTruncationEvents: limiter.truncationEvents()}, nil
+}
+
+// CancelCurrentCommand requests a graceful SIGINT for the active command and
+// waits for its normal control/EOF barrier. If that boundary is not proven by
+// the grace period, SIGKILL is sent to Bash and the result is unconfirmed.
+func (s *PersistentShell) CancelCurrentCommand(ctx context.Context, grace time.Duration) (PersistentShellStopResult, error) {
+	if s == nil {
+		return PersistentShellStopResult{}, ErrPersistentShellClosed
+	}
+	if ctx == nil {
+		return PersistentShellStopResult{}, fmt.Errorf("%w: nil context", ErrPersistentShellCommand)
+	}
+	if grace <= 0 {
+		grace = 500 * time.Millisecond
+	}
+	s.stateMu.Lock()
+	commandID := s.activeCommand
+	done := s.activeDone
+	if commandID == "" || done == nil {
+		s.stateMu.Unlock()
+		return PersistentShellStopResult{}, ErrNoActiveCommand
+	}
+	s.cancelRequested = true
+	process := s.cmd.Process
+	s.stateMu.Unlock()
+	if process == nil {
+		return PersistentShellStopResult{CommandID: commandID}, ErrPersistentShellLost
+	}
+	if err := signalProcessGroup(process.Pid, syscall.SIGINT); err != nil {
+		if count := signalDescendants(process.Pid, syscall.SIGINT); count == 0 {
+			return PersistentShellStopResult{CommandID: commandID}, fmt.Errorf("%w: signal interrupt: %v", ErrPersistentShellCommand, err)
+		}
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-done:
+		s.stateMu.Lock()
+		confirmed := s.stopConfirmed
+		s.stateMu.Unlock()
+		return PersistentShellStopResult{CommandID: commandID, Confirmed: confirmed}, nil
+	case <-ctx.Done():
+		return PersistentShellStopResult{CommandID: commandID}, ctx.Err()
+	case <-timer.C:
+		_ = signalProcessGroup(process.Pid, syscall.SIGKILL)
+		settle := time.NewTimer(100 * time.Millisecond)
+		defer settle.Stop()
+		select {
+		case <-done:
+			s.stateMu.Lock()
+			confirmed := s.stopConfirmed
+			s.stateMu.Unlock()
+			if confirmed {
+				return PersistentShellStopResult{CommandID: commandID, Confirmed: true}, nil
+			}
+			return PersistentShellStopResult{CommandID: commandID, Confirmed: false}, ErrPersistentShellLost
+		case <-settle.C:
+			return PersistentShellStopResult{CommandID: commandID, Confirmed: false}, ErrPersistentShellLost
+		}
+	}
+}
+
+func signalDescendants(rootPID int, signal syscall.Signal) int {
+	output, err := exec.Command("ps", "-axo", "pid=,ppid=").Output()
+	if err != nil {
+		return 0
+	}
+	children := make(map[int][]int)
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		pid, pidErr := strconv.Atoi(fields[0])
+		parent, parentErr := strconv.Atoi(fields[1])
+		if pidErr == nil && parentErr == nil {
+			children[parent] = append(children[parent], pid)
+		}
+	}
+	queue := append([]int(nil), children[rootPID]...)
+	count := 0
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		queue = append(queue, children[pid]...)
+		if syscall.Kill(pid, signal) == nil {
+			count++
+		}
+	}
+	return count
+}
+
+func signalProcessGroup(pid int, signal syscall.Signal) error {
+	if err := syscall.Kill(-pid, signal); err == nil {
+		return nil
+	}
+	return syscall.Kill(pid, signal)
+}
+
+// StopCommand is an adapter-friendly alias for CancelCurrentCommand.
+func (s *PersistentShell) StopCommand(ctx context.Context, grace time.Duration) (PersistentShellStopResult, error) {
+	return s.CancelCurrentCommand(ctx, grace)
 }
 
 func waitForOutputBoundary(stdoutDone, stderrDone <-chan outputDrainResult, timeout time.Duration, stdoutRead, stderrRead *os.File) (outputDrainResult, outputDrainResult, error) {
