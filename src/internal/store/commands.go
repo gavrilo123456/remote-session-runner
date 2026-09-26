@@ -340,7 +340,7 @@ func (s *AuthorityStore) CompleteRunningCommand(ctx context.Context, input Comma
 	if !input.NextState.IsTerminal() {
 		return CommandRecord{}, fmt.Errorf("%w: completion state %q is not terminal", ErrCommandTransition, input.NextState)
 	}
-	if nextSessionState != domain.SessionStateReady && nextSessionState != domain.SessionStateClosing && nextSessionState != domain.SessionStateLost {
+	if nextSessionState != domain.SessionStateReady && nextSessionState != domain.SessionStateClosing && nextSessionState != domain.SessionStateExpired && nextSessionState != domain.SessionStateLost {
 		return CommandRecord{}, fmt.Errorf("%w: completion session state %q is invalid", ErrCommandTransition, nextSessionState)
 	}
 	if _, err := validateLifecycleReason(sessionReason); err != nil {

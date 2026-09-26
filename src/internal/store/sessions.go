@@ -220,6 +220,53 @@ func (s *AuthorityStore) GetSession(ctx context.Context, id domain.SessionID) (S
 	return readSessionOnConnection(ctx, connection, validatedID)
 }
 
+// ListSessions returns authoritative session snapshots in creation order. The
+// ID query is fully consumed and closed before each snapshot is re-read so the
+// sqlite connection never has an open result set while validating a record.
+func (s *AuthorityStore) ListSessions(ctx context.Context) ([]SessionRecord, error) {
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire session list connection: %w", err)
+	}
+	defer connection.Close()
+	rows, err := connection.QueryContext(ctx, `
+SELECT session_id FROM exec_sessions ORDER BY created_at, session_id
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query sessions: %w", err)
+	}
+	var ids []domain.SessionID
+	for rows.Next() {
+		var rawID string
+		if err := rows.Scan(&rawID); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan session ID: %w", err)
+		}
+		id, err := domain.NewSessionID(rawID)
+		if err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("invalid session ID: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate sessions: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close sessions: %w", err)
+	}
+	result := make([]SessionRecord, 0, len(ids))
+	for _, id := range ids {
+		record, err := readSessionOnConnection(ctx, connection, id)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, record)
+	}
+	return result, nil
+}
+
 // CountLiveSessionReservations returns reservations whose cleanup has not
 // been durably confirmed. It is the admission count used by create
 // acceptance, and therefore includes creating, failed, or lost sessions until
