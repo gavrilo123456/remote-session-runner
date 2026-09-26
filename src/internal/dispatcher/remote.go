@@ -155,6 +155,9 @@ func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) 
 	}
 	switch outcome {
 	case reconcileAccepted:
+		if err := d.upsertRemoteProjectionFromReply(ctx, intent, reply); err != nil {
+			return intent, reply, err
+		}
 		if intent.Operation == operationCreateSession {
 			if err := d.observeRemoteSessionState(intent, reply); err != nil {
 				return intent, reply, err
@@ -359,6 +362,13 @@ func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (
 			}
 			return claimed, reply, err
 		}
+	}
+	if err := d.upsertRemoteProjectionFromReply(ctx, intent, reply); err != nil {
+		_, transitionErr := d.authority.TransitionLocalIntent(ctx, claimed.IntentID, store.LocalIntentUncertain, "remote_response_uncertain")
+		if transitionErr != nil {
+			return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, fmt.Errorf("%w; transition: %v", err, transitionErr)
+		}
+		return claimed, reply, err
 	}
 	accepted, err := d.authority.TransitionLocalIntent(ctx, claimed.IntentID, store.LocalIntentAccepted, "remote_target_accepted")
 	if err != nil {

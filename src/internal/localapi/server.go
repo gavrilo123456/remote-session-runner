@@ -186,9 +186,9 @@ type knownState struct {
 }
 
 type sessionRead struct {
-	View     string                `json:"view"`
-	IsStale  bool                  `json:"is_stale"`
-	Resource sessionIntentResource `json:"resource"`
+	View     string `json:"view"`
+	IsStale  bool   `json:"is_stale"`
+	Resource any    `json:"resource"`
 }
 
 type sessionIntentResource struct {
@@ -200,6 +200,28 @@ type sessionIntentResource struct {
 	Source          sourceResponse `json:"source"`
 	DeliveryState   string         `json:"delivery_state"`
 	Reason          string         `json:"reason,omitempty"`
+}
+
+type sessionProjectionResource struct {
+	SessionID         string               `json:"session_id"`
+	SessionState      string               `json:"session_state"`
+	ExecutionTarget   targetResponse       `json:"execution_target"`
+	Authority         string               `json:"authority"`
+	Controller        controllerView       `json:"controller"`
+	ObservedAt        time.Time            `json:"observed_at"`
+	Environment       string               `json:"environment"`
+	Source            sourceResponse       `json:"source"`
+	Capabilities      capabilitiesResponse `json:"capabilities"`
+	RuntimeGeneration string               `json:"runtime_generation,omitempty"`
+	ResolvedRevision  string               `json:"resolved_revision,omitempty"`
+	IsStale           bool                 `json:"is_stale,omitempty"`
+}
+
+type capabilitiesResponse struct {
+	HostClass        string         `json:"host_class"`
+	Isolation        string         `json:"isolation"`
+	EffectiveAccount string         `json:"effective_account"`
+	ServiceLimits    map[string]any `json:"service_limits"`
 }
 
 type targetResponse struct {
@@ -216,6 +238,7 @@ type sourceResponse struct {
 	Mode              string `json:"mode"`
 	RepositoryAlias   string `json:"repository_alias,omitempty"`
 	RequestedRevision string `json:"requested_revision,omitempty"`
+	ResolvedCommit    string `json:"resolved_commit,omitempty"`
 	Path              string `json:"path,omitempty"`
 	Portable          *bool  `json:"portable,omitempty"`
 }
@@ -336,9 +359,9 @@ type jobIntentResource struct {
 }
 
 type commandRead struct {
-	View     string                `json:"view"`
-	IsStale  bool                  `json:"is_stale"`
-	Resource commandIntentResource `json:"resource"`
+	View     string `json:"view"`
+	IsStale  bool   `json:"is_stale"`
+	Resource any    `json:"resource"`
 }
 
 // localAPICommandEvent is the public v1 event shape. Output payloads are
@@ -365,6 +388,26 @@ type commandIntentResource struct {
 	Source          sourceResponse `json:"source"`
 	DeliveryState   string         `json:"delivery_state"`
 	Reason          string         `json:"reason,omitempty"`
+}
+
+type commandProjectionResource struct {
+	CommandID               string               `json:"command_id"`
+	SessionID               string               `json:"session_id"`
+	Ordinal                 int64                `json:"ordinal"`
+	CommandState            string               `json:"command_state"`
+	ExitCode                *int                 `json:"exit_code,omitempty"`
+	FinalEventSequence      *int64               `json:"final_event_sequence,omitempty"`
+	OutputComplete          bool                 `json:"output_complete"`
+	OutputTruncated         bool                 `json:"output_truncated"`
+	OutputUnavailableReason string               `json:"output_unavailable_reason,omitempty"`
+	ExecutionTarget         targetResponse       `json:"execution_target"`
+	Authority               string               `json:"authority"`
+	Controller              controllerView       `json:"controller"`
+	ObservedAt              time.Time            `json:"observed_at"`
+	Environment             string               `json:"environment"`
+	Source                  sourceResponse       `json:"source"`
+	Capabilities            capabilitiesResponse `json:"capabilities"`
+	IsStale                 bool                 `json:"is_stale,omitempty"`
 }
 
 func (s *Server) handleSubmitCommand(response http.ResponseWriter, request *http.Request, rawSessionID string) {
@@ -750,6 +793,18 @@ func (s *Server) handleGetCommand(response http.ResponseWriter, request *http.Re
 		}
 		writeError(response, status, code, sanitizeError(err))
 		return
+	}
+	if remoteProjectionEligible(record) {
+		projection, projectionErr := s.authority.GetRemoteCommandProjection(request.Context(), commandID)
+		if projectionErr == nil {
+			writeJSON(response, http.StatusOK, commandRead{View: "projection", IsStale: projection.IsStale, Resource: commandProjectionResourceFromProjection(projection)})
+			return
+		}
+		if !errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
+			status, code := statusForStoreError(projectionErr)
+			writeError(response, status, code, sanitizeError(projectionErr))
+			return
+		}
 	}
 	writeJSON(response, http.StatusOK, commandRead{View: "local_intent", IsStale: false, Resource: commandIntentResourceFromRecord(record)})
 }
@@ -1313,6 +1368,18 @@ func (s *Server) handleGetSession(response http.ResponseWriter, request *http.Re
 		writeError(response, status, code, sanitizeError(err))
 		return
 	}
+	if remoteProjectionEligible(record) {
+		projection, projectionErr := s.authority.GetRemoteSessionProjection(request.Context(), sessionID)
+		if projectionErr == nil {
+			writeJSON(response, http.StatusOK, sessionRead{View: "projection", IsStale: projection.IsStale, Resource: sessionProjectionResourceFromProjection(projection)})
+			return
+		}
+		if !errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
+			status, code := statusForStoreError(projectionErr)
+			writeError(response, status, code, sanitizeError(projectionErr))
+			return
+		}
+	}
 	writeJSON(response, http.StatusOK, sessionRead{View: "local_intent", IsStale: false, Resource: sessionIntentResourceFromRecord(record)})
 }
 
@@ -1371,6 +1438,41 @@ func sessionIntentResourceFromRecord(record store.LocalIntentRecord) sessionInte
 		Controller:      controllerView{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())},
 		ObservedAt:      record.UpdatedAt.UTC(), Environment: record.Environment,
 		Source: sourceResponseFromDomain(record.Source), DeliveryState: string(record.DeliveryState), Reason: record.Reason,
+	}
+}
+
+func remoteProjectionEligible(record store.LocalIntentRecord) bool {
+	return record.Target.Kind() == domain.TargetKindRemote && (record.DeliveryState == store.LocalIntentAccepted || record.DeliveryState == store.LocalIntentReconciled)
+}
+
+func capabilitiesResponseFromProjection(capabilities store.RemoteCapabilities) capabilitiesResponse {
+	limits := capabilities.ServiceLimits
+	if limits == nil {
+		limits = map[string]any{}
+	}
+	return capabilitiesResponse{HostClass: capabilities.HostClass, Isolation: capabilities.Isolation, EffectiveAccount: capabilities.EffectiveAccount, ServiceLimits: limits}
+}
+
+func sessionProjectionResourceFromProjection(projection store.RemoteSessionProjection) sessionProjectionResource {
+	source := sourceResponseFromDomain(projection.Source)
+	source.ResolvedCommit = projection.ResolvedRevision
+	return sessionProjectionResource{
+		SessionID: string(projection.SessionID), SessionState: string(projection.State),
+		ExecutionTarget: targetResponse{Kind: string(projection.Target.Kind()), Profile: projection.Target.Profile()}, Authority: "remote",
+		Controller: controllerView{Type: string(projection.Controller.Type()), ID: string(projection.Controller.ID())}, ObservedAt: projection.ObservedAt.UTC(),
+		Environment: projection.Environment, Source: source, Capabilities: capabilitiesResponseFromProjection(projection.Capabilities),
+		RuntimeGeneration: projection.RuntimeGeneration, ResolvedRevision: projection.ResolvedRevision, IsStale: projection.IsStale,
+	}
+}
+
+func commandProjectionResourceFromProjection(projection store.RemoteCommandProjection) commandProjectionResource {
+	return commandProjectionResource{
+		CommandID: string(projection.CommandID), SessionID: string(projection.SessionID), Ordinal: projection.Ordinal, CommandState: string(projection.State),
+		ExitCode: projection.ExitCode, FinalEventSequence: projection.FinalEventSequence, OutputComplete: projection.OutputComplete,
+		OutputTruncated: projection.OutputTruncated, OutputUnavailableReason: projection.OutputUnavailableReason,
+		ExecutionTarget: targetResponse{Kind: string(projection.Target.Kind()), Profile: projection.Target.Profile()}, Authority: "remote",
+		Controller: controllerView{Type: string(projection.Controller.Type()), ID: string(projection.Controller.ID())}, ObservedAt: projection.ObservedAt.UTC(),
+		Environment: projection.Environment, Source: sourceResponseFromDomain(projection.Source), Capabilities: capabilitiesResponseFromProjection(projection.Capabilities), IsStale: projection.IsStale,
 	}
 }
 

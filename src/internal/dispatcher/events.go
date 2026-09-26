@@ -114,6 +114,12 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 		}
 	})
 	if streamErr != nil {
+		// A failed mirror leaves the last remote snapshot usable but explicitly
+		// stale. Missing views are harmless because acceptance may have returned
+		// only an identity envelope in older bridge responses.
+		if markErr := d.authority.MarkRemoteCommandProjectionStale(ctx, validatedCommand); markErr != nil && !errors.Is(markErr, store.ErrRemoteProjectionNotFound) {
+			return result, markErr
+		}
 		var gapErr *remoteEventGapError
 		if !errors.As(streamErr, &gapErr) {
 			return result, streamErr
