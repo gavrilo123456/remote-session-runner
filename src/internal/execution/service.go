@@ -138,6 +138,24 @@ type RuntimeCleanupRequest struct {
 	RuntimeGeneration string
 }
 
+// RuntimeReconcileRequest identifies one persisted session whose old runtime
+// must be inspected during executor startup. Reconciliation is deliberately
+// separate from SessionRuntime so the P020 fake and later runtime adapters can
+// adopt the restart boundary independently.
+type RuntimeReconcileRequest struct {
+	Session store.SessionRecord
+}
+
+// RuntimeReconcileResult reports the runtime generation observed for a
+// persisted session and whether the adapter proved that all known resources
+// for that session are gone. A matching generation never authorizes shell
+// reattachment in the PoC; it is recorded only to make generation changes
+// explicit in reconciliation evidence.
+type RuntimeReconcileResult struct {
+	RuntimeGeneration string
+	CleanupConfirmed  bool
+}
+
 // SessionRuntime is the shared execution boundary used by Mac and Linux
 // service instances. P020 uses it with a fake adapter; real adapters arrive
 // in the later runtime phases.
@@ -145,6 +163,13 @@ type SessionRuntime interface {
 	Prepare(context.Context, RuntimePrepareRequest) (RuntimePrepared, error)
 	StartAgent(context.Context, RuntimeStartRequest) (RuntimeStarted, error)
 	Cleanup(context.Context, RuntimeCleanupRequest) error
+}
+
+// RuntimeReconciler is optional during the fake-runtime phases. Real adapters
+// use it to inspect and stop resources labelled with a session/generation.
+// Implementations must never imply that an existing shell can be reattached.
+type RuntimeReconciler interface {
+	Reconcile(context.Context, RuntimeReconcileRequest) (RuntimeReconcileResult, error)
 }
 
 // RuntimeCommandRequest identifies one durably started command for the
