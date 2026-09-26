@@ -23,6 +23,10 @@ var (
 	ErrCommandPayloadCorrupt = errors.New("command script payload is corrupt")
 	// ErrCommandEvent means a durable command event failed store validation.
 	ErrCommandEvent = errors.New("invalid command event")
+	// ErrCommandOrderCorrupt means authoritative ordinals are not contiguous.
+	ErrCommandOrderCorrupt = errors.New("authoritative command order is corrupt")
+	// ErrCommandNotEligible means no queued command can run for the session.
+	ErrCommandNotEligible = errors.New("no eligible command")
 )
 
 const submitCommandOperation = "submit_command"
@@ -120,11 +124,9 @@ func (s *AuthorityStore) AcceptCommand(ctx context.Context, input CommandAccepta
 			return CommandRecord{}, fmt.Errorf("%w: current state %q", ErrCommandSessionState, sessionState)
 		}
 
-		var ordinal int64
-		if err := connection.QueryRowContext(ctx,
-			"SELECT COALESCE(MAX(ordinal), 0) + 1 FROM exec_commands WHERE session_id = ?",
-			string(validated.SessionID)).Scan(&ordinal); err != nil {
-			return CommandRecord{}, fmt.Errorf("allocate command ordinal: %w", err)
+		ordinal, err := nextCommandOrdinalOnConnection(ctx, connection, validated.SessionID)
+		if err != nil {
+			return CommandRecord{}, err
 		}
 		scriptBytes := []byte(validated.Script)
 		scriptHash := sha256.Sum256(scriptBytes)
@@ -163,6 +165,98 @@ VALUES (?, 1, 'command_queued', X'', 0, ?)
 		return CommandRecord{}, false, err
 	}
 	return returnRecord, duplicate, nil
+}
+
+// NextEligibleCommand returns the oldest queued command that may be started
+// for a ready/busy session. Earlier terminal commands are skipped; an earlier
+// queued, running, or cancelling command blocks later ordinals. The read also
+// verifies that authoritative ordinals start at one and have no gaps.
+func (s *AuthorityStore) NextEligibleCommand(ctx context.Context, id domain.SessionID) (CommandRecord, error) {
+	validatedID, err := domain.NewSessionID(string(id))
+	if err != nil {
+		return CommandRecord{}, err
+	}
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return CommandRecord{}, fmt.Errorf("acquire eligibility connection: %w", err)
+	}
+	defer connection.Close()
+	var sessionState string
+	if err := connection.QueryRowContext(ctx, "SELECT state FROM exec_sessions WHERE session_id = ?", string(validatedID)).Scan(&sessionState); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CommandRecord{}, ErrSessionNotFound
+		}
+		return CommandRecord{}, fmt.Errorf("read eligibility session: %w", err)
+	}
+	if sessionState != string(domain.SessionStateReady) && sessionState != string(domain.SessionStateBusy) {
+		return CommandRecord{}, fmt.Errorf("%w: current session state %q", ErrCommandNotEligible, sessionState)
+	}
+	commands, err := readCommandOrderOnConnection(ctx, connection, validatedID)
+	if err != nil {
+		return CommandRecord{}, err
+	}
+	for _, command := range commands {
+		switch command.State {
+		case domain.CommandStateSucceeded, domain.CommandStateFailed, domain.CommandStateCancelled, domain.CommandStateTimedOut, domain.CommandStateRejected, domain.CommandStateLost:
+			continue
+		case domain.CommandStateQueued:
+			return readCommandOnConnection(ctx, connection, command.CommandID)
+		case domain.CommandStateRunning, domain.CommandStateCancelling:
+			return CommandRecord{}, ErrCommandNotEligible
+		default:
+			return CommandRecord{}, fmt.Errorf("%w: command %q has state %q", ErrCommandOrderCorrupt, command.CommandID, command.State)
+		}
+	}
+	return CommandRecord{}, ErrCommandNotEligible
+}
+
+type commandOrderRow struct {
+	CommandID domain.CommandID
+	Ordinal   int64
+	State     domain.CommandState
+}
+
+func readCommandOrderOnConnection(ctx context.Context, connection *sql.Conn, sessionID domain.SessionID) ([]commandOrderRow, error) {
+	rows, err := connection.QueryContext(ctx, `
+SELECT command_id, ordinal, state
+FROM exec_commands WHERE session_id = ? ORDER BY ordinal
+`, string(sessionID))
+	if err != nil {
+		return nil, fmt.Errorf("read command order: %w", err)
+	}
+	defer rows.Close()
+	var result []commandOrderRow
+	expected := int64(1)
+	for rows.Next() {
+		var commandID string
+		var row commandOrderRow
+		var state string
+		if err := rows.Scan(&commandID, &row.Ordinal, &state); err != nil {
+			return nil, fmt.Errorf("scan command order: %w", err)
+		}
+		row.CommandID, err = domain.NewCommandID(commandID)
+		if err != nil || row.Ordinal != expected {
+			return nil, fmt.Errorf("%w: expected ordinal %d, got %d for %q", ErrCommandOrderCorrupt, expected, row.Ordinal, commandID)
+		}
+		row.State = domain.CommandState(state)
+		if !row.State.Valid() {
+			return nil, fmt.Errorf("%w: command %q has invalid state %q", ErrCommandOrderCorrupt, commandID, state)
+		}
+		result = append(result, row)
+		expected++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate command order: %w", err)
+	}
+	return result, nil
+}
+
+func nextCommandOrdinalOnConnection(ctx context.Context, connection *sql.Conn, sessionID domain.SessionID) (int64, error) {
+	commands, err := readCommandOrderOnConnection(ctx, connection, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(commands) + 1), nil
 }
 
 // GetCommand returns an authoritative command and verifies its durable script
