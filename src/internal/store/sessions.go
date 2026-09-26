@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -91,8 +92,11 @@ type SessionLifecycleRecord struct {
 // AuthorityStore owns authoritative SQLite session records. Its clock is
 // injectable so expiry and transaction fixtures do not depend on wall time.
 type AuthorityStore struct {
-	db  *sql.DB
-	now func() time.Time
+	db              *sql.DB
+	now             func() time.Time
+	commandEventsMu sync.Mutex
+	subscribersMu   sync.Mutex
+	subscribersByID map[domain.CommandID]map[*CommandEventSubscription]struct{}
 }
 
 // NewAuthorityStore wraps an opened P011 SQLite database with the P012 session
@@ -109,7 +113,7 @@ func NewAuthorityStoreWithClock(db *sql.DB, now func() time.Time) (*AuthoritySto
 	if now == nil {
 		return nil, fmt.Errorf("%w: clock is nil", ErrInvalidSession)
 	}
-	return &AuthorityStore{db: db, now: now}, nil
+	return &AuthorityStore{db: db, now: now, subscribersByID: make(map[domain.CommandID]map[*CommandEventSubscription]struct{})}, nil
 }
 
 // SessionCreateAcceptance contains the authoritative create request and the

@@ -108,6 +108,8 @@ func (s *AuthorityStore) AcceptCommand(ctx context.Context, input CommandAccepta
 	if err != nil {
 		return CommandRecord{}, false, err
 	}
+	s.commandEventsMu.Lock()
+	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
 	returnRecord, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
 		var sessionState, controllerType, controllerID string
@@ -189,6 +191,16 @@ VALUES (?, 1, 'command_queued', X'', 0, ?)
 	if err != nil {
 		return CommandRecord{}, false, err
 	}
+	if !duplicate {
+		s.publishCommandEvent(CommandEventRecord{
+			CommandID:  returnRecord.CommandID,
+			Sequence:   1,
+			Type:       "command_queued",
+			Payload:    []byte{},
+			ByteCount:  0,
+			OccurredAt: returnRecord.CreatedAt,
+		})
+	}
 	return returnRecord, duplicate, nil
 }
 
@@ -210,8 +222,10 @@ func (s *AuthorityStore) AppendCommandEvent(ctx context.Context, input CommandEv
 	} else if len(input.Payload) != 0 || input.ByteCount != 0 {
 		return CommandEventRecord{}, fmt.Errorf("%w: non-output event carries bytes", ErrCommandEvent)
 	}
+	s.commandEventsMu.Lock()
+	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandEventRecord, error) {
+	event, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandEventRecord, error) {
 		command, err := readCommandOnConnection(ctx, connection, commandID)
 		if err != nil {
 			return CommandEventRecord{}, err
@@ -231,6 +245,11 @@ func (s *AuthorityStore) AppendCommandEvent(ctx context.Context, input CommandEv
 		}
 		return CommandEventRecord{CommandID: commandID, Sequence: sequence, Type: input.Type, Payload: append([]byte(nil), input.Payload...), ByteCount: input.ByteCount, OccurredAt: now}, nil
 	})
+	if err != nil {
+		return CommandEventRecord{}, err
+	}
+	s.publishCommandEvent(event)
+	return event, nil
 }
 
 // TransitionCommand atomically validates a D-01 command transition, appends
@@ -245,8 +264,11 @@ func (s *AuthorityStore) TransitionCommand(ctx context.Context, input CommandTra
 	if !input.NextState.Valid() {
 		return CommandRecord{}, fmt.Errorf("%w: invalid next state %q", ErrCommandTransition, input.NextState)
 	}
+	s.commandEventsMu.Lock()
+	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+	var publishedEvent *CommandEventRecord
+	record, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
 		var currentValue string
 		if err := connection.QueryRowContext(ctx, "SELECT state FROM exec_commands WHERE command_id = ?", string(commandID)).Scan(&currentValue); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -275,6 +297,8 @@ func (s *AuthorityStore) TransitionCommand(ctx context.Context, input CommandTra
 		if err := insertCommandEventOnConnection(ctx, connection, commandID, sequence, eventType, nil, 0, now); err != nil {
 			return CommandRecord{}, err
 		}
+		event := CommandEventRecord{CommandID: commandID, Sequence: sequence, Type: eventType, Payload: []byte{}, ByteCount: 0, OccurredAt: now}
+		publishedEvent = &event
 		if input.NextState.IsTerminal() {
 			var exitCode any
 			if input.ExitCode != nil {
@@ -294,6 +318,13 @@ WHERE command_id = ?
 		}
 		return readCommandOnConnection(ctx, connection, commandID)
 	})
+	if err != nil {
+		return CommandRecord{}, err
+	}
+	if publishedEvent != nil {
+		s.publishCommandEvent(*publishedEvent)
+	}
+	return record, nil
 }
 
 // ReplayCommandEvents returns a contiguous event range after afterSequence.
