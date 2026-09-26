@@ -244,10 +244,53 @@ func (a *LinuxProcessAdapter) Inspect(sessionID string) (LinuxProcessRecord, err
 	record.SessionID = prepared.SessionID
 	record.Generation = prepared.Generation
 	record.Workspace = prepared.Workspace
+	if processGroup, groupErr := syscall.Getpgid(record.PID); groupErr == nil {
+		record.ProcessGroupID = processGroup
+	}
 	if record.UID != prepared.OwnerUID || record.Username != prepared.OwnerAccount {
 		return LinuxProcessRecord{}, fmt.Errorf("%w: process uid=%d user=%q expected uid=%d user=%q", ErrLinuxRuntimeAccount, record.UID, record.Username, prepared.OwnerUID, prepared.OwnerAccount)
 	}
 	return record, nil
+}
+
+// StopCommand interrupts the active command through the shared process-group
+// implementation. A false confirmation is conservative: the shell remains
+// the same owned generation and its capacity stays retained until cleanup.
+func (a *LinuxProcessAdapter) StopCommand(ctx context.Context, sessionID string, grace time.Duration) (PersistentShellStopResult, error) {
+	shell, err := a.Shell(sessionID)
+	if err != nil {
+		return PersistentShellStopResult{}, err
+	}
+	return shell.StopCommand(ctx, grace)
+}
+
+// InspectDescendants returns the current known descendants of the owned Bash.
+func (a *LinuxProcessAdapter) InspectDescendants(sessionID string) ([]DescendantProcess, error) {
+	shell, err := a.Shell(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return shell.InspectDescendants()
+}
+
+// CleanupDescendants sends bounded signals to known descendants and returns a
+// conservative confirmation. Unconfirmed residuals retain capacity.
+func (a *LinuxProcessAdapter) CleanupDescendants(ctx context.Context, sessionID string, grace time.Duration) (DescendantCleanupResult, error) {
+	shell, err := a.Shell(sessionID)
+	if err != nil {
+		return DescendantCleanupResult{}, err
+	}
+	return shell.CleanupDescendants(ctx, grace)
+}
+
+// CapacityRetained reports whether the owned runtime still has unconfirmed
+// descendants after a lost or uncertain command boundary.
+func (a *LinuxProcessAdapter) CapacityRetained(sessionID string) (bool, error) {
+	shell, err := a.Shell(sessionID)
+	if err != nil {
+		return false, err
+	}
+	return shell.CapacityRetained(), nil
 }
 
 // Cleanup closes the shell and removes only this adapter's owned workspace.
@@ -481,13 +524,14 @@ func inspectLinuxPID(pid int) (LinuxProcessRecord, error) {
 
 // LinuxProcessRecord is the public form of one host process-table observation.
 type LinuxProcessRecord struct {
-	SessionID  string
-	Generation string
-	Workspace  string
-	PID        int
-	UID        int
-	Username   string
-	Command    string
+	SessionID      string
+	Generation     string
+	Workspace      string
+	PID            int
+	ProcessGroupID int
+	UID            int
+	Username       string
+	Command        string
 }
 
 func linuxHostCapabilities(account string) LinuxProfileCapabilities {
