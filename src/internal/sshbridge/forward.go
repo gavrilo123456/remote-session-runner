@@ -31,7 +31,7 @@ type ForwarderOptions struct {
 	MaxResponseBytes int64
 }
 
-// RunnerdForwarder forwards the P050 session subset to runnerd.
+// RunnerdForwarder forwards the bridge operations implemented through P052.
 type RunnerdForwarder struct {
 	client           *http.Client
 	baseURL          string
@@ -83,7 +83,8 @@ func NewUnixSocketForwarder(socketPath string) (*RunnerdForwarder, error) {
 	return NewRunnerdForwarder(ForwarderOptions{Client: client})
 }
 
-// Handle implements RequestHandler for the P050 create/read session subset.
+// Handle implements RequestHandler for the bridge forwarding subset completed
+// through P052.
 func (f *RunnerdForwarder) Handle(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
 	if f == nil || f.client == nil {
 		return ReplyFrame{}, ErrForwarderConfiguration
@@ -97,6 +98,10 @@ func (f *RunnerdForwarder) Handle(ctx context.Context, controller domain.Control
 		return f.submitCommand(ctx, controller, request)
 	case OperationGetCommand:
 		return f.getCommand(ctx, controller, request)
+	case OperationRunOrResumeJob:
+		return f.runJob(ctx, controller, request)
+	case OperationGetJob:
+		return f.getJob(ctx, controller, request)
 	default:
 		return ReplyFrame{}, fmt.Errorf("%w: %s", ErrOperationUnsupported, request.Operation)
 	}
@@ -135,6 +140,22 @@ type bridgeGetCommandPayload struct {
 	CommandID string `json:"command_id"`
 }
 
+type bridgeRunJobPayload struct {
+	SessionID       string          `json:"session_id,omitempty"`
+	CommandID       string          `json:"command_id,omitempty"`
+	Environment     string          `json:"environment"`
+	ExecutionTarget bridgeTarget    `json:"execution_target"`
+	Source          json.RawMessage `json:"source,omitempty"`
+	Script          string          `json:"script"`
+	Limits          json.RawMessage `json:"limits,omitempty"`
+	Isolation       json.RawMessage `json:"isolation,omitempty"`
+	Policy          json.RawMessage `json:"policy,omitempty"`
+}
+
+type bridgeGetJobPayload struct {
+	JobID string `json:"job_id"`
+}
+
 type privateCreateSessionRequest struct {
 	SessionID       string           `json:"session_id"`
 	IdempotencyKey  string           `json:"idempotency_key"`
@@ -156,6 +177,22 @@ type privateSubmitCommandRequest struct {
 	Script         string           `json:"script"`
 	TimeoutSeconds int64            `json:"timeout_seconds,omitempty"`
 	IntentOrdinal  int64            `json:"intent_ordinal,omitempty"`
+}
+
+type privateRunJobRequest struct {
+	JobID           string           `json:"job_id"`
+	SessionID       string           `json:"session_id"`
+	CommandID       string           `json:"command_id"`
+	IdempotencyKey  string           `json:"idempotency_key"`
+	RequestID       string           `json:"request_id,omitempty"`
+	Environment     string           `json:"environment"`
+	ExecutionTarget bridgeTarget     `json:"execution_target"`
+	Controller      bridgeController `json:"controller"`
+	Source          json.RawMessage  `json:"source,omitempty"`
+	Script          string           `json:"script"`
+	Limits          json.RawMessage  `json:"limits,omitempty"`
+	Isolation       json.RawMessage  `json:"isolation,omitempty"`
+	Policy          json.RawMessage  `json:"policy,omitempty"`
 }
 
 func (f *RunnerdForwarder) createSession(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
@@ -226,6 +263,56 @@ func (f *RunnerdForwarder) getCommand(ctx context.Context, controller domain.Con
 	query.Set("controller_type", string(controller.Type()))
 	query.Set("controller_id", string(controller.ID()))
 	return f.doJSON(ctx, request.RequestID, http.MethodGet, "/internal/v1/commands/"+url.PathEscape(payload.CommandID), query, nil)
+}
+
+func (f *RunnerdForwarder) runJob(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
+	payload, err := decodeBridgePayload[bridgeRunJobPayload](request.Payload)
+	if err != nil {
+		return ReplyFrame{}, err
+	}
+	if strings.TrimSpace(payload.Environment) == "" || strings.TrimSpace(payload.ExecutionTarget.Kind) == "" || strings.TrimSpace(payload.ExecutionTarget.Profile) == "" {
+		return ReplyFrame{}, fmt.Errorf("%w: run payload requires environment and execution_target", ErrInvalidFrame)
+	}
+	if err := domain.ValidateScriptUTF8(payload.Script); err != nil {
+		return ReplyFrame{}, fmt.Errorf("%w: %v", ErrInvalidFrame, err)
+	}
+	// The bridge frame's resource_id is the stable job identity. Older/minimal
+	// frames did not carry the two child IDs, so derive them deterministically
+	// from that job ID; retries can never allocate replacement resources.
+	sessionID := payload.SessionID
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = request.ResourceID + "-session"
+	}
+	commandID := payload.CommandID
+	if strings.TrimSpace(commandID) == "" {
+		commandID = request.ResourceID + "-command"
+	}
+	body, err := json.Marshal(privateRunJobRequest{
+		JobID: request.ResourceID, SessionID: sessionID, CommandID: commandID,
+		IdempotencyKey: request.IdempotencyKey, RequestID: request.RequestID,
+		Environment: payload.Environment, ExecutionTarget: payload.ExecutionTarget,
+		Controller: bridgeController{Type: string(controller.Type()), ID: string(controller.ID())},
+		Source:     payload.Source, Script: payload.Script, Limits: payload.Limits,
+		Isolation: payload.Isolation, Policy: payload.Policy,
+	})
+	if err != nil {
+		return ReplyFrame{}, fmt.Errorf("%w: run request: %v", ErrInvalidFrame, err)
+	}
+	return f.doJSON(ctx, request.RequestID, http.MethodPost, "/internal/v1/jobs", nil, body)
+}
+
+func (f *RunnerdForwarder) getJob(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
+	payload, err := decodeBridgePayload[bridgeGetJobPayload](request.Payload)
+	if err != nil {
+		return ReplyFrame{}, err
+	}
+	if strings.TrimSpace(payload.JobID) == "" {
+		return ReplyFrame{}, fmt.Errorf("%w: get_job requires job_id", ErrInvalidFrame)
+	}
+	query := url.Values{}
+	query.Set("controller_type", string(controller.Type()))
+	query.Set("controller_id", string(controller.ID()))
+	return f.doJSON(ctx, request.RequestID, http.MethodGet, "/internal/v1/jobs/"+url.PathEscape(payload.JobID), query, nil)
 }
 
 func decodeBridgePayload[T any](raw json.RawMessage) (T, error) {
