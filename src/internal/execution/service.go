@@ -1226,6 +1226,23 @@ func (s *Service) SubscribeCommandEvents(ctx context.Context, id domain.CommandI
 	return s.store.SubscribeCommandEvents(ctx, id, afterSequence, capacity)
 }
 
+// GetJob returns an authoritative one-off snapshot after checking the
+// immutable controller stored with the job. Job reads therefore use the same
+// controller namespace as session and command reads.
+func (s *Service) GetJob(ctx context.Context, id domain.JobID, controller domain.ControllerIdentity) (store.JobRecord, error) {
+	if s == nil || s.store == nil {
+		return store.JobRecord{}, ErrExecutionServiceConfiguration
+	}
+	job, err := s.store.GetJob(ctx, id)
+	if err != nil {
+		return store.JobRecord{}, err
+	}
+	if job.Controller.Type() != controller.Type() || job.Controller.ID() != controller.ID() {
+		return store.JobRecord{}, ErrSessionController
+	}
+	return job, nil
+}
+
 func (s *Service) publishLatestLifecycle(ctx context.Context, id domain.SessionID) {
 	if s.publisher == nil {
 		return

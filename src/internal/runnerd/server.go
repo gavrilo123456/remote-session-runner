@@ -261,6 +261,14 @@ type sourceResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	if isJobCollectionPath(request.URL.Path) && request.Method == http.MethodPost {
+		s.handleRunJob(response, request)
+		return
+	}
+	if jobPathPrefix(request.URL.Path) != "" && request.Method == http.MethodGet {
+		s.handleGetJob(response, request)
+		return
+	}
 	if commandPathPrefix(request.URL.Path) != "" {
 		prefix := commandPathPrefix(request.URL.Path)
 		remainder := strings.TrimPrefix(request.URL.Path, prefix+"/")
@@ -282,6 +290,10 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 			s.handleCommandEvents(response, request, parts[0])
 			return
 		}
+		if len(parts) == 2 && parts[1] == "cancel" && request.Method == http.MethodPost {
+			s.handleCancelCommand(response, request, parts[0])
+			return
+		}
 	}
 	if isSessionCollectionPath(request.URL.Path) {
 		if request.Method != http.MethodPost {
@@ -292,6 +304,10 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if sessionPathPrefix(request.URL.Path) != "" {
+		if request.Method == http.MethodDelete {
+			s.handleCloseSession(response, request)
+			return
+		}
 		if request.Method != http.MethodGet {
 			writePrivateError(response, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -335,6 +351,59 @@ type commandEventResponse struct {
 	OccurredAt time.Time `json:"occurred_at"`
 	ByteCount  int64     `json:"byte_count"`
 	DataBase64 string    `json:"data_base64,omitempty"`
+}
+
+type cancelCommandRequest struct {
+	CommandID      string            `json:"command_id,omitempty"`
+	IdempotencyKey string            `json:"idempotency_key"`
+	RequestID      string            `json:"request_id,omitempty"`
+	Controller     controllerRequest `json:"controller"`
+}
+
+type closeSessionRequest struct {
+	SessionID      string            `json:"session_id,omitempty"`
+	IdempotencyKey string            `json:"idempotency_key"`
+	RequestID      string            `json:"request_id,omitempty"`
+	Controller     controllerRequest `json:"controller"`
+	Policy         string            `json:"policy,omitempty"`
+}
+
+type runJobRequest struct {
+	JobID           string            `json:"job_id"`
+	SessionID       string            `json:"session_id"`
+	CommandID       string            `json:"command_id"`
+	IdempotencyKey  string            `json:"idempotency_key"`
+	RequestID       string            `json:"request_id,omitempty"`
+	Environment     string            `json:"environment"`
+	ExecutionTarget targetRequest     `json:"execution_target"`
+	Controller      controllerRequest `json:"controller"`
+	Source          *sourceRequest    `json:"source,omitempty"`
+	Script          string            `json:"script"`
+	Limits          *limitsRequest    `json:"limits,omitempty"`
+	Isolation       *isolationRequest `json:"isolation,omitempty"`
+	Policy          map[string]any    `json:"policy,omitempty"`
+}
+
+type jobResponse struct {
+	JobID                   string            `json:"job_id"`
+	SessionID               string            `json:"session_id"`
+	CommandID               string            `json:"command_id"`
+	JobPhase                string            `json:"job_phase"`
+	CommandState            *string           `json:"command_state,omitempty"`
+	ExitCode                *int              `json:"exit_code,omitempty"`
+	FinalEventSequence      *int64            `json:"final_event_sequence,omitempty"`
+	OutputComplete          bool              `json:"output_complete"`
+	OutputTruncated         bool              `json:"output_truncated"`
+	OutputUnavailableReason string            `json:"output_unavailable_reason,omitempty"`
+	TeardownState           string            `json:"teardown_state"`
+	TeardownReason          string            `json:"teardown_reason,omitempty"`
+	ExecutionTarget         targetResponse    `json:"execution_target"`
+	Authority               string            `json:"authority"`
+	Controller              controllerRequest `json:"controller"`
+	ObservedAt              time.Time         `json:"observed_at"`
+	Environment             string            `json:"environment"`
+	Source                  sourceResponse    `json:"source"`
+	Duplicate               bool              `json:"duplicate,omitempty"`
 }
 
 func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, request *http.Request, pathSessionID string) {
@@ -418,6 +487,260 @@ func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, reques
 		return
 	}
 	writeJSON(response, http.StatusAccepted, commandResponseFromRecord(result.Command, result.Duplicate))
+}
+
+func (s *PrivateServer) handleCancelCommand(response http.ResponseWriter, request *http.Request, pathCommandID string) {
+	input, body, err := decodePrivateJSON[cancelCommandRequest](s, response, request)
+	if err != nil {
+		return
+	}
+	if input.IdempotencyKey == "" {
+		writePrivateError(response, http.StatusBadRequest, "idempotency_key is required")
+		return
+	}
+	if input.CommandID != "" && input.CommandID != pathCommandID {
+		writePrivateError(response, http.StatusBadRequest, "command path and body command_id differ")
+		return
+	}
+	commandID, err := domain.NewCommandID(pathCommandID)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	controller, err := controllerFromRequest(input.Controller)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	hash, err := domain.HashMutationRequestJSON("cancel_command", body, domain.CanonicalizationOptions{})
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
+		return
+	}
+	result, serviceErr := s.service.CancelCommand(request.Context(), execution.CancelCommandRequest{
+		CommandID: commandID, Controller: controller, IdempotencyKey: input.IdempotencyKey,
+		RequestHash: hash, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	})
+	if serviceErr != nil {
+		status := privateStatusForError(serviceErr)
+		if result.Command.CommandID != "" {
+			writeJSON(response, status, commandResponseFromRecord(result.Command, result.Duplicate))
+			return
+		}
+		writePrivateError(response, status, serviceErr.Error())
+		return
+	}
+	writeJSON(response, http.StatusAccepted, commandResponseFromRecord(result.Command, result.Duplicate))
+}
+
+func (s *PrivateServer) handleCloseSession(response http.ResponseWriter, request *http.Request) {
+	input, _, err := decodePrivateJSON[closeSessionRequest](s, response, request)
+	if err != nil {
+		return
+	}
+	if input.IdempotencyKey == "" {
+		writePrivateError(response, http.StatusBadRequest, "idempotency_key is required")
+		return
+	}
+	prefix := sessionPathPrefix(request.URL.Path)
+	rawID := strings.TrimPrefix(request.URL.Path, prefix+"/")
+	idText, err := url.PathUnescape(rawID)
+	if err != nil || idText == "" || strings.Contains(idText, "/") {
+		writePrivateError(response, http.StatusBadRequest, "invalid session path")
+		return
+	}
+	if input.SessionID != "" && input.SessionID != idText {
+		writePrivateError(response, http.StatusBadRequest, "session path and body session_id differ")
+		return
+	}
+	sessionID, err := domain.NewSessionID(idText)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	controller, err := controllerFromRequest(input.Controller)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	policy := input.Policy
+	if policy == "" {
+		policy = "graceful"
+	}
+	canonical, err := domain.CanonicalizeMutationRequestJSON("close_session", []byte(fmt.Sprintf(`{"operation":"close_session","session_id":%q,"policy":%q}`, sessionID, policy)), domain.CanonicalizationOptions{})
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
+		return
+	}
+	hash, err := domain.HashMutationRequestJSON("close_session", canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
+		return
+	}
+	result, serviceErr := s.service.CloseSession(request.Context(), execution.CloseSessionRequest{
+		SessionID: sessionID, Controller: controller, IdempotencyKey: input.IdempotencyKey,
+		RequestHash: hash, Policy: policy, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	})
+	if serviceErr != nil {
+		status := privateStatusForError(serviceErr)
+		if result.Session.SessionID != "" {
+			writeJSON(response, status, sessionResponseFromRecord(result.Session, result.Duplicate))
+			return
+		}
+		writePrivateError(response, status, serviceErr.Error())
+		return
+	}
+	writeJSON(response, http.StatusAccepted, sessionResponseFromRecord(result.Session, result.Duplicate))
+}
+
+func (s *PrivateServer) handleRunJob(response http.ResponseWriter, request *http.Request) {
+	input, _, err := decodePrivateJSON[runJobRequest](s, response, request)
+	if err != nil {
+		return
+	}
+	if input.JobID == "" || input.SessionID == "" || input.CommandID == "" || input.IdempotencyKey == "" || input.Environment == "" {
+		writePrivateError(response, http.StatusBadRequest, "job_id, session_id, command_id, idempotency_key, and environment are required")
+		return
+	}
+	jobID, err := domain.NewJobID(input.JobID)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	sessionID, err := domain.NewSessionID(input.SessionID)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	commandID, err := domain.NewCommandID(input.CommandID)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	target, err := domain.NewExecutionTarget(domain.TargetKind(input.ExecutionTarget.Kind), input.ExecutionTarget.Profile)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	if target.Kind() != domain.TargetKindRemote {
+		writePrivateError(response, http.StatusBadRequest, "runnerd private API accepts remote targets only")
+		return
+	}
+	controller, err := controllerFromRequest(input.Controller)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	source, err := parseSource(input.Source)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	limits, err := parseRequestedLimits(input.Limits)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	isolation := parseIsolation(input.Isolation)
+	environment := strings.TrimSpace(input.Environment)
+	if environment == "" {
+		writePrivateError(response, http.StatusBadRequest, "environment is required")
+		return
+	}
+	if err := domain.ValidateScriptUTF8(input.Script); err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	canonical, err := canonicalRunPayload(environment, target, source, input.Script, limits, isolation, input.Policy)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
+		return
+	}
+	hash, err := domain.HashMutationRequestJSON("run", canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
+		return
+	}
+	result, serviceErr := s.service.RunJob(request.Context(), execution.RunJobRequest{
+		Acceptance: store.JobAcceptance{
+			JobID: jobID, SessionID: sessionID, CommandID: commandID, Controller: controller,
+			IdempotencyKey: input.IdempotencyKey, RequestHash: hash, Environment: environment,
+			Target: target, Source: source, Script: input.Script, CanonicalPayload: canonical,
+			IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+		},
+		RequestedLimits: limits, Isolation: isolation, MaxActiveSessions: store.DefaultActiveSessionLimit,
+		IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	})
+	if serviceErr != nil {
+		status := privateStatusForError(serviceErr)
+		if result.Job.JobID != "" {
+			writeJSON(response, status, jobResponseFromRecord(result.Job, false))
+			return
+		}
+		writePrivateError(response, status, serviceErr.Error())
+		return
+	}
+	writeJSON(response, http.StatusAccepted, jobResponseFromRecord(result.Job, false))
+}
+
+func (s *PrivateServer) handleGetJob(response http.ResponseWriter, request *http.Request) {
+	prefix := jobPathPrefix(request.URL.Path)
+	rawID := strings.TrimPrefix(request.URL.Path, prefix+"/")
+	idText, err := url.PathUnescape(rawID)
+	if err != nil || idText == "" || strings.Contains(idText, "/") {
+		writePrivateError(response, http.StatusBadRequest, "invalid job path")
+		return
+	}
+	jobID, err := domain.NewJobID(idText)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	controller, err := controllerFromQuery(request)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	job, err := s.service.GetJob(request.Context(), jobID, controller)
+	if err != nil {
+		writePrivateError(response, privateStatusForError(err), err.Error())
+		return
+	}
+	writeJSON(response, http.StatusOK, jobResponseFromRecord(job, false))
+}
+
+func canonicalRunPayload(environment string, target domain.ExecutionTarget, source domain.Source, script string, limits domain.RequestedLimits, isolation domain.IsolationRequirements, policy map[string]any) ([]byte, error) {
+	payload := map[string]any{
+		"operation":        "run",
+		"environment":      environment,
+		"execution_target": map[string]any{"kind": string(target.Kind()), "profile": target.Profile()},
+		"source":           sourcePayload(source),
+		"script":           script,
+		"requested_limits": limits,
+		"isolation":        isolation,
+	}
+	if policy != nil {
+		payload["policy"] = policy
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return domain.CanonicalizeMutationRequestJSON("run", raw, domain.CanonicalizationOptions{})
+}
+
+func sourcePayload(source domain.Source) map[string]any {
+	payload := map[string]any{"mode": string(source.Mode())}
+	if source.RepositoryAlias() != "" {
+		payload["repository_alias"] = source.RepositoryAlias()
+	}
+	if source.RequestedRevision() != "" {
+		payload["requested_revision"] = source.RequestedRevision()
+	}
+	if source.Path() != "" {
+		payload["path"] = source.Path()
+	}
+	return payload
 }
 
 func controllerFromRequest(input controllerRequest) (domain.ControllerIdentity, error) {
@@ -555,6 +878,39 @@ func commandResponseFromRecord(record store.CommandRecord, duplicate bool) comma
 	}
 }
 
+func jobResponseFromRecord(record store.JobRecord, duplicate bool) jobResponse {
+	portable := record.Source.Portable()
+	source := sourceResponse{
+		Mode:              string(record.Source.Mode()),
+		RepositoryAlias:   record.Source.RepositoryAlias(),
+		RequestedRevision: record.Source.RequestedRevision(),
+		Path:              record.Source.Path(),
+		Portable:          &portable,
+	}
+	authority := "remote"
+	if record.Target.Kind() == domain.TargetKindLocal {
+		authority = "local"
+	}
+	return jobResponse{
+		JobID: string(record.JobID), SessionID: string(record.SessionID), CommandID: string(record.CommandID),
+		JobPhase: string(record.Phase), CommandState: commandStatePointer(record.CommandState),
+		ExitCode: record.ExitCode, FinalEventSequence: record.FinalEventSequence,
+		OutputComplete: record.OutputComplete, OutputTruncated: record.OutputTruncated,
+		OutputUnavailableReason: record.OutputUnavailableReason, TeardownState: string(record.TeardownState),
+		TeardownReason: record.TeardownReason, ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
+		Authority: authority, Controller: controllerRequest{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())},
+		ObservedAt: record.UpdatedAt.UTC(), Environment: record.Environment, Source: source, Duplicate: duplicate,
+	}
+}
+
+func commandStatePointer(state *domain.CommandState) *string {
+	if state == nil {
+		return nil
+	}
+	value := string(*state)
+	return &value
+}
+
 func (s *PrivateServer) handleCreateSession(response http.ResponseWriter, request *http.Request) {
 	if request.Body == nil {
 		writePrivateError(response, http.StatusBadRequest, "request body is required")
@@ -680,6 +1036,19 @@ func (s *PrivateServer) handleGetSession(response http.ResponseWriter, request *
 
 func isSessionCollectionPath(path string) bool {
 	return path == privateSessionsPath || path == privateSessionsAliasPath
+}
+
+func isJobCollectionPath(path string) bool {
+	return path == "/internal/v1/jobs" || path == "/v1/jobs"
+}
+
+func jobPathPrefix(path string) string {
+	for _, prefix := range []string{"/internal/v1/jobs", "/v1/jobs"} {
+		if strings.HasPrefix(path, prefix+"/") {
+			return prefix
+		}
+	}
+	return ""
 }
 
 func commandPathPrefix(path string) string {
@@ -823,17 +1192,52 @@ func privateStatusForError(err error) int {
 	switch {
 	case errors.Is(err, store.ErrSessionNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, store.ErrCommandNotFound), errors.Is(err, store.ErrJobNotFound):
+		return http.StatusNotFound
 	case errors.Is(err, execution.ErrSessionController):
 		return http.StatusForbidden
 	case errors.Is(err, store.ErrIdempotencyConflict), errors.Is(err, store.ErrSessionExists):
 		return http.StatusConflict
+	case errors.Is(err, store.ErrJobExists):
+		return http.StatusConflict
 	case errors.Is(err, execution.ErrRuntimeUnavailable):
 		return http.StatusServiceUnavailable
-	case errors.Is(err, domain.ErrEnvironmentTargetMismatch), errors.Is(err, domain.ErrEnvironmentSourceMismatch), errors.Is(err, domain.ErrControllerMismatch), errors.Is(err, domain.ErrUnsupportedIsolationRequirement), errors.Is(err, domain.ErrLimitExceedsServiceCeiling), errors.Is(err, domain.ErrInvalidRequestedLimits):
+	case errors.Is(err, domain.ErrEnvironmentTargetMismatch), errors.Is(err, domain.ErrEnvironmentSourceMismatch), errors.Is(err, domain.ErrControllerMismatch), errors.Is(err, domain.ErrUnsupportedIsolationRequirement), errors.Is(err, domain.ErrLimitExceedsServiceCeiling), errors.Is(err, domain.ErrInvalidRequestedLimits), errors.Is(err, store.ErrInvalidJob), errors.Is(err, execution.ErrSessionNotReady), errors.Is(err, execution.ErrCommandNotReady), errors.Is(err, store.ErrCommandSessionState):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+func decodePrivateJSON[T any](s *PrivateServer, response http.ResponseWriter, request *http.Request) (T, []byte, error) {
+	var zero T
+	if request.Body == nil {
+		writePrivateError(response, http.StatusBadRequest, "request body is required")
+		return zero, nil, errors.New("request body is required")
+	}
+	limited := http.MaxBytesReader(response, request.Body, s.maxBodyBytes)
+	defer limited.Close()
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("read request body: %v", err))
+		return zero, nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var value T
+	if err := decoder.Decode(&value); err != nil {
+		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("invalid request JSON: %v", err))
+		return zero, nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writePrivateError(response, http.StatusBadRequest, "request body contains multiple JSON values")
+		if err == nil {
+			return zero, nil, errors.New("multiple JSON values")
+		}
+		return zero, nil, err
+	}
+	return value, body, nil
 }
 
 // newRuntimeGeneration returns an unpredictable process-generation token so

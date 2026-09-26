@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"remote-session-runner/src/internal/execution"
 	hostruntime "remote-session-runner/src/internal/runtime"
+	"remote-session-runner/src/internal/store"
 )
 
 // LinuxSessionRuntime adapts the real Linux host-process adapter to the
@@ -111,4 +113,31 @@ func (r *LinuxSessionRuntime) ExecuteCommand(ctx context.Context, request execut
 		ExitCode:    exitCode,
 		ShellExited: false,
 	}, nil
+}
+
+// CancelCommand interrupts the active command at the persistent-shell
+// boundary. The adapter owns process-group signalling; runnerd only maps its
+// confirmed-boundary result into the shared execution contract.
+func (r *LinuxSessionRuntime) CancelCommand(ctx context.Context, request execution.RuntimeCommandRequest) (execution.RuntimeCommandStopResult, error) {
+	if r == nil || r.adapter == nil {
+		return execution.RuntimeCommandStopResult{}, execution.ErrRuntimeUnavailable
+	}
+	result, err := r.adapter.StopCommand(ctx, string(request.Session.SessionID), 500*time.Millisecond)
+	return execution.RuntimeCommandStopResult{Confirmed: result.Confirmed}, err
+}
+
+// StopSession closes the owned Bash/workspace after the shared service has
+// cancelled any active command. Cleanup is confirmed only when the adapter
+// closes and removes its owned resources successfully.
+func (r *LinuxSessionRuntime) StopSession(_ context.Context, session store.SessionRecord) (bool, error) {
+	if r == nil || r.adapter == nil {
+		return false, execution.ErrRuntimeUnavailable
+	}
+	if err := r.adapter.Cleanup(string(session.SessionID)); err != nil {
+		return false, err
+	}
+	r.mu.Lock()
+	delete(r.prepared, string(session.SessionID))
+	r.mu.Unlock()
+	return true, nil
 }
