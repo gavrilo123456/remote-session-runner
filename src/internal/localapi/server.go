@@ -345,6 +345,12 @@ type jobRead struct {
 	Resource jobIntentResource `json:"resource"`
 }
 
+type jobProjectionRead struct {
+	View     string                `json:"view"`
+	IsStale  bool                  `json:"is_stale"`
+	Resource jobProjectionResource `json:"resource"`
+}
+
 type jobIntentResource struct {
 	JobID           string         `json:"job_id"`
 	SessionID       string         `json:"session_id"`
@@ -356,6 +362,29 @@ type jobIntentResource struct {
 	Source          sourceResponse `json:"source"`
 	DeliveryState   string         `json:"delivery_state"`
 	Reason          string         `json:"reason,omitempty"`
+}
+
+type jobProjectionResource struct {
+	JobID                   string               `json:"job_id"`
+	SessionID               string               `json:"session_id"`
+	CommandID               string               `json:"command_id"`
+	JobPhase                string               `json:"job_phase"`
+	CommandState            *string              `json:"command_state,omitempty"`
+	ExitCode                *int                 `json:"exit_code,omitempty"`
+	FinalEventSequence      *int64               `json:"final_event_sequence,omitempty"`
+	OutputComplete          bool                 `json:"output_complete"`
+	OutputTruncated         bool                 `json:"output_truncated"`
+	OutputUnavailableReason string               `json:"output_unavailable_reason,omitempty"`
+	TeardownState           string               `json:"teardown_state"`
+	TeardownReason          string               `json:"teardown_reason,omitempty"`
+	ExecutionTarget         targetResponse       `json:"execution_target"`
+	Authority               string               `json:"authority"`
+	Controller              controllerView       `json:"controller"`
+	ObservedAt              time.Time            `json:"observed_at"`
+	Environment             string               `json:"environment"`
+	Source                  sourceResponse       `json:"source"`
+	Capabilities            capabilitiesResponse `json:"capabilities"`
+	IsStale                 bool                 `json:"is_stale,omitempty"`
 }
 
 type commandRead struct {
@@ -846,10 +875,12 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 		writeError(response, status, code, sanitizeError(err))
 		return
 	}
-	// Remote queued commands have no local authority event stream. Their
-	// durable events are exposed only after the later remote mirror phases.
 	if intent.Target.Kind() != domain.TargetKindLocal {
-		writeError(response, http.StatusConflict, "events_unavailable", "remote command events are not available in the local authority")
+		if !remoteProjectionEligible(intent) {
+			writeError(response, http.StatusConflict, "events_unavailable", "remote command events are not available before remote acceptance")
+			return
+		}
+		s.handleMirroredRemoteEvents(response, request, commandID, after, follow)
 		return
 	}
 	command, err := s.authority.GetCommand(request.Context(), commandID)
@@ -918,6 +949,77 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 	}
 }
 
+// handleMirroredRemoteEvents serves only the durable Mac mirror. It does not
+// contact the remote authority; the Router owns transport and advances the
+// cursor before an event becomes visible here.
+func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, request *http.Request, commandID domain.CommandID, after int64, follow bool) {
+	events, err := s.authority.ListRemoteEvents(request.Context(), commandID, after)
+	if err != nil {
+		status, code := statusForRemoteEventError(err)
+		writeError(response, status, code, sanitizeError(err))
+		return
+	}
+	projection, projectionErr := s.authority.GetRemoteCommandProjection(request.Context(), commandID)
+	ordinal := int64(0)
+	if projectionErr == nil {
+		ordinal = projection.Ordinal
+	}
+	response.Header().Set("Content-Type", "application/x-ndjson")
+	response.WriteHeader(http.StatusOK)
+	flusher, _ := response.(http.Flusher)
+	last := after
+	writeEvents := func(values []store.RemoteEventRecord) bool {
+		for _, event := range values {
+			if event.Sequence <= last {
+				continue
+			}
+			if err := writeRemoteAPIEvent(response, event, ordinal); err != nil {
+				return false
+			}
+			last = event.Sequence
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if isTerminalLocalAPIEvent(event.Type) {
+				return false
+			}
+		}
+		return true
+	}
+	if !writeEvents(events) || !follow {
+		return
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case <-ticker.C:
+			newEvents, listErr := s.authority.ListRemoteEvents(request.Context(), commandID, last)
+			if listErr != nil {
+				return
+			}
+			if !writeEvents(newEvents) {
+				return
+			}
+		}
+	}
+}
+
+func writeRemoteAPIEvent(response http.ResponseWriter, event store.RemoteEventRecord, ordinal int64) error {
+	value := localAPICommandEvent{CommandID: string(event.CommandID), Sequence: event.Sequence, Type: event.Type, Timestamp: event.OccurredAt.UTC()}
+	if event.Type == "command_queued" {
+		value.Ordinal = ordinal
+	}
+	if event.Type == "stdout" || event.Type == "stderr" {
+		value.Encoding = "base64"
+		value.DataBase64 = base64.StdEncoding.EncodeToString(event.Payload)
+		value.ByteCount = event.ByteCount
+	}
+	return json.NewEncoder(response).Encode(value)
+}
+
 func commandEventsPathID(path string) (domain.CommandID, error) {
 	const prefix = "/v1/commands/"
 	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, "/events") {
@@ -983,6 +1085,17 @@ func statusForCommandEventError(err error) (int, string) {
 		return http.StatusRequestedRangeNotSatisfiable, "event_history_unavailable"
 	case errors.Is(err, store.ErrCommandEvent), errors.Is(err, store.ErrCommandPayloadCorrupt), errors.Is(err, store.ErrLocalIntentPayloadCorrupt):
 		return http.StatusServiceUnavailable, "database_unavailable"
+	default:
+		return statusForStoreError(err)
+	}
+}
+
+func statusForRemoteEventError(err error) (int, string) {
+	switch {
+	case errors.Is(err, store.ErrRemoteEventGap):
+		return http.StatusRequestedRangeNotSatisfiable, "event_history_unavailable"
+	case errors.Is(err, store.ErrRemoteEventNotFound):
+		return http.StatusNotFound, "command_not_found"
 	default:
 		return statusForStoreError(err)
 	}
@@ -1343,6 +1456,18 @@ func (s *Server) handleGetJob(response http.ResponseWriter, request *http.Reques
 		writeError(response, status, code, sanitizeError(err))
 		return
 	}
+	if remoteProjectionEligible(record) {
+		projection, projectionErr := s.authority.GetRemoteJobProjection(request.Context(), jobID)
+		if projectionErr == nil {
+			writeJSON(response, http.StatusOK, jobProjectionRead{View: "projection", IsStale: projection.IsStale, Resource: jobProjectionResourceFromProjection(projection)})
+			return
+		}
+		if !errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
+			status, code := statusForStoreError(projectionErr)
+			writeError(response, status, code, sanitizeError(projectionErr))
+			return
+		}
+	}
 	writeJSON(response, http.StatusOK, jobRead{View: "local_intent", IsStale: false, Resource: jobIntentResourceFromRecord(record)})
 }
 
@@ -1470,6 +1595,23 @@ func commandProjectionResourceFromProjection(projection store.RemoteCommandProje
 		CommandID: string(projection.CommandID), SessionID: string(projection.SessionID), Ordinal: projection.Ordinal, CommandState: string(projection.State),
 		ExitCode: projection.ExitCode, FinalEventSequence: projection.FinalEventSequence, OutputComplete: projection.OutputComplete,
 		OutputTruncated: projection.OutputTruncated, OutputUnavailableReason: projection.OutputUnavailableReason,
+		ExecutionTarget: targetResponse{Kind: string(projection.Target.Kind()), Profile: projection.Target.Profile()}, Authority: "remote",
+		Controller: controllerView{Type: string(projection.Controller.Type()), ID: string(projection.Controller.ID())}, ObservedAt: projection.ObservedAt.UTC(),
+		Environment: projection.Environment, Source: sourceResponseFromDomain(projection.Source), Capabilities: capabilitiesResponseFromProjection(projection.Capabilities), IsStale: projection.IsStale,
+	}
+}
+
+func jobProjectionResourceFromProjection(projection store.RemoteJobProjection) jobProjectionResource {
+	var commandState *string
+	if projection.CommandState != nil {
+		value := string(*projection.CommandState)
+		commandState = &value
+	}
+	return jobProjectionResource{
+		JobID: string(projection.JobID), SessionID: string(projection.SessionID), CommandID: string(projection.CommandID), JobPhase: string(projection.Phase),
+		CommandState: commandState, ExitCode: projection.ExitCode, FinalEventSequence: projection.FinalEventSequence,
+		OutputComplete: projection.OutputComplete, OutputTruncated: projection.OutputTruncated, OutputUnavailableReason: projection.OutputUnavailableReason,
+		TeardownState: string(projection.TeardownState), TeardownReason: projection.TeardownReason,
 		ExecutionTarget: targetResponse{Kind: string(projection.Target.Kind()), Profile: projection.Target.Profile()}, Authority: "remote",
 		Controller: controllerView{Type: string(projection.Controller.Type()), ID: string(projection.Controller.ID())}, ObservedAt: projection.ObservedAt.UTC(),
 		Environment: projection.Environment, Source: sourceResponseFromDomain(projection.Source), Capabilities: capabilitiesResponseFromProjection(projection.Capabilities), IsStale: projection.IsStale,

@@ -42,6 +42,14 @@ func (d *RemoteDriver) upsertRemoteProjectionFromReply(ctx context.Context, inte
 		_, err = d.authority.UpsertRemoteCommandProjection(ctx, projection)
 		return err
 	}
+	if intent.Operation == "run" {
+		projection, present, err := remoteJobProjectionFromReply(intent, object, d.now())
+		if err != nil || !present {
+			return err
+		}
+		_, err = d.authority.UpsertRemoteJobProjection(ctx, projection)
+		return err
+	}
 	return nil
 }
 
@@ -296,4 +304,115 @@ func projectionObservedAt(object map[string]json.RawMessage, fallback time.Time)
 		return time.Time{}, true, fmt.Errorf("%w: observed_at", ErrRemoteResponse)
 	}
 	return observed.UTC(), true, nil
+}
+
+func remoteJobProjectionFromReply(intent store.LocalIntentRecord, object map[string]json.RawMessage, fallback time.Time) (store.RemoteJobProjection, bool, error) {
+	jobID, present, err := readProjectionString(object, "job_id")
+	if err != nil || !present {
+		return store.RemoteJobProjection{}, false, err
+	}
+	if jobID != string(intent.JobID) {
+		return store.RemoteJobProjection{}, false, fmt.Errorf("%w: job identity", ErrRemoteResponse)
+	}
+	phaseText, present, err := readProjectionString(object, "job_phase")
+	if err != nil || !present {
+		return store.RemoteJobProjection{}, false, err
+	}
+	phase := store.JobPhase(phaseText)
+	if !phase.Valid() {
+		return store.RemoteJobProjection{}, false, fmt.Errorf("%w: job_phase", ErrRemoteResponse)
+	}
+	target, err := projectionTarget(object, intent.Target)
+	if err != nil {
+		return store.RemoteJobProjection{}, false, err
+	}
+	controller, err := projectionController(object, intent.Controller)
+	if err != nil {
+		return store.RemoteJobProjection{}, false, err
+	}
+	if value, ok := object["session_id"]; ok {
+		var sessionID string
+		if json.Unmarshal(value, &sessionID) != nil || sessionID != string(intent.SessionID) {
+			return store.RemoteJobProjection{}, false, fmt.Errorf("%w: job session identity", ErrRemoteResponse)
+		}
+	}
+	if value, ok := object["command_id"]; ok {
+		var commandID string
+		if json.Unmarshal(value, &commandID) != nil || commandID != string(intent.CommandID) {
+			return store.RemoteJobProjection{}, false, fmt.Errorf("%w: job command identity", ErrRemoteResponse)
+		}
+	}
+	environment := intent.Environment
+	if value, present, readErr := readProjectionString(object, "environment"); readErr != nil {
+		return store.RemoteJobProjection{}, false, readErr
+	} else if present {
+		environment = value
+	}
+	source, _, sourcePresent, err := projectionSource(object, intent.Source)
+	if err != nil {
+		return store.RemoteJobProjection{}, false, err
+	}
+	if !sourcePresent {
+		source = intent.Source
+	}
+	capabilities, capabilitiesPresent, err := projectionCapabilities(object)
+	if err != nil || !capabilitiesPresent {
+		return store.RemoteJobProjection{}, false, err
+	}
+	observedAt, observedPresent, err := projectionObservedAt(object, fallback)
+	if err != nil || !observedPresent {
+		return store.RemoteJobProjection{}, false, err
+	}
+	teardownText, present, err := readProjectionString(object, "teardown_state")
+	if err != nil || !present {
+		return store.RemoteJobProjection{}, false, err
+	}
+	teardownState := store.JobTeardownState(teardownText)
+	if !teardownState.Valid() {
+		return store.RemoteJobProjection{}, false, fmt.Errorf("%w: teardown_state", ErrRemoteResponse)
+	}
+	result := store.RemoteJobProjection{JobID: intent.JobID, SessionID: intent.SessionID, CommandID: intent.CommandID, Phase: phase, OutputComplete: false, OutputTruncated: false, TeardownState: teardownState, Target: target, Controller: controller, Environment: environment, Source: source, Capabilities: capabilities, ObservedAt: observedAt, IsStale: false}
+	if raw, ok := object["command_state"]; ok && string(raw) != "null" {
+		var stateText string
+		if json.Unmarshal(raw, &stateText) != nil {
+			return store.RemoteJobProjection{}, false, fmt.Errorf("%w: command_state", ErrRemoteResponse)
+		}
+		state := domain.CommandState(stateText)
+		if !state.Valid() {
+			return store.RemoteJobProjection{}, false, fmt.Errorf("%w: command_state", ErrRemoteResponse)
+		}
+		result.CommandState = &state
+	}
+	if raw, ok := object["exit_code"]; ok && string(raw) != "null" {
+		var value int
+		if json.Unmarshal(raw, &value) != nil {
+			return store.RemoteJobProjection{}, false, fmt.Errorf("%w: job exit_code", ErrRemoteResponse)
+		}
+		result.ExitCode = &value
+	}
+	if raw, ok := object["final_event_sequence"]; ok && string(raw) != "null" {
+		var value int64
+		if json.Unmarshal(raw, &value) != nil {
+			return store.RemoteJobProjection{}, false, fmt.Errorf("%w: job final_event_sequence", ErrRemoteResponse)
+		}
+		result.FinalEventSequence = &value
+	}
+	for name, destination := range map[string]*bool{"output_complete": &result.OutputComplete, "output_truncated": &result.OutputTruncated} {
+		if raw, ok := object[name]; ok {
+			if json.Unmarshal(raw, destination) != nil {
+				return store.RemoteJobProjection{}, false, fmt.Errorf("%w: job %s", ErrRemoteResponse, name)
+			}
+		}
+	}
+	if value, present, readErr := readProjectionString(object, "output_unavailable_reason"); readErr != nil {
+		return store.RemoteJobProjection{}, false, readErr
+	} else if present {
+		result.OutputUnavailableReason = value
+	}
+	if value, present, readErr := readProjectionString(object, "teardown_reason"); readErr != nil {
+		return store.RemoteJobProjection{}, false, readErr
+	} else if present {
+		result.TeardownReason = value
+	}
+	return result, true, nil
 }
