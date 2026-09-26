@@ -229,8 +229,8 @@ func TestP011_ConcurrentOpenersApplyMigrationsOnce(t *testing.T) {
 	if err := dbs[0].QueryRow("SELECT count(*) FROM runner_schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("migration record count = %d, want 1", count)
+	if count != len(migrations) {
+		t.Fatalf("migration record count = %d, want %d", count, len(migrations))
 	}
 }
 
