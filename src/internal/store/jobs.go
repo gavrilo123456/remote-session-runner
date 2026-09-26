@@ -118,9 +118,11 @@ type JobRecord struct {
 // session is being created; when present its durable snapshot is copied into
 // the job row so a restart can inspect the same outcome without re-running it.
 type JobCheckpoint struct {
-	ExpectedPhase JobPhase
-	NextPhase     JobPhase
-	Command       *CommandRecord
+	ExpectedPhase  JobPhase
+	NextPhase      JobPhase
+	Command        *CommandRecord
+	TeardownState  *JobTeardownState
+	TeardownReason string
 }
 
 // AcceptJob atomically binds one run key/hash to a stable job/session/command
@@ -206,6 +208,9 @@ func (s *AuthorityStore) CheckpointJob(ctx context.Context, id domain.JobID, che
 			return JobRecord{}, fmt.Errorf("%w: checkpoint command metadata", ErrInvalidJob)
 		}
 	}
+	if checkpoint.TeardownState != nil && !checkpoint.TeardownState.Valid() {
+		return JobRecord{}, fmt.Errorf("%w: checkpoint teardown state %q", ErrInvalidJob, *checkpoint.TeardownState)
+	}
 	now := s.now().UTC()
 	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (JobRecord, error) {
 		var currentPhase string
@@ -248,6 +253,10 @@ func (s *AuthorityStore) CheckpointJob(ctx context.Context, id domain.JobID, che
 			set += ", command_state = ?, exit_code = ?, final_event_sequence = ?, output_truncated = ?, output_complete = ?"
 			args = append(args, string(checkpoint.Command.State), exitCode, finalSequence,
 				boolToSQLite(checkpoint.Command.OutputTruncated), boolToSQLite(checkpoint.Command.OutputComplete))
+		}
+		if checkpoint.TeardownState != nil {
+			set += ", teardown_state = ?, teardown_reason = ?"
+			args = append(args, string(*checkpoint.TeardownState), checkpoint.TeardownReason)
 		}
 		args = append(args, string(validatedID))
 		if _, err := connection.ExecContext(ctx, "UPDATE exec_jobs SET "+set+" WHERE job_id = ?", args...); err != nil {

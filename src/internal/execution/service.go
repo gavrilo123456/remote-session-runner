@@ -287,8 +287,8 @@ type RunJobRequest struct {
 }
 
 // RunJobResult is the durable job snapshot plus the latest shared-service
-// session and command snapshots. P025 stops at awaiting_command; P026 adds
-// teardown and final-result advancement.
+// session and command snapshots. A successful run reaches complete only after
+// confirmed session teardown; a failed teardown remains visible separately.
 type RunJobResult struct {
 	Job     store.JobRecord
 	Session store.SessionRecord
@@ -571,9 +571,8 @@ func (s *Service) ResumeCommand(ctx context.Context, commandID domain.CommandID,
 }
 
 // RunJob accepts a durable one-off row and advances it through session
-// creation and exactly one command. It deliberately leaves teardown and final
-// result classification to P026. Recalling this method after a restart reads
-// the stored phase and resumes the same stable resources.
+// creation, exactly one command, and confirmed teardown. Recalling this method
+// after a restart reads the stored phase and resumes the same stable resources.
 func (s *Service) RunJob(ctx context.Context, request RunJobRequest) (RunJobResult, error) {
 	if s == nil || s.store == nil || s.runtime == nil || s.resolver == nil {
 		return RunJobResult{}, ErrExecutionServiceConfiguration
@@ -736,6 +735,9 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 			if commandErr != nil {
 				return result, commandErr
 			}
+			if accepted.Command.State.IsTerminal() {
+				continue
+			}
 			return result, nil
 
 		case store.JobPhaseAwaitingCommand:
@@ -767,18 +769,97 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 				}
 			}
 			result.Command = command
-			next := store.JobPhaseAwaitingCommand
-			if command.State == domain.CommandStateLost || session.State == domain.SessionStateLost {
-				next = store.JobPhaseLost
+			if !command.State.IsTerminal() {
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAwaitingCommand, NextPhase: store.JobPhaseAwaitingCommand, Command: &command})
+				if err != nil {
+					return result, err
+				}
+				result.Job = job
+				return result, nil
 			}
-			job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAwaitingCommand, NextPhase: next, Command: &command})
+			job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAwaitingCommand, NextPhase: store.JobPhaseClosingSession, Command: &command})
 			if err != nil {
 				return result, err
 			}
 			result.Job = job
-			return result, nil
+			continue
+
+		case store.JobPhaseClosingSession:
+			session, err := s.store.GetSession(ctx, job.SessionID)
+			if err != nil {
+				return result, err
+			}
+			command, err := s.store.GetCommand(ctx, job.CommandID)
+			if err != nil {
+				return result, err
+			}
+			result.Session, result.Command = session, command
+			if session.State == domain.SessionStateClosed {
+				teardown := store.JobTeardownClosed
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseClosingSession, NextPhase: store.JobPhaseComplete, Command: &command, TeardownState: &teardown, TeardownReason: "runtime_closed"})
+				if err != nil {
+					return result, err
+				}
+				result.Job = job
+				return result, nil
+			}
+			if session.State == domain.SessionStateLost {
+				teardown := store.JobTeardownLost
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseClosingSession, NextPhase: store.JobPhaseLost, Command: &command, TeardownState: &teardown, TeardownReason: "runtime_cleanup_unconfirmed"})
+				if err != nil {
+					return result, err
+				}
+				result.Job = job
+				return result, fmt.Errorf("%w: one-off teardown was lost", ErrStopUnconfirmed)
+			}
+			closeHash, err := oneOffCloseHash(job)
+			if err != nil {
+				return result, err
+			}
+			closed, closeErr := s.CloseSession(ctx, CloseSessionRequest{
+				SessionID:            job.SessionID,
+				Controller:           job.Controller,
+				IdempotencyKey:       jobStepKey(job.JobID, "close_session"),
+				RequestHash:          closeHash,
+				Policy:               "one_off",
+				IdempotencyRetention: request.IdempotencyRetention,
+			})
+			if closed.Session.SessionID != "" {
+				result.Session = closed.Session
+			}
+			if closeErr == nil && closed.Session.State == domain.SessionStateClosed {
+				teardown := store.JobTeardownClosed
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseClosingSession, NextPhase: store.JobPhaseComplete, Command: &command, TeardownState: &teardown, TeardownReason: "runtime_closed"})
+				if err != nil {
+					return result, err
+				}
+				result.Job = job
+				return result, nil
+			}
+			if closed.Session.State == domain.SessionStateLost {
+				teardown := store.JobTeardownLost
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseClosingSession, NextPhase: store.JobPhaseLost, Command: &command, TeardownState: &teardown, TeardownReason: "runtime_cleanup_unconfirmed"})
+				if err != nil {
+					return result, err
+				}
+				result.Job = job
+				if closeErr != nil {
+					return result, closeErr
+				}
+				return result, fmt.Errorf("%w: one-off teardown was lost", ErrStopUnconfirmed)
+			}
+			if closeErr != nil {
+				return result, closeErr
+			}
+			return result, fmt.Errorf("%w: close did not reach a terminal session", ErrStopUnconfirmed)
 
 		default:
+			if session, readErr := s.store.GetSession(ctx, job.SessionID); readErr == nil {
+				result.Session = session
+			}
+			if command, readErr := s.store.GetCommand(ctx, job.CommandID); readErr == nil {
+				result.Command = command
+			}
 			return result, nil
 		}
 	}
@@ -808,6 +889,14 @@ func oneOffCommandHash(job store.JobRecord, timeout time.Duration) (domain.Canon
 		"session_id": string(job.SessionID),
 		"script":     string(job.ScriptBytes),
 		"timeout_ns": timeout.Nanoseconds(),
+	})
+}
+
+func oneOffCloseHash(job store.JobRecord) (domain.CanonicalHash, error) {
+	return oneOffHash("close_session", map[string]any{
+		"operation":  "close_session",
+		"session_id": string(job.SessionID),
+		"policy":     "one_off",
 	})
 }
 
@@ -956,17 +1045,19 @@ func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest)
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
-	if duplicate || session.State.IsTerminal() {
+	if session.State.IsTerminal() {
 		return CloseSessionResult{Session: session, Duplicate: duplicate}, nil
 	}
-	commands, err := s.store.ListSessionCommands(ctx, session.SessionID)
+	if session.State != domain.SessionStateClosing {
+		if _, err := s.store.TransitionSession(ctx, session.SessionID, domain.SessionStateClosing, "close_requested"); err != nil {
+			return CloseSessionResult{}, err
+		}
+	}
+	closing, err := s.store.GetSession(ctx, session.SessionID)
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
-	if _, err := s.store.TransitionSession(ctx, session.SessionID, domain.SessionStateClosing, "close_requested"); err != nil {
-		return CloseSessionResult{}, err
-	}
-	closing, err := s.store.GetSession(ctx, session.SessionID)
+	commands, err := s.store.ListSessionCommands(ctx, session.SessionID)
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
@@ -1018,7 +1109,7 @@ func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest)
 	if err := s.store.ConfirmSessionCleanup(ctx, session.SessionID); err != nil {
 		return CloseSessionResult{}, err
 	}
-	return CloseSessionResult{Session: closed}, nil
+	return CloseSessionResult{Session: closed, Duplicate: duplicate}, nil
 }
 
 func (s *Service) markClosingLost(ctx context.Context, session store.SessionRecord, cause error) (CloseSessionResult, error) {

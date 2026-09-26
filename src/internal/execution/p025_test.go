@@ -23,6 +23,7 @@ func (r *p025Runtime) ExecuteCommand(ctx context.Context, request RuntimeCommand
 func TestP025I04OneOffRunCreatesAndExecutesExactlyOneCommand(t *testing.T) {
 	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
 		generation:    "generation-p025-success",
+		stopConfirmed: true,
 		commandResult: RuntimeCommandResult{Stdout: []byte("one-off output\n"), ExitCode: 0},
 	}}
 	service, authority, _ := newP025Service(t, runtime)
@@ -31,7 +32,7 @@ func TestP025I04OneOffRunCreatesAndExecutesExactlyOneCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Job.Phase != store.JobPhaseAwaitingCommand || result.Session.State != domain.SessionStateReady || result.Command.State != domain.CommandStateSucceeded {
+	if result.Job.Phase != store.JobPhaseComplete || result.Session.State != domain.SessionStateClosed || result.Command.State != domain.CommandStateSucceeded {
 		t.Fatalf("one-off result = %+v", result)
 	}
 	if result.Command.ExitCode == nil || *result.Command.ExitCode != 0 || !result.Command.OutputComplete {
@@ -58,6 +59,7 @@ func TestP025I04OneOffRunCreatesAndExecutesExactlyOneCommand(t *testing.T) {
 func TestP025I04ResumeAfterSessionCommitUsesStableCreateStep(t *testing.T) {
 	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
 		generation:    "generation-p025-session-barrier",
+		stopConfirmed: true,
 		commandResult: RuntimeCommandResult{ExitCode: 0},
 	}}
 	service, authority, _ := newP025Service(t, runtime)
@@ -91,7 +93,7 @@ func TestP025I04ResumeAfterSessionCommitUsesStableCreateStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Job.Phase != store.JobPhaseAwaitingCommand || resumed.Session.State != domain.SessionStateReady || resumed.Command.State != domain.CommandStateSucceeded {
+	if resumed.Job.Phase != store.JobPhaseComplete || resumed.Session.State != domain.SessionStateClosed || resumed.Command.State != domain.CommandStateSucceeded {
 		t.Fatalf("resumed session barrier = %+v", resumed)
 	}
 	if runtime.prepareCall != 1 || runtime.startCall != 1 || runtime.commandCall != 1 {
@@ -105,6 +107,7 @@ func TestP025I04ResumeAfterSessionCommitUsesStableCreateStep(t *testing.T) {
 func TestP025I04ReopenAfterSessionCommitKeepsStableIDs(t *testing.T) {
 	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
 		generation:    "generation-p025-reopen",
+		stopConfirmed: true,
 		commandResult: RuntimeCommandResult{ExitCode: 0},
 	}}
 	databasePath := t.TempDir() + "/state/p025-reopen.db"
@@ -183,6 +186,7 @@ func TestP025I04ReopenAfterSessionCommitKeepsStableIDs(t *testing.T) {
 func TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice(t *testing.T) {
 	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
 		generation:    "generation-p025-command-barrier",
+		stopConfirmed: true,
 		commandResult: RuntimeCommandResult{Stdout: []byte("queued once\n"), ExitCode: 0},
 	}}
 	service, authority, _ := newP025Service(t, runtime)
@@ -231,7 +235,7 @@ func TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Job.Phase != store.JobPhaseAwaitingCommand || resumed.Command.State != domain.CommandStateSucceeded {
+	if resumed.Job.Phase != store.JobPhaseComplete || resumed.Session.State != domain.SessionStateClosed || resumed.Command.State != domain.CommandStateSucceeded {
 		t.Fatalf("resumed command barrier = %+v", resumed)
 	}
 	if runtime.commandCall != 1 || len(runtime.scripts) != 1 || runtime.scripts[0] != request.Acceptance.Script {
