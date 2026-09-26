@@ -26,7 +26,13 @@ var (
 	ErrRemoteResponse            = errors.New("remote bridge response is invalid")
 	ErrRemotePayload             = errors.New("remote bridge payload cannot be built")
 	ErrRemoteNotReconciled       = errors.New("remote intent remains uncertain after reconciliation")
+	ErrRemoteUncertaintyDeadline = errors.New("remote uncertainty deadline expired")
 )
+
+// RemoteUncertaintyWindow is the bounded period in which the dispatcher may
+// query a target after an ambiguous mutation send. Once it expires, the
+// intent remains indeterminate for a later durable/file-based decision.
+const RemoteUncertaintyWindow = 24 * time.Hour
 
 // RemoteCaller is the identity-preserving bridge operation used by the remote
 // driver. sshclient.Client implements it; tests can inject a bounded caller.
@@ -42,14 +48,21 @@ type RemoteDriver struct {
 	caller        RemoteCaller
 	owner         string
 	leaseDuration time.Duration
+	now           func() time.Time
 }
 
 // NewRemoteDriver constructs a lease-owning remote driver.
 func NewRemoteDriver(authority *store.AuthorityStore, caller RemoteCaller, owner string, leaseDuration time.Duration) (*RemoteDriver, error) {
-	if authority == nil || caller == nil || owner == "" || len(owner) > 256 || strings.IndexByte(owner, 0) >= 0 || leaseDuration <= 0 {
+	return NewRemoteDriverWithClock(authority, caller, owner, leaseDuration, time.Now)
+}
+
+// NewRemoteDriverWithClock is the deterministic-clock constructor used by
+// uncertainty deadline tests and controlled recovery harnesses.
+func NewRemoteDriverWithClock(authority *store.AuthorityStore, caller RemoteCaller, owner string, leaseDuration time.Duration, now func() time.Time) (*RemoteDriver, error) {
+	if authority == nil || caller == nil || owner == "" || len(owner) > 256 || strings.IndexByte(owner, 0) >= 0 || leaseDuration <= 0 || now == nil {
 		return nil, ErrRemoteDriverConfiguration
 	}
-	return &RemoteDriver{authority: authority, caller: caller, owner: owner, leaseDuration: leaseDuration}, nil
+	return &RemoteDriver{authority: authority, caller: caller, owner: owner, leaseDuration: leaseDuration, now: now}, nil
 }
 
 // DispatchNext selects the earliest eligible remote intent and delivers it
@@ -105,6 +118,13 @@ func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) 
 	if intent.Target.Kind() != domain.TargetKindRemote || (intent.DeliveryState != store.LocalIntentDispatching && intent.DeliveryState != store.LocalIntentUncertain) {
 		return intent, sshbridge.ReplyFrame{}, nil
 	}
+	deadline, err := d.uncertaintyDeadline(ctx, intent)
+	if err != nil {
+		return intent, sshbridge.ReplyFrame{}, err
+	}
+	if !d.now().UTC().Before(deadline) {
+		return intent, sshbridge.ReplyFrame{}, ErrRemoteUncertaintyDeadline
+	}
 	frame, err := readFrameForRemoteIntent(intent)
 	if err != nil {
 		return intent, sshbridge.ReplyFrame{}, err
@@ -133,6 +153,26 @@ func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) 
 	default:
 		return intent, reply, ErrRemoteNotReconciled
 	}
+}
+
+func (d *RemoteDriver) uncertaintyDeadline(ctx context.Context, intent store.LocalIntentRecord) (time.Time, error) {
+	start := intent.UpdatedAt
+	if intent.DeliveryState == store.LocalIntentUncertain {
+		lifecycle, err := d.authority.ListLocalIntentLifecycle(ctx, intent.IntentID)
+		if err != nil {
+			return time.Time{}, err
+		}
+		for index := len(lifecycle) - 1; index >= 0; index-- {
+			if lifecycle[index].NewState == store.LocalIntentUncertain {
+				start = lifecycle[index].OccurredAt
+				break
+			}
+		}
+	}
+	if start.IsZero() {
+		return time.Time{}, fmt.Errorf("%w: missing uncertainty start", ErrRemoteNotReconciled)
+	}
+	return start.UTC().Add(RemoteUncertaintyWindow), nil
 }
 
 func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
