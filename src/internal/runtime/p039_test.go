@@ -71,6 +71,9 @@ func TestP039LinuxDoctorRealHost(t *testing.T) {
 		t.Skip("P039 real-host gate runs on the designated Linux host")
 	}
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	workspace := root + "/workspaces"
 	if err := os.Mkdir(workspace, 0o700); err != nil {
 		t.Fatal(err)
