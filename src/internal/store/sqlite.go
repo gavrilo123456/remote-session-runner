@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 13
+	CurrentSchemaVersion = 14
 )
 
 var (
@@ -72,6 +72,9 @@ var remoteProjectionsSQL string
 
 //go:embed migrations/0013_remote_job_projections.sql
 var remoteJobProjectionsSQL string
+
+//go:embed migrations/0014_mailbox_exchanges.sql
+var mailboxExchangesSQL string
 
 type migration struct {
 	version int
@@ -131,6 +134,10 @@ var migrations = []migration{{
 	version: 13,
 	name:    "remote_job_projections",
 	sql:     remoteJobProjectionsSQL,
+}, {
+	version: 14,
+	name:    "mailbox_exchanges",
+	sql:     mailboxExchangesSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection

@@ -141,6 +141,10 @@ func (i *Importer) InboxPath() string {
 // markers from being examined. Files remain in place for the durable receipt
 // and cleanup phases that follow P081.
 func (i *Importer) Import(ctx context.Context) ([]Result, error) {
+	return i.importWithHandler(ctx, i.handler)
+}
+
+func (i *Importer) importWithHandler(ctx context.Context, handler Handler) ([]Result, error) {
 	if i == nil || i.schema == nil || i.inbox == "" {
 		return nil, ErrImporterConfiguration
 	}
@@ -162,7 +166,7 @@ func (i *Importer) Import(ctx context.Context) ([]Result, error) {
 			// their marker is safely published.
 			continue
 		}
-		result := i.importMarker(ctx, name)
+		result := i.importMarker(ctx, name, handler)
 		if result.Status != "" {
 			results = append(results, result)
 		}
@@ -170,7 +174,7 @@ func (i *Importer) Import(ctx context.Context) ([]Result, error) {
 	return results, nil
 }
 
-func (i *Importer) importMarker(ctx context.Context, markerName string) Result {
+func (i *Importer) importMarker(ctx context.Context, markerName string, handler Handler) Result {
 	result := Result{Filename: markerName, MarkerPath: filepath.Join(i.inbox, markerName), Status: ResultRejected}
 	requestID, ok := safeRequestID(strings.TrimSuffix(markerName, ReadySuffix))
 	if !ok {
@@ -222,8 +226,8 @@ func (i *Importer) importMarker(ctx context.Context, markerName string) Result {
 	}
 	result.Status = ResultAccepted
 	result.Request = &request
-	if i.handler != nil {
-		if err := i.handler(ctx, request); err != nil {
+	if handler != nil {
+		if err := handler(ctx, request); err != nil {
 			result.Status = ResultRejected
 			result.Reason = err.Error()
 			result.Request = nil
