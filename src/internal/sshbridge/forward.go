@@ -31,7 +31,7 @@ type ForwarderOptions struct {
 	MaxResponseBytes int64
 }
 
-// RunnerdForwarder forwards the bridge operations implemented through P052.
+// RunnerdForwarder forwards the bridge operations implemented through P053.
 type RunnerdForwarder struct {
 	client           *http.Client
 	baseURL          string
@@ -102,6 +102,10 @@ func (f *RunnerdForwarder) Handle(ctx context.Context, controller domain.Control
 		return f.runJob(ctx, controller, request)
 	case OperationGetJob:
 		return f.getJob(ctx, controller, request)
+	case OperationCancelCommand:
+		return f.cancelCommand(ctx, controller, request)
+	case OperationCloseSession:
+		return f.closeSession(ctx, controller, request)
 	default:
 		return ReplyFrame{}, fmt.Errorf("%w: %s", ErrOperationUnsupported, request.Operation)
 	}
@@ -156,6 +160,15 @@ type bridgeGetJobPayload struct {
 	JobID string `json:"job_id"`
 }
 
+type bridgeCancelCommandPayload struct {
+	CommandID string `json:"command_id"`
+}
+
+type bridgeCloseSessionPayload struct {
+	SessionID string `json:"session_id"`
+	Policy    string `json:"policy,omitempty"`
+}
+
 type privateCreateSessionRequest struct {
 	SessionID       string           `json:"session_id"`
 	IdempotencyKey  string           `json:"idempotency_key"`
@@ -193,6 +206,21 @@ type privateRunJobRequest struct {
 	Limits          json.RawMessage  `json:"limits,omitempty"`
 	Isolation       json.RawMessage  `json:"isolation,omitempty"`
 	Policy          json.RawMessage  `json:"policy,omitempty"`
+}
+
+type privateCancelCommandRequest struct {
+	CommandID      string           `json:"command_id,omitempty"`
+	IdempotencyKey string           `json:"idempotency_key"`
+	RequestID      string           `json:"request_id,omitempty"`
+	Controller     bridgeController `json:"controller"`
+}
+
+type privateCloseSessionRequest struct {
+	SessionID      string           `json:"session_id,omitempty"`
+	IdempotencyKey string           `json:"idempotency_key"`
+	RequestID      string           `json:"request_id,omitempty"`
+	Controller     bridgeController `json:"controller"`
+	Policy         string           `json:"policy,omitempty"`
 }
 
 func (f *RunnerdForwarder) createSession(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
@@ -313,6 +341,48 @@ func (f *RunnerdForwarder) getJob(ctx context.Context, controller domain.Control
 	query.Set("controller_type", string(controller.Type()))
 	query.Set("controller_id", string(controller.ID()))
 	return f.doJSON(ctx, request.RequestID, http.MethodGet, "/internal/v1/jobs/"+url.PathEscape(payload.JobID), query, nil)
+}
+
+func (f *RunnerdForwarder) cancelCommand(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
+	payload, err := decodeBridgePayload[bridgeCancelCommandPayload](request.Payload)
+	if err != nil {
+		return ReplyFrame{}, err
+	}
+	if strings.TrimSpace(payload.CommandID) == "" {
+		return ReplyFrame{}, fmt.Errorf("%w: cancel_command requires command_id", ErrInvalidFrame)
+	}
+	if payload.CommandID != request.ResourceID {
+		return ReplyFrame{}, fmt.Errorf("%w: cancel command resource_id and command_id differ", ErrInvalidFrame)
+	}
+	body, err := json.Marshal(privateCancelCommandRequest{
+		CommandID: payload.CommandID, IdempotencyKey: request.IdempotencyKey, RequestID: request.RequestID,
+		Controller: bridgeController{Type: string(controller.Type()), ID: string(controller.ID())},
+	})
+	if err != nil {
+		return ReplyFrame{}, fmt.Errorf("%w: cancel request: %v", ErrInvalidFrame, err)
+	}
+	return f.doJSON(ctx, request.RequestID, http.MethodPost, "/internal/v1/commands/"+url.PathEscape(payload.CommandID)+"/cancel", nil, body)
+}
+
+func (f *RunnerdForwarder) closeSession(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
+	payload, err := decodeBridgePayload[bridgeCloseSessionPayload](request.Payload)
+	if err != nil {
+		return ReplyFrame{}, err
+	}
+	if strings.TrimSpace(payload.SessionID) == "" {
+		return ReplyFrame{}, fmt.Errorf("%w: close_session requires session_id", ErrInvalidFrame)
+	}
+	if payload.SessionID != request.ResourceID {
+		return ReplyFrame{}, fmt.Errorf("%w: close session resource_id and session_id differ", ErrInvalidFrame)
+	}
+	body, err := json.Marshal(privateCloseSessionRequest{
+		SessionID: payload.SessionID, IdempotencyKey: request.IdempotencyKey, RequestID: request.RequestID,
+		Controller: bridgeController{Type: string(controller.Type()), ID: string(controller.ID())}, Policy: payload.Policy,
+	})
+	if err != nil {
+		return ReplyFrame{}, fmt.Errorf("%w: close request: %v", ErrInvalidFrame, err)
+	}
+	return f.doJSON(ctx, request.RequestID, http.MethodDelete, "/internal/v1/sessions/"+url.PathEscape(payload.SessionID), nil, body)
 }
 
 func decodeBridgePayload[T any](raw json.RawMessage) (T, error) {
