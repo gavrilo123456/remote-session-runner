@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -54,21 +55,22 @@ type CommandAcceptance struct {
 // CommandRecord is the authoritative command snapshot. ScriptBytes is the
 // exact validated UTF-8 byte sequence committed at acceptance.
 type CommandRecord struct {
-	CommandID          domain.CommandID
-	SessionID          domain.SessionID
-	Ordinal            int64
-	IntentOrdinal      *int64
-	RequestHash        domain.CanonicalHash
-	ScriptBytes        []byte
-	ScriptSHA256       []byte
-	State              domain.CommandState
-	Timeout            time.Duration
-	ExitCode           *int
-	FinalEventSequence *int64
-	OutputTruncated    bool
-	OutputComplete     bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	CommandID               domain.CommandID
+	SessionID               domain.SessionID
+	Ordinal                 int64
+	IntentOrdinal           *int64
+	RequestHash             domain.CanonicalHash
+	ScriptBytes             []byte
+	ScriptSHA256            []byte
+	State                   domain.CommandState
+	Timeout                 time.Duration
+	ExitCode                *int
+	FinalEventSequence      *int64
+	OutputTruncated         bool
+	OutputComplete          bool
+	OutputUnavailableReason string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 // CommandEventRecord is one durable event in a command's ordered stream.
@@ -448,6 +450,13 @@ func (s *AuthorityStore) ReplayCommandEvents(ctx context.Context, id domain.Comm
 	if _, err := readCommandOnConnection(ctx, connection, validatedID); err != nil {
 		return nil, err
 	}
+	var unavailable string
+	if err := connection.QueryRowContext(ctx, "SELECT output_unavailable_reason FROM exec_commands WHERE command_id = ?", string(validatedID)).Scan(&unavailable); err != nil {
+		return nil, fmt.Errorf("read command retention state: %w", err)
+	}
+	if unavailable != "" {
+		return []CommandEventRecord{}, nil
+	}
 	return readCommandEventsOnConnection(ctx, connection, validatedID, afterSequence)
 }
 
@@ -623,6 +632,13 @@ func (s *AuthorityStore) ListCommandEvents(ctx context.Context, id domain.Comman
 	if _, err := readCommandOnConnection(ctx, connection, validatedID); err != nil {
 		return nil, err
 	}
+	var unavailable string
+	if err := connection.QueryRowContext(ctx, "SELECT output_unavailable_reason FROM exec_commands WHERE command_id = ?", string(validatedID)).Scan(&unavailable); err != nil {
+		return nil, fmt.Errorf("read command retention state: %w", err)
+	}
+	if unavailable != "" {
+		return []CommandEventRecord{}, nil
+	}
 	return readCommandEventsOnConnection(ctx, connection, validatedID, -1)
 }
 
@@ -795,18 +811,19 @@ func readCommandOnConnection(ctx context.Context, connection *sql.Conn, id domai
 	var requestHashVersion int
 	var requestHash, scriptBytes, scriptHash []byte
 	var ordinal, timeoutNS, outputTruncated, outputComplete int64
+	var outputUnavailableReason string
 	var finalSequence sql.NullInt64
 	var exitCode sql.NullInt64
 	if err := connection.QueryRowContext(ctx, `
 SELECT command_id, session_id, ordinal, intent_ordinal,
        request_hash_version, request_hash, script_bytes, script_sha256,
        state, timeout_ns, exit_code, final_event_sequence,
-       output_truncated, output_complete, created_at, updated_at
+       output_truncated, output_complete, output_unavailable_reason, created_at, updated_at
 FROM exec_commands WHERE command_id = ?
 `, string(id)).Scan(&commandID, &sessionID, &ordinal, &intentOrdinal,
 		&requestHashVersion, &requestHash, &scriptBytes, &scriptHash,
 		&state, &timeoutNS, &exitCode, &finalSequence,
-		&outputTruncated, &outputComplete, &createdAt, &updatedAt); err != nil {
+		&outputTruncated, &outputComplete, &outputUnavailableReason, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return CommandRecord{}, ErrCommandNotFound
 		}
@@ -820,7 +837,7 @@ FROM exec_commands WHERE command_id = ?
 	if err != nil {
 		return CommandRecord{}, fmt.Errorf("%w: session ID: %v", ErrCommandPayloadCorrupt, err)
 	}
-	if validatedID != id || ordinal < 1 || !domain.CommandState(state).Valid() || timeoutNS <= 0 || (outputTruncated != 0 && outputTruncated != 1) || (outputComplete != 0 && outputComplete != 1) {
+	if validatedID != id || ordinal < 1 || !domain.CommandState(state).Valid() || timeoutNS <= 0 || (outputTruncated != 0 && outputTruncated != 1) || (outputComplete != 0 && outputComplete != 1) || len(outputUnavailableReason) > 128 || strings.IndexByte(outputUnavailableReason, 0) >= 0 {
 		return CommandRecord{}, fmt.Errorf("%w: command metadata", ErrCommandPayloadCorrupt)
 	}
 	hash, err := domain.NewCanonicalHash(uint16(requestHashVersion), requestHash)
@@ -856,6 +873,7 @@ FROM exec_commands WHERE command_id = ?
 		record.FinalEventSequence = &value
 	}
 	record.OutputTruncated, record.OutputComplete = outputTruncated == 1, outputComplete == 1
+	record.OutputUnavailableReason = outputUnavailableReason
 	if record.CreatedAt, err = parseStoredTime(createdAt); err != nil {
 		return CommandRecord{}, fmt.Errorf("%w: created_at: %v", ErrCommandPayloadCorrupt, err)
 	}
