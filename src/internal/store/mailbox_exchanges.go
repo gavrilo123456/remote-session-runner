@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -12,9 +13,11 @@ import (
 )
 
 var (
-	ErrMailboxExchangeInvalid  = errors.New("invalid mailbox exchange")
-	ErrMailboxExchangeConflict = errors.New("mailbox request ID or idempotency conflict")
-	ErrMailboxExchangeNotFound = errors.New("mailbox exchange not found")
+	ErrMailboxExchangeInvalid   = errors.New("invalid mailbox exchange")
+	ErrMailboxExchangeConflict  = errors.New("mailbox request ID or idempotency conflict")
+	ErrMailboxExchangeNotFound  = errors.New("mailbox exchange not found")
+	ErrMailboxResponseInvalid   = errors.New("invalid mailbox response")
+	ErrMailboxTerminalImmutable = errors.New("terminal mailbox response is immutable")
 )
 
 // MailboxExchangeState is the durable file-exchange lifecycle. Terminal
@@ -44,17 +47,30 @@ type MailboxExchangeCreate struct {
 // MailboxExchangeRecord is the durable request receipt and its current state.
 // Response bytes/revisions are intentionally reserved for later phases.
 type MailboxExchangeRecord struct {
-	RequestID        string
-	Operation        string
-	Controller       domain.ControllerIdentity
-	IdempotencyKey   string
-	RequestHash      domain.CanonicalHash
-	CanonicalPayload []byte
-	ResourceID       string
-	State            MailboxExchangeState
-	ResponseRevision int64
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	RequestID              string
+	Operation              string
+	Controller             domain.ControllerIdentity
+	IdempotencyKey         string
+	RequestHash            domain.CanonicalHash
+	CanonicalPayload       []byte
+	ResourceID             string
+	State                  MailboxExchangeState
+	ResponseRevision       int64
+	ResponseBytes          []byte
+	ResponseSHA256         []byte
+	TerminalResponseBytes  []byte
+	TerminalResponseSHA256 []byte
+	AvailableEventSequence *int64
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+// MailboxResponsePublication is one response snapshot. Accepted snapshots
+// may be replaced by a higher revision; terminal snapshots become immutable.
+type MailboxResponsePublication struct {
+	State                  MailboxExchangeState
+	Bytes                  []byte
+	AvailableEventSequence *int64
 }
 
 // AcceptMailboxExchange binds one request_id in the same SQLite transaction
@@ -95,6 +111,14 @@ func (s *AuthorityStore) AcceptMailboxExchange(ctx context.Context, input Mailbo
 				validated.ResourceID = existing.ResourceID
 				validated.State = existing.State
 				validated.ResponseRevision = existing.ResponseRevision
+				validated.ResponseBytes = append([]byte(nil), existing.ResponseBytes...)
+				validated.ResponseSHA256 = append([]byte(nil), existing.ResponseSHA256...)
+				validated.TerminalResponseBytes = append([]byte(nil), existing.TerminalResponseBytes...)
+				validated.TerminalResponseSHA256 = append([]byte(nil), existing.TerminalResponseSHA256...)
+				if existing.AvailableEventSequence != nil {
+					cursor := *existing.AvailableEventSequence
+					validated.AvailableEventSequence = &cursor
+				}
 				validated.CreatedAt = now
 				validated.UpdatedAt = now
 				if err := insertMailboxExchangeOnConnection(ctx, connection, validated); err != nil {
@@ -162,6 +186,55 @@ WHERE controller_type = ? AND controller_id = ? AND operation = ?
 	})
 }
 
+// PublishMailboxResponse stores one response revision. Nonterminal snapshots
+// increment response_revision; a terminal snapshot is copied into immutable
+// terminal columns and cannot be changed by a later retry of the same ID.
+func (s *AuthorityStore) PublishMailboxResponse(ctx context.Context, requestID string, publication MailboxResponsePublication) (MailboxExchangeRecord, error) {
+	if err := validateMailboxRequestID(requestID); err != nil {
+		return MailboxExchangeRecord{}, err
+	}
+	if publication.State != MailboxExchangeAccepted && publication.State != MailboxExchangeComplete && publication.State != MailboxExchangeRejected && publication.State != MailboxExchangeIndeterminate {
+		return MailboxExchangeRecord{}, fmt.Errorf("%w: state %q", ErrMailboxResponseInvalid, publication.State)
+	}
+	if len(publication.Bytes) == 0 || len(publication.Bytes) > domain.MaxSerializedRequestBytes {
+		return MailboxExchangeRecord{}, fmt.Errorf("%w: response byte size", ErrMailboxResponseInvalid)
+	}
+	if publication.AvailableEventSequence != nil && *publication.AvailableEventSequence < 0 {
+		return MailboxExchangeRecord{}, fmt.Errorf("%w: available event cursor", ErrMailboxResponseInvalid)
+	}
+	responseHash := sha256Bytes(publication.Bytes)
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+		current, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+		if err != nil {
+			return MailboxExchangeRecord{}, err
+		}
+		if current.State != MailboxExchangeAccepted {
+			if current.ResponseRevision > 0 && bytesEqual(current.ResponseBytes, publication.Bytes) && current.State == publication.State && sameCursor(current.AvailableEventSequence, publication.AvailableEventSequence) {
+				return current, nil
+			}
+			return MailboxExchangeRecord{}, ErrMailboxTerminalImmutable
+		}
+		nextRevision := current.ResponseRevision + 1
+		if nextRevision <= 0 {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: response revision overflow", ErrMailboxResponseInvalid)
+		}
+		var terminalBytes, terminalHash any
+		if publication.State == MailboxExchangeComplete || publication.State == MailboxExchangeRejected || publication.State == MailboxExchangeIndeterminate {
+			terminalBytes, terminalHash = publication.Bytes, responseHash
+		}
+		if _, err := connection.ExecContext(ctx, `
+UPDATE mailbox_exchanges
+SET request_state = ?, response_revision = ?, response_bytes = ?, response_sha256 = ?,
+    terminal_response_bytes = ?, terminal_response_sha256 = ?, available_event_sequence = ?, updated_at = ?
+WHERE request_id = ? AND request_state = 'accepted'
+`, string(publication.State), nextRevision, publication.Bytes, responseHash, terminalBytes, terminalHash, publication.AvailableEventSequence, formatStoredTime(now), requestID); err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("publish mailbox response: %w", err)
+		}
+		return readMailboxExchangeOnConnection(ctx, connection, requestID)
+	})
+}
+
 func validateMailboxExchangeCreate(input MailboxExchangeCreate) (validatedMailboxExchangeCreate, error) {
 	if err := validateMailboxRequestID(input.RequestID); err != nil {
 		return validatedMailboxExchangeCreate{}, err
@@ -191,10 +264,15 @@ func validateMailboxExchangeCreate(input MailboxExchangeCreate) (validatedMailbo
 
 type validatedMailboxExchangeCreate struct {
 	MailboxExchangeCreate
-	State            MailboxExchangeState
-	ResponseRevision int64
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	State                  MailboxExchangeState
+	ResponseRevision       int64
+	ResponseBytes          []byte
+	ResponseSHA256         []byte
+	TerminalResponseBytes  []byte
+	TerminalResponseSHA256 []byte
+	AvailableEventSequence *int64
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 func validateMailboxRequestID(requestID string) error {
@@ -213,10 +291,14 @@ func insertMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn
 INSERT INTO mailbox_exchanges (
     request_id, operation, controller_type, controller_id, idempotency_key,
     canonical_hash_version, canonical_hash, canonical_payload, resource_id,
-    request_state, response_revision, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    request_state, response_revision, terminal_response_bytes,
+    terminal_response_sha256, available_event_sequence, response_bytes,
+    response_sha256, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, input.RequestID, input.Operation, string(input.Controller.Type()), string(input.Controller.ID()), input.IdempotencyKey,
-		input.RequestHash.Version(), input.RequestHash.SHA256(), input.CanonicalPayload, input.ResourceID, string(input.State), input.ResponseRevision, formatStoredTime(input.CreatedAt), formatStoredTime(input.UpdatedAt))
+		input.RequestHash.Version(), input.RequestHash.SHA256(), input.CanonicalPayload, input.ResourceID, string(input.State), input.ResponseRevision,
+		nullableBytes(input.TerminalResponseBytes), nullableBytes(input.TerminalResponseSHA256), input.AvailableEventSequence,
+		nullableBytes(input.ResponseBytes), nullableBytes(input.ResponseSHA256), formatStoredTime(input.CreatedAt), formatStoredTime(input.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("insert mailbox exchange: %w", err)
 	}
@@ -257,12 +339,16 @@ func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, 
 	var controllerType, controllerID, operation, key, payload, resourceID, state, createdAt, updatedAt string
 	var version int
 	var digest []byte
+	var terminalBytes, terminalHash, responseBytes, responseHash []byte
+	var availableCursor sql.NullInt64
 	if err := connection.QueryRowContext(ctx, `
 SELECT request_id, operation, controller_type, controller_id, idempotency_key,
        canonical_hash_version, canonical_hash, canonical_payload, resource_id,
-       request_state, response_revision, created_at, updated_at
+       request_state, response_revision, terminal_response_bytes,
+       terminal_response_sha256, available_event_sequence, response_bytes,
+       response_sha256, created_at, updated_at
 FROM mailbox_exchanges WHERE request_id = ?
-`, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+`, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return MailboxExchangeRecord{}, ErrMailboxExchangeNotFound
 	} else if err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("read mailbox exchange: %w", err)
@@ -280,6 +366,25 @@ FROM mailbox_exchanges WHERE request_id = ?
 	}
 	if record.ResponseRevision < 0 {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: response revision", ErrMailboxExchangeInvalid)
+	}
+	if len(responseBytes) > 0 {
+		if len(responseHash) != sha256.Size || !bytesEqual(responseHash, sha256Bytes(responseBytes)) {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: response hash", ErrMailboxResponseInvalid)
+		}
+		record.ResponseBytes, record.ResponseSHA256 = append([]byte(nil), responseBytes...), append([]byte(nil), responseHash...)
+	}
+	if len(terminalBytes) > 0 {
+		if len(terminalHash) != sha256.Size || !bytesEqual(terminalHash, sha256Bytes(terminalBytes)) {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: terminal response hash", ErrMailboxResponseInvalid)
+		}
+		record.TerminalResponseBytes, record.TerminalResponseSHA256 = append([]byte(nil), terminalBytes...), append([]byte(nil), terminalHash...)
+	}
+	if availableCursor.Valid {
+		if availableCursor.Int64 < 0 {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: available event cursor", ErrMailboxResponseInvalid)
+		}
+		cursor := availableCursor.Int64
+		record.AvailableEventSequence = &cursor
 	}
 	if record.CreatedAt, err = parseStoredTime(createdAt); err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: created_at: %v", ErrMailboxExchangeInvalid, err)
@@ -302,4 +407,23 @@ func bytesEqual(left, right []byte) bool {
 		}
 	}
 	return true
+}
+
+func sha256Bytes(value []byte) []byte {
+	digest := sha256.Sum256(value)
+	return append([]byte(nil), digest[:]...)
+}
+
+func nullableBytes(value []byte) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return value
+}
+
+func sameCursor(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
