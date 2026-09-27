@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -194,6 +195,13 @@ type RuntimeCommandResult struct {
 // later adapters add command execution.
 type CommandRuntime interface {
 	ExecuteCommand(context.Context, RuntimeCommandRequest) (RuntimeCommandResult, error)
+}
+
+// StreamingCommandRuntime may publish output while a command is still active.
+// Each successful callback has durably stored the corresponding raw bytes;
+// implementations must retain the same command boundary as ExecuteCommand.
+type StreamingCommandRuntime interface {
+	ExecuteCommandStream(context.Context, RuntimeCommandRequest, func(stream string, payload []byte) error) (RuntimeCommandResult, error)
 }
 
 // RuntimeCommandStopResult reports the bounded stop boundary for cancel and
@@ -463,6 +471,18 @@ func (s *Service) finishRuntimeFailure(ctx context.Context, result CreateSession
 // session; a transport error or shell exit is a lost command/session and is
 // returned as a distinct service error.
 func (s *Service) SubmitCommand(ctx context.Context, request SubmitCommandRequest) (SubmitCommandResult, error) {
+	accepted, err := s.AcceptCommand(ctx, request)
+	if err != nil || accepted.Duplicate {
+		return accepted, err
+	}
+	return s.ResumeCommand(ctx, accepted.Command.CommandID, request.Controller)
+}
+
+// AcceptCommand durably queues one script without waiting for it to execute.
+// Private APIs use this boundary so callers can observe progress and partial
+// output while a command is running. SubmitCommand retains the synchronous
+// convenience behavior used by internal callers and existing job flows.
+func (s *Service) AcceptCommand(ctx context.Context, request SubmitCommandRequest) (SubmitCommandResult, error) {
 	if s == nil || s.store == nil || s.runtime == nil {
 		return SubmitCommandResult{}, ErrExecutionServiceConfiguration
 	}
@@ -502,11 +522,7 @@ func (s *Service) SubmitCommand(ctx context.Context, request SubmitCommandReques
 	if err != nil {
 		return SubmitCommandResult{}, err
 	}
-	result := SubmitCommandResult{Command: accepted, Duplicate: duplicate}
-	if duplicate {
-		return result, nil
-	}
-	return s.ResumeCommand(ctx, accepted.CommandID, request.Controller)
+	return SubmitCommandResult{Command: accepted, Duplicate: duplicate}, nil
 }
 
 // ResumeCommand continues an accepted queued command using its durable script
@@ -552,27 +568,54 @@ func (s *Service) ResumeCommand(ctx context.Context, commandID domain.CommandID,
 	if !ok {
 		return s.finishCommandFailure(ctx, currentSession, started, ErrCommandTransport, "command_transport_failed")
 	}
-	runtimeResult, runtimeErr := commandRuntime.ExecuteCommand(ctx, RuntimeCommandRequest{Session: currentSession, Command: started})
+	request := RuntimeCommandRequest{Session: currentSession, Command: started}
+	var streamed atomic.Bool
+	var runtimeResult RuntimeCommandResult
+	var runtimeErr error
+	if streamingRuntime, ok := s.runtime.(StreamingCommandRuntime); ok {
+		runtimeResult, runtimeErr = streamingRuntime.ExecuteCommandStream(ctx, request, func(stream string, payload []byte) error {
+			if len(payload) == 0 {
+				return nil
+			}
+			if stream != "stdout" && stream != "stderr" {
+				return fmt.Errorf("%w: invalid output stream", ErrExecutionServiceConfiguration)
+			}
+			if _, err := s.store.AppendCommandEvent(ctx, store.CommandEventAppend{
+				CommandID: started.CommandID,
+				Type:      stream,
+				Payload:   payload,
+				ByteCount: int64(len(payload)),
+			}); err != nil {
+				return err
+			}
+			streamed.Store(true)
+			return nil
+		})
+	} else {
+		runtimeResult, runtimeErr = commandRuntime.ExecuteCommand(ctx, request)
+	}
 	if runtimeErr != nil {
 		return s.finishCommandFailure(ctx, currentSession, started, runtimeErr, "command_transport_failed")
 	}
-	for _, output := range []struct {
-		eventType string
-		payload   []byte
-	}{
-		{eventType: "stdout", payload: runtimeResult.Stdout},
-		{eventType: "stderr", payload: runtimeResult.Stderr},
-	} {
-		if len(output.payload) == 0 {
-			continue
-		}
-		if _, err := s.store.AppendCommandEvent(ctx, store.CommandEventAppend{
-			CommandID: started.CommandID,
-			Type:      output.eventType,
-			Payload:   output.payload,
-			ByteCount: int64(len(output.payload)),
-		}); err != nil {
-			return s.finishCommandFailure(ctx, currentSession, started, err, "command_output_persistence_failed")
+	if !streamed.Load() {
+		for _, output := range []struct {
+			eventType string
+			payload   []byte
+		}{
+			{eventType: "stdout", payload: runtimeResult.Stdout},
+			{eventType: "stderr", payload: runtimeResult.Stderr},
+		} {
+			if len(output.payload) == 0 {
+				continue
+			}
+			if _, err := s.store.AppendCommandEvent(ctx, store.CommandEventAppend{
+				CommandID: started.CommandID,
+				Type:      output.eventType,
+				Payload:   output.payload,
+				ByteCount: int64(len(output.payload)),
+			}); err != nil {
+				return s.finishCommandFailure(ctx, currentSession, started, err, "command_output_persistence_failed")
+			}
 		}
 	}
 	if runtimeResult.ShellExited {

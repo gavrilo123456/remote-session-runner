@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
@@ -248,6 +249,23 @@ func (h *p062Harness) acceptCommand(t *testing.T, sessionID domain.SessionID, in
 	response := p060DoJSON(t, h.client, http.MethodPost, "http://locald/internal/v1/accept-intent", []byte(body))
 	if response.StatusCode != http.StatusAccepted {
 		t.Fatalf("command %s status = %d body=%s", commandID, response.StatusCode, p060ReadBody(t, response))
+	}
+	_ = p060ReadBody(t, response)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		status := p060DoJSON(t, h.client, http.MethodGet, "http://locald/internal/v1/commands/"+commandID, nil)
+		if status.StatusCode != http.StatusOK {
+			t.Fatalf("command %s read status = %d body=%s", commandID, status.StatusCode, p060ReadBody(t, status))
+		}
+		var command localCommandResponse
+		p060DecodeJSON(t, status, &command)
+		if domain.CommandState(command.CommandState).IsTerminal() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("command %s did not complete: %+v", commandID, command)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	events := p060DoJSON(t, h.client, http.MethodGet, "http://locald/internal/v1/commands/"+commandID+"/events?after=0", nil)
 	if events.StatusCode != http.StatusOK {

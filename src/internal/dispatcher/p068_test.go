@@ -197,6 +197,28 @@ func TestP068LocaldClientSendsOnlyIntentIdentity(t *testing.T) {
 	}
 }
 
+func TestP104LocaldRejectionExposesOnlyStructuredCode(t *testing.T) {
+	client, err := NewLocaldClientWithHTTP(&http.Client{Transport: p068RoundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := `{"code":"intent_acceptance_failed","message":"sensitive request detail"}`
+		return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := p068Hash(t, `{"operation":"submit_command","script":"secret"}`)
+	_, err = client.AcceptIntent(context.Background(), AcceptIntentRequest{IntentID: "intent-p104-rejected", RequestHash: hash})
+	if !errors.Is(err, ErrLocaldRejected) || !strings.Contains(err.Error(), "intent_acceptance_failed") {
+		t.Fatalf("locald rejection error=%v, want structured rejection code", err)
+	}
+	if strings.Contains(err.Error(), "sensitive request detail") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("locald rejection error leaked response detail: %v", err)
+	}
+	var rejection *LocaldRejectionError
+	if !errors.As(err, &rejection) || rejection.Message != "sensitive request detail" {
+		t.Fatalf("structured locald rejection=%+v, want its diagnostic message preserved separately", rejection)
+	}
+}
+
 func p068Authority(t *testing.T) *store.AuthorityStore {
 	t.Helper()
 	db, err := store.Open(context.Background(), testfixture.New(t).Path()+"/state/p068.db")

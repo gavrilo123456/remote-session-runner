@@ -255,6 +255,13 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 // RunScript atomically materializes a private script, sources it in the
 // existing Bash process, and waits for its dedicated control completion.
 func (s *PersistentShell) RunScript(ctx context.Context, commandID string, script []byte) (result PersistentShellResult, runErr error) {
+	return s.RunScriptWithOutput(ctx, commandID, script, nil)
+}
+
+// RunScriptWithOutput is RunScript with an optional callback for each bounded
+// output chunk. Callbacks run from the stdout/stderr drainers while the script
+// is active; callers must not retain or mutate the supplied byte slice.
+func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID string, script []byte, onOutput func(OutputChunk) error) (result PersistentShellResult, runErr error) {
 	if s == nil {
 		return PersistentShellResult{}, ErrPersistentShellClosed
 	}
@@ -323,8 +330,12 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 	stderrDone := make(chan outputDrainResult, 1)
 	var sequence atomic.Uint64
 	limiter := &outputLimiter{max: s.maxOutputBytes}
-	go func() { stdoutDone <- drainOutputFIFO(ctx, stdoutRead, OutputStreamStdout, &sequence, limiter) }()
-	go func() { stderrDone <- drainOutputFIFO(ctx, stderrRead, OutputStreamStderr, &sequence, limiter) }()
+	go func() {
+		stdoutDone <- drainOutputFIFO(ctx, stdoutRead, OutputStreamStdout, &sequence, limiter, onOutput)
+	}()
+	go func() {
+		stderrDone <- drainOutputFIFO(ctx, stderrRead, OutputStreamStderr, &sequence, limiter, onOutput)
+	}()
 
 	started := ControlFrame{Version: ControlProtocolVersion, Type: FrameTypeCommandStarted, SessionID: s.parser.sessionID, CommandID: commandID, Generation: s.parser.generation}
 	if err := started.Validate(); err != nil {
@@ -762,7 +773,7 @@ func createOutputFIFO(dir, pattern string) (string, *os.File, *os.File, error) {
 	return path, read, keepalive, nil
 }
 
-func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, sequence *atomic.Uint64, limiter *outputLimiter) outputDrainResult {
+func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, sequence *atomic.Uint64, limiter *outputLimiter, onOutput func(OutputChunk) error) outputDrainResult {
 	var result outputDrainResult
 	buffer := make([]byte, MaxOutputChunkBytes)
 	pending := make([]byte, 0, MaxOutputChunkBytes)
@@ -771,7 +782,13 @@ func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, se
 			return
 		}
 		data := append([]byte(nil), pending...)
-		result.chunks = append(result.chunks, OutputChunk{Sequence: sequence.Add(1), Stream: stream, Data: data})
+		chunk := OutputChunk{Sequence: sequence.Add(1), Stream: stream, Data: data}
+		result.chunks = append(result.chunks, chunk)
+		if onOutput != nil {
+			if err := onOutput(chunk); err != nil && result.err == nil {
+				result.err = err
+			}
+		}
 		pending = pending[:0]
 	}
 	ticker := time.NewTicker(OutputFlushInterval)
@@ -790,7 +807,13 @@ func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, se
 			pending = append(pending, limiter.retain(buffer[:n])...)
 			for len(pending) >= MaxOutputChunkBytes {
 				data := append([]byte(nil), pending[:MaxOutputChunkBytes]...)
-				result.chunks = append(result.chunks, OutputChunk{Sequence: sequence.Add(1), Stream: stream, Data: data})
+				chunk := OutputChunk{Sequence: sequence.Add(1), Stream: stream, Data: data}
+				result.chunks = append(result.chunks, chunk)
+				if onOutput != nil {
+					if callbackErr := onOutput(chunk); callbackErr != nil && result.err == nil {
+						result.err = callbackErr
+					}
+				}
 				pending = pending[MaxOutputChunkBytes:]
 			}
 		}

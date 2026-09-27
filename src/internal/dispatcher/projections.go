@@ -65,10 +65,14 @@ func remoteSessionProjectionFromReply(intent store.LocalIntentRecord, object map
 	if err != nil {
 		return store.RemoteSessionProjection{}, false, err
 	}
-	controller, err := projectionController(object, intent.Controller)
+	expectedController, err := queuedRemoteController(intent.Controller)
 	if err != nil {
 		return store.RemoteSessionProjection{}, false, err
 	}
+	if _, err := projectionController(object, expectedController); err != nil {
+		return store.RemoteSessionProjection{}, false, err
+	}
+	controller := intent.Controller
 	environment := intent.Environment
 	if value, present, readErr := readProjectionString(object, "environment"); readErr != nil {
 		return store.RemoteSessionProjection{}, false, readErr
@@ -110,10 +114,14 @@ func remoteCommandProjectionFromReply(intent store.LocalIntentRecord, object map
 	if err != nil {
 		return store.RemoteCommandProjection{}, false, err
 	}
-	controller, err := projectionController(object, intent.Controller)
+	expectedController, err := queuedRemoteController(intent.Controller)
 	if err != nil {
 		return store.RemoteCommandProjection{}, false, err
 	}
+	if _, err := projectionController(object, expectedController); err != nil {
+		return store.RemoteCommandProjection{}, false, err
+	}
+	controller := intent.Controller
 	sessionID := intent.SessionID
 	if value, present, readErr := readProjectionString(object, "session_id"); readErr != nil {
 		return store.RemoteCommandProjection{}, false, readErr
@@ -248,6 +256,24 @@ func projectionController(object map[string]json.RawMessage, fallback domain.Con
 	return fallback, nil
 }
 
+// queuedRemoteController converts the Mac ingress identity into the distinct
+// principal authenticated by the server-side SSH key map. The POC deliberately
+// uses the same selected account ID in the local_user and queued_mac namespaces.
+func queuedRemoteController(controller domain.ControllerIdentity) (domain.ControllerIdentity, error) {
+	switch controller.Type() {
+	case domain.ControllerTypeQueuedMac:
+		return controller, nil
+	case domain.ControllerTypeLocalUser:
+		mapped, err := domain.NewControllerIdentity(domain.ControllerTypeQueuedMac, controller.ID())
+		if err != nil {
+			return domain.ControllerIdentity{}, fmt.Errorf("%w: queued controller mapping", ErrRemoteResponse)
+		}
+		return mapped, nil
+	default:
+		return domain.ControllerIdentity{}, fmt.Errorf("%w: local intent controller cannot use the queued SSH bridge", ErrRemoteResponse)
+	}
+}
+
 func projectionSource(object map[string]json.RawMessage, fallback domain.Source) (domain.Source, string, bool, error) {
 	raw, ok := object["source"]
 	if !ok {
@@ -326,10 +352,14 @@ func remoteJobProjectionFromReply(intent store.LocalIntentRecord, object map[str
 	if err != nil {
 		return store.RemoteJobProjection{}, false, err
 	}
-	controller, err := projectionController(object, intent.Controller)
+	expectedController, err := queuedRemoteController(intent.Controller)
 	if err != nil {
 		return store.RemoteJobProjection{}, false, err
 	}
+	if _, err := projectionController(object, expectedController); err != nil {
+		return store.RemoteJobProjection{}, false, err
+	}
+	controller := intent.Controller
 	if value, ok := object["session_id"]; ok {
 		var sessionID string
 		if json.Unmarshal(value, &sessionID) != nil || sessionID != string(intent.SessionID) {

@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -263,7 +265,8 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 	}
 	accepted, err := s.acceptIntent(request.Context(), intent)
 	if err != nil {
-		writeJSON(response, http.StatusConflict, map[string]string{"code": "intent_acceptance_failed", "message": sanitizeError(err)})
+		code, _ := intentAcceptanceFailure(err)
+		writeJSON(response, http.StatusConflict, map[string]string{"code": code, "message": sanitizeError(err)})
 		return
 	}
 	writeJSON(response, http.StatusAccepted, accepted)
@@ -288,12 +291,17 @@ func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalInte
 		base.Duplicate = result.Duplicate
 	case "submit_command":
 		timeout := payload.Timeout
-		result, err := s.service.SubmitCommand(ctx, execution.SubmitCommandRequest{CommandID: intent.CommandID, SessionID: intent.SessionID, Controller: intent.Controller, IdempotencyKey: intent.IdempotencyKey, RequestHash: intent.RequestHash, Script: string(intent.ScriptBytes), Timeout: timeout, IntentOrdinal: dereferenceOrdinal(intent.IntentOrdinal)})
+		result, err := s.service.AcceptCommand(ctx, execution.SubmitCommandRequest{CommandID: intent.CommandID, SessionID: intent.SessionID, Controller: intent.Controller, IdempotencyKey: intent.IdempotencyKey, RequestHash: intent.RequestHash, Script: string(intent.ScriptBytes), Timeout: timeout, IntentOrdinal: dereferenceOrdinal(intent.IntentOrdinal)})
 		if err != nil {
 			return intentAcceptanceResponse{}, err
 		}
 		base.CommandState = string(result.Command.State)
 		base.Duplicate = result.Duplicate
+		if result.Command.State == domain.CommandStateQueued {
+			go func() {
+				_, _ = s.service.ResumeCommand(context.Background(), result.Command.CommandID, intent.Controller)
+			}()
+		}
 	case "cancel_command":
 		result, err := s.service.CancelCommand(ctx, execution.CancelCommandRequest{CommandID: intent.CommandID, Controller: intent.Controller, IdempotencyKey: intent.IdempotencyKey, RequestHash: intent.RequestHash})
 		if err != nil {
@@ -822,12 +830,12 @@ func rejectControllerQuery(request *http.Request) error {
 }
 
 type decodedIntentPayload struct {
-	TimeoutSeconds            int64  `json:"timeout_seconds,omitempty"`
-	Policy                    string `json:"policy,omitempty"`
-	CommandTimeoutSeconds     int64  `json:"command_timeout_seconds,omitempty"`
-	IdleTimeoutSeconds        int64  `json:"idle_timeout_seconds,omitempty"`
-	SessionMaxLifetimeSeconds int64  `json:"session_max_lifetime_seconds,omitempty"`
-	OutputBytesPerCommand     int64  `json:"output_bytes_per_command,omitempty"`
+	TimeoutSeconds            json.Number `json:"timeout_seconds,omitempty"`
+	Policy                    string      `json:"policy,omitempty"`
+	CommandTimeoutSeconds     json.Number `json:"command_timeout_seconds,omitempty"`
+	IdleTimeoutSeconds        json.Number `json:"idle_timeout_seconds,omitempty"`
+	SessionMaxLifetimeSeconds json.Number `json:"session_max_lifetime_seconds,omitempty"`
+	OutputBytesPerCommand     json.Number `json:"output_bytes_per_command,omitempty"`
 	IsolationFlags            struct {
 		FilesystemBoundary bool `json:"filesystem_boundary,omitempty"`
 		CPUControl         bool `json:"cpu_control,omitempty"`
@@ -849,14 +857,68 @@ func decodeIntentPayload(raw []byte) (decodedIntentPayload, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return decodedIntentPayload{}, fmt.Errorf("%w: payload: %v", ErrIntentRequest, err)
 	}
-	if payload.TimeoutSeconds > 0 {
-		payload.Timeout = time.Duration(payload.TimeoutSeconds) * time.Second
-	} else if payload.CommandTimeoutSeconds > 0 {
-		payload.Timeout = time.Duration(payload.CommandTimeoutSeconds) * time.Second
+	timeoutSeconds, err := parseCanonicalInt64(payload.TimeoutSeconds)
+	if err != nil {
+		return decodedIntentPayload{}, fmt.Errorf("%w: timeout_seconds", ErrIntentRequest)
 	}
-	payload.RequestedLimits = domain.RequestedLimits{CommandTimeout: time.Duration(payload.CommandTimeoutSeconds) * time.Second, IdleTimeout: time.Duration(payload.IdleTimeoutSeconds) * time.Second, SessionMaxLifetime: time.Duration(payload.SessionMaxLifetimeSeconds) * time.Second, OutputBytesPerCommand: payload.OutputBytesPerCommand}
+	commandTimeoutSeconds, err := parseCanonicalInt64(payload.CommandTimeoutSeconds)
+	if err != nil {
+		return decodedIntentPayload{}, fmt.Errorf("%w: command_timeout_seconds", ErrIntentRequest)
+	}
+	idleTimeoutSeconds, err := parseCanonicalInt64(payload.IdleTimeoutSeconds)
+	if err != nil {
+		return decodedIntentPayload{}, fmt.Errorf("%w: idle_timeout_seconds", ErrIntentRequest)
+	}
+	sessionMaxLifetimeSeconds, err := parseCanonicalInt64(payload.SessionMaxLifetimeSeconds)
+	if err != nil {
+		return decodedIntentPayload{}, fmt.Errorf("%w: session_max_lifetime_seconds", ErrIntentRequest)
+	}
+	outputBytesPerCommand, err := parseCanonicalInt64(payload.OutputBytesPerCommand)
+	if err != nil {
+		return decodedIntentPayload{}, fmt.Errorf("%w: output_bytes_per_command", ErrIntentRequest)
+	}
+	if timeoutSeconds > 0 {
+		payload.Timeout, err = durationFromSeconds(timeoutSeconds)
+	} else if commandTimeoutSeconds > 0 {
+		payload.Timeout, err = durationFromSeconds(commandTimeoutSeconds)
+	}
+	if err != nil {
+		return decodedIntentPayload{}, fmt.Errorf("%w: timeout is out of range", ErrIntentRequest)
+	}
+	commandTimeout, err := durationFromSeconds(commandTimeoutSeconds)
+	if err != nil {
+		return decodedIntentPayload{}, fmt.Errorf("%w: command_timeout_seconds is out of range", ErrIntentRequest)
+	}
+	idleTimeout, err := durationFromSeconds(idleTimeoutSeconds)
+	if err != nil {
+		return decodedIntentPayload{}, fmt.Errorf("%w: idle_timeout_seconds is out of range", ErrIntentRequest)
+	}
+	sessionMaxLifetime, err := durationFromSeconds(sessionMaxLifetimeSeconds)
+	if err != nil {
+		return decodedIntentPayload{}, fmt.Errorf("%w: session_max_lifetime_seconds is out of range", ErrIntentRequest)
+	}
+	payload.RequestedLimits = domain.RequestedLimits{CommandTimeout: commandTimeout, IdleTimeout: idleTimeout, SessionMaxLifetime: sessionMaxLifetime, OutputBytesPerCommand: outputBytesPerCommand}
 	payload.Isolation = domain.IsolationRequirements{FilesystemBoundary: payload.IsolationFlags.FilesystemBoundary, CPUControl: payload.IsolationFlags.CPUControl, MemoryControl: payload.IsolationFlags.MemoryControl, PIDControl: payload.IsolationFlags.PIDControl, DiskControl: payload.IsolationFlags.DiskControl, NetworkControl: payload.IsolationFlags.NetworkControl, Mounts: payload.IsolationFlags.Mounts, Volumes: payload.IsolationFlags.Volumes, PrivilegeControl: payload.IsolationFlags.PrivilegeControl}
 	return payload, nil
+}
+
+func parseCanonicalInt64(value json.Number) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	rational, ok := new(big.Rat).SetString(value.String())
+	if !ok || !rational.IsInt() || !rational.Num().IsInt64() {
+		return 0, ErrIntentRequest
+	}
+	return rational.Num().Int64(), nil
+}
+
+func durationFromSeconds(seconds int64) (time.Duration, error) {
+	const nanosPerSecond = int64(time.Second)
+	if seconds > math.MaxInt64/nanosPerSecond || seconds < math.MinInt64/nanosPerSecond {
+		return 0, ErrIntentRequest
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 func dereferenceOrdinal(value *int64) int64 {
@@ -911,4 +973,31 @@ func sanitizeError(err error) string {
 		return ""
 	}
 	return strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " ")
+}
+
+func intentAcceptanceFailure(err error) (string, string) {
+	switch {
+	case errors.Is(err, ErrIntentRequest), errors.Is(err, store.ErrInvalidCommand), errors.Is(err, store.ErrIdempotencyKey), errors.Is(err, domain.ErrInvalidSource), errors.Is(err, domain.ErrInvalidRequestedLimits), errors.Is(err, domain.ErrLimitExceedsServiceCeiling), errors.Is(err, domain.ErrScriptTooLarge), errors.Is(err, domain.ErrSerializedInputTooLarge):
+		return "invalid_request", "request exceeds the configured execution policy"
+	case errors.Is(err, execution.ErrSessionController), errors.Is(err, domain.ErrControllerMismatch):
+		return "controller_mismatch", "session controller does not match the local owner"
+	case errors.Is(err, execution.ErrSessionNotReady), errors.Is(err, store.ErrCommandSessionState):
+		return "session_not_ready", "session is not ready to accept this command"
+	case errors.Is(err, execution.ErrEnvironmentUnavailable):
+		return "environment_forbidden", "configured environment is unavailable"
+	case errors.Is(err, domain.ErrEnvironmentTargetMismatch), errors.Is(err, domain.ErrEnvironmentSourceMismatch), errors.Is(err, domain.ErrUnsupportedIsolationRequirement):
+		return "environment_target_mismatch", "request is incompatible with the configured environment"
+	case errors.Is(err, store.ErrIdempotencyConflict):
+		return "idempotency_conflict", "idempotency key is already bound to another request"
+	case errors.Is(err, store.ErrSessionCapacityExceeded):
+		return "quota_exceeded", "configured active-session capacity is full"
+	case errors.Is(err, store.ErrSessionNotFound), errors.Is(err, store.ErrCommandNotFound), errors.Is(err, store.ErrJobNotFound):
+		return "resource_not_found", "referenced execution resource is unavailable"
+	case errors.Is(err, execution.ErrRuntimeUnavailable), errors.Is(err, execution.ErrRuntimeHandshake), errors.Is(err, execution.ErrCommandTransport):
+		return "runtime_unavailable", "the target runtime could not accept the request"
+	case errors.Is(err, store.ErrCommandOrderCorrupt):
+		return "command_order_error", "command ordering could not be verified"
+	default:
+		return "intent_acceptance_failed", "target executor rejected the committed intent"
+	}
 }

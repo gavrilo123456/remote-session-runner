@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -208,7 +209,7 @@ func p104RunHostMailboxTarget(t *testing.T, h *p095Harness, client *mailboxclien
 		"request_id": retryID, "idempotency_key": "key-p104-" + targetName + "-same-key",
 		"operation": "submit_command", "session_id": create.SessionID, "script": countScript, "timeout_seconds": 30,
 	})
-	if retry.RequestID != retryID || retry.CommandID != first.CommandID || retry.SessionID != create.SessionID || retry.RequestState != "accepted" {
+	if retry.RequestID != retryID || retry.CommandID != first.CommandID || retry.SessionID != create.SessionID || (retry.RequestState != "accepted" && retry.RequestState != "complete") {
 		t.Fatalf("same-key retry response=%+v; original=%+v", retry, first)
 	}
 	if err := p104WaitCommand(ctx, h, remote, queuedController, first.CommandID, isRemote, true); err != nil {
@@ -402,7 +403,14 @@ func p104SubmitAndDispatch(t *testing.T, ctx context.Context, h *p095Harness, cl
 			t.Fatalf("queued remote submit dispatch %s: %v", requestID, err)
 		}
 	} else if _, _, err := local.DispatchIntent(ctx, intent.IntentID); err != nil {
-		t.Fatalf("local submit dispatch %s: %v", requestID, err)
+		command, commandErr := h.authority.GetCommand(ctx, intent.CommandID)
+		session, sessionErr := h.authority.GetSession(ctx, intent.SessionID)
+		diagnostic := ""
+		var rejection *dispatcher.LocaldRejectionError
+		if errors.As(err, &rejection) {
+			diagnostic = rejection.Message
+		}
+		t.Fatalf("local submit dispatch %s: %v (diagnostic=%q; target command state=%q lookup_err=%v; session state=%q lookup_err=%v)", requestID, err, diagnostic, command.State, commandErr, session.State, sessionErr)
 	}
 	if err := h.processor.Reconcile(ctx); err != nil {
 		t.Fatal(err)

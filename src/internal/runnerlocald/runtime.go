@@ -81,6 +81,10 @@ func (r *MacSessionRuntime) Cleanup(_ context.Context, request execution.Runtime
 }
 
 func (r *MacSessionRuntime) ExecuteCommand(ctx context.Context, request execution.RuntimeCommandRequest) (execution.RuntimeCommandResult, error) {
+	return r.ExecuteCommandStream(ctx, request, nil)
+}
+
+func (r *MacSessionRuntime) ExecuteCommandStream(ctx context.Context, request execution.RuntimeCommandRequest, onOutput func(stream string, payload []byte) error) (execution.RuntimeCommandResult, error) {
 	if r == nil || r.adapter == nil {
 		return execution.RuntimeCommandResult{}, execution.ErrRuntimeUnavailable
 	}
@@ -88,7 +92,12 @@ func (r *MacSessionRuntime) ExecuteCommand(ctx context.Context, request executio
 	if err != nil {
 		return execution.RuntimeCommandResult{}, err
 	}
-	result, err := shell.RunScript(ctx, string(request.Command.CommandID), request.Command.ScriptBytes)
+	result, err := shell.RunScriptWithOutput(ctx, string(request.Command.CommandID), request.Command.ScriptBytes, func(chunk hostruntime.OutputChunk) error {
+		if onOutput == nil {
+			return nil
+		}
+		return onOutput(string(chunk.Stream), chunk.Data)
+	})
 	if err != nil {
 		return execution.RuntimeCommandResult{}, err
 	}

@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
@@ -237,8 +238,12 @@ func TestP047PrivateSubmitReadEventsAndReplayAfterServerRestart(t *testing.T) {
 	}
 	var submitted commandResponse
 	p046DecodeJSON(t, submit, &submitted)
-	if submitted.CommandState != string(domain.CommandStateSucceeded) || submitted.ScriptByteCount != len("printf p047") || submitted.ScriptSHA256 == "" {
+	if (submitted.CommandState != string(domain.CommandStateQueued) && submitted.CommandState != string(domain.CommandStateRunning) && !domain.CommandState(submitted.CommandState).IsTerminal()) || submitted.ScriptByteCount != len("printf p047") || submitted.ScriptSHA256 == "" {
 		t.Fatalf("P047 submit response = %+v", submitted)
+	}
+	completed := p046WaitCommandTerminal(t, client, "http://runnerd/internal/v1/commands/p047-command?controller_type=queued_mac&controller_id=tomasz.walczuk")
+	if completed.CommandState != string(domain.CommandStateSucceeded) {
+		t.Fatalf("P047 completed command = %+v", completed)
 	}
 
 	read := p046DoJSON(t, client, http.MethodGet, "http://runnerd/internal/v1/commands/p047-command?controller_type=queued_mac&controller_id=tomasz.walczuk", nil)
@@ -380,8 +385,12 @@ func TestP047LinuxPrivateSubmitReadEventsUsesUbuntuRuntime(t *testing.T) {
 	}
 	var submitted commandResponse
 	p046DecodeJSON(t, submit, &submitted)
-	if submitted.CommandState != string(domain.CommandStateSucceeded) || submitted.ExitCode == nil || *submitted.ExitCode != 0 || !submitted.OutputComplete {
+	if (submitted.CommandState != string(domain.CommandStateQueued) && submitted.CommandState != string(domain.CommandStateRunning) && !domain.CommandState(submitted.CommandState).IsTerminal()) || submitted.ScriptByteCount != len("printf p047-linux") {
 		t.Fatalf("P047 Linux submit response = %+v", submitted)
+	}
+	completed := p046WaitCommandTerminal(t, client, "http://runnerd/internal/v1/commands/p047-linux-command?controller_type=direct_mtls&controller_id=tomasz.walczuk")
+	if completed.CommandState != string(domain.CommandStateSucceeded) || completed.ExitCode == nil || *completed.ExitCode != 0 || !completed.OutputComplete {
+		t.Fatalf("P047 Linux completed command = %+v", completed)
 	}
 
 	events := p046DoJSON(t, client, http.MethodGet, "http://runnerd/internal/v1/commands/p047-linux-command/events?controller_type=direct_mtls&controller_id=tomasz.walczuk&after=0", nil)
@@ -525,6 +534,25 @@ func p046DoJSON(t *testing.T, client *http.Client, method, url string, body []by
 		t.Fatal(err)
 	}
 	return response
+}
+
+func p046WaitCommandTerminal(t *testing.T, client *http.Client, url string) commandResponse {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		response := p046DoJSON(t, client, http.MethodGet, url, nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("P047 command read status = %d, body = %s", response.StatusCode, p046ReadBody(t, response))
+		}
+		var command commandResponse
+		p046DecodeJSON(t, response, &command)
+		if domain.CommandState(command.CommandState).IsTerminal() {
+			return command
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("P047 command did not reach a terminal state: %s", url)
+	return commandResponse{}
 }
 
 type p046Reader struct{ bytes []byte }

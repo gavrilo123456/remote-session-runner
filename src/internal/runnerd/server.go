@@ -466,7 +466,7 @@ func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, reques
 		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
 		return
 	}
-	result, serviceErr := s.service.SubmitCommand(request.Context(), execution.SubmitCommandRequest{
+	result, serviceErr := s.service.AcceptCommand(request.Context(), execution.SubmitCommandRequest{
 		CommandID:            commandID,
 		SessionID:            sessionID,
 		Controller:           controller,
@@ -485,6 +485,11 @@ func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, reques
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
+	}
+	if result.Command.State == domain.CommandStateQueued {
+		go func() {
+			_, _ = s.service.ResumeCommand(context.Background(), result.Command.CommandID, controller)
+		}()
 	}
 	writeJSON(response, http.StatusAccepted, commandResponseFromRecord(result.Command, result.Duplicate))
 }

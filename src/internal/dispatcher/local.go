@@ -56,6 +56,27 @@ type IntentAcceptance struct {
 	ObservedAt      time.Time        `json:"observed_at"`
 }
 
+// LocaldRejectionError preserves the private API's structured rejection for
+// internal diagnosis. Error intentionally omits Message so callers do not
+// accidentally copy executor details into general logs.
+type LocaldRejectionError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *LocaldRejectionError) Error() string {
+	if e == nil {
+		return ErrLocaldRejected.Error()
+	}
+	if e.Code != "" {
+		return fmt.Sprintf("%s: status %d code %s", ErrLocaldRejected, e.StatusCode, e.Code)
+	}
+	return fmt.Sprintf("%s: status %d", ErrLocaldRejected, e.StatusCode)
+}
+
+func (e *LocaldRejectionError) Unwrap() error { return ErrLocaldRejected }
+
 // TargetAcceptance identifies the target that acknowledged an intent.
 type TargetAcceptance struct {
 	Kind    string `json:"kind"`
@@ -248,6 +269,13 @@ func (c *LocaldClient) AcceptIntent(ctx context.Context, input AcceptIntentReque
 		return IntentAcceptance{}, fmt.Errorf("%w: bounded response", ErrLocaldResponse)
 	}
 	if response.StatusCode != http.StatusAccepted {
+		var envelope struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(reply, &envelope); err == nil {
+			return IntentAcceptance{}, &LocaldRejectionError{StatusCode: response.StatusCode, Code: safeLocaldErrorCode(envelope.Code), Message: envelope.Message}
+		}
 		return IntentAcceptance{}, fmt.Errorf("%w: status %d", ErrLocaldRejected, response.StatusCode)
 	}
 	var acceptance IntentAcceptance
@@ -261,4 +289,16 @@ func (c *LocaldClient) AcceptIntent(ctx context.Context, input AcceptIntentReque
 		return IntentAcceptance{}, fmt.Errorf("%w: trailing response data", ErrLocaldResponse)
 	}
 	return acceptance, nil
+}
+
+func safeLocaldErrorCode(code string) string {
+	if code == "" || len(code) > 64 {
+		return ""
+	}
+	for _, char := range code {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+			return ""
+		}
+	}
+	return code
 }

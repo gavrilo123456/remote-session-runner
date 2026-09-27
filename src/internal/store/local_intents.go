@@ -423,7 +423,8 @@ func (s *AuthorityStore) ClaimLocalIntent(ctx context.Context, id domain.IntentI
 }
 
 // ClaimNextLocalIntent claims the earliest eligible recorded intent. Earlier
-// unsettled command intents in a session keep later ordinals blocked.
+// unsettled remote command intents block later ordinals until the remote
+// result is reconciled; local target acceptance delegates ordering to locald.
 func (s *AuthorityStore) ClaimNextLocalIntent(ctx context.Context, owner string, leaseDuration time.Duration) (LocalIntentRecord, error) {
 	if err := validateLeaseRequest(owner, leaseDuration); err != nil {
 		return LocalIntentRecord{}, err
@@ -530,6 +531,7 @@ WHERE li.delivery_state = 'recorded'
             AND prior.intent_ordinal IS NOT NULL
             AND prior.intent_ordinal < li.intent_ordinal
             AND prior.delivery_state NOT IN ('reconciled', 'not_delivered')
+            AND NOT (prior.target_kind = 'local' AND prior.delivery_state = 'accepted')
       )
   )`
 
