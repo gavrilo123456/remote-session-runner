@@ -60,8 +60,10 @@ func (o *Outbox) Replace(ctx context.Context, requestID string, response []byte)
 	if !json.Valid(response) {
 		return fmt.Errorf("%w: response JSON is invalid", ErrOutboxResponse)
 	}
-	if err := ctx.Err(); err != nil {
-		return err
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 	temporary, err := os.CreateTemp(o.root, ".response-*.tmp")
 	if err != nil {
@@ -118,8 +120,9 @@ func (o *Outbox) Read(requestID string) ([]byte, error) {
 
 // Projector republishes the durable SQLite response snapshot after a crash.
 type Projector struct {
-	Authority *store.AuthorityStore
-	Outbox    *Outbox
+	Authority  *store.AuthorityStore
+	Outbox     *Outbox
+	EventFiles *EventFiles
 }
 
 func (p Projector) Publish(ctx context.Context, requestID string) error {
@@ -132,6 +135,38 @@ func (p Projector) Publish(ctx context.Context, requestID string) error {
 	}
 	if len(record.ResponseBytes) == 0 {
 		return fmt.Errorf("%w: response revision is not published", ErrOutboxResponse)
+	}
+	return p.Outbox.Replace(ctx, requestID, record.ResponseBytes)
+}
+
+// PublishCommand repairs/publishes the event prefix before replacing the
+// response file. Repeating it after a crash is safe: the event image and
+// response bytes are both regenerated from durable records, and the response
+// advertises only its stored frozen cursor.
+func (p Projector) PublishCommand(ctx context.Context, requestID string, commandID domain.CommandID) error {
+	if p.Authority == nil || p.Outbox == nil || p.EventFiles == nil {
+		return ErrOutboxConfiguration
+	}
+	record, err := p.Authority.GetMailboxExchange(ctx, requestID)
+	if err != nil {
+		return err
+	}
+	if len(record.ResponseBytes) == 0 {
+		return fmt.Errorf("%w: response revision is not published", ErrOutboxResponse)
+	}
+	if record.AvailableEventSequence == nil || *record.AvailableEventSequence < 1 {
+		return fmt.Errorf("%w: response has no event cursor", ErrOutboxResponse)
+	}
+	eventProjector := EventProjector{Authority: p.Authority}
+	eventBytes, cursor, err := eventProjector.ProjectThrough(ctx, commandID, *record.AvailableEventSequence)
+	if err != nil {
+		return err
+	}
+	if cursor != *record.AvailableEventSequence {
+		return fmt.Errorf("%w: projected cursor %d differs from response cursor %d", ErrOutboxResponse, cursor, *record.AvailableEventSequence)
+	}
+	if err := p.EventFiles.Replace(ctx, commandID, eventBytes); err != nil {
+		return err
 	}
 	return p.Outbox.Replace(ctx, requestID, record.ResponseBytes)
 }

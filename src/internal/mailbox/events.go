@@ -33,8 +33,18 @@ type EventProjector struct {
 // Project reads one contiguous durable command stream and returns newline-
 // terminated mailbox event records plus its highest available sequence.
 func (p EventProjector) Project(ctx context.Context, commandID domain.CommandID) ([]byte, int64, error) {
+	return p.ProjectThrough(ctx, commandID, 0)
+}
+
+// ProjectThrough renders only the durable prefix through sequence. A zero
+// limit renders the complete currently available stream; a positive limit
+// preserves an older frozen response cursor even when later events exist.
+func (p EventProjector) ProjectThrough(ctx context.Context, commandID domain.CommandID, through int64) ([]byte, int64, error) {
 	if p.Authority == nil {
 		return nil, 0, ErrEventProjectionConfiguration
+	}
+	if through < 0 {
+		return nil, 0, fmt.Errorf("%w: negative sequence limit", ErrEventProjection)
 	}
 	command, err := p.Authority.GetCommand(ctx, commandID)
 	if err != nil {
@@ -46,6 +56,12 @@ func (p EventProjector) Project(ctx context.Context, commandID domain.CommandID)
 	}
 	if len(events) == 0 {
 		return nil, 0, fmt.Errorf("%w: no retained events", ErrEventProjection)
+	}
+	if through > 0 {
+		if int64(len(events)) < through {
+			return nil, 0, fmt.Errorf("%w: retained cursor %d is below requested %d", ErrEventProjection, len(events), through)
+		}
+		events = events[:through]
 	}
 	data, err := RenderCommandEvents(command, events)
 	if err != nil {
