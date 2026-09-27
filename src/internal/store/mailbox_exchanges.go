@@ -61,6 +61,7 @@ type MailboxExchangeRecord struct {
 	TerminalResponseBytes  []byte
 	TerminalResponseSHA256 []byte
 	AvailableEventSequence *int64
+	AcknowledgedAt         *time.Time
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 }
@@ -341,14 +342,15 @@ func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, 
 	var digest []byte
 	var terminalBytes, terminalHash, responseBytes, responseHash []byte
 	var availableCursor sql.NullInt64
+	var acknowledgedAt sql.NullString
 	if err := connection.QueryRowContext(ctx, `
 SELECT request_id, operation, controller_type, controller_id, idempotency_key,
        canonical_hash_version, canonical_hash, canonical_payload, resource_id,
        request_state, response_revision, terminal_response_bytes,
        terminal_response_sha256, available_event_sequence, response_bytes,
-       response_sha256, created_at, updated_at
+       response_sha256, acknowledged_at, created_at, updated_at
 FROM mailbox_exchanges WHERE request_id = ?
-`, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+`, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return MailboxExchangeRecord{}, ErrMailboxExchangeNotFound
 	} else if err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("read mailbox exchange: %w", err)
@@ -385,6 +387,13 @@ FROM mailbox_exchanges WHERE request_id = ?
 		}
 		cursor := availableCursor.Int64
 		record.AvailableEventSequence = &cursor
+	}
+	if acknowledgedAt.Valid {
+		value, err := parseStoredTime(acknowledgedAt.String)
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: acknowledged_at: %v", ErrMailboxExchangeInvalid, err)
+		}
+		record.AcknowledgedAt = &value
 	}
 	if record.CreatedAt, err = parseStoredTime(createdAt); err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: created_at: %v", ErrMailboxExchangeInvalid, err)
