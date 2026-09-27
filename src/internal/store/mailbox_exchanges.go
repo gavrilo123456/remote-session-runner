@@ -74,6 +74,9 @@ type MailboxExchangeRecord struct {
 	ResponseCleanupStartedAt *time.Time
 	ResponseFileRemovedAt    *time.Time
 	EventFileCommandID       string
+	IdempotencyKeyExpiresAt  *time.Time
+	IdempotencyBindingActive bool
+	DeduplicationWarning     bool
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 }
@@ -92,9 +95,22 @@ type MailboxResponsePublication struct {
 // idempotency key and hash receives the original binding and state without
 // invoking a mutation a second time.
 func (s *AuthorityStore) AcceptMailboxExchange(ctx context.Context, input MailboxExchangeCreate) (record MailboxExchangeRecord, duplicate bool, err error) {
+	record, duplicate, _, err = s.acceptMailboxExchange(ctx, input, false, false)
+	return record, duplicate, err
+}
+
+// AcceptMailboxExchangeWithConflictReceipt atomically records a changed-payload
+// request ID when its key is still active, without replacing the original key
+// binding. The final bool identifies that the new request must receive a
+// structured idempotency_conflict response and must not invoke an operation.
+func (s *AuthorityStore) AcceptMailboxExchangeWithConflictReceipt(ctx context.Context, input MailboxExchangeCreate) (record MailboxExchangeRecord, duplicate, idempotencyConflict bool, err error) {
+	return s.acceptMailboxExchange(ctx, input, true, true)
+}
+
+func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input MailboxExchangeCreate, recordConflict, refreshDuplicate bool) (record MailboxExchangeRecord, duplicate, idempotencyConflict bool, err error) {
 	validated, err := validateMailboxExchangeCreate(input)
 	if err != nil {
-		return MailboxExchangeRecord{}, false, err
+		return MailboxExchangeRecord{}, false, false, err
 	}
 	now := s.now().UTC()
 	returnValue, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
@@ -115,40 +131,70 @@ func (s *AuthorityStore) AcceptMailboxExchange(ctx context.Context, input Mailbo
 				return MailboxExchangeRecord{}, err
 			}
 			if found {
-				if domain.CompareIdempotency(existing.RequestHash, validated.RequestHash) == domain.IdempotencyConflict {
-					return MailboxExchangeRecord{}, ErrIdempotencyConflict
-				}
-				if !bytesEqual(existing.CanonicalPayload, validated.CanonicalPayload) {
-					return MailboxExchangeRecord{}, ErrIdempotencyConflict
-				}
-				validated.ResourceID = existing.ResourceID
-				validated.State = existing.State
-				validated.ResponseRevision = existing.ResponseRevision
-				if len(existing.ResponseBytes) > 0 {
-					validated.ResponseBytes, err = rebindMailboxResponseRequestID(existing.ResponseBytes, validated.RequestID)
-					if err != nil {
-						return MailboxExchangeRecord{}, err
+				if existing.IdempotencyKeyExpiresAt != nil && now.Before(*existing.IdempotencyKeyExpiresAt) {
+					if domain.CompareIdempotency(existing.RequestHash, validated.RequestHash) == domain.IdempotencyConflict || !bytesEqual(existing.CanonicalPayload, validated.CanonicalPayload) {
+						if !recordConflict {
+							return MailboxExchangeRecord{}, ErrIdempotencyConflict
+						}
+						validated.State = MailboxExchangeAccepted
+						validated.IdempotencyBindingActive = false
+						validated.CreatedAt, validated.UpdatedAt = now, now
+						if err := insertMailboxExchangeOnConnection(ctx, connection, validated); err != nil {
+							return MailboxExchangeRecord{}, err
+						}
+						idempotencyConflict = true
+						return readMailboxExchangeOnConnection(ctx, connection, validated.RequestID)
 					}
-					validated.ResponseSHA256 = sha256Bytes(validated.ResponseBytes)
-				}
-				if len(existing.TerminalResponseBytes) > 0 {
-					validated.TerminalResponseBytes, err = rebindMailboxResponseRequestID(existing.TerminalResponseBytes, validated.RequestID)
-					if err != nil {
-						return MailboxExchangeRecord{}, err
+					validated.ResourceID = existing.ResourceID
+					if refreshDuplicate {
+						// The session processor creates a new response snapshot and asks
+						// its operation adapter for the original resource's current view.
+						validated.IdempotencyKeyExpiresAt = existing.IdempotencyKeyExpiresAt
+						validated.IdempotencyBindingActive = true
+						validated.DeduplicationWarning = existing.DeduplicationWarning
+					} else {
+						// Generic receipt users retain the P082/P083 replay contract.
+						validated.State = existing.State
+						validated.ResponseRevision = existing.ResponseRevision
+						if len(existing.ResponseBytes) > 0 {
+							validated.ResponseBytes, err = rebindMailboxResponseRequestID(existing.ResponseBytes, validated.RequestID)
+							if err != nil {
+								return MailboxExchangeRecord{}, err
+							}
+							validated.ResponseSHA256 = sha256Bytes(validated.ResponseBytes)
+						}
+						if len(existing.TerminalResponseBytes) > 0 {
+							validated.TerminalResponseBytes, err = rebindMailboxResponseRequestID(existing.TerminalResponseBytes, validated.RequestID)
+							if err != nil {
+								return MailboxExchangeRecord{}, err
+							}
+							validated.TerminalResponseSHA256 = sha256Bytes(validated.TerminalResponseBytes)
+						}
+						if existing.AvailableEventSequence != nil {
+							cursor := *existing.AvailableEventSequence
+							validated.AvailableEventSequence = &cursor
+						}
 					}
-					validated.TerminalResponseSHA256 = sha256Bytes(validated.TerminalResponseBytes)
+					validated.IdempotencyKeyExpiresAt = existing.IdempotencyKeyExpiresAt
+					validated.IdempotencyBindingActive = true
+					validated.DeduplicationWarning = existing.DeduplicationWarning
+					duplicate = true
+					if !refreshDuplicate {
+						validated.CreatedAt, validated.UpdatedAt = now, now
+						if err := insertMailboxExchangeOnConnection(ctx, connection, validated); err != nil {
+							return MailboxExchangeRecord{}, err
+						}
+						return readMailboxExchangeOnConnection(ctx, connection, validated.RequestID)
+					}
+				} else {
+					// The mapping expired. This is a new operation, and its response
+					// must warn that duplicate prevention is no longer guaranteed.
+					validated.DeduplicationWarning = true
 				}
-				if existing.AvailableEventSequence != nil {
-					cursor := *existing.AvailableEventSequence
-					validated.AvailableEventSequence = &cursor
-				}
-				validated.CreatedAt = now
-				validated.UpdatedAt = now
-				if err := insertMailboxExchangeOnConnection(ctx, connection, validated); err != nil {
-					return MailboxExchangeRecord{}, err
-				}
-				duplicate = true
-				return readMailboxExchangeOnConnection(ctx, connection, validated.RequestID)
+			}
+			if !validated.IdempotencyBindingActive {
+				validated.IdempotencyBindingActive = true
+				validated.IdempotencyKeyExpiresAt = timePointerMailboxStore(now.Add(DefaultSessionIdempotencyRetention))
 			}
 		}
 		validated.State = MailboxExchangeAccepted
@@ -160,9 +206,14 @@ func (s *AuthorityStore) AcceptMailboxExchange(ctx context.Context, input Mailbo
 		return readMailboxExchangeOnConnection(ctx, connection, validated.RequestID)
 	})
 	if err != nil {
-		return MailboxExchangeRecord{}, false, err
+		return MailboxExchangeRecord{}, false, false, err
 	}
-	return returnValue, duplicate, nil
+	return returnValue, duplicate, idempotencyConflict, nil
+}
+
+func timePointerMailboxStore(value time.Time) *time.Time {
+	value = value.UTC()
+	return &value
 }
 
 func rebindMailboxResponseRequestID(raw []byte, requestID string) ([]byte, error) {
@@ -389,15 +440,18 @@ func validateMailboxExchangeCreate(input MailboxExchangeCreate) (validatedMailbo
 
 type validatedMailboxExchangeCreate struct {
 	MailboxExchangeCreate
-	State                  MailboxExchangeState
-	ResponseRevision       int64
-	ResponseBytes          []byte
-	ResponseSHA256         []byte
-	TerminalResponseBytes  []byte
-	TerminalResponseSHA256 []byte
-	AvailableEventSequence *int64
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	State                    MailboxExchangeState
+	ResponseRevision         int64
+	ResponseBytes            []byte
+	ResponseSHA256           []byte
+	TerminalResponseBytes    []byte
+	TerminalResponseSHA256   []byte
+	AvailableEventSequence   *int64
+	IdempotencyKeyExpiresAt  *time.Time
+	IdempotencyBindingActive bool
+	DeduplicationWarning     bool
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 func validateMailboxRequestID(requestID string) error {
@@ -419,16 +473,26 @@ INSERT INTO mailbox_exchanges (
     request_state, response_revision, terminal_response_bytes,
     terminal_response_sha256, available_event_sequence, response_bytes,
     response_sha256, response_cleanup_at, response_cleanup_started_at,
-    response_file_removed_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    response_file_removed_at, idempotency_key_expires_at,
+    idempotency_binding_active, deduplication_warning, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, input.RequestID, input.Operation, string(input.Controller.Type()), string(input.Controller.ID()), input.IdempotencyKey,
 		input.RequestHash.Version(), input.RequestHash.SHA256(), input.CanonicalPayload, input.ResourceID, string(input.State), input.ResponseRevision,
 		nullableBytes(input.TerminalResponseBytes), nullableBytes(input.TerminalResponseSHA256), input.AvailableEventSequence,
-		nullableBytes(input.ResponseBytes), nullableBytes(input.ResponseSHA256), nil, nil, nil, formatStoredTime(input.CreatedAt), formatStoredTime(input.UpdatedAt))
+		nullableBytes(input.ResponseBytes), nullableBytes(input.ResponseSHA256), nil, nil, nil,
+		storedTimePointer(input.IdempotencyKeyExpiresAt), input.IdempotencyBindingActive, input.DeduplicationWarning,
+		formatStoredTime(input.CreatedAt), formatStoredTime(input.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("insert mailbox exchange: %w", err)
 	}
 	return nil
+}
+
+func storedTimePointer(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return formatStoredTime(*value)
 }
 
 func readMailboxExchangeByIDOnConnection(ctx context.Context, connection *sql.Conn, requestID string) (MailboxExchangeRecord, bool, error) {
@@ -448,6 +512,7 @@ func readLatestMailboxExchangeByKeyOnConnection(ctx context.Context, connection 
 	err := connection.QueryRowContext(ctx, `
 SELECT request_id FROM mailbox_exchanges
 WHERE controller_type = ? AND controller_id = ? AND operation = ? AND idempotency_key = ?
+  AND idempotency_binding_active = 1
 ORDER BY created_at DESC, request_id DESC LIMIT 1
 `, string(controller.Type()), string(controller.ID()), operation, key).Scan(&requestID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -467,8 +532,9 @@ func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, 
 	var digest []byte
 	var terminalBytes, terminalHash, responseBytes, responseHash []byte
 	var availableCursor sql.NullInt64
-	var acknowledgedAt, responseCleanupAt, responseCleanupStartedAt, responseFileRemovedAt sql.NullString
+	var acknowledgedAt, responseCleanupAt, responseCleanupStartedAt, responseFileRemovedAt, idempotencyKeyExpiresAt sql.NullString
 	var eventFileCommandID sql.NullString
+	var idempotencyBindingActive, deduplicationWarning int
 	if err := connection.QueryRowContext(ctx, `
 SELECT request_id, operation, controller_type, controller_id, idempotency_key,
        canonical_hash_version, canonical_hash, canonical_payload, resource_id,
@@ -476,13 +542,14 @@ SELECT request_id, operation, controller_type, controller_id, idempotency_key,
        terminal_response_sha256, available_event_sequence, response_bytes,
        response_sha256, acknowledged_at, response_cleanup_at,
        response_cleanup_started_at, response_file_removed_at,
+       idempotency_key_expires_at, idempotency_binding_active, deduplication_warning,
        COALESCE(
          (SELECT command_id FROM mailbox_event_file_references WHERE request_id = mailbox_exchanges.request_id),
          (SELECT command_id FROM mailbox_remote_event_file_references WHERE request_id = mailbox_exchanges.request_id)
        ),
        created_at, updated_at
 FROM mailbox_exchanges WHERE request_id = ?
-`, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &responseCleanupAt, &responseCleanupStartedAt, &responseFileRemovedAt, &eventFileCommandID, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+`, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &responseCleanupAt, &responseCleanupStartedAt, &responseFileRemovedAt, &idempotencyKeyExpiresAt, &idempotencyBindingActive, &deduplicationWarning, &eventFileCommandID, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return MailboxExchangeRecord{}, ErrMailboxExchangeNotFound
 	} else if err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("read mailbox exchange: %w", err)
@@ -556,6 +623,23 @@ FROM mailbox_exchanges WHERE request_id = ?
 	}
 	if record.UpdatedAt, err = parseStoredTime(updatedAt); err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: updated_at: %v", ErrMailboxExchangeInvalid, err)
+	}
+	if (idempotencyBindingActive != 0 && idempotencyBindingActive != 1) || (deduplicationWarning != 0 && deduplicationWarning != 1) {
+		return MailboxExchangeRecord{}, fmt.Errorf("%w: mailbox idempotency flags", ErrMailboxExchangeInvalid)
+	}
+	record.IdempotencyBindingActive = idempotencyBindingActive == 1
+	record.DeduplicationWarning = deduplicationWarning == 1
+	if idempotencyKeyExpiresAt.Valid {
+		value, err := parseStoredTime(idempotencyKeyExpiresAt.String)
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: idempotency_key_expires_at: %v", ErrMailboxExchangeInvalid, err)
+		}
+		record.IdempotencyKeyExpiresAt = &value
+	} else if key != "" && record.IdempotencyBindingActive {
+		// Rows written before P096 retain their original 90-day window rather
+		// than starting a new one when this migration is applied.
+		value := record.CreatedAt.Add(DefaultSessionIdempotencyRetention)
+		record.IdempotencyKeyExpiresAt = &value
 	}
 	if record.ResponseCleanupAt == nil && record.ResponseRevision > 0 && (state == string(MailboxExchangeComplete) || state == string(MailboxExchangeRejected) || state == string(MailboxExchangeIndeterminate)) {
 		deadline := mailboxResponseCleanupDeadline(record.UpdatedAt, record.AcknowledgedAt)

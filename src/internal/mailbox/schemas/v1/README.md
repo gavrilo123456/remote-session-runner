@@ -18,6 +18,11 @@ terminal event cursor, or event file. A positive available-event cursor names
 the command ID and relative `events/<command-id>.ndjson` file. Terminal command
 output flags and event cursors follow P002; ACKs echo the exact response
 revision and optionally its advertised cursor (including zero after expiry).
+Mutation responses may include `idempotency_warning: "deduplication_not_guaranteed"`
+when the supplied key's earlier 90-day mapping had expired. That request may
+create a new resource; clients must not treat the old key as preventing a
+duplicate operation. Reusing the same `request_id` remains single-use while
+its mapping is retained, and its response is never replaced by a later retry.
 
 Mailbox stdout/stderr events preserve command ID, sequence, type, timestamp,
 and byte count. A whole valid UTF-8 chunk uses `encoding: "utf8"` and `text`;

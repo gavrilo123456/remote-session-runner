@@ -381,6 +381,7 @@ type p095Response struct {
 	Operation               string `json:"operation"`
 	RequestState            string `json:"request_state"`
 	ResponseRevision        int64  `json:"response_revision"`
+	IdempotencyWarning      string `json:"idempotency_warning"`
 	CommandID               string `json:"command_id"`
 	SessionID               string `json:"session_id"`
 	DeliveryState           string `json:"delivery_state"`

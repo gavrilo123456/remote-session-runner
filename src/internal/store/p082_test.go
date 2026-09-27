@@ -58,7 +58,8 @@ func TestP082MailboxExchangeBindsRequestIDAndNewIDRetryByCanonicalHash(t *testin
 	}
 
 	// request_id and idempotency_key are excluded from canonical hashing, so a
-	// new exchange ID with the same key/payload binds to the original outcome.
+	// Generic receipt retries retain the P082 terminal snapshot; the working
+	// create/submit mailbox processor uses its dedicated refreshed-snapshot path.
 	retryRaw := p082RunPayload(t, "req-p082-b", "key-p082", "echo p082")
 	retryCanonical, retryHash, err := canonicalMailboxRun(retryRaw)
 	if err != nil {
@@ -73,7 +74,7 @@ func TestP082MailboxExchangeBindsRequestIDAndNewIDRetryByCanonicalHash(t *testin
 	}
 	terminal, duplicate, err := authority.AcceptMailboxExchange(context.Background(), MailboxExchangeCreate{RequestID: "req-p082-c", Operation: "run", Controller: controller, IdempotencyKey: "key-p082", RequestHash: retryHash, CanonicalPayload: retryCanonical})
 	if err != nil || !duplicate || terminal.State != MailboxExchangeComplete {
-		t.Fatalf("terminal new ID retry = %+v duplicate=%v err=%v", terminal, duplicate, err)
+		t.Fatalf("terminal new ID retry = %+v duplicate=%v err=%v, want original terminal state", terminal, duplicate, err)
 	}
 	conflictRaw := p082RunPayload(t, "req-p082-d", "key-p082", "echo conflict")
 	conflictCanonical, conflictHash, err := canonicalMailboxRun(conflictRaw)

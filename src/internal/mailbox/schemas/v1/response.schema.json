@@ -8,6 +8,7 @@
     "operation": { "type": "string", "enum": ["create_session", "get_session", "submit_command", "get_command", "cancel_command", "close_session", "run"] },
     "request_state": { "type": "string", "enum": ["accepted", "complete", "rejected", "indeterminate"] },
     "response_revision": { "type": "integer", "minimum": 1 },
+    "idempotency_warning": { "type": "string", "enum": ["deduplication_not_guaranteed"] },
     "delivery_state": { "type": "string", "enum": ["recorded", "dispatching", "uncertain", "accepted", "reconciled", "not_delivered"] },
     "session_id": { "type": "string", "minLength": 1 },
     "session_state": { "type": "string", "enum": ["requested", "creating", "ready", "busy", "closing", "closed", "expired", "failed", "lost"] },

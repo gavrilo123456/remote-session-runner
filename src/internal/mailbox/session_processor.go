@@ -153,7 +153,7 @@ func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, 
 	if err != nil {
 		return false, err
 	}
-	record, duplicate, err := p.authority.AcceptMailboxExchange(ctx, store.MailboxExchangeCreate{
+	record, duplicate, idempotencyConflict, err := p.authority.AcceptMailboxExchangeWithConflictReceipt(ctx, store.MailboxExchangeCreate{
 		RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
 		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
 	})
@@ -165,6 +165,14 @@ func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, 
 			return false, err
 		}
 		return true, nil
+	}
+	if idempotencyConflict || (record.IdempotencyKey != "" && !record.IdempotencyBindingActive) {
+		response := sessionMailboxResponse{
+			RequestID: request.RequestID, Operation: request.Operation,
+			RequestState: store.MailboxExchangeRejected,
+			Error:        &mailboxResponseError{Code: "idempotency_conflict", Message: "idempotency key is already bound to a different request"},
+		}
+		return p.publish(ctx, record, response, nil)
 	}
 	if record.State != store.MailboxExchangeAccepted {
 		return false, fmt.Errorf("%w: terminal exchange has no response snapshot", ErrOutboxResponse)
@@ -204,7 +212,7 @@ func (p *SessionProcessor) processCommand(ctx context.Context, request Request) 
 	if err != nil {
 		return false, err
 	}
-	record, duplicate, err := p.authority.AcceptMailboxExchange(ctx, store.MailboxExchangeCreate{
+	record, duplicate, idempotencyConflict, err := p.authority.AcceptMailboxExchangeWithConflictReceipt(ctx, store.MailboxExchangeCreate{
 		RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
 		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
 	})
@@ -213,6 +221,14 @@ func (p *SessionProcessor) processCommand(ctx context.Context, request Request) 
 	}
 	if duplicate && len(record.ResponseBytes) > 0 {
 		return true, p.publishStoredCommandResponse(ctx, record)
+	}
+	if idempotencyConflict || (record.IdempotencyKey != "" && !record.IdempotencyBindingActive) {
+		response := commandMailboxResponse{
+			RequestID: request.RequestID, Operation: request.Operation,
+			RequestState: store.MailboxExchangeRejected,
+			Error:        &mailboxResponseError{Code: "idempotency_conflict", Message: "idempotency key is already bound to a different request"},
+		}
+		return p.publishCommandResponse(ctx, record, response, nil)
 	}
 	if record.State != store.MailboxExchangeAccepted {
 		return false, fmt.Errorf("%w: terminal command exchange has no response snapshot", ErrOutboxResponse)
@@ -431,6 +447,9 @@ func (p *SessionProcessor) reconcileAcceptedSubmits(ctx context.Context) error {
 
 func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExchangeRecord, response sessionMailboxResponse, cursor *int64) (bool, error) {
 	response.ResponseRevision = current.ResponseRevision + 1
+	if current.DeduplicationWarning {
+		response.IdempotencyWarning = "deduplication_not_guaranteed"
+	}
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
 		return false, fmt.Errorf("%w: encode session response: %v", ErrOutboxResponse, err)
@@ -449,6 +468,9 @@ func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExc
 
 func (p *SessionProcessor) publishCommandResponse(ctx context.Context, current store.MailboxExchangeRecord, response commandMailboxResponse, cursor *int64) (bool, error) {
 	response.ResponseRevision = current.ResponseRevision + 1
+	if current.DeduplicationWarning {
+		response.IdempotencyWarning = "deduplication_not_guaranteed"
+	}
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
 		return false, fmt.Errorf("%w: encode command response: %v", ErrOutboxResponse, err)
@@ -470,15 +492,16 @@ func (p *SessionProcessor) publishCommandResponse(ctx context.Context, current s
 }
 
 type sessionMailboxResponse struct {
-	RequestID        string                     `json:"request_id"`
-	Operation        string                     `json:"operation"`
-	RequestState     store.MailboxExchangeState `json:"request_state"`
-	ResponseRevision int64                      `json:"response_revision"`
-	SessionID        string                     `json:"session_id,omitempty"`
-	SessionState     string                     `json:"session_state,omitempty"`
-	DeliveryState    string                     `json:"delivery_state,omitempty"`
-	ObservedAt       *time.Time                 `json:"observed_at,omitempty"`
-	Error            *mailboxResponseError      `json:"error,omitempty"`
+	RequestID          string                     `json:"request_id"`
+	Operation          string                     `json:"operation"`
+	RequestState       store.MailboxExchangeState `json:"request_state"`
+	ResponseRevision   int64                      `json:"response_revision"`
+	IdempotencyWarning string                     `json:"idempotency_warning,omitempty"`
+	SessionID          string                     `json:"session_id,omitempty"`
+	SessionState       string                     `json:"session_state,omitempty"`
+	DeliveryState      string                     `json:"delivery_state,omitempty"`
+	ObservedAt         *time.Time                 `json:"observed_at,omitempty"`
+	Error              *mailboxResponseError      `json:"error,omitempty"`
 }
 
 type mailboxResponseError struct {
@@ -492,6 +515,7 @@ type commandMailboxResponse struct {
 	Operation               string                     `json:"operation"`
 	RequestState            store.MailboxExchangeState `json:"request_state"`
 	ResponseRevision        int64                      `json:"response_revision"`
+	IdempotencyWarning      string                     `json:"idempotency_warning,omitempty"`
 	CommandID               string                     `json:"command_id,omitempty"`
 	SessionID               string                     `json:"session_id,omitempty"`
 	DeliveryState           string                     `json:"delivery_state,omitempty"`

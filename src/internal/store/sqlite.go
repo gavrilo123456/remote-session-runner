@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 18
+	CurrentSchemaVersion = 19
 )
 
 var (
@@ -87,6 +87,9 @@ var mailboxResponseCleanupSQL string
 
 //go:embed migrations/0018_mailbox_remote_event_cleanup.sql
 var mailboxRemoteEventCleanupSQL string
+
+//go:embed migrations/0019_mailbox_idempotency_expiry.sql
+var mailboxIdempotencyExpirySQL string
 
 type migration struct {
 	version int
@@ -166,6 +169,10 @@ var migrations = []migration{{
 	version: 18,
 	name:    "mailbox_remote_event_cleanup",
 	sql:     mailboxRemoteEventCleanupSQL,
+}, {
+	version: 19,
+	name:    "mailbox_idempotency_expiry",
+	sql:     mailboxIdempotencyExpirySQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
