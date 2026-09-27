@@ -158,6 +158,10 @@ func p104RunHostMailboxTarget(t *testing.T, h *p095Harness, client *mailboxclien
 	if isRemote {
 		targetName = "remote"
 	}
+	// The Ubuntu authority keeps idempotency records between host-gate runs.
+	// Give each run fresh request and key identifiers while keeping retries
+	// within this run on the same key.
+	targetName += fmt.Sprintf("-%x", time.Now().UnixNano())
 	createID := "req-p104-" + targetName + "-create"
 	create := p104FileImport(t, ctx, h, client, createID, map[string]any{
 		"request_id": createID, "idempotency_key": "key-p104-" + targetName + "-create", "operation": "create_session",
