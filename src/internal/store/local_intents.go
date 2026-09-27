@@ -25,6 +25,10 @@ const (
 	LocalIntentAccepted     LocalIntentDeliveryState = "accepted"
 	LocalIntentReconciled   LocalIntentDeliveryState = "reconciled"
 	LocalIntentNotDelivered LocalIntentDeliveryState = "not_delivered"
+
+	// DefaultRemoteUncertaintyWindow bounds automatic reconciliation of a
+	// queued remote mutation after its delivery outcome becomes uncertain.
+	DefaultRemoteUncertaintyWindow = 24 * time.Hour
 )
 
 var (

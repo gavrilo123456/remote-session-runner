@@ -229,7 +229,7 @@ func TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary(t *testing.T) 
 			t.Fatal(err)
 		}
 		result := p101ReadResponse(t, h, runID)
-		if result.RequestState != "complete" || result.DeliveryState != string(store.LocalIntentNotDelivered) || result.JobID != accepted.JobID || result.SessionID != accepted.SessionID || result.CommandID != accepted.CommandID || result.JobPhase != "" || result.CommandState != "" || result.TeardownOutcome != "not_created" || result.AvailableEventSequence != nil {
+		if result.RequestState != "rejected" || result.DeliveryState != string(store.LocalIntentNotDelivered) || result.JobID != accepted.JobID || result.SessionID != accepted.SessionID || result.CommandID != accepted.CommandID || result.JobPhase != "" || result.CommandState != "" || result.TeardownOutcome != "" || result.AvailableEventSequence != nil || result.Error == nil {
 			t.Fatalf("never-delivered run response=%+v", result)
 		}
 		if _, err := h.authority.GetJob(context.Background(), domain.JobID(accepted.JobID)); err == nil {

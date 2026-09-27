@@ -37,7 +37,7 @@ var (
 // RemoteUncertaintyWindow is the bounded period in which the dispatcher may
 // query a target after an ambiguous mutation send. Once it expires, the
 // intent remains indeterminate for a later durable/file-based decision.
-const RemoteUncertaintyWindow = 24 * time.Hour
+const RemoteUncertaintyWindow = store.DefaultRemoteUncertaintyWindow
 
 // RemoteCaller is the identity-preserving bridge operation used by the remote
 // driver. sshclient.Client implements it; tests can inject a bounded caller.

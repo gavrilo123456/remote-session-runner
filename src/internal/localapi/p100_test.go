@@ -244,7 +244,7 @@ func TestP100ProvenNeverDeliveredRunRemainsIntentOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := readP100Response(t, h, requestID)
-	if response.RequestState != "complete" || response.DeliveryState != string(store.LocalIntentNotDelivered) || response.JobID != string(intent.JobID) || response.SessionID != string(intent.SessionID) || response.CommandID != string(intent.CommandID) || response.JobPhase != "" || response.CommandState != "" || response.TeardownOutcome != "not_created" || response.FinalEventSequence != nil || response.AvailableEventSequence != nil {
+	if response.RequestState != "rejected" || response.DeliveryState != string(store.LocalIntentNotDelivered) || response.JobID != string(intent.JobID) || response.SessionID != string(intent.SessionID) || response.CommandID != string(intent.CommandID) || response.JobPhase != "" || response.CommandState != "" || response.TeardownOutcome != "" || response.FinalEventSequence != nil || response.AvailableEventSequence != nil || response.Error == nil {
 		t.Fatalf("proven non-delivery fabricated authority outcome: %+v", response)
 	}
 	if _, err := h.authority.GetJob(ctx, intent.JobID); err == nil {

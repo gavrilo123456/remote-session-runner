@@ -112,28 +112,41 @@ type SessionOperations interface {
 }
 
 type SessionProcessorOptions struct {
-	Importer   *Importer
-	Authority  *store.AuthorityStore
-	Controller domain.ControllerIdentity
-	Operations SessionOperations
-	Outbox     *Outbox
-	EventFiles *EventFiles
+	Importer                *Importer
+	Authority               *store.AuthorityStore
+	Controller              domain.ControllerIdentity
+	Operations              SessionOperations
+	Outbox                  *Outbox
+	EventFiles              *EventFiles
+	Now                     func() time.Time
+	RemoteUncertaintyWindow time.Duration
 }
 
 // SessionProcessor wires file mailbox session and command operations through
 // the Mac local API boundary. The mailbox remains an ingress/projection only.
 type SessionProcessor struct {
-	importer   *Importer
-	authority  *store.AuthorityStore
-	controller domain.ControllerIdentity
-	operations SessionOperations
-	projector  Projector
-	mu         sync.Mutex
+	importer          *Importer
+	authority         *store.AuthorityStore
+	controller        domain.ControllerIdentity
+	operations        SessionOperations
+	projector         Projector
+	now               func() time.Time
+	uncertaintyWindow time.Duration
+	mu                sync.Mutex
 }
 
 func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, error) {
 	if options.Importer == nil || options.Authority == nil || options.Operations == nil || options.Outbox == nil || options.EventFiles == nil {
 		return nil, ErrSessionProcessorConfiguration
+	}
+	if options.RemoteUncertaintyWindow < 0 {
+		return nil, fmt.Errorf("%w: negative remote uncertainty window", ErrSessionProcessorConfiguration)
+	}
+	if options.RemoteUncertaintyWindow == 0 {
+		options.RemoteUncertaintyWindow = store.DefaultRemoteUncertaintyWindow
+	}
+	if options.Now == nil {
+		options.Now = time.Now
 	}
 	controller, err := domain.NewControllerIdentity(options.Controller.Type(), options.Controller.ID())
 	if err != nil || controller.Type() != domain.ControllerTypeLocalUser {
@@ -147,6 +160,7 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 	return &SessionProcessor{
 		importer: options.Importer, authority: options.Authority, controller: controller,
 		operations: options.Operations, projector: Projector{Authority: options.Authority, Outbox: options.Outbox, EventFiles: options.EventFiles},
+		now: options.Now, uncertaintyWindow: options.RemoteUncertaintyWindow,
 	}, nil
 }
 
@@ -589,6 +603,11 @@ func (p *SessionProcessor) reconcileAcceptedCreates(ctx context.Context) error {
 			}
 			continue
 		}
+		if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.DeliveryState); err != nil {
+			return err
+		} else if published {
+			continue
+		}
 		if snapshot.DeliveryState != "" && snapshot.DeliveryState != previous.DeliveryState {
 			response := sessionMailboxResponse{
 				RequestID: record.RequestID, Operation: record.Operation,
@@ -663,6 +682,11 @@ func (p *SessionProcessor) reconcileAcceptedSubmits(ctx context.Context) error {
 			}
 			continue
 		}
+		if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.DeliveryState); err != nil {
+			return err
+		} else if published {
+			continue
+		}
 		if snapshot.DeliveryState != previous.DeliveryState {
 			response := commandMailboxResponse{
 				RequestID: record.RequestID, Operation: record.Operation, RequestState: store.MailboxExchangeAccepted,
@@ -714,6 +738,13 @@ func (p *SessionProcessor) reconcileAcceptedCancels(ctx context.Context) error {
 		}
 		if !validDeliveryState(snapshot.CancelDeliveryState) || (snapshot.CommandDeliveryState != "" && !validDeliveryState(snapshot.CommandDeliveryState)) {
 			return fmt.Errorf("%w: cancel reconciliation returned invalid delivery state", ErrSessionProcessorConfiguration)
+		}
+		if !domain.CommandState(snapshot.CommandState).IsTerminal() && snapshot.CommandDeliveryState != string(store.LocalIntentNotDelivered) {
+			if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.CancelDeliveryState); err != nil {
+				return err
+			} else if published {
+				continue
+			}
 		}
 		response := commandMailboxResponse{
 			RequestID: record.RequestID, Operation: record.Operation,
@@ -781,6 +812,13 @@ func (p *SessionProcessor) reconcileAcceptedCloses(ctx context.Context) error {
 		}
 		if snapshot.SessionState != "" && !domain.SessionState(snapshot.SessionState).Valid() {
 			return fmt.Errorf("%w: close reconciliation returned invalid session state %q", ErrSessionProcessorConfiguration, snapshot.SessionState)
+		}
+		if !domain.SessionState(snapshot.SessionState).IsTerminal() && !(snapshot.SessionState == "" && snapshot.SessionDeliveryState == string(store.LocalIntentNotDelivered)) {
+			if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.CloseDeliveryState); err != nil {
+				return err
+			} else if published {
+				continue
+			}
 		}
 		response := sessionMailboxResponse{
 			RequestID: record.RequestID, Operation: record.Operation,
@@ -860,9 +898,10 @@ func (p *SessionProcessor) reconcileAcceptedRuns(ctx context.Context) error {
 				return fmt.Errorf("%w: never-delivered run contains authoritative job state", ErrSessionProcessorConfiguration)
 			}
 			response := runMailboxResponse{
-				RequestID: record.RequestID, Operation: "run", RequestState: store.MailboxExchangeComplete,
+				RequestID: record.RequestID, Operation: "run", RequestState: store.MailboxExchangeRejected,
 				JobID: previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
-				DeliveryState: snapshot.DeliveryState, TeardownOutcome: "not_created",
+				DeliveryState: snapshot.DeliveryState,
+				Error:         &mailboxResponseError{Code: "runtime_unavailable", Message: "run was proven not delivered"},
 			}
 			if _, err := p.publishRunResponse(ctx, record, response, nil); err != nil {
 				return err
@@ -879,6 +918,11 @@ func (p *SessionProcessor) reconcileAcceptedRuns(ctx context.Context) error {
 			if _, err := p.publishRunResponse(ctx, record, response, cursor); err != nil {
 				return err
 			}
+			continue
+		}
+		if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.DeliveryState); err != nil {
+			return err
+		} else if published {
 			continue
 		}
 		if snapshot.DeliveryState == previous.DeliveryState {
@@ -955,6 +999,95 @@ func validDeliveryState(state string) bool {
 	default:
 		return false
 	}
+}
+
+// publishIndeterminateIfExpired freezes a remote mutation response after its
+// durable uncertain transition has exceeded the configured reconciliation
+// window. It deliberately publishes only stable intent IDs and uncertainty;
+// the mailbox never guesses target acceptance, command state, or output.
+func (p *SessionProcessor) publishIndeterminateIfExpired(ctx context.Context, record store.MailboxExchangeRecord, deliveryState string) (bool, error) {
+	if deliveryState != string(store.LocalIntentUncertain) {
+		return false, nil
+	}
+	intent, err := p.authority.GetLocalIntentByIdempotency(ctx, record.Operation, record.IdempotencyKey, record.Controller)
+	if err != nil {
+		return false, fmt.Errorf("%w: load uncertain mailbox intent: %v", ErrSessionProcessorConfiguration, err)
+	}
+	if intent.Target.Kind() != domain.TargetKindRemote || intent.DeliveryState != store.LocalIntentUncertain {
+		return false, nil
+	}
+	lifecycle, err := p.authority.ListLocalIntentLifecycle(ctx, intent.IntentID)
+	if err != nil {
+		return false, fmt.Errorf("%w: read uncertain mailbox lifecycle: %v", ErrSessionProcessorConfiguration, err)
+	}
+	var uncertainAt time.Time
+	for index := len(lifecycle) - 1; index >= 0; index-- {
+		if lifecycle[index].NewState == store.LocalIntentUncertain {
+			uncertainAt = lifecycle[index].OccurredAt.UTC()
+			break
+		}
+	}
+	if uncertainAt.IsZero() {
+		return false, fmt.Errorf("%w: uncertain intent has no durable uncertainty transition", ErrSessionProcessorConfiguration)
+	}
+	if p.now().UTC().Before(uncertainAt.Add(p.uncertaintyWindow)) {
+		return false, nil
+	}
+
+	switch record.Operation {
+	case "create_session":
+		var previous sessionMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.SessionID == "" {
+			return false, fmt.Errorf("%w: uncertain create response is corrupt", ErrOutboxResponse)
+		}
+		response := sessionMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation,
+			RequestState: store.MailboxExchangeIndeterminate, SessionID: previous.SessionID,
+			DeliveryState: string(store.LocalIntentUncertain),
+		}
+		_, err = p.publish(ctx, record, response, nil)
+	case "submit_command", "cancel_command":
+		var previous commandMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.CommandID == "" || previous.SessionID == "" {
+			return false, fmt.Errorf("%w: uncertain command response is corrupt", ErrOutboxResponse)
+		}
+		response := commandMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation,
+			RequestState: store.MailboxExchangeIndeterminate,
+			CommandID:    previous.CommandID, SessionID: previous.SessionID,
+			DeliveryState: string(store.LocalIntentUncertain),
+		}
+		_, err = p.publishCommandResponse(ctx, record, response, nil)
+	case "close_session":
+		var previous sessionMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.SessionID == "" {
+			return false, fmt.Errorf("%w: uncertain close response is corrupt", ErrOutboxResponse)
+		}
+		response := sessionMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation,
+			RequestState: store.MailboxExchangeIndeterminate, SessionID: previous.SessionID,
+			DeliveryState: string(store.LocalIntentUncertain),
+		}
+		_, err = p.publish(ctx, record, response, nil)
+	case "run":
+		var previous runMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.JobID == "" || previous.SessionID == "" || previous.CommandID == "" {
+			return false, fmt.Errorf("%w: uncertain run response is corrupt", ErrOutboxResponse)
+		}
+		response := runMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation,
+			RequestState: store.MailboxExchangeIndeterminate,
+			JobID:        previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
+			DeliveryState: string(store.LocalIntentUncertain),
+		}
+		_, err = p.publishRunResponse(ctx, record, response, nil)
+	default:
+		return false, fmt.Errorf("%w: unsupported uncertain mailbox mutation %q", ErrSessionProcessorConfiguration, record.Operation)
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExchangeRecord, response sessionMailboxResponse, cursor *int64) (bool, error) {

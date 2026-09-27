@@ -18,7 +18,7 @@ func TestP100RunResponseShapesMatchV1Schema(t *testing.T) {
 		},
 		{
 			name: "proven never delivered stays intent only",
-			raw:  `{"request_id":"req-p100-never","operation":"run","request_state":"complete","response_revision":2,"job_id":"job-p100-never","session_id":"sess-p100-never","command_id":"cmd-p100-never","delivery_state":"not_delivered","teardown_outcome":"not_created"}`,
+			raw:  `{"request_id":"req-p100-never","operation":"run","request_state":"rejected","response_revision":2,"job_id":"job-p100-never","session_id":"sess-p100-never","command_id":"cmd-p100-never","delivery_state":"not_delivered","error":{"code":"runtime_unavailable","message":"run was proven not delivered","retryable":false}}`,
 		},
 	}
 	for _, test := range cases {
