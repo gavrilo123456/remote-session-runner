@@ -454,7 +454,7 @@ func (s *AuthorityStore) ReplayCommandEvents(ctx context.Context, id domain.Comm
 	if err := connection.QueryRowContext(ctx, "SELECT output_unavailable_reason FROM exec_commands WHERE command_id = ?", string(validatedID)).Scan(&unavailable); err != nil {
 		return nil, fmt.Errorf("read command retention state: %w", err)
 	}
-	if unavailable != "" {
+	if unavailable == "retention_expired" {
 		return []CommandEventRecord{}, nil
 	}
 	return readCommandEventsOnConnection(ctx, connection, validatedID, afterSequence)
@@ -567,6 +567,38 @@ func (s *AuthorityStore) GetCommand(ctx context.Context, id domain.CommandID) (C
 	return readCommandOnConnection(ctx, connection, validatedID)
 }
 
+// GetCommandWithEvents reads command metadata and its retained contiguous
+// event prefix from one SQLite snapshot. Mailbox get_command uses this so its
+// observed state and frozen event cursor cannot describe different commits.
+func (s *AuthorityStore) GetCommandWithEvents(ctx context.Context, id domain.CommandID) (CommandRecord, []CommandEventRecord, error) {
+	validatedID, err := domain.NewCommandID(string(id))
+	if err != nil {
+		return CommandRecord{}, nil, err
+	}
+	type snapshot struct {
+		command CommandRecord
+		events  []CommandEventRecord
+	}
+	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
+		command, err := readCommandOnConnection(ctx, connection, validatedID)
+		if err != nil {
+			return snapshot{}, err
+		}
+		if command.OutputUnavailableReason == "retention_expired" {
+			return snapshot{command: command}, nil
+		}
+		events, err := readCommandEventsOnConnection(ctx, connection, validatedID, -1)
+		if err != nil {
+			return snapshot{}, err
+		}
+		return snapshot{command: command, events: events}, nil
+	})
+	if err != nil {
+		return CommandRecord{}, nil, err
+	}
+	return result.command, result.events, nil
+}
+
 // ListSessionCommands returns authoritative commands in ordinal order. It is
 // used by close orchestration to cancel queued work before teardown.
 func (s *AuthorityStore) ListSessionCommands(ctx context.Context, id domain.SessionID) ([]CommandRecord, error) {
@@ -636,7 +668,7 @@ func (s *AuthorityStore) ListCommandEvents(ctx context.Context, id domain.Comman
 	if err := connection.QueryRowContext(ctx, "SELECT output_unavailable_reason FROM exec_commands WHERE command_id = ?", string(validatedID)).Scan(&unavailable); err != nil {
 		return nil, fmt.Errorf("read command retention state: %w", err)
 	}
-	if unavailable != "" {
+	if unavailable == "retention_expired" {
 		return []CommandEventRecord{}, nil
 	}
 	return readCommandEventsOnConnection(ctx, connection, validatedID, -1)

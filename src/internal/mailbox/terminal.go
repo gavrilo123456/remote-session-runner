@@ -39,16 +39,12 @@ func (p EventProjector) TerminalSnapshot(ctx context.Context, commandID domain.C
 	if p.Authority == nil {
 		return TerminalCommandSnapshot{}, ErrEventProjectionConfiguration
 	}
-	command, err := p.Authority.GetCommand(ctx, commandID)
+	command, events, err := p.Authority.GetCommandWithEvents(ctx, commandID)
 	if err != nil {
 		return TerminalCommandSnapshot{}, err
 	}
 	if !command.State.IsTerminal() {
 		return TerminalCommandSnapshot{}, fmt.Errorf("%w: command state %q is not terminal", ErrTerminalSnapshot, command.State)
-	}
-	events, err := p.Authority.ListCommandEvents(ctx, commandID)
-	if err != nil {
-		return TerminalCommandSnapshot{}, err
 	}
 	return RenderTerminalCommandSnapshot(command, events)
 }

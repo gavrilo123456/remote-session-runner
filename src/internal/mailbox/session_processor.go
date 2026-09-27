@@ -29,6 +29,14 @@ type SessionSnapshot struct {
 	ObservedAt    time.Time
 }
 
+// CommandIntent is the durable Mac-side acceptance returned by
+// submit_command. It is not a target-authoritative command state.
+type CommandIntent struct {
+	CommandID     string
+	SessionID     string
+	DeliveryState string
+}
+
 // SessionOperationError is a safe, structured error from the Mac session
 // operation boundary. Retryable failures leave the inbox pair available.
 type SessionOperationError struct {
@@ -50,6 +58,8 @@ type SessionOperations interface {
 	SessionController() domain.ControllerIdentity
 	CreateSessionIntent(context.Context, Request) (SessionIntent, error)
 	GetSession(context.Context, string) (SessionSnapshot, error)
+	SubmitCommandIntent(context.Context, Request) (CommandIntent, error)
+	GetCommandSnapshot(context.Context, string) (CommandSnapshot, error)
 }
 
 type SessionProcessorOptions struct {
@@ -58,11 +68,11 @@ type SessionProcessorOptions struct {
 	Controller domain.ControllerIdentity
 	Operations SessionOperations
 	Outbox     *Outbox
+	EventFiles *EventFiles
 }
 
-// SessionProcessor wires only create_session/get_session. Create receipts
-// remain accepted until a later local/remote snapshot reaches the design's
-// readiness or known-failure boundary.
+// SessionProcessor wires file mailbox session and command operations through
+// the Mac local API boundary. The mailbox remains an ingress/projection only.
 type SessionProcessor struct {
 	importer   *Importer
 	authority  *store.AuthorityStore
@@ -73,7 +83,7 @@ type SessionProcessor struct {
 }
 
 func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, error) {
-	if options.Importer == nil || options.Authority == nil || options.Operations == nil || options.Outbox == nil {
+	if options.Importer == nil || options.Authority == nil || options.Operations == nil || options.Outbox == nil || options.EventFiles == nil {
 		return nil, ErrSessionProcessorConfiguration
 	}
 	controller, err := domain.NewControllerIdentity(options.Controller.Type(), options.Controller.ID())
@@ -87,12 +97,12 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 	}
 	return &SessionProcessor{
 		importer: options.Importer, authority: options.Authority, controller: controller,
-		operations: options.Operations, projector: Projector{Authority: options.Authority, Outbox: options.Outbox},
+		operations: options.Operations, projector: Projector{Authority: options.Authority, Outbox: options.Outbox, EventFiles: options.EventFiles},
 	}, nil
 }
 
-// Import records and projects create_session/get_session requests. Unsupported
-// mailbox operations remain outside this phase's handler boundary.
+// Import records and projects the implemented file-only session and command
+// operations, then reconciles accepted asynchronous create/submit intents.
 func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	if p == nil || p.importer == nil || p.authority == nil || p.operations == nil {
 		return nil, ErrSessionProcessorConfiguration
@@ -109,6 +119,9 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	if err := p.reconcileAcceptedCreates(ctx); err != nil {
 		return results, err
 	}
+	if err := p.reconcileAcceptedSubmits(ctx); err != nil {
+		return results, err
+	}
 	return results, nil
 }
 
@@ -123,12 +136,18 @@ func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.reconcileAcceptedCreates(ctx)
+	if err := p.reconcileAcceptedCreates(ctx); err != nil {
+		return err
+	}
+	return p.reconcileAcceptedSubmits(ctx)
 }
 
 func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, error) {
+	if request.Operation == "submit_command" || request.Operation == "get_command" {
+		return p.processCommand(ctx, request)
+	}
 	if request.Operation != "create_session" && request.Operation != "get_session" {
-		return false, fmt.Errorf("%w: operation %q is outside P094", ErrMailboxInput, request.Operation)
+		return false, fmt.Errorf("%w: operation %q is outside P095", ErrMailboxInput, request.Operation)
 	}
 	payload, hash, err := receiptCanonical(request)
 	if err != nil {
@@ -180,6 +199,74 @@ func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, 
 	return p.publish(ctx, record, response, nil)
 }
 
+func (p *SessionProcessor) processCommand(ctx context.Context, request Request) (bool, error) {
+	payload, hash, err := receiptCanonical(request)
+	if err != nil {
+		return false, err
+	}
+	record, duplicate, err := p.authority.AcceptMailboxExchange(ctx, store.MailboxExchangeCreate{
+		RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
+		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
+	})
+	if err != nil {
+		return false, err
+	}
+	if duplicate && len(record.ResponseBytes) > 0 {
+		return true, p.publishStoredCommandResponse(ctx, record)
+	}
+	if record.State != store.MailboxExchangeAccepted {
+		return false, fmt.Errorf("%w: terminal command exchange has no response snapshot", ErrOutboxResponse)
+	}
+	if request.Operation == "submit_command" {
+		intent, err := p.operations.SubmitCommandIntent(ctx, request)
+		if err != nil {
+			return p.publishOperationError(ctx, record, request.Operation, err)
+		}
+		if intent.CommandID == "" || intent.SessionID == "" {
+			return false, fmt.Errorf("%w: submit operation returned no command/session ID", ErrSessionProcessorConfiguration)
+		}
+		response := commandMailboxResponse{
+			RequestID: request.RequestID, Operation: request.Operation, RequestState: store.MailboxExchangeAccepted,
+			CommandID: intent.CommandID, SessionID: intent.SessionID, DeliveryState: intent.DeliveryState,
+		}
+		return p.publishCommandResponse(ctx, record, response, nil)
+	}
+
+	snapshot, err := p.operations.GetCommandSnapshot(ctx, request.CommandID)
+	if err != nil {
+		return p.publishOperationError(ctx, record, request.Operation, err)
+	}
+	commandID, err := domain.NewCommandID(request.CommandID)
+	if err != nil {
+		return false, err
+	}
+	if err := ValidateCommandSnapshot(snapshot, commandID); err != nil {
+		return false, fmt.Errorf("%w: %v", ErrSessionProcessorConfiguration, err)
+	}
+	response := commandResponseFromSnapshot(request.RequestID, request.Operation, snapshot)
+	var cursor *int64
+	if snapshot.State != "" || snapshot.AvailableEventSequence > 0 {
+		value := snapshot.AvailableEventSequence
+		cursor = &value
+	}
+	return p.publishCommandResponse(ctx, record, response, cursor)
+}
+
+func (p *SessionProcessor) publishStoredCommandResponse(ctx context.Context, record store.MailboxExchangeRecord) error {
+	if record.AvailableEventSequence != nil && *record.AvailableEventSequence > 0 {
+		var response commandMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &response); err != nil || response.CommandID == "" {
+			return fmt.Errorf("%w: stored command response is invalid", ErrOutboxResponse)
+		}
+		commandID, err := domain.NewCommandID(response.CommandID)
+		if err != nil {
+			return fmt.Errorf("%w: stored command response ID: %v", ErrOutboxResponse, err)
+		}
+		return p.projector.PublishCommand(ctx, record.RequestID, commandID)
+	}
+	return p.projector.Publish(ctx, record.RequestID)
+}
+
 func (p *SessionProcessor) publishOperationError(ctx context.Context, record store.MailboxExchangeRecord, operation string, err error) (bool, error) {
 	var operationErr *SessionOperationError
 	if errors.As(err, &operationErr) {
@@ -227,7 +314,7 @@ func (p *SessionProcessor) reconcileAcceptedCreates(ctx context.Context) error {
 		if snapshot.SessionID == "" {
 			snapshot.SessionID = previous.SessionID
 		}
-		if snapshot.SessionID != previous.SessionID {
+		if string(snapshot.SessionID) != previous.SessionID {
 			return fmt.Errorf("%w: reconciliation returned a different session ID", ErrSessionProcessorConfiguration)
 		}
 		if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
@@ -268,6 +355,80 @@ func (p *SessionProcessor) reconcileAcceptedCreates(ctx context.Context) error {
 	return nil
 }
 
+func (p *SessionProcessor) reconcileAcceptedSubmits(ctx context.Context) error {
+	records, err := p.authority.ListMailboxExchanges(ctx, p.controller, "submit_command", store.MailboxExchangeAccepted)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if len(record.ResponseBytes) == 0 {
+			continue
+		}
+		var previous commandMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "submit_command" || previous.CommandID == "" || previous.SessionID == "" {
+			return fmt.Errorf("%w: accepted submit response is corrupt", ErrOutboxResponse)
+		}
+		snapshot, err := p.operations.GetCommandSnapshot(ctx, previous.CommandID)
+		if err != nil {
+			var operationErr *SessionOperationError
+			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
+				continue
+			}
+			return err
+		}
+		commandID, err := domain.NewCommandID(previous.CommandID)
+		if err != nil {
+			return fmt.Errorf("%w: accepted submit command ID: %v", ErrOutboxResponse, err)
+		}
+		if err := ValidateCommandSnapshot(snapshot, commandID); err != nil {
+			return fmt.Errorf("%w: %v", ErrSessionProcessorConfiguration, err)
+		}
+		if string(snapshot.SessionID) != previous.SessionID {
+			return fmt.Errorf("%w: submit reconciliation returned a different session ID", ErrSessionProcessorConfiguration)
+		}
+		if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
+			response := commandMailboxResponse{
+				RequestID: record.RequestID, Operation: record.Operation, RequestState: store.MailboxExchangeRejected,
+				CommandID: previous.CommandID, SessionID: previous.SessionID, DeliveryState: snapshot.DeliveryState,
+				Error: &mailboxResponseError{Code: "resource_not_found", Message: "command submission was proven not delivered"},
+			}
+			if _, err := p.publishCommandResponse(ctx, record, response, nil); err != nil {
+				return err
+			}
+			continue
+		}
+		if snapshot.State.IsTerminal() {
+			response := commandResponseFromSnapshot(record.RequestID, record.Operation, snapshot)
+			var cursor *int64
+			value := snapshot.AvailableEventSequence
+			cursor = &value
+			if _, err := p.publishCommandResponse(ctx, record, response, cursor); err != nil {
+				return err
+			}
+			continue
+		}
+		if snapshot.DeliveryState != previous.DeliveryState {
+			response := commandMailboxResponse{
+				RequestID: record.RequestID, Operation: record.Operation, RequestState: store.MailboxExchangeAccepted,
+				CommandID: previous.CommandID, SessionID: previous.SessionID,
+				DeliveryState: snapshot.DeliveryState,
+				ObservedAt:    mailboxTime(snapshot.ObservedAt),
+			}
+			if _, err := p.publishCommandResponse(ctx, record, response, nil); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := p.projector.Publish(ctx, record.RequestID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExchangeRecord, response sessionMailboxResponse, cursor *int64) (bool, error) {
 	response.ResponseRevision = current.ResponseRevision + 1
 	responseBytes, err := json.Marshal(response)
@@ -281,6 +442,28 @@ func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExc
 		return false, err
 	}
 	if err := p.projector.Publish(ctx, current.RequestID); err != nil {
+		return false, err
+	}
+	return updated.ResponseRevision > 0, nil
+}
+
+func (p *SessionProcessor) publishCommandResponse(ctx context.Context, current store.MailboxExchangeRecord, response commandMailboxResponse, cursor *int64) (bool, error) {
+	response.ResponseRevision = current.ResponseRevision + 1
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		return false, fmt.Errorf("%w: encode command response: %v", ErrOutboxResponse, err)
+	}
+	updated, err := p.authority.PublishMailboxResponse(ctx, current.RequestID, store.MailboxResponsePublication{
+		State: response.RequestState, Bytes: responseBytes, AvailableEventSequence: cursor,
+	})
+	if err != nil {
+		return false, err
+	}
+	if cursor != nil && *cursor > 0 {
+		if err := p.projector.PublishCommand(ctx, current.RequestID, domain.CommandID(response.CommandID)); err != nil {
+			return false, err
+		}
+	} else if err := p.projector.Publish(ctx, current.RequestID); err != nil {
 		return false, err
 	}
 	return updated.ResponseRevision > 0, nil
@@ -303,6 +486,50 @@ type mailboxResponseError struct {
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
 }
+
+type commandMailboxResponse struct {
+	RequestID               string                     `json:"request_id"`
+	Operation               string                     `json:"operation"`
+	RequestState            store.MailboxExchangeState `json:"request_state"`
+	ResponseRevision        int64                      `json:"response_revision"`
+	CommandID               string                     `json:"command_id,omitempty"`
+	SessionID               string                     `json:"session_id,omitempty"`
+	DeliveryState           string                     `json:"delivery_state,omitempty"`
+	CommandState            string                     `json:"command_state,omitempty"`
+	ObservedAt              *time.Time                 `json:"observed_at,omitempty"`
+	ExitCode                *int                       `json:"exit_code,omitempty"`
+	FinalEventSequence      *int64                     `json:"final_event_sequence,omitempty"`
+	AvailableEventSequence  *int64                     `json:"available_event_sequence,omitempty"`
+	OutputComplete          *bool                      `json:"output_complete,omitempty"`
+	OutputTruncated         *bool                      `json:"output_truncated,omitempty"`
+	OutputUnavailableReason string                     `json:"output_unavailable_reason,omitempty"`
+	EventsFile              string                     `json:"events_file,omitempty"`
+	Error                   *mailboxResponseError      `json:"error,omitempty"`
+}
+
+func commandResponseFromSnapshot(requestID, operation string, snapshot CommandSnapshot) commandMailboxResponse {
+	response := commandMailboxResponse{
+		RequestID: requestID, Operation: operation, RequestState: store.MailboxExchangeComplete,
+		CommandID: string(snapshot.CommandID), SessionID: string(snapshot.SessionID),
+		DeliveryState: snapshot.DeliveryState, ObservedAt: mailboxTime(snapshot.ObservedAt),
+	}
+	if snapshot.State == "" {
+		return response
+	}
+	state := string(snapshot.State)
+	complete, truncated := snapshot.OutputComplete, snapshot.OutputTruncated
+	response.CommandState = state
+	response.ExitCode = snapshot.ExitCode
+	response.FinalEventSequence = snapshot.FinalEventSequence
+	response.AvailableEventSequence = int64PointerMailbox(snapshot.AvailableEventSequence)
+	response.OutputComplete = &complete
+	response.OutputTruncated = &truncated
+	response.OutputUnavailableReason = snapshot.OutputUnavailableReason
+	response.EventsFile = snapshot.EventsFile
+	return response
+}
+
+func int64PointerMailbox(value int64) *int64 { return &value }
 
 func responseFromSnapshot(requestID, operation string, state store.MailboxExchangeState, snapshot SessionSnapshot) sessionMailboxResponse {
 	return sessionMailboxResponse{

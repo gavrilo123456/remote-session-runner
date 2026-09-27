@@ -1,6 +1,7 @@
 package mailbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -199,6 +200,12 @@ func (p Projector) PublishCommand(ctx context.Context, requestID string, command
 	}
 	if cursor != *record.AvailableEventSequence {
 		return fmt.Errorf("%w: projected cursor %d differs from response cursor %d", ErrOutboxResponse, cursor, *record.AvailableEventSequence)
+	}
+	// A shared event file may already contain later output from another
+	// snapshot. Preserve it when the frozen response prefix still matches the
+	// pinned SQLite bytes; an older response must not shrink that shared file.
+	if current, currentCursor, readErr := p.EventFiles.Read(commandID); readErr == nil && currentCursor >= cursor && bytes.HasPrefix(current, eventBytes) {
+		return p.Outbox.Replace(ctx, requestID, record.ResponseBytes)
 	}
 	if err := p.EventFiles.Replace(ctx, commandID, eventBytes); err != nil {
 		return err

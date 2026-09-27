@@ -278,32 +278,36 @@ func (s *AuthorityStore) ListRemoteEvents(ctx context.Context, commandID domain.
 		if outputUnavailable == "retention_expired" {
 			return nil, ErrRemoteEventRetentionExpired
 		}
-		rows, err := connection.QueryContext(ctx, `
+		return readRemoteEventsOnConnection(ctx, connection, validated, afterSequence)
+	})
+}
+
+func readRemoteEventsOnConnection(ctx context.Context, connection *sql.Conn, commandID domain.CommandID, afterSequence int64) ([]RemoteEventRecord, error) {
+	rows, err := connection.QueryContext(ctx, `
 SELECT sequence, event_type, payload, byte_count, occurred_at
 FROM local_remote_events WHERE command_id = ? AND sequence > ? ORDER BY sequence
-`, string(validated), afterSequence)
+`, string(commandID), afterSequence)
+	if err != nil {
+		return nil, fmt.Errorf("list remote events: %w", err)
+	}
+	defer rows.Close()
+	result := make([]RemoteEventRecord, 0)
+	want := afterSequence + 1
+	for rows.Next() {
+		event, err := scanRemoteEvent(rows, commandID)
 		if err != nil {
-			return nil, fmt.Errorf("list remote events: %w", err)
+			return nil, err
 		}
-		defer rows.Close()
-		result := make([]RemoteEventRecord, 0)
-		want := afterSequence + 1
-		for rows.Next() {
-			event, err := scanRemoteEvent(rows, validated)
-			if err != nil {
-				return nil, err
-			}
-			if event.Sequence != want {
-				return nil, fmt.Errorf("%w: got %d after %d", ErrRemoteEventGap, event.Sequence, want-1)
-			}
-			result = append(result, event)
-			want++
+		if event.Sequence != want {
+			return nil, fmt.Errorf("%w: got %d after %d", ErrRemoteEventGap, event.Sequence, want-1)
 		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate remote events: %w", err)
-		}
-		return result, nil
-	})
+		result = append(result, event)
+		want++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate remote events: %w", err)
+	}
+	return result, nil
 }
 
 func validateRemoteEventBatch(events []RemoteEventRecord) ([]RemoteEventRecord, error) {

@@ -456,8 +456,7 @@ func (s *Server) handleSubmitCommand(response http.ResponseWriter, request *http
 		writeError(response, http.StatusBadRequest, "invalid_request", "invalid session path")
 		return
 	}
-	sessionID, err := domain.NewSessionID(sessionIDText)
-	if err != nil {
+	if _, err := domain.NewSessionID(sessionIDText); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -472,45 +471,53 @@ func (s *Server) handleSubmitCommand(response http.ResponseWriter, request *http
 		writeError(response, status, code, err.Error())
 		return
 	}
+	acceptance, failure := s.acceptSubmitCommandIntent(request.Context(), key, sessionIDText, body)
+	if failure != nil {
+		writeError(response, failure.status, failure.code, failure.message)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, acceptance)
+}
+
+func (s *Server) acceptSubmitCommandIntent(ctx context.Context, key, sessionIDText string, body []byte) (commandAcceptance, *localOperationFailure) {
+	if strings.TrimSpace(key) == "" {
+		return commandAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "Idempotency-Key is required")
+	}
 	var input submitCommandRequest
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid_request", "malformed or unsupported request JSON")
-		return
+		return commandAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "malformed or unsupported request JSON")
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		writeError(response, http.StatusBadRequest, "invalid_request", "request body contains multiple JSON values")
-		return
+		return commandAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "request body contains multiple JSON values")
+	}
+	sessionID, err := domain.NewSessionID(sessionIDText)
+	if err != nil {
+		return commandAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 	if input.Script == nil {
-		writeError(response, http.StatusBadRequest, "invalid_request", "script is required")
-		return
+		return commandAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "script is required")
 	}
 	script := *input.Script
 	if err := domain.ValidateScriptUTF8(script); err != nil {
 		if errors.Is(err, domain.ErrScriptTooLarge) {
-			writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", err.Error())
-		} else {
-			writeError(response, http.StatusBadRequest, "invalid_script", err.Error())
+			return commandAcceptance{}, localFailure(http.StatusRequestEntityTooLarge, "request_too_large", err.Error())
 		}
-		return
+		return commandAcceptance{}, localFailure(http.StatusBadRequest, "invalid_script", err.Error())
 	}
 	timeoutSeconds, hasTimeout, err := parseTimeoutSeconds(input.TimeoutSeconds)
 	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return commandAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
-	session, err := s.authority.GetLocalIntentByResource(request.Context(), "create_session", string(sessionID), s.owner)
+	session, err := s.authority.GetLocalIntentByResource(ctx, "create_session", string(sessionID), s.owner)
 	if err != nil {
 		if errors.Is(err, store.ErrLocalIntentNotFound) {
-			writeError(response, http.StatusNotFound, "session_not_found", "local session intent was not found")
-			return
+			return commandAcceptance{}, localFailure(http.StatusNotFound, "session_not_found", "local session intent was not found")
 		}
 		status, code := statusForStoreError(err)
-		writeError(response, status, code, sanitizeError(err))
-		return
+		return commandAcceptance{}, localFailure(status, code, sanitizeError(err))
 	}
 	payload := map[string]any{"session_id": string(sessionID), "script": script}
 	if hasTimeout {
@@ -518,35 +525,29 @@ func (s *Server) handleSubmitCommand(response http.ResponseWriter, request *http
 	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "could not encode command request")
-		return
+		return commandAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "could not encode command request")
 	}
 	canonical, err := domain.CanonicalizeMutationRequestJSON("submit_command", payloadJSON, domain.CanonicalizationOptions{})
 	if err != nil || int64(len(canonical)) > s.maxBodyBytes {
-		writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "canonical command request exceeds the configured body limit")
-		return
+		return commandAcceptance{}, localFailure(http.StatusRequestEntityTooLarge, "request_too_large", "canonical command request exceeds the configured body limit")
 	}
 	hash, err := domain.HashMutationRequestJSON("submit_command", canonical, domain.CanonicalizationOptions{})
 	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
-		return
+		return commandAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
 	}
 	commandIDText, err := newOpaqueID("cmd-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate command identity")
-		return
+		return commandAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate command identity")
 	}
 	commandID, err := domain.NewCommandID(commandIDText)
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not validate command identity")
-		return
+		return commandAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not validate command identity")
 	}
 	intentID, err := newOpaqueID("intent-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
-		return
+		return commandAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
 	}
-	record, _, err := s.authority.AcceptLocalIntent(request.Context(), store.LocalIntentCreate{
+	record, _, err := s.authority.AcceptLocalIntent(ctx, store.LocalIntentCreate{
 		IntentID:       domain.IntentID(intentID),
 		Operation:      "submit_command",
 		ResourceID:     string(commandID),
@@ -564,14 +565,13 @@ func (s *Server) handleSubmitCommand(response http.ResponseWriter, request *http
 	})
 	if err != nil {
 		status, code := statusForStoreError(err)
-		writeError(response, status, code, sanitizeError(err))
-		return
+		return commandAcceptance{}, localFailure(status, code, sanitizeError(err))
 	}
-	writeJSON(response, http.StatusAccepted, commandAcceptance{
+	return commandAcceptance{
 		ResourceID: string(record.CommandID), CommandID: string(record.CommandID), SessionID: string(record.SessionID), IntentID: string(record.IntentID),
 		AcceptanceScope: "local_intent", ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
-	})
+	}, nil
 }
 
 func (s *Server) handleCancelCommand(response http.ResponseWriter, request *http.Request, rawCommandID string) {

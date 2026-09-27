@@ -205,6 +205,48 @@ func (s *AuthorityStore) GetRemoteCommandProjection(ctx context.Context, id doma
 	})
 }
 
+// GetRemoteCommandWithEvents reads a mirrored command projection and its
+// highest contiguous event prefix from one local SQLite snapshot. The event
+// cursor is checked against the durable mirror cursor before returning.
+func (s *AuthorityStore) GetRemoteCommandWithEvents(ctx context.Context, id domain.CommandID) (RemoteCommandProjection, []RemoteEventRecord, error) {
+	validated, err := domain.NewCommandID(string(id))
+	if err != nil {
+		return RemoteCommandProjection{}, nil, err
+	}
+	type snapshot struct {
+		projection RemoteCommandProjection
+		events     []RemoteEventRecord
+	}
+	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
+		projection, err := readRemoteCommandProjectionOnConnection(ctx, connection, validated)
+		if err != nil {
+			return snapshot{}, err
+		}
+		if projection.OutputUnavailableReason == "retention_expired" {
+			return snapshot{projection: projection}, nil
+		}
+		events, err := readRemoteEventsOnConnection(ctx, connection, validated, 0)
+		if err != nil {
+			return snapshot{}, err
+		}
+		var cursor int64
+		err = connection.QueryRowContext(ctx, `SELECT last_sequence FROM local_remote_event_cursors WHERE command_id = ?`, string(validated)).Scan(&cursor)
+		if errors.Is(err, sql.ErrNoRows) {
+			cursor = 0
+		} else if err != nil {
+			return snapshot{}, fmt.Errorf("read remote command snapshot cursor: %w", err)
+		}
+		if cursor != int64(len(events)) {
+			return snapshot{}, fmt.Errorf("%w: cursor %d differs from retained prefix %d", ErrRemoteEventGap, cursor, len(events))
+		}
+		return snapshot{projection: projection, events: events}, nil
+	})
+	if err != nil {
+		return RemoteCommandProjection{}, nil, err
+	}
+	return result.projection, result.events, nil
+}
+
 // MarkRemoteCommandProjectionStale marks a command view stale while retaining
 // its last authoritative fields and observation timestamp.
 func (s *AuthorityStore) MarkRemoteCommandProjectionStale(ctx context.Context, id domain.CommandID) error {

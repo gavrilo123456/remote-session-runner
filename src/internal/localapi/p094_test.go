@@ -24,8 +24,12 @@ func TestP094MailboxSessionCreateReadAndCorrelation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	eventFiles, err := mailbox.NewEventFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
-		Importer: importer, Authority: authority, Controller: p063Owner(t), Operations: server, Outbox: outbox,
+		Importer: importer, Authority: authority, Controller: p063Owner(t), Operations: server, Outbox: outbox, EventFiles: eventFiles,
 	})
 	if err != nil {
 		t.Fatal(err)
