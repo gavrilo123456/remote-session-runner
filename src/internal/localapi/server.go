@@ -1208,78 +1208,72 @@ func (s *Server) handleCreateSession(response http.ResponseWriter, request *http
 		writeError(response, status, code, err.Error())
 		return
 	}
+	acceptance, failure := s.acceptCreateSessionIntent(request.Context(), key, body)
+	if failure != nil {
+		writeError(response, failure.status, failure.code, failure.message)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, acceptance)
+}
+
+func (s *Server) acceptCreateSessionIntent(ctx context.Context, key string, body []byte) (sessionAcceptance, *localOperationFailure) {
 	var input createSessionRequest
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid_request", "malformed or unsupported request JSON")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "malformed or unsupported request JSON")
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		writeError(response, http.StatusBadRequest, "invalid_request", "request body contains multiple JSON values")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "request body contains multiple JSON values")
 	}
 	if err := validateObjectField(input.Limits, "limits"); err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return sessionAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
 	if err := validateObjectField(input.Policy, "policy"); err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return sessionAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
 	if strings.TrimSpace(input.Environment) == "" || strings.IndexByte(input.Environment, 0) >= 0 {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "environment is required")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "environment is required")
 	}
 	target, err := domain.NewExecutionTarget(domain.TargetKind(input.ExecutionTarget.Kind), input.ExecutionTarget.Profile)
 	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return sessionAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
 	source, err := parseSource(input.Source)
 	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return sessionAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
 	if target.Kind() == domain.TargetKindRemote && source.Mode() == domain.SourceModeLocalWorktree {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "remote sessions cannot use a local_worktree source")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "remote sessions cannot use a local_worktree source")
 	}
 	canonical, err := domain.CanonicalizeMutationRequestJSON("create_session", body, domain.CanonicalizationOptions{})
 	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "canonical request is invalid")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "canonical request is invalid")
 	}
 	if err := domain.ValidateSerializedRequest(canonical); err != nil {
-		writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", err.Error())
-		return
+		return sessionAcceptance{}, localFailure(http.StatusRequestEntityTooLarge, "request_too_large", err.Error())
 	}
 	if int64(len(canonical)) > s.maxBodyBytes {
-		writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "canonical request exceeds the configured body limit")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusRequestEntityTooLarge, "request_too_large", "canonical request exceeds the configured body limit")
 	}
 	hash, err := domain.HashMutationRequestJSON("create_session", canonical, domain.CanonicalizationOptions{})
 	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
 	}
 	sessionIDText, err := newOpaqueID("sess-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate session identity")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate session identity")
 	}
 	sessionID, err := domain.NewSessionID(sessionIDText)
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not validate session identity")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not validate session identity")
 	}
 	intentID, err := newOpaqueID("intent-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
-		return
+		return sessionAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
 	}
-	record, duplicate, err := s.authority.AcceptLocalIntent(request.Context(), store.LocalIntentCreate{
+	record, duplicate, err := s.authority.AcceptLocalIntent(ctx, store.LocalIntentCreate{
 		IntentID:       domain.IntentID(intentID),
 		Operation:      "create_session",
 		ResourceID:     string(sessionID),
@@ -1295,15 +1289,14 @@ func (s *Server) handleCreateSession(response http.ResponseWriter, request *http
 	})
 	if err != nil {
 		status, code := statusForStoreError(err)
-		writeError(response, status, code, sanitizeError(err))
-		return
+		return sessionAcceptance{}, localFailure(status, code, sanitizeError(err))
 	}
-	writeJSON(response, http.StatusAccepted, sessionAcceptance{
+	_ = duplicate // The stable response identity is the durable idempotency result.
+	return sessionAcceptance{
 		ResourceID: string(record.SessionID), SessionID: string(record.SessionID), IntentID: string(record.IntentID),
 		AcceptanceScope: "local_intent", ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
-	})
-	_ = duplicate // The stable response identity is the durable idempotency result.
+	}, nil
 }
 
 func (s *Server) handleCreateJob(response http.ResponseWriter, request *http.Request) {
@@ -1502,30 +1495,49 @@ func (s *Server) handleGetSession(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusBadRequest, "invalid_request", "invalid session path")
 		return
 	}
+	read, failure := s.readSession(request.Context(), idText)
+	if failure != nil {
+		writeError(response, failure.status, failure.code, failure.message)
+		return
+	}
+	writeJSON(response, http.StatusOK, read)
+}
+
+func (s *Server) readSession(ctx context.Context, idText string) (sessionRead, *localOperationFailure) {
 	sessionID, err := domain.NewSessionID(idText)
 	if err != nil {
-		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
-		return
+		return sessionRead{}, localFailure(http.StatusBadRequest, "invalid_request", err.Error())
 	}
-	record, err := s.authority.GetLocalIntentByResource(request.Context(), "create_session", string(sessionID), s.owner)
+	record, err := s.authority.GetLocalIntentByResource(ctx, "create_session", string(sessionID), s.owner)
 	if err != nil {
 		status, code := statusForStoreError(err)
-		writeError(response, status, code, sanitizeError(err))
-		return
+		return sessionRead{}, localFailure(status, code, sanitizeError(err))
 	}
 	if remoteProjectionEligible(record) {
-		projection, projectionErr := s.authority.GetRemoteSessionProjection(request.Context(), sessionID)
+		projection, projectionErr := s.authority.GetRemoteSessionProjection(ctx, sessionID)
 		if projectionErr == nil {
-			writeJSON(response, http.StatusOK, sessionRead{View: "projection", IsStale: projection.IsStale, Resource: sessionProjectionResourceFromProjection(projection)})
-			return
+			return sessionRead{View: "projection", IsStale: projection.IsStale, Resource: sessionProjectionResourceFromProjection(projection)}, nil
 		}
 		if !errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
 			status, code := statusForStoreError(projectionErr)
-			writeError(response, status, code, sanitizeError(projectionErr))
-			return
+			return sessionRead{}, localFailure(status, code, sanitizeError(projectionErr))
 		}
 	}
-	writeJSON(response, http.StatusOK, sessionRead{View: "local_intent", IsStale: false, Resource: sessionIntentResourceFromRecord(record)})
+	if record.Target.Kind() == domain.TargetKindLocal && (record.DeliveryState == store.LocalIntentAccepted || record.DeliveryState == store.LocalIntentReconciled) {
+		authority, authorityErr := s.authority.GetSession(ctx, sessionID)
+		if authorityErr == nil {
+			if authority.Controller.Type() != record.Controller.Type() || authority.Controller.ID() != record.Controller.ID() ||
+				authority.Target.Kind() != record.Target.Kind() || authority.Target.Profile() != record.Target.Profile() {
+				return sessionRead{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "local session authority identity does not match its accepted intent")
+			}
+			return sessionRead{View: "authority", IsStale: false, Resource: sessionAuthorityResourceFromRecord(authority)}, nil
+		}
+		if !errors.Is(authorityErr, store.ErrSessionNotFound) {
+			status, code := statusForStoreError(authorityErr)
+			return sessionRead{}, localFailure(status, code, sanitizeError(authorityErr))
+		}
+	}
+	return sessionRead{View: "local_intent", IsStale: false, Resource: sessionIntentResourceFromRecord(record)}, nil
 }
 
 func (s *Server) readBody(request *http.Request) ([]byte, error) {
@@ -1607,6 +1619,17 @@ func sessionProjectionResourceFromProjection(projection store.RemoteSessionProje
 		Controller: controllerView{Type: string(projection.Controller.Type()), ID: string(projection.Controller.ID())}, ObservedAt: projection.ObservedAt.UTC(),
 		Environment: projection.Environment, Source: source, Capabilities: capabilitiesResponseFromProjection(projection.Capabilities),
 		RuntimeGeneration: projection.RuntimeGeneration, ResolvedRevision: projection.ResolvedRevision, IsStale: projection.IsStale,
+	}
+}
+
+func sessionAuthorityResourceFromRecord(record store.SessionRecord) sessionProjectionResource {
+	return sessionProjectionResource{
+		SessionID: string(record.SessionID), SessionState: string(record.State),
+		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()}, Authority: "local",
+		Controller: controllerView{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())}, ObservedAt: record.UpdatedAt.UTC(),
+		Environment: record.Environment, Source: sourceResponseFromDomain(record.Source),
+		Capabilities:      capabilitiesResponse{HostClass: record.Target.Profile(), Isolation: string(domain.IsolationOSUser), EffectiveAccount: string(record.Controller.ID()), ServiceLimits: map[string]any{}},
+		RuntimeGeneration: record.RuntimeGeneration, ResolvedRevision: record.ResolvedRevision,
 	}
 }
 

@@ -124,10 +124,20 @@ func (s *AuthorityStore) AcceptMailboxExchange(ctx context.Context, input Mailbo
 				validated.ResourceID = existing.ResourceID
 				validated.State = existing.State
 				validated.ResponseRevision = existing.ResponseRevision
-				validated.ResponseBytes = append([]byte(nil), existing.ResponseBytes...)
-				validated.ResponseSHA256 = append([]byte(nil), existing.ResponseSHA256...)
-				validated.TerminalResponseBytes = append([]byte(nil), existing.TerminalResponseBytes...)
-				validated.TerminalResponseSHA256 = append([]byte(nil), existing.TerminalResponseSHA256...)
+				if len(existing.ResponseBytes) > 0 {
+					validated.ResponseBytes, err = rebindMailboxResponseRequestID(existing.ResponseBytes, validated.RequestID)
+					if err != nil {
+						return MailboxExchangeRecord{}, err
+					}
+					validated.ResponseSHA256 = sha256Bytes(validated.ResponseBytes)
+				}
+				if len(existing.TerminalResponseBytes) > 0 {
+					validated.TerminalResponseBytes, err = rebindMailboxResponseRequestID(existing.TerminalResponseBytes, validated.RequestID)
+					if err != nil {
+						return MailboxExchangeRecord{}, err
+					}
+					validated.TerminalResponseSHA256 = sha256Bytes(validated.TerminalResponseBytes)
+				}
 				if existing.AvailableEventSequence != nil {
 					cursor := *existing.AvailableEventSequence
 					validated.AvailableEventSequence = &cursor
@@ -155,6 +165,23 @@ func (s *AuthorityStore) AcceptMailboxExchange(ctx context.Context, input Mailbo
 	return returnValue, duplicate, nil
 }
 
+func rebindMailboxResponseRequestID(raw []byte, requestID string) ([]byte, error) {
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &response); err != nil || response == nil {
+		return nil, fmt.Errorf("%w: stored response is not a JSON object", ErrMailboxResponseInvalid)
+	}
+	requestIDBytes, err := json.Marshal(requestID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode response request ID: %v", ErrMailboxResponseInvalid, err)
+	}
+	response["request_id"] = requestIDBytes
+	result, err := json.Marshal(response)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode correlated response: %v", ErrMailboxResponseInvalid, err)
+	}
+	return result, nil
+}
+
 // GetMailboxExchange reloads and validates one durable receipt.
 func (s *AuthorityStore) GetMailboxExchange(ctx context.Context, requestID string) (MailboxExchangeRecord, error) {
 	if err := validateMailboxRequestID(requestID); err != nil {
@@ -162,6 +189,57 @@ func (s *AuthorityStore) GetMailboxExchange(ctx context.Context, requestID strin
 	}
 	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
 		return readMailboxExchangeOnConnection(ctx, connection, requestID)
+	})
+}
+
+// ListMailboxExchanges returns mailbox exchanges for one controller and
+// operation in stable creation order. It lets operation projectors resume
+// accepted asynchronous requests after restart.
+func (s *AuthorityStore) ListMailboxExchanges(ctx context.Context, controller domain.ControllerIdentity, operation string, state MailboxExchangeState) ([]MailboxExchangeRecord, error) {
+	validatedController, err := validateController(controller)
+	if err != nil {
+		return nil, fmt.Errorf("%w: controller: %v", ErrMailboxExchangeInvalid, err)
+	}
+	if strings.TrimSpace(operation) == "" || len(operation) > 128 || strings.IndexByte(operation, 0) >= 0 {
+		return nil, fmt.Errorf("%w: operation", ErrMailboxExchangeInvalid)
+	}
+	if state != MailboxExchangeAccepted && state != MailboxExchangeComplete && state != MailboxExchangeRejected && state != MailboxExchangeIndeterminate {
+		return nil, fmt.Errorf("%w: state %q", ErrMailboxExchangeInvalid, state)
+	}
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
+		rows, err := connection.QueryContext(ctx, `
+SELECT request_id FROM mailbox_exchanges
+WHERE controller_type = ? AND controller_id = ? AND operation = ? AND request_state = ?
+ORDER BY created_at, request_id
+`, string(validatedController.Type()), string(validatedController.ID()), operation, string(state))
+		if err != nil {
+			return nil, fmt.Errorf("list mailbox exchanges: %w", err)
+		}
+		var requestIDs []string
+		for rows.Next() {
+			var requestID string
+			if err := rows.Scan(&requestID); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan mailbox request ID: %w", err)
+			}
+			requestIDs = append(requestIDs, requestID)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("read mailbox request IDs: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("close mailbox request IDs: %w", err)
+		}
+		records := make([]MailboxExchangeRecord, 0, len(requestIDs))
+		for _, requestID := range requestIDs {
+			record, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, record)
+		}
+		return records, nil
 	})
 }
 

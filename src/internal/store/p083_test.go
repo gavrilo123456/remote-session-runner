@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -61,7 +62,13 @@ func TestP083MailboxResponseRevisionsAndTerminalSnapshotAreImmutable(t *testing.
 
 	// New request IDs remain correlated to the immutable terminal snapshot.
 	retry, duplicate, err := authority.AcceptMailboxExchange(context.Background(), MailboxExchangeCreate{RequestID: "req-p083-retry", Operation: "run", Controller: controller, IdempotencyKey: "key-p083", RequestHash: hash, CanonicalPayload: []byte(`{"operation":"run","script":"echo p083"}`)})
-	if err != nil || !duplicate || retry.ResponseRevision != terminal.ResponseRevision || string(retry.ResponseBytes) != string(terminalBytes) || string(retry.TerminalResponseBytes) != string(terminalBytes) {
+	var correlated struct {
+		RequestID string `json:"request_id"`
+	}
+	if err == nil {
+		err = json.Unmarshal(retry.ResponseBytes, &correlated)
+	}
+	if err != nil || !duplicate || retry.ResponseRevision != terminal.ResponseRevision || correlated.RequestID != "req-p083-retry" || string(retry.ResponseBytes) != string(retry.TerminalResponseBytes) {
 		t.Fatalf("terminal retry=%+v duplicate=%v err=%v", retry, duplicate, err)
 	}
 }
