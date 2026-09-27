@@ -33,6 +33,11 @@ func p005ImportBoundaries(modulePath string) []p005ImportBoundary {
 	boundaries = append(boundaries,
 		p005ImportBoundary{importerRoot: localAPIRoot, forbiddenRoot: internal + "sshbridge"},
 		p005ImportBoundary{importerRoot: localAPIRoot, forbiddenRoot: internal + "runtime"},
+		p005ImportBoundary{importerRoot: localAPIRoot, forbiddenRoot: internal + "dispatcher"},
+		p005ImportBoundary{importerRoot: localAPIRoot, forbiddenRoot: internal + "sshclient"},
+		p005ImportBoundary{importerRoot: internal + "mailbox", forbiddenRoot: internal + "dispatcher"},
+		p005ImportBoundary{importerRoot: internal + "mailbox", forbiddenRoot: internal + "sshclient"},
+		p005ImportBoundary{importerRoot: internal + "mailbox", forbiddenRoot: internal + "sshbridge"},
 		p005ImportBoundary{importerRoot: bridgeRoot, forbiddenRoot: internal + "execution"},
 	)
 	return boundaries
@@ -205,5 +210,52 @@ import _ "example.test/remote-session-runner/src/internal/execution"`,
 	violations := p005ImportBoundaryViolations(graph, p005ImportBoundaries(modulePath))
 	if len(violations) != 3 {
 		t.Fatalf("found %d boundary violations, want 3: %v", len(violations), violations)
+	}
+}
+
+func TestP105ImportBoundaryScannerFindsTransitiveIngressToRouter(t *testing.T) {
+	repositoryRoot := t.TempDir()
+	modulePath := "example.test/remote-session-runner"
+	files := map[string]string{
+		"src/internal/localapi/handler.go": `package localapi
+import _ "example.test/remote-session-runner/src/internal/mailbox"`,
+		"src/internal/mailbox/processor.go": `package mailbox
+import _ "example.test/remote-session-runner/src/internal/dispatcher"`,
+		"src/internal/dispatcher/router.go": `package dispatcher
+import _ "example.test/remote-session-runner/src/internal/sshclient"`,
+		"src/internal/sshclient/client.go": `package sshclient`,
+	}
+	for name, contents := range files {
+		path := filepath.Join(repositoryRoot, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	graph, err := p005ImportGraph(repositoryRoot, modulePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	violations := p005ImportBoundaryViolations(graph, p005ImportBoundaries(modulePath))
+	wants := []string{
+		modulePath + "/src/internal/localapi must not depend on " + modulePath + "/src/internal/dispatcher",
+		modulePath + "/src/internal/localapi must not depend on " + modulePath + "/src/internal/sshclient",
+		modulePath + "/src/internal/mailbox must not depend on " + modulePath + "/src/internal/dispatcher",
+		modulePath + "/src/internal/mailbox must not depend on " + modulePath + "/src/internal/sshclient",
+	}
+	for _, want := range wants {
+		found := false
+		for _, violation := range violations {
+			if strings.HasPrefix(violation, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing expected transitive import-boundary violation %q in %v", want, violations)
+		}
 	}
 }
