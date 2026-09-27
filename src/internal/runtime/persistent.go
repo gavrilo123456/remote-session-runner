@@ -777,6 +777,7 @@ func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, se
 	var result outputDrainResult
 	buffer := make([]byte, MaxOutputChunkBytes)
 	pending := make([]byte, 0, MaxOutputChunkBytes)
+	publishedFirstChunk := false
 	flush := func() {
 		if len(pending) == 0 {
 			return
@@ -785,6 +786,7 @@ func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, se
 		chunk := OutputChunk{Sequence: sequence.Add(1), Stream: stream, Data: data}
 		result.chunks = append(result.chunks, chunk)
 		if onOutput != nil {
+			publishedFirstChunk = true
 			if err := onOutput(chunk); err != nil && result.err == nil {
 				result.err = err
 			}
@@ -810,11 +812,18 @@ func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, se
 				chunk := OutputChunk{Sequence: sequence.Add(1), Stream: stream, Data: data}
 				result.chunks = append(result.chunks, chunk)
 				if onOutput != nil {
+					publishedFirstChunk = true
 					if callbackErr := onOutput(chunk); callbackErr != nil && result.err == nil {
 						result.err = callbackErr
 					}
 				}
 				pending = pending[MaxOutputChunkBytes:]
+			}
+			// Publish the first partial chunk while the command is still running,
+			// even if host load delays the periodic batch flush. Later chunks remain
+			// batched by the normal flush interval and size cap.
+			if onOutput != nil && !publishedFirstChunk && len(pending) > 0 {
+				flush()
 			}
 		}
 		if err == io.EOF {

@@ -3,6 +3,8 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -56,28 +58,65 @@ func TestP032O01ConcurrentRawDrainPreservesBinaryBytesAndChunkBounds(t *testing.
 	}
 }
 
-func TestP032O01PartialOutputFlushesNearFiftyMilliseconds(t *testing.T) {
+func TestP032O01PartialOutputIsAvailableBeforeCommandCompletes(t *testing.T) {
 	shell, err := StartPersistentShell(context.Background(), PersistentShellOptions{SessionID: "session-p032-flush", Generation: "generation-p032-flush"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer shell.Close()
-
-	started := time.Now()
-	result, err := shell.RunScript(context.Background(), "command-p032-flush", []byte("printf 'a'\nsleep 0.12\nprintf 'b'\n"))
-	if err != nil {
+	releasePath := filepath.Join(t.TempDir(), "release-tail")
+	defer func() {
+		_ = os.WriteFile(releasePath, []byte("release"), 0o600)
+		if err := shell.Close(); err != nil {
+			t.Errorf("close shell: %v", err)
+		}
+	}()
+	type runResult struct {
+		result PersistentShellResult
+		err    error
+	}
+	completed := make(chan runResult, 1)
+	output := make(chan OutputChunk, 4)
+	go func() {
+		script := []byte("printf 'a'\nwhile [ ! -e " + shellQuote(releasePath) + " ]; do sleep 0.01; done\nprintf 'b'\n")
+		result, err := shell.RunScriptWithOutput(context.Background(), "command-p032-flush", script, func(chunk OutputChunk) error {
+			output <- chunk
+			return nil
+		})
+		completed <- runResult{result: result, err: err}
+	}()
+	select {
+	case chunk := <-output:
+		if chunk.Stream != OutputStreamStdout || string(chunk.Data) != "a" {
+			t.Fatalf("first partial chunk = %+v, want stdout a", chunk)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("partial output was not published while command was active")
+	}
+	select {
+	case result := <-completed:
+		t.Fatalf("command completed before the output boundary was released: err=%v result=%+v", result.err, result.result)
+	default:
+	}
+	if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	var result PersistentShellResult
+	select {
+	case run := <-completed:
+		if run.err != nil {
+			t.Fatal(run.err)
+		}
+		result = run.result
+	case <-time.After(10 * time.Second):
+		t.Fatal("command did not complete after output boundary release")
 	}
 	if got := string(result.Stdout); got != "ab" {
 		t.Fatalf("stdout = %q", got)
 	}
 	if len(result.Chunks) < 2 {
-		t.Fatalf("chunks = %+v, want the first partial chunk flushed before delayed byte", result.Chunks)
+		t.Fatalf("chunks = %+v, want the first partial chunk separate from the later byte", result.Chunks)
 	}
 	if got := string(result.Chunks[0].Data); got != "a" {
 		t.Fatalf("first chunk = %q, want a", got)
-	}
-	if elapsed := time.Since(started); elapsed < 100*time.Millisecond {
-		t.Fatalf("delayed script elapsed %s, want real pipe delay", elapsed)
 	}
 }
