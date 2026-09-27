@@ -15,6 +15,7 @@
     "command_state": { "type": "string", "enum": ["queued", "running", "cancelling", "succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] },
     "job_id": { "type": "string", "minLength": 1 },
     "job_phase": { "type": "string", "enum": ["creating_session", "accepting_command", "awaiting_command", "closing_session", "complete", "failed", "lost"] },
+    "observed_at": { "type": "string", "format": "date-time" },
     "exit_code": { "type": "integer" },
     "final_event_sequence": { "type": "integer", "minimum": 1 },
     "available_event_sequence": { "type": "integer", "minimum": 0 },

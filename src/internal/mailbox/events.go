@@ -27,6 +27,7 @@ var (
 // durability boundaries are owned by later mailbox phases.
 type EventProjector struct {
 	Authority *store.AuthorityStore
+	Clock     func() time.Time
 }
 
 // Project reads one contiguous durable command stream and returns newline-
