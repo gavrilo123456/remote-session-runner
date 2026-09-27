@@ -584,8 +584,7 @@ func (s *Server) handleCancelCommand(response http.ResponseWriter, request *http
 		writeError(response, http.StatusBadRequest, "invalid_request", "invalid command path")
 		return
 	}
-	commandID, err := domain.NewCommandID(commandIDText)
-	if err != nil {
+	if _, err := domain.NewCommandID(commandIDText); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -619,49 +618,75 @@ func (s *Server) handleCancelCommand(response http.ResponseWriter, request *http
 		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "reason is invalid")
 		return
 	}
-	submitIntent, err := s.authority.GetLocalIntentByResource(request.Context(), "submit_command", commandIDText, s.owner)
+	accepted, failure := s.acceptCancelCommandIntent(request.Context(), request.Header.Get("Idempotency-Key"), commandIDText, reason)
+	if failure != nil {
+		writeError(response, failure.status, failure.code, failure.message)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, accepted)
+}
+
+func (s *Server) acceptCancelCommandIntent(ctx context.Context, key, commandIDText, reason string) (commandAcceptance, *localOperationFailure) {
+	if strings.TrimSpace(key) == "" {
+		return commandAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "Idempotency-Key is required")
+	}
+	commandID, err := domain.NewCommandID(commandIDText)
+	if err != nil {
+		return commandAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	if len(reason) > 256 || strings.IndexByte(reason, 0) >= 0 {
+		return commandAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "reason is invalid")
+	}
+	submitIntent, err := s.authority.GetLocalIntentByResource(ctx, "submit_command", commandIDText, s.owner)
 	if err != nil {
 		if errors.Is(err, store.ErrLocalIntentNotFound) {
-			writeError(response, http.StatusNotFound, "command_not_found", "local command intent was not found")
-			return
+			return commandAcceptance{}, localFailure(http.StatusNotFound, "command_not_found", "local command intent was not found")
 		}
 		status, code := statusForStoreError(err)
 		if code == "session_not_found" {
 			code = "command_not_found"
 		}
-		writeError(response, status, code, sanitizeError(err))
-		return
+		return commandAcceptance{}, localFailure(status, code, sanitizeError(err))
 	}
 	payload := map[string]any{"command_id": commandIDText}
 	if reason != "" {
 		payload["reason"] = reason
 	}
-	payloadJSON, hash, ok := s.canonicalLocalMutation(response, "cancel_command", payload)
-	if !ok {
-		return
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return commandAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "could not encode cancel request")
+	}
+	canonical, err := domain.CanonicalizeMutationRequestJSON("cancel_command", payloadJSON, domain.CanonicalizationOptions{})
+	if err != nil {
+		return commandAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "canonical cancel request is invalid")
+	}
+	if int64(len(canonical)) > s.maxBodyBytes {
+		return commandAcceptance{}, localFailure(http.StatusRequestEntityTooLarge, "request_too_large", "canonical cancel request exceeds the configured body limit")
+	}
+	hash, err := domain.HashMutationRequestJSON("cancel_command", canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		return commandAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
 	}
 	intentID, err := newOpaqueID("intent-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
-		return
+		return commandAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
 	}
-	record, _, err := s.authority.AcceptLocalIntent(request.Context(), store.LocalIntentCreate{
+	record, _, err := s.authority.AcceptLocalIntent(ctx, store.LocalIntentCreate{
 		IntentID: domain.IntentID(intentID), Operation: "cancel_command", ResourceID: commandIDText,
 		SessionID: submitIntent.SessionID, CommandID: commandID, Target: submitIntent.Target,
 		Environment: submitIntent.Environment, Controller: s.owner, Source: submitIntent.Source,
-		RequestHash: hash, IdempotencyKey: request.Header.Get("Idempotency-Key"), PayloadJSON: payloadJSON,
+		RequestHash: hash, IdempotencyKey: key, PayloadJSON: canonical,
 		DeliveryState: store.LocalIntentRecorded,
 	})
 	if err != nil {
 		status, code := statusForStoreError(err)
-		writeError(response, status, code, sanitizeError(err))
-		return
+		return commandAcceptance{}, localFailure(status, code, sanitizeError(err))
 	}
-	writeJSON(response, http.StatusAccepted, commandAcceptance{
+	return commandAcceptance{
 		ResourceID: string(record.CommandID), CommandID: string(record.CommandID), SessionID: string(record.SessionID), IntentID: string(record.IntentID),
 		AcceptanceScope: "local_intent", ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
-	})
+	}, nil
 }
 
 func (s *Server) handleCloseSession(response http.ResponseWriter, request *http.Request, rawSessionID string) {
@@ -674,8 +699,7 @@ func (s *Server) handleCloseSession(response http.ResponseWriter, request *http.
 		writeError(response, http.StatusBadRequest, "invalid_request", "invalid session path")
 		return
 	}
-	sessionID, err := domain.NewSessionID(sessionIDText)
-	if err != nil {
+	if _, err := domain.NewSessionID(sessionIDText); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -726,41 +750,71 @@ func (s *Server) handleCloseSession(response http.ResponseWriter, request *http.
 		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "close policy is invalid")
 		return
 	}
-	createIntent, err := s.authority.GetLocalIntentByResource(request.Context(), "create_session", sessionIDText, s.owner)
-	if err != nil {
-		if errors.Is(err, store.ErrLocalIntentNotFound) {
-			writeError(response, http.StatusNotFound, "session_not_found", "local session intent was not found")
-			return
-		}
-		status, code := statusForStoreError(err)
-		writeError(response, status, code, sanitizeError(err))
+	accepted, failure := s.acceptCloseSessionIntent(request.Context(), request.Header.Get("Idempotency-Key"), sessionIDText, policy)
+	if failure != nil {
+		writeError(response, failure.status, failure.code, failure.message)
 		return
 	}
-	payloadJSON, hash, ok := s.canonicalLocalMutation(response, "close_session", map[string]any{"session_id": sessionIDText, "policy": policy})
-	if !ok {
-		return
+	writeJSON(response, http.StatusAccepted, accepted)
+}
+
+func (s *Server) acceptCloseSessionIntent(ctx context.Context, key, sessionIDText, policy string) (closeAcceptance, *localOperationFailure) {
+	if strings.TrimSpace(key) == "" {
+		return closeAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "Idempotency-Key is required")
+	}
+	sessionID, err := domain.NewSessionID(sessionIDText)
+	if err != nil {
+		return closeAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	policy = strings.TrimSpace(policy)
+	if policy == "" {
+		policy = "cancel"
+	}
+	if len(policy) > 64 || strings.IndexByte(policy, 0) >= 0 {
+		return closeAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "close policy is invalid")
+	}
+	createIntent, err := s.authority.GetLocalIntentByResource(ctx, "create_session", sessionIDText, s.owner)
+	if err != nil {
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			return closeAcceptance{}, localFailure(http.StatusNotFound, "session_not_found", "local session intent was not found")
+		}
+		status, code := statusForStoreError(err)
+		return closeAcceptance{}, localFailure(status, code, sanitizeError(err))
+	}
+	payloadJSON, err := json.Marshal(map[string]any{"session_id": sessionIDText, "policy": policy})
+	if err != nil {
+		return closeAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "could not encode close request")
+	}
+	canonical, err := domain.CanonicalizeMutationRequestJSON("close_session", payloadJSON, domain.CanonicalizationOptions{})
+	if err != nil {
+		return closeAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "canonical close request is invalid")
+	}
+	if int64(len(canonical)) > s.maxBodyBytes {
+		return closeAcceptance{}, localFailure(http.StatusRequestEntityTooLarge, "request_too_large", "canonical close request exceeds the configured body limit")
+	}
+	hash, err := domain.HashMutationRequestJSON("close_session", canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		return closeAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
 	}
 	intentID, err := newOpaqueID("intent-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
-		return
+		return closeAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
 	}
-	record, _, err := s.authority.AcceptLocalIntent(request.Context(), store.LocalIntentCreate{
+	record, _, err := s.authority.AcceptLocalIntent(ctx, store.LocalIntentCreate{
 		IntentID: domain.IntentID(intentID), Operation: "close_session", ResourceID: sessionIDText,
 		SessionID: sessionID, Target: createIntent.Target, Environment: createIntent.Environment,
 		Controller: s.owner, Source: createIntent.Source, RequestHash: hash,
-		IdempotencyKey: request.Header.Get("Idempotency-Key"), PayloadJSON: payloadJSON, DeliveryState: store.LocalIntentRecorded,
+		IdempotencyKey: key, PayloadJSON: canonical, DeliveryState: store.LocalIntentRecorded,
 	})
 	if err != nil {
 		status, code := statusForStoreError(err)
-		writeError(response, status, code, sanitizeError(err))
-		return
+		return closeAcceptance{}, localFailure(status, code, sanitizeError(err))
 	}
-	writeJSON(response, http.StatusAccepted, closeAcceptance{
+	return closeAcceptance{
 		ResourceID: string(record.SessionID), SessionID: string(record.SessionID), IntentID: string(record.IntentID),
 		AcceptanceScope: "local_intent", ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
-	})
+	}, nil
 }
 
 func (s *Server) canonicalLocalMutation(response http.ResponseWriter, operation string, payload map[string]any) ([]byte, domain.CanonicalHash, bool) {

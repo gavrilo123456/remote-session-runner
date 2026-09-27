@@ -397,6 +397,7 @@ type p095Response struct {
 	OutputTruncated         *bool  `json:"output_truncated"`
 	OutputUnavailableReason string `json:"output_unavailable_reason"`
 	EventsFile              string `json:"events_file"`
+	TeardownOutcome         string `json:"teardown_outcome"`
 	Error                   *struct {
 		Code      string `json:"code"`
 		Message   string `json:"message"`

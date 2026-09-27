@@ -8,8 +8,12 @@ retention, or cleanup behavior.
 Requests cover the seven detailed-design operations. Each mutation has a new
 exchange `request_id` and a stable `idempotency_key`; reads have no idempotency
 key. A later retry uses a new request ID and the same key and canonical
-payload. `source`, `limits`, `policy`, and `close_policy` remain objects for
-later domain validation. An omitted source has the design's meaning of empty.
+payload. `source`, `limits`, and `policy` remain objects for later domain
+validation. `close_policy` is an optional object with an optional `policy`
+string; the mailbox defaults an omitted or empty value to `cancel` and rejects
+unknown members. It maps to the existing Mac API close-policy field. This
+records requested policy intent and does not claim the target has applied it.
+An omitted source has the design's meaning of empty.
 
 Responses distinguish mailbox `request_state` from session, command, delivery,
 and job state. `accepted` is only Mac receipt; it carries no authoritative

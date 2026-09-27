@@ -37,6 +37,27 @@ type CommandIntent struct {
 	DeliveryState string
 }
 
+// CancelCommandSnapshot keeps the cancel-intent delivery state separate from
+// the submitted command's state and delivery state.
+type CancelCommandSnapshot struct {
+	CommandID            string
+	SessionID            string
+	CancelDeliveryState  string
+	CommandDeliveryState string
+	CommandState         string
+	ObservedAt           time.Time
+}
+
+// CloseSessionSnapshot keeps close-intent delivery separate from the
+// authoritative session lifecycle and original create-intent delivery.
+type CloseSessionSnapshot struct {
+	SessionID            string
+	CloseDeliveryState   string
+	SessionDeliveryState string
+	SessionState         string
+	ObservedAt           time.Time
+}
+
 // SessionOperationError is a safe, structured error from the Mac session
 // operation boundary. Retryable failures leave the inbox pair available.
 type SessionOperationError struct {
@@ -60,6 +81,10 @@ type SessionOperations interface {
 	GetSession(context.Context, string) (SessionSnapshot, error)
 	SubmitCommandIntent(context.Context, Request) (CommandIntent, error)
 	GetCommandSnapshot(context.Context, string) (CommandSnapshot, error)
+	CancelCommandIntent(context.Context, Request) (CommandIntent, error)
+	GetCancelCommandSnapshot(context.Context, string, string) (CancelCommandSnapshot, error)
+	CloseSessionIntent(context.Context, Request) (SessionIntent, error)
+	GetCloseSessionSnapshot(context.Context, string, string) (CloseSessionSnapshot, error)
 }
 
 type SessionProcessorOptions struct {
@@ -122,6 +147,12 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	if err := p.reconcileAcceptedSubmits(ctx); err != nil {
 		return results, err
 	}
+	if err := p.reconcileAcceptedCancels(ctx); err != nil {
+		return results, err
+	}
+	if err := p.reconcileAcceptedCloses(ctx); err != nil {
+		return results, err
+	}
 	return results, nil
 }
 
@@ -139,12 +170,24 @@ func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 	if err := p.reconcileAcceptedCreates(ctx); err != nil {
 		return err
 	}
-	return p.reconcileAcceptedSubmits(ctx)
+	if err := p.reconcileAcceptedSubmits(ctx); err != nil {
+		return err
+	}
+	if err := p.reconcileAcceptedCancels(ctx); err != nil {
+		return err
+	}
+	return p.reconcileAcceptedCloses(ctx)
 }
 
 func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, error) {
 	if request.Operation == "submit_command" || request.Operation == "get_command" {
 		return p.processCommand(ctx, request)
+	}
+	if request.Operation == "cancel_command" {
+		return p.processCancelCommand(ctx, request)
+	}
+	if request.Operation == "close_session" {
+		return p.processCloseSession(ctx, request)
 	}
 	if request.Operation != "create_session" && request.Operation != "get_session" {
 		return false, fmt.Errorf("%w: operation %q is outside P095", ErrMailboxInput, request.Operation)
@@ -266,6 +309,114 @@ func (p *SessionProcessor) processCommand(ctx context.Context, request Request) 
 		cursor = &value
 	}
 	return p.publishCommandResponse(ctx, record, response, cursor)
+}
+
+func (p *SessionProcessor) processCancelCommand(ctx context.Context, request Request) (bool, error) {
+	record, duplicate, idempotencyConflict, err := p.acceptMutationExchange(ctx, request)
+	if err != nil {
+		return false, err
+	}
+	if duplicate && len(record.ResponseBytes) > 0 {
+		return true, p.projector.Publish(ctx, request.RequestID)
+	}
+	if idempotencyConflict || (record.IdempotencyKey != "" && !record.IdempotencyBindingActive) {
+		response := commandMailboxResponse{
+			RequestID: request.RequestID, Operation: request.Operation,
+			RequestState: store.MailboxExchangeRejected,
+			Error:        &mailboxResponseError{Code: "idempotency_conflict", Message: "idempotency key is already bound to a different request"},
+		}
+		return p.publishCommandResponse(ctx, record, response, nil)
+	}
+	if record.State != store.MailboxExchangeAccepted {
+		return false, fmt.Errorf("%w: terminal cancel exchange has no response snapshot", ErrOutboxResponse)
+	}
+	intent, err := p.operations.CancelCommandIntent(ctx, request)
+	if err != nil {
+		return p.publishCommandOperationError(ctx, record, request.CommandID, request.Operation, err)
+	}
+	if intent.CommandID != request.CommandID || intent.SessionID == "" {
+		return false, fmt.Errorf("%w: cancel operation returned a different command or no session ID", ErrSessionProcessorConfiguration)
+	}
+	response := commandMailboxResponse{
+		RequestID: request.RequestID, Operation: request.Operation, RequestState: store.MailboxExchangeAccepted,
+		CommandID: intent.CommandID, SessionID: intent.SessionID, DeliveryState: intent.DeliveryState,
+	}
+	return p.publishCommandResponse(ctx, record, response, nil)
+}
+
+func (p *SessionProcessor) processCloseSession(ctx context.Context, request Request) (bool, error) {
+	record, duplicate, idempotencyConflict, err := p.acceptMutationExchange(ctx, request)
+	if err != nil {
+		return false, err
+	}
+	if duplicate && len(record.ResponseBytes) > 0 {
+		return true, p.projector.Publish(ctx, request.RequestID)
+	}
+	if idempotencyConflict || (record.IdempotencyKey != "" && !record.IdempotencyBindingActive) {
+		response := sessionMailboxResponse{
+			RequestID: request.RequestID, Operation: request.Operation,
+			RequestState: store.MailboxExchangeRejected,
+			Error:        &mailboxResponseError{Code: "idempotency_conflict", Message: "idempotency key is already bound to a different request"},
+		}
+		return p.publish(ctx, record, response, nil)
+	}
+	if record.State != store.MailboxExchangeAccepted {
+		return false, fmt.Errorf("%w: terminal close exchange has no response snapshot", ErrOutboxResponse)
+	}
+	intent, err := p.operations.CloseSessionIntent(ctx, request)
+	if err != nil {
+		return p.publishSessionOperationError(ctx, record, request.SessionID, request.Operation, err)
+	}
+	if intent.SessionID != request.SessionID {
+		return false, fmt.Errorf("%w: close operation returned a different session ID", ErrSessionProcessorConfiguration)
+	}
+	response := sessionMailboxResponse{
+		RequestID: request.RequestID, Operation: request.Operation,
+		RequestState: store.MailboxExchangeAccepted, SessionID: intent.SessionID,
+		DeliveryState: intent.DeliveryState,
+	}
+	return p.publish(ctx, record, response, nil)
+}
+
+func (p *SessionProcessor) acceptMutationExchange(ctx context.Context, request Request) (store.MailboxExchangeRecord, bool, bool, error) {
+	payload, hash, err := receiptCanonical(request)
+	if err != nil {
+		return store.MailboxExchangeRecord{}, false, false, err
+	}
+	return p.authority.AcceptMailboxExchangeWithConflictReceipt(ctx, store.MailboxExchangeCreate{
+		RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
+		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
+	})
+}
+
+func (p *SessionProcessor) publishCommandOperationError(ctx context.Context, record store.MailboxExchangeRecord, commandID, operation string, err error) (bool, error) {
+	var operationErr *SessionOperationError
+	if !errors.As(err, &operationErr) {
+		return false, err
+	}
+	if operationErr.Retryable {
+		return false, err
+	}
+	response := commandMailboxResponse{
+		RequestID: record.RequestID, Operation: operation, RequestState: store.MailboxExchangeRejected,
+		CommandID: commandID, Error: safeSessionMailboxError(operationErr),
+	}
+	return p.publishCommandResponse(ctx, record, response, nil)
+}
+
+func (p *SessionProcessor) publishSessionOperationError(ctx context.Context, record store.MailboxExchangeRecord, sessionID, operation string, err error) (bool, error) {
+	var operationErr *SessionOperationError
+	if !errors.As(err, &operationErr) {
+		return false, err
+	}
+	if operationErr.Retryable {
+		return false, err
+	}
+	response := sessionMailboxResponse{
+		RequestID: record.RequestID, Operation: operation, RequestState: store.MailboxExchangeRejected,
+		SessionID: sessionID, Error: safeSessionMailboxError(operationErr),
+	}
+	return p.publish(ctx, record, response, nil)
 }
 
 func (p *SessionProcessor) publishStoredCommandResponse(ctx context.Context, record store.MailboxExchangeRecord) error {
@@ -445,6 +596,156 @@ func (p *SessionProcessor) reconcileAcceptedSubmits(ctx context.Context) error {
 	return nil
 }
 
+func (p *SessionProcessor) reconcileAcceptedCancels(ctx context.Context) error {
+	records, err := p.authority.ListMailboxExchanges(ctx, p.controller, "cancel_command", store.MailboxExchangeAccepted)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if len(record.ResponseBytes) == 0 {
+			continue
+		}
+		var previous commandMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "cancel_command" || previous.CommandID == "" || previous.SessionID == "" {
+			return fmt.Errorf("%w: accepted cancel response is corrupt", ErrOutboxResponse)
+		}
+		snapshot, err := p.operations.GetCancelCommandSnapshot(ctx, previous.CommandID, record.IdempotencyKey)
+		if err != nil {
+			var operationErr *SessionOperationError
+			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
+				continue
+			}
+			return err
+		}
+		if snapshot.CommandID != previous.CommandID || snapshot.SessionID != previous.SessionID {
+			return fmt.Errorf("%w: cancel reconciliation returned a different resource", ErrSessionProcessorConfiguration)
+		}
+		if snapshot.CommandState != "" && !domain.CommandState(snapshot.CommandState).Valid() {
+			return fmt.Errorf("%w: cancel reconciliation returned invalid command state %q", ErrSessionProcessorConfiguration, snapshot.CommandState)
+		}
+		if !validDeliveryState(snapshot.CancelDeliveryState) || (snapshot.CommandDeliveryState != "" && !validDeliveryState(snapshot.CommandDeliveryState)) {
+			return fmt.Errorf("%w: cancel reconciliation returned invalid delivery state", ErrSessionProcessorConfiguration)
+		}
+		response := commandMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation,
+			CommandID: previous.CommandID, SessionID: previous.SessionID,
+			DeliveryState: snapshot.CancelDeliveryState,
+		}
+		switch {
+		case domain.CommandState(snapshot.CommandState).IsTerminal():
+			response.RequestState = store.MailboxExchangeComplete
+		case snapshot.CommandDeliveryState == string(store.LocalIntentNotDelivered):
+			// The dispatcher atomically settled the original submit before it
+			// could reach the target, so no authoritative command state exists.
+			response.RequestState = store.MailboxExchangeComplete
+			response.DeliveryState = string(store.LocalIntentNotDelivered)
+		case snapshot.CancelDeliveryState == string(store.LocalIntentAccepted) || snapshot.CancelDeliveryState == string(store.LocalIntentReconciled):
+			// Target acceptance confirms the cancellation request, not its eventual
+			// effect on a command that may still be running.
+			response.RequestState = store.MailboxExchangeComplete
+		case snapshot.CancelDeliveryState == string(store.LocalIntentNotDelivered):
+			response.RequestState = store.MailboxExchangeRejected
+			response.Error = &mailboxResponseError{Code: "runtime_unavailable", Message: "cancellation request was proven not delivered"}
+		default:
+			response.RequestState = store.MailboxExchangeAccepted
+		}
+		if response.RequestState == store.MailboxExchangeAccepted && response.DeliveryState == previous.DeliveryState {
+			if err := p.projector.Publish(ctx, record.RequestID); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := p.publishCommandResponse(ctx, record, response, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *SessionProcessor) reconcileAcceptedCloses(ctx context.Context) error {
+	records, err := p.authority.ListMailboxExchanges(ctx, p.controller, "close_session", store.MailboxExchangeAccepted)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if len(record.ResponseBytes) == 0 {
+			continue
+		}
+		var previous sessionMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "close_session" || previous.SessionID == "" {
+			return fmt.Errorf("%w: accepted close response is corrupt", ErrOutboxResponse)
+		}
+		snapshot, err := p.operations.GetCloseSessionSnapshot(ctx, previous.SessionID, record.IdempotencyKey)
+		if err != nil {
+			var operationErr *SessionOperationError
+			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
+				continue
+			}
+			return err
+		}
+		if snapshot.SessionID != previous.SessionID || !validDeliveryState(snapshot.CloseDeliveryState) ||
+			(snapshot.SessionDeliveryState != "" && !validDeliveryState(snapshot.SessionDeliveryState)) {
+			return fmt.Errorf("%w: close reconciliation returned invalid identity or delivery state", ErrSessionProcessorConfiguration)
+		}
+		if snapshot.SessionState != "" && !domain.SessionState(snapshot.SessionState).Valid() {
+			return fmt.Errorf("%w: close reconciliation returned invalid session state %q", ErrSessionProcessorConfiguration, snapshot.SessionState)
+		}
+		response := sessionMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation,
+			SessionID: previous.SessionID, DeliveryState: snapshot.CloseDeliveryState,
+		}
+		switch {
+		case domain.SessionState(snapshot.SessionState).IsTerminal():
+			response.RequestState = store.MailboxExchangeComplete
+			response.SessionState = snapshot.SessionState
+			if snapshot.SessionState == string(domain.SessionStateLost) {
+				response.TeardownOutcome = "lost"
+			} else {
+				response.TeardownOutcome = "closed"
+			}
+		case snapshot.SessionState == "" && snapshot.SessionDeliveryState == string(store.LocalIntentNotDelivered):
+			// The create intent was proven never delivered; closure is a local
+			// no-op and must not invent a target session state.
+			response.RequestState = store.MailboxExchangeComplete
+			response.DeliveryState = string(store.LocalIntentNotDelivered)
+			response.TeardownOutcome = "not_created"
+		case snapshot.CloseDeliveryState == string(store.LocalIntentAccepted) || snapshot.CloseDeliveryState == string(store.LocalIntentReconciled):
+			response.RequestState = store.MailboxExchangeAccepted
+		case snapshot.CloseDeliveryState == string(store.LocalIntentNotDelivered):
+			response.RequestState = store.MailboxExchangeRejected
+			response.Error = &mailboxResponseError{Code: "runtime_unavailable", Message: "close request was proven not delivered"}
+		default:
+			response.RequestState = store.MailboxExchangeAccepted
+		}
+		if response.RequestState == store.MailboxExchangeAccepted && response.DeliveryState == previous.DeliveryState {
+			if err := p.projector.Publish(ctx, record.RequestID); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := p.publish(ctx, record, response, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validDeliveryState(state string) bool {
+	switch store.LocalIntentDeliveryState(state) {
+	case store.LocalIntentRecorded, store.LocalIntentDispatching, store.LocalIntentUncertain,
+		store.LocalIntentAccepted, store.LocalIntentReconciled, store.LocalIntentNotDelivered:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExchangeRecord, response sessionMailboxResponse, cursor *int64) (bool, error) {
 	response.ResponseRevision = current.ResponseRevision + 1
 	if current.DeduplicationWarning {
@@ -501,6 +802,7 @@ type sessionMailboxResponse struct {
 	SessionState       string                     `json:"session_state,omitempty"`
 	DeliveryState      string                     `json:"delivery_state,omitempty"`
 	ObservedAt         *time.Time                 `json:"observed_at,omitempty"`
+	TeardownOutcome    string                     `json:"teardown_outcome,omitempty"`
 	Error              *mailboxResponseError      `json:"error,omitempty"`
 }
 

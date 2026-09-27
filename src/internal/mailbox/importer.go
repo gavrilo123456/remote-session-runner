@@ -59,6 +59,7 @@ type Request struct {
 	Environment    string
 	SessionID      string
 	CommandID      string
+	ClosePolicy    string
 	Script         string
 	RawJSON        []byte
 }
@@ -288,13 +289,14 @@ func (i *Importer) validateRequest(filenameID string, raw []byte) (Request, erro
 		return Request{}, fmt.Errorf("%w: %v", ErrMailboxSchema, err)
 	}
 	var wire struct {
-		RequestID      string `json:"request_id"`
-		IdempotencyKey string `json:"idempotency_key"`
-		Operation      string `json:"operation"`
-		Environment    string `json:"environment"`
-		SessionID      string `json:"session_id"`
-		CommandID      string `json:"command_id"`
-		Script         string `json:"script"`
+		RequestID      string          `json:"request_id"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		Operation      string          `json:"operation"`
+		Environment    string          `json:"environment"`
+		SessionID      string          `json:"session_id"`
+		CommandID      string          `json:"command_id"`
+		Script         string          `json:"script"`
+		ClosePolicy    json.RawMessage `json:"close_policy"`
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return Request{}, fmt.Errorf("%w: decode request: %v", ErrMailboxSchema, err)
@@ -310,7 +312,44 @@ func (i *Importer) validateRequest(filenameID string, raw []byte) (Request, erro
 			return Request{}, fmt.Errorf("%w: %v", ErrMailboxScriptTooLarge, err)
 		}
 	}
-	return Request{RequestID: wire.RequestID, IdempotencyKey: wire.IdempotencyKey, Operation: wire.Operation, Environment: wire.Environment, SessionID: wire.SessionID, CommandID: wire.CommandID, Script: wire.Script, RawJSON: append([]byte(nil), raw...)}, nil
+	closePolicy := ""
+	if wire.Operation == "close_session" {
+		closePolicy, err = parseClosePolicy(wire.ClosePolicy)
+		if err != nil {
+			return Request{}, fmt.Errorf("%w: close_policy: %v", ErrMailboxSchema, err)
+		}
+	}
+	return Request{RequestID: wire.RequestID, IdempotencyKey: wire.IdempotencyKey, Operation: wire.Operation, Environment: wire.Environment, SessionID: wire.SessionID, CommandID: wire.CommandID, ClosePolicy: closePolicy, Script: wire.Script, RawJSON: append([]byte(nil), raw...)}, nil
+}
+
+func parseClosePolicy(raw json.RawMessage) (string, error) {
+	policy := "cancel"
+	if len(raw) == 0 {
+		return policy, nil
+	}
+	var input struct {
+		Policy string `json:"policy"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		return "", err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return "", errors.New("close_policy contains multiple JSON values")
+		}
+		return "", err
+	}
+	policy = strings.TrimSpace(input.Policy)
+	if policy == "" {
+		policy = "cancel"
+	}
+	if len(policy) > 64 || strings.IndexByte(policy, 0) >= 0 {
+		return "", errors.New("policy is invalid")
+	}
+	return policy, nil
 }
 
 func compileRequestSchema() (*jsonschema.Schema, error) {

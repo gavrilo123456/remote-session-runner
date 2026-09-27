@@ -79,6 +79,112 @@ func (s *Server) SubmitCommandIntent(ctx context.Context, request mailbox.Reques
 	}, nil
 }
 
+// CancelCommandIntent uses the same keyed local-intent acceptance path as the
+// Unix-socket cancel route. It does not claim that the target has applied the
+// cancellation request.
+func (s *Server) CancelCommandIntent(ctx context.Context, request mailbox.Request) (mailbox.CommandIntent, error) {
+	if request.Operation != "cancel_command" || request.CommandID == "" || request.IdempotencyKey == "" {
+		return mailbox.CommandIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox cancel request is invalid"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	accepted, failure := s.acceptCancelCommandIntent(ctx, request.IdempotencyKey, request.CommandID, "")
+	if failure != nil {
+		return mailbox.CommandIntent{}, mailboxOperationError(failure)
+	}
+	return mailbox.CommandIntent{
+		CommandID: accepted.CommandID, SessionID: accepted.SessionID,
+		DeliveryState: accepted.KnownState.DeliveryState,
+	}, nil
+}
+
+// GetCancelCommandSnapshot reloads the exact keyed cancel intent and the
+// accepted command view through the owner-scoped Mac API boundary.
+func (s *Server) GetCancelCommandSnapshot(ctx context.Context, commandIDText, idempotencyKey string) (mailbox.CancelCommandSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cancelIntent, err := s.authority.GetLocalIntentByIdempotency(ctx, "cancel_command", idempotencyKey, s.owner)
+	if err != nil {
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			return mailbox.CancelCommandSnapshot{}, &mailbox.SessionOperationError{Code: "resource_not_found", Message: "cancel intent is not available through this Mac ingress"}
+		}
+		status, code := statusForStoreError(err)
+		return mailbox.CancelCommandSnapshot{}, mailboxOperationError(localFailure(status, code, sanitizeError(err)))
+	}
+	if string(cancelIntent.CommandID) != commandIDText || cancelIntent.ResourceID != commandIDText {
+		return mailbox.CancelCommandSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "cancel intent identity does not match its request", Retryable: true}
+	}
+	command, err := s.GetCommandSnapshot(ctx, commandIDText)
+	if err != nil {
+		return mailbox.CancelCommandSnapshot{}, err
+	}
+	if string(command.SessionID) != string(cancelIntent.SessionID) {
+		return mailbox.CancelCommandSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "cancel intent session does not match the command", Retryable: true}
+	}
+	observedAt := cancelIntent.UpdatedAt.UTC()
+	if command.ObservedAt.After(observedAt) {
+		observedAt = command.ObservedAt.UTC()
+	}
+	return mailbox.CancelCommandSnapshot{
+		CommandID: commandIDText, SessionID: string(cancelIntent.SessionID),
+		CancelDeliveryState:  string(cancelIntent.DeliveryState),
+		CommandDeliveryState: command.DeliveryState, CommandState: string(command.State), ObservedAt: observedAt,
+	}, nil
+}
+
+// CloseSessionIntent uses the same keyed close-intent path and policy
+// validation as the Unix-socket API. Omitted close_policy was normalized by
+// the mailbox importer to the API's default "cancel" policy.
+func (s *Server) CloseSessionIntent(ctx context.Context, request mailbox.Request) (mailbox.SessionIntent, error) {
+	if request.Operation != "close_session" || request.SessionID == "" || request.IdempotencyKey == "" {
+		return mailbox.SessionIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox close request is invalid"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	accepted, failure := s.acceptCloseSessionIntent(ctx, request.IdempotencyKey, request.SessionID, request.ClosePolicy)
+	if failure != nil {
+		return mailbox.SessionIntent{}, mailboxOperationError(failure)
+	}
+	return mailbox.SessionIntent{SessionID: accepted.SessionID, DeliveryState: accepted.KnownState.DeliveryState}, nil
+}
+
+// GetCloseSessionSnapshot reloads the exact keyed close intent separately
+// from the session's original create delivery and authoritative lifecycle.
+func (s *Server) GetCloseSessionSnapshot(ctx context.Context, sessionIDText, idempotencyKey string) (mailbox.CloseSessionSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	closeIntent, err := s.authority.GetLocalIntentByIdempotency(ctx, "close_session", idempotencyKey, s.owner)
+	if err != nil {
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			return mailbox.CloseSessionSnapshot{}, &mailbox.SessionOperationError{Code: "resource_not_found", Message: "close intent is not available through this Mac ingress"}
+		}
+		status, code := statusForStoreError(err)
+		return mailbox.CloseSessionSnapshot{}, mailboxOperationError(localFailure(status, code, sanitizeError(err)))
+	}
+	if string(closeIntent.SessionID) != sessionIDText || closeIntent.ResourceID != sessionIDText {
+		return mailbox.CloseSessionSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "close intent identity does not match its request", Retryable: true}
+	}
+	session, err := s.GetSession(ctx, sessionIDText)
+	if err != nil {
+		return mailbox.CloseSessionSnapshot{}, err
+	}
+	if session.SessionID != sessionIDText {
+		return mailbox.CloseSessionSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "close intent session does not match its snapshot", Retryable: true}
+	}
+	observedAt := closeIntent.UpdatedAt.UTC()
+	if session.ObservedAt.After(observedAt) {
+		observedAt = session.ObservedAt.UTC()
+	}
+	return mailbox.CloseSessionSnapshot{
+		SessionID: sessionIDText, CloseDeliveryState: string(closeIntent.DeliveryState),
+		SessionDeliveryState: session.DeliveryState, SessionState: session.SessionState, ObservedAt: observedAt,
+	}, nil
+}
+
 func mailboxCreateSessionBody(raw []byte) ([]byte, error) {
 	var input struct {
 		Environment     json.RawMessage `json:"environment"`
@@ -211,6 +317,8 @@ func mailboxOperationError(failure *localOperationFailure) *mailbox.SessionOpera
 	code := failure.code
 	switch code {
 	case "session_not_found":
+		code = "resource_not_found"
+	case "command_not_found":
 		code = "resource_not_found"
 	case "invalid_script":
 		code = "invalid_request"

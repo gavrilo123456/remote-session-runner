@@ -254,6 +254,45 @@ ORDER BY created_at DESC, intent_id DESC LIMIT 1
 	})
 }
 
+// GetLocalIntentByIdempotency reloads the exact immutable intent bound to one
+// controller/operation/key. Status readers for a mailbox exchange use the key
+// rather than the latest intent for a resource, since a resource can have
+// several independently keyed control requests.
+func (s *AuthorityStore) GetLocalIntentByIdempotency(ctx context.Context, operation, key string, controller domain.ControllerIdentity) (LocalIntentRecord, error) {
+	if !validLocalIntentOperation(operation) || strings.TrimSpace(key) == "" || len(key) > 256 || strings.IndexByte(key, 0) >= 0 {
+		return LocalIntentRecord{}, fmt.Errorf("%w: operation or idempotency key", ErrInvalidLocalIntent)
+	}
+	if _, err := domain.NewControllerIdentity(controller.Type(), controller.ID()); err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("%w: controller: %v", ErrInvalidLocalIntent, err)
+	}
+	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+		var intentID string
+		err := connection.QueryRowContext(ctx, `
+SELECT intent_id FROM local_idempotency
+WHERE operation = ? AND idempotency_key = ? AND controller_type = ? AND controller_id = ?
+`, operation, key, string(controller.Type()), string(controller.ID())).Scan(&intentID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return LocalIntentRecord{}, ErrLocalIntentNotFound
+		}
+		if err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("lookup local intent by idempotency key: %w", err)
+		}
+		id, err := domain.NewIntentID(intentID)
+		if err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("%w: intent ID: %v", ErrLocalIntentPayloadCorrupt, err)
+		}
+		record, err := readLocalIntentOnConnection(ctx, connection, id)
+		if err != nil {
+			return LocalIntentRecord{}, err
+		}
+		if record.Operation != operation || record.IdempotencyKey != key ||
+			record.Controller.Type() != controller.Type() || record.Controller.ID() != controller.ID() {
+			return LocalIntentRecord{}, fmt.Errorf("%w: idempotency binding identity", ErrLocalIdempotencyCorrupt)
+		}
+		return record, nil
+	})
+}
+
 // ValidateLocalIntentPayload verifies the persisted immutable payload without
 // exposing it to a caller that only needs a durability check.
 func (s *AuthorityStore) ValidateLocalIntentPayload(ctx context.Context, id domain.IntentID) error {

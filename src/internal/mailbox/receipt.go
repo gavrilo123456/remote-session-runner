@@ -3,7 +3,9 @@ package mailbox
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/store"
@@ -85,11 +87,27 @@ func (p *ReceiptProcessor) process(ctx context.Context, request Request) (bool, 
 func receiptCanonical(request Request) ([]byte, domain.CanonicalHash, error) {
 	switch request.Operation {
 	case "create_session", "submit_command", "cancel_command", "close_session", "run":
-		canonical, err := domain.CanonicalizeMutationRequestJSON(request.Operation, request.RawJSON, domain.CanonicalizationOptions{})
+		payload := request.RawJSON
+		if request.Operation == "close_session" {
+			policy := strings.TrimSpace(request.ClosePolicy)
+			if policy == "" {
+				policy = "cancel"
+			}
+			encoded, err := json.Marshal(struct {
+				Operation string `json:"operation"`
+				SessionID string `json:"session_id"`
+				Policy    string `json:"policy"`
+			}{Operation: request.Operation, SessionID: request.SessionID, Policy: policy})
+			if err != nil {
+				return nil, domain.CanonicalHash{}, fmt.Errorf("encode close-session receipt: %w", err)
+			}
+			payload = encoded
+		}
+		canonical, err := domain.CanonicalizeMutationRequestJSON(request.Operation, payload, domain.CanonicalizationOptions{})
 		if err != nil {
 			return nil, domain.CanonicalHash{}, err
 		}
-		hash, err := domain.HashMutationRequestJSON(request.Operation, request.RawJSON, domain.CanonicalizationOptions{})
+		hash, err := domain.HashMutationRequestJSON(request.Operation, payload, domain.CanonicalizationOptions{})
 		return canonical, hash, err
 	default:
 		digest := sha256.Sum256(request.RawJSON)
