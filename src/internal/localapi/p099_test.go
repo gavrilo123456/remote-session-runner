@@ -258,3 +258,12 @@ func (o *p099Operations) CloseSessionIntent(ctx context.Context, request mailbox
 func (o *p099Operations) GetCloseSessionSnapshot(ctx context.Context, sessionID, key string) (mailbox.CloseSessionSnapshot, error) {
 	return o.delegate.GetCloseSessionSnapshot(ctx, sessionID, key)
 }
+
+func (o *p099Operations) RunJobIntent(ctx context.Context, request mailbox.Request) (mailbox.RunIntent, error) {
+	intent, err := o.delegate.RunJobIntent(ctx, request)
+	return intent, o.afterCommit("run", err)
+}
+
+func (o *p099Operations) GetRunSnapshot(ctx context.Context, jobID string) (mailbox.RunSnapshot, error) {
+	return o.delegate.GetRunSnapshot(ctx, jobID)
+}

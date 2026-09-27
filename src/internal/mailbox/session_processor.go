@@ -58,6 +58,28 @@ type CloseSessionSnapshot struct {
 	ObservedAt           time.Time
 }
 
+// RunIntent is the stable Mac-side acceptance of a one-off job. Its IDs are
+// known before any target-authoritative session or command state exists.
+type RunIntent struct {
+	JobID         string
+	SessionID     string
+	CommandID     string
+	DeliveryState string
+}
+
+// RunSnapshot combines the owner-scoped run intent with any matching job and
+// command snapshot. Command is nil until a command outcome is available.
+type RunSnapshot struct {
+	JobID           string
+	SessionID       string
+	CommandID       string
+	DeliveryState   string
+	JobPhase        string
+	Command         *CommandSnapshot
+	TeardownOutcome string
+	ObservedAt      time.Time
+}
+
 // SessionOperationError is a safe, structured error from the Mac session
 // operation boundary. Retryable failures leave the inbox pair available.
 type SessionOperationError struct {
@@ -85,6 +107,8 @@ type SessionOperations interface {
 	GetCancelCommandSnapshot(context.Context, string, string) (CancelCommandSnapshot, error)
 	CloseSessionIntent(context.Context, Request) (SessionIntent, error)
 	GetCloseSessionSnapshot(context.Context, string, string) (CloseSessionSnapshot, error)
+	RunJobIntent(context.Context, Request) (RunIntent, error)
+	GetRunSnapshot(context.Context, string) (RunSnapshot, error)
 }
 
 type SessionProcessorOptions struct {
@@ -126,8 +150,8 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 	}, nil
 }
 
-// Import records and projects the implemented file-only session and command
-// operations, then reconciles accepted asynchronous create/submit intents.
+// Import records and projects the implemented file-only operations, then
+// reconciles accepted asynchronous intents and one-off run outcomes.
 func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	if p == nil || p.importer == nil || p.authority == nil || p.operations == nil {
 		return nil, ErrSessionProcessorConfiguration
@@ -153,11 +177,14 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	if err := p.reconcileAcceptedCloses(ctx); err != nil {
 		return results, err
 	}
+	if err := p.reconcileAcceptedRuns(ctx); err != nil {
+		return results, err
+	}
 	return results, nil
 }
 
-// Reconcile advances accepted create_session responses after the local intent
-// or remote projection changes. It is safe to call after restart.
+// Reconcile advances accepted mutation responses after local intents or remote
+// projections change. It is safe to call after restart.
 func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 	if p == nil || p.authority == nil || p.operations == nil {
 		return ErrSessionProcessorConfiguration
@@ -176,7 +203,10 @@ func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 	if err := p.reconcileAcceptedCancels(ctx); err != nil {
 		return err
 	}
-	return p.reconcileAcceptedCloses(ctx)
+	if err := p.reconcileAcceptedCloses(ctx); err != nil {
+		return err
+	}
+	return p.reconcileAcceptedRuns(ctx)
 }
 
 func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, error) {
@@ -189,8 +219,11 @@ func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, 
 	if request.Operation == "close_session" {
 		return p.processCloseSession(ctx, request)
 	}
+	if request.Operation == "run" {
+		return p.processRun(ctx, request)
+	}
 	if request.Operation != "create_session" && request.Operation != "get_session" {
-		return false, fmt.Errorf("%w: operation %q is outside P095", ErrMailboxInput, request.Operation)
+		return false, fmt.Errorf("%w: unsupported mailbox operation %q", ErrMailboxInput, request.Operation)
 	}
 	payload, hash, err := receiptCanonical(request)
 	if err != nil {
@@ -376,6 +409,59 @@ func (p *SessionProcessor) processCloseSession(ctx context.Context, request Requ
 		DeliveryState: intent.DeliveryState,
 	}
 	return p.publish(ctx, record, response, nil)
+}
+
+func (p *SessionProcessor) processRun(ctx context.Context, request Request) (bool, error) {
+	record, duplicate, idempotencyConflict, err := p.acceptMutationExchange(ctx, request)
+	if err != nil {
+		return false, err
+	}
+	if duplicate && len(record.ResponseBytes) > 0 {
+		return true, p.publishStoredRunResponse(ctx, record)
+	}
+	if idempotencyConflict || (record.IdempotencyKey != "" && !record.IdempotencyBindingActive) {
+		response := runMailboxResponse{
+			RequestID: request.RequestID, Operation: request.Operation,
+			RequestState: store.MailboxExchangeRejected,
+			Error:        &mailboxResponseError{Code: "idempotency_conflict", Message: "idempotency key is already bound to a different request"},
+		}
+		return p.publishRunResponse(ctx, record, response, nil)
+	}
+	if record.State != store.MailboxExchangeAccepted {
+		return false, fmt.Errorf("%w: terminal run exchange has no response snapshot", ErrOutboxResponse)
+	}
+	intent, err := p.operations.RunJobIntent(ctx, request)
+	if err != nil {
+		return p.publishRunOperationError(ctx, record, err)
+	}
+	jobID, jobErr := domain.NewJobID(intent.JobID)
+	sessionID, sessionErr := domain.NewSessionID(intent.SessionID)
+	commandID, commandErr := domain.NewCommandID(intent.CommandID)
+	if jobErr != nil || sessionErr != nil || commandErr != nil || !validDeliveryState(intent.DeliveryState) {
+		return false, fmt.Errorf("%w: run operation returned invalid IDs or delivery state", ErrSessionProcessorConfiguration)
+	}
+	response := runMailboxResponse{
+		RequestID: request.RequestID, Operation: request.Operation,
+		RequestState: store.MailboxExchangeAccepted,
+		JobID:        string(jobID), SessionID: string(sessionID), CommandID: string(commandID),
+		DeliveryState: intent.DeliveryState,
+	}
+	return p.publishRunResponse(ctx, record, response, nil)
+}
+
+func (p *SessionProcessor) publishRunOperationError(ctx context.Context, record store.MailboxExchangeRecord, err error) (bool, error) {
+	var operationErr *SessionOperationError
+	if !errors.As(err, &operationErr) {
+		return false, err
+	}
+	if operationErr.Retryable {
+		return false, err
+	}
+	response := runMailboxResponse{
+		RequestID: record.RequestID, Operation: record.Operation,
+		RequestState: store.MailboxExchangeRejected, Error: safeSessionMailboxError(operationErr),
+	}
+	return p.publishRunResponse(ctx, record, response, nil)
 }
 
 func (p *SessionProcessor) acceptMutationExchange(ctx context.Context, request Request) (store.MailboxExchangeRecord, bool, bool, error) {
@@ -736,6 +822,131 @@ func (p *SessionProcessor) reconcileAcceptedCloses(ctx context.Context) error {
 	return nil
 }
 
+func (p *SessionProcessor) reconcileAcceptedRuns(ctx context.Context) error {
+	records, err := p.authority.ListMailboxExchanges(ctx, p.controller, "run", store.MailboxExchangeAccepted)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if len(record.ResponseBytes) == 0 {
+			continue
+		}
+		var previous runMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "run" || previous.JobID == "" || previous.SessionID == "" || previous.CommandID == "" {
+			return fmt.Errorf("%w: accepted run response is corrupt", ErrOutboxResponse)
+		}
+		snapshot, err := p.operations.GetRunSnapshot(ctx, previous.JobID)
+		if err != nil {
+			var operationErr *SessionOperationError
+			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
+				continue
+			}
+			return err
+		}
+		if snapshot.JobID != previous.JobID || snapshot.SessionID != previous.SessionID || snapshot.CommandID != previous.CommandID || !validDeliveryState(snapshot.DeliveryState) {
+			return fmt.Errorf("%w: run reconciliation returned invalid identity or delivery state", ErrSessionProcessorConfiguration)
+		}
+		if snapshot.Command != nil {
+			commandID, idErr := domain.NewCommandID(previous.CommandID)
+			if idErr != nil || ValidateCommandSnapshot(*snapshot.Command, commandID) != nil || string(snapshot.Command.SessionID) != previous.SessionID {
+				return fmt.Errorf("%w: run reconciliation returned an invalid command snapshot", ErrSessionProcessorConfiguration)
+			}
+		}
+		if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
+			if snapshot.JobPhase != "" || snapshot.Command != nil || snapshot.TeardownOutcome != "" {
+				return fmt.Errorf("%w: never-delivered run contains authoritative job state", ErrSessionProcessorConfiguration)
+			}
+			response := runMailboxResponse{
+				RequestID: record.RequestID, Operation: "run", RequestState: store.MailboxExchangeComplete,
+				JobID: previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
+				DeliveryState: snapshot.DeliveryState, TeardownOutcome: "not_created",
+			}
+			if _, err := p.publishRunResponse(ctx, record, response, nil); err != nil {
+				return err
+			}
+			continue
+		}
+		if (snapshot.JobPhase != "" && !validJobPhase(snapshot.JobPhase)) || (snapshot.TeardownOutcome != "" && !validTeardownOutcome(snapshot.TeardownOutcome)) ||
+			(snapshot.JobPhase == "" && (snapshot.Command != nil || snapshot.TeardownOutcome != "")) ||
+			(snapshot.JobPhase == string(store.JobPhaseComplete) && snapshot.Command == nil) {
+			return fmt.Errorf("%w: run reconciliation returned an invalid job or teardown state", ErrSessionProcessorConfiguration)
+		}
+		if terminalJobPhase(snapshot.JobPhase) && snapshot.TeardownOutcome != "" && (snapshot.Command == nil || snapshot.Command.State.IsTerminal()) {
+			response, cursor := runResponseFromSnapshot(record.RequestID, snapshot)
+			if _, err := p.publishRunResponse(ctx, record, response, cursor); err != nil {
+				return err
+			}
+			continue
+		}
+		if snapshot.DeliveryState == previous.DeliveryState {
+			if err := p.projector.Publish(ctx, record.RequestID); err != nil {
+				return err
+			}
+			continue
+		}
+		response := runMailboxResponse{
+			RequestID: record.RequestID, Operation: "run", RequestState: store.MailboxExchangeAccepted,
+			JobID: previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
+			DeliveryState: snapshot.DeliveryState, ObservedAt: mailboxTime(snapshot.ObservedAt),
+		}
+		if _, err := p.publishRunResponse(ctx, record, response, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runResponseFromSnapshot(requestID string, snapshot RunSnapshot) (runMailboxResponse, *int64) {
+	response := runMailboxResponse{
+		RequestID: requestID, Operation: "run", RequestState: store.MailboxExchangeComplete,
+		JobID: snapshot.JobID, SessionID: snapshot.SessionID, CommandID: snapshot.CommandID,
+		JobPhase: snapshot.JobPhase, DeliveryState: snapshot.DeliveryState,
+		TeardownOutcome: snapshot.TeardownOutcome, ObservedAt: mailboxTime(snapshot.ObservedAt),
+	}
+	if snapshot.Command == nil {
+		return response, nil
+	}
+	command := snapshot.Command
+	response.CommandState = string(command.State)
+	response.ExitCode = command.ExitCode
+	response.Stdout = command.StdoutPreview
+	response.Stderr = command.StderrPreview
+	response.FinalEventSequence = command.FinalEventSequence
+	response.AvailableEventSequence = int64PointerMailbox(command.AvailableEventSequence)
+	response.OutputComplete = boolPointerMailbox(command.OutputComplete)
+	response.OutputTruncated = boolPointerMailbox(command.OutputTruncated)
+	response.OutputUnavailableReason = command.OutputUnavailableReason
+	response.EventsFile = command.EventsFile
+	if command.AvailableEventSequence > 0 {
+		cursor := command.AvailableEventSequence
+		return response, &cursor
+	}
+	return response, nil
+}
+
+func boolPointerMailbox(value bool) *bool { return &value }
+
+func validJobPhase(value string) bool {
+	return store.JobPhase(value).Valid()
+}
+
+func terminalJobPhase(value string) bool {
+	phase := store.JobPhase(value)
+	return phase == store.JobPhaseComplete || phase == store.JobPhaseFailed || phase == store.JobPhaseLost
+}
+
+func validTeardownOutcome(value string) bool {
+	switch value {
+	case "closed", "not_created", "lost":
+		return true
+	default:
+		return false
+	}
+}
+
 func validDeliveryState(state string) bool {
 	switch store.LocalIntentDeliveryState(state) {
 	case store.LocalIntentRecorded, store.LocalIntentDispatching, store.LocalIntentUncertain,
@@ -792,6 +1003,50 @@ func (p *SessionProcessor) publishCommandResponse(ctx context.Context, current s
 	return updated.ResponseRevision > 0, nil
 }
 
+func (p *SessionProcessor) publishRunResponse(ctx context.Context, current store.MailboxExchangeRecord, response runMailboxResponse, cursor *int64) (bool, error) {
+	response.ResponseRevision = current.ResponseRevision + 1
+	if current.DeduplicationWarning {
+		response.IdempotencyWarning = "deduplication_not_guaranteed"
+	}
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		return false, fmt.Errorf("%w: encode run response: %v", ErrOutboxResponse, err)
+	}
+	updated, err := p.authority.PublishMailboxResponse(ctx, current.RequestID, store.MailboxResponsePublication{
+		State: response.RequestState, Bytes: responseBytes, AvailableEventSequence: cursor,
+	})
+	if err != nil {
+		return false, err
+	}
+	if cursor != nil && *cursor > 0 {
+		commandID, idErr := domain.NewCommandID(response.CommandID)
+		if idErr != nil {
+			return false, fmt.Errorf("%w: run response command ID: %v", ErrOutboxResponse, idErr)
+		}
+		if err := p.projector.PublishCommand(ctx, current.RequestID, commandID); err != nil {
+			return false, err
+		}
+	} else if err := p.projector.Publish(ctx, current.RequestID); err != nil {
+		return false, err
+	}
+	return updated.ResponseRevision > 0, nil
+}
+
+func (p *SessionProcessor) publishStoredRunResponse(ctx context.Context, record store.MailboxExchangeRecord) error {
+	if record.AvailableEventSequence != nil && *record.AvailableEventSequence > 0 {
+		var response runMailboxResponse
+		if err := json.Unmarshal(record.ResponseBytes, &response); err != nil || response.CommandID == "" {
+			return fmt.Errorf("%w: stored run response is invalid", ErrOutboxResponse)
+		}
+		commandID, err := domain.NewCommandID(response.CommandID)
+		if err != nil {
+			return fmt.Errorf("%w: stored run command ID: %v", ErrOutboxResponse, err)
+		}
+		return p.projector.PublishCommand(ctx, record.RequestID, commandID)
+	}
+	return p.projector.Publish(ctx, record.RequestID)
+}
+
 type sessionMailboxResponse struct {
 	RequestID          string                     `json:"request_id"`
 	Operation          string                     `json:"operation"`
@@ -832,6 +1087,32 @@ type commandMailboxResponse struct {
 	OutputTruncated         *bool                      `json:"output_truncated,omitempty"`
 	OutputUnavailableReason string                     `json:"output_unavailable_reason,omitempty"`
 	EventsFile              string                     `json:"events_file,omitempty"`
+	Error                   *mailboxResponseError      `json:"error,omitempty"`
+}
+
+type runMailboxResponse struct {
+	RequestID               string                     `json:"request_id"`
+	Operation               string                     `json:"operation"`
+	RequestState            store.MailboxExchangeState `json:"request_state"`
+	ResponseRevision        int64                      `json:"response_revision"`
+	IdempotencyWarning      string                     `json:"idempotency_warning,omitempty"`
+	JobID                   string                     `json:"job_id,omitempty"`
+	JobPhase                string                     `json:"job_phase,omitempty"`
+	CommandID               string                     `json:"command_id,omitempty"`
+	SessionID               string                     `json:"session_id,omitempty"`
+	DeliveryState           string                     `json:"delivery_state,omitempty"`
+	CommandState            string                     `json:"command_state,omitempty"`
+	ObservedAt              *time.Time                 `json:"observed_at,omitempty"`
+	ExitCode                *int                       `json:"exit_code,omitempty"`
+	Stdout                  string                     `json:"stdout,omitempty"`
+	Stderr                  string                     `json:"stderr,omitempty"`
+	FinalEventSequence      *int64                     `json:"final_event_sequence,omitempty"`
+	AvailableEventSequence  *int64                     `json:"available_event_sequence,omitempty"`
+	OutputComplete          *bool                      `json:"output_complete,omitempty"`
+	OutputTruncated         *bool                      `json:"output_truncated,omitempty"`
+	OutputUnavailableReason string                     `json:"output_unavailable_reason,omitempty"`
+	EventsFile              string                     `json:"events_file,omitempty"`
+	TeardownOutcome         string                     `json:"teardown_outcome,omitempty"`
 	Error                   *mailboxResponseError      `json:"error,omitempty"`
 }
 

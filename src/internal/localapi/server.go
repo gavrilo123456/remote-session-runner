@@ -836,24 +836,6 @@ func (s *Server) canonicalLocalMutation(response http.ResponseWriter, operation 
 	return canonical, hash, true
 }
 
-func (s *Server) canonicalLocalBody(response http.ResponseWriter, operation string, body []byte) ([]byte, domain.CanonicalHash, bool) {
-	canonical, err := domain.CanonicalizeMutationRequestJSON(operation, body, domain.CanonicalizationOptions{})
-	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "canonical request is invalid")
-		return nil, domain.CanonicalHash{}, false
-	}
-	if int64(len(canonical)) > s.maxBodyBytes {
-		writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "canonical request exceeds the configured body limit")
-		return nil, domain.CanonicalHash{}, false
-	}
-	hash, err := domain.HashMutationRequestJSON(operation, canonical, domain.CanonicalizationOptions{})
-	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
-		return nil, domain.CanonicalHash{}, false
-	}
-	return canonical, hash, true
-}
-
 func (s *Server) handleGetCommand(response http.ResponseWriter, request *http.Request) {
 	if len(request.URL.Query()) != 0 {
 		writeError(response, http.StatusBadRequest, "invalid_request", "controller query parameters are not accepted")
@@ -1365,101 +1347,105 @@ func (s *Server) handleCreateJob(response http.ResponseWriter, request *http.Req
 		writeError(response, status, code, err.Error())
 		return
 	}
+	acceptance, failure := s.acceptCreateJobIntent(request.Context(), key, body)
+	if failure != nil {
+		writeError(response, failure.status, failure.code, failure.message)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, acceptance)
+}
+
+func (s *Server) acceptCreateJobIntent(ctx context.Context, key string, body []byte) (jobAcceptance, *localOperationFailure) {
 	var input createJobRequest
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid_request", "malformed or unsupported job request JSON")
-		return
+		return jobAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "malformed or unsupported job request JSON")
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		writeError(response, http.StatusBadRequest, "invalid_request", "request body contains multiple JSON values")
-		return
+		return jobAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "request body contains multiple JSON values")
 	}
 	if err := validateObjectField(input.Limits, "limits"); err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
 	if err := validateObjectField(input.Policy, "policy"); err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
 	if strings.TrimSpace(input.Environment) == "" || strings.IndexByte(input.Environment, 0) >= 0 {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "environment is required")
-		return
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "environment is required")
 	}
 	if input.Script == nil {
-		writeError(response, http.StatusBadRequest, "invalid_request", "script is required")
-		return
+		return jobAcceptance{}, localFailure(http.StatusBadRequest, "invalid_request", "script is required")
 	}
 	script := *input.Script
 	if err := domain.ValidateScriptUTF8(script); err != nil {
 		if errors.Is(err, domain.ErrScriptTooLarge) {
-			writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", err.Error())
+			return jobAcceptance{}, localFailure(http.StatusRequestEntityTooLarge, "request_too_large", err.Error())
 		} else {
-			writeError(response, http.StatusBadRequest, "invalid_script", err.Error())
+			return jobAcceptance{}, localFailure(http.StatusBadRequest, "invalid_script", err.Error())
 		}
-		return
 	}
 	if _, _, err := parseTimeoutSeconds(input.TimeoutSeconds); err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
 	target, err := domain.NewExecutionTarget(domain.TargetKind(input.ExecutionTarget.Kind), input.ExecutionTarget.Profile)
 	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
 	source, err := parseSource(input.Source)
 	if err != nil {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
 	}
 	if target.Kind() == domain.TargetKindRemote && source.Mode() == domain.SourceModeLocalWorktree {
-		writeError(response, http.StatusUnprocessableEntity, "invalid_request", "remote jobs cannot use a local_worktree source")
-		return
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "remote jobs cannot use a local_worktree source")
 	}
-	canonical, hash, ok := s.canonicalLocalBody(response, "run", body)
-	if !ok {
-		return
+	canonical, err := domain.CanonicalizeMutationRequestJSON("run", body, domain.CanonicalizationOptions{})
+	if err != nil {
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "canonical request is invalid")
+	}
+	if err := domain.ValidateSerializedRequest(canonical); err != nil {
+		return jobAcceptance{}, localFailure(http.StatusRequestEntityTooLarge, "request_too_large", err.Error())
+	}
+	if int64(len(canonical)) > s.maxBodyBytes {
+		return jobAcceptance{}, localFailure(http.StatusRequestEntityTooLarge, "request_too_large", "canonical request exceeds the configured body limit")
+	}
+	hash, err := domain.HashMutationRequestJSON("run", canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", "canonical request hash is invalid")
 	}
 	jobIDText, err := newOpaqueID("job-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate job identity")
-		return
+		return jobAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate job identity")
 	}
 	sessionIDText, err := newOpaqueID("sess-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate session identity")
-		return
+		return jobAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate session identity")
 	}
 	commandIDText, err := newOpaqueID("cmd-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate command identity")
-		return
+		return jobAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate command identity")
 	}
 	intentID, err := newOpaqueID("intent-")
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
-		return
+		return jobAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
 	}
 	jobID, err := domain.NewJobID(jobIDText)
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not validate job identity")
-		return
+		return jobAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not validate job identity")
 	}
 	sessionID, err := domain.NewSessionID(sessionIDText)
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not validate session identity")
-		return
+		return jobAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not validate session identity")
 	}
 	commandID, err := domain.NewCommandID(commandIDText)
 	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "could not validate command identity")
-		return
+		return jobAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not validate command identity")
 	}
-	record, _, err := s.authority.AcceptLocalIntent(request.Context(), store.LocalIntentCreate{
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	record, _, err := s.authority.AcceptLocalIntent(ctx, store.LocalIntentCreate{
 		IntentID: domain.IntentID(intentID), Operation: "run", ResourceID: jobIDText,
 		SessionID: sessionID, CommandID: commandID, JobID: jobID, Target: target,
 		Environment: strings.TrimSpace(input.Environment), Controller: s.owner, Source: source,
@@ -1468,14 +1454,13 @@ func (s *Server) handleCreateJob(response http.ResponseWriter, request *http.Req
 	})
 	if err != nil {
 		status, code := statusForStoreError(err)
-		writeError(response, status, code, sanitizeError(err))
-		return
+		return jobAcceptance{}, localFailure(status, code, sanitizeError(err))
 	}
-	writeJSON(response, http.StatusAccepted, jobAcceptance{
+	return jobAcceptance{
 		ResourceID: string(record.JobID), JobID: string(record.JobID), SessionID: string(record.SessionID), CommandID: string(record.CommandID), IntentID: string(record.IntentID),
 		AcceptanceScope: "local_intent", ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		KnownState: knownState{DeliveryState: string(record.DeliveryState)},
-	})
+	}, nil
 }
 
 func (s *Server) handleGetJob(response http.ResponseWriter, request *http.Request) {

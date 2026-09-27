@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -149,6 +150,208 @@ func (s *Server) CloseSessionIntent(ctx context.Context, request mailbox.Request
 		return mailbox.SessionIntent{}, mailboxOperationError(failure)
 	}
 	return mailbox.SessionIntent{SessionID: accepted.SessionID, DeliveryState: accepted.KnownState.DeliveryState}, nil
+}
+
+// RunJobIntent sends a file-only run through the same validator, canonical
+// request hash, idempotency key, and durable local-intent path as /v1/jobs.
+func (s *Server) RunJobIntent(ctx context.Context, request mailbox.Request) (mailbox.RunIntent, error) {
+	if request.Operation != "run" || request.RequestID == "" || request.IdempotencyKey == "" {
+		return mailbox.RunIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox run request is invalid"}
+	}
+	body, err := mailboxRunJobBody(request)
+	if err != nil {
+		return mailbox.RunIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox run request is invalid"}
+	}
+	acceptance, failure := s.acceptCreateJobIntent(ctx, request.IdempotencyKey, body)
+	if failure != nil {
+		return mailbox.RunIntent{}, mailboxOperationError(failure)
+	}
+	return mailbox.RunIntent{
+		JobID: acceptance.JobID, SessionID: acceptance.SessionID,
+		CommandID: acceptance.CommandID, DeliveryState: acceptance.KnownState.DeliveryState,
+	}, nil
+}
+
+// GetRunSnapshot reads only a run intent owned by this Mac API controller,
+// then joins its matching local job or queued-remote projection and command.
+func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.RunSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	jobID, err := domain.NewJobID(jobIDText)
+	if err != nil {
+		return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "job ID is invalid"}
+	}
+	intent, err := s.authority.GetLocalIntentByResource(ctx, "run", string(jobID), s.owner)
+	if err != nil {
+		if errors.Is(err, store.ErrLocalIntentNotFound) {
+			return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "resource_not_found", Message: "job is not available through this Mac ingress"}
+		}
+		status, code := statusForStoreError(err)
+		return mailbox.RunSnapshot{}, mailboxOperationError(localFailure(status, code, sanitizeError(err)))
+	}
+	if intent.JobID != jobID || intent.ResourceID != string(jobID) || intent.SessionID == "" || intent.CommandID == "" || intent.Operation != "run" ||
+		intent.Controller.Type() != s.owner.Type() || intent.Controller.ID() != s.owner.ID() {
+		return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "run intent identity does not match its owner-scoped resource", Retryable: true}
+	}
+	snapshot := mailbox.RunSnapshot{
+		JobID: string(intent.JobID), SessionID: string(intent.SessionID), CommandID: string(intent.CommandID),
+		DeliveryState: string(intent.DeliveryState), ObservedAt: intent.UpdatedAt.UTC(),
+	}
+	if intent.DeliveryState == store.LocalIntentNotDelivered {
+		return snapshot, nil
+	}
+	if remoteProjectionEligible(intent) {
+		projection, projectionErr := s.authority.GetRemoteJobProjection(ctx, jobID)
+		if errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
+			return snapshot, nil
+		}
+		if projectionErr != nil {
+			status, code := statusForStoreError(projectionErr)
+			return mailbox.RunSnapshot{}, mailboxOperationError(localFailure(status, code, sanitizeError(projectionErr)))
+		}
+		if projection.JobID != intent.JobID || projection.SessionID != intent.SessionID || projection.CommandID != intent.CommandID ||
+			projection.Target.Kind() != domain.TargetKindRemote || projection.Target.Profile() != intent.Target.Profile() ||
+			projection.Controller.Type() != s.owner.Type() || projection.Controller.ID() != s.owner.ID() ||
+			projection.Environment != intent.Environment || projection.Source != intent.Source {
+			return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "remote job projection does not match its accepted intent", Retryable: true}
+		}
+		snapshot.JobPhase = string(projection.Phase)
+		snapshot.TeardownOutcome = mailboxJobTeardownOutcome(projection.TeardownState)
+		snapshot.ObservedAt = projection.ObservedAt.UTC()
+		if projection.CommandState != nil {
+			commandProjection, events, commandErr := s.authority.GetRemoteCommandWithEvents(ctx, projection.CommandID)
+			if commandErr != nil {
+				status, code := statusForStoreError(commandErr)
+				if errors.Is(commandErr, store.ErrRemoteProjectionNotFound) {
+					return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "remote run command snapshot is not available yet", Retryable: true}
+				}
+				return mailbox.RunSnapshot{}, mailboxOperationError(localFailure(status, code, sanitizeError(commandErr)))
+			}
+			if commandProjection.CommandID != intent.CommandID || commandProjection.SessionID != intent.SessionID ||
+				commandProjection.Target.Kind() != domain.TargetKindRemote || commandProjection.Target.Profile() != intent.Target.Profile() ||
+				commandProjection.Controller.Type() != s.owner.Type() || commandProjection.Controller.ID() != s.owner.ID() ||
+				commandProjection.Environment != intent.Environment || commandProjection.Source != intent.Source ||
+				commandProjection.State != *projection.CommandState ||
+				!sameLocalInt(commandProjection.ExitCode, projection.ExitCode) ||
+				!sameLocalInt64(commandProjection.FinalEventSequence, projection.FinalEventSequence) ||
+				commandProjection.OutputComplete != projection.OutputComplete || commandProjection.OutputTruncated != projection.OutputTruncated ||
+				commandProjection.OutputUnavailableReason != projection.OutputUnavailableReason {
+				return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "remote run command does not match its job projection", Retryable: true}
+			}
+			command, snapshotErr := mailbox.SnapshotRemoteCommand(commandProjection, events, commandProjection.ObservedAt.UTC())
+			if snapshotErr != nil {
+				return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "remote run command snapshot is temporarily unavailable", Retryable: true}
+			}
+			command.DeliveryState = string(intent.DeliveryState)
+			snapshot.Command = &command
+		}
+		return snapshot, nil
+	}
+	if intent.Target.Kind() != domain.TargetKindLocal || (intent.DeliveryState != store.LocalIntentAccepted && intent.DeliveryState != store.LocalIntentReconciled) {
+		return snapshot, nil
+	}
+	job, err := s.authority.GetJob(ctx, jobID)
+	if errors.Is(err, store.ErrJobNotFound) {
+		return snapshot, nil
+	}
+	if err != nil {
+		status, code := statusForStoreError(err)
+		return mailbox.RunSnapshot{}, mailboxOperationError(localFailure(status, code, sanitizeError(err)))
+	}
+	if job.JobID != intent.JobID || job.SessionID != intent.SessionID || job.CommandID != intent.CommandID ||
+		job.Controller.Type() != s.owner.Type() || job.Controller.ID() != s.owner.ID() ||
+		job.Target != intent.Target || job.Environment != intent.Environment || job.Source != intent.Source ||
+		domain.CompareIdempotency(job.RequestHash, intent.RequestHash) != domain.IdempotencySamePayload ||
+		!bytes.Equal(job.CanonicalPayload, intent.PayloadJSON) || !bytes.Equal(job.ScriptBytes, intent.ScriptBytes) {
+		return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "local job authority does not match its accepted intent", Retryable: true}
+	}
+	snapshot.JobPhase = string(job.Phase)
+	snapshot.TeardownOutcome = mailboxJobTeardownOutcome(job.TeardownState)
+	snapshot.ObservedAt = job.UpdatedAt.UTC()
+	if job.CommandState != nil {
+		command, events, commandErr := s.authority.GetCommandWithEvents(ctx, intent.CommandID)
+		if commandErr != nil {
+			if errors.Is(commandErr, store.ErrCommandNotFound) {
+				return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "local run command snapshot is not available yet", Retryable: true}
+			}
+			status, code := statusForStoreError(commandErr)
+			return mailbox.RunSnapshot{}, mailboxOperationError(localFailure(status, code, sanitizeError(commandErr)))
+		}
+		if command.CommandID != intent.CommandID || command.SessionID != intent.SessionID || command.State != *job.CommandState ||
+			!bytes.Equal(command.ScriptBytes, intent.ScriptBytes) || !sameLocalInt(command.ExitCode, job.ExitCode) ||
+			!sameLocalInt64(command.FinalEventSequence, job.FinalEventSequence) || command.OutputComplete != job.OutputComplete ||
+			command.OutputTruncated != job.OutputTruncated {
+			return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "local run command does not match its job authority", Retryable: true}
+		}
+		commandSnapshot, snapshotErr := mailbox.SnapshotCommand(command, events, command.UpdatedAt.UTC())
+		if snapshotErr != nil {
+			return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "local run command snapshot is temporarily unavailable", Retryable: true}
+		}
+		commandSnapshot.DeliveryState = string(intent.DeliveryState)
+		snapshot.Command = &commandSnapshot
+	}
+	return snapshot, nil
+}
+
+func mailboxRunJobBody(request mailbox.Request) ([]byte, error) {
+	var input struct {
+		RequestID       string          `json:"request_id"`
+		IdempotencyKey  string          `json:"idempotency_key"`
+		Operation       string          `json:"operation"`
+		Environment     string          `json:"environment"`
+		ExecutionTarget targetRequest   `json:"execution_target"`
+		Source          *sourceRequest  `json:"source,omitempty"`
+		Script          *string         `json:"script"`
+		TimeoutSeconds  json.RawMessage `json:"timeout_seconds,omitempty"`
+		Limits          json.RawMessage `json:"limits,omitempty"`
+		Policy          json.RawMessage `json:"policy,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(request.RawJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF || input.RequestID != request.RequestID || input.IdempotencyKey != request.IdempotencyKey ||
+		input.Operation != "run" || input.Environment != request.Environment || input.Script == nil || *input.Script != request.Script {
+		return nil, ErrConfiguration
+	}
+	body, err := json.Marshal(createJobRequest{
+		Environment: input.Environment, ExecutionTarget: input.ExecutionTarget, Source: input.Source,
+		Script: input.Script, TimeoutSeconds: input.TimeoutSeconds, Limits: input.Limits, Policy: input.Policy,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func mailboxJobTeardownOutcome(state store.JobTeardownState) string {
+	switch state {
+	case store.JobTeardownClosed:
+		return "closed"
+	case store.JobTeardownNotCreated:
+		return "not_created"
+	case store.JobTeardownFailed, store.JobTeardownLost:
+		return "lost"
+	default:
+		return ""
+	}
+}
+
+func sameLocalInt(left, right *int) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func sameLocalInt64(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // GetCloseSessionSnapshot reloads the exact keyed close intent separately
