@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 
 	"remote-session-runner/src/internal/config"
@@ -66,18 +65,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runnerd: Linux server key reference is missing")
 		return 1
 	}
-	httpsServer, err := NewDirectHTTPSServer(DirectHTTPSServerOptions{
-		BindAddress:        settings.DirectHTTPSBind,
-		ServerCertificate:  settings.ServerCertificate,
-		ServerPrivateKey:   serverKey.File,
-		ClientCA:           settings.ClientCA,
-		ClientPrincipalMap: settings.ClientPrincipalMap,
-		Handler:            http.NotFoundHandler(),
-	})
-	if err != nil {
-		fmt.Fprintf(stderr, "runnerd: configure direct HTTPS: %v\n", err)
-		return 1
-	}
 	ctx := context.Background()
 	authorityDB, err := store.Open(ctx, settings.Database)
 	if err != nil {
@@ -106,6 +93,23 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}, environments...)
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: construct execution service: %v\n", err)
+		return 1
+	}
+	directHandler, err := NewDirectHTTPSAPIHandler(service)
+	if err != nil {
+		fmt.Fprintf(stderr, "runnerd: construct direct HTTPS API: %v\n", err)
+		return 1
+	}
+	httpsServer, err := NewDirectHTTPSServer(DirectHTTPSServerOptions{
+		BindAddress:        settings.DirectHTTPSBind,
+		ServerCertificate:  settings.ServerCertificate,
+		ServerPrivateKey:   serverKey.File,
+		ClientCA:           settings.ClientCA,
+		ClientPrincipalMap: settings.ClientPrincipalMap,
+		Handler:            directHandler,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "runnerd: configure direct HTTPS: %v\n", err)
 		return 1
 	}
 	server, err := NewPrivateServer(PrivateServerOptions{Service: service, SocketPath: settings.PrivateSocket})
