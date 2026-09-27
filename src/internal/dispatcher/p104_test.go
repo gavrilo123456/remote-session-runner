@@ -113,6 +113,10 @@ func TestP104RefreshCommandProjectionReadsAuthoritativeTerminalState(t *testing.
 	if projection.CommandID != intent.CommandID || projection.SessionID != intent.SessionID || projection.State != domain.CommandStateSucceeded || projection.FinalEventSequence == nil || *projection.FinalEventSequence != 4 || !projection.OutputComplete || projection.IsStale {
 		t.Fatalf("refreshed command projection=%+v", projection)
 	}
+	reconciled, err := authority.GetLocalIntent(ctx, intent.IntentID)
+	if err != nil || reconciled.DeliveryState != store.LocalIntentReconciled {
+		t.Fatalf("terminal target read did not reconcile the intent: state=%s err=%v", reconciled.DeliveryState, err)
+	}
 	if len(caller.frames) != 1 || caller.frames[0].Operation != sshbridge.OperationGetCommand || caller.frames[0].ResourceID != "" || caller.frames[0].IdempotencyKey != "" {
 		t.Fatalf("command state read frame=%+v, want frozen read fields only", caller.frames)
 	}

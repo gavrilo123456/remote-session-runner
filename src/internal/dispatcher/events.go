@@ -144,8 +144,9 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 }
 
 // RefreshCommandProjection reads the target authority and persists its current
-// command state for mailbox/API readers. Event mirroring alone advances output
-// cursors but does not infer a terminal command state from event names.
+// command state for mailbox/API readers. A terminal target read also releases
+// the next command in the serialized remote session. Event mirroring alone
+// advances output cursors but does not infer a terminal command state.
 func (d *RemoteDriver) RefreshCommandProjection(ctx context.Context, commandID domain.CommandID, controller domain.ControllerIdentity) (store.RemoteCommandProjection, error) {
 	if d == nil || d.authority == nil || d.caller == nil {
 		return store.RemoteCommandProjection{}, ErrRemoteDriverConfiguration
@@ -194,6 +195,14 @@ func (d *RemoteDriver) RefreshCommandProjection(ctx context.Context, commandID d
 	}
 	if _, err := d.authority.UpsertRemoteCommandProjection(ctx, projection); err != nil {
 		return store.RemoteCommandProjection{}, err
+	}
+	if projection.State.IsTerminal() && intent.DeliveryState == store.LocalIntentAccepted {
+		if _, transitionErr := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentReconciled, "remote_terminal_command_confirmed"); transitionErr != nil {
+			current, readErr := d.authority.GetLocalIntent(ctx, intent.IntentID)
+			if readErr != nil || current.DeliveryState != store.LocalIntentReconciled {
+				return store.RemoteCommandProjection{}, transitionErr
+			}
+		}
 	}
 	return d.authority.GetRemoteCommandProjection(ctx, validatedCommand)
 }
