@@ -50,7 +50,18 @@ func (s *AuthorityStore) AcknowledgeMailboxExchange(ctx context.Context, ack Mai
 		if record.AcknowledgedAt != nil {
 			return record, nil
 		}
-		if _, err := connection.ExecContext(ctx, `UPDATE mailbox_exchanges SET acknowledged_at = ? WHERE request_id = ? AND acknowledged_at IS NULL`, formatStoredTime(now), ack.RequestID); err != nil {
+		cleanupAt := record.ResponseCleanupAt
+		if cleanupAt == nil {
+			fallback := record.UpdatedAt.Add(MailboxUnackedResponseLifetime)
+			cleanupAt = &fallback
+		}
+		ackedDeadline := now.Add(MailboxAckedResponseLifetime)
+		if record.ResponseCleanupStartedAt == nil && now.Before(*cleanupAt) && ackedDeadline.Before(*cleanupAt) {
+			cleanupAt = &ackedDeadline
+		}
+		if _, err := connection.ExecContext(ctx, `UPDATE mailbox_exchanges
+SET acknowledged_at = ?, response_cleanup_at = ?
+WHERE request_id = ? AND acknowledged_at IS NULL`, formatStoredTime(now), formatStoredTime(*cleanupAt), ack.RequestID); err != nil {
 			return MailboxExchangeRecord{}, fmt.Errorf("record mailbox acknowledgement: %w", err)
 		}
 		return readMailboxExchangeOnConnection(ctx, connection, ack.RequestID)

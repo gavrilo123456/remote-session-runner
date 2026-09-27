@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"remote-session-runner/src/internal/store"
 )
 
 const UnmarkedDraftLifetime = 24 * time.Hour
@@ -153,6 +155,82 @@ func removeMailboxPair(directory, requestID string) error {
 		}
 	}
 	return nil
+}
+
+func removeOwnedMailboxFile(path, directory string) error {
+	if err := ensureOwnerDirectory(directory); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: inspect cleanup file: %v", ErrMailboxPath, err)
+	}
+	if !safeDraftInfo(info) {
+		return fmt.Errorf("%w: cleanup target must be a regular 0600 file", ErrMailboxPath)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: remove cleanup file: %v", ErrMailboxPath, err)
+	}
+	return syncMailboxDirectory(directory)
+}
+
+// ArtifactCleaner removes expired terminal responses and then event files
+// whose every durable response reference has reached its cleanup deadline.
+type ArtifactCleaner struct {
+	Authority  *store.AuthorityStore
+	Outbox     *Outbox
+	EventFiles *EventFiles
+}
+
+type ArtifactCleanupReport struct {
+	ResponsesRemoved  int
+	EventFilesRemoved int
+}
+
+func (c ArtifactCleaner) Run(ctx context.Context) (ArtifactCleanupReport, error) {
+	if c.Authority == nil || c.Outbox == nil || c.EventFiles == nil {
+		return ArtifactCleanupReport{}, ErrOutboxConfiguration
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var report ArtifactCleanupReport
+	requestIDs, err := c.Authority.ClaimMailboxResponsesForCleanup(ctx)
+	if err != nil {
+		return report, err
+	}
+	for _, requestID := range requestIDs {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		if err := c.Outbox.Remove(ctx, requestID); err != nil {
+			return report, err
+		}
+		if err := c.Authority.MarkMailboxResponseFileRemoved(ctx, requestID); err != nil {
+			return report, err
+		}
+		report.ResponsesRemoved++
+	}
+	commandIDs, err := c.Authority.ClaimMailboxEventFilesForCleanup(ctx)
+	if err != nil {
+		return report, err
+	}
+	for _, commandID := range commandIDs {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		if err := c.EventFiles.Remove(ctx, commandID); err != nil {
+			return report, err
+		}
+		if err := c.Authority.MarkMailboxEventFileRemoved(ctx, commandID); err != nil {
+			return report, err
+		}
+		report.EventFilesRemoved++
+	}
+	return report, nil
 }
 
 func syncMailboxDirectory(directory string) error {

@@ -13,16 +13,23 @@ import (
 )
 
 var (
-	ErrMailboxExchangeInvalid   = errors.New("invalid mailbox exchange")
-	ErrMailboxExchangeConflict  = errors.New("mailbox request ID or idempotency conflict")
-	ErrMailboxExchangeNotFound  = errors.New("mailbox exchange not found")
-	ErrMailboxResponseInvalid   = errors.New("invalid mailbox response")
-	ErrMailboxTerminalImmutable = errors.New("terminal mailbox response is immutable")
+	ErrMailboxExchangeInvalid       = errors.New("invalid mailbox exchange")
+	ErrMailboxExchangeConflict      = errors.New("mailbox request ID or idempotency conflict")
+	ErrMailboxExchangeNotFound      = errors.New("mailbox exchange not found")
+	ErrMailboxResponseInvalid       = errors.New("invalid mailbox response")
+	ErrMailboxResponseExpired       = errors.New("terminal mailbox response cleanup deadline has passed")
+	ErrMailboxEventReferenceExpired = errors.New("mailbox event file cleanup has started")
+	ErrMailboxTerminalImmutable     = errors.New("terminal mailbox response is immutable")
 )
 
-// MailboxExchangeState is the durable file-exchange lifecycle. Terminal
-// response revisions are added by later mailbox phases; P082 persists the
-// receipt and accepted/terminal state before any file cleanup.
+const (
+	MailboxAckedResponseLifetime   = 24 * time.Hour
+	MailboxUnackedResponseLifetime = 7 * 24 * time.Hour
+)
+
+// MailboxExchangeState is the durable file-exchange lifecycle. P082 persists
+// receipts before pair cleanup; response revisions and cleanup deadlines are
+// retained with the same exchange record.
 type MailboxExchangeState string
 
 const (
@@ -44,26 +51,30 @@ type MailboxExchangeCreate struct {
 	ResourceID       string
 }
 
-// MailboxExchangeRecord is the durable request receipt and its current state.
-// Response bytes/revisions are intentionally reserved for later phases.
+// MailboxExchangeRecord is the durable request receipt, current response, and
+// cleanup lifecycle for its immutable request ID.
 type MailboxExchangeRecord struct {
-	RequestID              string
-	Operation              string
-	Controller             domain.ControllerIdentity
-	IdempotencyKey         string
-	RequestHash            domain.CanonicalHash
-	CanonicalPayload       []byte
-	ResourceID             string
-	State                  MailboxExchangeState
-	ResponseRevision       int64
-	ResponseBytes          []byte
-	ResponseSHA256         []byte
-	TerminalResponseBytes  []byte
-	TerminalResponseSHA256 []byte
-	AvailableEventSequence *int64
-	AcknowledgedAt         *time.Time
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	RequestID                string
+	Operation                string
+	Controller               domain.ControllerIdentity
+	IdempotencyKey           string
+	RequestHash              domain.CanonicalHash
+	CanonicalPayload         []byte
+	ResourceID               string
+	State                    MailboxExchangeState
+	ResponseRevision         int64
+	ResponseBytes            []byte
+	ResponseSHA256           []byte
+	TerminalResponseBytes    []byte
+	TerminalResponseSHA256   []byte
+	AvailableEventSequence   *int64
+	AcknowledgedAt           *time.Time
+	ResponseCleanupAt        *time.Time
+	ResponseCleanupStartedAt *time.Time
+	ResponseFileRemovedAt    *time.Time
+	EventFileCommandID       string
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 // MailboxResponsePublication is one response snapshot. Accepted snapshots
@@ -220,16 +231,18 @@ func (s *AuthorityStore) PublishMailboxResponse(ctx context.Context, requestID s
 		if nextRevision <= 0 {
 			return MailboxExchangeRecord{}, fmt.Errorf("%w: response revision overflow", ErrMailboxResponseInvalid)
 		}
-		var terminalBytes, terminalHash any
+		var terminalBytes, terminalHash, responseCleanupAt any
 		if publication.State == MailboxExchangeComplete || publication.State == MailboxExchangeRejected || publication.State == MailboxExchangeIndeterminate {
 			terminalBytes, terminalHash = publication.Bytes, responseHash
+			responseCleanupAt = formatStoredTime(now.Add(MailboxUnackedResponseLifetime))
 		}
 		if _, err := connection.ExecContext(ctx, `
 UPDATE mailbox_exchanges
 SET request_state = ?, response_revision = ?, response_bytes = ?, response_sha256 = ?,
-    terminal_response_bytes = ?, terminal_response_sha256 = ?, available_event_sequence = ?, updated_at = ?
+    terminal_response_bytes = ?, terminal_response_sha256 = ?, available_event_sequence = ?,
+    response_cleanup_at = ?, updated_at = ?
 WHERE request_id = ? AND request_state = 'accepted'
-`, string(publication.State), nextRevision, publication.Bytes, responseHash, terminalBytes, terminalHash, publication.AvailableEventSequence, formatStoredTime(now), requestID); err != nil {
+`, string(publication.State), nextRevision, publication.Bytes, responseHash, terminalBytes, terminalHash, publication.AvailableEventSequence, responseCleanupAt, formatStoredTime(now), requestID); err != nil {
 			return MailboxExchangeRecord{}, fmt.Errorf("publish mailbox response: %w", err)
 		}
 		return readMailboxExchangeOnConnection(ctx, connection, requestID)
@@ -294,12 +307,13 @@ INSERT INTO mailbox_exchanges (
     canonical_hash_version, canonical_hash, canonical_payload, resource_id,
     request_state, response_revision, terminal_response_bytes,
     terminal_response_sha256, available_event_sequence, response_bytes,
-    response_sha256, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    response_sha256, response_cleanup_at, response_cleanup_started_at,
+    response_file_removed_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, input.RequestID, input.Operation, string(input.Controller.Type()), string(input.Controller.ID()), input.IdempotencyKey,
 		input.RequestHash.Version(), input.RequestHash.SHA256(), input.CanonicalPayload, input.ResourceID, string(input.State), input.ResponseRevision,
 		nullableBytes(input.TerminalResponseBytes), nullableBytes(input.TerminalResponseSHA256), input.AvailableEventSequence,
-		nullableBytes(input.ResponseBytes), nullableBytes(input.ResponseSHA256), formatStoredTime(input.CreatedAt), formatStoredTime(input.UpdatedAt))
+		nullableBytes(input.ResponseBytes), nullableBytes(input.ResponseSHA256), nil, nil, nil, formatStoredTime(input.CreatedAt), formatStoredTime(input.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("insert mailbox exchange: %w", err)
 	}
@@ -342,15 +356,19 @@ func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, 
 	var digest []byte
 	var terminalBytes, terminalHash, responseBytes, responseHash []byte
 	var availableCursor sql.NullInt64
-	var acknowledgedAt sql.NullString
+	var acknowledgedAt, responseCleanupAt, responseCleanupStartedAt, responseFileRemovedAt sql.NullString
+	var eventFileCommandID sql.NullString
 	if err := connection.QueryRowContext(ctx, `
 SELECT request_id, operation, controller_type, controller_id, idempotency_key,
        canonical_hash_version, canonical_hash, canonical_payload, resource_id,
        request_state, response_revision, terminal_response_bytes,
        terminal_response_sha256, available_event_sequence, response_bytes,
-       response_sha256, acknowledged_at, created_at, updated_at
+       response_sha256, acknowledged_at, response_cleanup_at,
+       response_cleanup_started_at, response_file_removed_at,
+       (SELECT command_id FROM mailbox_event_file_references WHERE request_id = mailbox_exchanges.request_id),
+       created_at, updated_at
 FROM mailbox_exchanges WHERE request_id = ?
-`, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+`, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &responseCleanupAt, &responseCleanupStartedAt, &responseFileRemovedAt, &eventFileCommandID, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return MailboxExchangeRecord{}, ErrMailboxExchangeNotFound
 	} else if err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("read mailbox exchange: %w", err)
@@ -395,11 +413,39 @@ FROM mailbox_exchanges WHERE request_id = ?
 		}
 		record.AcknowledgedAt = &value
 	}
+	if responseCleanupAt.Valid {
+		value, err := parseStoredTime(responseCleanupAt.String)
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: response_cleanup_at: %v", ErrMailboxExchangeInvalid, err)
+		}
+		record.ResponseCleanupAt = &value
+	}
+	if responseCleanupStartedAt.Valid {
+		value, err := parseStoredTime(responseCleanupStartedAt.String)
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: response_cleanup_started_at: %v", ErrMailboxExchangeInvalid, err)
+		}
+		record.ResponseCleanupStartedAt = &value
+	}
+	if responseFileRemovedAt.Valid {
+		value, err := parseStoredTime(responseFileRemovedAt.String)
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: response_file_removed_at: %v", ErrMailboxExchangeInvalid, err)
+		}
+		record.ResponseFileRemovedAt = &value
+	}
+	if eventFileCommandID.Valid {
+		record.EventFileCommandID = eventFileCommandID.String
+	}
 	if record.CreatedAt, err = parseStoredTime(createdAt); err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: created_at: %v", ErrMailboxExchangeInvalid, err)
 	}
 	if record.UpdatedAt, err = parseStoredTime(updatedAt); err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: updated_at: %v", ErrMailboxExchangeInvalid, err)
+	}
+	if record.ResponseCleanupAt == nil && record.ResponseRevision > 0 && (state == string(MailboxExchangeComplete) || state == string(MailboxExchangeRejected) || state == string(MailboxExchangeIndeterminate)) {
+		deadline := mailboxResponseCleanupDeadline(record.UpdatedAt, record.AcknowledgedAt)
+		record.ResponseCleanupAt = &deadline
 	}
 	record.Operation, record.Controller, record.IdempotencyKey = operation, controller, key
 	record.RequestHash, record.CanonicalPayload, record.ResourceID, record.State = hash, append([]byte(nil), payload...), resourceID, MailboxExchangeState(state)
@@ -435,4 +481,15 @@ func sameCursor(left, right *int64) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+func mailboxResponseCleanupDeadline(publishedAt time.Time, acknowledgedAt *time.Time) time.Time {
+	deadline := publishedAt.Add(MailboxUnackedResponseLifetime)
+	if acknowledgedAt != nil {
+		ackedDeadline := acknowledgedAt.Add(MailboxAckedResponseLifetime)
+		if ackedDeadline.Before(deadline) {
+			deadline = ackedDeadline
+		}
+	}
+	return deadline
 }

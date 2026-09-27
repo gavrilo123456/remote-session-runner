@@ -120,6 +120,21 @@ func (f *EventFiles) Read(commandID domain.CommandID) ([]byte, int64, error) {
 	return data, cursor, nil
 }
 
+// Remove durably removes one safe owner-only command event file. A missing
+// file is treated as an already-completed unlink after a crash.
+func (f *EventFiles) Remove(ctx context.Context, commandID domain.CommandID) error {
+	path, err := f.Path(commandID)
+	if err != nil {
+		return err
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return removeOwnedMailboxFile(path, f.root)
+}
+
 // Publish renders durable events and atomically replaces the event file. It
 // is safe to repeat after a crash before response publication.
 func (p EventProjector) Publish(ctx context.Context, files *EventFiles, commandID domain.CommandID) (int64, error) {

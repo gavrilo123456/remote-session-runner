@@ -118,6 +118,21 @@ func (o *Outbox) Read(requestID string) ([]byte, error) {
 	return data, nil
 }
 
+// Remove durably removes one safe owner-only response file. A missing file is
+// treated as an already-completed unlink after a crash.
+func (o *Outbox) Remove(ctx context.Context, requestID string) error {
+	path, err := o.Path(requestID)
+	if err != nil {
+		return err
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return removeOwnedMailboxFile(path, o.root)
+}
+
 // Projector republishes the durable SQLite response snapshot after a crash.
 type Projector struct {
 	Authority  *store.AuthorityStore
@@ -135,6 +150,9 @@ func (p Projector) Publish(ctx context.Context, requestID string) error {
 	}
 	if len(record.ResponseBytes) == 0 {
 		return fmt.Errorf("%w: response revision is not published", ErrOutboxResponse)
+	}
+	if err := p.Authority.EnsureMailboxResponsePublishable(ctx, requestID); err != nil {
+		return err
 	}
 	return p.Outbox.Replace(ctx, requestID, record.ResponseBytes)
 }
@@ -156,6 +174,23 @@ func (p Projector) PublishCommand(ctx context.Context, requestID string, command
 	}
 	if record.AvailableEventSequence == nil || *record.AvailableEventSequence < 1 {
 		return fmt.Errorf("%w: response has no event cursor", ErrOutboxResponse)
+	}
+	var response struct {
+		CommandID  string `json:"command_id"`
+		EventsFile string `json:"events_file"`
+	}
+	if err := json.Unmarshal(record.ResponseBytes, &response); err != nil {
+		return fmt.Errorf("%w: response JSON: %v", ErrOutboxResponse, err)
+	}
+	expectedReference, err := commandEventsFileReference(commandID)
+	if err != nil || response.CommandID != string(commandID) || response.EventsFile != expectedReference {
+		return fmt.Errorf("%w: event-file reference does not match command", ErrOutboxResponse)
+	}
+	if err := p.Authority.EnsureMailboxResponsePublishable(ctx, requestID); err != nil {
+		return err
+	}
+	if err := p.Authority.BindMailboxEventFileReference(ctx, requestID, commandID); err != nil {
+		return err
 	}
 	eventProjector := EventProjector{Authority: p.Authority}
 	eventBytes, cursor, err := eventProjector.ProjectThrough(ctx, commandID, *record.AvailableEventSequence)
