@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -144,10 +145,10 @@ type bridgeGetSessionPayload struct {
 }
 
 type bridgeSubmitCommandPayload struct {
-	SessionID      string `json:"session_id"`
-	IntentOrdinal  int64  `json:"intent_ordinal"`
-	Script         string `json:"script"`
-	TimeoutSeconds int64  `json:"timeout_seconds,omitempty"`
+	SessionID      string          `json:"session_id"`
+	IntentOrdinal  int64           `json:"intent_ordinal"`
+	Script         string          `json:"script"`
+	TimeoutSeconds json.RawMessage `json:"timeout_seconds,omitempty"`
 }
 
 type bridgeGetCommandPayload struct {
@@ -278,6 +279,10 @@ func (f *RunnerdForwarder) submitCommand(ctx context.Context, controller domain.
 	if err != nil {
 		return ReplyFrame{}, err
 	}
+	timeoutSeconds, err := parseBridgeInteger(payload.TimeoutSeconds)
+	if err != nil {
+		return ReplyFrame{}, fmt.Errorf("%w: payload timeout_seconds must be an integer", ErrInvalidFrame)
+	}
 	if strings.TrimSpace(payload.SessionID) == "" || payload.IntentOrdinal < 1 {
 		return ReplyFrame{}, fmt.Errorf("%w: submit payload requires session_id and positive intent_ordinal", ErrInvalidFrame)
 	}
@@ -287,7 +292,7 @@ func (f *RunnerdForwarder) submitCommand(ctx context.Context, controller domain.
 	body, err := json.Marshal(privateSubmitCommandRequest{
 		CommandID: request.ResourceID, SessionID: payload.SessionID, IdempotencyKey: request.IdempotencyKey,
 		RequestID: request.RequestID, Controller: bridgeController{Type: string(controller.Type()), ID: string(controller.ID())},
-		Script: payload.Script, TimeoutSeconds: payload.TimeoutSeconds, IntentOrdinal: payload.IntentOrdinal,
+		Script: payload.Script, TimeoutSeconds: timeoutSeconds, IntentOrdinal: payload.IntentOrdinal,
 	})
 	if err != nil {
 		return ReplyFrame{}, fmt.Errorf("%w: submit request: %v", ErrInvalidFrame, err)
@@ -584,6 +589,27 @@ func decodeBridgePayload[T any](raw json.RawMessage) (T, error) {
 		return value, fmt.Errorf("%w: payload trailing JSON: %v", ErrInvalidFrame, err)
 	}
 	return value, nil
+}
+
+func parseBridgeInteger(raw json.RawMessage) (int64, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return 0, ErrInvalidFrame
+	}
+	number, ok := value.(json.Number)
+	if !ok {
+		return 0, ErrInvalidFrame
+	}
+	rational, ok := new(big.Rat).SetString(number.String())
+	if !ok || !rational.IsInt() || !rational.Num().IsInt64() {
+		return 0, ErrInvalidFrame
+	}
+	return rational.Num().Int64(), nil
 }
 
 func (f *RunnerdForwarder) doJSON(ctx context.Context, requestID, method, route string, query url.Values, body []byte) (ReplyFrame, error) {
