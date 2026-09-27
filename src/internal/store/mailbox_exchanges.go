@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -214,6 +215,15 @@ func (s *AuthorityStore) PublishMailboxResponse(ctx context.Context, requestID s
 	if publication.AvailableEventSequence != nil && *publication.AvailableEventSequence < 0 {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: available event cursor", ErrMailboxResponseInvalid)
 	}
+	var eventFileCommandID domain.CommandID
+	bindEventFile := false
+	if publication.State != MailboxExchangeAccepted && publication.AvailableEventSequence != nil && *publication.AvailableEventSequence > 0 {
+		parsedCommandID, shouldBind, parseErr := responseEventFileCommand(publication.Bytes)
+		if parseErr != nil {
+			return MailboxExchangeRecord{}, parseErr
+		}
+		eventFileCommandID, bindEventFile = parsedCommandID, shouldBind
+	}
 	responseHash := sha256Bytes(publication.Bytes)
 	now := s.now().UTC()
 	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
@@ -245,8 +255,31 @@ WHERE request_id = ? AND request_state = 'accepted'
 `, string(publication.State), nextRevision, publication.Bytes, responseHash, terminalBytes, terminalHash, publication.AvailableEventSequence, responseCleanupAt, formatStoredTime(now), requestID); err != nil {
 			return MailboxExchangeRecord{}, fmt.Errorf("publish mailbox response: %w", err)
 		}
+		if bindEventFile {
+			if err := bindMailboxEventFileReferenceOnConnection(ctx, connection, requestID, eventFileCommandID, now); err != nil {
+				return MailboxExchangeRecord{}, err
+			}
+		}
 		return readMailboxExchangeOnConnection(ctx, connection, requestID)
 	})
+}
+
+func responseEventFileCommand(response []byte) (domain.CommandID, bool, error) {
+	var reference struct {
+		CommandID  string `json:"command_id"`
+		EventsFile string `json:"events_file"`
+	}
+	if err := json.Unmarshal(response, &reference); err != nil {
+		return "", false, nil
+	}
+	if reference.CommandID == "" && reference.EventsFile == "" {
+		return "", false, nil
+	}
+	commandID, err := domain.NewCommandID(reference.CommandID)
+	if err != nil || reference.EventsFile != "events/"+reference.CommandID+".ndjson" {
+		return "", false, fmt.Errorf("%w: event-file command/path reference", ErrMailboxResponseInvalid)
+	}
+	return commandID, true, nil
 }
 
 func validateMailboxExchangeCreate(input MailboxExchangeCreate) (validatedMailboxExchangeCreate, error) {
@@ -365,7 +398,10 @@ SELECT request_id, operation, controller_type, controller_id, idempotency_key,
        terminal_response_sha256, available_event_sequence, response_bytes,
        response_sha256, acknowledged_at, response_cleanup_at,
        response_cleanup_started_at, response_file_removed_at,
-       (SELECT command_id FROM mailbox_event_file_references WHERE request_id = mailbox_exchanges.request_id),
+       COALESCE(
+         (SELECT command_id FROM mailbox_event_file_references WHERE request_id = mailbox_exchanges.request_id),
+         (SELECT command_id FROM mailbox_remote_event_file_references WHERE request_id = mailbox_exchanges.request_id)
+       ),
        created_at, updated_at
 FROM mailbox_exchanges WHERE request_id = ?
 `, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &responseCleanupAt, &responseCleanupStartedAt, &responseFileRemovedAt, &eventFileCommandID, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {

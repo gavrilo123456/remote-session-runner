@@ -1100,6 +1100,8 @@ func statusForRemoteEventError(err error) (int, string) {
 	switch {
 	case errors.Is(err, store.ErrRemoteEventGap):
 		return http.StatusRequestedRangeNotSatisfiable, "event_history_unavailable"
+	case errors.Is(err, store.ErrRemoteEventRetentionExpired):
+		return http.StatusRequestedRangeNotSatisfiable, "event_history_unavailable"
 	case errors.Is(err, store.ErrRemoteEventNotFound):
 		return http.StatusNotFound, "command_not_found"
 	default:

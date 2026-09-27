@@ -70,6 +70,27 @@ func (p EventProjector) ProjectThrough(ctx context.Context, commandID domain.Com
 	return data, events[len(events)-1].Sequence, nil
 }
 
+// ProjectMailboxResponseThrough rebuilds only the event prefix frozen into a
+// live terminal mailbox response. The store authorizes this exceptional read
+// through the durable response-to-command reference and cleanup deadline.
+func (p EventProjector) ProjectMailboxResponseThrough(ctx context.Context, requestID string, commandID domain.CommandID) ([]byte, int64, error) {
+	if p.Authority == nil {
+		return nil, 0, ErrEventProjectionConfiguration
+	}
+	command, events, err := p.Authority.MailboxResponseCommandEvents(ctx, requestID, commandID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(events) == 0 {
+		return nil, 0, fmt.Errorf("%w: pinned response has no events", ErrEventProjection)
+	}
+	data, err := RenderCommandEvents(command, events)
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, events[len(events)-1].Sequence, nil
+}
+
 // RenderCommandEvents converts store events to the versioned mailbox event
 // shape. Every output payload is represented as either a whole valid UTF-8
 // chunk or exact base64 bytes; no replacement characters or dropped bytes are

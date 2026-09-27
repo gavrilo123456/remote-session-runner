@@ -32,12 +32,14 @@ type GarbageCollectionOptions struct {
 // Live session reservations and live command slots deliberately do not appear
 // in the deletion counts: they pin their parent records beyond retention.
 type GarbageCollectionReport struct {
-	IdempotencyRecordsDeleted int
-	CommandsOutputExpired     int
-	CommandEventsDeleted      int
-	JobsDeleted               int
-	CommandsDeleted           int
-	SessionsDeleted           int
+	IdempotencyRecordsDeleted   int
+	CommandsOutputExpired       int
+	CommandEventsDeleted        int
+	RemoteCommandsOutputExpired int
+	RemoteCommandEventsDeleted  int
+	JobsDeleted                 int
+	CommandsDeleted             int
+	SessionsDeleted             int
 }
 
 // CollectGarbage expires output payloads at the 30-day boundary, removes
@@ -97,15 +99,92 @@ WHERE command_id IN (
 			return report, fmt.Errorf("expire job output: %w", err)
 		}
 		result, err = connection.ExecContext(ctx, `
+UPDATE local_remote_command_projections
+SET output_complete = 0, output_unavailable_reason = 'retention_expired'
+WHERE command_state IN (?, ?, ?, ?, ?, ?)
+  AND output_unavailable_reason != 'retention_expired'
+  AND (
+      EXISTS (
+          SELECT 1 FROM local_remote_events e
+          WHERE e.command_id = local_remote_command_projections.command_id
+            AND e.sequence = local_remote_command_projections.final_event_sequence
+            AND e.event_type IN ('command_succeeded', 'command_failed', 'command_cancelled', 'command_timed_out', 'command_rejected', 'command_lost')
+            AND e.occurred_at <= ?
+      )
+      OR EXISTS (
+          SELECT 1 FROM local_remote_event_gaps g
+          WHERE g.command_id = local_remote_command_projections.command_id
+            AND g.confirmed_at <= ?
+      )
+  )
+`, string(domain.CommandStateSucceeded), string(domain.CommandStateFailed), string(domain.CommandStateCancelled),
+			string(domain.CommandStateTimedOut), string(domain.CommandStateRejected), string(domain.CommandStateLost), formatStoredTime(outputCutoff), formatStoredTime(outputCutoff))
+		if err != nil {
+			return report, fmt.Errorf("expire mirrored remote output: %w", err)
+		}
+		if report.RemoteCommandsOutputExpired, err = rowsAffected(result); err != nil {
+			return report, err
+		}
+		if _, err := connection.ExecContext(ctx, `
+UPDATE local_remote_job_projections
+SET output_complete = 0, output_unavailable_reason = 'retention_expired'
+WHERE command_id IN (
+    SELECT command_id FROM local_remote_command_projections WHERE output_unavailable_reason = 'retention_expired'
+)
+  AND output_unavailable_reason = ''
+`); err != nil {
+			return report, fmt.Errorf("expire mirrored remote job output: %w", err)
+		}
+		result, err = connection.ExecContext(ctx, `
 DELETE FROM exec_command_events
 WHERE command_id IN (
     SELECT command_id FROM exec_commands WHERE output_unavailable_reason = 'retention_expired'
 )
-`)
+  AND NOT EXISTS (
+      SELECT 1 FROM mailbox_event_file_references r
+      JOIN mailbox_exchanges e ON e.request_id = r.request_id
+      WHERE r.command_id = exec_command_events.command_id
+        AND e.response_file_removed_at IS NULL
+        AND (e.response_cleanup_at IS NULL OR e.response_cleanup_at > ?)
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM mailbox_remote_event_file_references r
+      JOIN mailbox_exchanges e ON e.request_id = r.request_id
+      WHERE r.command_id = exec_command_events.command_id
+        AND e.response_file_removed_at IS NULL
+        AND (e.response_cleanup_at IS NULL OR e.response_cleanup_at > ?)
+  )
+`, formatStoredTime(now), formatStoredTime(now))
 		if err != nil {
 			return report, fmt.Errorf("delete expired command events: %w", err)
 		}
 		if report.CommandEventsDeleted, err = rowsAffected(result); err != nil {
+			return report, err
+		}
+		result, err = connection.ExecContext(ctx, `
+DELETE FROM local_remote_events
+WHERE command_id IN (
+    SELECT command_id FROM local_remote_command_projections WHERE output_unavailable_reason = 'retention_expired'
+)
+  AND NOT EXISTS (
+      SELECT 1 FROM mailbox_event_file_references r
+      JOIN mailbox_exchanges e ON e.request_id = r.request_id
+      WHERE r.command_id = local_remote_events.command_id
+        AND e.response_file_removed_at IS NULL
+        AND (e.response_cleanup_at IS NULL OR e.response_cleanup_at > ?)
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM mailbox_remote_event_file_references r
+      JOIN mailbox_exchanges e ON e.request_id = r.request_id
+      WHERE r.command_id = local_remote_events.command_id
+        AND e.response_file_removed_at IS NULL
+        AND (e.response_cleanup_at IS NULL OR e.response_cleanup_at > ?)
+  )
+`, formatStoredTime(now), formatStoredTime(now))
+		if err != nil {
+			return report, fmt.Errorf("delete expired mirrored remote events: %w", err)
+		}
+		if report.RemoteCommandEventsDeleted, err = rowsAffected(result); err != nil {
 			return report, err
 		}
 

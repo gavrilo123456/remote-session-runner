@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"remote-session-runner/src/internal/domain"
 )
@@ -38,53 +39,197 @@ func (s *AuthorityStore) BindMailboxEventFileReference(ctx context.Context, requ
 	}
 	now := s.now().UTC()
 	_, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
-		record, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
-		if err != nil {
-			return struct{}{}, err
-		}
-		if record.AvailableEventSequence == nil || *record.AvailableEventSequence < 1 {
-			return struct{}{}, fmt.Errorf("%w: response has no event cursor", ErrMailboxResponseInvalid)
-		}
-		if record.ResponseCleanupStartedAt != nil || record.ResponseFileRemovedAt != nil ||
-			(record.ResponseCleanupAt != nil && !now.Before(*record.ResponseCleanupAt)) {
-			return struct{}{}, ErrMailboxResponseExpired
-		}
-		var commandState string
-		if err := connection.QueryRowContext(ctx, `SELECT state FROM exec_commands WHERE command_id = ?`, string(validatedCommandID)).Scan(&commandState); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return struct{}{}, ErrCommandNotFound
-			}
-			return struct{}{}, fmt.Errorf("read event-file command: %w", err)
-		}
-		var cleanupStarted, fileRemovedAt sql.NullString
-		err = connection.QueryRowContext(ctx, `SELECT cleanup_started_at, file_removed_at FROM mailbox_event_file_cleanup WHERE command_id = ?`, string(validatedCommandID)).Scan(&cleanupStarted, &fileRemovedAt)
-		if err == nil {
-			if !fileRemovedAt.Valid {
-				return struct{}{}, ErrMailboxEventReferenceExpired
-			}
-			if _, err := connection.ExecContext(ctx, `DELETE FROM mailbox_event_file_cleanup WHERE command_id = ? AND file_removed_at IS NOT NULL`, string(validatedCommandID)); err != nil {
-				return struct{}{}, fmt.Errorf("reactivate cleaned event file: %w", err)
-			}
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return struct{}{}, fmt.Errorf("read event-file cleanup state: %w", err)
-		}
-		var existing string
-		err = connection.QueryRowContext(ctx, `SELECT command_id FROM mailbox_event_file_references WHERE request_id = ?`, requestID).Scan(&existing)
-		if err == nil {
-			if existing != string(validatedCommandID) {
-				return struct{}{}, ErrMailboxExchangeConflict
-			}
-			return struct{}{}, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return struct{}{}, fmt.Errorf("read event-file reference: %w", err)
-		}
-		if _, err := connection.ExecContext(ctx, `INSERT INTO mailbox_event_file_references (request_id, command_id, created_at) VALUES (?, ?, ?)`, requestID, string(validatedCommandID), formatStoredTime(now)); err != nil {
-			return struct{}{}, fmt.Errorf("record event-file reference: %w", err)
-		}
-		return struct{}{}, nil
+		return struct{}{}, bindMailboxEventFileReferenceOnConnection(ctx, connection, requestID, validatedCommandID, now)
 	})
 	return err
+}
+
+func bindMailboxEventFileReferenceOnConnection(ctx context.Context, connection *sql.Conn, requestID string, commandID domain.CommandID, now time.Time) error {
+	record, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+	if err != nil {
+		return err
+	}
+	if record.State == MailboxExchangeAccepted || record.AvailableEventSequence == nil || *record.AvailableEventSequence < 1 || record.ResponseCleanupAt == nil {
+		return fmt.Errorf("%w: terminal response has no event cursor or cleanup deadline", ErrMailboxResponseInvalid)
+	}
+	if record.ResponseCleanupStartedAt != nil || record.ResponseFileRemovedAt != nil || !now.Before(*record.ResponseCleanupAt) {
+		return ErrMailboxResponseExpired
+	}
+
+	var localState, remoteState string
+	localErr := connection.QueryRowContext(ctx, `SELECT state FROM exec_commands WHERE command_id = ?`, string(commandID)).Scan(&localState)
+	remoteErr := connection.QueryRowContext(ctx, `SELECT command_state FROM local_remote_command_projections WHERE command_id = ?`, string(commandID)).Scan(&remoteState)
+	localFound, remoteFound := localErr == nil, remoteErr == nil
+	if localErr != nil && !errors.Is(localErr, sql.ErrNoRows) {
+		return fmt.Errorf("read local event-file command: %w", localErr)
+	}
+	if remoteErr != nil && !errors.Is(remoteErr, sql.ErrNoRows) {
+		return fmt.Errorf("read mirrored event-file command: %w", remoteErr)
+	}
+	if localFound == remoteFound {
+		if localFound {
+			return fmt.Errorf("%w: command ID is ambiguous across local and remote stores", ErrMailboxExchangeConflict)
+		}
+		return ErrCommandNotFound
+	}
+	remote := remoteFound
+	if record.EventFileCommandID != "" && record.EventFileCommandID != string(commandID) {
+		return ErrMailboxExchangeConflict
+	}
+
+	cleanupTable := "mailbox_event_file_cleanup"
+	referenceTable := "mailbox_event_file_references"
+	if remote {
+		cleanupTable = "mailbox_remote_event_file_cleanup"
+		referenceTable = "mailbox_remote_event_file_references"
+	}
+	var cleanupStarted, fileRemovedAt sql.NullString
+	err = connection.QueryRowContext(ctx, `SELECT cleanup_started_at, file_removed_at FROM `+cleanupTable+` WHERE command_id = ?`, string(commandID)).Scan(&cleanupStarted, &fileRemovedAt)
+	if err == nil {
+		if !fileRemovedAt.Valid {
+			return ErrMailboxEventReferenceExpired
+		}
+		if _, err := connection.ExecContext(ctx, `DELETE FROM `+cleanupTable+` WHERE command_id = ? AND file_removed_at IS NOT NULL`, string(commandID)); err != nil {
+			return fmt.Errorf("reactivate cleaned event file: %w", err)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read event-file cleanup state: %w", err)
+	}
+
+	var localReference, remoteReference sql.NullString
+	if err := connection.QueryRowContext(ctx, `SELECT command_id FROM mailbox_event_file_references WHERE request_id = ?`, requestID).Scan(&localReference); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read local event-file reference: %w", err)
+	}
+	if err := connection.QueryRowContext(ctx, `SELECT command_id FROM mailbox_remote_event_file_references WHERE request_id = ?`, requestID).Scan(&remoteReference); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read remote event-file reference: %w", err)
+	}
+	if localReference.Valid || remoteReference.Valid {
+		existing := localReference
+		if remoteReference.Valid {
+			if existing.Valid {
+				return ErrMailboxExchangeConflict
+			}
+			existing = remoteReference
+		}
+		if existing.String != string(commandID) || remoteReference.Valid != remote {
+			return ErrMailboxExchangeConflict
+		}
+		return nil
+	}
+	if _, err := connection.ExecContext(ctx, `INSERT INTO `+referenceTable+` (request_id, command_id, created_at) VALUES (?, ?, ?)`, requestID, string(commandID), formatStoredTime(now)); err != nil {
+		return fmt.Errorf("record event-file reference: %w", err)
+	}
+	return nil
+}
+
+// MailboxResponseCommandEvents reads the immutable event prefix advertised by
+// one still-live mailbox response. It may read payloads retained only for that
+// response after ordinary output expiry; ordinary command reads remain
+// retention-filtered.
+func (s *AuthorityStore) MailboxResponseCommandEvents(ctx context.Context, requestID string, commandID domain.CommandID) (CommandRecord, []CommandEventRecord, error) {
+	if err := validateMailboxRequestID(requestID); err != nil {
+		return CommandRecord{}, nil, err
+	}
+	validatedCommandID, err := domain.NewCommandID(string(commandID))
+	if err != nil {
+		return CommandRecord{}, nil, fmt.Errorf("%w: command ID: %v", ErrMailboxResponseInvalid, err)
+	}
+	now := s.now().UTC()
+	type commandEvents struct {
+		command CommandRecord
+		events  []CommandEventRecord
+	}
+	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (commandEvents, error) {
+		exchange, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+		if err != nil {
+			return commandEvents{}, err
+		}
+		if exchange.State == MailboxExchangeAccepted || exchange.AvailableEventSequence == nil || *exchange.AvailableEventSequence < 1 || exchange.EventFileCommandID != string(validatedCommandID) {
+			return commandEvents{}, ErrMailboxResponseInvalid
+		}
+		if exchange.ResponseCleanupAt == nil || exchange.ResponseCleanupStartedAt != nil || exchange.ResponseFileRemovedAt != nil || !now.Before(*exchange.ResponseCleanupAt) {
+			return commandEvents{}, ErrMailboxResponseExpired
+		}
+		var localReference, remoteReference sql.NullString
+		if err := connection.QueryRowContext(ctx, `SELECT command_id FROM mailbox_event_file_references WHERE request_id = ?`, requestID).Scan(&localReference); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return commandEvents{}, fmt.Errorf("read local mailbox event reference: %w", err)
+		}
+		if err := connection.QueryRowContext(ctx, `SELECT command_id FROM mailbox_remote_event_file_references WHERE request_id = ?`, requestID).Scan(&remoteReference); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return commandEvents{}, fmt.Errorf("read mirrored mailbox event reference: %w", err)
+		}
+		if localReference.Valid == remoteReference.Valid {
+			return commandEvents{}, ErrMailboxResponseInvalid
+		}
+		through := *exchange.AvailableEventSequence
+		var command CommandRecord
+		var events []CommandEventRecord
+		if localReference.Valid {
+			if localReference.String != string(validatedCommandID) {
+				return commandEvents{}, ErrMailboxResponseInvalid
+			}
+			command, err = readCommandOnConnection(ctx, connection, validatedCommandID)
+			if err != nil {
+				return commandEvents{}, err
+			}
+			events, err = readCommandEventsOnConnection(ctx, connection, validatedCommandID, -1)
+		} else {
+			if remoteReference.String != string(validatedCommandID) {
+				return commandEvents{}, ErrMailboxResponseInvalid
+			}
+			projection, projectionErr := readRemoteCommandProjectionOnConnection(ctx, connection, validatedCommandID)
+			if projectionErr != nil {
+				return commandEvents{}, projectionErr
+			}
+			command = CommandRecord{
+				CommandID: projection.CommandID, SessionID: projection.SessionID,
+				Ordinal: projection.Ordinal, State: projection.State,
+				ExitCode: projection.ExitCode, FinalEventSequence: projection.FinalEventSequence,
+				OutputComplete: projection.OutputComplete, OutputTruncated: projection.OutputTruncated,
+				OutputUnavailableReason: projection.OutputUnavailableReason,
+			}
+			events, err = readMirroredCommandEventsOnConnection(ctx, connection, validatedCommandID, through)
+		}
+		if err != nil {
+			return commandEvents{}, err
+		}
+		if int64(len(events)) < through {
+			return commandEvents{}, fmt.Errorf("%w: pinned event prefix ends at %d, response advertises %d", ErrCommandReplayGap, len(events), through)
+		}
+		return commandEvents{command: command, events: events[:through]}, nil
+	})
+	return result.command, result.events, err
+}
+
+func readMirroredCommandEventsOnConnection(ctx context.Context, connection *sql.Conn, commandID domain.CommandID, through int64) ([]CommandEventRecord, error) {
+	rows, err := connection.QueryContext(ctx, `
+SELECT sequence, event_type, payload, byte_count, occurred_at
+FROM local_remote_events WHERE command_id = ? ORDER BY sequence LIMIT ?
+`, string(commandID), through)
+	if err != nil {
+		return nil, fmt.Errorf("read pinned mirrored events: %w", err)
+	}
+	defer rows.Close()
+	events := make([]CommandEventRecord, 0, through)
+	expected := int64(1)
+	for rows.Next() {
+		remoteEvent, err := scanRemoteEvent(rows, commandID)
+		if err != nil {
+			return nil, err
+		}
+		if remoteEvent.Sequence != expected {
+			return nil, fmt.Errorf("%w: pinned mirror expected sequence %d, got %d", ErrRemoteEventGap, expected, remoteEvent.Sequence)
+		}
+		events = append(events, CommandEventRecord{
+			CommandID: commandID, Sequence: remoteEvent.Sequence, Type: remoteEvent.Type,
+			Payload: append([]byte(nil), remoteEvent.Payload...), ByteCount: remoteEvent.ByteCount,
+			OccurredAt: remoteEvent.OccurredAt,
+		})
+		expected++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pinned mirrored events: %w", err)
+	}
+	return events, nil
 }
 
 // ClaimMailboxResponsesForCleanup claims expired terminal response files. A
@@ -170,7 +315,12 @@ WHERE request_id = ? AND response_cleanup_started_at IS NOT NULL`, formatStoredT
 func (s *AuthorityStore) ClaimMailboxEventFilesForCleanup(ctx context.Context) ([]domain.CommandID, error) {
 	now := s.now().UTC()
 	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]domain.CommandID, error) {
-		rows, err := connection.QueryContext(ctx, `SELECT DISTINCT command_id FROM mailbox_event_file_references ORDER BY command_id`)
+		rows, err := connection.QueryContext(ctx, `
+SELECT command_id FROM mailbox_event_file_references
+UNION
+SELECT command_id FROM mailbox_remote_event_file_references
+ORDER BY command_id
+`)
 		if err != nil {
 			return nil, fmt.Errorf("list shared mailbox event files: %w", err)
 		}
@@ -193,13 +343,20 @@ func (s *AuthorityStore) ClaimMailboxEventFilesForCleanup(ctx context.Context) (
 		var claimed []domain.CommandID
 		for _, commandID := range commandIDs {
 			var commandState string
-			if err := connection.QueryRowContext(ctx, `SELECT state FROM exec_commands WHERE command_id = ?`, commandID).Scan(&commandState); err != nil {
-				return nil, fmt.Errorf("read mailbox event command: %w", err)
+			localErr := connection.QueryRowContext(ctx, `SELECT state FROM exec_commands WHERE command_id = ?`, commandID).Scan(&commandState)
+			remote := false
+			if errors.Is(localErr, sql.ErrNoRows) {
+				remote = true
+				localErr = connection.QueryRowContext(ctx, `SELECT command_state FROM local_remote_command_projections WHERE command_id = ?`, commandID).Scan(&commandState)
+			}
+			if localErr != nil {
+				return nil, fmt.Errorf("read mailbox event command: %w", localErr)
 			}
 			if !mailboxCommandStateTerminal(commandState) {
 				continue
 			}
-			refs, err := connection.QueryContext(ctx, `SELECT request_id FROM mailbox_event_file_references WHERE command_id = ? ORDER BY request_id`, commandID)
+			refQuery := `SELECT request_id FROM mailbox_event_file_references WHERE command_id = ? UNION SELECT request_id FROM mailbox_remote_event_file_references WHERE command_id = ? ORDER BY request_id`
+			refs, err := connection.QueryContext(ctx, refQuery, commandID, commandID)
 			if err != nil {
 				return nil, fmt.Errorf("list mailbox event references: %w", err)
 			}
@@ -237,11 +394,15 @@ func (s *AuthorityStore) ClaimMailboxEventFilesForCleanup(ctx context.Context) (
 			if !eligible {
 				continue
 			}
-			if _, err := connection.ExecContext(ctx, `INSERT OR IGNORE INTO mailbox_event_file_cleanup (command_id, cleanup_started_at) VALUES (?, ?)`, commandID, formatStoredTime(now)); err != nil {
+			cleanupTable := "mailbox_event_file_cleanup"
+			if remote {
+				cleanupTable = "mailbox_remote_event_file_cleanup"
+			}
+			if _, err := connection.ExecContext(ctx, `INSERT OR IGNORE INTO `+cleanupTable+` (command_id, cleanup_started_at) VALUES (?, ?)`, commandID, formatStoredTime(now)); err != nil {
 				return nil, fmt.Errorf("claim mailbox event-file cleanup: %w", err)
 			}
 			var removedAt sql.NullString
-			if err := connection.QueryRowContext(ctx, `SELECT file_removed_at FROM mailbox_event_file_cleanup WHERE command_id = ?`, commandID).Scan(&removedAt); err != nil {
+			if err := connection.QueryRowContext(ctx, `SELECT file_removed_at FROM `+cleanupTable+` WHERE command_id = ?`, commandID).Scan(&removedAt); err != nil {
 				return nil, fmt.Errorf("read mailbox event-file cleanup claim: %w", err)
 			}
 			if !removedAt.Valid {
@@ -256,20 +417,29 @@ func (s *AuthorityStore) ClaimMailboxEventFilesForCleanup(ctx context.Context) (
 func (s *AuthorityStore) MarkMailboxEventFileRemoved(ctx context.Context, commandID domain.CommandID) error {
 	now := s.now().UTC()
 	_, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
-		result, err := connection.ExecContext(ctx, `UPDATE mailbox_event_file_cleanup
+		for _, table := range []string{"mailbox_event_file_cleanup", "mailbox_remote_event_file_cleanup"} {
+			result, err := connection.ExecContext(ctx, `UPDATE `+table+`
 SET file_removed_at = COALESCE(file_removed_at, ?)
 WHERE command_id = ?`, formatStoredTime(now), string(commandID))
-		if err != nil {
-			return struct{}{}, fmt.Errorf("mark mailbox event file removed: %w", err)
+			if err != nil {
+				return struct{}{}, fmt.Errorf("mark mailbox event file removed: %w", err)
+			}
+			count, err := rowsAffected(result)
+			if err != nil {
+				return struct{}{}, err
+			}
+			if count > 0 {
+				return struct{}{}, nil
+			}
+			var exists int
+			if err := connection.QueryRowContext(ctx, `SELECT count(*) FROM `+table+` WHERE command_id = ? AND file_removed_at IS NOT NULL`, string(commandID)).Scan(&exists); err != nil {
+				return struct{}{}, fmt.Errorf("verify mailbox event cleanup: %w", err)
+			}
+			if exists > 0 {
+				return struct{}{}, nil
+			}
 		}
-		count, err := rowsAffected(result)
-		if err != nil {
-			return struct{}{}, err
-		}
-		if count == 0 {
-			return struct{}{}, ErrMailboxCleanupState
-		}
-		return struct{}{}, nil
+		return struct{}{}, ErrMailboxCleanupState
 	})
 	return err
 }

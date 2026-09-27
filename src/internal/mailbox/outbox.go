@@ -193,7 +193,7 @@ func (p Projector) PublishCommand(ctx context.Context, requestID string, command
 		return err
 	}
 	eventProjector := EventProjector{Authority: p.Authority}
-	eventBytes, cursor, err := eventProjector.ProjectThrough(ctx, commandID, *record.AvailableEventSequence)
+	eventBytes, cursor, err := eventProjector.ProjectMailboxResponseThrough(ctx, requestID, commandID)
 	if err != nil {
 		return err
 	}

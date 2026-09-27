@@ -13,13 +13,14 @@ import (
 )
 
 var (
-	ErrRemoteEventBatch    = errors.New("remote event batch is invalid")
-	ErrRemoteEventGap      = errors.New("remote event sequence has a gap")
-	ErrRemoteEventConflict = errors.New("remote event duplicate conflicts with stored bytes")
-	ErrRemoteEventNotFound = errors.New("remote event was not found")
-	ErrRemoteGapRecord     = errors.New("remote event gap record is invalid")
-	ErrRemoteGapConflict   = errors.New("remote event gap record conflicts with stored confirmation")
-	ErrRemoteGapNotFound   = errors.New("remote event gap record was not found")
+	ErrRemoteEventBatch            = errors.New("remote event batch is invalid")
+	ErrRemoteEventGap              = errors.New("remote event sequence has a gap")
+	ErrRemoteEventConflict         = errors.New("remote event duplicate conflicts with stored bytes")
+	ErrRemoteEventNotFound         = errors.New("remote event was not found")
+	ErrRemoteEventRetentionExpired = errors.New("mirrored remote event output retention expired")
+	ErrRemoteGapRecord             = errors.New("remote event gap record is invalid")
+	ErrRemoteGapConflict           = errors.New("remote event gap record conflicts with stored confirmation")
+	ErrRemoteGapNotFound           = errors.New("remote event gap record was not found")
 )
 
 // RemoteEventRecord is one immutable event mirrored from the remote command
@@ -269,6 +270,14 @@ func (s *AuthorityStore) ListRemoteEvents(ctx context.Context, commandID domain.
 		return nil, fmt.Errorf("%w: negative cursor", ErrRemoteEventBatch)
 	}
 	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]RemoteEventRecord, error) {
+		var outputUnavailable string
+		projectionErr := connection.QueryRowContext(ctx, `SELECT output_unavailable_reason FROM local_remote_command_projections WHERE command_id = ?`, string(validated)).Scan(&outputUnavailable)
+		if projectionErr != nil && !errors.Is(projectionErr, sql.ErrNoRows) {
+			return nil, fmt.Errorf("read mirrored event retention state: %w", projectionErr)
+		}
+		if outputUnavailable == "retention_expired" {
+			return nil, ErrRemoteEventRetentionExpired
+		}
 		rows, err := connection.QueryContext(ctx, `
 SELECT sequence, event_type, payload, byte_count, occurred_at
 FROM local_remote_events WHERE command_id = ? AND sequence > ? ORDER BY sequence

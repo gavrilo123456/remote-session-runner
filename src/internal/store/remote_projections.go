@@ -177,6 +177,10 @@ INSERT INTO local_remote_command_projections (
 		if validated.ObservedAt.Before(stored.ObservedAt) {
 			return stored, nil
 		}
+		if stored.OutputUnavailableReason == "retention_expired" {
+			validated.OutputComplete = false
+			validated.OutputUnavailableReason = "retention_expired"
+		}
 		_, err = connection.ExecContext(ctx, `
 UPDATE local_remote_command_projections SET
  command_state = ?, exit_code = ?, final_event_sequence = ?, output_complete = ?, output_truncated = ?,
