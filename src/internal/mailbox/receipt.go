@@ -48,36 +48,38 @@ func (p *ReceiptProcessor) Import(ctx context.Context) ([]Result, error) {
 	if p == nil || p.importer == nil || p.authority == nil {
 		return nil, ErrImporterConfiguration
 	}
-	return p.importer.importWithHandler(ctx, p.process)
+	return p.importer.importWithRecorder(ctx, p.process)
 }
 
-func (p *ReceiptProcessor) process(ctx context.Context, request Request) error {
+func (p *ReceiptProcessor) process(ctx context.Context, request Request) (bool, error) {
 	payload, hash, err := receiptCanonical(request)
 	if err != nil {
-		return err
+		return false, err
 	}
 	record, duplicate, err := p.authority.AcceptMailboxExchange(ctx, store.MailboxExchangeCreate{
 		RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
 		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if duplicate && record.State != store.MailboxExchangeAccepted {
-		return nil
+		return true, nil
 	}
 	if p.handler == nil {
-		return nil
+		// The receipt is durable, but the request remains available so a later
+		// processor with its operation handler can resume it.
+		return false, nil
 	}
 	if err := p.handler(ctx, request); err != nil {
 		_, completeErr := p.authority.CompleteMailboxExchange(ctx, request.RequestID, store.MailboxExchangeRejected)
 		if completeErr != nil {
-			return fmt.Errorf("%w; receipt rejection: %v", err, completeErr)
+			return false, fmt.Errorf("%w; receipt rejection: %v", err, completeErr)
 		}
-		return err
+		return true, err
 	}
 	_, err = p.authority.CompleteMailboxExchange(ctx, request.RequestID, store.MailboxExchangeComplete)
-	return err
+	return err == nil, err
 }
 
 func receiptCanonical(request Request) ([]byte, domain.CanonicalHash, error) {

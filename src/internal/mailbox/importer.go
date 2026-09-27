@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
@@ -81,25 +82,33 @@ type Result struct {
 	Status      ResultStatus
 	Reason      string
 	Request     *Request
+	Durable     bool
+	PairRemoved bool
 }
 
 // Handler receives only fully validated requests. It is deliberately an
 // injected boundary: P081 does not execute mutations or write responses.
 type Handler func(context.Context, Request) error
 
-// Options configures an owner-only mailbox importer rooted at Root. Inbox is
-// created below Root when absent. Handler is optional for validation-only use.
+type durableHandler func(context.Context, Request) (bool, error)
+
+// Options configures an owner-only mailbox importer rooted at Root. Inbox and
+// ACK directories are created below Root when absent. Handler is optional for
+// validation-only use; Clock controls the 24-hour draft cutoff.
 type Options struct {
 	Root    string
 	Handler Handler
+	Clock   func() time.Time
 }
 
 // Importer implements marker-last mailbox discovery and validation.
 type Importer struct {
 	root    string
 	inbox   string
+	acks    string
 	handler Handler
 	schema  *jsonschema.Schema
+	clock   func() time.Time
 }
 
 // NewImporter creates an importer for root. It creates missing root/inbox
@@ -120,11 +129,19 @@ func New(options Options) (*Importer, error) {
 	if err := ensureOwnerDirectory(inbox); err != nil {
 		return nil, err
 	}
+	acks := filepath.Join(options.Root, "acks")
+	if err := ensureOwnerDirectory(acks); err != nil {
+		return nil, err
+	}
 	schema, err := compileRequestSchema()
 	if err != nil {
 		return nil, err
 	}
-	return &Importer{root: options.Root, inbox: inbox, handler: options.Handler, schema: schema}, nil
+	clock := options.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	return &Importer{root: options.Root, inbox: inbox, acks: acks, handler: options.Handler, schema: schema, clock: clock}, nil
 }
 
 // InboxPath returns the configured inbox directory.
@@ -135,21 +152,33 @@ func (i *Importer) InboxPath() string {
 	return i.inbox
 }
 
-// Import scans the inbox once. Only safe regular request/marker pairs with a
-// valid schema and bounded script reach Handler. Unmarked drafts are ignored.
-// A malformed marked input produces a rejected Result and does not stop other
-// markers from being examined. Files remain in place for the durable receipt
-// and cleanup phases that follow P081.
+// Import first collects expired unmarked drafts, then scans the inbox once.
+// Only safe regular request/marker pairs with a valid schema and bounded
+// script reach Handler. A malformed marked input produces a rejected Result
+// and does not stop other markers from being examined.
 func (i *Importer) Import(ctx context.Context) ([]Result, error) {
 	return i.importWithHandler(ctx, i.handler)
 }
 
 func (i *Importer) importWithHandler(ctx context.Context, handler Handler) ([]Result, error) {
+	var recorder durableHandler
+	if handler != nil {
+		recorder = func(ctx context.Context, request Request) (bool, error) {
+			return false, handler(ctx, request)
+		}
+	}
+	return i.importWithRecorder(ctx, recorder)
+}
+
+func (i *Importer) importWithRecorder(ctx context.Context, handler durableHandler) ([]Result, error) {
 	if i == nil || i.schema == nil || i.inbox == "" {
 		return nil, ErrImporterConfiguration
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if _, err := i.CleanupUnmarkedDrafts(ctx); err != nil {
+		return nil, err
 	}
 	entries, err := os.ReadDir(i.inbox)
 	if err != nil {
@@ -166,7 +195,10 @@ func (i *Importer) importWithHandler(ctx context.Context, handler Handler) ([]Re
 			// their marker is safely published.
 			continue
 		}
-		result := i.importMarker(ctx, name, handler)
+		result, importErr := i.importMarker(ctx, name, handler)
+		if importErr != nil {
+			return results, importErr
+		}
 		if result.Status != "" {
 			results = append(results, result)
 		}
@@ -174,66 +206,74 @@ func (i *Importer) importWithHandler(ctx context.Context, handler Handler) ([]Re
 	return results, nil
 }
 
-func (i *Importer) importMarker(ctx context.Context, markerName string, handler Handler) Result {
+func (i *Importer) importMarker(ctx context.Context, markerName string, handler durableHandler) (Result, error) {
 	result := Result{Filename: markerName, MarkerPath: filepath.Join(i.inbox, markerName), Status: ResultRejected}
 	requestID, ok := safeRequestID(strings.TrimSuffix(markerName, ReadySuffix))
 	if !ok {
 		result.Reason = "unsafe request marker filename"
-		return result
+		return result, nil
 	}
 	result.RequestID = requestID
 	requestName := requestID + RequestSuffix
 	result.RequestPath = filepath.Join(i.inbox, requestName)
 	if err := validateMailboxFile(result.MarkerPath, true); err != nil {
 		result.Reason = err.Error()
-		return result
+		return result, nil
 	}
 	if err := validateMailboxFile(result.RequestPath, false); err != nil {
 		result.Reason = err.Error()
-		return result
+		return result, nil
 	}
 	markerInfo, err := os.Stat(result.MarkerPath)
 	if err != nil {
 		result.Reason = "marker disappeared before import"
-		return result
+		return result, nil
 	}
 	if markerInfo.Size() != 0 {
 		result.Reason = "ready marker must be empty"
-		return result
+		return result, nil
 	}
 	requestInfo, err := os.Stat(result.RequestPath)
 	if err != nil {
 		result.Reason = "request disappeared before import"
-		return result
+		return result, nil
 	}
 	if requestInfo.Size() > int64(domain.MaxSerializedRequestBytes) {
 		result.Reason = ErrMailboxRequestTooLarge.Error()
-		return result
+		return result, nil
 	}
 	requestBytes, err := readBounded(result.RequestPath, domain.MaxSerializedRequestBytes)
 	if err != nil {
 		result.Reason = err.Error()
-		return result
+		return result, nil
 	}
 	request, err := i.validateRequest(requestID, requestBytes)
 	if err != nil {
 		result.Reason = err.Error()
-		return result
+		return result, nil
 	}
 	if err := ctx.Err(); err != nil {
 		result.Reason = err.Error()
-		return result
+		return result, nil
 	}
 	result.Status = ResultAccepted
 	result.Request = &request
 	if handler != nil {
-		if err := handler(ctx, request); err != nil {
+		durable, err := handler(ctx, request)
+		result.Durable = durable
+		if err != nil {
 			result.Status = ResultRejected
 			result.Reason = err.Error()
 			result.Request = nil
 		}
+		if durable {
+			if err := removeMailboxPair(i.inbox, requestID); err != nil {
+				return result, err
+			}
+			result.PairRemoved = true
+		}
 	}
-	return result
+	return result, nil
 }
 
 func (i *Importer) validateRequest(filenameID string, raw []byte) (Request, error) {
