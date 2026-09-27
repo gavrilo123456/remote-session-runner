@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -13,7 +15,9 @@ func TestP104OutputCallbackRunsBeforeCommandCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	releasePath := filepath.Join(t.TempDir(), "release-tail")
 	defer func() {
+		_ = os.WriteFile(releasePath, []byte("release"), 0o600)
 		if err := shell.Close(); err != nil {
 			t.Errorf("close shell: %v", err)
 		}
@@ -26,7 +30,8 @@ func TestP104OutputCallbackRunsBeforeCommandCompletes(t *testing.T) {
 	completed := make(chan runResult, 1)
 	output := make(chan OutputChunk, 4)
 	go func() {
-		result, err := shell.RunScriptWithOutput(context.Background(), "command-p104-stream", []byte("printf 'prefix\\n'\nsleep 4\nprintf 'tail\\n'\n"), func(chunk OutputChunk) error {
+		script := []byte("printf 'prefix\\n'\nwhile [ ! -e " + shellQuote(releasePath) + " ]; do sleep 0.01; done\nprintf 'tail\\n'\n")
+		result, err := shell.RunScriptWithOutput(context.Background(), "command-p104-stream", script, func(chunk OutputChunk) error {
 			output <- chunk
 			return nil
 		})
@@ -38,13 +43,16 @@ func TestP104OutputCallbackRunsBeforeCommandCompletes(t *testing.T) {
 		if chunk.Stream != OutputStreamStdout || string(chunk.Data) != "prefix\n" {
 			t.Fatalf("early output chunk = %+v, want stdout prefix", chunk)
 		}
-	case <-time.After(3500 * time.Millisecond):
+	case <-time.After(10 * time.Second):
 		t.Fatal("first output callback did not run while command was active")
 	}
 	select {
 	case result := <-completed:
 		t.Fatalf("command completed before its delayed tail: err=%v result=%+v", result.err, result.result)
 	default:
+	}
+	if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	select {
@@ -58,7 +66,7 @@ func TestP104OutputCallbackRunsBeforeCommandCompletes(t *testing.T) {
 		if got := string(result.result.Stdout); got != "prefix\ntail\n" {
 			t.Fatalf("captured stdout = %q", got)
 		}
-	case <-time.After(6 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("command did not reach completion")
 	}
 }
