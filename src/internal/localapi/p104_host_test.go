@@ -205,7 +205,7 @@ func p104RunHostMailboxTarget(t *testing.T, h *p095Harness, client *mailboxclien
 	if first.SessionID != create.SessionID || first.CommandID == "" || first.RequestID != firstRequestID {
 		t.Fatalf("first submit did not correlate IDs: %+v", first)
 	}
-	if err := p104WaitCommand(ctx, h, remote, queuedController, first.CommandID, isRemote, true); err != nil {
+	if err := p104WaitCommand(ctx, h, remote, queuedController, p063Owner(t), first.CommandID, isRemote, true); err != nil {
 		t.Fatalf("wait first command: %v", err)
 	}
 	retryID := "req-p104-" + targetName + "-same-key-retry"
@@ -216,12 +216,12 @@ func p104RunHostMailboxTarget(t *testing.T, h *p095Harness, client *mailboxclien
 	if retry.RequestID != retryID || retry.CommandID != first.CommandID || retry.SessionID != create.SessionID || (retry.RequestState != "accepted" && retry.RequestState != "complete") {
 		t.Fatalf("same-key retry response=%+v; original=%+v", retry, first)
 	}
-	if err := p104WaitCommand(ctx, h, remote, queuedController, first.CommandID, isRemote, true); err != nil {
+	if err := p104WaitCommand(ctx, h, remote, queuedController, p063Owner(t), first.CommandID, isRemote, true); err != nil {
 		t.Fatalf("wait retried command: %v", err)
 	}
 	countReadID := "req-p104-" + targetName + "-count-read"
 	countRead := p104SubmitAndDispatch(t, ctx, h, client, local, remote, countReadID, "key-p104-"+targetName+"-count-read", create.SessionID, "cat .p104-run-count", isRemote)
-	if err := p104WaitCommand(ctx, h, remote, queuedController, countRead.CommandID, isRemote, true); err != nil {
+	if err := p104WaitCommand(ctx, h, remote, queuedController, p063Owner(t), countRead.CommandID, isRemote, true); err != nil {
 		t.Fatalf("wait side-effect check: %v", err)
 	}
 	countResponse := p104GetCommand(t, ctx, h, client, countRead.CommandID, "req-p104-"+targetName+"-count-result")
@@ -246,7 +246,7 @@ func p104RunHostMailboxTarget(t *testing.T, h *p095Harness, client *mailboxclien
 	}
 	p104AcknowledgeExact(t, ctx, h, client, ackImporter, incomplete)
 
-	if err := p104WaitCommand(ctx, h, remote, queuedController, partial.CommandID, isRemote, true); err != nil {
+	if err := p104WaitCommand(ctx, h, remote, queuedController, p063Owner(t), partial.CommandID, isRemote, true); err != nil {
 		t.Fatalf("wait partial command terminal: %v", err)
 	}
 	completeID := "req-p104-" + targetName + "-complete-read"
@@ -545,7 +545,7 @@ func p104WaitForOutputPrefix(ctx context.Context, h *p095Harness, remote *dispat
 	}
 }
 
-func p104WaitCommand(ctx context.Context, h *p095Harness, remote *dispatcher.RemoteDriver, controller domain.ControllerIdentity, commandID string, isRemote, terminal bool) error {
+func p104WaitCommand(ctx context.Context, h *p095Harness, remote *dispatcher.RemoteDriver, controller, mailboxOwner domain.ControllerIdentity, commandID string, isRemote, terminal bool) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	var lastErr error
@@ -553,6 +553,9 @@ func p104WaitCommand(ctx context.Context, h *p095Harness, remote *dispatcher.Rem
 		var operationErr error
 		if isRemote {
 			if _, err := remote.MirrorCommandEvents(ctx, domain.CommandID(commandID), controller); err != nil {
+				operationErr = err
+			}
+			if _, err := remote.RefreshCommandProjection(ctx, domain.CommandID(commandID), mailboxOwner); err != nil {
 				operationErr = err
 			}
 		}

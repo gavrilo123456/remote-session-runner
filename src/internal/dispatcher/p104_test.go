@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -80,4 +81,75 @@ func TestP104RemoteProjectionValidatesQueuedPrincipalAndRetainsMailboxOwner(t *t
 	if _, _, err := remoteSessionProjectionFromReply(intent, object, time.Now()); !errors.Is(err, ErrRemoteResponse) {
 		t.Fatalf("projection with a different authenticated controller err=%v, want ErrRemoteResponse", err)
 	}
+}
+
+func TestP104RefreshCommandProjectionReadsAuthoritativeTerminalState(t *testing.T) {
+	ctx := context.Background()
+	authority := p068Authority(t)
+	intent := p068SubmitIntent(t, "intent-p104-refresh", "session-p104-refresh", "command-p104-refresh", domain.TargetKindRemote, "printf done")
+	localOwner, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, "tomasz.walczuk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.Controller = localOwner
+	if _, err := authority.CreateLocalIntent(ctx, intent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentDispatching, "p104-test-dispatch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentAccepted, "p104-test-accepted"); err != nil {
+		t.Fatal(err)
+	}
+	caller := &p104RefreshCommandCaller{intent: intent}
+	driver, err := NewRemoteDriver(authority, caller, "router-p104-refresh", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := driver.RefreshCommandProjection(ctx, intent.CommandID, localOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.CommandID != intent.CommandID || projection.SessionID != intent.SessionID || projection.State != domain.CommandStateSucceeded || projection.FinalEventSequence == nil || *projection.FinalEventSequence != 4 || !projection.OutputComplete || projection.IsStale {
+		t.Fatalf("refreshed command projection=%+v", projection)
+	}
+	if len(caller.frames) != 1 || caller.frames[0].Operation != sshbridge.OperationGetCommand || caller.frames[0].ResourceID != "" || caller.frames[0].IdempotencyKey != "" {
+		t.Fatalf("command state read frame=%+v, want frozen read fields only", caller.frames)
+	}
+	raw, err := json.Marshal(caller.frames[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sshbridge.DecodeRequest(raw); err != nil {
+		t.Fatalf("command state read frame violates bridge protocol: %v", err)
+	}
+}
+
+type p104RefreshCommandCaller struct {
+	intent store.LocalIntentCreate
+	frames []sshbridge.RequestFrame
+}
+
+func (c *p104RefreshCommandCaller) Call(_ context.Context, frame sshbridge.RequestFrame) (sshbridge.ReplyFrame, error) {
+	c.frames = append(c.frames, frame)
+	if frame.Operation != sshbridge.OperationGetCommand {
+		return sshbridge.ReplyFrame{}, fmt.Errorf("unexpected operation %s", frame.Operation)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"command_id": string(c.intent.CommandID), "session_id": string(c.intent.SessionID), "ordinal": 1,
+		"command_state": "succeeded", "exit_code": 0, "final_event_sequence": 4,
+		"output_complete": true, "output_truncated": false,
+		"execution_target": map[string]string{"kind": "remote", "profile": "linux-host"},
+		"controller":       map[string]string{"controller_type": "queued_mac", "controller_id": "tomasz.walczuk"},
+		"environment":      "dev", "source": map[string]string{"mode": "empty"},
+		"capabilities": map[string]any{
+			"host_class": "linux-host", "isolation": "os-user", "effective_account": "ubuntu",
+			"service_limits": map[string]any{"running_commands_per_host": 4},
+		},
+		"observed_at": time.Now().UTC(),
+	})
+	if err != nil {
+		return sshbridge.ReplyFrame{}, err
+	}
+	return sshbridge.ReplyFrame{ProtocolVersion: sshbridge.ProtocolVersion, RequestID: frame.RequestID, ResponseType: "result", Payload: payload}, nil
 }

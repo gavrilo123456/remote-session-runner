@@ -144,6 +144,61 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 	return result, nil
 }
 
+// RefreshCommandProjection reads the target authority and persists its current
+// command state for mailbox/API readers. Event mirroring alone advances output
+// cursors but does not infer a terminal command state from event names.
+func (d *RemoteDriver) RefreshCommandProjection(ctx context.Context, commandID domain.CommandID, controller domain.ControllerIdentity) (store.RemoteCommandProjection, error) {
+	if d == nil || d.authority == nil || d.caller == nil {
+		return store.RemoteCommandProjection{}, ErrRemoteDriverConfiguration
+	}
+	validatedCommand, err := domain.NewCommandID(string(commandID))
+	if err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	intent, err := d.authority.GetLocalIntentByResource(ctx, operationSubmitCommand, string(validatedCommand), controller)
+	if err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	if intent.Target.Kind() != domain.TargetKindRemote || (intent.DeliveryState != store.LocalIntentAccepted && intent.DeliveryState != store.LocalIntentReconciled) {
+		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command is not an accepted remote intent", ErrRemoteResponse)
+	}
+	payload, err := json.Marshal(map[string]string{"command_id": string(validatedCommand)})
+	if err != nil {
+		return store.RemoteCommandProjection{}, fmt.Errorf("%w: build command read payload", ErrRemotePayload)
+	}
+	request := sshbridge.RequestFrame{
+		ProtocolVersion: sshbridge.ProtocolVersion,
+		RequestID:       fmt.Sprintf("command-state/%s/%d", validatedCommand, d.now().UTC().UnixNano()),
+		Operation:       sshbridge.OperationGetCommand,
+		Payload:         payload,
+	}
+	reply, err := d.caller.Call(ctx, request)
+	if err != nil {
+		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state read: %v", ErrRemoteResponse, err)
+	}
+	if reply.ProtocolVersion != sshbridge.ProtocolVersion || reply.RequestID != request.RequestID {
+		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state read identity mismatch", ErrRemoteResponse)
+	}
+	if reply.ResponseType != "result" {
+		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state response type %q", ErrRemoteResponse, reply.ResponseType)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(reply.Payload, &object); err != nil || object == nil {
+		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state result object", ErrRemoteResponse)
+	}
+	projection, present, err := remoteCommandProjectionFromReply(intent, object, d.now())
+	if err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	if !present {
+		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state result is incomplete", ErrRemoteResponse)
+	}
+	if _, err := d.authority.UpsertRemoteCommandProjection(ctx, projection); err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	return d.authority.GetRemoteCommandProjection(ctx, validatedCommand)
+}
+
 func remoteGapAvailableSequence(details map[string]any) (int64, bool) {
 	value, ok := details["last_sequence"]
 	if !ok {
