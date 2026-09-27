@@ -264,7 +264,16 @@ func (c *p103RemoteTransport) Call(_ context.Context, frame sshbridge.RequestFra
 func (c *p103RemoteTransport) Stream(_ context.Context, request sshbridge.RequestFrame, receive func(sshbridge.ReplyFrame) error) error {
 	c.streamRequests = append(c.streamRequests, request)
 	c.streamCalls++
-	commandID := request.ResourceID
+	if request.ResourceID != "" || request.IdempotencyKey != "" {
+		return errors.New("read-only event stream carried mutation identity fields")
+	}
+	var payload struct {
+		CommandID string `json:"command_id"`
+	}
+	if err := json.Unmarshal(request.Payload, &payload); err != nil || payload.CommandID == "" {
+		return errors.New("read-only event stream omitted command ID from payload")
+	}
+	commandID := payload.CommandID
 	when := time.Date(2026, 9, 27, 12, 3, 0, 0, time.UTC)
 	if c.streamCalls == 1 {
 		for _, reply := range []sshbridge.ReplyFrame{

@@ -65,7 +65,6 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 		ProtocolVersion: sshbridge.ProtocolVersion,
 		RequestID:       fmt.Sprintf("events/%s/%d", validatedCommand, after),
 		Operation:       sshbridge.OperationStreamCommandEvents,
-		ResourceID:      string(validatedCommand),
 		Payload:         payload,
 	}
 	result := store.RemoteEventMirrorResult{CommandID: validatedCommand, LastSequence: after}

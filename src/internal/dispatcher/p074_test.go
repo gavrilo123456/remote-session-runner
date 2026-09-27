@@ -43,8 +43,15 @@ func TestP074RemoteEventMirrorStreamsDeduplicatesAndAdvancesCursor(t *testing.T)
 	if err != nil || len(events) != 2 || events[0].Sequence != 1 || events[1].Sequence != 2 {
 		t.Fatalf("stream events = %+v, %v", events, err)
 	}
-	if len(caller.requests) != 1 || caller.requests[0].Operation != sshbridge.OperationStreamCommandEvents {
+	if len(caller.requests) != 1 || caller.requests[0].Operation != sshbridge.OperationStreamCommandEvents || caller.requests[0].ResourceID != "" || caller.requests[0].IdempotencyKey != "" {
 		t.Fatalf("stream request = %+v", caller.requests)
+	}
+	requestData, err := json.Marshal(caller.requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sshbridge.DecodeRequest(requestData); err != nil {
+		t.Fatalf("stream request violates frozen bridge protocol: %v", err)
 	}
 }
 
