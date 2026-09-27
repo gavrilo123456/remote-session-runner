@@ -26,8 +26,12 @@ func TestP035R03InterruptWithoutProvenBoundaryReturnsLost(t *testing.T) {
 	}()
 	time.Sleep(20 * time.Millisecond)
 	stop, err := shell.CancelCurrentCommand(context.Background(), 750*time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
+	if stop.Confirmed {
+		if err != nil {
+			t.Fatalf("confirmed stop error = %v", err)
+		}
+	} else if !errors.Is(err, ErrPersistentShellLost) {
+		t.Fatalf("unconfirmed stop = %+v err=%v, want lost/unconfirmed", stop, err)
 	}
 	if stop.CommandID != "command-p035-stop" {
 		t.Fatalf("stop result = %+v err=%v, want the active command ID", stop, err)

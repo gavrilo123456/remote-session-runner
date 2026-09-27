@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -71,25 +72,40 @@ func TestP070ReconcileAcceptedResourceWithoutResubmitting(t *testing.T) {
 	}
 }
 
-func TestP070ReconcileNotFoundProvesNoTargetDelivery(t *testing.T) {
+func TestP070ReconcileNotFoundRetriesSameMutationWithinKeyWindow(t *testing.T) {
 	authority := p068Authority(t)
 	intent := p068SubmitIntent(t, "intent-p070-missing", "session-p070-missing", "command-p070-missing", domain.TargetKindRemote, "echo missing")
 	if _, err := authority.CreateLocalIntent(context.Background(), intent); err != nil {
 		t.Fatal(err)
 	}
+	persisted, err := authority.GetLocalIntent(context.Background(), intent.IntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutationFrame, err := frameForRemoteIntent(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
 	errorPayload, _ := json.Marshal(sshbridge.ErrorPayload{Code: "resource_not_found", Message: "unknown command"})
 	caller := &p070Caller{
-		errors:    []error{&sshclient.TransportError{Phase: sshclient.PhaseAfterSend, Err: errors.New("response lost")}},
-		responses: []sshbridge.ReplyFrame{{}, {ProtocolVersion: sshbridge.ProtocolVersion, RequestID: string(intent.IntentID) + "/reconcile", ResponseType: "error", Payload: errorPayload}},
+		errors: []error{&sshclient.TransportError{Phase: sshclient.PhaseAfterSend, Err: errors.New("response lost")}},
+		responses: []sshbridge.ReplyFrame{
+			{},
+			{ProtocolVersion: sshbridge.ProtocolVersion, RequestID: string(intent.IntentID) + "/reconcile", ResponseType: "error", Payload: errorPayload},
+			p069AcceptedReply(mutationFrame),
+		},
 	}
 	driver, err := NewRemoteDriver(authority, caller, "router-p070", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, _, _ = driver.DispatchIntent(context.Background(), intent.IntentID)
-	notDelivered, _, err := driver.ReconcileIntent(context.Background(), intent.IntentID)
-	if err != nil || notDelivered.DeliveryState != store.LocalIntentNotDelivered {
-		t.Fatalf("not-found reconciliation = %+v, %v", notDelivered, err)
+	accepted, _, err := driver.ReconcileIntent(context.Background(), intent.IntentID)
+	if err != nil || accepted.DeliveryState != store.LocalIntentAccepted {
+		t.Fatalf("same-key retry after not-found = %+v, %v", accepted, err)
+	}
+	if len(caller.frames) != 3 || caller.frames[1].Operation != sshbridge.OperationGetCommand || !reflect.DeepEqual(caller.frames[0], caller.frames[2]) {
+		t.Fatalf("not-found retry changed the stable mutation frame: %+v", caller.frames)
 	}
 }
 

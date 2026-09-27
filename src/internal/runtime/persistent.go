@@ -452,12 +452,14 @@ func (s *PersistentShell) CancelCurrentCommand(ctx context.Context, grace time.D
 		confirmed := s.stopConfirmed
 		s.stateMu.Unlock()
 		if confirmed && !s.processAlive() {
-			s.mu.Lock()
-			s.lost = true
-			s.mu.Unlock()
+			s.markLost()
 			return PersistentShellStopResult{CommandID: commandID}, ErrPersistentShellLost
 		}
-		return PersistentShellStopResult{CommandID: commandID, Confirmed: confirmed}, nil
+		if !confirmed {
+			s.markLost()
+			return PersistentShellStopResult{CommandID: commandID}, ErrPersistentShellLost
+		}
+		return PersistentShellStopResult{CommandID: commandID, Confirmed: true}, nil
 	case <-ctx.Done():
 		return PersistentShellStopResult{CommandID: commandID}, ctx.Err()
 	case <-timer.C:
@@ -472,11 +474,19 @@ func (s *PersistentShell) CancelCurrentCommand(ctx context.Context, grace time.D
 			if confirmed && s.processAlive() {
 				return PersistentShellStopResult{CommandID: commandID, Confirmed: true}, nil
 			}
+			s.markLost()
 			return PersistentShellStopResult{CommandID: commandID, Confirmed: false}, ErrPersistentShellLost
 		case <-settle.C:
+			s.markLost()
 			return PersistentShellStopResult{CommandID: commandID, Confirmed: false}, ErrPersistentShellLost
 		}
 	}
+}
+
+func (s *PersistentShell) markLost() {
+	s.mu.Lock()
+	s.lost = true
+	s.mu.Unlock()
 }
 
 func (s *PersistentShell) processAlive() bool {

@@ -173,6 +173,56 @@ func (s *AuthorityStore) GetLocalIntent(ctx context.Context, id domain.IntentID)
 	})
 }
 
+// LocalIntentIdempotencyExpiry returns the persisted retry-safety deadline for
+// one immutable intent. It deliberately returns expired rows instead of
+// deleting them: the Router must distinguish an expired guarantee from a
+// missing or corrupt binding before deciding whether an uncertain mutation
+// can be retried.
+func (s *AuthorityStore) LocalIntentIdempotencyExpiry(ctx context.Context, id domain.IntentID) (time.Time, bool, error) {
+	if s == nil || s.db == nil {
+		return time.Time{}, false, ErrNilDatabase
+	}
+	validatedID, err := domain.NewIntentID(string(id))
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("%w: intent ID: %v", ErrInvalidLocalIntent, err)
+	}
+	type expiryResult struct {
+		deadline time.Time
+		found    bool
+	}
+	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (expiryResult, error) {
+		var operation, resourceID, expiresAt string
+		var controllerType, controllerID, idempotencyKey string
+		err := connection.QueryRowContext(ctx, `
+SELECT controller_type, controller_id, operation, idempotency_key, resource_id, expires_at
+FROM local_idempotency WHERE intent_id = ?
+`, string(validatedID)).Scan(&controllerType, &controllerID, &operation, &idempotencyKey, &resourceID, &expiresAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return expiryResult{}, nil
+		}
+		if err != nil {
+			return expiryResult{}, fmt.Errorf("read local intent idempotency expiry: %w", err)
+		}
+		intent, err := readLocalIntentOnConnection(ctx, connection, validatedID)
+		if err != nil {
+			return expiryResult{}, err
+		}
+		if controllerType != string(intent.Controller.Type()) || controllerID != string(intent.Controller.ID()) ||
+			operation != intent.Operation || idempotencyKey != intent.IdempotencyKey || resourceID != intent.ResourceID {
+			return expiryResult{}, fmt.Errorf("%w: intent binding identity", ErrLocalIdempotencyCorrupt)
+		}
+		deadline, err := parseStoredTime(expiresAt)
+		if err != nil {
+			return expiryResult{}, fmt.Errorf("%w: expires_at: %v", ErrLocalIdempotencyCorrupt, err)
+		}
+		return expiryResult{deadline: deadline, found: true}, nil
+	})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return result.deadline, result.found, nil
+}
+
 // GetLocalIntentByResource returns the immutable intent for one controller's
 // resource and operation. Resource IDs are stable API identifiers; callers do
 // not need to expose the internal intent ID to read a local projection.

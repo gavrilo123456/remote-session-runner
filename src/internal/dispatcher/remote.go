@@ -28,6 +28,7 @@ var (
 	ErrRemotePayload                 = errors.New("remote bridge payload cannot be built")
 	ErrRemoteNotReconciled           = errors.New("remote intent remains uncertain after reconciliation")
 	ErrRemoteUncertaintyDeadline     = errors.New("remote uncertainty deadline expired")
+	ErrRemoteIdempotencyDeadline     = errors.New("remote idempotency retry deadline expired")
 	ErrRemoteSessionNotReady         = errors.New("remote session is not ready for command dispatch")
 	ErrRemoteSessionCreateFailed     = errors.New("remote session creation failed")
 	ErrRemoteCancelledBeforeDelivery = errors.New("remote intent was superseded before target delivery")
@@ -95,6 +96,9 @@ func (d *RemoteDriver) DispatchNext(ctx context.Context) (store.LocalIntentRecor
 		if errors.Is(dispatchErr, ErrRemoteCancelledBeforeDelivery) {
 			continue
 		}
+		if errors.Is(dispatchErr, ErrRemoteIdempotencyDeadline) {
+			continue
+		}
 		return record, reply, dispatchErr
 	}
 	return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, ErrNoRemoteDispatchWork
@@ -119,10 +123,11 @@ func (d *RemoteDriver) DispatchIntent(ctx context.Context, id domain.IntentID) (
 }
 
 // ReconcileIntent queries the target authority for an intent that may have
-// crossed the bridge before the response was lost. It never resubmits the
-// mutation. A matching target resource becomes accepted; an explicit
-// resource_not_found result becomes proven not_delivered; every other outcome
-// remains uncertain for a later retry or deadline decision.
+// crossed the bridge before the response was lost. A matching target resource
+// becomes accepted. If the resource is absent, the same immutable mutation is
+// retried only while its persisted idempotency guarantee remains open; after
+// expiry the intent remains uncertain because target metadata may have been
+// collected.
 func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
 	if d == nil || d.authority == nil || d.caller == nil {
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, ErrRemoteDriverConfiguration
@@ -169,14 +174,61 @@ func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) 
 		}
 		return accepted, reply, nil
 	case reconcileNotDelivered:
-		notDelivered, transitionErr := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentNotDelivered, "remote_reconciled_not_found")
-		if transitionErr != nil {
-			return intent, reply, transitionErr
+		if _, deadlineErr := d.ensureRemoteRetryWindow(ctx, intent); deadlineErr != nil {
+			return intent, reply, deadlineErr
 		}
-		return notDelivered, reply, nil
+		return d.retryRemoteIntent(ctx, intent)
 	default:
 		return intent, reply, ErrRemoteNotReconciled
 	}
+}
+
+func (d *RemoteDriver) ensureRemoteRetryWindow(ctx context.Context, intent store.LocalIntentRecord) (time.Time, error) {
+	deadline, found, err := d.authority.LocalIntentIdempotencyExpiry(ctx, intent.IntentID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !found {
+		return time.Time{}, fmt.Errorf("%w: local idempotency expiry is unavailable", ErrRemoteIdempotencyDeadline)
+	}
+	if !d.now().UTC().Before(deadline) {
+		return deadline, fmt.Errorf("%w: key guarantee expired at %s", ErrRemoteIdempotencyDeadline, deadline.UTC().Format(time.RFC3339Nano))
+	}
+	return deadline, nil
+}
+
+func (d *RemoteDriver) retryRemoteIntent(ctx context.Context, intent store.LocalIntentRecord) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
+	frame, err := frameForRemoteIntent(intent)
+	if err != nil {
+		return intent, sshbridge.ReplyFrame{}, err
+	}
+	reply, callErr := d.caller.Call(ctx, frame)
+	if callErr != nil {
+		return intent, sshbridge.ReplyFrame{}, fmt.Errorf("%w: same-key retry transport: %v", ErrRemoteNotReconciled, callErr)
+	}
+	if err := validateRemoteReply(intent, frame, reply); err != nil {
+		if errors.Is(err, ErrRemoteRejected) {
+			notDelivered, transitionErr := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentNotDelivered, "remote_retry_rejected")
+			if transitionErr != nil {
+				return intent, reply, transitionErr
+			}
+			return notDelivered, reply, err
+		}
+		return intent, reply, err
+	}
+	if intent.Operation == operationCreateSession {
+		if err := d.observeRemoteSessionState(intent, reply); err != nil {
+			return intent, reply, err
+		}
+	}
+	if err := d.upsertRemoteProjectionFromReply(ctx, intent, reply); err != nil {
+		return intent, reply, err
+	}
+	accepted, err := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentAccepted, "remote_target_accepted_after_retry")
+	if err != nil {
+		return intent, reply, err
+	}
+	return accepted, reply, nil
 }
 
 func (d *RemoteDriver) uncertaintyDeadline(ctx context.Context, intent store.LocalIntentRecord) (time.Time, error) {
@@ -308,6 +360,18 @@ func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (
 	guarded, guardErr := d.guardRemoteIntentBeforeDelivery(ctx, intent)
 	if guardErr != nil {
 		return guarded, sshbridge.ReplyFrame{}, guardErr
+	}
+	if intent.DeliveryState == store.LocalIntentRecorded {
+		if _, deadlineErr := d.ensureRemoteRetryWindow(ctx, intent); deadlineErr != nil {
+			if !errors.Is(deadlineErr, ErrRemoteIdempotencyDeadline) {
+				return intent, sshbridge.ReplyFrame{}, deadlineErr
+			}
+			updated, transitionErr := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentNotDelivered, "remote_idempotency_expired_before_dispatch")
+			if transitionErr != nil {
+				return intent, sshbridge.ReplyFrame{}, transitionErr
+			}
+			return updated, sshbridge.ReplyFrame{}, deadlineErr
+		}
 	}
 	if intent.Operation == operationSubmitCommand {
 		ready, readinessErr := d.ensureRemoteSubmitReady(ctx, intent)
