@@ -17,6 +17,8 @@ type CommandSnapshot struct {
 	State                   domain.CommandState
 	Ordinal                 int64
 	ObservedAt              time.Time
+	StdoutPreview           string
+	StderrPreview           string
 	ExitCode                *int
 	FinalEventSequence      *int64
 	AvailableEventSequence  int64
@@ -68,6 +70,7 @@ func commandSnapshotFromActive(snapshot ActiveCommandSnapshot) CommandSnapshot {
 	return CommandSnapshot{
 		CommandID: snapshot.CommandID, SessionID: snapshot.SessionID, State: snapshot.State,
 		Ordinal: snapshot.Ordinal, ObservedAt: snapshot.ObservedAt,
+		StdoutPreview: snapshot.StdoutPreview, StderrPreview: snapshot.StderrPreview,
 		AvailableEventSequence: snapshot.AvailableEventSequence, OutputComplete: false,
 		OutputTruncated: snapshot.OutputTruncated, EventsFile: snapshot.EventsFile,
 		EventBytes: append([]byte(nil), snapshot.EventBytes...),
@@ -79,6 +82,7 @@ func commandSnapshotFromTerminal(snapshot TerminalCommandSnapshot, observedAt ti
 	return CommandSnapshot{
 		CommandID: snapshot.CommandID, SessionID: snapshot.SessionID, State: snapshot.State,
 		Ordinal: snapshot.Ordinal, ObservedAt: observedAt.UTC(), ExitCode: snapshot.ExitCode,
+		StdoutPreview: snapshot.StdoutPreview, StderrPreview: snapshot.StderrPreview,
 		FinalEventSequence: &finalSequence, AvailableEventSequence: snapshot.AvailableEventSequence,
 		OutputComplete: snapshot.OutputComplete, OutputTruncated: snapshot.OutputTruncated,
 		OutputUnavailableReason: snapshot.OutputUnavailableReason, EventsFile: snapshot.EventsFile,

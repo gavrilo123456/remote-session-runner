@@ -21,6 +21,10 @@ func TestP095CommandResponseShapesMatchV1Schema(t *testing.T) {
 			raw:  `{"request_id":"req-p095-failed","operation":"submit_command","request_state":"complete","response_revision":2,"command_id":"command-p095","session_id":"sess-p095","delivery_state":"accepted","command_state":"failed","observed_at":"2026-09-27T12:00:00Z","exit_code":7,"final_event_sequence":4,"available_event_sequence":4,"output_complete":true,"output_truncated":false,"events_file":"events/command-p095.ndjson"}`,
 		},
 		{
+			name: "tiny inline preview still advertises ordered event file",
+			raw:  `{"request_id":"req-p095-inline","operation":"get_command","request_state":"complete","response_revision":1,"command_id":"command-p095","session_id":"sess-p095","command_state":"succeeded","observed_at":"2026-09-27T12:00:00Z","exit_code":0,"stdout":"tiny output\n","final_event_sequence":3,"available_event_sequence":3,"output_complete":true,"output_truncated":false,"events_file":"events/command-p095.ndjson"}`,
+		},
+		{
 			name: "active get is a frozen incomplete snapshot",
 			raw:  `{"request_id":"req-p095-active","operation":"get_command","request_state":"complete","response_revision":1,"command_id":"command-p095","session_id":"sess-p095","command_state":"queued","observed_at":"2026-09-27T12:00:00Z","available_event_sequence":1,"output_complete":false,"output_truncated":false,"events_file":"events/command-p095.ndjson"}`,
 		},

@@ -522,6 +522,8 @@ type commandMailboxResponse struct {
 	CommandState            string                     `json:"command_state,omitempty"`
 	ObservedAt              *time.Time                 `json:"observed_at,omitempty"`
 	ExitCode                *int                       `json:"exit_code,omitempty"`
+	Stdout                  string                     `json:"stdout,omitempty"`
+	Stderr                  string                     `json:"stderr,omitempty"`
 	FinalEventSequence      *int64                     `json:"final_event_sequence,omitempty"`
 	AvailableEventSequence  *int64                     `json:"available_event_sequence,omitempty"`
 	OutputComplete          *bool                      `json:"output_complete,omitempty"`
@@ -544,6 +546,8 @@ func commandResponseFromSnapshot(requestID, operation string, snapshot CommandSn
 	complete, truncated := snapshot.OutputComplete, snapshot.OutputTruncated
 	response.CommandState = state
 	response.ExitCode = snapshot.ExitCode
+	response.Stdout = snapshot.StdoutPreview
+	response.Stderr = snapshot.StderrPreview
 	response.FinalEventSequence = snapshot.FinalEventSequence
 	response.AvailableEventSequence = int64PointerMailbox(snapshot.AvailableEventSequence)
 	response.OutputComplete = &complete

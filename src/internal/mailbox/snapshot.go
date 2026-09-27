@@ -21,6 +21,8 @@ type ActiveCommandSnapshot struct {
 	Ordinal                int64
 	State                  domain.CommandState
 	ObservedAt             time.Time
+	StdoutPreview          string
+	StderrPreview          string
 	AvailableEventSequence int64
 	EventsFile             string
 	OutputComplete         bool
@@ -75,9 +77,11 @@ func RenderActiveCommandSnapshot(command store.CommandRecord, events []store.Com
 			return ActiveCommandSnapshot{}, err
 		}
 	}
+	stdoutPreview, stderrPreview := inlineOutputPreviews(events)
 	return ActiveCommandSnapshot{
 		CommandID: command.CommandID, SessionID: command.SessionID, Ordinal: command.Ordinal,
-		State: command.State, ObservedAt: observedAt.UTC(), AvailableEventSequence: available,
+		State: command.State, ObservedAt: observedAt.UTC(), StdoutPreview: stdoutPreview,
+		StderrPreview: stderrPreview, AvailableEventSequence: available,
 		EventsFile: file, OutputComplete: false, OutputTruncated: command.OutputTruncated,
 		EventBytes: append([]byte(nil), data...),
 	}, nil

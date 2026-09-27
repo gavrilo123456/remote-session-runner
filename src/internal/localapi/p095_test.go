@@ -384,10 +384,13 @@ type p095Response struct {
 	IdempotencyWarning      string `json:"idempotency_warning"`
 	CommandID               string `json:"command_id"`
 	SessionID               string `json:"session_id"`
+	SessionState            string `json:"session_state"`
 	DeliveryState           string `json:"delivery_state"`
 	CommandState            string `json:"command_state"`
 	ObservedAt              string `json:"observed_at"`
 	ExitCode                *int   `json:"exit_code"`
+	Stdout                  string `json:"stdout"`
+	Stderr                  string `json:"stderr"`
 	FinalEventSequence      *int64 `json:"final_event_sequence"`
 	AvailableEventSequence  *int64 `json:"available_event_sequence"`
 	OutputComplete          *bool  `json:"output_complete"`

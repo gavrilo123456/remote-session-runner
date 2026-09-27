@@ -23,6 +23,8 @@ type TerminalCommandSnapshot struct {
 	Ordinal                 int64
 	State                   domain.CommandState
 	ExitCode                *int
+	StdoutPreview           string
+	StderrPreview           string
 	FinalEventSequence      int64
 	AvailableEventSequence  int64
 	OutputComplete          bool
@@ -105,6 +107,10 @@ func RenderTerminalCommandSnapshot(command store.CommandRecord, events []store.C
 		data = nil
 		file = ""
 	}
+	stdoutPreview, stderrPreview := inlineOutputPreviews(events)
+	if reason == "retention_expired" {
+		stdoutPreview, stderrPreview = "", ""
+	}
 	var exitCode *int
 	if command.ExitCode != nil {
 		value := *command.ExitCode
@@ -116,6 +122,8 @@ func RenderTerminalCommandSnapshot(command store.CommandRecord, events []store.C
 		Ordinal:                 command.Ordinal,
 		State:                   command.State,
 		ExitCode:                exitCode,
+		StdoutPreview:           stdoutPreview,
+		StderrPreview:           stderrPreview,
 		FinalEventSequence:      finalSequence,
 		AvailableEventSequence:  available,
 		OutputComplete:          command.OutputComplete,

@@ -15,12 +15,60 @@ import (
 )
 
 const mailboxEventChunkBytes = 16 * 1024
+const mailboxInlinePreviewBytes = 4 * 1024
 
 var (
 	ErrEventProjectionConfiguration = errors.New("mailbox event projector configuration is invalid")
 	ErrEventProjection              = errors.New("mailbox event projection failed")
 	ErrEventProjectionChunk         = errors.New("mailbox event chunk exceeds projection limit")
 )
+
+type inlineOutputPreview struct {
+	bytes   []byte
+	invalid bool
+}
+
+func (p *inlineOutputPreview) append(chunk []byte) {
+	if !utf8.Valid(chunk) {
+		p.invalid = true
+		return
+	}
+	remaining := mailboxInlinePreviewBytes - len(p.bytes)
+	if remaining <= 0 {
+		return
+	}
+	length := len(chunk)
+	if length > remaining {
+		length = remaining
+		for length > 0 && !utf8.RuneStart(chunk[length]) {
+			length--
+		}
+	}
+	p.bytes = append(p.bytes, chunk[:length]...)
+}
+
+func (p inlineOutputPreview) string() string {
+	if p.invalid || len(p.bytes) == 0 {
+		return ""
+	}
+	return string(p.bytes)
+}
+
+// inlineOutputPreviews returns bounded UTF-8 previews for the two output
+// streams. If a stream contains binary data, its preview is omitted; the
+// ordered event projection remains the lossless source in every case.
+func inlineOutputPreviews(events []store.CommandEventRecord) (stdout, stderr string) {
+	var out, errOut inlineOutputPreview
+	for _, event := range events {
+		switch event.Type {
+		case "stdout":
+			out.append(event.Payload)
+		case "stderr":
+			errOut.append(event.Payload)
+		}
+	}
+	return out.string(), errOut.string()
+}
 
 // EventProjector renders the durable command event stream in the mailbox's
 // lossless NDJSON representation. It does not publish or sync a file; those
