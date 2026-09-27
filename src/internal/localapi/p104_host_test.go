@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -606,6 +607,11 @@ func p104AcknowledgeExact(t *testing.T, ctx context.Context, h *p095Harness, cli
 	if err != nil || record.AcknowledgedAt == nil || record.ResponseRevision != response.ResponseRevision || !p104SameCursor(record.AvailableEventSequence, response.AvailableEventSequence) {
 		t.Fatalf("durable ACK receipt=%+v err=%v", record, err)
 	}
+	cursor := "nil"
+	if response.AvailableEventSequence != nil {
+		cursor = strconv.FormatInt(*response.AvailableEventSequence, 10)
+	}
+	t.Logf("exact ACK request_id=%s response_revision=%d available_event_sequence=%s", response.RequestID, response.ResponseRevision, cursor)
 }
 
 func p104EventOutput(events []mailboxclient.Event, eventType string) string {
