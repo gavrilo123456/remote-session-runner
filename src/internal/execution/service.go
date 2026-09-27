@@ -1222,6 +1222,16 @@ func (s *Service) GetSession(ctx context.Context, id domain.SessionID, controlle
 	return record, nil
 }
 
+// ResolveEnvironment returns the immutable policy snapshot used by the service
+// for one configured environment. Read adapters use it to report the actual
+// account boundary and Runner-enforced ceilings alongside target state.
+func (s *Service) ResolveEnvironment(ctx context.Context, name string) (domain.Environment, error) {
+	if s == nil || s.resolver == nil {
+		return domain.Environment{}, ErrExecutionServiceConfiguration
+	}
+	return s.resolver.ResolveEnvironment(ctx, name)
+}
+
 // GetCommand returns an authoritative command snapshot after checking the
 // immutable controller of its parent session. Command reads therefore use the
 // same ownership rule as session reads and cannot disclose another controller's

@@ -344,6 +344,24 @@ type commandResponse struct {
 	Duplicate               bool   `json:"duplicate,omitempty"`
 }
 
+type commandReadResponse struct {
+	commandResponse
+	ExecutionTarget targetResponse              `json:"execution_target"`
+	Authority       string                      `json:"authority"`
+	Controller      controllerRequest           `json:"controller"`
+	ObservedAt      time.Time                   `json:"observed_at"`
+	Environment     string                      `json:"environment"`
+	Source          sourceResponse              `json:"source"`
+	Capabilities    commandCapabilitiesResponse `json:"capabilities"`
+}
+
+type commandCapabilitiesResponse struct {
+	HostClass        string         `json:"host_class"`
+	Isolation        string         `json:"isolation"`
+	EffectiveAccount string         `json:"effective_account"`
+	ServiceLimits    map[string]any `json:"service_limits"`
+}
+
 type commandEventResponse struct {
 	CommandID  string    `json:"command_id"`
 	Sequence   int64     `json:"sequence"`
@@ -772,7 +790,37 @@ func (s *PrivateServer) handleGetCommand(response http.ResponseWriter, request *
 		writePrivateError(response, privateStatusForError(err), err.Error())
 		return
 	}
-	writeJSON(response, http.StatusOK, commandResponseFromRecord(command, false))
+	result, err := s.commandReadResponse(request.Context(), command, controller)
+	if err != nil {
+		writePrivateError(response, privateStatusForError(err), "command session policy is unavailable")
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (s *PrivateServer) commandReadResponse(ctx context.Context, command store.CommandRecord, controller domain.ControllerIdentity) (commandReadResponse, error) {
+	session, err := s.service.GetSession(ctx, command.SessionID, controller)
+	if err != nil {
+		return commandReadResponse{}, err
+	}
+	environment, err := s.service.ResolveEnvironment(ctx, session.Environment)
+	if err != nil {
+		return commandReadResponse{}, err
+	}
+	authority := "remote"
+	if session.Target.Kind() == domain.TargetKindLocal {
+		authority = "local"
+	}
+	return commandReadResponse{
+		commandResponse: commandResponseFromRecord(command, false),
+		ExecutionTarget: targetResponse{Kind: string(session.Target.Kind()), Profile: session.Target.Profile()},
+		Authority:       authority,
+		Controller:      controllerRequest{Type: string(session.Controller.Type()), ID: string(session.Controller.ID())},
+		ObservedAt:      command.UpdatedAt.UTC(),
+		Environment:     session.Environment,
+		Source:          sourceResponseFromRecord(session),
+		Capabilities:    capabilitiesResponseFromEnvironment(environment),
+	}, nil
 }
 
 func (s *PrivateServer) handleCommandEvents(response http.ResponseWriter, request *http.Request, rawID string) {
@@ -1162,15 +1210,7 @@ func parseIsolation(input *isolationRequest) domain.IsolationRequirements {
 }
 
 func sessionResponseFromRecord(record store.SessionRecord, duplicate bool) sessionResponse {
-	portable := record.Source.Portable()
-	source := sourceResponse{
-		Mode:              string(record.Source.Mode()),
-		RepositoryAlias:   record.Source.RepositoryAlias(),
-		RequestedRevision: record.Source.RequestedRevision(),
-		Path:              record.Source.Path(),
-		Portable:          &portable,
-		ResolvedCommit:    record.ResolvedRevision,
-	}
+	source := sourceResponseFromRecord(record)
 	authority := "remote"
 	if record.Target.Kind() == domain.TargetKindLocal {
 		authority = "local"
@@ -1187,6 +1227,42 @@ func sessionResponseFromRecord(record store.SessionRecord, duplicate bool) sessi
 		RuntimeGeneration: record.RuntimeGeneration,
 		ResolvedRevision:  record.ResolvedRevision,
 		Duplicate:         duplicate,
+	}
+}
+
+func sourceResponseFromRecord(record store.SessionRecord) sourceResponse {
+	portable := record.Source.Portable()
+	return sourceResponse{
+		Mode:              string(record.Source.Mode()),
+		RepositoryAlias:   record.Source.RepositoryAlias(),
+		RequestedRevision: record.Source.RequestedRevision(),
+		Path:              record.Source.Path(),
+		Portable:          &portable,
+		ResolvedCommit:    record.ResolvedRevision,
+	}
+}
+
+func capabilitiesResponseFromEnvironment(environment domain.Environment) commandCapabilitiesResponse {
+	capabilities := environment.Capabilities()
+	limits := capabilities.ServiceLimits()
+	return commandCapabilitiesResponse{
+		HostClass:        capabilities.HostClass(),
+		Isolation:        string(capabilities.Isolation()),
+		EffectiveAccount: capabilities.EffectiveAccount(),
+		ServiceLimits: map[string]any{
+			"active_sessions":              limits.ActiveSessionsPerHost,
+			"running_commands":             limits.RunningCommandsPerHost,
+			"serialized_request_bytes":     limits.SerializedRequestBytes,
+			"script_bytes_per_request":     limits.ScriptBytesPerRequest,
+			"command_timeout_seconds":      int64(limits.CommandTimeout / time.Second),
+			"idle_timeout_seconds":         int64(limits.IdleTimeout / time.Second),
+			"session_max_lifetime_seconds": int64(limits.SessionMaxLifetime / time.Second),
+			"output_bytes_per_command":     limits.OutputBytesPerCommand,
+			"subscriber_buffer_bytes":      limits.SubscriberBufferBytes,
+			"persistence_queue_bytes":      limits.PersistenceQueueBytes,
+			"metadata_retention_seconds":   int64(limits.MetadataRetention / time.Second),
+			"output_retention_seconds":     int64(limits.OutputRetention / time.Second),
+		},
 	}
 }
 

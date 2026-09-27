@@ -232,7 +232,7 @@ func p104RunHostMailboxTarget(t *testing.T, h *p095Harness, client *mailboxclien
 
 	partialID := "req-p104-" + targetName + "-incomplete"
 	partial := p104SubmitAndDispatch(t, ctx, h, client, local, remote, partialID, "key-p104-"+targetName+"-incomplete", create.SessionID, "printf 'prefix\\n'; sleep 4; printf 'tail\\n'", isRemote)
-	if err := p104WaitForOutputPrefix(ctx, h, remote, queuedController, partial.CommandID, isRemote); err != nil {
+	if err := p104WaitForOutputPrefix(ctx, h, remote, queuedController, p063Owner(t), partial.CommandID, isRemote); err != nil {
 		t.Fatalf("wait for active output prefix: %v", err)
 	}
 	incompleteID := "req-p104-" + targetName + "-incomplete-read"
@@ -521,12 +521,15 @@ func p104WaitRemoteSessionReady(ctx context.Context, caller *sshclient.Client, c
 	}
 }
 
-func p104WaitForOutputPrefix(ctx context.Context, h *p095Harness, remote *dispatcher.RemoteDriver, controller domain.ControllerIdentity, commandID string, isRemote bool) error {
+func p104WaitForOutputPrefix(ctx context.Context, h *p095Harness, remote *dispatcher.RemoteDriver, controller, mailboxOwner domain.ControllerIdentity, commandID string, isRemote bool) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		if isRemote {
 			if _, err := remote.MirrorCommandEvents(ctx, domain.CommandID(commandID), controller); err != nil {
+				return err
+			}
+			if _, err := remote.RefreshCommandProjection(ctx, domain.CommandID(commandID), mailboxOwner); err != nil {
 				return err
 			}
 		}
