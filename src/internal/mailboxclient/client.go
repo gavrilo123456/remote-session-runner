@@ -1,0 +1,358 @@
+// Package mailboxclient implements the file-only mailbox client. It has no
+// dependency on the Runner API, CLI, dispatcher, or execution packages.
+package mailboxclient
+
+import (
+	"bufio"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"syscall"
+	"time"
+	"unicode/utf8"
+)
+
+const (
+	maxRequestBytes = 1 << 20
+	maxEventLine    = 1 << 20
+	fileMode        = 0o600
+	directoryMode   = 0o700
+)
+
+var (
+	ErrConfiguration  = errors.New("mailbox client configuration is invalid")
+	ErrRequest        = errors.New("mailbox request file is invalid")
+	ErrResponse       = errors.New("mailbox response file is invalid")
+	ErrEvents         = errors.New("mailbox event file is invalid")
+	ErrAcknowledgment = errors.New("mailbox acknowledgment is invalid")
+	requestIDPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+)
+
+type Client struct {
+	root string
+}
+
+type Response struct {
+	RequestID              string `json:"request_id"`
+	Operation              string `json:"operation"`
+	RequestState           string `json:"request_state"`
+	ResponseRevision       int64  `json:"response_revision"`
+	SessionID              string `json:"session_id,omitempty"`
+	CommandID              string `json:"command_id,omitempty"`
+	AvailableEventSequence *int64 `json:"available_event_sequence,omitempty"`
+	OutputComplete         *bool  `json:"output_complete,omitempty"`
+	EventsFile             string `json:"events_file,omitempty"`
+}
+
+type Event struct {
+	CommandID  string `json:"command_id"`
+	Sequence   int64  `json:"sequence"`
+	Type       string `json:"type"`
+	Encoding   string `json:"encoding,omitempty"`
+	Text       string `json:"text,omitempty"`
+	DataBase64 string `json:"data_base64,omitempty"`
+	ByteCount  int64  `json:"byte_count,omitempty"`
+}
+
+type Acknowledgment struct {
+	RequestID              string `json:"request_id"`
+	ResponseRevision       int64  `json:"response_revision"`
+	AvailableEventSequence *int64 `json:"available_event_sequence,omitempty"`
+}
+
+func New(root string) (*Client, error) {
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return nil, ErrConfiguration
+	}
+	if err := validateOwnerDirectory(root); err != nil {
+		return nil, fmt.Errorf("%w: mailbox root: %v", ErrConfiguration, err)
+	}
+	return &Client{root: root}, nil
+}
+
+// WriteRequest publishes immutable JSON first and an empty .ready marker
+// last. The client only touches the mailbox filesystem.
+func (c *Client) WriteRequest(requestID string, raw []byte) error {
+	if c == nil || !validRequestID(requestID) || len(raw) == 0 || len(raw) > maxRequestBytes || !json.Valid(raw) {
+		return ErrRequest
+	}
+	var identity struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(raw, &identity); err != nil || identity.RequestID != requestID {
+		return fmt.Errorf("%w: request_id does not match filename", ErrRequest)
+	}
+	inbox := filepath.Join(c.root, "inbox")
+	if err := validateOwnerDirectory(inbox); err != nil {
+		return fmt.Errorf("%w: inbox: %v", ErrRequest, err)
+	}
+	if err := writeExclusiveSynced(filepath.Join(inbox, requestID+".json"), raw); err != nil {
+		return fmt.Errorf("%w: write request: %v", ErrRequest, err)
+	}
+	if err := writeExclusiveSynced(filepath.Join(inbox, requestID+".ready"), nil); err != nil {
+		return fmt.Errorf("%w: publish marker: %v", ErrRequest, err)
+	}
+	return syncDirectory(inbox)
+}
+
+// WaitResponse polls only the outbox file and returns once the matching
+// response revision is visible.
+func (c *Client) WaitResponse(ctx context.Context, requestID string) (Response, error) {
+	if c == nil || !validRequestID(requestID) {
+		return Response{}, ErrResponse
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	outbox := filepath.Join(c.root, "outbox")
+	if err := validateOwnerDirectory(outbox); err != nil {
+		return Response{}, fmt.Errorf("%w: outbox: %v", ErrResponse, err)
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		raw, err := readOwnerFile(filepath.Join(outbox, requestID+".json"), maxRequestBytes)
+		if err == nil {
+			var response Response
+			if decodeErr := json.Unmarshal(raw, &response); decodeErr != nil || response.RequestID != requestID || response.ResponseRevision < 1 {
+				return Response{}, fmt.Errorf("%w: invalid request identity or revision", ErrResponse)
+			}
+			return response, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return Response{}, fmt.Errorf("%w: read outbox: %v", ErrResponse, err)
+		}
+		select {
+		case <-ctx.Done():
+			return Response{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// ReadEventsThroughCursor reads only the frozen prefix advertised by a
+// response and validates each event's command ID, sequence, encoding, and
+// byte count.
+func (c *Client) ReadEventsThroughCursor(response Response) ([]Event, error) {
+	if c == nil {
+		return nil, ErrConfiguration
+	}
+	if response.AvailableEventSequence == nil {
+		if response.EventsFile != "" {
+			return nil, ErrEvents
+		}
+		return nil, nil
+	}
+	cursor := *response.AvailableEventSequence
+	if cursor < 0 || !validRequestID(response.CommandID) {
+		return nil, ErrEvents
+	}
+	if cursor == 0 {
+		if response.EventsFile != "" {
+			return nil, ErrEvents
+		}
+		return []Event{}, nil
+	}
+	if !validEventReference(response.EventsFile, response.CommandID) {
+		return nil, ErrEvents
+	}
+	eventsDir := filepath.Join(c.root, "events")
+	if err := validateOwnerDirectory(eventsDir); err != nil {
+		return nil, fmt.Errorf("%w: events directory: %v", ErrEvents, err)
+	}
+	path := filepath.Join(c.root, filepath.FromSlash(response.EventsFile))
+	file, err := openOwnerFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open event file: %v", ErrEvents, err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), maxEventLine)
+	events := make([]Event, 0, min(cursor, 256))
+	for expected := int64(1); expected <= cursor; expected++ {
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return nil, fmt.Errorf("%w: scan event file: %v", ErrEvents, err)
+			}
+			return nil, fmt.Errorf("%w: event cursor %d is incomplete at %d", ErrEvents, cursor, expected)
+		}
+		var event Event
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil || event.CommandID != response.CommandID || event.Sequence != expected || event.Type == "" {
+			return nil, fmt.Errorf("%w: invalid event at sequence %d", ErrEvents, expected)
+		}
+		if err := validateEventPayload(event); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+// WriteAcknowledgment echoes the response revision and available event cursor
+// exactly, then publishes its marker last.
+func (c *Client) WriteAcknowledgment(requestID string, response Response) error {
+	if c == nil || !validRequestID(requestID) || response.RequestID != requestID || response.ResponseRevision < 1 {
+		return ErrAcknowledgment
+	}
+	if response.AvailableEventSequence != nil && *response.AvailableEventSequence < 0 {
+		return ErrAcknowledgment
+	}
+	acks := filepath.Join(c.root, "acks")
+	if err := validateOwnerDirectory(acks); err != nil {
+		return fmt.Errorf("%w: ACK directory: %v", ErrAcknowledgment, err)
+	}
+	ack := Acknowledgment{
+		RequestID: requestID, ResponseRevision: response.ResponseRevision,
+		AvailableEventSequence: cloneInt64(response.AvailableEventSequence),
+	}
+	raw, err := json.Marshal(ack)
+	if err != nil {
+		return fmt.Errorf("%w: encode: %v", ErrAcknowledgment, err)
+	}
+	if err := writeExclusiveSynced(filepath.Join(acks, requestID+".json"), raw); err != nil {
+		return fmt.Errorf("%w: write: %v", ErrAcknowledgment, err)
+	}
+	if err := writeExclusiveSynced(filepath.Join(acks, requestID+".ready"), nil); err != nil {
+		return fmt.Errorf("%w: publish marker: %v", ErrAcknowledgment, err)
+	}
+	return syncDirectory(acks)
+}
+
+func validRequestID(value string) bool {
+	return requestIDPattern.MatchString(value)
+}
+
+func validEventReference(reference, commandID string) bool {
+	return reference == "events/"+commandID+".ndjson" && filepath.Clean(filepath.FromSlash(reference)) == filepath.FromSlash(reference)
+}
+
+func validateEventPayload(event Event) error {
+	switch event.Type {
+	case "stdout", "stderr":
+		switch event.Encoding {
+		case "utf8":
+			if !utf8.ValidString(event.Text) || int64(len(event.Text)) != event.ByteCount || event.DataBase64 != "" {
+				return fmt.Errorf("%w: invalid UTF-8 output at sequence %d", ErrEvents, event.Sequence)
+			}
+		case "base64":
+			decoded, err := base64.StdEncoding.DecodeString(event.DataBase64)
+			if err != nil || int64(len(decoded)) != event.ByteCount || event.Text != "" {
+				return fmt.Errorf("%w: invalid base64 output at sequence %d", ErrEvents, event.Sequence)
+			}
+		default:
+			return fmt.Errorf("%w: unsupported output encoding at sequence %d", ErrEvents, event.Sequence)
+		}
+	default:
+		if event.Encoding != "" || event.Text != "" || event.DataBase64 != "" || event.ByteCount != 0 {
+			return fmt.Errorf("%w: non-output event carries bytes at sequence %d", ErrEvents, event.Sequence)
+		}
+	}
+	return nil
+}
+
+func validateOwnerDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("directory must be owner-only")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		return fmt.Errorf("directory owner differs from current account")
+	}
+	return nil
+}
+
+func openOwnerFile(path string) (*os.File, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() || before.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("file must be regular and owner-only")
+	}
+	stat, ok := before.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		return nil, fmt.Errorf("file owner differs from current account")
+	}
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	after, err := file.Stat()
+	if err != nil || !os.SameFile(before, after) || !after.Mode().IsRegular() || after.Mode().Perm()&0o077 != 0 {
+		_ = file.Close()
+		return nil, fmt.Errorf("file changed while opening")
+	}
+	return file, nil
+}
+
+func readOwnerFile(path string, limit int) ([]byte, error) {
+	file, err := openOwnerFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > limit {
+		return nil, fmt.Errorf("file exceeds byte limit")
+	}
+	return data, nil
+}
+
+func writeExclusiveSynced(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
+	if err != nil {
+		return err
+	}
+	remove := true
+	defer func() {
+		_ = file.Close()
+		if remove {
+			_ = os.Remove(path)
+		}
+	}()
+	if err := file.Chmod(fileMode); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	remove = false
+	return nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func cloneInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}

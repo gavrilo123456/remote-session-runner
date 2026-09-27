@@ -629,7 +629,6 @@ func readinessFrameForCreateIntent(intent store.LocalIntentRecord) (sshbridge.Re
 		return sshbridge.RequestFrame{}, err
 	}
 	frame.RequestID = string(intent.IntentID) + "/readiness"
-	frame.ResourceID = intent.ResourceID
 	return frame, nil
 }
 

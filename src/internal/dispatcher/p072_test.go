@@ -184,8 +184,16 @@ func p072CreateIntent(t *testing.T, intentID, sessionID string, state domain.Ses
 }
 
 func p072SessionReply(frame sshbridge.RequestFrame, state domain.SessionState) sshbridge.ReplyFrame {
+	sessionID := string(frame.ResourceID)
+	if frame.Operation == sshbridge.OperationGetSession {
+		var request struct {
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(frame.Payload, &request)
+		sessionID = request.SessionID
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"session_id":       string(frame.ResourceID),
+		"session_id":       sessionID,
 		"session_state":    string(state),
 		"environment":      "dev",
 		"execution_target": map[string]string{"kind": "remote", "profile": "linux-host"},

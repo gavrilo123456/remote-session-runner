@@ -9,7 +9,7 @@ import (
 const p055PublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBYMjC61Pqv/NVxaR86CMLlNBmFw8Oy3TBpIQoBObzka runner-mac-dispatcher"
 
 func p055Entry() Entry {
-	return Entry{PublicKey: p055PublicKey, BridgePath: "/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge"}
+	return Entry{PublicKey: p055PublicKey, WrapperPath: "/home/ubuntu/.local/share/remote-session-runner/deploy/runner-ssh-bridge-forced.sh"}
 }
 
 func TestP055RenderRestrictedAuthorizedKeyAndExactOriginalCommand(t *testing.T) {
@@ -18,7 +18,7 @@ func TestP055RenderRestrictedAuthorizedKeyAndExactOriginalCommand(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(rendered, `restrict,command="/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge --stdio" ssh-ed25519 `) || !strings.HasSuffix(rendered, " runner-mac-dispatcher") {
+	if !strings.HasPrefix(rendered, `restrict,command="/home/ubuntu/.local/share/remote-session-runner/deploy/runner-ssh-bridge-forced.sh SHA256:FnYdf11ON1ZHh+eCnkZbHvjePKktcH7Z/rDjv3nWsms" ssh-ed25519 `) || !strings.HasSuffix(rendered, " runner-mac-dispatcher") {
 		t.Fatalf("rendered entry = %q", rendered)
 	}
 	if err := ValidateRendered(rendered, entry); err != nil {
@@ -55,11 +55,11 @@ func TestP055RejectsOptionWideningMalformedKeysAndUnsafePaths(t *testing.T) {
 		}
 	}
 	for _, invalid := range []Entry{
-		{PublicKey: "ssh-rsa AAAA key", BridgePath: entry.BridgePath},
-		{PublicKey: "ssh-ed25519 !!! key", BridgePath: entry.BridgePath},
-		{PublicKey: p055PublicKey, BridgePath: "runner-ssh-bridge"},
-		{PublicKey: p055PublicKey, BridgePath: "/home/ubuntu/bin/bridge;sh"},
-		{PublicKey: p055PublicKey, BridgePath: "/home/ubuntu/bin/bridge,other"},
+		{PublicKey: "ssh-rsa AAAA key", WrapperPath: entry.WrapperPath},
+		{PublicKey: "ssh-ed25519 !!! key", WrapperPath: entry.WrapperPath},
+		{PublicKey: p055PublicKey, WrapperPath: "runner-ssh-bridge"},
+		{PublicKey: p055PublicKey, WrapperPath: "/home/ubuntu/bin/bridge;sh"},
+		{PublicKey: p055PublicKey, WrapperPath: "/home/ubuntu/bin/bridge,other"},
 	} {
 		if _, err := invalid.Render(); err == nil {
 			t.Fatalf("invalid entry rendered: %+v", invalid)

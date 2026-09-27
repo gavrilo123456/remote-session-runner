@@ -3,6 +3,7 @@
 package sshdeploy
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -23,27 +24,27 @@ const DispatcherComment = "runner-mac-dispatcher"
 // public authorized_keys line without options; private key material is never
 // loaded by this package.
 type Entry struct {
-	PublicKey  string
-	BridgePath string
-	Comment    string
+	PublicKey   string
+	WrapperPath string
+	Comment     string
 }
 
-// FixedCommand returns the exact argv-like command placed in the authorized
-// key option. It is compared byte-for-byte by the wrapper using SSH_ORIGINAL_COMMAND.
+// FixedCommand returns the one command accepted from the SSH client. The
+// authorized_keys forced command is the wrapper path; OpenSSH exposes this
+// client command to the wrapper through SSH_ORIGINAL_COMMAND.
 func (e Entry) FixedCommand() (string, error) {
-	path := strings.TrimSpace(e.BridgePath)
+	path := strings.TrimSpace(e.WrapperPath)
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || hasUnsafePathRune(path) {
 		return "", ErrUnsafeBridgePath
 	}
-	return path + " --stdio", nil
+	return "runner-ssh-bridge --stdio", nil
 }
 
 // Render returns one restricted authorized_keys line. The restriction set is
 // intentionally fixed: no PTY, agent/X11 forwarding, TCP forwarding, or user
 // startup file is available to the key.
 func (e Entry) Render() (string, error) {
-	command, err := e.FixedCommand()
-	if err != nil {
+	if _, err := e.FixedCommand(); err != nil {
 		return "", err
 	}
 	keyType, keyData, comment, err := parsePublicKey(e.PublicKey)
@@ -59,7 +60,11 @@ func (e Entry) Render() (string, error) {
 	if hasUnsafeComment(comment) {
 		return "", fmt.Errorf("%w: comment", ErrInvalidEntry)
 	}
-	return `restrict,command="` + command + `" ` + keyType + " " + keyData + " " + comment, nil
+	fingerprint, err := publicKeyFingerprint(keyData)
+	if err != nil {
+		return "", fmt.Errorf("%w: public key fingerprint", ErrInvalidEntry)
+	}
+	return `restrict,command="` + strings.TrimSpace(e.WrapperPath) + " " + fingerprint + `" ` + keyType + " " + keyData + " " + comment, nil
 }
 
 // ValidateRendered checks that a line contains exactly the fixed restriction
@@ -105,6 +110,15 @@ func parsePublicKey(raw string) (keyType, keyData, comment string, err error) {
 		comment = fields[2]
 	}
 	return fields[0], fields[1], comment, nil
+}
+
+func publicKeyFingerprint(keyData string) (string, error) {
+	decoded, err := base64.StdEncoding.DecodeString(keyData)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(decoded)
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(digest[:]), nil
 }
 
 func hasUnsafePathRune(value string) bool {
