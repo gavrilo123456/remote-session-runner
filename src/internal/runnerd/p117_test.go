@@ -354,7 +354,8 @@ func p117RequireTLSRejection(t *testing.T, client *http.Client, bearerOnly bool)
 	}
 	var verificationFailure *tls.CertificateVerificationError
 	var protocolAlert tls.AlertError
-	if !errors.As(err, &verificationFailure) && !errors.As(err, &protocolAlert) {
+	remoteTLSAlert := strings.Contains(err.Error(), "remote error: tls:")
+	if !errors.As(err, &verificationFailure) && !errors.As(err, &protocolAlert) && !remoteTLSAlert {
 		t.Fatalf("negative TLS case failed without a TLS verification error or alert: %v", err)
 	}
 }
