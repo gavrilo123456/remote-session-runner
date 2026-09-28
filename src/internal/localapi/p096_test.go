@@ -194,7 +194,7 @@ func newP096Harness(t *testing.T) (*p095Harness, *time.Time) {
 	}
 	processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
 		Importer: importer, Authority: authority, Controller: p063Owner(t), Operations: server,
-		Outbox: outbox, EventFiles: eventFiles,
+		Outbox: outbox, EventFiles: eventFiles, Now: func() time.Time { return clock },
 	})
 	if err != nil {
 		t.Fatal(err)

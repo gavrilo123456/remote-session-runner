@@ -886,6 +886,37 @@ func (s *Server) handleGetCommand(response http.ResponseWriter, request *http.Re
 			return
 		}
 	}
+	if record.Target.Kind() == domain.TargetKindLocal && (record.DeliveryState == store.LocalIntentAccepted || record.DeliveryState == store.LocalIntentReconciled) {
+		command, commandErr := s.authority.GetCommand(request.Context(), commandID)
+		if commandErr == nil {
+			session, sessionErr := s.authority.GetSession(request.Context(), command.SessionID)
+			if sessionErr != nil {
+				if errors.Is(sessionErr, store.ErrSessionNotFound) {
+					writeError(response, http.StatusServiceUnavailable, "database_unavailable", "accepted local command has no authoritative session")
+					return
+				}
+				status, code := statusForStoreError(sessionErr)
+				writeError(response, status, code, sanitizeError(sessionErr))
+				return
+			}
+			if command.CommandID != record.CommandID || command.SessionID != record.SessionID ||
+				domain.CompareIdempotency(command.RequestHash, record.RequestHash) != domain.IdempotencySamePayload || !bytes.Equal(command.ScriptBytes, record.ScriptBytes) ||
+				session.SessionID != record.SessionID || session.Target.Kind() != record.Target.Kind() || session.Target.Profile() != record.Target.Profile() ||
+				session.Controller.Type() != record.Controller.Type() || session.Controller.ID() != record.Controller.ID() || session.Environment != record.Environment ||
+				session.Source.Mode() != record.Source.Mode() || session.Source.RepositoryAlias() != record.Source.RepositoryAlias() ||
+				session.Source.RequestedRevision() != record.Source.RequestedRevision() || session.Source.Path() != record.Source.Path() {
+				writeError(response, http.StatusServiceUnavailable, "database_unavailable", "local command authority identity does not match its accepted intent")
+				return
+			}
+			writeJSON(response, http.StatusOK, commandRead{View: "authority", IsStale: false, Resource: commandAuthorityResourceFromRecords(command, session)})
+			return
+		}
+		if !errors.Is(commandErr, store.ErrCommandNotFound) {
+			status, code := statusForStoreError(commandErr)
+			writeError(response, status, code, sanitizeError(commandErr))
+			return
+		}
+	}
 	writeJSON(response, http.StatusOK, commandRead{View: "local_intent", IsStale: false, Resource: commandIntentResourceFromRecord(record)})
 }
 
@@ -1858,6 +1889,18 @@ func commandProjectionResourceFromProjection(projection store.RemoteCommandProje
 		ExecutionTarget: targetResponse{Kind: string(projection.Target.Kind()), Profile: projection.Target.Profile()}, Authority: "remote",
 		Controller: controllerView{Type: string(projection.Controller.Type()), ID: string(projection.Controller.ID())}, ObservedAt: projection.ObservedAt.UTC(),
 		Environment: projection.Environment, Source: sourceResponseFromDomain(projection.Source), Capabilities: capabilitiesResponseFromProjection(projection.Capabilities), IsStale: projection.IsStale,
+	}
+}
+
+func commandAuthorityResourceFromRecords(command store.CommandRecord, session store.SessionRecord) commandProjectionResource {
+	return commandProjectionResource{
+		CommandID: string(command.CommandID), SessionID: string(command.SessionID), Ordinal: command.Ordinal, CommandState: string(command.State),
+		ExitCode: command.ExitCode, FinalEventSequence: command.FinalEventSequence, OutputComplete: command.OutputComplete,
+		OutputTruncated: command.OutputTruncated, OutputUnavailableReason: command.OutputUnavailableReason,
+		ExecutionTarget: targetResponse{Kind: string(session.Target.Kind()), Profile: session.Target.Profile()}, Authority: "local",
+		Controller: controllerView{Type: string(session.Controller.Type()), ID: string(session.Controller.ID())}, ObservedAt: command.UpdatedAt.UTC(),
+		Environment: session.Environment, Source: sourceResponseFromDomain(session.Source),
+		Capabilities: capabilitiesResponse{HostClass: session.Target.Profile(), Isolation: string(domain.IsolationOSUser), EffectiveAccount: string(session.Controller.ID()), ServiceLimits: map[string]any{}},
 	}
 }
 
