@@ -320,15 +320,18 @@ type KnownState struct {
 
 // Acceptance is returned after a mutation has been durably accepted.
 type Acceptance struct {
-	ResourceID      string     `json:"resource_id"`
-	SessionID       string     `json:"session_id,omitempty"`
-	CommandID       string     `json:"command_id,omitempty"`
-	JobID           string     `json:"job_id,omitempty"`
-	IntentID        string     `json:"intent_id,omitempty"`
-	AcceptanceScope string     `json:"acceptance_scope"`
-	ExecutionTarget Target     `json:"execution_target"`
-	KnownState      KnownState `json:"known_state"`
+	ResourceID         string     `json:"resource_id"`
+	SessionID          string     `json:"session_id,omitempty"`
+	CommandID          string     `json:"command_id,omitempty"`
+	JobID              string     `json:"job_id,omitempty"`
+	IntentID           string     `json:"intent_id,omitempty"`
+	AcceptanceScope    string     `json:"acceptance_scope"`
+	ExecutionTarget    Target     `json:"execution_target"`
+	KnownState         KnownState `json:"known_state"`
+	IdempotencyWarning string     `json:"idempotency_warning,omitempty"`
 }
+
+const IdempotencyWarningDeduplicationNotGuaranteed = "deduplication_not_guaranteed"
 
 // Snapshot wraps an as-of resource view returned by either ingress.
 type Snapshot[T any] struct {

@@ -356,10 +356,27 @@ func TestP118ResourceAndIdempotencyValidation(t *testing.T) {
 	}
 }
 
+func TestP122AcceptanceWarningIsDecodedAndValidated(t *testing.T) {
+	request := CreateSessionRequest{Environment: "linux-dev", ExecutionTarget: Target{Kind: "remote", Profile: "linux-host"}, Source: json.RawMessage(`{"mode":"empty"}`)}
+	known := &p118Fixture{view: "local_intent", acceptanceWarning: IdempotencyWarningDeduplicationNotGuaranteed}
+	client := p118NewUnixClient(t, known)
+	accepted, err := client.CreateSession(context.Background(), request, "p122-warning-key")
+	if err != nil || accepted.IdempotencyWarning != IdempotencyWarningDeduplicationNotGuaranteed {
+		t.Fatalf("known acceptance warning = %+v err=%v", accepted, err)
+	}
+
+	unknown := &p118Fixture{view: "local_intent", acceptanceWarning: "unknown_warning"}
+	client = p118NewUnixClient(t, unknown)
+	if _, err := client.CreateSession(context.Background(), request, "p122-unknown-warning-key"); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("unknown acceptance warning error = %v, want ErrProtocol", err)
+	}
+}
+
 type p118Fixture struct {
-	view    string
-	mu      sync.Mutex
-	records []p118RequestRecord
+	view              string
+	acceptanceWarning string
+	mu                sync.Mutex
+	records           []p118RequestRecord
 }
 
 type p118RequestRecord struct {
@@ -389,7 +406,7 @@ func (f *p118Fixture) ServeHTTP(response http.ResponseWriter, request *http.Requ
 			http.Error(response, "invalid session request", http.StatusBadRequest)
 			return
 		}
-		p118WriteJSON(response, http.StatusAccepted, Acceptance{ResourceID: p118SessionID, SessionID: p118SessionID, AcceptanceScope: "local_intent", ExecutionTarget: input.ExecutionTarget, KnownState: KnownState{DeliveryState: "recorded"}})
+		p118WriteJSON(response, http.StatusAccepted, Acceptance{ResourceID: p118SessionID, SessionID: p118SessionID, AcceptanceScope: "local_intent", ExecutionTarget: input.ExecutionTarget, KnownState: KnownState{DeliveryState: "recorded"}, IdempotencyWarning: f.acceptanceWarning})
 	case request.Method == http.MethodGet && request.URL.Path == "/v1/sessions/"+p118SessionID:
 		resource := map[string]any{
 			"session_id": p118SessionID, "execution_target": Target{Kind: "remote", Profile: "linux-host"},

@@ -112,6 +112,7 @@ type JobRecord struct {
 	TeardownReason          string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
+	IdempotencyWarning      bool
 }
 
 // JobCheckpoint advances one coordinator phase. Command is optional while a
@@ -152,8 +153,13 @@ func (s *AuthorityStore) AcceptJob(ctx context.Context, input JobAcceptance) (re
 			if err != nil {
 				return JobRecord{}, fmt.Errorf("read idempotent job: %w", err)
 			}
+			record.IdempotencyWarning = existing.DeduplicationWarning
 			duplicate = true
 			return record, nil
+		}
+		warning, err := idempotencyExpiryWarningOnConnection(ctx, connection, validated.Controller, runJobOperation, validated.IdempotencyKey, now)
+		if err != nil {
+			return JobRecord{}, err
 		}
 		var exists int
 		if err := connection.QueryRowContext(ctx, "SELECT 1 FROM exec_jobs WHERE job_id = ?", string(validated.JobID)).Scan(&exists); err == nil {
@@ -161,10 +167,12 @@ func (s *AuthorityStore) AcceptJob(ctx context.Context, input JobAcceptance) (re
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return JobRecord{}, fmt.Errorf("check job identity: %w", err)
 		}
-		if err := insertJobOnConnection(ctx, connection, validated, now); err != nil {
+		if err := insertJobOnConnection(ctx, connection, validated, now, warning); err != nil {
 			return JobRecord{}, err
 		}
-		return readJobOnConnection(ctx, connection, validated.JobID)
+		created, err := readJobOnConnection(ctx, connection, validated.JobID)
+		created.IdempotencyWarning = warning
+		return created, err
 	})
 	if err != nil {
 		return JobRecord{}, false, err
@@ -371,7 +379,7 @@ func validateRunPayload(raw []byte, script, environment string, target domain.Ex
 	return append([]byte(nil), canonical...), hash, nil
 }
 
-func insertJobOnConnection(ctx context.Context, connection *sql.Conn, input JobAcceptance, now time.Time) error {
+func insertJobOnConnection(ctx context.Context, connection *sql.Conn, input JobAcceptance, now time.Time, idempotencyWarning bool) error {
 	scriptBytes := []byte(input.Script)
 	scriptHash := sha256.Sum256(scriptBytes)
 	if _, err := connection.ExecContext(ctx, `
@@ -397,6 +405,7 @@ INSERT INTO exec_jobs (
 		return err
 	}
 	idempotency.CreatedAt, idempotency.ExpiresAt = now, now.Add(input.IdempotencyRetention)
+	idempotency.DeduplicationWarning = idempotencyWarning
 	if err := recordIdempotencyOnConnection(ctx, connection, idempotency); err != nil {
 		return err
 	}

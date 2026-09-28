@@ -29,6 +29,9 @@ func (c *Client) CreateSession(ctx context.Context, request CreateSessionRequest
 	if accepted.SessionID == "" || accepted.ResourceID != accepted.SessionID {
 		return Acceptance{}, fmt.Errorf("%w: session acceptance must return matching stable IDs", ErrProtocol)
 	}
+	if err := validateAcceptanceWarning(accepted.IdempotencyWarning); err != nil {
+		return Acceptance{}, err
+	}
 	return accepted, nil
 }
 
@@ -65,6 +68,9 @@ func (c *Client) SubmitCommand(ctx context.Context, sessionID string, request Su
 	}
 	if accepted.CommandID == "" || accepted.SessionID != sessionID || accepted.ResourceID != accepted.CommandID {
 		return Acceptance{}, fmt.Errorf("%w: command acceptance IDs do not match the request", ErrProtocol)
+	}
+	if err := validateAcceptanceWarning(accepted.IdempotencyWarning); err != nil {
+		return Acceptance{}, err
 	}
 	return accepted, nil
 }
@@ -104,6 +110,9 @@ func (c *Client) CancelCommand(ctx context.Context, commandID, idempotencyKey st
 	if accepted.CommandID != commandID || accepted.ResourceID != commandID {
 		return Acceptance{}, fmt.Errorf("%w: cancel acceptance does not identify the requested command", ErrProtocol)
 	}
+	if err := validateAcceptanceWarning(accepted.IdempotencyWarning); err != nil {
+		return Acceptance{}, err
+	}
 	return accepted, nil
 }
 
@@ -131,6 +140,9 @@ func (c *Client) CloseSession(ctx context.Context, sessionID, policy, idempotenc
 	if accepted.SessionID != sessionID || accepted.ResourceID != sessionID {
 		return Acceptance{}, fmt.Errorf("%w: close acceptance does not identify the requested session", ErrProtocol)
 	}
+	if err := validateAcceptanceWarning(accepted.IdempotencyWarning); err != nil {
+		return Acceptance{}, err
+	}
 	return accepted, nil
 }
 
@@ -147,7 +159,17 @@ func (c *Client) Run(ctx context.Context, request RunJobRequest, idempotencyKey 
 	if accepted.JobID == "" || accepted.SessionID == "" || accepted.CommandID == "" || accepted.ResourceID != accepted.JobID {
 		return Acceptance{}, fmt.Errorf("%w: job acceptance is missing stable resource IDs", ErrProtocol)
 	}
+	if err := validateAcceptanceWarning(accepted.IdempotencyWarning); err != nil {
+		return Acceptance{}, err
+	}
 	return accepted, nil
+}
+
+func validateAcceptanceWarning(warning string) error {
+	if warning != "" && warning != IdempotencyWarningDeduplicationNotGuaranteed {
+		return fmt.Errorf("%w: unknown idempotency warning %q", ErrProtocol, warning)
+	}
+	return nil
 }
 
 // GetJob reads one as-of one-off job snapshot from this client's ingress.

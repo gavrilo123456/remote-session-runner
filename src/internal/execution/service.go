@@ -246,8 +246,9 @@ type CreateSessionRequest struct {
 // CreateSessionResult contains the authoritative snapshot and whether the
 // request reused a retained idempotency record.
 type CreateSessionResult struct {
-	Session   store.SessionRecord
-	Duplicate bool
+	Session            store.SessionRecord
+	Duplicate          bool
+	IdempotencyWarning bool
 }
 
 // SubmitCommandRequest is the shared service input for an authoritative
@@ -269,8 +270,9 @@ type SubmitCommandRequest struct {
 // result can remain queued when another command/session owns the scheduler;
 // no runtime call is made until this command is durably started.
 type SubmitCommandResult struct {
-	Command   store.CommandRecord
-	Duplicate bool
+	Command            store.CommandRecord
+	Duplicate          bool
+	IdempotencyWarning bool
 }
 
 // CancelCommandRequest identifies a keyed cancellation mutation.
@@ -285,8 +287,9 @@ type CancelCommandRequest struct {
 // CancelCommandResult contains the command snapshot after the cancellation
 // request or its terminal race winner.
 type CancelCommandResult struct {
-	Command   store.CommandRecord
-	Duplicate bool
+	Command            store.CommandRecord
+	Duplicate          bool
+	IdempotencyWarning bool
 }
 
 // CloseSessionRequest identifies a keyed session close policy. The policy is
@@ -303,8 +306,9 @@ type CloseSessionRequest struct {
 
 // CloseSessionResult contains the final or lost session snapshot.
 type CloseSessionResult struct {
-	Session   store.SessionRecord
-	Duplicate bool
+	Session            store.SessionRecord
+	Duplicate          bool
+	IdempotencyWarning bool
 }
 
 // RunJobRequest supplies the already-validated immutable P024 job acceptance
@@ -323,9 +327,10 @@ type RunJobRequest struct {
 // session and command snapshots. A successful run reaches complete only after
 // confirmed session teardown; a failed teardown remains visible separately.
 type RunJobResult struct {
-	Job     store.JobRecord
-	Session store.SessionRecord
-	Command store.CommandRecord
+	Job                store.JobRecord
+	Session            store.SessionRecord
+	Command            store.CommandRecord
+	IdempotencyWarning bool
 }
 
 // Service is the shared execution orchestration core. It performs policy
@@ -404,7 +409,7 @@ func (s *Service) CreateSession(ctx context.Context, request CreateSessionReques
 	if err != nil {
 		return CreateSessionResult{}, err
 	}
-	result := CreateSessionResult{Session: accepted, Duplicate: duplicate}
+	result := CreateSessionResult{Session: accepted, Duplicate: duplicate, IdempotencyWarning: accepted.IdempotencyWarning}
 	if duplicate {
 		return result, nil
 	}
@@ -475,7 +480,9 @@ func (s *Service) SubmitCommand(ctx context.Context, request SubmitCommandReques
 	if err != nil || accepted.Duplicate {
 		return accepted, err
 	}
-	return s.ResumeCommand(ctx, accepted.Command.CommandID, request.Controller)
+	resumed, err := s.ResumeCommand(ctx, accepted.Command.CommandID, request.Controller)
+	resumed.IdempotencyWarning = accepted.IdempotencyWarning
+	return resumed, err
 }
 
 // AcceptCommand durably queues one script without waiting for it to execute.
@@ -522,7 +529,7 @@ func (s *Service) AcceptCommand(ctx context.Context, request SubmitCommandReques
 	if err != nil {
 		return SubmitCommandResult{}, err
 	}
-	return SubmitCommandResult{Command: accepted, Duplicate: duplicate}, nil
+	return SubmitCommandResult{Command: accepted, Duplicate: duplicate, IdempotencyWarning: accepted.IdempotencyWarning}, nil
 }
 
 // ResumeCommand continues an accepted queued command using its durable script
@@ -685,7 +692,7 @@ func (s *Service) ResumeJob(ctx context.Context, id domain.JobID, controller dom
 }
 
 func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job store.JobRecord) (RunJobResult, error) {
-	result := RunJobResult{Job: job}
+	result := RunJobResult{Job: job, IdempotencyWarning: job.IdempotencyWarning}
 	for {
 		switch job.Phase {
 		case store.JobPhaseCreatingSession:
@@ -1028,19 +1035,20 @@ func (s *Service) CancelCommand(ctx context.Context, request CancelCommandReques
 	if session.Controller.Type() != request.Controller.Type() || session.Controller.ID() != request.Controller.ID() {
 		return CancelCommandResult{}, ErrSessionController
 	}
-	_, duplicate, err := s.store.EnsureIdempotency(ctx, request.Controller, "cancel_command", request.IdempotencyKey, request.RequestHash, string(command.CommandID), request.IdempotencyRetention)
+	idempotency, duplicate, err := s.store.EnsureIdempotency(ctx, request.Controller, "cancel_command", request.IdempotencyKey, request.RequestHash, string(command.CommandID), request.IdempotencyRetention)
 	if err != nil {
 		return CancelCommandResult{}, err
 	}
+	warning := idempotency.DeduplicationWarning
 	if duplicate || command.State.IsTerminal() {
-		return CancelCommandResult{Command: command, Duplicate: duplicate}, nil
+		return CancelCommandResult{Command: command, Duplicate: duplicate, IdempotencyWarning: warning}, nil
 	}
 	if command.State == domain.CommandStateQueued {
 		cancelled, err := s.store.TransitionCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateCancelled, OutputComplete: true})
 		if err != nil {
 			return CancelCommandResult{}, err
 		}
-		return CancelCommandResult{Command: cancelled}, nil
+		return CancelCommandResult{Command: cancelled, IdempotencyWarning: warning}, nil
 	}
 	if command.State != domain.CommandStateRunning && command.State != domain.CommandStateCancelling {
 		return CancelCommandResult{}, fmt.Errorf("%w: current command state %q", ErrCommandNotReady, command.State)
@@ -1053,13 +1061,19 @@ func (s *Service) CancelCommand(ctx context.Context, request CancelCommandReques
 	}
 	control, ok := s.runtime.(RuntimeCommandControl)
 	if !ok {
-		return s.finishCancelledCommand(ctx, session, command, RuntimeCommandStopResult{}, ErrStopUnconfirmed)
+		result, err := s.finishCancelledCommand(ctx, session, command, RuntimeCommandStopResult{}, ErrStopUnconfirmed)
+		result.IdempotencyWarning = warning
+		return result, err
 	}
 	stopped, stopErr := control.CancelCommand(ctx, RuntimeCommandRequest{Session: session, Command: command})
 	if stopErr != nil {
-		return s.finishCancelledCommand(ctx, session, command, stopped, stopErr)
+		result, err := s.finishCancelledCommand(ctx, session, command, stopped, stopErr)
+		result.IdempotencyWarning = warning
+		return result, err
 	}
-	return s.finishCancelledCommand(ctx, session, command, stopped, nil)
+	result, err := s.finishCancelledCommand(ctx, session, command, stopped, nil)
+	result.IdempotencyWarning = warning
+	return result, err
 }
 
 func (s *Service) finishCancelledCommand(ctx context.Context, session store.SessionRecord, command store.CommandRecord, stopped RuntimeCommandStopResult, stopErr error) (CancelCommandResult, error) {
@@ -1109,12 +1123,13 @@ func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest)
 	if session.Controller.Type() != request.Controller.Type() || session.Controller.ID() != request.Controller.ID() {
 		return CloseSessionResult{}, ErrSessionController
 	}
-	_, duplicate, err := s.store.EnsureIdempotency(ctx, request.Controller, "close_session", request.IdempotencyKey, request.RequestHash, string(session.SessionID), request.IdempotencyRetention)
+	idempotency, duplicate, err := s.store.EnsureIdempotency(ctx, request.Controller, "close_session", request.IdempotencyKey, request.RequestHash, string(session.SessionID), request.IdempotencyRetention)
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
+	warning := idempotency.DeduplicationWarning
 	if session.State.IsTerminal() {
-		return CloseSessionResult{Session: session, Duplicate: duplicate}, nil
+		return CloseSessionResult{Session: session, Duplicate: duplicate, IdempotencyWarning: warning}, nil
 	}
 	if session.State != domain.SessionStateClosing {
 		if _, err := s.store.TransitionSession(ctx, session.SessionID, domain.SessionStateClosing, "close_requested"); err != nil {
@@ -1145,7 +1160,9 @@ func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest)
 			}
 			if !hasControl {
 				_, _ = s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateLost, OutputComplete: false}, domain.SessionStateClosing, "close_stop_unconfirmed", false)
-				return s.markClosingLost(ctx, closing, ErrStopUnconfirmed)
+				result, err := s.markClosingLost(ctx, closing, ErrStopUnconfirmed)
+				result.IdempotencyWarning = warning
+				return result, err
 			}
 			stopped, stopErr := control.CancelCommand(ctx, RuntimeCommandRequest{Session: closing, Command: command})
 			if err := s.appendStopOutput(ctx, command.CommandID, stopped); err != nil {
@@ -1154,7 +1171,9 @@ func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest)
 			}
 			if stopErr != nil || !stopped.Confirmed {
 				_, _ = s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateLost, OutputComplete: false}, domain.SessionStateClosing, "close_stop_unconfirmed", false)
-				return s.markClosingLost(ctx, closing, fmt.Errorf("%w: %v", ErrStopUnconfirmed, stopErr))
+				result, err := s.markClosingLost(ctx, closing, fmt.Errorf("%w: %v", ErrStopUnconfirmed, stopErr))
+				result.IdempotencyWarning = warning
+				return result, err
 			}
 			if _, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateCancelled, OutputComplete: true}, domain.SessionStateClosing, "close_command_cancelled", true); err != nil {
 				return CloseSessionResult{}, err
@@ -1167,7 +1186,9 @@ func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest)
 			if stopErr == nil {
 				stopErr = ErrStopUnconfirmed
 			}
-			return s.markClosingLost(ctx, closing, stopErr)
+			result, err := s.markClosingLost(ctx, closing, stopErr)
+			result.IdempotencyWarning = warning
+			return result, err
 		}
 	}
 	closed, err := s.store.TransitionSession(ctx, session.SessionID, domain.SessionStateClosed, "runtime_closed")
@@ -1177,7 +1198,7 @@ func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest)
 	if err := s.store.ConfirmSessionCleanup(ctx, session.SessionID); err != nil {
 		return CloseSessionResult{}, err
 	}
-	return CloseSessionResult{Session: closed, Duplicate: duplicate}, nil
+	return CloseSessionResult{Session: closed, Duplicate: duplicate, IdempotencyWarning: warning}, nil
 }
 
 func (s *Service) markClosingLost(ctx context.Context, session store.SessionRecord, cause error) (CloseSessionResult, error) {

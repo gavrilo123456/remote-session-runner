@@ -49,11 +49,12 @@ type directKnownState struct {
 }
 
 type directSessionAcceptance struct {
-	ResourceID      string           `json:"resource_id"`
-	SessionID       string           `json:"session_id"`
-	AcceptanceScope string           `json:"acceptance_scope"`
-	ExecutionTarget targetResponse   `json:"execution_target"`
-	KnownState      directKnownState `json:"known_state"`
+	ResourceID         string           `json:"resource_id"`
+	SessionID          string           `json:"session_id"`
+	AcceptanceScope    string           `json:"acceptance_scope"`
+	ExecutionTarget    targetResponse   `json:"execution_target"`
+	KnownState         directKnownState `json:"known_state"`
+	IdempotencyWarning string           `json:"idempotency_warning,omitempty"`
 }
 
 type directSessionResource struct {
@@ -90,12 +91,13 @@ type directRunJobRequest struct {
 }
 
 type directCommandAcceptance struct {
-	ResourceID      string           `json:"resource_id"`
-	CommandID       string           `json:"command_id"`
-	SessionID       string           `json:"session_id"`
-	AcceptanceScope string           `json:"acceptance_scope"`
-	ExecutionTarget targetResponse   `json:"execution_target"`
-	KnownState      directKnownState `json:"known_state"`
+	ResourceID         string           `json:"resource_id"`
+	CommandID          string           `json:"command_id"`
+	SessionID          string           `json:"session_id"`
+	AcceptanceScope    string           `json:"acceptance_scope"`
+	ExecutionTarget    targetResponse   `json:"execution_target"`
+	KnownState         directKnownState `json:"known_state"`
+	IdempotencyWarning string           `json:"idempotency_warning,omitempty"`
 }
 
 type directCommandResource struct {
@@ -124,13 +126,14 @@ type directCommandReadResponse struct {
 }
 
 type directJobAcceptance struct {
-	ResourceID      string           `json:"resource_id"`
-	JobID           string           `json:"job_id"`
-	SessionID       string           `json:"session_id"`
-	CommandID       string           `json:"command_id"`
-	AcceptanceScope string           `json:"acceptance_scope"`
-	ExecutionTarget targetResponse   `json:"execution_target"`
-	KnownState      directKnownState `json:"known_state"`
+	ResourceID         string           `json:"resource_id"`
+	JobID              string           `json:"job_id"`
+	SessionID          string           `json:"session_id"`
+	CommandID          string           `json:"command_id"`
+	AcceptanceScope    string           `json:"acceptance_scope"`
+	ExecutionTarget    targetResponse   `json:"execution_target"`
+	KnownState         directKnownState `json:"known_state"`
+	IdempotencyWarning string           `json:"idempotency_warning,omitempty"`
 }
 
 type directJobResource struct {
@@ -398,7 +401,7 @@ func (s *directHTTPSAPI) handleCreateSession(response http.ResponseWriter, reque
 	// Once the service returns a durable session record, acceptance has
 	// happened even if runtime preparation already moved that record to a
 	// terminal state. Report its stable ID and current known state.
-	writeJSON(response, http.StatusAccepted, directSessionAcceptanceFromRecord(result.Session))
+	writeJSON(response, http.StatusAccepted, directSessionAcceptanceFromRecord(result.Session, result.IdempotencyWarning))
 }
 
 func (s *directHTTPSAPI) handleRunJob(response http.ResponseWriter, request *http.Request) {
@@ -531,7 +534,7 @@ func (s *directHTTPSAPI) handleRunJob(response http.ResponseWriter, request *htt
 	}
 	// A durable job row is the acceptance boundary. The read route returns its
 	// command and teardown outcomes even when the coordinator reports failure.
-	writeJSON(response, http.StatusAccepted, directJobAcceptanceFromRecord(result.Job))
+	writeJSON(response, http.StatusAccepted, directJobAcceptanceFromRecord(result.Job, result.IdempotencyWarning))
 }
 
 func (s *directHTTPSAPI) handleGetJob(response http.ResponseWriter, request *http.Request) {
@@ -561,7 +564,7 @@ func (s *directHTTPSAPI) handleGetJob(response http.ResponseWriter, request *htt
 	})
 }
 
-func directJobAcceptanceFromRecord(record store.JobRecord) directJobAcceptance {
+func directJobAcceptanceFromRecord(record store.JobRecord, idempotencyWarning bool) directJobAcceptance {
 	known := directKnownState{}
 	if record.CommandState != nil {
 		known.CommandState = string(*record.CommandState)
@@ -570,6 +573,7 @@ func directJobAcceptanceFromRecord(record store.JobRecord) directJobAcceptance {
 		ResourceID: string(record.JobID), JobID: string(record.JobID), SessionID: string(record.SessionID),
 		CommandID: string(record.CommandID), AcceptanceScope: "target_authority",
 		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()}, KnownState: known,
+		IdempotencyWarning: directIdempotencyWarning(idempotencyWarning),
 	}
 }
 
@@ -752,7 +756,7 @@ func (s *directHTTPSAPI) handleSubmitCommand(response http.ResponseWriter, reque
 			_, _ = s.service.ResumeCommand(context.Background(), acceptedID, controller)
 		}()
 	}
-	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target))
+	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target, result.IdempotencyWarning))
 }
 
 func (s *directHTTPSAPI) handleGetCommand(response http.ResponseWriter, request *http.Request) {
@@ -1067,7 +1071,7 @@ func (s *directHTTPSAPI) handleCancelCommand(response http.ResponseWriter, reque
 	}
 	// A populated record means the authority durably accepted the cancel request.
 	// Report its current state even when the runtime could not confirm a stop.
-	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target))
+	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target, result.IdempotencyWarning))
 }
 
 func (s *directHTTPSAPI) handleCloseSession(response http.ResponseWriter, request *http.Request) {
@@ -1118,7 +1122,7 @@ func (s *directHTTPSAPI) handleCloseSession(response http.ResponseWriter, reques
 	}
 	// The session record is the acceptance result; closed/lost is reported as
 	// known state, not hidden behind a transport-shaped error.
-	writeJSON(response, http.StatusAccepted, directSessionAcceptanceFromRecord(result.Session))
+	writeJSON(response, http.StatusAccepted, directSessionAcceptanceFromRecord(result.Session, result.IdempotencyWarning))
 }
 
 func directCommandTimeout(raw json.RawMessage) (time.Duration, error) {
@@ -1387,25 +1391,34 @@ func directCommandCancelIDFromPath(requestURL *url.URL) (domain.CommandID, error
 	return domain.NewCommandID(idText)
 }
 
-func directSessionAcceptanceFromRecord(record store.SessionRecord) directSessionAcceptance {
+func directSessionAcceptanceFromRecord(record store.SessionRecord, idempotencyWarning bool) directSessionAcceptance {
 	return directSessionAcceptance{
-		ResourceID:      string(record.SessionID),
-		SessionID:       string(record.SessionID),
-		AcceptanceScope: "target_authority",
-		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
-		KnownState:      directKnownState{SessionState: string(record.State)},
+		ResourceID:         string(record.SessionID),
+		SessionID:          string(record.SessionID),
+		AcceptanceScope:    "target_authority",
+		ExecutionTarget:    targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
+		KnownState:         directKnownState{SessionState: string(record.State)},
+		IdempotencyWarning: directIdempotencyWarning(idempotencyWarning),
 	}
 }
 
-func directCommandAcceptanceFromRecord(record store.CommandRecord, target domain.ExecutionTarget) directCommandAcceptance {
+func directCommandAcceptanceFromRecord(record store.CommandRecord, target domain.ExecutionTarget, idempotencyWarning bool) directCommandAcceptance {
 	return directCommandAcceptance{
-		ResourceID:      string(record.CommandID),
-		CommandID:       string(record.CommandID),
-		SessionID:       string(record.SessionID),
-		AcceptanceScope: "target_authority",
-		ExecutionTarget: targetResponse{Kind: string(target.Kind()), Profile: target.Profile()},
-		KnownState:      directKnownState{CommandState: string(record.State)},
+		ResourceID:         string(record.CommandID),
+		CommandID:          string(record.CommandID),
+		SessionID:          string(record.SessionID),
+		AcceptanceScope:    "target_authority",
+		ExecutionTarget:    targetResponse{Kind: string(target.Kind()), Profile: target.Profile()},
+		KnownState:         directKnownState{CommandState: string(record.State)},
+		IdempotencyWarning: directIdempotencyWarning(idempotencyWarning),
 	}
+}
+
+func directIdempotencyWarning(warning bool) string {
+	if warning {
+		return "deduplication_not_guaranteed"
+	}
+	return ""
 }
 
 func directSessionError(err error) (int, string, string) {

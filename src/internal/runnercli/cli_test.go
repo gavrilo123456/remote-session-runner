@@ -101,6 +101,30 @@ func TestP119NoWaitReturnsAcceptedIDWithoutPolling(t *testing.T) {
 	}
 }
 
+func TestP122ExpiryWarningIsWrittenToStderrWithoutChangingStdout(t *testing.T) {
+	client := &fakeSessionClient{
+		kind: runnerclient.EndpointUnixSocket,
+		acceptance: runnerclient.Acceptance{
+			ResourceID: "session-p122-warning", SessionID: "session-p122-warning",
+			AcceptanceScope: "local_intent", ExecutionTarget: runnerclient.Target{Kind: "remote", Profile: "linux-host"},
+			KnownState:         runnerclient.KnownState{DeliveryState: "recorded"},
+			IdempotencyWarning: runnerclient.IdempotencyWarningDeduplicationNotGuaranteed,
+		},
+	}
+	resolver := &fakeEndpointResolver{clients: map[string]sessionClient{"local": client}}
+	var stdout, stderr bytes.Buffer
+	code := runWithDependencies([]string{
+		"--endpoint", "local", "session", "create", "--environment", "linux-dev",
+		"--target", "remote", "--profile", "linux-host", "--no-wait",
+	}, &stdout, &stderr, cliDependencies{resolver: resolver})
+	if code != 0 {
+		t.Fatalf("create --no-wait exit code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "deduplication_not_guaranteed") || !strings.Contains(stderr.String(), "deduplication is not guaranteed for this idempotency key") {
+		t.Fatalf("warning stream placement: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestP119ReadinessTimeoutRetainsSessionIDWithoutCancelling(t *testing.T) {
 	client := &fakeSessionClient{
 		kind: runnerclient.EndpointUnixSocket,

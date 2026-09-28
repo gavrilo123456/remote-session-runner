@@ -274,6 +274,7 @@
         ]
       },
       "AcceptanceScope": { "type": "string", "enum": ["local_intent", "target_authority"] },
+      "IdempotencyWarning": { "type": "string", "enum": ["deduplication_not_guaranteed"], "description": "The key was previously used outside its guarantee window; this response does not restore deduplication for earlier work." },
       "KnownState": {
         "type": "object",
         "properties": {
@@ -287,25 +288,25 @@
       },
       "SessionAcceptance": {
         "type": "object",
-        "properties": { "resource_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1, "description": "Equal to resource_id for this response." }, "intent_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" } },
+        "properties": { "resource_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1, "description": "Equal to resource_id for this response." }, "intent_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" }, "idempotency_warning": { "$ref": "#/components/schemas/IdempotencyWarning" } },
         "required": ["resource_id", "session_id", "acceptance_scope", "execution_target", "known_state"],
         "additionalProperties": false
       },
       "CommandAcceptance": {
         "type": "object",
-        "properties": { "resource_id": { "type": "string", "minLength": 1 }, "command_id": { "type": "string", "minLength": 1, "description": "Equal to resource_id for this response." }, "session_id": { "type": "string", "minLength": 1 }, "intent_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" } },
+        "properties": { "resource_id": { "type": "string", "minLength": 1 }, "command_id": { "type": "string", "minLength": 1, "description": "Equal to resource_id for this response." }, "session_id": { "type": "string", "minLength": 1 }, "intent_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" }, "idempotency_warning": { "$ref": "#/components/schemas/IdempotencyWarning" } },
         "required": ["resource_id", "command_id", "session_id", "acceptance_scope", "execution_target", "known_state"],
         "additionalProperties": false
       },
       "CloseAcceptance": {
         "type": "object",
-        "properties": { "resource_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" } },
+        "properties": { "resource_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" }, "idempotency_warning": { "$ref": "#/components/schemas/IdempotencyWarning" } },
         "required": ["resource_id", "session_id", "acceptance_scope", "execution_target", "known_state"],
         "additionalProperties": false
       },
       "JobAcceptance": {
         "type": "object",
-        "properties": { "resource_id": { "type": "string", "minLength": 1, "description": "Equal to job_id for this response." }, "job_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "command_id": { "type": "string", "minLength": 1 }, "intent_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" } },
+        "properties": { "resource_id": { "type": "string", "minLength": 1, "description": "Equal to job_id for this response." }, "job_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "command_id": { "type": "string", "minLength": 1 }, "intent_id": { "type": "string", "minLength": 1 }, "acceptance_scope": { "$ref": "#/components/schemas/AcceptanceScope" }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "known_state": { "$ref": "#/components/schemas/KnownState" }, "idempotency_warning": { "$ref": "#/components/schemas/IdempotencyWarning" } },
         "required": ["resource_id", "job_id", "session_id", "command_id", "acceptance_scope", "execution_target", "known_state"],
         "additionalProperties": false
       },

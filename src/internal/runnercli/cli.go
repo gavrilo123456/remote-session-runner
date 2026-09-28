@@ -228,6 +228,7 @@ func runSessionCreate(args []string, endpointName, configPath string, waitTimeou
 		fmt.Fprintf(stderr, "runner: session create failed; retry only with the same --idempotency-key %q if delivery may be uncertain: %v\n", idempotencyKey, err)
 		return 1
 	}
+	writeIdempotencyWarning(stderr, accepted)
 
 	fmt.Fprintf(stdout, "endpoint: %s\n", endpointName)
 	fmt.Fprintf(stdout, "session_id: %s\n", accepted.SessionID)
@@ -350,6 +351,7 @@ func runCommandCancel(args []string, endpointName, configPath string, stdout, st
 		fmt.Fprintf(stderr, "runner: cancel acceptance did not identify command %s; preserve idempotency key %q\n", commandID, idempotencyKey)
 		return 1
 	}
+	writeIdempotencyWarning(stderr, accepted)
 	fmt.Fprintf(stdout, "endpoint: %s\ncommand_id: %s\ncancel_requested: accepted\nacceptance_scope: %s\n", endpointName, commandID, valueOrUnknown(accepted.AcceptanceScope))
 	fmt.Fprintf(stdout, "command_state: %s\n", valueOrUnknown(accepted.KnownState.CommandState))
 	if accepted.KnownState.DeliveryState != "" {
@@ -413,6 +415,7 @@ func runSessionClose(args []string, endpointName, configPath string, waitTimeout
 		fmt.Fprintf(stderr, "runner: close acceptance did not identify session %s; preserve idempotency key %q\n", sessionID, idempotencyKey)
 		return 1
 	}
+	writeIdempotencyWarning(stderr, accepted)
 	fmt.Fprintf(stdout, "endpoint: %s\nsession_id: %s\nclose_requested: accepted\nclose_policy: %s\nacceptance_scope: %s\n", endpointName, sessionID, policy, valueOrUnknown(accepted.AcceptanceScope))
 	if accepted.KnownState.DeliveryState != "" {
 		fmt.Fprintf(stdout, "delivery_state: %s\n", accepted.KnownState.DeliveryState)
@@ -526,6 +529,7 @@ func runOneOffJob(args []string, endpointName, configPath string, waitTimeout ti
 		fmt.Fprintf(stderr, "runner: job acceptance was malformed; preserve idempotency key %q\n", idempotencyKey)
 		return 1
 	}
+	writeIdempotencyWarning(stderr, accepted)
 	fmt.Fprintf(stderr, "endpoint: %s\njob_id: %s\nsession_id: %s\ncommand_id: %s\nacceptance_scope: %s\nexecution_target: %s/%s\n", endpointName, accepted.JobID, accepted.SessionID, accepted.CommandID, valueOrUnknown(accepted.AcceptanceScope), accepted.ExecutionTarget.Kind, accepted.ExecutionTarget.Profile)
 
 	jobDeadline := dependencies.now().Add(waitTimeout)
@@ -893,6 +897,7 @@ func runCommandExec(args []string, endpointName, configPath string, stdout, stde
 		fmt.Fprintf(stderr, "runner: command acceptance was malformed; session_id: %s; idempotency_key: %s\n", sessionID, idempotencyKey)
 		return 1
 	}
+	writeIdempotencyWarning(stderr, accepted)
 	fmt.Fprintf(stderr, "endpoint: %s\nsession_id: %s\ncommand_id: %s\nacceptance_scope: %s\n", endpointName, sessionID, accepted.CommandID, valueOrUnknown(accepted.AcceptanceScope))
 
 	cursor, _, err := consumeCommandEvents(context.Background(), client, accepted.CommandID, 0, true, stdout, stderr, dependencies)
@@ -1331,6 +1336,12 @@ func valueOrUnknown(value string) string {
 		return "unknown"
 	}
 	return value
+}
+
+func writeIdempotencyWarning(stderr io.Writer, accepted runnerclient.Acceptance) {
+	if accepted.IdempotencyWarning == runnerclient.IdempotencyWarningDeduplicationNotGuaranteed {
+		fmt.Fprintln(stderr, "runner: warning: deduplication is not guaranteed for this idempotency key")
+	}
 }
 
 func newIdempotencyKey() (string, error) {

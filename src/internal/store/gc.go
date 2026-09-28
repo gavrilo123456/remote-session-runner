@@ -43,8 +43,9 @@ type GarbageCollectionReport struct {
 }
 
 // CollectGarbage expires output payloads at the 30-day boundary, removes
-// expired idempotency bindings, and removes terminal metadata only after the
-// 90-day boundary. Unconfirmed session reservations and command slots pin all
+// expired idempotency bindings after retaining a short-lived key fingerprint
+// warning marker, and removes terminal metadata only after the 90-day
+// boundary. Unconfirmed session reservations and command slots pin all
 // related parent metadata, so GC can never free residual runtime capacity.
 func (s *AuthorityStore) CollectGarbage(ctx context.Context, options GarbageCollectionOptions) (GarbageCollectionReport, error) {
 	if s == nil || s.db == nil {
@@ -66,12 +67,104 @@ func (s *AuthorityStore) CollectGarbage(ctx context.Context, options GarbageColl
 	metadataCutoff := now.Add(-metadataRetention)
 	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (GarbageCollectionReport, error) {
 		var report GarbageCollectionReport
+		rows, err := connection.QueryContext(ctx, `
+SELECT controller_type, controller_id, operation, idempotency_key, expires_at
+FROM exec_idempotency WHERE expires_at <= ?
+`, formatStoredTime(now))
+		if err != nil {
+			return report, fmt.Errorf("read expired idempotency keys: %w", err)
+		}
+		type expiredIdempotencyKey struct {
+			controllerType string
+			controllerID   string
+			operation      string
+			key            string
+			expiresAt      string
+		}
+		var expiredKeys []expiredIdempotencyKey
+		for rows.Next() {
+			var key expiredIdempotencyKey
+			if err := rows.Scan(&key.controllerType, &key.controllerID, &key.operation, &key.key, &key.expiresAt); err != nil {
+				rows.Close()
+				return report, fmt.Errorf("scan expired idempotency key: %w", err)
+			}
+			expiredKeys = append(expiredKeys, key)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return report, fmt.Errorf("read expired idempotency keys: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return report, fmt.Errorf("close expired idempotency key rows: %w", err)
+		}
+		for _, expired := range expiredKeys {
+			controllerID, err := domain.NewControllerID(expired.controllerID)
+			if err != nil {
+				return report, fmt.Errorf("validate expired idempotency controller ID: %w", err)
+			}
+			controller, err := domain.NewControllerIdentity(domain.ControllerType(expired.controllerType), controllerID)
+			if err != nil {
+				return report, fmt.Errorf("validate expired idempotency controller: %w", err)
+			}
+			expiresAt, err := parseStoredTime(expired.expiresAt)
+			if err != nil {
+				return report, fmt.Errorf("parse expired idempotency expiry: %w", err)
+			}
+			if err := recordIdempotencyExpiryWarningOnConnection(ctx, connection, controller, expired.operation, expired.key, expiresAt, now); err != nil {
+				return report, err
+			}
+		}
 		result, err := connection.ExecContext(ctx, "DELETE FROM exec_idempotency WHERE expires_at <= ?", formatStoredTime(now))
 		if err != nil {
 			return report, fmt.Errorf("garbage-collect idempotency: %w", err)
 		}
 		if report.IdempotencyRecordsDeleted, err = rowsAffected(result); err != nil {
 			return report, err
+		}
+		warningRows, err := connection.QueryContext(ctx, `
+SELECT controller_type, controller_id, operation, key_fingerprint, warning_until
+FROM exec_idempotency_expiry_warnings
+`)
+		if err != nil {
+			return report, fmt.Errorf("read idempotency expiry warnings: %w", err)
+		}
+		type expiredWarning struct {
+			controllerType string
+			controllerID   string
+			operation      string
+			fingerprint    []byte
+			warningUntil   string
+		}
+		var expiredWarnings []expiredWarning
+		for warningRows.Next() {
+			var warning expiredWarning
+			if err := warningRows.Scan(&warning.controllerType, &warning.controllerID, &warning.operation, &warning.fingerprint, &warning.warningUntil); err != nil {
+				warningRows.Close()
+				return report, fmt.Errorf("scan idempotency expiry warning: %w", err)
+			}
+			expiredWarnings = append(expiredWarnings, warning)
+		}
+		if err := warningRows.Err(); err != nil {
+			warningRows.Close()
+			return report, fmt.Errorf("read idempotency expiry warnings: %w", err)
+		}
+		if err := warningRows.Close(); err != nil {
+			return report, fmt.Errorf("close idempotency expiry warning rows: %w", err)
+		}
+		for _, warning := range expiredWarnings {
+			warningUntil, err := parseStoredTime(warning.warningUntil)
+			if err != nil {
+				return report, fmt.Errorf("parse idempotency expiry warning: %w", err)
+			}
+			if now.Before(warningUntil) {
+				continue
+			}
+			if _, err := connection.ExecContext(ctx, `
+DELETE FROM exec_idempotency_expiry_warnings
+WHERE controller_type = ? AND controller_id = ? AND operation = ? AND key_fingerprint = ?
+`, warning.controllerType, warning.controllerID, warning.operation, warning.fingerprint); err != nil {
+				return report, fmt.Errorf("garbage-collect idempotency expiry warning: %w", err)
+			}
 		}
 
 		result, err = connection.ExecContext(ctx, `

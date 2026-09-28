@@ -73,6 +73,7 @@ type CommandRecord struct {
 	OutputUnavailableReason string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
+	IdempotencyWarning      bool
 }
 
 // CommandEventRecord is one durable event in a command's ordered stream.
@@ -148,8 +149,13 @@ func (s *AuthorityStore) AcceptCommand(ctx context.Context, input CommandAccepta
 			if err != nil {
 				return CommandRecord{}, fmt.Errorf("read idempotent command: %w", err)
 			}
+			record.IdempotencyWarning = existing.DeduplicationWarning
 			duplicate = true
 			return record, nil
+		}
+		warning, err := idempotencyExpiryWarningOnConnection(ctx, connection, controller, submitCommandOperation, validated.IdempotencyKey, now)
+		if err != nil {
+			return CommandRecord{}, err
 		}
 		if sessionState != string(domain.SessionStateReady) && sessionState != string(domain.SessionStateBusy) {
 			return CommandRecord{}, fmt.Errorf("%w: current state %q", ErrCommandSessionState, sessionState)
@@ -187,10 +193,13 @@ VALUES (?, 1, 'command_queued', X'', 0, ?)
 			return CommandRecord{}, err
 		}
 		idempotencyInput.CreatedAt, idempotencyInput.ExpiresAt = now, now.Add(validated.IdempotencyRetention)
+		idempotencyInput.DeduplicationWarning = warning
 		if err := recordIdempotencyOnConnection(ctx, connection, idempotencyInput); err != nil {
 			return CommandRecord{}, err
 		}
-		return readCommandOnConnection(ctx, connection, validated.CommandID)
+		created, err := readCommandOnConnection(ctx, connection, validated.CommandID)
+		created.IdempotencyWarning = warning
+		return created, err
 	})
 	if err != nil {
 		return CommandRecord{}, false, err

@@ -64,18 +64,19 @@ type SessionCreate struct {
 // store. Target, environment, and controller identity are immutable for the
 // lifetime of a session.
 type SessionRecord struct {
-	SessionID         domain.SessionID
-	Target            domain.ExecutionTarget
-	Environment       string
-	Controller        domain.ControllerIdentity
-	Source            domain.Source
-	ResolvedRevision  string
-	RuntimeGeneration string
-	State             domain.SessionState
-	Limits            domain.EffectiveSessionLimits
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	ExpiresAt         time.Time
+	SessionID          domain.SessionID
+	Target             domain.ExecutionTarget
+	Environment        string
+	Controller         domain.ControllerIdentity
+	Source             domain.Source
+	ResolvedRevision   string
+	RuntimeGeneration  string
+	State              domain.SessionState
+	Limits             domain.EffectiveSessionLimits
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	ExpiresAt          time.Time
+	IdempotencyWarning bool
 }
 
 // SessionLifecycleRecord is one durable state transition. The first record
@@ -150,9 +151,11 @@ func (s *AuthorityStore) AcceptSessionCreate(ctx context.Context, input SessionC
 	now := s.now().UTC()
 	expiresAt := now.Add(validated.IdempotencyRetention)
 	record, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
-		if existing, found, err := lookupIdempotencyOnConnection(ctx, connection, validated.SessionCreate.Controller, createSessionOperation, validated.IdempotencyKey, now); err != nil {
+		existing, found, err := lookupIdempotencyOnConnection(ctx, connection, validated.SessionCreate.Controller, createSessionOperation, validated.IdempotencyKey, now)
+		if err != nil {
 			return SessionRecord{}, err
-		} else if found {
+		}
+		if found {
 			if domain.CompareIdempotency(existing.Hash, validated.RequestHash) == domain.IdempotencyConflict {
 				return SessionRecord{}, ErrIdempotencyConflict
 			}
@@ -167,17 +170,24 @@ func (s *AuthorityStore) AcceptSessionCreate(ctx context.Context, input SessionC
 			if err != nil {
 				return SessionRecord{}, fmt.Errorf("read idempotent session: %w", err)
 			}
+			existingRecord.IdempotencyWarning = existing.DeduplicationWarning
 			duplicate = true
 			return existingRecord, nil
+		}
+		warning, err := idempotencyExpiryWarningOnConnection(ctx, connection, validated.SessionCreate.Controller, createSessionOperation, validated.IdempotencyKey, now)
+		if err != nil {
+			return SessionRecord{}, err
 		}
 
 		if err := ensureSessionCapacity(ctx, connection, validated.MaxActiveSessions); err != nil {
 			return SessionRecord{}, err
 		}
-		if err := insertSessionAcceptance(ctx, connection, validated.SessionCreate, validated.IdempotencyKey, validated.RequestHash, expiresAt, now); err != nil {
+		if err := insertSessionAcceptance(ctx, connection, validated.SessionCreate, validated.IdempotencyKey, validated.RequestHash, expiresAt, now, warning); err != nil {
 			return SessionRecord{}, err
 		}
-		return readSessionOnConnection(ctx, connection, validated.SessionCreate.SessionID)
+		created, err := readSessionOnConnection(ctx, connection, validated.SessionCreate.SessionID)
+		created.IdempotencyWarning = warning
+		return created, err
 	})
 	if err != nil {
 		return SessionRecord{}, false, err
@@ -199,7 +209,7 @@ func (s *AuthorityStore) CreateSession(ctx context.Context, input SessionCreate)
 		if err := ensureSessionCapacity(ctx, connection, DefaultActiveSessionLimit); err != nil {
 			return SessionRecord{}, err
 		}
-		if err := insertSessionAcceptance(ctx, connection, validated, "", domain.CanonicalHash{}, time.Time{}, now); err != nil {
+		if err := insertSessionAcceptance(ctx, connection, validated, "", domain.CanonicalHash{}, time.Time{}, now, false); err != nil {
 			return SessionRecord{}, err
 		}
 		return readSessionOnConnection(ctx, connection, validated.SessionID)
@@ -620,7 +630,7 @@ WHERE host_key = ? AND cleanup_confirmed_at IS NULL
 	return nil
 }
 
-func insertSessionAcceptance(ctx context.Context, connection *sql.Conn, validated SessionCreate, idempotencyKey string, requestHash domain.CanonicalHash, idempotencyExpiresAt, now time.Time) error {
+func insertSessionAcceptance(ctx context.Context, connection *sql.Conn, validated SessionCreate, idempotencyKey string, requestHash domain.CanonicalHash, idempotencyExpiresAt, now time.Time, idempotencyWarning bool) error {
 	var existing int
 	err := connection.QueryRowContext(ctx,
 		"SELECT 1 FROM exec_sessions WHERE session_id = ?", string(validated.SessionID)).Scan(&existing)
@@ -669,6 +679,7 @@ VALUES (?, ?, ?)
 			return err
 		}
 		input.CreatedAt, input.ExpiresAt = now, idempotencyExpiresAt
+		input.DeduplicationWarning = idempotencyWarning
 		if err := recordIdempotencyOnConnection(ctx, connection, input); err != nil {
 			return err
 		}
