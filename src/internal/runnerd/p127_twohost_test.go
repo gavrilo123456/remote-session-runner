@@ -36,7 +36,7 @@ func TestP127UbuntuAuditRowsAndJournalForDirectIngress(t *testing.T) {
 	if os.Getenv("RSR_P127_AUDIT_HOST_GATE") != "1" {
 		t.Skip("set RSR_P127_AUDIT_HOST_GATE=1 to inspect live Ubuntu audit rows and service logs")
 	}
-	identity := p127RequiredHostFixture(t, "RUNNER_P124_SSH_IDENTITY")
+	identity := p127RequiredHostFixture(t, "RUNNER_P124_INSPECT_SSH_IDENTITY")
 	knownHosts := p127RequiredHostFixture(t, "RUNNER_P124_SSH_KNOWN_HOSTS")
 	sinceID := p127AuditHighWater(t, identity, knownHosts)
 	logSince := time.Now().Add(-time.Second).Unix()
@@ -116,8 +116,7 @@ func TestP127UbuntuAuditRowsAndJournalForDirectIngress(t *testing.T) {
 
 func p127ReadAuditRecords(t *testing.T, identity, knownHosts string, afterID int64) []p127RemoteAuditRecord {
 	t.Helper()
-	python := fmt.Sprintf(`import json,sqlite3; c=sqlite3.connect("file:/home/ubuntu/.local/share/remote-session-runner/state/remote.db?mode=ro",uri=True); q="SELECT id,principal_type,principal_id,ingress,COALESCE(environment,''),COALESCE(session_id,''),COALESCE(command_id,''),COALESCE(job_id,''),action,outcome,reason_code,occurred_at FROM runner_audit_records WHERE id > %d ORDER BY id LIMIT 10000"; cur=c.execute(q); keys=[d[0] for d in cur.description]; print(json.dumps([dict(zip(keys,r)) for r in cur.fetchall()]))`, afterID)
-	contents := p127RemoteCommand(t, identity, knownHosts, "python3 -c "+p127ShellQuote(python))
+	contents := p127HostAuditRead(t, identity, knownHosts, "rows", afterID)
 	var records []p127RemoteAuditRecord
 	if err := json.Unmarshal(contents, &records); err != nil {
 		t.Fatalf("decode Ubuntu audit query JSON: %v", err)
@@ -127,13 +126,31 @@ func p127ReadAuditRecords(t *testing.T, identity, knownHosts string, afterID int
 
 func p127AuditHighWater(t *testing.T, identity, knownHosts string) int64 {
 	t.Helper()
-	python := `import sqlite3; c=sqlite3.connect("file:/home/ubuntu/.local/share/remote-session-runner/state/remote.db?mode=ro",uri=True); print(c.execute("SELECT COALESCE(MAX(id),0) FROM runner_audit_records").fetchone()[0])`
-	contents := p127RemoteCommand(t, identity, knownHosts, "python3 -c "+p127ShellQuote(python))
+	contents := p127HostAuditRead(t, identity, knownHosts, "highwater", 0)
 	value, err := strconv.ParseInt(strings.TrimSpace(string(contents)), 10, 64)
 	if err != nil {
 		t.Fatalf("decode Ubuntu audit high-water ID: %v", err)
 	}
 	return value
+}
+
+func p127HostAuditRead(t *testing.T, identity, knownHosts, mode string, afterID int64) []byte {
+	t.Helper()
+	if mode != "highwater" && mode != "rows" {
+		t.Fatalf("unsupported Ubuntu audit read mode %q", mode)
+	}
+	command := fmt.Sprintf("cd /home/ubuntu/projects/remote-session-runner && GOCACHE=/home/ubuntu/.cache/go-build GOMODCACHE=/home/ubuntu/go/pkg/mod RSR_P127_HOST_AUDIT_MODE=%s RSR_P127_HOST_AUDIT_AFTER_ID=%d make GO=%s test-p127-host-audit-read",
+		p127ShellQuote(mode), afterID, p127ShellQuote("/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go"))
+	contents := p127RemoteCommand(t, identity, knownHosts, command)
+	prefix := "P127_HOST_AUDIT_" + strings.ToUpper(mode) + "="
+	for _, line := range strings.Split(string(contents), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return []byte(strings.TrimPrefix(line, prefix))
+		}
+	}
+	t.Fatalf("Ubuntu Go audit reader omitted %s output: %q", prefix, contents)
+	return nil
 }
 
 func p127RemoteCommand(t *testing.T, identity, knownHosts, command string) []byte {
@@ -163,11 +180,14 @@ func p127RequiredHostFixture(t *testing.T, name string) string {
 	if err != nil || !info.Mode().IsRegular() {
 		t.Fatalf("%s must name an existing regular file", name)
 	}
-	if name == "RUNNER_P124_SSH_IDENTITY" {
+	if name == "RUNNER_P124_SSH_IDENTITY" || name == "RUNNER_P124_INSPECT_SSH_IDENTITY" {
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0o077 != 0 || info.Mode().Perm()&0o400 == 0 {
 			t.Fatalf("%s must be owner-readable and owner-only", name)
 		}
+	}
+	if name == "RUNNER_P124_INSPECT_SSH_IDENTITY" && path != "/Users/tomasz.walczuk/.ssh/remote-session-runner" {
+		t.Fatalf("%s must use the selected host-inspection key", name)
 	}
 	return path
 }

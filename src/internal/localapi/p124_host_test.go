@@ -85,18 +85,21 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 	clientCert := p124RequiredFixturePath(t, "RUNNER_P124_CLIENT_CERT")
 	clientKey := p124RequiredFixturePath(t, "RUNNER_P124_CLIENT_KEY")
 	sshIdentity := p124RequiredFixturePath(t, "RUNNER_P124_SSH_IDENTITY")
+	inspectSSHIdentity := p124RequiredFixturePath(t, "RUNNER_P124_INSPECT_SSH_IDENTITY")
 	knownHosts := p124RequiredFixturePath(t, "RUNNER_P124_SSH_KNOWN_HOSTS")
 	for name, path := range map[string]string{
 		"RUNNER_P124_SERVER_CA": serverCA, "RUNNER_P124_CLIENT_CERT": clientCert,
 		"RUNNER_P124_CLIENT_KEY": clientKey, "RUNNER_P124_SSH_IDENTITY": sshIdentity,
-		"RUNNER_P124_SSH_KNOWN_HOSTS": knownHosts,
+		"RUNNER_P124_INSPECT_SSH_IDENTITY": inspectSSHIdentity,
+		"RUNNER_P124_SSH_KNOWN_HOSTS":      knownHosts,
 	} {
 		want := map[string]string{
-			"RUNNER_P124_SERVER_CA":       filepath.Join(config.MacServiceRoot, "secrets", "poc-ca.pem"),
-			"RUNNER_P124_CLIENT_CERT":     filepath.Join(config.MacServiceRoot, "secrets", "direct-client.pem"),
-			"RUNNER_P124_CLIENT_KEY":      filepath.Join(config.MacServiceRoot, "secrets", "direct-client.key"),
-			"RUNNER_P124_SSH_IDENTITY":    filepath.Join(config.MacServiceRoot, "secrets", "dispatcher_ed25519"),
-			"RUNNER_P124_SSH_KNOWN_HOSTS": filepath.Join(config.MacServiceRoot, "secrets", "ssh_known_hosts"),
+			"RUNNER_P124_SERVER_CA":            filepath.Join(config.MacServiceRoot, "secrets", "poc-ca.pem"),
+			"RUNNER_P124_CLIENT_CERT":          filepath.Join(config.MacServiceRoot, "secrets", "direct-client.pem"),
+			"RUNNER_P124_CLIENT_KEY":           filepath.Join(config.MacServiceRoot, "secrets", "direct-client.key"),
+			"RUNNER_P124_SSH_IDENTITY":         filepath.Join(config.MacServiceRoot, "secrets", "dispatcher_ed25519"),
+			"RUNNER_P124_INSPECT_SSH_IDENTITY": filepath.Join("/Users", config.MacAccount, ".ssh", "remote-session-runner"),
+			"RUNNER_P124_SSH_KNOWN_HOSTS":      filepath.Join(config.MacServiceRoot, "secrets", "ssh_known_hosts"),
 		}[name]
 		if path != want {
 			t.Fatalf("%s points to %q, want selected host file %q", name, path, want)
@@ -207,7 +210,7 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 	if deniedEnvironment.code == 0 {
 		t.Fatalf("unknown local environment was accepted: %+v", deniedEnvironment)
 	}
-	ubuntuAuditAfter := p124UbuntuAuditHighWater(t, sshIdentity, knownHosts)
+	ubuntuAuditAfter := p124UbuntuAuditHighWater(t, inspectSSHIdentity, knownHosts)
 	ubuntuLogSince := time.Now().Add(-time.Second).Unix()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -342,7 +345,7 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 		}
 	}
 
-	ubuntuRows := p124ReadUbuntuAuditRows(t, sshIdentity, knownHosts, ubuntuAuditAfter)
+	ubuntuRows := p124ReadUbuntuAuditRows(t, inspectSSHIdentity, knownHosts, ubuntuAuditAfter)
 	ubuntuActions := map[string]map[string]map[string]int{}
 	for _, row := range ubuntuRows {
 		if row.ID <= ubuntuAuditAfter || row.Principal != config.MacAccount || row.OccurredAt == "" ||
@@ -380,7 +383,7 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 			}
 		}
 	}
-	ubuntuJournal := p124RemoteCommand(t, sshIdentity, knownHosts,
+	ubuntuJournal := p124RemoteCommand(t, inspectSSHIdentity, knownHosts,
 		fmt.Sprintf("sudo -n journalctl -u runnerd.service --since=@%d -n 3000 --no-pager -o cat", ubuntuLogSince))
 	var ubuntuAuditLines []string
 	for _, line := range strings.Split(string(ubuntuJournal), "\n") {
@@ -492,8 +495,7 @@ func p124AssertMacAuditLogs(t *testing.T, logs string) {
 
 func p124ReadUbuntuAuditRows(t *testing.T, identity, knownHosts string, afterID int64) []p124RemoteAuditRecord {
 	t.Helper()
-	python := fmt.Sprintf(`import json,sqlite3; c=sqlite3.connect("file:/home/ubuntu/.local/share/remote-session-runner/state/remote.db?mode=ro",uri=True); q="SELECT id,principal_id,ingress,COALESCE(session_id,''),COALESCE(command_id,''),action,outcome,occurred_at FROM runner_audit_records WHERE id > %d ORDER BY id LIMIT 10000"; cur=c.execute(q); keys=[d[0] for d in cur.description]; print(json.dumps([dict(zip(keys,r)) for r in cur.fetchall()]))`, afterID)
-	contents := p124RemoteCommand(t, identity, knownHosts, "python3 -c "+p124ShellQuote(python))
+	contents := p124HostAuditRead(t, identity, knownHosts, "rows", afterID)
 	var rows []p124RemoteAuditRecord
 	if err := json.Unmarshal(contents, &rows); err != nil {
 		t.Fatalf("decode Ubuntu P124 audit query JSON: %v", err)
@@ -503,13 +505,31 @@ func p124ReadUbuntuAuditRows(t *testing.T, identity, knownHosts string, afterID 
 
 func p124UbuntuAuditHighWater(t *testing.T, identity, knownHosts string) int64 {
 	t.Helper()
-	python := `import sqlite3; c=sqlite3.connect("file:/home/ubuntu/.local/share/remote-session-runner/state/remote.db?mode=ro",uri=True); print(c.execute("SELECT COALESCE(MAX(id),0) FROM runner_audit_records").fetchone()[0])`
-	contents := p124RemoteCommand(t, identity, knownHosts, "python3 -c "+p124ShellQuote(python))
+	contents := p124HostAuditRead(t, identity, knownHosts, "highwater", 0)
 	value, err := strconv.ParseInt(strings.TrimSpace(string(contents)), 10, 64)
 	if err != nil {
 		t.Fatalf("decode Ubuntu P124 audit high-water ID: %v", err)
 	}
 	return value
+}
+
+func p124HostAuditRead(t *testing.T, identity, knownHosts, mode string, afterID int64) []byte {
+	t.Helper()
+	if mode != "highwater" && mode != "rows" {
+		t.Fatalf("unsupported Ubuntu audit read mode %q", mode)
+	}
+	command := fmt.Sprintf("cd /home/ubuntu/projects/remote-session-runner && GOCACHE=/home/ubuntu/.cache/go-build GOMODCACHE=/home/ubuntu/go/pkg/mod RSR_P127_HOST_AUDIT_MODE=%s RSR_P127_HOST_AUDIT_AFTER_ID=%d make GO=%s test-p127-host-audit-read",
+		p124ShellQuote(mode), afterID, p124ShellQuote("/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go"))
+	contents := p124RemoteCommand(t, identity, knownHosts, command)
+	prefix := "P127_HOST_AUDIT_" + strings.ToUpper(mode) + "="
+	for _, line := range strings.Split(string(contents), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return []byte(strings.TrimPrefix(line, prefix))
+		}
+	}
+	t.Fatalf("Ubuntu Go audit reader omitted %s output: %q", prefix, contents)
+	return nil
 }
 
 func p124RemoteCommand(t *testing.T, identity, knownHosts, command string) []byte {
