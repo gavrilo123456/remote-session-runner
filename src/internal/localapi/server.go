@@ -26,6 +26,8 @@ import (
 
 const DefaultMaxBodyBytes int64 = domain.MaxSerializedRequestBytes
 
+const localAPIEventLastSequenceHeader = "X-Runner-Last-Sequence"
+
 var (
 	ErrConfiguration = errors.New("local API configuration is invalid")
 	ErrSocketPath    = errors.New("local API socket path is invalid")
@@ -244,9 +246,16 @@ type sourceResponse struct {
 }
 
 type errorEnvelope struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable"`
+	Code       string                    `json:"code"`
+	Message    string                    `json:"message"`
+	Retryable  bool                      `json:"retryable"`
+	ResourceID string                    `json:"resource_id,omitempty"`
+	Details    *localEventHistoryDetails `json:"details,omitempty"`
+}
+
+type localEventHistoryDetails struct {
+	OutputComplete          bool   `json:"output_complete"`
+	OutputUnavailableReason string `json:"output_unavailable_reason"`
 }
 
 func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) {
@@ -942,49 +951,74 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "local authority command does not match its accepted intent")
 		return
 	}
+	if command.OutputUnavailableReason == "retention_expired" {
+		writeLocalEventHistoryError(response, commandID, "retention_expired")
+		return
+	}
 	if !follow {
 		events, err := s.authority.ReplayCommandEvents(request.Context(), commandID, after)
 		if err != nil {
-			status, code := statusForCommandEventError(err)
-			writeError(response, status, code, sanitizeError(err))
+			s.writeCommandEventReadError(response, commandID, err)
 			return
 		}
-		response.Header().Set("Content-Type", "application/x-ndjson")
+		frames, err := encodeLocalAPIEvents(events, command.Ordinal)
+		if err != nil {
+			writeError(response, http.StatusServiceUnavailable, "database_unavailable", "stored command events could not be encoded")
+			return
+		}
+		last := after
+		if len(events) > 0 {
+			last = events[len(events)-1].Sequence
+		}
+		setLocalAPIEventHeaders(response, "authority", false)
+		response.Header().Set(localAPIEventLastSequenceHeader, strconv.FormatInt(last, 10))
 		response.WriteHeader(http.StatusOK)
-		for _, event := range events {
-			if err := writeLocalAPIEvent(response, event, command.Ordinal); err != nil {
+		for _, frame := range frames {
+			if err := writeLocalAPIEventFrame(response, frame); err != nil {
 				return
 			}
 		}
 		return
 	}
+	if command.FinalEventSequence != nil && after >= *command.FinalEventSequence {
+		setLocalAPIEventHeaders(response, "authority", false)
+		response.Header().Set(localAPIEventLastSequenceHeader, strconv.FormatInt(after, 10))
+		response.WriteHeader(http.StatusOK)
+		return
+	}
 	subscription, err := s.authority.SubscribeCommandEvents(request.Context(), commandID, after, 256)
 	if err != nil {
-		status, code := statusForCommandEventError(err)
-		writeError(response, status, code, sanitizeError(err))
+		s.writeCommandEventReadError(response, commandID, err)
 		return
 	}
 	defer subscription.Close()
-	response.Header().Set("Content-Type", "application/x-ndjson")
+	setLocalAPIEventHeaders(response, "authority", false)
+	response.Header().Set("Trailer", localAPIEventLastSequenceHeader)
 	response.WriteHeader(http.StatusOK)
+	lastWritten := after
+	defer func() {
+		response.Header().Set(localAPIEventLastSequenceHeader, strconv.FormatInt(lastWritten, 10))
+	}()
 	flusher, _ := response.(http.Flusher)
 	for {
 		select {
 		case event, ok := <-subscription.Events():
 			if !ok {
+				// Overflow closes the channel after preserving the bounded prefix.
+				// Draining it keeps the published cursor resumable.
 				return
 			}
-			if err := writeLocalAPIEvent(response, event, command.Ordinal); err != nil {
+			frame, err := encodeLocalAPIEvent(event, command.Ordinal)
+			if err != nil || writeLocalAPIEventFrame(response, frame) != nil {
 				return
 			}
+			lastWritten = event.Sequence
 			if flusher != nil {
 				flusher.Flush()
 			}
 			if isTerminalLocalAPIEvent(event.Type) {
 				return
 			}
-		case <-subscription.Errors():
-			return
 		case <-request.Context().Done():
 			return
 		}
@@ -995,27 +1029,89 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 // contact the remote authority; the Router owns transport and advances the
 // cursor before an event becomes visible here.
 func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, request *http.Request, commandID domain.CommandID, after int64, follow bool) {
-	events, err := s.authority.ListRemoteEvents(request.Context(), commandID, after)
-	if err != nil {
-		status, code := statusForRemoteEventError(err)
-		writeError(response, status, code, sanitizeError(err))
+	projection, projectionErr := s.authority.GetRemoteCommandProjection(request.Context(), commandID)
+	if projectionErr != nil && !errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
+		status, code := statusForStoreError(projectionErr)
+		writeError(response, status, code, sanitizeError(projectionErr))
 		return
 	}
-	projection, projectionErr := s.authority.GetRemoteCommandProjection(request.Context(), commandID)
 	ordinal := int64(0)
+	stale := true
 	if projectionErr == nil {
 		ordinal = projection.Ordinal
+		stale = projection.IsStale
 	}
-	response.Header().Set("Content-Type", "application/x-ndjson")
+	if projectionErr == nil && projection.OutputUnavailableReason == "retention_expired" {
+		writeLocalEventHistoryError(response, commandID, "retention_expired")
+		return
+	}
+	if projectionErr == nil && projection.OutputUnavailableReason == "remote_event_gap" && projection.FinalEventSequence != nil && after < *projection.FinalEventSequence {
+		writeLocalEventHistoryError(response, commandID, "remote_event_gap")
+		return
+	}
+	gap, gapErr := s.authority.GetRemoteEventGap(request.Context(), commandID)
+	if gapErr == nil && after < gap.MissingTo {
+		writeLocalEventHistoryError(response, commandID, "remote_event_gap")
+		return
+	}
+	if gapErr != nil && !errors.Is(gapErr, store.ErrRemoteGapNotFound) {
+		status, code := statusForStoreError(gapErr)
+		writeError(response, status, code, sanitizeError(gapErr))
+		return
+	}
+	if projectionErr == nil && projection.FinalEventSequence != nil && after >= *projection.FinalEventSequence {
+		setLocalAPIEventHeaders(response, "projection", stale)
+		response.Header().Set(localAPIEventLastSequenceHeader, strconv.FormatInt(after, 10))
+		response.WriteHeader(http.StatusOK)
+		return
+	}
+	events, err := s.authority.ListRemoteEvents(request.Context(), commandID, after)
+	if err != nil {
+		s.writeRemoteEventReadError(response, commandID, err)
+		return
+	}
+	frames, err := encodeRemoteAPIEvents(events, ordinal)
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "stored remote events could not be encoded")
+		return
+	}
+	lastSequence := after
+	if len(events) > 0 {
+		lastSequence = events[len(events)-1].Sequence
+	}
+	setLocalAPIEventHeaders(response, "projection", stale)
+	if !follow {
+		response.Header().Set(localAPIEventLastSequenceHeader, strconv.FormatInt(lastSequence, 10))
+		response.WriteHeader(http.StatusOK)
+		for _, frame := range frames {
+			if writeLocalAPIEventFrame(response, frame) != nil {
+				return
+			}
+		}
+		return
+	}
+	response.Header().Set("Trailer", localAPIEventLastSequenceHeader)
 	response.WriteHeader(http.StatusOK)
 	flusher, _ := response.(http.Flusher)
 	last := after
-	writeEvents := func(values []store.RemoteEventRecord) bool {
-		for _, event := range values {
+	defer func() {
+		response.Header().Set(localAPIEventLastSequenceHeader, strconv.FormatInt(last, 10))
+	}()
+	writeEvents := func(values []store.RemoteEventRecord, prepared [][]byte) bool {
+		for index, event := range values {
 			if event.Sequence <= last {
 				continue
 			}
-			if err := writeRemoteAPIEvent(response, event, ordinal); err != nil {
+			var frame []byte
+			if index < len(prepared) {
+				frame = prepared[index]
+			} else {
+				frame, err = encodeRemoteAPIEvent(event, ordinal)
+				if err != nil {
+					return false
+				}
+			}
+			if writeLocalAPIEventFrame(response, frame) != nil {
 				return false
 			}
 			last = event.Sequence
@@ -1028,7 +1124,7 @@ func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, reques
 		}
 		return true
 	}
-	if !writeEvents(events) || !follow {
+	if !writeEvents(events, frames) || !follow {
 		return
 	}
 	ticker := time.NewTicker(25 * time.Millisecond)
@@ -1040,16 +1136,18 @@ func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, reques
 		case <-ticker.C:
 			newEvents, listErr := s.authority.ListRemoteEvents(request.Context(), commandID, last)
 			if listErr != nil {
+				// Headers are already committed; the cursor trailer lets a client
+				// resume and receive a structured 410 if history is unavailable.
 				return
 			}
-			if !writeEvents(newEvents) {
+			if !writeEvents(newEvents, nil) {
 				return
 			}
 		}
 	}
 }
 
-func writeRemoteAPIEvent(response http.ResponseWriter, event store.RemoteEventRecord, ordinal int64) error {
+func encodeRemoteAPIEvent(event store.RemoteEventRecord, ordinal int64) ([]byte, error) {
 	value := localAPICommandEvent{CommandID: string(event.CommandID), Sequence: event.Sequence, Type: event.Type, Timestamp: event.OccurredAt.UTC()}
 	if event.Type == "command_queued" {
 		value.Ordinal = ordinal
@@ -1059,7 +1157,7 @@ func writeRemoteAPIEvent(response http.ResponseWriter, event store.RemoteEventRe
 		value.DataBase64 = base64.StdEncoding.EncodeToString(event.Payload)
 		value.ByteCount = event.ByteCount
 	}
-	return json.NewEncoder(response).Encode(value)
+	return encodeLocalAPIEventValue(value)
 }
 
 func commandEventsPathID(path string) (domain.CommandID, error) {
@@ -1097,7 +1195,31 @@ func parseLocalEventFollow(value string) (bool, error) {
 	}
 }
 
-func writeLocalAPIEvent(response http.ResponseWriter, event store.CommandEventRecord, ordinal int64) error {
+func encodeLocalAPIEvents(events []store.CommandEventRecord, ordinal int64) ([][]byte, error) {
+	frames := make([][]byte, len(events))
+	for index, event := range events {
+		frame, err := encodeLocalAPIEvent(event, ordinal)
+		if err != nil {
+			return nil, err
+		}
+		frames[index] = frame
+	}
+	return frames, nil
+}
+
+func encodeRemoteAPIEvents(events []store.RemoteEventRecord, ordinal int64) ([][]byte, error) {
+	frames := make([][]byte, len(events))
+	for index, event := range events {
+		frame, err := encodeRemoteAPIEvent(event, ordinal)
+		if err != nil {
+			return nil, err
+		}
+		frames[index] = frame
+	}
+	return frames, nil
+}
+
+func encodeLocalAPIEvent(event store.CommandEventRecord, ordinal int64) ([]byte, error) {
 	value := localAPICommandEvent{CommandID: string(event.CommandID), Sequence: event.Sequence, Type: event.Type, Timestamp: event.OccurredAt.UTC()}
 	if event.Type == "command_queued" {
 		value.Ordinal = ordinal
@@ -1107,7 +1229,63 @@ func writeLocalAPIEvent(response http.ResponseWriter, event store.CommandEventRe
 		value.DataBase64 = base64.StdEncoding.EncodeToString(event.Payload)
 		value.ByteCount = event.ByteCount
 	}
-	return json.NewEncoder(response).Encode(value)
+	return encodeLocalAPIEventValue(value)
+}
+
+func encodeLocalAPIEventValue(value localAPICommandEvent) ([]byte, error) {
+	frame, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return append(frame, '\n'), nil
+}
+
+func writeLocalAPIEventFrame(response http.ResponseWriter, frame []byte) error {
+	written, err := response.Write(frame)
+	if err != nil {
+		return err
+	}
+	if written != len(frame) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func setLocalAPIEventHeaders(response http.ResponseWriter, view string, stale bool) {
+	response.Header().Set("Content-Type", "application/x-ndjson")
+	response.Header().Set("X-Runner-View", view)
+	response.Header().Set("X-Runner-Stale", strconv.FormatBool(stale))
+}
+
+func (s *Server) writeCommandEventReadError(response http.ResponseWriter, commandID domain.CommandID, err error) {
+	switch {
+	case errors.Is(err, store.ErrCommandReplayExpired):
+		writeLocalEventHistoryError(response, commandID, "retention_expired")
+	case errors.Is(err, store.ErrCommandReplayGap):
+		writeLocalEventHistoryError(response, commandID, "remote_event_gap")
+	default:
+		status, code := statusForCommandEventError(err)
+		writeError(response, status, code, sanitizeError(err))
+	}
+}
+
+func (s *Server) writeRemoteEventReadError(response http.ResponseWriter, commandID domain.CommandID, err error) {
+	switch {
+	case errors.Is(err, store.ErrRemoteEventRetentionExpired):
+		writeLocalEventHistoryError(response, commandID, "retention_expired")
+	case errors.Is(err, store.ErrRemoteEventGap):
+		writeLocalEventHistoryError(response, commandID, "remote_event_gap")
+	default:
+		status, code := statusForRemoteEventError(err)
+		writeError(response, status, code, sanitizeError(err))
+	}
+}
+
+func writeLocalEventHistoryError(response http.ResponseWriter, commandID domain.CommandID, reason string) {
+	writeJSON(response, http.StatusGone, errorEnvelope{
+		Code: "event_history_unavailable", Message: "requested event history is unavailable", Retryable: false,
+		ResourceID: string(commandID), Details: &localEventHistoryDetails{OutputComplete: false, OutputUnavailableReason: reason},
+	})
 }
 
 func isTerminalLocalAPIEvent(eventType string) bool {
@@ -1135,9 +1313,9 @@ func statusForCommandEventError(err error) (int, string) {
 func statusForRemoteEventError(err error) (int, string) {
 	switch {
 	case errors.Is(err, store.ErrRemoteEventGap):
-		return http.StatusRequestedRangeNotSatisfiable, "event_history_unavailable"
+		return http.StatusGone, "event_history_unavailable"
 	case errors.Is(err, store.ErrRemoteEventRetentionExpired):
-		return http.StatusRequestedRangeNotSatisfiable, "event_history_unavailable"
+		return http.StatusGone, "event_history_unavailable"
 	case errors.Is(err, store.ErrRemoteEventNotFound):
 		return http.StatusNotFound, "command_not_found"
 	default:
