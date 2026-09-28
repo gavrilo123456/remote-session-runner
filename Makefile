@@ -12,7 +12,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-twohost test-p123-twohost vet build smoke check
+.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -55,6 +55,17 @@ test-p123-twohost: check-go
 	: "$${RUNNER_P123_SSH_KNOWN_HOSTS:?set RUNNER_P123_SSH_KNOWN_HOSTS to the pinned host file}"; \
 	RSR_P123_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test -tags=p123twohost ./src/internal/runnerd -run '^TestP123DirectDisconnectReplaysWithoutRerun$$' -count=1 -v; \
 	RSR_P123_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test -tags=p123twohost ./src/internal/localapi -run '^TestP123QueuedProjectionReconcilesAfterSSHOutage$$' -count=1 -v
+
+# Real Mac CLI smoke through local, queued SSH, and public direct mTLS routes.
+# The Ubuntu Runner and temporary queued-key authorization are host fixtures.
+test-p124-cli-twohost: check-go
+	@set -eu; \
+	: "$${RUNNER_P124_SERVER_CA:?set RUNNER_P124_SERVER_CA to the trusted server CA file}"; \
+	: "$${RUNNER_P124_CLIENT_CERT:?set RUNNER_P124_CLIENT_CERT to the direct mTLS certificate}"; \
+	: "$${RUNNER_P124_CLIENT_KEY:?set RUNNER_P124_CLIENT_KEY to the direct mTLS private key}"; \
+	: "$${RUNNER_P124_SSH_IDENTITY:?set RUNNER_P124_SSH_IDENTITY to the dedicated dispatcher key}"; \
+	: "$${RUNNER_P124_SSH_KNOWN_HOSTS:?set RUNNER_P124_SSH_KNOWN_HOSTS to the pinned Ubuntu host file}"; \
+	RSR_P124_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test -tags=p124twohost ./src/internal/localapi -run '^TestP124CommonCLISmokeAcrossRoutes$$' -count=1 -v
 
 vet: check-go
 	GOTOOLCHAIN=local "$(GO)" vet ./...
