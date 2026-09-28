@@ -1,0 +1,26 @@
+[Unit]
+Description=Remote Session Runner Linux execution service
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/.local/share/remote-session-runner
+Environment=HOME=/home/ubuntu
+UMask=0077
+ExecStart=/home/ubuntu/.local/share/remote-session-runner/bin/runnerd-entrypoint.sh
+Restart=on-failure
+RestartSec=3s
+RestartPreventExitStatus=78
+KillMode=control-group
+TimeoutStopSec=15s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=runnerd
+
+[Install]
+WantedBy=multi-user.target

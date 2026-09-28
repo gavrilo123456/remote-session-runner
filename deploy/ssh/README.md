@@ -1,5 +1,27 @@
 # Linux forced-command SSH deployment
 
+Before authorizing the queued Mac key, install and verify `runnerd.service` on
+Ubuntu with `deploy/linux/install-systemd-service.sh`. The unit runs as
+`ubuntu`; its startup entrypoint refuses to run with an invalid service
+account, a non-owner-only service directory, or a group/other-readable config
+or mTLS credential file. `runnerd` owns `/home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock`
+with mode 0600 beneath the owner-only `run/` directory. The bridge below uses
+that socket and cannot start the execution authority itself. A systemd stop
+closes the private and HTTPS listeners and removes the socket; P130/P132 add
+the shared graceful command-drain behavior.
+
+On Ubuntu, the installer is run from the synchronized project checkout as
+`ubuntu`, without `sudo`:
+
+```sh
+deploy/linux/install-systemd-service.sh
+sudo systemctl status runnerd.service
+```
+
+It builds the checked-out `runnerd` into the external service root, installs
+the versioned unit under `/etc/systemd/system`, and starts it. It does not
+authorize a key or modify `authorized_keys`.
+
 The queued Mac dispatcher key is authorized on Ubuntu with one exact entry:
 
 ```text

@@ -2,9 +2,13 @@ package runnerd
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"remote-session-runner/src/internal/config"
@@ -50,6 +54,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runnerd: --config is required")
 		return 2
 	}
+	signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	loaded, err := config.LoadFile(*configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: load config: %v\n", err)
@@ -128,17 +134,47 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "runnerd private API listening on %s\n", settings.PrivateSocket)
 	fmt.Fprintf(stdout, "runnerd direct HTTPS listening on %s (TLS 1.3, client certificate required)\n", httpsServer.Addr())
-	serveErrors := make(chan error, 2)
-	go func() { serveErrors <- server.Serve() }()
-	go func() { serveErrors <- httpsServer.Serve() }()
-	serveErr := <-serveErrors
-	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = httpsServer.Close(closeCtx)
-	_ = server.Close(closeCtx)
-	if serveErr != nil {
-		fmt.Fprintf(stderr, "runnerd: serve: %v\n", serveErr)
+	if err := serveUntilSignal(signalContext, server, httpsServer); err != nil {
+		fmt.Fprintf(stderr, "runnerd: serve: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// serveUntilSignal owns the two listener goroutines. Closing the private
+// server removes only its own Unix socket, allowing systemd to restart the
+// service without unlinking an unknown path. P132 adds coordinated execution
+// draining; this boundary only stops ingress listeners cleanly.
+func serveUntilSignal(ctx context.Context, privateServer *PrivateServer, httpsServer *DirectHTTPSServer) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	serveErrors := make(chan error, 2)
+	go func() { serveErrors <- privateServer.Serve() }()
+	go func() { serveErrors <- httpsServer.Serve() }()
+
+	remaining := 2
+	var serveErr error
+	select {
+	case serveErr = <-serveErrors:
+		remaining--
+		if ctx.Err() == nil && serveErr == nil {
+			serveErr = errors.New("runnerd listener stopped unexpectedly")
+		}
+	case <-ctx.Done():
+	}
+
+	closeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	closeErr := errors.Join(httpsServer.Close(closeContext), privateServer.Close(closeContext))
+	cancel()
+
+	for i := 0; i < remaining; i++ {
+		select {
+		case err := <-serveErrors:
+			serveErr = errors.Join(serveErr, err)
+		case <-time.After(6 * time.Second):
+			serveErr = errors.Join(serveErr, errors.New("runnerd listener did not stop after close"))
+		}
+	}
+	return errors.Join(serveErr, closeErr)
 }

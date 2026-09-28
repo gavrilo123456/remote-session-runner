@@ -12,7 +12,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services vet build smoke check
+.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -70,6 +70,10 @@ test-p124-cli-twohost: check-go
 # Real Mac launchd lifecycle, owner-only path, Unix socket, and mailbox smoke.
 test-p125-macos-services: check-go
 	@deploy/macos/test-launchagents.sh
+
+# Real Ubuntu systemd lifecycle and owner-only service-path gate.
+test-p126-linux-services: check-go
+	@deploy/linux/test-systemd-service.sh
 
 vet: check-go
 	GOTOOLCHAIN=local "$(GO)" vet ./...
