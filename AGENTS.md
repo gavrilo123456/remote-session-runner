@@ -26,3 +26,7 @@ git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o Identit
 ```
 
 If either checkout is dirty, the branches diverge, authentication fails, or a pull is not fast-forwardable, stop and report the exact state. Do not force-push, reset, overwrite local files, or skip the GitHub handoff. The serial phase/test requirements in the detailed phased implementation plan still apply.
+
+## Go cache and temporary files
+
+On the Mac, use the shared `GOCACHE=/private/tmp/remote-session-runner-gocache` and `GOMODCACHE=/private/tmp/remote-session-runner-gomodcache` configured by the Makefile. Reuse these across phases; do not create a new cache or module-cache copy per phase. On Ubuntu, reuse the selected account's normal Go caches. Use `t.TempDir()` for test fixtures and shell `trap` cleanup for temporary host scripts. Keep generated build/test output outside the Git checkout, and remove only task-owned temporary artifacts after their processes have exited. Do not clean shared or other-project caches.

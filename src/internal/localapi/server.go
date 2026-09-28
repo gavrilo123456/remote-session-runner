@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/store"
 )
@@ -259,6 +260,7 @@ type localEventHistoryDetails struct {
 }
 
 func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	request = request.WithContext(audit.WithIngress(request.Context(), audit.IngressLocalUnix))
 	switch {
 	case request.Method == http.MethodPost && request.URL.Path == "/v1/sessions":
 		s.handleCreateSession(response, request)

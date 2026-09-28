@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 )
 
@@ -35,6 +36,13 @@ type IdempotencyRecord struct {
 // close, and job mutations can use the same key namespace in their own
 // resource transaction.
 func (s *AuthorityStore) EnsureIdempotency(ctx context.Context, controller domain.ControllerIdentity, operation, key string, hash domain.CanonicalHash, resourceID string, retention time.Duration) (record IdempotencyRecord, duplicate bool, err error) {
+	return s.EnsureIdempotencyWithAudit(ctx, controller, operation, key, hash, resourceID, retention, nil)
+}
+
+// EnsureIdempotencyWithAudit accepts the idempotent action and its audit row
+// in one transaction. A duplicate keyed retry is still an allowed action and
+// receives its own row.
+func (s *AuthorityStore) EnsureIdempotencyWithAudit(ctx context.Context, controller domain.ControllerIdentity, operation, key string, hash domain.CanonicalHash, resourceID string, retention time.Duration, actionAudit *audit.Record) (record IdempotencyRecord, duplicate bool, err error) {
 	validated, err := validateIdempotencyInput(controller, operation, key, hash, resourceID, retention)
 	if err != nil {
 		return IdempotencyRecord{}, false, err
@@ -49,6 +57,9 @@ func (s *AuthorityStore) EnsureIdempotency(ctx context.Context, controller domai
 			if domain.CompareIdempotency(existing.Hash, validated.Hash) == domain.IdempotencyConflict {
 				return IdempotencyRecord{}, ErrIdempotencyConflict
 			}
+			if err := insertOptionalAuditOnConnection(ctx, connection, actionAudit); err != nil {
+				return IdempotencyRecord{}, err
+			}
 			duplicate = true
 			return existing, nil
 		}
@@ -61,11 +72,15 @@ func (s *AuthorityStore) EnsureIdempotency(ctx context.Context, controller domai
 		if err := recordIdempotencyOnConnection(ctx, connection, validated); err != nil {
 			return IdempotencyRecord{}, err
 		}
+		if err := insertOptionalAuditOnConnection(ctx, connection, actionAudit); err != nil {
+			return IdempotencyRecord{}, err
+		}
 		return validated.IdempotencyRecord, nil
 	})
 	if err != nil {
 		return IdempotencyRecord{}, false, err
 	}
+	logOptionalAudit(ctx, actionAudit)
 	return record, duplicate, nil
 }
 

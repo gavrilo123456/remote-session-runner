@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
 	"remote-session-runner/src/internal/store"
@@ -176,6 +177,7 @@ type targetResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	request = request.WithContext(audit.WithIngress(request.Context(), audit.IngressLocalWorker))
 	if localSessionPathPrefix(request.URL.Path) != "" {
 		if request.Method == http.MethodDelete {
 			s.handleCloseSession(response, request)
@@ -273,6 +275,7 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 }
 
 func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalIntentRecord) (intentAcceptanceResponse, error) {
+	ctx = audit.WithIngress(ctx, audit.IngressLocalWorker)
 	if !sameController(intent.Controller, s.owner) {
 		return intentAcceptanceResponse{}, fmt.Errorf("%w: locald owner controller mismatch", execution.ErrSessionController)
 	}

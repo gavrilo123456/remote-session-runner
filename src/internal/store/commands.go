@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 )
 
@@ -52,6 +53,7 @@ type CommandAcceptance struct {
 	Script               string
 	Timeout              time.Duration
 	IntentOrdinal        int64
+	Audit                *audit.Record
 }
 
 // CommandRecord is the authoritative command snapshot. ScriptBytes is the
@@ -150,6 +152,9 @@ func (s *AuthorityStore) AcceptCommand(ctx context.Context, input CommandAccepta
 				return CommandRecord{}, fmt.Errorf("read idempotent command: %w", err)
 			}
 			record.IdempotencyWarning = existing.DeduplicationWarning
+			if err := insertOptionalAuditOnConnection(ctx, connection, validated.Audit); err != nil {
+				return CommandRecord{}, err
+			}
 			duplicate = true
 			return record, nil
 		}
@@ -199,11 +204,18 @@ VALUES (?, 1, 'command_queued', X'', 0, ?)
 		}
 		created, err := readCommandOnConnection(ctx, connection, validated.CommandID)
 		created.IdempotencyWarning = warning
-		return created, err
+		if err != nil {
+			return CommandRecord{}, err
+		}
+		if err := insertOptionalAuditOnConnection(ctx, connection, validated.Audit); err != nil {
+			return CommandRecord{}, err
+		}
+		return created, nil
 	})
 	if err != nil {
 		return CommandRecord{}, false, err
 	}
+	logOptionalAudit(ctx, validated.Audit)
 	if !duplicate {
 		s.publishCommandEvent(CommandEventRecord{
 			CommandID:  returnRecord.CommandID,
@@ -848,7 +860,7 @@ func validateCommandAcceptance(input CommandAcceptance) (CommandAcceptance, erro
 	if input.IntentOrdinal < 0 {
 		return CommandAcceptance{}, fmt.Errorf("%w: intent ordinal must not be negative", ErrInvalidCommand)
 	}
-	return CommandAcceptance{CommandID: commandID, SessionID: sessionID, RequestHash: hash, IdempotencyKey: input.IdempotencyKey, IdempotencyRetention: retention, Script: input.Script, Timeout: input.Timeout, IntentOrdinal: input.IntentOrdinal}, nil
+	return CommandAcceptance{CommandID: commandID, SessionID: sessionID, RequestHash: hash, IdempotencyKey: input.IdempotencyKey, IdempotencyRetention: retention, Script: input.Script, Timeout: input.Timeout, IntentOrdinal: input.IntentOrdinal, Audit: input.Audit}, nil
 }
 
 func readCommandOnConnection(ctx context.Context, connection *sql.Conn, id domain.CommandID) (CommandRecord, error) {

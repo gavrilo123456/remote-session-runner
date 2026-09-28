@@ -5,17 +5,23 @@ package localapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/dispatcher"
 	"remote-session-runner/src/internal/domain"
@@ -32,6 +38,31 @@ type p124CLIResult struct {
 	stderr string
 }
 
+type p124RemoteAuditRecord struct {
+	ID         int64  `json:"id"`
+	Principal  string `json:"principal_id"`
+	Ingress    string `json:"ingress"`
+	SessionID  string `json:"session_id"`
+	CommandID  string `json:"command_id"`
+	Action     string `json:"action"`
+	Outcome    string `json:"outcome"`
+	OccurredAt string `json:"occurred_at"`
+}
+
+type p124MacAuditLogRecord struct {
+	Message     string `json:"msg"`
+	RecordID    int64  `json:"record_id"`
+	Action      string `json:"action"`
+	PrincipalID string `json:"principal_id"`
+	Ingress     string `json:"ingress"`
+	Environment string `json:"environment"`
+	SessionID   string `json:"session_id"`
+	CommandID   string `json:"command_id"`
+	Outcome     string `json:"outcome"`
+	ReasonCode  string `json:"reason_code"`
+	OccurredAt  string `json:"occurred_at"`
+}
+
 func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 	if os.Getenv("RSR_P124_HOST_GATE") != "1" {
 		t.Skip("set RSR_P124_HOST_GATE=1 to run the real Mac/Ubuntu P-CLI-01 gate")
@@ -43,6 +74,10 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 	if err != nil || current.Username != config.MacAccount {
 		t.Fatalf("P124 CLI account=%v err=%v, want %s", current, err, config.MacAccount)
 	}
+	var structuredAuditLogs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&structuredAuditLogs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	t.Logf("machine=Mac account=%s uid=%s os=%s go=%s direct=%s queued=ubuntu@129.151.232.40",
 		current.Username, current.Uid, runtime.GOOS, runtime.Version(), config.PublicEndpoint)
 
@@ -166,6 +201,14 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	deniedEnvironment := p124RunCLI("local", "", "session", "create", "--no-wait",
+		"--environment", "p124-unconfigured-environment", "--target", "local", "--profile", "mac-workstation",
+		"--idempotency-key", "p124-denied-environment")
+	if deniedEnvironment.code == 0 {
+		t.Fatalf("unknown local environment was accepted: %+v", deniedEnvironment)
+	}
+	ubuntuAuditAfter := p124UbuntuAuditHighWater(t, sshIdentity, knownHosts)
+	ubuntuLogSince := time.Now().Add(-time.Second).Unix()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -198,6 +241,7 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 		{"queued-remote", "local", "", queuedSessionID, "remote", "linux-host", "ubuntu", true},
 		{"direct-remote", "linux-poc", macConfigPath, directSessionID, "remote", "linux-host", "ubuntu", false},
 	}
+	var outputMarkers []string
 	for _, route := range routes {
 		status := p124WaitReadyStatus(t, route.endpoint, route.configPath, route.sessionID)
 		if !strings.Contains(status.stdout, "execution_target: "+route.target+"/"+route.profile) ||
@@ -207,6 +251,7 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 		}
 
 		marker := "P124-" + strings.ToUpper(strings.ReplaceAll(route.name, "-", "_")) + "-OUTPUT"
+		outputMarkers = append(outputMarkers, marker)
 		// Exit from a child Bash, so the target command is nonzero while the
 		// persistent session shell remains available for status and close.
 		script := fmt.Sprintf("bash -c 'printf \"%s\\n\"; exit 7'", marker)
@@ -230,6 +275,20 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 			t.Fatalf("%s events result=%+v; want complete replay including output", route.name, events)
 		}
 
+		var cancelled p124CLIResult
+		if route.queued || route.target == "local" {
+			cancelled = p124RunIntentCLI(t, h.authority, localDriver, remoteDriver, owner, queuedController,
+				route.endpoint, route.configPath,
+				[]string{"cancel", "--idempotency-key", "p124-" + route.name + "-cancel", commandID},
+				"cancel_command", route.target)
+		} else {
+			cancelled = p124RunCLI(route.endpoint, route.configPath, "cancel",
+				"--idempotency-key", "p124-direct-remote-cancel", commandID)
+		}
+		if cancelled.code != 0 || !strings.Contains(cancelled.stdout, "cancel_requested: accepted") {
+			t.Fatalf("%s cancel result=%+v; want accepted cancel action", route.name, cancelled)
+		}
+
 		var closed p124CLIResult
 		if route.queued || route.target == "local" {
 			closed = p124RunIntentCLI(t, h.authority, localDriver, remoteDriver, owner, queuedController,
@@ -242,6 +301,112 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 		}
 		if closed.code != 0 || !strings.Contains(closed.stdout, "session_state: closed") {
 			t.Fatalf("%s close result=%+v; want confirmed closed state", route.name, closed)
+		}
+	}
+
+	auditRows, err := h.authority.ListAuditRecords(ctx, 1000)
+	if err != nil {
+		t.Fatalf("read Mac audit rows after local and queued routes: %v", err)
+	}
+	macAuditActions := map[audit.Action]map[audit.Ingress]map[audit.Outcome]int{}
+	macDeniedEnvironment := false
+	for _, row := range auditRows {
+		if macAuditActions[row.Action] == nil {
+			macAuditActions[row.Action] = map[audit.Ingress]map[audit.Outcome]int{}
+		}
+		if macAuditActions[row.Action][row.Ingress] == nil {
+			macAuditActions[row.Action][row.Ingress] = map[audit.Outcome]int{}
+		}
+		macAuditActions[row.Action][row.Ingress][row.Outcome]++
+		if row.Action == audit.ActionCreate && row.Ingress == audit.IngressLocalUnix && row.Outcome == audit.OutcomeDenied &&
+			row.ReasonCode == audit.ReasonEnvironmentDenied && row.Environment == "p124-unconfigured-environment" {
+			macDeniedEnvironment = true
+		}
+	}
+	for _, action := range []audit.Action{audit.ActionCreate, audit.ActionSubmit, audit.ActionCancel, audit.ActionClose} {
+		if got := macAuditActions[action][audit.IngressLocalUnix][audit.OutcomeAllowed]; got < 2 {
+			t.Errorf("Mac local_unix %s audit rows=%d, want at least 2 across local and queued routes", action, got)
+		}
+		if got := macAuditActions[action][audit.IngressLocalWorker][audit.OutcomeAllowed]; got < 1 {
+			t.Errorf("Mac local_executor %s audit rows=%d, want at least 1 for the local route", action, got)
+		}
+	}
+	if !macDeniedEnvironment {
+		t.Errorf("Mac audit rows omitted the denied local_unix unconfigured-environment action: %+v", auditRows)
+	}
+	logs := structuredAuditLogs.String()
+	p124AssertMacAuditLogs(t, logs)
+	for _, marker := range outputMarkers {
+		if strings.Contains(logs, marker) {
+			t.Errorf("Mac structured audit log included command output marker %q", marker)
+		}
+	}
+
+	ubuntuRows := p124ReadUbuntuAuditRows(t, sshIdentity, knownHosts, ubuntuAuditAfter)
+	ubuntuActions := map[string]map[string]map[string]int{}
+	for _, row := range ubuntuRows {
+		if row.ID <= ubuntuAuditAfter || row.Principal != config.MacAccount || row.OccurredAt == "" ||
+			(row.Ingress != string(audit.IngressSSHBridge) && row.Ingress != string(audit.IngressDirectMTLS)) {
+			t.Errorf("Ubuntu P124 audit row lacks current-run correlation fields: %+v", row)
+		}
+		if row.Outcome == string(audit.OutcomeAllowed) {
+			switch row.Action {
+			case string(audit.ActionCreate), string(audit.ActionClose):
+				if row.SessionID == "" {
+					t.Errorf("Ubuntu allowed %s audit row has no session ID: %+v", row.Action, row)
+				}
+			case string(audit.ActionSubmit):
+				if row.SessionID == "" || row.CommandID == "" {
+					t.Errorf("Ubuntu allowed submit audit row lacks session/command IDs: %+v", row)
+				}
+			case string(audit.ActionCancel):
+				if row.CommandID == "" {
+					t.Errorf("Ubuntu allowed cancel audit row has no command ID: %+v", row)
+				}
+			}
+		}
+		if ubuntuActions[row.Ingress] == nil {
+			ubuntuActions[row.Ingress] = map[string]map[string]int{}
+		}
+		if ubuntuActions[row.Ingress][row.Action] == nil {
+			ubuntuActions[row.Ingress][row.Action] = map[string]int{}
+		}
+		ubuntuActions[row.Ingress][row.Action][row.Outcome]++
+	}
+	for _, ingress := range []string{string(audit.IngressSSHBridge), string(audit.IngressDirectMTLS)} {
+		for _, action := range []string{"create", "submit", "cancel", "close"} {
+			if got := ubuntuActions[ingress][action][string(audit.OutcomeAllowed)]; got < 1 {
+				t.Errorf("Ubuntu %s %s allowed audit rows=%d, want at least 1; rows=%+v", ingress, action, got, ubuntuRows)
+			}
+		}
+	}
+	ubuntuJournal := p124RemoteCommand(t, sshIdentity, knownHosts,
+		fmt.Sprintf("sudo -n journalctl -u runnerd.service --since=@%d -n 3000 --no-pager -o cat", ubuntuLogSince))
+	var ubuntuAuditLines []string
+	for _, line := range strings.Split(string(ubuntuJournal), "\n") {
+		if strings.Contains(line, "runner authorization action") {
+			ubuntuAuditLines = append(ubuntuAuditLines, line)
+		}
+	}
+	ubuntuLogs := strings.Join(ubuntuAuditLines, "\n")
+	for _, ingress := range []string{string(audit.IngressSSHBridge), string(audit.IngressDirectMTLS)} {
+		for _, action := range []string{"create", "submit", "cancel", "close"} {
+			want := []string{"action=" + action, "principal_id=" + config.MacAccount, "ingress=" + ingress, "outcome=allowed"}
+			found := false
+			for _, line := range ubuntuAuditLines {
+				if allAuditFieldsPresent(line, want) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Ubuntu runnerd structured audit logs omitted correlated fields %q: %s", want, ubuntuLogs)
+			}
+		}
+	}
+	for _, marker := range outputMarkers {
+		if strings.Contains(ubuntuLogs, marker) {
+			t.Errorf("Ubuntu runnerd structured audit log included command output marker %q", marker)
 		}
 	}
 
@@ -258,7 +423,120 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 		!strings.Contains(transportFailure.stderr, "transport") {
 		t.Fatalf("transport failure result=%+v; want distinct CLI transport error", transportFailure)
 	}
-	t.Log("P-CLI-01 PASS: delayed readiness, --no-wait, local/queued/direct create-status-exec-events-close, explicit endpoint, truthful target/account/isolation, child exit 7, replay, and distinct transport error")
+	t.Logf("P-CLI-01/P127 PASS: local/queued/direct create-status-exec-events-cancel-close, %d safe Ubuntu audit rows and %d audit log lines, Mac local_unix/local_executor audit rows, truthful target/account/isolation, child exit 7, replay, and distinct transport error", len(ubuntuRows), len(ubuntuAuditLines))
+}
+
+func allAuditFieldsPresent(line string, fields []string) bool {
+	for _, field := range fields {
+		if !strings.Contains(line, field) {
+			return false
+		}
+	}
+	return true
+}
+
+func p124AssertMacAuditLogs(t *testing.T, logs string) {
+	t.Helper()
+	wantActions := []string{"create", "submit", "cancel", "close"}
+	wantIngresses := []string{string(audit.IngressLocalUnix), string(audit.IngressLocalWorker)}
+	counts := make(map[string]map[string]int)
+	for _, line := range strings.Split(logs, "\n") {
+		var record p124MacAuditLogRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil || record.Message != "runner authorization action" {
+			continue
+		}
+		if record.RecordID < 1 || record.PrincipalID != config.MacAccount {
+			t.Errorf("Mac audit log lacks row/principal correlation: %+v", record)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, record.OccurredAt); err != nil {
+			t.Errorf("Mac audit log has invalid timestamp %q: %+v", record.OccurredAt, record)
+		}
+		if record.Outcome == string(audit.OutcomeDenied) {
+			if record.Action != string(audit.ActionCreate) || record.Ingress != string(audit.IngressLocalUnix) ||
+				record.Environment != "p124-unconfigured-environment" || record.ReasonCode != audit.ReasonEnvironmentDenied || record.SessionID == "" {
+				t.Errorf("unexpected Mac denied audit record: %+v", record)
+			}
+			continue
+		}
+		if record.Outcome != string(audit.OutcomeAllowed) {
+			t.Errorf("Mac audit log has unsupported outcome: %+v", record)
+			continue
+		}
+		switch record.Action {
+		case string(audit.ActionCreate), string(audit.ActionClose):
+			if record.SessionID == "" {
+				t.Errorf("Mac %s audit log has no session ID: %+v", record.Action, record)
+			}
+		case string(audit.ActionSubmit):
+			if record.SessionID == "" || record.CommandID == "" {
+				t.Errorf("Mac submit audit log lacks session/command IDs: %+v", record)
+			}
+		case string(audit.ActionCancel):
+			if record.CommandID == "" {
+				t.Errorf("Mac cancel audit log has no command ID: %+v", record)
+			}
+		}
+		if counts[record.Ingress] == nil {
+			counts[record.Ingress] = make(map[string]int)
+		}
+		counts[record.Ingress][record.Action]++
+	}
+	for _, ingress := range wantIngresses {
+		for _, action := range wantActions {
+			if got := counts[ingress][action]; got < 1 {
+				t.Errorf("Mac structured audit logs have no correlated %s/%s allowed record", ingress, action)
+			}
+		}
+	}
+}
+
+func p124ReadUbuntuAuditRows(t *testing.T, identity, knownHosts string, afterID int64) []p124RemoteAuditRecord {
+	t.Helper()
+	python := fmt.Sprintf(`import json,sqlite3; c=sqlite3.connect("file:/home/ubuntu/.local/share/remote-session-runner/state/remote.db?mode=ro",uri=True); q="SELECT id,principal_id,ingress,COALESCE(session_id,''),COALESCE(command_id,''),action,outcome,occurred_at FROM runner_audit_records WHERE id > %d ORDER BY id LIMIT 10000"; cur=c.execute(q); keys=[d[0] for d in cur.description]; print(json.dumps([dict(zip(keys,r)) for r in cur.fetchall()]))`, afterID)
+	contents := p124RemoteCommand(t, identity, knownHosts, "python3 -c "+p124ShellQuote(python))
+	var rows []p124RemoteAuditRecord
+	if err := json.Unmarshal(contents, &rows); err != nil {
+		t.Fatalf("decode Ubuntu P124 audit query JSON: %v", err)
+	}
+	return rows
+}
+
+func p124UbuntuAuditHighWater(t *testing.T, identity, knownHosts string) int64 {
+	t.Helper()
+	python := `import sqlite3; c=sqlite3.connect("file:/home/ubuntu/.local/share/remote-session-runner/state/remote.db?mode=ro",uri=True); print(c.execute("SELECT COALESCE(MAX(id),0) FROM runner_audit_records").fetchone()[0])`
+	contents := p124RemoteCommand(t, identity, knownHosts, "python3 -c "+p124ShellQuote(python))
+	value, err := strconv.ParseInt(strings.TrimSpace(string(contents)), 10, 64)
+	if err != nil {
+		t.Fatalf("decode Ubuntu P124 audit high-water ID: %v", err)
+	}
+	return value
+}
+
+func p124RemoteCommand(t *testing.T, identity, knownHosts, command string) []byte {
+	t.Helper()
+	args := []string{
+		"-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+		"-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no", "-o", "ConnectTimeout=10", "-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", p124SSHPathOption("UserKnownHostsFile", knownHosts), "-o", "ClearAllForwardings=yes",
+		"-o", "RequestTTY=no", "-i", identity, "-l", "ubuntu", "-p", "22", "129.151.232.40", command,
+	}
+	process := exec.Command("ssh", args...)
+	process.Stderr = io.Discard
+	contents, err := process.Output()
+	if err != nil {
+		t.Fatalf("read-only Ubuntu P124 audit inspection command failed: %v", err)
+	}
+	return contents
+}
+
+func p124SSHPathOption(name, path string) string {
+	path = strings.ReplaceAll(path, `\`, `\\`)
+	path = strings.ReplaceAll(path, `"`, `\"`)
+	return name + `="` + path + `"`
+}
+
+func p124ShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func p124RunDelayedCreate(t *testing.T, ctx context.Context, authority *store.AuthorityStore,

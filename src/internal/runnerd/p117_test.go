@@ -108,7 +108,10 @@ func TestP117PublicEndpointPNET02(t *testing.T) {
 
 func p117ExerciseAuthorizedAPI(t *testing.T, owner *http.Client, roots *x509.CertPool, otherCertificate *tls.Certificate) {
 	t.Helper()
-	status, body := p117Do(t, owner, http.MethodPost, p117PublicEndpoint+"/v1/sessions", []byte(p107CreateBody), p117Key(t), "")
+	unknownEnvironment := []byte(`{"environment":"p117-unconfigured-environment","execution_target":{"kind":"remote","profile":"linux-host"},"source":{"mode":"empty"}}`)
+	status, body := p117Do(t, owner, http.MethodPost, p117PublicEndpoint+"/v1/sessions", unknownEnvironment, p117Key(t), "")
+	p117RequireAPIError(t, status, body, http.StatusUnprocessableEntity, "invalid_request")
+	status, body = p117Do(t, owner, http.MethodPost, p117PublicEndpoint+"/v1/sessions", []byte(p107CreateBody), p117Key(t), "")
 	p117RequireStatus(t, status, body, http.StatusAccepted)
 	var acceptedSession directSessionAcceptance
 	if err := json.Unmarshal(body, &acceptedSession); err != nil || acceptedSession.SessionID == "" {
@@ -194,6 +197,10 @@ func p117ExerciseAuthorizedAPI(t *testing.T, owner *http.Client, roots *x509.Cer
 	if err := json.Unmarshal(body, &commandRead); err != nil || commandRead.Resource.CommandState != "succeeded" {
 		t.Fatalf("cross-controller attempts changed owner command: state=%q decode=%v", commandRead.Resource.CommandState, err)
 	}
+	status, body = p117Do(t, owner, http.MethodPost, p117PublicEndpoint+"/v1/commands/"+commandID+"/cancel", nil, p117Key(t), "")
+	p117RequireStatus(t, status, body, http.StatusAccepted)
+	status, body = p117Do(t, owner, http.MethodDelete, p117PublicEndpoint+"/v1/sessions/"+sessionID, nil, p117Key(t), "")
+	p117RequireStatus(t, status, body, http.StatusAccepted)
 }
 
 func p117LoadServerRoots(t *testing.T) *x509.CertPool {

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/store"
 )
@@ -375,7 +376,12 @@ func (s *Service) CreateSession(ctx context.Context, request CreateSessionReques
 	}
 	environment, err := s.resolver.ResolveEnvironment(ctx, request.Environment)
 	if err != nil {
-		return CreateSessionResult{}, fmt.Errorf("%w: %v", ErrEnvironmentUnavailable, err)
+		cause := fmt.Errorf("%w: %v", ErrEnvironmentUnavailable, err)
+		denial := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionCreate, audit.OutcomeDenied)
+		denial.Environment = request.Environment
+		denial.SessionID = request.SessionID
+		denial.ReasonCode = audit.ReasonEnvironmentDenied
+		return CreateSessionResult{}, s.recordDenial(ctx, denial, cause)
 	}
 	source := request.Source
 	if source.Mode() == "" {
@@ -389,8 +395,15 @@ func (s *Service) CreateSession(ctx context.Context, request CreateSessionReques
 		Isolation:  request.Isolation,
 	})
 	if err != nil {
-		return CreateSessionResult{}, err
+		denial := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionCreate, audit.OutcomeDenied)
+		denial.Environment = request.Environment
+		denial.SessionID = request.SessionID
+		denial.ReasonCode = audit.ReasonPolicyDenied
+		return CreateSessionResult{}, s.recordDenial(ctx, denial, err)
 	}
+	actionAudit := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionCreate, audit.OutcomeAllowed)
+	actionAudit.Environment = environment.Name()
+	actionAudit.SessionID = request.SessionID
 	accepted, duplicate, err := s.store.AcceptSessionCreate(ctx, store.SessionCreateAcceptance{
 		SessionCreate: store.SessionCreate{
 			SessionID:   request.SessionID,
@@ -405,6 +418,7 @@ func (s *Service) CreateSession(ctx context.Context, request CreateSessionReques
 		RequestHash:          request.RequestHash,
 		MaxActiveSessions:    request.MaxActiveSessions,
 		IdempotencyRetention: request.IdempotencyRetention,
+		Audit:                &actionAudit,
 	})
 	if err != nil {
 		return CreateSessionResult{}, err
@@ -498,7 +512,12 @@ func (s *Service) AcceptCommand(ctx context.Context, request SubmitCommandReques
 		return SubmitCommandResult{}, err
 	}
 	if session.Controller.Type() != request.Controller.Type() || session.Controller.ID() != request.Controller.ID() {
-		return SubmitCommandResult{}, ErrSessionController
+		denial := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionSubmit, audit.OutcomeDenied)
+		denial.Environment = session.Environment
+		denial.SessionID = session.SessionID
+		denial.CommandID = request.CommandID
+		denial.ReasonCode = audit.ReasonControllerDenied
+		return SubmitCommandResult{}, s.recordDenial(ctx, denial, ErrSessionController)
 	}
 	if session.State != domain.SessionStateReady && session.State != domain.SessionStateBusy {
 		return SubmitCommandResult{}, fmt.Errorf("%w: current state %q", ErrSessionNotReady, session.State)
@@ -516,6 +535,10 @@ func (s *Service) AcceptCommand(ctx context.Context, request SubmitCommandReques
 	if timeout > session.Limits.CommandTimeout {
 		return SubmitCommandResult{}, fmt.Errorf("%w: command timeout", domain.ErrLimitExceedsServiceCeiling)
 	}
+	actionAudit := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionSubmit, audit.OutcomeAllowed)
+	actionAudit.Environment = session.Environment
+	actionAudit.SessionID = session.SessionID
+	actionAudit.CommandID = request.CommandID
 	accepted, duplicate, err := s.store.AcceptCommand(ctx, store.CommandAcceptance{
 		CommandID:            request.CommandID,
 		SessionID:            request.SessionID,
@@ -525,6 +548,7 @@ func (s *Service) AcceptCommand(ctx context.Context, request SubmitCommandReques
 		Script:               request.Script,
 		Timeout:              timeout,
 		IntentOrdinal:        request.IntentOrdinal,
+		Audit:                &actionAudit,
 	})
 	if err != nil {
 		return SubmitCommandResult{}, err
@@ -1033,9 +1057,18 @@ func (s *Service) CancelCommand(ctx context.Context, request CancelCommandReques
 		return CancelCommandResult{}, err
 	}
 	if session.Controller.Type() != request.Controller.Type() || session.Controller.ID() != request.Controller.ID() {
-		return CancelCommandResult{}, ErrSessionController
+		denial := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionCancel, audit.OutcomeDenied)
+		denial.Environment = session.Environment
+		denial.SessionID = session.SessionID
+		denial.CommandID = command.CommandID
+		denial.ReasonCode = audit.ReasonControllerDenied
+		return CancelCommandResult{}, s.recordDenial(ctx, denial, ErrSessionController)
 	}
-	idempotency, duplicate, err := s.store.EnsureIdempotency(ctx, request.Controller, "cancel_command", request.IdempotencyKey, request.RequestHash, string(command.CommandID), request.IdempotencyRetention)
+	actionAudit := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionCancel, audit.OutcomeAllowed)
+	actionAudit.Environment = session.Environment
+	actionAudit.SessionID = session.SessionID
+	actionAudit.CommandID = command.CommandID
+	idempotency, duplicate, err := s.store.EnsureIdempotencyWithAudit(ctx, request.Controller, "cancel_command", request.IdempotencyKey, request.RequestHash, string(command.CommandID), request.IdempotencyRetention, &actionAudit)
 	if err != nil {
 		return CancelCommandResult{}, err
 	}
@@ -1121,9 +1154,16 @@ func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest)
 		return CloseSessionResult{}, err
 	}
 	if session.Controller.Type() != request.Controller.Type() || session.Controller.ID() != request.Controller.ID() {
-		return CloseSessionResult{}, ErrSessionController
+		denial := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionClose, audit.OutcomeDenied)
+		denial.Environment = session.Environment
+		denial.SessionID = session.SessionID
+		denial.ReasonCode = audit.ReasonControllerDenied
+		return CloseSessionResult{}, s.recordDenial(ctx, denial, ErrSessionController)
 	}
-	idempotency, duplicate, err := s.store.EnsureIdempotency(ctx, request.Controller, "close_session", request.IdempotencyKey, request.RequestHash, string(session.SessionID), request.IdempotencyRetention)
+	actionAudit := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionClose, audit.OutcomeAllowed)
+	actionAudit.Environment = session.Environment
+	actionAudit.SessionID = session.SessionID
+	idempotency, duplicate, err := s.store.EnsureIdempotencyWithAudit(ctx, request.Controller, "close_session", request.IdempotencyKey, request.RequestHash, string(session.SessionID), request.IdempotencyRetention, &actionAudit)
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
@@ -1238,7 +1278,15 @@ func (s *Service) GetSession(ctx context.Context, id domain.SessionID, controlle
 		return store.SessionRecord{}, err
 	}
 	if record.Controller.Type() != controller.Type() || record.Controller.ID() != controller.ID() {
-		return store.SessionRecord{}, ErrSessionController
+		action := audit.ActionHint(ctx)
+		if action == "" {
+			action = audit.ActionReadSession
+		}
+		denial := audit.NewRecord(controller, audit.IngressFromContext(ctx), action, audit.OutcomeDenied)
+		denial.Environment = record.Environment
+		denial.SessionID = record.SessionID
+		denial.ReasonCode = audit.ReasonControllerDenied
+		return store.SessionRecord{}, s.recordDenial(ctx, denial, ErrSessionController)
 	}
 	return record, nil
 }
@@ -1270,7 +1318,16 @@ func (s *Service) GetCommand(ctx context.Context, id domain.CommandID, controlle
 		return store.CommandRecord{}, err
 	}
 	if session.Controller.Type() != controller.Type() || session.Controller.ID() != controller.ID() {
-		return store.CommandRecord{}, ErrSessionController
+		action := audit.ActionHint(ctx)
+		if action == "" {
+			action = audit.ActionReadCommand
+		}
+		denial := audit.NewRecord(controller, audit.IngressFromContext(ctx), action, audit.OutcomeDenied)
+		denial.Environment = session.Environment
+		denial.SessionID = session.SessionID
+		denial.CommandID = command.CommandID
+		denial.ReasonCode = audit.ReasonControllerDenied
+		return store.CommandRecord{}, s.recordDenial(ctx, denial, ErrSessionController)
 	}
 	return command, nil
 }
@@ -1312,9 +1369,26 @@ func (s *Service) GetJob(ctx context.Context, id domain.JobID, controller domain
 		return store.JobRecord{}, err
 	}
 	if job.Controller.Type() != controller.Type() || job.Controller.ID() != controller.ID() {
-		return store.JobRecord{}, ErrSessionController
+		action := audit.ActionHint(ctx)
+		if action == "" {
+			action = audit.ActionReadJob
+		}
+		denial := audit.NewRecord(controller, audit.IngressFromContext(ctx), action, audit.OutcomeDenied)
+		denial.Environment = job.Environment
+		denial.SessionID = job.SessionID
+		denial.CommandID = job.CommandID
+		denial.JobID = job.JobID
+		denial.ReasonCode = audit.ReasonControllerDenied
+		return store.JobRecord{}, s.recordDenial(ctx, denial, ErrSessionController)
 	}
 	return job, nil
+}
+
+func (s *Service) recordDenial(ctx context.Context, record audit.Record, cause error) error {
+	if err := s.store.RecordAudit(ctx, record); err != nil {
+		return errors.Join(cause, fmt.Errorf("persist authorization denial audit: %w", err))
+	}
+	return cause
 }
 
 func (s *Service) publishLatestLifecycle(ctx context.Context, id domain.SessionID) {

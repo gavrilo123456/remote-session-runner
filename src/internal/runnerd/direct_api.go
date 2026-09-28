@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
 	hostruntime "remote-session-runner/src/internal/runtime"
@@ -207,6 +208,7 @@ func (s *directHTTPSAPI) ServeHTTP(response http.ResponseWriter, request *http.R
 		writeDirectError(response, http.StatusBadRequest, "invalid_request", "request URL is required")
 		return
 	}
+	request = request.WithContext(audit.WithIngress(request.Context(), audit.IngressDirectMTLS))
 	if request.URL.Path == "/v1/sessions" {
 		if request.Method != http.MethodPost {
 			writeDirectError(response, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
@@ -685,7 +687,8 @@ func (s *directHTTPSAPI) handleSubmitCommand(response http.ResponseWriter, reque
 	// Check ownership before detailed request-dependent validation or writes.
 	// This also supplies the immutable session timeout used to normalize the
 	// idempotency hash when timeout_seconds is omitted.
-	session, err := s.service.GetSession(request.Context(), sessionID, principal.Controller)
+	mutationCtx := audit.WithActionHint(request.Context(), audit.ActionSubmit)
+	session, err := s.service.GetSession(mutationCtx, sessionID, principal.Controller)
 	if err != nil {
 		status, code, message := directCommandError(err)
 		writeDirectError(response, status, code, message)
@@ -734,7 +737,7 @@ func (s *directHTTPSAPI) handleSubmitCommand(response http.ResponseWriter, reque
 		writeDirectError(response, http.StatusServiceUnavailable, "runtime_unavailable", "could not allocate a command identity")
 		return
 	}
-	result, serviceErr := s.service.AcceptCommand(request.Context(), execution.SubmitCommandRequest{
+	result, serviceErr := s.service.AcceptCommand(mutationCtx, execution.SubmitCommandRequest{
 		CommandID:            commandID,
 		SessionID:            sessionID,
 		Controller:           principal.Controller,
@@ -1043,18 +1046,6 @@ func (s *directHTTPSAPI) handleCancelCommand(response http.ResponseWriter, reque
 		writeDirectError(response, http.StatusBadRequest, "invalid_request", "command cancellation does not accept a request body")
 		return
 	}
-	command, err := s.service.GetCommand(request.Context(), commandID, principal.Controller)
-	if err != nil {
-		status, code, message := directCommandError(err)
-		writeDirectError(response, status, code, message)
-		return
-	}
-	session, err := s.service.GetSession(request.Context(), command.SessionID, principal.Controller)
-	if err != nil {
-		status, code, message := directSessionError(err)
-		writeDirectError(response, status, code, message)
-		return
-	}
 	requestHash, err := directCancellationRequestHash(commandID)
 	if err != nil {
 		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "cancellation request cannot be hashed")
@@ -1066,6 +1057,12 @@ func (s *directHTTPSAPI) handleCancelCommand(response http.ResponseWriter, reque
 	})
 	if serviceErr != nil && result.Command.CommandID == "" {
 		status, code, message := directCommandError(serviceErr)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	session, err := s.service.GetSession(request.Context(), result.Command.SessionID, principal.Controller)
+	if err != nil {
+		status, code, message := directSessionError(err)
 		writeDirectError(response, status, code, message)
 		return
 	}
@@ -1098,12 +1095,6 @@ func (s *directHTTPSAPI) handleCloseSession(response http.ResponseWriter, reques
 	policy, err := directClosePolicy(body)
 	if err != nil {
 		writeDirectError(response, http.StatusBadRequest, "invalid_request", "close policy body must contain one supported JSON object with a nonempty policy")
-		return
-	}
-	_, err = s.service.GetSession(request.Context(), sessionID, principal.Controller)
-	if err != nil {
-		status, code, message := directSessionError(err)
-		writeDirectError(response, status, code, message)
 		return
 	}
 	requestHash, err := directCloseRequestHash(sessionID, policy)

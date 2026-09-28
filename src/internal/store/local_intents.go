@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 )
 
@@ -113,6 +114,15 @@ func (s *AuthorityStore) AcceptLocalIntent(ctx context.Context, input LocalInten
 	if err != nil {
 		return LocalIntentRecord{}, false, err
 	}
+	var actionAudit *audit.Record
+	if action, ok := audit.ActionForOperation(validated.Operation); ok {
+		entry := audit.NewRecord(validated.Controller, audit.IngressFromContext(ctx), action, audit.OutcomeAllowed)
+		entry.Environment = validated.Environment
+		entry.SessionID = validated.SessionID
+		entry.CommandID = validated.CommandID
+		entry.JobID = validated.JobID
+		actionAudit = &entry
+	}
 	now := s.now().UTC()
 	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
 		existing, found, lookupErr := lookupLocalIdempotencyOnConnection(ctx, connection, validated.Controller, validated.Operation, validated.IdempotencyKey, now)
@@ -130,6 +140,9 @@ func (s *AuthorityStore) AcceptLocalIntent(ctx context.Context, input LocalInten
 			record, err := readLocalIntentOnConnection(ctx, connection, existingID)
 			if err != nil {
 				return LocalIntentRecord{}, fmt.Errorf("read idempotent local intent: %w", err)
+			}
+			if err := insertOptionalAuditOnConnection(ctx, connection, actionAudit); err != nil {
+				return LocalIntentRecord{}, err
 			}
 			duplicate = true
 			return record, nil
@@ -157,11 +170,15 @@ VALUES (?, 1, NULL, ?, ?, ?)
 		if err := insertLocalIdempotencyOnConnection(ctx, connection, validated, now); err != nil {
 			return LocalIntentRecord{}, err
 		}
+		if err := insertOptionalAuditOnConnection(ctx, connection, actionAudit); err != nil {
+			return LocalIntentRecord{}, err
+		}
 		return readLocalIntentOnConnection(ctx, connection, validated.IntentID)
 	})
 	if err != nil {
 		return LocalIntentRecord{}, false, err
 	}
+	logOptionalAudit(ctx, actionAudit)
 	return result, duplicate, nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 )
 
@@ -126,6 +127,7 @@ type SessionCreateAcceptance struct {
 	RequestHash          domain.CanonicalHash
 	MaxActiveSessions    int
 	IdempotencyRetention time.Duration
+	Audit                *audit.Record
 }
 
 // SessionReservation is the durable host-capacity reservation for a session.
@@ -171,6 +173,9 @@ func (s *AuthorityStore) AcceptSessionCreate(ctx context.Context, input SessionC
 				return SessionRecord{}, fmt.Errorf("read idempotent session: %w", err)
 			}
 			existingRecord.IdempotencyWarning = existing.DeduplicationWarning
+			if err := insertOptionalAuditOnConnection(ctx, connection, validated.Audit); err != nil {
+				return SessionRecord{}, err
+			}
 			duplicate = true
 			return existingRecord, nil
 		}
@@ -187,11 +192,18 @@ func (s *AuthorityStore) AcceptSessionCreate(ctx context.Context, input SessionC
 		}
 		created, err := readSessionOnConnection(ctx, connection, validated.SessionCreate.SessionID)
 		created.IdempotencyWarning = warning
+		if err != nil {
+			return SessionRecord{}, err
+		}
+		if err := insertOptionalAuditOnConnection(ctx, connection, validated.Audit); err != nil {
+			return SessionRecord{}, err
+		}
 		return created, err
 	})
 	if err != nil {
 		return SessionRecord{}, false, err
 	}
+	logOptionalAudit(ctx, validated.Audit)
 	return record, duplicate, nil
 }
 
@@ -613,6 +625,7 @@ func validateSessionAcceptance(input SessionCreateAcceptance) (SessionCreateAcce
 		RequestHash:          hash,
 		MaxActiveSessions:    maxActive,
 		IdempotencyRetention: retention,
+		Audit:                input.Audit,
 	}, nil
 }
 

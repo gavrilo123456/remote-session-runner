@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/store"
@@ -35,6 +36,7 @@ func localFailure(status int, code, message string) *localOperationFailure {
 // CreateSessionIntent uses the same acceptance logic as Unix-socket API
 // ingress. The file-only client itself remains filesystem-only.
 func (s *Server) CreateSessionIntent(ctx context.Context, request mailbox.Request) (mailbox.SessionIntent, error) {
+	ctx = audit.WithIngress(ctx, audit.IngressMailbox)
 	body, err := mailboxCreateSessionBody(request.RawJSON)
 	if err != nil {
 		return mailbox.SessionIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox create request is invalid"}
@@ -50,6 +52,7 @@ func (s *Server) CreateSessionIntent(ctx context.Context, request mailbox.Reques
 // canonical-hash, and idempotency path as the Unix-socket API. It records only
 // a local intent; Router delivery remains a separate authority boundary.
 func (s *Server) SubmitCommandIntent(ctx context.Context, request mailbox.Request) (mailbox.CommandIntent, error) {
+	ctx = audit.WithIngress(ctx, audit.IngressMailbox)
 	var input struct {
 		RequestID      string          `json:"request_id"`
 		IdempotencyKey string          `json:"idempotency_key"`
@@ -84,6 +87,7 @@ func (s *Server) SubmitCommandIntent(ctx context.Context, request mailbox.Reques
 // Unix-socket cancel route. It does not claim that the target has applied the
 // cancellation request.
 func (s *Server) CancelCommandIntent(ctx context.Context, request mailbox.Request) (mailbox.CommandIntent, error) {
+	ctx = audit.WithIngress(ctx, audit.IngressMailbox)
 	if request.Operation != "cancel_command" || request.CommandID == "" || request.IdempotencyKey == "" {
 		return mailbox.CommandIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox cancel request is invalid"}
 	}
@@ -139,6 +143,7 @@ func (s *Server) GetCancelCommandSnapshot(ctx context.Context, commandIDText, id
 // validation as the Unix-socket API. Omitted close_policy was normalized by
 // the mailbox importer to the API's default "cancel" policy.
 func (s *Server) CloseSessionIntent(ctx context.Context, request mailbox.Request) (mailbox.SessionIntent, error) {
+	ctx = audit.WithIngress(ctx, audit.IngressMailbox)
 	if request.Operation != "close_session" || request.SessionID == "" || request.IdempotencyKey == "" {
 		return mailbox.SessionIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox close request is invalid"}
 	}
@@ -155,6 +160,7 @@ func (s *Server) CloseSessionIntent(ctx context.Context, request mailbox.Request
 // RunJobIntent sends a file-only run through the same validator, canonical
 // request hash, idempotency key, and durable local-intent path as /v1/jobs.
 func (s *Server) RunJobIntent(ctx context.Context, request mailbox.Request) (mailbox.RunIntent, error) {
+	ctx = audit.WithIngress(ctx, audit.IngressMailbox)
 	if request.Operation != "run" || request.RequestID == "" || request.IdempotencyKey == "" {
 		return mailbox.RunIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox run request is invalid"}
 	}

@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
 	"remote-session-runner/src/internal/store"
@@ -262,6 +263,7 @@ type sourceResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	request = request.WithContext(audit.WithIngress(request.Context(), audit.IngressSSHBridge))
 	if isJobCollectionPath(request.URL.Path) && request.Method == http.MethodPost {
 		s.handleRunJob(response, request)
 		return
