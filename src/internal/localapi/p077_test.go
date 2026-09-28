@@ -31,6 +31,29 @@ func TestP077MacAPIReadsMirroredRemoteEventsAndRemoteJobProjection(t *testing.T)
 	if _, err := authority.MirrorRemoteEvents(context.Background(), []store.RemoteEventRecord{{CommandID: intent.CommandID, Sequence: 1, Type: "command_queued", OccurredAt: when}, {CommandID: intent.CommandID, Sequence: 2, Type: "stdout", Payload: []byte("remote\n"), ByteCount: 7, OccurredAt: when.Add(time.Second)}}); err != nil {
 		t.Fatal(err)
 	}
+	beforeProjection, err := client.Get("http://local/v1/commands/" + commandID + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeProjectionData, _ := io.ReadAll(beforeProjection.Body)
+	beforeProjection.Body.Close()
+	if beforeProjection.StatusCode != http.StatusConflict || !strings.Contains(string(beforeProjectionData), `"code":"events_unavailable"`) || strings.Contains(string(beforeProjectionData), `"type":"command_queued"`) {
+		t.Fatalf("pre-projection event response status=%d body=%s", beforeProjection.StatusCode, beforeProjectionData)
+	}
+	target, err := domain.NewExecutionTarget(domain.TargetKindRemote, "linux-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.IntentOrdinal == nil {
+		t.Fatal("accepted remote command intent has no ordinal")
+	}
+	if _, err := authority.UpsertRemoteCommandProjection(context.Background(), store.RemoteCommandProjection{
+		CommandID: intent.CommandID, SessionID: intent.SessionID, Ordinal: *intent.IntentOrdinal, State: domain.CommandStateRunning,
+		Target: target, Controller: intent.Controller, Environment: intent.Environment, Source: intent.Source,
+		Capabilities: p076APICapabilities(), ObservedAt: when,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	replay, err := client.Get("http://local/v1/commands/" + commandID + "/events?after=1")
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +120,6 @@ func TestP077MacAPIReadsMirroredRemoteEventsAndRemoteJobProjection(t *testing.T)
 	if _, err := authority.TransitionLocalIntent(context.Background(), jobIntent.IntentID, store.LocalIntentAccepted, "p077-accepted"); err != nil {
 		t.Fatal(err)
 	}
-	target, _ := domain.NewExecutionTarget(domain.TargetKindRemote, "linux-host")
 	jobState := domain.CommandStateSucceeded
 	if _, err := authority.UpsertRemoteJobProjection(context.Background(), store.RemoteJobProjection{JobID: jobIntent.JobID, SessionID: jobIntent.SessionID, CommandID: jobIntent.CommandID, Phase: store.JobPhaseAwaitingCommand, CommandState: &jobState, OutputComplete: true, TeardownState: store.JobTeardownClosed, Target: target, Controller: jobIntent.Controller, Environment: jobIntent.Environment, Source: jobIntent.Source, Capabilities: p076APICapabilities(), ObservedAt: when.Add(3 * time.Second)}); err != nil {
 		t.Fatal(err)

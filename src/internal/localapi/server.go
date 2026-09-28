@@ -1061,22 +1061,26 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 // cursor before an event becomes visible here.
 func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, request *http.Request, commandID domain.CommandID, after int64, follow bool) {
 	projection, projectionErr := s.authority.GetRemoteCommandProjection(request.Context(), commandID)
-	if projectionErr != nil && !errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
+	if errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
+		writeError(response, http.StatusConflict, "events_unavailable", "remote command events are not available until the authoritative command ordinal is projected")
+		return
+	}
+	if projectionErr != nil {
 		status, code := statusForStoreError(projectionErr)
 		writeError(response, status, code, sanitizeError(projectionErr))
 		return
 	}
-	ordinal := int64(0)
-	stale := true
-	if projectionErr == nil {
-		ordinal = projection.Ordinal
-		stale = projection.IsStale
+	if projection.Ordinal < 1 {
+		writeError(response, http.StatusConflict, "events_unavailable", "remote command events are not available until the authoritative command ordinal is projected")
+		return
 	}
-	if projectionErr == nil && projection.OutputUnavailableReason == "retention_expired" {
+	ordinal := projection.Ordinal
+	stale := projection.IsStale
+	if projection.OutputUnavailableReason == "retention_expired" {
 		writeLocalEventHistoryError(response, commandID, "retention_expired")
 		return
 	}
-	if projectionErr == nil && projection.OutputUnavailableReason == "remote_event_gap" && projection.FinalEventSequence != nil && after < *projection.FinalEventSequence {
+	if projection.OutputUnavailableReason == "remote_event_gap" && projection.FinalEventSequence != nil && after < *projection.FinalEventSequence {
 		writeLocalEventHistoryError(response, commandID, "remote_event_gap")
 		return
 	}
@@ -1090,7 +1094,7 @@ func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, reques
 		writeError(response, status, code, sanitizeError(gapErr))
 		return
 	}
-	if projectionErr == nil && projection.FinalEventSequence != nil && after >= *projection.FinalEventSequence {
+	if projection.FinalEventSequence != nil && after >= *projection.FinalEventSequence {
 		setLocalAPIEventHeaders(response, "projection", stale)
 		response.Header().Set(localAPIEventLastSequenceHeader, strconv.FormatInt(after, 10))
 		response.WriteHeader(http.StatusOK)
