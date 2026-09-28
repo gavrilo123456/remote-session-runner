@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -216,6 +217,40 @@ func TestP115I03QueuedRemoteGapAndRetentionReturnStructuredGone(t *testing.T) {
 	}
 }
 
+func TestP115I03QueuedRemoteFollowWriteFailureResumesFromLastCompleteFrame(t *testing.T) {
+	server, authority, _, client := p063Server(t)
+	sessionID := p064CreateSession(t, client, `{"environment":"linux-dev","execution_target":{"kind":"remote","profile":"linux-host"}}`, "p115-remote-resume-session")
+	commandID := p077APICommand(t, client, sessionID)
+	intent := p115AcceptRemoteIntent(t, authority, commandID)
+	when := time.Date(2026, 9, 28, 13, 0, 0, 0, time.UTC)
+	if _, err := authority.MirrorRemoteEvents(context.Background(), []store.RemoteEventRecord{
+		{CommandID: intent.CommandID, Sequence: 1, Type: "command_queued", OccurredAt: when},
+		{CommandID: intent.CommandID, Sequence: 2, Type: "command_started", OccurredAt: when.Add(time.Second)},
+		{CommandID: intent.CommandID, Sequence: 3, Type: "stdout", Payload: []byte("remote output"), ByteCount: int64(len("remote output")), OccurredAt: when.Add(2 * time.Second)},
+		{CommandID: intent.CommandID, Sequence: 4, Type: "command_succeeded", OccurredAt: when.Add(3 * time.Second)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	final := int64(4)
+	p115UpsertRemoteProjection(t, authority, intent, domain.CommandStateSucceeded, &final, "", when.Add(4*time.Second))
+
+	interrupted := newP115ResponseWriter()
+	interrupted.failAtWrite = 2
+	server.serveHTTP(interrupted, httptest.NewRequest(http.MethodGet, "http://local/v1/commands/"+commandID+"/events?after=0&follow=true", nil))
+	first := p115DecodeEvents(t, interrupted.body.Bytes())
+	if interrupted.status != http.StatusOK || len(first) != 1 || first[0].Sequence != 1 || interrupted.header.Get(localAPIEventLastSequenceHeader) != "1" {
+		t.Fatalf("interrupted follow status=%d cursor=%q events=%+v", interrupted.status, interrupted.header.Get(localAPIEventLastSequenceHeader), first)
+	}
+
+	resumed := newP115ResponseWriter()
+	server.serveHTTP(resumed, httptest.NewRequest(http.MethodGet, "http://local/v1/commands/"+commandID+"/events?after=1&follow=true", nil))
+	suffix := p115DecodeEvents(t, resumed.body.Bytes())
+	if resumed.status != http.StatusOK || len(suffix) != 3 || suffix[0].Sequence != 2 || suffix[2].Sequence != 4 || suffix[2].Type != "command_succeeded" || resumed.header.Get(localAPIEventLastSequenceHeader) != "4" {
+		t.Fatalf("resumed follow status=%d cursor=%q events=%+v", resumed.status, resumed.header.Get(localAPIEventLastSequenceHeader), suffix)
+	}
+	p115RequireSequences(t, append(first, suffix...), 1, 4)
+}
+
 func p115AcceptRemoteIntent(t *testing.T, authority *store.AuthorityStore, commandID string) store.LocalIntentRecord {
 	t.Helper()
 	intent, err := authority.GetLocalIntentByResource(context.Background(), "submit_command", commandID, p063Owner(t))
@@ -306,6 +341,7 @@ type p115ResponseWriter struct {
 	status       int
 	writeCount   int
 	blockAtWrite int
+	failAtWrite  int
 	blocked      chan struct{}
 	release      chan struct{}
 	blockOnce    *sync.Once
@@ -329,6 +365,9 @@ func (w *p115ResponseWriter) WriteHeader(status int) {
 
 func (w *p115ResponseWriter) Write(data []byte) (int, error) {
 	w.writeCount++
+	if w.failAtWrite > 0 && w.writeCount == w.failAtWrite {
+		return 0, io.ErrClosedPipe
+	}
 	if w.blockAtWrite > 0 && w.writeCount == w.blockAtWrite {
 		w.blockOnce.Do(func() {
 			close(w.blocked)
