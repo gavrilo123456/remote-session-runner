@@ -1,4 +1,4 @@
-// Package runnercli implements the first resource commands for the shared
+// Package runnercli implements resource commands for the shared
 // Runner client. Every resource operation uses one explicitly selected
 // endpoint for its complete lifetime.
 package runnercli
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,12 +32,28 @@ const (
 )
 
 type cliDependencies struct {
-	resolver endpointResolver
-	now      func() time.Time
-	sleep    func(context.Context, time.Duration) error
+	resolver   endpointResolver
+	openEvents func(context.Context, sessionClient, string, int64, bool) (commandEventStream, error)
+	now        func() time.Time
+	sleep      func(context.Context, time.Duration) error
 }
 
-// Run handles runner help/version and the P119 session create/status commands.
+type commandEventStream interface {
+	Next() (runnerclient.Event, error)
+	Cursor() int64
+	Close() error
+}
+
+type commandOperations interface {
+	SubmitCommand(context.Context, string, runnerclient.SubmitCommandRequest, string) (runnerclient.Acceptance, error)
+	GetCommand(context.Context, string) (runnerclient.Snapshot[runnerclient.CommandResource], error)
+}
+
+type commandEventOpener interface {
+	StreamCommandEvents(context.Context, string, int64, bool) (*runnerclient.EventStream, error)
+}
+
+// Run handles runner help/version and the session, command, and event commands.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if stdout == nil {
 		stdout = io.Discard
@@ -45,9 +62,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		stderr = io.Discard
 	}
 	return runWithDependencies(args, stdout, stderr, cliDependencies{
-		resolver: newDefaultEndpointResolver(),
-		now:      time.Now,
-		sleep:    sleepContext,
+		resolver:   newDefaultEndpointResolver(),
+		openEvents: openRunnerCommandEvents,
+		now:        time.Now,
+		sleep:      sleepContext,
 	})
 }
 
@@ -57,6 +75,9 @@ func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies c
 	}
 	if dependencies.sleep == nil {
 		dependencies.sleep = sleepContext
+	}
+	if dependencies.openEvents == nil {
+		dependencies.openEvents = openRunnerCommandEvents
 	}
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h")) {
 		writeUsage(stdout)
@@ -92,12 +113,8 @@ func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies c
 	}
 
 	remaining := global.Args()
-	if len(remaining) == 0 || remaining[0] != "session" {
-		fmt.Fprintln(stderr, "runner: expected session create or session status; use --help")
-		return exitInvalidInvocation
-	}
-	if len(remaining) < 2 {
-		fmt.Fprintln(stderr, "runner: expected session create or session status; use --help")
+	if len(remaining) == 0 {
+		fmt.Fprintln(stderr, "runner: expected a command; use --help")
 		return exitInvalidInvocation
 	}
 	if dependencies.resolver == nil {
@@ -105,13 +122,27 @@ func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies c
 		return 1
 	}
 
-	switch remaining[1] {
-	case "create":
-		return runSessionCreate(remaining[2:], endpointName, configPath, waitTimeout, stdout, stderr, dependencies)
-	case "status":
-		return runSessionStatus(remaining[2:], endpointName, configPath, stdout, stderr, dependencies)
+	switch remaining[0] {
+	case "session":
+		if len(remaining) < 2 {
+			fmt.Fprintln(stderr, "runner: expected session create or session status; use --help")
+			return exitInvalidInvocation
+		}
+		switch remaining[1] {
+		case "create":
+			return runSessionCreate(remaining[2:], endpointName, configPath, waitTimeout, stdout, stderr, dependencies)
+		case "status":
+			return runSessionStatus(remaining[2:], endpointName, configPath, stdout, stderr, dependencies)
+		default:
+			fmt.Fprintln(stderr, "runner: expected session create or session status; use --help")
+			return exitInvalidInvocation
+		}
+	case "exec":
+		return runCommandExec(remaining[1:], endpointName, configPath, stdout, stderr, dependencies)
+	case "events":
+		return runCommandEvents(remaining[1:], endpointName, configPath, stdout, stderr, dependencies)
 	default:
-		fmt.Fprintln(stderr, "runner: expected session create or session status; use --help")
+		fmt.Fprintln(stderr, "runner: expected session, exec, or events; use --help")
 		return exitInvalidInvocation
 	}
 }
@@ -251,6 +282,391 @@ func runSessionStatus(args []string, endpointName, configPath string, stdout, st
 	}
 	writeSessionStatus(stdout, endpointName, snapshot, true)
 	return 0
+}
+
+func runCommandExec(args []string, endpointName, configPath string, stdout, stderr io.Writer, dependencies cliDependencies) int {
+	separator := -1
+	for i, arg := range args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator < 0 {
+		if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+			writeExecUsage(stdout)
+			return 0
+		}
+		fmt.Fprintln(stderr, "runner: exec requires SESSION_ID -- SCRIPT; use --help")
+		return exitInvalidInvocation
+	}
+	if separator+2 != len(args) {
+		fmt.Fprintln(stderr, "runner: exec requires exactly one SCRIPT argument after --; use --help")
+		return exitInvalidInvocation
+	}
+
+	var sessionID, idempotencyKey string
+	for i := 0; i < separator; i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			writeExecUsage(stdout)
+			return 0
+		case arg == "--idempotency-key":
+			if i+1 >= separator || idempotencyKey != "" {
+				fmt.Fprintln(stderr, "runner: exec --idempotency-key requires one value; use --help")
+				return exitInvalidInvocation
+			}
+			i++
+			idempotencyKey = args[i]
+		case strings.HasPrefix(arg, "--idempotency-key="):
+			if idempotencyKey != "" {
+				fmt.Fprintln(stderr, "runner: exec accepts --idempotency-key only once")
+				return exitInvalidInvocation
+			}
+			idempotencyKey = strings.TrimPrefix(arg, "--idempotency-key=")
+		default:
+			if strings.HasPrefix(arg, "-") || sessionID != "" {
+				fmt.Fprintln(stderr, "runner: exec expects one SESSION_ID before --; use --help")
+				return exitInvalidInvocation
+			}
+			sessionID = arg
+		}
+	}
+	if sessionID == "" || endpointName == "" {
+		if endpointName == "" {
+			fmt.Fprintln(stderr, "runner: resource commands require an explicit --endpoint")
+		} else {
+			fmt.Fprintln(stderr, "runner: exec requires one SESSION_ID before --; use --help")
+		}
+		return exitInvalidInvocation
+	}
+	client, operations, err := resolveCommandOperations(endpointName, configPath, dependencies)
+	if err != nil {
+		fmt.Fprintf(stderr, "runner: could not select command endpoint %q: %v\n", endpointName, err)
+		return 1
+	}
+	if idempotencyKey == "" {
+		idempotencyKey, err = newIdempotencyKey()
+		if err != nil {
+			fmt.Fprintln(stderr, "runner: could not create an idempotency key")
+			return 1
+		}
+	}
+	// Print the retry key before mutation so it remains available if the
+	// response is lost and delivery is uncertain.
+	fmt.Fprintf(stderr, "idempotency_key: %s\n", idempotencyKey)
+	requestContext, cancel := context.WithTimeout(context.Background(), apiRequestTimeout)
+	accepted, err := operations.SubmitCommand(requestContext, sessionID, runnerclient.SubmitCommandRequest{Script: args[separator+1]}, idempotencyKey)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(stderr, "runner: command submission failed; its outcome may be uncertain; preserve SESSION_ID %s and retry only with the same idempotency key: %v\n", sessionID, err)
+		return 1
+	}
+	if accepted.CommandID == "" || accepted.SessionID != sessionID {
+		fmt.Fprintf(stderr, "runner: command acceptance was malformed; session_id: %s; idempotency_key: %s\n", sessionID, idempotencyKey)
+		return 1
+	}
+	fmt.Fprintf(stderr, "endpoint: %s\nsession_id: %s\ncommand_id: %s\nacceptance_scope: %s\n", endpointName, sessionID, accepted.CommandID, valueOrUnknown(accepted.AcceptanceScope))
+
+	cursor, _, err := consumeCommandEvents(context.Background(), client, accepted.CommandID, 0, true, stdout, stderr, dependencies)
+	if err != nil {
+		if !writeEventHistoryError(stderr, endpointName, accepted.CommandID, cursor, err) {
+			writeCommandResumeError(stderr, endpointName, accepted.CommandID, cursor, err)
+		}
+		return 1
+	}
+	snapshot, err := getCommandSnapshot(operations, accepted.CommandID)
+	if err != nil {
+		writeCommandResumeError(stderr, endpointName, accepted.CommandID, cursor, err)
+		return 1
+	}
+	writeCommandStatus(stderr, endpointName, snapshot, cursor, 0)
+	return commandExitStatus(snapshot.Resource)
+}
+
+func runCommandEvents(args []string, endpointName, configPath string, stdout, stderr io.Writer, dependencies cliDependencies) int {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		writeEventsUsage(stdout)
+		return 0
+	}
+	var commandID string
+	var after int64
+	follow := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			writeEventsUsage(stdout)
+			return 0
+		case arg == "--follow":
+			follow = true
+		case arg == "--after":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "runner: events --after requires a nonnegative sequence")
+				return exitInvalidInvocation
+			}
+			i++
+			parsed, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil || parsed < 0 {
+				fmt.Fprintln(stderr, "runner: events --after requires a nonnegative sequence")
+				return exitInvalidInvocation
+			}
+			after = parsed
+		case strings.HasPrefix(arg, "--after="):
+			parsed, err := strconv.ParseInt(strings.TrimPrefix(arg, "--after="), 10, 64)
+			if err != nil || parsed < 0 {
+				fmt.Fprintln(stderr, "runner: events --after requires a nonnegative sequence")
+				return exitInvalidInvocation
+			}
+			after = parsed
+		default:
+			if strings.HasPrefix(arg, "-") || commandID != "" {
+				fmt.Fprintln(stderr, "runner: events requires one COMMAND_ID and accepts --after and --follow; use --help")
+				return exitInvalidInvocation
+			}
+			commandID = arg
+		}
+	}
+	if commandID == "" || endpointName == "" {
+		if endpointName == "" {
+			fmt.Fprintln(stderr, "runner: resource commands require an explicit --endpoint")
+		} else {
+			fmt.Fprintln(stderr, "runner: events requires one COMMAND_ID; use --help")
+		}
+		return exitInvalidInvocation
+	}
+	client, operations, err := resolveCommandOperations(endpointName, configPath, dependencies)
+	if err != nil {
+		fmt.Fprintf(stderr, "runner: could not select command endpoint %q: %v\n", endpointName, err)
+		return 1
+	}
+	writeCursor := after
+	if follow {
+		writeCursor, _, err = consumeCommandEvents(context.Background(), client, commandID, after, true, stdout, stderr, dependencies)
+	} else {
+		writeCursor, _, err = consumeCommandEvents(context.Background(), client, commandID, after, false, stdout, stderr, dependencies)
+	}
+	if err != nil {
+		if !writeEventHistoryError(stderr, endpointName, commandID, writeCursor, err) {
+			writeCommandResumeError(stderr, endpointName, commandID, writeCursor, err)
+		}
+		return 1
+	}
+	snapshot, err := getCommandSnapshot(operations, commandID)
+	if err != nil {
+		writeCommandResumeError(stderr, endpointName, commandID, writeCursor, err)
+		return 1
+	}
+	writeCommandStatus(stderr, endpointName, snapshot, writeCursor, after)
+	if follow {
+		return commandExitStatus(snapshot.Resource)
+	}
+	return 0
+}
+
+func resolveCommandOperations(endpointName, configPath string, dependencies cliDependencies) (sessionClient, commandOperations, error) {
+	client, err := dependencies.resolver.Resolve(endpointName, configPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	operations, ok := client.(commandOperations)
+	if !ok {
+		return nil, nil, errors.New("selected endpoint does not support command operations")
+	}
+	return client, operations, nil
+}
+
+func openRunnerCommandEvents(ctx context.Context, client sessionClient, commandID string, after int64, follow bool) (commandEventStream, error) {
+	opener, ok := client.(commandEventOpener)
+	if !ok {
+		return nil, errors.New("selected endpoint does not support command events")
+	}
+	return opener.StreamCommandEvents(ctx, commandID, after, follow)
+}
+
+func consumeCommandEvents(ctx context.Context, client sessionClient, commandID string, after int64, follow bool, stdout, stderr io.Writer, dependencies cliDependencies) (int64, bool, error) {
+	operations, ok := client.(commandOperations)
+	if !ok {
+		return after, false, errors.New("selected endpoint does not support command reads")
+	}
+	cursor := after
+	terminal := false
+	for {
+		openContext := ctx
+		cancel := func() {}
+		if !follow {
+			openContext, cancel = context.WithTimeout(ctx, apiRequestTimeout)
+		}
+		stream, err := dependencies.openEvents(openContext, client, commandID, cursor, follow)
+		if err != nil {
+			cancel()
+			return cursor, terminal, err
+		}
+		for {
+			event, nextErr := stream.Next()
+			if errors.Is(nextErr, io.EOF) {
+				break
+			}
+			if nextErr != nil {
+				_ = stream.Close()
+				cancel()
+				return cursor, terminal, nextErr
+			}
+			if event.CommandID != commandID || event.Sequence != cursor+1 {
+				_ = stream.Close()
+				cancel()
+				return cursor, terminal, fmt.Errorf("%w: command event identity or sequence does not continue after %d", runnerclient.ErrProtocol, cursor)
+			}
+			if event.Type == "stdout" || event.Type == "stderr" {
+				writer := stdout
+				if event.Type == "stderr" {
+					writer = stderr
+				}
+				if err := writeAll(writer, event.Data); err != nil {
+					_ = stream.Close()
+					cancel()
+					return cursor, terminal, fmt.Errorf("write command %s output: %w", event.Type, err)
+				}
+			} else if err := writeLifecycleEvent(stderr, event); err != nil {
+				_ = stream.Close()
+				cancel()
+				return cursor, terminal, fmt.Errorf("write command event: %w", err)
+			}
+			cursor = event.Sequence
+			terminal = terminal || isTerminalCommandEvent(event.Type)
+		}
+		_ = stream.Close()
+		cancel()
+		if !follow || terminal {
+			return cursor, terminal, nil
+		}
+		snapshot, err := getCommandSnapshot(operations, commandID)
+		if err != nil {
+			return cursor, terminal, err
+		}
+		if isTerminalCommandState(snapshot.Resource.CommandState) {
+			return cursor, true, nil
+		}
+		if err := dependencies.sleep(ctx, readinessPollEvery); err != nil {
+			return cursor, terminal, err
+		}
+	}
+}
+
+func writeAll(writer io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := writer.Write(data)
+		if err != nil {
+			return err
+		}
+		if n <= 0 || n > len(data) {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
+}
+
+func writeLifecycleEvent(writer io.Writer, event runnerclient.Event) error {
+	if event.ExitCode != nil {
+		return writeAll(writer, []byte(fmt.Sprintf("event: sequence=%d type=%s exit_code=%d\n", event.Sequence, event.Type, *event.ExitCode)))
+	}
+	return writeAll(writer, []byte(fmt.Sprintf("event: sequence=%d type=%s\n", event.Sequence, event.Type)))
+}
+
+func isTerminalCommandEvent(eventType string) bool {
+	switch eventType {
+	case "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTerminalCommandState(state string) bool {
+	switch state {
+	case "succeeded", "failed", "cancelled", "timed_out", "rejected", "lost":
+		return true
+	default:
+		return false
+	}
+}
+
+func getCommandSnapshot(client commandOperations, commandID string) (runnerclient.Snapshot[runnerclient.CommandResource], error) {
+	ctx, cancel := context.WithTimeout(context.Background(), apiRequestTimeout)
+	defer cancel()
+	return client.GetCommand(ctx, commandID)
+}
+
+func writeCommandStatus(output io.Writer, endpointName string, snapshot runnerclient.Snapshot[runnerclient.CommandResource], cursor, requestedAfter int64) {
+	resource := snapshot.Resource
+	fmt.Fprintf(output, "endpoint: %s\ncommand_id: %s\nview: %s\ncommand_state: %s\n", endpointName, resource.CommandID, valueOrUnknown(snapshot.View), valueOrUnknown(resource.CommandState))
+	if resource.ExitCode == nil {
+		fmt.Fprintln(output, "command_exit_code: unknown")
+	} else {
+		fmt.Fprintf(output, "command_exit_code: %d\n", *resource.ExitCode)
+	}
+	fmt.Fprintf(output, "event_cursor: %d\n", cursor)
+	finalSequence := int64(-1)
+	if resource.FinalEventSequence == nil {
+		fmt.Fprintln(output, "final_event_sequence: unknown")
+	} else {
+		finalSequence = *resource.FinalEventSequence
+		fmt.Fprintf(output, "final_event_sequence: %d\n", finalSequence)
+	}
+	fmt.Fprintf(output, "output_complete: %t\noutput_truncated: %t\n", resource.OutputComplete, resource.OutputTruncated)
+	fmt.Fprintf(output, "output_unavailable_reason: %s\n", valueOrUnknown(resource.OutputUnavailableReason))
+	eventsComplete := requestedAfter == 0 && finalSequence >= 0 && cursor == finalSequence && resource.OutputComplete && !resource.OutputTruncated
+	fmt.Fprintf(output, "event_history_complete_this_read: %t\n", eventsComplete)
+	if resource.DeliveryState != "" {
+		fmt.Fprintf(output, "delivery_state: %s\n", resource.DeliveryState)
+	}
+	if resource.Reason != "" {
+		fmt.Fprintf(output, "reason: %s\n", resource.Reason)
+	}
+	fmt.Fprintf(output, "is_stale: %t\n", snapshot.IsStale || resource.IsStale)
+}
+
+func commandExitStatus(resource runnerclient.CommandResource) int {
+	if resource.ExitCode != nil && *resource.ExitCode != 0 {
+		if *resource.ExitCode > 0 && *resource.ExitCode <= 255 {
+			return *resource.ExitCode
+		}
+		return 1
+	}
+	if resource.CommandState == "succeeded" {
+		return 0
+	}
+	if isTerminalCommandState(resource.CommandState) {
+		return 1
+	}
+	return 0
+}
+
+func writeCommandResumeError(stderr io.Writer, endpointName, commandID string, cursor int64, err error) {
+	fmt.Fprintf(stderr, "runner: command %s stream/status failed after validated cursor %d; command was not cancelled; resume with --endpoint %s events %s --after %d --follow: %v\n", commandID, cursor, endpointName, commandID, cursor, err)
+}
+
+func writeEventHistoryError(stderr io.Writer, endpointName, commandID string, cursor int64, err error) bool {
+	var apiError *runnerclient.APIError
+	if !errors.As(err, &apiError) || apiError.Code != "event_history_unavailable" {
+		return false
+	}
+	details := apiError.EventHistoryDetails()
+	complete := false
+	if details.OutputComplete != nil {
+		complete = *details.OutputComplete
+	}
+	fmt.Fprintf(stderr, "runner: event history unavailable; command_id: %s\noutput_complete: %t\noutput_unavailable_reason: %s\nevent_cursor: %d\n", commandID, complete, valueOrUnknown(details.OutputUnavailableReason), cursor)
+	if details.EarliestAvailable != nil {
+		fmt.Fprintf(stderr, "earliest_available_sequence: %d\n", *details.EarliestAvailable)
+		if *details.EarliestAvailable > 0 {
+			fmt.Fprintf(stderr, "retained tail can be inspected with --endpoint %s events %s --after %d --follow; the complete output remains unavailable\n", endpointName, commandID, *details.EarliestAvailable-1)
+		}
+	}
+	fmt.Fprintf(stderr, "event stream stopped at cursor %d: %v\n", cursor, err)
+	return true
 }
 
 type waitOutcome uint8
@@ -412,10 +828,12 @@ func sleepContext(ctx context.Context, duration time.Duration) error {
 
 func writeUsage(output io.Writer) {
 	fmt.Fprintf(output, "Usage: runner --endpoint <local|profile> [--config PATH] [--wait-timeout DURATION] COMMAND\n")
-	fmt.Fprintln(output, "Create and inspect sessions through one explicitly selected ingress.")
+	fmt.Fprintln(output, "Use one explicitly selected ingress for the complete resource operation.")
 	fmt.Fprintln(output, "\nCommands:")
 	fmt.Fprintln(output, "  session create --environment NAME --target local|remote --profile NAME [--no-wait] [--idempotency-key KEY]")
 	fmt.Fprintln(output, "  session status SESSION_ID")
+	fmt.Fprintln(output, "  exec [--idempotency-key KEY] SESSION_ID -- SCRIPT")
+	fmt.Fprintln(output, "  events COMMAND_ID [--after SEQUENCE] [--follow]")
 	fmt.Fprintln(output, "\nEndpoint selection:")
 	fmt.Fprintln(output, "  local       Mac Unix-socket API")
 	fmt.Fprintln(output, "  linux-poc   configured direct HTTPS profile (mandatory mTLS)")
@@ -431,4 +849,16 @@ func writeCreateUsage(output io.Writer) {
 func writeStatusUsage(output io.Writer) {
 	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> [--config PATH] session status SESSION_ID")
 	fmt.Fprintln(output, "The selected endpoint is used exactly as supplied; the session ID never selects an ingress.")
+}
+
+func writeExecUsage(output io.Writer) {
+	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> exec [--idempotency-key KEY] SESSION_ID -- SCRIPT")
+	fmt.Fprintln(output, "SCRIPT is one argument passed unchanged as UTF-8. Accepted command IDs are printed before output is followed.")
+	fmt.Fprintln(output, "A transport or local output error does not cancel the accepted command; resume with events and its last validated cursor.")
+}
+
+func writeEventsUsage(output io.Writer) {
+	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> events COMMAND_ID [--after SEQUENCE] [--follow]")
+	fmt.Fprintln(output, "By default reads retained events once. --follow resumes from the last validated cursor until the command is terminal.")
+	fmt.Fprintln(output, "Command output bytes go to stdout/stderr; lifecycle and command metadata go to stderr.")
 }
