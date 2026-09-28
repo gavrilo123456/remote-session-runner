@@ -48,7 +48,7 @@ func (s *AuthorityStore) EnsureIdempotencyWithAudit(ctx context.Context, control
 		return IdempotencyRecord{}, false, err
 	}
 	now := s.now().UTC()
-	record, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (IdempotencyRecord, error) {
+	record, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (IdempotencyRecord, error) {
 		existing, found, err := lookupIdempotencyOnConnection(ctx, connection, validated.Controller, validated.Operation, validated.Key, now)
 		if err != nil {
 			return IdempotencyRecord{}, err
@@ -96,7 +96,7 @@ func (s *AuthorityStore) LookupIdempotency(ctx context.Context, controller domai
 		return IdempotencyRecord{}, false, err
 	}
 	now := s.now().UTC()
-	record, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (IdempotencyRecord, error) {
+	record, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (IdempotencyRecord, error) {
 		var foundRecord bool
 		record, foundRecord, err = lookupIdempotencyOnConnection(ctx, connection, validatedController, operation, key, now)
 		found = foundRecord

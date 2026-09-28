@@ -73,7 +73,7 @@ func (s *AuthorityStore) RecordRemoteEventGap(ctx context.Context, input RemoteE
 	}
 	s.commandEventsMu.Lock()
 	defer s.commandEventsMu.Unlock()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (RemoteEventGapRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteEventGapRecord, error) {
 		stored, err := readRemoteEventGapOnConnection(ctx, connection, validated.CommandID)
 		if err == nil {
 			if sameRemoteEventGap(stored, validated) {
@@ -103,7 +103,7 @@ func (s *AuthorityStore) GetRemoteEventGap(ctx context.Context, commandID domain
 	if err != nil {
 		return RemoteEventGapRecord{}, err
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (RemoteEventGapRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteEventGapRecord, error) {
 		return readRemoteEventGapOnConnection(ctx, connection, validated)
 	})
 }
@@ -183,7 +183,7 @@ func (s *AuthorityStore) MirrorRemoteEvents(ctx context.Context, events []Remote
 	s.commandEventsMu.Lock()
 	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (RemoteEventMirrorResult, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteEventMirrorResult, error) {
 		var result RemoteEventMirrorResult
 		result.CommandID = validated[0].CommandID
 		var last int64
@@ -246,7 +246,7 @@ func (s *AuthorityStore) GetRemoteEventCursor(ctx context.Context, commandID dom
 		return 0, err
 	}
 	var cursor int64
-	_, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		err := connection.QueryRowContext(ctx, `SELECT last_sequence FROM local_remote_event_cursors WHERE command_id = ?`, string(validated)).Scan(&cursor)
 		if errors.Is(err, sql.ErrNoRows) {
 			return struct{}{}, nil
@@ -269,7 +269,7 @@ func (s *AuthorityStore) ListRemoteEvents(ctx context.Context, commandID domain.
 	if afterSequence < 0 {
 		return nil, fmt.Errorf("%w: negative cursor", ErrRemoteEventBatch)
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]RemoteEventRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]RemoteEventRecord, error) {
 		var outputUnavailable string
 		projectionErr := connection.QueryRowContext(ctx, `SELECT output_unavailable_reason FROM local_remote_command_projections WHERE command_id = ?`, string(validated)).Scan(&outputUnavailable)
 		if projectionErr != nil && !errors.Is(projectionErr, sql.ErrNoRows) {

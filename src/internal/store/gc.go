@@ -65,7 +65,7 @@ func (s *AuthorityStore) CollectGarbage(ctx context.Context, options GarbageColl
 	now := s.now().UTC()
 	outputCutoff := now.Add(-outputRetention)
 	metadataCutoff := now.Add(-metadataRetention)
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (GarbageCollectionReport, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (GarbageCollectionReport, error) {
 		var report GarbageCollectionReport
 		rows, err := connection.QueryContext(ctx, `
 SELECT controller_type, controller_id, operation, idempotency_key, expires_at

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 )
@@ -74,4 +75,32 @@ func macIngressHealthReport(ctx context.Context, authority *store.AuthorityStore
 		backlog.Reason = snapshot.reason
 	}
 	return opshealth.NewReport("mac_ingress", time.Now(), database, backlog)
+}
+
+func macIngressHealthReportWithMetrics(ctx context.Context, authority *store.AuthorityStore, monitor *routerHealthMonitor, importer *mailbox.Importer, recorder *opshealth.Recorder, thresholds *opshealth.ThresholdMonitor) opshealth.Report {
+	report := macIngressHealthReport(ctx, authority, monitor)
+	if authority == nil {
+		return report
+	}
+	durable, err := authority.ReadOperationalMetrics(ctx)
+	if err != nil {
+		return report
+	}
+	metrics := opshealth.Metrics{
+		ActiveSessionSlots: durable.ActiveSessionSlots, ActiveCommandSlots: durable.ActiveCommandSlots,
+		QueuedCommands: durable.QueuedCommands, QueuedIntents: durable.QueuedIntents,
+		DispatchAttemptsTotal: durable.DispatchAttemptsTotal, ReconciliationAgeSeconds: durable.ReconciliationAgeSeconds,
+		EventLagEvents: durable.EventLagEvents, EventGapsTotal: durable.EventGapsTotal,
+		OutputTruncationsTotal: durable.OutputTruncationsTotal,
+		StorageErrorsTotal:     durable.StorageErrorsTotal, CleanupFailuresTotal: durable.CleanupFailuresTotal,
+		MailboxBacklog: durable.MailboxBacklog,
+	}
+	if importer != nil {
+		ready, err := importer.ReadyRequestCount(ctx)
+		if err != nil {
+			return report
+		}
+		metrics.MailboxBacklog += ready
+	}
+	return opshealth.AddMetrics(report, metrics, recorder, thresholds, nil)
 }

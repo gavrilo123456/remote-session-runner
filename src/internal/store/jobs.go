@@ -136,7 +136,7 @@ func (s *AuthorityStore) AcceptJob(ctx context.Context, input JobAcceptance) (re
 		return JobRecord{}, false, err
 	}
 	now := s.now().UTC()
-	record, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (JobRecord, error) {
+	record, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (JobRecord, error) {
 		existing, found, err := lookupIdempotencyOnConnection(ctx, connection, validated.Controller, runJobOperation, validated.IdempotencyKey, now)
 		if err != nil {
 			return JobRecord{}, err
@@ -220,7 +220,7 @@ func (s *AuthorityStore) CheckpointJob(ctx context.Context, id domain.JobID, che
 		return JobRecord{}, fmt.Errorf("%w: checkpoint teardown state %q", ErrInvalidJob, *checkpoint.TeardownState)
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (JobRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (JobRecord, error) {
 		var currentPhase string
 		var sessionID, commandID string
 		if err := connection.QueryRowContext(ctx, "SELECT phase, session_id, command_id FROM exec_jobs WHERE job_id = ?", string(validatedID)).Scan(&currentPhase, &sessionID, &commandID); err != nil {

@@ -17,7 +17,7 @@ func (s *AuthorityStore) RecordAudit(ctx context.Context, record audit.Record) e
 	if s == nil || s.db == nil {
 		return ErrNilDatabase
 	}
-	saved, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (audit.Record, error) {
+	saved, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (audit.Record, error) {
 		return insertAuditOnConnection(ctx, connection, record)
 	})
 	if err != nil {
@@ -43,6 +43,9 @@ FROM runner_audit_records
 ORDER BY id DESC LIMIT ?
 `, limit)
 	if err != nil {
+		if IsSQLiteError(err) {
+			s.storageErrors.Add(1)
+		}
 		return nil, fmt.Errorf("list audit records: %w", err)
 	}
 	defer rows.Close()
@@ -98,6 +101,9 @@ ORDER BY id DESC LIMIT ?
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
+		if IsSQLiteError(err) {
+			s.storageErrors.Add(1)
+		}
 		return nil, fmt.Errorf("read audit records: %w", err)
 	}
 	for left, right := 0, len(records)-1; left < right; left, right = left+1, right-1 {

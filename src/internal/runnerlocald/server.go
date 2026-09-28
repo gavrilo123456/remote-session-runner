@@ -50,6 +50,7 @@ type PrivateServerOptions struct {
 	SocketPath   string
 	MaxBodyBytes int64
 	HealthReport func(context.Context) opshealth.Report
+	Thresholds   *opshealth.ThresholdMonitor
 }
 
 type PrivateServer struct {
@@ -62,6 +63,7 @@ type PrivateServer struct {
 	listener     net.Listener
 	closed       bool
 	healthReport func(context.Context) opshealth.Report
+	thresholds   *opshealth.ThresholdMonitor
 }
 
 func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
@@ -85,7 +87,11 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = DefaultPrivateRequestBytes
 	}
-	return &PrivateServer{authority: options.Authority, service: options.Service, owner: owner, socketPath: options.SocketPath, maxBodyBytes: options.MaxBodyBytes, httpServer: &http.Server{}, healthReport: options.HealthReport}, nil
+	thresholds := options.Thresholds
+	if thresholds == nil {
+		thresholds = opshealth.NewThresholdMonitor()
+	}
+	return &PrivateServer{authority: options.Authority, service: options.Service, owner: owner, socketPath: options.SocketPath, maxBodyBytes: options.MaxBodyBytes, httpServer: &http.Server{}, healthReport: options.HealthReport, thresholds: thresholds}, nil
 }
 
 func (s *PrivateServer) SocketPath() string {
@@ -282,7 +288,11 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 
 func (s *PrivateServer) currentHealthReport(ctx context.Context) opshealth.Report {
 	if s != nil && s.healthReport != nil {
-		return s.healthReport(ctx)
+		report := s.healthReport(ctx)
+		if report.Metrics != nil {
+			return report
+		}
+		return s.withOperationalMetrics(ctx, report)
 	}
 	database := opshealth.Check{Component: "sqlite_writes", State: opshealth.StateReady, RequiredForReadiness: true}
 	if s == nil || s.authority == nil || s.authority.CheckWritable(ctx, "mac_local_executor") != nil {
@@ -294,7 +304,28 @@ func (s *PrivateServer) currentHealthReport(ctx context.Context) opshealth.Repor
 		profile.State = opshealth.StateNotReady
 		profile.Reason = "host_profile_not_ready"
 	}
-	return opshealth.NewReport("mac_local_executor", time.Now(), database, profile)
+	return s.withOperationalMetrics(ctx, opshealth.NewReport("mac_local_executor", time.Now(), database, profile))
+}
+
+func (s *PrivateServer) withOperationalMetrics(ctx context.Context, report opshealth.Report) opshealth.Report {
+	if s == nil || s.authority == nil {
+		return report
+	}
+	thresholds := s.thresholds
+	durable, err := s.authority.ReadOperationalMetrics(ctx)
+	if err != nil {
+		return report
+	}
+	metrics := opshealth.Metrics{
+		ActiveSessionSlots: durable.ActiveSessionSlots, ActiveCommandSlots: durable.ActiveCommandSlots,
+		QueuedCommands: durable.QueuedCommands, QueuedIntents: durable.QueuedIntents,
+		DispatchAttemptsTotal: durable.DispatchAttemptsTotal, ReconciliationAgeSeconds: durable.ReconciliationAgeSeconds,
+		EventLagEvents: durable.EventLagEvents, EventGapsTotal: durable.EventGapsTotal,
+		OutputTruncationsTotal: durable.OutputTruncationsTotal,
+		StorageErrorsTotal:     durable.StorageErrorsTotal, CleanupFailuresTotal: durable.CleanupFailuresTotal,
+		MailboxBacklog: durable.MailboxBacklog,
+	}
+	return opshealth.AddMetrics(report, metrics, nil, thresholds, nil)
 }
 
 func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalIntentRecord) (intentAcceptanceResponse, error) {

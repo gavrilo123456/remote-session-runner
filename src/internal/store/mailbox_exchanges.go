@@ -113,7 +113,7 @@ func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input Mailbo
 		return MailboxExchangeRecord{}, false, false, err
 	}
 	now := s.now().UTC()
-	returnValue, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+	returnValue, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
 		byID, found, err := readMailboxExchangeByIDOnConnection(ctx, connection, validated.RequestID)
 		if err != nil {
 			return MailboxExchangeRecord{}, err
@@ -238,7 +238,7 @@ func (s *AuthorityStore) GetMailboxExchange(ctx context.Context, requestID strin
 	if err := validateMailboxRequestID(requestID); err != nil {
 		return MailboxExchangeRecord{}, err
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
 		return readMailboxExchangeOnConnection(ctx, connection, requestID)
 	})
 }
@@ -257,7 +257,7 @@ func (s *AuthorityStore) ListMailboxExchanges(ctx context.Context, controller do
 	if state != MailboxExchangeAccepted && state != MailboxExchangeComplete && state != MailboxExchangeRejected && state != MailboxExchangeIndeterminate {
 		return nil, fmt.Errorf("%w: state %q", ErrMailboxExchangeInvalid, state)
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
 		rows, err := connection.QueryContext(ctx, `
 SELECT request_id FROM mailbox_exchanges
 WHERE controller_type = ? AND controller_id = ? AND operation = ? AND request_state = ?
@@ -305,7 +305,7 @@ func (s *AuthorityStore) CompleteMailboxExchange(ctx context.Context, requestID 
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: terminal state %q", ErrMailboxExchangeInvalid, next)
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
 		current, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
 		if err != nil {
 			return MailboxExchangeRecord{}, err
@@ -355,7 +355,7 @@ func (s *AuthorityStore) PublishMailboxResponse(ctx context.Context, requestID s
 	}
 	responseHash := sha256Bytes(publication.Bytes)
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
 		current, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
 		if err != nil {
 			return MailboxExchangeRecord{}, err

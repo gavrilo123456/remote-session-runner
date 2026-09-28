@@ -53,7 +53,7 @@ func (s *AuthorityStore) StartNextEligibleCommand(ctx context.Context, maxSlots 
 	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
 	var publishedEvent *CommandEventRecord
-	record, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+	record, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
 		var liveSlots int
 		if err := connection.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM exec_command_slots
@@ -192,7 +192,7 @@ func (s *AuthorityStore) ConfirmCommandSlotRelease(ctx context.Context, id domai
 		return err
 	}
 	now := s.now().UTC()
-	_, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		var state string
 		if err := connection.QueryRowContext(ctx, "SELECT state FROM exec_commands WHERE command_id = ?", string(validatedID)).Scan(&state); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {

@@ -6,12 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/opshealth"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 	"syscall"
@@ -98,7 +100,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runner-locald: owner controller: %v\n", err)
 		return 1
 	}
-	server, err := NewPrivateServer(PrivateServerOptions{Authority: authority, Service: service, Owner: owner, SocketPath: settings.LocalDSocket})
+	thresholds := opshealth.NewThresholdMonitor()
+	server, err := NewPrivateServer(PrivateServerOptions{Authority: authority, Service: service, Owner: owner, SocketPath: settings.LocalDSocket, Thresholds: thresholds})
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: construct private API: %v\n", err)
 		return 1
@@ -107,12 +110,19 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runner-locald: listen: %v\n", err)
 		return 1
 	}
+	metricsObserverDone := make(chan struct{})
+	go func() {
+		defer close(metricsObserverDone)
+		observeMacLocalOperationalMetrics(signalContext, authority, thresholds)
+	}()
 	fmt.Fprintf(stdout, "runner-locald listening on %s\n", settings.LocalDSocket)
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- server.Serve() }()
 	select {
 	case serveErr := <-serveErrors:
 		closeErr := server.Close(context.Background())
+		stop()
+		<-metricsObserverDone
 		if serveErr != nil || closeErr != nil {
 			fmt.Fprintf(stderr, "runner-locald: serve: %v\n", errors.Join(serveErr, closeErr))
 			return 1
@@ -122,10 +132,47 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		defer cancel()
 		closeErr := server.Close(shutdownContext)
 		serveErr := <-serveErrors
+		<-metricsObserverDone
 		if closeErr != nil || serveErr != nil {
 			fmt.Fprintf(stderr, "runner-locald: shutdown: %v\n", errors.Join(closeErr, serveErr))
 			return 1
 		}
 	}
 	return 0
+}
+
+func observeMacLocalOperationalMetrics(ctx context.Context, authority *store.AuthorityStore, thresholds *opshealth.ThresholdMonitor) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	observe := func() {
+		if authority == nil {
+			return
+		}
+		durable, err := authority.ReadOperationalMetrics(ctx)
+		if err != nil {
+			return
+		}
+		metrics := opshealth.Metrics{
+			ActiveSessionSlots: durable.ActiveSessionSlots, ActiveCommandSlots: durable.ActiveCommandSlots,
+			QueuedCommands: durable.QueuedCommands, QueuedIntents: durable.QueuedIntents,
+			DispatchAttemptsTotal: durable.DispatchAttemptsTotal, ReconciliationAgeSeconds: durable.ReconciliationAgeSeconds,
+			EventLagEvents: durable.EventLagEvents, EventGapsTotal: durable.EventGapsTotal,
+			OutputTruncationsTotal: durable.OutputTruncationsTotal,
+			StorageErrorsTotal:     durable.StorageErrorsTotal, CleanupFailuresTotal: durable.CleanupFailuresTotal,
+			MailboxBacklog: durable.MailboxBacklog,
+		}
+		thresholds.LogThresholds(slog.Default(), "mac_local_executor", metrics)
+	}
+	observe()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			observe()
+		}
+	}
 }

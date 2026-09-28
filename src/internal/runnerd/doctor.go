@@ -60,12 +60,14 @@ func diagnoseLinuxRunner(ctx context.Context, configPath string) opshealth.Repor
 
 	database := opshealth.Check{Component: "sqlite_writes", State: opshealth.StateReady, RequiredForReadiness: true}
 	db, openErr := store.Open(ctx, settings.Database)
+	var authority *store.AuthorityStore
 	if openErr != nil {
 		database.State = opshealth.StateNotReady
 		database.Reason = "database_migration_or_write_failed"
 	} else {
 		defer db.Close()
-		authority, authorityErr := store.NewAuthorityStore(db)
+		var authorityErr error
+		authority, authorityErr = store.NewAuthorityStore(db)
 		if authorityErr != nil || authority.CheckWritable(ctx, "linux_runnerd") != nil {
 			database.State = opshealth.StateNotReady
 			database.Reason = "database_write_failed"
@@ -100,7 +102,22 @@ func diagnoseLinuxRunner(ctx context.Context, configPath string) opshealth.Repor
 		tls.Reason = "mtls_configuration_not_ready"
 	}
 	checks = append(checks, tls)
-	return opshealth.NewReport("linux_runnerd", time.Now(), checks...)
+	report := opshealth.NewReport("linux_runnerd", time.Now(), checks...)
+	if authority != nil {
+		if durable, err := authority.ReadOperationalMetrics(ctx); err == nil {
+			metrics := opshealth.Metrics{
+				ActiveSessionSlots: durable.ActiveSessionSlots, ActiveCommandSlots: durable.ActiveCommandSlots,
+				QueuedCommands: durable.QueuedCommands, QueuedIntents: durable.QueuedIntents,
+				DispatchAttemptsTotal: durable.DispatchAttemptsTotal, ReconciliationAgeSeconds: durable.ReconciliationAgeSeconds,
+				EventLagEvents: durable.EventLagEvents, EventGapsTotal: durable.EventGapsTotal,
+				OutputTruncationsTotal: durable.OutputTruncationsTotal,
+				StorageErrorsTotal:     durable.StorageErrorsTotal, CleanupFailuresTotal: durable.CleanupFailuresTotal,
+				MailboxBacklog: durable.MailboxBacklog,
+			}
+			report = opshealth.AddMetrics(report, metrics, nil, nil, nil)
+		}
+	}
+	return report
 }
 
 func linuxRunnerHealthReport(ctx context.Context, authority *store.AuthorityStore, profileReady, tlsReady bool) opshealth.Report {
@@ -120,4 +137,25 @@ func linuxRunnerHealthReport(ctx context.Context, authority *store.AuthorityStor
 		tls.Reason = "mtls_configuration_not_ready"
 	}
 	return opshealth.NewReport("linux_runnerd", time.Now(), database, profile, tls)
+}
+
+func linuxRunnerHealthReportWithMetrics(ctx context.Context, authority *store.AuthorityStore, profileReady, tlsReady bool, thresholds *opshealth.ThresholdMonitor) opshealth.Report {
+	report := linuxRunnerHealthReport(ctx, authority, profileReady, tlsReady)
+	if authority == nil {
+		return report
+	}
+	durable, err := authority.ReadOperationalMetrics(ctx)
+	if err != nil {
+		return report
+	}
+	metrics := opshealth.Metrics{
+		ActiveSessionSlots: durable.ActiveSessionSlots, ActiveCommandSlots: durable.ActiveCommandSlots,
+		QueuedCommands: durable.QueuedCommands, QueuedIntents: durable.QueuedIntents,
+		DispatchAttemptsTotal: durable.DispatchAttemptsTotal, ReconciliationAgeSeconds: durable.ReconciliationAgeSeconds,
+		EventLagEvents: durable.EventLagEvents, EventGapsTotal: durable.EventGapsTotal,
+		OutputTruncationsTotal: durable.OutputTruncationsTotal,
+		StorageErrorsTotal:     durable.StorageErrorsTotal, CleanupFailuresTotal: durable.CleanupFailuresTotal,
+		MailboxBacklog: durable.MailboxBacklog,
+	}
+	return opshealth.AddMetrics(report, metrics, nil, thresholds, nil)
 }

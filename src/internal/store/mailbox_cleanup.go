@@ -38,7 +38,7 @@ func (s *AuthorityStore) BindMailboxEventFileReference(ctx context.Context, requ
 		return fmt.Errorf("%w: command ID: %v", ErrMailboxResponseInvalid, err)
 	}
 	now := s.now().UTC()
-	_, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		return struct{}{}, bindMailboxEventFileReferenceOnConnection(ctx, connection, requestID, validatedCommandID, now)
 	})
 	return err
@@ -139,7 +139,7 @@ func (s *AuthorityStore) MailboxResponseCommandEvents(ctx context.Context, reque
 		command CommandRecord
 		events  []CommandEventRecord
 	}
-	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (commandEvents, error) {
+	result, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (commandEvents, error) {
 		exchange, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
 		if err != nil {
 			return commandEvents{}, err
@@ -237,7 +237,7 @@ FROM local_remote_events WHERE command_id = ? ORDER BY sequence LIMIT ?
 // idempotent unlink instead of allowing a projector to recreate the file.
 func (s *AuthorityStore) ClaimMailboxResponsesForCleanup(ctx context.Context) ([]string, error) {
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]string, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]string, error) {
 		rows, err := connection.QueryContext(ctx, `
 SELECT request_id FROM mailbox_exchanges
 WHERE request_state IN ('complete', 'rejected', 'indeterminate') AND response_revision > 0
@@ -285,7 +285,7 @@ ORDER BY request_id
 // cleanup. Repeating the marker after an unlink is harmless.
 func (s *AuthorityStore) MarkMailboxResponseFileRemoved(ctx context.Context, requestID string) error {
 	now := s.now().UTC()
-	_, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		result, err := connection.ExecContext(ctx, `UPDATE mailbox_exchanges
 SET response_file_removed_at = COALESCE(response_file_removed_at, ?)
 WHERE request_id = ? AND response_cleanup_started_at IS NOT NULL`, formatStoredTime(now), requestID)
@@ -314,7 +314,7 @@ WHERE request_id = ? AND response_cleanup_started_at IS NOT NULL`, formatStoredT
 // which every durable response reference has reached its own cleanup deadline.
 func (s *AuthorityStore) ClaimMailboxEventFilesForCleanup(ctx context.Context) ([]domain.CommandID, error) {
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]domain.CommandID, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]domain.CommandID, error) {
 		rows, err := connection.QueryContext(ctx, `
 SELECT command_id FROM mailbox_event_file_references
 UNION
@@ -416,7 +416,7 @@ ORDER BY command_id
 // MarkMailboxEventFileRemoved completes a claimed shared-event unlink.
 func (s *AuthorityStore) MarkMailboxEventFileRemoved(ctx context.Context, commandID domain.CommandID) error {
 	now := s.now().UTC()
-	_, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		for _, table := range []string{"mailbox_event_file_cleanup", "mailbox_remote_event_file_cleanup"} {
 			result, err := connection.ExecContext(ctx, `UPDATE `+table+`
 SET file_removed_at = COALESCE(file_removed_at, ?)

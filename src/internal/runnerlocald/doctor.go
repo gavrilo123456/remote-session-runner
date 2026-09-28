@@ -86,5 +86,18 @@ func diagnoseMacLocalExecutor(configPath string) opshealth.Report {
 		}
 	}
 	checks = append(checks, profile)
-	return opshealth.NewReport("mac_local_executor", time.Now(), checks...)
+	report := opshealth.NewReport("mac_local_executor", time.Now(), checks...)
+	if durable, err := authority.ReadOperationalMetrics(context.Background()); err == nil {
+		metrics := opshealth.Metrics{
+			ActiveSessionSlots: durable.ActiveSessionSlots, ActiveCommandSlots: durable.ActiveCommandSlots,
+			QueuedCommands: durable.QueuedCommands, QueuedIntents: durable.QueuedIntents,
+			DispatchAttemptsTotal: durable.DispatchAttemptsTotal, ReconciliationAgeSeconds: durable.ReconciliationAgeSeconds,
+			EventLagEvents: durable.EventLagEvents, EventGapsTotal: durable.EventGapsTotal,
+			OutputTruncationsTotal: durable.OutputTruncationsTotal,
+			StorageErrorsTotal:     durable.StorageErrorsTotal, CleanupFailuresTotal: durable.CleanupFailuresTotal,
+			MailboxBacklog: durable.MailboxBacklog,
+		}
+		report = opshealth.AddMetrics(report, metrics, nil, nil, nil)
+	}
+	return report
 }

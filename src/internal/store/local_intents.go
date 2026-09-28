@@ -124,7 +124,7 @@ func (s *AuthorityStore) AcceptLocalIntent(ctx context.Context, input LocalInten
 		actionAudit = &entry
 	}
 	now := s.now().UTC()
-	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+	result, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
 		existing, found, lookupErr := lookupLocalIdempotencyOnConnection(ctx, connection, validated.Controller, validated.Operation, validated.IdempotencyKey, now)
 		if lookupErr != nil {
 			return LocalIntentRecord{}, lookupErr
@@ -189,7 +189,7 @@ func (s *AuthorityStore) GetLocalIntent(ctx context.Context, id domain.IntentID)
 	if err != nil {
 		return LocalIntentRecord{}, fmt.Errorf("%w: intent ID: %v", ErrInvalidLocalIntent, err)
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
 		return readLocalIntentOnConnection(ctx, connection, validatedID)
 	})
 }
@@ -211,7 +211,7 @@ func (s *AuthorityStore) LocalIntentIdempotencyExpiry(ctx context.Context, id do
 		deadline time.Time
 		found    bool
 	}
-	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (expiryResult, error) {
+	result, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (expiryResult, error) {
 		var operation, resourceID, expiresAt string
 		var controllerType, controllerID, idempotencyKey string
 		err := connection.QueryRowContext(ctx, `
@@ -254,7 +254,7 @@ func (s *AuthorityStore) GetLocalIntentByResource(ctx context.Context, operation
 	if _, err := domain.NewControllerIdentity(controller.Type(), controller.ID()); err != nil {
 		return LocalIntentRecord{}, fmt.Errorf("%w: controller: %v", ErrInvalidLocalIntent, err)
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
 		var intentID string
 		err := connection.QueryRowContext(ctx, `
 SELECT intent_id FROM local_intents
@@ -286,7 +286,7 @@ func (s *AuthorityStore) GetLocalIntentByIdempotency(ctx context.Context, operat
 	if _, err := domain.NewControllerIdentity(controller.Type(), controller.ID()); err != nil {
 		return LocalIntentRecord{}, fmt.Errorf("%w: controller: %v", ErrInvalidLocalIntent, err)
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
 		var intentID string
 		err := connection.QueryRowContext(ctx, `
 SELECT intent_id FROM local_idempotency
@@ -327,7 +327,7 @@ func (s *AuthorityStore) ListLocalIntentLifecycle(ctx context.Context, id domain
 	if err != nil {
 		return nil, fmt.Errorf("%w: intent ID: %v", ErrInvalidLocalIntent, err)
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LocalIntentLifecycleRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]LocalIntentLifecycleRecord, error) {
 		if _, err := readLocalIntentOnConnection(ctx, connection, validatedID); err != nil {
 			return nil, err
 		}
@@ -387,7 +387,7 @@ func (s *AuthorityStore) TransitionLocalIntent(ctx context.Context, id domain.In
 	if !validLocalIntentDeliveryState(string(next)) {
 		return LocalIntentRecord{}, fmt.Errorf("%w: unknown next state %q", ErrLocalIntentTransition, next)
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
 		current, err := readLocalIntentOnConnection(ctx, connection, validatedID)
 		if err != nil {
 			return LocalIntentRecord{}, err
@@ -434,7 +434,7 @@ func (s *AuthorityStore) ClaimLocalIntent(ctx context.Context, id domain.IntentI
 		return LocalIntentRecord{}, err
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
 		return claimLocalIntentOnConnection(ctx, connection, validatedID, owner, leaseDuration, now)
 	})
 }
@@ -447,7 +447,7 @@ func (s *AuthorityStore) ClaimNextLocalIntent(ctx context.Context, owner string,
 		return LocalIntentRecord{}, err
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
 		id, err := findNextEligibleLocalIntentOnConnection(ctx, connection, now)
 		if err != nil {
 			return LocalIntentRecord{}, err
@@ -468,7 +468,7 @@ func (s *AuthorityStore) RenewLocalIntentLease(ctx context.Context, id domain.In
 		return LocalIntentRecord{}, err
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
 		current, err := readLocalIntentOnConnection(ctx, connection, validatedID)
 		if err != nil {
 			return LocalIntentRecord{}, err
@@ -498,7 +498,7 @@ func (s *AuthorityStore) ListEligibleLocalIntents(ctx context.Context, limit int
 		return nil, fmt.Errorf("%w: eligibility limit exceeds 1000", ErrInvalidLocalIntent)
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LocalIntentRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]LocalIntentRecord, error) {
 		rows, err := connection.QueryContext(ctx, eligibleLocalIntentQuery+" LIMIT ?", formatStoredTime(now), limit)
 		if err != nil {
 			return nil, fmt.Errorf("list eligible local intents: %w", err)
@@ -519,7 +519,7 @@ func (s *AuthorityStore) ListRecoverableLocalIntents(ctx context.Context, limit 
 		return nil, fmt.Errorf("%w: recovery limit exceeds 1000", ErrInvalidLocalIntent)
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LocalIntentRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]LocalIntentRecord, error) {
 		rows, err := connection.QueryContext(ctx, `
 SELECT intent_id FROM local_intents
 WHERE delivery_state IN ('dispatching', 'uncertain')

@@ -23,6 +23,7 @@ import (
 	"remote-session-runner/src/internal/dispatcher"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/localapi"
+	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/sshbridge"
 	"remote-session-runner/src/internal/sshclient"
@@ -113,10 +114,16 @@ func TestP128MacIngressAcceptsDurableIntentDuringRemoteOutage(t *testing.T) {
 	if err := os.Mkdir(runDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	metricsImporter, err := mailbox.NewImporter(filepath.Join(apiRoot, "mailbox"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsRecorder := opshealth.NewRecorder()
+	thresholds := opshealth.NewThresholdMonitor()
 	api, err := localapi.NewServer(localapi.ServerOptions{
 		Authority: authority, Owner: owner, SocketPath: filepath.Join(runDir, "api.sock"),
 		HealthReport: func(ctx context.Context) opshealth.Report {
-			return macIngressHealthReport(ctx, authority, monitor)
+			return macIngressHealthReportWithMetrics(ctx, authority, monitor, metricsImporter, metricsRecorder, thresholds)
 		},
 	})
 	if err != nil {
@@ -192,8 +199,18 @@ func TestP128MacIngressAcceptsDurableIntentDuringRemoteOutage(t *testing.T) {
 	var health opshealth.Report
 	decodeErr := json.NewDecoder(healthResponse.Body).Decode(&health)
 	closeErr := healthResponse.Body.Close()
-	if decodeErr != nil || closeErr != nil || healthResponse.StatusCode != http.StatusOK || health.Readiness != opshealth.StateReady || health.Checks[1].State != opshealth.StateDegraded || health.Checks[1].Details["pending_intents"] != 1 {
+	if decodeErr != nil || closeErr != nil || healthResponse.StatusCode != http.StatusOK || health.Readiness != opshealth.StateReady || health.Checks[1].State != opshealth.StateDegraded || health.Checks[1].Details["pending_intents"] != 1 || health.Metrics == nil || health.Metrics.QueuedIntents < 2 {
 		t.Fatalf("Mac readiness during SSH outage status=%d report=%+v decode=%v close=%v", healthResponse.StatusCode, health, decodeErr, closeErr)
+	}
+	metricsResponse, err := client.Get("http://runner/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ingressMetrics opshealth.Metrics
+	decodeErr = json.NewDecoder(metricsResponse.Body).Decode(&ingressMetrics)
+	closeErr = metricsResponse.Body.Close()
+	if decodeErr != nil || closeErr != nil || metricsResponse.StatusCode != http.StatusOK || ingressMetrics.QueuedIntents < 2 {
+		t.Fatalf("Mac /metrics status=%d metrics=%+v decode=%v close=%v", metricsResponse.StatusCode, ingressMetrics, decodeErr, closeErr)
 	}
 	caller.setUnavailable(false)
 	recovered := service.Doctor(ctx)
@@ -225,6 +242,9 @@ func p128CheckMacIngressDoctor(t *testing.T, configPath string) {
 	}
 	if report.Component != "mac_ingress" || report.Readiness != opshealth.StateReady || len(report.Checks) != 2 || report.Checks[0].Component != "sqlite_writes" || report.Checks[0].State != opshealth.StateReady || report.Checks[1].Component != "remote_router" || report.Checks[1].State != opshealth.StateReady {
 		t.Fatalf("runner-local doctor did not report healthy ingress and Router: %+v", report)
+	}
+	if report.Metrics == nil {
+		t.Fatal("runner-local doctor omitted operational metrics")
 	}
 	if strings.Contains(output.String(), "dispatcher_ed25519") || strings.Contains(output.String(), "direct-client.key") || strings.Contains(output.String(), "PRIVATE KEY") {
 		t.Fatal("runner-local doctor report exposed a secret path or private-key marker")

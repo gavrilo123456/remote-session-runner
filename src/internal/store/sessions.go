@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"remote-session-runner/src/internal/audit"
@@ -99,6 +100,8 @@ type AuthorityStore struct {
 	commandEventsMu sync.Mutex
 	subscribersMu   sync.Mutex
 	subscribersByID map[domain.CommandID]map[*CommandEventSubscription]struct{}
+	storageErrors   atomic.Int64
+	cleanupFailures atomic.Int64
 }
 
 // NewAuthorityStore wraps an opened P011 SQLite database with the P012 session
@@ -152,7 +155,7 @@ func (s *AuthorityStore) AcceptSessionCreate(ctx context.Context, input SessionC
 	}
 	now := s.now().UTC()
 	expiresAt := now.Add(validated.IdempotencyRetention)
-	record, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+	record, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
 		existing, found, err := lookupIdempotencyOnConnection(ctx, connection, validated.SessionCreate.Controller, createSessionOperation, validated.IdempotencyKey, now)
 		if err != nil {
 			return SessionRecord{}, err
@@ -217,7 +220,7 @@ func (s *AuthorityStore) CreateSession(ctx context.Context, input SessionCreate)
 		return SessionRecord{}, err
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
 		if err := ensureSessionCapacity(ctx, connection, DefaultActiveSessionLimit); err != nil {
 			return SessionRecord{}, err
 		}
@@ -331,7 +334,7 @@ func (s *AuthorityStore) ConfirmSessionCleanup(ctx context.Context, id domain.Se
 		return err
 	}
 	now := s.now().UTC()
-	_, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		result, err := connection.ExecContext(ctx, `
 UPDATE exec_capacity_reservations
 SET cleanup_confirmed_at = ?, released_at = ?
@@ -376,7 +379,7 @@ func (s *AuthorityStore) TransitionSession(ctx context.Context, id domain.Sessio
 		return SessionRecord{}, err
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
 		var currentValue string
 		if err := connection.QueryRowContext(ctx,
 			"SELECT state FROM exec_sessions WHERE session_id = ?", string(validatedID)).Scan(&currentValue); err != nil {
@@ -438,7 +441,7 @@ func (s *AuthorityStore) CompleteSessionCreation(ctx context.Context, id domain.
 		return SessionRecord{}, err
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
 		var currentValue, currentGeneration, currentRevision string
 		if err := connection.QueryRowContext(ctx, `
 SELECT state, runtime_generation, source_resolved_revision
@@ -882,7 +885,16 @@ func parseStoredTime(value string) (time.Time, error) {
 	return parsed.UTC(), nil
 }
 
-func withImmediateTransaction[T any](ctx context.Context, db *sql.DB, fn func(context.Context, *sql.Conn) (T, error)) (result T, err error) {
+func withImmediateTransaction[T any](ctx context.Context, owner *AuthorityStore, fn func(context.Context, *sql.Conn) (T, error)) (result T, err error) {
+	if owner == nil || owner.db == nil {
+		return result, ErrNilDatabase
+	}
+	defer func() {
+		if IsSQLiteError(err) {
+			owner.storageErrors.Add(1)
+		}
+	}()
+	db := owner.db
 	connection, err := db.Conn(ctx)
 	if err != nil {
 		return result, fmt.Errorf("acquire SQLite transaction connection: %w", err)

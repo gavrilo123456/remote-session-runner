@@ -36,7 +36,7 @@ func (s *AuthorityStore) AcknowledgeMailboxExchange(ctx context.Context, ack Mai
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: available event sequence", ErrMailboxAckInvalid)
 	}
 	now := s.now().UTC()
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
 		record, err := readMailboxExchangeOnConnection(ctx, connection, ack.RequestID)
 		if err != nil {
 			return MailboxExchangeRecord{}, err

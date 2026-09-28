@@ -43,6 +43,9 @@ func TestP128MacLocalExecutorDoctorHost(t *testing.T) {
 	if report.Component != "mac_local_executor" || report.Readiness != opshealth.StateReady || len(report.Checks) != 2 || report.Checks[0].Component != "sqlite_writes" || report.Checks[0].State != opshealth.StateReady || report.Checks[1].Component != "mac_host_profile" || report.Checks[1].State != opshealth.StateReady {
 		t.Fatalf("runner-locald doctor did not report a ready Mac host profile: %+v", report)
 	}
+	if report.Metrics == nil {
+		t.Fatal("runner-locald doctor omitted operational metrics")
+	}
 	if strings.Contains(output.String(), "dispatcher_ed25519") || strings.Contains(output.String(), "direct-client.key") || strings.Contains(output.String(), "PRIVATE KEY") {
 		t.Fatal("runner-locald doctor report exposed a secret path or private-key marker")
 	}

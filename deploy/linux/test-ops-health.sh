@@ -7,7 +7,8 @@ service_root='/home/ubuntu/.local/share/remote-session-runner'
 config_file="$service_root/config/linux.yaml"
 socket_path="$service_root/run/runnerd.sock"
 go_bin=${GO:-"$service_root/toolchains/go1.27.1/bin/go"}
-expected_commit=${RSR_P128_EXPECTED_COMMIT:?set to the exact Mac commit already pushed and pulled to Ubuntu}
+expected_commit=${RSR_P129_EXPECTED_COMMIT:-${RSR_P128_EXPECTED_COMMIT:-}}
+: "${expected_commit:?set to the exact P129 commit already pushed and pulled to Ubuntu}"
 stopped=0
 scratch=''
 backup_ready=0
@@ -184,6 +185,8 @@ if ! "$new_runnerd" doctor --config "$config_file" > "$healthy_doctor" 2>&1; the
 fi
 grep -Fq '"component": "linux_runnerd"' "$healthy_doctor"
 grep -Fq '"readiness": "ready"' "$healthy_doctor"
+grep -Fq '"active_session_slots"' "$healthy_doctor"
+grep -Fq '"cleanup_failures_total"' "$healthy_doctor"
 if grep -Eq '/secrets/|PRIVATE KEY|server\.key' "$healthy_doctor"; then
 	printf '%s\n' 'healthy doctor report exposed credential information' >&2
 	exit 1
@@ -211,12 +214,16 @@ stopped=0
 
 live="$scratch/health-live.json"
 ready_report="$scratch/health-ready.json"
+metrics_report="$scratch/metrics.json"
 curl --silent --show-error --fail --unix-socket "$socket_path" http://runner/health/live > "$live"
 curl --silent --show-error --fail --unix-socket "$socket_path" http://runner/health/ready > "$ready_report"
+curl --silent --show-error --fail --unix-socket "$socket_path" http://runner/metrics > "$metrics_report"
 grep -Fq '"liveness":"live"' "$live"
 grep -Fq '"component":"linux_runnerd"' "$ready_report"
 grep -Fq '"readiness":"ready"' "$ready_report"
+grep -Fq '"active_session_slots"' "$metrics_report"
+grep -Fq '"mailbox_backlog"' "$metrics_report"
 cat "$ready_report"
 make -C "$repo_root" test-p128-host-readonly-health
 
-printf '%s\n' 'P128 Ubuntu host gate passed: safe doctor negatives, healthy doctor, schema migration, active Linux profile, owner-only private health socket, readiness, and read-only SQLite write-failure detection.'
+printf '%s\n' 'P128/P129 Ubuntu host gate passed: safe doctor negatives, healthy doctor and bounded metrics, schema migration, active Linux profile, owner-only private health socket, readiness and metrics routes, and read-only SQLite write-failure detection.'

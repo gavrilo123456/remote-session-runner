@@ -33,7 +33,10 @@ INSERT INTO runner_health_probes(component, checked_at) VALUES(?, ?)
 ON CONFLICT(component) DO UPDATE SET checked_at = excluded.checked_at
 `, component, formatStoredTime(s.now()))
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrHealthProbe, err)
+		if IsSQLiteError(err) {
+			s.storageErrors.Add(1)
+		}
+		return fmt.Errorf("%w: %w", ErrHealthProbe, err)
 	}
 	return nil
 }
@@ -52,10 +55,13 @@ func (s *AuthorityStore) CountRemoteIntentBacklog(ctx context.Context) (RemoteIn
 SELECT
   COALESCE(SUM(CASE WHEN delivery_state IN ('recorded', 'dispatching') THEN 1 ELSE 0 END), 0),
   COALESCE(SUM(CASE WHEN delivery_state = 'uncertain' THEN 1 ELSE 0 END), 0)
-FROM local_intents
+		FROM local_intents
 WHERE target_kind = 'remote'
 `).Scan(&result.Pending, &result.Uncertain)
 	if err != nil {
+		if IsSQLiteError(err) {
+			s.storageErrors.Add(1)
+		}
 		return RemoteIntentBacklog{}, fmt.Errorf("read Router backlog: %w", err)
 	}
 	return result, nil

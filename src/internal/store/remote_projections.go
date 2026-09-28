@@ -78,7 +78,7 @@ func (s *AuthorityStore) UpsertRemoteSessionProjection(ctx context.Context, inpu
 	if err != nil {
 		return RemoteSessionProjection{}, err
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (RemoteSessionProjection, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteSessionProjection, error) {
 		stored, err := readRemoteSessionProjectionOnConnection(ctx, connection, validated.SessionID)
 		if errors.Is(err, ErrRemoteProjectionNotFound) {
 			_, err := connection.ExecContext(ctx, `
@@ -121,7 +121,7 @@ func (s *AuthorityStore) GetRemoteSessionProjection(ctx context.Context, id doma
 	if err != nil {
 		return RemoteSessionProjection{}, err
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (RemoteSessionProjection, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteSessionProjection, error) {
 		return readRemoteSessionProjectionOnConnection(ctx, connection, validated)
 	})
 }
@@ -133,7 +133,7 @@ func (s *AuthorityStore) MarkRemoteSessionProjectionStale(ctx context.Context, i
 	if err != nil {
 		return err
 	}
-	_, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		result, err := connection.ExecContext(ctx, `UPDATE local_remote_session_projections SET is_stale = 1 WHERE session_id = ?`, string(validated))
 		if err != nil {
 			return struct{}{}, fmt.Errorf("mark remote session projection stale: %w", err)
@@ -151,7 +151,7 @@ func (s *AuthorityStore) UpsertRemoteCommandProjection(ctx context.Context, inpu
 	if err != nil {
 		return RemoteCommandProjection{}, err
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (RemoteCommandProjection, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteCommandProjection, error) {
 		stored, err := readRemoteCommandProjectionOnConnection(ctx, connection, validated.CommandID)
 		if errors.Is(err, ErrRemoteProjectionNotFound) {
 			_, err := connection.ExecContext(ctx, `
@@ -200,7 +200,7 @@ func (s *AuthorityStore) GetRemoteCommandProjection(ctx context.Context, id doma
 	if err != nil {
 		return RemoteCommandProjection{}, err
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (RemoteCommandProjection, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteCommandProjection, error) {
 		return readRemoteCommandProjectionOnConnection(ctx, connection, validated)
 	})
 }
@@ -217,7 +217,7 @@ func (s *AuthorityStore) GetRemoteCommandWithEvents(ctx context.Context, id doma
 		projection RemoteCommandProjection
 		events     []RemoteEventRecord
 	}
-	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
+	result, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
 		projection, err := readRemoteCommandProjectionOnConnection(ctx, connection, validated)
 		if err != nil {
 			return snapshot{}, err
@@ -254,7 +254,7 @@ func (s *AuthorityStore) MarkRemoteCommandProjectionStale(ctx context.Context, i
 	if err != nil {
 		return err
 	}
-	_, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		result, err := connection.ExecContext(ctx, `UPDATE local_remote_command_projections SET is_stale = 1 WHERE command_id = ?`, string(validated))
 		if err != nil {
 			return struct{}{}, fmt.Errorf("mark remote command projection stale: %w", err)

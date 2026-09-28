@@ -40,7 +40,7 @@ func (s *AuthorityStore) UpsertRemoteJobProjection(ctx context.Context, input Re
 	if err != nil {
 		return RemoteJobProjection{}, err
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (RemoteJobProjection, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteJobProjection, error) {
 		stored, err := readRemoteJobProjectionOnConnection(ctx, connection, validated.JobID)
 		if errors.Is(err, ErrRemoteProjectionNotFound) {
 			_, err := connection.ExecContext(ctx, `
@@ -84,7 +84,7 @@ func (s *AuthorityStore) GetRemoteJobProjection(ctx context.Context, id domain.J
 	if err != nil {
 		return RemoteJobProjection{}, err
 	}
-	return withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (RemoteJobProjection, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteJobProjection, error) {
 		return readRemoteJobProjectionOnConnection(ctx, connection, validated)
 	})
 }
@@ -94,7 +94,7 @@ func (s *AuthorityStore) MarkRemoteJobProjectionStale(ctx context.Context, id do
 	if err != nil {
 		return err
 	}
-	_, err = withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		result, err := connection.ExecContext(ctx, `UPDATE local_remote_job_projections SET is_stale = 1 WHERE job_id = ?`, string(validated))
 		if err != nil {
 			return struct{}{}, fmt.Errorf("mark remote job projection stale: %w", err)

@@ -174,6 +174,7 @@ func (s *Service) timeoutCommand(ctx context.Context, session store.SessionRecor
 }
 
 func (s *Service) completePolicyCommandLoss(ctx context.Context, command store.CommandRecord, nextSession domain.SessionState, reason string, cause error) (policyOutcome, error) {
+	s.store.RecordCleanupFailure()
 	completed, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{
 		CommandID: command.CommandID, NextState: domain.CommandStateLost, OutputComplete: false,
 	}, nextSession, reason, false)
@@ -259,6 +260,7 @@ func (s *Service) expireSession(ctx context.Context, session store.SessionRecord
 			return policyOutcome{}, completionErr
 		}
 		_ = completed
+		s.store.RecordCleanupFailure()
 		return policyOutcome{sessionsLost: 1}, fmt.Errorf("%w: %v", ErrStopUnconfirmed, stopErr)
 	}
 	if _, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateTimedOut, OutputComplete: true}, domain.SessionStateExpired, reason+"_command", true); err != nil {
@@ -271,6 +273,7 @@ func (s *Service) expireSession(ctx context.Context, session store.SessionRecord
 }
 
 func (s *Service) expireLost(ctx context.Context, command store.CommandRecord, cause error) (policyOutcome, error) {
+	s.store.RecordCleanupFailure()
 	if _, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateLost, OutputComplete: false}, domain.SessionStateLost, "policy_stop_unconfirmed", false); err != nil {
 		return policyOutcome{}, err
 	}
@@ -278,6 +281,7 @@ func (s *Service) expireLost(ctx context.Context, command store.CommandRecord, c
 }
 
 func (s *Service) expireLostSession(ctx context.Context, session store.SessionRecord, cause error) (policyOutcome, error) {
+	s.store.RecordCleanupFailure()
 	if _, err := s.store.TransitionSession(ctx, session.SessionID, domain.SessionStateLost, "policy_cleanup_unconfirmed"); err != nil {
 		return policyOutcome{}, err
 	}

@@ -65,6 +65,7 @@ func (s *Service) ReconcileStartup(ctx context.Context) (StartupReconciliationRe
 			report.CleanupConfirmed++
 		} else {
 			report.CleanupUnconfirmed++
+			s.store.RecordCleanupFailure()
 		}
 
 		switch session.State {

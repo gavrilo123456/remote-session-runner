@@ -51,7 +51,7 @@ func TestP128PublicHealthRequiresMandatoryMTLS(t *testing.T) {
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{certificate}}}
 	client := &http.Client{Transport: transport, Timeout: 20 * time.Second}
 	defer transport.CloseIdleConnections()
-	for _, path := range []string{"/health/live", "/health/ready"} {
+	for _, path := range []string{"/health/live", "/health/ready", "/metrics"} {
 		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint+path, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -59,6 +59,15 @@ func TestP128PublicHealthRequiresMandatoryMTLS(t *testing.T) {
 		response, err := client.Do(request)
 		if err != nil {
 			t.Fatalf("GET %s with mandatory mTLS: %v", path, err)
+		}
+		if path == "/metrics" {
+			var metrics map[string]json.RawMessage
+			decodeErr := json.NewDecoder(response.Body).Decode(&metrics)
+			closeErr := response.Body.Close()
+			if decodeErr != nil || closeErr != nil || response.StatusCode != http.StatusOK || metrics["active_session_slots"] == nil || metrics["mailbox_backlog"] == nil || metrics["storage_errors_total"] == nil {
+				t.Fatalf("GET /metrics status=%d metrics=%+v decode=%v close=%v", response.StatusCode, metrics, decodeErr, closeErr)
+			}
+			continue
 		}
 		var report opshealth.Report
 		decodeErr := json.NewDecoder(response.Body).Decode(&report)
@@ -74,6 +83,9 @@ func TestP128PublicHealthRequiresMandatoryMTLS(t *testing.T) {
 		}
 		if report.Component != "linux_runnerd" || report.Readiness != opshealth.StateReady || len(report.Checks) != 3 {
 			t.Fatalf("public readiness report=%+v", report)
+		}
+		if report.Metrics == nil {
+			t.Fatal("public readiness report omitted operational metrics")
 		}
 		for _, check := range report.Checks {
 			if check.State != opshealth.StateReady {

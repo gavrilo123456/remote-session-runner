@@ -6,7 +6,8 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 service_root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
 go_bin=${GO:-"$service_root/toolchains/go1.27.1/bin/go"}
 remote_repo='/home/ubuntu/projects/remote-session-runner'
-expected_commit=${RSR_P128_EXPECTED_COMMIT:?set to the exact P128 commit already pushed and pulled to Ubuntu}
+expected_commit=${RSR_P129_EXPECTED_COMMIT:-${RSR_P128_EXPECTED_COMMIT:-}}
+: "${expected_commit:?set to the exact P129 commit already pushed and pulled to Ubuntu}"
 admin_identity=${RUNNER_P128_ADMIN_SSH_IDENTITY:-/Users/tomasz.walczuk/.ssh/remote-session-runner}
 remote_fixture_pending=0
 remote_fixture_token=''
@@ -82,7 +83,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-printf '%s\n' 'Running full synchronized Ubuntu P128 validation before the Mac two-host acceptance gate.'
+printf '%s\n' 'Running synchronized Ubuntu P128 regression and P129 operational-metrics validation before the Mac two-host acceptance gate.'
 ssh_admin "cd '$remote_repo' && RSR_P128_EXPECTED_COMMIT='$expected_commit' deploy/linux/test-ops-health.sh"
 
 dispatcher_fingerprint=$(ssh-keygen -lf "$RUNNER_P128_SSH_IDENTITY.pub" | awk '{print $2}')
@@ -111,4 +112,4 @@ export GOTOOLCHAIN=local
 ssh_admin "cd '$remote_repo' && deploy/linux/p128-ops-ssh-fixture.sh cleanup '$remote_fixture_token'"
 remote_fixture_pending=0
 
-printf '%s\n' 'P128 two-host health gates passed; temporary dispatcher authorization and Mac service paths are being removed.'
+printf '%s\n' 'P128 regression and P129 two-host operational-metrics gates passed; temporary dispatcher authorization and Mac service paths are being removed.'

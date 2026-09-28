@@ -118,7 +118,7 @@ func (s *AuthorityStore) AcceptCommand(ctx context.Context, input CommandAccepta
 	s.commandEventsMu.Lock()
 	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
-	returnRecord, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+	returnRecord, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
 		var sessionState, controllerType, controllerID string
 		if err := connection.QueryRowContext(ctx,
 			"SELECT state, controller_type, controller_id FROM exec_sessions WHERE session_id = ?", string(validated.SessionID)).Scan(&sessionState, &controllerType, &controllerID); err != nil {
@@ -250,7 +250,7 @@ func (s *AuthorityStore) AppendCommandEvent(ctx context.Context, input CommandEv
 	s.commandEventsMu.Lock()
 	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
-	event, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandEventRecord, error) {
+	event, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (CommandEventRecord, error) {
 		command, err := readCommandOnConnection(ctx, connection, commandID)
 		if err != nil {
 			return CommandEventRecord{}, err
@@ -293,7 +293,7 @@ func (s *AuthorityStore) TransitionCommand(ctx context.Context, input CommandTra
 	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
 	var publishedEvent *CommandEventRecord
-	record, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+	record, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
 		var currentValue string
 		if err := connection.QueryRowContext(ctx, "SELECT state FROM exec_commands WHERE command_id = ?", string(commandID)).Scan(&currentValue); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -375,7 +375,7 @@ func (s *AuthorityStore) CompleteRunningCommand(ctx context.Context, input Comma
 	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
 	var publishedEvent *CommandEventRecord
-	record, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+	record, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
 		command, err := readCommandOnConnection(ctx, connection, commandID)
 		if err != nil {
 			return CommandRecord{}, err
@@ -606,7 +606,7 @@ func (s *AuthorityStore) GetCommandWithEvents(ctx context.Context, id domain.Com
 		command CommandRecord
 		events  []CommandEventRecord
 	}
-	result, err := withImmediateTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
+	result, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
 		command, err := readCommandOnConnection(ctx, connection, validatedID)
 		if err != nil {
 			return snapshot{}, err

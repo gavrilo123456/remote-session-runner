@@ -469,6 +469,7 @@ func (s *Service) finishRuntimeFailure(ctx context.Context, result CreateSession
 	next := domain.SessionStateFailed
 	reason := "runtime_failed"
 	if cleanupErr != nil {
+		s.store.RecordCleanupFailure()
 		next = domain.SessionStateLost
 		reason = "runtime_cleanup_unconfirmed"
 	}
@@ -1022,6 +1023,7 @@ func oneOffSourcePayload(source domain.Source) map[string]any {
 }
 
 func (s *Service) finishCommandFailure(ctx context.Context, session store.SessionRecord, command store.CommandRecord, cause error, reason string) (SubmitCommandResult, error) {
+	s.store.RecordCleanupFailure()
 	completed, transitionErr := s.store.CompleteRunningCommand(ctx, store.CommandTransition{
 		CommandID:      command.CommandID,
 		NextState:      domain.CommandStateLost,
@@ -1120,6 +1122,7 @@ func (s *Service) finishCancelledCommand(ctx context.Context, session store.Sess
 	release := true
 	resultErr := stopErr
 	if stopErr != nil || !stopped.Confirmed {
+		s.store.RecordCleanupFailure()
 		next = domain.CommandStateLost
 		nextSession = domain.SessionStateLost
 		reason = "command_stop_unconfirmed"
@@ -1242,6 +1245,7 @@ func (s *Service) CloseSession(ctx context.Context, request CloseSessionRequest)
 }
 
 func (s *Service) markClosingLost(ctx context.Context, session store.SessionRecord, cause error) (CloseSessionResult, error) {
+	s.store.RecordCleanupFailure()
 	lost, err := s.store.TransitionSession(ctx, session.SessionID, domain.SessionStateLost, "runtime_cleanup_unconfirmed")
 	if err != nil {
 		return CloseSessionResult{}, err

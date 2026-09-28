@@ -122,6 +122,9 @@ type Service struct {
 	pollInterval    time.Duration
 	routerHealth    *routerHealthMonitor
 	remoteProbe     func(context.Context) error
+	metricsRecorder *opshealth.Recorder
+	thresholds      *opshealth.ThresholdMonitor
+	mailboxImporter *mailbox.Importer
 }
 
 // New constructs the Mac services from an owner-restricted selected config.
@@ -162,10 +165,13 @@ func New(configPath string) (*Service, error) {
 		return nil, fmt.Errorf("construct Mac owner identity: %w", err)
 	}
 	routerHealth := newRouterHealthMonitor()
+	metricsRecorder := opshealth.NewRecorder()
+	thresholds := opshealth.NewThresholdMonitor()
+	var metricsImporter *mailbox.Importer
 	api, err := localapi.NewServer(localapi.ServerOptions{
 		Authority: authority, Owner: owner, SocketPath: settings.APISocket,
 		HealthReport: func(ctx context.Context) opshealth.Report {
-			return macIngressHealthReport(ctx, authority, routerHealth)
+			return macIngressHealthReportWithMetrics(ctx, authority, routerHealth, metricsImporter, metricsRecorder, thresholds)
 		},
 	})
 	if err != nil {
@@ -199,6 +205,7 @@ func New(configPath string) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox importer: %w", err)
 	}
+	metricsImporter = importer
 	outbox, err := mailbox.NewOutbox(settings.MailboxRoot)
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox outbox: %w", err)
@@ -224,6 +231,7 @@ func New(configPath string) (*Service, error) {
 		remoteDriver: remoteDriver, mailbox: processor, ackImporter: ackImporter,
 		artifactCleaner: mailbox.ArtifactCleaner{Authority: authority, Outbox: outbox, EventFiles: eventFiles}, routerHealth: routerHealth,
 		pollInterval: defaultPollInterval, remoteProbe: remoteDriver.Probe,
+		metricsRecorder: metricsRecorder, thresholds: thresholds, mailboxImporter: metricsImporter,
 	}
 	closeOnError = false
 	return service, nil
@@ -291,6 +299,9 @@ func (s *Service) runWorkers(ctx context.Context, stderr io.Writer) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	metricsTicker := time.NewTicker(30 * time.Second)
+	defer metricsTicker.Stop()
+	s.logOperationalMetrics(ctx)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -300,21 +311,63 @@ func (s *Service) runWorkers(ctx context.Context, stderr io.Writer) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-metricsTicker.C:
+			s.logOperationalMetrics(ctx)
 		}
 	}
 }
 
+func (s *Service) logOperationalMetrics(ctx context.Context) {
+	if s == nil || s.database == nil {
+		return
+	}
+	durable, err := s.database.ReadOperationalMetrics(ctx)
+	if err != nil {
+		return
+	}
+	metrics := opshealth.Metrics{
+		ActiveSessionSlots: durable.ActiveSessionSlots, ActiveCommandSlots: durable.ActiveCommandSlots,
+		QueuedCommands: durable.QueuedCommands, QueuedIntents: durable.QueuedIntents,
+		DispatchAttemptsTotal: durable.DispatchAttemptsTotal, ReconciliationAgeSeconds: durable.ReconciliationAgeSeconds,
+		EventLagEvents: durable.EventLagEvents, EventGapsTotal: durable.EventGapsTotal,
+		OutputTruncationsTotal: durable.OutputTruncationsTotal,
+		StorageErrorsTotal:     durable.StorageErrorsTotal, CleanupFailuresTotal: durable.CleanupFailuresTotal,
+		MailboxBacklog: durable.MailboxBacklog,
+	}
+	if s.mailboxImporter != nil {
+		pending, err := s.mailboxImporter.ReadyRequestCount(ctx)
+		if err != nil {
+			return
+		}
+		metrics.MailboxBacklog += pending
+	}
+	if s.thresholds != nil {
+		s.thresholds.LogThresholds(nil, "mac_ingress", withRecorder(metrics, s.metricsRecorder))
+	}
+}
+
+func withRecorder(metrics opshealth.Metrics, recorder *opshealth.Recorder) opshealth.Metrics {
+	if recorder != nil {
+		recorder.AddTo(&metrics)
+	}
+	return metrics
+}
+
 func (s *Service) runCycle(ctx context.Context, stderr io.Writer) {
 	if _, err := s.mailbox.Import(ctx); err != nil && ctx.Err() == nil {
+		s.recordOperationalError(err, false)
 		fmt.Fprintln(stderr, "runner-local: mailbox import cycle failed")
 	}
 	if err := s.mailbox.Reconcile(ctx); err != nil && ctx.Err() == nil {
+		s.recordOperationalError(err, false)
 		fmt.Fprintln(stderr, "runner-local: mailbox reconciliation cycle failed")
 	}
 	if _, err := s.ackImporter.Import(ctx); err != nil && ctx.Err() == nil {
+		s.recordOperationalError(err, false)
 		fmt.Fprintln(stderr, "runner-local: mailbox ACK cycle failed")
 	}
 	if _, err := s.artifactCleaner.Run(ctx); err != nil && ctx.Err() == nil {
+		s.recordOperationalError(err, true)
 		fmt.Fprintln(stderr, "runner-local: mailbox cleanup cycle failed")
 	}
 	for i := 0; i < defaultDrainLimit && ctx.Err() == nil; i++ {
@@ -323,6 +376,7 @@ func (s *Service) runCycle(ctx context.Context, stderr io.Writer) {
 			break
 		}
 		if err != nil {
+			s.recordOperationalError(err, false)
 			fmt.Fprintln(stderr, "runner-local: local Router dispatch cycle failed")
 			break
 		}
@@ -333,11 +387,21 @@ func (s *Service) runCycle(ctx context.Context, stderr io.Writer) {
 			break
 		}
 		if err != nil {
+			s.recordOperationalError(err, false)
 			s.routerHealth.update(err, time.Now())
 			fmt.Fprintln(stderr, "runner-local: remote Router dispatch cycle failed")
 			break
 		}
 		s.routerHealth.update(nil, time.Now())
+	}
+}
+
+func (s *Service) recordOperationalError(err error, cleanup bool) {
+	if s == nil || err == nil {
+		return
+	}
+	if cleanup && s.metricsRecorder != nil {
+		s.metricsRecorder.RecordCleanupFailure()
 	}
 }
 
@@ -377,7 +441,7 @@ func (s *Service) Doctor(ctx context.Context) opshealth.Report {
 	if s == nil {
 		return opshealth.NewReport("mac_ingress", time.Now(), opshealth.Check{Component: "configuration", State: opshealth.StateNotReady, Reason: "service_configuration_not_ready", RequiredForReadiness: true})
 	}
-	return macIngressHealthReport(ctx, s.database, s.routerHealth)
+	return macIngressHealthReportWithMetrics(ctx, s.database, s.routerHealth, s.mailboxImporter, s.metricsRecorder, s.thresholds)
 }
 
 func (s *Service) probeRemote(ctx context.Context) error {

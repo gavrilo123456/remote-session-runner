@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -110,8 +111,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runnerd: host process profile is not ready")
 		return 1
 	}
+	thresholds := opshealth.NewThresholdMonitor()
 	healthReport := func(ctx context.Context) opshealth.Report {
-		return linuxRunnerHealthReport(ctx, authority, true, true)
+		return linuxRunnerHealthReportWithMetrics(ctx, authority, true, true, thresholds)
 	}
 	service, _, err := NewLinuxExecutionService(authority, hostruntime.LinuxRuntimeOptions{
 		Account:       settings.Account,
@@ -154,13 +156,57 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runnerd: listen direct HTTPS: %v\n", err)
 		return 1
 	}
+	metricsObserverDone := make(chan struct{})
+	go func() {
+		defer close(metricsObserverDone)
+		observeLinuxOperationalMetrics(signalContext, authority, thresholds)
+	}()
 	fmt.Fprintf(stdout, "runnerd private API listening on %s\n", settings.PrivateSocket)
 	fmt.Fprintf(stdout, "runnerd direct HTTPS listening on %s (TLS 1.3, client certificate required)\n", httpsServer.Addr())
-	if err := serveUntilSignal(signalContext, server, httpsServer); err != nil {
-		fmt.Fprintf(stderr, "runnerd: serve: %v\n", err)
+	serveErr := serveUntilSignal(signalContext, server, httpsServer)
+	stopSignals()
+	<-metricsObserverDone
+	if serveErr != nil {
+		fmt.Fprintf(stderr, "runnerd: serve: %v\n", serveErr)
 		return 1
 	}
 	return 0
+}
+
+func observeLinuxOperationalMetrics(ctx context.Context, authority *store.AuthorityStore, thresholds *opshealth.ThresholdMonitor) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	observe := func() {
+		if authority == nil {
+			return
+		}
+		durable, err := authority.ReadOperationalMetrics(ctx)
+		if err != nil {
+			return
+		}
+		metrics := opshealth.Metrics{
+			ActiveSessionSlots: durable.ActiveSessionSlots, ActiveCommandSlots: durable.ActiveCommandSlots,
+			QueuedCommands: durable.QueuedCommands, QueuedIntents: durable.QueuedIntents,
+			DispatchAttemptsTotal: durable.DispatchAttemptsTotal, ReconciliationAgeSeconds: durable.ReconciliationAgeSeconds,
+			EventLagEvents: durable.EventLagEvents, EventGapsTotal: durable.EventGapsTotal,
+			OutputTruncationsTotal: durable.OutputTruncationsTotal,
+			StorageErrorsTotal:     durable.StorageErrorsTotal, CleanupFailuresTotal: durable.CleanupFailuresTotal,
+			MailboxBacklog: durable.MailboxBacklog,
+		}
+		thresholds.LogThresholds(slog.Default(), "linux_runnerd", metrics)
+	}
+	observe()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			observe()
+		}
+	}
 }
 
 // serveUntilSignal owns the two listener goroutines. Closing the private
