@@ -2,11 +2,13 @@ package runnerd
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,7 +35,8 @@ type directCreateSessionRequest struct {
 }
 
 type directKnownState struct {
-	SessionState string `json:"session_state"`
+	SessionState string `json:"session_state,omitempty"`
+	CommandState string `json:"command_state,omitempty"`
 }
 
 type directSessionAcceptance struct {
@@ -60,6 +63,45 @@ type directSessionReadResponse struct {
 	View     string                `json:"view"`
 	IsStale  bool                  `json:"is_stale"`
 	Resource directSessionResource `json:"resource"`
+}
+
+type directSubmitCommandRequest struct {
+	Script         *string         `json:"script"`
+	TimeoutSeconds json.RawMessage `json:"timeout_seconds,omitempty"`
+}
+
+type directCommandAcceptance struct {
+	ResourceID      string           `json:"resource_id"`
+	CommandID       string           `json:"command_id"`
+	SessionID       string           `json:"session_id"`
+	AcceptanceScope string           `json:"acceptance_scope"`
+	ExecutionTarget targetResponse   `json:"execution_target"`
+	KnownState      directKnownState `json:"known_state"`
+}
+
+type directCommandResource struct {
+	CommandID               string                      `json:"command_id"`
+	SessionID               string                      `json:"session_id"`
+	Ordinal                 int64                       `json:"ordinal,omitempty"`
+	CommandState            string                      `json:"command_state"`
+	ExitCode                *int                        `json:"exit_code,omitempty"`
+	FinalEventSequence      *int64                      `json:"final_event_sequence,omitempty"`
+	OutputComplete          bool                        `json:"output_complete"`
+	OutputTruncated         bool                        `json:"output_truncated"`
+	OutputUnavailableReason string                      `json:"output_unavailable_reason,omitempty"`
+	ExecutionTarget         targetResponse              `json:"execution_target"`
+	Authority               string                      `json:"authority"`
+	Controller              controllerRequest           `json:"controller"`
+	ObservedAt              time.Time                   `json:"observed_at"`
+	Environment             string                      `json:"environment"`
+	Source                  sourceResponse              `json:"source"`
+	Capabilities            commandCapabilitiesResponse `json:"capabilities"`
+}
+
+type directCommandReadResponse struct {
+	View     string                `json:"view"`
+	IsStale  bool                  `json:"is_stale"`
+	Resource directCommandResource `json:"resource"`
 }
 
 type directAPIError struct {
@@ -90,12 +132,28 @@ func (s *directHTTPSAPI) ServeHTTP(response http.ResponseWriter, request *http.R
 		s.handleCreateSession(response, request)
 		return
 	}
+	if strings.HasPrefix(request.URL.Path, "/v1/sessions/") && strings.HasSuffix(request.URL.Path, "/commands") {
+		if request.Method != http.MethodPost {
+			writeDirectError(response, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+			return
+		}
+		s.handleSubmitCommand(response, request)
+		return
+	}
 	if strings.HasPrefix(request.URL.Path, "/v1/sessions/") {
 		if request.Method != http.MethodGet {
 			writeDirectError(response, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 			return
 		}
 		s.handleGetSession(response, request)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, "/v1/commands/") {
+		if request.Method != http.MethodGet {
+			writeDirectError(response, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+			return
+		}
+		s.handleGetCommand(response, request)
 		return
 	}
 	writeDirectError(response, http.StatusNotFound, "resource_not_found", "route not found")
@@ -264,6 +322,191 @@ func (s *directHTTPSAPI) handleGetSession(response http.ResponseWriter, request 
 	writeJSON(response, http.StatusOK, directSessionReadResponse{View: "authority", IsStale: false, Resource: resource})
 }
 
+func (s *directHTTPSAPI) handleSubmitCommand(response http.ResponseWriter, request *http.Request) {
+	principal, ok := DirectPrincipalFromContext(request.Context())
+	if !ok || principal.Controller.Type() != domain.ControllerTypeDirectMTLS || principal.Controller.ID() == "" {
+		writeDirectError(response, http.StatusForbidden, "environment_forbidden", "a mapped direct client identity is required")
+		return
+	}
+	sessionID, err := directSessionCommandIDFromPath(request.URL)
+	if err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "session command path contains an invalid session ID")
+		return
+	}
+	idempotencyKey := request.Header.Get("Idempotency-Key")
+	if strings.TrimSpace(idempotencyKey) == "" || len(idempotencyKey) > 256 || strings.IndexByte(idempotencyKey, 0) >= 0 {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "a valid Idempotency-Key header is required")
+		return
+	}
+	body, err := s.readRequestBody(request)
+	if err != nil {
+		if errors.Is(err, domain.ErrSerializedInputTooLarge) {
+			writeDirectError(response, http.StatusRequestEntityTooLarge, "invalid_request", "serialized request exceeds the 1 MiB limit")
+		} else {
+			writeDirectError(response, http.StatusBadRequest, "invalid_request", "request body could not be read")
+		}
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var input directSubmitCommandRequest
+	if err := decoder.Decode(&input); err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "malformed or unsupported command request JSON")
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "request body must contain one JSON value")
+		return
+	}
+	// Run the domain canonicalizer on the exact request bytes as well as the
+	// decoded value. It rejects duplicate object keys, invalid UTF-8, and
+	// malformed Unicode escapes that encoding/json otherwise accepts loosely.
+	if _, err := domain.CanonicalizeMutationRequestJSON("submit_command", body, domain.CanonicalizationOptions{}); err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "command request JSON is not canonicalizable")
+		return
+	}
+	// Check ownership before detailed request-dependent validation or writes.
+	// This also supplies the immutable session timeout used to normalize the
+	// idempotency hash when timeout_seconds is omitted.
+	session, err := s.service.GetSession(request.Context(), sessionID, principal.Controller)
+	if err != nil {
+		status, code, message := directCommandError(err)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	if input.Script == nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "script is required")
+		return
+	}
+	if err := domain.ValidateScriptUTF8(*input.Script); err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "script must be valid UTF-8 and no larger than 128 KiB")
+		return
+	}
+	timeout, err := directCommandTimeout(input.TimeoutSeconds)
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "timeout_seconds must be a positive whole number of seconds")
+		return
+	}
+	effectiveTimeout := timeout
+	if effectiveTimeout == 0 {
+		effectiveTimeout = session.Limits.CommandTimeout
+	}
+	if effectiveTimeout <= 0 {
+		status, code, message := directCommandError(domain.ErrInvalidRequestedLimits)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	// Include both the path session and effective timeout. The session path is
+	// part of the mutation even though it is not repeated in the HTTP body.
+	hashPayload, err := json.Marshal(struct {
+		SessionID          string `json:"session_id"`
+		Script             string `json:"script"`
+		TimeoutNanoseconds int64  `json:"timeout_nanoseconds"`
+	}{SessionID: string(sessionID), Script: *input.Script, TimeoutNanoseconds: int64(effectiveTimeout)})
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "command request cannot be canonicalized")
+		return
+	}
+	hash, err := domain.HashMutationRequestJSON("submit_command", hashPayload, domain.CanonicalizationOptions{})
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "command request cannot be hashed")
+		return
+	}
+	commandID, err := newDirectCommandID()
+	if err != nil {
+		writeDirectError(response, http.StatusServiceUnavailable, "runtime_unavailable", "could not allocate a command identity")
+		return
+	}
+	result, serviceErr := s.service.AcceptCommand(request.Context(), execution.SubmitCommandRequest{
+		CommandID:            commandID,
+		SessionID:            sessionID,
+		Controller:           principal.Controller,
+		IdempotencyKey:       idempotencyKey,
+		RequestHash:          hash,
+		Script:               *input.Script,
+		Timeout:              effectiveTimeout,
+		IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	})
+	if serviceErr != nil {
+		status, code, message := directCommandError(serviceErr)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	if result.Command.State == domain.CommandStateQueued {
+		acceptedID := result.Command.CommandID
+		controller := principal.Controller
+		go func() {
+			_, _ = s.service.ResumeCommand(context.Background(), acceptedID, controller)
+		}()
+	}
+	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target))
+}
+
+func (s *directHTTPSAPI) handleGetCommand(response http.ResponseWriter, request *http.Request) {
+	principal, ok := DirectPrincipalFromContext(request.Context())
+	if !ok || principal.Controller.Type() != domain.ControllerTypeDirectMTLS || principal.Controller.ID() == "" {
+		writeDirectError(response, http.StatusForbidden, "environment_forbidden", "a mapped direct client identity is required")
+		return
+	}
+	commandID, err := directCommandIDFromPath(request.URL)
+	if err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "command path contains an invalid ID")
+		return
+	}
+	command, err := s.service.GetCommand(request.Context(), commandID, principal.Controller)
+	if err != nil {
+		status, code, message := directCommandError(err)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	session, err := s.service.GetSession(request.Context(), command.SessionID, principal.Controller)
+	if err != nil {
+		status, code, message := directCommandError(err)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	environment, err := s.service.ResolveEnvironment(request.Context(), session.Environment)
+	if err != nil {
+		writeDirectError(response, http.StatusServiceUnavailable, "runtime_unavailable", "command capabilities are unavailable")
+		return
+	}
+	resource := directCommandResource{
+		CommandID:               string(command.CommandID),
+		SessionID:               string(command.SessionID),
+		Ordinal:                 command.Ordinal,
+		CommandState:            string(command.State),
+		ExitCode:                command.ExitCode,
+		FinalEventSequence:      command.FinalEventSequence,
+		OutputComplete:          command.OutputComplete,
+		OutputTruncated:         command.OutputTruncated,
+		OutputUnavailableReason: command.OutputUnavailableReason,
+		ExecutionTarget:         targetResponse{Kind: string(session.Target.Kind()), Profile: session.Target.Profile()},
+		Authority:               "remote",
+		Controller:              controllerRequest{Type: string(session.Controller.Type()), ID: string(session.Controller.ID())},
+		ObservedAt:              command.UpdatedAt.UTC(),
+		Environment:             session.Environment,
+		Source:                  sourceResponseFromRecord(session),
+		Capabilities:            capabilitiesResponseFromEnvironment(environment),
+	}
+	writeJSON(response, http.StatusOK, directCommandReadResponse{View: "authority", IsStale: false, Resource: resource})
+}
+
+func directCommandTimeout(raw json.RawMessage) (time.Duration, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return 0, domain.ErrInvalidRequestedLimits
+	}
+	var seconds int64
+	if err := json.Unmarshal(trimmed, &seconds); err != nil || seconds <= 0 || seconds > math.MaxInt64/int64(time.Second) {
+		return 0, domain.ErrInvalidRequestedLimits
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
+
 func (s *directHTTPSAPI) readRequestBody(request *http.Request) ([]byte, error) {
 	if request.Body == nil {
 		return nil, errors.New("request body is required")
@@ -327,6 +570,14 @@ func newDirectSessionID() (domain.SessionID, error) {
 	return domain.NewSessionID("sess-" + hex.EncodeToString(random[:]))
 }
 
+func newDirectCommandID() (domain.CommandID, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return domain.NewCommandID("cmd-" + hex.EncodeToString(random[:]))
+}
+
 func directSessionIDFromPath(requestURL *url.URL) (domain.SessionID, error) {
 	const prefix = "/v1/sessions/"
 	if requestURL == nil || !strings.HasPrefix(requestURL.Path, prefix) {
@@ -340,6 +591,33 @@ func directSessionIDFromPath(requestURL *url.URL) (domain.SessionID, error) {
 	return domain.NewSessionID(idText)
 }
 
+func directSessionCommandIDFromPath(requestURL *url.URL) (domain.SessionID, error) {
+	const prefix = "/v1/sessions/"
+	const suffix = "/commands"
+	if requestURL == nil || !strings.HasPrefix(requestURL.Path, prefix) || !strings.HasSuffix(requestURL.Path, suffix) {
+		return "", errors.New("session command path is invalid")
+	}
+	rawID := strings.TrimSuffix(strings.TrimPrefix(requestURL.EscapedPath(), prefix), suffix)
+	idText, err := url.PathUnescape(rawID)
+	if err != nil || idText == "" || strings.Contains(idText, "/") {
+		return "", errors.New("session command path ID is invalid")
+	}
+	return domain.NewSessionID(idText)
+}
+
+func directCommandIDFromPath(requestURL *url.URL) (domain.CommandID, error) {
+	const prefix = "/v1/commands/"
+	if requestURL == nil || !strings.HasPrefix(requestURL.Path, prefix) {
+		return "", errors.New("command path is invalid")
+	}
+	rawID := strings.TrimPrefix(requestURL.EscapedPath(), prefix)
+	idText, err := url.PathUnescape(rawID)
+	if err != nil || idText == "" || strings.Contains(idText, "/") {
+		return "", errors.New("command path ID is invalid")
+	}
+	return domain.NewCommandID(idText)
+}
+
 func directSessionAcceptanceFromRecord(record store.SessionRecord) directSessionAcceptance {
 	return directSessionAcceptance{
 		ResourceID:      string(record.SessionID),
@@ -347,6 +625,17 @@ func directSessionAcceptanceFromRecord(record store.SessionRecord) directSession
 		AcceptanceScope: "target_authority",
 		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		KnownState:      directKnownState{SessionState: string(record.State)},
+	}
+}
+
+func directCommandAcceptanceFromRecord(record store.CommandRecord, target domain.ExecutionTarget) directCommandAcceptance {
+	return directCommandAcceptance{
+		ResourceID:      string(record.CommandID),
+		CommandID:       string(record.CommandID),
+		SessionID:       string(record.SessionID),
+		AcceptanceScope: "target_authority",
+		ExecutionTarget: targetResponse{Kind: string(target.Kind()), Profile: target.Profile()},
+		KnownState:      directKnownState{CommandState: string(record.State)},
 	}
 }
 
@@ -372,6 +661,25 @@ func directSessionError(err error) (int, string, string) {
 		return http.StatusServiceUnavailable, "runtime_unavailable", "session runtime is unavailable"
 	default:
 		return http.StatusServiceUnavailable, "runtime_unavailable", "session request could not be completed"
+	}
+}
+
+func directCommandError(err error) (int, string, string) {
+	switch {
+	case errors.Is(err, store.ErrSessionNotFound), errors.Is(err, store.ErrCommandNotFound):
+		return http.StatusNotFound, "resource_not_found", "session or command not found"
+	case errors.Is(err, execution.ErrSessionController):
+		return http.StatusForbidden, "controller_mismatch", "resource belongs to another controller"
+	case errors.Is(err, execution.ErrSessionNotReady):
+		return http.StatusUnprocessableEntity, "session_not_ready", "session is not ready to accept commands"
+	case errors.Is(err, store.ErrIdempotencyConflict):
+		return http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for a different request"
+	case errors.Is(err, domain.ErrScriptTooLarge), errors.Is(err, domain.ErrScriptInvalidUTF8), errors.Is(err, domain.ErrInvalidRequestedLimits), errors.Is(err, domain.ErrLimitExceedsServiceCeiling), errors.Is(err, store.ErrIdempotencyKey), errors.Is(err, store.ErrCommandSessionState):
+		return http.StatusUnprocessableEntity, "invalid_request", "command request is invalid for the session"
+	case errors.Is(err, execution.ErrRuntimeUnavailable), errors.Is(err, execution.ErrExecutionServiceConfiguration):
+		return http.StatusServiceUnavailable, "runtime_unavailable", "command authority is unavailable"
+	default:
+		return http.StatusServiceUnavailable, "runtime_unavailable", "command request could not be completed"
 	}
 }
 
