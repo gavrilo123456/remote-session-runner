@@ -34,7 +34,9 @@ func TestP124RefreshSessionProjectionReadsCurrentAuthorityState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if refreshed.SessionID != create.SessionID || refreshed.State != domain.SessionStateReady || refreshed.IsStale || refreshed.Capabilities.EffectiveAccount != "ubuntu" {
+	if refreshed.SessionID != create.SessionID || refreshed.State != domain.SessionStateReady || refreshed.IsStale ||
+		refreshed.Capabilities.EffectiveAccount != "ubuntu" || refreshed.Capabilities.ServiceLimits["running_commands_per_host"] == nil ||
+		refreshed.RuntimeGeneration != "runtime-p124" {
 		t.Fatalf("refreshed session projection=%+v, want current ready authority state", refreshed)
 	}
 	if len(caller.frames) != 2 || caller.frames[1].Operation != sshbridge.OperationGetSession || caller.frames[1].ResourceID != "" || caller.frames[1].IdempotencyKey != "" {
@@ -76,16 +78,20 @@ func (c *p124SessionProjectionCaller) Call(_ context.Context, frame sshbridge.Re
 		state = string(domain.SessionStateReady)
 		observedAt = "2026-09-27T13:11:00Z"
 	}
-	result, err := json.Marshal(map[string]any{
+	resultFields := map[string]any{
 		"session_id": sessionID, "session_state": state,
 		"execution_target": map[string]string{"kind": "remote", "profile": "linux-host"},
 		"controller":       map[string]string{"controller_type": "queued_mac", "controller_id": "tomasz.walczuk"},
 		"observed_at":      observedAt, "environment": "dev", "source": map[string]string{"mode": "empty"},
-		"capabilities": map[string]any{
+	}
+	if frame.Operation != sshbridge.OperationGetSession {
+		resultFields["runtime_generation"] = "runtime-p124"
+		resultFields["capabilities"] = map[string]any{
 			"host_class": "linux-host", "isolation": "os-user", "effective_account": "ubuntu",
 			"service_limits": map[string]any{"running_commands_per_host": 4},
-		},
-	})
+		}
+	}
+	result, err := json.Marshal(resultFields)
 	if err != nil {
 		return sshbridge.ReplyFrame{}, err
 	}

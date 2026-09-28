@@ -28,6 +28,10 @@ func (d *RemoteDriver) RefreshSessionProjection(ctx context.Context, sessionID d
 	if intent.Target.Kind() != domain.TargetKindRemote || (intent.DeliveryState != store.LocalIntentAccepted && intent.DeliveryState != store.LocalIntentReconciled) {
 		return store.RemoteSessionProjection{}, fmt.Errorf("%w: session is not an accepted remote intent", ErrRemoteResponse)
 	}
+	projection, err := d.authority.GetRemoteSessionProjection(ctx, validatedSession)
+	if err != nil {
+		return store.RemoteSessionProjection{}, err
+	}
 	request, err := readinessFrameForCreateIntent(intent)
 	if err != nil {
 		return store.RemoteSessionProjection{}, err
@@ -44,13 +48,44 @@ func (d *RemoteDriver) RefreshSessionProjection(ctx context.Context, sessionID d
 	if err := json.Unmarshal(reply.Payload, &object); err != nil || object == nil {
 		return store.RemoteSessionProjection{}, fmt.Errorf("%w: session state result object", ErrRemoteResponse)
 	}
-	projection, present, err := remoteSessionProjectionFromReply(intent, object, d.now())
+	expectedController, err := queuedRemoteController(intent.Controller)
 	if err != nil {
 		return store.RemoteSessionProjection{}, err
 	}
-	if !present || projection.State != state {
-		return store.RemoteSessionProjection{}, fmt.Errorf("%w: session state result is incomplete", ErrRemoteResponse)
+	if _, err := projectionController(object, expectedController); err != nil {
+		return store.RemoteSessionProjection{}, err
 	}
+	if _, ok := object["controller"]; !ok {
+		return store.RemoteSessionProjection{}, fmt.Errorf("%w: session state result has no controller", ErrRemoteResponse)
+	}
+	source, resolvedRevision, sourcePresent, err := projectionSource(object, projection.Source)
+	if err != nil {
+		return store.RemoteSessionProjection{}, err
+	}
+	if !sourcePresent {
+		return store.RemoteSessionProjection{}, fmt.Errorf("%w: session state result has no source", ErrRemoteResponse)
+	}
+	observedAt, observedAtPresent, err := projectionObservedAt(object, d.now())
+	if err != nil {
+		return store.RemoteSessionProjection{}, err
+	}
+	if !observedAtPresent {
+		return store.RemoteSessionProjection{}, fmt.Errorf("%w: session state result has no observation time", ErrRemoteResponse)
+	}
+	runtimeGeneration, runtimeGenerationPresent, err := readProjectionString(object, "runtime_generation")
+	if err != nil {
+		return store.RemoteSessionProjection{}, err
+	}
+	projection.State = state
+	projection.Source = source
+	if resolvedRevision != "" {
+		projection.ResolvedRevision = resolvedRevision
+	}
+	if runtimeGenerationPresent {
+		projection.RuntimeGeneration = runtimeGeneration
+	}
+	projection.ObservedAt = observedAt
+	projection.IsStale = false
 	if _, err := d.authority.UpsertRemoteSessionProjection(ctx, projection); err != nil {
 		return store.RemoteSessionProjection{}, err
 	}
