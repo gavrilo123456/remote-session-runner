@@ -24,15 +24,17 @@ import (
 )
 
 const p106MappedURI = "urn:remote-session-runner:controller:runner-tomasz-direct"
+const p106OtherMappedURI = "urn:remote-session-runner:controller:runner-other-direct"
 
 type p106TestPKI struct {
-	caPEM       []byte
-	serverCert  []byte
-	serverKey   []byte
-	clientTLS   tls.Certificate
-	unknownTLS  tls.Certificate
-	unmappedTLS tls.Certificate
-	serverRoots *x509.CertPool
+	caPEM          []byte
+	serverCert     []byte
+	serverKey      []byte
+	clientTLS      tls.Certificate
+	otherClientTLS tls.Certificate
+	unknownTLS     tls.Certificate
+	unmappedTLS    tls.Certificate
+	serverRoots    *x509.CertPool
 }
 
 func TestP106DirectHTTPSRequiresTLS13AndMappedClientCertificate(t *testing.T) {
@@ -255,6 +257,7 @@ func newP106TestPKI(t *testing.T) p106TestPKI {
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
 	serverCert, serverKey, _ := p106IssueCertificate(t, now, caCert, caKey, "server", "", x509.ExtKeyUsageServerAuth)
 	_, _, clientTLS := p106IssueCertificate(t, now, caCert, caKey, "client", p106MappedURI, x509.ExtKeyUsageClientAuth)
+	_, _, otherClientTLS := p106IssueCertificate(t, now, caCert, caKey, "other-client", p106OtherMappedURI, x509.ExtKeyUsageClientAuth)
 	_, _, unmappedTLS := p106IssueCertificate(t, now, caCert, caKey, "unmapped", "urn:remote-session-runner:controller:unmapped", x509.ExtKeyUsageClientAuth)
 	otherCAKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -275,13 +278,14 @@ func newP106TestPKI(t *testing.T) p106TestPKI {
 	roots := x509.NewCertPool()
 	roots.AddCert(caCert)
 	return p106TestPKI{
-		caPEM:       caPEM,
-		serverCert:  serverCert,
-		serverKey:   serverKey,
-		clientTLS:   clientTLS,
-		unknownTLS:  unknownTLS,
-		unmappedTLS: unmappedTLS,
-		serverRoots: roots,
+		caPEM:          caPEM,
+		serverCert:     serverCert,
+		serverKey:      serverKey,
+		clientTLS:      clientTLS,
+		otherClientTLS: otherClientTLS,
+		unknownTLS:     unknownTLS,
+		unmappedTLS:    unmappedTLS,
+		serverRoots:    roots,
 	}
 }
 
