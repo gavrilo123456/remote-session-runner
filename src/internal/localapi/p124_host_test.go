@@ -188,6 +188,7 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 	if directCreate.code != 0 || !strings.Contains(directCreate.stdout, "readiness: pending (not waited") {
 		t.Fatalf("direct --no-wait result=%+v; want accepted pending result", directCreate)
 	}
+	p124WaitQueuedSessionReady(t, ctx, remoteDriver, queuedSessionID, owner)
 
 	routes := []struct {
 		name, endpoint, configPath, sessionID, target, profile, account string
@@ -391,6 +392,32 @@ func p124WaitReadyStatus(t *testing.T, endpoint, configPath, sessionID string) p
 	}
 	t.Fatalf("session %s did not become ready through endpoint %s", sessionID, endpoint)
 	return p124CLIResult{}
+}
+
+func p124WaitQueuedSessionReady(t *testing.T, ctx context.Context, remote *dispatcher.RemoteDriver, sessionID string, owner domain.ControllerIdentity) {
+	t.Helper()
+	deadline := time.Now().Add(45 * time.Second)
+	lastState := "unknown"
+	for time.Now().Before(deadline) {
+		projection, err := remote.RefreshSessionProjection(ctx, domain.SessionID(sessionID), owner)
+		if err == nil {
+			lastState = string(projection.State)
+			if projection.State == domain.SessionStateReady {
+				return
+			}
+			if projection.State.IsTerminal() {
+				t.Fatalf("queued session %s reached terminal state %s before becoming ready", sessionID, projection.State)
+			}
+		} else {
+			lastState = err.Error()
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out refreshing queued session %s: %s: %v", sessionID, lastState, ctx.Err())
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	t.Fatalf("queued session %s did not become ready in the remote authority; last state: %s", sessionID, lastState)
 }
 
 func p124StartCLI(endpoint, configPath string, command ...string) <-chan p124CLIResult {
