@@ -306,6 +306,111 @@ func TestP120ExecStreamsRawOutputAndReturnsCommandExit(t *testing.T) {
 	}
 }
 
+func TestP124ExecWaitsForLocalAndQueuedTargetAcceptance(t *testing.T) {
+	exitCode := 7
+	resource := p120CommandResource("failed", exitCode, 3)
+	client := &fakeCommandClient{
+		fakeSessionClient: &fakeSessionClient{kind: runnerclient.EndpointUnixSocket},
+		acceptance:        runnerclient.Acceptance{ResourceID: "command-p124", SessionID: "session-p124", CommandID: "command-p124", AcceptanceScope: "local_intent"},
+		snapshot:          runnerclient.Snapshot[runnerclient.CommandResource]{View: "authority", Resource: resource},
+	}
+	resolver := &fakeEndpointResolver{clients: map[string]sessionClient{"local": client}}
+	var stdout, stderr bytes.Buffer
+	now := time.Unix(100, 0)
+	openCalls, sleepCalls := 0, 0
+	output := []byte("target accepted\n")
+	dependencies := cliDependencies{
+		resolver: resolver,
+		now:      func() time.Time { return now },
+		sleep: func(_ context.Context, delay time.Duration) error {
+			sleepCalls++
+			now = now.Add(delay)
+			return nil
+		},
+		openEvents: func(_ context.Context, got sessionClient, commandID string, after int64, follow bool) (commandEventStream, error) {
+			openCalls++
+			if got != client || commandID != "command-p124" || after != 0 || !follow {
+				t.Fatalf("event endpoint/id/cursor/follow changed: got=%T id=%q after=%d follow=%t", got, commandID, after, follow)
+			}
+			switch openCalls {
+			case 1:
+				return nil, &runnerclient.APIError{StatusCode: 404, Code: "command_not_found", Message: "command not found"}
+			case 2:
+				return nil, &runnerclient.APIError{StatusCode: 409, Code: "events_unavailable", Message: "remote command events are not available before remote acceptance"}
+			default:
+				return &fakeP120EventStream{events: []runnerclient.Event{
+					p120Event("command-p124", 1, "command_queued", nil, nil),
+					p120Event("command-p124", 2, "stdout", output, nil),
+					p120Event("command-p124", 3, "command_failed", nil, &exitCode),
+				}}, nil
+			}
+		},
+	}
+
+	code := runWithDependencies([]string{"--endpoint", "local", "--wait-timeout=2s", "exec", "--idempotency-key", "p124-key", "session-p124", "--", "printf target"}, &stdout, &stderr, dependencies)
+	if code != exitCode || openCalls != 3 || sleepCalls != 2 || !bytes.Equal(stdout.Bytes(), output) {
+		t.Fatalf("exec did not wait for target acceptance: exit=%d opens=%d sleeps=%d stdout=%q stderr=%q", code, openCalls, sleepCalls, stdout.Bytes(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "command_id: command-p124") || !strings.Contains(stderr.String(), "event_cursor: 3") {
+		t.Fatalf("target-waiting exec lost accepted command metadata: %q", stderr.String())
+	}
+}
+
+func TestP124ExecDoesNotRetryTargetAuthorityCommandNotFound(t *testing.T) {
+	client := &fakeCommandClient{
+		fakeSessionClient: &fakeSessionClient{kind: runnerclient.EndpointHTTPS},
+		acceptance:        runnerclient.Acceptance{ResourceID: "command-p124-direct", SessionID: "session-p124-direct", CommandID: "command-p124-direct", AcceptanceScope: "target_authority"},
+	}
+	resolver := &fakeEndpointResolver{clients: map[string]sessionClient{"linux-poc": client}}
+	var stdout, stderr bytes.Buffer
+	openCalls, sleepCalls := 0, 0
+	dependencies := cliDependencies{
+		resolver: resolver,
+		sleep: func(context.Context, time.Duration) error {
+			sleepCalls++
+			return nil
+		},
+		openEvents: func(context.Context, sessionClient, string, int64, bool) (commandEventStream, error) {
+			openCalls++
+			return nil, &runnerclient.APIError{StatusCode: 404, Code: "command_not_found", Message: "command not found"}
+		},
+	}
+	code := runWithDependencies([]string{"--endpoint", "linux-poc", "exec", "session-p124-direct", "--", "true"}, &stdout, &stderr, dependencies)
+	if code != 1 || openCalls != 1 || sleepCalls != 0 || !strings.Contains(stderr.String(), "command-p124-direct") {
+		t.Fatalf("direct-authority error was retried or lost: exit=%d opens=%d sleeps=%d stderr=%q", code, openCalls, sleepCalls, stderr.String())
+	}
+}
+
+func TestP124ExecTargetAcceptanceTimeoutDoesNotCancelCommand(t *testing.T) {
+	client := &fakeCommandClient{
+		fakeSessionClient: &fakeSessionClient{kind: runnerclient.EndpointUnixSocket},
+		acceptance:        runnerclient.Acceptance{ResourceID: "command-p124-timeout", SessionID: "session-p124-timeout", CommandID: "command-p124-timeout", AcceptanceScope: "local_intent"},
+	}
+	resolver := &fakeEndpointResolver{clients: map[string]sessionClient{"local": client}}
+	var stdout, stderr bytes.Buffer
+	now := time.Unix(200, 0)
+	openCalls := 0
+	dependencies := cliDependencies{
+		resolver: resolver,
+		now:      func() time.Time { return now },
+		sleep: func(_ context.Context, delay time.Duration) error {
+			now = now.Add(delay)
+			return nil
+		},
+		openEvents: func(context.Context, sessionClient, string, int64, bool) (commandEventStream, error) {
+			openCalls++
+			return nil, &runnerclient.APIError{StatusCode: 404, Code: "command_not_found", Message: "command not found"}
+		},
+	}
+	code := runWithDependencies([]string{"--endpoint", "local", "--wait-timeout=1s", "exec", "session-p124-timeout", "--", "true"}, &stdout, &stderr, dependencies)
+	if code != 1 || openCalls < 2 || client.cancelCalls != 0 ||
+		!strings.Contains(stderr.String(), "target authority did not accept command within 1s") ||
+		!strings.Contains(stderr.String(), "command was not cancelled") ||
+		!strings.Contains(stderr.String(), "events command-p124-timeout --after 0 --follow") {
+		t.Fatalf("acceptance timeout canceled work or omitted resume state: exit=%d opens=%d cancels=%d stderr=%q", code, openCalls, client.cancelCalls, stderr.String())
+	}
+}
+
 func TestP120ExecTransportFailureKeepsAcceptedIDAndResumeCursor(t *testing.T) {
 	client := &fakeCommandClient{
 		fakeSessionClient: &fakeSessionClient{kind: runnerclient.EndpointUnixSocket},

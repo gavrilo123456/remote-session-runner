@@ -155,7 +155,7 @@ func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies c
 	case "run":
 		return runOneOffJob(remaining[1:], endpointName, configPath, waitTimeout, stdout, stderr, dependencies)
 	case "exec":
-		return runCommandExec(remaining[1:], endpointName, configPath, stdout, stderr, dependencies)
+		return runCommandExec(remaining[1:], endpointName, configPath, waitTimeout, stdout, stderr, dependencies)
 	case "events":
 		return runCommandEvents(remaining[1:], endpointName, configPath, stdout, stderr, dependencies)
 	default:
@@ -576,7 +576,7 @@ func runOneOffJob(args []string, endpointName, configPath string, waitTimeout ti
 	}
 
 	lastObservedJob := *jobSnapshot
-	cursor, _, streamErr := consumeCommandEvents(jobContext, client, accepted.CommandID, 0, true, stdout, stderr, dependencies)
+	cursor, _, streamErr := consumeCommandEvents(jobContext, client, accepted.CommandID, 0, true, 0, stdout, stderr, dependencies)
 	if streamErr != nil {
 		fmt.Fprintln(stderr, "job_snapshot: last observed before stream stopped")
 		writeJobStatus(stderr, endpointName, *jobSnapshot, cursor, 0)
@@ -814,7 +814,7 @@ func writeRunPending(stderr io.Writer, endpointName string, accepted runnerclien
 	fmt.Fprintf(stderr, "runner: resume with the same request and --idempotency-key %q at --endpoint %s; the accepted command was not cancelled\n", idempotencyKey, endpointName)
 }
 
-func runCommandExec(args []string, endpointName, configPath string, stdout, stderr io.Writer, dependencies cliDependencies) int {
+func runCommandExec(args []string, endpointName, configPath string, waitTimeout time.Duration, stdout, stderr io.Writer, dependencies cliDependencies) int {
 	separator := -1
 	for i, arg := range args {
 		if arg == "--" {
@@ -871,6 +871,10 @@ func runCommandExec(args []string, endpointName, configPath string, stdout, stde
 		}
 		return exitInvalidInvocation
 	}
+	if waitTimeout < time.Second || waitTimeout > maximumOperationWait {
+		fmt.Fprintln(stderr, "runner: --wait-timeout must be between 1s and 10m")
+		return exitInvalidInvocation
+	}
 	client, operations, err := resolveCommandOperations(endpointName, configPath, dependencies)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner: could not select command endpoint %q: %v\n", endpointName, err)
@@ -900,7 +904,11 @@ func runCommandExec(args []string, endpointName, configPath string, stdout, stde
 	writeIdempotencyWarning(stderr, accepted)
 	fmt.Fprintf(stderr, "endpoint: %s\nsession_id: %s\ncommand_id: %s\nacceptance_scope: %s\n", endpointName, sessionID, accepted.CommandID, valueOrUnknown(accepted.AcceptanceScope))
 
-	cursor, _, err := consumeCommandEvents(context.Background(), client, accepted.CommandID, 0, true, stdout, stderr, dependencies)
+	acceptanceWait := time.Duration(0)
+	if accepted.AcceptanceScope == "local_intent" {
+		acceptanceWait = waitTimeout
+	}
+	cursor, _, err := consumeCommandEvents(context.Background(), client, accepted.CommandID, 0, true, acceptanceWait, stdout, stderr, dependencies)
 	if err != nil {
 		if !writeEventHistoryError(stderr, endpointName, accepted.CommandID, cursor, err) {
 			writeCommandResumeError(stderr, endpointName, accepted.CommandID, cursor, err)
@@ -974,9 +982,9 @@ func runCommandEvents(args []string, endpointName, configPath string, stdout, st
 	}
 	writeCursor := after
 	if follow {
-		writeCursor, _, err = consumeCommandEvents(context.Background(), client, commandID, after, true, stdout, stderr, dependencies)
+		writeCursor, _, err = consumeCommandEvents(context.Background(), client, commandID, after, true, 0, stdout, stderr, dependencies)
 	} else {
-		writeCursor, _, err = consumeCommandEvents(context.Background(), client, commandID, after, false, stdout, stderr, dependencies)
+		writeCursor, _, err = consumeCommandEvents(context.Background(), client, commandID, after, false, 0, stdout, stderr, dependencies)
 	}
 	if err != nil {
 		if !writeEventHistoryError(stderr, endpointName, commandID, writeCursor, err) {
@@ -1016,13 +1024,17 @@ func openRunnerCommandEvents(ctx context.Context, client sessionClient, commandI
 	return opener.StreamCommandEvents(ctx, commandID, after, follow)
 }
 
-func consumeCommandEvents(ctx context.Context, client sessionClient, commandID string, after int64, follow bool, stdout, stderr io.Writer, dependencies cliDependencies) (int64, bool, error) {
+func consumeCommandEvents(ctx context.Context, client sessionClient, commandID string, after int64, follow bool, targetAcceptanceWait time.Duration, stdout, stderr io.Writer, dependencies cliDependencies) (int64, bool, error) {
 	operations, ok := client.(commandOperations)
 	if !ok {
 		return after, false, errors.New("selected endpoint does not support command reads")
 	}
 	cursor := after
 	terminal := false
+	var targetAcceptanceDeadline time.Time
+	if targetAcceptanceWait > 0 {
+		targetAcceptanceDeadline = dependencies.now().Add(targetAcceptanceWait)
+	}
 	for {
 		openContext := ctx
 		cancel := func() {}
@@ -1032,6 +1044,20 @@ func consumeCommandEvents(ctx context.Context, client sessionClient, commandID s
 		stream, err := dependencies.openEvents(openContext, client, commandID, cursor, follow)
 		if err != nil {
 			cancel()
+			if targetAcceptanceWait > 0 && cursor == after && !terminal && isPendingTargetAcceptanceError(err) {
+				remaining := targetAcceptanceDeadline.Sub(dependencies.now())
+				if remaining <= 0 {
+					return cursor, terminal, fmt.Errorf("target authority did not accept command within %s: %w", targetAcceptanceWait, err)
+				}
+				pause := readinessPollEvery
+				if pause > remaining {
+					pause = remaining
+				}
+				if sleepErr := dependencies.sleep(ctx, pause); sleepErr != nil {
+					return cursor, terminal, fmt.Errorf("waiting for target authority acceptance: %w", sleepErr)
+				}
+				continue
+			}
 			return cursor, terminal, err
 		}
 		for {
@@ -1083,6 +1109,15 @@ func consumeCommandEvents(ctx context.Context, client sessionClient, commandID s
 			return cursor, terminal, err
 		}
 	}
+}
+
+func isPendingTargetAcceptanceError(err error) bool {
+	var apiError *runnerclient.APIError
+	if !errors.As(err, &apiError) {
+		return false
+	}
+	return (apiError.StatusCode == 404 && apiError.Code == "command_not_found") ||
+		(apiError.StatusCode == 409 && apiError.Code == "events_unavailable")
 }
 
 func writeAll(writer io.Writer, data []byte) error {
@@ -1374,7 +1409,7 @@ func writeUsage(output io.Writer) {
 	fmt.Fprintln(output, "  events COMMAND_ID [--after SEQUENCE] [--follow]")
 	fmt.Fprintln(output, "  cancel [--idempotency-key KEY] COMMAND_ID")
 	fmt.Fprintln(output, "  run --environment NAME --target local|remote --profile NAME [--idempotency-key KEY] -- SCRIPT")
-	fmt.Fprintln(output, "\n--wait-timeout bounds session readiness, session close, and one-off run waits (1s through 10m).")
+	fmt.Fprintln(output, "\n--wait-timeout bounds session readiness, local/queued command acceptance, session close, and one-off run waits (1s through 10m).")
 	fmt.Fprintln(output, "\nEndpoint selection:")
 	fmt.Fprintln(output, "  local       Mac Unix-socket API")
 	fmt.Fprintln(output, "  linux-poc   configured direct HTTPS profile (mandatory mTLS)")
@@ -1403,8 +1438,9 @@ func writeCancelUsage(output io.Writer) {
 }
 
 func writeExecUsage(output io.Writer) {
-	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> exec [--idempotency-key KEY] SESSION_ID -- SCRIPT")
+	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> [--wait-timeout DURATION] exec [--idempotency-key KEY] SESSION_ID -- SCRIPT")
 	fmt.Fprintln(output, "SCRIPT is one argument passed unchanged as UTF-8. Accepted command IDs are printed before output is followed.")
+	fmt.Fprintln(output, "For local or queued commands, waits up to --wait-timeout for target acceptance; timeout does not cancel accepted work.")
 	fmt.Fprintln(output, "A transport or local output error does not cancel the accepted command; resume with events and its last validated cursor.")
 }
 
