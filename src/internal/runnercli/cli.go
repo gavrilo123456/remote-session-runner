@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	defaultReadinessWait = time.Minute
-	maximumReadinessWait = 10 * time.Minute
+	defaultOperationWait = time.Minute
+	maximumOperationWait = 10 * time.Minute
 	readinessPollEvery   = 250 * time.Millisecond
 	apiRequestTimeout    = 15 * time.Second
 
@@ -49,11 +49,22 @@ type commandOperations interface {
 	GetCommand(context.Context, string) (runnerclient.Snapshot[runnerclient.CommandResource], error)
 }
 
+type lifecycleOperations interface {
+	CancelCommand(context.Context, string, string) (runnerclient.Acceptance, error)
+	CloseSession(context.Context, string, string, string) (runnerclient.Acceptance, error)
+}
+
+type jobOperations interface {
+	Run(context.Context, runnerclient.RunJobRequest, string) (runnerclient.Acceptance, error)
+	GetJob(context.Context, string) (runnerclient.Snapshot[runnerclient.JobResource], error)
+}
+
 type commandEventOpener interface {
 	StreamCommandEvents(context.Context, string, int64, bool) (*runnerclient.EventStream, error)
 }
 
-// Run handles runner help/version and the session, command, and event commands.
+// Run handles runner help/version and the session, command, event, lifecycle,
+// and one-off job commands.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if stdout == nil {
 		stdout = io.Discard
@@ -92,7 +103,7 @@ func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies c
 	var help, version bool
 	global.StringVar(&endpointName, "endpoint", "", "required ingress: local or a configured endpoint profile")
 	global.StringVar(&configPath, "config", "", "owner-only Mac endpoint configuration (remote profiles only)")
-	global.DurationVar(&waitTimeout, "wait-timeout", defaultReadinessWait, "maximum session readiness wait (1s through 10m)")
+	global.DurationVar(&waitTimeout, "wait-timeout", defaultOperationWait, "maximum readiness, close, or run wait (1s through 10m)")
 	global.BoolVar(&help, "help", false, "show help")
 	global.BoolVar(&help, "h", false, "show help")
 	global.BoolVar(&version, "version", false, "show version")
@@ -125,7 +136,7 @@ func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies c
 	switch remaining[0] {
 	case "session":
 		if len(remaining) < 2 {
-			fmt.Fprintln(stderr, "runner: expected session create or session status; use --help")
+			fmt.Fprintln(stderr, "runner: expected session create, status, or close; use --help")
 			return exitInvalidInvocation
 		}
 		switch remaining[1] {
@@ -133,16 +144,22 @@ func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies c
 			return runSessionCreate(remaining[2:], endpointName, configPath, waitTimeout, stdout, stderr, dependencies)
 		case "status":
 			return runSessionStatus(remaining[2:], endpointName, configPath, stdout, stderr, dependencies)
+		case "close":
+			return runSessionClose(remaining[2:], endpointName, configPath, waitTimeout, stdout, stderr, dependencies)
 		default:
-			fmt.Fprintln(stderr, "runner: expected session create or session status; use --help")
+			fmt.Fprintln(stderr, "runner: expected session create, status, or close; use --help")
 			return exitInvalidInvocation
 		}
+	case "cancel":
+		return runCommandCancel(remaining[1:], endpointName, configPath, stdout, stderr, dependencies)
+	case "run":
+		return runOneOffJob(remaining[1:], endpointName, configPath, waitTimeout, stdout, stderr, dependencies)
 	case "exec":
 		return runCommandExec(remaining[1:], endpointName, configPath, stdout, stderr, dependencies)
 	case "events":
 		return runCommandEvents(remaining[1:], endpointName, configPath, stdout, stderr, dependencies)
 	default:
-		fmt.Fprintln(stderr, "runner: expected session, exec, or events; use --help")
+		fmt.Fprintln(stderr, "runner: expected session, exec, events, cancel, or run; use --help")
 		return exitInvalidInvocation
 	}
 }
@@ -176,7 +193,7 @@ func runSessionCreate(args []string, endpointName, configPath string, waitTimeou
 		fmt.Fprintln(stderr, "runner: resource commands require an explicit --endpoint")
 		return exitInvalidInvocation
 	}
-	if !noWait && (waitTimeout < time.Second || waitTimeout > maximumReadinessWait) {
+	if !noWait && (waitTimeout < time.Second || waitTimeout > maximumOperationWait) {
 		fmt.Fprintln(stderr, "runner: --wait-timeout must be between 1s and 10m")
 		return exitInvalidInvocation
 	}
@@ -282,6 +299,515 @@ func runSessionStatus(args []string, endpointName, configPath string, stdout, st
 	}
 	writeSessionStatus(stdout, endpointName, snapshot, true)
 	return 0
+}
+
+func runCommandCancel(args []string, endpointName, configPath string, stdout, stderr io.Writer, dependencies cliDependencies) int {
+	options := flag.NewFlagSet("runner cancel", flag.ContinueOnError)
+	options.SetOutput(io.Discard)
+	var idempotencyKey string
+	var help bool
+	options.StringVar(&idempotencyKey, "idempotency-key", "", "stable mutation key; generated when omitted")
+	options.BoolVar(&help, "help", false, "show cancel help")
+	options.BoolVar(&help, "h", false, "show cancel help")
+	if err := options.Parse(args); err != nil {
+		fmt.Fprintln(stderr, "runner: invalid cancel options; use --help")
+		return exitInvalidInvocation
+	}
+	if help {
+		writeCancelUsage(stdout)
+		return 0
+	}
+	if len(options.Args()) != 1 || strings.TrimSpace(options.Args()[0]) == "" {
+		fmt.Fprintln(stderr, "runner: cancel requires exactly one COMMAND_ID; use --help")
+		return exitInvalidInvocation
+	}
+	if endpointName == "" {
+		fmt.Fprintln(stderr, "runner: resource commands require an explicit --endpoint")
+		return exitInvalidInvocation
+	}
+	_, operations, err := resolveLifecycleOperations(endpointName, configPath, dependencies)
+	if err != nil {
+		fmt.Fprintf(stderr, "runner: could not select cancel endpoint %q: %v\n", endpointName, err)
+		return 1
+	}
+	if idempotencyKey == "" {
+		idempotencyKey, err = newIdempotencyKey()
+		if err != nil {
+			fmt.Fprintln(stderr, "runner: could not create an idempotency key")
+			return 1
+		}
+	}
+	commandID := options.Args()[0]
+	fmt.Fprintf(stderr, "idempotency_key: %s\n", idempotencyKey)
+	requestContext, cancel := context.WithTimeout(context.Background(), apiRequestTimeout)
+	accepted, err := operations.CancelCommand(requestContext, commandID, idempotencyKey)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(stderr, "runner: cancel request failed; retry only with the same --idempotency-key %q if delivery may be uncertain; command_id: %s: %v\n", idempotencyKey, commandID, err)
+		return 1
+	}
+	if accepted.CommandID != commandID || accepted.ResourceID != commandID {
+		fmt.Fprintf(stderr, "runner: cancel acceptance did not identify command %s; preserve idempotency key %q\n", commandID, idempotencyKey)
+		return 1
+	}
+	fmt.Fprintf(stdout, "endpoint: %s\ncommand_id: %s\ncancel_requested: accepted\nacceptance_scope: %s\n", endpointName, commandID, valueOrUnknown(accepted.AcceptanceScope))
+	fmt.Fprintf(stdout, "command_state: %s\n", valueOrUnknown(accepted.KnownState.CommandState))
+	if accepted.KnownState.DeliveryState != "" {
+		fmt.Fprintf(stdout, "delivery_state: %s\n", accepted.KnownState.DeliveryState)
+	}
+	fmt.Fprintln(stdout, "cancellation is a request; this response does not claim a terminal cancelled state")
+	return 0
+}
+
+func runSessionClose(args []string, endpointName, configPath string, waitTimeout time.Duration, stdout, stderr io.Writer, dependencies cliDependencies) int {
+	options := flag.NewFlagSet("runner session close", flag.ContinueOnError)
+	options.SetOutput(io.Discard)
+	var policy, idempotencyKey string
+	var help bool
+	options.StringVar(&policy, "policy", "graceful", "session close policy (defaults to graceful)")
+	options.StringVar(&idempotencyKey, "idempotency-key", "", "stable mutation key; generated when omitted")
+	options.BoolVar(&help, "help", false, "show session close help")
+	options.BoolVar(&help, "h", false, "show session close help")
+	if err := options.Parse(args); err != nil {
+		fmt.Fprintln(stderr, "runner: invalid session close options; use --help")
+		return exitInvalidInvocation
+	}
+	if help {
+		writeCloseUsage(stdout)
+		return 0
+	}
+	if len(options.Args()) != 1 || strings.TrimSpace(options.Args()[0]) == "" || strings.TrimSpace(policy) == "" {
+		fmt.Fprintln(stderr, "runner: session close requires one SESSION_ID and a nonempty policy; use --help")
+		return exitInvalidInvocation
+	}
+	if endpointName == "" {
+		fmt.Fprintln(stderr, "runner: resource commands require an explicit --endpoint")
+		return exitInvalidInvocation
+	}
+	if waitTimeout < time.Second || waitTimeout > maximumOperationWait {
+		fmt.Fprintln(stderr, "runner: --wait-timeout must be between 1s and 10m")
+		return exitInvalidInvocation
+	}
+	client, operations, err := resolveLifecycleOperations(endpointName, configPath, dependencies)
+	if err != nil {
+		fmt.Fprintf(stderr, "runner: could not select close endpoint %q: %v\n", endpointName, err)
+		return 1
+	}
+	if idempotencyKey == "" {
+		idempotencyKey, err = newIdempotencyKey()
+		if err != nil {
+			fmt.Fprintln(stderr, "runner: could not create an idempotency key")
+			return 1
+		}
+	}
+	sessionID := options.Args()[0]
+	fmt.Fprintf(stderr, "idempotency_key: %s\n", idempotencyKey)
+	requestContext, cancel := context.WithTimeout(context.Background(), apiRequestTimeout)
+	accepted, err := operations.CloseSession(requestContext, sessionID, policy, idempotencyKey)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(stderr, "runner: close request failed; session_id: %s; retry only with the same --idempotency-key %q if delivery may be uncertain: %v\n", sessionID, idempotencyKey, err)
+		return 1
+	}
+	if accepted.SessionID != sessionID || accepted.ResourceID != sessionID {
+		fmt.Fprintf(stderr, "runner: close acceptance did not identify session %s; preserve idempotency key %q\n", sessionID, idempotencyKey)
+		return 1
+	}
+	fmt.Fprintf(stdout, "endpoint: %s\nsession_id: %s\nclose_requested: accepted\nclose_policy: %s\nacceptance_scope: %s\n", endpointName, sessionID, policy, valueOrUnknown(accepted.AcceptanceScope))
+	if accepted.KnownState.DeliveryState != "" {
+		fmt.Fprintf(stdout, "delivery_state: %s\n", accepted.KnownState.DeliveryState)
+	}
+	if accepted.KnownState.DeliveryState == "not_delivered" {
+		fmt.Fprintln(stdout, "session_state: not_delivered")
+		fmt.Fprintf(stderr, "runner: close was accepted locally but not delivered; session %s has no confirmed target teardown\n", sessionID)
+		return 1
+	}
+
+	snapshot, outcome, err := waitForSessionClosed(context.Background(), client, sessionID, waitTimeout, dependencies)
+	if snapshot != nil {
+		writeSessionStatus(stdout, endpointName, *snapshot, false)
+		fmt.Fprintf(stdout, "teardown_outcome: %s\n", sessionTeardownOutcome(snapshot.Resource))
+	} else if outcome == waitPending {
+		fmt.Fprintln(stdout, "session_state: pending")
+		fmt.Fprintln(stdout, "teardown_outcome: pending")
+	}
+	switch outcome {
+	case waitReady:
+		return 0
+	case waitTerminal:
+		state := "unknown"
+		if snapshot != nil {
+			state = displaySessionState(snapshot.Resource)
+		}
+		fmt.Fprintf(stderr, "runner: close was accepted but teardown reached %s; session_id: %s\n", state, sessionID)
+		return 1
+	case waitPending:
+		fmt.Fprintln(stdout, "close: pending (wait timed out; no second close was sent)")
+		fmt.Fprintf(stderr, "runner: session %s remains accepted; check it with --endpoint %s session status %s; retry close only with the same --idempotency-key %q\n", sessionID, endpointName, sessionID, idempotencyKey)
+		return exitWaitPending
+	default:
+		fmt.Fprintf(stderr, "runner: close outcome could not be confirmed; session_id: %s; check with --endpoint %s session status %s: %v\n", sessionID, endpointName, sessionID, err)
+		return 1
+	}
+}
+
+func runOneOffJob(args []string, endpointName, configPath string, waitTimeout time.Duration, stdout, stderr io.Writer, dependencies cliDependencies) int {
+	options := flag.NewFlagSet("runner run", flag.ContinueOnError)
+	options.SetOutput(io.Discard)
+	var environment, targetKind, targetProfile, idempotencyKey string
+	var help bool
+	options.StringVar(&environment, "environment", "", "configured environment name")
+	options.StringVar(&targetKind, "target", "", "immutable execution target: local or remote")
+	options.StringVar(&targetProfile, "profile", "", "execution target profile")
+	options.StringVar(&idempotencyKey, "idempotency-key", "", "stable mutation key; generated when omitted")
+	options.BoolVar(&help, "help", false, "show run help")
+	options.BoolVar(&help, "h", false, "show run help")
+	if err := options.Parse(args); err != nil {
+		fmt.Fprintln(stderr, "runner: invalid run options; use --help")
+		return exitInvalidInvocation
+	}
+	if help {
+		writeRunUsage(stdout)
+		return 0
+	}
+	if len(options.Args()) != 1 || strings.TrimSpace(environment) == "" ||
+		(targetKind != "local" && targetKind != "remote") || strings.TrimSpace(targetProfile) == "" {
+		fmt.Fprintln(stderr, "runner: run requires --environment, --target, --profile, and exactly one SCRIPT after --; use --help")
+		return exitInvalidInvocation
+	}
+	if endpointName == "" {
+		fmt.Fprintln(stderr, "runner: resource commands require an explicit --endpoint")
+		return exitInvalidInvocation
+	}
+	if waitTimeout < time.Second || waitTimeout > maximumOperationWait {
+		fmt.Fprintln(stderr, "runner: --wait-timeout must be between 1s and 10m")
+		return exitInvalidInvocation
+	}
+	client, err := dependencies.resolver.Resolve(endpointName, configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "runner: could not select endpoint profile %q: %v\n", endpointName, err)
+		return 1
+	}
+	if client.EndpointKind() == runnerclient.EndpointHTTPS && targetKind != "remote" {
+		fmt.Fprintln(stderr, "runner: direct HTTPS endpoint profiles accept remote targets only")
+		return exitInvalidInvocation
+	}
+	jobs, ok := client.(jobOperations)
+	if !ok {
+		fmt.Fprintln(stderr, "runner: selected endpoint does not support one-off jobs")
+		return 1
+	}
+	if _, ok := client.(commandOperations); !ok {
+		fmt.Fprintln(stderr, "runner: selected endpoint does not support command reads")
+		return 1
+	}
+	if idempotencyKey == "" {
+		idempotencyKey, err = newIdempotencyKey()
+		if err != nil {
+			fmt.Fprintln(stderr, "runner: could not create an idempotency key")
+			return 1
+		}
+	}
+	// Print the retry key before the one-off mutation. Replaying that exact
+	// request and key resumes the same durable job rather than allocating work.
+	fmt.Fprintf(stderr, "idempotency_key: %s\n", idempotencyKey)
+	requestContext, cancel := context.WithTimeout(context.Background(), apiRequestTimeout)
+	accepted, err := jobs.Run(requestContext, runnerclient.RunJobRequest{
+		Environment:     environment,
+		ExecutionTarget: runnerclient.Target{Kind: targetKind, Profile: targetProfile},
+		Script:          options.Args()[0],
+	}, idempotencyKey)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(stderr, "runner: run acceptance failed; outcome may be uncertain; retry only with the same --idempotency-key %q: %v\n", idempotencyKey, err)
+		return 1
+	}
+	if accepted.JobID == "" || accepted.SessionID == "" || accepted.CommandID == "" || accepted.ResourceID != accepted.JobID {
+		fmt.Fprintf(stderr, "runner: job acceptance was malformed; preserve idempotency key %q\n", idempotencyKey)
+		return 1
+	}
+	fmt.Fprintf(stderr, "endpoint: %s\njob_id: %s\nsession_id: %s\ncommand_id: %s\nacceptance_scope: %s\nexecution_target: %s/%s\n", endpointName, accepted.JobID, accepted.SessionID, accepted.CommandID, valueOrUnknown(accepted.AcceptanceScope), accepted.ExecutionTarget.Kind, accepted.ExecutionTarget.Profile)
+
+	jobDeadline := dependencies.now().Add(waitTimeout)
+	jobContext, cancelJob := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancelJob()
+	jobSnapshot, outcome, err := waitForJobUntil(jobContext, jobs, accepted.JobID, jobDeadline, dependencies, jobCanStream)
+	if jobSnapshot != nil {
+		if err := validateAcceptedJob(*jobSnapshot, accepted); err != nil {
+			fmt.Fprintf(stderr, "runner: accepted job identity changed; preserve job_id %s, session_id %s, and command_id %s: %v\n", accepted.JobID, accepted.SessionID, accepted.CommandID, err)
+			return 1
+		}
+	}
+	if outcome == waitPending {
+		if jobSnapshot != nil {
+			fmt.Fprintln(stderr, "job_snapshot: last observed before wait timeout")
+			writeJobStatus(stderr, endpointName, *jobSnapshot, 0, 0)
+		}
+		writeRunPending(stderr, endpointName, accepted, idempotencyKey, "job authority or command acceptance")
+		return exitWaitPending
+	}
+	if outcome == waitFailed {
+		if jobSnapshot != nil {
+			fmt.Fprintln(stderr, "job_snapshot: last observed before status read failure")
+			writeJobStatus(stderr, endpointName, *jobSnapshot, 0, 0)
+		}
+		fmt.Fprintf(stderr, "runner: could not read accepted job %s; retry the same request with idempotency key %q: %v\n", accepted.JobID, idempotencyKey, err)
+		return 1
+	}
+	if jobSnapshot == nil {
+		fmt.Fprintf(stderr, "runner: job %s has no readable state; preserve session_id %s and command_id %s\n", accepted.JobID, accepted.SessionID, accepted.CommandID)
+		return 1
+	}
+	if !jobHasCommandState(jobSnapshot.Resource) {
+		writeJobStatus(stderr, endpointName, *jobSnapshot, 0, 0)
+		if jobSnapshot.Resource.DeliveryState == "not_delivered" {
+			fmt.Fprintf(stderr, "runner: job %s was proven not delivered; the command was not executed\n", accepted.JobID)
+			return 1
+		}
+		if jobIsTerminal(jobSnapshot.Resource) {
+			return jobExitStatus(jobSnapshot.Resource)
+		}
+		fmt.Fprintf(stderr, "runner: job %s reached a terminal pre-command outcome; no command output was followed\n", accepted.JobID)
+		return 1
+	}
+
+	lastObservedJob := *jobSnapshot
+	cursor, _, streamErr := consumeCommandEvents(jobContext, client, accepted.CommandID, 0, true, stdout, stderr, dependencies)
+	if streamErr != nil {
+		fmt.Fprintln(stderr, "job_snapshot: last observed before stream stopped")
+		writeJobStatus(stderr, endpointName, *jobSnapshot, cursor, 0)
+		if errors.Is(jobContext.Err(), context.DeadlineExceeded) || jobDeadline.Sub(dependencies.now()) <= 0 {
+			writeRunPending(stderr, endpointName, accepted, idempotencyKey, "command output or completion")
+			return exitWaitPending
+		}
+		if !writeEventHistoryError(stderr, endpointName, accepted.CommandID, cursor, streamErr) {
+			writeCommandResumeError(stderr, endpointName, accepted.CommandID, cursor, streamErr)
+		}
+		fmt.Fprintf(stderr, "runner: job %s remains durable; command was not restarted; retry run only with idempotency key %q\n", accepted.JobID, idempotencyKey)
+		return 1
+	}
+
+	jobSnapshot, outcome, err = waitForJobUntil(jobContext, jobs, accepted.JobID, jobDeadline, dependencies, jobIsTerminal)
+	if jobSnapshot != nil {
+		if err := validateAcceptedJob(*jobSnapshot, accepted); err != nil {
+			fmt.Fprintf(stderr, "runner: final job identity changed; preserve job_id %s, session_id %s, and command_id %s: %v\n", accepted.JobID, accepted.SessionID, accepted.CommandID, err)
+			return 1
+		}
+		writeJobStatus(stderr, endpointName, *jobSnapshot, cursor, 0)
+	} else {
+		fmt.Fprintln(stderr, "job_snapshot: last observed before teardown status read")
+		writeJobStatus(stderr, endpointName, lastObservedJob, cursor, 0)
+	}
+	if outcome == waitPending {
+		writeRunPending(stderr, endpointName, accepted, idempotencyKey, "session teardown")
+		return exitWaitPending
+	}
+	if outcome == waitFailed {
+		fmt.Fprintf(stderr, "runner: job %s command finished but teardown status could not be read; preserve all IDs and retry only with idempotency key %q: %v\n", accepted.JobID, idempotencyKey, err)
+		return 1
+	}
+	if jobSnapshot == nil {
+		fmt.Fprintf(stderr, "runner: job %s completed without a final readable status; session_id %s command_id %s\n", accepted.JobID, accepted.SessionID, accepted.CommandID)
+		return 1
+	}
+	return jobExitStatus(jobSnapshot.Resource)
+}
+
+func sessionTeardownOutcome(resource runnerclient.SessionResource) string {
+	switch resource.SessionState {
+	case "closed", "expired":
+		return "closed"
+	case "lost":
+		return "lost"
+	case "failed":
+		return "failed"
+	}
+	if resource.SessionState == "" && resource.DeliveryState == "not_delivered" {
+		return "not_created"
+	}
+	return "pending"
+}
+
+func resolveLifecycleOperations(endpointName, configPath string, dependencies cliDependencies) (sessionClient, lifecycleOperations, error) {
+	client, err := dependencies.resolver.Resolve(endpointName, configPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	operations, ok := client.(lifecycleOperations)
+	if !ok {
+		return nil, nil, errors.New("selected endpoint does not support lifecycle operations")
+	}
+	return client, operations, nil
+}
+
+func waitForSessionClosed(ctx context.Context, client sessionClient, sessionID string, timeout time.Duration, dependencies cliDependencies) (*runnerclient.Snapshot[runnerclient.SessionResource], waitOutcome, error) {
+	deadline := dependencies.now().Add(timeout)
+	var last *runnerclient.Snapshot[runnerclient.SessionResource]
+	for {
+		remaining := deadline.Sub(dependencies.now())
+		if remaining <= 0 {
+			return last, waitPending, nil
+		}
+		requestTimeout := remaining
+		if requestTimeout > apiRequestTimeout {
+			requestTimeout = apiRequestTimeout
+		}
+		requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
+		snapshot, err := client.GetSession(requestContext, sessionID)
+		cancel()
+		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) || deadline.Sub(dependencies.now()) <= 0 {
+				return last, waitPending, nil
+			}
+			return last, waitFailed, err
+		}
+		if snapshot.Resource.SessionID != sessionID {
+			return last, waitFailed, fmt.Errorf("%w: session response ID differs from requested close", runnerclient.ErrProtocol)
+		}
+		last = &snapshot
+		switch snapshot.Resource.SessionState {
+		case "closed", "expired":
+			return last, waitReady, nil
+		case "failed", "lost":
+			return last, waitTerminal, nil
+		}
+		if snapshot.Resource.SessionState == "" && snapshot.Resource.DeliveryState == "not_delivered" {
+			// The create intent was proven never delivered, so there is no
+			// target session to tear down; the local close is a known no-op.
+			return last, waitReady, nil
+		}
+		remaining = deadline.Sub(dependencies.now())
+		if remaining <= 0 {
+			return last, waitPending, nil
+		}
+		pause := readinessPollEvery
+		if pause > remaining {
+			pause = remaining
+		}
+		if err := dependencies.sleep(ctx, pause); err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) || deadline.Sub(dependencies.now()) <= 0 {
+				return last, waitPending, nil
+			}
+			return last, waitFailed, err
+		}
+	}
+}
+
+func waitForJobUntil(ctx context.Context, operations jobOperations, jobID string, deadline time.Time, dependencies cliDependencies, done func(runnerclient.JobResource) bool) (*runnerclient.Snapshot[runnerclient.JobResource], waitOutcome, error) {
+	var last *runnerclient.Snapshot[runnerclient.JobResource]
+	for {
+		remaining := deadline.Sub(dependencies.now())
+		if remaining <= 0 {
+			return last, waitPending, nil
+		}
+		requestTimeout := remaining
+		if requestTimeout > apiRequestTimeout {
+			requestTimeout = apiRequestTimeout
+		}
+		requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
+		snapshot, err := operations.GetJob(requestContext, jobID)
+		cancel()
+		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) || deadline.Sub(dependencies.now()) <= 0 {
+				return last, waitPending, nil
+			}
+			return last, waitFailed, err
+		}
+		if snapshot.Resource.JobID != jobID {
+			return last, waitFailed, fmt.Errorf("%w: job response ID differs from requested job", runnerclient.ErrProtocol)
+		}
+		last = &snapshot
+		if done(snapshot.Resource) {
+			return last, waitReady, nil
+		}
+		remaining = deadline.Sub(dependencies.now())
+		if remaining <= 0 {
+			return last, waitPending, nil
+		}
+		pause := readinessPollEvery
+		if pause > remaining {
+			pause = remaining
+		}
+		if err := dependencies.sleep(ctx, pause); err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) || deadline.Sub(dependencies.now()) <= 0 {
+				return last, waitPending, nil
+			}
+			return last, waitFailed, err
+		}
+	}
+}
+
+func jobHasCommandState(resource runnerclient.JobResource) bool {
+	return resource.CommandState != nil && *resource.CommandState != ""
+}
+
+func validateAcceptedJob(snapshot runnerclient.Snapshot[runnerclient.JobResource], accepted runnerclient.Acceptance) error {
+	resource := snapshot.Resource
+	if resource.JobID != accepted.JobID || resource.SessionID != accepted.SessionID || resource.CommandID != accepted.CommandID {
+		return fmt.Errorf("job snapshot IDs (%s, %s, %s) do not match accepted IDs (%s, %s, %s)", resource.JobID, resource.SessionID, resource.CommandID, accepted.JobID, accepted.SessionID, accepted.CommandID)
+	}
+	return nil
+}
+
+func jobCanStream(resource runnerclient.JobResource) bool {
+	return jobHasCommandState(resource) || jobIsTerminal(resource)
+}
+
+func jobIsTerminal(resource runnerclient.JobResource) bool {
+	switch resource.EffectivePhase() {
+	case "failed", "lost":
+		return true
+	case "complete":
+		return resource.TeardownState != "pending"
+	}
+	return resource.TeardownState == "failed" || resource.TeardownState == "lost" || resource.DeliveryState == "not_delivered"
+}
+
+func writeJobStatus(output io.Writer, endpointName string, snapshot runnerclient.Snapshot[runnerclient.JobResource], cursor, requestedAfter int64) {
+	resource := snapshot.Resource
+	state := ""
+	if resource.CommandState != nil {
+		state = *resource.CommandState
+	}
+	fmt.Fprintf(output, "endpoint: %s\njob_id: %s\nsession_id: %s\ncommand_id: %s\nview: %s\njob_phase: %s\ncommand_state: %s\n", endpointName, resource.JobID, resource.SessionID, resource.CommandID, valueOrUnknown(snapshot.View), valueOrUnknown(resource.EffectivePhase()), valueOrUnknown(state))
+	if resource.ExitCode == nil {
+		fmt.Fprintln(output, "command_exit_code: unknown")
+	} else {
+		fmt.Fprintf(output, "command_exit_code: %d\n", *resource.ExitCode)
+	}
+	fmt.Fprintf(output, "event_cursor: %d\n", cursor)
+	finalSequence := int64(-1)
+	if resource.FinalEventSequence == nil {
+		fmt.Fprintln(output, "final_event_sequence: unknown")
+	} else {
+		finalSequence = *resource.FinalEventSequence
+		fmt.Fprintf(output, "final_event_sequence: %d\n", finalSequence)
+	}
+	fmt.Fprintf(output, "output_complete: %t\noutput_truncated: %t\noutput_unavailable_reason: %s\n", resource.OutputComplete, resource.OutputTruncated, valueOrUnknown(resource.OutputUnavailableReason))
+	completeRead := requestedAfter == 0 && finalSequence >= 0 && cursor == finalSequence && resource.OutputComplete && !resource.OutputTruncated
+	fmt.Fprintf(output, "event_history_complete_this_read: %t\nteardown_state: %s\n", completeRead, valueOrUnknown(resource.TeardownState))
+	if resource.TeardownReason != "" {
+		fmt.Fprintf(output, "teardown_reason: %s\n", resource.TeardownReason)
+	}
+	if resource.DeliveryState != "" {
+		fmt.Fprintf(output, "delivery_state: %s\n", resource.DeliveryState)
+	}
+	if resource.Reason != "" {
+		fmt.Fprintf(output, "reason: %s\n", resource.Reason)
+	}
+	fmt.Fprintf(output, "is_stale: %t\n", snapshot.IsStale || resource.IsStale)
+}
+
+func jobExitStatus(resource runnerclient.JobResource) int {
+	if resource.EffectivePhase() != "complete" || resource.TeardownState != "closed" || !jobHasCommandState(resource) {
+		return 1
+	}
+	return commandExitStatus(runnerclient.CommandResource{CommandState: *resource.CommandState, ExitCode: resource.ExitCode})
+}
+
+func writeRunPending(stderr io.Writer, endpointName string, accepted runnerclient.Acceptance, idempotencyKey, stage string) {
+	fmt.Fprintf(stderr, "runner: run remains pending during %s; job_id: %s; session_id: %s; command_id: %s; no replacement job was created\n", stage, accepted.JobID, accepted.SessionID, accepted.CommandID)
+	fmt.Fprintf(stderr, "runner: resume with the same request and --idempotency-key %q at --endpoint %s; the accepted command was not cancelled\n", idempotencyKey, endpointName)
 }
 
 func runCommandExec(args []string, endpointName, configPath string, stdout, stderr io.Writer, dependencies cliDependencies) int {
@@ -832,8 +1358,12 @@ func writeUsage(output io.Writer) {
 	fmt.Fprintln(output, "\nCommands:")
 	fmt.Fprintln(output, "  session create --environment NAME --target local|remote --profile NAME [--no-wait] [--idempotency-key KEY]")
 	fmt.Fprintln(output, "  session status SESSION_ID")
+	fmt.Fprintln(output, "  session close [--policy graceful] [--idempotency-key KEY] SESSION_ID")
 	fmt.Fprintln(output, "  exec [--idempotency-key KEY] SESSION_ID -- SCRIPT")
 	fmt.Fprintln(output, "  events COMMAND_ID [--after SEQUENCE] [--follow]")
+	fmt.Fprintln(output, "  cancel [--idempotency-key KEY] COMMAND_ID")
+	fmt.Fprintln(output, "  run --environment NAME --target local|remote --profile NAME [--idempotency-key KEY] -- SCRIPT")
+	fmt.Fprintln(output, "\n--wait-timeout bounds session readiness, session close, and one-off run waits (1s through 10m).")
 	fmt.Fprintln(output, "\nEndpoint selection:")
 	fmt.Fprintln(output, "  local       Mac Unix-socket API")
 	fmt.Fprintln(output, "  linux-poc   configured direct HTTPS profile (mandatory mTLS)")
@@ -851,6 +1381,16 @@ func writeStatusUsage(output io.Writer) {
 	fmt.Fprintln(output, "The selected endpoint is used exactly as supplied; the session ID never selects an ingress.")
 }
 
+func writeCloseUsage(output io.Writer) {
+	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> [--config PATH] [--wait-timeout DURATION] session close [--policy POLICY] [--idempotency-key KEY] SESSION_ID")
+	fmt.Fprintln(output, "The default close policy is graceful. Waits for confirmed close/expiry; lost or failed teardown is an error.")
+}
+
+func writeCancelUsage(output io.Writer) {
+	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> [--config PATH] cancel [--idempotency-key KEY] COMMAND_ID")
+	fmt.Fprintln(output, "Cancellation is an idempotent request; acceptance does not guarantee a cancelled terminal state.")
+}
+
 func writeExecUsage(output io.Writer) {
 	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> exec [--idempotency-key KEY] SESSION_ID -- SCRIPT")
 	fmt.Fprintln(output, "SCRIPT is one argument passed unchanged as UTF-8. Accepted command IDs are printed before output is followed.")
@@ -861,4 +1401,10 @@ func writeEventsUsage(output io.Writer) {
 	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> events COMMAND_ID [--after SEQUENCE] [--follow]")
 	fmt.Fprintln(output, "By default reads retained events once. --follow resumes from the last validated cursor until the command is terminal.")
 	fmt.Fprintln(output, "Command output bytes go to stdout/stderr; lifecycle and command metadata go to stderr.")
+}
+
+func writeRunUsage(output io.Writer) {
+	fmt.Fprintln(output, "Usage: runner --endpoint <local|profile> [--config PATH] [--wait-timeout DURATION] run --environment NAME --target local|remote --profile NAME [--idempotency-key KEY] -- SCRIPT")
+	fmt.Fprintln(output, "Runs one command in an ephemeral session, follows output, and waits for teardown.")
+	fmt.Fprintln(output, "A wait timeout leaves the accepted job running; resume with the same request and idempotency key.")
 }
