@@ -206,7 +206,9 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 		}
 
 		marker := "P124-" + strings.ToUpper(strings.ReplaceAll(route.name, "-", "_")) + "-OUTPUT"
-		script := fmt.Sprintf("printf '%s\\n'; exit 7", marker)
+		// Exit from a child Bash, so the target command is nonzero while the
+		// persistent session shell remains available for status and close.
+		script := fmt.Sprintf("bash -c 'printf \"%s\\n\"; exit 7'", marker)
 		var executed p124CLIResult
 		if route.queued || route.target == "local" {
 			executed = p124RunIntentCLI(t, h.authority, localDriver, remoteDriver, owner, queuedController,
