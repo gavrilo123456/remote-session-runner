@@ -124,7 +124,11 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	localdSocket := filepath.Join(t.TempDir(), "locald.sock")
+	localdRoot := filepath.Join(t.TempDir(), "locald")
+	if err := os.Mkdir(localdRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	localdSocket := filepath.Join(localdRoot, "locald.sock")
 	locald, err := runnerlocald.NewPrivateServer(runnerlocald.PrivateServerOptions{
 		Authority: h.authority, Service: localService, Owner: owner, SocketPath: localdSocket,
 	})
