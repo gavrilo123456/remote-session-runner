@@ -84,6 +84,7 @@ type MacSettings struct {
 	Backups                 string
 	RemoteEndpointProfile   string
 	RemoteEndpoint          string
+	RemoteServerCA          string
 	SSHHostAlias            string
 	SSHKnownHosts           string
 	DirectClientCertificate string
@@ -267,6 +268,7 @@ type macDocument struct {
 	Backups                 string         `yaml:"backups"`
 	RemoteEndpointProfile   string         `yaml:"remote_endpoint_profile"`
 	RemoteEndpoint          string         `yaml:"remote_endpoint"`
+	RemoteServerCA          string         `yaml:"remote_server_ca_certificate"`
 	SSHHostAlias            string         `yaml:"ssh_host_alias"`
 	SSHKnownHosts           string         `yaml:"ssh_known_hosts"`
 	DirectClientCertificate string         `yaml:"direct_client_certificate"`
@@ -637,6 +639,7 @@ func validateMacDocument(mac *macDocument, refs secretReferencesDocument) error 
 		servicePath{mac.Workspaces, "workspaces"},
 		servicePath{mac.ScriptTempRoot, "tmp/scripts"},
 		servicePath{mac.Backups, "backups"},
+		servicePath{mac.RemoteServerCA, "secrets/poc-ca.pem"},
 		servicePath{mac.SSHKnownHosts, "secrets/ssh_known_hosts"},
 		servicePath{mac.DirectClientCertificate, "secrets/direct-client.pem"},
 	) {
@@ -759,6 +762,7 @@ func macSettings(document *macDocument) MacSettings {
 		Backups:                 document.Backups,
 		RemoteEndpointProfile:   document.RemoteEndpointProfile,
 		RemoteEndpoint:          document.RemoteEndpoint,
+		RemoteServerCA:          document.RemoteServerCA,
 		SSHHostAlias:            document.SSHHostAlias,
 		SSHKnownHosts:           document.SSHKnownHosts,
 		DirectClientCertificate: document.DirectClientCertificate,

@@ -24,6 +24,7 @@ mac:
   backups: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/backups"
   remote_endpoint_profile: linux-poc
   remote_endpoint: https://129.151.232.40:8443
+  remote_server_ca_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem"
   ssh_host_alias: remote-session-runner
   ssh_known_hosts: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/ssh_known_hosts"
   direct_client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.pem"
@@ -117,7 +118,8 @@ func TestP010_D14LoadsSelectedHostConfigsAndDefaults(t *testing.T) {
 			t.Fatalf("Kind() = %q, want %q", config.Kind(), HostKindMac)
 		}
 		settings, ok := config.MacSettings()
-		if !ok || settings.Account != MacAccount || settings.ServiceRoot != MacServiceRoot || settings.RemoteEndpoint != PublicEndpoint {
+		if !ok || settings.Account != MacAccount || settings.ServiceRoot != MacServiceRoot || settings.RemoteEndpoint != PublicEndpoint ||
+			settings.RemoteServerCA != filepath.Join(MacServiceRoot, "secrets/poc-ca.pem") {
 			t.Fatalf("unexpected Mac settings: %+v, present=%v", settings, ok)
 		}
 		if settings.ReconciliationDeadline != DefaultReconciliationDeadline {
@@ -250,6 +252,9 @@ func TestP010_D14RejectsUnknownInvalidAndInlineSecretConfig(t *testing.T) {
 		{"wrong selected database path", strings.Replace(linuxConfigFixture,
 			"/home/ubuntu/.local/share/remote-session-runner/state/remote.db",
 			"/home/ubuntu/.local/share/remote-session-runner/state/other.db", 1)},
+		{"wrong Mac server CA path", strings.Replace(macConfigFixture,
+			"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem",
+			"/tmp/untrusted-ca.pem", 1)},
 		{"wrong public endpoint", strings.Replace(linuxConfigFixture, PublicEndpoint, "https://example.invalid:8443", 1)},
 		{"wrong bind", strings.Replace(linuxConfigFixture, LinuxHTTPSBind, "0.0.0.0:8443", 1)},
 		{"inline private key", strings.Replace(linuxConfigFixture,
