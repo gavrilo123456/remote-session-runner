@@ -140,12 +140,23 @@ func (s *directHTTPSAPI) ServeHTTP(response http.ResponseWriter, request *http.R
 		s.handleSubmitCommand(response, request)
 		return
 	}
-	if strings.HasPrefix(request.URL.Path, "/v1/sessions/") {
-		if request.Method != http.MethodGet {
+	if strings.HasPrefix(request.URL.Path, "/v1/commands/") && strings.HasSuffix(request.URL.Path, "/cancel") {
+		if request.Method != http.MethodPost {
 			writeDirectError(response, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 			return
 		}
-		s.handleGetSession(response, request)
+		s.handleCancelCommand(response, request)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, "/v1/sessions/") {
+		switch request.Method {
+		case http.MethodGet:
+			s.handleGetSession(response, request)
+		case http.MethodDelete:
+			s.handleCloseSession(response, request)
+		default:
+			writeDirectError(response, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		}
 		return
 	}
 	if strings.HasPrefix(request.URL.Path, "/v1/commands/") {
@@ -492,6 +503,113 @@ func (s *directHTTPSAPI) handleGetCommand(response http.ResponseWriter, request 
 	writeJSON(response, http.StatusOK, directCommandReadResponse{View: "authority", IsStale: false, Resource: resource})
 }
 
+func (s *directHTTPSAPI) handleCancelCommand(response http.ResponseWriter, request *http.Request) {
+	principal, ok := DirectPrincipalFromContext(request.Context())
+	if !ok || principal.Controller.Type() != domain.ControllerTypeDirectMTLS || principal.Controller.ID() == "" {
+		writeDirectError(response, http.StatusForbidden, "environment_forbidden", "a mapped direct client identity is required")
+		return
+	}
+	commandID, err := directCommandCancelIDFromPath(request.URL)
+	if err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "command cancellation path contains an invalid ID")
+		return
+	}
+	idempotencyKey, ok := directIdempotencyKey(request)
+	if !ok {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "a valid Idempotency-Key header is required")
+		return
+	}
+	body, err := s.readOptionalRequestBody(request)
+	if err != nil {
+		writeDirectRequestBodyError(response, err)
+		return
+	}
+	if len(body) != 0 {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "command cancellation does not accept a request body")
+		return
+	}
+	command, err := s.service.GetCommand(request.Context(), commandID, principal.Controller)
+	if err != nil {
+		status, code, message := directCommandError(err)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	session, err := s.service.GetSession(request.Context(), command.SessionID, principal.Controller)
+	if err != nil {
+		status, code, message := directSessionError(err)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	requestHash, err := directCancellationRequestHash(commandID)
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "cancellation request cannot be hashed")
+		return
+	}
+	result, serviceErr := s.service.CancelCommand(request.Context(), execution.CancelCommandRequest{
+		CommandID: commandID, Controller: principal.Controller, IdempotencyKey: idempotencyKey,
+		RequestHash: requestHash, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	})
+	if serviceErr != nil && result.Command.CommandID == "" {
+		status, code, message := directCommandError(serviceErr)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	// A populated record means the authority durably accepted the cancel request.
+	// Report its current state even when the runtime could not confirm a stop.
+	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target))
+}
+
+func (s *directHTTPSAPI) handleCloseSession(response http.ResponseWriter, request *http.Request) {
+	principal, ok := DirectPrincipalFromContext(request.Context())
+	if !ok || principal.Controller.Type() != domain.ControllerTypeDirectMTLS || principal.Controller.ID() == "" {
+		writeDirectError(response, http.StatusForbidden, "environment_forbidden", "a mapped direct client identity is required")
+		return
+	}
+	sessionID, err := directSessionIDFromPath(request.URL)
+	if err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "session path contains an invalid ID")
+		return
+	}
+	idempotencyKey, ok := directIdempotencyKey(request)
+	if !ok {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "a valid Idempotency-Key header is required")
+		return
+	}
+	body, err := s.readOptionalRequestBody(request)
+	if err != nil {
+		writeDirectRequestBodyError(response, err)
+		return
+	}
+	policy, err := directClosePolicy(body)
+	if err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "close policy body must contain one supported JSON object with a nonempty policy")
+		return
+	}
+	_, err = s.service.GetSession(request.Context(), sessionID, principal.Controller)
+	if err != nil {
+		status, code, message := directSessionError(err)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	requestHash, err := directCloseRequestHash(sessionID, policy)
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "close request cannot be hashed")
+		return
+	}
+	result, serviceErr := s.service.CloseSession(request.Context(), execution.CloseSessionRequest{
+		SessionID: sessionID, Controller: principal.Controller, IdempotencyKey: idempotencyKey,
+		RequestHash: requestHash, Policy: policy, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	})
+	if serviceErr != nil && result.Session.SessionID == "" {
+		status, code, message := directSessionError(serviceErr)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	// The session record is the acceptance result; closed/lost is reported as
+	// known state, not hidden behind a transport-shaped error.
+	writeJSON(response, http.StatusAccepted, directSessionAcceptanceFromRecord(result.Session))
+}
+
 func directCommandTimeout(raw json.RawMessage) (time.Duration, error) {
 	if len(raw) == 0 {
 		return 0, nil
@@ -511,6 +629,13 @@ func (s *directHTTPSAPI) readRequestBody(request *http.Request) ([]byte, error) 
 	if request.Body == nil {
 		return nil, errors.New("request body is required")
 	}
+	return s.readOptionalRequestBody(request)
+}
+
+func (s *directHTTPSAPI) readOptionalRequestBody(request *http.Request) ([]byte, error) {
+	if request.Body == nil {
+		return nil, nil
+	}
 	defer request.Body.Close()
 	if request.ContentLength > s.maxBodyBytes {
 		return nil, domain.ErrSerializedInputTooLarge
@@ -522,10 +647,96 @@ func (s *directHTTPSAPI) readRequestBody(request *http.Request) ([]byte, error) 
 	if int64(len(body)) > s.maxBodyBytes {
 		return nil, domain.ErrSerializedInputTooLarge
 	}
-	if err := domain.ValidateSerializedRequest(body); err != nil {
-		return nil, err
+	if len(body) > 0 {
+		if err := domain.ValidateSerializedRequest(body); err != nil {
+			return nil, err
+		}
 	}
 	return body, nil
+}
+
+func writeDirectRequestBodyError(response http.ResponseWriter, err error) {
+	if errors.Is(err, domain.ErrSerializedInputTooLarge) {
+		writeDirectError(response, http.StatusRequestEntityTooLarge, "invalid_request", "serialized request exceeds the 1 MiB limit")
+		return
+	}
+	writeDirectError(response, http.StatusBadRequest, "invalid_request", "request body could not be read or is not valid UTF-8")
+}
+
+func directIdempotencyKey(request *http.Request) (string, bool) {
+	key := request.Header.Get("Idempotency-Key")
+	if strings.TrimSpace(key) == "" || len(key) > 256 || strings.IndexByte(key, 0) >= 0 {
+		return "", false
+	}
+	return key, true
+}
+
+func directClosePolicy(body []byte) (string, error) {
+	policy := "graceful"
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return policy, nil
+	}
+	if _, err := domain.CanonicalizeMutationRequestJSON("close_session", body, domain.CanonicalizationOptions{}); err != nil {
+		return "", err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var input struct {
+		Policy json.RawMessage `json:"policy,omitempty"`
+	}
+	if err := decoder.Decode(&input); err != nil {
+		return "", err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return "", errors.New("close policy body must contain one JSON value")
+	}
+	if len(input.Policy) == 0 {
+		return policy, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(input.Policy), []byte("null")) {
+		return "", errors.New("close policy must be a string")
+	}
+	if err := json.Unmarshal(input.Policy, &policy); err != nil {
+		return "", err
+	}
+	policy = strings.TrimSpace(policy)
+	if policy == "" || strings.IndexByte(policy, 0) >= 0 {
+		return "", errors.New("close policy must be nonempty")
+	}
+	return policy, nil
+}
+
+func directCancellationRequestHash(commandID domain.CommandID) (domain.CanonicalHash, error) {
+	payload, err := json.Marshal(struct {
+		Operation string `json:"operation"`
+		CommandID string `json:"command_id"`
+	}{Operation: "cancel_command", CommandID: string(commandID)})
+	if err != nil {
+		return domain.CanonicalHash{}, err
+	}
+	canonical, err := domain.CanonicalizeMutationRequestJSON("cancel_command", payload, domain.CanonicalizationOptions{})
+	if err != nil {
+		return domain.CanonicalHash{}, err
+	}
+	return domain.HashMutationRequestJSON("cancel_command", canonical, domain.CanonicalizationOptions{})
+}
+
+func directCloseRequestHash(sessionID domain.SessionID, policy string) (domain.CanonicalHash, error) {
+	payload, err := json.Marshal(struct {
+		Operation string `json:"operation"`
+		SessionID string `json:"session_id"`
+		Policy    string `json:"policy"`
+	}{Operation: "close_session", SessionID: string(sessionID), Policy: policy})
+	if err != nil {
+		return domain.CanonicalHash{}, err
+	}
+	canonical, err := domain.CanonicalizeMutationRequestJSON("close_session", payload, domain.CanonicalizationOptions{})
+	if err != nil {
+		return domain.CanonicalHash{}, err
+	}
+	return domain.HashMutationRequestJSON("close_session", canonical, domain.CanonicalizationOptions{})
 }
 
 func decodeOptionalDirectObject[T any](raw json.RawMessage) (*T, error) {
@@ -618,6 +829,20 @@ func directCommandIDFromPath(requestURL *url.URL) (domain.CommandID, error) {
 	return domain.NewCommandID(idText)
 }
 
+func directCommandCancelIDFromPath(requestURL *url.URL) (domain.CommandID, error) {
+	const prefix = "/v1/commands/"
+	const suffix = "/cancel"
+	if requestURL == nil || !strings.HasPrefix(requestURL.Path, prefix) || !strings.HasSuffix(requestURL.Path, suffix) {
+		return "", errors.New("command cancellation path is invalid")
+	}
+	rawID := strings.TrimSuffix(strings.TrimPrefix(requestURL.EscapedPath(), prefix), suffix)
+	idText, err := url.PathUnescape(rawID)
+	if err != nil || idText == "" || strings.Contains(idText, "/") {
+		return "", errors.New("command cancellation path ID is invalid")
+	}
+	return domain.NewCommandID(idText)
+}
+
 func directSessionAcceptanceFromRecord(record store.SessionRecord) directSessionAcceptance {
 	return directSessionAcceptance{
 		ResourceID:      string(record.SessionID),
@@ -670,7 +895,7 @@ func directCommandError(err error) (int, string, string) {
 		return http.StatusNotFound, "resource_not_found", "session or command not found"
 	case errors.Is(err, execution.ErrSessionController):
 		return http.StatusForbidden, "controller_mismatch", "resource belongs to another controller"
-	case errors.Is(err, execution.ErrSessionNotReady):
+	case errors.Is(err, execution.ErrSessionNotReady), errors.Is(err, execution.ErrCommandNotReady):
 		return http.StatusUnprocessableEntity, "session_not_ready", "session is not ready to accept commands"
 	case errors.Is(err, store.ErrIdempotencyConflict):
 		return http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for a different request"

@@ -57,13 +57,16 @@
       "delete": {
         "operationId": "closeSession",
         "summary": "Request session close",
-        "description": "Closes through the same ingress/controller that created the session. A response acknowledges the close request; it does not claim teardown is complete.",
+        "description": "Closes through the same ingress/controller that created the session. The optional policy defaults to graceful. A response acknowledges the close request and reports the currently known session state.",
         "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "$ref": "#/components/requestBodies/CloseSession" },
         "responses": {
           "202": { "$ref": "#/components/responses/CloseAccepted" },
+          "400": { "$ref": "#/components/responses/InvalidRequest" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/InvalidRequest" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
@@ -125,9 +128,11 @@
         "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
         "responses": {
           "202": { "$ref": "#/components/responses/CommandAccepted" },
+          "400": { "$ref": "#/components/responses/InvalidRequest" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/InvalidRequest" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
@@ -173,6 +178,7 @@
     "requestBodies": {
       "CreateSession": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateSessionRequest" } } } },
       "SubmitCommand": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmitCommandRequest" } } } },
+      "CloseSession": { "required": false, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CloseSessionRequest" } } } },
       "CreateJob": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateJobRequest" } } } }
     },
     "responses": {
@@ -221,6 +227,11 @@
         "type": "object",
         "properties": { "script": { "type": "string", "description": "UTF-8 shell script; at most 131072 UTF-8 bytes.", "x-runner-max-utf8-bytes": 131072 }, "timeout_seconds": { "type": "integer", "minimum": 1 } },
         "required": ["script"],
+        "additionalProperties": false
+      },
+      "CloseSessionRequest": {
+        "type": "object",
+        "properties": { "policy": { "type": "string", "minLength": 1, "description": "Close policy included in the idempotency request hash. Defaults to graceful when omitted." } },
         "additionalProperties": false
       },
       "CreateJobRequest": {

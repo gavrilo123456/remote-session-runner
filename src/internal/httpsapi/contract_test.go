@@ -325,6 +325,40 @@ func TestP003OpenAPIRoutesAndSecurity(t *testing.T) {
 		t.Fatal("submit command schema must reject any target override")
 	}
 
+	closeSession := p003OperationAt(t, document, "delete", "/v1/sessions/{session_id}")
+	closeBodyValue, hasCloseBody := closeSession["requestBody"]
+	if !hasCloseBody {
+		t.Fatal("close session must document its optional policy request body")
+	}
+	closeBody := p003Object(t, p003Ref(t, document, p003Object(t, closeBodyValue, "close requestBody")), "close request body component")
+	if closeBody["required"] != false {
+		t.Fatalf("close policy body required = %v, want optional", closeBody["required"])
+	}
+	closeBodyContent := p003Object(t, closeBody["content"], "close request body content")
+	closeJSON := p003Object(t, closeBodyContent["application/json"], "close request application/json")
+	closeSchemaRef := p003Object(t, closeJSON["schema"], "close request schema")
+	if closeSchemaRef["$ref"] != "#/components/schemas/CloseSessionRequest" {
+		t.Fatalf("close request schema ref = %v, want CloseSessionRequest", closeSchemaRef["$ref"])
+	}
+	closeSchema := p003Object(t, p003At(t, document, closeSchemaRef["$ref"].(string)), "CloseSessionRequest schema")
+	closeProperties := p003Object(t, closeSchema["properties"], "close request properties")
+	policySchema := p003Object(t, closeProperties["policy"], "close policy schema")
+	if policySchema["type"] != "string" || closeSchema["additionalProperties"] != false {
+		t.Fatalf("close policy schema must be a string and reject unknown fields: %#v", closeSchema)
+	}
+	closePolicyValidator := p003CompileRef(t, p003CompileSchemas(t, document), "#/components/schemas/CloseSessionRequest")
+	for _, valid := range []any{map[string]any{}, map[string]any{"policy": "graceful"}} {
+		if err := closePolicyValidator.Validate(valid); err != nil {
+			t.Errorf("valid optional close policy rejected: %v", err)
+		}
+	}
+	if err := closePolicyValidator.Validate(map[string]any{"policy": nil}); err == nil {
+		t.Error("null close policy unexpectedly passed the schema")
+	}
+	if err := closePolicyValidator.Validate(map[string]any{"policy": "graceful", "controller": map[string]any{}}); err == nil {
+		t.Error("close policy schema unexpectedly accepts controller override")
+	}
+
 	events := p003OperationAt(t, document, "get", "/v1/commands/{command_id}/events")
 	eventResponses := p003Object(t, events["responses"], "event responses")
 	if _, ok := eventResponses["410"]; !ok {
