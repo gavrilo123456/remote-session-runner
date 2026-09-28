@@ -17,7 +17,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown vet build smoke check
+.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -127,6 +127,26 @@ test-p125-macos-services: check-go
 # Real Mac launchd process gate for graceful drain, audit/event persistence, and cursor resume.
 test-p131-macos-shutdown: check-go
 	@GO='$(GO)' deploy/macos/test-graceful-shutdown.sh
+
+# Real Ubuntu systemd graceful shutdown with a live host-process command.
+# The test runs on the Mac using the selected public mTLS identity and pinned
+# Ubuntu inspection key; Ubuntu source is consumed only after Git fast-forward.
+test-p132-linux-shutdown: check-go
+	@set -eu; \
+	: "$${RUNNER_P117_SERVER_CA:?set RUNNER_P117_SERVER_CA}"; \
+	: "$${RUNNER_P117_CLIENT_CERT:?set RUNNER_P117_CLIENT_CERT}"; \
+	: "$${RUNNER_P117_CLIENT_KEY:?set RUNNER_P117_CLIENT_KEY}"; \
+	: "$${RUNNER_P124_INSPECT_SSH_IDENTITY:?set RUNNER_P124_INSPECT_SSH_IDENTITY}"; \
+	: "$${RUNNER_P124_SSH_KNOWN_HOSTS:?set RUNNER_P124_SSH_KNOWN_HOSTS}"; \
+	RSR_P132_HOST_GATE=1 RSR_P132_EXPECTED_COMMIT=$$(git rev-parse HEAD) GOTOOLCHAIN=local "$(GO)" test -tags=p117twohost ./src/internal/runnerd -run '^TestP132LinuxGracefulShutdownProcessHost$$' -count=1 -v
+
+# Bounded read-only Runner state capture while runnerd.service is stopped.
+test-p132-host-read: check-go
+	@set -eu; \
+	: "$${RSR_P132_HOST_SESSION_ID:?set RSR_P132_HOST_SESSION_ID}"; \
+	: "$${RSR_P132_HOST_COMMAND_ID:?set RSR_P132_HOST_COMMAND_ID}"; \
+	: "$${RSR_P132_HOST_AUDIT_AFTER_ID:?set RSR_P132_HOST_AUDIT_AFTER_ID}"; \
+	RSR_P132_HOST_READ=1 GOTOOLCHAIN=local "$(GO)" test -tags=p132hostreader ./src/internal/store -run '^TestP132UbuntuHostCommandReader$$' -count=1 -v
 
 # Real Ubuntu systemd lifecycle and owner-only service-path gate.
 test-p126-linux-services: check-go

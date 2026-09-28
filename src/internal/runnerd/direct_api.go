@@ -19,6 +19,7 @@ import (
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/lifecycle"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 )
@@ -27,6 +28,8 @@ var ErrDirectHTTPSAPIConfiguration = errors.New("direct HTTPS API configuration 
 
 type directHTTPSAPI struct {
 	service        *execution.Service
+	requestGate    *lifecycle.Gate
+	dispatchGate   *lifecycle.Gate
 	maxBodyBytes   int64
 	allocateRunIDs func() (domain.JobID, domain.SessionID, domain.CommandID, error)
 }
@@ -197,10 +200,17 @@ type directEventHistoryError struct {
 // NewDirectHTTPSAPIHandler creates the public v1 session and job routes over
 // the same authoritative service used by runnerd's private API and SSH bridge.
 func NewDirectHTTPSAPIHandler(service *execution.Service) (http.Handler, error) {
+	return newDirectHTTPSAPIHandler(service, nil, nil)
+}
+
+func newDirectHTTPSAPIHandler(service *execution.Service, requestGate, dispatchGate *lifecycle.Gate) (http.Handler, error) {
 	if service == nil {
 		return nil, ErrDirectHTTPSAPIConfiguration
 	}
-	return &directHTTPSAPI{service: service, maxBodyBytes: domain.MaxSerializedRequestBytes, allocateRunIDs: newDirectRunIDs}, nil
+	return &directHTTPSAPI{
+		service: service, requestGate: requestGate, dispatchGate: dispatchGate,
+		maxBodyBytes: domain.MaxSerializedRequestBytes, allocateRunIDs: newDirectRunIDs,
+	}, nil
 }
 
 func (s *directHTTPSAPI) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -208,6 +218,13 @@ func (s *directHTTPSAPI) ServeHTTP(response http.ResponseWriter, request *http.R
 		writeDirectError(response, http.StatusBadRequest, "invalid_request", "request URL is required")
 		return
 	}
+	release, admitted := admitRunnerRequest(s.requestGate, request.URL.Path, request.Method, func() {
+		writeDirectError(response, http.StatusServiceUnavailable, "shutting_down", "runnerd is shutting down")
+	})
+	if !admitted {
+		return
+	}
+	defer release()
 	request = request.WithContext(audit.WithIngress(request.Context(), audit.IngressDirectMTLS))
 	if request.URL.Path == "/v1/sessions" {
 		if request.Method != http.MethodPost {
@@ -755,9 +772,9 @@ func (s *directHTTPSAPI) handleSubmitCommand(response http.ResponseWriter, reque
 	if result.Command.State == domain.CommandStateQueued {
 		acceptedID := result.Command.CommandID
 		controller := principal.Controller
-		go func() {
+		launchRunnerWork(s.dispatchGate, func() {
 			_, _ = s.service.ResumeCommand(context.Background(), acceptedID, controller)
-		}()
+		})
 	}
 	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target, result.IdempotencyWarning))
 }

@@ -36,9 +36,12 @@ sudo systemctl restart runnerd.service
 sudo systemctl stop runnerd.service
 ```
 
-SIGTERM closes the HTTP listeners and removes the runnerd-owned Unix socket so
-systemd can restart cleanly. The lifecycle smoke uses an idle service; it does
-not prove safe shutdown of active sessions or commands. P130/P132 add the
-shared command drain/cancellation coordinator. Forced-command SSH setup is
+SIGTERM closes admission on both APIs, waits for accepted requests and command
+dispatch, closes any remaining Linux sessions through the normal runtime stop
+path, verifies the durable audit/operational tail, then closes event followers
+and removes the runnerd-owned Unix socket. The coordinator allows an 8-second
+drain and up to 4 seconds for each cleanup stage; `TimeoutStopSec=30s` leaves
+systemd time to finish the process-group cleanup. The P132 host gate exercises
+this path with an active command. Forced-command SSH setup is
 documented in [the SSH deployment guide](../ssh/README.md), and must use this
 active service's private socket.

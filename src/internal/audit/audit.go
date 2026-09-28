@@ -23,12 +23,14 @@ const (
 type Ingress string
 
 const (
-	IngressLocalUnix    Ingress = "local_unix"
-	IngressMailbox      Ingress = "mailbox"
-	IngressLocalWorker  Ingress = "local_executor"
-	IngressSSHBridge    Ingress = "ssh_bridge"
-	IngressDirectMTLS   Ingress = "direct_mtls"
-	IngressInternalTest Ingress = "internal"
+	IngressLocalUnix        Ingress = "local_unix"
+	IngressMailbox          Ingress = "mailbox"
+	IngressLocalWorker      Ingress = "local_executor"
+	IngressSSHBridge        Ingress = "ssh_bridge"
+	IngressDirectMTLS       Ingress = "direct_mtls"
+	IngressInternal         Ingress = "internal"
+	IngressServiceLifecycle Ingress = IngressInternal
+	IngressInternalTest     Ingress = IngressInternal
 )
 
 type Action string
@@ -145,7 +147,7 @@ func (record Record) Validate() error {
 		return fmt.Errorf("%w: principal", ErrInvalidRecord)
 	}
 	switch record.Ingress {
-	case IngressLocalUnix, IngressMailbox, IngressLocalWorker, IngressSSHBridge, IngressDirectMTLS, IngressInternalTest:
+	case IngressLocalUnix, IngressMailbox, IngressLocalWorker, IngressSSHBridge, IngressDirectMTLS, IngressInternal:
 	default:
 		return fmt.Errorf("%w: ingress", ErrInvalidRecord)
 	}

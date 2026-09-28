@@ -26,6 +26,7 @@ import (
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 )
@@ -50,18 +51,24 @@ type PrivateServerOptions struct {
 	SocketPath   string
 	MaxBodyBytes int64
 	HealthReport func(context.Context) opshealth.Report
+	RequestGate  *lifecycle.Gate
+	DispatchGate *lifecycle.Gate
 }
 
 // PrivateServer serves only the P046 create/read session subset.
 type PrivateServer struct {
-	service      *execution.Service
-	socketPath   string
-	maxBodyBytes int64
-	httpServer   *http.Server
-	listener     net.Listener
-	mu           sync.Mutex
-	closed       bool
-	healthReport func(context.Context) opshealth.Report
+	service       *execution.Service
+	socketPath    string
+	maxBodyBytes  int64
+	httpServer    *http.Server
+	listener      net.Listener
+	mu            sync.Mutex
+	closed        bool
+	socketCreated bool
+	socketInfo    os.FileInfo
+	requestGate   *lifecycle.Gate
+	dispatchGate  *lifecycle.Gate
+	healthReport  func(context.Context) opshealth.Report
 }
 
 // NewPrivateServer validates the owner-only socket location but does not
@@ -81,6 +88,8 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 		socketPath:   options.SocketPath,
 		maxBodyBytes: options.MaxBodyBytes,
 		httpServer:   &http.Server{Handler: nil},
+		requestGate:  options.RequestGate,
+		dispatchGate: options.DispatchGate,
 		healthReport: options.HealthReport,
 	}, nil
 }
@@ -113,12 +122,27 @@ func (s *PrivateServer) Listen() error {
 	if err != nil {
 		return fmt.Errorf("%w: listen: %v", ErrPrivateSocketPath, err)
 	}
+	unixListener, ok := listener.(*net.UnixListener)
+	if !ok {
+		_ = listener.Close()
+		return fmt.Errorf("%w: listener is not a Unix socket", ErrPrivateSocketPath)
+	}
+	unixListener.SetUnlinkOnClose(false)
+	socketInfo, err := os.Lstat(s.socketPath)
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("%w: inspect newly created socket: %v", ErrPrivateSocketPath, err)
+	}
 	if err := os.Chmod(s.socketPath, 0o600); err != nil {
 		_ = listener.Close()
-		_ = os.Remove(s.socketPath)
+		if current, statErr := os.Lstat(s.socketPath); statErr == nil && os.SameFile(socketInfo, current) {
+			_ = os.Remove(s.socketPath)
+		}
 		return fmt.Errorf("%w: chmod socket: %v", ErrPrivateSocketPath, err)
 	}
 	s.listener = listener
+	s.socketCreated = true
+	s.socketInfo = socketInfo
 	s.httpServer.Handler = http.HandlerFunc(s.serveHTTP)
 	return nil
 }
@@ -149,30 +173,78 @@ func (s *PrivateServer) Close(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stopErr := s.StopAccepting()
+	shutdownErr := s.httpServer.Shutdown(ctx)
+	return errors.Join(stopErr, shutdownErr, s.CloseStreams())
+}
+
+// StopAccepting closes the private listener while preserving active handlers
+// and event followers for the bounded drain and durable flush stages.
+func (s *PrivateServer) StopAccepting() error {
+	if s == nil {
+		return nil
+	}
+	s.httpServer.SetKeepAlivesEnabled(false)
+	s.mu.Lock()
+	listener := s.listener
+	s.mu.Unlock()
+	if listener == nil {
+		return nil
+	}
+	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("stop runnerd private listener: %w", err)
+	}
+	return nil
+}
+
+// CloseStreams ends remaining HTTP followers after event/audit state is
+// durable, closes the listener, and removes only the Unix socket this server
+// successfully created.
+func (s *PrivateServer) CloseStreams() error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
-	httpServer := s.httpServer
 	listener := s.listener
+	socketCreated := s.socketCreated
+	socketInfo := s.socketInfo
+	s.socketCreated = false
+	s.socketInfo = nil
 	s.mu.Unlock()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	shutdownErr := httpServer.Shutdown(ctx)
+	var closeErr error
 	if listener != nil {
-		_ = listener.Close()
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			closeErr = err
+		}
 	}
-	removeErr := os.Remove(s.socketPath)
-	if errors.Is(removeErr, os.ErrNotExist) {
-		removeErr = nil
+	if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		closeErr = errors.Join(closeErr, err)
 	}
-	if shutdownErr != nil {
-		return shutdownErr
+	if !socketCreated {
+		return closeErr
 	}
-	return removeErr
+	info, err := os.Lstat(s.socketPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return closeErr
+	}
+	if err != nil {
+		return errors.Join(closeErr, fmt.Errorf("inspect runnerd socket during shutdown: %w", err))
+	}
+	if info.Mode()&os.ModeSocket == 0 || socketInfo == nil || !os.SameFile(socketInfo, info) {
+		return errors.Join(closeErr, fmt.Errorf("refuse to remove replaced runnerd socket path %q", s.socketPath))
+	}
+	if err := os.Remove(s.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		closeErr = errors.Join(closeErr, fmt.Errorf("remove runnerd socket: %w", err))
+	}
+	return closeErr
 }
 
 func validatePrivateSocketPath(path string) error {
@@ -267,6 +339,13 @@ type sourceResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	release, admitted := admitRunnerRequest(s.requestGate, request.URL.Path, request.Method, func() {
+		writePrivateError(response, http.StatusServiceUnavailable, "runnerd is shutting down")
+	})
+	if !admitted {
+		return
+	}
+	defer release()
 	if opshealth.ServeHealth("linux_runnerd", response, request, s.currentHealthReport) {
 		return
 	}
@@ -527,9 +606,9 @@ func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, reques
 		return
 	}
 	if result.Command.State == domain.CommandStateQueued {
-		go func() {
+		launchRunnerWork(s.dispatchGate, func() {
 			_, _ = s.service.ResumeCommand(context.Background(), result.Command.CommandID, controller)
-		}()
+		})
 	}
 	writeJSON(response, http.StatusAccepted, commandResponseFromRecord(result.Command, result.Duplicate))
 }

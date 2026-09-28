@@ -190,6 +190,39 @@ func (s *DirectHTTPSServer) Close(ctx context.Context) error {
 	if s == nil || s.server == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stopErr := s.StopAccepting()
+	shutdownErr := s.server.Shutdown(ctx)
+	return errors.Join(stopErr, shutdownErr, s.CloseStreams())
+}
+
+// StopAccepting closes the HTTPS listener but leaves active handlers and
+// followers open for the bounded drain and durable flush stages.
+func (s *DirectHTTPSServer) StopAccepting() error {
+	if s == nil || s.server == nil {
+		return nil
+	}
+	s.server.SetKeepAlivesEnabled(false)
+	s.mu.Lock()
+	listener := s.listener
+	s.mu.Unlock()
+	if listener == nil {
+		return nil
+	}
+	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("stop direct HTTPS listener: %w", err)
+	}
+	return nil
+}
+
+// CloseStreams force-closes the remaining HTTP streams after durable state
+// has been verified.
+func (s *DirectHTTPSServer) CloseStreams() error {
+	if s == nil || s.server == nil {
+		return nil
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -198,17 +231,16 @@ func (s *DirectHTTPSServer) Close(ctx context.Context) error {
 	s.closed = true
 	listener := s.listener
 	s.mu.Unlock()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	err := s.server.Shutdown(ctx)
+	var closeErr error
 	if listener != nil {
-		_ = listener.Close()
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			closeErr = err
+		}
 	}
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+	if err := s.server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		closeErr = errors.Join(closeErr, err)
 	}
-	return err
+	return closeErr
 }
 
 func loadPrincipalMap(path string) (map[string]domain.ControllerIdentity, error) {
