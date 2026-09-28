@@ -124,11 +124,7 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	localdRoot := filepath.Join(t.TempDir(), "locald")
-	if err := os.Mkdir(localdRoot, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	localdSocket := filepath.Join(localdRoot, "locald.sock")
+	localdSocket := filepath.Join(filepath.Dir(localAPISocket), "locald.sock")
 	locald, err := runnerlocald.NewPrivateServer(runnerlocald.PrivateServerOptions{
 		Authority: h.authority, Service: localService, Owner: owner, SocketPath: localdSocket,
 	})
@@ -530,6 +526,12 @@ func p124PrepareLocalAPISocket(t *testing.T) (string, func()) {
 		t.Fatalf("refusing to replace existing local API path %s", socket)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("inspect local API socket path: %v", err)
+	}
+	localdSocket := filepath.Join(runDir, "locald.sock")
+	if _, err := os.Lstat(localdSocket); err == nil {
+		t.Fatalf("refusing to replace existing locald path %s", localdSocket)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inspect locald socket path: %v", err)
 	}
 	return socket, func() {
 		if created {
