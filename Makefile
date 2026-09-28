@@ -12,7 +12,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-twohost vet build smoke check
+.PHONY: check-go test test-twohost test-p123-twohost vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -42,6 +42,19 @@ test-twohost: check-go
 	: "$${RUNNER_P117_UNMAPPED_CLIENT_CERT:?set RUNNER_P117_UNMAPPED_CLIENT_CERT}"; \
 	: "$${RUNNER_P117_UNMAPPED_CLIENT_KEY:?set RUNNER_P117_UNMAPPED_CLIENT_KEY}"; \
 	GOTOOLCHAIN=local "$(GO)" test -tags=p117twohost ./src/internal/runnerd -run '^TestP117PublicEndpointPNET02$$' -count=1 -v
+
+# Real Mac/Ubuntu disconnect and durable-cursor replay gate. Credentials and
+# the temporary Ubuntu runner/forced-command fixture are provisioned outside
+# Git; the two test packages run sequentially against the same Linux authority.
+test-p123-twohost: check-go
+	@set -eu; \
+	: "$${RUNNER_P123_SERVER_CA:?set RUNNER_P123_SERVER_CA to the trusted server CA file}"; \
+	: "$${RUNNER_P123_CLIENT_CERT:?set RUNNER_P123_CLIENT_CERT}"; \
+	: "$${RUNNER_P123_CLIENT_KEY:?set RUNNER_P123_CLIENT_KEY}"; \
+	: "$${RUNNER_P123_SSH_IDENTITY:?set RUNNER_P123_SSH_IDENTITY to the dedicated dispatcher key}"; \
+	: "$${RUNNER_P123_SSH_KNOWN_HOSTS:?set RUNNER_P123_SSH_KNOWN_HOSTS to the pinned host file}"; \
+	RSR_P123_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test -tags=p123twohost ./src/internal/runnerd -run '^TestP123DirectDisconnectReplaysWithoutRerun$$' -count=1 -v; \
+	RSR_P123_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test -tags=p123twohost ./src/internal/localapi -run '^TestP123QueuedProjectionReconcilesAfterSSHOutage$$' -count=1 -v
 
 vet: check-go
 	GOTOOLCHAIN=local "$(GO)" vet ./...
