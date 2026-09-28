@@ -26,7 +26,7 @@ func (d *RemoteDriver) upsertRemoteProjectionFromReply(ctx context.Context, inte
 	if err := decoder.Decode(&object); err != nil || object == nil {
 		return fmt.Errorf("%w: projection result object", ErrRemoteResponse)
 	}
-	if intent.Operation == operationCreateSession {
+	if intent.Operation == operationCreateSession || intent.Operation == operationCloseSession {
 		projection, present, err := remoteSessionProjectionFromReply(intent, object, d.now())
 		if err != nil || !present {
 			return err

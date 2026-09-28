@@ -56,6 +56,18 @@ func TestP124RefreshSessionProjectionReadsCurrentAuthorityState(t *testing.T) {
 	if err := json.Unmarshal(decoded.Payload, &payload); err != nil || payload.SessionID != string(create.SessionID) {
 		t.Fatalf("session refresh payload=%+v err=%v", payload, err)
 	}
+
+	closeIntent := p073CloseIntent(t, "intent-p124-close-projection", create)
+	if _, err := authority.CreateLocalIntent(ctx, closeIntent); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := driver.DispatchIntent(ctx, closeIntent.IntentID); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := authority.GetRemoteSessionProjection(ctx, create.SessionID)
+	if err != nil || closed.State != domain.SessionStateClosed || closed.IsStale {
+		t.Fatalf("close response projection=%+v err=%v, want current closed state", closed, err)
+	}
 }
 
 type p124SessionProjectionCaller struct {
@@ -77,6 +89,9 @@ func (c *p124SessionProjectionCaller) Call(_ context.Context, frame sshbridge.Re
 		sessionID = payload.SessionID
 		state = string(domain.SessionStateReady)
 		observedAt = "2026-09-27T13:11:00Z"
+	} else if frame.Operation == sshbridge.OperationCloseSession {
+		state = string(domain.SessionStateClosed)
+		observedAt = "2026-09-27T13:12:00Z"
 	}
 	resultFields := map[string]any{
 		"session_id": sessionID, "session_state": state,
