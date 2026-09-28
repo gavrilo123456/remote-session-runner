@@ -97,8 +97,19 @@ func TestP128MacIngressAcceptsDurableIntentDuringRemoteOutage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := testfixture.New(t)
-	runDir := filepath.Join(root.Path(), "run")
+	apiRoot, err := os.MkdirTemp("/private/tmp", "p128-api-")
+	if err != nil {
+		t.Fatalf("create short-path Mac API fixture root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(apiRoot); err != nil {
+			t.Errorf("remove short-path Mac API fixture root: %v", err)
+		}
+	})
+	if err := os.Chmod(apiRoot, 0o700); err != nil {
+		t.Fatalf("set Mac API fixture root to owner-only mode: %v", err)
+	}
+	runDir := filepath.Join(apiRoot, "run")
 	if err := os.Mkdir(runDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
