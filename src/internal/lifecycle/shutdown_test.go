@@ -130,6 +130,18 @@ func TestP130GateStopsAdmissionAndWaitsForExistingWork(t *testing.T) {
 	}
 }
 
+func TestP131StoppingIdleGateIsIdempotent(t *testing.T) {
+	gate := NewGate()
+	gate.Stop()
+	gate.Stop()
+	if err := gate.Wait(context.Background()); err != nil {
+		t.Fatalf("wait on stopped idle gate: %v", err)
+	}
+	if _, err := gate.Enter(); !errors.Is(err, ErrAdmissionClosed) {
+		t.Fatalf("admission after stop = %v, want ErrAdmissionClosed", err)
+	}
+}
+
 func TestP130ShutdownIsIdempotent(t *testing.T) {
 	runtime := &p130FakeRuntime{}
 	coordinator := p130Coordinator(t, runtime, RealClock{}, Config{DrainTimeout: time.Second, CleanupTimeout: time.Second})

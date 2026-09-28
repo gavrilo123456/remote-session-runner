@@ -74,9 +74,6 @@ func (g *Gate) Stop() {
 		return
 	}
 	g.stopped = true
-	if g.active == 0 {
-		close(g.idle)
-	}
 }
 
 // Wait closes the gate and waits for all admitted work to finish.

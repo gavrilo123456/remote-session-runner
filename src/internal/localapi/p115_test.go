@@ -104,6 +104,71 @@ func TestP115I03LocalAuthorityFollowHandoffAndOverflowResume(t *testing.T) {
 	})
 }
 
+func TestP131LocalAuthorityFollowObservesCommitsFromSeparateStore(t *testing.T) {
+	_, authority, database, client := p063Server(t)
+	otherAuthority, err := store.NewAuthorityStore(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := p064CreateSession(t, client, `{"environment":"mac-dev","execution_target":{"kind":"local","profile":"mac-workstation"}}`, "p131-cross-store-session")
+	commandID := p065CreateAuthoritativeRunningCommand(t, client, authority, sessionID, "p131-cross-store-command", "printf p131")
+	initial, err := authority.ReplayCommandEvents(context.Background(), domain.CommandID(commandID), 0)
+	if err != nil || len(initial) == 0 {
+		t.Fatalf("read initial command events: events=%+v err=%v", initial, err)
+	}
+	cursor := initial[len(initial)-1].Sequence
+
+	followContext, cancelFollow := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFollow()
+	request, err := http.NewRequestWithContext(followContext, http.MethodGet,
+		"http://local/v1/commands/"+commandID+"/events?after="+strconv.FormatInt(cursor, 10)+"&follow=true", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("open local authority follower before cross-store commit: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		t.Fatalf("cross-store follow status=%d body=%s", response.StatusCode, body)
+	}
+	type bodyResult struct {
+		body []byte
+		err  error
+	}
+	bodyDone := make(chan bodyResult, 1)
+	go func() {
+		body, readErr := io.ReadAll(response.Body)
+		bodyDone <- bodyResult{body: body, err: readErr}
+	}()
+
+	p115AppendAuthorityEvent(t, otherAuthority, commandID, "stdout", []byte("separate store handle\n"))
+	if _, err := otherAuthority.CompleteRunningCommand(context.Background(), store.CommandTransition{
+		CommandID: domain.CommandID(commandID), NextState: domain.CommandStateSucceeded, ExitCode: p115Int(0), OutputComplete: true,
+	}, domain.SessionStateReady, "P131 cross-store commit", false); err != nil {
+		t.Fatal(err)
+	}
+	var result bodyResult
+	select {
+	case result = <-bodyDone:
+	case <-followContext.Done():
+		_ = response.Body.Close()
+		t.Fatalf("local follower did not observe separate-store events: %v", followContext.Err())
+	}
+	if closeErr := response.Body.Close(); result.err != nil || closeErr != nil {
+		t.Fatalf("read cross-store event response: read=%v close=%v", result.err, closeErr)
+	}
+	events := p115DecodeEvents(t, result.body)
+	if len(events) != 2 || events[0].Sequence != cursor+1 || events[0].Type != "stdout" || events[1].Sequence != cursor+2 || events[1].Type != "command_succeeded" {
+		t.Fatalf("cross-store follow events=%+v, want stdout and terminal after cursor %d", events, cursor)
+	}
+	if response.Trailer.Get(localAPIEventLastSequenceHeader) != strconv.FormatInt(cursor+2, 10) {
+		t.Fatalf("cross-store final cursor=%q, want %d", response.Trailer.Get(localAPIEventLastSequenceHeader), cursor+2)
+	}
+}
+
 func TestP115I03QueuedRemoteMirrorHandoffAndSlowReader(t *testing.T) {
 	server, authority, _, client := p063Server(t)
 	sessionID := p064CreateSession(t, client, `{"environment":"linux-dev","execution_target":{"kind":"remote","profile":"linux-host"}}`, "p115-remote-handoff-session")

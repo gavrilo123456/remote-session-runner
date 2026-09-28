@@ -17,11 +17,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 )
@@ -29,6 +31,11 @@ import (
 const DefaultMaxBodyBytes int64 = domain.MaxSerializedRequestBytes
 
 const localAPIEventLastSequenceHeader = "X-Runner-Last-Sequence"
+
+const (
+	localAPIEventFollowPollInterval = 100 * time.Millisecond
+	localAPIEventFollowReplayLimit  = 256
+)
 
 var (
 	ErrConfiguration = errors.New("local API configuration is invalid")
@@ -47,14 +54,17 @@ type ServerOptions struct {
 
 // Server is the Mac-local HTTP/JSON adapter over an owner-only Unix socket.
 type Server struct {
-	authority    *store.AuthorityStore
-	owner        domain.ControllerIdentity
-	socketPath   string
-	maxBodyBytes int64
-	httpServer   *http.Server
-	listener     net.Listener
-	closed       bool
-	healthReport func(context.Context) opshealth.Report
+	authority      *store.AuthorityStore
+	owner          domain.ControllerIdentity
+	socketPath     string
+	maxBodyBytes   int64
+	httpServer     *http.Server
+	listener       net.Listener
+	requestGate    *lifecycle.Gate
+	cancelRequests context.CancelFunc
+	mu             sync.Mutex
+	closed         bool
+	healthReport   func(context.Context) opshealth.Report
 }
 
 func NewServer(options ServerOptions) (*Server, error) {
@@ -81,13 +91,18 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if options.MaxBodyBytes > domain.MaxSerializedRequestBytes {
 		return nil, fmt.Errorf("%w: body limit exceeds shared request ceiling", ErrConfiguration)
 	}
+	requestContext, cancelRequests := context.WithCancel(context.Background())
 	return &Server{
 		authority:    options.Authority,
 		owner:        owner,
 		socketPath:   options.SocketPath,
 		maxBodyBytes: options.MaxBodyBytes,
-		httpServer:   &http.Server{},
-		healthReport: options.HealthReport,
+		httpServer: &http.Server{BaseContext: func(net.Listener) context.Context {
+			return requestContext
+		}},
+		requestGate:    lifecycle.NewGate(),
+		cancelRequests: cancelRequests,
+		healthReport:   options.HealthReport,
 	}, nil
 }
 
@@ -135,26 +150,95 @@ func (s *Server) Serve() error {
 	return err
 }
 
-func (s *Server) Close(ctx context.Context) error {
-	if s == nil || s.closed {
+// StopAccepting rejects new API requests and closes the Unix listener. Event
+// followers already connected remain open until CloseStreams so their
+// consumers can resume from the last sequence they received.
+func (s *Server) StopAccepting() error {
+	if s == nil {
+		return ErrConfiguration
+	}
+	if s.requestGate != nil {
+		s.requestGate.Stop()
+	}
+	s.mu.Lock()
+	listener := s.listener
+	s.mu.Unlock()
+	if listener == nil {
+		return nil
+	}
+	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("stop local API listener: %w", err)
+	}
+	return nil
+}
+
+// Drain waits for already admitted non-stream requests to finish. Long-lived
+// event followers are deliberately closed only after durable writers flush.
+func (s *Server) Drain(ctx context.Context) error {
+	if s == nil || s.requestGate == nil {
+		return ErrConfiguration
+	}
+	return s.requestGate.Wait(ctx)
+}
+
+// Flush verifies that the SQLite authority remains readable after all
+// accepted request handlers have returned. Event and audit writes use
+// synchronous committed transactions; there is no in-memory write queue.
+func (s *Server) Flush(ctx context.Context) error {
+	if s == nil || s.authority == nil {
+		return ErrConfiguration
+	}
+	_, err := s.authority.ListAuditRecords(ctx, 1)
+	return err
+}
+
+// CancelRequests cancels active non-stream handlers after a drain deadline so
+// their request-scoped database work can stop before the final flush.
+func (s *Server) CancelRequests() {
+	if s != nil && s.cancelRequests != nil {
+		s.cancelRequests()
+	}
+}
+
+// CloseStreams closes active HTTP streams and removes the owned socket path.
+func (s *Server) CloseStreams() error {
+	if s == nil {
+		return ErrConfiguration
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
-	if ctx == nil {
-		ctx = context.Background()
+	listener := s.listener
+	s.mu.Unlock()
+	s.CancelRequests()
+
+	var closeErr error
+	if listener != nil {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			closeErr = err
+		}
 	}
-	shutdownErr := s.httpServer.Shutdown(ctx)
-	if s.listener != nil {
-		_ = s.listener.Close()
+	if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		closeErr = errors.Join(closeErr, err)
 	}
 	removeErr := os.Remove(s.socketPath)
 	if errors.Is(removeErr, os.ErrNotExist) {
 		removeErr = nil
 	}
-	if shutdownErr != nil {
-		return shutdownErr
+	return errors.Join(closeErr, removeErr)
+}
+
+func (s *Server) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return removeErr
+	stopErr := s.StopAccepting()
+	drainErr := s.Drain(ctx)
+	closeErr := s.CloseStreams()
+	return errors.Join(stopErr, drainErr, closeErr)
 }
 
 type createSessionRequest struct {
@@ -264,6 +348,18 @@ type localEventHistoryDetails struct {
 }
 
 func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	release, err := s.requestGate.Enter()
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "service_shutting_down", "local API is shutting down")
+		return
+	}
+	if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/events") {
+		// Streaming handlers remain connected until the coordinator has
+		// drained command writers and flushed their durable event tails.
+		release()
+	} else {
+		defer release()
+	}
 	if opshealth.ServeHealth("mac_ingress", response, request, s.currentHealthReport) {
 		return
 	}
@@ -1052,23 +1148,80 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 		response.Header().Set(localAPIEventLastSequenceHeader, strconv.FormatInt(lastWritten, 10))
 	}()
 	flusher, _ := response.(http.Flusher)
-	for {
+	if flusher != nil {
+		// Make the accepted stream visible before waiting for an event. The
+		// durable authority may be updated by runner-locald, whose in-memory
+		// subscriber notifications are not shared with this process.
+		flusher.Flush()
+	}
+	eventChannel := subscription.Events()
+	ticker := time.NewTicker(localAPIEventFollowPollInterval)
+	defer ticker.Stop()
+	writeFollowEvent := func(event store.CommandEventRecord) bool {
+		if event.Sequence <= lastWritten {
+			return true
+		}
+		// A later in-process notification can race an event committed through
+		// another store handle. Let the durable poll fill that sequence gap.
+		if event.Sequence != lastWritten+1 {
+			return true
+		}
+		frame, err := encodeLocalAPIEvent(event, command.Ordinal)
+		if err != nil || writeLocalAPIEventFrame(response, frame) != nil {
+			return false
+		}
+		lastWritten = event.Sequence
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return !isTerminalLocalAPIEvent(event.Type)
+	}
+	readQueuedEvent := func() (bool, bool) {
 		select {
-		case event, ok := <-subscription.Events():
+		case event, ok := <-eventChannel:
 			if !ok {
 				// Overflow closes the channel after preserving the bounded prefix.
-				// Draining it keeps the published cursor resumable.
+				return true, false
+			}
+			return true, writeFollowEvent(event)
+		default:
+			return false, true
+		}
+	}
+	for {
+		// Prefer queued events and, especially, a closed overflow channel over
+		// polling. This retains the bounded-prefix resume contract for slow readers.
+		if received, keepGoing := readQueuedEvent(); received {
+			if !keepGoing {
 				return
 			}
-			frame, err := encodeLocalAPIEvent(event, command.Ordinal)
-			if err != nil || writeLocalAPIEventFrame(response, frame) != nil {
+			continue
+		}
+		select {
+		case <-ticker.C:
+			if received, keepGoing := readQueuedEvent(); received {
+				if !keepGoing {
+					return
+				}
+				continue
+			}
+			// Store notifications are process-local, while command events are
+			// committed to shared SQLite by runner-locald. Poll the durable cursor
+			// so a follower observes those cross-process commits as well.
+			replayed, err := s.authority.ReplayCommandEvents(request.Context(), commandID, lastWritten)
+			if err != nil {
 				return
 			}
-			lastWritten = event.Sequence
-			if flusher != nil {
-				flusher.Flush()
+			if len(replayed) > localAPIEventFollowReplayLimit {
+				replayed = replayed[:localAPIEventFollowReplayLimit]
 			}
-			if isTerminalLocalAPIEvent(event.Type) {
+			for _, event := range replayed {
+				if !writeFollowEvent(event) {
+					return
+				}
+			}
+		case event, ok := <-eventChannel:
+			if !ok || !writeFollowEvent(event) {
 				return
 			}
 		case <-request.Context().Done():

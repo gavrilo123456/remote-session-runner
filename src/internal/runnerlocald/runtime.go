@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sync"
+	"time"
 
 	"remote-session-runner/src/internal/execution"
 	hostruntime "remote-session-runner/src/internal/runtime"
@@ -112,9 +113,12 @@ func (r *MacSessionRuntime) CancelCommand(ctx context.Context, request execution
 	if r == nil || r.adapter == nil {
 		return execution.RuntimeCommandStopResult{}, execution.ErrRuntimeUnavailable
 	}
-	_ = ctx
-	_ = request
-	return execution.RuntimeCommandStopResult{}, execution.ErrStopUnconfirmed
+	shell, err := r.adapter.Shell(string(request.Session.SessionID))
+	if err != nil {
+		return execution.RuntimeCommandStopResult{}, err
+	}
+	stopped, err := shell.CancelCurrentCommand(ctx, 500*time.Millisecond)
+	return execution.RuntimeCommandStopResult{Confirmed: stopped.Confirmed}, err
 }
 
 func (r *MacSessionRuntime) StopSession(_ context.Context, session store.SessionRecord) (bool, error) {

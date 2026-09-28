@@ -28,7 +28,11 @@ launchctl bootout gui/501 "$HOME/Library/LaunchAgents/com.remote-session-runner.
 launchctl bootout gui/501 "$HOME/Library/LaunchAgents/com.remote-session-runner.locald.plist"
 ```
 
-SIGTERM closes the API listeners and removes their owned Unix socket paths, so
-the next launch can bind them again. P130/P131 add the shared bounded
-graceful-shutdown coordinator, cancellation ordering, audit flush, and
-resumable-stream behavior.
+On SIGTERM, each service stops accepting new work, drains within an eight-second
+budget, uses the normal runtime cancellation/close path if work remains, checks
+the committed audit tail, then closes event streams and removes its Unix socket.
+The shared cleanup stage is bounded to five seconds; the combined 13-second
+limit fits inside each plist's 15-second `ExitTimeOut`. Event records committed
+before shutdown remain available after restart, and clients resume after the
+last sequence they received. Run `make test-p131-macos-shutdown` on the selected
+Mac account to verify the real LaunchAgent stop and restart path.

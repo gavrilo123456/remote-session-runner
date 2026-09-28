@@ -13,11 +13,17 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 	"syscall"
 	"time"
+)
+
+const (
+	macShutdownDrainTimeout   = 8 * time.Second
+	macShutdownCleanupTimeout = 5 * time.Second
 )
 
 // NewMacExecutionService wires the shared execution service to the Mac
@@ -118,27 +124,80 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "runner-locald listening on %s\n", settings.LocalDSocket)
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- server.Serve() }()
+	coordinator, err := lifecycle.NewCoordinator(&privateServerShutdown{server: server}, lifecycle.RealClock{}, lifecycle.Config{
+		DrainTimeout: macShutdownDrainTimeout, CleanupTimeout: macShutdownCleanupTimeout,
+	})
+	if err != nil {
+		stop()
+		_ = server.Close(context.Background())
+		<-metricsObserverDone
+		fmt.Fprintf(stderr, "runner-locald: configure shutdown: %v\n", err)
+		return 1
+	}
 	select {
 	case serveErr := <-serveErrors:
-		closeErr := server.Close(context.Background())
+		shutdownErr := coordinator.Shutdown(context.Background())
 		stop()
 		<-metricsObserverDone
-		if serveErr != nil || closeErr != nil {
-			fmt.Fprintf(stderr, "runner-locald: serve: %v\n", errors.Join(serveErr, closeErr))
+		if serveErr != nil || shutdownErr != nil {
+			fmt.Fprintf(stderr, "runner-locald: serve: %v\n", errors.Join(serveErr, shutdownErr))
 			return 1
 		}
 	case <-signalContext.Done():
-		shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		closeErr := server.Close(shutdownContext)
+		shutdownErr := coordinator.Shutdown(context.Background())
 		serveErr := <-serveErrors
 		<-metricsObserverDone
-		if closeErr != nil || serveErr != nil {
-			fmt.Fprintf(stderr, "runner-locald: shutdown: %v\n", errors.Join(closeErr, serveErr))
+		if shutdownErr != nil || serveErr != nil {
+			fmt.Fprintf(stderr, "runner-locald: shutdown: %v\n", errors.Join(shutdownErr, serveErr))
 			return 1
 		}
 	}
 	return 0
+}
+
+type privateServerShutdown struct {
+	server  *PrivateServer
+	stopErr error
+}
+
+func (h *privateServerShutdown) StopAccepting() {
+	if h != nil && h.server != nil {
+		h.stopErr = h.server.StopAccepting()
+	}
+}
+
+func (h *privateServerShutdown) StopDispatch() {
+	if h != nil && h.server != nil {
+		h.server.StopDispatch()
+	}
+}
+
+func (h *privateServerShutdown) Drain(ctx context.Context) error {
+	if h == nil || h.server == nil {
+		return errors.New("runner-locald shutdown is not configured")
+	}
+	return errors.Join(h.stopErr, h.server.Drain(ctx))
+}
+
+func (h *privateServerShutdown) CancelRemaining(ctx context.Context) error {
+	if h == nil || h.server == nil {
+		return errors.New("runner-locald shutdown is not configured")
+	}
+	return h.server.CancelRemaining(ctx)
+}
+
+func (h *privateServerShutdown) Flush(ctx context.Context) error {
+	if h == nil || h.server == nil {
+		return errors.New("runner-locald shutdown is not configured")
+	}
+	return h.server.Flush(ctx)
+}
+
+func (h *privateServerShutdown) CloseStreams(context.Context) error {
+	if h == nil || h.server == nil {
+		return errors.New("runner-locald shutdown is not configured")
+	}
+	return h.server.CloseStreams()
 }
 
 func observeMacLocalOperationalMetrics(ctx context.Context, authority *store.AuthorityStore, thresholds *opshealth.ThresholdMonitor) {

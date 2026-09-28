@@ -17,7 +17,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu vet build smoke check
+.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -123,6 +123,10 @@ test-p129-ops-ubuntu: check-go
 # Real Mac launchd lifecycle, owner-only path, Unix socket, and mailbox smoke.
 test-p125-macos-services: check-go
 	@deploy/macos/test-launchagents.sh
+
+# Real Mac launchd process gate for graceful drain, audit/event persistence, and cursor resume.
+test-p131-macos-shutdown: check-go
+	@GO='$(GO)' deploy/macos/test-graceful-shutdown.sh
 
 # Real Ubuntu systemd lifecycle and owner-only service-path gate.
 test-p126-linux-services: check-go

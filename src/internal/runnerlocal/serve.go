@@ -8,11 +8,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +20,7 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/dispatcher"
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/localapi"
 	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/opshealth"
@@ -248,8 +249,11 @@ func (s *Service) Serve(ctx context.Context, stdout, stderr io.Writer) (returnEr
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	workerContext, cancelWorkers := context.WithCancel(ctx)
+	workerContext, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
+	dispatchGate := lifecycle.NewGate()
+	stopCycles := make(chan struct{})
+	var stopCyclesOnce sync.Once
 	if err := s.api.Listen(); err != nil {
 		return fmt.Errorf("listen on local API socket: %w", err)
 	}
@@ -259,40 +263,46 @@ func (s *Service) Serve(ctx context.Context, stdout, stderr io.Writer) (returnEr
 	workersDone := make(chan struct{})
 	go func() {
 		defer close(workersDone)
-		s.runWorkers(workerContext, stderr)
+		s.runWorkers(workerContext, stopCycles, dispatchGate, stderr)
 	}()
+	hooks := &macIngressShutdown{
+		api: s.api, dispatchGate: dispatchGate, stopCycles: stopCycles,
+		stopCyclesOnce: &stopCyclesOnce, cancelWorkers: cancelWorkers,
+		workersDone: workersDone,
+	}
+	coordinator, err := lifecycle.NewCoordinator(hooks, lifecycle.RealClock{}, lifecycle.Config{
+		DrainTimeout: 8 * time.Second, CleanupTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		cancelWorkers()
+		_ = s.api.Close(context.Background())
+		return err
+	}
 	select {
 	case err := <-serveErr:
-		cancelWorkers()
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		closeErr := s.api.Close(stopCtx)
-		workerErr := waitWorkers(workersDone, stopCtx)
-		return errors.Join(err, closeErr, workerErr)
+		shutdownErr := coordinator.Shutdown(context.Background())
+		return errors.Join(err, shutdownErr)
 	case <-ctx.Done():
-		cancelWorkers()
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		closeErr := s.api.Close(stopCtx)
+		shutdownErr := coordinator.Shutdown(context.Background())
 		serveResult := <-serveErr
-		workerErr := waitWorkers(workersDone, stopCtx)
-		if errors.Is(serveResult, http.ErrServerClosed) {
-			serveResult = nil
-		}
 		if errors.Is(ctx.Err(), context.Canceled) {
-			return errors.Join(closeErr, serveResult, workerErr)
+			return errors.Join(shutdownErr, serveResult)
 		}
-		return errors.Join(ctx.Err(), closeErr, serveResult, workerErr)
+		return errors.Join(ctx.Err(), shutdownErr, serveResult)
 	}
 }
 
-func (s *Service) runWorkers(ctx context.Context, stderr io.Writer) {
+func (s *Service) runWorkers(ctx context.Context, stopCycles <-chan struct{}, dispatchGate *lifecycle.Gate, stderr io.Writer) {
+	probeContext, cancelProbe := context.WithCancel(ctx)
 	probeDone := make(chan struct{})
 	go func() {
 		defer close(probeDone)
-		s.runRemoteHealthProbe(ctx)
+		s.runRemoteHealthProbe(probeContext)
 	}()
-	defer func() { <-probeDone }()
+	defer func() {
+		cancelProbe()
+		<-probeDone
+	}()
 	interval := s.pollInterval
 	if interval <= 0 {
 		interval = defaultPollInterval
@@ -303,12 +313,19 @@ func (s *Service) runWorkers(ctx context.Context, stderr io.Writer) {
 	defer metricsTicker.Stop()
 	s.logOperationalMetrics(ctx)
 	for {
+		select {
+		case <-stopCycles:
+			return
+		default:
+		}
 		if ctx.Err() != nil {
 			return
 		}
-		s.runCycle(ctx, stderr)
+		s.runCycle(ctx, dispatchGate, stderr)
 		select {
 		case <-ctx.Done():
+			return
+		case <-stopCycles:
 			return
 		case <-ticker.C:
 		case <-metricsTicker.C:
@@ -353,7 +370,7 @@ func withRecorder(metrics opshealth.Metrics, recorder *opshealth.Recorder) opshe
 	return metrics
 }
 
-func (s *Service) runCycle(ctx context.Context, stderr io.Writer) {
+func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, stderr io.Writer) {
 	if _, err := s.mailbox.Import(ctx); err != nil && ctx.Err() == nil {
 		s.recordOperationalError(err, false)
 		fmt.Fprintln(stderr, "runner-local: mailbox import cycle failed")
@@ -371,7 +388,12 @@ func (s *Service) runCycle(ctx context.Context, stderr io.Writer) {
 		fmt.Fprintln(stderr, "runner-local: mailbox cleanup cycle failed")
 	}
 	for i := 0; i < defaultDrainLimit && ctx.Err() == nil; i++ {
+		release, gateErr := dispatchGate.Enter()
+		if gateErr != nil {
+			break
+		}
 		_, _, err := s.localDriver.DispatchNext(ctx)
+		release()
 		if errors.Is(err, dispatcher.ErrNoLocalDispatchWork) {
 			break
 		}
@@ -382,7 +404,12 @@ func (s *Service) runCycle(ctx context.Context, stderr io.Writer) {
 		}
 	}
 	for i := 0; i < defaultDrainLimit && ctx.Err() == nil; i++ {
+		release, gateErr := dispatchGate.Enter()
+		if gateErr != nil {
+			break
+		}
 		_, _, err := s.remoteDriver.DispatchNext(ctx)
+		release()
 		if errors.Is(err, dispatcher.ErrNoRemoteDispatchWork) {
 			break
 		}
@@ -464,6 +491,67 @@ func waitWorkers(done <-chan struct{}, ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+type macIngressShutdown struct {
+	api            *localapi.Server
+	dispatchGate   *lifecycle.Gate
+	stopCycles     chan struct{}
+	stopCyclesOnce *sync.Once
+	cancelWorkers  context.CancelFunc
+	workersDone    <-chan struct{}
+	stopErr        error
+}
+
+func (h *macIngressShutdown) StopAccepting() {
+	if h != nil && h.api != nil {
+		h.stopErr = h.api.StopAccepting()
+	}
+}
+
+func (h *macIngressShutdown) StopDispatch() {
+	if h == nil {
+		return
+	}
+	if h.dispatchGate != nil {
+		h.dispatchGate.Stop()
+	}
+	if h.stopCycles != nil && h.stopCyclesOnce != nil {
+		h.stopCyclesOnce.Do(func() { close(h.stopCycles) })
+	}
+}
+
+func (h *macIngressShutdown) Drain(ctx context.Context) error {
+	if h == nil || h.api == nil || h.dispatchGate == nil || h.workersDone == nil {
+		return errors.New("Mac ingress shutdown is not configured")
+	}
+	apiErr := h.api.Drain(ctx)
+	dispatchErr := h.dispatchGate.Wait(ctx)
+	workersErr := waitWorkers(h.workersDone, ctx)
+	return errors.Join(h.stopErr, apiErr, dispatchErr, workersErr)
+}
+
+func (h *macIngressShutdown) CancelRemaining(ctx context.Context) error {
+	if h == nil || h.api == nil || h.cancelWorkers == nil || h.workersDone == nil {
+		return errors.New("Mac ingress shutdown is not configured")
+	}
+	h.cancelWorkers()
+	h.api.CancelRequests()
+	return errors.Join(h.api.Drain(ctx), waitWorkers(h.workersDone, ctx))
+}
+
+func (h *macIngressShutdown) Flush(ctx context.Context) error {
+	if h == nil || h.api == nil {
+		return errors.New("Mac ingress shutdown is not configured")
+	}
+	return h.api.Flush(ctx)
+}
+
+func (h *macIngressShutdown) CloseStreams(context.Context) error {
+	if h == nil || h.api == nil {
+		return errors.New("Mac ingress shutdown is not configured")
+	}
+	return h.api.CloseStreams()
 }
 
 func ensureMacServiceRoot(root string) error {

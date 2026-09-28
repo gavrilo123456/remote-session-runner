@@ -22,12 +22,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 )
@@ -54,16 +56,20 @@ type PrivateServerOptions struct {
 }
 
 type PrivateServer struct {
-	authority    *store.AuthorityStore
-	service      *execution.Service
-	owner        domain.ControllerIdentity
-	socketPath   string
-	maxBodyBytes int64
-	httpServer   *http.Server
-	listener     net.Listener
-	closed       bool
-	healthReport func(context.Context) opshealth.Report
-	thresholds   *opshealth.ThresholdMonitor
+	authority      *store.AuthorityStore
+	service        *execution.Service
+	owner          domain.ControllerIdentity
+	socketPath     string
+	maxBodyBytes   int64
+	httpServer     *http.Server
+	listener       net.Listener
+	requestGate    *lifecycle.Gate
+	dispatchGate   *lifecycle.Gate
+	cancelRequests context.CancelFunc
+	mu             sync.Mutex
+	closed         bool
+	healthReport   func(context.Context) opshealth.Report
+	thresholds     *opshealth.ThresholdMonitor
 }
 
 func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
@@ -91,7 +97,16 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 	if thresholds == nil {
 		thresholds = opshealth.NewThresholdMonitor()
 	}
-	return &PrivateServer{authority: options.Authority, service: options.Service, owner: owner, socketPath: options.SocketPath, maxBodyBytes: options.MaxBodyBytes, httpServer: &http.Server{}, healthReport: options.HealthReport, thresholds: thresholds}, nil
+	requestContext, cancelRequests := context.WithCancel(context.Background())
+	return &PrivateServer{
+		authority: options.Authority, service: options.Service, owner: owner,
+		socketPath: options.SocketPath, maxBodyBytes: options.MaxBodyBytes,
+		httpServer: &http.Server{BaseContext: func(net.Listener) context.Context {
+			return requestContext
+		}}, requestGate: lifecycle.NewGate(),
+		dispatchGate: lifecycle.NewGate(), healthReport: options.HealthReport,
+		cancelRequests: cancelRequests, thresholds: thresholds,
+	}, nil
 }
 
 func (s *PrivateServer) SocketPath() string {
@@ -139,25 +154,167 @@ func (s *PrivateServer) Serve() error {
 }
 
 func (s *PrivateServer) Close(ctx context.Context) error {
-	if s == nil || s.closed {
-		return nil
-	}
-	s.closed = true
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	shutdownErr := s.httpServer.Shutdown(ctx)
-	if s.listener != nil {
-		_ = s.listener.Close()
+	stopErr := s.StopAccepting()
+	s.StopDispatch()
+	requestErr := s.requestGate.Wait(ctx)
+	dispatchErr := s.dispatchGate.Wait(ctx)
+	closeErr := s.CloseStreams()
+	return errors.Join(stopErr, requestErr, dispatchErr, closeErr)
+}
+
+// StopAccepting rejects new private API requests and closes the listener.
+// Existing event followers remain connected until CloseStreams.
+func (s *PrivateServer) StopAccepting() error {
+	if s == nil {
+		return ErrPrivateAPIConfiguration
+	}
+	if s.requestGate != nil {
+		s.requestGate.Stop()
+	}
+	s.mu.Lock()
+	listener := s.listener
+	s.mu.Unlock()
+	if listener == nil {
+		return nil
+	}
+	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("stop runner-locald listener: %w", err)
+	}
+	return nil
+}
+
+// StopDispatch prevents another accepted queued command from starting.
+func (s *PrivateServer) StopDispatch() {
+	if s != nil && s.dispatchGate != nil {
+		s.dispatchGate.Stop()
+	}
+}
+
+// Drain waits for accepted handlers and command workers, then tears down every
+// local runtime through the normal execution state transitions.
+func (s *PrivateServer) Drain(ctx context.Context) error {
+	if s == nil || s.requestGate == nil || s.dispatchGate == nil {
+		return ErrPrivateAPIConfiguration
+	}
+	if err := s.requestGate.Wait(ctx); err != nil {
+		return fmt.Errorf("drain private API requests: %w", err)
+	}
+	if err := s.dispatchGate.Wait(ctx); err != nil {
+		return fmt.Errorf("drain accepted local commands: %w", err)
+	}
+	return s.closeLocalSessions(ctx)
+}
+
+// CancelRemaining uses the regular keyed close/cancel path. A failed runtime
+// stop stays visible and keeps its durable session/command capacity reserved.
+func (s *PrivateServer) CancelRemaining(ctx context.Context) error {
+	if s == nil {
+		return ErrPrivateAPIConfiguration
+	}
+	s.CancelRequests()
+	requestErr := s.requestGate.Wait(ctx)
+	closeErr := s.closeLocalSessions(ctx)
+	dispatchErr := s.dispatchGate.Wait(ctx)
+	return errors.Join(requestErr, closeErr, dispatchErr)
+}
+
+// CancelRequests interrupts request-scoped operations that exceeded the
+// bounded drain. Existing event followers are closed later by CloseStreams.
+func (s *PrivateServer) CancelRequests() {
+	if s != nil && s.cancelRequests != nil {
+		s.cancelRequests()
+	}
+}
+
+// Flush verifies the committed audit tail after request and command writers
+// have drained. Event and audit changes are synchronous SQLite transactions.
+func (s *PrivateServer) Flush(ctx context.Context) error {
+	if s == nil || s.authority == nil {
+		return ErrPrivateAPIConfiguration
+	}
+	_, err := s.authority.ListAuditRecords(ctx, 1)
+	return err
+}
+
+// CloseStreams force-closes event followers after the durable tail is flushed
+// and removes the owned Unix socket path.
+func (s *PrivateServer) CloseStreams() error {
+	if s == nil {
+		return ErrPrivateAPIConfiguration
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	listener := s.listener
+	s.mu.Unlock()
+	s.CancelRequests()
+
+	var closeErr error
+	if listener != nil {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			closeErr = err
+		}
+	}
+	if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		closeErr = errors.Join(closeErr, err)
 	}
 	removeErr := os.Remove(s.socketPath)
 	if errors.Is(removeErr, os.ErrNotExist) {
 		removeErr = nil
 	}
-	if shutdownErr != nil {
-		return shutdownErr
+	return errors.Join(closeErr, removeErr)
+}
+
+func (s *PrivateServer) closeLocalSessions(ctx context.Context) error {
+	sessions, err := s.authority.ListSessions(ctx)
+	if err != nil {
+		return fmt.Errorf("list local sessions for shutdown: %w", err)
 	}
-	return removeErr
+	var results []error
+	for _, session := range sessions {
+		if session.Target.Kind() != domain.TargetKindLocal || session.State.IsTerminal() {
+			continue
+		}
+		sessionID := string(session.SessionID)
+		hash, err := localMutationHash("close_session", map[string]string{"session_id": sessionID, "policy": "drain"})
+		if err != nil {
+			results = append(results, fmt.Errorf("hash shutdown close for %s: %w", sessionID, err))
+			continue
+		}
+		digest := sha256.Sum256([]byte(sessionID))
+		key := "shutdown-" + hex.EncodeToString(digest[:12])
+		closed, err := s.service.CloseSession(ctx, execution.CloseSessionRequest{
+			SessionID: session.SessionID, Controller: s.owner, IdempotencyKey: key,
+			RequestHash: hash, Policy: "drain", IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+		})
+		if err != nil {
+			results = append(results, fmt.Errorf("close local session %s: %w", sessionID, err))
+			continue
+		}
+		if !closed.Session.State.IsTerminal() {
+			results = append(results, fmt.Errorf("close local session %s: shutdown returned nonterminal state %q", sessionID, closed.Session.State))
+		}
+	}
+	return errors.Join(results...)
+}
+
+func (s *PrivateServer) resumeAcceptedCommand(commandID domain.CommandID, controller domain.ControllerIdentity) {
+	release, err := s.dispatchGate.Enter()
+	if err != nil {
+		// The command acceptance is already durable. Leaving it queued is
+		// truthful; startup recovery or a later worker can reconcile it.
+		return
+	}
+	go func() {
+		defer release()
+		_, _ = s.service.ResumeCommand(context.Background(), commandID, controller)
+	}()
 }
 
 type acceptIntentRequest struct {
@@ -186,6 +343,18 @@ type targetResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	release, err := s.requestGate.Enter()
+	if err != nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "runner-locald is shutting down")
+		return
+	}
+	if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/events") {
+		// Keep existing followers open until command writes and audit rows have
+		// drained. CloseStreams ends the response after the durable tail flush.
+		release()
+	} else {
+		defer release()
+	}
 	if opshealth.ServeHealth("mac_local_executor", response, request, s.currentHealthReport) {
 		return
 	}
@@ -355,9 +524,7 @@ func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalInte
 		base.CommandState = string(result.Command.State)
 		base.Duplicate = result.Duplicate
 		if result.Command.State == domain.CommandStateQueued {
-			go func() {
-				_, _ = s.service.ResumeCommand(context.Background(), result.Command.CommandID, intent.Controller)
-			}()
+			s.resumeAcceptedCommand(result.Command.CommandID, intent.Controller)
 		}
 	case "cancel_command":
 		result, err := s.service.CancelCommand(ctx, execution.CancelCommandRequest{CommandID: intent.CommandID, Controller: intent.Controller, IdempotencyKey: intent.IdempotencyKey, RequestHash: intent.RequestHash})
