@@ -496,7 +496,7 @@ func p118WriteJSON(response http.ResponseWriter, status int, value any) {
 
 func p118NewUnixClient(t *testing.T, handler http.Handler) *Client {
 	t.Helper()
-	socketDir, err := os.MkdirTemp("/private/tmp", "p118-")
+	socketDir, err := os.MkdirTemp("/tmp", "p118-")
 	if err != nil {
 		t.Fatal(err)
 	}
