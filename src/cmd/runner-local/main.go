@@ -3,9 +3,9 @@ package main
 import (
 	"os"
 
-	"remote-session-runner/src/internal/commandstub"
+	"remote-session-runner/src/internal/runnerlocal"
 )
 
 func main() {
-	os.Exit(commandstub.Run("runner-local", "Mac-local API, mailbox, router, and dispatcher.", os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(runnerlocal.Run(os.Args[1:], os.Stdout, os.Stderr))
 }

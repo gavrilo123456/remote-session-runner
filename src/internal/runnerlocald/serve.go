@@ -2,15 +2,20 @@ package runnerlocald
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
+	"syscall"
+	"time"
 )
 
 // NewMacExecutionService wires the shared execution service to the Mac
@@ -47,6 +52,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runner-locald: --config is required")
 		return 2
 	}
+	signalContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	loaded, err := config.LoadFile(*configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: load config: %v\n", err)
@@ -97,11 +104,25 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runner-locald: listen: %v\n", err)
 		return 1
 	}
-	defer server.Close(context.Background())
 	fmt.Fprintf(stdout, "runner-locald listening on %s\n", settings.LocalDSocket)
-	if err := server.Serve(); err != nil {
-		fmt.Fprintf(stderr, "runner-locald: serve: %v\n", err)
-		return 1
+	serveErrors := make(chan error, 1)
+	go func() { serveErrors <- server.Serve() }()
+	select {
+	case serveErr := <-serveErrors:
+		closeErr := server.Close(context.Background())
+		if serveErr != nil || closeErr != nil {
+			fmt.Fprintf(stderr, "runner-locald: serve: %v\n", errors.Join(serveErr, closeErr))
+			return 1
+		}
+	case <-signalContext.Done():
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		closeErr := server.Close(shutdownContext)
+		serveErr := <-serveErrors
+		if closeErr != nil || serveErr != nil {
+			fmt.Fprintf(stderr, "runner-locald: shutdown: %v\n", errors.Join(closeErr, serveErr))
+			return 1
+		}
 	}
 	return 0
 }
