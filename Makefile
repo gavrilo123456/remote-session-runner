@@ -17,7 +17,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read vet build smoke check
+.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -98,6 +98,20 @@ test-p127-host-audit-read: check-go
 	: "$${RSR_P127_HOST_AUDIT_MODE:?set to highwater or rows}"; \
 	: "$${RSR_P127_HOST_AUDIT_AFTER_ID:?set to a nonnegative audit ID}"; \
 	RSR_P127_HOST_AUDIT_READ=1 GOTOOLCHAIN=local "$(GO)" test -tags=p127hostreader ./src/internal/store -run '^TestP127HostAuditReadHelper$$' -count=1 -v
+
+# Actual Mac account plus pinned Ubuntu bridge probe, followed by an injected
+# SSH outage while durable local and queued-remote ingress remain available.
+test-p128-ops-mac: check-go
+	@GO='$(GO)' deploy/macos/test-ops-health.sh
+
+test-p128-host-status: check-go
+	RSR_P128_HOST_STATUS=1 GOTOOLCHAIN=local "$(GO)" test -tags=p128hoststatus ./src/internal/store -run '^TestP128UbuntuNoActiveWorkBeforeRestart$$' -count=1 -v
+
+test-p128-host-readonly-health: check-go
+	RSR_P128_HOST_STATUS=1 GOTOOLCHAIN=local "$(GO)" test -tags=p128hoststatus ./src/internal/store -run '^TestP128UbuntuHealthWriteProbeRejectsReadOnlyDatabase$$' -count=1 -v
+
+test-p128-ops-ubuntu: check-go
+	@deploy/linux/test-ops-health.sh
 
 # Real Mac launchd lifecycle, owner-only path, Unix socket, and mailbox smoke.
 test-p125-macos-services: check-go

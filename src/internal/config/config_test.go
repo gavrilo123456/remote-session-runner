@@ -162,6 +162,19 @@ func TestP010_D14LoadsSelectedHostConfigsAndDefaults(t *testing.T) {
 	})
 }
 
+func TestP128HostProfileAndMTLSConfigFailuresAreClassifiableWithoutValues(t *testing.T) {
+	invalidProfile := strings.Replace(linuxConfigFixture, "runtime_adapter: linux-host-process", "runtime_adapter: unknown-profile", 1)
+	_, err := parse([]byte(invalidProfile))
+	if !errors.Is(err, ErrInvalidConfig) || !errors.Is(err, ErrConfigHostProfile) || strings.Contains(err.Error(), "unknown-profile") {
+		t.Fatalf("invalid host profile error=%v; want safe ErrConfigHostProfile classification", err)
+	}
+	missingKey := strings.Replace(linuxConfigFixture, "secret_references:\n  linux_server_private_key:\n    file: /home/ubuntu/.local/share/remote-session-runner/secrets/server.key\n", "secret_references: {}\n", 1)
+	_, err = parse([]byte(missingKey))
+	if !errors.Is(err, ErrInvalidSecretRef) {
+		t.Fatalf("missing mTLS key reference error=%v, want ErrInvalidSecretRef", err)
+	}
+}
+
 func TestP010_D14SelectedEnvironmentPoliciesAndLimits(t *testing.T) {
 	config := loadFixture(t, macConfigFixture)
 	if got, want := config.EnvironmentNames(), []string{"linux-dev", "mac-dev"}; !equalStrings(got, want) {

@@ -55,6 +55,7 @@ var (
 	ErrConfigTooLarge      = errors.New("configuration file exceeds the size limit")
 	ErrInvalidSecretRef    = errors.New("invalid secret file reference")
 	ErrConfigEnvironment   = errors.New("environment is not configured")
+	ErrConfigHostProfile   = errors.New("Linux host-process profile is invalid")
 	environmentNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 )
 
@@ -653,8 +654,11 @@ func validateMacDocument(mac *macDocument, refs secretReferencesDocument) error 
 }
 
 func validateLinuxDocument(linux *linuxDocument, refs secretReferencesDocument) error {
+	if linux.RuntimeAdapter != "linux-host-process" {
+		return fmt.Errorf("%w: %w", ErrInvalidConfig, ErrConfigHostProfile)
+	}
 	if linux.Account != LinuxAccount || linux.ServiceRoot != LinuxServiceRoot || !validServiceRoot(linux.ServiceRoot) || linux.DirectHTTPSBind != LinuxHTTPSBind ||
-		!validateEndpoint(linux.DirectPublicEndpoint) || linux.TLSMinVersion != "1.3" || linux.RuntimeAdapter != "linux-host-process" {
+		!validateEndpoint(linux.DirectPublicEndpoint) || linux.TLSMinVersion != "1.3" {
 		return ErrInvalidConfig
 	}
 	if !selectedPaths(linux.ServiceRoot,

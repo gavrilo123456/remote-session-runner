@@ -14,6 +14,7 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/opshealth"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 )
@@ -44,6 +45,9 @@ func NewLinuxExecutionService(authority *store.AuthorityStore, options hostrunti
 // Run starts the configured Linux runnerd private API and the mandatory-mTLS
 // direct HTTPS listener. Direct resource routes are added in later phases.
 func Run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "doctor" {
+		return runDoctor(args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("runnerd", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Linux runnerd YAML configuration")
@@ -92,6 +96,23 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		environments = append(environments, registered.Policy())
 	}
+	profile, err := hostruntime.NewLinuxProcessProfile(hostruntime.LinuxRuntimeOptions{
+		Account: settings.Account, ServiceRoot: settings.ServiceRoot, WorkspaceRoot: settings.Workspaces, ShellPath: "/usr/bin/bash",
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, "runnerd: host process profile is not ready")
+		return 1
+	}
+	doctorContext, cancelDoctor := context.WithTimeout(context.Background(), 30*time.Second)
+	profileReport, profileErr := profile.Doctor(doctorContext)
+	cancelDoctor()
+	if profileErr != nil || !profileReport.Ready {
+		fmt.Fprintln(stderr, "runnerd: host process profile is not ready")
+		return 1
+	}
+	healthReport := func(ctx context.Context) opshealth.Report {
+		return linuxRunnerHealthReport(ctx, authority, true, true)
+	}
 	service, _, err := NewLinuxExecutionService(authority, hostruntime.LinuxRuntimeOptions{
 		Account:       settings.Account,
 		WorkspaceRoot: settings.Workspaces,
@@ -106,6 +127,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runnerd: construct direct HTTPS API: %v\n", err)
 		return 1
 	}
+	directHandler = opshealth.Middleware("linux_runnerd", healthReport, directHandler)
 	httpsServer, err := NewDirectHTTPSServer(DirectHTTPSServerOptions{
 		BindAddress:        settings.DirectHTTPSBind,
 		ServerCertificate:  settings.ServerCertificate,
@@ -118,7 +140,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runnerd: configure direct HTTPS: %v\n", err)
 		return 1
 	}
-	server, err := NewPrivateServer(PrivateServerOptions{Service: service, SocketPath: settings.PrivateSocket})
+	server, err := NewPrivateServer(PrivateServerOptions{Service: service, SocketPath: settings.PrivateSocket, HealthReport: healthReport})
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: construct private API: %v\n", err)
 		return 1

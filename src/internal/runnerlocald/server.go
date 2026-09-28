@@ -28,6 +28,7 @@ import (
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 )
 
@@ -48,6 +49,7 @@ type PrivateServerOptions struct {
 	Owner        domain.ControllerIdentity
 	SocketPath   string
 	MaxBodyBytes int64
+	HealthReport func(context.Context) opshealth.Report
 }
 
 type PrivateServer struct {
@@ -59,6 +61,7 @@ type PrivateServer struct {
 	httpServer   *http.Server
 	listener     net.Listener
 	closed       bool
+	healthReport func(context.Context) opshealth.Report
 }
 
 func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
@@ -82,7 +85,7 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = DefaultPrivateRequestBytes
 	}
-	return &PrivateServer{authority: options.Authority, service: options.Service, owner: owner, socketPath: options.SocketPath, maxBodyBytes: options.MaxBodyBytes, httpServer: &http.Server{}}, nil
+	return &PrivateServer{authority: options.Authority, service: options.Service, owner: owner, socketPath: options.SocketPath, maxBodyBytes: options.MaxBodyBytes, httpServer: &http.Server{}, healthReport: options.HealthReport}, nil
 }
 
 func (s *PrivateServer) SocketPath() string {
@@ -177,6 +180,9 @@ type targetResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	if opshealth.ServeHealth("mac_local_executor", response, request, s.currentHealthReport) {
+		return
+	}
 	request = request.WithContext(audit.WithIngress(request.Context(), audit.IngressLocalWorker))
 	if localSessionPathPrefix(request.URL.Path) != "" {
 		if request.Method == http.MethodDelete {
@@ -272,6 +278,23 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	writeJSON(response, http.StatusAccepted, accepted)
+}
+
+func (s *PrivateServer) currentHealthReport(ctx context.Context) opshealth.Report {
+	if s != nil && s.healthReport != nil {
+		return s.healthReport(ctx)
+	}
+	database := opshealth.Check{Component: "sqlite_writes", State: opshealth.StateReady, RequiredForReadiness: true}
+	if s == nil || s.authority == nil || s.authority.CheckWritable(ctx, "mac_local_executor") != nil {
+		database.State = opshealth.StateNotReady
+		database.Reason = "database_write_failed"
+	}
+	profile := opshealth.Check{Component: "mac_host_profile", State: opshealth.StateReady, RequiredForReadiness: true}
+	if s == nil || s.service == nil {
+		profile.State = opshealth.StateNotReady
+		profile.Reason = "host_profile_not_ready"
+	}
+	return opshealth.NewReport("mac_local_executor", time.Now(), database, profile)
 }
 
 func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalIntentRecord) (intentAcceptanceResponse, error) {

@@ -26,6 +26,7 @@ import (
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 )
 
@@ -48,6 +49,7 @@ type PrivateServerOptions struct {
 	Service      *execution.Service
 	SocketPath   string
 	MaxBodyBytes int64
+	HealthReport func(context.Context) opshealth.Report
 }
 
 // PrivateServer serves only the P046 create/read session subset.
@@ -59,6 +61,7 @@ type PrivateServer struct {
 	listener     net.Listener
 	mu           sync.Mutex
 	closed       bool
+	healthReport func(context.Context) opshealth.Report
 }
 
 // NewPrivateServer validates the owner-only socket location but does not
@@ -78,6 +81,7 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 		socketPath:   options.SocketPath,
 		maxBodyBytes: options.MaxBodyBytes,
 		httpServer:   &http.Server{Handler: nil},
+		healthReport: options.HealthReport,
 	}, nil
 }
 
@@ -263,6 +267,9 @@ type sourceResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	if opshealth.ServeHealth("linux_runnerd", response, request, s.currentHealthReport) {
+		return
+	}
 	request = request.WithContext(audit.WithIngress(request.Context(), audit.IngressSSHBridge))
 	if isJobCollectionPath(request.URL.Path) && request.Method == http.MethodPost {
 		s.handleRunJob(response, request)
@@ -319,6 +326,18 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	writePrivateError(response, http.StatusNotFound, "route not found")
+}
+
+func (s *PrivateServer) currentHealthReport(ctx context.Context) opshealth.Report {
+	if s != nil && s.healthReport != nil {
+		return s.healthReport(ctx)
+	}
+	database := opshealth.Check{Component: "sqlite_writes", State: opshealth.StateReady, RequiredForReadiness: true}
+	if s == nil || s.service == nil {
+		database.State = opshealth.StateNotReady
+		database.Reason = "database_not_ready"
+	}
+	return opshealth.NewReport("linux_runnerd", time.Now(), database)
 }
 
 type submitCommandRequest struct {

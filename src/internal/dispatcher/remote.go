@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -18,6 +19,8 @@ import (
 	"remote-session-runner/src/internal/sshclient"
 	"remote-session-runner/src/internal/store"
 )
+
+var remoteProbeSequence atomic.Uint64
 
 var (
 	ErrRemoteDriverConfiguration     = errors.New("remote dispatcher configuration is invalid")
@@ -102,6 +105,35 @@ func (d *RemoteDriver) DispatchNext(ctx context.Context) (store.LocalIntentRecor
 		return record, reply, dispatchErr
 	}
 	return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, ErrNoRemoteDispatchWork
+}
+
+// Probe checks the restricted SSH bridge/runnerd control path without reading
+// or mutating execution resources.
+func (d *RemoteDriver) Probe(ctx context.Context) error {
+	if d == nil || d.caller == nil {
+		return ErrRemoteDriverConfiguration
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestID := fmt.Sprintf("router-health-%d", remoteProbeSequence.Add(1))
+	reply, err := d.caller.Call(ctx, sshbridge.RequestFrame{
+		ProtocolVersion: sshbridge.ProtocolVersion,
+		RequestID:       requestID,
+		Operation:       sshbridge.OperationPing,
+		Payload:         json.RawMessage(`{}`),
+	})
+	if err != nil {
+		return fmt.Errorf("%w: health probe transport failed", ErrRemoteResponse)
+	}
+	if reply.ProtocolVersion != sshbridge.ProtocolVersion || reply.RequestID != requestID || reply.ResponseType != "result" {
+		return fmt.Errorf("%w: health probe reply mismatch", ErrRemoteResponse)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(reply.Payload, &payload); err != nil || payload == nil || len(payload) != 0 {
+		return fmt.Errorf("%w: health probe payload is invalid", ErrRemoteResponse)
+	}
+	return nil
 }
 
 // DispatchIntent claims and delivers one remote intent by its stable ID.

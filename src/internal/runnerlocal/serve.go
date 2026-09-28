@@ -22,6 +22,7 @@ import (
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/localapi"
 	"remote-session-runner/src/internal/mailbox"
+	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/sshclient"
 	"remote-session-runner/src/internal/store"
 )
@@ -32,11 +33,16 @@ const (
 	intentLeaseDuration = 2 * time.Minute
 )
 
+var errMacDatabaseNotReady = errors.New("Mac authority database is not ready")
+
 // Run loads the selected Mac configuration and serves local ingress until
 // launchd sends SIGTERM or the process receives an interrupt.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help" || args[0] == "--version" || args[0] == "version") {
 		return commandstub.Run("runner-local", "Mac-local API, mailbox, router, and dispatcher.", args, stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "doctor" {
+		return runDoctor(args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("runner-local", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -62,6 +68,47 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runDoctor(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("runner-local doctor", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	configPath := flags.String("config", "", "owner-only Mac runner configuration")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if *configPath == "" || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "runner-local doctor: --config is required")
+		return 2
+	}
+	service, err := New(*configPath)
+	if err != nil {
+		_ = opshealth.WriteDoctor(stdout, macDoctorStartupFailureReport(err))
+		return 1
+	}
+	defer service.dbCloser.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	report := service.Doctor(ctx)
+	if err := opshealth.WriteDoctor(stdout, report); err != nil {
+		fmt.Fprintln(stderr, "runner-local doctor: could not write health report")
+		return 1
+	}
+	if report.Readiness != opshealth.StateReady {
+		return 1
+	}
+	return 0
+}
+
+func macDoctorStartupFailureReport(err error) opshealth.Report {
+	component, reason := "configuration", "service_configuration_not_ready"
+	if errors.Is(err, errMacDatabaseNotReady) {
+		component, reason = "sqlite_writes", "database_migration_or_write_failed"
+	}
+	return opshealth.NewReport("mac_ingress", time.Now(), opshealth.Check{Component: component, State: opshealth.StateNotReady, Reason: reason, RequiredForReadiness: true})
+}
+
 // Service owns the process-level composition for the Mac ingress and Router.
 type Service struct {
 	database        *store.AuthorityStore
@@ -73,6 +120,8 @@ type Service struct {
 	ackImporter     *mailbox.AckImporter
 	artifactCleaner mailbox.ArtifactCleaner
 	pollInterval    time.Duration
+	routerHealth    *routerHealthMonitor
+	remoteProbe     func(context.Context) error
 }
 
 // New constructs the Mac services from an owner-restricted selected config.
@@ -96,7 +145,7 @@ func New(configPath string) (*Service, error) {
 	ctx := context.Background()
 	db, err := store.Open(ctx, settings.Database)
 	if err != nil {
-		return nil, fmt.Errorf("open local authority database: %w", err)
+		return nil, fmt.Errorf("%w: %w", errMacDatabaseNotReady, err)
 	}
 	closeOnError := true
 	defer func() {
@@ -106,13 +155,19 @@ func New(configPath string) (*Service, error) {
 	}()
 	authority, err := store.NewAuthorityStore(db)
 	if err != nil {
-		return nil, fmt.Errorf("construct local authority: %w", err)
+		return nil, fmt.Errorf("%w: %w", errMacDatabaseNotReady, err)
 	}
 	owner, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, domain.ControllerID(settings.Account))
 	if err != nil {
 		return nil, fmt.Errorf("construct Mac owner identity: %w", err)
 	}
-	api, err := localapi.NewServer(localapi.ServerOptions{Authority: authority, Owner: owner, SocketPath: settings.APISocket})
+	routerHealth := newRouterHealthMonitor()
+	api, err := localapi.NewServer(localapi.ServerOptions{
+		Authority: authority, Owner: owner, SocketPath: settings.APISocket,
+		HealthReport: func(ctx context.Context) opshealth.Report {
+			return macIngressHealthReport(ctx, authority, routerHealth)
+		},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("construct local API: %w", err)
 	}
@@ -167,8 +222,8 @@ func New(configPath string) (*Service, error) {
 	service := &Service{
 		database: authority, dbCloser: db, api: api, localDriver: localDriver,
 		remoteDriver: remoteDriver, mailbox: processor, ackImporter: ackImporter,
-		artifactCleaner: mailbox.ArtifactCleaner{Authority: authority, Outbox: outbox, EventFiles: eventFiles},
-		pollInterval:    defaultPollInterval,
+		artifactCleaner: mailbox.ArtifactCleaner{Authority: authority, Outbox: outbox, EventFiles: eventFiles}, routerHealth: routerHealth,
+		pollInterval: defaultPollInterval, remoteProbe: remoteDriver.Probe,
 	}
 	closeOnError = false
 	return service, nil
@@ -224,6 +279,12 @@ func (s *Service) Serve(ctx context.Context, stdout, stderr io.Writer) (returnEr
 }
 
 func (s *Service) runWorkers(ctx context.Context, stderr io.Writer) {
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		s.runRemoteHealthProbe(ctx)
+	}()
+	defer func() { <-probeDone }()
 	interval := s.pollInterval
 	if interval <= 0 {
 		interval = defaultPollInterval
@@ -272,10 +333,64 @@ func (s *Service) runCycle(ctx context.Context, stderr io.Writer) {
 			break
 		}
 		if err != nil {
+			s.routerHealth.update(err, time.Now())
 			fmt.Fprintln(stderr, "runner-local: remote Router dispatch cycle failed")
 			break
 		}
+		s.routerHealth.update(nil, time.Now())
 	}
+}
+
+func (s *Service) runRemoteHealthProbe(ctx context.Context) {
+	if s == nil || s.remoteDriver == nil || s.routerHealth == nil {
+		return
+	}
+	probe := func() {
+		probeContext, cancel := context.WithTimeout(ctx, 12*time.Second)
+		defer cancel()
+		s.routerHealth.update(s.probeRemote(probeContext), time.Now())
+	}
+	probe()
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			probe()
+		}
+	}
+}
+
+// Doctor checks local durable ingress and probes the remote Router without
+// making remote availability a prerequisite for local acceptance.
+func (s *Service) Doctor(ctx context.Context) opshealth.Report {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s != nil && s.remoteDriver != nil && s.routerHealth != nil {
+		probeContext, cancel := context.WithTimeout(ctx, 12*time.Second)
+		s.routerHealth.update(s.probeRemote(probeContext), time.Now())
+		cancel()
+	}
+	if s == nil {
+		return opshealth.NewReport("mac_ingress", time.Now(), opshealth.Check{Component: "configuration", State: opshealth.StateNotReady, Reason: "service_configuration_not_ready", RequiredForReadiness: true})
+	}
+	return macIngressHealthReport(ctx, s.database, s.routerHealth)
+}
+
+func (s *Service) probeRemote(ctx context.Context) error {
+	if s == nil {
+		return dispatcher.ErrRemoteDriverConfiguration
+	}
+	if s.remoteProbe != nil {
+		return s.remoteProbe(ctx)
+	}
+	if s.remoteDriver == nil {
+		return dispatcher.ErrRemoteDriverConfiguration
+	}
+	return s.remoteDriver.Probe(ctx)
 }
 
 func waitWorkers(done <-chan struct{}, ctx context.Context) error {

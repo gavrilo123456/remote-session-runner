@@ -22,6 +22,7 @@ import (
 
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 )
 
@@ -41,6 +42,7 @@ type ServerOptions struct {
 	Owner        domain.ControllerIdentity
 	SocketPath   string
 	MaxBodyBytes int64
+	HealthReport func(context.Context) opshealth.Report
 }
 
 // Server is the Mac-local HTTP/JSON adapter over an owner-only Unix socket.
@@ -52,6 +54,7 @@ type Server struct {
 	httpServer   *http.Server
 	listener     net.Listener
 	closed       bool
+	healthReport func(context.Context) opshealth.Report
 }
 
 func NewServer(options ServerOptions) (*Server, error) {
@@ -84,6 +87,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		socketPath:   options.SocketPath,
 		maxBodyBytes: options.MaxBodyBytes,
 		httpServer:   &http.Server{},
+		healthReport: options.HealthReport,
 	}, nil
 }
 
@@ -260,6 +264,9 @@ type localEventHistoryDetails struct {
 }
 
 func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	if opshealth.ServeHealth("mac_ingress", response, request, s.currentHealthReport) {
+		return
+	}
 	request = request.WithContext(audit.WithIngress(request.Context(), audit.IngressLocalUnix))
 	switch {
 	case request.Method == http.MethodPost && request.URL.Path == "/v1/sessions":
@@ -293,6 +300,18 @@ func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) 
 	default:
 		writeError(response, http.StatusNotFound, "resource_not_found", "local API route not found")
 	}
+}
+
+func (s *Server) currentHealthReport(ctx context.Context) opshealth.Report {
+	if s != nil && s.healthReport != nil {
+		return s.healthReport(ctx)
+	}
+	check := opshealth.Check{Component: "sqlite_writes", State: opshealth.StateReady, RequiredForReadiness: true}
+	if s == nil || s.authority == nil || s.authority.CheckWritable(ctx, "mac_ingress") != nil {
+		check.State = opshealth.StateNotReady
+		check.Reason = "database_write_failed"
+	}
+	return opshealth.NewReport("mac_ingress", time.Now(), check)
 }
 
 type submitCommandRequest struct {
