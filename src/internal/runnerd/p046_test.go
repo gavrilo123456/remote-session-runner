@@ -89,6 +89,7 @@ func TestP046PrivateCreateReadOwnerOnlySocket(t *testing.T) {
 	if created["session_id"] != "p046-session" || created["session_state"] != string(domain.SessionStateReady) || created["runtime_generation"] != "p046-fake-generation" {
 		t.Fatalf("create response = %#v", created)
 	}
+	assertP046SessionCapabilities(t, "create", created)
 
 	duplicate := p046DoJSON(t, client, http.MethodPost, "http://runnerd/internal/v1/sessions", body)
 	if duplicate.StatusCode != http.StatusAccepted {
@@ -99,6 +100,7 @@ func TestP046PrivateCreateReadOwnerOnlySocket(t *testing.T) {
 	if duplicateResource["duplicate"] != true {
 		t.Fatalf("duplicate response = %#v", duplicateResource)
 	}
+	assertP046SessionCapabilities(t, "duplicate create", duplicateResource)
 
 	readURL := "http://runnerd/internal/v1/sessions/p046-session?controller_type=queued_mac&controller_id=tomasz.walczuk"
 	read := p046DoJSON(t, client, http.MethodGet, readURL, nil)
@@ -110,6 +112,7 @@ func TestP046PrivateCreateReadOwnerOnlySocket(t *testing.T) {
 	if readResource["session_id"] != "p046-session" || readResource["session_state"] != string(domain.SessionStateReady) {
 		t.Fatalf("read response = %#v", readResource)
 	}
+	assertP046SessionCapabilities(t, "read", readResource)
 
 	wrongController := p046DoJSON(t, client, http.MethodGet, "http://runnerd/internal/v1/sessions/p046-session?controller_type=direct_mtls&controller_id=tomasz.walczuk", nil)
 	if wrongController.StatusCode != http.StatusForbidden {
@@ -118,6 +121,21 @@ func TestP046PrivateCreateReadOwnerOnlySocket(t *testing.T) {
 
 	if _, err := authority.GetSession(context.Background(), domain.SessionID("p046-session")); err != nil {
 		t.Fatalf("authoritative read after API operations: %v", err)
+	}
+}
+
+func assertP046SessionCapabilities(t *testing.T, operation string, resource map[string]any) {
+	t.Helper()
+	capabilities, ok := resource["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s session response capabilities = %#v, want configured environment capabilities", operation, resource["capabilities"])
+	}
+	if capabilities["host_class"] != "Ubuntu Linux host" || capabilities["isolation"] != string(domain.IsolationOSUser) || capabilities["effective_account"] != "ubuntu" {
+		t.Fatalf("%s session response capabilities = %#v, want configured Ubuntu host-process capabilities", operation, capabilities)
+	}
+	serviceLimits, ok := capabilities["service_limits"].(map[string]any)
+	if !ok || serviceLimits["active_sessions"] != float64(20) || serviceLimits["running_commands"] != float64(4) {
+		t.Fatalf("%s session response service limits = %#v, want configured 20-session/4-command ceilings", operation, capabilities["service_limits"])
 	}
 }
 

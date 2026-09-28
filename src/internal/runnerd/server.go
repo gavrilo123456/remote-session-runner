@@ -233,17 +233,18 @@ type isolationRequest struct {
 }
 
 type sessionResponse struct {
-	SessionID         string            `json:"session_id"`
-	SessionState      string            `json:"session_state"`
-	ExecutionTarget   targetResponse    `json:"execution_target"`
-	Authority         string            `json:"authority"`
-	Controller        controllerRequest `json:"controller"`
-	ObservedAt        time.Time         `json:"observed_at"`
-	Environment       string            `json:"environment"`
-	Source            sourceResponse    `json:"source"`
-	RuntimeGeneration string            `json:"runtime_generation,omitempty"`
-	ResolvedRevision  string            `json:"resolved_revision,omitempty"`
-	Duplicate         bool              `json:"duplicate,omitempty"`
+	SessionID         string                      `json:"session_id"`
+	SessionState      string                      `json:"session_state"`
+	ExecutionTarget   targetResponse              `json:"execution_target"`
+	Authority         string                      `json:"authority"`
+	Controller        controllerRequest           `json:"controller"`
+	ObservedAt        time.Time                   `json:"observed_at"`
+	Environment       string                      `json:"environment"`
+	Source            sourceResponse              `json:"source"`
+	Capabilities      commandCapabilitiesResponse `json:"capabilities"`
+	RuntimeGeneration string                      `json:"runtime_generation,omitempty"`
+	ResolvedRevision  string                      `json:"resolved_revision,omitempty"`
+	Duplicate         bool                        `json:"duplicate,omitempty"`
 }
 
 type targetResponse struct {
@@ -607,13 +608,13 @@ func (s *PrivateServer) handleCloseSession(response http.ResponseWriter, request
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
 		if result.Session.SessionID != "" {
-			writeJSON(response, status, sessionResponseFromRecord(result.Session, result.Duplicate))
+			s.writeSessionResponse(response, request, status, result.Session, result.Duplicate)
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
-	writeJSON(response, http.StatusAccepted, sessionResponseFromRecord(result.Session, result.Duplicate))
+	s.writeSessionResponse(response, request, http.StatusAccepted, result.Session, result.Duplicate)
 }
 
 func (s *PrivateServer) handleRunJob(response http.ResponseWriter, request *http.Request) {
@@ -1059,13 +1060,13 @@ func (s *PrivateServer) handleCreateSession(response http.ResponseWriter, reques
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
 		if result.Session.SessionID != "" {
-			writeJSON(response, status, sessionResponseFromRecord(result.Session, result.Duplicate))
+			s.writeSessionResponse(response, request, status, result.Session, result.Duplicate)
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
-	writeJSON(response, http.StatusAccepted, sessionResponseFromRecord(result.Session, result.Duplicate))
+	s.writeSessionResponse(response, request, http.StatusAccepted, result.Session, result.Duplicate)
 }
 
 func (s *PrivateServer) handleGetSession(response http.ResponseWriter, request *http.Request) {
@@ -1091,7 +1092,7 @@ func (s *PrivateServer) handleGetSession(response http.ResponseWriter, request *
 		writePrivateError(response, privateStatusForError(err), err.Error())
 		return
 	}
-	writeJSON(response, http.StatusOK, sessionResponseFromRecord(record, false))
+	s.writeSessionResponse(response, request, http.StatusOK, record, false)
 }
 
 func isSessionCollectionPath(path string) bool {
@@ -1209,7 +1210,16 @@ func parseIsolation(input *isolationRequest) domain.IsolationRequirements {
 	}
 }
 
-func sessionResponseFromRecord(record store.SessionRecord, duplicate bool) sessionResponse {
+func (s *PrivateServer) writeSessionResponse(response http.ResponseWriter, request *http.Request, status int, record store.SessionRecord, duplicate bool) {
+	environment, err := s.service.ResolveEnvironment(request.Context(), record.Environment)
+	if err != nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "session capabilities are unavailable")
+		return
+	}
+	writeJSON(response, status, sessionResponseFromRecord(record, duplicate, environment))
+}
+
+func sessionResponseFromRecord(record store.SessionRecord, duplicate bool, environment domain.Environment) sessionResponse {
 	source := sourceResponseFromRecord(record)
 	authority := "remote"
 	if record.Target.Kind() == domain.TargetKindLocal {
@@ -1224,6 +1234,7 @@ func sessionResponseFromRecord(record store.SessionRecord, duplicate bool) sessi
 		ObservedAt:        record.UpdatedAt.UTC(),
 		Environment:       record.Environment,
 		Source:            source,
+		Capabilities:      capabilitiesResponseFromEnvironment(environment),
 		RuntimeGeneration: record.RuntimeGeneration,
 		ResolvedRevision:  record.ResolvedRevision,
 		Duplicate:         duplicate,
