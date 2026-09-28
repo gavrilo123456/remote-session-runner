@@ -22,8 +22,9 @@ import (
 var ErrDirectHTTPSAPIConfiguration = errors.New("direct HTTPS API configuration is incomplete")
 
 type directHTTPSAPI struct {
-	service      *execution.Service
-	maxBodyBytes int64
+	service        *execution.Service
+	maxBodyBytes   int64
+	allocateRunIDs func() (domain.JobID, domain.SessionID, domain.CommandID, error)
 }
 
 type directCreateSessionRequest struct {
@@ -70,6 +71,16 @@ type directSubmitCommandRequest struct {
 	TimeoutSeconds json.RawMessage `json:"timeout_seconds,omitempty"`
 }
 
+type directRunJobRequest struct {
+	Environment     string          `json:"environment"`
+	ExecutionTarget targetRequest   `json:"execution_target"`
+	Source          json.RawMessage `json:"source,omitempty"`
+	Script          *string         `json:"script"`
+	TimeoutSeconds  json.RawMessage `json:"timeout_seconds,omitempty"`
+	Limits          json.RawMessage `json:"limits,omitempty"`
+	Policy          json.RawMessage `json:"policy,omitempty"`
+}
+
 type directCommandAcceptance struct {
 	ResourceID      string           `json:"resource_id"`
 	CommandID       string           `json:"command_id"`
@@ -104,19 +115,56 @@ type directCommandReadResponse struct {
 	Resource directCommandResource `json:"resource"`
 }
 
+type directJobAcceptance struct {
+	ResourceID      string           `json:"resource_id"`
+	JobID           string           `json:"job_id"`
+	SessionID       string           `json:"session_id"`
+	CommandID       string           `json:"command_id"`
+	AcceptanceScope string           `json:"acceptance_scope"`
+	ExecutionTarget targetResponse   `json:"execution_target"`
+	KnownState      directKnownState `json:"known_state"`
+}
+
+type directJobResource struct {
+	JobID                   string                      `json:"job_id"`
+	SessionID               string                      `json:"session_id"`
+	CommandID               string                      `json:"command_id"`
+	Phase                   string                      `json:"phase"`
+	CommandState            *string                     `json:"command_state,omitempty"`
+	ExitCode                *int                        `json:"exit_code,omitempty"`
+	FinalEventSequence      *int64                      `json:"final_event_sequence,omitempty"`
+	OutputComplete          bool                        `json:"output_complete"`
+	OutputTruncated         bool                        `json:"output_truncated"`
+	OutputUnavailableReason string                      `json:"output_unavailable_reason,omitempty"`
+	TeardownState           string                      `json:"teardown_state"`
+	ExecutionTarget         targetResponse              `json:"execution_target"`
+	Authority               string                      `json:"authority"`
+	Controller              controllerRequest           `json:"controller"`
+	ObservedAt              time.Time                   `json:"observed_at"`
+	Environment             string                      `json:"environment"`
+	Source                  sourceResponse              `json:"source"`
+	Capabilities            commandCapabilitiesResponse `json:"capabilities"`
+}
+
+type directJobReadResponse struct {
+	View     string            `json:"view"`
+	IsStale  bool              `json:"is_stale"`
+	Resource directJobResource `json:"resource"`
+}
+
 type directAPIError struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
 }
 
-// NewDirectHTTPSAPIHandler creates the public v1 session routes over the same
-// authoritative service used by runnerd's private API and SSH bridge.
+// NewDirectHTTPSAPIHandler creates the public v1 session and job routes over
+// the same authoritative service used by runnerd's private API and SSH bridge.
 func NewDirectHTTPSAPIHandler(service *execution.Service) (http.Handler, error) {
 	if service == nil {
 		return nil, ErrDirectHTTPSAPIConfiguration
 	}
-	return &directHTTPSAPI{service: service, maxBodyBytes: domain.MaxSerializedRequestBytes}, nil
+	return &directHTTPSAPI{service: service, maxBodyBytes: domain.MaxSerializedRequestBytes, allocateRunIDs: newDirectRunIDs}, nil
 }
 
 func (s *directHTTPSAPI) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -130,6 +178,22 @@ func (s *directHTTPSAPI) ServeHTTP(response http.ResponseWriter, request *http.R
 			return
 		}
 		s.handleCreateSession(response, request)
+		return
+	}
+	if request.URL.Path == "/v1/jobs" {
+		if request.Method != http.MethodPost {
+			writeDirectError(response, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+			return
+		}
+		s.handleRunJob(response, request)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, "/v1/jobs/") {
+		if request.Method != http.MethodGet {
+			writeDirectError(response, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+			return
+		}
+		s.handleGetJob(response, request)
 		return
 	}
 	if strings.HasPrefix(request.URL.Path, "/v1/sessions/") && strings.HasSuffix(request.URL.Path, "/commands") {
@@ -295,6 +359,203 @@ func (s *directHTTPSAPI) handleCreateSession(response http.ResponseWriter, reque
 	// happened even if runtime preparation already moved that record to a
 	// terminal state. Report its stable ID and current known state.
 	writeJSON(response, http.StatusAccepted, directSessionAcceptanceFromRecord(result.Session))
+}
+
+func (s *directHTTPSAPI) handleRunJob(response http.ResponseWriter, request *http.Request) {
+	principal, ok := DirectPrincipalFromContext(request.Context())
+	if !ok || principal.Controller.Type() != domain.ControllerTypeDirectMTLS || principal.Controller.ID() == "" {
+		writeDirectError(response, http.StatusForbidden, "environment_forbidden", "a mapped direct client identity is required")
+		return
+	}
+	idempotencyKey := request.Header.Get("Idempotency-Key")
+	if strings.TrimSpace(idempotencyKey) == "" || len(idempotencyKey) > 256 || strings.IndexByte(idempotencyKey, 0) >= 0 {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "a valid Idempotency-Key header is required")
+		return
+	}
+	body, err := s.readRequestBody(request)
+	if err != nil {
+		writeDirectRequestBodyError(response, err)
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var input directRunJobRequest
+	if err := decoder.Decode(&input); err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "malformed or unsupported job request JSON")
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "request body must contain one JSON value")
+		return
+	}
+	if _, err := domain.CanonicalizeMutationRequestJSON("run", body, domain.CanonicalizationOptions{}); err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "job request JSON is not canonicalizable")
+		return
+	}
+	if strings.TrimSpace(input.Environment) == "" || strings.IndexByte(input.Environment, 0) >= 0 || input.Script == nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "environment and script are required")
+		return
+	}
+	target, err := domain.NewExecutionTarget(domain.TargetKind(input.ExecutionTarget.Kind), input.ExecutionTarget.Profile)
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "execution_target must name a supported kind and profile")
+		return
+	}
+	if target.Kind() != domain.TargetKindRemote {
+		writeDirectError(response, http.StatusUnprocessableEntity, "environment_target_mismatch", "direct HTTPS accepts remote targets only")
+		return
+	}
+	sourceInput, err := decodeOptionalDirectObject[sourceRequest](input.Source)
+	if err != nil || len(input.Source) > 0 && (sourceInput == nil || sourceInput.Mode == "") {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "source must be a supported JSON object")
+		return
+	}
+	source, err := parseSource(sourceInput)
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "source is invalid for a job request")
+		return
+	}
+	limitsInput, err := decodeOptionalDirectObject[limitsRequest](input.Limits)
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "limits must be a supported JSON object")
+		return
+	}
+	limits, err := parseDirectRequestedLimits(limitsInput)
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "requested limits are invalid")
+		return
+	}
+	commandTimeout, err := directCommandTimeout(input.TimeoutSeconds)
+	if err != nil || commandTimeout > 0 && limits.CommandTimeout > 0 && commandTimeout != limits.CommandTimeout {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "timeout_seconds conflicts with limits.command_timeout_seconds")
+		return
+	}
+	if commandTimeout > 0 {
+		limits.CommandTimeout = commandTimeout
+	}
+	policy, err := decodeOptionalDirectObject[map[string]any](input.Policy)
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "policy must be a JSON object")
+		return
+	}
+	var policyValue map[string]any
+	if policy != nil {
+		policyValue = *policy
+	}
+	if err := domain.ValidateScriptUTF8(*input.Script); err != nil {
+		if errors.Is(err, domain.ErrScriptTooLarge) {
+			writeDirectError(response, http.StatusRequestEntityTooLarge, "invalid_request", "script exceeds the 128 KiB UTF-8 limit")
+		} else {
+			writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "script must be valid UTF-8")
+		}
+		return
+	}
+	canonical, err := canonicalRunPayload(input.Environment, target, source, *input.Script, limits, domain.IsolationRequirements{}, policyValue)
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "job request cannot be canonicalized")
+		return
+	}
+	if err := domain.ValidateSerializedRequest(canonical); err != nil {
+		if errors.Is(err, domain.ErrSerializedInputTooLarge) {
+			writeDirectError(response, http.StatusRequestEntityTooLarge, "invalid_request", "canonical job request exceeds the 1 MiB limit")
+		} else {
+			writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "job request is invalid")
+		}
+		return
+	}
+	hash, err := domain.HashMutationRequestJSON("run", canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "job request cannot be hashed")
+		return
+	}
+	jobID, sessionID, commandID, err := s.allocateRunIDs()
+	if err != nil {
+		writeDirectError(response, http.StatusServiceUnavailable, "runtime_unavailable", "could not allocate job identities")
+		return
+	}
+	result, serviceErr := s.service.RunJob(request.Context(), execution.RunJobRequest{
+		Acceptance: store.JobAcceptance{
+			JobID: jobID, SessionID: sessionID, CommandID: commandID, Controller: principal.Controller,
+			IdempotencyKey: idempotencyKey, RequestHash: hash, Environment: input.Environment,
+			Target: target, Source: source, Script: *input.Script, CanonicalPayload: canonical,
+			IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+		},
+		RequestedLimits: limits, MaxActiveSessions: store.DefaultActiveSessionLimit,
+		IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	})
+	if serviceErr != nil && result.Job.JobID == "" {
+		status, code, message := directJobError(serviceErr)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	// A durable job row is the acceptance boundary. The read route returns its
+	// command and teardown outcomes even when the coordinator reports failure.
+	writeJSON(response, http.StatusAccepted, directJobAcceptanceFromRecord(result.Job))
+}
+
+func (s *directHTTPSAPI) handleGetJob(response http.ResponseWriter, request *http.Request) {
+	principal, ok := DirectPrincipalFromContext(request.Context())
+	if !ok || principal.Controller.Type() != domain.ControllerTypeDirectMTLS || principal.Controller.ID() == "" {
+		writeDirectError(response, http.StatusForbidden, "environment_forbidden", "a mapped direct client identity is required")
+		return
+	}
+	jobID, err := directJobIDFromPath(request.URL)
+	if err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "job path contains an invalid ID")
+		return
+	}
+	record, err := s.service.GetJob(request.Context(), jobID, principal.Controller)
+	if err != nil {
+		status, code, message := directJobError(err)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	environment, err := s.service.ResolveEnvironment(request.Context(), record.Environment)
+	if err != nil {
+		writeDirectError(response, http.StatusServiceUnavailable, "runtime_unavailable", "job capabilities are unavailable")
+		return
+	}
+	writeJSON(response, http.StatusOK, directJobReadResponse{
+		View: "authority", IsStale: false, Resource: directJobResourceFromRecord(record, environment),
+	})
+}
+
+func directJobAcceptanceFromRecord(record store.JobRecord) directJobAcceptance {
+	known := directKnownState{}
+	if record.CommandState != nil {
+		known.CommandState = string(*record.CommandState)
+	}
+	return directJobAcceptance{
+		ResourceID: string(record.JobID), JobID: string(record.JobID), SessionID: string(record.SessionID),
+		CommandID: string(record.CommandID), AcceptanceScope: "target_authority",
+		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()}, KnownState: known,
+	}
+}
+
+func directJobResourceFromRecord(record store.JobRecord, environment domain.Environment) directJobResource {
+	authority := "remote"
+	if record.Target.Kind() == domain.TargetKindLocal {
+		authority = "local"
+	}
+	return directJobResource{
+		JobID: string(record.JobID), SessionID: string(record.SessionID), CommandID: string(record.CommandID),
+		Phase: string(record.Phase), CommandState: commandStatePointer(record.CommandState), ExitCode: record.ExitCode,
+		FinalEventSequence: record.FinalEventSequence, OutputComplete: record.OutputComplete, OutputTruncated: record.OutputTruncated,
+		OutputUnavailableReason: record.OutputUnavailableReason, TeardownState: string(record.TeardownState),
+		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()}, Authority: authority,
+		Controller: controllerRequest{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())},
+		ObservedAt: record.UpdatedAt.UTC(), Environment: record.Environment, Source: sourceResponseFromJobRecord(record),
+		Capabilities: capabilitiesResponseFromEnvironment(environment),
+	}
+}
+
+func sourceResponseFromJobRecord(record store.JobRecord) sourceResponse {
+	portable := record.Source.Portable()
+	return sourceResponse{
+		Mode: string(record.Source.Mode()), RepositoryAlias: record.Source.RepositoryAlias(),
+		RequestedRevision: record.Source.RequestedRevision(), Path: record.Source.Path(), Portable: &portable,
+	}
 }
 
 func (s *directHTTPSAPI) handleGetSession(response http.ResponseWriter, request *http.Request) {
@@ -789,6 +1050,26 @@ func newDirectCommandID() (domain.CommandID, error) {
 	return domain.NewCommandID("cmd-" + hex.EncodeToString(random[:]))
 }
 
+func newDirectRunIDs() (domain.JobID, domain.SessionID, domain.CommandID, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", "", "", err
+	}
+	jobID, err := domain.NewJobID("job-" + hex.EncodeToString(random[:]))
+	if err != nil {
+		return "", "", "", err
+	}
+	sessionID, err := newDirectSessionID()
+	if err != nil {
+		return "", "", "", err
+	}
+	commandID, err := newDirectCommandID()
+	if err != nil {
+		return "", "", "", err
+	}
+	return jobID, sessionID, commandID, nil
+}
+
 func directSessionIDFromPath(requestURL *url.URL) (domain.SessionID, error) {
 	const prefix = "/v1/sessions/"
 	if requestURL == nil || !strings.HasPrefix(requestURL.Path, prefix) {
@@ -827,6 +1108,19 @@ func directCommandIDFromPath(requestURL *url.URL) (domain.CommandID, error) {
 		return "", errors.New("command path ID is invalid")
 	}
 	return domain.NewCommandID(idText)
+}
+
+func directJobIDFromPath(requestURL *url.URL) (domain.JobID, error) {
+	const prefix = "/v1/jobs/"
+	if requestURL == nil || !strings.HasPrefix(requestURL.Path, prefix) {
+		return "", errors.New("job path prefix is invalid")
+	}
+	rawID := strings.TrimPrefix(requestURL.EscapedPath(), prefix)
+	idText, err := url.PathUnescape(rawID)
+	if err != nil || idText == "" || strings.Contains(idText, "/") {
+		return "", errors.New("job path ID is invalid")
+	}
+	return domain.NewJobID(idText)
 }
 
 func directCommandCancelIDFromPath(requestURL *url.URL) (domain.CommandID, error) {
@@ -905,6 +1199,33 @@ func directCommandError(err error) (int, string, string) {
 		return http.StatusServiceUnavailable, "runtime_unavailable", "command authority is unavailable"
 	default:
 		return http.StatusServiceUnavailable, "runtime_unavailable", "command request could not be completed"
+	}
+}
+
+func directJobError(err error) (int, string, string) {
+	switch {
+	case errors.Is(err, store.ErrJobNotFound):
+		return http.StatusNotFound, "resource_not_found", "job not found"
+	case errors.Is(err, execution.ErrSessionController):
+		return http.StatusForbidden, "controller_mismatch", "job belongs to another controller"
+	case errors.Is(err, domain.ErrControllerMismatch):
+		return http.StatusForbidden, "environment_forbidden", "controller is not authorized for this environment"
+	case errors.Is(err, store.ErrIdempotencyConflict), errors.Is(err, store.ErrJobExists):
+		return http.StatusConflict, "idempotency_conflict", "Idempotency-Key or job identity conflicts with an existing request"
+	case errors.Is(err, domain.ErrScriptTooLarge):
+		return http.StatusRequestEntityTooLarge, "invalid_request", "script exceeds the 128 KiB UTF-8 limit"
+	case errors.Is(err, store.ErrSessionCapacityExceeded):
+		return http.StatusTooManyRequests, "quota_exceeded", "active session capacity is full"
+	case errors.Is(err, execution.ErrEnvironmentUnavailable):
+		return http.StatusUnprocessableEntity, "invalid_request", "environment is not configured"
+	case errors.Is(err, domain.ErrEnvironmentTargetMismatch):
+		return http.StatusUnprocessableEntity, "environment_target_mismatch", "environment does not allow the requested target"
+	case errors.Is(err, domain.ErrEnvironmentSourceMismatch), errors.Is(err, domain.ErrRepositoryAliasNotAllowed), errors.Is(err, domain.ErrUnsupportedIsolationRequirement), errors.Is(err, domain.ErrInvalidRequestedLimits), errors.Is(err, domain.ErrLimitExceedsServiceCeiling), errors.Is(err, domain.ErrInvalidSource), errors.Is(err, domain.ErrInvalidTargetKind), errors.Is(err, domain.ErrEmptyTargetProfile), errors.Is(err, domain.ErrScriptInvalidUTF8), errors.Is(err, store.ErrIdempotencyKey), errors.Is(err, store.ErrInvalidJob):
+		return http.StatusUnprocessableEntity, "invalid_request", "job request is invalid for the selected environment"
+	case errors.Is(err, execution.ErrRuntimeUnavailable), errors.Is(err, execution.ErrExecutionServiceConfiguration):
+		return http.StatusServiceUnavailable, "runtime_unavailable", "job authority is unavailable"
+	default:
+		return http.StatusServiceUnavailable, "runtime_unavailable", "job request could not be completed"
 	}
 }
 

@@ -372,6 +372,55 @@ func TestP003OpenAPIRoutesAndSecurity(t *testing.T) {
 	}
 }
 
+func TestP110OpenAPIJobLimitsAndOutcomes(t *testing.T) {
+	document := p003OpenAPIDoc(t)
+	createJob := p003OperationAt(t, document, "post", "/v1/jobs")
+	responses := p003Object(t, createJob["responses"], "create job responses")
+	for _, status := range []string{"202", "400", "403", "409", "413", "422", "429", "503"} {
+		if _, ok := responses[status]; !ok {
+			t.Errorf("POST /v1/jobs does not document HTTP %s", status)
+		}
+	}
+	if ref := p003Object(t, responses["413"], "job request too large response")["$ref"]; ref != "#/components/responses/InvalidRequest" {
+		t.Errorf("job 413 response ref = %v, want InvalidRequest", ref)
+	}
+	requestRef, ok := p003RequestSchemaRef(t, document, createJob)
+	if !ok || requestRef != "#/components/schemas/CreateJobRequest" {
+		t.Fatalf("job request schema ref = %q, want CreateJobRequest", requestRef)
+	}
+	requestSchema := p003Object(t, p003At(t, document, requestRef), "CreateJobRequest schema")
+	properties := p003Object(t, requestSchema["properties"], "CreateJobRequest properties")
+	script := p003Object(t, properties["script"], "CreateJobRequest script")
+	if script["x-runner-max-utf8-bytes"] != json.Number("131072") {
+		t.Errorf("job script limit = %v, want 131072 UTF-8 bytes", script["x-runner-max-utf8-bytes"])
+	}
+	timeout := p003Object(t, properties["timeout_seconds"], "CreateJobRequest timeout_seconds")
+	if !strings.Contains(timeout["description"].(string), "limits.command_timeout_seconds") {
+		t.Error("timeout_seconds does not document its shared command-timeout field")
+	}
+	limits := p003Object(t, properties["limits"], "CreateJobRequest limits")
+	limitProperties := p003Object(t, limits["properties"], "CreateJobRequest limit properties")
+	for _, name := range []string{"command_timeout_seconds", "idle_timeout_seconds", "session_max_lifetime_seconds", "output_bytes_per_command"} {
+		if _, ok := limitProperties[name]; !ok {
+			t.Errorf("CreateJobRequest limits does not document %s", name)
+		}
+	}
+	if limits["additionalProperties"] != false {
+		t.Error("CreateJobRequest limits must reject unsupported limit fields")
+	}
+	getJob := p003OperationAt(t, document, "get", "/v1/jobs/{job_id}")
+	getResponses := p003Object(t, getJob["responses"], "get job responses")
+	if _, ok := getResponses["503"]; !ok {
+		t.Error("GET /v1/jobs/{job_id} does not document unavailable capability resolution")
+	}
+	jobRead := p003Object(t, p003At(t, document, "#/components/schemas/JobResource"), "JobResource schema")
+	jobProperties := p003Object(t, jobRead["properties"], "JobResource properties")
+	teardown := p003Object(t, jobProperties["teardown_state"], "JobResource teardown state")
+	if !containsP003(teardown["enum"].([]any), "lost") {
+		t.Error("JobResource teardown_state must expose lost runtime teardown")
+	}
+}
+
 func TestP003ContractFixtures(t *testing.T) {
 	document := p003OpenAPIDoc(t)
 	compiler := p003CompileSchemas(t, document)

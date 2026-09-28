@@ -147,9 +147,12 @@
         "requestBody": { "$ref": "#/components/requestBodies/CreateJob" },
         "responses": {
           "202": { "$ref": "#/components/responses/JobAccepted" },
+          "400": { "$ref": "#/components/responses/InvalidRequest" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/InvalidRequest" },
           "422": { "$ref": "#/components/responses/InvalidRequest" },
+          "429": { "$ref": "#/components/responses/QuotaExceeded" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
@@ -162,7 +165,8 @@
         "responses": {
           "200": { "$ref": "#/components/responses/JobRead" },
           "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
     }
@@ -195,6 +199,7 @@
       "Forbidden": { "description": "Caller is not the controller for this resource.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "NotFound": { "description": "Resource does not exist or is not visible to this controller.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "InvalidRequest": { "description": "Invalid input or target/environment combination.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+      "QuotaExceeded": { "description": "The target authority has no available session capacity.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "Unavailable": { "description": "Store or runtime unavailable before acceptance; same key/ID may be retried within its guarantee window.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
     },
     "headers": {
@@ -236,7 +241,24 @@
       },
       "CreateJobRequest": {
         "type": "object",
-        "properties": { "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "source": { "$ref": "#/components/schemas/Source" }, "script": { "type": "string", "description": "UTF-8 shell script; at most 131072 UTF-8 bytes.", "x-runner-max-utf8-bytes": 131072 }, "timeout_seconds": { "type": "integer", "minimum": 1 }, "limits": { "type": "object" }, "policy": { "type": "object" } },
+        "properties": {
+          "environment": { "type": "string", "minLength": 1 },
+          "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" },
+          "source": { "$ref": "#/components/schemas/Source" },
+          "script": { "type": "string", "description": "UTF-8 shell script; at most 131072 UTF-8 bytes.", "x-runner-max-utf8-bytes": 131072 },
+          "timeout_seconds": { "type": "integer", "minimum": 1, "description": "Alias for limits.command_timeout_seconds. If both are supplied, the values must match." },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "command_timeout_seconds": { "type": "integer", "minimum": 0 },
+              "idle_timeout_seconds": { "type": "integer", "minimum": 0 },
+              "session_max_lifetime_seconds": { "type": "integer", "minimum": 0 },
+              "output_bytes_per_command": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          },
+          "policy": { "type": "object" }
+        },
         "required": ["environment", "execution_target", "script"],
         "additionalProperties": false,
         "allOf": [
