@@ -289,24 +289,33 @@ func p123MirrorUntilOutput(t *testing.T, ctx context.Context, authority *store.A
 	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	for {
+		if err := deadline.Err(); err != nil {
+			cursor, cursorErr := authority.GetRemoteEventCursor(context.Background(), commandID)
+			t.Fatalf("remote command %s did not publish %q before timeout: %v (mirrored cursor=%d, cursor error=%v)", commandID, marker, err, cursor, cursorErr)
+		}
 		if _, err := remote.MirrorCommandEvents(deadline, commandID, controller); err != nil {
 			t.Fatalf("mirror events before outage: %v", err)
 		}
-		_, events, err := authority.GetRemoteCommandWithEvents(deadline, commandID)
-		if err == nil {
-			var output strings.Builder
-			for _, event := range events {
-				if event.Type == "stdout" {
-					output.Write(event.Payload)
-				}
+		// Event mirroring can precede creation of the read-only command
+		// projection. Inspect the durable event mirror directly while waiting
+		// for output; GetRemoteCommandWithEvents intentionally requires both.
+		events, err := authority.ListRemoteEvents(deadline, commandID, 0)
+		if err != nil {
+			t.Fatalf("read mirrored events before outage: %v", err)
+		}
+		var output strings.Builder
+		for _, event := range events {
+			if event.Type == "stdout" {
+				output.Write(event.Payload)
 			}
-			if strings.Contains(output.String(), marker) {
-				return int64(len(events))
-			}
+		}
+		if strings.Contains(output.String(), marker) {
+			return int64(len(events))
 		}
 		select {
 		case <-deadline.Done():
-			t.Fatalf("remote command %s did not publish %q before timeout: %v", commandID, marker, deadline.Err())
+			// The next loop reports the current durable cursor without starting
+			// another SSH request on an expired context.
 		case <-time.After(120 * time.Millisecond):
 		}
 	}
