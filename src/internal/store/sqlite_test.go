@@ -108,6 +108,9 @@ func TestP011_RejectsUnsafeDatabasePathsAndModes(t *testing.T) {
 		if err := os.Mkdir(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.Chmod(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := Open(context.Background(), path); !errors.Is(err, ErrDatabasePermissions) {
 			t.Fatalf("Open(insecure parent) error = %v, want ErrDatabasePermissions", err)
 		}
@@ -120,6 +123,9 @@ func TestP011_RejectsUnsafeDatabasePathsAndModes(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(path, nil, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o640); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Open(context.Background(), path); !errors.Is(err, ErrDatabasePermissions) {
