@@ -204,17 +204,43 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
 	deniedEnvironment := p124RunCLI("local", "", "session", "create", "--no-wait",
 		"--environment", "p124-unconfigured-environment", "--target", "local", "--profile", "mac-workstation",
 		"--idempotency-key", "p124-denied-environment")
-	if deniedEnvironment.code == 0 {
-		t.Fatalf("unknown local environment was accepted: %+v", deniedEnvironment)
+	deniedSessionID := p124RequireField(t, deniedEnvironment.stdout, "session_id")
+	if deniedEnvironment.code != 0 || !strings.Contains(deniedEnvironment.stdout, "acceptance_scope: local_intent") ||
+		!strings.Contains(deniedEnvironment.stdout, "delivery_state: recorded") ||
+		!strings.Contains(deniedEnvironment.stdout, "readiness: pending (not waited") {
+		t.Fatalf("unknown local environment intent result=%+v; want honest local-intent acceptance before target validation", deniedEnvironment)
+	}
+	deniedIntent, err := h.authority.GetLocalIntentByResource(ctx, "create_session", deniedSessionID, owner)
+	if err != nil {
+		t.Fatalf("load unknown-environment local intent before dispatch: %v", err)
+	}
+	if deniedIntent.DeliveryState != store.LocalIntentRecorded {
+		t.Fatalf("unknown-environment intent before dispatch has delivery state %q, want recorded", deniedIntent.DeliveryState)
+	}
+	if _, _, err := localDriver.DispatchIntent(ctx, deniedIntent.IntentID); !errors.Is(err, dispatcher.ErrLocaldRejected) {
+		t.Fatalf("local worker error for unknown environment = %v, want a target rejection", err)
+	}
+	deniedIntent, err = h.authority.GetLocalIntent(ctx, deniedIntent.IntentID)
+	if err != nil {
+		t.Fatalf("reload rejected local intent: %v", err)
+	}
+	if deniedIntent.DeliveryState != store.LocalIntentNotDelivered || deniedIntent.Reason != "locald_rejected" {
+		t.Fatalf("unknown-environment intent after target rejection = state %q reason %q, want not_delivered/locald_rejected", deniedIntent.DeliveryState, deniedIntent.Reason)
+	}
+	deniedStatus := p124RunCLI("local", "", "session", "status", deniedSessionID)
+	if deniedStatus.code != 0 || !strings.Contains(deniedStatus.stdout, "session_state: not_delivered") ||
+		!strings.Contains(deniedStatus.stdout, "delivery_state: not_delivered") {
+		t.Fatalf("CLI status after target rejection=%+v; want a truthful not_delivered intent view", deniedStatus)
 	}
 	ubuntuAuditAfter := p124UbuntuAuditHighWater(t, inspectSSHIdentity, knownHosts)
 	ubuntuLogSince := time.Now().Add(-time.Second).Unix()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
 	localCreate := p124RunDelayedCreate(t, ctx, h.authority, localDriver, remoteDriver, owner, queuedController,
 		"mac-dev", "local", "mac-workstation", "p124-local-create")
 	localSessionID := p124RequireField(t, localCreate.stdout, "session_id")
@@ -321,7 +347,7 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 			macAuditActions[row.Action][row.Ingress] = map[audit.Outcome]int{}
 		}
 		macAuditActions[row.Action][row.Ingress][row.Outcome]++
-		if row.Action == audit.ActionCreate && row.Ingress == audit.IngressLocalUnix && row.Outcome == audit.OutcomeDenied &&
+		if row.Action == audit.ActionCreate && row.Ingress == audit.IngressLocalWorker && row.Outcome == audit.OutcomeDenied &&
 			row.ReasonCode == audit.ReasonEnvironmentDenied && row.Environment == "p124-unconfigured-environment" {
 			macDeniedEnvironment = true
 		}
@@ -335,7 +361,7 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 		}
 	}
 	if !macDeniedEnvironment {
-		t.Errorf("Mac audit rows omitted the denied local_unix unconfigured-environment action: %+v", auditRows)
+		t.Errorf("Mac audit rows omitted the denied local_executor unconfigured-environment action: %+v", auditRows)
 	}
 	logs := structuredAuditLogs.String()
 	p124AssertMacAuditLogs(t, logs)
@@ -455,7 +481,7 @@ func p124AssertMacAuditLogs(t *testing.T, logs string) {
 			t.Errorf("Mac audit log has invalid timestamp %q: %+v", record.OccurredAt, record)
 		}
 		if record.Outcome == string(audit.OutcomeDenied) {
-			if record.Action != string(audit.ActionCreate) || record.Ingress != string(audit.IngressLocalUnix) ||
+			if record.Action != string(audit.ActionCreate) || record.Ingress != string(audit.IngressLocalWorker) ||
 				record.Environment != "p124-unconfigured-environment" || record.ReasonCode != audit.ReasonEnvironmentDenied || record.SessionID == "" {
 				t.Errorf("unexpected Mac denied audit record: %+v", record)
 			}
