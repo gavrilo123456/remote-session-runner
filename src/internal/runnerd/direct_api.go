@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,11 +12,13 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 )
 
@@ -158,6 +161,30 @@ type directAPIError struct {
 	Retryable bool   `json:"retryable"`
 }
 
+type directCommandEvent struct {
+	CommandID  string    `json:"command_id"`
+	Sequence   int64     `json:"sequence"`
+	Type       string    `json:"type"`
+	Timestamp  time.Time `json:"timestamp"`
+	Ordinal    int64     `json:"ordinal,omitempty"`
+	Encoding   string    `json:"encoding,omitempty"`
+	DataBase64 string    `json:"data_base64,omitempty"`
+	ByteCount  int64     `json:"byte_count,omitempty"`
+}
+
+type directEventHistoryDetails struct {
+	OutputComplete          bool   `json:"output_complete"`
+	OutputUnavailableReason string `json:"output_unavailable_reason"`
+}
+
+type directEventHistoryError struct {
+	Code       string                    `json:"code"`
+	Message    string                    `json:"message"`
+	Retryable  bool                      `json:"retryable"`
+	ResourceID string                    `json:"resource_id"`
+	Details    directEventHistoryDetails `json:"details"`
+}
+
 // NewDirectHTTPSAPIHandler creates the public v1 session and job routes over
 // the same authoritative service used by runnerd's private API and SSH bridge.
 func NewDirectHTTPSAPIHandler(service *execution.Service) (http.Handler, error) {
@@ -210,6 +237,14 @@ func (s *directHTTPSAPI) ServeHTTP(response http.ResponseWriter, request *http.R
 			return
 		}
 		s.handleCancelCommand(response, request)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, "/v1/commands/") && strings.HasSuffix(request.URL.Path, "/events") {
+		if request.Method != http.MethodGet {
+			writeDirectError(response, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+			return
+		}
+		s.handleGetCommandEvents(response, request)
 		return
 	}
 	if strings.HasPrefix(request.URL.Path, "/v1/sessions/") {
@@ -762,6 +797,144 @@ func (s *directHTTPSAPI) handleGetCommand(response http.ResponseWriter, request 
 		Capabilities:            capabilitiesResponseFromEnvironment(environment),
 	}
 	writeJSON(response, http.StatusOK, directCommandReadResponse{View: "authority", IsStale: false, Resource: resource})
+}
+
+func (s *directHTTPSAPI) handleGetCommandEvents(response http.ResponseWriter, request *http.Request) {
+	principal, ok := DirectPrincipalFromContext(request.Context())
+	if !ok || principal.Controller.Type() != domain.ControllerTypeDirectMTLS || principal.Controller.ID() == "" {
+		writeDirectError(response, http.StatusForbidden, "environment_forbidden", "a mapped direct client identity is required")
+		return
+	}
+	commandID, err := directCommandEventsIDFromPath(request.URL)
+	if err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", "command events path contains an invalid ID")
+		return
+	}
+	after, err := directEventCursor(request.URL.Query())
+	if err != nil {
+		writeDirectError(response, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	command, err := s.service.GetCommand(request.Context(), commandID, principal.Controller)
+	if err != nil {
+		status, code, message := directCommandError(err)
+		writeDirectError(response, status, code, message)
+		return
+	}
+	if command.OutputUnavailableReason == "retention_expired" {
+		writeDirectEventHistoryError(response, commandID, "retention_expired")
+		return
+	}
+	events, err := s.service.ReplayCommandEvents(request.Context(), commandID, principal.Controller, after)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrCommandReplayExpired):
+			writeDirectEventHistoryError(response, commandID, "retention_expired")
+		case errors.Is(err, store.ErrCommandReplayGap):
+			writeDirectEventHistoryError(response, commandID, "remote_event_gap")
+		default:
+			status, code, message := directCommandError(err)
+			writeDirectError(response, status, code, message)
+		}
+		return
+	}
+
+	// Validate every frame before committing response headers. This ensures a
+	// corrupt or overlarge stored event cannot turn an unavailable range into
+	// a successful partial NDJSON response.
+	for _, event := range events {
+		if _, err := encodeDirectCommandEvent(event, command.Ordinal); err != nil {
+			writeDirectError(response, http.StatusServiceUnavailable, "runtime_unavailable", "stored command event exceeds the supported frame limit")
+			return
+		}
+	}
+	response.Header().Set("Content-Type", "application/x-ndjson")
+	response.Header().Set("X-Runner-View", "authority")
+	response.Header().Set("X-Runner-Stale", "false")
+	response.WriteHeader(http.StatusOK)
+	for _, event := range events {
+		frame, err := encodeDirectCommandEvent(event, command.Ordinal)
+		if err != nil {
+			return
+		}
+		if _, err := response.Write(frame); err != nil {
+			return
+		}
+	}
+}
+
+func directEventCursor(query url.Values) (int64, error) {
+	for key, values := range query {
+		if key != "after" && key != "follow" {
+			return 0, errors.New("unsupported event query parameter")
+		}
+		if len(values) != 1 {
+			return 0, errors.New("event query parameter must occur once")
+		}
+	}
+	if follow := query.Get("follow"); follow != "" && follow != "false" {
+		if follow == "true" {
+			return 0, errors.New("follow must be false for replay requests")
+		}
+		return 0, errors.New("follow must be true or false")
+	}
+	value := query.Get("after")
+	if value == "" {
+		return 0, nil
+	}
+	cursor, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || cursor < 0 {
+		return 0, errors.New("invalid event cursor")
+	}
+	return cursor, nil
+}
+
+func encodeDirectCommandEvent(event store.CommandEventRecord, ordinal int64) ([]byte, error) {
+	value := directCommandEvent{
+		CommandID: string(event.CommandID), Sequence: event.Sequence,
+		Type: event.Type, Timestamp: event.OccurredAt.UTC(),
+	}
+	if event.Type == "command_queued" {
+		value.Ordinal = ordinal
+	}
+	if event.Type == "stdout" || event.Type == "stderr" {
+		if len(event.Payload) == 0 || len(event.Payload) > hostruntime.MaxOutputChunkBytes || int64(len(event.Payload)) != event.ByteCount {
+			return nil, domain.ErrSerializedInputTooLarge
+		}
+		value.Encoding = "base64"
+		value.DataBase64 = base64.StdEncoding.EncodeToString(event.Payload)
+		value.ByteCount = event.ByteCount
+	}
+	frame, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	if err := domain.ValidateSerializedFrame(frame); err != nil {
+		return nil, err
+	}
+	return append(frame, '\n'), nil
+}
+
+func directCommandEventsIDFromPath(requestURL *url.URL) (domain.CommandID, error) {
+	const prefix = "/v1/commands/"
+	const suffix = "/events"
+	if requestURL == nil || !strings.HasPrefix(requestURL.Path, prefix) || !strings.HasSuffix(requestURL.Path, suffix) {
+		return "", errors.New("command events path is invalid")
+	}
+	rawID := strings.TrimSuffix(strings.TrimPrefix(requestURL.EscapedPath(), prefix), suffix)
+	idText, err := url.PathUnescape(rawID)
+	if err != nil || idText == "" || strings.Contains(idText, "/") {
+		return "", errors.New("command events path ID is invalid")
+	}
+	return domain.NewCommandID(idText)
+}
+
+func writeDirectEventHistoryError(response http.ResponseWriter, commandID domain.CommandID, reason string) {
+	writeJSON(response, http.StatusGone, directEventHistoryError{
+		Code: "event_history_unavailable", Message: "requested event history is unavailable", Retryable: false,
+		ResourceID: string(commandID),
+		Details:    directEventHistoryDetails{OutputComplete: false, OutputUnavailableReason: reason},
+	})
 }
 
 func (s *directHTTPSAPI) handleCancelCommand(response http.ResponseWriter, request *http.Request) {

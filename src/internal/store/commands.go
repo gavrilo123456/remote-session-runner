@@ -32,6 +32,8 @@ var (
 	ErrCommandTerminal = errors.New("command is already terminal")
 	// ErrCommandReplayGap means a requested event range is not contiguous.
 	ErrCommandReplayGap = errors.New("command event replay has a gap")
+	// ErrCommandReplayExpired means output retention removed the requested history.
+	ErrCommandReplayExpired = errors.New("command event replay history has expired")
 	// ErrCommandTransition means a command state/event transaction is invalid.
 	ErrCommandTransition = errors.New("invalid command state transition")
 )
@@ -442,22 +444,26 @@ func (s *AuthorityStore) ReplayCommandEvents(ctx context.Context, id domain.Comm
 	if afterSequence < 0 {
 		return nil, fmt.Errorf("%w: negative cursor", ErrCommandReplayGap)
 	}
-	connection, err := s.db.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("acquire replay connection: %w", err)
-	}
-	defer connection.Close()
-	if _, err := readCommandOnConnection(ctx, connection, validatedID); err != nil {
-		return nil, err
-	}
-	var unavailable string
-	if err := connection.QueryRowContext(ctx, "SELECT output_unavailable_reason FROM exec_commands WHERE command_id = ?", string(validatedID)).Scan(&unavailable); err != nil {
-		return nil, fmt.Errorf("read command retention state: %w", err)
-	}
-	if unavailable == "retention_expired" {
-		return []CommandEventRecord{}, nil
-	}
-	return readCommandEventsOnConnection(ctx, connection, validatedID, afterSequence)
+	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]CommandEventRecord, error) {
+		command, err := readCommandOnConnection(ctx, connection, validatedID)
+		if err != nil {
+			return nil, err
+		}
+		if command.OutputUnavailableReason == "retention_expired" {
+			return nil, ErrCommandReplayExpired
+		}
+		events, err := readCommandEventsOnConnection(ctx, connection, validatedID, afterSequence)
+		if err != nil {
+			return nil, err
+		}
+		if command.FinalEventSequence != nil && afterSequence < *command.FinalEventSequence && int64(len(events)) != *command.FinalEventSequence-afterSequence {
+			return nil, fmt.Errorf("%w: expected %d retained events through final sequence %d, got %d", ErrCommandReplayGap, *command.FinalEventSequence-afterSequence, *command.FinalEventSequence, len(events))
+		}
+		if command.FinalEventSequence == nil && afterSequence == 0 && len(events) == 0 {
+			return nil, fmt.Errorf("%w: accepted command has no sequence-one event", ErrCommandReplayGap)
+		}
+		return events, nil
+	})
 }
 
 // NextEligibleCommand returns the oldest queued command that may be started

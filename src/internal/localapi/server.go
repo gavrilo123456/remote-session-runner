@@ -1123,8 +1123,8 @@ func statusForCommandEventError(err error) (int, string) {
 	switch {
 	case errors.Is(err, store.ErrCommandNotFound), errors.Is(err, store.ErrSessionNotFound):
 		return http.StatusNotFound, "command_not_found"
-	case errors.Is(err, store.ErrCommandReplayGap):
-		return http.StatusRequestedRangeNotSatisfiable, "event_history_unavailable"
+	case errors.Is(err, store.ErrCommandReplayGap), errors.Is(err, store.ErrCommandReplayExpired):
+		return http.StatusGone, "event_history_unavailable"
 	case errors.Is(err, store.ErrCommandEvent), errors.Is(err, store.ErrCommandPayloadCorrupt), errors.Is(err, store.ErrLocalIntentPayloadCorrupt):
 		return http.StatusServiceUnavailable, "database_unavailable"
 	default:

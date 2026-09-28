@@ -1290,7 +1290,7 @@ func privateStatusForError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, execution.ErrRuntimeUnavailable):
 		return http.StatusServiceUnavailable
-	case errors.Is(err, store.ErrCommandReplayGap):
+	case errors.Is(err, store.ErrCommandReplayGap), errors.Is(err, store.ErrCommandReplayExpired):
 		return http.StatusRequestedRangeNotSatisfiable
 	case errors.Is(err, domain.ErrEnvironmentTargetMismatch), errors.Is(err, domain.ErrEnvironmentSourceMismatch), errors.Is(err, domain.ErrControllerMismatch), errors.Is(err, domain.ErrUnsupportedIsolationRequirement), errors.Is(err, domain.ErrLimitExceedsServiceCeiling), errors.Is(err, domain.ErrInvalidRequestedLimits), errors.Is(err, store.ErrInvalidJob), errors.Is(err, execution.ErrSessionNotReady), errors.Is(err, execution.ErrCommandNotReady), errors.Is(err, store.ErrCommandSessionState):
 		return http.StatusBadRequest

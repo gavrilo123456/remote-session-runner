@@ -883,3 +883,32 @@ func withImmediateTransaction[T any](ctx context.Context, db *sql.DB, fn func(co
 	committed = true
 	return result, nil
 }
+
+// withReadTransaction keeps related reads on one SQLite snapshot without
+// reserving the writer slot. Event replay can therefore verify its retention
+// marker and contiguous rows atomically without holding up appends or GC.
+func withReadTransaction[T any](ctx context.Context, db *sql.DB, fn func(context.Context, *sql.Conn) (T, error)) (result T, err error) {
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return result, fmt.Errorf("acquire SQLite read transaction connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, "BEGIN"); err != nil {
+		return result, fmt.Errorf("begin SQLite read transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = connection.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	result, err = fn(ctx, connection)
+	if err != nil {
+		return result, err
+	}
+	if _, err := connection.ExecContext(ctx, "COMMIT"); err != nil {
+		return result, fmt.Errorf("commit SQLite read transaction: %w", err)
+	}
+	committed = true
+	return result, nil
+}
