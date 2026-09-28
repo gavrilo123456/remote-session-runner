@@ -106,7 +106,7 @@
       "get": {
         "operationId": "getCommandEvents",
         "summary": "Replay or follow retained command events",
-        "description": "Returns ordered NDJSON events. A gap or expired requested range is an error, never a successful partial stream. Response headers identify authority versus projection and staleness.",
+        "description": "Returns ordered NDJSON events. A gap or expired requested range is an error, never a successful partial stream. Follow registers before replay and ends on the terminal event or bounded-subscriber overflow. X-Runner-Last-Sequence reports the last complete frame written (a trailer for a live follow, a header for finite replay or a follow already complete at the supplied cursor); after overflow, resume with after=<cursor>&follow=true.",
         "parameters": [
           { "name": "after", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 0, "default": 0 } },
           { "name": "follow", "in": "query", "required": false, "schema": { "type": "boolean", "default": false } }
@@ -194,7 +194,7 @@
       "SessionRead": { "description": "As-of snapshot, marked as authority or projection.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionReadResponse" } } } },
       "CommandRead": { "description": "As-of snapshot with terminal and output-completeness metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommandReadResponse" } } } },
       "JobRead": { "description": "As-of job snapshot or retained local intent status, without inventing target state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobReadResponse" } } } },
-      "Events": { "description": "Ordered command-event records; replay/follow handoff must be gap-free.", "headers": { "X-Runner-View": { "$ref": "#/components/headers/View" }, "X-Runner-Stale": { "$ref": "#/components/headers/Stale" } }, "content": { "application/x-ndjson": { "schema": { "$ref": "../../../domain/schemas/v1/command-event.schema.json" } } } },
+      "Events": { "description": "Ordered command-event records; replay/follow handoff must be gap-free.", "headers": { "X-Runner-View": { "$ref": "#/components/headers/View" }, "X-Runner-Stale": { "$ref": "#/components/headers/Stale" }, "X-Runner-Last-Sequence": { "$ref": "#/components/headers/LastSequence" } }, "content": { "application/x-ndjson": { "schema": { "$ref": "../../../domain/schemas/v1/command-event.schema.json" } } } },
       "EventHistoryUnavailable": { "description": "Requested event range expired or contains an irrecoverable gap.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "example": { "code": "event_history_unavailable", "message": "Requested event history is unavailable", "retryable": false, "resource_id": "cmd-1", "details": { "output_complete": false, "output_unavailable_reason": "retention_expired", "earliest_available_sequence": 12 } } } } },
       "Conflict": { "description": "Idempotency key reused with a different canonical request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
       "Forbidden": { "description": "Caller is not the controller for this resource.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
@@ -205,7 +205,8 @@
     },
     "headers": {
       "View": { "description": "Whether the response reflects authority or a Mac projection.", "required": true, "schema": { "type": "string", "enum": ["authority", "projection"] } },
-      "Stale": { "description": "Whether a projection may lag target authority.", "required": true, "schema": { "type": "boolean" } }
+      "Stale": { "description": "Whether a projection may lag target authority.", "required": true, "schema": { "type": "boolean" } },
+      "LastSequence": { "description": "Last complete event frame included. This is an HTTP trailer for a live follow and a normal response header for finite replay or a follow already complete at its supplied cursor; use it to resume after subscriber overflow.", "required": true, "schema": { "type": "integer", "minimum": 0 } }
     },
     "schemas": {
       "ExecutionTarget": { "$ref": "../../../domain/schemas/v1/execution-target.schema.json" },

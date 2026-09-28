@@ -30,6 +30,11 @@ type directHTTPSAPI struct {
 	allocateRunIDs func() (domain.JobID, domain.SessionID, domain.CommandID, error)
 }
 
+const (
+	directEventsLastSequenceHeader = "X-Runner-Last-Sequence"
+	directEventsSubscriberCapacity = 256
+)
+
 type directCreateSessionRequest struct {
 	Environment     string          `json:"environment"`
 	ExecutionTarget targetRequest   `json:"execution_target"`
@@ -810,7 +815,7 @@ func (s *directHTTPSAPI) handleGetCommandEvents(response http.ResponseWriter, re
 		writeDirectError(response, http.StatusBadRequest, "invalid_request", "command events path contains an invalid ID")
 		return
 	}
-	after, err := directEventCursor(request.URL.Query())
+	after, follow, err := directEventCursor(request.URL.Query())
 	if err != nil {
 		writeDirectError(response, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -825,17 +830,26 @@ func (s *directHTTPSAPI) handleGetCommandEvents(response http.ResponseWriter, re
 		writeDirectEventHistoryError(response, commandID, "retention_expired")
 		return
 	}
+	if follow {
+		if command.FinalEventSequence != nil && after >= *command.FinalEventSequence {
+			setDirectEventHeaders(response)
+			response.Header().Set(directEventsLastSequenceHeader, strconv.FormatInt(after, 10))
+			response.WriteHeader(http.StatusOK)
+			return
+		}
+		subscription, err := s.service.SubscribeCommandEvents(request.Context(), commandID, principal.Controller, after, directEventsSubscriberCapacity)
+		if err != nil {
+			writeDirectCommandEventReadError(response, commandID, err)
+			return
+		}
+		defer subscription.Close()
+		s.writeDirectCommandEventFollow(response, request, subscription, command.Ordinal, after)
+		return
+	}
+
 	events, err := s.service.ReplayCommandEvents(request.Context(), commandID, principal.Controller, after)
 	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrCommandReplayExpired):
-			writeDirectEventHistoryError(response, commandID, "retention_expired")
-		case errors.Is(err, store.ErrCommandReplayGap):
-			writeDirectEventHistoryError(response, commandID, "remote_event_gap")
-		default:
-			status, code, message := directCommandError(err)
-			writeDirectError(response, status, code, message)
-		}
+		writeDirectCommandEventReadError(response, commandID, err)
 		return
 	}
 
@@ -848,9 +862,12 @@ func (s *directHTTPSAPI) handleGetCommandEvents(response http.ResponseWriter, re
 			return
 		}
 	}
-	response.Header().Set("Content-Type", "application/x-ndjson")
-	response.Header().Set("X-Runner-View", "authority")
-	response.Header().Set("X-Runner-Stale", "false")
+	lastSequence := after
+	if len(events) > 0 {
+		lastSequence = events[len(events)-1].Sequence
+	}
+	setDirectEventHeaders(response)
+	response.Header().Set(directEventsLastSequenceHeader, strconv.FormatInt(lastSequence, 10))
 	response.WriteHeader(http.StatusOK)
 	for _, event := range events {
 		frame, err := encodeDirectCommandEvent(event, command.Ordinal)
@@ -863,30 +880,90 @@ func (s *directHTTPSAPI) handleGetCommandEvents(response http.ResponseWriter, re
 	}
 }
 
-func directEventCursor(query url.Values) (int64, error) {
-	for key, values := range query {
-		if key != "after" && key != "follow" {
-			return 0, errors.New("unsupported event query parameter")
-		}
-		if len(values) != 1 {
-			return 0, errors.New("event query parameter must occur once")
+func (s *directHTTPSAPI) writeDirectCommandEventFollow(response http.ResponseWriter, request *http.Request, subscription *store.CommandEventSubscription, ordinal, after int64) {
+	setDirectEventHeaders(response)
+	response.Header().Set("Trailer", directEventsLastSequenceHeader)
+	response.WriteHeader(http.StatusOK)
+	lastWrittenSequence := after
+	defer func() {
+		response.Header().Set(directEventsLastSequenceHeader, strconv.FormatInt(lastWrittenSequence, 10))
+	}()
+	flusher, _ := response.(http.Flusher)
+	for {
+		select {
+		case event, ok := <-subscription.Events():
+			if !ok {
+				// On overflow the subscription closes only after preserving its
+				// bounded prefix. Drain that prefix before publishing the cursor.
+				return
+			}
+			frame, err := encodeDirectCommandEvent(event, ordinal)
+			if err != nil {
+				return
+			}
+			written, err := response.Write(frame)
+			if err != nil || written != len(frame) {
+				return
+			}
+			lastWrittenSequence = event.Sequence
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if isTerminalCommandEvent(event.Type) {
+				return
+			}
+		case <-request.Context().Done():
+			return
 		}
 	}
-	if follow := query.Get("follow"); follow != "" && follow != "false" {
-		if follow == "true" {
-			return 0, errors.New("follow must be false for replay requests")
+}
+
+func setDirectEventHeaders(response http.ResponseWriter) {
+	response.Header().Set("Content-Type", "application/x-ndjson")
+	response.Header().Set("X-Runner-View", "authority")
+	response.Header().Set("X-Runner-Stale", "false")
+}
+
+func writeDirectCommandEventReadError(response http.ResponseWriter, commandID domain.CommandID, err error) {
+	switch {
+	case errors.Is(err, store.ErrCommandReplayExpired):
+		writeDirectEventHistoryError(response, commandID, "retention_expired")
+	case errors.Is(err, store.ErrCommandReplayGap):
+		writeDirectEventHistoryError(response, commandID, "remote_event_gap")
+	default:
+		status, code, message := directCommandError(err)
+		writeDirectError(response, status, code, message)
+	}
+}
+
+func directEventCursor(query url.Values) (int64, bool, error) {
+	for key, values := range query {
+		if key != "after" && key != "follow" {
+			return 0, false, errors.New("unsupported event query parameter")
 		}
-		return 0, errors.New("follow must be true or false")
+		if len(values) != 1 {
+			return 0, false, errors.New("event query parameter must occur once")
+		}
+	}
+	follow := false
+	if values, exists := query["follow"]; exists {
+		switch values[0] {
+		case "true":
+			follow = true
+		case "false":
+		default:
+			return 0, false, errors.New("follow must be true or false")
+		}
 	}
 	value := query.Get("after")
 	if value == "" {
-		return 0, nil
+		return 0, follow, nil
 	}
 	cursor, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || cursor < 0 {
-		return 0, errors.New("invalid event cursor")
+		return 0, false, errors.New("invalid event cursor")
 	}
-	return cursor, nil
+	return cursor, follow, nil
 }
 
 func encodeDirectCommandEvent(event store.CommandEventRecord, ordinal int64) ([]byte, error) {

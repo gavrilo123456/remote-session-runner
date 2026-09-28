@@ -32,7 +32,7 @@ func TestP113DirectEventReplayUsesBoundedPublicNDJSONAndCursor(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("event replay status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if response.Header().Get("Content-Type") != "application/x-ndjson" || response.Header().Get("X-Runner-View") != "authority" || response.Header().Get("X-Runner-Stale") != "false" {
+	if response.Header().Get("Content-Type") != "application/x-ndjson" || response.Header().Get("X-Runner-View") != "authority" || response.Header().Get("X-Runner-Stale") != "false" || response.Header().Get(directEventsLastSequenceHeader) == "" {
 		t.Fatalf("event replay headers = %#v", response.Header())
 	}
 	allEvents := p113DecodeEventLines(t, response.Body.Bytes())
@@ -77,7 +77,9 @@ func TestP113DirectEventReplayUsesBoundedPublicNDJSONAndCursor(t *testing.T) {
 		"/v1/commands/" + string(commandID) + "/events?after=9223372036854775808",
 		"/v1/commands/" + string(commandID) + "/events?after=0&after=1",
 		"/v1/commands/" + string(commandID) + "/events?unsupported=1",
-		"/v1/commands/" + string(commandID) + "/events?follow=true",
+		"/v1/commands/" + string(commandID) + "/events?follow=yes",
+		"/v1/commands/" + string(commandID) + "/events?follow=",
+		"/v1/commands/" + string(commandID) + "/events?follow=true&follow=false",
 	} {
 		invalid := p107Do(handler, controller, true, http.MethodGet, path, nil, "")
 		if invalid.Code != http.StatusBadRequest {
