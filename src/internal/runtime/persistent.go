@@ -82,8 +82,9 @@ type DescendantKiller func(rootPID int, signal syscall.Signal) int
 const (
 	// MaxOutputChunkBytes is the raw-byte ceiling for one agent output chunk.
 	MaxOutputChunkBytes = 16 * 1024
-	// OutputFlushInterval is the normal-load upper bound for a partial chunk.
-	OutputFlushInterval = 50 * time.Millisecond
+	// OutputFlushInterval coalesces active partial output into bounded durable
+	// events while keeping the batching window below the 500 ms visibility goal.
+	OutputFlushInterval = 200 * time.Millisecond
 )
 
 // OutputStream identifies the command-scoped raw byte pipe.

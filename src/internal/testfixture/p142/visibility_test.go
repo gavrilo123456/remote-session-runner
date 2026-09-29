@@ -40,6 +40,32 @@ func TestP142AddSampleRejectsInvalidWidthAndSequence(t *testing.T) {
 	}
 }
 
+func TestP142AddSampleClampsAndReportsSmallClockSkew(t *testing.T) {
+	metrics := newMetrics()
+	producer := time.Unix(1_800_000_000, 0)
+	line := p142SampleLine(0, producer.UnixNano())
+	if err := metrics.addSample(0, line, producer.Add(-15*time.Millisecond)); err != nil {
+		t.Fatalf("add sample within clock-skew allowance: %v", err)
+	}
+	latencies, _, counts := metrics.snapshot()
+	skewCount, maximumSkew := metrics.clockSkewSnapshot()
+	if counts[0] != 1 || len(latencies[0]) != 1 || latencies[0][0] != 0 {
+		t.Fatalf("sample metrics counts=%v latencies=%v, want one zero-clamped sample", counts, latencies[0])
+	}
+	if skewCount != 1 || maximumSkew != 15*time.Millisecond {
+		t.Fatalf("clock skew count=%d maximum=%s, want 1 and 15ms", skewCount, maximumSkew)
+	}
+}
+
+func TestP142AddSampleRejectsClockSkewAboveAllowance(t *testing.T) {
+	metrics := newMetrics()
+	producer := time.Unix(1_800_000_000, 0)
+	line := p142SampleLine(0, producer.UnixNano())
+	if err := metrics.addSample(0, line, producer.Add(-maximumClockSkew-time.Nanosecond)); err == nil {
+		t.Fatal("sample beyond clock-skew allowance was accepted")
+	}
+}
+
 func TestP142PercentileUsesNearestRank(t *testing.T) {
 	values := make([]time.Duration, 100)
 	for index := range values {

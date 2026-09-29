@@ -26,21 +26,23 @@ import (
 )
 
 const (
-	activeSessionLimit     = 20
-	runningCommandLimit    = 4
-	sampleCount            = 6000
-	sampleInterval         = 100 * time.Millisecond
-	sampleRecordBytes      = 4096
-	slowSubscriberBurst    = 1_310_720
-	subscriberBufferSize   = 1 << 20
-	commandCapacity        = 4096
-	subscriberOverflowSlop = 16 * 1024
-	loadContextTimeout     = 16 * time.Minute
-	cleanupTimeout         = 90 * time.Second
-	healthSampleInterval   = 30 * time.Second
-	measuredLoadDuration   = time.Duration(sampleCount) * sampleInterval
-	bufferSampleInterval   = 100 * time.Millisecond
-	visibilityTarget       = 500 * time.Millisecond
+	activeSessionLimit      = 20
+	runningCommandLimit     = 4
+	sampleCount             = 6000
+	sampleInterval          = 100 * time.Millisecond
+	sampleRecordBytes       = 4096
+	slowSubscriberBurst     = 1_310_720
+	subscriberBufferSize    = 1 << 20
+	commandCapacity         = 4096
+	subscriberOverflowSlop  = 16 * 1024
+	loadContextTimeout      = 16 * time.Minute
+	cleanupTimeout          = 90 * time.Second
+	healthSampleInterval    = 30 * time.Second
+	measuredLoadDuration    = time.Duration(sampleCount) * sampleInterval
+	bufferSampleInterval    = 100 * time.Millisecond
+	visibilityTarget        = 500 * time.Millisecond
+	maximumClockSkew        = 25 * time.Millisecond
+	maximumClockSkewSamples = runningCommandLimit * sampleCount / 1000
 )
 
 type RuntimeController interface {
@@ -97,6 +99,8 @@ type metrics struct {
 	latencies       [][]time.Duration
 	outputBytes     []int64
 	nextSampleIndex []int
+	clockSkewCount  int
+	maximumSkew     time.Duration
 }
 
 func newMetrics() *metrics {
@@ -451,6 +455,10 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 	if stats.Samples == 0 || stats.PeakFixtureRSSBytes <= 0 || stats.BaselineAvailableBytes <= 0 || stats.PeakFixtureRSSBytes > stats.BaselineAvailableBytes {
 		t.Fatalf("P142 memory evidence is incomplete or exceeds available memory: %+v", stats)
 	}
+	clockSkewCount, maximumSkew := metrics.clockSkewSnapshot()
+	if clockSkewCount > maximumClockSkewSamples {
+		t.Fatalf("P142 clock-skew samples=%d exceed the %d-sample allowance", clockSkewCount, maximumClockSkewSamples)
+	}
 
 	for _, currentWorker := range workers {
 		command, commandErr := options.Authority.GetCommand(ctx, currentWorker.commandID)
@@ -466,10 +474,10 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 	for _, subscription := range subscriptions[:runningCommandLimit] {
 		normalSubscriberPeaks = append(normalSubscriberPeaks, subscription.maxBytes.Load())
 	}
-	t.Logf("machine=%s os=%s account=%s; sessions=%d; simultaneous_commands=%d; load_duration=%s; records_per_command=%d; total_records=%d; record_bytes=%d; persisted_output_bytes=%d; visibility_p50=%s; visibility_p95=%s; visibility_p99=%s; visibility_max=%s; samples_over_500ms=%d; normal_subscriber_peak_bytes=%v; slow_subscriber_peak_bytes=%d; slow_subscriber_bytes_at_overflow=%d; slow_subscriber_limit_bytes=%d; slow_replay_cursor=%d; stable_state_samples=%d; memory_samples=%d; baseline_available_bytes=%d; peak_fixture_rss_bytes=%d; available_after_bytes=%d; live_command_slots_after_load=0",
+	t.Logf("machine=%s os=%s account=%s; sessions=%d; simultaneous_commands=%d; load_duration=%s; records_per_command=%d; total_records=%d; record_bytes=%d; persisted_output_bytes=%d; visibility_p50=%s; visibility_p95=%s; visibility_p99=%s; visibility_max=%s; samples_over_500ms=%d; clock_skew_samples=%d; maximum_clock_skew=%s; normal_subscriber_peak_bytes=%v; slow_subscriber_peak_bytes=%d; slow_subscriber_bytes_at_overflow=%d; slow_subscriber_limit_bytes=%d; slow_replay_cursor=%d; stable_state_samples=%d; memory_samples=%d; baseline_available_bytes=%d; peak_fixture_rss_bytes=%d; available_after_bytes=%d; live_command_slots_after_load=0",
 		host, runtime.GOOS, current.Username, activeSessionLimit, runningCommandLimit, time.Duration(sampleCount)*sampleInterval,
 		sampleCount, len(allLatencies), sampleRecordBytes, sum(outputBytes), p50, p95, p99, maximum, misses,
-		normalSubscriberPeaks, maxSlowBytes, slowOverflowBufferedBytes, subscriberBufferSize, slowCursor, stableChecks, stats.Samples, stats.BaselineAvailableBytes,
+		clockSkewCount, maximumSkew, normalSubscriberPeaks, maxSlowBytes, slowOverflowBufferedBytes, subscriberBufferSize, slowCursor, stableChecks, stats.Samples, stats.BaselineAvailableBytes,
 		stats.PeakFixtureRSSBytes, stats.AvailableAfterBytes)
 
 	for _, sessionID := range sessions {
@@ -564,17 +572,34 @@ func (m *metrics) addSample(workerIndex int, line []byte, observedAt time.Time) 
 		return fmt.Errorf("parse P142 producer timestamp: %w", err)
 	}
 	latency := observedAt.Sub(time.Unix(0, stamp))
+	clockSkew := time.Duration(0)
 	if latency < 0 {
-		return fmt.Errorf("P142 producer timestamp is in the future by %s", -latency)
+		clockSkew = -latency
+		if clockSkew > maximumClockSkew {
+			return fmt.Errorf("P142 producer timestamp is in the future by %s, over the %s clock-skew allowance", clockSkew, maximumClockSkew)
+		}
+		latency = 0
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if index != m.nextSampleIndex[workerIndex] {
 		return fmt.Errorf("P142 worker %d sample index=%d, want %d", workerIndex, index, m.nextSampleIndex[workerIndex])
 	}
+	if clockSkew > 0 {
+		m.clockSkewCount++
+		if clockSkew > m.maximumSkew {
+			m.maximumSkew = clockSkew
+		}
+	}
 	m.nextSampleIndex[workerIndex]++
 	m.latencies[workerIndex] = append(m.latencies[workerIndex], latency)
 	return nil
+}
+
+func (m *metrics) clockSkewSnapshot() (int, time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.clockSkewCount, m.maximumSkew
 }
 
 func isTerminalEvent(kind string) bool {
