@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,8 +65,11 @@ func TestP033R02DelayedPipeReaderMakesBoundaryUncertainAndBlocksNextCommand(t *t
 	if !errors.Is(err, ErrOutputBoundary) {
 		t.Fatalf("delayed reader error = %v, want ErrOutputBoundary", err)
 	}
-	if elapsed := time.Since(started); elapsed < 50*time.Millisecond || elapsed > 250*time.Millisecond {
-		t.Fatalf("boundary wait elapsed = %s, want bounded timeout", elapsed)
+	if !strings.Contains(err.Error(), "timed out after 60ms") {
+		t.Fatalf("delayed reader error = %v, want configured 60ms timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed < 50*time.Millisecond || elapsed > time.Second {
+		t.Fatalf("boundary wait elapsed = %s, want configured timeout within 1s including shell startup and scheduler delay", elapsed)
 	}
 	if _, err := shell.RunScript(context.Background(), "command-p033-after-delay", []byte("printf 'must-not-run'\n")); !errors.Is(err, ErrPersistentShellLost) {
 		t.Fatalf("post-boundary error = %v, want ErrPersistentShellLost", err)
