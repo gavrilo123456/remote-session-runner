@@ -291,7 +291,11 @@ func p140LinuxRunnerdHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	pki := newP106TestPKI(t)
-	httpsOptions := writeP106TestFiles(t, filepath.Join(backupDir, "loopback-tls"), pki, validP106PrincipalMap)
+	tlsRoot := filepath.Join(backupDir, "loopback-tls")
+	if err := os.MkdirAll(tlsRoot, 0o700); err != nil {
+		t.Fatalf("create isolated P140 loopback TLS fixture directory: %v", err)
+	}
+	httpsOptions := writeP106TestFiles(t, tlsRoot, pki, validP106PrincipalMap)
 	httpsOptions.Handler, err = newDirectHTTPSAPIHandler(service, requestGate, dispatchGate)
 	if err != nil {
 		t.Fatal(err)
