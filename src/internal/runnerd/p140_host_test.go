@@ -291,7 +291,7 @@ func p140LinuxRunnerdHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	pki := newP106TestPKI(t)
-	tlsRoot := filepath.Join(backupDir, "loopback-tls")
+	tlsRoot := filepath.Join(filepath.Dir(backupDir), "loopback-tls")
 	if err := os.MkdirAll(tlsRoot, 0o700); err != nil {
 		t.Fatalf("create isolated P140 loopback TLS fixture directory: %v", err)
 	}
