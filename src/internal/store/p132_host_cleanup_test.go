@@ -72,8 +72,9 @@ func TestP132UbuntuCleanupConfirmedLostFixture(t *testing.T) {
 		t.Fatal("refuse cleanup: command is not one of the exact P132 host fixtures")
 	}
 	if session.Environment != "linux-dev" || session.Target.Kind() != domain.TargetKindRemote || session.Target.Profile() != "linux-host" ||
-		session.Controller.Type() != domain.ControllerTypeQueuedMac || session.Controller.ID() != "tomasz.walczuk" {
-		t.Fatal("refuse cleanup: session does not match the selected P132 remote fixture")
+		session.Controller.Type() != domain.ControllerTypeDirectMTLS || session.Controller.ID() != "tomasz.walczuk" {
+		t.Fatalf("refuse cleanup: session identity is target=%s/%s environment=%q controller=%s/%s, want remote/linux-host linux-dev direct_mtls/tomasz.walczuk",
+			session.Target.Kind(), session.Target.Profile(), session.Environment, session.Controller.Type(), session.Controller.ID())
 	}
 	events, err := authority.ListCommandEvents(ctx, commandID)
 	if err != nil {

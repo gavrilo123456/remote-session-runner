@@ -38,6 +38,11 @@ type p132HostAudit struct {
 type p132HostCommandState struct {
 	SessionID          string          `json:"session_id"`
 	SessionState       string          `json:"session_state"`
+	TargetKind         string          `json:"target_kind"`
+	TargetProfile      string          `json:"target_profile"`
+	Environment        string          `json:"environment"`
+	ControllerType     string          `json:"controller_type"`
+	ControllerID       string          `json:"controller_id"`
 	CommandID          string          `json:"command_id"`
 	CommandState       string          `json:"command_state"`
 	FinalEventSequence *int64          `json:"final_event_sequence,omitempty"`
@@ -96,7 +101,10 @@ func TestP132UbuntuHostCommandReader(t *testing.T) {
 		t.Fatalf("read P132 audit records after service stop: %v", err)
 	}
 	result := p132HostCommandState{
-		SessionID: string(sessionID), SessionState: string(session.State), CommandID: string(commandID),
+		SessionID: string(sessionID), SessionState: string(session.State),
+		TargetKind: string(session.Target.Kind()), TargetProfile: session.Target.Profile(),
+		Environment: session.Environment, ControllerType: string(session.Controller.Type()),
+		ControllerID: string(session.Controller.ID()), CommandID: string(commandID),
 		CommandState: string(command.State), FinalEventSequence: command.FinalEventSequence,
 		OutputComplete: command.OutputComplete, Events: make([]p132HostEvent, 0, len(events)),
 		Audits: make([]p132HostAudit, 0),
