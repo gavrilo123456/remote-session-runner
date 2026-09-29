@@ -90,7 +90,9 @@ below. Every mutation uses a fresh request ID and a stable idempotency key.
 For queued Ubuntu work, change a create or run request to
 `"environment":"linux-dev"` and
 `"execution_target":{"kind":"remote","profile":"linux-host"}` only
-after the separate restricted SSH bridge has been installed and verified.
+after the permanent restricted SSH bridge has been installed and verified with
+`deploy/ssh/install-queued-bridge.sh status` on Ubuntu. See the
+[setup runbook](setup.md#optional-enable-the-queued-ssh-route).
 
 ## Simple local `run` request
 
@@ -225,7 +227,7 @@ fail semantic validation receive a terminal `rejected` response.
 - Event output follows the 30-day output retention policy, subject to the
   response references that still need it.
 - Mac local mailbox work is available with healthy Mac services.
-- Queued remote mailbox work requires the optional restricted SSH bridge and
-  is currently unavailable until that setup is intentionally restored.
+- Queued remote mailbox work requires the optional permanent restricted SSH
+  bridge and a successful Ubuntu `install-queued-bridge.sh status` check.
 - A direct-mTLS resource must be operated through direct mTLS CLI/API, not
   this mailbox.

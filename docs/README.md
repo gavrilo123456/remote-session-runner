@@ -33,9 +33,9 @@ Start here:
 
 The direct mTLS route has been exercised against the Runner application. A
 previous temporary TLS probe validated transport credentials only; it was not
-an application test. The queued SSH route needs its separate restricted bridge
-authorization and should be treated as unavailable until that host setup is
-installed and verified.
+an application test. The queued SSH route needs its separate permanent
+restricted bridge authorization; verify it with the setup runbook before using
+queued CLI or mailbox work.
 
 ## Read before operating
 

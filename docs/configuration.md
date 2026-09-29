@@ -43,7 +43,7 @@ environment unless the code and tests are changed together.
 ```text
 /home/ubuntu/.local/share/remote-session-runner/
 ├── bin/                 runnerd, entrypoint, optional SSH bridge/wrapper
-├── config/              linux.yaml, client-principals.yaml, optional SSH map
+├── config/              linux.yaml, client-principals.yaml, optional queued-SSH map/key/manifest
 ├── secrets/             server certificate/key and trusted client CA
 ├── run/                 runnerd.sock
 ├── state/               remote.db
@@ -199,21 +199,27 @@ by `client-ca.pem`. The certificate and private key stay on the Mac under
 ### Queued SSH controller map
 
 Queued remote execution is a different route from direct mTLS. When it is
-needed, add an owner-only controller map under the Ubuntu config directory:
+needed, use the permanent installer described in the
+[setup runbook](setup.md#optional-enable-the-queued-ssh-route). It creates
+these owner-only files:
 
-```yaml
-version: 1
-keys:
-  'SHA256:<dispatcher-public-key-fingerprint-without-padding>':
-    controller_type: queued_mac
-    controller_id: tomasz.walczuk
+```text
+/home/ubuntu/.local/share/remote-session-runner/config/ssh-controller-map.yaml
+/home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-dispatcher.pub
+/home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-bridge.manifest
 ```
 
-The matching public key gets one `restrict,command=...` entry in Ubuntu
-`authorized_keys`. Follow [the setup runbook](setup.md#optional-enable-the-queued-ssh-route)
-and the corrected forced-command details in
-[`deploy/ssh/README.md`](../deploy/ssh/README.md). Direct mTLS does not make
-this queue bridge available.
+The map pins one SHA-256 public-key fingerprint to
+`queued_mac/tomasz.walczuk`; the public-key copy and manifest let the installer
+detect key or artifact drift without reading a private key. All three files
+must remain regular `ubuntu`-owned mode-`0600` files. The bridge and its fixed
+wrapper are regular `ubuntu`-owned mode-`0700` files in `bin/`.
+
+The matching public key gets exactly one `restrict,command=...` entry in
+Ubuntu `authorized_keys`. The installer creates it only after validating the
+bridge and keeps unrelated entries byte-for-byte intact. Use
+`deploy/ssh/install-queued-bridge.sh status` on Ubuntu to verify it. Direct
+mTLS does not make this queue bridge available.
 
 ## Service limits and retention
 

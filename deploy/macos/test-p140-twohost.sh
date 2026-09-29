@@ -13,6 +13,7 @@ known_hosts=${RUNNER_P140_SSH_KNOWN_HOSTS:-"$service_root/secrets/ssh_known_host
 remote_fixture_token=''
 remote_fixture_pending=0
 authorized_keys_before=''
+remote_bridge_mode=''
 
 if [ "$(uname -s)" != Darwin ] || [ "$(id -un)" != tomasz.walczuk ]; then
 	printf '%s\n' 'test-p140-twohost.sh must run on the selected Mac account tomasz.walczuk' >&2
@@ -34,6 +35,12 @@ ssh_admin() {
 		-o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR \
 		-o "UserKnownHostsFile=\"$RUNNER_P128_SSH_KNOWN_HOSTS\"" \
 		ubuntu@129.151.232.40 "$@"
+}
+
+verify_permanent_bridge() {
+	remote_bridge_status=$(ssh_admin "cd '$remote_repo' && deploy/ssh/install-queued-bridge.sh status") || return 1
+	remote_bridge_fingerprint=$(printf '%s\n' "$remote_bridge_status" | awk -F= '$1 == "dispatcher_fingerprint" {print $2}')
+	[ "$remote_bridge_fingerprint" = "$dispatcher_fingerprint" ]
 }
 
 status=$(git -C "$repo_root" status --porcelain --untracked-files=all)
@@ -76,9 +83,16 @@ cleanup() {
 			printf '%s\n' 'Ubuntu authorized_keys hash did not return to its exact P140 pre-test value' >&2
 			status=1
 		fi
-		if ! ssh_admin "test ! -e /home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh && test ! -e /home/ubuntu/.local/share/remote-session-runner/config/ssh-controller-map.yaml"; then
-			printf '%s\n' 'P140 temporary forced-command wrapper or controller map remains on Ubuntu' >&2
-			status=1
+		if [ "$remote_bridge_mode" = fixture ]; then
+			if ! ssh_admin "test ! -e /home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh && test ! -e /home/ubuntu/.local/share/remote-session-runner/config/ssh-controller-map.yaml"; then
+				printf '%s\n' 'P140 temporary forced-command wrapper or controller map remains on Ubuntu' >&2
+				status=1
+			fi
+		elif [ "$remote_bridge_mode" = permanent ]; then
+			if ! verify_permanent_bridge; then
+				printf '%s\n' 'P140 permanent queued bridge did not remain ready for the selected dispatcher key' >&2
+				status=1
+			fi
 		fi
 	fi
 	exit "$status"
@@ -91,9 +105,19 @@ trap 'exit 143' TERM
 dispatcher_fingerprint=$(ssh-keygen -lf "$dispatcher_identity.pub" | awk '{print $2}')
 dispatcher_public=$(cat "$dispatcher_identity.pub")
 dispatcher_public_base64=$(printf '%s' "$dispatcher_public" | base64 | tr -d '\n')
-remote_fixture_token="p140-$(date +%s)-$$"
-remote_fixture_pending=1
-ssh_admin "cd '$remote_repo' && deploy/linux/p128-ops-ssh-fixture.sh setup '$remote_fixture_token' '$dispatcher_fingerprint' '$dispatcher_public_base64'"
+if ssh_admin "test -e /home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-bridge.manifest || test -L /home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-bridge.manifest"; then
+	if ! verify_permanent_bridge; then
+		printf '%s\n' 'permanent queued bridge is not ready for the selected dispatcher key; P140 will not replace it with a fixture' >&2
+		exit 1
+	fi
+	remote_bridge_mode=permanent
+	printf '%s\n' 'Using the verified permanent queued bridge; P140 will preserve it.'
+else
+	remote_fixture_token="p140-$(date +%s)-$$"
+	remote_fixture_pending=1
+	ssh_admin "cd '$remote_repo' && deploy/linux/p128-ops-ssh-fixture.sh setup '$remote_fixture_token' '$dispatcher_fingerprint' '$dispatcher_public_base64'"
+	remote_bridge_mode=fixture
+fi
 
 export RUNNER_P140_SSH_IDENTITY="$dispatcher_identity"
 export RUNNER_P140_SSH_KNOWN_HOSTS="$known_hosts"
@@ -102,6 +126,10 @@ export GOTOOLCHAIN=local
 "$go_bin" test -tags=p140twohost ./src/internal/localapi \
 	-run '^TestP140MacLinuxOrdinalGapSurvivesRestoreAndReconcilesBeforeNextDispatch$' -count=1 -v
 
-ssh_admin "cd '$remote_repo' && deploy/linux/p128-ops-ssh-fixture.sh cleanup '$remote_fixture_token'"
-remote_fixture_pending=0
-printf '%s\n' 'P140 Mac/Ubuntu backup, restore, ID reconciliation, ordered dispatch, and temporary SSH fixture cleanup passed.'
+if [ "$remote_bridge_mode" = fixture ]; then
+	ssh_admin "cd '$remote_repo' && deploy/linux/p128-ops-ssh-fixture.sh cleanup '$remote_fixture_token'"
+	remote_fixture_pending=0
+else
+	verify_permanent_bridge
+fi
+printf '%s\n' 'P140 Mac/Ubuntu backup, restore, ID reconciliation, ordered dispatch, and selected queued bridge preservation passed.'

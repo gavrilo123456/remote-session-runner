@@ -11,6 +11,7 @@ expected_commit=${RSR_P129_EXPECTED_COMMIT:-${RSR_P128_EXPECTED_COMMIT:-}}
 admin_identity=${RUNNER_P128_ADMIN_SSH_IDENTITY:-/Users/tomasz.walczuk/.ssh/remote-session-runner}
 remote_fixture_pending=0
 remote_fixture_token=''
+remote_bridge_mode=''
 scratch=''
 
 if [ "$(uname -s)" != Darwin ] || [ "$(id -un)" != tomasz.walczuk ]; then
@@ -33,6 +34,12 @@ ssh_admin() {
 		-o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR \
 		-o "UserKnownHostsFile=\"$RUNNER_P128_SSH_KNOWN_HOSTS\"" \
 		ubuntu@129.151.232.40 "$@"
+}
+
+verify_permanent_bridge() {
+	remote_bridge_status=$(ssh_admin "cd '$remote_repo' && deploy/ssh/install-queued-bridge.sh status") || return 1
+	remote_bridge_fingerprint=$(printf '%s\n' "$remote_bridge_status" | awk -F= '$1 == "dispatcher_fingerprint" {print $2}')
+	[ "$remote_bridge_fingerprint" = "$dispatcher_fingerprint" ]
 }
 
 if [ "$(git -C "$repo_root" branch --show-current)" != dev ] \
@@ -89,9 +96,19 @@ ssh_admin "cd '$remote_repo' && RSR_P128_EXPECTED_COMMIT='$expected_commit' depl
 dispatcher_fingerprint=$(ssh-keygen -lf "$RUNNER_P128_SSH_IDENTITY.pub" | awk '{print $2}')
 dispatcher_public=$(cat "$RUNNER_P128_SSH_IDENTITY.pub")
 dispatcher_public_base64=$(printf '%s' "$dispatcher_public" | base64 | tr -d '\n')
-remote_fixture_token="p128ops-$(date +%s)-$$"
-remote_fixture_pending=1
-ssh_admin "cd '$remote_repo' && deploy/linux/p128-ops-ssh-fixture.sh setup '$remote_fixture_token' '$dispatcher_fingerprint' '$dispatcher_public_base64'"
+if ssh_admin "test -e /home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-bridge.manifest || test -L /home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-bridge.manifest"; then
+	if ! verify_permanent_bridge; then
+		printf '%s\n' 'permanent queued bridge is not ready for the selected dispatcher key; P128 will not replace it with a fixture' >&2
+		exit 1
+	fi
+	remote_bridge_mode=permanent
+	printf '%s\n' 'Using the verified permanent queued bridge; P128 will preserve it.'
+else
+	remote_fixture_token="p128ops-$(date +%s)-$$"
+	remote_fixture_pending=1
+	ssh_admin "cd '$remote_repo' && deploy/linux/p128-ops-ssh-fixture.sh setup '$remote_fixture_token' '$dispatcher_fingerprint' '$dispatcher_public_base64'"
+	remote_bridge_mode=fixture
+fi
 
 config_file="$scratch/mac.yaml"
 install -m 600 "$repo_root/deploy/macos/mac.yaml.example" "$config_file"
@@ -109,7 +126,11 @@ export GOTOOLCHAIN=local
 "$go_bin" test -tags=p128opshost ./src/internal/runnerd \
 	-run '^TestP128PublicHealthRequiresMandatoryMTLS$' -count=1 -v
 
-ssh_admin "cd '$remote_repo' && deploy/linux/p128-ops-ssh-fixture.sh cleanup '$remote_fixture_token'"
-remote_fixture_pending=0
+if [ "$remote_bridge_mode" = fixture ]; then
+	ssh_admin "cd '$remote_repo' && deploy/linux/p128-ops-ssh-fixture.sh cleanup '$remote_fixture_token'"
+	remote_fixture_pending=0
+else
+	verify_permanent_bridge
+fi
 
-printf '%s\n' 'P128 regression and P129 two-host operational-metrics gates passed; temporary dispatcher authorization and Mac service paths are being removed.'
+printf '%s\n' 'P128 regression and P129 two-host operational-metrics gates passed; the selected queued bridge mode was preserved and Mac service paths are being removed.'

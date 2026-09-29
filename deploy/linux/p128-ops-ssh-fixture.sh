@@ -13,11 +13,41 @@ repo_root='/home/ubuntu/projects/remote-session-runner'
 authorized_keys='/home/ubuntu/.ssh/authorized_keys'
 wrapper="$service_root/bin/runner-ssh-bridge-forced.sh"
 controller_map="$service_root/config/ssh-controller-map.yaml"
+permanent_manifest="$service_root/config/queued-ssh-bridge.manifest"
+permanent_public="$service_root/config/queued-ssh-dispatcher.pub"
+lock_path="$service_root/run/queued-bridge-install.lock"
 state="/tmp/$token"
 
 if [ "$(id -un)" != ubuntu ] || [ "$(id -u)" != 1001 ]; then
 	printf '%s\n' 'P128 SSH fixture must run as ubuntu uid 1001' >&2
 	exit 2
+fi
+if [ ! -d "$service_root/run" ] || [ -L "$service_root/run" ]; then
+	printf '%s\n' 'P128 SSH fixture requires a real Runner run directory' >&2
+	exit 1
+fi
+if [ -L "$lock_path" ]; then
+	printf '%s\n' 'P128 SSH fixture refuses an unsafe queued bridge lock path' >&2
+	exit 1
+fi
+if [ ! -e "$lock_path" ]; then
+	: > "$lock_path"
+	chmod 600 "$lock_path"
+fi
+if [ ! -f "$lock_path" ] || [ "$(stat -c '%u:%a' "$lock_path")" != '1001:600' ]; then
+	printf '%s\n' 'P128 SSH fixture requires an ubuntu-owned mode-0600 queued bridge lock' >&2
+	exit 1
+fi
+exec 9>"$lock_path"
+if ! flock -n 9; then
+	printf '%s\n' 'P128 SSH fixture could not acquire the queued bridge maintenance lock' >&2
+	exit 1
+fi
+if [ -e "$permanent_manifest" ] || [ -L "$permanent_manifest" ] \
+	|| [ -e "$permanent_public" ] || [ -L "$permanent_public" ] \
+	|| { [ -f "$authorized_keys" ] && grep -Fq 'runner-mac-dispatcher' "$authorized_keys"; }; then
+	printf '%s\n' 'P128 SSH fixture refuses to alter a host with permanent queued bridge state' >&2
+	exit 1
 fi
 
 if [ "$action" = setup ]; then
@@ -55,9 +85,12 @@ if [ "$action" = setup ]; then
 		printf '%s\n' 'provided dispatcher public key does not match its fingerprint' >&2
 		exit 1
 	fi
+	public_key_type=$(awk 'NR == 1 {print $1}' "$state/dispatcher.pub")
+	public_key_data=$(awk 'NR == 1 {print $2}' "$state/dispatcher.pub")
 	printf 'version: 1\nkeys:\n  "%s":\n    controller_type: queued_mac\n    controller_id: tomasz.walczuk\n' "$fingerprint" > "$state/controller-map.yaml"
 	cp "$repo_root/deploy/ssh/runner-ssh-bridge-forced.sh" "$state/runner-ssh-bridge-forced.sh"
-	printf '%s\n' "restrict,command=\"$wrapper $fingerprint\" $(cat "$state/dispatcher.pub")" > "$state/authorized-line"
+	printf 'restrict,command="%s %s" %s %s runner-p128-temporary\n' \
+		"$wrapper" "$fingerprint" "$public_key_type" "$public_key_data" > "$state/authorized-line"
 	sha256sum "$authorized_keys" | awk '{print $1}' > "$state/authorized_keys.before.sha256"
 
 	install -o ubuntu -g ubuntu -m 600 "$state/controller-map.yaml" "$controller_map"

@@ -139,13 +139,13 @@ sudo systemctl status runnerd.service --no-pager
 ```
 
 The installer builds `runnerd`, verifies its systemd unit, and enables the
-service. When upgrading an already active instance, wait for zero active work
-then explicitly restart it so the new binary is in use:
-
-```sh
-sudo systemctl restart runnerd.service
-sudo systemctl is-active runnerd.service
-```
+service. When upgrading an already active instance, it runs the checked-in
+read-only zero-active-work gate before the build and again immediately before
+restart, then restarts the service itself so the new binary is in use. It
+refuses the upgrade if either gate finds live sessions, commands, unreleased
+slots, or unfinished jobs. Schedule this during a maintenance window because
+the gate is not an admission fence; a request accepted after it is handled by
+the normal graceful shutdown path and has a truthful durable outcome.
 
 Verify the private socket and expected listener:
 
@@ -177,52 +177,79 @@ route.
 
 ## Optional: enable the queued SSH route
 
-The ordinary Linux installer does **not** install `runner-ssh-bridge`,
-install its forced wrapper, change `authorized_keys`, or authorize the Mac
-dispatcher. P147 deliberately removed its temporary authorization, so queued
-remote CLI and mailbox work are unavailable until this reviewed configuration
-is restored.
+The queued route is opt-in. It uses a permanent, restricted SSH bridge on
+Ubuntu and the existing owner-only Mac dispatcher key. It is separate from the
+direct mTLS route: a successful public HTTPS check does not make queued CLI or
+mailbox work available.
 
 Perform these steps only when this route is required and the Ubuntu service is
 already healthy.
 
-### Ubuntu - `ubuntu`: install bridge files
+### Mac - `tomasz.walczuk`: install the permanent bridge
+
+The command derives and streams only the dispatcher **public** key. It does
+not print or copy the private key:
+
+```sh
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+ssh-keygen -y -f "$root/secrets/dispatcher_ed25519" |
+  ssh -F /dev/null \
+    -i /Users/tomasz.walczuk/.ssh/remote-session-runner \
+    -o IdentitiesOnly=yes \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes \
+    -o GlobalKnownHostsFile=/dev/null \
+    -o 'UserKnownHostsFile="/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/ssh_known_hosts"' \
+    ubuntu@129.151.232.40 \
+    'cd /home/ubuntu/projects/remote-session-runner && deploy/ssh/install-queued-bridge.sh enable --dispatcher-public-key-stdin'
+```
+
+The installer refuses a different or duplicate dispatcher identity, unsafe
+paths or modes, a partial earlier installation, a dirty Ubuntu checkout, and a
+missing active `runnerd.service` socket. It creates these Ubuntu-owned files:
+
+```text
+/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge
+/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh
+/home/ubuntu/.local/share/remote-session-runner/config/ssh-controller-map.yaml
+/home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-dispatcher.pub
+/home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-bridge.manifest
+```
+
+It records one exact `restrict,command=...` key in
+`/home/ubuntu/.ssh/authorized_keys` only after the bridge files have been
+staged and validated. The bridge permits only `runner-ssh-bridge --stdio`,
+forwards only to `runnerd.sock`, and does not create a general remote shell.
+
+### Ubuntu - `ubuntu`: verify the permanent route
 
 ```sh
 cd /home/ubuntu/projects/remote-session-runner
-root='/home/ubuntu/.local/share/remote-session-runner'
-go_bin="$root/toolchains/go1.27.1/bin/go"
-temporary="$root/bin/.runner-ssh-bridge.$$"
-trap 'rm -f "$temporary"' EXIT HUP INT TERM
-GOTOOLCHAIN=local "$go_bin" build -o "$temporary" ./src/cmd/runner-ssh-bridge
-chmod 700 "$temporary"
-mv -f "$temporary" "$root/bin/runner-ssh-bridge"
-trap - EXIT HUP INT TERM
-install -m 700 deploy/ssh/runner-ssh-bridge-forced.sh "$root/bin/runner-ssh-bridge-forced.sh"
+deploy/ssh/install-queued-bridge.sh status
 ```
 
-Create `config/ssh-controller-map.yaml` with mode `0600`, owned by `ubuntu`:
+`status` does not change the bridge authorization or durable configuration. It
+prints the public-key fingerprint and artifact hashes, never private-key
+material. It verifies the selected account, service, socket, path modes, one
+exact restricted key line, controller map, and current source revision.
 
-```yaml
-version: 1
-keys:
-  'SHA256:<dispatcher-public-key-fingerprint-without-padding>':
-    controller_type: queued_mac
-    controller_id: tomasz.walczuk
+Future regular Ubuntu deployments refresh the bridge automatically:
+
+```sh
+cd /home/ubuntu/projects/remote-session-runner
+deploy/linux/install-systemd-service.sh
+deploy/ssh/install-queued-bridge.sh status
 ```
 
-Add exactly one restricted key entry for the dedicated Mac dispatcher public
-key in `/home/ubuntu/.ssh/authorized_keys` (also mode `0600`):
-
-```text
-restrict,command="/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh SHA256:<fingerprint-without-padding>" ssh-ed25519 <dispatcher-public-key> runner-mac-dispatcher
-```
-
-The bridge permits only `runner-ssh-bridge --stdio`, forwards only to
-`runnerd.sock`, and does not create a general remote shell. Confirm the
-Mac-side `ssh_known_hosts` file pins the intended server host key. Use a new
-one-off request through `--endpoint local` to prove the queued route; do not
-attempt to access a direct-mTLS-created session through it:
+The Linux installer calls `refresh` only when the permanent manifest already
+exists. Before it replaces `runnerd`, it preflights the existing bridge
+identity and runs the read-only zero-active-work gate before restarting an
+active service, including an immediate pre-restart repeat; after the new
+`runnerd` has created its owner-only socket, refresh updates the bridge binary
+and fixed wrapper for the checked-out revision. It does not add, replace, or
+rotate the dispatcher authorization. The Ubuntu checkout must be clean `dev`
+with `HEAD` equal to `origin/dev`; identity mismatch or partial state fails
+closed for inspection.
 
 ### Mac - `tomasz.walczuk`: confirm the queued route
 

@@ -9,7 +9,7 @@ import (
 const p055PublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBYMjC61Pqv/NVxaR86CMLlNBmFw8Oy3TBpIQoBObzka runner-mac-dispatcher"
 
 func p055Entry() Entry {
-	return Entry{PublicKey: p055PublicKey, WrapperPath: "/home/ubuntu/.local/share/remote-session-runner/deploy/runner-ssh-bridge-forced.sh"}
+	return Entry{PublicKey: p055PublicKey, WrapperPath: "/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh"}
 }
 
 func TestP055RenderRestrictedAuthorizedKeyAndExactOriginalCommand(t *testing.T) {
@@ -18,7 +18,7 @@ func TestP055RenderRestrictedAuthorizedKeyAndExactOriginalCommand(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(rendered, `restrict,command="/home/ubuntu/.local/share/remote-session-runner/deploy/runner-ssh-bridge-forced.sh SHA256:FnYdf11ON1ZHh+eCnkZbHvjePKktcH7Z/rDjv3nWsms" ssh-ed25519 `) || !strings.HasSuffix(rendered, " runner-mac-dispatcher") {
+	if !strings.HasPrefix(rendered, `restrict,command="/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh SHA256:FnYdf11ON1ZHh+eCnkZbHvjePKktcH7Z/rDjv3nWsms" ssh-ed25519 `) || !strings.HasSuffix(rendered, " runner-mac-dispatcher") {
 		t.Fatalf("rendered entry = %q", rendered)
 	}
 	if err := ValidateRendered(rendered, entry); err != nil {

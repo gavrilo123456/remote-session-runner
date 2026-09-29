@@ -119,8 +119,8 @@ test-twohost: check-go
 	GOTOOLCHAIN=local "$(GO)" test -tags=p117twohost ./src/internal/runnerd -run '^TestP117PublicEndpointPNET02$$' -count=1 -v
 
 # Real Mac/Ubuntu disconnect and durable-cursor replay gate. Credentials and
-# the temporary Ubuntu runner/forced-command fixture are provisioned outside
-# Git; the two test packages run sequentially against the same Linux authority.
+# a verified queued bridge are provisioned outside Git; the two test packages
+# run sequentially against the same Linux authority.
 test-p123-twohost: check-go
 	@set -eu; \
 	: "$${RUNNER_P123_SERVER_CA:?set RUNNER_P123_SERVER_CA to the trusted server CA file}"; \
@@ -132,7 +132,7 @@ test-p123-twohost: check-go
 	RSR_P123_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test -tags=p123twohost ./src/internal/localapi -run '^TestP123QueuedProjectionReconcilesAfterSSHOutage$$' -count=1 -v
 
 # Real Mac CLI smoke through local, queued SSH, and public direct mTLS routes.
-# The Ubuntu Runner and temporary queued-key authorization are host fixtures.
+# The Ubuntu Runner and a verified queued bridge are host prerequisites.
 test-p124-cli-twohost: check-go
 	@set -eu; \
 	: "$${RUNNER_P124_SERVER_CA:?set RUNNER_P124_SERVER_CA to the trusted server CA file}"; \

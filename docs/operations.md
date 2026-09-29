@@ -45,6 +45,23 @@ ss -lntH | grep '10.0.0.200:8443'
 sudo journalctl -u runnerd.service -n 200 --no-pager
 ```
 
+If the optional queued route is enabled, verify its permanent bridge separately:
+
+```sh
+cd /home/ubuntu/projects/remote-session-runner
+deploy/ssh/install-queued-bridge.sh status
+```
+
+This check does not change the bridge authorization or durable configuration.
+It validates the selected `ubuntu` account, active enabled service, owner-only
+socket and files, pinned dispatcher fingerprint, exact restricted
+authorization, controller map, wrapper, and source revision. A regular
+`deploy/linux/install-systemd-service.sh` deployment refreshes the bridge only
+when this permanent route is already configured. It preflights the permanent
+identity, uses the read-only zero-active-work gate before restarting an active
+service, then refreshes after the new private socket is ready. It never changes
+the dispatcher key.
+
 ### Public direct path - Mac
 
 ```sh
@@ -151,12 +168,19 @@ Mac commit and active work has reached zero:
 ```sh
 cd /home/ubuntu/projects/remote-session-runner
 deploy/linux/install-systemd-service.sh
-sudo systemctl restart runnerd.service
 sudo systemctl is-active runnerd.service
 ```
 
-The normal installer deploys `runnerd` only. It does not deploy or authorize
-the restricted SSH bridge.
+The normal installer deploys and starts `runnerd`; when it replaces an active
+service, it runs the checked-in read-only zero-active-work gate before the
+build and again immediately before restart so the new binary is actually in
+use. Schedule this during a maintenance window: the gate is a point-in-time
+check, and a request admitted after it is handled by the service's graceful
+shutdown, which stops admission, drains, or cancels remaining work truthfully.
+When the restricted SSH bridge has already been enabled, the installer also
+verifies its source checkout and refreshes the bridge program and forced-command
+wrapper. It does not create or change the dispatcher authorization; use the
+explicit bridge enable command in the setup guide for that one-time action.
 
 ## Triage guide
 

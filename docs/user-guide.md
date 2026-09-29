@@ -22,7 +22,7 @@ runner --endpoint <local|profile> [--config PATH] [--wait-timeout DURATION] COMM
 | --- | --- | --- | --- |
 | Local Mac | `--endpoint local`; `mac-dev`, `local`, `mac-workstation` | `tomasz.walczuk` | Available when the two Mac LaunchAgents are healthy. |
 | Remote Ubuntu, direct | `--endpoint linux-poc --config <mac.yaml>`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Uses direct public TLS 1.3 mTLS. This is the currently verified remote route. |
-| Remote Ubuntu, queued | `--endpoint local`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Requires the separately installed restricted SSH bridge. It is currently unavailable until that bridge is restored and verified. |
+| Remote Ubuntu, queued | `--endpoint local`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Requires the separately installed permanent restricted SSH bridge. Verify it on Ubuntu with `deploy/ssh/install-queued-bridge.sh status`. |
 
 Use the same endpoint for the complete resource lifecycle. The queued and
 direct remote routes use different controller identities, so a resource made

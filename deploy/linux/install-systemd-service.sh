@@ -63,6 +63,24 @@ for file in \
 	require_private_file "$file"
 done
 
+queued_bridge_manifest="$service_root/config/queued-ssh-bridge.manifest"
+if [ -e "$queued_bridge_manifest" ] || [ -L "$queued_bridge_manifest" ]; then
+	"$repo_root/deploy/ssh/install-queued-bridge.sh" preflight
+fi
+
+require_no_active_work() {
+	GO="$go_bin" make -C "$repo_root" test-p128-host-status
+}
+
+# Replacing a binary does not replace an already-running service process.
+# Use the checked-in read-only status gate before beginning an active-service
+# update, then repeat it immediately before the controlled restart.
+was_active=0
+if sudo -n systemctl is-active --quiet runnerd.service; then
+	was_active=1
+	require_no_active_work
+fi
+
 temporary="$service_root/bin/.runnerd.$$"
 trap 'rm -f "$temporary"' EXIT
 trap 'exit 129' HUP
@@ -77,11 +95,37 @@ install -m 700 "$entrypoint_source" "$service_root/bin/runnerd-entrypoint.sh"
 sudo -n install -o root -g root -m 644 "$unit_source" /etc/systemd/system/runnerd.service
 sudo -n systemctl daemon-reload
 sudo -n systemd-analyze verify /etc/systemd/system/runnerd.service
-sudo -n systemctl enable --now runnerd.service
+sudo -n systemctl enable runnerd.service
+if [ "$was_active" -eq 1 ]; then
+	require_no_active_work
+	sudo -n systemctl restart runnerd.service
+else
+	sudo -n systemctl start runnerd.service
+fi
 if ! sudo -n systemctl is-active --quiet runnerd.service; then
 	sudo -n systemctl status --no-pager runnerd.service >&2 || true
 	printf '%s\n' 'runnerd.service did not become active' >&2
 	exit 1
+fi
+
+socket_ready=0
+for attempt in $(seq 1 40); do
+	if [ ! -L "$service_root/run/runnerd.sock" ] \
+		&& [ -S "$service_root/run/runnerd.sock" ] \
+		&& [ "$(stat -c '%u:%a' "$service_root/run/runnerd.sock" 2>/dev/null || true)" = "$uid:600" ]; then
+		socket_ready=1
+		break
+	fi
+	sleep 0.25
+done
+if [ "$socket_ready" -ne 1 ]; then
+	sudo -n systemctl status --no-pager runnerd.service >&2 || true
+	printf '%s\n' 'runnerd.service did not create an ubuntu-owned mode-0600 private socket' >&2
+	exit 1
+fi
+
+if [ -e "$queued_bridge_manifest" ] || [ -L "$queued_bridge_manifest" ]; then
+	"$repo_root/deploy/ssh/install-queued-bridge.sh" refresh
 fi
 
 printf 'Installed and started runnerd.service as %s with %s\n' "$(id -un)" "$go_version"

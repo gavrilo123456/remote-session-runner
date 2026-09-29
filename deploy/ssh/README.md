@@ -1,59 +1,58 @@
-# Linux forced-command SSH deployment
+# Permanent Linux forced-command SSH bridge
 
-Before authorizing the queued Mac key, install and verify `runnerd.service` on
-Ubuntu with `deploy/linux/install-systemd-service.sh`. The unit runs as
-`ubuntu`; its startup entrypoint refuses to run with an invalid service
-account, a non-owner-only service directory, or a group/other-readable config
-or mTLS credential file. `runnerd` owns `/home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock`
-with mode 0600 beneath the owner-only `run/` directory. The bridge below uses
-that socket and cannot start the execution authority itself. A systemd stop
-closes the private and HTTPS listeners and removes the socket; P130/P132 add
-the shared graceful command-drain behavior.
+Use [`install-queued-bridge.sh`](install-queued-bridge.sh) to enable, inspect,
+and refresh the optional queued route. Do not use the P128 fixture as a normal
+deployment path: it is intentionally temporary and refuses to alter a host
+with a permanent bridge manifest.
 
-On Ubuntu, the installer is run from the synchronized project checkout as
-`ubuntu`, without `sudo`:
-
-```sh
-deploy/linux/install-systemd-service.sh
-sudo systemctl status runnerd.service
-```
-
-It builds the checked-out `runnerd` into the external service root, installs
-the versioned unit under `/etc/systemd/system`, and starts it. It does not
-authorize a key or modify `authorized_keys`.
-
-The queued Mac dispatcher key is authorized on Ubuntu with one exact entry:
+The permanent installer runs as `ubuntu` from a clean synchronized `dev`
+checkout. It requires an enabled and active `runnerd.service`, its owner-only
+`runnerd.sock`, the selected Go toolchain, and an owner-only `authorized_keys`
+file. It accepts one canonical `ssh-ed25519` **public** key. It never accepts
+or prints private-key material.
 
 ```text
-restrict,command="/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh SHA256:<fingerprint-without-padding>" ssh-ed25519 <dispatcher-public-key> runner-mac-dispatcher
+install-queued-bridge.sh enable --dispatcher-public-key-file PATH
+install-queued-bridge.sh enable --dispatcher-public-key-stdin
+install-queued-bridge.sh refresh
+install-queued-bridge.sh status
 ```
+
+`enable` records these persistent, Ubuntu-owned paths:
+
+```text
+bin/runner-ssh-bridge                         mode 0700
+bin/runner-ssh-bridge-forced.sh               mode 0700
+config/ssh-controller-map.yaml                mode 0600
+config/queued-ssh-dispatcher.pub              mode 0600
+config/queued-ssh-bridge.manifest             mode 0600
+```
+
+It also appends one exact restricted line to
+`/home/ubuntu/.ssh/authorized_keys`, preserving unrelated entries:
+
+```text
+restrict,command="/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh SHA256:<fingerprint>" ssh-ed25519 <dispatcher-public-key> runner-mac-dispatcher
+```
+
+The installer stages files privately, atomically replaces each destination,
+and changes `authorized_keys` last. A partial installation, a duplicate key,
+or a different dispatcher identity fails closed. Changing the dispatcher key
+requires an explicit reviewed rotation procedure; `enable` and `refresh` will
+not replace it silently.
 
 The `restrict` option disables PTY allocation, agent and X11 forwarding, TCP
 forwarding, and the user startup file. The wrapper checks
 `SSH_ORIGINAL_COMMAND` byte-for-byte against `runner-ssh-bridge --stdio`, the
-exact command sent by the Mac client. The fingerprint argument comes from the
-server-controlled forced command, not from SSH request data. The wrapper
-passes it to the bridge along with fixed service paths; the bridge resolves it
-through the owner-only `config/ssh-controller-map.yaml` before forwarding
-frames to the owner-only runnerd socket. The map has this shape:
+exact command sent by the Mac client. It rejects a PTY and executes only the
+fixed bridge with the server-supplied key fingerprint, controller map, and
+owner-only Runner socket.
 
-```yaml
-version: 1
-keys:
-  "SHA256:<fingerprint-without-padding>":
-    controller_type: queued_mac
-    controller_id: tomasz.walczuk
-```
-
-The wrapper executes only
-`/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge` with
-fixed arguments and never evaluates the requested command as shell text. The
-wrapper, binary, map, and configuration are owned by `ubuntu` and are not
-writable by other users; the `authorized_keys` file remains mode `0600`.
-
-Install the wrapper and binary under the selected Linux service root, render the
-entry from the dedicated public dispatcher key, inspect the resulting line, and
-append it only after verifying the existing file and a pinned-host-key SSH
-check. Keep private keys outside Git. A host-side deployment may replace the
-fixed paths with a reviewed service-root equivalent, but must preserve the exact
-`restrict` option and wrapper checks.
+Run `status` after enabling and after every controlled Linux deployment. When
+a permanent manifest exists, the normal
+`deploy/linux/install-systemd-service.sh` path preflights the existing identity
+before replacing `runnerd`, runs the read-only zero-active-work gate before
+restarting an active service and repeats it immediately before restart, waits
+for `runnerd.service` to recreate its private socket, then calls `refresh`.
+Refresh updates the bridge binary and fixed wrapper for that source revision
+without changing the public key, controller map, or authorization line.

@@ -16,9 +16,14 @@ owner-only `config/linux.yaml`, `config/client-principals.yaml`, server key and
 certificate, and client CA. It never reads or prints private key contents. It
 builds `runnerd` under the external service root, sets its service directories
 to mode 0700 after verifying their ownership and rejecting symlinks, installs
-the unit, verifies it with `systemd-analyze`, then enables and starts it.
-Existing runtime configuration and database files are not copied from the
-repository or replaced.
+the unit, verifies it with `systemd-analyze`, then enables and starts it. When
+updating an active service, it first runs the checked-in read-only
+zero-active-work gate and repeats it immediately before restart so the new
+binary is used. Schedule this during a maintenance window: the gate is a
+snapshot, and a request accepted after it is handled through the normal
+graceful shutdown path with a truthful durable outcome. Existing runtime
+configuration and database files are not copied from the repository or
+replaced.
 
 The unit sets `User=ubuntu`, `Group=ubuntu`, and `UMask=0077`. Its entrypoint
 checks the account, service-directory ownership/modes, launcher and runnerd
@@ -32,8 +37,17 @@ On Ubuntu, inspect the systemd service with:
 
 ```sh
 sudo systemctl status runnerd.service
-sudo systemctl restart runnerd.service
 sudo systemctl stop runnerd.service
+```
+
+Use `deploy/linux/install-systemd-service.sh` for an update: it performs the
+two zero-active-work checks before restarting an active service. If a manual
+restart is required for an operational reason, first run the same check during
+a maintenance window:
+
+```sh
+make test-p128-host-status
+sudo systemctl restart runnerd.service
 ```
 
 SIGTERM closes admission on both APIs, waits for accepted requests and command
@@ -47,3 +61,12 @@ still kills remaining service processes after shutdown or the deadline. The
 P132 host gate exercises this path with an active command. Forced-command SSH
 setup is documented in [the SSH deployment guide](../ssh/README.md), and must
 use this active service's private socket.
+
+If the optional permanent queued bridge has already been enabled, this installer
+preflights its selected dispatcher identity before replacing `runnerd`. Once
+the zero-active-work gates permit an active-service restart and the new service
+has recreated its owner-only socket, it refreshes the bridge binary and fixed
+wrapper from the same clean synchronized `dev` revision. It does not create,
+change, or rotate the SSH authorization. Run
+`deploy/ssh/install-queued-bridge.sh status` after the deployment to confirm
+the bridge remains ready.
