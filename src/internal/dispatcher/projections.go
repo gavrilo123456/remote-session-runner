@@ -138,17 +138,9 @@ func remoteCommandProjectionFromReply(intent store.LocalIntentRecord, object map
 		}
 		return store.RemoteCommandProjection{}, false, fmt.Errorf("%w: command identity", ErrRemoteResponse)
 	}
-	ordinal := int64(0)
-	if intent.IntentOrdinal != nil {
-		ordinal = *intent.IntentOrdinal
-	}
-	if raw, present := object["ordinal"]; present {
-		if err := json.Unmarshal(raw, &ordinal); err != nil || ordinal <= 0 || intent.IntentOrdinal != nil && ordinal != *intent.IntentOrdinal {
-			return store.RemoteCommandProjection{}, false, fmt.Errorf("%w: command ordinal", ErrRemoteResponse)
-		}
-	}
-	if ordinal <= 0 {
-		return store.RemoteCommandProjection{}, false, nil
+	ordinal, present := positiveRemoteAuthorityOrdinal(object)
+	if !present {
+		return store.RemoteCommandProjection{}, false, fmt.Errorf("%w: missing or invalid remote command ordinal", ErrRemoteResponse)
 	}
 	environment := intent.Environment
 	if value, present, readErr := readProjectionString(object, "environment"); readErr != nil {

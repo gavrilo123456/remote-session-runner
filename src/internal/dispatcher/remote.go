@@ -860,10 +860,12 @@ func validateRemoteReply(intent store.LocalIntentRecord, frame sshbridge.Request
 	if err := json.Unmarshal(object[field], &resourceID); err != nil || resourceID != intent.ResourceID {
 		return fmt.Errorf("%w: %s identity", ErrRemoteResponse, field)
 	}
-	if intent.Operation == operationSubmitCommand && intent.IntentOrdinal != nil {
-		var ordinal int64
-		if raw, ok := object["ordinal"]; !ok || json.Unmarshal(raw, &ordinal) != nil || ordinal != *intent.IntentOrdinal {
-			return fmt.Errorf("%w: command ordinal mismatch", ErrRemoteResponse)
+	if intent.Operation == operationSubmitCommand {
+		if intent.IntentOrdinal == nil || *intent.IntentOrdinal <= 0 {
+			return fmt.Errorf("%w: missing Mac command intent ordinal", ErrRemoteResponse)
+		}
+		if _, ok := positiveRemoteAuthorityOrdinal(object); !ok {
+			return fmt.Errorf("%w: missing or invalid remote command ordinal", ErrRemoteResponse)
 		}
 	}
 	return nil
@@ -931,12 +933,11 @@ func validateReconciledResource(intent store.LocalIntentRecord, object map[strin
 		if err := readString("session_id", string(intent.SessionID)); err != nil {
 			return err
 		}
-		if intent.IntentOrdinal == nil {
+		if intent.IntentOrdinal == nil || *intent.IntentOrdinal <= 0 {
 			return fmt.Errorf("%w: missing local command ordinal", ErrRemoteNotReconciled)
 		}
-		var ordinal int64
-		if raw, ok := object["ordinal"]; !ok || json.Unmarshal(raw, &ordinal) != nil || ordinal != *intent.IntentOrdinal {
-			return fmt.Errorf("%w: ordinal mismatch", ErrRemoteNotReconciled)
+		if _, ok := positiveRemoteAuthorityOrdinal(object); !ok {
+			return fmt.Errorf("%w: missing or invalid remote command ordinal", ErrRemoteNotReconciled)
 		}
 		var scriptHash string
 		digest := sha256.Sum256(intent.ScriptBytes)
@@ -963,6 +964,21 @@ func validateReconciledResource(intent store.LocalIntentRecord, object map[strin
 	default:
 		return fmt.Errorf("%w: operation %s", ErrRemoteNotReconciled, intent.Operation)
 	}
+}
+
+// positiveRemoteAuthorityOrdinal reads Linux's contiguous command ordinal.
+// It is independent of the Mac intent ordinal, which remains provenance and
+// may have gaps for commands proven not delivered before target acceptance.
+func positiveRemoteAuthorityOrdinal(object map[string]json.RawMessage) (int64, bool) {
+	raw, present := object["ordinal"]
+	if !present {
+		return 0, false
+	}
+	var ordinal int64
+	if json.Unmarshal(raw, &ordinal) != nil || ordinal <= 0 {
+		return 0, false
+	}
+	return ordinal, true
 }
 
 func validateRemoteTarget(object map[string]json.RawMessage) error {
