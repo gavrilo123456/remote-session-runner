@@ -65,6 +65,10 @@ type Server struct {
 	mu             sync.Mutex
 	closed         bool
 	healthReport   func(context.Context) opshealth.Report
+	// afterIntentCommit is a private crash-test seam. The production service
+	// composition never sets it; package tests use it to stop the real HTTP
+	// process after SQLite committed an idempotent local receipt.
+	afterIntentCommit func()
 }
 
 func NewServer(options ServerOptions) (*Server, error) {
@@ -1713,6 +1717,9 @@ func (s *Server) acceptCreateSessionIntent(ctx context.Context, key string, body
 	if err != nil {
 		status, code := statusForStoreError(err)
 		return sessionAcceptance{}, localFailure(status, code, sanitizeError(err))
+	}
+	if s.afterIntentCommit != nil {
+		s.afterIntentCommit()
 	}
 	_ = duplicate // The stable response identity is the durable idempotency result.
 	return sessionAcceptance{

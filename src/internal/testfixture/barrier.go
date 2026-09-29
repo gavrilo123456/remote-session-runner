@@ -21,16 +21,17 @@ import (
 type BarrierPoint string
 
 const (
-	BarrierMacAPIAfterIntentCommit  BarrierPoint = "mac_api.after_intent_commit"
-	BarrierRouterAfterLeaseCommit   BarrierPoint = "router.after_delivery_lease_commit"
-	BarrierExecutorAfterStartCommit BarrierPoint = "executor.after_command_started_commit"
-	BarrierAgentAfterBashSpawn      BarrierPoint = "agent.after_bash_spawn"
-	BarrierBashAfterScriptSource    BarrierPoint = "bash.after_script_source"
-	phaseBarrierFDEnv                            = "RSR_PHASE_BARRIER_FD"
-	phaseBarrierContinue                         = "continue"
-	phaseBarrierMessageLimit                     = 64 * 1024
-	phaseBarrierOutputLimit                      = 64 * 1024
-	phaseBarrierWaitTimeout                      = 5 * time.Second
+	BarrierMacAPIAfterIntentCommit    BarrierPoint = "mac_api.after_intent_commit"
+	BarrierRouterAfterLeaseCommit     BarrierPoint = "router.after_delivery_lease_commit"
+	BarrierRouterAfterUncertainCommit BarrierPoint = "router.after_uncertain_intent_commit"
+	BarrierExecutorAfterStartCommit   BarrierPoint = "executor.after_command_started_commit"
+	BarrierAgentAfterBashSpawn        BarrierPoint = "agent.after_bash_spawn"
+	BarrierBashAfterScriptSource      BarrierPoint = "bash.after_script_source"
+	phaseBarrierFDEnv                              = "RSR_PHASE_BARRIER_FD"
+	phaseBarrierContinue                           = "continue"
+	phaseBarrierMessageLimit                       = 64 * 1024
+	phaseBarrierOutputLimit                        = 64 * 1024
+	phaseBarrierWaitTimeout                        = 5 * time.Second
 )
 
 // NamedPhaseBarriers returns the P133 crash points in deterministic plan order.
@@ -38,6 +39,7 @@ func NamedPhaseBarriers() []BarrierPoint {
 	return []BarrierPoint{
 		BarrierMacAPIAfterIntentCommit,
 		BarrierRouterAfterLeaseCommit,
+		BarrierRouterAfterUncertainCommit,
 		BarrierExecutorAfterStartCommit,
 		BarrierAgentAfterBashSpawn,
 		BarrierBashAfterScriptSource,
