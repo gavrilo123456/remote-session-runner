@@ -78,7 +78,6 @@ func TestP140UbuntuOnlineBackupRestoreAndGenerationBumpHost(t *testing.T) {
 			"RSR_P140_DB="+databasePath,
 			"RSR_P140_WORKSPACES="+workspaceRoot,
 			"RSR_P140_SOCKET="+socketPath,
-			"RSR_P140_BACKUPS="+backupDir,
 		)
 		return command
 	})
@@ -267,18 +266,11 @@ func p140LinuxRunnerdHelper(t *testing.T) {
 	databasePath := os.Getenv("RSR_P140_DB")
 	workspaceRoot := os.Getenv("RSR_P140_WORKSPACES")
 	socketPath := os.Getenv("RSR_P140_SOCKET")
-	backupDir := os.Getenv("RSR_P140_BACKUPS")
 	db, authority, service, err := p135LinuxService(databasePath, workspaceRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := os.MkdirAll(backupDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(backupDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	report, err := service.ReconcileStartup(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +283,7 @@ func p140LinuxRunnerdHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	pki := newP106TestPKI(t)
-	tlsRoot := filepath.Join(filepath.Dir(backupDir), "loopback-tls")
+	tlsRoot := filepath.Join(filepath.Dir(databasePath), "loopback-tls")
 	if err := os.MkdirAll(tlsRoot, 0o700); err != nil {
 		t.Fatalf("create isolated P140 loopback TLS fixture directory: %v", err)
 	}
