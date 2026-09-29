@@ -210,8 +210,11 @@ func TestP140UbuntuOnlineBackupRestoreAndGenerationBumpHost(t *testing.T) {
 	}
 	activeProcess = second
 	secondResult := p140LinuxWaitResult(t, second, true)
-	if secondResult.Report.SessionsInspected != 1 || secondResult.Report.CleanupUnconfirmed != 0 || secondResult.Report.RuntimeFailures != 0 {
-		t.Fatalf("post-restore isolated runnerd reconciliation=%+v, want one inspected session and no uncertain cleanup/runtime failure", secondResult.Report)
+	// Graceful shutdown removed the old process ownership marker before this
+	// older READY snapshot was restored. Startup must retain capacity until the
+	// parent independently proves that the old process group is gone.
+	if secondResult.Report.SessionsInspected != 1 || secondResult.Report.SessionsLost != 1 || secondResult.Report.CleanupUnconfirmed != 1 || secondResult.Report.RuntimeFailures != 0 {
+		t.Fatalf("post-restore isolated runnerd reconciliation=%+v, want one lost session with cleanup conservatively unconfirmed", secondResult.Report)
 	}
 	database, authority = p135LinuxOpenAuthority(t, databasePath)
 	restored, err := authority.GetSession(context.Background(), domain.SessionID(oldSessionID))
