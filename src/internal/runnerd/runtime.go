@@ -150,3 +150,13 @@ func (r *LinuxSessionRuntime) StopSession(_ context.Context, session store.Sessi
 	r.mu.Unlock()
 	return true, nil
 }
+
+// Reconcile reloads durable process ownership and stops the previous
+// generation without ever reattaching its Bash shell.
+func (r *LinuxSessionRuntime) Reconcile(ctx context.Context, request execution.RuntimeReconcileRequest) (execution.RuntimeReconcileResult, error) {
+	if r == nil || r.adapter == nil {
+		return execution.RuntimeReconcileResult{}, execution.ErrRuntimeUnavailable
+	}
+	result, err := r.adapter.ReconcileSession(ctx, string(request.Session.SessionID), request.Session.RuntimeGeneration, 500*time.Millisecond)
+	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
+}

@@ -134,6 +134,16 @@ func (r *MacSessionRuntime) StopSession(_ context.Context, session store.Session
 	return true, nil
 }
 
+// Reconcile quarantines and stops the prior process group. A successful
+// result never restores the old in-memory shell handle.
+func (r *MacSessionRuntime) Reconcile(ctx context.Context, request execution.RuntimeReconcileRequest) (execution.RuntimeReconcileResult, error) {
+	if r == nil || r.adapter == nil {
+		return execution.RuntimeReconcileResult{}, execution.ErrRuntimeUnavailable
+	}
+	result, err := r.adapter.ReconcileSession(ctx, string(request.Session.SessionID), request.Session.RuntimeGeneration, 500*time.Millisecond)
+	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
+}
+
 func newRuntimeGeneration() (string, error) {
 	var value [16]byte
 	if _, err := rand.Read(value[:]); err != nil {

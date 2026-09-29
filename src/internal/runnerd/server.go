@@ -29,6 +29,7 @@ import (
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
+	"remote-session-runner/src/internal/unixsocket"
 )
 
 const (
@@ -112,6 +113,9 @@ func (s *PrivateServer) Listen() error {
 	defer s.mu.Unlock()
 	if s.listener != nil {
 		return nil
+	}
+	if err := unixsocket.RemoveStaleOwned(s.socketPath); err != nil {
+		return fmt.Errorf("%w: %v", ErrPrivateSocketPath, err)
 	}
 	if info, err := os.Lstat(s.socketPath); err == nil {
 		return fmt.Errorf("%w: socket path already exists as %s", ErrPrivateSocketPath, info.Mode().Type())

@@ -422,6 +422,20 @@ func (a *LinuxProcessAdapter) StartAgent(ctx context.Context, prepared LinuxPrep
 		return err
 	}
 	a.sessions[prepared.SessionID] = shell
+	record, err := a.inspectPreparedLocked(prepared, shell)
+	if err == nil {
+		err = writeRuntimeOwnership(a.options.WorkspaceRoot, RuntimeOwnershipRecord{
+			Version: runtimeOwnershipVersion, HostOS: runtime.GOOS, SessionID: prepared.SessionID,
+			Generation: prepared.Generation, Workspace: prepared.Workspace, OwnedWorkspace: prepared.OwnedWorkspace,
+			PID: record.PID, ProcessGroupID: record.ProcessGroupID, UID: record.UID, Username: record.Username,
+			Command: record.Command, ProcessStartIdentity: record.ProcessStartIdentity,
+		})
+	}
+	if err != nil {
+		delete(a.sessions, prepared.SessionID)
+		_ = shell.Close()
+		return fmt.Errorf("record Linux runtime ownership: %w", err)
+	}
 	return nil
 }
 
@@ -448,6 +462,10 @@ func (a *LinuxProcessAdapter) Inspect(sessionID string) (LinuxProcessRecord, err
 	shell := a.sessions[sessionID]
 	prepared := a.prepared[sessionID]
 	a.mu.Unlock()
+	return a.inspectPreparedLocked(prepared, shell)
+}
+
+func (a *LinuxProcessAdapter) inspectPreparedLocked(prepared LinuxPrepared, shell *PersistentShell) (LinuxProcessRecord, error) {
 	if shell == nil || prepared.SessionID == "" || shell.cmd == nil || shell.cmd.Process == nil {
 		return LinuxProcessRecord{}, ErrLinuxRuntimeAccount
 	}
@@ -620,26 +638,49 @@ func (a *LinuxProcessAdapter) ReconcileProcess(ctx context.Context, record Linux
 	if record.PID <= 0 {
 		return result, fmt.Errorf("%w: invalid PID %d", ErrLinuxRuntimeOwnership, record.PID)
 	}
-	observed, err := inspectLinuxPID(record.PID)
-	if err != nil {
-		if !linuxProcessExists(record.PID) {
-			result.Reason = "process already absent; no shell reattached"
-			result.CleanupConfirmed = true
-			return result, nil
+	observed, inspectErr := inspectLinuxPID(record.PID)
+	if inspectErr == nil {
+		if observed.UID != a.accountUID() || observed.Username != a.account.Username {
+			result.CapacityRetained = true
+			result.Reason = "process belongs to a different OS account"
+			return result, fmt.Errorf("%w: PID %d is uid=%d user=%q", ErrLinuxRuntimeOwnership, record.PID, observed.UID, observed.Username)
 		}
+		if record.UID != 0 && record.UID != observed.UID || record.Username != "" && record.Username != observed.Username {
+			result.CapacityRetained = true
+			result.Reason = "persisted process identity does not match the live process"
+			return result, fmt.Errorf("%w: recorded uid=%d user=%q, observed uid=%d user=%q", ErrLinuxRuntimeOwnership, record.UID, record.Username, observed.UID, observed.Username)
+		}
+		if record.ProcessStartIdentity != "" && record.ProcessStartIdentity != observed.ProcessStartIdentity {
+			result.CapacityRetained = true
+			result.Reason = "PID was reused by a different process"
+			return result, fmt.Errorf("%w: recorded process start identity differs", ErrLinuxRuntimeOwnership)
+		}
+		if record.ProcessGroupID > 0 && observed.ProcessGroupID != record.ProcessGroupID {
+			result.CapacityRetained = true
+			result.Reason = "process group identity changed"
+			return result, fmt.Errorf("%w: PID %d process group changed", ErrLinuxRuntimeOwnership, record.PID)
+		}
+	} else if linuxProcessExists(record.PID) {
 		result.CapacityRetained = true
 		result.Reason = "process identity could not be inspected"
-		return result, fmt.Errorf("%w: inspect PID %d: %v", ErrLinuxRuntimeOwnership, record.PID, err)
+		return result, fmt.Errorf("%w: inspect PID %d: %v", ErrLinuxRuntimeOwnership, record.PID, inspectErr)
 	}
-	if observed.UID != a.accountUID() || observed.Username != a.account.Username {
-		result.CapacityRetained = true
-		result.Reason = "process belongs to a different OS account"
-		return result, fmt.Errorf("%w: PID %d is uid=%d user=%q", ErrLinuxRuntimeOwnership, record.PID, observed.UID, observed.Username)
+	group := record.ProcessGroupID
+	if group <= 0 {
+		group = record.PID
 	}
-	if record.UID != 0 && record.UID != observed.UID || record.Username != "" && record.Username != observed.Username {
+	members, membersErr := linuxProcessGroupMembers(group)
+	if membersErr != nil {
 		result.CapacityRetained = true
-		result.Reason = "persisted process identity does not match the live process"
-		return result, fmt.Errorf("%w: recorded uid=%d user=%q, observed uid=%d user=%q", ErrLinuxRuntimeOwnership, record.UID, record.Username, observed.UID, observed.Username)
+		result.Reason = "process group identity could not be inspected"
+		return result, membersErr
+	}
+	for _, member := range members {
+		if member.UID != a.accountUID() || member.Username != a.account.Username {
+			result.CapacityRetained = true
+			result.Reason = "process group contains a different OS account"
+			return result, fmt.Errorf("%w: process group %d contains uid=%d user=%q", ErrLinuxRuntimeOwnership, group, member.UID, member.Username)
+		}
 	}
 	result.Quarantined = true
 	if expectedGeneration == "" || record.Generation != expectedGeneration {
@@ -647,54 +688,72 @@ func (a *LinuxProcessAdapter) ReconcileProcess(ctx context.Context, record Linux
 	} else {
 		result.Reason = "executor restart; shell reattachment is forbidden"
 	}
-	group := record.ProcessGroupID
-	if group <= 0 {
-		group, _ = syscall.Getpgid(record.PID)
-	}
-	if group <= 0 {
-		group = record.PID
-	}
-	if err := signalProcessGroup(group, syscall.SIGTERM); err != nil {
+	if err := stopOwnedProcessGroup(ctx, group, grace); err != nil {
 		result.CapacityRetained = true
-		return result, fmt.Errorf("%w: signal quarantined process group: %v", ErrLinuxRuntimeOwnership, err)
+		result.Reason = "process group remains after bounded cleanup"
+		result.Remaining, _ = linuxProcessGroupDescendants(group)
+		return result, fmt.Errorf("%w: %v", ErrLinuxRuntimeOwnership, err)
 	}
-	if grace <= 0 {
-		grace = 500 * time.Millisecond
+	result.CleanupConfirmed = true
+	return result, nil
+}
+
+// ReconcileSession reloads the durable process identity from the owner-only
+// workspace metadata and quarantines the old process group. It never
+// reattaches the Bash shell.
+func (a *LinuxProcessAdapter) ReconcileSession(ctx context.Context, sessionID, expectedGeneration string, grace time.Duration) (LinuxReconciliationResult, error) {
+	result := LinuxReconciliationResult{SessionID: sessionID, Reattached: false}
+	if a == nil {
+		return result, ErrLinuxRuntimeAccount
 	}
-	if linuxWaitProcessGone(ctx, record.PID, grace) {
-		result.CleanupConfirmed = true
+	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		result.Reason = "runtime ownership record is missing; shell reattachment is forbidden"
 		return result, nil
 	}
-	_ = signalProcessGroup(group, syscall.SIGKILL)
-	if linuxWaitProcessGone(ctx, record.PID, 100*time.Millisecond) {
-		result.CleanupConfirmed = true
-		return result, nil
+	if err != nil {
+		result.CapacityRetained = true
+		result.Reason = "runtime ownership record could not be validated"
+		return result, err
 	}
-	result.Remaining, _ = inspectProcessDescendants(record.PID)
-	result.CapacityRetained = true
+	result.Generation, result.PID = record.Generation, record.PID
+	if record.Generation != expectedGeneration {
+		result.Reason = "generation mismatch after executor restart; shell reattachment is forbidden"
+	}
+	if record.UID != a.accountUID() || record.Username != a.account.Username {
+		result.CapacityRetained = true
+		return result, fmt.Errorf("%w: recorded owner uid=%d user=%q", ErrLinuxRuntimeOwnership, record.UID, record.Username)
+	}
+	result, err = a.ReconcileProcess(ctx, LinuxProcessRecord{
+		SessionID: record.SessionID, Generation: record.Generation, Workspace: record.Workspace,
+		PID: record.PID, ProcessGroupID: record.ProcessGroupID, UID: record.UID, Username: record.Username,
+		Command: record.Command, ProcessStartIdentity: record.ProcessStartIdentity,
+	}, expectedGeneration, grace)
+	if err != nil || !result.CleanupConfirmed {
+		return result, err
+	}
+	if record.OwnedWorkspace {
+		if err := removeOwnedRuntimeWorkspace(a.options.WorkspaceRoot, record.Workspace); err != nil {
+			result.CleanupConfirmed = false
+			result.CapacityRetained = true
+			return result, err
+		}
+	}
+	if err := removeRuntimeOwnership(a.options.WorkspaceRoot, sessionID); err != nil {
+		result.CleanupConfirmed = false
+		result.CapacityRetained = true
+		return result, err
+	}
+	a.mu.Lock()
+	delete(a.sessions, sessionID)
+	delete(a.prepared, sessionID)
+	a.mu.Unlock()
+	result.CapacityRetained = false
+	result.Reason = "prior process group stopped; old shell was not reattached"
 	return result, nil
 }
 
 func linuxProcessExists(pid int) bool { return syscall.Kill(pid, 0) == nil }
-
-func linuxWaitProcessGone(ctx context.Context, pid int, duration time.Duration) bool {
-	deadline := time.NewTimer(duration)
-	defer deadline.Stop()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if !linuxProcessExists(pid) {
-			return true
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-deadline.C:
-			return !linuxProcessExists(pid)
-		case <-ticker.C:
-		}
-	}
-}
 
 // Cleanup closes the shell and removes only this adapter's owned workspace.
 func (a *LinuxProcessAdapter) Cleanup(sessionID string) error {
@@ -704,24 +763,70 @@ func (a *LinuxProcessAdapter) Cleanup(sessionID string) error {
 	a.mu.Lock()
 	shell := a.sessions[sessionID]
 	prepared := a.prepared[sessionID]
-	delete(a.sessions, sessionID)
-	delete(a.prepared, sessionID)
 	a.mu.Unlock()
-	if shell == nil {
-		if prepared.SessionID == "" {
-			return ErrLinuxRuntimeAccount
+	if prepared.SessionID == "" {
+		return ErrLinuxRuntimeAccount
+	}
+	owner, ownerErr := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
+	if ownerErr != nil && !errors.Is(ownerErr, os.ErrNotExist) {
+		return ownerErr
+	}
+	if shell == nil && ownerErr == nil {
+		result, err := a.ReconcileSession(context.Background(), sessionID, owner.Generation, 500*time.Millisecond)
+		if err != nil {
+			return err
 		}
-		if prepared.OwnedWorkspace {
-			return os.RemoveAll(prepared.Workspace)
+		if !result.CleanupConfirmed {
+			return fmt.Errorf("%w: runtime cleanup remains unconfirmed", ErrLinuxRuntimeAccount)
 		}
 		return nil
 	}
-	if err := shell.Close(); err != nil {
-		return err
+
+	processGroupID := 0
+	if ownerErr == nil {
+		if owner.Generation != prepared.Generation || owner.Workspace != prepared.Workspace || owner.OwnedWorkspace != prepared.OwnedWorkspace || owner.Username != a.account.Username || owner.UID != a.accountUID() {
+			return fmt.Errorf("%w: persisted ownership does not match prepared Linux session", ErrLinuxRuntimeOwnership)
+		}
+		processGroupID = owner.ProcessGroupID
+	}
+	if shell != nil {
+		if shell.cmd == nil || shell.cmd.Process == nil {
+			return ErrLinuxRuntimeAccount
+		}
+		pid := shell.cmd.Process.Pid
+		if processGroupID == 0 {
+			var err error
+			processGroupID, err = syscall.Getpgid(pid)
+			if err != nil {
+				return fmt.Errorf("inspect Linux process group before cleanup: %w", err)
+			}
+		}
+		if processGroupID != pid {
+			return fmt.Errorf("%w: Bash process group does not match its PID", ErrLinuxRuntimeOwnership)
+		}
+		if err := shell.Close(); err != nil {
+			return err
+		}
+		groupExists, err := processGroupExists(processGroupID)
+		if err != nil {
+			return fmt.Errorf("inspect Linux session process group after shell exit: %w", err)
+		}
+		if groupExists {
+			return fmt.Errorf("%w: residual process group %d remains after shell exit", ErrLinuxRuntimeOwnership, processGroupID)
+		}
 	}
 	if prepared.OwnedWorkspace {
-		return os.RemoveAll(prepared.Workspace)
+		if err := os.RemoveAll(prepared.Workspace); err != nil {
+			return err
+		}
 	}
+	if err := removeRuntimeOwnership(a.options.WorkspaceRoot, sessionID); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	delete(a.sessions, sessionID)
+	delete(a.prepared, sessionID)
+	a.mu.Unlock()
 	return nil
 }
 
@@ -922,19 +1027,95 @@ func inspectLinuxPID(pid int) (LinuxProcessRecord, error) {
 	if lookupErr != nil {
 		return LinuxProcessRecord{}, lookupErr
 	}
-	return LinuxProcessRecord{PID: pid, UID: uid, Username: identity.Username, Command: command}, nil
+	_, processGroupID, startIdentity, err := linuxProcessStat(pid)
+	if err != nil {
+		return LinuxProcessRecord{}, err
+	}
+	return LinuxProcessRecord{PID: pid, ProcessGroupID: processGroupID, UID: uid, Username: identity.Username, Command: command, ProcessStartIdentity: startIdentity}, nil
+}
+
+func linuxProcessStat(pid int) (byte, int, string, error) {
+	if pid <= 0 {
+		return 0, 0, "", fmt.Errorf("%w: invalid PID %d", ErrLinuxRuntimeOwnership, pid)
+	}
+	contents, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, 0, "", err
+	}
+	closing := strings.LastIndexByte(string(contents), ')')
+	if closing < 0 || closing+1 >= len(contents) {
+		return 0, 0, "", fmt.Errorf("%w: malformed /proc/%d/stat", ErrLinuxRuntimeOwnership, pid)
+	}
+	fields := strings.Fields(string(contents[closing+1:]))
+	if len(fields) <= 19 || len(fields[0]) != 1 {
+		return 0, 0, "", fmt.Errorf("%w: incomplete /proc/%d/stat", ErrLinuxRuntimeOwnership, pid)
+	}
+	processGroupID, err := strconv.Atoi(fields[2])
+	if err != nil || processGroupID <= 0 {
+		return 0, 0, "", fmt.Errorf("%w: invalid process group in /proc/%d/stat", ErrLinuxRuntimeOwnership, pid)
+	}
+	return fields[0][0], processGroupID, fields[19], nil
+}
+
+func linuxProcessGroupMembers(processGroupID int) ([]LinuxProcessRecord, error) {
+	if processGroupID <= 0 {
+		return nil, fmt.Errorf("%w: invalid process group ID", ErrLinuxRuntimeOwnership)
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, fmt.Errorf("%w: read process table: %v", ErrLinuxRuntimeOwnership, err)
+	}
+	members := make([]LinuxProcessRecord, 0, 4)
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		state, group, _, statErr := linuxProcessStat(pid)
+		if errors.Is(statErr, os.ErrNotExist) || errors.Is(statErr, syscall.ESRCH) {
+			continue
+		}
+		if statErr != nil {
+			return nil, statErr
+		}
+		if group != processGroupID || state == 'Z' || state == 'X' {
+			continue
+		}
+		record, inspectErr := inspectLinuxPID(pid)
+		if inspectErr != nil {
+			if !linuxProcessExists(pid) {
+				continue
+			}
+			return nil, fmt.Errorf("%w: inspect process group member %d: %v", ErrLinuxRuntimeOwnership, pid, inspectErr)
+		}
+		members = append(members, record)
+	}
+	return members, nil
+}
+
+func linuxProcessGroupDescendants(processGroupID int) ([]DescendantProcess, error) {
+	members, err := linuxProcessGroupMembers(processGroupID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]DescendantProcess, 0, len(members))
+	for _, member := range members {
+		result = append(result, DescendantProcess{PID: member.PID, Command: member.Command})
+	}
+	return result, nil
 }
 
 // LinuxProcessRecord is the public form of one host process-table observation.
 type LinuxProcessRecord struct {
-	SessionID      string
-	Generation     string
-	Workspace      string
-	PID            int
-	ProcessGroupID int
-	UID            int
-	Username       string
-	Command        string
+	SessionID            string
+	Generation           string
+	Workspace            string
+	PID                  int
+	ProcessGroupID       int
+	UID                  int
+	Username             string
+	Command              string
+	ProcessStartIdentity string
 }
 
 func linuxHostCapabilities(account string) LinuxProfileCapabilities {

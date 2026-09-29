@@ -64,6 +64,26 @@ type DirectHTTPSServer struct {
 	closed   bool
 }
 
+// closeOnceListener makes closing the server listener safe when the caller
+// stops accepting at the same time that http.Server.Serve is unwinding. Serve
+// closes its listener after returning, so the wrapper must treat that second
+// close as an already-completed operation.
+type closeOnceListener struct {
+	net.Listener
+	once sync.Once
+	err  error
+}
+
+func (l *closeOnceListener) Close() error {
+	l.once.Do(func() {
+		l.err = l.Listener.Close()
+		if errors.Is(l.err, net.ErrClosed) {
+			l.err = nil
+		}
+	})
+	return l.err
+}
+
 type principalMapDocument struct {
 	Version    int                         `yaml:"version"`
 	Principals []principalMapDocumentEntry `yaml:"principals"`
@@ -149,7 +169,7 @@ func (s *DirectHTTPSServer) Listen() error {
 	if err != nil {
 		return fmt.Errorf("listen direct HTTPS on %s: %w", s.address, err)
 	}
-	s.listener = tls.NewListener(listener, s.server.TLSConfig)
+	s.listener = tls.NewListener(&closeOnceListener{Listener: listener}, s.server.TLSConfig)
 	return nil
 }
 

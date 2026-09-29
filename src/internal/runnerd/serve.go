@@ -130,6 +130,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runnerd: construct execution service: %v\n", err)
 		return 1
 	}
+	reconciliation, err := service.ReconcileStartup(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "runnerd: startup runtime reconciliation: %v\n", err)
+		return 1
+	}
+	slog.Info("runnerd startup reconciliation complete",
+		"sessions_inspected", reconciliation.SessionsInspected,
+		"sessions_lost", reconciliation.SessionsLost,
+		"commands_lost", reconciliation.CommandsLost,
+		"commands_rejected", reconciliation.CommandsRejected,
+		"cleanup_unconfirmed", reconciliation.CleanupUnconfirmed,
+	)
 	requestGate := lifecycle.NewGate()
 	dispatchGate := lifecycle.NewGate()
 	directHandler, err := newDirectHTTPSAPIHandler(service, requestGate, dispatchGate)

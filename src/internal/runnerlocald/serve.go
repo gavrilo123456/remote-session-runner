@@ -101,6 +101,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runner-locald: construct execution service: %v\n", err)
 		return 1
 	}
+	reconciliation, err := service.ReconcileStartup(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "runner-locald: startup runtime reconciliation: %v\n", err)
+		return 1
+	}
+	slog.Info("runner-locald startup reconciliation complete",
+		"sessions_inspected", reconciliation.SessionsInspected,
+		"sessions_lost", reconciliation.SessionsLost,
+		"commands_lost", reconciliation.CommandsLost,
+		"commands_rejected", reconciliation.CommandsRejected,
+		"cleanup_unconfirmed", reconciliation.CleanupUnconfirmed,
+	)
 	owner, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, domain.ControllerID(settings.Account))
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: owner controller: %v\n", err)
