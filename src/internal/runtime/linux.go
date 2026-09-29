@@ -1042,6 +1042,13 @@ func linuxProcessStat(pid int) (byte, int, string, error) {
 	if err != nil {
 		return 0, 0, "", err
 	}
+	return parseLinuxProcessStat(pid, contents)
+}
+
+func parseLinuxProcessStat(pid int, contents []byte) (byte, int, string, error) {
+	if pid <= 0 {
+		return 0, 0, "", fmt.Errorf("%w: invalid PID %d", ErrLinuxRuntimeOwnership, pid)
+	}
 	closing := strings.LastIndexByte(string(contents), ')')
 	if closing < 0 || closing+1 >= len(contents) {
 		return 0, 0, "", fmt.Errorf("%w: malformed /proc/%d/stat", ErrLinuxRuntimeOwnership, pid)
@@ -1051,7 +1058,7 @@ func linuxProcessStat(pid int) (byte, int, string, error) {
 		return 0, 0, "", fmt.Errorf("%w: incomplete /proc/%d/stat", ErrLinuxRuntimeOwnership, pid)
 	}
 	processGroupID, err := strconv.Atoi(fields[2])
-	if err != nil || processGroupID <= 0 {
+	if err != nil || processGroupID < 0 {
 		return 0, 0, "", fmt.Errorf("%w: invalid process group in /proc/%d/stat", ErrLinuxRuntimeOwnership, pid)
 	}
 	return fields[0][0], processGroupID, fields[19], nil
