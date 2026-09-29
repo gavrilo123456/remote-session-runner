@@ -16,12 +16,57 @@ type p027Runtime struct {
 	reconcileErr    error
 	reconcileCall   int
 	reconcileSaw    []store.SessionRecord
+	ownershipAudit  int
+	attributable    map[string]struct{}
+	ownershipErr    error
 }
 
 func (r *p027Runtime) Reconcile(_ context.Context, request RuntimeReconcileRequest) (RuntimeReconcileResult, error) {
 	r.reconcileCall++
 	r.reconcileSaw = append(r.reconcileSaw, request.Session)
 	return r.reconcileResult, r.reconcileErr
+}
+
+func (r *p027Runtime) AuditOwnership(_ context.Context, attributable map[string]struct{}) error {
+	r.ownershipAudit++
+	r.attributable = make(map[string]struct{}, len(attributable))
+	for sessionID := range attributable {
+		r.attributable[sessionID] = struct{}{}
+	}
+	return r.ownershipErr
+}
+
+func TestP137StartupOwnershipAuditKeepsKnownResidualAttributedUntilRelease(t *testing.T) {
+	runtime := &p027Runtime{p020FakeRuntime: p020FakeRuntime{generation: "generation-p137-residual"}}
+	service, authority := newP027Service(t, runtime)
+	request := p020Request(t, "session-p137-known-residual", "key-p137-known-residual", p020Target(t, domain.TargetKindLocal, "mac-workstation"))
+	created, err := service.CreateSession(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.TransitionSession(context.Background(), created.Session.SessionID, domain.SessionStateLost, "runtime_cleanup_unconfirmed"); err != nil {
+		t.Fatal(err)
+	}
+
+	if report, err := service.ReconcileStartup(context.Background()); err != nil || report.SessionsInspected != 0 {
+		t.Fatalf("startup report=%+v err=%v, want terminal residual retained and profile available", report, err)
+	}
+	if _, ok := runtime.attributable[string(created.Session.SessionID)]; !ok {
+		t.Fatalf("live residual session reservations attributed=%v, want %s", runtime.attributable, created.Session.SessionID)
+	}
+	if live, err := authority.CountLiveSessionReservations(context.Background()); err != nil || live != 1 {
+		t.Fatalf("live residual reservations=%d err=%v, want one retained slot", live, err)
+	}
+
+	if err := authority.ConfirmSessionCleanup(context.Background(), created.Session.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReconcileStartup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := runtime.attributable[string(created.Session.SessionID)]; ok {
+		t.Fatalf("released session remains attributable: %v", runtime.attributable)
+	}
 }
 
 func TestP027CreatingSessionBecomesFailedAfterConfirmedStartupCleanup(t *testing.T) {

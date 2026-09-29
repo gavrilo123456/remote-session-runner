@@ -160,3 +160,10 @@ func (r *LinuxSessionRuntime) Reconcile(ctx context.Context, request execution.R
 	result, err := r.adapter.ReconcileSession(ctx, string(request.Session.SessionID), request.Session.RuntimeGeneration, 500*time.Millisecond)
 	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
 }
+
+func (r *LinuxSessionRuntime) AuditOwnership(ctx context.Context, attributable map[string]struct{}) error {
+	if r == nil || r.adapter == nil {
+		return execution.ErrRuntimeUnavailable
+	}
+	return r.adapter.AuditOwnership(ctx, attributable)
+}

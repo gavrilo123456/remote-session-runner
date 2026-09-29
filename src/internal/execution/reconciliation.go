@@ -46,6 +46,21 @@ func (s *Service) ReconcileStartup(ctx context.Context) (StartupReconciliationRe
 	if err != nil {
 		return StartupReconciliationReport{}, err
 	}
+	if auditor, ok := s.runtime.(RuntimeOwnershipAuditor); ok {
+		attributable := make(map[string]struct{}, len(sessions))
+		for _, session := range sessions {
+			reservation, err := s.store.GetSessionReservation(ctx, session.SessionID)
+			if err != nil {
+				return StartupReconciliationReport{}, fmt.Errorf("read session %s runtime reservation: %w", session.SessionID, err)
+			}
+			if reservation.CleanupConfirmedAt == nil {
+				attributable[string(session.SessionID)] = struct{}{}
+			}
+		}
+		if err := auditor.AuditOwnership(ctx, attributable); err != nil {
+			return StartupReconciliationReport{}, fmt.Errorf("runtime ownership attribution: %w", err)
+		}
+	}
 	var report StartupReconciliationReport
 	var runtimeFailures []error
 	for _, session := range sessions {

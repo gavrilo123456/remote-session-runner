@@ -440,6 +440,15 @@ func (a *MacProcessAdapter) ReconcileSession(ctx context.Context, sessionID, exp
 	return result, nil
 }
 
+// AuditOwnership verifies that all host owner markers can be matched to a
+// durable live session reservation before runner-locald advertises readiness.
+func (a *MacProcessAdapter) AuditOwnership(ctx context.Context, attributable map[string]struct{}) error {
+	if a == nil {
+		return ErrMacRuntimeAccount
+	}
+	return auditRuntimeOwnership(ctx, a.options.WorkspaceRoot, attributable)
+}
+
 type MacReconciliationResult struct {
 	SessionID        string
 	Generation       string

@@ -127,6 +127,60 @@ func readRuntimeOwnership(workspaceRoot, sessionID string) (RuntimeOwnershipReco
 	return record, nil
 }
 
+// auditRuntimeOwnership blocks startup when a host owner marker is not backed
+// by a live durable session reservation. It does not stop or delete an
+// unattributed process: the profile remains unavailable until an operator or
+// later recovery can resolve ownership safely.
+func auditRuntimeOwnership(ctx context.Context, workspaceRoot string, attributable map[string]struct{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(workspaceRoot) == "" {
+		return fmt.Errorf("%w: workspace root is empty", ErrRuntimeOwnershipRecord)
+	}
+	root, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return fmt.Errorf("%w: resolve workspace root: %v", ErrRuntimeOwnershipRecord, err)
+	}
+	directory := filepath.Join(root, runtimeOwnershipDirectory)
+	if _, err := os.Lstat(directory); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect runtime ownership directory: %w", err)
+	}
+	if err := validateOwnerDirectory(directory); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("read runtime ownership directory: %w", err)
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			return fmt.Errorf("%w: unresolved runtime ownership entry blocks profile readiness", ErrRuntimeOwnershipRecord)
+		}
+		path := filepath.Join(directory, entry.Name())
+		record, err := readRuntimeOwnershipPath(path)
+		if err != nil {
+			return fmt.Errorf("%w: unresolved runtime ownership entry blocks profile readiness: %v", ErrRuntimeOwnershipRecord, err)
+		}
+		canonicalPath, err := runtimeOwnershipPath(root, record.SessionID)
+		if err != nil || canonicalPath != path {
+			return fmt.Errorf("%w: runtime ownership record name does not match its session", ErrRuntimeOwnershipRecord)
+		}
+		if _, ok := attributable[record.SessionID]; !ok {
+			return fmt.Errorf("%w: unattributed runtime owner blocks profile readiness", ErrRuntimeOwnershipRecord)
+		}
+	}
+	return nil
+}
+
 func readRuntimeOwnershipPath(path string) (RuntimeOwnershipRecord, error) {
 	info, err := os.Lstat(path)
 	if err != nil {

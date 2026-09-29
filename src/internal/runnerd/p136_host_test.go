@@ -29,8 +29,8 @@ type p136LinuxRunResult struct {
 	err    error
 }
 
-type p136LinuxStopResult struct {
-	result execution.RuntimeCommandStopResult
+type p136LinuxCancelResult struct {
+	result execution.CancelCommandResult
 	err    error
 }
 
@@ -218,21 +218,11 @@ func TestP136UbuntuFourSlotsHoldAcrossDelayedStopEOF(t *testing.T) {
 		t.Fatalf("fifth P136 Ubuntu command ran while four slots were occupied: stat error=%v", err)
 	}
 
-	firstSession, err := authority.GetSession(ctx, sessions[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstCommand, err := authority.GetCommand(ctx, commandIDs[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := authority.TransitionCommand(ctx, store.CommandTransition{CommandID: commandIDs[0], NextState: domain.CommandStateCancelling}); err != nil {
-		t.Fatalf("persist P136 Ubuntu cancellation request: %v", err)
-	}
-	stopDone := make(chan p136LinuxStopResult, 1)
+	cancelRequest := p136LinuxCancelRequest(t, commandIDs[0], controller)
+	stopDone := make(chan p136LinuxCancelResult, 1)
 	go func() {
-		stopped, stopErr := runtimeAdapter.CancelCommand(context.Background(), execution.RuntimeCommandRequest{Session: firstSession, Command: firstCommand})
-		stopDone <- p136LinuxStopResult{result: stopped, err: stopErr}
+		cancelled, cancelErr := service.CancelCommand(context.Background(), cancelRequest)
+		stopDone <- p136LinuxCancelResult{result: cancelled, err: cancelErr}
 	}()
 	p135LinuxWaitCommandState(t, authority, commandIDs[0], domain.CommandStateCancelling)
 	time.Sleep(150 * time.Millisecond)
@@ -259,12 +249,15 @@ func TestP136UbuntuFourSlotsHoldAcrossDelayedStopEOF(t *testing.T) {
 	}
 
 	select {
-	case stopped := <-stopDone:
-		if stopped.result.Confirmed || stopped.err == nil {
-			t.Fatalf("P136 Ubuntu stop=%+v err=%v, want an unconfirmed stop after the bounded grace", stopped.result, stopped.err)
+	case cancelled := <-stopDone:
+		if cancelled.result.Command.State != domain.CommandStateLost {
+			t.Fatalf("P136 Ubuntu cancellation=%+v err=%v, want a lost command after unconfirmed stop", cancelled.result, cancelled.err)
+		}
+		if cancelled.err != nil && !errors.Is(cancelled.err, execution.ErrStopUnconfirmed) {
+			t.Fatalf("P136 Ubuntu cancellation error=%v, want only the expected unconfirmed-stop outcome", cancelled.err)
 		}
 	case <-time.After(4 * time.Second):
-		t.Fatal("P136 Ubuntu stop did not finish after its bounded grace")
+		t.Fatal("P136 Ubuntu cancellation did not finish after its bounded grace")
 	}
 	select {
 	case result := <-runDone[0]:
@@ -276,6 +269,7 @@ func TestP136UbuntuFourSlotsHoldAcrossDelayedStopEOF(t *testing.T) {
 		t.Fatal("P136 Ubuntu command worker did not observe delayed control/EOF loss")
 	}
 	p135LinuxWaitCommandState(t, authority, commandIDs[0], domain.CommandStateLost)
+	p136LinuxAssertLostOutcome(t, authority, commandIDs[0])
 	if live, err := authority.CountLiveCommandSlots(ctx); err != nil || live != 4 {
 		t.Fatalf("P136 Ubuntu live slots after unconfirmed stop=%d err=%v, want four including residual reservation", live, err)
 	}
@@ -303,10 +297,25 @@ func TestP136UbuntuFourSlotsHoldAcrossDelayedStopEOF(t *testing.T) {
 		t.Fatalf("fifth P136 Ubuntu command ran in residual capacity test: stat error=%v", err)
 	}
 
-	if _, err := service.CancelCommand(ctx, p136LinuxCancelRequest(t, fifthID, controller)); err != nil {
-		t.Fatalf("cancel queued fifth P136 Ubuntu command: %v", err)
+	fifthSession, err := authority.GetSession(ctx, sessions[4])
+	if err != nil {
+		t.Fatal(err)
 	}
-	for i := 1; i < 5; i++ {
+	if _, err := service.CloseSession(ctx, p136LinuxCloseRequest(t, fifthSession.SessionID, controller)); err != nil {
+		t.Fatalf("close session with queued fifth P136 Ubuntu command: %v", err)
+	}
+	if record, err := authority.GetCommand(ctx, fifthID); err != nil || record.State != domain.CommandStateCancelled {
+		t.Fatalf("queued fifth P136 Ubuntu command after close=%+v err=%v, want cancelled", record, err)
+	}
+	_, _ = service.ResumeCommand(ctx, fifthID, controller)
+	if record, err := authority.GetCommand(ctx, fifthID); err != nil || record.State != domain.CommandStateCancelled {
+		t.Fatalf("closed fifth P136 Ubuntu command changed after a later resume attempt=%+v err=%v", record, err)
+	}
+	if _, err := os.Stat(fifthMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("closed fifth P136 Ubuntu command ran after capacity became available: stat error=%v", err)
+	}
+	cleanedSessions[fifthSession.SessionID] = true
+	for i := 1; i < 4; i++ {
 		session, err := authority.GetSession(ctx, sessions[i])
 		if err != nil {
 			t.Fatal(err)
@@ -338,6 +347,31 @@ func TestP136UbuntuFourSlotsHoldAcrossDelayedStopEOF(t *testing.T) {
 		t.Fatalf("P136 Ubuntu session reservations after fixture cleanup=%d err=%v, want zero", reservations, err)
 	}
 	t.Logf("machine=%s os=Linux account=%s: four live commands occupied all slots; fifth stayed queued; ignored-SIGINT child held output EOF through stop grace; lost command retained its slot until process-group cleanup was confirmed", hostname, current.Username)
+}
+
+func p136LinuxAssertLostOutcome(t *testing.T, authority *store.AuthorityStore, commandID domain.CommandID) {
+	t.Helper()
+	command, err := authority.GetCommand(context.Background(), commandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.State != domain.CommandStateLost || command.OutputComplete || command.FinalEventSequence == nil {
+		t.Fatalf("P136 Ubuntu lost command=%+v, want incomplete output and a final event sequence", command)
+	}
+	events, err := authority.ListCommandEvents(context.Background(), commandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	for _, event := range events {
+		switch event.Type {
+		case "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost":
+			terminal++
+		}
+	}
+	if terminal != 1 || len(events) == 0 || events[len(events)-1].Type != "command_lost" || events[len(events)-1].Sequence != *command.FinalEventSequence {
+		t.Fatalf("P136 Ubuntu terminal events=%+v final_sequence=%v, want exactly one terminal command_lost event", events, command.FinalEventSequence)
+	}
 }
 
 func p136LinuxSubmitRequest(t *testing.T, sessionID domain.SessionID, commandID domain.CommandID, controller domain.ControllerIdentity, script string) execution.SubmitCommandRequest {

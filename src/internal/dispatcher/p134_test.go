@@ -81,6 +81,7 @@ func TestP134RouterKillRestartF01(t *testing.T) {
 
 	t.Run("accepted_remote_mutation_with_lost_reply", func(t *testing.T) {
 		root, localPath, remotePath, intent, submit := p134RouterFixture(t, "uncertain")
+		p134AssertLocalResidualCommandSlots(t, localPath, 4)
 		mode := "uncertain"
 		harness := testfixture.NewPhaseHarness(t, func() *exec.Cmd {
 			return p134RouterChildCommand(mode, localPath, remotePath, intent.IntentID)
@@ -95,6 +96,7 @@ func TestP134RouterKillRestartF01(t *testing.T) {
 			t.Fatalf("wait for persisted uncertainty barrier: %v; output: %s", err, child.Output())
 		}
 		localBefore := p134RouterLocalSnapshot(t, root, localPath, "router-uncertain-before-kill.json")
+		p134AssertLocalResidualCommandSlots(t, localPath, 4)
 		p134AssertIntentState(t, localBefore, intent.IntentID, store.LocalIntentUncertain)
 		p134AssertIntentState(t, localBefore, submit.IntentID, store.LocalIntentRecorded)
 		remoteBefore := p134RemoteSnapshot(t, root, remotePath, "remote-uncertain-before-kill.json")
@@ -103,6 +105,7 @@ func TestP134RouterKillRestartF01(t *testing.T) {
 			t.Fatalf("kill uncertain Router: %v; output: %s", err, child.Output())
 		}
 		localAfter := p134RouterLocalSnapshot(t, root, localPath, "router-uncertain-after-kill.json")
+		p134AssertLocalResidualCommandSlots(t, localPath, 4)
 		remoteAfter := p134RemoteSnapshot(t, root, remotePath, "remote-uncertain-after-kill.json")
 		if !reflectSnapshotsEqual(localBefore, localAfter) || !reflectSnapshotsEqual(remoteBefore, remoteAfter) {
 			t.Fatalf("uncertain state changed across Router kill: local_equal=%t remote_equal=%t", reflectSnapshotsEqual(localBefore, localAfter), reflectSnapshotsEqual(remoteBefore, remoteAfter))
@@ -121,6 +124,7 @@ func TestP134RouterKillRestartF01(t *testing.T) {
 			t.Fatalf("uncertain Router recovery exit: %v; output: %s", err, restarted.Output())
 		}
 		localAfterRestart := p134RouterLocalSnapshot(t, root, localPath, "router-uncertain-after-restart.json")
+		p134AssertLocalResidualCommandSlots(t, localPath, 4)
 		p134AssertIntentState(t, localAfterRestart, intent.IntentID, store.LocalIntentAccepted)
 		p134AssertIntentState(t, localAfterRestart, submit.IntentID, store.LocalIntentRecorded)
 		remoteAfterRestart := p134RemoteSnapshot(t, root, remotePath, "remote-uncertain-after-restart.json")
@@ -303,6 +307,9 @@ func p134RouterFixture(t *testing.T, suffix string) (*testfixture.Root, string, 
 	if _, err := authority.CreateLocalIntent(context.Background(), submit); err != nil {
 		t.Fatal(err)
 	}
+	if suffix == "uncertain" {
+		p134SeedLocalResidualCommandSlots(t, authority)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -327,6 +334,73 @@ func p134RouterFixture(t *testing.T, suffix string) (*testfixture.Root, string, 
 		t.Fatal(err)
 	}
 	return root, localPath, remotePath, intent, submit
+}
+
+func p134SeedLocalResidualCommandSlots(t *testing.T, authority *store.AuthorityStore) {
+	t.Helper()
+	ctx := context.Background()
+	target, err := domain.NewExecutionTarget(domain.TargetKindLocal, "mac-workstation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controllerID, err := domain.NewControllerID("tomasz.walczuk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, controllerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := domain.EffectiveSessionLimits{
+		CommandTimeout: 30 * time.Minute, IdleTimeout: 30 * time.Minute,
+		SessionMaxLifetime: 4 * time.Hour, OutputBytesPerCommand: 100 << 20,
+	}
+	for index := 0; index < 4; index++ {
+		sessionID := domain.SessionID(fmt.Sprintf("session-p137-residual-%d", index))
+		session, err := authority.CreateSession(ctx, store.SessionCreate{
+			SessionID: sessionID, Target: target, Environment: "mac-dev", Controller: controller,
+			Source: domain.NewEmptySource(), RuntimeGeneration: "generation-p137-residual", Limits: limits,
+		})
+		if err != nil {
+			t.Fatalf("seed P137 local residual session %s: %v", sessionID, err)
+		}
+		if _, err := authority.CompleteSessionCreation(ctx, sessionID, domain.SessionStateReady, session.RuntimeGeneration, "", "runtime_ready"); err != nil {
+			t.Fatalf("make P137 residual session ready: %v", err)
+		}
+		commandID := domain.CommandID(fmt.Sprintf("command-p137-residual-%d", index))
+		raw := []byte(fmt.Sprintf(`{"operation":"submit_command","session_id":%q,"script":%q}`, sessionID, "sleep"))
+		hash, err := domain.HashMutationRequestJSON("submit_command", raw, domain.CanonicalizationOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := authority.AcceptCommand(ctx, store.CommandAcceptance{
+			CommandID: commandID, SessionID: sessionID, RequestHash: hash,
+			IdempotencyKey:       fmt.Sprintf("key-p137-residual-%d", index),
+			IdempotencyRetention: time.Hour, Script: "sleep", Timeout: limits.CommandTimeout,
+		}); err != nil {
+			t.Fatalf("seed P137 residual command %s: %v", commandID, err)
+		}
+		started, err := authority.StartNextEligibleCommand(ctx, store.DefaultRunningCommandLimit)
+		if err != nil || started.CommandID != commandID || started.State != domain.CommandStateRunning {
+			t.Fatalf("seed P137 residual command slot = %+v err=%v, want %s running", started, err, commandID)
+		}
+	}
+}
+
+func p134AssertLocalResidualCommandSlots(t *testing.T, path string, want int) {
+	t.Helper()
+	db, err := store.Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	authority, err := store.NewAuthorityStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := authority.CountLiveCommandSlots(context.Background()); err != nil || got != want {
+		t.Fatalf("Mac pending/uncertain Router race live command slots=%d err=%v, want %d residual slots", got, err, want)
+	}
 }
 
 func p134RouterChildCommand(mode, localPath, remotePath string, intentID domain.IntentID) *exec.Cmd {

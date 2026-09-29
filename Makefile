@@ -17,7 +17,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
+.PHONY: check-go test test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-p137-macos-host test-p137-linux-host test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -55,6 +55,14 @@ test-p136-macos-host: check-go
 
 test-p136-linux-host: check-go
 	RSR_P136_LINUX_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerd -run '^TestP136UbuntuFourSlotsHoldAcrossDelayedStopEOF$$' -count=1 -v
+
+# Actual Mac and Ubuntu profile startup block when a runtime ownership record
+# cannot be attributed to a live durable session reservation.
+test-p137-macos-host: check-go
+	RSR_P137_MAC_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocald -run '^TestP137MacUnattributedOrphanBlocksProfileStartup$$' -count=1 -v
+
+test-p137-linux-host: check-go
+	RSR_P137_LINUX_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerd -run '^TestP137UbuntuUnattributedOrphanBlocksProfileStartup$$' -count=1 -v
 
 # Public endpoint validation is deliberately opt-in and requires owner-only
 # credential fixtures outside the repository. The test is pinned to the

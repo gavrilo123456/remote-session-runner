@@ -215,6 +215,9 @@ func (s *DirectHTTPSServer) Close(ctx context.Context) error {
 	}
 	stopErr := s.StopAccepting()
 	shutdownErr := s.server.Shutdown(ctx)
+	if errors.Is(shutdownErr, net.ErrClosed) {
+		shutdownErr = nil
+	}
 	return errors.Join(stopErr, shutdownErr, s.CloseStreams())
 }
 

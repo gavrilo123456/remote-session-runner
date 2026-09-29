@@ -144,6 +144,13 @@ func (r *MacSessionRuntime) Reconcile(ctx context.Context, request execution.Run
 	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
 }
 
+func (r *MacSessionRuntime) AuditOwnership(ctx context.Context, attributable map[string]struct{}) error {
+	if r == nil || r.adapter == nil {
+		return execution.ErrRuntimeUnavailable
+	}
+	return r.adapter.AuditOwnership(ctx, attributable)
+}
+
 func newRuntimeGeneration() (string, error) {
 	var value [16]byte
 	if _, err := rand.Read(value[:]); err != nil {

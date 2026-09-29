@@ -174,6 +174,14 @@ type RuntimeReconciler interface {
 	Reconcile(context.Context, RuntimeReconcileRequest) (RuntimeReconcileResult, error)
 }
 
+// RuntimeOwnershipAuditor checks that every persisted host runtime owner can
+// be attributed to a live durable session reservation before startup makes the
+// execution profile available. An unattributed record blocks readiness; known
+// residual owners remain attributed so reconciliation can retain their slots.
+type RuntimeOwnershipAuditor interface {
+	AuditOwnership(context.Context, map[string]struct{}) error
+}
+
 // RuntimeCommandRequest identifies one durably started command for the
 // command-capable portion of a runtime adapter.
 type RuntimeCommandRequest struct {
@@ -665,6 +673,11 @@ func (s *Service) ResumeCommand(ctx context.Context, commandID domain.CommandID,
 		OutputComplete: true,
 	}, domain.SessionStateReady, "command_completed", true)
 	if err != nil {
+		if raced, terminal, readErr := s.terminalCommandOutcome(ctx, started.CommandID); readErr != nil {
+			return SubmitCommandResult{Command: started}, errors.Join(err, readErr)
+		} else if terminal {
+			return SubmitCommandResult{Command: raced}, nil
+		}
 		return SubmitCommandResult{Command: started}, err
 	}
 	return SubmitCommandResult{Command: completed}, nil
@@ -1023,15 +1036,23 @@ func oneOffSourcePayload(source domain.Source) map[string]any {
 }
 
 func (s *Service) finishCommandFailure(ctx context.Context, session store.SessionRecord, command store.CommandRecord, cause error, reason string) (SubmitCommandResult, error) {
-	s.store.RecordCleanupFailure()
 	completed, transitionErr := s.store.CompleteRunningCommand(ctx, store.CommandTransition{
 		CommandID:      command.CommandID,
 		NextState:      domain.CommandStateLost,
 		OutputComplete: false,
 	}, domain.SessionStateLost, reason, false)
 	if transitionErr != nil {
+		if raced, terminal, readErr := s.terminalCommandOutcome(ctx, command.CommandID); readErr != nil {
+			return SubmitCommandResult{Command: command}, errors.Join(transitionErr, readErr)
+		} else if terminal {
+			if raced.State != domain.CommandStateLost {
+				return SubmitCommandResult{Command: raced}, nil
+			}
+			return SubmitCommandResult{Command: raced}, fmt.Errorf("%w: %v", ErrCommandTransport, cause)
+		}
 		return SubmitCommandResult{Command: command}, fmt.Errorf("%w: record lost command: %v", ErrCommandTransport, transitionErr)
 	}
+	s.store.RecordCleanupFailure()
 	_ = session
 	if errors.Is(cause, ErrShellExited) {
 		return SubmitCommandResult{Command: completed}, fmt.Errorf("%w: %v", ErrShellExited, cause)
@@ -1111,7 +1132,20 @@ func (s *Service) CancelCommand(ctx context.Context, request CancelCommandReques
 	return result, err
 }
 
+func (s *Service) terminalCommandOutcome(ctx context.Context, commandID domain.CommandID) (store.CommandRecord, bool, error) {
+	current, err := s.store.GetCommand(ctx, commandID)
+	if err != nil {
+		return store.CommandRecord{}, false, err
+	}
+	return current, current.State.IsTerminal(), nil
+}
+
 func (s *Service) finishCancelledCommand(ctx context.Context, session store.SessionRecord, command store.CommandRecord, stopped RuntimeCommandStopResult, stopErr error) (CancelCommandResult, error) {
+	if current, terminal, err := s.terminalCommandOutcome(ctx, command.CommandID); err != nil {
+		return CancelCommandResult{Command: command}, err
+	} else if terminal {
+		return cancelRaceWinner(current)
+	}
 	if err := s.appendStopOutput(ctx, command.CommandID, stopped); err != nil {
 		stopErr = err
 		stopped.Confirmed = false
@@ -1122,7 +1156,6 @@ func (s *Service) finishCancelledCommand(ctx context.Context, session store.Sess
 	release := true
 	resultErr := stopErr
 	if stopErr != nil || !stopped.Confirmed {
-		s.store.RecordCleanupFailure()
 		next = domain.CommandStateLost
 		nextSession = domain.SessionStateLost
 		reason = "command_stop_unconfirmed"
@@ -1133,11 +1166,27 @@ func (s *Service) finishCancelledCommand(ctx context.Context, session store.Sess
 	}
 	completed, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{CommandID: command.CommandID, NextState: next, OutputComplete: stopped.Confirmed}, nextSession, reason, release)
 	if err != nil {
+		if current, terminal, readErr := s.terminalCommandOutcome(ctx, command.CommandID); readErr != nil {
+			return CancelCommandResult{Command: command}, errors.Join(err, readErr)
+		} else if terminal {
+			return cancelRaceWinner(current)
+		}
 		return CancelCommandResult{Command: command}, err
+	}
+	if completed.State == domain.CommandStateLost {
+		s.store.RecordCleanupFailure()
 	}
 	result := CancelCommandResult{Command: completed}
 	if resultErr != nil {
 		return result, fmt.Errorf("%w: %v", ErrStopUnconfirmed, resultErr)
+	}
+	return result, nil
+}
+
+func cancelRaceWinner(command store.CommandRecord) (CancelCommandResult, error) {
+	result := CancelCommandResult{Command: command}
+	if command.State == domain.CommandStateLost {
+		return result, ErrStopUnconfirmed
 	}
 	return result, nil
 }

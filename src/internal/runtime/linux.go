@@ -753,6 +753,15 @@ func (a *LinuxProcessAdapter) ReconcileSession(ctx context.Context, sessionID, e
 	return result, nil
 }
 
+// AuditOwnership verifies that all host owner markers can be matched to a
+// durable live session reservation before runnerd advertises readiness.
+func (a *LinuxProcessAdapter) AuditOwnership(ctx context.Context, attributable map[string]struct{}) error {
+	if a == nil {
+		return ErrLinuxRuntimeAccount
+	}
+	return auditRuntimeOwnership(ctx, a.options.WorkspaceRoot, attributable)
+}
+
 func linuxProcessExists(pid int) bool { return syscall.Kill(pid, 0) == nil }
 
 // Cleanup closes the shell and removes only this adapter's owned workspace.

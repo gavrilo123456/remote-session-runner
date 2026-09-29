@@ -182,6 +182,9 @@ func (s *PrivateServer) Close(ctx context.Context) error {
 	}
 	stopErr := s.StopAccepting()
 	shutdownErr := s.httpServer.Shutdown(ctx)
+	if errors.Is(shutdownErr, net.ErrClosed) {
+		shutdownErr = nil
+	}
 	return errors.Join(stopErr, shutdownErr, s.CloseStreams())
 }
 
