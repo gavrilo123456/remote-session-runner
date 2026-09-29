@@ -185,7 +185,7 @@ func TestP140MacLinuxOrdinalGapSurvivesRestoreAndReconcilesBeforeNextDispatch(t 
 		t.Fatalf("decode actual Linux mutation reply %s: %v", caller.failedReply.Payload, err)
 	}
 	if ordinal, ok := positiveRemoteAuthorityOrdinalForP140(acceptedReply); !ok || ordinal != 1 {
-		t.Fatalf("actual Linux ordinal=%d present=%v, want first contiguous authority ordinal 1", ordinal, ok)
+		t.Fatalf("actual Linux ordinal=%d present=%v, want first contiguous authority ordinal 1; response_type=%q request_id=%q payload=%s", ordinal, ok, caller.failedReply.ResponseType, caller.failedReply.RequestID, caller.failedReply.Payload)
 	}
 	secondCommandID, err := domain.NewCommandID(secondCommand.CommandID)
 	if err != nil {
