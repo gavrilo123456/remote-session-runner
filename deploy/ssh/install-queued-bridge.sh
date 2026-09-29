@@ -510,11 +510,20 @@ prepare_initial_authorization() {
 preserve_initial_bridge() {
 	initial_bridge_was_present=0
 	if [ -e "$bridge" ] || [ -L "$bridge" ]; then
-		require_regular_mode "$bridge" 700
+		# A prior Runner deployment can leave the bridge binary at its normal Go
+		# build mode (0755) before this permanent route exists. The private bin
+		# directory protects that file; require a real ubuntu-owned file, preserve
+		# it exactly for rollback, then install the permanent replacement at 0700.
+		if [ -L "$bridge" ] || [ ! -f "$bridge" ]; then
+			die "existing SSH bridge is missing or unsafe: $bridge"
+		fi
+		bridge_owner=$(stat -c '%u' "$bridge") || die "could not inspect existing SSH bridge: $bridge"
+		if [ "$bridge_owner" != "$uid" ]; then
+			die "existing SSH bridge is not ubuntu-owned: $bridge"
+		fi
 		initial_bridge_was_present=1
 		bridge_backup=$(mktemp "$bin_dir/.runner-ssh-bridge-backup.XXXXXX")
 		cp -p "$bridge" "$bridge_backup"
-		chmod 700 "$bridge_backup"
 	fi
 }
 
