@@ -14,8 +14,9 @@ func TestP142AddSampleMeasuresFixedWidthRecord(t *testing.T) {
 	if got, want := len(line), sampleRecordBytes-1; got != want {
 		t.Fatalf("sample payload length=%d, want %d", got, want)
 	}
+	appendStarted := producer.Add(25 * time.Millisecond)
 	observed := producer.Add(237 * time.Millisecond)
-	if err := metrics.addSample(2, line, observed); err != nil {
+	if err := metrics.addSample(2, line, observed, appendStarted); err != nil {
 		t.Fatalf("add P142 sample: %v", err)
 	}
 	latencies, _, counts := metrics.snapshot()
@@ -25,17 +26,21 @@ func TestP142AddSampleMeasuresFixedWidthRecord(t *testing.T) {
 	if counts[0] != 0 || len(latencies[0]) != 0 {
 		t.Fatalf("sample was attributed to worker 0: counts=%v latencies=%v", counts, latencies[0])
 	}
+	preStore, storeToObserver := metrics.stageLatencySnapshot()
+	if len(preStore[2]) != 1 || preStore[2][0] != 25*time.Millisecond || len(storeToObserver[2]) != 1 || storeToObserver[2][0] != 212*time.Millisecond {
+		t.Fatalf("latency stages before_store=%v store_to_observer=%v, want 25ms and 212ms", preStore[2], storeToObserver[2])
+	}
 }
 
 func TestP142AddSampleRejectsInvalidWidthAndSequence(t *testing.T) {
 	metrics := newMetrics()
 	observed := time.Unix(1_800_000_001, 0)
-	if err := metrics.addSample(0, []byte("P142|"), observed); err == nil {
+	if err := metrics.addSample(0, []byte("P142|"), observed, observed); err == nil {
 		t.Fatal("malformed P142 record was accepted")
 	}
 
 	line := p142SampleLine(1, observed.Add(-time.Millisecond).UnixNano())
-	if err := metrics.addSample(0, line, observed); err == nil {
+	if err := metrics.addSample(0, line, observed, observed); err == nil {
 		t.Fatal("out-of-order P142 sample index was accepted")
 	}
 }
@@ -44,7 +49,7 @@ func TestP142AddSampleClampsAndReportsSmallClockSkew(t *testing.T) {
 	metrics := newMetrics()
 	producer := time.Unix(1_800_000_000, 0)
 	line := p142SampleLine(0, producer.UnixNano())
-	if err := metrics.addSample(0, line, producer.Add(-15*time.Millisecond)); err != nil {
+	if err := metrics.addSample(0, line, producer.Add(-15*time.Millisecond), producer.Add(-10*time.Millisecond)); err != nil {
 		t.Fatalf("add sample within clock-skew allowance: %v", err)
 	}
 	latencies, _, counts := metrics.snapshot()
@@ -61,7 +66,7 @@ func TestP142AddSampleRejectsClockSkewAboveAllowance(t *testing.T) {
 	metrics := newMetrics()
 	producer := time.Unix(1_800_000_000, 0)
 	line := p142SampleLine(0, producer.UnixNano())
-	if err := metrics.addSample(0, line, producer.Add(-maximumClockSkew-time.Nanosecond)); err == nil {
+	if err := metrics.addSample(0, line, producer.Add(-maximumClockSkew-time.Nanosecond), producer); err == nil {
 		t.Fatal("sample beyond clock-skew allowance was accepted")
 	}
 }

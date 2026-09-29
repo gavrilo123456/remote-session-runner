@@ -95,19 +95,23 @@ type subscriberRun struct {
 }
 
 type metrics struct {
-	mu              sync.Mutex
-	latencies       [][]time.Duration
-	outputBytes     []int64
-	nextSampleIndex []int
-	clockSkewCount  int
-	maximumSkew     time.Duration
+	mu                   sync.Mutex
+	latencies            [][]time.Duration
+	preStoreLatencies    [][]time.Duration
+	storeToObserverTimes [][]time.Duration
+	outputBytes          []int64
+	nextSampleIndex      []int
+	clockSkewCount       int
+	maximumSkew          time.Duration
 }
 
 func newMetrics() *metrics {
 	return &metrics{
-		latencies:       make([][]time.Duration, runningCommandLimit),
-		outputBytes:     make([]int64, runningCommandLimit),
-		nextSampleIndex: make([]int, runningCommandLimit),
+		latencies:            make([][]time.Duration, runningCommandLimit),
+		preStoreLatencies:    make([][]time.Duration, runningCommandLimit),
+		storeToObserverTimes: make([][]time.Duration, runningCommandLimit),
+		outputBytes:          make([]int64, runningCommandLimit),
+		nextSampleIndex:      make([]int, runningCommandLimit),
 	}
 }
 
@@ -384,7 +388,9 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 		}
 	}
 	latencies, outputBytes, sampleCounts := metrics.snapshot()
+	preStoreLatencies, storeToObserverTimes := metrics.stageLatencySnapshot()
 	var allLatencies []time.Duration
+	var allPreStoreLatencies, allStoreToObserverTimes []time.Duration
 	for index, samples := range latencies {
 		if sampleCounts[index] != sampleCount || len(samples) != sampleCount {
 			t.Fatalf("P142 worker %d persisted sample count=%d latencies=%d, want %d", index, sampleCounts[index], len(samples), sampleCount)
@@ -397,11 +403,18 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 			t.Fatalf("P142 worker %d output bytes=%d, want %d", index, outputBytes[index], wantOutputBytes)
 		}
 		allLatencies = append(allLatencies, samples...)
+		allPreStoreLatencies = append(allPreStoreLatencies, preStoreLatencies[index]...)
+		allStoreToObserverTimes = append(allStoreToObserverTimes, storeToObserverTimes[index]...)
 	}
 	if len(allLatencies) != runningCommandLimit*sampleCount {
 		t.Fatalf("P142 total visibility samples=%d, want %d", len(allLatencies), runningCommandLimit*sampleCount)
 	}
+	if len(allPreStoreLatencies) != len(allLatencies) || len(allStoreToObserverTimes) != len(allLatencies) {
+		t.Fatalf("P142 latency-stage sample counts before_store=%d store_to_observer=%d, want %d each", len(allPreStoreLatencies), len(allStoreToObserverTimes), len(allLatencies))
+	}
 	sort.Slice(allLatencies, func(i, j int) bool { return allLatencies[i] < allLatencies[j] })
+	sort.Slice(allPreStoreLatencies, func(i, j int) bool { return allPreStoreLatencies[i] < allPreStoreLatencies[j] })
+	sort.Slice(allStoreToObserverTimes, func(i, j int) bool { return allStoreToObserverTimes[i] < allStoreToObserverTimes[j] })
 	misses := 0
 	for _, latency := range allLatencies {
 		if latency > visibilityTarget {
@@ -412,9 +425,8 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 	p95 := percentile(allLatencies, 95)
 	p99 := percentile(allLatencies, 99)
 	maximum := allLatencies[len(allLatencies)-1]
-	if p99 > visibilityTarget {
-		t.Fatalf("P142 persisted-output p99=%s exceeds the %s target (%d samples over target)", p99, visibilityTarget, misses)
-	}
+	preStoreP50, preStoreP95, preStoreP99 := percentile(allPreStoreLatencies, 50), percentile(allPreStoreLatencies, 95), percentile(allPreStoreLatencies, 99)
+	storeToObserverP50, storeToObserverP95, storeToObserverP99 := percentile(allStoreToObserverTimes, 50), percentile(allStoreToObserverTimes, 95), percentile(allStoreToObserverTimes, 99)
 	if stableChecks < 19 {
 		t.Fatalf("P142 completed only %d 30-second stability samples, want at least 19", stableChecks)
 	}
@@ -456,9 +468,6 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 		t.Fatalf("P142 memory evidence is incomplete or exceeds available memory: %+v", stats)
 	}
 	clockSkewCount, maximumSkew := metrics.clockSkewSnapshot()
-	if clockSkewCount > maximumClockSkewSamples {
-		t.Fatalf("P142 clock-skew samples=%d exceed the %d-sample allowance", clockSkewCount, maximumClockSkewSamples)
-	}
 
 	for _, currentWorker := range workers {
 		command, commandErr := options.Authority.GetCommand(ctx, currentWorker.commandID)
@@ -474,10 +483,10 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 	for _, subscription := range subscriptions[:runningCommandLimit] {
 		normalSubscriberPeaks = append(normalSubscriberPeaks, subscription.maxBytes.Load())
 	}
-	t.Logf("machine=%s os=%s account=%s; sessions=%d; simultaneous_commands=%d; load_duration=%s; records_per_command=%d; total_records=%d; record_bytes=%d; persisted_output_bytes=%d; visibility_p50=%s; visibility_p95=%s; visibility_p99=%s; visibility_max=%s; samples_over_500ms=%d; clock_skew_samples=%d; maximum_clock_skew=%s; normal_subscriber_peak_bytes=%v; slow_subscriber_peak_bytes=%d; slow_subscriber_bytes_at_overflow=%d; slow_subscriber_limit_bytes=%d; slow_replay_cursor=%d; stable_state_samples=%d; memory_samples=%d; baseline_available_bytes=%d; peak_fixture_rss_bytes=%d; available_after_bytes=%d; live_command_slots_after_load=0",
+	t.Logf("machine=%s os=%s account=%s; sessions=%d; simultaneous_commands=%d; load_duration=%s; records_per_command=%d; total_records=%d; record_bytes=%d; persisted_output_bytes=%d; visibility_p50=%s; visibility_p95=%s; visibility_p99=%s; visibility_max=%s; samples_over_500ms=%d; before_store_p50=%s; before_store_p95=%s; before_store_p99=%s; store_to_observer_p50=%s; store_to_observer_p95=%s; store_to_observer_p99=%s; clock_skew_samples=%d; maximum_clock_skew=%s; normal_subscriber_peak_bytes=%v; slow_subscriber_peak_bytes=%d; slow_subscriber_bytes_at_overflow=%d; slow_subscriber_limit_bytes=%d; slow_replay_cursor=%d; stable_state_samples=%d; memory_samples=%d; baseline_available_bytes=%d; peak_fixture_rss_bytes=%d; available_after_bytes=%d; live_command_slots_after_load=0",
 		host, runtime.GOOS, current.Username, activeSessionLimit, runningCommandLimit, time.Duration(sampleCount)*sampleInterval,
 		sampleCount, len(allLatencies), sampleRecordBytes, sum(outputBytes), p50, p95, p99, maximum, misses,
-		clockSkewCount, maximumSkew, normalSubscriberPeaks, maxSlowBytes, slowOverflowBufferedBytes, subscriberBufferSize, slowCursor, stableChecks, stats.Samples, stats.BaselineAvailableBytes,
+		preStoreP50, preStoreP95, preStoreP99, storeToObserverP50, storeToObserverP95, storeToObserverP99, clockSkewCount, maximumSkew, normalSubscriberPeaks, maxSlowBytes, slowOverflowBufferedBytes, subscriberBufferSize, slowCursor, stableChecks, stats.Samples, stats.BaselineAvailableBytes,
 		stats.PeakFixtureRSSBytes, stats.AvailableAfterBytes)
 
 	for _, sessionID := range sessions {
@@ -498,6 +507,12 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 	}
 	if len(markers) != 0 {
 		t.Fatalf("P142 left %d runtime ownership markers after teardown", len(markers))
+	}
+	if clockSkewCount > maximumClockSkewSamples {
+		t.Fatalf("P142 clock-skew samples=%d exceed the %d-sample allowance", clockSkewCount, maximumClockSkewSamples)
+	}
+	if p99 > visibilityTarget {
+		t.Fatalf("P142 persisted-output p99=%s exceeds the %s target (%d samples over target)", p99, visibilityTarget, misses)
 	}
 }
 
@@ -523,7 +538,7 @@ func consumeEvents(subscription *subscriberRun, workerIndex int, observed *metri
 				}
 				line := append([]byte(nil), pending[:lineEnd]...)
 				pending = pending[lineEnd+1:]
-				if err := observed.addSample(workerIndex, line, observedAt); err != nil {
+				if err := observed.addSample(workerIndex, line, observedAt, event.OccurredAt); err != nil {
 					return err
 				}
 			}
@@ -545,7 +560,7 @@ func consumeEvents(subscription *subscriberRun, workerIndex int, observed *metri
 	return fmt.Errorf("P142 command %s event subscription closed before a terminal event", subscription.commandID)
 }
 
-func (m *metrics) addSample(workerIndex int, line []byte, observedAt time.Time) error {
+func (m *metrics) addSample(workerIndex int, line []byte, observedAt, appendStartedAt time.Time) error {
 	if !bytes.HasPrefix(line, []byte("P142|")) {
 		return nil
 	}
@@ -572,6 +587,8 @@ func (m *metrics) addSample(workerIndex int, line []byte, observedAt time.Time) 
 		return fmt.Errorf("parse P142 producer timestamp: %w", err)
 	}
 	latency := observedAt.Sub(time.Unix(0, stamp))
+	preStoreLatency := appendStartedAt.Sub(time.Unix(0, stamp))
+	storeToObserverTime := observedAt.Sub(appendStartedAt)
 	clockSkew := time.Duration(0)
 	if latency < 0 {
 		clockSkew = -latency
@@ -593,7 +610,21 @@ func (m *metrics) addSample(workerIndex int, line []byte, observedAt time.Time) 
 	}
 	m.nextSampleIndex[workerIndex]++
 	m.latencies[workerIndex] = append(m.latencies[workerIndex], latency)
+	m.preStoreLatencies[workerIndex] = append(m.preStoreLatencies[workerIndex], preStoreLatency)
+	m.storeToObserverTimes[workerIndex] = append(m.storeToObserverTimes[workerIndex], storeToObserverTime)
 	return nil
+}
+
+func (m *metrics) stageLatencySnapshot() ([][]time.Duration, [][]time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	preStore := make([][]time.Duration, len(m.preStoreLatencies))
+	storeToObserver := make([][]time.Duration, len(m.storeToObserverTimes))
+	for index := range preStore {
+		preStore[index] = append([]time.Duration(nil), m.preStoreLatencies[index]...)
+		storeToObserver[index] = append([]time.Duration(nil), m.storeToObserverTimes[index]...)
+	}
+	return preStore, storeToObserver
 }
 
 func (m *metrics) clockSkewSnapshot() (int, time.Duration) {
