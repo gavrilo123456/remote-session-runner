@@ -68,6 +68,8 @@ type Options struct {
 type worker struct {
 	commandID domain.CommandID
 	sessionID domain.SessionID
+	startPath string
+	readyPath string
 	burst     bool
 	done      chan error
 	finished  bool
@@ -130,6 +132,32 @@ func (m *metrics) snapshot() ([][]time.Duration, []int64, []int) {
 		latencies[index] = append([]time.Duration(nil), m.latencies[index]...)
 	}
 	return latencies, append([]int64(nil), m.outputBytes...), append([]int(nil), m.nextSampleIndex...)
+}
+
+func logPartialLatencyMetrics(t testing.TB, observed *metrics) {
+	t.Helper()
+	latencies, outputBytes, sampleCounts := observed.snapshot()
+	preStoreLatencies, storeToObserverTimes := observed.stageLatencySnapshot()
+	for index, samples := range latencies {
+		if len(samples) == 0 {
+			t.Logf("P142 partial_worker=%d samples=0 recorded_samples=%d output_bytes=%d", index, sampleCounts[index], outputBytes[index])
+			continue
+		}
+		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		preStore := preStoreLatencies[index]
+		sort.Slice(preStore, func(i, j int) bool { return preStore[i] < preStore[j] })
+		storeToObserver := storeToObserverTimes[index]
+		sort.Slice(storeToObserver, func(i, j int) bool { return storeToObserver[i] < storeToObserver[j] })
+		misses := 0
+		for _, sample := range samples {
+			if sample > visibilityTarget {
+				misses++
+			}
+		}
+		t.Logf("P142 partial_worker=%d samples=%d recorded_samples=%d output_bytes=%d visibility_p50=%s visibility_p95=%s visibility_p99=%s visibility_max=%s samples_over_500ms=%d before_store_p99=%s store_to_observer_p99=%s",
+			index, len(samples), sampleCounts[index], outputBytes[index], percentile(samples, 50), percentile(samples, 95), percentile(samples, 99), samples[len(samples)-1], misses,
+			percentile(preStore, 99), percentile(storeToObserver, 99))
+	}
 }
 
 // RunReferenceHostVisibilitySoak measures output visibility and stability on
@@ -248,6 +276,7 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 
 	stamp := strconv.FormatInt(time.Now().UnixNano(), 10)
 	prefix := "p142-" + stamp
+	startPath := filepath.Join(options.WorkspaceRoot, prefix+"-start")
 	for index := 0; index < activeSessionLimit; index++ {
 		sessionID := domain.SessionID(fmt.Sprintf("%s-s%02d", prefix, index))
 		created, createErr := options.Service.CreateSession(ctx, createRequest(t, options, sessionID))
@@ -262,7 +291,11 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 
 	for index := 0; index < runningCommandLimit; index++ {
 		commandID := domain.CommandID(fmt.Sprintf("%s-c%02d", prefix, index))
-		currentWorker := &worker{commandID: commandID, sessionID: sessions[index], burst: index == 0, done: make(chan error, 1)}
+		currentWorker := &worker{
+			commandID: commandID, sessionID: sessions[index], startPath: startPath,
+			readyPath: filepath.Join(options.WorkspaceRoot, fmt.Sprintf("%s-c%02d-ready", prefix, index)),
+			burst:     index == 0, done: make(chan error, 1),
+		}
 		workers = append(workers, currentWorker)
 		if _, submitErr := options.Service.AcceptCommand(ctx, submitRequest(t, options, currentWorker)); submitErr != nil {
 			t.Fatalf("accept P142 command %s: %v", commandID, submitErr)
@@ -288,6 +321,23 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 		}(index, subscription)
 	}
 	workerResults := make(chan workerResult, runningCommandLimit)
+	slowErrors := slow.stream.Errors()
+	slowOverflowTimer := time.NewTimer(30 * time.Second)
+	defer slowOverflowTimer.Stop()
+	slowOverflowDeadline := slowOverflowTimer.C
+	var slowOverflow error
+	var slowOverflowBufferedBytes int64
+	maxSlowBytes := int64(0)
+	captureSlowOverflow := func(overflow error, open bool) {
+		if !open || !errors.Is(overflow, store.ErrSubscriberOverflow) {
+			t.Fatalf("P142 slow subscriber error=%v open=%t, want byte-bounded overflow", overflow, open)
+		}
+		slowOverflow = overflow
+		slowOverflowBufferedBytes = slow.stream.BufferedPayloadBytes()
+		updateMaximumValue(&maxSlowBytes, slowOverflowBufferedBytes)
+		updateMaximum(&slow.maxBytes, slowOverflowBufferedBytes)
+		slowErrors = nil
+	}
 	for index, currentWorker := range workers {
 		go func(workerIndex int, value *worker) {
 			_, runErr := options.Service.ResumeCommand(ctx, value.commandID, options.Controller)
@@ -296,6 +346,55 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 		}(index, currentWorker)
 		waitCommandState(t, ctx, options.Authority, currentWorker.commandID, domain.CommandStateRunning)
 	}
+	readyTicker := time.NewTicker(10 * time.Millisecond)
+	defer readyTicker.Stop()
+	for {
+		allReady := true
+		for _, currentWorker := range workers {
+			if _, statErr := os.Stat(currentWorker.readyPath); statErr == nil {
+				continue
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("stat P142 workload readiness marker %q: %v", currentWorker.readyPath, statErr)
+			} else {
+				allReady = false
+			}
+		}
+		if allReady {
+			// The burst is persisted before worker 0 writes its readiness marker,
+			// so the overflow result must be observable before the measured run.
+			select {
+			case overflow, open := <-slowErrors:
+				captureSlowOverflow(overflow, open)
+			default:
+			}
+			break
+		}
+		select {
+		case result := <-workerResults:
+			logPartialLatencyMetrics(t, metrics)
+			if result.err != nil {
+				t.Fatalf("P142 command %s failed before the synchronized workload start: %v", workers[result.index].commandID, result.err)
+			}
+			t.Fatalf("P142 command %s completed before the synchronized workload start", workers[result.index].commandID)
+		case overflow, open := <-slowErrors:
+			captureSlowOverflow(overflow, open)
+		case <-slowOverflowDeadline:
+			if slowOverflow == nil {
+				select {
+				case overflow, open := <-slowErrors:
+					captureSlowOverflow(overflow, open)
+				default:
+				}
+			}
+			if slowOverflow == nil {
+				t.Fatal("P142 unread subscriber did not overflow within 30 seconds of the startup burst")
+			}
+			slowOverflowDeadline = nil
+		case <-ctx.Done():
+			t.Fatalf("wait for P142 workload readiness markers: %v", ctx.Err())
+		case <-readyTicker.C:
+		}
+	}
 	initialState, err := verifyStableState(ctx, options.Authority, sessions, workers)
 	if err != nil {
 		t.Fatalf("P142 initial stable-load state: %v", err)
@@ -303,41 +402,32 @@ func RunReferenceHostVisibilitySoak(t testing.TB, options Options) {
 	logStabilitySample(t, 0, initialState)
 	stableChecks := 1
 	loadStarted := time.Now()
+	if err := os.WriteFile(startPath, []byte("start\n"), 0o600); err != nil {
+		t.Fatalf("release synchronized P142 workload: %v", err)
+	}
 	healthTicker := time.NewTicker(healthSampleInterval)
 	defer healthTicker.Stop()
 	bufferTicker := time.NewTicker(bufferSampleInterval)
 	defer bufferTicker.Stop()
-	slowOverflowTimer := time.NewTimer(30 * time.Second)
-	defer slowOverflowTimer.Stop()
-	slowOverflowDeadline := slowOverflowTimer.C
-	var slowOverflow error
-	var slowOverflowBufferedBytes int64
-	slowErrors := slow.stream.Errors()
 	completedWorkers := 0
 	completedConsumers := 0
-	maxSlowBytes := int64(0)
 	for completedWorkers < runningCommandLimit {
 		select {
 		case result := <-workerResults:
 			workers[result.index].finished = true
 			completedWorkers++
 			if result.err != nil {
+				logPartialLatencyMetrics(t, metrics)
 				t.Fatalf("P142 command %s result: %v", workers[result.index].commandID, result.err)
 			}
 		case consumerErr := <-consumerErrors:
 			completedConsumers++
 			if consumerErr != nil {
+				logPartialLatencyMetrics(t, metrics)
 				t.Fatalf("P142 persisted event consumer failed: %v", consumerErr)
 			}
 		case overflow, open := <-slowErrors:
-			if !open || !errors.Is(overflow, store.ErrSubscriberOverflow) {
-				t.Fatalf("P142 slow subscriber error=%v open=%t, want byte-bounded overflow", overflow, open)
-			}
-			slowOverflow = overflow
-			slowOverflowBufferedBytes = slow.stream.BufferedPayloadBytes()
-			updateMaximumValue(&maxSlowBytes, slowOverflowBufferedBytes)
-			updateMaximum(&slow.maxBytes, slowOverflowBufferedBytes)
-			slowErrors = nil
+			captureSlowOverflow(overflow, open)
 		case <-slowOverflowDeadline:
 			if slowOverflow == nil {
 				t.Fatal("P142 unread subscriber did not overflow within 30 seconds of the startup burst")
@@ -738,7 +828,7 @@ func createRequest(t testing.TB, options Options, sessionID domain.SessionID) ex
 
 func submitRequest(t testing.TB, options Options, currentWorker *worker) execution.SubmitCommandRequest {
 	t.Helper()
-	script := loadScript(options.PythonPath, currentWorker.burst)
+	script := loadScript(options.PythonPath, currentWorker.burst, currentWorker.startPath, currentWorker.readyPath)
 	encoded, err := json.Marshal(map[string]string{"script": script, "session_id": string(currentWorker.sessionID)})
 	if err != nil {
 		t.Fatal(err)
@@ -772,12 +862,12 @@ func closeRequest(t testing.TB, options Options, sessionID domain.SessionID, pre
 	}
 }
 
-func loadScript(pythonPath string, burst bool) string {
+func loadScript(pythonPath string, burst bool, startPath, readyPath string) string {
 	burstSource := ""
 	if burst {
 		burstSource = fmt.Sprintf("burst = b'B' * (%d - 1) + b'\\n'\nfor _ in range(%d):\n    write_all(burst)\n", sampleRecordBytes, slowSubscriberBurst/sampleRecordBytes)
 	}
-	program := fmt.Sprintf("import os, time\ndef write_all(data):\n    offset = 0\n    while offset < len(data):\n        offset += os.write(1, data[offset:])\n%sfor i in range(%d):\n    prefix = f'P142|{i}|{time.time_ns()}|'.encode()\n    record = prefix + b'x' * (%d - len(prefix) - 1) + b'\\n'\n    write_all(record)\n    time.sleep(%.3f)\n", burstSource, sampleCount, sampleRecordBytes, sampleInterval.Seconds())
+	program := fmt.Sprintf("import os, time\ndef write_all(data):\n    offset = 0\n    while offset < len(data):\n        offset += os.write(1, data[offset:])\n%sready_path = %s\nstart_path = %s\nwith open(ready_path, 'wb'):\n    pass\nwhile not os.path.exists(start_path):\n    time.sleep(0.01)\nfor i in range(%d):\n    prefix = f'P142|{i}|{time.time_ns()}|'.encode()\n    record = prefix + b'x' * (%d - len(prefix) - 1) + b'\\n'\n    write_all(record)\n    time.sleep(%.3f)\n", burstSource, strconv.Quote(readyPath), strconv.Quote(startPath), sampleCount, sampleRecordBytes, sampleInterval.Seconds())
 	return shellQuote(pythonPath) + " -u -c " + shellQuote(program) + "\n"
 }
 

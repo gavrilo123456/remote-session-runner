@@ -89,7 +89,9 @@ func TestP142PercentileUsesNearestRank(t *testing.T) {
 
 func TestP142LoadScriptHasConfiguredWorkload(t *testing.T) {
 	pythonPath := "/opt/python 3/bin/python3"
-	script := loadScript(pythonPath, true)
+	startPath := "/tmp/P142 start/measure"
+	readyPath := "/tmp/P142 start/worker 0 ready"
+	script := loadScript(pythonPath, true, startPath, readyPath)
 	if !bytes.Contains([]byte(script), []byte(shellQuote(pythonPath)+" -u -c ")) {
 		t.Fatalf("load script does not quote Python path: %s", script)
 	}
@@ -99,8 +101,13 @@ func TestP142LoadScriptHasConfiguredWorkload(t *testing.T) {
 	if !bytes.Contains([]byte(script), []byte(fmt.Sprintf("range(%d)", sampleCount))) || !bytes.Contains([]byte(script), []byte("time.sleep(0.100)")) {
 		t.Fatalf("load script does not emit the measured ten-minute workload")
 	}
+	if !bytes.Contains([]byte(script), []byte("while not os.path.exists(start_path)")) ||
+		!bytes.Contains([]byte(script), []byte(fmt.Sprintf("ready_path = %q", readyPath))) ||
+		!bytes.Contains([]byte(script), []byte(fmt.Sprintf("start_path = %q", startPath))) {
+		t.Fatalf("load script does not wait at the synchronized workload start")
+	}
 
-	withoutBurst := loadScript(pythonPath, false)
+	withoutBurst := loadScript(pythonPath, false, startPath, readyPath)
 	if bytes.Contains([]byte(withoutBurst), []byte("burst =")) {
 		t.Fatalf("non-burst command unexpectedly emits startup burst")
 	}
