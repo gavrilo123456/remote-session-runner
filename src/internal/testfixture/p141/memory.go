@@ -20,6 +20,12 @@ type MemoryStats struct {
 	AvailableAfterBytes    int64
 }
 
+// MemorySampler is a host-test sampler for the test process and fixture-owned
+// runtime process groups.
+type MemorySampler interface {
+	Stop() (MemoryStats, error)
+}
+
 type memorySampler struct {
 	workspaceRoot string
 	processID     int
@@ -32,6 +38,19 @@ type memorySampler struct {
 }
 
 func startMemorySampler(workspaceRoot string) (*memorySampler, error) {
+	return startMemorySamplerAtInterval(workspaceRoot, 200*time.Millisecond)
+}
+
+// StartMemorySampler starts the P141 host measurement with an explicit sample
+// interval so later long-load fixtures can limit sampler overhead.
+func StartMemorySampler(workspaceRoot string, interval time.Duration) (MemorySampler, error) {
+	if interval <= 0 {
+		return nil, fmt.Errorf("memory sampler interval must be positive")
+	}
+	return startMemorySamplerAtInterval(workspaceRoot, interval)
+}
+
+func startMemorySamplerAtInterval(workspaceRoot string, interval time.Duration) (*memorySampler, error) {
 	available, err := availableMemoryBytes()
 	if err != nil {
 		return nil, err
@@ -46,7 +65,7 @@ func startMemorySampler(workspaceRoot string) (*memorySampler, error) {
 	sampler.sample()
 	go func() {
 		defer close(sampler.done)
-		ticker := time.NewTicker(200 * time.Millisecond)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
