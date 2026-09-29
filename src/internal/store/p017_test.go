@@ -99,6 +99,9 @@ func TestP017FailedEventAppendRollsBackStateAndGapFailsReplay(t *testing.T) {
 	if _, err := db.Exec("UPDATE exec_command_events SET sequence = 4 WHERE command_id = ? AND sequence = 2", string(command.CommandID)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.AppendCommandEvent(context.Background(), CommandEventAppend{CommandID: command.CommandID, Type: "stdout", Payload: []byte("after gap"), ByteCount: 9}); !errors.Is(err, ErrCommandReplayGap) {
+		t.Fatalf("append after gapped history error = %v, want replay-gap rejection", err)
+	}
 	if _, err := store.TransitionCommand(context.Background(), CommandTransition{CommandID: command.CommandID, NextState: domain.CommandStateFailed, ExitCode: intPointer(1), OutputComplete: false}); !errors.Is(err, ErrCommandReplayGap) {
 		t.Fatalf("gapped transition error = %v", err)
 	}

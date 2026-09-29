@@ -748,11 +748,24 @@ FROM exec_command_events WHERE command_id = ? AND sequence > ? ORDER BY sequence
 }
 
 func nextEventSequenceOnConnection(ctx context.Context, connection *sql.Conn, commandID domain.CommandID) (int64, error) {
-	events, err := readCommandEventsOnConnection(ctx, connection, commandID, -1)
-	if err != nil {
-		return 0, err
+	var tailSequence, eventCount int64
+	if err := connection.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(sequence), 0), COUNT(*)
+FROM exec_command_events
+WHERE command_id = ?
+`, string(commandID)).Scan(&tailSequence, &eventCount); err != nil {
+		return 0, fmt.Errorf("read command event sequence: %w", err)
 	}
-	return int64(len(events) + 1), nil
+	if eventCount == 0 {
+		return 0, fmt.Errorf("%w: command %s has no sequence-one event", ErrCommandEvent, commandID)
+	}
+	// Event sequence numbers are positive and unique per command. For an active
+	// command, tail==count proves the retained sequence is contiguous from one
+	// without loading every prior output payload into Go on each append.
+	if tailSequence != eventCount {
+		return 0, fmt.Errorf("%w: command %s has %d events and tail sequence %d", ErrCommandReplayGap, commandID, eventCount, tailSequence)
+	}
+	return tailSequence + 1, nil
 }
 
 func insertCommandEventOnConnection(ctx context.Context, connection *sql.Conn, commandID domain.CommandID, sequence int64, eventType string, payload []byte, byteCount int64, occurredAt time.Time) error {
