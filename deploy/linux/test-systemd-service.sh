@@ -95,6 +95,39 @@ check_stopped() {
 	fi
 }
 
+check_insecure_path_rejected() {
+	rejected=0
+	for attempt in $(seq 1 40); do
+		active_state=$(sudo -n systemctl show -p ActiveState --value runnerd.service)
+		if [ "$active_state" = failed ]; then
+			result=$(sudo -n systemctl show -p Result --value runnerd.service)
+			exit_status=$(sudo -n systemctl show -p ExecMainStatus --value runnerd.service)
+			if [ "$result" = exit-code ] && [ "$exit_status" = 78 ]; then
+				rejected=1
+				break
+			fi
+			printf 'runnerd failed for an unexpected reason with Result=%s ExecMainStatus=%s\n' "$result" "$exit_status" >&2
+			sudo -n systemctl status --no-pager runnerd.service >&2 || true
+			return 1
+		fi
+		sleep 0.25
+	done
+	if [ "$rejected" -ne 1 ]; then
+		printf 'runnerd did not reject the insecure service path; ActiveState=%s\n' \
+			"$(sudo -n systemctl show -p ActiveState --value runnerd.service)" >&2
+		sudo -n systemctl status --no-pager runnerd.service >&2 || true
+		return 1
+	fi
+	if [ -e "$service_root/run/runnerd.sock" ]; then
+		printf '%s\n' 'runnerd created its socket despite an invalid owner-only service path' >&2
+		return 1
+	fi
+	if ss -H -ltn 'sport = :8443' | grep -q '10\.0\.0\.200:8443'; then
+		printf '%s\n' 'runnerd opened its HTTPS listener despite an invalid owner-only service path' >&2
+		return 1
+	fi
+}
+
 installed=1
 (cd "$repo_root" && deploy/linux/install-systemd-service.sh)
 check_active
@@ -127,20 +160,8 @@ sudo -n systemctl stop runnerd.service
 check_stopped
 chmod 755 "$tmp_root"
 tmp_mode_changed=1
-if sudo -n systemctl start runnerd.service; then
-	if sudo -n systemctl is-active --quiet runnerd.service; then
-		printf '%s\n' 'runnerd became active with a group/other-accessible tmp path' >&2
-		exit 1
-	fi
-fi
-if sudo -n systemctl is-active --quiet runnerd.service; then
-	printf '%s\n' 'runnerd became active with a group/other-accessible tmp path' >&2
-	exit 1
-fi
-if [ -e "$service_root/run/runnerd.sock" ]; then
-	printf '%s\n' 'runnerd created its socket despite an invalid owner-only service path' >&2
-	exit 1
-fi
+sudo -n systemctl start runnerd.service || true
+check_insecure_path_rejected
 chmod 700 "$tmp_root"
 tmp_mode_changed=0
 sudo -n systemctl reset-failed runnerd.service
