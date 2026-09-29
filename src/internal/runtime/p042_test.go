@@ -57,7 +57,7 @@ func TestP042LinuxReconcileQuarantinesPriorGeneration(t *testing.T) {
 	}
 	result, err := newAdapter.ReconcileProcess(context.Background(), record, "generation-new", 500*time.Millisecond)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("known-owned process reconciliation result=%+v err=%v", result, err)
 	}
 	if !result.Quarantined || result.Reattached || result.SessionID != prepared.SessionID || !strings.Contains(result.Reason, "generation mismatch") {
 		t.Fatalf("reconciliation result = %+v", result)

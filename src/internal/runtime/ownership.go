@@ -289,6 +289,17 @@ func processGroupExists(processGroupID int) (bool, error) {
 	if processGroupID <= 0 {
 		return false, fmt.Errorf("%w: invalid process group ID", ErrRuntimeOwnershipRecord)
 	}
+	if runtimeinfo.GOOS == "linux" {
+		// kill(-pgid, 0) keeps reporting a group containing only zombies as
+		// present. They cannot execute or be reattached, and a container init
+		// may take longer than the bounded cleanup window to reap them. On
+		// Linux, define cleanup completion by the absence of live group members.
+		members, err := linuxProcessGroupMembers(processGroupID)
+		if err != nil {
+			return false, err
+		}
+		return len(members) != 0, nil
+	}
 	err := syscall.Kill(-processGroupID, 0)
 	if err == nil || errors.Is(err, syscall.EPERM) {
 		return true, nil

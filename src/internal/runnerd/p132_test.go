@@ -54,9 +54,9 @@ func TestP132AdmissionAndDispatchGatesStopNewWork(t *testing.T) {
 	}
 }
 
-func TestP132ShutdownClosesSessionsThroughExecutionService(t *testing.T) {
-	service, authority := newP046Service(t, &p046FakeRuntime{generation: "p132-shutdown-generation"})
-	parent, err := os.MkdirTemp("/private/tmp", "r132-")
+func p132PrivateSocketPath(t *testing.T) string {
+	t.Helper()
+	parent, err := os.MkdirTemp("/tmp", "r132-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,12 @@ func TestP132ShutdownClosesSessionsThroughExecutionService(t *testing.T) {
 	if err := os.Chmod(parent, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	socketPath := filepath.Join(parent, "runnerd.sock")
+	return filepath.Join(parent, "runnerd.sock")
+}
+
+func TestP132ShutdownClosesSessionsThroughExecutionService(t *testing.T) {
+	service, authority := newP046Service(t, &p046FakeRuntime{generation: "p132-shutdown-generation"})
+	socketPath := p132PrivateSocketPath(t)
 	server, err := NewPrivateServer(PrivateServerOptions{Service: service, SocketPath: socketPath})
 	if err != nil {
 		t.Fatal(err)
@@ -117,15 +122,7 @@ func TestP132CoordinatorDrainsBothIngressesBeforeClosingStreams(t *testing.T) {
 	service, authority := newP046Service(t, &p046FakeRuntime{generation: "p132-coordinator-generation"})
 	requestGate := lifecycle.NewGate()
 	dispatchGate := lifecycle.NewGate()
-	privateParent, err := os.MkdirTemp("/private/tmp", "r132-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(privateParent) })
-	if err := os.Chmod(privateParent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	socketPath := filepath.Join(privateParent, "runnerd.sock")
+	socketPath := p132PrivateSocketPath(t)
 	privateServer, err := NewPrivateServer(PrivateServerOptions{
 		Service: service, SocketPath: socketPath, RequestGate: requestGate, DispatchGate: dispatchGate,
 	})
@@ -213,15 +210,7 @@ func TestP132CoordinatorDrainsBothIngressesBeforeClosingStreams(t *testing.T) {
 
 func TestP132CloseStreamsRefusesReplacedPrivateSocket(t *testing.T) {
 	service, _ := newP046Service(t, &p046FakeRuntime{generation: "p132-socket-generation"})
-	parent, err := os.MkdirTemp("/private/tmp", "r132-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(parent) })
-	if err := os.Chmod(parent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	socketPath := filepath.Join(parent, "runnerd.sock")
+	socketPath := p132PrivateSocketPath(t)
 	server, err := NewPrivateServer(PrivateServerOptions{Service: service, SocketPath: socketPath})
 	if err != nil {
 		t.Fatal(err)
