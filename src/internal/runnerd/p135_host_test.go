@@ -75,7 +75,7 @@ func TestP135UbuntuRunnerdRestartWithKnownSurvivingChild(t *testing.T) {
 	laterCommandMarker := filepath.Join(root, "later-command-ran")
 
 	harness := testfixture.NewPhaseHarness(t, func() *exec.Cmd {
-		command := exec.Command(os.Args[0], "-test.run=^TestP135UbuntuRunnerdRestartWithKnownSurvivingChild$")
+		command := exec.Command(os.Args[0], "-test.v", "-test.run=^TestP135UbuntuRunnerdRestartWithKnownSurvivingChild$")
 		command.Env = append(os.Environ(), p135LinuxHelper+"=1",
 			"RSR_P135_DB="+databasePath,
 			"RSR_P135_WORKSPACES="+workspaceRoot,
@@ -113,7 +113,7 @@ func TestP135UbuntuRunnerdRestartWithKnownSurvivingChild(t *testing.T) {
 		t.Fatalf("P135 Ubuntu created session = %+v, want ready with generation", session)
 	}
 
-	firstScript := fmt.Sprintf("(trap '' TERM; exec /bin/sleep 120) >/dev/null 2>&1 &\necho $! > %s\nwait\n", childPIDPath)
+	firstScript := fmt.Sprintf("(trap '' TERM; exec /bin/sleep 30) >/dev/null 2>&1 &\necho $! > %s\nwait\n", childPIDPath)
 	p135LinuxSubmit(t, client, "p135-linux-session", "p135-linux-running", "p135-linux-running-key", firstScript)
 	p135LinuxWaitFile(t, childPIDPath)
 	childPID := p135LinuxParsePID(t, childPIDPath)
@@ -184,6 +184,7 @@ func TestP135UbuntuRunnerdRestartWithKnownSurvivingChild(t *testing.T) {
 }
 
 func p135LinuxRunnerdHelper(t *testing.T) {
+	t.Logf("P135 Ubuntu helper entered pid=%d", os.Getpid())
 	reporter, err := testfixture.OpenPhaseBarrierReporter()
 	if err != nil {
 		t.Fatal(err)
@@ -196,10 +197,12 @@ func p135LinuxRunnerdHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("P135 Ubuntu helper opened isolated authority")
 	report, err := service.ReconcileStartup(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("P135 Ubuntu helper completed startup reconciliation: %+v", report)
 	server, err := NewPrivateServer(PrivateServerOptions{Service: service, SocketPath: socketPath})
 	if err != nil {
 		t.Fatal(err)
@@ -207,11 +210,13 @@ func p135LinuxRunnerdHelper(t *testing.T) {
 	if err := server.Listen(); err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("P135 Ubuntu helper opened private socket")
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve() }()
 	if err := testfixture.PublishPhaseResult(reporter, p135LinuxStartupResult{Ready: true, Report: report}); err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("P135 Ubuntu helper published startup result")
 	if err := <-serveErr; err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +328,10 @@ func p135LinuxWaitReady(t *testing.T, process *testfixture.BarrierProcess) p135L
 	defer cancel()
 	encoded, err := process.WaitForResult(ctx)
 	if err != nil {
-		t.Fatalf("wait for isolated Ubuntu runnerd startup result: %v; output=%s", err, process.Output())
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		processErr := process.Wait(waitCtx)
+		waitCancel()
+		t.Fatalf("wait for isolated Ubuntu runnerd startup result: %v; child wait=%v; output=%s", err, processErr, process.Output())
 	}
 	var result p135LinuxStartupResult
 	if err := json.Unmarshal(encoded, &result); err != nil || !result.Ready {
