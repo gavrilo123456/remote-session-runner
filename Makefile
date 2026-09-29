@@ -17,7 +17,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-p137-macos-host test-p137-linux-host test-p138-macos-host test-p138-linux-host test-p139-macos-host test-p140-linux-host test-p140-twohost test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
+.PHONY: check-go test test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-p137-macos-host test-p137-linux-host test-p138-macos-host test-p138-linux-host test-p139-macos-host test-p140-linux-host test-p140-twohost test-p141-macos-host test-p141-linux-host test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -83,6 +83,14 @@ test-p140-linux-host: check-go
 # later Mac intent can dispatch. A temporary forced SSH key is cleaned afterward.
 test-p140-twohost: check-go
 	RSR_P140_EXPECTED_COMMIT=$$(git rev-parse HEAD) deploy/macos/test-p140-twohost.sh
+
+# Isolated Mac account runtime, 20-session/four-slot quota, and byte-bounded slow-subscriber soak.
+test-p141-macos-host: check-go
+	RSR_P141_MAC_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocald -run '^TestP141F05MacTwentySessionsFourSlotsAndBoundedSlowSubscriber$$' -count=1 -v
+
+# Isolated Ubuntu account runtime, 20-session/four-slot quota, and byte-bounded slow-subscriber soak.
+test-p141-linux-host: check-go
+	RSR_P141_LINUX_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerd -run '^TestP141F05UbuntuTwentySessionsFourSlotsAndBoundedSlowSubscriber$$' -count=1 -v
 
 # Public endpoint validation is deliberately opt-in and requires owner-only
 # credential fixtures outside the repository. The test is pinned to the

@@ -25,25 +25,35 @@ type CommandEventSubscription struct {
 	owner     *AuthorityStore
 	commandID domain.CommandID
 	capacity  int
+	maxBytes  int64
 	events    chan CommandEventRecord
 	errors    chan error
 
-	mu           sync.Mutex
-	replaying    bool
-	pending      map[int64]CommandEventRecord
-	lastSequence int64
-	closed       bool
+	mu            sync.Mutex
+	replaying     bool
+	pending       map[int64]CommandEventRecord
+	charged       map[int64]int64
+	bufferedBytes int64
+	lastSequence  int64
+	closed        bool
 }
 
 // SubscribeCommandEvents registers a bounded subscriber before reading its
 // replay range. Events committed while the replay query is in flight are
 // buffered and sequence de-duplicated at the replay/live handoff.
 func (s *AuthorityStore) SubscribeCommandEvents(ctx context.Context, id domain.CommandID, afterSequence int64, capacity int) (*CommandEventSubscription, error) {
+	return s.SubscribeCommandEventsWithByteLimit(ctx, id, afterSequence, capacity, domain.DefaultServiceLimits().SubscriberBufferBytes)
+}
+
+// SubscribeCommandEventsWithByteLimit registers a bounded subscriber before
+// reading its replay range. In addition to the event-count capacity, it caps
+// the queued output payload bytes across replay, handoff, and live delivery.
+func (s *AuthorityStore) SubscribeCommandEventsWithByteLimit(ctx context.Context, id domain.CommandID, afterSequence int64, capacity int, maxBufferedBytes int64) (*CommandEventSubscription, error) {
 	validatedID, err := domain.NewCommandID(string(id))
 	if err != nil {
 		return nil, err
 	}
-	if afterSequence < 0 || capacity <= 0 {
+	if afterSequence < 0 || capacity <= 0 || maxBufferedBytes <= 0 {
 		return nil, ErrInvalidSubscriber
 	}
 	if ctx == nil {
@@ -56,10 +66,12 @@ func (s *AuthorityStore) SubscribeCommandEvents(ctx context.Context, id domain.C
 		owner:        s,
 		commandID:    validatedID,
 		capacity:     capacity,
+		maxBytes:     maxBufferedBytes,
 		events:       make(chan CommandEventRecord, capacity),
 		errors:       make(chan error, 1),
 		replaying:    true,
 		pending:      make(map[int64]CommandEventRecord),
+		charged:      make(map[int64]int64),
 		lastSequence: afterSequence,
 	}
 	s.addSubscriber(subscription)
@@ -101,6 +113,31 @@ func (s *CommandEventSubscription) LastSequence() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastSequence
+}
+
+// BufferedPayloadBytes reports output bytes retained for this subscriber,
+// including events awaiting replay/live delivery or acknowledgement.
+func (s *CommandEventSubscription) BufferedPayloadBytes() int64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bufferedBytes
+}
+
+// Acknowledge releases the event payload's byte charge after the consumer has
+// finished writing it. Duplicate and unrelated acknowledgements are ignored.
+func (s *CommandEventSubscription) Acknowledge(event CommandEventRecord) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if size, ok := s.charged[event.Sequence]; ok {
+		delete(s.charged, event.Sequence)
+		s.bufferedBytes -= size
+	}
+	s.mu.Unlock()
 }
 
 // Close removes the subscriber and closes its channels. It is idempotent.
@@ -177,7 +214,9 @@ func (s *CommandEventSubscription) finishReplay() {
 			break
 		}
 	}
-	s.pending = nil
+	if !s.closed {
+		s.pending = nil
+	}
 	closed := s.closed
 	s.mu.Unlock()
 	if closed {
@@ -193,13 +232,14 @@ func (s *CommandEventSubscription) publish(event CommandEventRecord) {
 	}
 	if s.replaying {
 		if _, exists := s.pending[event.Sequence]; !exists {
-			if len(s.pending) >= s.capacity {
+			if len(s.pending) >= s.capacity || !s.canBufferLocked(event) {
 				s.terminateLocked(ErrSubscriberOverflow)
 				s.mu.Unlock()
 				s.owner.removeSubscriber(s)
 				return
 			}
 			s.pending[event.Sequence] = cloneCommandEvent(event)
+			s.chargeLocked(event)
 		}
 		s.mu.Unlock()
 		return
@@ -214,16 +254,37 @@ func (s *CommandEventSubscription) publish(event CommandEventRecord) {
 
 func (s *CommandEventSubscription) enqueueLocked(event CommandEventRecord) bool {
 	if s.closed || event.Sequence <= s.lastSequence {
+		delete(s.pending, event.Sequence)
 		return !s.closed
+	}
+	_, alreadyCharged := s.charged[event.Sequence]
+	if !alreadyCharged && !s.canBufferLocked(event) {
+		s.terminateLocked(ErrSubscriberOverflow)
+		return false
 	}
 	select {
 	case s.events <- cloneCommandEvent(event):
+		if !alreadyCharged {
+			s.chargeLocked(event)
+		}
+		delete(s.pending, event.Sequence)
 		s.lastSequence = event.Sequence
 		return true
 	default:
 		s.terminateLocked(ErrSubscriberOverflow)
 		return false
 	}
+}
+
+func (s *CommandEventSubscription) canBufferLocked(event CommandEventRecord) bool {
+	bytes := int64(len(event.Payload))
+	return bytes <= s.maxBytes && s.bufferedBytes <= s.maxBytes-bytes
+}
+
+func (s *CommandEventSubscription) chargeLocked(event CommandEventRecord) {
+	bytes := int64(len(event.Payload))
+	s.charged[event.Sequence] = bytes
+	s.bufferedBytes += bytes
 }
 
 func (s *CommandEventSubscription) terminate(err error) {
@@ -241,6 +302,13 @@ func (s *CommandEventSubscription) terminateLocked(err error) {
 		return
 	}
 	s.closed = true
+	for sequence := range s.pending {
+		if size, ok := s.charged[sequence]; ok {
+			delete(s.charged, sequence)
+			s.bufferedBytes -= size
+		}
+	}
+	s.pending = nil
 	if err != nil {
 		s.errors <- err
 	}

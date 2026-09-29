@@ -151,6 +151,12 @@ func TestP134APIKillAfterIntentCommitReplaysQueuedRequest(t *testing.T) {
 	if response.StatusCode != http.StatusAccepted || replay.SessionID != wantSessionID || replay.IntentID != wantIntentID || replay.AcceptanceScope != "local_intent" || replay.KnownState.DeliveryState != string(store.LocalIntentRecorded) {
 		t.Fatalf("idempotent replay status=%d body=%+v; want accepted local intent", response.StatusCode, replay)
 	}
+	if err := restarted.WaitForBarrier(ctx, testfixture.BarrierMacAPIAfterReplayResponse); err != nil {
+		t.Fatalf("wait for replay response-complete barrier: %v; child output: %s", err, restarted.Output())
+	}
+	if err := restarted.Release(testfixture.BarrierMacAPIAfterReplayResponse); err != nil {
+		t.Fatalf("release replay response-complete barrier: %v", err)
+	}
 	if err := restarted.Wait(ctx); err != nil {
 		t.Fatalf("restarted API child exit: %v; output: %s", err, restarted.Output())
 	}
@@ -191,6 +197,7 @@ func TestP134APIProcessChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	committed := make(chan struct{})
+	replayBarrierReleased := make(chan struct{})
 	switch mode {
 	case "crash":
 		server.afterIntentCommit = func() {
@@ -204,6 +211,7 @@ func TestP134APIProcessChild(t *testing.T) {
 			if err := testfixture.WaitAtPhaseBarrier(os.Stdin, reporter, testfixture.BarrierMacAPIAfterIntentCommit); err != nil {
 				fmt.Fprintf(os.Stderr, "wait for replay API barrier: %v\n", err)
 			}
+			close(replayBarrierReleased)
 		}
 	default:
 		t.Fatalf("unknown P134 API child mode %q", mode)
@@ -220,6 +228,10 @@ func TestP134APIProcessChild(t *testing.T) {
 		return
 	}
 	<-committed
+	<-replayBarrierReleased
+	if err := testfixture.WaitAtPhaseBarrier(os.Stdin, reporter, testfixture.BarrierMacAPIAfterReplayResponse); err != nil {
+		t.Fatalf("wait for replay response-complete barrier: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Close(ctx); err != nil {

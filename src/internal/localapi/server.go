@@ -1163,11 +1163,13 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 	defer ticker.Stop()
 	writeFollowEvent := func(event store.CommandEventRecord) bool {
 		if event.Sequence <= lastWritten {
+			subscription.Acknowledge(event)
 			return true
 		}
 		// A later in-process notification can race an event committed through
 		// another store handle. Let the durable poll fill that sequence gap.
 		if event.Sequence != lastWritten+1 {
+			subscription.Acknowledge(event)
 			return true
 		}
 		frame, err := encodeLocalAPIEvent(event, command.Ordinal)
@@ -1178,6 +1180,7 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 		if flusher != nil {
 			flusher.Flush()
 		}
+		subscription.Acknowledge(event)
 		return !isTerminalLocalAPIEvent(event.Type)
 	}
 	readQueuedEvent := func() (bool, bool) {

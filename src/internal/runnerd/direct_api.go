@@ -933,6 +933,7 @@ func (s *directHTTPSAPI) writeDirectCommandEventFollow(response http.ResponseWri
 			if flusher != nil {
 				flusher.Flush()
 			}
+			subscription.Acknowledge(event)
 			if isTerminalCommandEvent(event.Type) {
 				return
 			}

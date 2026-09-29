@@ -22,6 +22,7 @@ type BarrierPoint string
 
 const (
 	BarrierMacAPIAfterIntentCommit    BarrierPoint = "mac_api.after_intent_commit"
+	BarrierMacAPIAfterReplayResponse  BarrierPoint = "mac_api.after_replay_response"
 	BarrierRouterAfterLeaseCommit     BarrierPoint = "router.after_delivery_lease_commit"
 	BarrierRouterAfterUncertainCommit BarrierPoint = "router.after_uncertain_intent_commit"
 	BarrierExecutorAfterStartCommit   BarrierPoint = "executor.after_command_started_commit"
@@ -47,6 +48,9 @@ func NamedPhaseBarriers() []BarrierPoint {
 }
 
 func validBarrierPoint(point BarrierPoint) bool {
+	if point == BarrierMacAPIAfterReplayResponse {
+		return true
+	}
 	for _, named := range NamedPhaseBarriers() {
 		if point == named {
 			return true

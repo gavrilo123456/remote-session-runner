@@ -998,11 +998,13 @@ func (s *PrivateServer) handleCommandEvents(response http.ResponseWriter, reques
 			if !ok {
 				return
 			}
-			if err := writeEvent(event); err != nil || isTerminalCommandEvent(event.Type) {
+			if err := writeEvent(event); err != nil {
 				return
 			}
-		case <-subscription.Errors():
-			return
+			subscription.Acknowledge(event)
+			if isTerminalCommandEvent(event.Type) {
+				return
+			}
 		case <-request.Context().Done():
 			return
 		}

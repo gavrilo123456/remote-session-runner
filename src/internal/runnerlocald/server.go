@@ -770,11 +770,10 @@ func (s *PrivateServer) handleCommandEvents(response http.ResponseWriter, reques
 			if flusher != nil {
 				flusher.Flush()
 			}
+			subscription.Acknowledge(event)
 			if isTerminalCommandEvent(event.Type) {
 				return
 			}
-		case <-subscription.Errors():
-			return
 		case <-request.Context().Done():
 			return
 		}

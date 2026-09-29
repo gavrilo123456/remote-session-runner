@@ -1460,13 +1460,22 @@ func (s *Service) ReplayCommandEvents(ctx context.Context, id domain.CommandID, 
 // SubscribeCommandEvents registers a durable replay/live handoff after the
 // same controller check used by command reads.
 func (s *Service) SubscribeCommandEvents(ctx context.Context, id domain.CommandID, controller domain.ControllerIdentity, afterSequence int64, capacity int) (*store.CommandEventSubscription, error) {
-	if s == nil || s.store == nil {
+	if s == nil || s.store == nil || s.resolver == nil {
 		return nil, ErrExecutionServiceConfiguration
 	}
-	if _, err := s.GetCommand(ctx, id, controller); err != nil {
+	command, err := s.GetCommand(ctx, id, controller)
+	if err != nil {
 		return nil, err
 	}
-	return s.store.SubscribeCommandEvents(ctx, id, afterSequence, capacity)
+	session, err := s.store.GetSession(ctx, command.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	environment, err := s.resolver.ResolveEnvironment(ctx, session.Environment)
+	if err != nil {
+		return nil, fmt.Errorf("resolve subscriber buffer policy: %w", err)
+	}
+	return s.store.SubscribeCommandEventsWithByteLimit(ctx, id, afterSequence, capacity, environment.ServiceLimits().SubscriberBufferBytes)
 }
 
 // GetJob returns an authoritative one-off snapshot after checking the
