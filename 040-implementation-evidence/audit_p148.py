@@ -120,6 +120,25 @@ missing_phase_files = [
 ]
 if missing_phase_files:
     fail(f"missing phase evidence: {', '.join(missing_phase_files)}")
+tracked_paths = set(
+    subprocess.check_output(
+        ["git", "-C", str(ROOT), "ls-files"], text=True
+    ).splitlines()
+)
+untracked_phase_files = [
+    f"P{phase:03}.md"
+    for phase in range(1, 148)
+    if f"040-implementation-evidence/P{phase:03}.md" not in tracked_paths
+]
+if untracked_phase_files:
+    fail(f"phase evidence is not committed: {', '.join(untracked_phase_files)}")
+phase_records_without_result = [
+    f"P{phase:03}.md"
+    for phase in range(1, 148)
+    if not re.search(r"\bpass(?:ed)?\b", read(EVIDENCE / f"P{phase:03}.md"), re.IGNORECASE)
+]
+if phase_records_without_result:
+    fail(f"phase evidence has no explicit PASS/passed result text: {', '.join(phase_records_without_result)}")
 if not (EVIDENCE / "P148.md").is_file():
     fail("P148 evidence record is missing")
 
@@ -171,6 +190,6 @@ print(
     "P148 audit PASS: "
     f"{len(test_ids)}/{len(test_ids)} detailed-design §14 IDs map to their plan owner; "
     f"{len(acceptance_rows)} §15 areas reconciled; "
-    "P001–P147 evidence files and serial commit identifiers present; "
+    "147 committed phase evidence results and serial phase identifiers present; "
     "Mac/Ubuntu/two-host final evidence labeled; P143 physical limitation preserved."
 )
