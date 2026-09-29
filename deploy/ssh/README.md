@@ -25,7 +25,7 @@ authorize a key or modify `authorized_keys`.
 The queued Mac dispatcher key is authorized on Ubuntu with one exact entry:
 
 ```text
-restrict,command="/home/ubuntu/.local/share/remote-session-runner/deploy/runner-ssh-bridge-forced.sh SHA256:<fingerprint-without-padding>" ssh-ed25519 <dispatcher-public-key> runner-mac-dispatcher
+restrict,command="/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh SHA256:<fingerprint-without-padding>" ssh-ed25519 <dispatcher-public-key> runner-mac-dispatcher
 ```
 
 The `restrict` option disables PTY allocation, agent and X11 forwarding, TCP

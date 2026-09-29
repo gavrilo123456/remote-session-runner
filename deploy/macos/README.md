@@ -24,8 +24,8 @@ owner-only umask, a fixed `PATH`, and logs beneath the private service root.
 Stop or unload the jobs with:
 
 ```sh
-launchctl bootout gui/501 "$HOME/Library/LaunchAgents/com.remote-session-runner.local.plist"
-launchctl bootout gui/501 "$HOME/Library/LaunchAgents/com.remote-session-runner.locald.plist"
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.remote-session-runner.local.plist"
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.remote-session-runner.locald.plist"
 ```
 
 On SIGTERM, each service stops accepting new work, drains within an eight-second
