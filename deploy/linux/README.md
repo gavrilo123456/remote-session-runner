@@ -41,7 +41,9 @@ dispatch, closes any remaining Linux sessions through the normal runtime stop
 path, verifies the durable audit/operational tail, then closes event followers
 and removes the runnerd-owned Unix socket. The coordinator allows an 8-second
 drain and up to 4 seconds for each cleanup stage; `TimeoutStopSec=30s` leaves
-systemd time to finish the process-group cleanup. The P132 host gate exercises
-this path with an active command. Forced-command SSH setup is
-documented in [the SSH deployment guide](../ssh/README.md), and must use this
-active service's private socket.
+systemd time to finish the process-group cleanup. `KillMode=mixed` sends the
+initial stop signal to runnerd so it can cancel its Bash sessions; systemd
+still kills remaining service processes after shutdown or the deadline. The
+P132 host gate exercises this path with an active command. Forced-command SSH
+setup is documented in [the SSH deployment guide](../ssh/README.md), and must
+use this active service's private socket.

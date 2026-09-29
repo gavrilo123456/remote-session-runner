@@ -88,6 +88,7 @@ func TestP132LinuxGracefulShutdownProcessHost(t *testing.T) {
 	var sessionID, commandID string
 	phasePassed := false
 	backupReady := false
+	stopVerified := false
 	t.Cleanup(func() {
 		if owner != nil {
 			defer owner.CloseIdleConnections()
@@ -100,13 +101,26 @@ func TestP132LinuxGracefulShutdownProcessHost(t *testing.T) {
 			return
 		}
 		if !phasePassed {
-			_, startErr := p132RunRemote(identity, knownHosts, 30*time.Second, "sudo -n systemctl start runnerd.service || sudo -n systemctl is-active --quiet runnerd.service")
-			if startErr != nil {
-				t.Errorf("restore active runnerd before P132 cleanup: %v", startErr)
-			}
-			if owner != nil && sessionID != "" {
-				if err := p132CloseSession(owner, sessionID); err != nil {
-					t.Errorf("close P132 fixture session during cleanup: %v", err)
+			if stopVerified && sessionID != "" && commandID != "" {
+				cleanup := fmt.Sprintf("cd %s && GOCACHE=/home/ubuntu/.cache/go-build GOMODCACHE=/home/ubuntu/go/pkg/mod RSR_P132_HOST_SESSION_ID=%s RSR_P132_HOST_COMMAND_ID=%s make GO=%s test-p132-host-cleanup",
+					p127ShellQuote(checkout), p127ShellQuote(sessionID), p127ShellQuote(commandID),
+					p127ShellQuote("/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go"))
+				if _, err := p132RunRemote(identity, knownHosts, 45*time.Second, cleanup); err != nil {
+					t.Errorf("release only the P132 fixture's confirmed-dead lost capacity: %v", err)
+				}
+			} else {
+				_, startErr := p132RunRemote(identity, knownHosts, 30*time.Second, "sudo -n systemctl start runnerd.service || sudo -n systemctl is-active --quiet runnerd.service")
+				if startErr != nil {
+					t.Errorf("restore active runnerd before P132 cleanup: %v", startErr)
+				}
+				ready := fmt.Sprintf("for attempt in $(seq 1 40); do if sudo -n systemctl is-active --quiet runnerd.service && test -S %s/run/runnerd.sock && ss -H -ltn 'sport = :8443' | grep -q '10\\.0\\.0\\.200:8443'; then exit 0; fi; sleep 0.25; done; exit 1", p127ShellQuote(p132UbuntuServiceRoot))
+				if _, err := p132RunRemote(identity, knownHosts, 15*time.Second, ready); err != nil {
+					t.Errorf("wait for runnerd cleanup API: %v", err)
+				}
+				if owner != nil && sessionID != "" {
+					if err := p132CloseSession(owner, sessionID); err != nil {
+						t.Errorf("close P132 fixture session during cleanup: %v", err)
+					}
 				}
 			}
 			restore := fmt.Sprintf("set -eu; sudo -n systemctl stop runnerd.service >/dev/null 2>&1 || true; install -m 700 %s %s/bin/runnerd; sudo -n install -o root -g root -m 644 %s /etc/systemd/system/runnerd.service; sudo -n systemctl daemon-reload; sudo -n systemctl start runnerd.service; rm -f %s %s",
@@ -133,7 +147,7 @@ func TestP132LinuxGracefulShutdownProcessHost(t *testing.T) {
 	p132RemoteMust(t, identity, knownHosts, 45*time.Second, "sudo -n systemctl stop runnerd.service")
 	installCommand := fmt.Sprintf("cd %s && deploy/linux/install-systemd-service.sh", p127ShellQuote(checkout))
 	p132RemoteMust(t, identity, knownHosts, 90*time.Second, installCommand)
-	readyCommand := fmt.Sprintf("sudo -n systemctl is-active --quiet runnerd.service && test \"$(sudo -n systemctl show -p TimeoutStopUSec --value runnerd.service)\" = 30s && test \"$(stat -c '%%u:%%a' %s/run/runnerd.sock)\" = 1001:600 && ss -H -ltn 'sport = :8443' | grep -q '10\\.0\\.0\\.200:8443'",
+	readyCommand := fmt.Sprintf("sudo -n systemctl is-active --quiet runnerd.service && test \"$(sudo -n systemctl show -p TimeoutStopUSec --value runnerd.service)\" = 30s && test \"$(sudo -n systemctl show -p KillMode --value runnerd.service)\" = mixed && test \"$(stat -c '%%u:%%a' %s/run/runnerd.sock)\" = 1001:600 && ss -H -ltn 'sport = :8443' | grep -q '10\\.0\\.0\\.200:8443'",
 		p127ShellQuote(p132UbuntuServiceRoot))
 	p132RemoteMust(t, identity, knownHosts, 20*time.Second, readyCommand)
 
@@ -154,7 +168,7 @@ func TestP132LinuxGracefulShutdownProcessHost(t *testing.T) {
 	sessionID = created.SessionID
 	p117WaitForSessionState(t, owner, sessionID, "ready")
 
-	script := "/bin/sleep 120 & child=$!; printf 'P132_CHILD_PID=%s\\nP132_RUNNING\\n' \"$child\"; wait \"$child\""
+	script := "/bin/sh -c 'printf \"P132_CHILD_PID=%s\\nP132_RUNNING\\n\" \"$$\"; exec /bin/sleep 120'"
 	commandBody, err := json.Marshal(directSubmitCommandRequest{Script: &script})
 	if err != nil {
 		t.Fatal(err)
@@ -246,6 +260,7 @@ func TestP132LinuxGracefulShutdownProcessHost(t *testing.T) {
 	stoppedCommand := fmt.Sprintf("! sudo -n systemctl is-active --quiet runnerd.service && test ! -e %s/run/runnerd.sock && ! ss -H -ltn 'sport = :8443' | grep -q '10\\.0\\.0\\.200:8443' && ! kill -0 %d 2>/dev/null && sudo -n systemctl show -p Result --value runnerd.service | grep -qx success && sudo -n systemctl show -p ExecMainStatus --value runnerd.service | grep -qx 0",
 		p127ShellQuote(p132UbuntuServiceRoot), childPID)
 	p132RemoteMust(t, identity, knownHosts, 20*time.Second, stoppedCommand)
+	stopVerified = true
 
 	readCommand := fmt.Sprintf("cd %s && GOCACHE=/home/ubuntu/.cache/go-build GOMODCACHE=/home/ubuntu/go/pkg/mod RSR_P132_HOST_SESSION_ID=%s RSR_P132_HOST_COMMAND_ID=%s RSR_P132_HOST_AUDIT_AFTER_ID=%d make GO=%s test-p132-host-read",
 		p127ShellQuote(checkout), p127ShellQuote(sessionID), p127ShellQuote(commandID), auditAfter,

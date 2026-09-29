@@ -17,7 +17,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read vet build smoke check
+.PHONY: check-go test test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -147,6 +147,14 @@ test-p132-host-read: check-go
 	: "$${RSR_P132_HOST_COMMAND_ID:?set RSR_P132_HOST_COMMAND_ID}"; \
 	: "$${RSR_P132_HOST_AUDIT_AFTER_ID:?set RSR_P132_HOST_AUDIT_AFTER_ID}"; \
 	RSR_P132_HOST_READ=1 GOTOOLCHAIN=local "$(GO)" test -tags=p132hostreader ./src/internal/store -run '^TestP132UbuntuHostCommandReader$$' -count=1 -v
+
+# Narrow cleanup for a P132 test fixture only after the old service cgroup and
+# the fixture's recorded command process have both been confirmed empty.
+test-p132-host-cleanup: check-go
+	@set -eu; \
+	: "$${RSR_P132_HOST_SESSION_ID:?set RSR_P132_HOST_SESSION_ID}"; \
+	: "$${RSR_P132_HOST_COMMAND_ID:?set RSR_P132_HOST_COMMAND_ID}"; \
+	RSR_P132_HOST_CLEANUP=1 GOTOOLCHAIN=local "$(GO)" test -tags=p132hostcleanup ./src/internal/store -run '^TestP132UbuntuCleanupConfirmedLostFixture$$' -count=1 -v
 
 # Real Ubuntu systemd lifecycle and owner-only service-path gate.
 test-p126-linux-services: check-go
