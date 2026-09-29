@@ -36,14 +36,15 @@ const (
 type Action string
 
 const (
-	ActionCreate      Action = "create"
-	ActionSubmit      Action = "submit"
-	ActionCancel      Action = "cancel"
-	ActionClose       Action = "close"
-	ActionRun         Action = "run"
-	ActionReadSession Action = "read_session"
-	ActionReadCommand Action = "read_command"
-	ActionReadJob     Action = "read_job"
+	ActionCreate         Action = "create"
+	ActionSubmit         Action = "submit"
+	ActionCancel         Action = "cancel"
+	ActionClose          Action = "close"
+	ActionRun            Action = "run"
+	ActionReadSession    Action = "read_session"
+	ActionReadCommand    Action = "read_command"
+	ActionReadJob        Action = "read_job"
+	ActionRuntimeCleanup Action = "runtime_cleanup"
 )
 
 type Outcome string
@@ -51,12 +52,14 @@ type Outcome string
 const (
 	OutcomeAllowed Outcome = "allowed"
 	OutcomeDenied  Outcome = "denied"
+	OutcomeFailed  Outcome = "failed"
 )
 
 const (
-	ReasonEnvironmentDenied = "environment_denied"
-	ReasonPolicyDenied      = "policy_denied"
-	ReasonControllerDenied  = "controller_denied"
+	ReasonEnvironmentDenied         = "environment_denied"
+	ReasonPolicyDenied              = "policy_denied"
+	ReasonControllerDenied          = "controller_denied"
+	ReasonRuntimeCleanupUnconfirmed = "runtime_cleanup_unconfirmed"
 )
 
 var ErrInvalidRecord = errors.New("invalid audit record")
@@ -152,20 +155,27 @@ func (record Record) Validate() error {
 		return fmt.Errorf("%w: ingress", ErrInvalidRecord)
 	}
 	switch record.Action {
-	case ActionCreate, ActionSubmit, ActionCancel, ActionClose, ActionRun, ActionReadSession, ActionReadCommand, ActionReadJob:
+	case ActionCreate, ActionSubmit, ActionCancel, ActionClose, ActionRun, ActionReadSession, ActionReadCommand, ActionReadJob, ActionRuntimeCleanup:
 	default:
 		return fmt.Errorf("%w: action", ErrInvalidRecord)
 	}
-	if record.Outcome != OutcomeAllowed && record.Outcome != OutcomeDenied {
+	switch record.Outcome {
+	case OutcomeAllowed:
+		if record.Action == ActionRuntimeCleanup || record.ReasonCode != "" {
+			return fmt.Errorf("%w: allowed outcome is invalid for this action or has a reason", ErrInvalidRecord)
+		}
+	case OutcomeDenied:
+		if record.Action == ActionRuntimeCleanup || record.ReasonCode == "" || record.ReasonCode == ReasonRuntimeCleanupUnconfirmed {
+			return fmt.Errorf("%w: denied outcome requires an authorization reason", ErrInvalidRecord)
+		}
+	case OutcomeFailed:
+		if record.Action != ActionRuntimeCleanup || record.ReasonCode != ReasonRuntimeCleanupUnconfirmed || record.SessionID == "" {
+			return fmt.Errorf("%w: failed outcome must identify an unconfirmed runtime cleanup", ErrInvalidRecord)
+		}
+	default:
 		return fmt.Errorf("%w: outcome", ErrInvalidRecord)
 	}
-	if record.Outcome == OutcomeDenied && record.ReasonCode == "" {
-		return fmt.Errorf("%w: denied outcome requires a reason code", ErrInvalidRecord)
-	}
-	if record.Outcome == OutcomeAllowed && record.ReasonCode != "" {
-		return fmt.Errorf("%w: allowed outcome cannot have a denial reason", ErrInvalidRecord)
-	}
-	if record.ReasonCode != "" && record.ReasonCode != ReasonEnvironmentDenied && record.ReasonCode != ReasonPolicyDenied && record.ReasonCode != ReasonControllerDenied {
+	if record.ReasonCode != "" && record.ReasonCode != ReasonEnvironmentDenied && record.ReasonCode != ReasonPolicyDenied && record.ReasonCode != ReasonControllerDenied && record.ReasonCode != ReasonRuntimeCleanupUnconfirmed {
 		return fmt.Errorf("%w: reason code", ErrInvalidRecord)
 	}
 	if len(record.Environment) > 256 || strings.IndexByte(record.Environment, 0) >= 0 {
@@ -195,7 +205,11 @@ func (record Record) Validate() error {
 // Log emits exactly the fields stored in the audit row. Callers must invoke it
 // only after the corresponding database transaction commits.
 func Log(ctx context.Context, record Record) {
-	slog.Default().InfoContext(ctx, "runner authorization action",
+	level, message := slog.LevelInfo, "runner authorization action"
+	if record.Action == ActionRuntimeCleanup {
+		level, message = slog.LevelError, "runner runtime cleanup failure"
+	}
+	slog.Default().Log(ctx, level, message,
 		"record_id", record.ID,
 		"action", string(record.Action),
 		"principal_type", string(record.Principal.Type()),

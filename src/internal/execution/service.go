@@ -461,7 +461,7 @@ func (s *Service) CreateSession(ctx context.Context, request CreateSessionReques
 	}
 	ready, err := s.store.CompleteSessionCreation(ctx, accepted.SessionID, domain.SessionStateReady, generation, prepared.ResolvedRevision, "runtime_ready")
 	if err != nil {
-		return CreateSessionResult{}, err
+		return s.finishRuntimeFailure(ctx, result, prepared, fmt.Errorf("persist runtime ready state: %w", err))
 	}
 	result.Session = ready
 	s.publishLatestLifecycle(ctx, ready.SessionID)
@@ -482,15 +482,19 @@ func (s *Service) finishRuntimeFailure(ctx context.Context, result CreateSession
 		reason = "runtime_cleanup_unconfirmed"
 	}
 	completed, transitionErr := s.store.CompleteSessionCreation(ctx, result.Session.SessionID, next, prepared.RuntimeGeneration, prepared.ResolvedRevision, reason)
+	var auditErr error
+	if cleanupErr != nil {
+		auditErr = s.recordRuntimeCleanupFailure(ctx, result.Session, "")
+	}
 	if transitionErr != nil {
-		return CreateSessionResult{}, fmt.Errorf("%w: record %s state: %v", ErrRuntimeUnavailable, next, transitionErr)
+		return result, errors.Join(fmt.Errorf("%w: record %s state: %w", ErrRuntimeUnavailable, next, transitionErr), auditErr)
 	}
 	result.Session = completed
 	s.publishLatestLifecycle(ctx, completed.SessionID)
 	if cleanupErr != nil {
-		return result, fmt.Errorf("%w: %v; cleanup: %v", ErrRuntimeUnavailable, cause, cleanupErr)
+		return result, errors.Join(fmt.Errorf("%w: %w; cleanup: %w", ErrRuntimeUnavailable, cause, cleanupErr), auditErr)
 	}
-	return result, fmt.Errorf("%w: %v", ErrRuntimeUnavailable, cause)
+	return result, fmt.Errorf("%w: %w", ErrRuntimeUnavailable, cause)
 }
 
 // SubmitCommand accepts one script, starts it only after the durable scheduler
@@ -626,6 +630,15 @@ func (s *Service) ResumeCommand(ctx context.Context, commandID domain.CommandID,
 				Payload:   payload,
 				ByteCount: int64(len(payload)),
 			}); err != nil {
+				if control, ok := s.runtime.(RuntimeCommandControl); ok {
+					cleanupParent := ctx
+					if cleanupParent == nil {
+						cleanupParent = context.Background()
+					}
+					cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(cleanupParent), 2*time.Second)
+					_, _ = control.CancelCommand(cleanupContext, request)
+					cancel()
+				}
 				return err
 			}
 			streamed.Store(true)
@@ -677,6 +690,9 @@ func (s *Service) ResumeCommand(ctx context.Context, commandID domain.CommandID,
 			return SubmitCommandResult{Command: started}, errors.Join(err, readErr)
 		} else if terminal {
 			return SubmitCommandResult{Command: raced}, nil
+		}
+		if store.IsSQLiteError(err) {
+			return s.finishCommandFailure(ctx, currentSession, started, err, "command_completion_persistence_failed")
 		}
 		return SubmitCommandResult{Command: started}, err
 	}
@@ -1036,6 +1052,29 @@ func oneOffSourcePayload(source domain.Source) map[string]any {
 }
 
 func (s *Service) finishCommandFailure(ctx context.Context, session store.SessionRecord, command store.CommandRecord, cause error, reason string) (SubmitCommandResult, error) {
+	var cleanupErr error
+	if store.IsSQLiteError(cause) {
+		control, ok := s.runtime.(RuntimeCommandControl)
+		if !ok {
+			cleanupErr = ErrStopUnconfirmed
+		} else {
+			cleanupContext := ctx
+			if cleanupContext == nil {
+				cleanupContext = context.Background()
+			}
+			cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(cleanupContext), 2*time.Second)
+			stopped, stopErr := control.StopSession(cleanupContext, session)
+			cancel()
+			if stopErr != nil {
+				cleanupErr = stopErr
+			} else if !stopped {
+				cleanupErr = ErrStopUnconfirmed
+			}
+		}
+		if cleanupErr != nil {
+			s.store.RecordCleanupFailure()
+		}
+	}
 	completed, transitionErr := s.store.CompleteRunningCommand(ctx, store.CommandTransition{
 		CommandID:      command.CommandID,
 		NextState:      domain.CommandStateLost,
@@ -1043,21 +1082,41 @@ func (s *Service) finishCommandFailure(ctx context.Context, session store.Sessio
 	}, domain.SessionStateLost, reason, false)
 	if transitionErr != nil {
 		if raced, terminal, readErr := s.terminalCommandOutcome(ctx, command.CommandID); readErr != nil {
-			return SubmitCommandResult{Command: command}, errors.Join(transitionErr, readErr)
+			return SubmitCommandResult{Command: command}, errors.Join(transitionErr, readErr, s.auditCleanupFailure(ctx, session, command, cleanupErr))
 		} else if terminal {
 			if raced.State != domain.CommandStateLost {
 				return SubmitCommandResult{Command: raced}, nil
 			}
-			return SubmitCommandResult{Command: raced}, fmt.Errorf("%w: %v", ErrCommandTransport, cause)
+			return SubmitCommandResult{Command: raced}, errors.Join(fmt.Errorf("%w: %w", ErrCommandTransport, cause), s.auditCleanupFailure(ctx, session, command, cleanupErr))
 		}
-		return SubmitCommandResult{Command: command}, fmt.Errorf("%w: record lost command: %v", ErrCommandTransport, transitionErr)
+		return SubmitCommandResult{Command: command}, errors.Join(fmt.Errorf("%w: record lost command: %w", ErrCommandTransport, transitionErr), s.auditCleanupFailure(ctx, session, command, cleanupErr))
 	}
-	s.store.RecordCleanupFailure()
-	_ = session
+	auditErr := s.auditCleanupFailure(ctx, session, command, cleanupErr)
 	if errors.Is(cause, ErrShellExited) {
-		return SubmitCommandResult{Command: completed}, fmt.Errorf("%w: %v", ErrShellExited, cause)
+		return SubmitCommandResult{Command: completed}, errors.Join(fmt.Errorf("%w: %w", ErrShellExited, cause), auditErr)
 	}
-	return SubmitCommandResult{Command: completed}, fmt.Errorf("%w: %v", ErrCommandTransport, cause)
+	return SubmitCommandResult{Command: completed}, errors.Join(fmt.Errorf("%w: %w", ErrCommandTransport, cause), auditErr)
+}
+
+func (s *Service) auditCleanupFailure(ctx context.Context, session store.SessionRecord, command store.CommandRecord, cleanupErr error) error {
+	if cleanupErr == nil {
+		return nil
+	}
+	if err := s.recordRuntimeCleanupFailure(ctx, session, string(command.CommandID)); err != nil {
+		return fmt.Errorf("record runtime cleanup audit: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) recordRuntimeCleanupFailure(ctx context.Context, session store.SessionRecord, commandID string) error {
+	record := audit.NewRecord(session.Controller, audit.IngressFromContext(ctx), audit.ActionRuntimeCleanup, audit.OutcomeFailed)
+	record.Environment = session.Environment
+	record.SessionID = session.SessionID
+	if commandID != "" {
+		record.CommandID = domain.CommandID(commandID)
+	}
+	record.ReasonCode = audit.ReasonRuntimeCleanupUnconfirmed
+	return s.store.RecordAudit(ctx, record)
 }
 
 // CancelCommand records a keyed cancellation request and applies it to queued

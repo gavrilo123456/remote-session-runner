@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 22
+	CurrentSchemaVersion = 23
 )
 
 var (
@@ -99,6 +99,9 @@ var auditRecordsSQL string
 
 //go:embed migrations/0022_health_probes.sql
 var healthProbesSQL string
+
+//go:embed migrations/0023_runtime_cleanup_audit.sql
+var runtimeCleanupAuditSQL string
 
 type migration struct {
 	version int
@@ -194,6 +197,10 @@ var migrations = []migration{{
 	version: 22,
 	name:    "health_probes",
 	sql:     healthProbesSQL,
+}, {
+	version: 23,
+	name:    "runtime_cleanup_audit",
+	sql:     runtimeCleanupAuditSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
