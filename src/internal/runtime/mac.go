@@ -339,15 +339,19 @@ func (a *MacProcessAdapter) Cleanup(sessionID string) error {
 		if processGroupID != pid {
 			return fmt.Errorf("%w: Bash process group does not match its PID", ErrRuntimeOwnershipRecord)
 		}
-		if err := shell.Close(); err != nil {
-			return err
-		}
+		waitErr := shell.Close()
 		groupExists, err := processGroupExists(processGroupID)
 		if err != nil {
 			return fmt.Errorf("inspect Mac session process group after shell exit: %w", err)
 		}
 		if groupExists {
 			return fmt.Errorf("%w: residual process group %d remains after shell exit", ErrRuntimeOwnershipRecord, processGroupID)
+		}
+		if waitErr != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(waitErr, &exitErr) {
+				return waitErr
+			}
 		}
 	}
 	if prepared.OwnedWorkspace {
