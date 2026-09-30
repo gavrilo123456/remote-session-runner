@@ -56,8 +56,11 @@ one implicit inbox named `default` at the existing path and one implicit remote
 host profile named `linux-host`.
 
 `version: 2` enables the new registries. It must be rejected unless every
-reference is complete, unique, under the configured service root where
-appropriate, and passes the existing no-symlink, owner, and mode checks.
+reference is complete, unique, and passes the applicable no-symlink, owner,
+and mode checks. The legacy `default` mailbox remains at its selected service
+root path. A non-default mailbox may use either its selected service-root path
+or a separately configured owner-safe absolute path; the rules are defined in
+the next section.
 
 ### 3.2 Conceptual Mac configuration
 
@@ -127,8 +130,20 @@ installed and tested.
 
 - Inbox IDs, context names, remote profile names, and direct endpoint names
   are bounded safe identifiers and unique in their namespace.
-- Mailbox roots are unique owner-only directories. The existing default root
-  remains valid and is never moved automatically.
+- Mailbox roots are unique owner-only directories and neither may equal nor
+  contain another configured root. The existing default root remains valid and
+  is never moved automatically. A non-default root inside the service root
+  must use its selected `mailboxes/<inbox-id>` path. A non-default root outside
+  the service root may be any clean absolute path, provided its parent already
+  exists and the whole existing ancestor chain is made of real directories
+  without group or other write permission. The immediate parent must be owned
+  by the selected Mac user. This permits a repository-local mailbox while
+  rejecting unsafe shared paths such as `/tmp`.
+- Runner never creates or changes an external root's ancestors. It creates or
+  verifies only the configured root and its `inbox`, `outbox`, `events`, and
+  `acks` children. Each must be a current-user-owned real directory at mode
+  `0700`; a symlink or an unsafe ancestor fails activation before the existing
+  LaunchAgents are quiesced.
 - Each context names one configured environment and a target permitted by that
   environment's policy.
 - Each mailbox has at least one allowed context, and its default is in that

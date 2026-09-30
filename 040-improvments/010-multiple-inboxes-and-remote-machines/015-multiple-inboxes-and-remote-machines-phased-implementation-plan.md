@@ -95,12 +95,26 @@ host-key pin and restricted bridge or direct mTLS materials, then prove account
 that specific profile. Record a separate P157 evidence file keyed by the host
 profile. A host that is unavailable is `NOT RUN`, never `PASS`.
 
-## 4. Completion and handoff
+## 4. External mailbox roots and P158
+
+`P158` extends the completed multi-inbox implementation after `P157`. It
+keeps the legacy default and service-root mailbox layout, while permitting a
+non-default mailbox at any owner-safe absolute location outside the service
+root. This is a mailbox-ingress change, not a new host onboarding gate:
+`sandbox.env` remains only the bootstrap SSH alias, and the configured Runner
+default must name the already accepted `ubuntu-sandbox` context
+(`sandbox-dev` / `remote/sandbox-host`).
+
+| Phase | Bounded deliverable | Focused exit gate |
+| --- | --- | --- |
+| `P158` | Add fail-closed support for owner-safe external mailbox roots, preflight their trees before service quiescence, and add `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` with default `ubuntu-sandbox`. | Config and runtime tests reject non-absolute, nested, service-root-escape, symlinked, missing-parent, and group/other-writable external paths; they preserve existing roots and do not change external ancestors. Installer preflight happens before quiescence. The activated inbox completes a native `mailboxclient` request with no selection pair, resolves `sandbox-dev` / `remote/sandbox-host`, returns complete untruncated output/events, accepts the exact ACK, and finishes with sandbox P128 zero active work. Direct mTLS is not mailbox evidence. |
+
+## 5. Completion and handoff
 
 The configurable-inbox extension is ready for the current controlled PoC only
-after P150--P156 pass in order, each has a phase commit and GitHub/Ubuntu
-handoff where required, the current Mac and Ubuntu evidence is current, and
-the documentation describes the actual installed behavior. Additional remote
-machines are ready only after their own P157 gate. The handoff continues to
-state that physical power-loss survival is unverified unless coordinated
-physical evidence later changes that fact.
+after P150--P156 and any later applicable phase such as P158 pass in order,
+each has a phase commit and GitHub/Ubuntu handoff where required, the current
+Mac and Ubuntu evidence is current, and the documentation describes the actual
+installed behavior. Additional remote machines are ready only after their own
+P157 gate. The handoff continues to state that physical power-loss survival is
+unverified unless coordinated physical evidence later changes that fact.
