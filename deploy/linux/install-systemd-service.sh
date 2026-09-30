@@ -83,17 +83,42 @@ require_no_active_work() {
 		make -C "$repo_root" test-p128-host-status
 }
 
+remove_go_cache() {
+	if [ -z "$go_cache_root" ]; then
+		return 0
+	fi
+	if [ -L "$go_cache_root" ] || [ ! -d "$go_cache_root" ]; then
+		printf 'refusing unsafe private Go cache path: %s\n' "$go_cache_root" >&2
+		return 1
+	fi
+	# Go makes extracted module directories read-only. Restore write/search
+	# permission on this installer-owned tree before removing it; do not touch
+	# shared Go caches or follow symbolic links.
+	if ! find -P "$go_cache_root" -type d -exec chmod u+rwx {} + \
+		|| ! find -P "$go_cache_root" -type f -exec chmod u+rw {} + \
+		|| ! rm -rf -- "$go_cache_root"; then
+		printf 'could not remove private Go cache: %s\n' "$go_cache_root" >&2
+		return 1
+	fi
+	go_cache_root=''
+}
+
 # Replacing a binary does not replace an already-running service process.
 # Use the checked-in read-only status gate before beginning an active-service
 # update, then repeat it immediately before the controlled restart.
 cleanup() {
 	cleanup_status=$?
 	trap - EXIT
+	# Do not let a second ordinary termination signal interrupt safe cleanup of
+	# the installer-owned temporary tree.
+	trap '' HUP INT TERM
 	if [ -n "$temporary" ] && { [ -e "$temporary" ] || [ -L "$temporary" ]; }; then
-		rm -f -- "$temporary"
+		if ! rm -f -- "$temporary"; then
+			cleanup_status=1
+		fi
 	fi
-	if [ -n "$go_cache_root" ] && { [ -e "$go_cache_root" ] || [ -L "$go_cache_root" ]; }; then
-		rm -rf -- "$go_cache_root"
+	if ! remove_go_cache; then
+		cleanup_status=1
 	fi
 	exit "$cleanup_status"
 }
@@ -127,6 +152,9 @@ if [ "$was_active" -eq 1 ]; then
 	require_no_active_work
 	sudo -n systemctl restart runnerd.service
 else
+	if ! remove_go_cache; then
+		exit 1
+	fi
 	sudo -n systemctl start runnerd.service
 fi
 if ! sudo -n systemctl is-active --quiet runnerd.service; then
@@ -151,11 +179,13 @@ if [ "$socket_ready" -ne 1 ]; then
 	exit 1
 fi
 
+if ! remove_go_cache; then
+	exit 1
+fi
+
 if [ -e "$queued_bridge_manifest" ] || [ -L "$queued_bridge_manifest" ]; then
 	"$repo_root/deploy/ssh/install-queued-bridge.sh" refresh
 fi
 
-rm -rf -- "$go_cache_root"
-go_cache_root=''
 trap - EXIT HUP INT TERM
 printf 'Installed and started runnerd.service as %s with %s\n' "$(id -un)" "$go_version"

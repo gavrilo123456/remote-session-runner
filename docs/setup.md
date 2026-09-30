@@ -297,9 +297,11 @@ For a new Linux host, first install the selected native Go 1.27.1 toolchain
 outside Git and verify its exact `go version` platform suffix. The service and
 queued-bridge installers accept only `linux/amd64` on `x86_64`/`amd64` or
 `linux/arm64` on `aarch64`/`arm64`. They use a private, per-invocation Go cache
-below the host's Runner service-root `tmp/` directory and remove that task-owned
-cache when the invocation ends. They do not remove shared caches or download a
-toolchain.
+below the host's Runner service-root `tmp/` directory and restore owner write
+permission on Go's read-only module files before removing that task-owned
+cache. The service installer preserves the immediate zero-active-work-to-restart
+boundary for an active service; the bridge removes its cache as soon as the
+build ends. They do not remove shared caches or download a toolchain.
 
 A host that is unavailable or has not been attempted is `NOT RUN`. A required
 gate that runs and fails is `FAIL`: stop, preserve the exact evidence, and do

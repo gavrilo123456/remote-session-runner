@@ -1,6 +1,8 @@
 # P157 — `sandbox-host` onboarding
 
-**Status:** IN PROGRESS. This is the separate physical-host acceptance gate for
+**Status:** IN PROGRESS after authorized remediation. The first direct mTLS
+application attempt failed and is recorded below; P157 remains unaccepted until
+all required gates pass. This is the separate physical-host acceptance gate for
 the user-supplied bootstrap alias `sandbox.env`. It does not alter the
 accepted status of `linux-host`.
 
@@ -155,3 +157,79 @@ stops P157. A host that has not reached a gate remains **NOT RUN**.
 The live `make test-p157-sandbox-host` gate has deliberately not run: the
 candidate is not yet configured, deployed, or routed. Running it earlier would
 only test the absence of the planned profile rather than a deployed P157 host.
+
+## First candidate deployment attempt and failed direct mTLS gate
+
+The P157 preparation revision was committed on the Mac as
+`2693a8091c926e66239243ad89fa1fa6648ebbbb`
+(`phase(P157): prepare sandbox host onboarding`), pushed to `origin/dev` with
+the dedicated Mac GitHub identity, then fast-forwarded from clean `dev`
+checkouts on both the existing Ubuntu host and the candidate. Each checkout,
+`origin/dev`, and the Mac checkout resolved to that exact revision before any
+candidate service installation.
+
+The candidate received independent owner-only runtime configuration, SQLite
+state path, mTLS materials, and an ARM64 Go 1.27.1 toolchain. Its service
+started as `ubuntu`, created its private socket, and listened on
+`10.0.0.14:8443`. These are service-install observations only; the bridge,
+Mac candidate configuration, router health, and mailbox request were not
+enabled or run.
+
+| Required P157 gate | Result |
+| --- | --- |
+| Candidate `runnerd.service` / private socket / `10.0.0.14:8443` listener | PASS |
+| Public direct mTLS Runner health | **FAIL** |
+| Restricted queued bridge | NOT RUN |
+| Activated Mac `sandbox-host` route and profile health | NOT RUN |
+| `make test-p157-sandbox-host` native mailbox request | NOT RUN |
+| Final zero-active-work status | NOT RUN |
+
+From the Mac, the owner-only sandbox CA, client certificate, and client key
+were supplied to the direct health request for
+`https://132.226.205.205:8443/health/ready`. It returned:
+
+```text
+curl: (56) LibreSSL SSL_read: LibreSSL/3.3.6: error:1404C418:SSL routines:ST_OK:tlsv1 alert unknown ca, errno 0
+HTTP 000
+```
+
+The candidate service journal reported that the client certificate was signed
+by an unknown authority because its signature was considered insecure:
+
+```text
+tls: failed to verify certificate: x509: certificate signed by unknown authority
+(possibly because of "x509: cannot verify signature: insecure algorithm ECDSA-SHA1"
+while trying to verify candidate authority certificate "Remote Session Runner PoC CA")
+```
+
+Public certificate metadata confirmed the newly issued candidate client and
+server leaves were signed with `ecdsa-with-SHA1`, while the already accepted
+current-host client leaf uses `ecdsa-with-SHA256`. The cause is the Mac
+LibreSSL default signing selection during first issuance. No private key
+material is recorded here.
+
+The first installer run also left its own
+`tmp/install-go-cache.*` directory after the service transition. Go had made
+the downloaded module directories read-only, so plain `rm -rf` could not clean
+that task-owned cache. The P157 remediation changes both Linux installers to
+restore owner write permission without following symbolic links and remove only
+their own cache. The service installer preserves the active service's immediate
+zero-active-work-to-restart boundary; the bridge removes its cache after its
+build. The retry will verify that no such cache remains.
+
+The user authorized the remediation after this recorded failure. It will issue
+new candidate-only SHA-256 leaves, repair the task-owned cache cleanup, and
+repeat the required gates from the direct mTLS check. This prior failure is not
+treated as a pass or hidden by the retry.
+
+### Pre-activation mailbox-test guard
+
+Before the reviewed Mac candidate configuration contained `ubuntu-sandbox`,
+the opt-in `make test-p157-sandbox-host` command was invoked twice during
+remediation source validation. Both invocations failed at the test's local
+allow-list check: the installed `analytics` mailbox only allowed `mac-local`
+and `ubuntu-current`. The test performs that check before opening a native
+mailbox client, so neither invocation published a request or ran a command on
+either Ubuntu host. This is a configuration prerequisite observation, not a
+P157 mailbox acceptance result. The controlled mailbox gate remains NOT RUN
+until the reviewed candidate configuration is activated.

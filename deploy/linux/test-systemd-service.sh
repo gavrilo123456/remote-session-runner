@@ -95,6 +95,15 @@ check_stopped() {
 	fi
 }
 
+check_no_installer_cache() {
+	leftover_cache=$(find "$tmp_root" -mindepth 1 -maxdepth 1 \
+		-name 'install-go-cache.*' \( -type d -o -type l \) -print -quit)
+	if [ -n "$leftover_cache" ]; then
+		printf 'runnerd installer left a private Go cache: %s\n' "$leftover_cache" >&2
+		return 1
+	fi
+}
+
 check_insecure_path_rejected() {
 	rejected=0
 	for attempt in $(seq 1 40); do
@@ -131,6 +140,7 @@ check_insecure_path_rejected() {
 installed=1
 (cd "$repo_root" && deploy/linux/install-systemd-service.sh)
 check_active
+check_no_installer_cache
 
 invalid_config="$service_root/config/.p126-invalid-$$.yaml"
 invalid_output="$service_root/tmp/.p126-invalid-$$.log"
