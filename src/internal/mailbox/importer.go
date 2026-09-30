@@ -18,6 +18,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/store"
 )
 
 const (
@@ -61,11 +62,25 @@ type Request struct {
 	ExecutionIdempotencyKey string
 	Operation               string
 	Environment             string
-	SessionID               string
-	CommandID               string
-	ClosePolicy             string
-	Script                  string
-	RawJSON                 []byte
+	// EnvironmentPresent and ExecutionTargetPresent retain whether the
+	// corresponding create_session or run request member appeared in the
+	// mailbox JSON. P153 needs this distinction because omitting both selects
+	// the inbox default, while supplying only one is a terminal request error.
+	EnvironmentPresent     bool
+	ExecutionTargetPresent bool
+	ExecutionTarget        domain.ExecutionTarget
+	// RepositoryAlias is optional policy and audit metadata for new-work
+	// requests. It never selects a source checkout or execution target.
+	RepositoryAlias string
+	// ExecutionSelection is trusted processor state. It is not decoded from
+	// mailbox JSON; the session processor populates it only from a resolved
+	// and durably recorded selection.
+	ExecutionSelection *store.MailboxExecutionSelection
+	SessionID          string
+	CommandID          string
+	ClosePolicy        string
+	Script             string
+	RawJSON            []byte
 }
 
 // ResultStatus describes whether a marked request passed importer validation.
@@ -309,14 +324,19 @@ func (i *Importer) validateRequest(filenameID string, raw []byte) (Request, erro
 		return Request{}, fmt.Errorf("%w: %v", ErrMailboxSchema, err)
 	}
 	var wire struct {
-		RequestID      string          `json:"request_id"`
-		IdempotencyKey string          `json:"idempotency_key"`
-		Operation      string          `json:"operation"`
-		Environment    string          `json:"environment"`
-		SessionID      string          `json:"session_id"`
-		CommandID      string          `json:"command_id"`
-		Script         string          `json:"script"`
-		ClosePolicy    json.RawMessage `json:"close_policy"`
+		RequestID       string  `json:"request_id"`
+		IdempotencyKey  string  `json:"idempotency_key"`
+		Operation       string  `json:"operation"`
+		Environment     *string `json:"environment"`
+		ExecutionTarget *struct {
+			Kind    domain.TargetKind `json:"kind"`
+			Profile string            `json:"profile"`
+		} `json:"execution_target"`
+		RepositoryAlias string          `json:"repository_alias"`
+		SessionID       string          `json:"session_id"`
+		CommandID       string          `json:"command_id"`
+		Script          string          `json:"script"`
+		ClosePolicy     json.RawMessage `json:"close_policy"`
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return Request{}, fmt.Errorf("%w: decode request: %v", ErrMailboxSchema, err)
@@ -332,6 +352,17 @@ func (i *Importer) validateRequest(filenameID string, raw []byte) (Request, erro
 			return Request{}, fmt.Errorf("%w: %v", ErrMailboxScriptTooLarge, err)
 		}
 	}
+	var target domain.ExecutionTarget
+	if wire.ExecutionTarget != nil {
+		target, err = domain.NewExecutionTarget(wire.ExecutionTarget.Kind, wire.ExecutionTarget.Profile)
+		if err != nil {
+			return Request{}, fmt.Errorf("%w: execution_target: %v", ErrMailboxSchema, err)
+		}
+	}
+	environment := ""
+	if wire.Environment != nil {
+		environment = *wire.Environment
+	}
 	closePolicy := ""
 	if wire.Operation == "close_session" {
 		closePolicy, err = parseClosePolicy(wire.ClosePolicy)
@@ -339,7 +370,22 @@ func (i *Importer) validateRequest(filenameID string, raw []byte) (Request, erro
 			return Request{}, fmt.Errorf("%w: close_policy: %v", ErrMailboxSchema, err)
 		}
 	}
-	return Request{MailboxID: i.mailboxID, RequestID: wire.RequestID, IdempotencyKey: wire.IdempotencyKey, Operation: wire.Operation, Environment: wire.Environment, SessionID: wire.SessionID, CommandID: wire.CommandID, ClosePolicy: closePolicy, Script: wire.Script, RawJSON: append([]byte(nil), raw...)}, nil
+	return Request{
+		MailboxID:              i.mailboxID,
+		RequestID:              wire.RequestID,
+		IdempotencyKey:         wire.IdempotencyKey,
+		Operation:              wire.Operation,
+		Environment:            environment,
+		EnvironmentPresent:     wire.Environment != nil,
+		ExecutionTarget:        target,
+		ExecutionTargetPresent: wire.ExecutionTarget != nil,
+		RepositoryAlias:        wire.RepositoryAlias,
+		SessionID:              wire.SessionID,
+		CommandID:              wire.CommandID,
+		ClosePolicy:            closePolicy,
+		Script:                 wire.Script,
+		RawJSON:                append([]byte(nil), raw...),
+	}, nil
 }
 
 func parseClosePolicy(raw json.RawMessage) (string, error) {

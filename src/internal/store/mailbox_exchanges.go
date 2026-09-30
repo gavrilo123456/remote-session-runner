@@ -26,6 +26,25 @@ var (
 const (
 	MailboxAckedResponseLifetime   = 24 * time.Hour
 	MailboxUnackedResponseLifetime = 7 * 24 * time.Hour
+
+	// MailboxExecutionSelectionInboxDefault identifies a selection supplied by
+	// the trusted configured mailbox default.
+	MailboxExecutionSelectionInboxDefault = "inbox_default"
+	// MailboxExecutionSelectionRequestOverride identifies a complete client
+	// selection that passed the mailbox allow-list.
+	MailboxExecutionSelectionRequestOverride = "request_override"
+)
+
+// MailboxExecutionSelectionState records whether a new-work receipt has
+// trusted P153 selection provenance. Legacy marks rows that existed before
+// P153 added this state; it must never be used to represent a newly rejected
+// P153 request.
+type MailboxExecutionSelectionState string
+
+const (
+	MailboxExecutionSelectionLegacy   MailboxExecutionSelectionState = "legacy"
+	MailboxExecutionSelectionResolved MailboxExecutionSelectionState = "resolved"
+	MailboxExecutionSelectionRejected MailboxExecutionSelectionState = "rejected"
 )
 
 // MailboxExchangeState is the durable file-exchange lifecycle. P082 persists
@@ -39,6 +58,22 @@ const (
 	MailboxExchangeRejected      MailboxExchangeState = "rejected"
 	MailboxExchangeIndeterminate MailboxExchangeState = "indeterminate"
 )
+
+// MailboxExecutionSelection is the trusted, immutable new-work decision made
+// by the mailbox processor before it creates a local intent. It is persisted
+// with the exchange so retained retries and later configuration edits cannot
+// change the effective target of accepted work.
+//
+// Repository fields are labels only. They never contain a source path or
+// cause source materialization.
+type MailboxExecutionSelection struct {
+	ContextName       string
+	Environment       string
+	Target            domain.ExecutionTarget
+	Source            string
+	RepositoryAlias   string
+	RepositoryAliases []string
+}
 
 // MailboxExchangeCreate contains the immutable receipt binding. CanonicalPayload
 // must exclude request_id and idempotency_key for mutation retries.
@@ -56,6 +91,11 @@ type MailboxExchangeCreate struct {
 	RequestHash             domain.CanonicalHash
 	CanonicalPayload        []byte
 	ResourceID              string
+	// Selection is present only for a successfully resolved create_session or
+	// run request. Nil preserves compatibility with legacy exchanges and
+	// non-new-work operations.
+	Selection      *MailboxExecutionSelection
+	SelectionState MailboxExecutionSelectionState
 }
 
 // MailboxExchangeRecord is the durable request receipt, current response, and
@@ -73,6 +113,8 @@ type MailboxExchangeRecord struct {
 	RequestHash              domain.CanonicalHash
 	CanonicalPayload         []byte
 	ResourceID               string
+	Selection                *MailboxExecutionSelection
+	SelectionState           MailboxExecutionSelectionState
 	State                    MailboxExchangeState
 	ResponseRevision         int64
 	ResponseBytes            []byte
@@ -183,6 +225,10 @@ func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input Mailbo
 						return readMailboxExchangeOnConnection(ctx, connection, validated.MailboxExchangeRef())
 					}
 					validated.ResourceID = existing.ResourceID
+					// The original acceptance owns the selection snapshot. A retry
+					// must not obtain a newer default or alter the selection source.
+					validated.Selection = cloneMailboxExecutionSelection(existing.Selection)
+					validated.SelectionState = existing.SelectionState
 					if refreshDuplicate {
 						// The session processor creates a new response snapshot and asks
 						// its operation adapter for the original resource's current view.
@@ -289,6 +335,44 @@ func (s *AuthorityStore) GetMailboxExchangeInMailbox(ctx context.Context, ref Ma
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
 		return readMailboxExchangeOnConnection(ctx, connection, validated)
 	})
+}
+
+// FindActiveMailboxExchangeByKeyInMailbox returns the unexpired, active
+// idempotency binding for one mailbox/controller/operation/key tuple. It is
+// used before canonicalizing an omitted mailbox execution selection so a
+// retained retry keeps the target that was accepted originally.
+func (s *AuthorityStore) FindActiveMailboxExchangeByKeyInMailbox(ctx context.Context, mailboxID string, controller domain.ControllerIdentity, operation, key string) (MailboxExchangeRecord, bool, error) {
+	if err := validateMailboxID(mailboxID); err != nil {
+		return MailboxExchangeRecord{}, false, err
+	}
+	validatedController, err := validateController(controller)
+	if err != nil {
+		return MailboxExchangeRecord{}, false, fmt.Errorf("%w: controller: %v", ErrMailboxExchangeInvalid, err)
+	}
+	if operation == "" || len(operation) > 128 || strings.IndexByte(operation, 0) >= 0 {
+		return MailboxExchangeRecord{}, false, fmt.Errorf("%w: operation", ErrMailboxExchangeInvalid)
+	}
+	if key == "" || len(key) > 256 || strings.IndexByte(key, 0) >= 0 {
+		return MailboxExchangeRecord{}, false, fmt.Errorf("%w: idempotency key", ErrMailboxExchangeInvalid)
+	}
+	now := s.now().UTC()
+	record, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+		record, found, err := readLatestMailboxExchangeByKeyOnConnection(ctx, connection, mailboxID, validatedController, operation, key)
+		if err != nil || !found {
+			return record, err
+		}
+		if !record.IdempotencyBindingActive || record.IdempotencyKeyExpiresAt == nil || !now.Before(*record.IdempotencyKeyExpiresAt) {
+			return MailboxExchangeRecord{}, nil
+		}
+		return record, nil
+	})
+	if err != nil {
+		return MailboxExchangeRecord{}, false, err
+	}
+	if record.ExchangeID == "" {
+		return MailboxExchangeRecord{}, false, nil
+	}
+	return record, true, nil
 }
 
 // ListMailboxExchanges returns mailbox exchanges for one controller and
@@ -584,7 +668,111 @@ func validateMailboxExchangeCreate(input MailboxExchangeCreate) (validatedMailbo
 	if input.ResourceID != "" && (len(input.ResourceID) > 256 || strings.IndexByte(input.ResourceID, 0) >= 0) {
 		return validatedMailboxExchangeCreate{}, fmt.Errorf("%w: resource ID", ErrMailboxExchangeInvalid)
 	}
-	return validatedMailboxExchangeCreate{MailboxExchangeCreate: MailboxExchangeCreate{MailboxID: ref.MailboxID, RequestID: ref.ClientRequestID, Operation: input.Operation, Controller: controller, IdempotencyKey: input.IdempotencyKey, ExecutionIdempotencyKey: executionKey, RequestHash: hash, CanonicalPayload: append([]byte(nil), input.CanonicalPayload...), ResourceID: input.ResourceID}}, nil
+	selection, err := validateMailboxExecutionSelection(input.Operation, input.Selection)
+	if err != nil {
+		return validatedMailboxExchangeCreate{}, err
+	}
+	selectionState, err := validateMailboxExecutionSelectionState(input.Operation, selection, input.SelectionState)
+	if err != nil {
+		return validatedMailboxExchangeCreate{}, err
+	}
+	return validatedMailboxExchangeCreate{MailboxExchangeCreate: MailboxExchangeCreate{MailboxID: ref.MailboxID, RequestID: ref.ClientRequestID, Operation: input.Operation, Controller: controller, IdempotencyKey: input.IdempotencyKey, ExecutionIdempotencyKey: executionKey, RequestHash: hash, CanonicalPayload: append([]byte(nil), input.CanonicalPayload...), ResourceID: input.ResourceID, Selection: selection, SelectionState: selectionState}}, nil
+}
+
+func validateMailboxExecutionSelection(operation string, input *MailboxExecutionSelection) (*MailboxExecutionSelection, error) {
+	if input == nil {
+		return nil, nil
+	}
+	if operation != "create_session" && operation != "run" {
+		return nil, fmt.Errorf("%w: mailbox execution selection is only valid for new work", ErrMailboxExchangeInvalid)
+	}
+	if !validMailboxSelectionName(input.ContextName) || !validMailboxSelectionName(input.Environment) ||
+		!validMailboxSelectionName(input.Target.Profile()) {
+		return nil, fmt.Errorf("%w: mailbox execution selection identity", ErrMailboxExchangeInvalid)
+	}
+	target, err := domain.NewExecutionTarget(input.Target.Kind(), input.Target.Profile())
+	if err != nil {
+		return nil, fmt.Errorf("%w: mailbox execution selection target", ErrMailboxExchangeInvalid)
+	}
+	if input.Source != MailboxExecutionSelectionInboxDefault && input.Source != MailboxExecutionSelectionRequestOverride {
+		return nil, fmt.Errorf("%w: mailbox execution selection source", ErrMailboxExchangeInvalid)
+	}
+	aliases := make([]string, 0, len(input.RepositoryAliases))
+	seen := make(map[string]struct{}, len(input.RepositoryAliases))
+	for _, alias := range input.RepositoryAliases {
+		if !validMailboxSelectionName(alias) {
+			return nil, fmt.Errorf("%w: mailbox repository alias", ErrMailboxExchangeInvalid)
+		}
+		if _, exists := seen[alias]; exists {
+			return nil, fmt.Errorf("%w: duplicate mailbox repository alias", ErrMailboxExchangeInvalid)
+		}
+		seen[alias] = struct{}{}
+		aliases = append(aliases, alias)
+	}
+	if input.RepositoryAlias != "" {
+		if !validMailboxSelectionName(input.RepositoryAlias) {
+			return nil, fmt.Errorf("%w: selected mailbox repository alias", ErrMailboxExchangeInvalid)
+		}
+		if _, exists := seen[input.RepositoryAlias]; !exists {
+			return nil, fmt.Errorf("%w: selected repository alias is outside mailbox scope", ErrMailboxExchangeInvalid)
+		}
+	}
+	return &MailboxExecutionSelection{
+		ContextName: input.ContextName, Environment: input.Environment, Target: target,
+		Source: input.Source, RepositoryAlias: input.RepositoryAlias, RepositoryAliases: aliases,
+	}, nil
+}
+
+func validateMailboxExecutionSelectionState(operation string, selection *MailboxExecutionSelection, state MailboxExecutionSelectionState) (MailboxExecutionSelectionState, error) {
+	if state == "" {
+		if selection != nil {
+			state = MailboxExecutionSelectionResolved
+		} else {
+			// Keep the pre-P153 store API compatible. The mailbox processor always
+			// supplies an explicit state for new P153 work.
+			state = MailboxExecutionSelectionLegacy
+		}
+	}
+	newWork := operation == "create_session" || operation == "run"
+	switch state {
+	case MailboxExecutionSelectionLegacy:
+		if selection != nil {
+			return "", fmt.Errorf("%w: legacy mailbox selection must be absent", ErrMailboxExchangeInvalid)
+		}
+	case MailboxExecutionSelectionResolved:
+		if !newWork || selection == nil {
+			return "", fmt.Errorf("%w: resolved mailbox selection requires new work", ErrMailboxExchangeInvalid)
+		}
+	case MailboxExecutionSelectionRejected:
+		if !newWork || selection != nil {
+			return "", fmt.Errorf("%w: rejected mailbox selection requires selection-free new work", ErrMailboxExchangeInvalid)
+		}
+	default:
+		return "", fmt.Errorf("%w: mailbox selection state", ErrMailboxExchangeInvalid)
+	}
+	return state, nil
+}
+
+func validMailboxSelectionName(value string) bool {
+	if len(value) == 0 || len(value) > 63 {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9' && index > 0) || (character == '-' && index > 0) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func cloneMailboxExecutionSelection(input *MailboxExecutionSelection) *MailboxExecutionSelection {
+	if input == nil {
+		return nil
+	}
+	clone := *input
+	clone.RepositoryAliases = append([]string(nil), input.RepositoryAliases...)
+	return &clone
 }
 
 type validatedMailboxExchangeCreate struct {
@@ -619,18 +807,27 @@ func sameMailboxBinding(existing MailboxExchangeRecord, input validatedMailboxEx
 }
 
 func insertMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, input validatedMailboxExchangeCreate) error {
-	_, err := connection.ExecContext(ctx, `
+	selectionValues, err := mailboxExecutionSelectionValues(input.Operation, input.Selection)
+	if err != nil {
+		return err
+	}
+	_, err = connection.ExecContext(ctx, `
 	INSERT INTO mailbox_exchanges (
 	    exchange_id, mailbox_id, client_request_id, operation, controller_type, controller_id, client_idempotency_key, execution_idempotency_key,
 	    canonical_hash_version, canonical_hash, canonical_payload, resource_id,
+	    resolved_execution_context, resolved_environment, resolved_target_kind, resolved_target_profile,
+	    execution_selection_source, execution_selection_state, repository_alias, repository_aliases_json,
     request_state, response_revision, terminal_response_bytes,
     terminal_response_sha256, available_event_sequence, response_bytes,
     response_sha256, response_cleanup_at, response_cleanup_started_at,
     response_file_removed_at, idempotency_key_expires_at,
     idempotency_binding_active, deduplication_warning, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, mailboxExchangeID(input.MailboxExchangeRef()), input.MailboxID, input.RequestID, input.Operation, string(input.Controller.Type()), string(input.Controller.ID()), input.IdempotencyKey, input.ExecutionIdempotencyKey,
-		input.RequestHash.Version(), input.RequestHash.SHA256(), input.CanonicalPayload, input.ResourceID, string(input.State), input.ResponseRevision,
+		input.RequestHash.Version(), input.RequestHash.SHA256(), input.CanonicalPayload, input.ResourceID,
+		selectionValues.contextName, selectionValues.environment, selectionValues.targetKind, selectionValues.targetProfile,
+		selectionValues.source, string(input.SelectionState), selectionValues.repositoryAlias, selectionValues.repositoryAliasesJSON,
+		string(input.State), input.ResponseRevision,
 		nullableBytes(input.TerminalResponseBytes), nullableBytes(input.TerminalResponseSHA256), input.AvailableEventSequence,
 		nullableBytes(input.ResponseBytes), nullableBytes(input.ResponseSHA256), nil, nil, nil,
 		storedTimePointer(input.IdempotencyKeyExpiresAt), input.IdempotencyBindingActive, input.DeduplicationWarning,
@@ -639,6 +836,69 @@ func insertMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn
 		return fmt.Errorf("insert mailbox exchange: %w", err)
 	}
 	return nil
+}
+
+type mailboxExecutionSelectionSQLValues struct {
+	contextName           string
+	environment           string
+	targetKind            string
+	targetProfile         string
+	source                string
+	repositoryAlias       string
+	repositoryAliasesJSON string
+}
+
+func mailboxExecutionSelectionValues(operation string, selection *MailboxExecutionSelection) (mailboxExecutionSelectionSQLValues, error) {
+	if selection == nil {
+		return mailboxExecutionSelectionSQLValues{repositoryAliasesJSON: "[]"}, nil
+	}
+	validated, err := validateMailboxExecutionSelection(operation, selection)
+	if err != nil {
+		return mailboxExecutionSelectionSQLValues{}, err
+	}
+	aliases, err := json.Marshal(validated.RepositoryAliases)
+	if err != nil {
+		return mailboxExecutionSelectionSQLValues{}, fmt.Errorf("%w: encode mailbox repository aliases", ErrMailboxExchangeInvalid)
+	}
+	return mailboxExecutionSelectionSQLValues{
+		contextName:           validated.ContextName,
+		environment:           validated.Environment,
+		targetKind:            string(validated.Target.Kind()),
+		targetProfile:         validated.Target.Profile(),
+		source:                validated.Source,
+		repositoryAlias:       validated.RepositoryAlias,
+		repositoryAliasesJSON: string(aliases),
+	}, nil
+}
+
+func mailboxExecutionSelectionFromStorage(operation, contextName, environment, targetKind, targetProfile, source, repositoryAlias, repositoryAliasesJSON string) (*MailboxExecutionSelection, error) {
+	hasSelection := contextName != "" || environment != "" || targetKind != "" || targetProfile != "" || source != ""
+	var aliases []string
+	if err := json.Unmarshal([]byte(repositoryAliasesJSON), &aliases); err != nil || aliases == nil {
+		return nil, fmt.Errorf("%w: mailbox repository aliases", ErrMailboxExchangeInvalid)
+	}
+	if !hasSelection {
+		if repositoryAlias != "" || len(aliases) != 0 {
+			return nil, fmt.Errorf("%w: incomplete mailbox execution selection", ErrMailboxExchangeInvalid)
+		}
+		return nil, nil
+	}
+	target, err := domain.NewExecutionTarget(domain.TargetKind(targetKind), targetProfile)
+	if err != nil {
+		return nil, fmt.Errorf("%w: mailbox execution selection target", ErrMailboxExchangeInvalid)
+	}
+	selection, err := validateMailboxExecutionSelection(operation, &MailboxExecutionSelection{
+		ContextName:       contextName,
+		Environment:       environment,
+		Target:            target,
+		Source:            source,
+		RepositoryAlias:   repositoryAlias,
+		RepositoryAliases: aliases,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return selection, nil
 }
 
 func storedTimePointer(value *time.Time) any {
@@ -692,6 +952,7 @@ func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, 
 	}
 	var record MailboxExchangeRecord
 	var controllerType, controllerID, operation, key, executionKey, payload, resourceID, state, createdAt, updatedAt string
+	var selectionContext, selectionEnvironment, selectionTargetKind, selectionTargetProfile, selectionSource, selectionState, selectionRepositoryAlias, selectionRepositoryAliasesJSON string
 	var version int
 	var digest []byte
 	var terminalBytes, terminalHash, responseBytes, responseHash []byte
@@ -703,6 +964,8 @@ func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, 
 	SELECT exchange_id, mailbox_id, client_request_id, operation, controller_type, controller_id,
          client_idempotency_key, execution_idempotency_key,
          canonical_hash_version, canonical_hash, canonical_payload, resource_id,
+	       resolved_execution_context, resolved_environment, resolved_target_kind, resolved_target_profile,
+	       execution_selection_source, execution_selection_state, repository_alias, repository_aliases_json,
        request_state, response_revision, terminal_response_bytes,
        terminal_response_sha256, available_event_sequence, response_bytes,
        response_sha256, acknowledged_at, response_cleanup_at,
@@ -714,7 +977,7 @@ func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, 
        ),
        created_at, updated_at
 FROM mailbox_exchanges WHERE exchange_id = ?
-`, mailboxExchangeID(validated)).Scan(&record.ExchangeID, &record.MailboxID, &record.RequestID, &operation, &controllerType, &controllerID, &key, &executionKey, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &responseCleanupAt, &responseCleanupStartedAt, &responseFileRemovedAt, &idempotencyKeyExpiresAt, &idempotencyBindingActive, &deduplicationWarning, &eventFileCommandID, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+	`, mailboxExchangeID(validated)).Scan(&record.ExchangeID, &record.MailboxID, &record.RequestID, &operation, &controllerType, &controllerID, &key, &executionKey, &version, &digest, &payload, &resourceID, &selectionContext, &selectionEnvironment, &selectionTargetKind, &selectionTargetProfile, &selectionSource, &selectionState, &selectionRepositoryAlias, &selectionRepositoryAliasesJSON, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &responseCleanupAt, &responseCleanupStartedAt, &responseFileRemovedAt, &idempotencyKeyExpiresAt, &idempotencyBindingActive, &deduplicationWarning, &eventFileCommandID, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return MailboxExchangeRecord{}, ErrMailboxExchangeNotFound
 	} else if err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("read mailbox exchange: %w", err)
@@ -736,6 +999,15 @@ FROM mailbox_exchanges WHERE exchange_id = ?
 	if record.ResponseRevision < 0 {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: response revision", ErrMailboxExchangeInvalid)
 	}
+	selection, err := mailboxExecutionSelectionFromStorage(operation, selectionContext, selectionEnvironment, selectionTargetKind, selectionTargetProfile, selectionSource, selectionRepositoryAlias, selectionRepositoryAliasesJSON)
+	if err != nil {
+		return MailboxExchangeRecord{}, err
+	}
+	record.SelectionState, err = validateMailboxExecutionSelectionState(operation, selection, MailboxExecutionSelectionState(selectionState))
+	if err != nil {
+		return MailboxExchangeRecord{}, err
+	}
+	record.Selection = selection
 	if len(responseBytes) > 0 {
 		if len(responseHash) != sha256.Size || !bytesEqual(responseHash, sha256Bytes(responseBytes)) {
 			return MailboxExchangeRecord{}, fmt.Errorf("%w: response hash", ErrMailboxResponseInvalid)

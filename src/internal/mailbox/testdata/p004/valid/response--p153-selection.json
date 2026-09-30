@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "name": "selected run response adds inbox and resolved target",
+      "document": {
+        "inbox_id": "analytics",
+        "request_id": "req-p153-run",
+        "operation": "run",
+        "request_state": "accepted",
+        "response_revision": 1,
+        "job_id": "job-p153",
+        "session_id": "sess-p153",
+        "command_id": "cmd-p153",
+        "delivery_state": "recorded",
+        "execution_selection_source": "inbox_default",
+        "resolved_environment": "linux-dev",
+        "resolved_execution_target": {"kind": "remote", "profile": "linux-host"}
+      }
+    },
+    {
+      "name": "selected create response accepts request override metadata",
+      "document": {
+        "inbox_id": "default",
+        "request_id": "req-p153-create",
+        "operation": "create_session",
+        "request_state": "accepted",
+        "response_revision": 1,
+        "session_id": "sess-p153",
+        "delivery_state": "recorded",
+        "execution_selection_source": "request_override",
+        "resolved_environment": "mac-dev",
+        "resolved_execution_target": {"kind": "local", "profile": "mac-workstation"}
+      }
+    }
+  ]
+}

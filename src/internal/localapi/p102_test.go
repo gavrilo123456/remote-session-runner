@@ -39,7 +39,7 @@ func newP102Harness(t *testing.T) *p102Harness {
 	}
 	processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
 		Importer: importer, Authority: authority, Controller: p063Owner(t), Operations: server,
-		Outbox: outbox, EventFiles: eventFiles,
+		Outbox: outbox, EventFiles: eventFiles, ExecutionResolver: testMailboxExecutionResolver{},
 	})
 	if err != nil {
 		t.Fatal(err)

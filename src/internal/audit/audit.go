@@ -62,22 +62,113 @@ const (
 	ReasonRuntimeCleanupUnconfirmed = "runtime_cleanup_unconfirmed"
 )
 
+const (
+	// MailboxSelectionSourceInboxDefault identifies a context selected from an
+	// inbox's configured default.
+	MailboxSelectionSourceInboxDefault = "inbox_default"
+	// MailboxSelectionSourceRequestOverride identifies a complete context pair
+	// supplied by the mailbox request.
+	MailboxSelectionSourceRequestOverride = "request_override"
+)
+
 var ErrInvalidRecord = errors.New("invalid audit record")
 
 // Record contains only identifiers and bounded policy metadata. It has no
 // fields for request bodies, scripts, output, keys, certificates, or secrets.
 type Record struct {
-	ID          int64
-	Principal   domain.ControllerIdentity
-	Ingress     Ingress
-	Environment string
-	SessionID   domain.SessionID
-	CommandID   domain.CommandID
-	JobID       domain.JobID
-	Action      Action
-	Outcome     Outcome
-	ReasonCode  string
-	OccurredAt  time.Time
+	ID               int64
+	Principal        domain.ControllerIdentity
+	Ingress          Ingress
+	Environment      string
+	SessionID        domain.SessionID
+	CommandID        domain.CommandID
+	JobID            domain.JobID
+	Action           Action
+	Outcome          Outcome
+	ReasonCode       string
+	MailboxSelection *MailboxSelection
+	OccurredAt       time.Time
+}
+
+// MailboxSelection is the bounded routing decision attached to an allowed
+// mailbox create or run action. It contains policy metadata only: it has no
+// source path, checkout content, request body, script, output, or credential.
+//
+// Source is one of MailboxSelectionSourceInboxDefault and
+// MailboxSelectionSourceRequestOverride. RepositoryAlias is optional, while
+// RepositoryAliases records the configured scope at acceptance time.
+type MailboxSelection struct {
+	InboxID           string
+	ContextName       string
+	Environment       string
+	TargetKind        domain.TargetKind
+	TargetProfile     string
+	Source            string
+	RepositoryAlias   string
+	RepositoryAliases []string
+}
+
+// CloneMailboxSelection returns a copy safe to retain independently of a
+// caller-owned repository-scope slice. Nil remains nil.
+func CloneMailboxSelection(input *MailboxSelection) *MailboxSelection {
+	if input == nil {
+		return nil
+	}
+	clone := *input
+	clone.RepositoryAliases = append([]string(nil), input.RepositoryAliases...)
+	return &clone
+}
+
+// Validate checks that a mailbox selection contains only bounded policy
+// metadata. It deliberately permits an empty repository scope, which is how
+// the legacy default inbox is represented.
+func (selection MailboxSelection) Validate() error {
+	if !validMailboxSelectionName(selection.InboxID) ||
+		!validMailboxSelectionName(selection.ContextName) ||
+		!validMailboxSelectionName(selection.Environment) ||
+		!validMailboxSelectionName(selection.TargetProfile) {
+		return fmt.Errorf("%w: mailbox selection identity", ErrInvalidRecord)
+	}
+	if _, err := domain.NewExecutionTarget(selection.TargetKind, selection.TargetProfile); err != nil {
+		return fmt.Errorf("%w: mailbox selection target", ErrInvalidRecord)
+	}
+	if selection.Source != MailboxSelectionSourceInboxDefault && selection.Source != MailboxSelectionSourceRequestOverride {
+		return fmt.Errorf("%w: mailbox selection source", ErrInvalidRecord)
+	}
+	aliases := make(map[string]struct{}, len(selection.RepositoryAliases))
+	for _, alias := range selection.RepositoryAliases {
+		if !validMailboxSelectionName(alias) {
+			return fmt.Errorf("%w: mailbox repository alias", ErrInvalidRecord)
+		}
+		if _, exists := aliases[alias]; exists {
+			return fmt.Errorf("%w: duplicate mailbox repository alias", ErrInvalidRecord)
+		}
+		aliases[alias] = struct{}{}
+	}
+	if selection.RepositoryAlias != "" {
+		if !validMailboxSelectionName(selection.RepositoryAlias) {
+			return fmt.Errorf("%w: selected mailbox repository alias", ErrInvalidRecord)
+		}
+		if _, exists := aliases[selection.RepositoryAlias]; !exists {
+			return fmt.Errorf("%w: selected repository alias is outside mailbox scope", ErrInvalidRecord)
+		}
+	}
+	return nil
+}
+
+func validMailboxSelectionName(value string) bool {
+	if len(value) == 0 || len(value) > 63 {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= '0' && character <= '9' && index > 0) ||
+			(character == '-' && index > 0) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // WithIngress marks a context at a trusted server-side adapter boundary.
@@ -199,6 +290,18 @@ func (record Record) Validate() error {
 	if record.OccurredAt.IsZero() {
 		return fmt.Errorf("%w: timestamp", ErrInvalidRecord)
 	}
+	if record.MailboxSelection != nil {
+		if record.Ingress != IngressMailbox || record.Outcome != OutcomeAllowed ||
+			(record.Action != ActionCreate && record.Action != ActionRun) {
+			return fmt.Errorf("%w: mailbox selection only applies to allowed mailbox create or run", ErrInvalidRecord)
+		}
+		if err := record.MailboxSelection.Validate(); err != nil {
+			return err
+		}
+		if record.Environment != record.MailboxSelection.Environment {
+			return fmt.Errorf("%w: mailbox selection environment", ErrInvalidRecord)
+		}
+	}
 	return nil
 }
 
@@ -209,7 +312,7 @@ func Log(ctx context.Context, record Record) {
 	if record.Action == ActionRuntimeCleanup {
 		level, message = slog.LevelError, "runner runtime cleanup failure"
 	}
-	slog.Default().Log(ctx, level, message,
+	attributes := []any{
 		"record_id", record.ID,
 		"action", string(record.Action),
 		"principal_type", string(record.Principal.Type()),
@@ -222,5 +325,18 @@ func Log(ctx context.Context, record Record) {
 		"outcome", string(record.Outcome),
 		"reason_code", record.ReasonCode,
 		"occurred_at", record.OccurredAt.UTC().Format(time.RFC3339Nano),
-	)
+	}
+	if record.MailboxSelection != nil {
+		selection := record.MailboxSelection
+		attributes = append(attributes,
+			"mailbox_id", selection.InboxID,
+			"execution_context", selection.ContextName,
+			"execution_selection_source", selection.Source,
+			"resolved_target_kind", string(selection.TargetKind),
+			"resolved_target_profile", selection.TargetProfile,
+			"repository_alias", selection.RepositoryAlias,
+			"repository_aliases", append([]string(nil), selection.RepositoryAliases...),
+		)
+	}
+	slog.Default().Log(ctx, level, message, attributes...)
 }

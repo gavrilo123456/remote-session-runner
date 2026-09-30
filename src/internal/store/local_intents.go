@@ -70,6 +70,11 @@ type LocalIntentCreate struct {
 	LeaseOwner           string
 	LeaseExpiresAt       *time.Time
 	AttemptCount         int
+	// MailboxSelection is copied only into the allowed audit row written with
+	// this local-intent acceptance. It is not part of the execution payload or
+	// local-intent schema; the mailbox exchange is the durable selection
+	// snapshot for retry and replay decisions.
+	MailboxSelection *audit.MailboxSelection
 }
 
 // LocalIntentRecord is a durable local-intent snapshot. PayloadJSON and
@@ -137,6 +142,7 @@ func (s *AuthorityStore) AcceptLocalIntent(ctx context.Context, input LocalInten
 		entry.SessionID = validated.SessionID
 		entry.CommandID = validated.CommandID
 		entry.JobID = validated.JobID
+		entry.MailboxSelection = audit.CloneMailboxSelection(validated.MailboxSelection)
 		actionAudit = &entry
 	}
 	now := s.now().UTC()
@@ -909,6 +915,20 @@ func validateLocalIntentCreate(input LocalIntentCreate) (LocalIntentCreate, erro
 	validated.Target, err = domain.NewExecutionTarget(input.Target.Kind(), input.Target.Profile())
 	if err != nil {
 		return LocalIntentCreate{}, fmt.Errorf("%w: target: %v", ErrInvalidLocalIntent, err)
+	}
+	if input.MailboxSelection != nil {
+		if input.Operation != localIntentCreateSessionOperation && input.Operation != localIntentRunOperation {
+			return LocalIntentCreate{}, fmt.Errorf("%w: mailbox selection only applies to create_session or run", ErrInvalidLocalIntent)
+		}
+		if err := input.MailboxSelection.Validate(); err != nil {
+			return LocalIntentCreate{}, fmt.Errorf("%w: mailbox selection: %v", ErrInvalidLocalIntent, err)
+		}
+		if input.MailboxSelection.Environment != validated.Environment ||
+			input.MailboxSelection.TargetKind != validated.Target.Kind() ||
+			input.MailboxSelection.TargetProfile != validated.Target.Profile() {
+			return LocalIntentCreate{}, fmt.Errorf("%w: mailbox selection differs from local intent", ErrInvalidLocalIntent)
+		}
+		validated.MailboxSelection = audit.CloneMailboxSelection(input.MailboxSelection)
 	}
 	validated.Controller, err = validateController(input.Controller)
 	if err != nil {

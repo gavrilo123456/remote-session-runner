@@ -56,7 +56,7 @@ func p099NewProcessor(t *testing.T, h *p095Harness, operations mailbox.SessionOp
 	t.Helper()
 	processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
 		Importer: h.importer, Authority: h.authority, Controller: p063Owner(t), Operations: operations,
-		Outbox: h.outbox, EventFiles: h.eventFiles,
+		Outbox: h.outbox, EventFiles: h.eventFiles, ExecutionResolver: testMailboxExecutionResolver{},
 	})
 	if err != nil {
 		t.Fatal(err)

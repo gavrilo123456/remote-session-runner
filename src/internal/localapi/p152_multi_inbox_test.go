@@ -249,7 +249,7 @@ func p152NewMailboxRuntime(t *testing.T, authority *store.AuthorityStore, server
 	}
 	processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
 		MailboxID: mailboxID, Importer: importer, Authority: authority, Controller: owner,
-		Operations: server, Outbox: outbox, EventFiles: events,
+		Operations: server, Outbox: outbox, EventFiles: events, ExecutionResolver: testMailboxExecutionResolver{},
 	})
 	if err != nil {
 		t.Fatal(err)

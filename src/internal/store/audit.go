@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"remote-session-runner/src/internal/audit"
@@ -38,7 +39,10 @@ func (s *AuthorityStore) ListAuditRecords(ctx context.Context, limit int) ([]aud
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, principal_type, principal_id, ingress, environment, session_id, command_id, job_id,
-       action, outcome, reason_code, occurred_at
+       action, outcome, reason_code, occurred_at,
+       mailbox_id, execution_context, execution_selection_source,
+       resolved_target_kind, resolved_target_profile, repository_alias,
+       repository_aliases_json
 FROM runner_audit_records
 ORDER BY id DESC LIMIT ?
 `, limit)
@@ -54,8 +58,14 @@ ORDER BY id DESC LIMIT ?
 		var record audit.Record
 		var principalType, principalID, ingress, action, outcome, reasonCode, occurredAt string
 		var environment, sessionID, commandID, jobID sql.NullString
+		var mailboxID, executionContext, selectionSource sql.NullString
+		var resolvedTargetKind, resolvedTargetProfile sql.NullString
+		var repositoryAlias, repositoryAliasesJSON sql.NullString
 		if err := rows.Scan(&record.ID, &principalType, &principalID, &ingress, &environment, &sessionID, &commandID, &jobID,
-			&action, &outcome, &reasonCode, &occurredAt); err != nil {
+			&action, &outcome, &reasonCode, &occurredAt,
+			&mailboxID, &executionContext, &selectionSource,
+			&resolvedTargetKind, &resolvedTargetProfile, &repositoryAlias,
+			&repositoryAliasesJSON); err != nil {
 			return nil, fmt.Errorf("scan audit record: %w", err)
 		}
 		controllerID, err := domain.NewControllerID(principalID)
@@ -91,6 +101,21 @@ ORDER BY id DESC LIMIT ?
 				return nil, fmt.Errorf("decode audit job ID: %w", err)
 			}
 		}
+		record.MailboxSelection, err = decodeAuditMailboxSelection(
+			mailboxID,
+			executionContext,
+			selectionSource,
+			resolvedTargetKind,
+			resolvedTargetProfile,
+			repositoryAlias,
+			repositoryAliasesJSON,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if record.MailboxSelection != nil {
+			record.MailboxSelection.Environment = record.Environment
+		}
 		record.OccurredAt, err = parseStoredTime(occurredAt)
 		if err != nil {
 			return nil, fmt.Errorf("decode audit timestamp: %w", err)
@@ -116,6 +141,7 @@ func insertAuditOnConnection(ctx context.Context, connection *sql.Conn, record a
 	if err := record.Validate(); err != nil {
 		return audit.Record{}, err
 	}
+	record.MailboxSelection = audit.CloneMailboxSelection(record.MailboxSelection)
 	var environment, sessionID, commandID, jobID any
 	if record.Environment != "" {
 		environment = record.Environment
@@ -129,13 +155,23 @@ func insertAuditOnConnection(ctx context.Context, connection *sql.Conn, record a
 	if record.JobID != "" {
 		jobID = string(record.JobID)
 	}
+	selectionValues, err := auditMailboxSelectionSQLValuesFor(record.MailboxSelection)
+	if err != nil {
+		return audit.Record{}, err
+	}
 	result, err := connection.ExecContext(ctx, `
 INSERT INTO runner_audit_records (
     principal_type, principal_id, ingress, environment, session_id, command_id, job_id,
-    action, outcome, reason_code, occurred_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    action, outcome, reason_code, occurred_at,
+    mailbox_id, execution_context, execution_selection_source,
+    resolved_target_kind, resolved_target_profile, repository_alias,
+    repository_aliases_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, string(record.Principal.Type()), string(record.Principal.ID()), string(record.Ingress), environment,
-		sessionID, commandID, jobID, string(record.Action), string(record.Outcome), record.ReasonCode, formatStoredTime(record.OccurredAt.UTC()))
+		sessionID, commandID, jobID, string(record.Action), string(record.Outcome), record.ReasonCode, formatStoredTime(record.OccurredAt.UTC()),
+		selectionValues.mailboxID, selectionValues.executionContext, selectionValues.selectionSource,
+		selectionValues.resolvedTargetKind, selectionValues.resolvedTargetProfile, selectionValues.repositoryAlias,
+		selectionValues.repositoryAliasesJSON)
 	if err != nil {
 		return audit.Record{}, fmt.Errorf("insert audit record: %w", err)
 	}
@@ -144,6 +180,84 @@ INSERT INTO runner_audit_records (
 		return audit.Record{}, fmt.Errorf("read audit row ID: %w", err)
 	}
 	return record, nil
+}
+
+type auditMailboxSelectionSQLValues struct {
+	mailboxID             any
+	executionContext      any
+	selectionSource       any
+	resolvedTargetKind    any
+	resolvedTargetProfile any
+	repositoryAlias       any
+	repositoryAliasesJSON any
+}
+
+func auditMailboxSelectionSQLValuesFor(selection *audit.MailboxSelection) (auditMailboxSelectionSQLValues, error) {
+	if selection == nil {
+		return auditMailboxSelectionSQLValues{}, nil
+	}
+	if err := selection.Validate(); err != nil {
+		return auditMailboxSelectionSQLValues{}, err
+	}
+	aliases := selection.RepositoryAliases
+	if aliases == nil {
+		aliases = []string{}
+	}
+	aliasesJSON, err := json.Marshal(aliases)
+	if err != nil {
+		return auditMailboxSelectionSQLValues{}, fmt.Errorf("encode audit mailbox repository aliases: %w", err)
+	}
+	values := auditMailboxSelectionSQLValues{
+		mailboxID:             selection.InboxID,
+		executionContext:      selection.ContextName,
+		selectionSource:       selection.Source,
+		resolvedTargetKind:    string(selection.TargetKind),
+		resolvedTargetProfile: selection.TargetProfile,
+		repositoryAliasesJSON: string(aliasesJSON),
+	}
+	if selection.RepositoryAlias != "" {
+		values.repositoryAlias = selection.RepositoryAlias
+	}
+	return values, nil
+}
+
+func decodeAuditMailboxSelection(
+	mailboxID,
+	executionContext,
+	selectionSource,
+	resolvedTargetKind,
+	resolvedTargetProfile,
+	repositoryAlias,
+	repositoryAliasesJSON sql.NullString,
+) (*audit.MailboxSelection, error) {
+	present := mailboxID.Valid || executionContext.Valid || selectionSource.Valid ||
+		resolvedTargetKind.Valid || resolvedTargetProfile.Valid || repositoryAlias.Valid || repositoryAliasesJSON.Valid
+	if !present {
+		return nil, nil
+	}
+	if !mailboxID.Valid || !executionContext.Valid || !selectionSource.Valid ||
+		!resolvedTargetKind.Valid || !resolvedTargetProfile.Valid || !repositoryAliasesJSON.Valid {
+		return nil, fmt.Errorf("decode audit mailbox selection: %w: incomplete metadata", audit.ErrInvalidRecord)
+	}
+	var aliases []string
+	if err := json.Unmarshal([]byte(repositoryAliasesJSON.String), &aliases); err != nil || aliases == nil {
+		if err == nil {
+			err = fmt.Errorf("repository alias scope must be an array")
+		}
+		return nil, fmt.Errorf("decode audit mailbox repository aliases: %w", err)
+	}
+	selection := &audit.MailboxSelection{
+		InboxID:           mailboxID.String,
+		ContextName:       executionContext.String,
+		TargetKind:        domain.TargetKind(resolvedTargetKind.String),
+		TargetProfile:     resolvedTargetProfile.String,
+		Source:            selectionSource.String,
+		RepositoryAliases: aliases,
+	}
+	if repositoryAlias.Valid {
+		selection.RepositoryAlias = repositoryAlias.String
+	}
+	return selection, nil
 }
 
 func insertOptionalAuditOnConnection(ctx context.Context, connection *sql.Conn, record *audit.Record) error {

@@ -1,0 +1,26 @@
+{
+  "cases": [
+    {
+      "name": "selection source is fixed vocabulary",
+      "document": {
+        "inbox_id": "default",
+        "request_id": "req-p153-invalid-source",
+        "operation": "run",
+        "request_state": "accepted",
+        "response_revision": 1,
+        "execution_selection_source": "automatic"
+      }
+    },
+    {
+      "name": "resolved target needs complete identity",
+      "document": {
+        "inbox_id": "default",
+        "request_id": "req-p153-invalid-target",
+        "operation": "run",
+        "request_state": "accepted",
+        "response_revision": 1,
+        "resolved_execution_target": {"kind": "remote"}
+      }
+    }
+  ]
+}

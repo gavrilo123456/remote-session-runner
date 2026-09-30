@@ -98,6 +98,14 @@ func (p *ReceiptProcessor) process(ctx context.Context, request Request) (bool, 
 }
 
 func receiptCanonical(request Request) ([]byte, domain.CanonicalHash, error) {
+	return receiptCanonicalWithSelection(request, nil)
+}
+
+// receiptCanonicalWithSelection adds the already-resolved effective target to
+// a new-work receipt only when the mailbox request omitted it. The canonical
+// payload therefore binds defaulted work to the original target before its
+// durable exchange is accepted.
+func receiptCanonicalWithSelection(request Request, selection *store.MailboxExecutionSelection) ([]byte, domain.CanonicalHash, error) {
 	switch request.Operation {
 	case "create_session", "submit_command", "cancel_command", "close_session", "run":
 		payload := request.RawJSON
@@ -116,15 +124,40 @@ func receiptCanonical(request Request) ([]byte, domain.CanonicalHash, error) {
 			}
 			payload = encoded
 		}
-		canonical, err := domain.CanonicalizeMutationRequestJSON(request.Operation, payload, domain.CanonicalizationOptions{})
+		options, err := mailboxReceiptCanonicalizationOptions(request.Operation, selection)
 		if err != nil {
 			return nil, domain.CanonicalHash{}, err
 		}
-		hash, err := domain.HashMutationRequestJSON(request.Operation, payload, domain.CanonicalizationOptions{})
+		canonical, err := domain.CanonicalizeMutationRequestJSON(request.Operation, payload, options)
+		if err != nil {
+			return nil, domain.CanonicalHash{}, err
+		}
+		hash, err := domain.HashMutationRequestJSON(request.Operation, payload, options)
 		return canonical, hash, err
 	default:
 		digest := sha256.Sum256(request.RawJSON)
 		hash, err := domain.NewCanonicalHash(domain.CanonicalizationVersionV1, digest[:])
 		return append([]byte(nil), request.RawJSON...), hash, err
 	}
+}
+
+func mailboxReceiptCanonicalizationOptions(operation string, selection *store.MailboxExecutionSelection) (domain.CanonicalizationOptions, error) {
+	if selection == nil || (operation != "create_session" && operation != "run") {
+		return domain.CanonicalizationOptions{}, nil
+	}
+	environment, err := json.Marshal(selection.Environment)
+	if err != nil {
+		return domain.CanonicalizationOptions{}, fmt.Errorf("encode mailbox selection environment: %w", err)
+	}
+	target, err := json.Marshal(struct {
+		Kind    string `json:"kind"`
+		Profile string `json:"profile"`
+	}{Kind: string(selection.Target.Kind()), Profile: selection.Target.Profile()})
+	if err != nil {
+		return domain.CanonicalizationOptions{}, fmt.Errorf("encode mailbox selection target: %w", err)
+	}
+	return domain.CanonicalizationOptions{Defaults: map[string]json.RawMessage{
+		"environment":      environment,
+		"execution_target": target,
+	}}, nil
 }

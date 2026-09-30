@@ -18,6 +18,12 @@
       "required": ["kind", "profile"],
       "additionalProperties": false
     },
+    "repositoryAlias": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9-]{0,62}$"
+    },
     "closePolicy": {
       "type": "object",
       "properties": { "policy": { "type": "string" } },
@@ -27,10 +33,10 @@
       "type": "object",
       "properties": {
         "request_id": { "type": "string", "minLength": 1 }, "idempotency_key": { "type": "string", "minLength": 1 }, "operation": { "const": "create_session" },
-        "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/$defs/executionTarget" },
+        "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/$defs/executionTarget" }, "repository_alias": { "$ref": "#/$defs/repositoryAlias" },
         "source": { "type": "object" }, "limits": { "type": "object" }, "policy": { "type": "object" }
       },
-      "required": ["request_id", "idempotency_key", "operation", "environment", "execution_target"],
+      "required": ["request_id", "idempotency_key", "operation"],
       "additionalProperties": false
     },
     "getSession": {
@@ -73,10 +79,10 @@
       "type": "object",
       "properties": {
         "request_id": { "type": "string", "minLength": 1 }, "idempotency_key": { "type": "string", "minLength": 1 }, "operation": { "const": "run" },
-        "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/$defs/executionTarget" }, "script": { "type": "string" },
+        "environment": { "type": "string", "minLength": 1 }, "execution_target": { "$ref": "#/$defs/executionTarget" }, "repository_alias": { "$ref": "#/$defs/repositoryAlias" }, "script": { "type": "string" },
         "timeout_seconds": { "type": "integer", "minimum": 1 }, "source": { "type": "object" }, "limits": { "type": "object" }, "policy": { "type": "object" }
       },
-      "required": ["request_id", "idempotency_key", "operation", "environment", "execution_target", "script"],
+      "required": ["request_id", "idempotency_key", "operation", "script"],
       "additionalProperties": false
     }
   }

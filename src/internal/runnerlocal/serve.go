@@ -225,7 +225,7 @@ func New(configPath string) (*Service, error) {
 	}
 	processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
 		MailboxID: store.DefaultMailboxID, Importer: importer, Authority: authority, Controller: owner, Operations: api,
-		Outbox: outbox, EventFiles: eventFiles,
+		Outbox: outbox, EventFiles: eventFiles, ExecutionResolver: &loaded,
 		RemoteUncertaintyWindow: settings.ReconciliationDeadline,
 	})
 	if err != nil {

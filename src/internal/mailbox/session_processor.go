@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/store"
 )
@@ -112,14 +113,25 @@ type SessionOperations interface {
 	GetRunSnapshot(context.Context, string) (RunSnapshot, error)
 }
 
+// MailboxExecutionResolver resolves an immutable configured context for a
+// mailbox new-work request. The production implementation is config.Config;
+// the interface keeps mailbox policy tests independent of a host config file.
+type MailboxExecutionResolver interface {
+	ResolveMailboxExecution(mailboxID string, environmentPresent bool, environment string, targetPresent bool, target domain.ExecutionTarget, repositoryAlias string) (config.MailboxExecutionSelection, error)
+}
+
 type SessionProcessorOptions struct {
-	MailboxID               string
-	Importer                *Importer
-	Authority               *store.AuthorityStore
-	Controller              domain.ControllerIdentity
-	Operations              SessionOperations
-	Outbox                  *Outbox
-	EventFiles              *EventFiles
+	MailboxID  string
+	Importer   *Importer
+	Authority  *store.AuthorityStore
+	Controller domain.ControllerIdentity
+	Operations SessionOperations
+	Outbox     *Outbox
+	EventFiles *EventFiles
+	// ExecutionResolver resolves trusted mailbox defaults and allow-listed
+	// overrides for create_session and run. It is mandatory: allowing a nil
+	// resolver would let a miswired mailbox runtime bypass configured policy.
+	ExecutionResolver       MailboxExecutionResolver
 	Now                     func() time.Time
 	RemoteUncertaintyWindow time.Duration
 }
@@ -133,13 +145,14 @@ type SessionProcessor struct {
 	controller        domain.ControllerIdentity
 	operations        SessionOperations
 	projector         Projector
+	executionResolver MailboxExecutionResolver
 	now               func() time.Time
 	uncertaintyWindow time.Duration
 	mu                sync.Mutex
 }
 
 func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, error) {
-	if options.Importer == nil || options.Authority == nil || options.Operations == nil || options.Outbox == nil || options.EventFiles == nil {
+	if options.Importer == nil || options.Authority == nil || options.Operations == nil || options.Outbox == nil || options.EventFiles == nil || options.ExecutionResolver == nil {
 		return nil, ErrSessionProcessorConfiguration
 	}
 	if options.RemoteUncertaintyWindow < 0 {
@@ -170,7 +183,7 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 	return &SessionProcessor{
 		mailboxID: mailboxID, importer: options.Importer, authority: options.Authority, controller: controller,
 		operations: options.Operations, projector: Projector{MailboxID: mailboxID, Authority: options.Authority, Outbox: options.Outbox, EventFiles: options.EventFiles},
-		now: options.Now, uncertaintyWindow: options.RemoteUncertaintyWindow,
+		executionResolver: options.ExecutionResolver, now: options.Now, uncertaintyWindow: options.RemoteUncertaintyWindow,
 	}, nil
 }
 
@@ -194,7 +207,17 @@ func (p *SessionProcessor) scopedRequest(request Request, record store.MailboxEx
 		return Request{}, ErrSessionProcessorConfiguration
 	}
 	request.ExecutionIdempotencyKey = record.ExecutionIdempotencyKey
+	request.ExecutionSelection = cloneMailboxExecutionSelection(record.Selection)
 	return request, nil
+}
+
+func cloneMailboxExecutionSelection(input *store.MailboxExecutionSelection) *store.MailboxExecutionSelection {
+	if input == nil {
+		return nil
+	}
+	clone := *input
+	clone.RepositoryAliases = append([]string(nil), input.RepositoryAliases...)
+	return &clone
 }
 
 // Import records and projects the implemented file-only operations, then
@@ -278,7 +301,10 @@ func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, 
 	if request.Operation == "run" {
 		return p.processRun(ctx, request)
 	}
-	if request.Operation != "create_session" && request.Operation != "get_session" {
+	if request.Operation == "create_session" {
+		return p.processCreateSession(ctx, request)
+	}
+	if request.Operation != "get_session" {
 		return false, fmt.Errorf("%w: unsupported mailbox operation %q", ErrMailboxInput, request.Operation)
 	}
 	payload, hash, err := receiptCanonical(request)
@@ -313,26 +339,6 @@ func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, 
 	if record.State != store.MailboxExchangeAccepted {
 		return false, fmt.Errorf("%w: terminal exchange has no response snapshot", ErrOutboxResponse)
 	}
-	if request.Operation == "create_session" {
-		scopedRequest, err := p.scopedRequest(request, record)
-		if err != nil {
-			return false, err
-		}
-		intent, err := p.operations.CreateSessionIntent(ctx, scopedRequest)
-		if err != nil {
-			return p.publishOperationError(ctx, record, request.Operation, err)
-		}
-		if intent.SessionID == "" {
-			return false, fmt.Errorf("%w: create operation returned no session ID", ErrSessionProcessorConfiguration)
-		}
-		response := sessionMailboxResponse{
-			RequestID: request.RequestID, Operation: request.Operation,
-			RequestState: store.MailboxExchangeAccepted, SessionID: intent.SessionID,
-			DeliveryState: intent.DeliveryState,
-		}
-		return p.publish(ctx, record, response, nil)
-	}
-
 	snapshot, err := p.operations.GetSession(ctx, request.SessionID)
 	if err != nil {
 		return p.publishOperationError(ctx, record, request.Operation, err)
@@ -344,6 +350,57 @@ func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, 
 		return false, fmt.Errorf("%w: get operation returned a different session ID", ErrSessionProcessorConfiguration)
 	}
 	response := responseFromSnapshot(request.RequestID, request.Operation, store.MailboxExchangeComplete, snapshot)
+	return p.publish(ctx, record, response, nil)
+}
+
+func (p *SessionProcessor) processCreateSession(ctx context.Context, request Request) (bool, error) {
+	record, duplicate, idempotencyConflict, selectionError, legacyExplicitSelection, err := p.acceptNewWorkExchange(ctx, request)
+	if err != nil {
+		return false, err
+	}
+	if duplicate && len(record.ResponseBytes) > 0 {
+		if err := p.projector.Publish(ctx, request.RequestID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if idempotencyConflict || (record.IdempotencyKey != "" && !record.IdempotencyBindingActive) {
+		response := sessionMailboxResponse{
+			RequestID: request.RequestID, Operation: request.Operation,
+			RequestState: store.MailboxExchangeRejected,
+			Error:        &mailboxResponseError{Code: "idempotency_conflict", Message: "idempotency key is already bound to a different request"},
+		}
+		return p.publish(ctx, record, response, nil)
+	}
+	if selectionError != nil {
+		response := sessionMailboxResponse{
+			RequestID: request.RequestID, Operation: request.Operation,
+			RequestState: store.MailboxExchangeRejected, Error: selectionError,
+		}
+		return p.publish(ctx, record, response, nil)
+	}
+	if record.State != store.MailboxExchangeAccepted {
+		return false, fmt.Errorf("%w: terminal create exchange has no response snapshot", ErrOutboxResponse)
+	}
+	scopedRequest, err := p.scopedRequest(request, record)
+	if err != nil {
+		return false, err
+	}
+	if scopedRequest.ExecutionSelection == nil && !legacyExplicitSelection {
+		return false, fmt.Errorf("%w: resolved create selection was not persisted", ErrSessionProcessorConfiguration)
+	}
+	intent, err := p.operations.CreateSessionIntent(ctx, scopedRequest)
+	if err != nil {
+		return p.publishOperationError(ctx, record, request.Operation, err)
+	}
+	if intent.SessionID == "" {
+		return false, fmt.Errorf("%w: create operation returned no session ID", ErrSessionProcessorConfiguration)
+	}
+	response := sessionMailboxResponse{
+		RequestID: request.RequestID, Operation: request.Operation,
+		RequestState: store.MailboxExchangeAccepted, SessionID: intent.SessionID,
+		DeliveryState: intent.DeliveryState,
+	}
 	return p.publish(ctx, record, response, nil)
 }
 
@@ -492,7 +549,7 @@ func (p *SessionProcessor) processCloseSession(ctx context.Context, request Requ
 }
 
 func (p *SessionProcessor) processRun(ctx context.Context, request Request) (bool, error) {
-	record, duplicate, idempotencyConflict, err := p.acceptMutationExchange(ctx, request)
+	record, duplicate, idempotencyConflict, selectionError, legacyExplicitSelection, err := p.acceptNewWorkExchange(ctx, request)
 	if err != nil {
 		return false, err
 	}
@@ -507,12 +564,22 @@ func (p *SessionProcessor) processRun(ctx context.Context, request Request) (boo
 		}
 		return p.publishRunResponse(ctx, record, response, nil)
 	}
+	if selectionError != nil {
+		response := runMailboxResponse{
+			RequestID: request.RequestID, Operation: request.Operation,
+			RequestState: store.MailboxExchangeRejected, Error: selectionError,
+		}
+		return p.publishRunResponse(ctx, record, response, nil)
+	}
 	if record.State != store.MailboxExchangeAccepted {
 		return false, fmt.Errorf("%w: terminal run exchange has no response snapshot", ErrOutboxResponse)
 	}
 	scopedRequest, err := p.scopedRequest(request, record)
 	if err != nil {
 		return false, err
+	}
+	if scopedRequest.ExecutionSelection == nil && !legacyExplicitSelection {
+		return false, fmt.Errorf("%w: resolved run selection was not persisted", ErrSessionProcessorConfiguration)
 	}
 	intent, err := p.operations.RunJobIntent(ctx, scopedRequest)
 	if err != nil {
@@ -546,6 +613,223 @@ func (p *SessionProcessor) publishRunOperationError(ctx context.Context, record 
 		RequestState: store.MailboxExchangeRejected, Error: safeSessionMailboxError(operationErr),
 	}
 	return p.publishRunResponse(ctx, record, response, nil)
+}
+
+// acceptNewWorkExchange resolves the trusted execution selection before it
+// forms the receipt hash, then persists both in the same durable exchange.
+// A selection rejection is itself recorded as a terminal mailbox result, but
+// it never reaches the local intent or target-operation boundary.
+func (p *SessionProcessor) acceptNewWorkExchange(ctx context.Context, request Request) (store.MailboxExchangeRecord, bool, bool, *mailboxResponseError, bool, error) {
+	ref, err := p.exchangeRef(request.RequestID)
+	if err != nil {
+		return store.MailboxExchangeRecord{}, false, false, nil, false, err
+	}
+	if record, duplicate, handled, err := p.pendingSelectionRejection(ctx, ref, request); err != nil {
+		return store.MailboxExchangeRecord{}, false, false, nil, false, err
+	} else if handled {
+		return record, duplicate, false, rejectedSelectionRecoveryError(), false, nil
+	}
+	selection, selectionError, err := p.resolveNewWorkSelection(ctx, request)
+	if err != nil {
+		return store.MailboxExchangeRecord{}, false, false, nil, false, err
+	}
+	payload, hash, err := receiptCanonicalWithSelection(request, selection)
+	if err != nil {
+		return store.MailboxExchangeRecord{}, false, false, nil, false, err
+	}
+	selectionState := store.MailboxExecutionSelectionResolved
+	if selectionError != nil {
+		selectionState = store.MailboxExecutionSelectionRejected
+	}
+	record, duplicate, idempotencyConflict, err := p.authority.AcceptMailboxExchangeWithConflictReceiptInMailbox(ctx, ref, store.MailboxExchangeCreate{
+		MailboxID: p.mailboxID, RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
+		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
+		Selection: selection, SelectionState: selectionState,
+	})
+	if err != nil {
+		return store.MailboxExchangeRecord{}, false, false, nil, false, err
+	}
+	// A migrated v25 record has no selection fields and is marked legacy. It
+	// can resume only when the current resolver accepts its original complete
+	// explicit pair. A new P153 rejection uses the rejected state, so it cannot
+	// be mistaken for a legacy record after a crash before publication.
+	legacyExplicitSelection := selectionError == nil && selection != nil &&
+		record.Selection == nil && record.SelectionState == store.MailboxExecutionSelectionLegacy &&
+		selection.Source == store.MailboxExecutionSelectionRequestOverride &&
+		legacyExplicitNewWorkRequest(request) && resolverMailboxExecutionSelectionMatchesRequest(request, selection)
+	return record, duplicate, idempotencyConflict, selectionError, legacyExplicitSelection, nil
+}
+
+// pendingSelectionRejection finds a P153 selection rejection that was
+// durably accepted before the process crashed but has no response snapshot.
+// It deliberately compares the original raw canonical receipt, before any
+// now-allowed default can be injected. This keeps retries terminal even when
+// configuration changes between the failed attempt and recovery.
+func (p *SessionProcessor) pendingSelectionRejection(ctx context.Context, ref store.MailboxExchangeRef, request Request) (store.MailboxExchangeRecord, bool, bool, error) {
+	existing, err := p.authority.GetMailboxExchangeInMailbox(ctx, ref)
+	if err == nil {
+		if selectionRejectionMatchesRequest(request, existing) {
+			return existing, true, true, nil
+		}
+		return store.MailboxExchangeRecord{}, false, false, nil
+	}
+	if !errors.Is(err, store.ErrMailboxExchangeNotFound) {
+		return store.MailboxExchangeRecord{}, false, false, err
+	}
+	if request.IdempotencyKey == "" {
+		return store.MailboxExchangeRecord{}, false, false, nil
+	}
+	existing, found, err := p.authority.FindActiveMailboxExchangeByKeyInMailbox(ctx, p.mailboxID, p.controller, request.Operation, request.IdempotencyKey)
+	if err != nil {
+		return store.MailboxExchangeRecord{}, false, false, err
+	}
+	if !found || !selectionRejectionMatchesRequest(request, existing) {
+		return store.MailboxExchangeRecord{}, false, false, nil
+	}
+	recorded, duplicate, _, err := p.authority.AcceptMailboxExchangeWithConflictReceiptInMailbox(ctx, ref, store.MailboxExchangeCreate{
+		MailboxID: p.mailboxID, RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
+		IdempotencyKey: request.IdempotencyKey, RequestHash: existing.RequestHash, CanonicalPayload: existing.CanonicalPayload,
+		SelectionState: store.MailboxExecutionSelectionRejected,
+	})
+	if err != nil {
+		return store.MailboxExchangeRecord{}, false, false, err
+	}
+	return recorded, duplicate, true, nil
+}
+
+func selectionRejectionMatchesRequest(request Request, record store.MailboxExchangeRecord) bool {
+	if record.Selection != nil || record.SelectionState != store.MailboxExecutionSelectionRejected {
+		return false
+	}
+	// An accepted record with no response models a crash before publication. A
+	// rejected record is the same durable decision after publication. Either
+	// one must remain terminal for a same-key retry even if its configuration
+	// later changes to allow the request.
+	if record.State != store.MailboxExchangeRejected &&
+		(record.State != store.MailboxExchangeAccepted || len(record.ResponseBytes) != 0) {
+		return false
+	}
+	payload, hash, err := receiptCanonicalWithSelection(request, nil)
+	return err == nil && domain.CompareIdempotency(hash, record.RequestHash) == domain.IdempotencySamePayload && bytes.Equal(payload, record.CanonicalPayload)
+}
+
+func rejectedSelectionRecoveryError() *mailboxResponseError {
+	return &mailboxResponseError{Code: "invalid_request", Message: "mailbox execution selection was rejected"}
+}
+
+func (p *SessionProcessor) resolveNewWorkSelection(ctx context.Context, request Request) (*store.MailboxExecutionSelection, *mailboxResponseError, error) {
+	if request.Operation != "create_session" && request.Operation != "run" {
+		return nil, nil, fmt.Errorf("%w: selection operation %q", ErrSessionProcessorConfiguration, request.Operation)
+	}
+	if request.IdempotencyKey != "" {
+		existing, found, err := p.authority.FindActiveMailboxExchangeByKeyInMailbox(ctx, p.mailboxID, p.controller, request.Operation, request.IdempotencyKey)
+		if err != nil {
+			return nil, nil, err
+		}
+		if found && existing.Selection != nil && retainedMailboxExecutionSelectionMatchesRequest(request, existing.Selection) {
+			return cloneMailboxExecutionSelection(existing.Selection), nil, nil
+		}
+	}
+	resolved, err := p.executionResolver.ResolveMailboxExecution(
+		p.mailboxID,
+		request.EnvironmentPresent,
+		request.Environment,
+		request.ExecutionTargetPresent,
+		request.ExecutionTarget,
+		request.RepositoryAlias,
+	)
+	if err != nil {
+		return nil, mailboxSelectionError(err), nil
+	}
+	selection, err := mailboxExecutionSelectionFromConfig(p.mailboxID, resolved)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !resolverMailboxExecutionSelectionMatchesRequest(request, selection) {
+		return nil, nil, fmt.Errorf("%w: resolver selection does not match mailbox request", ErrSessionProcessorConfiguration)
+	}
+	return selection, nil, nil
+}
+
+// retainedMailboxExecutionSelectionMatchesRequest recognizes a retained
+// same-key selection before receipt canonicalization. An omitted pair is a
+// retry request for the selection that was already bound to its key, whether
+// that original selection came from an inbox default or an explicit override.
+func retainedMailboxExecutionSelectionMatchesRequest(request Request, selection *store.MailboxExecutionSelection) bool {
+	if selection == nil || request.RepositoryAlias != selection.RepositoryAlias || request.EnvironmentPresent != request.ExecutionTargetPresent {
+		return false
+	}
+	if !request.EnvironmentPresent {
+		return true
+	}
+	return request.Environment == selection.Environment && request.ExecutionTarget.Kind() == selection.Target.Kind() && request.ExecutionTarget.Profile() == selection.Target.Profile()
+}
+
+// resolverMailboxExecutionSelectionMatchesRequest rejects a malformed or
+// miswired resolver output. A fresh resolution must accurately describe the
+// raw request form; only a retained key may omit an originally explicit pair.
+func resolverMailboxExecutionSelectionMatchesRequest(request Request, selection *store.MailboxExecutionSelection) bool {
+	if !retainedMailboxExecutionSelectionMatchesRequest(request, selection) {
+		return false
+	}
+	if !request.EnvironmentPresent {
+		return selection.Source == store.MailboxExecutionSelectionInboxDefault
+	}
+	return selection.Source == store.MailboxExecutionSelectionRequestOverride
+}
+
+// legacyExplicitNewWorkRequest identifies an active pre-P153 create/run
+// receipt. P153 never creates a selection-free new-work exchange, but v25
+// rows legitimately have no selection snapshot. They may resume only when
+// their original request still carries the complete explicit pair; omitted or
+// partial selection cannot be inferred without inventing a default.
+func legacyExplicitNewWorkRequest(request Request) bool {
+	if (request.Operation != "create_session" && request.Operation != "run") ||
+		!request.EnvironmentPresent || !request.ExecutionTargetPresent || request.Environment == "" {
+		return false
+	}
+	_, err := domain.NewExecutionTarget(request.ExecutionTarget.Kind(), request.ExecutionTarget.Profile())
+	return err == nil
+}
+
+func mailboxExecutionSelectionFromConfig(mailboxID string, resolved config.MailboxExecutionSelection) (*store.MailboxExecutionSelection, error) {
+	if resolved.MailboxID != mailboxID {
+		return nil, fmt.Errorf("%w: resolver returned a selection for another mailbox", ErrSessionProcessorConfiguration)
+	}
+	source := ""
+	switch resolved.Source {
+	case config.MailboxExecutionSelectionSourceInboxDefault:
+		source = store.MailboxExecutionSelectionInboxDefault
+	case config.MailboxExecutionSelectionSourceRequestOverride:
+		source = store.MailboxExecutionSelectionRequestOverride
+	default:
+		return nil, fmt.Errorf("%w: unknown mailbox selection source", ErrSessionProcessorConfiguration)
+	}
+	return &store.MailboxExecutionSelection{
+		ContextName:       resolved.ContextName,
+		Environment:       resolved.Environment,
+		Target:            resolved.Target,
+		Source:            source,
+		RepositoryAlias:   resolved.RepositoryAlias,
+		RepositoryAliases: append([]string(nil), resolved.RepositoryAliases...),
+	}, nil
+}
+
+func mailboxSelectionError(err error) *mailboxResponseError {
+	switch {
+	case errors.Is(err, config.ErrMailboxExecutionContextNotFound):
+		return &mailboxResponseError{Code: "environment_target_mismatch", Message: "environment and execution target do not identify a configured context"}
+	case errors.Is(err, config.ErrMailboxExecutionPairRequired):
+		return &mailboxResponseError{Code: "invalid_request", Message: "environment and execution target must be supplied together"}
+	case errors.Is(err, config.ErrMailboxExecutionContextNotAllowed):
+		return &mailboxResponseError{Code: "invalid_request", Message: "execution context is not allowed for this mailbox"}
+	case errors.Is(err, config.ErrMailboxRepositoryAliasNotAllowed):
+		return &mailboxResponseError{Code: "invalid_request", Message: "repository alias is not allowed for this mailbox"}
+	case errors.Is(err, config.ErrMailboxNotConfigured):
+		return &mailboxResponseError{Code: "invalid_request", Message: "mailbox is not configured"}
+	default:
+		return &mailboxResponseError{Code: "invalid_request", Message: "mailbox execution selection is invalid"}
+	}
 }
 
 func (p *SessionProcessor) acceptMutationExchange(ctx context.Context, request Request) (store.MailboxExchangeRecord, bool, bool, error) {
@@ -1345,6 +1629,8 @@ func (p *SessionProcessor) publishIndeterminateIfExpired(ctx context.Context, re
 }
 
 func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExchangeRecord, response sessionMailboxResponse, cursor *int64) (bool, error) {
+	response.InboxID = p.mailboxID
+	applySessionResponseSelection(&response, current.Selection)
 	response.ResponseRevision = current.ResponseRevision + 1
 	if current.DeduplicationWarning {
 		response.IdempotencyWarning = "deduplication_not_guaranteed"
@@ -1370,6 +1656,7 @@ func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExc
 }
 
 func (p *SessionProcessor) publishCommandResponse(ctx context.Context, current store.MailboxExchangeRecord, response commandMailboxResponse, cursor *int64) (bool, error) {
+	response.InboxID = p.mailboxID
 	response.ResponseRevision = current.ResponseRevision + 1
 	if current.DeduplicationWarning {
 		response.IdempotencyWarning = "deduplication_not_guaranteed"
@@ -1399,6 +1686,8 @@ func (p *SessionProcessor) publishCommandResponse(ctx context.Context, current s
 }
 
 func (p *SessionProcessor) publishRunResponse(ctx context.Context, current store.MailboxExchangeRecord, response runMailboxResponse, cursor *int64) (bool, error) {
+	response.InboxID = p.mailboxID
+	applyRunResponseSelection(&response, current.Selection)
 	response.ResponseRevision = current.ResponseRevision + 1
 	if current.DeduplicationWarning {
 		response.IdempotencyWarning = "deduplication_not_guaranteed"
@@ -1432,17 +1721,21 @@ func (p *SessionProcessor) publishRunResponse(ctx context.Context, current store
 }
 
 type sessionMailboxResponse struct {
-	RequestID          string                     `json:"request_id"`
-	Operation          string                     `json:"operation"`
-	RequestState       store.MailboxExchangeState `json:"request_state"`
-	ResponseRevision   int64                      `json:"response_revision"`
-	IdempotencyWarning string                     `json:"idempotency_warning,omitempty"`
-	SessionID          string                     `json:"session_id,omitempty"`
-	SessionState       string                     `json:"session_state,omitempty"`
-	DeliveryState      string                     `json:"delivery_state,omitempty"`
-	ObservedAt         *time.Time                 `json:"observed_at,omitempty"`
-	TeardownOutcome    string                     `json:"teardown_outcome,omitempty"`
-	Error              *mailboxResponseError      `json:"error,omitempty"`
+	InboxID                  string                     `json:"inbox_id,omitempty"`
+	RequestID                string                     `json:"request_id"`
+	Operation                string                     `json:"operation"`
+	RequestState             store.MailboxExchangeState `json:"request_state"`
+	ResponseRevision         int64                      `json:"response_revision"`
+	IdempotencyWarning       string                     `json:"idempotency_warning,omitempty"`
+	SessionID                string                     `json:"session_id,omitempty"`
+	SessionState             string                     `json:"session_state,omitempty"`
+	DeliveryState            string                     `json:"delivery_state,omitempty"`
+	ObservedAt               *time.Time                 `json:"observed_at,omitempty"`
+	TeardownOutcome          string                     `json:"teardown_outcome,omitempty"`
+	ExecutionSelectionSource string                     `json:"execution_selection_source,omitempty"`
+	ResolvedEnvironment      string                     `json:"resolved_environment,omitempty"`
+	ResolvedExecutionTarget  *mailboxResponseTarget     `json:"resolved_execution_target,omitempty"`
+	Error                    *mailboxResponseError      `json:"error,omitempty"`
 }
 
 type mailboxResponseError struct {
@@ -1452,6 +1745,7 @@ type mailboxResponseError struct {
 }
 
 type commandMailboxResponse struct {
+	InboxID                 string                     `json:"inbox_id,omitempty"`
 	RequestID               string                     `json:"request_id"`
 	Operation               string                     `json:"operation"`
 	RequestState            store.MailboxExchangeState `json:"request_state"`
@@ -1475,29 +1769,56 @@ type commandMailboxResponse struct {
 }
 
 type runMailboxResponse struct {
-	RequestID               string                     `json:"request_id"`
-	Operation               string                     `json:"operation"`
-	RequestState            store.MailboxExchangeState `json:"request_state"`
-	ResponseRevision        int64                      `json:"response_revision"`
-	IdempotencyWarning      string                     `json:"idempotency_warning,omitempty"`
-	JobID                   string                     `json:"job_id,omitempty"`
-	JobPhase                string                     `json:"job_phase,omitempty"`
-	CommandID               string                     `json:"command_id,omitempty"`
-	SessionID               string                     `json:"session_id,omitempty"`
-	DeliveryState           string                     `json:"delivery_state,omitempty"`
-	CommandState            string                     `json:"command_state,omitempty"`
-	ObservedAt              *time.Time                 `json:"observed_at,omitempty"`
-	ExitCode                *int                       `json:"exit_code,omitempty"`
-	Stdout                  string                     `json:"stdout,omitempty"`
-	Stderr                  string                     `json:"stderr,omitempty"`
-	FinalEventSequence      *int64                     `json:"final_event_sequence,omitempty"`
-	AvailableEventSequence  *int64                     `json:"available_event_sequence,omitempty"`
-	OutputComplete          *bool                      `json:"output_complete,omitempty"`
-	OutputTruncated         *bool                      `json:"output_truncated,omitempty"`
-	OutputUnavailableReason string                     `json:"output_unavailable_reason,omitempty"`
-	EventsFile              string                     `json:"events_file,omitempty"`
-	TeardownOutcome         string                     `json:"teardown_outcome,omitempty"`
-	Error                   *mailboxResponseError      `json:"error,omitempty"`
+	InboxID                  string                     `json:"inbox_id,omitempty"`
+	RequestID                string                     `json:"request_id"`
+	Operation                string                     `json:"operation"`
+	RequestState             store.MailboxExchangeState `json:"request_state"`
+	ResponseRevision         int64                      `json:"response_revision"`
+	IdempotencyWarning       string                     `json:"idempotency_warning,omitempty"`
+	JobID                    string                     `json:"job_id,omitempty"`
+	JobPhase                 string                     `json:"job_phase,omitempty"`
+	CommandID                string                     `json:"command_id,omitempty"`
+	SessionID                string                     `json:"session_id,omitempty"`
+	DeliveryState            string                     `json:"delivery_state,omitempty"`
+	CommandState             string                     `json:"command_state,omitempty"`
+	ObservedAt               *time.Time                 `json:"observed_at,omitempty"`
+	ExitCode                 *int                       `json:"exit_code,omitempty"`
+	Stdout                   string                     `json:"stdout,omitempty"`
+	Stderr                   string                     `json:"stderr,omitempty"`
+	FinalEventSequence       *int64                     `json:"final_event_sequence,omitempty"`
+	AvailableEventSequence   *int64                     `json:"available_event_sequence,omitempty"`
+	OutputComplete           *bool                      `json:"output_complete,omitempty"`
+	OutputTruncated          *bool                      `json:"output_truncated,omitempty"`
+	OutputUnavailableReason  string                     `json:"output_unavailable_reason,omitempty"`
+	EventsFile               string                     `json:"events_file,omitempty"`
+	TeardownOutcome          string                     `json:"teardown_outcome,omitempty"`
+	ExecutionSelectionSource string                     `json:"execution_selection_source,omitempty"`
+	ResolvedEnvironment      string                     `json:"resolved_environment,omitempty"`
+	ResolvedExecutionTarget  *mailboxResponseTarget     `json:"resolved_execution_target,omitempty"`
+	Error                    *mailboxResponseError      `json:"error,omitempty"`
+}
+
+type mailboxResponseTarget struct {
+	Kind    string `json:"kind"`
+	Profile string `json:"profile"`
+}
+
+func applySessionResponseSelection(response *sessionMailboxResponse, selection *store.MailboxExecutionSelection) {
+	if response == nil || selection == nil {
+		return
+	}
+	response.ExecutionSelectionSource = selection.Source
+	response.ResolvedEnvironment = selection.Environment
+	response.ResolvedExecutionTarget = &mailboxResponseTarget{Kind: string(selection.Target.Kind()), Profile: selection.Target.Profile()}
+}
+
+func applyRunResponseSelection(response *runMailboxResponse, selection *store.MailboxExecutionSelection) {
+	if response == nil || selection == nil {
+		return
+	}
+	response.ExecutionSelectionSource = selection.Source
+	response.ResolvedEnvironment = selection.Environment
+	response.ResolvedExecutionTarget = &mailboxResponseTarget{Kind: string(selection.Target.Kind()), Profile: selection.Target.Profile()}
 }
 
 func commandResponseFromSnapshot(requestID, operation string, snapshot CommandSnapshot) commandMailboxResponse {

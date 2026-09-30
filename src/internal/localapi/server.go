@@ -1713,7 +1713,7 @@ func (s *Server) handleCreateSession(response http.ResponseWriter, request *http
 		writeError(response, status, code, err.Error())
 		return
 	}
-	acceptance, failure := s.acceptCreateSessionIntent(request.Context(), key, body)
+	acceptance, failure := s.acceptCreateSessionIntent(request.Context(), key, body, nil)
 	if failure != nil {
 		writeError(response, failure.status, failure.code, failure.message)
 		return
@@ -1721,7 +1721,7 @@ func (s *Server) handleCreateSession(response http.ResponseWriter, request *http
 	writeJSON(response, http.StatusAccepted, acceptance)
 }
 
-func (s *Server) acceptCreateSessionIntent(ctx context.Context, key string, body []byte) (sessionAcceptance, *localOperationFailure) {
+func (s *Server) acceptCreateSessionIntent(ctx context.Context, key string, body []byte, mailboxSelection *audit.MailboxSelection) (sessionAcceptance, *localOperationFailure) {
 	var input createSessionRequest
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
@@ -1779,18 +1779,19 @@ func (s *Server) acceptCreateSessionIntent(ctx context.Context, key string, body
 		return sessionAcceptance{}, localFailure(http.StatusServiceUnavailable, "database_unavailable", "could not allocate intent identity")
 	}
 	record, duplicate, err := s.authority.AcceptLocalIntent(ctx, store.LocalIntentCreate{
-		IntentID:       domain.IntentID(intentID),
-		Operation:      "create_session",
-		ResourceID:     string(sessionID),
-		SessionID:      sessionID,
-		Target:         target,
-		Environment:    strings.TrimSpace(input.Environment),
-		Controller:     s.owner,
-		Source:         source,
-		RequestHash:    hash,
-		IdempotencyKey: key,
-		PayloadJSON:    canonical,
-		DeliveryState:  store.LocalIntentRecorded,
+		IntentID:         domain.IntentID(intentID),
+		Operation:        "create_session",
+		ResourceID:       string(sessionID),
+		SessionID:        sessionID,
+		Target:           target,
+		Environment:      strings.TrimSpace(input.Environment),
+		Controller:       s.owner,
+		Source:           source,
+		RequestHash:      hash,
+		IdempotencyKey:   key,
+		PayloadJSON:      canonical,
+		DeliveryState:    store.LocalIntentRecorded,
+		MailboxSelection: audit.CloneMailboxSelection(mailboxSelection),
 	})
 	if err != nil {
 		status, code := statusForStoreError(err)
@@ -1819,7 +1820,7 @@ func (s *Server) handleCreateJob(response http.ResponseWriter, request *http.Req
 		writeError(response, status, code, err.Error())
 		return
 	}
-	acceptance, failure := s.acceptCreateJobIntent(request.Context(), key, body)
+	acceptance, failure := s.acceptCreateJobIntent(request.Context(), key, body, nil)
 	if failure != nil {
 		writeError(response, failure.status, failure.code, failure.message)
 		return
@@ -1827,7 +1828,7 @@ func (s *Server) handleCreateJob(response http.ResponseWriter, request *http.Req
 	writeJSON(response, http.StatusAccepted, acceptance)
 }
 
-func (s *Server) acceptCreateJobIntent(ctx context.Context, key string, body []byte) (jobAcceptance, *localOperationFailure) {
+func (s *Server) acceptCreateJobIntent(ctx context.Context, key string, body []byte, mailboxSelection *audit.MailboxSelection) (jobAcceptance, *localOperationFailure) {
 	var input createJobRequest
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
@@ -1922,7 +1923,7 @@ func (s *Server) acceptCreateJobIntent(ctx context.Context, key string, body []b
 		SessionID: sessionID, CommandID: commandID, JobID: jobID, Target: target,
 		Environment: strings.TrimSpace(input.Environment), Controller: s.owner, Source: source,
 		RequestHash: hash, IdempotencyKey: key, PayloadJSON: canonical, ScriptBytes: []byte(script),
-		DeliveryState: store.LocalIntentRecorded,
+		DeliveryState: store.LocalIntentRecorded, MailboxSelection: audit.CloneMailboxSelection(mailboxSelection),
 	})
 	if err != nil {
 		status, code := statusForStoreError(err)

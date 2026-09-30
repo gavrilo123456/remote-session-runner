@@ -192,7 +192,7 @@ func p103Harness(t *testing.T, now *time.Time) *p095Harness {
 	h := newP095Harness(t)
 	processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
 		Importer: h.importer, Authority: h.authority, Controller: p063Owner(t), Operations: h.server,
-		Outbox: h.outbox, EventFiles: h.eventFiles, Now: func() time.Time { return *now },
+		Outbox: h.outbox, EventFiles: h.eventFiles, ExecutionResolver: testMailboxExecutionResolver{}, Now: func() time.Time { return *now },
 		RemoteUncertaintyWindow: dispatcher.RemoteUncertaintyWindow,
 	})
 	if err != nil {

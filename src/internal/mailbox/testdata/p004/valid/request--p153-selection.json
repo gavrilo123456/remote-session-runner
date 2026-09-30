@@ -1,0 +1,43 @@
+{
+  "cases": [
+    {
+      "name": "create session may omit both selection fields for inbox default",
+      "document": {
+        "request_id": "req-p153-default-create",
+        "idempotency_key": "key-p153-default-create",
+        "operation": "create_session"
+      }
+    },
+    {
+      "name": "run may omit both selection fields for inbox default",
+      "document": {
+        "request_id": "req-p153-default-run",
+        "idempotency_key": "key-p153-default-run",
+        "operation": "run",
+        "script": "printf default"
+      }
+    },
+    {
+      "name": "run accepts complete explicit override and metadata alias",
+      "document": {
+        "request_id": "req-p153-override",
+        "idempotency_key": "key-p153-override",
+        "operation": "run",
+        "environment": "linux-dev",
+        "execution_target": {"kind": "remote", "profile": "linux-host"},
+        "repository_alias": "analytics-dbt",
+        "script": "printf override"
+      }
+    },
+    {
+      "name": "partial selection is schema valid so processor can publish a rejection",
+      "document": {
+        "request_id": "req-p153-partial",
+        "idempotency_key": "key-p153-partial",
+        "operation": "run",
+        "environment": "linux-dev",
+        "script": "printf partial"
+      }
+    }
+  ]
+}

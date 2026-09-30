@@ -40,11 +40,15 @@ func (s *Server) CreateSessionIntent(ctx context.Context, request mailbox.Reques
 	if request.ExecutionIdempotencyKey == "" {
 		return mailbox.SessionIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox create request is invalid"}
 	}
-	body, err := mailboxCreateSessionBody(request.RawJSON)
+	selection, err := mailboxAuditSelection(request.MailboxID, request.ExecutionSelection)
 	if err != nil {
 		return mailbox.SessionIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox create request is invalid"}
 	}
-	acceptance, failure := s.acceptCreateSessionIntent(ctx, request.ExecutionIdempotencyKey, body)
+	body, err := mailboxCreateSessionBody(request)
+	if err != nil {
+		return mailbox.SessionIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox create request is invalid"}
+	}
+	acceptance, failure := s.acceptCreateSessionIntent(ctx, request.ExecutionIdempotencyKey, body, selection)
 	if failure != nil {
 		return mailbox.SessionIntent{}, mailboxOperationError(failure)
 	}
@@ -167,11 +171,15 @@ func (s *Server) RunJobIntent(ctx context.Context, request mailbox.Request) (mai
 	if request.Operation != "run" || request.RequestID == "" || request.IdempotencyKey == "" || request.ExecutionIdempotencyKey == "" {
 		return mailbox.RunIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox run request is invalid"}
 	}
+	selection, err := mailboxAuditSelection(request.MailboxID, request.ExecutionSelection)
+	if err != nil {
+		return mailbox.RunIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox run request is invalid"}
+	}
 	body, err := mailboxRunJobBody(request)
 	if err != nil {
 		return mailbox.RunIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox run request is invalid"}
 	}
-	acceptance, failure := s.acceptCreateJobIntent(ctx, request.ExecutionIdempotencyKey, body)
+	acceptance, failure := s.acceptCreateJobIntent(ctx, request.ExecutionIdempotencyKey, body, selection)
 	if failure != nil {
 		return mailbox.RunIntent{}, mailboxOperationError(failure)
 	}
@@ -315,8 +323,9 @@ func mailboxRunJobBody(request mailbox.Request) ([]byte, error) {
 		RequestID       string          `json:"request_id"`
 		IdempotencyKey  string          `json:"idempotency_key"`
 		Operation       string          `json:"operation"`
-		Environment     string          `json:"environment"`
-		ExecutionTarget targetRequest   `json:"execution_target"`
+		Environment     *string         `json:"environment,omitempty"`
+		ExecutionTarget *targetRequest  `json:"execution_target,omitempty"`
+		RepositoryAlias *string         `json:"repository_alias,omitempty"`
 		Source          *sourceRequest  `json:"source,omitempty"`
 		Script          *string         `json:"script"`
 		TimeoutSeconds  json.RawMessage `json:"timeout_seconds,omitempty"`
@@ -330,11 +339,15 @@ func mailboxRunJobBody(request mailbox.Request) ([]byte, error) {
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF || input.RequestID != request.RequestID || input.IdempotencyKey != request.IdempotencyKey ||
-		input.Operation != "run" || input.Environment != request.Environment || input.Script == nil || *input.Script != request.Script {
+		input.Operation != "run" || input.Script == nil || *input.Script != request.Script {
 		return nil, ErrConfiguration
 	}
+	environment, target, err := mailboxEffectiveSelection(input.Environment, input.ExecutionTarget, request)
+	if err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(createJobRequest{
-		Environment: input.Environment, ExecutionTarget: input.ExecutionTarget, Source: input.Source,
+		Environment: environment, ExecutionTarget: target, Source: input.Source,
 		Script: input.Script, TimeoutSeconds: input.TimeoutSeconds, Limits: input.Limits, Policy: input.Policy,
 	})
 	if err != nil {
@@ -404,30 +417,88 @@ func (s *Server) GetCloseSessionSnapshot(ctx context.Context, sessionIDText, ide
 	}, nil
 }
 
-func mailboxCreateSessionBody(raw []byte) ([]byte, error) {
+func mailboxCreateSessionBody(request mailbox.Request) ([]byte, error) {
 	var input struct {
-		Environment     json.RawMessage `json:"environment"`
-		ExecutionTarget json.RawMessage `json:"execution_target"`
-		Source          json.RawMessage `json:"source,omitempty"`
+		RequestID       string          `json:"request_id"`
+		IdempotencyKey  string          `json:"idempotency_key"`
+		Operation       string          `json:"operation"`
+		Environment     *string         `json:"environment,omitempty"`
+		ExecutionTarget *targetRequest  `json:"execution_target,omitempty"`
+		RepositoryAlias *string         `json:"repository_alias,omitempty"`
+		Source          *sourceRequest  `json:"source,omitempty"`
 		Limits          json.RawMessage `json:"limits,omitempty"`
 		Policy          json.RawMessage `json:"policy,omitempty"`
 	}
-	if err := json.Unmarshal(raw, &input); err != nil || len(input.Environment) == 0 || len(input.ExecutionTarget) == 0 {
+	decoder := json.NewDecoder(bytes.NewReader(request.RawJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
 		return nil, ErrConfiguration
 	}
-	fields := map[string]json.RawMessage{
-		"environment": input.Environment, "execution_target": input.ExecutionTarget,
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF || input.RequestID != request.RequestID || input.IdempotencyKey != request.IdempotencyKey || input.Operation != "create_session" {
+		return nil, ErrConfiguration
 	}
-	if len(input.Source) > 0 {
-		fields["source"] = input.Source
+	environment, target, err := mailboxEffectiveSelection(input.Environment, input.ExecutionTarget, request)
+	if err != nil {
+		return nil, err
 	}
-	if len(input.Limits) > 0 {
-		fields["limits"] = input.Limits
+	// RepositoryAlias is P153 routing and audit metadata. It intentionally does
+	// not enter the API request body. A repository_alias nested within source
+	// keeps its existing source-control meaning and is handled by parseSource.
+	return json.Marshal(createSessionRequest{
+		Environment: environment, ExecutionTarget: target,
+		Source: input.Source, Limits: input.Limits, Policy: input.Policy,
+	})
+}
+
+// mailboxEffectiveSelection chooses the persisted processor selection when it
+// is available. The mailbox JSON is still structurally parsed above, but it
+// cannot overwrite the trusted environment and target selected by mailbox
+// policy. Selection-free calls preserve the legacy explicit-body behavior.
+func mailboxEffectiveSelection(environment *string, target *targetRequest, request mailbox.Request) (string, targetRequest, error) {
+	if request.ExecutionSelection != nil {
+		selection := request.ExecutionSelection
+		if _, err := domain.NewExecutionTarget(selection.Target.Kind(), selection.Target.Profile()); err != nil {
+			return "", targetRequest{}, ErrConfiguration
+		}
+		return selection.Environment, targetRequest{
+			Kind: string(selection.Target.Kind()), Profile: selection.Target.Profile(),
+		}, nil
 	}
-	if len(input.Policy) > 0 {
-		fields["policy"] = input.Policy
+	if environment == nil || target == nil {
+		return "", targetRequest{}, ErrConfiguration
 	}
-	return json.Marshal(fields)
+	if request.Operation == "run" && *environment != request.Environment {
+		return "", targetRequest{}, ErrConfiguration
+	}
+	return *environment, *target, nil
+}
+
+func mailboxAuditSelection(mailboxID string, selection *store.MailboxExecutionSelection) (*audit.MailboxSelection, error) {
+	if selection == nil {
+		return nil, nil
+	}
+	result := &audit.MailboxSelection{
+		InboxID:           mailboxID,
+		ContextName:       selection.ContextName,
+		Environment:       selection.Environment,
+		TargetKind:        selection.Target.Kind(),
+		TargetProfile:     selection.Target.Profile(),
+		RepositoryAlias:   selection.RepositoryAlias,
+		RepositoryAliases: append([]string(nil), selection.RepositoryAliases...),
+	}
+	switch selection.Source {
+	case store.MailboxExecutionSelectionInboxDefault:
+		result.Source = audit.MailboxSelectionSourceInboxDefault
+	case store.MailboxExecutionSelectionRequestOverride:
+		result.Source = audit.MailboxSelectionSourceRequestOverride
+	default:
+		return nil, ErrConfiguration
+	}
+	if err := result.Validate(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // GetSession uses the same owner-scoped session read logic as Unix-socket API

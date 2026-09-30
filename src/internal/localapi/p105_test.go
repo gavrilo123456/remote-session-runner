@@ -68,7 +68,7 @@ func TestP105I06MailboxHandlersCannotReachRemoteDependencies(t *testing.T) {
 			operations := &p105TripwireOperations{SessionOperations: h.server, tripwires: tripwires}
 			processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
 				Importer: h.importer, Authority: h.authority, Controller: p063Owner(t), Operations: operations,
-				Outbox: h.outbox, EventFiles: h.eventFiles,
+				Outbox: h.outbox, EventFiles: h.eventFiles, ExecutionResolver: testMailboxExecutionResolver{},
 			})
 			if err != nil {
 				t.Fatal(err)

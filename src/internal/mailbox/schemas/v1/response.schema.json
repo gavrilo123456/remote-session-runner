@@ -4,6 +4,7 @@
   "title": "Remote Session Runner v1 mailbox response",
   "type": "object",
   "properties": {
+    "inbox_id": { "type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z][a-z0-9-]{0,62}$" },
     "request_id": { "type": "string", "minLength": 1 },
     "operation": { "type": "string", "enum": ["create_session", "get_session", "submit_command", "get_command", "cancel_command", "close_session", "run"] },
     "request_state": { "type": "string", "enum": ["accepted", "complete", "rejected", "indeterminate"] },
@@ -27,6 +28,17 @@
     "output_unavailable_reason": { "type": "string", "enum": ["capture_boundary_unconfirmed", "remote_event_gap", "retention_expired"] },
     "events_file": { "type": "string", "pattern": "^events/[^/]+\\.ndjson$" },
     "teardown_outcome": { "type": "string", "enum": ["closed", "not_created", "lost"] },
+    "execution_selection_source": { "type": "string", "enum": ["inbox_default", "request_override"] },
+    "resolved_environment": { "type": "string", "minLength": 1 },
+    "resolved_execution_target": {
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string", "enum": ["local", "remote"] },
+        "profile": { "type": "string", "minLength": 1 }
+      },
+      "required": ["kind", "profile"],
+      "additionalProperties": false
+    },
     "error": {
       "type": "object",
       "properties": {
