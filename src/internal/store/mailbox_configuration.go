@@ -125,17 +125,8 @@ func validMailboxConfigurationRoot(root string) bool {
 }
 
 func validateConfiguredMailboxSet(ctx context.Context, query mailboxConfigurationQuerier, configurations, legacyBaseline map[string]string, nowTime time.Time) error {
-	registered, err := readRegisteredMailboxConfigurations(ctx, query)
-	if err != nil {
+	if err := validateRegisteredMailboxRoots(ctx, query, configurations, legacyBaseline); err != nil {
 		return err
-	}
-	if len(registered) == 0 {
-		registered = legacyBaseline
-	}
-	for mailboxID, root := range registered {
-		if configuredRoot, exists := configurations[mailboxID]; !exists || configuredRoot != root {
-			return ErrMailboxConfigurationPending
-		}
 	}
 
 	mailboxIDs := make([]string, 0, len(configurations))
@@ -153,7 +144,7 @@ func validateConfiguredMailboxSet(ctx context.Context, query mailboxConfiguratio
 	}
 	arguments = append(arguments, formatStoredTime(nowTime.UTC()))
 	var pending int
-	err = query.QueryRowContext(ctx, `
+	err := query.QueryRowContext(ctx, `
 SELECT EXISTS(
   SELECT 1 FROM mailbox_exchanges
   WHERE mailbox_id NOT IN (`+strings.Join(placeholders, ",")+`)
@@ -173,6 +164,45 @@ SELECT EXISTS(
 	}
 	if pending != 0 {
 		return ErrMailboxConfigurationPending
+	}
+	return nil
+}
+
+// validateLegacyConfiguredMailboxSet checks schema 24 before the installer
+// activation boundary. All of its mailbox work belongs to the implicit
+// default inbox, so retaining that root preserves every legacy exchange. The
+// caller has already verified the exact legacy schema and holds only a
+// read-only connection.
+func validateLegacyConfiguredMailboxSet(ctx context.Context, query mailboxConfigurationQuerier, configurations, legacyBaseline []MailboxConfiguration) error {
+	normalized, err := normalizeMailboxConfigurations(configurations)
+	if err != nil {
+		return err
+	}
+	baseline, err := normalizeOptionalMailboxConfigurations(legacyBaseline)
+	if err != nil {
+		return err
+	}
+	if _, exists := baseline[DefaultMailboxID]; !exists {
+		// Schema 24 has no durable namespace column: every exchange belongs to
+		// the implicit default inbox. Without the caller's known default root,
+		// this read-only preflight cannot prove that the candidate retains it.
+		return ErrMailboxConfigurationPending
+	}
+	return validateRegisteredMailboxRoots(ctx, query, normalized, baseline)
+}
+
+func validateRegisteredMailboxRoots(ctx context.Context, query mailboxConfigurationQuerier, configurations, legacyBaseline map[string]string) error {
+	registered, err := readRegisteredMailboxConfigurations(ctx, query)
+	if err != nil {
+		return err
+	}
+	if len(registered) == 0 {
+		registered = legacyBaseline
+	}
+	for mailboxID, root := range registered {
+		if configuredRoot, exists := configurations[mailboxID]; !exists || configuredRoot != root {
+			return ErrMailboxConfigurationPending
+		}
 	}
 	return nil
 }

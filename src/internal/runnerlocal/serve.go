@@ -75,9 +75,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 // runValidateConfig is the installer-safe configuration check. It creates no
 // service paths and makes no remote probe. With --check-retained-mailboxes it
 // additionally opens an existing authority database read-only, so an inbox
-// removal with live work is rejected before LaunchAgents are replaced. Its
-// output deliberately contains only schema and configured inbox identifiers,
-// never paths or secret references.
+// removal with live work is rejected before LaunchAgents are replaced. Schema
+// 24 is checked as its implicit default inbox without migration; the later
+// activation operation is intentionally after the installer's no-rollback
+// boundary. Its output deliberately contains only schema and configured inbox
+// identifiers, never paths or secret references.
 func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("runner-local validate-config", flag.ContinueOnError)
 	flags.SetOutput(stderr)

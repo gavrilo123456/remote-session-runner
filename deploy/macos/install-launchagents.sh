@@ -336,11 +336,13 @@ if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxe
 fi
 
 # This is the irreversible boundary. A same-user file producer can publish a
-# marker-last request as soon as the candidate layout is visible. Do not revive
-# the prior configuration after this point: the staged runner-local records the
-# complete candidate roots before mac.yaml is handed off, and a failed candidate
-# remains available for a safe repair/retry rather than stranding a newly
-# published marker.
+# marker-last request as soon as the candidate layout is visible, and the
+# activation command may migrate a schema-24 database that the prior V1 binary
+# cannot reopen. Do not revive the prior configuration after this point: the
+# staged runner-local records the complete candidate roots before mac.yaml is
+# handed off, and a failed candidate remains available for a safe repair/retry
+# rather than stranding a newly published marker or restarting V1 on a newer
+# schema.
 candidate_activation_started=1
 if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --config "$selected_config"; then
 	printf '%s\n' 'Candidate mailbox activation could not be recorded; leaving the candidate state in place for safe repair.' >&2

@@ -24,6 +24,12 @@ const (
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
 	CurrentSchemaVersion = 27
+
+	// legacySingleMailboxSchemaVersion is the last schema that represented all
+	// mailbox work in the implicit default inbox. It is accepted only by the
+	// read-only installer preflight; activation performs its later migration
+	// after the installer has crossed its no-rollback boundary.
+	legacySingleMailboxSchemaVersion = 24
 )
 
 var (
@@ -284,9 +290,12 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 
 // ValidateConfiguredMailboxSetAtPath performs the retained-mailbox portion of
 // a configuration preflight without creating a database, applying migrations,
-// or making any write. A missing database is valid for a first installation;
-// an existing database is opened read-only and checked for work owned by an
-// inbox absent from mailboxIDs.
+// or making any write. A missing database is valid for a first installation.
+// An existing current database is opened read-only and checked for work owned
+// by an inbox absent from the candidate. The final single-mailbox schema (24)
+// is also checked read-only as one implicit default inbox, so a candidate may
+// add inboxes but cannot remove or relocate that legacy root before the later
+// activation migration.
 func ValidateConfiguredMailboxSetAtPath(ctx context.Context, path string, configurations, legacyBaseline []MailboxConfiguration) error {
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
 		return ErrDatabasePath
@@ -334,11 +343,71 @@ func ValidateConfiguredMailboxSetAtPath(ctx context.Context, path string, config
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("connect to SQLite database read-only: %w", err)
 	}
+	legacySchema, err := isLegacySingleMailboxSchema(ctx, db)
+	if err != nil {
+		return err
+	}
+	if legacySchema {
+		return validateLegacyConfiguredMailboxSet(ctx, db, configurations, legacyBaseline)
+	}
 	authority, err := NewAuthorityStore(db)
 	if err != nil {
 		return err
 	}
 	return authority.ValidateConfiguredMailboxSet(ctx, configurations, legacyBaseline)
+}
+
+// isLegacySingleMailboxSchema verifies the read-only database history before
+// recognizing exactly schema 24's request_id-based mailbox exchange table.
+// A malformed or older schema must not be treated as a safe candidate simply
+// because it lacks the newer mailbox_id column.
+func isLegacySingleMailboxSchema(ctx context.Context, db *sql.DB) (bool, error) {
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return false, fmt.Errorf("acquire SQLite read-only schema connection: %w", err)
+	}
+	defer connection.Close()
+
+	version, err := userVersion(ctx, connection)
+	if err != nil {
+		return false, err
+	}
+	if version < 0 || version > CurrentSchemaVersion {
+		return false, fmt.Errorf("%w: got %d, current %d", ErrSchemaVersion, version, CurrentSchemaVersion)
+	}
+	if err := verifyMigrationHistory(ctx, connection, version); err != nil {
+		return false, err
+	}
+
+	rows, err := connection.QueryContext(ctx, `SELECT name FROM pragma_table_info('mailbox_exchanges')`)
+	if err != nil {
+		return false, fmt.Errorf("inspect read-only mailbox exchange schema: %w", err)
+	}
+	defer rows.Close()
+	hasMailboxID := false
+	hasLegacyRequestID := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, fmt.Errorf("read read-only mailbox exchange schema: %w", err)
+		}
+		switch name {
+		case "mailbox_id":
+			hasMailboxID = true
+		case "request_id":
+			hasLegacyRequestID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate read-only mailbox exchange schema: %w", err)
+	}
+	if hasMailboxID {
+		return false, nil
+	}
+	if version == legacySingleMailboxSchemaVersion && hasLegacyRequestID {
+		return true, nil
+	}
+	return false, fmt.Errorf("%w: mailbox exchange schema at version %d", ErrSchemaVersion, version)
 }
 
 func dataSourceName(path string) string {
