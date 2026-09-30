@@ -17,7 +17,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-p137-macos-host test-p137-linux-host test-p138-macos-host test-p138-linux-host test-p139-macos-host test-p140-linux-host test-p140-twohost test-p141-macos-host test-p141-linux-host test-p142-macos-host test-p142-linux-host test-p155-macos-multi-inbox test-p157-sandbox-host test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
+.PHONY: check-go test test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-p137-macos-host test-p137-linux-host test-p138-macos-host test-p138-linux-host test-p139-macos-host test-p140-linux-host test-p140-twohost test-p141-macos-host test-p141-linux-host test-p142-macos-host test-p142-linux-host test-p155-macos-multi-inbox test-p157-sandbox-host test-p158-slidestud-mailbox test-p159-slidestud-workspace-mailbox test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -115,6 +115,12 @@ test-p157-sandbox-host: check-go
 # target fields, then verifies the response, events, and exact ACK.
 test-p158-slidestud-mailbox: check-go
 	RSR_P158_SLIDESTUD_MAILBOX_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocal -run '^TestP158SlideStudioExternalMailboxDefaultSandboxGate$$' -count=1 -v
+
+# Installed external SlideStudio inbox -> configured sandbox-host default. The
+# test writes ordinary exact-0644 request and ACK pairs directly, then checks
+# that Runner still keeps response and event projections private at 0600.
+test-p159-slidestud-workspace-mailbox: check-go
+	RSR_P159_SLIDESTUD_WORKSPACE_MAILBOX_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocal -run '^TestP159SlideStudioWorkspaceMailboxDefaultSandboxGate$$' -count=1 -v
 
 # Public endpoint validation is deliberately opt-in and requires owner-only
 # credential fixtures outside the repository. The test is pinned to the

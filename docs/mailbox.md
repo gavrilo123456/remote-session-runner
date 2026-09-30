@@ -1,17 +1,19 @@
 # File mailbox guide
 
 The mailbox is an owner-only **Mac ingress and response projection** for a
-native automation integration. It is not a shell, a terminal, or an execution
-authority. It can submit Mac-local work and, when the permanent restricted SSH
-bridge is ready, queued work on an accepted Ubuntu profile that the selected
-inbox permits. It cannot create or manage resources made through direct mTLS
-HTTPS.
+file-producing automation integration. It is not a shell, a terminal, or an
+execution authority. It can submit Mac-local work and, when the permanent
+restricted SSH bridge is ready, queued work on an accepted Ubuntu profile that
+the selected inbox permits. It cannot create or manage resources made through
+direct mTLS HTTPS.
 
 There is no `runner mailbox` CLI command. Use the [CLI guide](user-guide.md)
-for interactive operator work. A file-producing integration uses the internal
-in-module `src/internal/mailboxclient` package so that JSON creation,
-exclusive creation, no-follow checks, file sync, directory sync, and
-marker-last publication happen together.
+for interactive operator work. The internal in-module
+`src/internal/mailboxclient` package is the preferred publisher because it
+performs JSON creation, exclusive creation, no-follow checks, file sync,
+directory sync, and marker-last publication together. A workspace integration
+that can create only normal `0644` files may use the documented direct-file
+ingress path below.
 
 ## Active mailbox roots
 
@@ -34,11 +36,14 @@ $MAILBOX_ROOT/
 └── acks/      <request_id>.json and <request_id>.ready, written by the client
 ```
 
-The root and its four children are `0700`. Client JSON and empty `.ready`
-markers are regular non-symlink files at `0600`. The namespace is part of the
-durable identity: the same client-visible request ID and idempotency key may be
-used once in each configured root, yielding isolated durable resources,
-responses, events, retries, acknowledgements, and cleanup.
+The root and its four children are selected-user-owned `0700`. Client request
+and ACK JSON plus their empty `.ready` markers must be selected-user-owned,
+regular non-symlink files at exact `0600` (native publisher) or exact `0644`
+(direct workspace publisher). Runner-produced `outbox` JSON and `events`
+NDJSON remain exact `0600`. The namespace is part of the durable identity: the
+same client-visible request ID and idempotency key may be used once in each
+configured root, yielding isolated durable resources, responses, events,
+retries, acknowledgements, and cleanup.
 
 ## External mailbox roots
 
@@ -95,10 +100,36 @@ if err := client.WriteAcknowledgment(requestID, response); err != nil {
 ```
 
 `WaitResponse` returns the first visible or later response revision; it does
-not promise that the revision is terminal. Do not replace this sequence with
-terminal-created JSON or `.ready` files: an ordinary redirection cannot provide
-the package's exclusive-create, no-follow, file-sync, and directory-sync
+not promise that the revision is terminal. The native publisher is the only
+path with its exclusive-create, no-follow, file-sync, and directory-sync
 properties.
+
+## Use direct workspace-file ingress
+
+Use this path when a workspace automation or coding agent can create ordinary
+files but cannot call the native Go package. It is accepted only inside an
+already configured mailbox root whose root and four child directories are
+selected-user-owned `0700`.
+
+1. Choose the configured root and generate a new safe request ID. Do not reuse
+   a retained request ID.
+2. Create the complete JSON document at
+   `inbox/<request_id>.json` at exact `0644`.
+3. Close that JSON file. Do not change it afterward.
+4. Create an empty `inbox/<request_id>.ready` at exact `0644` **last**.
+5. Read `outbox/<request_id>.json` until its `request_state` is terminal, then
+   read its advertised event prefix from `events/` through
+   `available_event_sequence`.
+6. Create an ACK JSON at `acks/<request_id>.json` containing the exact
+   `request_id`, `response_revision`, and `available_event_sequence` from the
+   response. Then create its empty exact-`0644` `.ready` marker last.
+
+The importer rejects a missing pair, a changed mode, a symlink, a non-regular
+file, a file owned by another account, unsafe names, incomplete JSON, or an
+invalid request/ACK schema. It removes a durably accepted input pair and ACK
+pair. Direct-file publication supports ordinary workspace tools; it does not
+provide native exclusive-create, no-follow, file-sync, directory-sync, or
+crash-durability guarantees.
 
 ## New-work target resolution
 
@@ -123,8 +154,9 @@ or chooses a host.
 
 ### Useful request shapes
 
-The JSON is passed to `WriteRequest`; the native client derives its location
-from the selected root and request ID.
+The JSON is passed to `WriteRequest` for native publication. A direct
+workspace publisher writes the same complete document to its selected root's
+`inbox/<request_id>.json`, then creates the empty marker as described above.
 
 **Use the default root's local default:**
 
@@ -189,9 +221,9 @@ unavailable until its own P157 host gate passes.
 }
 ```
 
-Publish this JSON through `mailboxclient.New` with
-`/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`. It deliberately
-omits both selection fields, so it resolves as
+Publish this JSON through `mailboxclient.New`, or create its direct exact-`0644`
+pair, in `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`. It
+deliberately omits both selection fields, so it resolves as
 `execution_selection_source: "inbox_default"` to `sandbox-dev` /
 `remote/sandbox-host`. P158 accepted this native marker-last route with
 complete untruncated output, retained events, and the exact ACK. It is queued
@@ -269,8 +301,9 @@ is authoritative retained content. An incomplete response can name an
 
 After the advertised event prefix is read, `WriteAcknowledgment` writes the
 exact `request_id`, `response_revision`, and available event cursor in the
-same mailbox root. A valid ACK is durably recorded before its pair is removed.
-An ACK in one root cannot clean an artifact in another root.
+same mailbox root. A direct workspace publisher writes those same fields into
+its exact-`0644` ACK pair. A valid ACK is durably recorded before its pair is
+removed. An ACK in one root cannot clean an artifact in another root.
 
 ## Recovery and retention
 
@@ -287,5 +320,5 @@ teardown, and the retained event boundary agree.
   is not yet verified.
 
 For route and service checks, use [operations](operations.md). For the P155,
-P157, and P158 proofs and the per-host P157 boundary, use
+P157, P158, and P159 evidence and the per-host P157 boundary, use
 [current-host evidence](current-host-evidence.md).

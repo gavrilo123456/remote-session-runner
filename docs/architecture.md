@@ -35,9 +35,9 @@ flowchart LR
     LocalD[runner-locald\nlocal execution authority]
     MacBash[Persistent Bash\nmacOS permissions]
 
-    Default -->|native marker-last exchange| Router
-    Analytics -->|native marker-last exchange| Router
-    SlideStudio -->|native marker-last exchange| Router
+    Default -->|native 0600 or workspace 0644 marker-last exchange| Router
+    Analytics -->|native 0600 or workspace 0644 marker-last exchange| Router
+    SlideStudio -->|native 0600 or workspace 0644 marker-last exchange| Router
     CLI -->|endpoint local| Router
     Router <--> LocalDB
     Router -->|mac-local| LocalD
@@ -181,7 +181,7 @@ incomplete or under investigation rather than being reported as successful.
 | Boundary | Enforcement | Practical result |
 | --- | --- | --- |
 | Mac ingress | Owner-only Unix sockets, `0700` mailbox trees, safe external ancestors, and GUI launchd services | Only `tomasz.walczuk` should operate the local services. |
-| Mailbox publication | Native exclusive-create, file and directory sync, JSON then empty marker last | A terminal request is not produced by a partially written draft. |
+| Mailbox publication | Native publisher: exclusive-create, no-follow, file and directory sync, JSON then empty marker last. Direct workspace publisher: complete exact-`0644` JSON then empty marker last inside a `0700` tree. | Both paths reject unsafe inputs; only the native publisher has the stronger publication and crash-durability properties. Runner response/event projections remain `0600`. |
 | Direct Ubuntu ingress | TLS 1.3 mandatory mTLS and the certificate-principal map | A client certificate URI SAN must map to the selected controller. |
 | Queued Ubuntu ingress | Pinned SSH host key, one forced command, controller fingerprint map, owner-only Runner socket | The bridge permits no general SSH shell. |
 | Script execution | OS-account permissions | A workspace is a starting directory, not containment. |

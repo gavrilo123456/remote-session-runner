@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // ReadyRequestCount reports published regular request markers waiting in the
@@ -56,8 +55,7 @@ func inspectOwnerDirectory(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("%w: inspect %s: %v", ErrMailboxPath, path, err)
 	}
-	stat, ownerOK := info.Sys().(*syscall.Stat_t)
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !ownerOK || int(stat.Uid) != os.Geteuid() || info.Mode().Perm() != MailboxDirectoryMode {
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !mailboxFileOwnedByCurrentUser(info) || info.Mode().Perm() != MailboxDirectoryMode {
 		return false, fmt.Errorf("%w: %s must be an owner-only directory", ErrMailboxPath, path)
 	}
 	return true, nil
@@ -84,7 +82,7 @@ func readyRequestCountAtInbox(ctx context.Context, inbox string) (int64, error) 
 		if err != nil {
 			return count, fmt.Errorf("%w: inspect inbox marker: %v", ErrMailboxPath, err)
 		}
-		if info.Mode().IsRegular() && info.Mode().Perm() == MailboxFileMode {
+		if safeIngressFileInfo(info) {
 			count++
 		}
 	}

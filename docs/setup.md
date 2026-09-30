@@ -182,8 +182,10 @@ remains after a successful install while a staged copy becomes active
 `mac.yaml`.
 
 Verify every configured mailbox tree and the running service health before
-publishing new work. Use the native mailbox-client integration in [the mailbox guide](mailbox.md),
-not terminal-created request files.
+publishing new work. Use the native mailbox-client integration in [the mailbox
+guide](mailbox.md) when possible. A workspace integration may instead publish
+the documented exact-`0644` JSON-plus-marker pairs inside a configured `0700`
+mailbox tree; it does not inherit the native publisher's durability guarantees.
 
 ## 4. Install or refresh an accepted Ubuntu service
 
@@ -373,5 +375,5 @@ not mark the profile available. It must never reuse an accepted host's
 certificates, state database, bridge authorization, or proof.
 
 For normal use after setup, follow the [CLI guide](user-guide.md) or the
-native [mailbox guide](mailbox.md). The current accepted status is indexed in
+[mailbox guide](mailbox.md). The current accepted status is indexed in
 [current-host evidence](current-host-evidence.md).

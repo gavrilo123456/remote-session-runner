@@ -30,8 +30,13 @@ const (
 	RequestSuffix = ".json"
 	// MailboxDirectoryMode is the owner-only mode for the mailbox root/inbox.
 	MailboxDirectoryMode os.FileMode = 0o700
-	// MailboxFileMode is the owner-only mode for request and marker files.
+	// MailboxFileMode is the exact private mode for native-client pairs and
+	// every Runner-produced outbox/event projection.
 	MailboxFileMode os.FileMode = 0o600
+	// MailboxWorkspaceIngressFileMode is the exact mode accepted for a direct
+	// workspace-produced request or ACK pair inside an owner-only mailbox tree.
+	// It is never used for Runner-produced output or events.
+	MailboxWorkspaceIngressFileMode os.FileMode = 0o644
 )
 
 var (
@@ -253,11 +258,11 @@ func (i *Importer) importMarker(ctx context.Context, markerName string, handler 
 	result.RequestID = requestID
 	requestName := requestID + RequestSuffix
 	result.RequestPath = filepath.Join(i.inbox, requestName)
-	if err := validateMailboxFile(result.MarkerPath, true); err != nil {
+	if err := validateMailboxIngressFile(result.MarkerPath, true); err != nil {
 		result.Reason = err.Error()
 		return result, nil
 	}
-	if err := validateMailboxFile(result.RequestPath, false); err != nil {
+	if err := validateMailboxIngressFile(result.RequestPath, false); err != nil {
 		result.Reason = err.Error()
 		return result, nil
 	}
@@ -479,14 +484,21 @@ func ensureOwnerDirectory(path string) error {
 	if err != nil {
 		return fmt.Errorf("%w: inspect %s: %v", ErrMailboxPath, path, err)
 	}
-	stat, ownerOK := info.Sys().(*syscall.Stat_t)
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !ownerOK || int(stat.Uid) != os.Geteuid() || info.Mode().Perm() != MailboxDirectoryMode {
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !mailboxFileOwnedByCurrentUser(info) || info.Mode().Perm() != MailboxDirectoryMode {
 		return fmt.Errorf("%w: %s must be an owner-only directory", ErrMailboxPath, path)
 	}
 	return nil
 }
 
-func validateMailboxFile(path string, marker bool) error {
+func mailboxFileOwnedByCurrentUser(info os.FileInfo) bool {
+	if info == nil {
+		return false
+	}
+	stat, ownerOK := info.Sys().(*syscall.Stat_t)
+	return ownerOK && int(stat.Uid) == os.Geteuid()
+}
+
+func validateMailboxIngressFile(path string, marker bool) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if marker {
@@ -503,10 +515,37 @@ func validateMailboxFile(path string, marker bool) error {
 	if !info.Mode().IsRegular() {
 		return errors.New("mailbox input must be a regular file")
 	}
-	if info.Mode().Perm() != MailboxFileMode {
-		return fmt.Errorf("mailbox file mode is %04o, want 0600", info.Mode().Perm())
+	if !mailboxFileOwnedByCurrentUser(info) {
+		return errors.New("mailbox input must be owned by the selected user")
+	}
+	if !isMailboxIngressFileMode(info.Mode().Perm()) {
+		return fmt.Errorf("mailbox ingress file mode is %04o, want 0600 or 0644", info.Mode().Perm())
 	}
 	return nil
+}
+
+func validateMailboxPrivateFile(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.New("mailbox file is missing")
+	}
+	if err != nil {
+		return fmt.Errorf("inspect mailbox file: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("mailbox symlink is rejected")
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("mailbox file must be a regular file")
+	}
+	if info.Mode().Perm() != MailboxFileMode {
+		return fmt.Errorf("mailbox private file mode is %04o, want 0600", info.Mode().Perm())
+	}
+	return nil
+}
+
+func isMailboxIngressFileMode(mode os.FileMode) bool {
+	return mode == MailboxFileMode || mode == MailboxWorkspaceIngressFileMode
 }
 
 func readBounded(path string, maximum int) ([]byte, error) {

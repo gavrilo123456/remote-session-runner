@@ -41,6 +41,23 @@ func TestP088SyncedEventFileRepairsTrailingLineAndPreservesCursor(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != MailboxFileMode {
+		t.Fatalf("initial event file mode=%v err=%v", info, err)
+	}
+	if err := os.Chmod(path, MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := files.Read(command.CommandID); err == nil {
+		t.Fatal("event read accepted workspace ingress mode")
+	}
+	if repairedCursor, err := projector.Publish(context.Background(), files, command.CommandID); err != nil || repairedCursor != 4 {
+		t.Fatalf("mode repair publish cursor=%d err=%v", repairedCursor, err)
+	}
+	info, err = os.Stat(path)
+	if err != nil || info.Mode().Perm() != MailboxFileMode {
+		t.Fatalf("mode-repaired event file=%v err=%v", info, err)
+	}
 	partial, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, MailboxFileMode)
 	if err != nil {
 		t.Fatal(err)

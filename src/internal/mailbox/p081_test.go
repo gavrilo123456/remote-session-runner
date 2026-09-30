@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/domain"
 )
@@ -45,6 +47,33 @@ func TestP081MarkerLastImportsOnlyAfterReadyAndPassesExactBytes(t *testing.T) {
 	}
 }
 
+func TestP081ImportsWorkspaceModeRequestPair(t *testing.T) {
+	root := p081MailboxRoot(t)
+	var received []Request
+	importer, err := NewImporter(root, func(_ context.Context, request Request) error {
+		received = append(received, request)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID := "req-workspace-mode"
+	raw := p081RunJSON(t, requestID, "printf 'workspace\\n'")
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), requestID+RequestSuffix), raw, MailboxWorkspaceIngressFileMode)
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), requestID+ReadySuffix), nil, MailboxWorkspaceIngressFileMode)
+
+	results, err := importer.Import(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Status != ResultAccepted || len(received) != 1 {
+		t.Fatalf("workspace-mode import results=%+v received=%d", results, len(received))
+	}
+	if received[0].RequestID != requestID || string(received[0].RawJSON) != string(raw) {
+		t.Fatalf("workspace-mode request = %+v", received[0])
+	}
+}
+
 func TestP081RejectsUnsafeNamesSymlinksNonRegularAndWrongModes(t *testing.T) {
 	root := p081MailboxRoot(t)
 	var received int
@@ -75,22 +104,40 @@ func TestP081RejectsUnsafeNamesSymlinksNonRegularAndWrongModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "req-dir.ready"), nil, 0o600)
-	// Wrong owner-only mode is rejected, even for otherwise valid JSON.
-	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "req-mode.json"), p081RunJSON(t, "req-mode", "echo mode"), 0o644)
-	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "req-mode.ready"), nil, 0o600)
+	// Only the exact ingress modes are accepted; group-readable variants are
+	// rejected even when the JSON and marker otherwise look valid.
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "req-mode-0640.json"), p081RunJSON(t, "req-mode-0640", "echo mode"), 0o640)
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "req-mode-0640.ready"), nil, 0o600)
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "req-mode-0664.json"), p081RunJSON(t, "req-mode-0664", "echo mode"), 0o664)
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "req-mode-0664.ready"), nil, 0o600)
+	// The marker itself must also have an exact ingress mode.
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "req-marker-mode.json"), p081RunJSON(t, "req-marker-mode", "echo marker mode"), 0o600)
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "req-marker-mode.ready"), nil, 0o640)
 	// Unsafe marker basename never maps to a path outside inbox.
 	writeMailboxFile(t, filepath.Join(importer.InboxPath(), "bad name.ready"), nil, 0o600)
 	results, err := importer.Import(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 5 || received != 0 {
+	if len(results) != 7 || received != 0 {
 		t.Fatalf("unsafe input results=%+v handler_calls=%d", results, received)
 	}
 	for _, result := range results {
 		if result.Status != ResultRejected {
 			t.Fatalf("unsafe input accepted: %+v", result)
 		}
+	}
+}
+
+func TestP081RejectsMismatchedIngressFileOwner(t *testing.T) {
+	currentOwner := uint32(os.Geteuid())
+	current := p081FileInfo{mode: MailboxFileMode, stat: &syscall.Stat_t{Uid: currentOwner}}
+	if !mailboxFileOwnedByCurrentUser(current) || !safeIngressFileInfo(current) {
+		t.Fatal("current-user ingress file was rejected")
+	}
+	mismatched := p081FileInfo{mode: MailboxWorkspaceIngressFileMode, stat: &syscall.Stat_t{Uid: currentOwner + 1}}
+	if mailboxFileOwnedByCurrentUser(mismatched) || safeIngressFileInfo(mismatched) {
+		t.Fatal("mismatched ingress file owner was accepted")
 	}
 }
 
@@ -196,3 +243,15 @@ func p081MailboxRoot(t *testing.T) string {
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	return root
 }
+
+type p081FileInfo struct {
+	mode os.FileMode
+	stat *syscall.Stat_t
+}
+
+func (i p081FileInfo) Name() string       { return "p081" }
+func (i p081FileInfo) Size() int64        { return 0 }
+func (i p081FileInfo) Mode() os.FileMode  { return i.mode }
+func (i p081FileInfo) ModTime() time.Time { return time.Time{} }
+func (i p081FileInfo) IsDir() bool        { return false }
+func (i p081FileInfo) Sys() any           { return i.stat }

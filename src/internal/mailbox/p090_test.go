@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +34,8 @@ func TestP090DurableRequestReceiptRemovesPairAndReplaysAfterCommit(t *testing.T)
 		t.Fatal(err)
 	}
 	requestID := "req-p090-replay"
-	writeP082MailboxPair(t, importer, requestID, "key-p090-replay", "echo durable")
+	writeP090RequestPair(t, importer, requestID, "key-p090-replay", "echo durable", MailboxWorkspaceIngressFileMode)
+	assertMailboxPairMode(t, importer.InboxPath(), requestID, MailboxWorkspaceIngressFileMode)
 	callbackCount := 0
 	processor, err := NewReceiptProcessor(ReceiptProcessorOptions{Importer: importer, Authority: authority, Controller: owner, Handler: func(context.Context, Request) error {
 		callbackCount++
@@ -162,7 +164,8 @@ func TestP090AckImporterRemovesOnlyDurablyMatchedPair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeP090AckPair(t, ackImporter, "req-p090-ack", 1, int64Ptr(3))
+	writeP090AckPairWithMode(t, ackImporter, "req-p090-ack", 1, int64Ptr(3), MailboxWorkspaceIngressFileMode)
+	assertMailboxPairMode(t, ackImporter.AcksPath(), "req-p090-ack", MailboxWorkspaceIngressFileMode)
 	// Model a stop just after the SQLite ACK transaction. Re-import observes
 	// the exact duplicate as durable and completes the pair removal.
 	ackRecord, err := authority.AcknowledgeMailboxExchange(context.Background(), store.MailboxAcknowledgement{RequestID: "req-p090-ack", ResponseRevision: 1, AvailableEventSequence: int64Ptr(3)})
@@ -227,6 +230,40 @@ func TestP090AckImporterPreservesNilAndZeroCursorSemantics(t *testing.T) {
 	}
 }
 
+func TestP090AckImporterRejectsUnsupportedIngressModes(t *testing.T) {
+	root := p081MailboxRoot(t)
+	db, err := store.Open(context.Background(), filepath.Join(root, "state", "mailbox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	authority, err := store.NewAuthorityStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ackImporter, err := NewAckImporter(AckImporterOptions{Root: root, Authority: authority})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for requestID, mode := range map[string]os.FileMode{
+		"req-p090-ack-0640": 0o640,
+		"req-p090-ack-0664": 0o664,
+	} {
+		writeP090AckPairWithMode(t, ackImporter, requestID, 1, nil, mode)
+	}
+
+	results, err := ackImporter.Import(context.Background())
+	if err != nil || len(results) != 2 {
+		t.Fatalf("unsupported ACK modes results=%+v err=%v", results, err)
+	}
+	for _, result := range results {
+		if result.Status != ResultRejected || !strings.Contains(result.Reason, "0600 or 0644") {
+			t.Fatalf("unsupported ACK mode result=%+v", result)
+		}
+		assertMailboxPairPresent(t, ackImporter.AcksPath(), result.RequestID)
+	}
+}
+
 func TestP090FakeClockCleansOnlyOldSafeUnmarkedDrafts(t *testing.T) {
 	root := p081MailboxRoot(t)
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
@@ -238,10 +275,13 @@ func TestP090FakeClockCleansOnlyOldSafeUnmarkedDrafts(t *testing.T) {
 	old := now.Add(-UnmarkedDraftLifetime)
 	writeP090Draft(t, filepath.Join(inbox, "req-old-inbox.json"), old, 0o600)
 	writeP090Draft(t, filepath.Join(acks, "req-old-ack.json"), old, 0o600)
+	writeP090Draft(t, filepath.Join(inbox, "req-old-workspace-inbox.json"), old, MailboxWorkspaceIngressFileMode)
+	writeP090Draft(t, filepath.Join(acks, "req-old-workspace-ack.json"), old, MailboxWorkspaceIngressFileMode)
 	writeP090Draft(t, filepath.Join(inbox, "req-recent.json"), now.Add(-23*time.Hour), 0o600)
 	writeP090Draft(t, filepath.Join(inbox, "req-marked.json"), old, 0o600)
 	writeMailboxFile(t, filepath.Join(inbox, "req-marked.ready"), nil, 0o600)
-	writeP090Draft(t, filepath.Join(inbox, "req-wrong-mode.json"), old, 0o644)
+	writeP090Draft(t, filepath.Join(inbox, "req-wrong-mode-0640.json"), old, 0o640)
+	writeP090Draft(t, filepath.Join(inbox, "req-wrong-mode-0664.json"), old, 0o664)
 	writeP090Draft(t, filepath.Join(inbox, "bad name.json"), old, 0o600)
 	writeMailboxFile(t, filepath.Join(inbox, "req-directory.json"), nil, 0o600)
 	if err := os.Remove(filepath.Join(inbox, "req-directory.json")); err != nil {
@@ -262,17 +302,19 @@ func TestP090FakeClockCleansOnlyOldSafeUnmarkedDrafts(t *testing.T) {
 	writeP090Draft(t, filepath.Join(inbox, "req-temp.tmp"), old, 0o600)
 
 	removed, err := importer.CleanupUnmarkedDrafts(context.Background())
-	if err != nil || removed != 2 {
+	if err != nil || removed != 4 {
 		t.Fatalf("removed drafts=%d err=%v", removed, err)
 	}
 	for _, path := range []string{
 		filepath.Join(inbox, "req-old-inbox.json"), filepath.Join(acks, "req-old-ack.json"),
+		filepath.Join(inbox, "req-old-workspace-inbox.json"), filepath.Join(acks, "req-old-workspace-ack.json"),
 	} {
 		assertPathAbsent(t, path)
 	}
 	for _, path := range []string{
 		filepath.Join(inbox, "req-recent.json"), filepath.Join(inbox, "req-marked.json"),
-		filepath.Join(inbox, "req-marked.ready"), filepath.Join(inbox, "req-wrong-mode.json"),
+		filepath.Join(inbox, "req-marked.ready"), filepath.Join(inbox, "req-wrong-mode-0640.json"),
+		filepath.Join(inbox, "req-wrong-mode-0664.json"),
 		filepath.Join(inbox, "bad name.json"), filepath.Join(inbox, "req-directory.json"),
 		filepath.Join(inbox, "req-link.json"), outside, filepath.Join(root, "outbox", "req-outbox.json"),
 		filepath.Join(inbox, "req-temp.tmp"),
@@ -339,6 +381,10 @@ func p090CreateExchangeWithCursor(t *testing.T, authority *store.AuthorityStore,
 }
 
 func writeP090AckPair(t *testing.T, importer *AckImporter, requestID string, revision int64, cursor *int64) {
+	writeP090AckPairWithMode(t, importer, requestID, revision, cursor, MailboxFileMode)
+}
+
+func writeP090AckPairWithMode(t *testing.T, importer *AckImporter, requestID string, revision int64, cursor *int64, mode os.FileMode) {
 	t.Helper()
 	value := map[string]any{"request_id": requestID, "response_revision": revision}
 	if cursor != nil {
@@ -348,8 +394,22 @@ func writeP090AckPair(t *testing.T, importer *AckImporter, requestID string, rev
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeMailboxFile(t, filepath.Join(importer.AcksPath(), requestID+RequestSuffix), raw, 0o600)
-	writeMailboxFile(t, filepath.Join(importer.AcksPath(), requestID+ReadySuffix), nil, 0o600)
+	writeMailboxFile(t, filepath.Join(importer.AcksPath(), requestID+RequestSuffix), raw, mode)
+	writeMailboxFile(t, filepath.Join(importer.AcksPath(), requestID+ReadySuffix), nil, mode)
+}
+
+func writeP090RequestPair(t *testing.T, importer *Importer, requestID, key, script string, mode os.FileMode) {
+	t.Helper()
+	value := map[string]any{
+		"request_id": requestID, "idempotency_key": key, "operation": "run", "environment": "mac-dev",
+		"execution_target": map[string]string{"kind": "local", "profile": "mac-workstation"}, "script": script,
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), requestID+RequestSuffix), raw, mode)
+	writeMailboxFile(t, filepath.Join(importer.InboxPath(), requestID+ReadySuffix), nil, mode)
 }
 
 func writeP090Draft(t *testing.T, path string, modTime time.Time, mode os.FileMode) {
@@ -370,6 +430,20 @@ func assertMailboxPairPresent(t *testing.T, directory, requestID string) {
 	t.Helper()
 	assertPathPresent(t, filepath.Join(directory, requestID+ReadySuffix))
 	assertPathPresent(t, filepath.Join(directory, requestID+RequestSuffix))
+}
+
+func assertMailboxPairMode(t *testing.T, directory, requestID string, want os.FileMode) {
+	t.Helper()
+	for _, suffix := range []string{RequestSuffix, ReadySuffix} {
+		path := filepath.Join(directory, requestID+suffix)
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("inspect mailbox pair member %q: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Fatalf("mailbox pair member %q mode=%04o, want %04o", path, got, want)
+		}
+	}
 }
 
 func assertPathAbsent(t *testing.T, path string) {

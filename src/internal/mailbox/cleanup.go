@@ -69,7 +69,7 @@ func cleanupUnmarkedDraftDirectory(ctx context.Context, directory string, cutoff
 		if err != nil {
 			return removed, fmt.Errorf("%w: inspect draft: %v", ErrMailboxPath, err)
 		}
-		if !safeDraftInfo(info) || info.ModTime().After(cutoff) {
+		if !safeIngressFileInfo(info) || info.ModTime().After(cutoff) {
 			continue
 		}
 		marked, err := markerExists(directory, requestID)
@@ -88,7 +88,7 @@ func cleanupUnmarkedDraftDirectory(ctx context.Context, directory string, cutoff
 		if err != nil {
 			return removed, fmt.Errorf("%w: recheck draft: %v", ErrMailboxPath, err)
 		}
-		if !safeDraftInfo(info) || info.ModTime().After(cutoff) {
+		if !safeIngressFileInfo(info) || info.ModTime().After(cutoff) {
 			continue
 		}
 		marked, err = markerExists(directory, requestID)
@@ -109,7 +109,11 @@ func cleanupUnmarkedDraftDirectory(ctx context.Context, directory string, cutoff
 	return removed, nil
 }
 
-func safeDraftInfo(info os.FileInfo) bool {
+func safeIngressFileInfo(info os.FileInfo) bool {
+	return info != nil && info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular() && mailboxFileOwnedByCurrentUser(info) && isMailboxIngressFileMode(info.Mode().Perm())
+}
+
+func safePrivateMailboxFileInfo(info os.FileInfo) bool {
 	return info != nil && info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular() && info.Mode().Perm() == MailboxFileMode
 }
 
@@ -144,8 +148,8 @@ func removeMailboxPair(directory, requestID string) error {
 		if err != nil {
 			return fmt.Errorf("%w: inspect imported pair: %v", ErrMailboxPath, err)
 		}
-		if !safeDraftInfo(info) {
-			return fmt.Errorf("%w: imported pair member must be a regular 0600 file", ErrMailboxPath)
+		if !safeIngressFileInfo(info) {
+			return fmt.Errorf("%w: imported pair member must be a regular 0600 or 0644 file", ErrMailboxPath)
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("%w: remove imported pair member: %v", ErrMailboxPath, err)
@@ -168,7 +172,7 @@ func removeOwnedMailboxFile(path, directory string) error {
 	if err != nil {
 		return fmt.Errorf("%w: inspect cleanup file: %v", ErrMailboxPath, err)
 	}
-	if !safeDraftInfo(info) {
+	if !safePrivateMailboxFileInfo(info) {
 		return fmt.Errorf("%w: cleanup target must be a regular 0600 file", ErrMailboxPath)
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

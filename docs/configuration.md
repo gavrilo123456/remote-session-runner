@@ -70,12 +70,14 @@ producer; Runner does not change that repository or any external ancestor.
 
 Service-root directories and every configured mailbox root/child are owned by
 the selected account at mode `0700`. Config and secret files are regular
-owner-only files at mode `0600`. For an external mailbox, every pre-existing
-ancestor must be a real directory without group or other write access, and its
-immediate parent must belong to the selected Mac user. Runner creates or verifies
-only the external root and its `inbox`, `outbox`, `events`, and `acks` children.
-It rejects unsafe modes, ownership, symlinks, unknown fields, and ambiguous
-paths.
+owner-only files at mode `0600`. Mailbox ingress JSON and `.ready` files may be
+exact `0600` from the native publisher or exact `0644` from a direct workspace
+publisher; Runner-generated outbox and event files remain `0600`. For an
+external mailbox, every pre-existing ancestor must be a real directory without
+group or other write access, and its immediate parent must belong to the
+selected Mac user. Runner creates or verifies only the external root and its
+`inbox`, `outbox`, `events`, and `acks` children. It rejects unsafe modes,
+ownership, symlinks, unknown fields, and ambiguous paths.
 
 ## Mac configuration schemas
 

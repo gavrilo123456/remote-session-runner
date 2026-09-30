@@ -101,7 +101,7 @@ func (o *Outbox) Read(requestID string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateMailboxFile(path, false); err != nil {
+	if err := validateMailboxPrivateFile(path); err != nil {
 		return nil, err
 	}
 	file, err := os.Open(path)

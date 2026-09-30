@@ -150,11 +150,11 @@ func (i *AckImporter) importMarker(ctx context.Context, markerName string) (Resu
 	}
 	result.RequestID = requestID
 	result.RequestPath = filepath.Join(i.acks, requestID+RequestSuffix)
-	if err := validateMailboxFile(result.MarkerPath, true); err != nil {
+	if err := validateMailboxIngressFile(result.MarkerPath, true); err != nil {
 		result.Reason = err.Error()
 		return result, nil
 	}
-	if err := validateMailboxFile(result.RequestPath, false); err != nil {
+	if err := validateMailboxIngressFile(result.RequestPath, false); err != nil {
 		result.Reason = err.Error()
 		return result, nil
 	}

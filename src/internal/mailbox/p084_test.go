@@ -34,8 +34,18 @@ func TestP084OutboxAtomicReplacementAndProjectorRepair(t *testing.T) {
 	if got, err := outbox.Read(requestID); err != nil || string(got) != string(first) {
 		t.Fatalf("first response=%q err=%v", got, err)
 	}
+	if err := os.Chmod(path, MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := outbox.Read(requestID); err == nil {
+		t.Fatal("outbox read accepted workspace ingress mode")
+	}
 	if err := outbox.Replace(context.Background(), requestID, second); err != nil {
 		t.Fatal(err)
+	}
+	info, err = os.Stat(path)
+	if err != nil || info.Mode().Perm() != MailboxFileMode {
+		t.Fatalf("replaced outbox response mode=%v err=%v", info, err)
 	}
 	if got, err := outbox.Read(requestID); err != nil || string(got) != string(second) {
 		t.Fatalf("replaced response=%q err=%v", got, err)
@@ -86,6 +96,10 @@ func TestP084OutboxAtomicReplacementAndProjectorRepair(t *testing.T) {
 	projectorPath, err := outbox.Path("req-projector")
 	if err != nil {
 		t.Fatal(err)
+	}
+	info, err = os.Stat(projectorPath)
+	if err != nil || info.Mode().Perm() != MailboxFileMode {
+		t.Fatalf("projected response mode=%v err=%v", info, err)
 	}
 	if err := os.WriteFile(projectorPath, []byte(`{"partial":`), MailboxFileMode); err != nil {
 		t.Fatal(err)

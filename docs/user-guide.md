@@ -12,7 +12,7 @@ between `exec` requests in that same session.
 
 The CLI selects an ingress endpoint and target profile. It does **not** select
 a file inbox; mailbox roots and their default/override policy belong to the
-native [mailbox integration](mailbox.md).
+[mailbox integration](mailbox.md).
 
 ## Select the route first
 
@@ -238,7 +238,8 @@ transport becomes uncertain.
 - The `slidestud-io` mailbox root is
   `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; its omitted pair
   resolves to `sandbox-dev` / `remote/sandbox-host`. The CLI does not publish
-  mailbox files; use the native mailbox integration.
+  mailbox files; use the native publisher or the documented direct workspace
+  file path.
 - Direct HTTPS accepts remote targets only. A Mac-local command uses
   `--endpoint local`.
 - `run` has no standalone CLI job-status command. Preserve its IDs and use the

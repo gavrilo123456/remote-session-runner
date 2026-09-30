@@ -101,7 +101,7 @@ func (f *EventFiles) Read(commandID domain.CommandID) ([]byte, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	if err := validateMailboxFile(path, false); err != nil {
+	if err := validateMailboxPrivateFile(path); err != nil {
 		return nil, 0, err
 	}
 	file, err := os.Open(path)
