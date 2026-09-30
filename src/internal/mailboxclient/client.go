@@ -38,16 +38,39 @@ type Client struct {
 	root string
 }
 
+// ResponseTarget is the resolved immutable target included in new-work
+// mailbox responses. It is deliberately a data-only view of the server's
+// existing response field; it cannot select or alter execution.
+type ResponseTarget struct {
+	Kind    string `json:"kind"`
+	Profile string `json:"profile"`
+}
+
 type Response struct {
-	RequestID              string `json:"request_id"`
-	Operation              string `json:"operation"`
-	RequestState           string `json:"request_state"`
-	ResponseRevision       int64  `json:"response_revision"`
-	SessionID              string `json:"session_id,omitempty"`
-	CommandID              string `json:"command_id,omitempty"`
-	AvailableEventSequence *int64 `json:"available_event_sequence,omitempty"`
-	OutputComplete         *bool  `json:"output_complete,omitempty"`
-	EventsFile             string `json:"events_file,omitempty"`
+	InboxID                  string          `json:"inbox_id,omitempty"`
+	RequestID                string          `json:"request_id"`
+	Operation                string          `json:"operation"`
+	RequestState             string          `json:"request_state"`
+	ResponseRevision         int64           `json:"response_revision"`
+	JobID                    string          `json:"job_id,omitempty"`
+	JobPhase                 string          `json:"job_phase,omitempty"`
+	SessionID                string          `json:"session_id,omitempty"`
+	CommandID                string          `json:"command_id,omitempty"`
+	DeliveryState            string          `json:"delivery_state,omitempty"`
+	CommandState             string          `json:"command_state,omitempty"`
+	ExitCode                 *int            `json:"exit_code,omitempty"`
+	Stdout                   string          `json:"stdout,omitempty"`
+	Stderr                   string          `json:"stderr,omitempty"`
+	FinalEventSequence       *int64          `json:"final_event_sequence,omitempty"`
+	AvailableEventSequence   *int64          `json:"available_event_sequence,omitempty"`
+	OutputComplete           *bool           `json:"output_complete,omitempty"`
+	OutputTruncated          *bool           `json:"output_truncated,omitempty"`
+	OutputUnavailableReason  string          `json:"output_unavailable_reason,omitempty"`
+	EventsFile               string          `json:"events_file,omitempty"`
+	TeardownOutcome          string          `json:"teardown_outcome,omitempty"`
+	ExecutionSelectionSource string          `json:"execution_selection_source,omitempty"`
+	ResolvedEnvironment      string          `json:"resolved_environment,omitempty"`
+	ResolvedExecutionTarget  *ResponseTarget `json:"resolved_execution_target,omitempty"`
 }
 
 type Event struct {

@@ -112,3 +112,36 @@ func TestP104FileOnlyClientRejectsMismatchedIDsAndUnsafeEventReferences(t *testi
 		t.Fatal("missing response wait unexpectedly succeeded")
 	}
 }
+
+func TestP155ClientDecodesSelectionAndTerminalRunFields(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "mailbox")
+	for _, directory := range []string{"", "inbox", "outbox", "events", "acks"} {
+		path := root
+		if directory != "" {
+			path = filepath.Join(root, directory)
+		}
+		if err := os.Mkdir(path, directoryMode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBytes := []byte(`{"inbox_id":"analytics","request_id":"req-p155-client","operation":"run","request_state":"complete","response_revision":4,"job_id":"job-p155-client","job_phase":"complete","session_id":"sess-p155-client","command_id":"cmd-p155-client","delivery_state":"accepted","command_state":"succeeded","exit_code":0,"stdout":"P155_OK\n","final_event_sequence":4,"available_event_sequence":4,"output_complete":true,"output_truncated":false,"events_file":"events/cmd-p155-client.ndjson","teardown_outcome":"closed","execution_selection_source":"request_override","resolved_environment":"linux-dev","resolved_execution_target":{"kind":"remote","profile":"linux-host"}}`)
+	if err := os.WriteFile(filepath.Join(root, "outbox", "req-p155-client.json"), responseBytes, fileMode); err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.WaitResponse(context.Background(), "req-p155-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.InboxID != "analytics" || response.JobID != "job-p155-client" || response.JobPhase != "complete" ||
+		response.DeliveryState != "accepted" || response.CommandState != "succeeded" || response.ExitCode == nil || *response.ExitCode != 0 ||
+		response.OutputComplete == nil || !*response.OutputComplete || response.OutputTruncated == nil || *response.OutputTruncated ||
+		response.ExecutionSelectionSource != "request_override" || response.ResolvedEnvironment != "linux-dev" ||
+		response.ResolvedExecutionTarget == nil || response.ResolvedExecutionTarget.Kind != "remote" || response.ResolvedExecutionTarget.Profile != "linux-host" ||
+		response.TeardownOutcome != "closed" || response.FinalEventSequence == nil || *response.FinalEventSequence != 4 || response.Stdout != "P155_OK\n" {
+		t.Fatalf("decoded response=%+v", response)
+	}
+}
