@@ -8,13 +8,13 @@ is a record of completed gates, not a live-health substitute. Run the checks in
 
 | Component | Accepted identity | Evidence |
 | --- | --- | --- |
-| Mac services | `tomasz.walczuk` at `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` | P155 real-process two-inbox test, P158 external-mailbox activation, private socket/readiness checks, and zero backlog. |
+| Mac services | `tomasz.walczuk` at `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` | P155 real-process two-inbox test, P158 external-mailbox activation, P159 direct-workspace mailbox test, private socket/readiness checks, and zero backlog. |
 | Current Ubuntu host | `ubuntu@oracle-yuta-konopka-ubuntu-micro-02` / `linux-host` | P155 `runnerd.service`, listener `10.0.0.200:8443`, zero-work P128 checks, and permanent bridge status. |
 | Sandbox Ubuntu host | `ubuntu@oracle-gustaw-janecki-ubuntu-flex-02` / `sandbox-host` | P157 `runnerd.service`, listener `10.0.0.14:8443`, zero-work P128 checks, and permanent bridge status after the authorized repair. |
 | Current direct route | `linux-poc` → `https://129.151.232.40:8443` | P155 Runner application mTLS health and direct CLI evidence, separate from mailbox evidence. |
 | Sandbox direct route | `sandbox-poc` → `https://132.226.205.205:8443` | P157 Runner application mTLS readiness (`HTTP 200`), separate from the queued mailbox request. |
 | Current queued route | `ubuntu-current` → `remote/linux-host` | P155 permanent restricted bridge and an end-to-end analytics mailbox override. |
-| Sandbox queued route | `ubuntu-sandbox` → `remote/sandbox-host` | P157 permanent restricted bridge and native end-to-end analytics mailbox request; P158 external SlideStudio mailbox default. |
+| Sandbox queued route | `ubuntu-sandbox` → `remote/sandbox-host` | P157 permanent restricted bridge and native end-to-end analytics mailbox request; P158 external SlideStudio default and P159 direct-workspace-file default. |
 
 The associated source and evidence closeout are:
 
@@ -28,6 +28,9 @@ The associated source and evidence closeout are:
 - P158 source and host-gate revision:
   `ce74e368f2aa40f9db90d1bb049f96fd533c5753`
 - Detailed record: [P158 SlideStudio external-mailbox evidence](../040-implementation-evidence/P158-slidestud-external-mailbox.md)
+- P159 source and host-gate revision:
+  `ee140ec5e4eefcdd5716a356bbbfec0f62c014b7`
+- Detailed record: [P159 workspace-compatible mailbox evidence](../040-implementation-evidence/P159.md)
 
 ## What P155 proved
 
@@ -106,6 +109,31 @@ and unfinished jobs.
 
 This is queued mailbox evidence. P158 did not use the direct mTLS endpoint as
 a substitute for the mailbox result, and it did not onboard a new host.
+
+## What P159 proved
+
+P159 retained the owner-owned `0700` SlideStudio mailbox tree and added direct
+workspace-file compatibility for selected-user-owned exact-`0644` request and
+ACK pairs. Native `mailboxclient` publication remains exact `0600`, and
+Runner-produced outbox and event files remain exact `0600`.
+
+After the Mac source revision
+`ee140ec5e4eefcdd5716a356bbbfec0f62c014b7` was pushed and both clean Ubuntu
+checkouts fast-forwarded to it, the installed Mac gate published direct `0644`
+request and ACK pairs without using the native publisher. It omitted the
+selection pair, ran `uname -a` through the `slidestud-io` default, verified the
+complete untruncated response and retained event prefix, and confirmed private
+outbox/event projection modes.
+
+The same flow was then run through ordinary workspace-created files at the
+SlideStudio path. It returned `Linux` output from
+`oracle-gustaw-janecki-ubuntu-flex-02` (`aarch64`), resolved to
+`sandbox-dev` / `remote/sandbox-host`, consumed the exact direct ACK, and left
+no request or ACK pair. The final sandbox P128 check reported zero active
+sessions, running commands, unreleased slots, and unfinished jobs.
+
+This is queued mailbox evidence. It does not replace a direct mTLS test and it
+does not add or accept another remote host.
 
 ## What is not accepted
 

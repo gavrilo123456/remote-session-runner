@@ -17,9 +17,11 @@ override. `default` permits `mac-local` and `ubuntu-current`; `analytics`
 additionally permits an explicit `ubuntu-sandbox` override; `slidestud-io` at
 `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` defaults to
 `ubuntu-sandbox` and also permits `mac-local` and `ubuntu-current`. P155
-accepted `linux-host`; P157 separately accepted `sandbox-host`; and P158
-accepted the native external-mailbox path to that already accepted sandbox
-host. Other new hosts remain unavailable until they pass their own P157 gate.
+accepted `linux-host`; P157 separately accepted `sandbox-host`; P158 accepted
+the native external-mailbox path to that already accepted sandbox host; and
+P159 accepted selected-user-owned direct workspace `0644` request/ACK pairs
+while retaining private `0600` responses and events. Other new hosts remain
+unavailable until they pass their own P157 gate.
 
 Start with [the post-implementation documentation index](docs/README.md):
 

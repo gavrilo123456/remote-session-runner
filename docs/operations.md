@@ -16,15 +16,17 @@ controls.
 | Queued `sandbox-host` execution | Accepted in P157 | Fresh sandbox bridge `status`; `analytics` permits its explicit override and `slidestud-io` uses it as its default. |
 | `default` mailbox | Installed and accepted in P155 | Mac readiness, configured root ownership, and native terminal response/event/ACK. |
 | `analytics` mailbox | Installed in P155; `sandbox-host` override accepted in P157 | Same checks; each remote override additionally needs its selected bridge status. |
-| `slidestud-io` mailbox | Installed and accepted in P158 | External owner-only tree, Mac readiness, native no-selection request resolved to `sandbox-host`, complete event/ACK, and sandbox P128 zero-work status. |
+| `slidestud-io` mailbox | Native path accepted in P158; direct workspace-file path accepted in P159 | External owner-only tree, Mac readiness, no-selection request resolved to `sandbox-host`, complete event/ACK, and sandbox P128 zero-work status. |
 | Any additional profile | **NOT RUN** | Its own P157 service, route, and end-to-end acceptance. |
 
 P155 proved `default` local-default work and an `analytics` allowed queued
 `linux-host` override. P157 independently proved the sandbox bridge, router
 health, native mailbox request, event read, ACK, and zero-work state for
 `sandbox-host`. P158 then proved the external `slidestud-io` inbox's sandbox
-default with the same native request/event/ACK boundary and a final zero-work
-check. A successful direct mTLS request does not prove queued mailbox delivery.
+default with the same native request/event/ACK boundary. P159 added the
+selected-user-owned exact-`0644` direct workspace-file request and ACK path,
+with private `0600` response/event projections and a final zero-work check. A
+successful direct mTLS request does not prove queued mailbox delivery.
 
 ## Fast health checks
 

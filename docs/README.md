@@ -17,7 +17,7 @@ selection, or automatic fallback.
 | [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, events, ACKs, and retries. |
 | [API reference](api.md) | Direct mTLS and Unix-socket transports plus v1 HTTP/JSON behavior. |
 | [Operations runbook](operations.md) | Health, metrics, logs, service refresh, troubleshooting, and recovery limits. |
-| [Current-host evidence](current-host-evidence.md) | What P155, P157, and P158 accepted, what remains unaccepted, and the per-host boundary. |
+| [Current-host evidence](current-host-evidence.md) | What P155, P157, P158, and P159 accepted, what remains unaccepted, and the per-host boundary. |
 
 ## Current controlled configuration
 
@@ -42,10 +42,11 @@ P157 separately accepted `sandbox-host` (`sandbox.env` resolves to
 `8873852ddc9ab33093c105371de93a3695d99b89`. Its queued context is
 `ubuntu-sandbox` (`sandbox-dev` / `remote/sandbox-host`). `analytics` permits
 it as an explicit complete override; the external `slidestud-io` inbox defaults
-to it. P158 accepted the latter through its native marker-last exchange,
-complete events, exact ACK, and sandbox zero-work check. `default` does not
-permit it. Other physical machines remain **NOT RUN** until their separate P157
-onboarding and end-to-end evidence pass.
+to it. P158 accepted the latter through its native marker-last exchange. P159
+then accepted its direct workspace-file `0644` request/ACK path with private
+`0600` response/event projections, complete events, and a sandbox zero-work
+check. `default` does not permit it. Other physical machines remain **NOT RUN**
+until their separate P157 onboarding and end-to-end evidence pass.
 
 Runner application readiness over direct mTLS was exercised for both accepted
 endpoints. A prior temporary TLS probe validated transport only. Software-

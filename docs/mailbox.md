@@ -225,9 +225,10 @@ Publish this JSON through `mailboxclient.New`, or create its direct exact-`0644`
 pair, in `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`. It
 deliberately omits both selection fields, so it resolves as
 `execution_selection_source: "inbox_default"` to `sandbox-dev` /
-`remote/sandbox-host`. P158 accepted this native marker-last route with
-complete untruncated output, retained events, and the exact ACK. It is queued
-bridge evidence, not a direct mTLS request.
+`remote/sandbox-host`. P158 accepted this native marker-last route; P159
+accepted the same default through selected-user-owned direct `0644` workspace
+files, with complete untruncated output, retained events, and the exact ACK.
+It is queued bridge evidence, not a direct mTLS request.
 
 **Create a default-target session:**
 
