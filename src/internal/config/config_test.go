@@ -247,7 +247,7 @@ func TestP010_D14RejectsUnknownInvalidAndInlineSecretConfig(t *testing.T) {
 	}{
 		{"unknown security field", strings.Replace(linuxConfigFixture, "linux:\n", "linux:\n  allow_bearer: true\n", 1)},
 		{"duplicate key", strings.Replace(linuxConfigFixture, "version: 1\n", "version: 1\nversion: 1\n", 1)},
-		{"unsupported version", strings.Replace(linuxConfigFixture, "version: 1", "version: 2", 1)},
+		{"unsupported version", strings.Replace(linuxConfigFixture, "version: 1", "version: 3", 1)},
 		{"both host sections", strings.Replace(linuxConfigFixture, "version: 1\n", "version: 1\nmac:\n  account: tomasz.walczuk\n", 1)},
 		{"additional registry environment", strings.Replace(linuxConfigFixture, "  linux-dev:\n", "  staging: {}\n  linux-dev:\n", 1)},
 		{"second document", linuxConfigFixture + "\n---\nversion: 1\n"},
@@ -270,6 +270,8 @@ func TestP010_D14RejectsUnknownInvalidAndInlineSecretConfig(t *testing.T) {
 			"/tmp/untrusted-ca.pem", 1)},
 		{"wrong public endpoint", strings.Replace(linuxConfigFixture, PublicEndpoint, "https://example.invalid:8443", 1)},
 		{"wrong bind", strings.Replace(linuxConfigFixture, LinuxHTTPSBind, "0.0.0.0:8443", 1)},
+		{"version-two Linux profile in version one", strings.Replace(linuxConfigFixture,
+			"  runtime_adapter: linux-host-process\n", "  runtime_adapter: linux-host-process\n  remote_target_profile: linux-other\n", 1)},
 		{"inline private key", strings.Replace(linuxConfigFixture,
 			"/home/ubuntu/.local/share/remote-session-runner/secrets/server.key", privateMaterial, 1)},
 		{"secret path escape", strings.Replace(linuxConfigFixture,
@@ -407,4 +409,295 @@ func equalStrings(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+const macV2ConfigFixture = `version: 2
+mac:
+  account: tomasz.walczuk
+  service_root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner"
+  api_socket: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock"
+  locald_socket: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/locald.sock"
+  sqlite: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/state/local.db"
+  workspaces: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/workspaces"
+  script_temp_root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/tmp/scripts"
+  backups: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/backups"
+  reconciliation_deadline: 24h
+environment_registry:
+  mac-dev:
+    base_system: macOS
+    host_class: macOS workstation
+    effective_account: tomasz.walczuk
+    allowed_targets: [{kind: local, profile: mac-workstation}]
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers: [{type: local_user, id: tomasz.walczuk}]
+  linux-dev:
+    base_system: Ubuntu 20.04.6 LTS
+    host_class: Ubuntu Linux host
+    effective_account: ubuntu
+    allowed_targets: [{kind: remote, profile: linux-host}]
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers:
+      - {type: queued_mac, id: tomasz.walczuk}
+      - {type: direct_mtls, id: tomasz.walczuk}
+  linux-build-dev:
+    base_system: Ubuntu 22.04 LTS
+    host_class: Ubuntu Linux host
+    effective_account: ubuntu
+    allowed_targets: [{kind: remote, profile: linux-build-host}]
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers:
+      - {type: queued_mac, id: tomasz.walczuk}
+      - {type: direct_mtls, id: tomasz.walczuk}
+execution_contexts:
+  mac-local:
+    environment: mac-dev
+    execution_target: {kind: local, profile: mac-workstation}
+  ubuntu-current:
+    environment: linux-dev
+    execution_target: {kind: remote, profile: linux-host}
+  ubuntu-build:
+    environment: linux-build-dev
+    execution_target: {kind: remote, profile: linux-build-host}
+remote_hosts:
+  linux-host:
+    account: ubuntu
+    queued_bridge:
+      host: 129.151.232.40
+      port: 22
+      known_hosts: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/ssh_known_hosts"
+      private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/dispatcher_ed25519"
+    direct_endpoint:
+      name: linux-poc
+      url: https://129.151.232.40:8443
+      server_ca: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem"
+      client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.pem"
+      client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.key"
+  linux-build-host:
+    account: ubuntu
+    queued_bridge:
+      host: 203.0.113.20
+      port: 22
+      known_hosts: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build_known_hosts"
+      private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build_dispatcher_ed25519"
+    direct_endpoint:
+      name: linux-build-poc
+      url: https://203.0.113.20:8443
+      server_ca: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build-ca.pem"
+      client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build-client.pem"
+      client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build-client.key"
+mailboxes:
+  default:
+    root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox"
+    repository_aliases: [remote-session-runner]
+    default_execution: mac-local
+    allowed_execution: [mac-local, ubuntu-current]
+  analytics:
+    root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics"
+    repository_aliases: [analytics-dbt]
+    default_execution: ubuntu-current
+    allowed_execution: [ubuntu-current, ubuntu-build]
+`
+
+const linuxV2ConfigFixture = `version: 2
+linux:
+  account: ubuntu
+  service_root: /home/ubuntu/.local/share/remote-session-runner
+  sqlite: /home/ubuntu/.local/share/remote-session-runner/state/remote.db
+  private_socket: /home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock
+  workspaces: /home/ubuntu/.local/share/remote-session-runner/workspaces
+  script_temp_root: /home/ubuntu/.local/share/remote-session-runner/tmp/scripts
+  backups: /home/ubuntu/.local/share/remote-session-runner/backups
+  direct_https_bind: 10.0.0.201:8443
+  direct_public_endpoint: https://198.51.100.20:8443
+  server_cert: /home/ubuntu/.local/share/remote-session-runner/secrets/server.pem
+  client_ca: /home/ubuntu/.local/share/remote-session-runner/secrets/client-ca.pem
+  client_principal_map: /home/ubuntu/.local/share/remote-session-runner/config/client-principals.yaml
+  tls_min_version: "1.3"
+  runtime_adapter: linux-host-process
+  remote_target_profile: linux-build-host
+secret_references:
+  linux_server_private_key:
+    file: /home/ubuntu/.local/share/remote-session-runner/secrets/server.key
+environment_registry:
+  linux-build-dev:
+    base_system: Ubuntu 22.04 LTS
+    host_class: Ubuntu Linux host
+    effective_account: ubuntu
+    allowed_targets: [{kind: remote, profile: linux-build-host}]
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers:
+      - {type: queued_mac, id: tomasz.walczuk}
+      - {type: direct_mtls, id: tomasz.walczuk}
+`
+
+func TestP150V1SynthesizesTheLegacyDefaultRegistry(t *testing.T) {
+	loaded := loadFixture(t, macConfigFixture)
+	if loaded.SchemaVersion() != VersionV1 {
+		t.Fatalf("SchemaVersion() = %d, want %d", loaded.SchemaVersion(), VersionV1)
+	}
+	if got, want := loaded.ExecutionContextNames(), []string{"mac-local", "ubuntu-current"}; !equalStrings(got, want) {
+		t.Fatalf("ExecutionContextNames() = %v, want %v", got, want)
+	}
+	if got, want := loaded.RemoteHostNames(), []string{"linux-host"}; !equalStrings(got, want) {
+		t.Fatalf("RemoteHostNames() = %v, want %v", got, want)
+	}
+	if got, want := loaded.DirectEndpointNames(), []string{"linux-poc"}; !equalStrings(got, want) {
+		t.Fatalf("DirectEndpointNames() = %v, want %v", got, want)
+	}
+	mailbox, ok := loaded.Mailbox("default")
+	if !ok || mailbox.Root != filepath.Join(MacServiceRoot, "mailbox") || mailbox.DefaultExecution != "mac-local" ||
+		!equalStrings(mailbox.AllowedExecution, []string{"mac-local", "ubuntu-current"}) {
+		t.Fatalf("legacy default mailbox = %+v, present=%v", mailbox, ok)
+	}
+	remoteTarget, _ := domain.NewExecutionTarget(domain.TargetKindRemote, "linux-host")
+	context, ok := loaded.ExecutionContextFor("linux-dev", remoteTarget)
+	if !ok || context.Name != "ubuntu-current" {
+		t.Fatalf("legacy remote context = %+v, present=%v", context, ok)
+	}
+	host, ok := loaded.RemoteHost("linux-host")
+	if !ok || host.Account != LinuxAccount || host.QueuedBridge == nil || host.QueuedBridge.Host != "129.151.232.40" ||
+		host.DirectEndpoint == nil || host.DirectEndpoint.Name != "linux-poc" {
+		t.Fatalf("legacy remote host = %+v, present=%v", host, ok)
+	}
+}
+
+func TestP150LoadsValidatedNamedMacRegistries(t *testing.T) {
+	loaded := loadFixture(t, macV2ConfigFixture)
+	if loaded.SchemaVersion() != VersionV2 || loaded.Kind() != HostKindMac {
+		t.Fatalf("v2 config identity = version %d kind %q", loaded.SchemaVersion(), loaded.Kind())
+	}
+	if got, want := loaded.ExecutionContextNames(), []string{"mac-local", "ubuntu-build", "ubuntu-current"}; !equalStrings(got, want) {
+		t.Fatalf("ExecutionContextNames() = %v, want %v", got, want)
+	}
+	if got, want := loaded.RemoteHostNames(), []string{"linux-build-host", "linux-host"}; !equalStrings(got, want) {
+		t.Fatalf("RemoteHostNames() = %v, want %v", got, want)
+	}
+	if got, want := loaded.DirectEndpointNames(), []string{"linux-build-poc", "linux-poc"}; !equalStrings(got, want) {
+		t.Fatalf("DirectEndpointNames() = %v, want %v", got, want)
+	}
+	if got, want := loaded.MailboxNames(), []string{"analytics", "default"}; !equalStrings(got, want) {
+		t.Fatalf("MailboxNames() = %v, want %v", got, want)
+	}
+
+	endpoint, ok := loaded.DirectEndpoint("linux-build-poc")
+	if !ok || endpoint.TargetProfile != "linux-build-host" || endpoint.Endpoint != "https://203.0.113.20:8443" {
+		t.Fatalf("direct endpoint binding = %+v, present=%v", endpoint, ok)
+	}
+	remoteTarget, _ := domain.NewExecutionTarget(domain.TargetKindRemote, "linux-build-host")
+	context, ok := loaded.ExecutionContextFor("linux-build-dev", remoteTarget)
+	if !ok || context.Name != "ubuntu-build" {
+		t.Fatalf("remote context lookup = %+v, present=%v", context, ok)
+	}
+
+	mailbox, ok := loaded.Mailbox("analytics")
+	if !ok || mailbox.DefaultExecution != "ubuntu-current" || !equalStrings(mailbox.RepositoryAliases, []string{"analytics-dbt"}) {
+		t.Fatalf("analytics mailbox = %+v, present=%v", mailbox, ok)
+	}
+	mailbox.RepositoryAliases[0] = "changed"
+	mailbox.AllowedExecution[0] = "changed"
+	again, _ := loaded.Mailbox("analytics")
+	if !equalStrings(again.RepositoryAliases, []string{"analytics-dbt"}) || !equalStrings(again.AllowedExecution, []string{"ubuntu-current", "ubuntu-build"}) {
+		t.Fatalf("Mailbox() returned mutable slices: %+v", again)
+	}
+
+	host, ok := loaded.RemoteHost("linux-host")
+	if !ok || host.QueuedBridge == nil {
+		t.Fatalf("linux host = %+v, present=%v", host, ok)
+	}
+	host.QueuedBridge.Host = "changed"
+	host.DirectEndpoint = nil
+	againHost, _ := loaded.RemoteHost("linux-host")
+	if againHost.QueuedBridge == nil || againHost.QueuedBridge.Host != "129.151.232.40" || againHost.DirectEndpoint == nil {
+		t.Fatalf("RemoteHost() returned mutable pointers: %+v", againHost)
+	}
+
+	settings, ok := loaded.MacSettings()
+	if !ok || settings.MailboxRoot != "" || settings.RemoteEndpointProfile != "" {
+		t.Fatalf("v2 unexpectedly exposed a singleton route: %+v", settings)
+	}
+}
+
+func TestP150LoadsGenericLinuxV2HostProfile(t *testing.T) {
+	loaded := loadFixture(t, linuxV2ConfigFixture)
+	if loaded.SchemaVersion() != VersionV2 || loaded.Kind() != HostKindLinux {
+		t.Fatalf("v2 Linux identity = version %d kind %q", loaded.SchemaVersion(), loaded.Kind())
+	}
+	settings, ok := loaded.LinuxSettings()
+	if !ok || settings.DirectHTTPSBind != "10.0.0.201:8443" || settings.DirectPublicEndpoint != "https://198.51.100.20:8443" {
+		t.Fatalf("v2 Linux settings = %+v, present=%v", settings, ok)
+	}
+	if got, want := loaded.EnvironmentNames(), []string{"linux-build-dev"}; !equalStrings(got, want) {
+		t.Fatalf("EnvironmentNames() = %v, want %v", got, want)
+	}
+}
+
+func TestP150AllowsDirectOnlyProfilesOutsideMailboxRoutes(t *testing.T) {
+	directOnly := strings.Replace(macV2ConfigFixture,
+		"    queued_bridge:\n      host: 203.0.113.20\n      port: 22\n      known_hosts: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build_known_hosts\"\n      private_key: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build_dispatcher_ed25519\"\n", "", 1)
+	directOnly = strings.Replace(directOnly, "allowed_execution: [ubuntu-current, ubuntu-build]", "allowed_execution: [ubuntu-current]", 1)
+	loaded := loadFixture(t, directOnly)
+	host, ok := loaded.RemoteHost("linux-build-host")
+	if !ok || host.QueuedBridge != nil || host.DirectEndpoint == nil || host.DirectEndpoint.Name != "linux-build-poc" {
+		t.Fatalf("direct-only profile = %+v, present=%v", host, ok)
+	}
+}
+
+func TestP150AllowsQueuedOnlyProfilesForMailboxRoutes(t *testing.T) {
+	queuedOnly := strings.Replace(macV2ConfigFixture,
+		"    direct_endpoint:\n      name: linux-build-poc\n      url: https://203.0.113.20:8443\n      server_ca: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build-ca.pem\"\n      client_certificate: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build-client.pem\"\n      client_private_key: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build-client.key\"\n", "", 1)
+	loaded := loadFixture(t, queuedOnly)
+	host, ok := loaded.RemoteHost("linux-build-host")
+	if !ok || host.QueuedBridge == nil || host.DirectEndpoint != nil {
+		t.Fatalf("queued-only profile = %+v, present=%v", host, ok)
+	}
+	if _, ok := loaded.DirectEndpoint("linux-build-poc"); ok {
+		t.Fatal("queued-only profile retained a direct endpoint")
+	}
+}
+
+func TestP150RejectsUnsafeOrAmbiguousV2Registries(t *testing.T) {
+	invalid := []struct {
+		name string
+		text string
+	}{
+		{"legacy fields in v2 Mac", strings.Replace(macV2ConfigFixture, "  reconciliation_deadline: 24h\n", "  reconciliation_deadline: 24h\n  mailbox_root: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox\"\n", 1)},
+		{"legacy secret references in v2 Mac", strings.Replace(macV2ConfigFixture, "environment_registry:\n", "secret_references:\n  dispatcher_ssh_key:\n    file: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/dispatcher_ed25519\"\nenvironment_registry:\n", 1)},
+		{"unsafe queued private key", strings.Replace(macV2ConfigFixture, "secrets/dispatcher_ed25519", "secrets/../dispatcher_ed25519", 1)},
+		{"unsafe direct certificate", strings.Replace(macV2ConfigFixture, "secrets/poc-ca.pem", "/tmp/poc-ca.pem", 1)},
+		{"invalid direct endpoint", strings.Replace(macV2ConfigFixture, "https://129.151.232.40:8443", "http://129.151.232.40:8443", 1)},
+		{"direct endpoint wrong port", strings.Replace(macV2ConfigFixture, "https://129.151.232.40:8443", "https://129.151.232.40:9443", 1)},
+		{"direct endpoint contains path", strings.Replace(macV2ConfigFixture, "https://129.151.232.40:8443", "https://129.151.232.40:8443/not-allowed", 1)},
+		{"direct endpoint contains user info", strings.Replace(macV2ConfigFixture, "https://129.151.232.40:8443", "https://untrusted@129.151.232.40:8443", 1)},
+		{"Linux v2 TLS below mandatory minimum", strings.Replace(linuxV2ConfigFixture, "tls_min_version: \"1.3\"", "tls_min_version: \"1.2\"", 1)},
+		{"duplicate direct endpoint name", strings.Replace(macV2ConfigFixture, "name: linux-build-poc", "name: linux-poc", 1)},
+		{"duplicate execution context pair", strings.Replace(macV2ConfigFixture, "remote_hosts:\n", "  duplicate-ubuntu-current:\n    environment: linux-dev\n    execution_target: {kind: remote, profile: linux-host}\nremote_hosts:\n", 1)},
+		{"duplicate mailbox root", strings.Replace(macV2ConfigFixture, "mailboxes/analytics", "mailbox", 1)},
+		{"unknown default context", strings.Replace(macV2ConfigFixture, "default_execution: ubuntu-current", "default_execution: not-configured", 1)},
+		{"default missing from allow list", strings.Replace(macV2ConfigFixture, "allowed_execution: [ubuntu-current, ubuntu-build]", "allowed_execution: [ubuntu-build]", 1)},
+		{"unknown remote profile", strings.Replace(macV2ConfigFixture, "  ubuntu-build:\n    environment: linux-build-dev\n    execution_target: {kind: remote, profile: linux-build-host}", "  ubuntu-build:\n    environment: linux-build-dev\n    execution_target: {kind: remote, profile: missing-host}", 1)},
+		{"invalid local profile", strings.Replace(macV2ConfigFixture, "  mac-local:\n    environment: mac-dev\n    execution_target: {kind: local, profile: mac-workstation}", "  mac-local:\n    environment: mac-dev\n    execution_target: {kind: local, profile: another-mac}", 1)},
+		{"local effective account mismatch", strings.Replace(macV2ConfigFixture, "  mac-dev:\n    base_system: macOS\n    host_class: macOS workstation\n    effective_account: tomasz.walczuk", "  mac-dev:\n    base_system: macOS\n    host_class: macOS workstation\n    effective_account: ubuntu", 1)},
+		{"remote effective account mismatch", strings.Replace(macV2ConfigFixture, "  linux-dev:\n    base_system: Ubuntu 20.04.6 LTS\n    host_class: Ubuntu Linux host\n    effective_account: ubuntu", "  linux-dev:\n    base_system: Ubuntu 20.04.6 LTS\n    host_class: Ubuntu Linux host\n    effective_account: tomasz.walczuk", 1)},
+		{"remote account is fixed", strings.Replace(macV2ConfigFixture, "  linux-build-host:\n    account: ubuntu", "  linux-build-host:\n    account: other", 1)},
+		{"remote mailbox context needs bridge", strings.Replace(macV2ConfigFixture, "    queued_bridge:\n      host: 203.0.113.20\n      port: 22\n      known_hosts: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build_known_hosts\"\n      private_key: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/linux-build_dispatcher_ed25519\"\n", "", 1)},
+		{"Linux v2 has Mac registries", linuxV2ConfigFixture + "mailboxes: {}\n"},
+		{"Linux v2 profile mismatch", strings.Replace(linuxV2ConfigFixture, "profile: linux-build-host", "profile: other-host", 1)},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parse([]byte(test.text)); err == nil {
+				t.Fatal("parse accepted unsafe or ambiguous v2 registry")
+			}
+		})
+	}
+
+	invalidHostProfile := strings.Replace(linuxV2ConfigFixture, "runtime_adapter: linux-host-process", "runtime_adapter: unknown-profile", 1)
+	_, err := parse([]byte(invalidHostProfile))
+	if !errors.Is(err, ErrInvalidConfig) || !errors.Is(err, ErrConfigHostProfile) || strings.Contains(err.Error(), "unknown-profile") {
+		t.Fatalf("v2 invalid host profile error=%v; want safe ErrConfigHostProfile classification", err)
+	}
 }

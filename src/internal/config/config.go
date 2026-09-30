@@ -24,7 +24,11 @@ import (
 )
 
 const (
-	Version                       = 1
+	// Version remains the version-one compatibility constant for existing
+	// callers. VersionV2 is selected explicitly by the configuration document.
+	Version                       = VersionV1
+	VersionV1                     = 1
+	VersionV2                     = 2
 	MaxConfigBytes                = 1 << 20
 	MacAccount                    = "tomasz.walczuk"
 	LinuxAccount                  = "ubuntu"
@@ -133,20 +137,77 @@ func (e RegisteredEnvironment) BaseSystem() string { return e.baseSystem }
 // Policy returns the immutable validated environment policy.
 func (e RegisteredEnvironment) Policy() domain.Environment { return e.policy }
 
+// ExecutionContext is a named, immutable environment and target pair. It is
+// resolved before mailbox acceptance; it is never a mutable routing pointer
+// for an existing session.
+type ExecutionContext struct {
+	Name        string
+	Environment string
+	Target      domain.ExecutionTarget
+}
+
+// QueuedBridgeProfile is the pinned SSH route for one configured remote host.
+// The referenced files are paths only; this package never opens credentials.
+type QueuedBridgeProfile struct {
+	Host           string
+	Port           int
+	KnownHostsFile string
+	PrivateKeyFile string
+}
+
+// DirectEndpointProfile is a named mTLS endpoint bound to one remote target
+// profile. It contains file references, never credential contents.
+type DirectEndpointProfile struct {
+	Name                 string
+	TargetProfile        string
+	Endpoint             string
+	ServerCA             string
+	ClientCertificate    string
+	ClientPrivateKeyFile string
+}
+
+// RemoteHostProfile defines the only routes through which an immutable remote
+// target profile may be reached. The PoC keeps the execution account fixed to
+// ubuntu.
+type RemoteHostProfile struct {
+	Profile        string
+	Account        string
+	QueuedBridge   *QueuedBridgeProfile
+	DirectEndpoint *DirectEndpointProfile
+}
+
+// MailboxDefinition is one named Mac file-ingress root and its permitted
+// execution contexts. Repository aliases are policy/audit metadata only.
+type MailboxDefinition struct {
+	ID                string
+	Root              string
+	RepositoryAliases []string
+	DefaultExecution  string
+	AllowedExecution  []string
+}
+
 // Config is an immutable, validated host config and environment registry.
 type Config struct {
-	kind          HostKind
-	mac           *MacSettings
-	linux         *LinuxSettings
-	defaults      domain.ServiceLimits
-	retention     Retention
-	environments  map[string]RegisteredEnvironment
-	secretRefs    map[SecretName]SecretReference
-	defaultSource domain.SourceMode
+	kind              HostKind
+	schemaVersion     int
+	mac               *MacSettings
+	linux             *LinuxSettings
+	defaults          domain.ServiceLimits
+	retention         Retention
+	environments      map[string]RegisteredEnvironment
+	secretRefs        map[SecretName]SecretReference
+	executionContexts map[string]ExecutionContext
+	remoteHosts       map[string]RemoteHostProfile
+	directEndpoints   map[string]DirectEndpointProfile
+	mailboxes         map[string]MailboxDefinition
+	defaultSource     domain.SourceMode
 }
 
 // Kind returns which host-specific config section was loaded.
 func (c Config) Kind() HostKind { return c.kind }
+
+// SchemaVersion returns the accepted configuration schema version.
+func (c Config) SchemaVersion() int { return c.schemaVersion }
 
 // MacSettings returns the Mac settings when this is a Mac config.
 func (c Config) MacSettings() (MacSettings, bool) {
@@ -194,6 +255,52 @@ func (c Config) SecretReference(name SecretName) (SecretReference, bool) {
 	reference, ok := c.secretRefs[name]
 	return reference, ok
 }
+
+// ExecutionContext returns a named immutable context.
+func (c Config) ExecutionContext(name string) (ExecutionContext, bool) {
+	context, ok := c.executionContexts[name]
+	return context, ok
+}
+
+// ExecutionContextNames returns configured context names in sorted order.
+func (c Config) ExecutionContextNames() []string { return sortedKeys(c.executionContexts) }
+
+// ExecutionContextFor finds the unique context for an environment/target pair.
+func (c Config) ExecutionContextFor(environment string, target domain.ExecutionTarget) (ExecutionContext, bool) {
+	for _, context := range c.executionContexts {
+		if context.Environment == environment && context.Target.Kind() == target.Kind() && context.Target.Profile() == target.Profile() {
+			return context, true
+		}
+	}
+	return ExecutionContext{}, false
+}
+
+// RemoteHost returns a copy of one named remote host profile.
+func (c Config) RemoteHost(profile string) (RemoteHostProfile, bool) {
+	host, ok := c.remoteHosts[profile]
+	return cloneRemoteHost(host), ok
+}
+
+// RemoteHostNames returns configured remote target profiles in sorted order.
+func (c Config) RemoteHostNames() []string { return sortedKeys(c.remoteHosts) }
+
+// DirectEndpoint returns a copy of one named direct mTLS endpoint profile.
+func (c Config) DirectEndpoint(name string) (DirectEndpointProfile, bool) {
+	endpoint, ok := c.directEndpoints[name]
+	return endpoint, ok
+}
+
+// DirectEndpointNames returns configured direct endpoint names in sorted order.
+func (c Config) DirectEndpointNames() []string { return sortedKeys(c.directEndpoints) }
+
+// Mailbox returns a copy of one named mailbox definition.
+func (c Config) Mailbox(id string) (MailboxDefinition, bool) {
+	mailbox, ok := c.mailboxes[id]
+	return cloneMailbox(mailbox), ok
+}
+
+// MailboxNames returns configured mailbox IDs in sorted order.
+func (c Config) MailboxNames() []string { return sortedKeys(c.mailboxes) }
 
 // LoadFile opens and validates a configuration file without following
 // symlinks, checks that its owner is the current user and its mode excludes
@@ -248,13 +355,16 @@ func validateConfigFileOwner(info os.FileInfo, expectedUID uint32) error {
 }
 
 type fileDocument struct {
-	Version             int                            `yaml:"version"`
-	Mac                 *macDocument                   `yaml:"mac,omitempty"`
-	Linux               *linuxDocument                 `yaml:"linux,omitempty"`
-	Limits              serviceLimitsDocument          `yaml:"limits,omitempty"`
-	Retention           retentionDocument              `yaml:"retention,omitempty"`
-	EnvironmentRegistry map[string]environmentDocument `yaml:"environment_registry"`
-	SecretReferences    secretReferencesDocument       `yaml:"secret_references,omitempty"`
+	Version             int                                 `yaml:"version"`
+	Mac                 *macDocument                        `yaml:"mac,omitempty"`
+	Linux               *linuxDocument                      `yaml:"linux,omitempty"`
+	Limits              serviceLimitsDocument               `yaml:"limits,omitempty"`
+	Retention           retentionDocument                   `yaml:"retention,omitempty"`
+	EnvironmentRegistry map[string]environmentDocument      `yaml:"environment_registry"`
+	SecretReferences    secretReferencesDocument            `yaml:"secret_references,omitempty"`
+	ExecutionContexts   map[string]executionContextDocument `yaml:"execution_contexts,omitempty"`
+	RemoteHosts         map[string]remoteHostDocument       `yaml:"remote_hosts,omitempty"`
+	Mailboxes           map[string]mailboxDocument          `yaml:"mailboxes,omitempty"`
 }
 
 type macDocument struct {
@@ -291,6 +401,40 @@ type linuxDocument struct {
 	ClientPrincipalMap   string `yaml:"client_principal_map"`
 	TLSMinVersion        string `yaml:"tls_min_version"`
 	RuntimeAdapter       string `yaml:"runtime_adapter"`
+	RemoteTargetProfile  string `yaml:"remote_target_profile,omitempty"`
+}
+
+type executionContextDocument struct {
+	Environment     string         `yaml:"environment"`
+	ExecutionTarget targetDocument `yaml:"execution_target"`
+}
+
+type queuedBridgeDocument struct {
+	Host       string `yaml:"host"`
+	Port       int    `yaml:"port"`
+	KnownHosts string `yaml:"known_hosts"`
+	PrivateKey string `yaml:"private_key"`
+}
+
+type directEndpointDocument struct {
+	Name              string `yaml:"name"`
+	URL               string `yaml:"url"`
+	ServerCA          string `yaml:"server_ca"`
+	ClientCertificate string `yaml:"client_certificate"`
+	ClientPrivateKey  string `yaml:"client_private_key"`
+}
+
+type remoteHostDocument struct {
+	Account        string                  `yaml:"account"`
+	QueuedBridge   *queuedBridgeDocument   `yaml:"queued_bridge,omitempty"`
+	DirectEndpoint *directEndpointDocument `yaml:"direct_endpoint,omitempty"`
+}
+
+type mailboxDocument struct {
+	Root              string   `yaml:"root"`
+	RepositoryAliases []string `yaml:"repository_aliases"`
+	DefaultExecution  string   `yaml:"default_execution"`
+	AllowedExecution  []string `yaml:"allowed_execution"`
 }
 
 type secretReferencesDocument struct {
@@ -427,15 +571,122 @@ func validateYAMLDocument(contents []byte) error {
 }
 
 func validateDocument(document fileDocument) (Config, error) {
-	if document.Version != Version || (document.Mac == nil) == (document.Linux == nil) || len(document.EnvironmentRegistry) != 2 {
+	switch document.Version {
+	case VersionV1:
+		return validateV1Document(document)
+	case VersionV2:
+		return validateV2Document(document)
+	default:
+		return Config{}, ErrInvalidConfig
+	}
+}
+
+func validateV1Document(document fileDocument) (Config, error) {
+	if document.Version != VersionV1 || (document.Mac == nil) == (document.Linux == nil) || len(document.EnvironmentRegistry) != 2 ||
+		document.ExecutionContexts != nil || document.RemoteHosts != nil || document.Mailboxes != nil {
 		return Config{}, ErrInvalidConfig
 	}
 	if err := validateSelectedRegistry(document.EnvironmentRegistry); err != nil {
 		return Config{}, err
 	}
+	defaults, retention, err := validateLimitsAndRetention(document)
+	if err != nil {
+		return Config{}, err
+	}
+	if document.Mac != nil {
+		if err := validateMacDocument(document.Mac, document.SecretReferences); err != nil {
+			return Config{}, err
+		}
+	} else if err := validateLinuxDocument(document.Linux, document.SecretReferences); err != nil {
+		return Config{}, err
+	}
+
+	config := Config{
+		kind:              HostKindLinux,
+		schemaVersion:     VersionV1,
+		defaults:          defaults,
+		retention:         retention,
+		environments:      make(map[string]RegisteredEnvironment, len(document.EnvironmentRegistry)),
+		secretRefs:        make(map[SecretName]SecretReference),
+		executionContexts: make(map[string]ExecutionContext),
+		remoteHosts:       make(map[string]RemoteHostProfile),
+		directEndpoints:   make(map[string]DirectEndpointProfile),
+		mailboxes:         make(map[string]MailboxDefinition),
+		defaultSource:     domain.SourceModeEmpty,
+	}
+	if document.Mac != nil {
+		config.kind = HostKindMac
+		settings := macSettings(document.Mac)
+		config.mac = &settings
+		config.secretRefs[SecretDispatcherSSHKey] = SecretReference{File: document.SecretReferences.DispatcherSSHKey.File}
+		config.secretRefs[SecretDirectClientTLSKey] = SecretReference{File: document.SecretReferences.DirectClientKey.File}
+	} else {
+		config.kind = HostKindLinux
+		settings := linuxSettings(document.Linux)
+		config.linux = &settings
+		config.secretRefs[SecretLinuxServerTLSKey] = SecretReference{File: document.SecretReferences.LinuxServerKey.File}
+	}
+
+	if err := populateEnvironments(&config, document.EnvironmentRegistry); err != nil {
+		return Config{}, err
+	}
+	if config.kind == HostKindMac {
+		synthesizeV1MacRegistries(&config)
+	}
+	return config, nil
+}
+
+func populateEnvironments(config *Config, definitions map[string]environmentDocument) error {
+	for name, spec := range definitions {
+		if !environmentNamePattern.MatchString(name) || strings.TrimSpace(spec.BaseSystem) == "" || strings.TrimSpace(spec.HostClass) == "" || strings.TrimSpace(spec.EffectiveAccount) == "" {
+			return ErrInvalidConfig
+		}
+		targets := make([]domain.ExecutionTarget, 0, len(spec.AllowedTargets))
+		for _, target := range spec.AllowedTargets {
+			validated, err := domain.NewExecutionTarget(target.Kind, target.Profile)
+			if err != nil {
+				return ErrInvalidConfig
+			}
+			targets = append(targets, validated)
+		}
+		controllers := make([]domain.ControllerIdentity, 0, len(spec.AllowedControllers))
+		for _, controller := range spec.AllowedControllers {
+			id, err := domain.NewControllerID(controller.ID)
+			if err != nil {
+				return ErrInvalidConfig
+			}
+			validated, err := domain.NewControllerIdentity(controller.Type, id)
+			if err != nil {
+				return ErrInvalidConfig
+			}
+			controllers = append(controllers, validated)
+		}
+		limits := config.defaults
+		if err := applyServiceLimits(&limits, spec.ServiceLimits); err != nil {
+			return err
+		}
+		environmentPolicy, err := domain.NewEnvironment(domain.EnvironmentSpec{
+			Name:                     name,
+			HostClass:                spec.HostClass,
+			EffectiveAccount:         spec.EffectiveAccount,
+			AllowedTargets:           targets,
+			AllowedSourceModes:       append([]domain.SourceMode(nil), spec.AllowedSourceModes...),
+			AllowedRepositoryAliases: append([]string(nil), spec.AllowedRepositoryAliases...),
+			AllowedControllers:       controllers,
+			ServiceLimits:            limits,
+		})
+		if err != nil {
+			return ErrInvalidConfig
+		}
+		config.environments[name] = RegisteredEnvironment{baseSystem: spec.BaseSystem, policy: environmentPolicy}
+	}
+	return nil
+}
+
+func validateLimitsAndRetention(document fileDocument) (domain.ServiceLimits, Retention, error) {
 	defaults := domain.DefaultServiceLimits()
 	if err := applyServiceLimits(&defaults, document.Limits); err != nil {
-		return Config{}, err
+		return domain.ServiceLimits{}, Retention{}, err
 	}
 	retention := Retention{
 		MetadataAndIdempotency: defaults.MetadataRetention,
@@ -456,82 +707,11 @@ func validateDocument(document fileDocument) (Config, error) {
 		retention.MailboxUnacked = time.Duration(*document.Retention.MailboxUnacked)
 	}
 	if retention.MetadataAndIdempotency < 90*24*time.Hour || retention.OutputEvents <= 0 || retention.MailboxACKGrace <= 0 || retention.MailboxUnacked <= 0 {
-		return Config{}, ErrInvalidConfig
+		return domain.ServiceLimits{}, Retention{}, ErrInvalidConfig
 	}
 	defaults.MetadataRetention = retention.MetadataAndIdempotency
 	defaults.OutputRetention = retention.OutputEvents
-	if document.Mac != nil {
-		if err := validateMacDocument(document.Mac, document.SecretReferences); err != nil {
-			return Config{}, err
-		}
-	} else if err := validateLinuxDocument(document.Linux, document.SecretReferences); err != nil {
-		return Config{}, err
-	}
-
-	config := Config{
-		defaults:      defaults,
-		retention:     retention,
-		environments:  make(map[string]RegisteredEnvironment, len(document.EnvironmentRegistry)),
-		secretRefs:    make(map[SecretName]SecretReference),
-		defaultSource: domain.SourceModeEmpty,
-	}
-	if document.Mac != nil {
-		config.kind = HostKindMac
-		settings := macSettings(document.Mac)
-		config.mac = &settings
-		config.secretRefs[SecretDispatcherSSHKey] = SecretReference{File: document.SecretReferences.DispatcherSSHKey.File}
-		config.secretRefs[SecretDirectClientTLSKey] = SecretReference{File: document.SecretReferences.DirectClientKey.File}
-	} else {
-		config.kind = HostKindLinux
-		settings := linuxSettings(document.Linux)
-		config.linux = &settings
-		config.secretRefs[SecretLinuxServerTLSKey] = SecretReference{File: document.SecretReferences.LinuxServerKey.File}
-	}
-
-	for name, spec := range document.EnvironmentRegistry {
-		if !environmentNamePattern.MatchString(name) || strings.TrimSpace(spec.BaseSystem) == "" || strings.TrimSpace(spec.HostClass) == "" || strings.TrimSpace(spec.EffectiveAccount) == "" {
-			return Config{}, ErrInvalidConfig
-		}
-		targets := make([]domain.ExecutionTarget, 0, len(spec.AllowedTargets))
-		for _, target := range spec.AllowedTargets {
-			validated, err := domain.NewExecutionTarget(target.Kind, target.Profile)
-			if err != nil {
-				return Config{}, ErrInvalidConfig
-			}
-			targets = append(targets, validated)
-		}
-		controllers := make([]domain.ControllerIdentity, 0, len(spec.AllowedControllers))
-		for _, controller := range spec.AllowedControllers {
-			id, err := domain.NewControllerID(controller.ID)
-			if err != nil {
-				return Config{}, ErrInvalidConfig
-			}
-			validated, err := domain.NewControllerIdentity(controller.Type, id)
-			if err != nil {
-				return Config{}, ErrInvalidConfig
-			}
-			controllers = append(controllers, validated)
-		}
-		limits := defaults
-		if err := applyServiceLimits(&limits, spec.ServiceLimits); err != nil {
-			return Config{}, err
-		}
-		environmentPolicy, err := domain.NewEnvironment(domain.EnvironmentSpec{
-			Name:                     name,
-			HostClass:                spec.HostClass,
-			EffectiveAccount:         spec.EffectiveAccount,
-			AllowedTargets:           targets,
-			AllowedSourceModes:       append([]domain.SourceMode(nil), spec.AllowedSourceModes...),
-			AllowedRepositoryAliases: append([]string(nil), spec.AllowedRepositoryAliases...),
-			AllowedControllers:       controllers,
-			ServiceLimits:            limits,
-		})
-		if err != nil {
-			return Config{}, ErrInvalidConfig
-		}
-		config.environments[name] = RegisteredEnvironment{baseSystem: spec.BaseSystem, policy: environmentPolicy}
-	}
-	return config, nil
+	return defaults, retention, nil
 }
 
 func validateSelectedRegistry(environments map[string]environmentDocument) error {
@@ -658,7 +838,7 @@ func validateLinuxDocument(linux *linuxDocument, refs secretReferencesDocument) 
 		return fmt.Errorf("%w: %w", ErrInvalidConfig, ErrConfigHostProfile)
 	}
 	if linux.Account != LinuxAccount || linux.ServiceRoot != LinuxServiceRoot || !validServiceRoot(linux.ServiceRoot) || linux.DirectHTTPSBind != LinuxHTTPSBind ||
-		!validateEndpoint(linux.DirectPublicEndpoint) || linux.TLSMinVersion != "1.3" {
+		!validateEndpoint(linux.DirectPublicEndpoint) || linux.TLSMinVersion != "1.3" || linux.RemoteTargetProfile != "" {
 		return ErrInvalidConfig
 	}
 	if !selectedPaths(linux.ServiceRoot,
