@@ -33,7 +33,11 @@ func (c *p128ProbeCaller) Call(_ context.Context, request sshbridge.RequestFrame
 
 func TestP128RemoteHealthProbeUsesReadOnlyPingAndValidatesReply(t *testing.T) {
 	caller := &p128ProbeCaller{}
-	driver := &RemoteDriver{caller: caller}
+	resolver, err := NewRemoteCallerResolver(map[string]RemoteCaller{"linux-host": caller})
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver := &RemoteDriver{resolver: resolver}
 	if err := driver.Probe(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +49,7 @@ func TestP128RemoteHealthProbeUsesReadOnlyPingAndValidatesReply(t *testing.T) {
 		t.Fatalf("invalid probe reply error=%v, want ErrRemoteResponse", err)
 	}
 	caller.err = errors.New("secret-bearing transport error")
-	err := driver.Probe(context.Background())
+	err = driver.Probe(context.Background())
 	if !errors.Is(err, ErrRemoteResponse) || err.Error() == "" || containsP128(err.Error(), "secret-bearing") {
 		t.Fatalf("transport failure leaked raw cause or lost classification: %v", err)
 	}

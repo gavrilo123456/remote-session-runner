@@ -17,6 +17,10 @@ import (
 func TestP074RemoteEventMirrorStreamsDeduplicatesAndAdvancesCursor(t *testing.T) {
 	authority := p068Authority(t)
 	commandID := domain.CommandID("command-p074-stream")
+	intent := p068SubmitIntent(t, "intent-p074-stream", "session-p074-stream", string(commandID), domain.TargetKindRemote, "printf stream")
+	if _, err := authority.CreateLocalIntent(context.Background(), intent); err != nil {
+		t.Fatal(err)
+	}
 	caller := &p074StreamCaller{replies: []sshbridge.ReplyFrame{
 		p074EventReply("events/command-p074-stream/0", commandID, 1, "command_queued", nil),
 		p074EventReply("events/command-p074-stream/0", commandID, 1, "command_queued", nil),
@@ -60,6 +64,10 @@ func TestP074RemoteEventMirrorStreamsDeduplicatesAndAdvancesCursor(t *testing.T)
 func TestP074RemoteEventMirrorRejectsGapWithoutAdvancingCursor(t *testing.T) {
 	authority := p068Authority(t)
 	commandID := domain.CommandID("command-p074-gap")
+	intent := p068SubmitIntent(t, "intent-p074-gap", "session-p074-gap", string(commandID), domain.TargetKindRemote, "printf gap")
+	if _, err := authority.CreateLocalIntent(context.Background(), intent); err != nil {
+		t.Fatal(err)
+	}
 	requestID := "events/command-p074-gap/0"
 	caller := &p074StreamCaller{replies: []sshbridge.ReplyFrame{
 		p074EventReply(requestID, commandID, 2, "command_succeeded", nil),

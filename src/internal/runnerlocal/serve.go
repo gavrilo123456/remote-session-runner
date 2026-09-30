@@ -24,7 +24,6 @@ import (
 	"remote-session-runner/src/internal/localapi"
 	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/opshealth"
-	"remote-session-runner/src/internal/sshclient"
 	"remote-session-runner/src/internal/store"
 )
 
@@ -123,7 +122,7 @@ type Service struct {
 	artifactCleaner     mailbox.ArtifactCleaner
 	pollInterval        time.Duration
 	routerHealth        *routerHealthMonitor
-	remoteProbe         func(context.Context) error
+	remoteProbe         func(context.Context) map[string]error
 	metricsRecorder     *opshealth.Recorder
 	thresholds          *opshealth.ThresholdMonitor
 	mailboxImporter     *mailbox.Importer
@@ -146,7 +145,19 @@ func New(configPath string) (*Service, error) {
 	if !ok || loaded.Kind() != config.HostKindMac || settings.Account != config.MacAccount {
 		return nil, errors.New("selected Mac host configuration is required")
 	}
-	if err := ensureMacServicePaths(settings); err != nil {
+	defaultMailbox, ok := loaded.Mailbox("default")
+	if !ok || defaultMailbox.Root == "" {
+		return nil, errors.New("default Mac mailbox configuration is required")
+	}
+	mailboxRoots := make([]string, 0, len(loaded.MailboxNames()))
+	for _, mailboxID := range loaded.MailboxNames() {
+		definition, exists := loaded.Mailbox(mailboxID)
+		if !exists || definition.Root == "" {
+			return nil, errors.New("configured Mac mailbox is invalid")
+		}
+		mailboxRoots = append(mailboxRoots, definition.Root)
+	}
+	if err := ensureMacServicePaths(settings, mailboxRoots...); err != nil {
 		return nil, err
 	}
 	ctx := context.Background()
@@ -168,7 +179,7 @@ func New(configPath string) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("construct Mac owner identity: %w", err)
 	}
-	routerHealth := newRouterHealthMonitor()
+	var routerHealth *routerHealthMonitor
 	metricsRecorder := opshealth.NewRecorder()
 	thresholds := opshealth.NewThresholdMonitor()
 	var metricsImporter *mailbox.Importer
@@ -190,31 +201,25 @@ func New(configPath string) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("construct local Router driver: %w", err)
 	}
-	dispatcherKey, ok := loaded.SecretReference(config.SecretDispatcherSSHKey)
-	if !ok {
-		return nil, errors.New("dispatcher SSH key reference is missing")
-	}
-	ssh, err := sshclient.New(sshclient.Config{
-		User: "ubuntu", Host: "129.151.232.40", IdentityFile: dispatcherKey.File,
-		KnownHostsFile: settings.SSHKnownHosts,
-	})
+	remoteResolver, err := newPinnedRemoteCallerResolver(loaded)
 	if err != nil {
-		return nil, fmt.Errorf("construct pinned SSH bridge client: %w", err)
+		return nil, fmt.Errorf("construct pinned SSH bridge routes: %w", err)
 	}
-	remoteDriver, err := dispatcher.NewRemoteDriver(authority, ssh, routerOwner, intentLeaseDuration)
+	remoteDriver, err := dispatcher.NewRemoteDriverWithResolver(authority, remoteResolver, routerOwner, intentLeaseDuration)
 	if err != nil {
 		return nil, fmt.Errorf("construct remote Router driver: %w", err)
 	}
-	importer, err := mailbox.NewImporter(settings.MailboxRoot, nil)
+	routerHealth = newRouterHealthMonitorForProfiles(remoteDriver.RemoteProfiles())
+	importer, err := mailbox.NewImporter(defaultMailbox.Root, nil)
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox importer: %w", err)
 	}
 	metricsImporter = importer
-	outbox, err := mailbox.NewOutbox(settings.MailboxRoot)
+	outbox, err := mailbox.NewOutbox(defaultMailbox.Root)
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox outbox: %w", err)
 	}
-	eventFiles, err := mailbox.NewEventFiles(settings.MailboxRoot)
+	eventFiles, err := mailbox.NewEventFiles(defaultMailbox.Root)
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox event files: %w", err)
 	}
@@ -226,7 +231,7 @@ func New(configPath string) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox processor: %w", err)
 	}
-	ackImporter, err := mailbox.NewAckImporter(mailbox.AckImporterOptions{Root: settings.MailboxRoot, Authority: authority})
+	ackImporter, err := mailbox.NewAckImporter(mailbox.AckImporterOptions{Root: defaultMailbox.Root, Authority: authority})
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox ACK importer: %w", err)
 	}
@@ -234,7 +239,7 @@ func New(configPath string) (*Service, error) {
 		database: authority, dbCloser: db, api: api, localDriver: localDriver,
 		remoteDriver: remoteDriver, mailbox: processor, ackImporter: ackImporter,
 		artifactCleaner: mailbox.ArtifactCleaner{Authority: authority, Outbox: outbox, EventFiles: eventFiles}, routerHealth: routerHealth,
-		pollInterval: defaultPollInterval, remoteProbe: remoteDriver.Probe,
+		pollInterval: defaultPollInterval, remoteProbe: remoteDriver.ProbeProfiles,
 		metricsRecorder: metricsRecorder, thresholds: thresholds, mailboxImporter: metricsImporter,
 	}
 	closeOnError = false
@@ -418,11 +423,9 @@ func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, st
 		}
 		if err != nil {
 			s.recordOperationalError(err, false)
-			s.routerHealth.update(err, time.Now())
 			fmt.Fprintln(stderr, "runner-local: remote Router dispatch cycle failed")
 			break
 		}
-		s.routerHealth.update(nil, time.Now())
 	}
 	if ctx.Err() == nil && s.acceptedRemoteReconciliationDue(time.Now()) {
 		reconciledRemoteWork := false
@@ -436,7 +439,6 @@ func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, st
 			release()
 			if err != nil {
 				s.recordOperationalError(err, false)
-				s.routerHealth.update(err, time.Now())
 				fmt.Fprintln(stderr, "runner-local: accepted remote work reconciliation cycle failed")
 			}
 		}
@@ -481,7 +483,7 @@ func (s *Service) runRemoteHealthProbe(ctx context.Context) {
 	probe := func() {
 		probeContext, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
-		s.routerHealth.update(s.probeRemote(probeContext), time.Now())
+		s.routerHealth.updateProfiles(s.probeRemote(probeContext), time.Now())
 	}
 	probe()
 	ticker := time.NewTicker(15 * time.Second)
@@ -504,7 +506,7 @@ func (s *Service) Doctor(ctx context.Context) opshealth.Report {
 	}
 	if s != nil && s.remoteDriver != nil && s.routerHealth != nil {
 		probeContext, cancel := context.WithTimeout(ctx, 12*time.Second)
-		s.routerHealth.update(s.probeRemote(probeContext), time.Now())
+		s.routerHealth.updateProfiles(s.probeRemote(probeContext), time.Now())
 		cancel()
 	}
 	if s == nil {
@@ -513,17 +515,17 @@ func (s *Service) Doctor(ctx context.Context) opshealth.Report {
 	return macIngressHealthReportWithMetrics(ctx, s.database, s.routerHealth, s.mailboxImporter, s.metricsRecorder, s.thresholds)
 }
 
-func (s *Service) probeRemote(ctx context.Context) error {
+func (s *Service) probeRemote(ctx context.Context) map[string]error {
 	if s == nil {
-		return dispatcher.ErrRemoteDriverConfiguration
+		return map[string]error{"router": dispatcher.ErrRemoteDriverConfiguration}
 	}
 	if s.remoteProbe != nil {
 		return s.remoteProbe(ctx)
 	}
 	if s.remoteDriver == nil {
-		return dispatcher.ErrRemoteDriverConfiguration
+		return map[string]error{"router": dispatcher.ErrRemoteDriverConfiguration}
 	}
-	return s.remoteDriver.Probe(ctx)
+	return s.remoteDriver.ProbeProfiles(ctx)
 }
 
 func waitWorkers(done <-chan struct{}, ctx context.Context) error {
@@ -618,14 +620,15 @@ func ensureMacServiceRoot(root string) error {
 	return nil
 }
 
-func ensureMacServicePaths(settings config.MacSettings) error {
+func ensureMacServicePaths(settings config.MacSettings, mailboxRoots ...string) error {
 	paths := []string{
 		filepath.Join(settings.ServiceRoot, "bin"), filepath.Join(settings.ServiceRoot, "config"),
 		filepath.Join(settings.ServiceRoot, "logs"), filepath.Dir(settings.APISocket),
-		filepath.Dir(settings.LocalDSocket), filepath.Dir(settings.Database), settings.MailboxRoot,
+		filepath.Dir(settings.LocalDSocket), filepath.Dir(settings.Database),
 		settings.Workspaces, settings.ScriptTempRoot, settings.Backups,
 		filepath.Join(settings.ServiceRoot, "secrets"),
 	}
+	paths = append(paths, mailboxRoots...)
 	for _, path := range paths {
 		if err := ensureOwnedDirectoryUnder(settings.ServiceRoot, path); err != nil {
 			return err

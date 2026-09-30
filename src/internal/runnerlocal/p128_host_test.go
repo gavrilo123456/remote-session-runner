@@ -79,8 +79,8 @@ func TestP128MacIngressAcceptsDurableIntentDuringRemoteOutage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	monitor := newRouterHealthMonitor()
-	service := &Service{database: authority, remoteDriver: remote, routerHealth: monitor, remoteProbe: remote.Probe}
+	monitor := newRouterHealthMonitorForProfiles(remote.RemoteProfiles())
+	service := &Service{database: authority, remoteDriver: remote, routerHealth: monitor, remoteProbe: remote.ProbeProfiles}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 

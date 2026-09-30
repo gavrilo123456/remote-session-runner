@@ -27,14 +27,26 @@ type sessionClient interface {
 
 type endpointResolver interface {
 	Resolve(name, configPath string) (sessionClient, error)
+	ResolveWithBinding(name, configPath string) (endpointResolution, error)
+}
+
+// endpointResolution keeps a client and its direct target binding from the
+// same configuration read. The binding is empty for the local Unix endpoint.
+// It must not be reconstructed through a second config read after the client
+// has been constructed.
+type endpointResolution struct {
+	client        sessionClient
+	targetProfile string
+	bound         bool
 }
 
 type remoteEndpointProfile struct {
-	name       string
-	endpoint   string
-	serverCA   string
-	clientCert string
-	clientKey  string
+	name          string
+	targetProfile string
+	endpoint      string
+	serverCA      string
+	clientCert    string
+	clientKey     string
 }
 
 func defaultMacConfigPath() string {
@@ -54,35 +66,62 @@ func newDefaultEndpointResolver() defaultEndpointResolver {
 }
 
 func (r defaultEndpointResolver) Resolve(name, configPath string) (sessionClient, error) {
+	resolution, err := r.ResolveWithBinding(name, configPath)
+	if err != nil {
+		return nil, err
+	}
+	return resolution.client, nil
+}
+
+// ResolveWithBinding constructs the selected endpoint client and returns its
+// immutable direct target binding from one validated profile read.
+func (r defaultEndpointResolver) ResolveWithBinding(name, configPath string) (endpointResolution, error) {
 	if name == "local" {
 		socketPath := filepath.Join(config.MacServiceRoot, "run", "local-api.sock")
 		client, err := runnerclient.NewUnixSocketClient(socketPath)
 		if err != nil {
-			return nil, fmt.Errorf("configure local endpoint: %w", err)
+			return endpointResolution{}, fmt.Errorf("configure local endpoint: %w", err)
 		}
-		return client, nil
+		return endpointResolution{client: client}, nil
 	}
 	if name == "" {
-		return nil, errors.New("--endpoint is required; choose local or a configured endpoint profile")
+		return endpointResolution{}, errors.New("--endpoint is required; choose local or a configured endpoint profile")
 	}
 	if r.readRemoteProfile == nil || r.newHTTPSClient == nil {
-		return nil, ErrEndpointProfile
+		return endpointResolution{}, ErrEndpointProfile
 	}
 	profile, err := r.readRemoteProfile(name, configPath)
 	if err != nil {
-		return nil, err
+		return endpointResolution{}, err
 	}
-	if profile.name != name {
-		return nil, ErrEndpointProfile
+	if profile.name != name || profile.targetProfile == "" {
+		return endpointResolution{}, ErrEndpointProfile
 	}
 	client, err := r.newHTTPSClient(profile)
 	if err != nil {
-		return nil, err
+		return endpointResolution{}, err
 	}
 	if client == nil || client.EndpointKind() != runnerclient.EndpointHTTPS {
-		return nil, ErrEndpointProfile
+		return endpointResolution{}, ErrEndpointProfile
 	}
-	return client, nil
+	return endpointResolution{client: client, targetProfile: profile.targetProfile, bound: true}, nil
+}
+
+// EndpointTargetProfile returns the immutable target binding for a named
+// direct endpoint. The local Unix endpoint deliberately has no remote target
+// binding.
+func (r defaultEndpointResolver) EndpointTargetProfile(name, configPath string) (string, bool, error) {
+	if name == "local" {
+		return "", false, nil
+	}
+	if name == "" || r.readRemoteProfile == nil {
+		return "", false, ErrEndpointProfile
+	}
+	profile, err := r.readRemoteProfile(name, configPath)
+	if err != nil || profile.name != name || profile.targetProfile == "" {
+		return "", false, ErrEndpointProfile
+	}
+	return profile.targetProfile, true, nil
 }
 
 func loadRemoteEndpointProfile(name, configPath string) (remoteEndpointProfile, error) {
@@ -90,9 +129,15 @@ func loadRemoteEndpointProfile(name, configPath string) (remoteEndpointProfile, 
 	if err != nil || loaded.Kind() != config.HostKindMac {
 		return remoteEndpointProfile{}, ErrEndpointProfile
 	}
-	mac, macOK := loaded.MacSettings()
-	key, keyOK := loaded.SecretReference(config.SecretDirectClientTLSKey)
-	return remoteProfileFromSettings(name, loaded.Kind(), mac, key, macOK, keyOK)
+	endpoint, ok := loaded.DirectEndpoint(name)
+	if !ok || endpoint.Name != name || endpoint.TargetProfile == "" || endpoint.Endpoint == "" || endpoint.ServerCA == "" ||
+		endpoint.ClientCertificate == "" || endpoint.ClientPrivateKeyFile == "" {
+		return remoteEndpointProfile{}, ErrEndpointProfile
+	}
+	return remoteEndpointProfile{
+		name: name, targetProfile: endpoint.TargetProfile, endpoint: endpoint.Endpoint, serverCA: endpoint.ServerCA,
+		clientCert: endpoint.ClientCertificate, clientKey: endpoint.ClientPrivateKeyFile,
+	}, nil
 }
 
 func remoteProfileFromSettings(name string, kind config.HostKind, settings config.MacSettings, key config.SecretReference, settingsOK, keyOK bool) (remoteEndpointProfile, error) {
@@ -101,7 +146,7 @@ func remoteProfileFromSettings(name string, kind config.HostKind, settings confi
 		return remoteEndpointProfile{}, ErrEndpointProfile
 	}
 	return remoteEndpointProfile{
-		name: name, endpoint: settings.RemoteEndpoint, serverCA: settings.RemoteServerCA,
+		name: name, targetProfile: "linux-host", endpoint: settings.RemoteEndpoint, serverCA: settings.RemoteServerCA,
 		clientCert: settings.DirectClientCertificate, clientKey: key.File,
 	}, nil
 }

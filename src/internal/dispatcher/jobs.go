@@ -18,7 +18,7 @@ var remoteProjectionReadSequence atomic.Uint64
 // view. It is read-only: it never carries a mutation resource or idempotency
 // key and it never resumes a job.
 func (d *RemoteDriver) RefreshJobProjection(ctx context.Context, jobID domain.JobID, controller domain.ControllerIdentity) (store.RemoteJobProjection, error) {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return store.RemoteJobProjection{}, ErrRemoteDriverConfiguration
 	}
 	validatedJob, err := domain.NewJobID(string(jobID))
@@ -36,7 +36,7 @@ func (d *RemoteDriver) RefreshJobProjection(ctx context.Context, jobID domain.Jo
 // remote one-off runs. Every remote operation in this recovery path is a
 // status/event read; an accepted mutation is never sent again.
 func (d *RemoteDriver) ReconcileAcceptedRemoteRuns(ctx context.Context, limit int) error {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return ErrRemoteDriverConfiguration
 	}
 	d.reconcileMu.Lock()
@@ -61,7 +61,7 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteRuns(ctx context.Context, limit in
 // session commands. It uses only strict target reads and event streams; it
 // never repeats a submit mutation or sends the script again.
 func (d *RemoteDriver) ReconcileAcceptedRemoteSubmits(ctx context.Context, limit int) error {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return ErrRemoteDriverConfiguration
 	}
 	d.reconcileMu.Lock()
@@ -132,7 +132,7 @@ func (d *RemoteDriver) nextAcceptedRemoteSubmitPage(ctx context.Context, limit i
 // It changes the delivery state only after a strict terminal projection and
 // its durable event boundary agree.
 func (d *RemoteDriver) ReconcileAcceptedRemoteSubmit(ctx context.Context, id domain.IntentID) error {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return ErrRemoteDriverConfiguration
 	}
 	intent, err := d.authority.GetLocalIntent(ctx, id)
@@ -183,7 +183,7 @@ func (d *RemoteDriver) reconcileAcceptedRemoteSubmit(ctx context.Context, intent
 // local delivery state when the target job, command, and retained event prefix
 // form one internally consistent terminal snapshot.
 func (d *RemoteDriver) ReconcileAcceptedRun(ctx context.Context, id domain.IntentID) error {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return ErrRemoteDriverConfiguration
 	}
 	intent, err := d.authority.GetLocalIntent(ctx, id)
@@ -266,7 +266,7 @@ func (d *RemoteDriver) refreshJobProjectionForIntent(ctx context.Context, intent
 		Operation:       sshbridge.OperationGetJob,
 		Payload:         payload,
 	}
-	object, err := d.readRemoteProjectionObject(ctx, request, "job")
+	object, err := d.readRemoteProjectionObject(ctx, intent, request, "job")
 	if err != nil {
 		return store.RemoteJobProjection{}, err
 	}
@@ -284,8 +284,12 @@ func (d *RemoteDriver) refreshJobProjectionForIntent(ctx context.Context, intent
 	return stored, nil
 }
 
-func (d *RemoteDriver) readRemoteProjectionObject(ctx context.Context, request sshbridge.RequestFrame, resource string) (map[string]json.RawMessage, error) {
-	reply, err := d.caller.Call(ctx, request)
+func (d *RemoteDriver) readRemoteProjectionObject(ctx context.Context, intent store.LocalIntentRecord, request sshbridge.RequestFrame, resource string) (map[string]json.RawMessage, error) {
+	caller, err := d.remoteCallerForTarget(intent.Target)
+	if err != nil {
+		return nil, err
+	}
+	reply, err := caller.Call(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s state read: %v", ErrRemoteResponse, resource, err)
 	}

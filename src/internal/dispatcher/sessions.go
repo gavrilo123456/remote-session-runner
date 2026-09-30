@@ -14,7 +14,7 @@ import (
 // of the state at acceptance time, so callers use this read while a remote
 // session is preparing or changing state.
 func (d *RemoteDriver) RefreshSessionProjection(ctx context.Context, sessionID domain.SessionID, controller domain.ControllerIdentity) (store.RemoteSessionProjection, error) {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return store.RemoteSessionProjection{}, ErrRemoteDriverConfiguration
 	}
 	validatedSession, err := domain.NewSessionID(string(sessionID))
@@ -36,7 +36,11 @@ func (d *RemoteDriver) RefreshSessionProjection(ctx context.Context, sessionID d
 	if err != nil {
 		return store.RemoteSessionProjection{}, err
 	}
-	reply, err := d.caller.Call(ctx, request)
+	caller, err := d.remoteCallerForTarget(intent.Target)
+	if err != nil {
+		return store.RemoteSessionProjection{}, err
+	}
+	reply, err := caller.Call(ctx, request)
 	if err != nil {
 		return store.RemoteSessionProjection{}, fmt.Errorf("%w: session state read: %v", ErrRemoteResponse, err)
 	}

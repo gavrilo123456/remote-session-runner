@@ -795,6 +795,119 @@ func TestP121ExplicitEndpointAndDirectTargetRules(t *testing.T) {
 	}
 }
 
+func TestP151DirectEndpointProfileMismatchPreventsMutation(t *testing.T) {
+	t.Run("session create", func(t *testing.T) {
+		client := &fakeSessionClient{kind: runnerclient.EndpointHTTPS}
+		resolver := &fakeEndpointResolver{
+			clients:        map[string]sessionClient{"host-a-poc": client},
+			targetProfiles: map[string]string{"host-a-poc": "host-a"},
+		}
+		var stdout, stderr bytes.Buffer
+		code := runWithDependencies([]string{
+			"--endpoint", "host-a-poc", "session", "create", "--environment", "linux-dev",
+			"--target", "remote", "--profile", "host-b", "--no-wait",
+		}, &stdout, &stderr, cliDependencies{resolver: resolver})
+		if code != exitInvalidInvocation || client.createCalls != 0 || !strings.Contains(stderr.String(), "endpoint/target mismatch") {
+			t.Fatalf("mismatched direct create mutated or had wrong result: exit=%d creates=%d stdout=%q stderr=%q", code, client.createCalls, stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("one-off run", func(t *testing.T) {
+		client := &fakeCommandClient{fakeSessionClient: &fakeSessionClient{kind: runnerclient.EndpointHTTPS}}
+		resolver := &fakeEndpointResolver{
+			clients:        map[string]sessionClient{"host-a-poc": client},
+			targetProfiles: map[string]string{"host-a-poc": "host-a"},
+		}
+		var stdout, stderr bytes.Buffer
+		code := runWithDependencies([]string{
+			"--endpoint", "host-a-poc", "run", "--environment", "linux-dev",
+			"--target", "remote", "--profile", "host-b", "--", "true",
+		}, &stdout, &stderr, cliDependencies{resolver: resolver})
+		if code != exitInvalidInvocation || client.runCalls != 0 || !strings.Contains(stderr.String(), "endpoint/target mismatch") {
+			t.Fatalf("mismatched direct run mutated or had wrong result: exit=%d runs=%d stdout=%q stderr=%q", code, client.runCalls, stdout.String(), stderr.String())
+		}
+	})
+}
+
+func TestP151DirectEndpointMatchingSessionCreateNoWaitMutatesOnce(t *testing.T) {
+	client := &fakeSessionClient{
+		kind: runnerclient.EndpointHTTPS,
+		acceptance: runnerclient.Acceptance{
+			ResourceID: "session-p151-match", SessionID: "session-p151-match", AcceptanceScope: "target_authority",
+			ExecutionTarget: runnerclient.Target{Kind: "remote", Profile: "host-b"},
+		},
+	}
+	resolver := &fakeEndpointResolver{
+		clients:        map[string]sessionClient{"host-b-poc": client},
+		targetProfiles: map[string]string{"host-b-poc": "host-b"},
+	}
+	var stdout, stderr bytes.Buffer
+	code := runWithDependencies([]string{
+		"--endpoint", "host-b-poc", "session", "create", "--environment", "linux-build-dev",
+		"--target", "remote", "--profile", "host-b", "--no-wait", "--idempotency-key", "p151-match",
+	}, &stdout, &stderr, cliDependencies{resolver: resolver})
+	if code != 0 || client.createCalls != 1 || client.getCalls != 0 {
+		t.Fatalf("matched direct create result: exit=%d creates=%d reads=%d stdout=%q stderr=%q", code, client.createCalls, client.getCalls, stdout.String(), stderr.String())
+	}
+	if client.createdRequest.Environment != "linux-build-dev" || client.createdRequest.ExecutionTarget != (runnerclient.Target{Kind: "remote", Profile: "host-b"}) ||
+		client.createdKey != "p151-match" || !strings.Contains(stdout.String(), "readiness: pending") {
+		t.Fatalf("matched direct create changed request or output: request=%+v key=%q stdout=%q", client.createdRequest, client.createdKey, stdout.String())
+	}
+}
+
+func TestP151DirectEndpointContradictoryCreateAcceptanceFailsAfterMutation(t *testing.T) {
+	client := &fakeSessionClient{
+		kind: runnerclient.EndpointHTTPS,
+		acceptance: runnerclient.Acceptance{
+			ResourceID: "session-p151-contradictory", SessionID: "session-p151-contradictory", AcceptanceScope: "target_authority",
+			ExecutionTarget: runnerclient.Target{Kind: "remote", Profile: "host-b"},
+		},
+	}
+	resolver := &fakeEndpointResolver{
+		clients:        map[string]sessionClient{"host-a-poc": client},
+		targetProfiles: map[string]string{"host-a-poc": "host-a"},
+	}
+	var stdout, stderr bytes.Buffer
+	code := runWithDependencies([]string{
+		"--endpoint", "host-a-poc", "session", "create", "--environment", "linux-dev",
+		"--target", "remote", "--profile", "host-a", "--no-wait", "--idempotency-key", "p151-contradictory",
+	}, &stdout, &stderr, cliDependencies{resolver: resolver})
+	if code != 1 || client.createCalls != 1 || client.getCalls != 0 || !strings.Contains(stderr.String(), "session create acceptance target mismatch") {
+		t.Fatalf("contradictory direct acceptance result: exit=%d creates=%d reads=%d stdout=%q stderr=%q", code, client.createCalls, client.getCalls, stdout.String(), stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("contradictory direct acceptance was reported as usable: stdout=%q", stdout.String())
+	}
+}
+
+func TestP151DirectMutationsUseAtomicClientAndTargetBinding(t *testing.T) {
+	t.Run("session create", func(t *testing.T) {
+		client := &fakeSessionClient{kind: runnerclient.EndpointHTTPS}
+		resolver := &p151AtomicBindingResolver{client: client}
+		var stdout, stderr bytes.Buffer
+		code := runWithDependencies([]string{
+			"--endpoint", "host-a-poc", "session", "create", "--environment", "linux-dev",
+			"--target", "remote", "--profile", "host-b", "--no-wait",
+		}, &stdout, &stderr, cliDependencies{resolver: resolver})
+		if code != exitInvalidInvocation || client.createCalls != 0 || resolver.atomicCalls != 1 || resolver.resolveCalls != 0 || resolver.separateBindingCalls != 0 {
+			t.Fatalf("atomic direct create result exit=%d creates=%d atomic=%d resolve=%d separate=%d stdout=%q stderr=%q", code, client.createCalls, resolver.atomicCalls, resolver.resolveCalls, resolver.separateBindingCalls, stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("one-off run", func(t *testing.T) {
+		client := &fakeCommandClient{fakeSessionClient: &fakeSessionClient{kind: runnerclient.EndpointHTTPS}}
+		resolver := &p151AtomicBindingResolver{client: client}
+		var stdout, stderr bytes.Buffer
+		code := runWithDependencies([]string{
+			"--endpoint", "host-a-poc", "run", "--environment", "linux-dev",
+			"--target", "remote", "--profile", "host-b", "--", "true",
+		}, &stdout, &stderr, cliDependencies{resolver: resolver})
+		if code != exitInvalidInvocation || client.runCalls != 0 || resolver.atomicCalls != 1 || resolver.resolveCalls != 0 || resolver.separateBindingCalls != 0 {
+			t.Fatalf("atomic direct run result exit=%d runs=%d atomic=%d resolve=%d separate=%d stdout=%q stderr=%q", code, client.runCalls, resolver.atomicCalls, resolver.resolveCalls, resolver.separateBindingCalls, stdout.String(), stderr.String())
+		}
+	})
+}
+
 func p120CommandResource(state string, exitCode, finalSequence int) runnerclient.CommandResource {
 	final := int64(finalSequence)
 	return runnerclient.CommandResource{
@@ -921,9 +1034,10 @@ func (s *fakeP120EventStream) Close() error {
 }
 
 type fakeEndpointResolver struct {
-	clients   map[string]sessionClient
-	requested string
-	calls     int
+	clients        map[string]sessionClient
+	targetProfiles map[string]string
+	requested      string
+	calls          int
 }
 
 func (r *fakeEndpointResolver) Resolve(name, _ string) (sessionClient, error) {
@@ -934,6 +1048,41 @@ func (r *fakeEndpointResolver) Resolve(name, _ string) (sessionClient, error) {
 		return nil, errors.New("profile unavailable")
 	}
 	return client, nil
+}
+
+func (r *fakeEndpointResolver) ResolveWithBinding(name, configPath string) (endpointResolution, error) {
+	client, err := r.Resolve(name, configPath)
+	if err != nil {
+		return endpointResolution{}, err
+	}
+	profile, ok := r.targetProfiles[name]
+	return endpointResolution{client: client, targetProfile: profile, bound: ok}, nil
+}
+
+// p151AtomicBindingResolver models a config change between the historical
+// client read (host A) and a separate binding read (host B). The direct create
+// path must use only the atomic host-A resolution and reject a host-B request
+// before it reaches the host-A client.
+type p151AtomicBindingResolver struct {
+	client               sessionClient
+	resolveCalls         int
+	atomicCalls          int
+	separateBindingCalls int
+}
+
+func (r *p151AtomicBindingResolver) Resolve(string, string) (sessionClient, error) {
+	r.resolveCalls++
+	return r.client, nil
+}
+
+func (r *p151AtomicBindingResolver) ResolveWithBinding(string, string) (endpointResolution, error) {
+	r.atomicCalls++
+	return endpointResolution{client: r.client, targetProfile: "host-a", bound: true}, nil
+}
+
+func (r *p151AtomicBindingResolver) EndpointTargetProfile(string, string) (string, bool, error) {
+	r.separateBindingCalls++
+	return "host-b", true, nil
 }
 
 type fakeSessionClient struct {

@@ -53,12 +53,12 @@ type RemoteCaller interface {
 // frame is reconstructed from the committed immutable local intent.
 type RemoteDriver struct {
 	authority     *store.AuthorityStore
-	caller        RemoteCaller
+	resolver      RemoteCallerResolver
 	owner         string
 	leaseDuration time.Duration
 	now           func() time.Time
 	sessionMu     sync.RWMutex
-	sessionStates map[domain.SessionID]domain.SessionState
+	sessionStates map[remoteSessionKey]domain.SessionState
 	reconcileMu   sync.Mutex
 	runCursor     *store.RemoteIntentCursor
 	submitCursor  *store.RemoteIntentCursor
@@ -72,16 +72,37 @@ func NewRemoteDriver(authority *store.AuthorityStore, caller RemoteCaller, owner
 // NewRemoteDriverWithClock is the deterministic-clock constructor used by
 // uncertainty deadline tests and controlled recovery harnesses.
 func NewRemoteDriverWithClock(authority *store.AuthorityStore, caller RemoteCaller, owner string, leaseDuration time.Duration, now func() time.Time) (*RemoteDriver, error) {
-	if authority == nil || caller == nil || owner == "" || len(owner) > 256 || strings.IndexByte(owner, 0) >= 0 || leaseDuration <= 0 || now == nil {
+	resolver, err := NewRemoteCallerResolver(map[string]RemoteCaller{"linux-host": caller})
+	if err != nil {
+		return nil, err
+	}
+	return NewRemoteDriverWithResolverAndClock(authority, resolver, owner, leaseDuration, now)
+}
+
+// NewRemoteDriverWithResolver constructs a remote driver whose every bridge
+// call is selected from the target profile stored with the local intent.
+func NewRemoteDriverWithResolver(authority *store.AuthorityStore, resolver RemoteCallerResolver, owner string, leaseDuration time.Duration) (*RemoteDriver, error) {
+	return NewRemoteDriverWithResolverAndClock(authority, resolver, owner, leaseDuration, time.Now)
+}
+
+// NewRemoteDriverWithResolverAndClock is the deterministic constructor for
+// profile-aware routing tests and controlled recovery harnesses.
+func NewRemoteDriverWithResolverAndClock(authority *store.AuthorityStore, resolver RemoteCallerResolver, owner string, leaseDuration time.Duration, now func() time.Time) (*RemoteDriver, error) {
+	if authority == nil || resolver == nil || owner == "" || len(owner) > 256 || strings.IndexByte(owner, 0) >= 0 || leaseDuration <= 0 || now == nil {
 		return nil, ErrRemoteDriverConfiguration
 	}
-	return &RemoteDriver{authority: authority, caller: caller, owner: owner, leaseDuration: leaseDuration, now: now, sessionStates: make(map[domain.SessionID]domain.SessionState)}, nil
+	return &RemoteDriver{authority: authority, resolver: resolver, owner: owner, leaseDuration: leaseDuration, now: now, sessionStates: make(map[remoteSessionKey]domain.SessionState)}, nil
+}
+
+type remoteSessionKey struct {
+	profile   string
+	sessionID domain.SessionID
 }
 
 // DispatchNext selects the earliest eligible remote intent and delivers it
 // with stable resource, request, idempotency, and command-ordinal identities.
 func (d *RemoteDriver) DispatchNext(ctx context.Context) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, ErrRemoteDriverConfiguration
 	}
 	candidates, err := d.authority.ListEligibleLocalIntents(ctx, 1000)
@@ -105,22 +126,29 @@ func (d *RemoteDriver) DispatchNext(ctx context.Context) (store.LocalIntentRecor
 		if errors.Is(dispatchErr, ErrRemoteIdempotencyDeadline) {
 			continue
 		}
+		// A persisted intent for a route that is no longer configured remains
+		// recorded for later repair. It must not make another immutable target
+		// profile fall back or starve behind it in this dispatch sweep.
+		if errors.Is(dispatchErr, ErrRemoteRouteUnavailable) {
+			continue
+		}
 		return record, reply, dispatchErr
 	}
 	return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, ErrNoRemoteDispatchWork
 }
 
-// Probe checks the restricted SSH bridge/runnerd control path without reading
-// or mutating execution resources.
-func (d *RemoteDriver) Probe(ctx context.Context) error {
-	if d == nil || d.caller == nil {
-		return ErrRemoteDriverConfiguration
+// ProbeProfile checks one restricted SSH bridge/runnerd control path without
+// reading or mutating execution resources.
+func (d *RemoteDriver) ProbeProfile(ctx context.Context, profile string) error {
+	caller, err := d.remoteCallerForProfile(profile)
+	if err != nil {
+		return err
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	requestID := fmt.Sprintf("router-health-%d", remoteProbeSequence.Add(1))
-	reply, err := d.caller.Call(ctx, sshbridge.RequestFrame{
+	requestID := fmt.Sprintf("router-health-%s-%d", profile, remoteProbeSequence.Add(1))
+	reply, err := caller.Call(ctx, sshbridge.RequestFrame{
 		ProtocolVersion: sshbridge.ProtocolVersion,
 		RequestID:       requestID,
 		Operation:       sshbridge.OperationPing,
@@ -139,9 +167,41 @@ func (d *RemoteDriver) Probe(ctx context.Context) error {
 	return nil
 }
 
+// ProbeProfiles probes every configured queued route independently. A failed
+// profile is retained in the result map and cannot be hidden by another
+// profile succeeding.
+func (d *RemoteDriver) ProbeProfiles(ctx context.Context) map[string]error {
+	profiles := d.remoteCallerProfiles()
+	results := make(map[string]error, len(profiles))
+	for _, profile := range profiles {
+		results[profile] = d.ProbeProfile(ctx, profile)
+	}
+	return results
+}
+
+// Probe preserves the single-result health API for legacy callers while
+// joining failures from every configured profile.
+func (d *RemoteDriver) Probe(ctx context.Context) error {
+	if d == nil || d.resolver == nil {
+		return ErrRemoteDriverConfiguration
+	}
+	profiles := d.remoteCallerProfiles()
+	if len(profiles) == 0 {
+		return nil
+	}
+	results := d.ProbeProfiles(ctx)
+	var result error
+	for _, profile := range profiles {
+		if err := results[profile]; err != nil {
+			result = errors.Join(result, fmt.Errorf("profile %s: %w", profile, err))
+		}
+	}
+	return result
+}
+
 // DispatchIntent claims and delivers one remote intent by its stable ID.
 func (d *RemoteDriver) DispatchIntent(ctx context.Context, id domain.IntentID) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, ErrRemoteDriverConfiguration
 	}
 	intent, err := d.authority.GetLocalIntent(ctx, id)
@@ -164,7 +224,7 @@ func (d *RemoteDriver) DispatchIntent(ctx context.Context, id domain.IntentID) (
 // expiry the intent remains uncertain because target metadata may have been
 // collected.
 func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) (store.LocalIntentRecord, sshbridge.ReplyFrame, error) {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, ErrRemoteDriverConfiguration
 	}
 	intent, err := d.authority.GetLocalIntent(ctx, id)
@@ -185,7 +245,11 @@ func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) 
 	if err != nil {
 		return intent, sshbridge.ReplyFrame{}, err
 	}
-	reply, callErr := d.caller.Call(ctx, frame)
+	caller, routeErr := d.remoteCallerForTarget(intent.Target)
+	if routeErr != nil {
+		return intent, sshbridge.ReplyFrame{}, routeErr
+	}
+	reply, callErr := caller.Call(ctx, frame)
 	if callErr != nil {
 		return intent, sshbridge.ReplyFrame{}, fmt.Errorf("%w: read transport: %v", ErrRemoteNotReconciled, callErr)
 	}
@@ -237,7 +301,11 @@ func (d *RemoteDriver) retryRemoteIntent(ctx context.Context, intent store.Local
 	if err != nil {
 		return intent, sshbridge.ReplyFrame{}, err
 	}
-	reply, callErr := d.caller.Call(ctx, frame)
+	caller, routeErr := d.remoteCallerForTarget(intent.Target)
+	if routeErr != nil {
+		return intent, sshbridge.ReplyFrame{}, routeErr
+	}
+	reply, callErr := caller.Call(ctx, frame)
 	if callErr != nil {
 		return intent, sshbridge.ReplyFrame{}, fmt.Errorf("%w: same-key retry transport: %v", ErrRemoteNotReconciled, callErr)
 	}
@@ -309,8 +377,11 @@ func (d *RemoteDriver) ensureRemoteSubmitReady(ctx context.Context, intent store
 	default:
 		return intent, fmt.Errorf("%w: create intent state %s", ErrRemoteSessionNotReady, create.DeliveryState)
 	}
+	if !sameRemoteTarget(create.Target, intent.Target) {
+		return intent, fmt.Errorf("%w: create intent target does not match command target", ErrRemoteSessionCreateFailed)
+	}
 
-	state, known := d.cachedRemoteSessionState(create.SessionID)
+	state, known := d.cachedRemoteSessionState(create.Target, create.SessionID)
 	if known && state.IsTerminal() {
 		return intent, fmt.Errorf("%w: session %s is %s", ErrRemoteSessionCreateFailed, create.SessionID, state)
 	}
@@ -346,16 +417,16 @@ func (d *RemoteDriver) markRemoteSubmitNotDelivered(ctx context.Context, intent 
 	return intent, sshbridge.ReplyFrame{}, cause
 }
 
-func (d *RemoteDriver) cachedRemoteSessionState(sessionID domain.SessionID) (domain.SessionState, bool) {
+func (d *RemoteDriver) cachedRemoteSessionState(target domain.ExecutionTarget, sessionID domain.SessionID) (domain.SessionState, bool) {
 	d.sessionMu.RLock()
-	state, ok := d.sessionStates[sessionID]
+	state, ok := d.sessionStates[remoteSessionKey{profile: target.Profile(), sessionID: sessionID}]
 	d.sessionMu.RUnlock()
 	return state, ok
 }
 
-func (d *RemoteDriver) rememberRemoteSessionState(sessionID domain.SessionID, state domain.SessionState) {
+func (d *RemoteDriver) rememberRemoteSessionState(target domain.ExecutionTarget, sessionID domain.SessionID, state domain.SessionState) {
 	d.sessionMu.Lock()
-	d.sessionStates[sessionID] = state
+	d.sessionStates[remoteSessionKey{profile: target.Profile(), sessionID: sessionID}] = state
 	d.sessionMu.Unlock()
 }
 
@@ -365,7 +436,7 @@ func (d *RemoteDriver) observeRemoteSessionState(intent store.LocalIntentRecord,
 		return err
 	}
 	if present {
-		d.rememberRemoteSessionState(intent.SessionID, state)
+		d.rememberRemoteSessionState(intent.Target, intent.SessionID, state)
 	}
 	return nil
 }
@@ -375,7 +446,11 @@ func (d *RemoteDriver) refreshRemoteSessionState(ctx context.Context, create sto
 	if err != nil {
 		return "", err
 	}
-	reply, callErr := d.caller.Call(ctx, frame)
+	caller, routeErr := d.remoteCallerForTarget(create.Target)
+	if routeErr != nil {
+		return "", routeErr
+	}
+	reply, callErr := caller.Call(ctx, frame)
 	if callErr != nil {
 		return "", callErr
 	}
@@ -383,7 +458,7 @@ func (d *RemoteDriver) refreshRemoteSessionState(ctx context.Context, create sto
 	if err != nil {
 		return "", err
 	}
-	d.rememberRemoteSessionState(create.SessionID, state)
+	d.rememberRemoteSessionState(create.Target, create.SessionID, state)
 	return state, nil
 }
 
@@ -391,6 +466,10 @@ func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (
 	intent, err := d.authority.GetLocalIntent(ctx, id)
 	if err != nil {
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, err
+	}
+	caller, routeErr := d.remoteCallerForTarget(intent.Target)
+	if routeErr != nil {
+		return intent, sshbridge.ReplyFrame{}, routeErr
 	}
 	guarded, guardErr := d.guardRemoteIntentBeforeDelivery(ctx, intent)
 	if guardErr != nil {
@@ -425,7 +504,7 @@ func (d *RemoteDriver) dispatchIntent(ctx context.Context, id domain.IntentID) (
 	if err != nil {
 		return store.LocalIntentRecord{}, sshbridge.ReplyFrame{}, err
 	}
-	reply, callErr := d.caller.Call(ctx, frame)
+	reply, callErr := caller.Call(ctx, frame)
 	if callErr != nil {
 		next := store.LocalIntentUncertain
 		reason := "remote_transport_uncertain"
@@ -722,7 +801,7 @@ func validateRemoteSessionReadReply(create store.LocalIntentRecord, frame sshbri
 	if err := readString("environment", create.Environment); err != nil {
 		return "", err
 	}
-	if err := validateRemoteTarget(object); err != nil {
+	if err := validateRemoteTarget(create.Target, object); err != nil {
 		return "", fmt.Errorf("%w: %v", ErrRemoteSessionNotReady, err)
 	}
 	state, present, err := remoteSessionStateFromResult(reply.Payload)
@@ -928,7 +1007,7 @@ func validateReconciledResource(intent store.LocalIntentRecord, object map[strin
 		if err := readString("environment", intent.Environment); err != nil {
 			return err
 		}
-		return validateRemoteTarget(object)
+		return validateRemoteTarget(intent.Target, object)
 	case operationSubmitCommand:
 		if err := readString("command_id", string(intent.CommandID)); err != nil {
 			return err
@@ -963,7 +1042,7 @@ func validateReconciledResource(intent store.LocalIntentRecord, object map[strin
 		if err := readString("command_id", string(intent.CommandID)); err != nil {
 			return err
 		}
-		return validateRemoteTarget(object)
+		return validateRemoteTarget(intent.Target, object)
 	default:
 		return fmt.Errorf("%w: operation %s", ErrRemoteNotReconciled, intent.Operation)
 	}
@@ -984,13 +1063,14 @@ func positiveRemoteAuthorityOrdinal(object map[string]json.RawMessage) (int64, b
 	return ordinal, true
 }
 
-func validateRemoteTarget(object map[string]json.RawMessage) error {
+func validateRemoteTarget(expected domain.ExecutionTarget, object map[string]json.RawMessage) error {
 	var target struct {
 		Kind    string `json:"kind"`
 		Profile string `json:"profile"`
 	}
 	raw, ok := object["execution_target"]
-	if !ok || json.Unmarshal(raw, &target) != nil || target.Kind != string(domain.TargetKindRemote) || target.Profile == "" {
+	if !ok || expected.Kind() != domain.TargetKindRemote || json.Unmarshal(raw, &target) != nil ||
+		target.Kind != string(expected.Kind()) || target.Profile != expected.Profile() {
 		return fmt.Errorf("%w: execution target mismatch", ErrRemoteNotReconciled)
 	}
 	return nil

@@ -63,6 +63,26 @@ type commandEventOpener interface {
 	StreamCommandEvents(context.Context, string, int64, bool) (*runnerclient.EventStream, error)
 }
 
+func directEndpointTargetMatches(targetKind, targetProfile, boundProfile string, bound bool) error {
+	if !bound {
+		return nil
+	}
+	if targetKind != "remote" || targetProfile != boundProfile {
+		return fmt.Errorf("endpoint is bound to remote profile %q", boundProfile)
+	}
+	return nil
+}
+
+func acceptedDirectEndpointTargetMatches(accepted runnerclient.Acceptance, boundProfile string, bound bool) error {
+	if !bound {
+		return nil
+	}
+	if accepted.ExecutionTarget.Kind != "remote" || accepted.ExecutionTarget.Profile != boundProfile {
+		return fmt.Errorf("accepted target %s/%s does not match endpoint profile %q", accepted.ExecutionTarget.Kind, accepted.ExecutionTarget.Profile, boundProfile)
+	}
+	return nil
+}
+
 // Run handles runner help/version and the session, command, event, lifecycle,
 // and one-off job commands.
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -198,14 +218,23 @@ func runSessionCreate(args []string, endpointName, configPath string, waitTimeou
 		return exitInvalidInvocation
 	}
 
-	client, err := dependencies.resolver.Resolve(endpointName, configPath)
+	resolution, err := dependencies.resolver.ResolveWithBinding(endpointName, configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner: could not select endpoint profile %q: %v\n", endpointName, err)
 		return 1
 	}
+	client := resolution.client
 	if client.EndpointKind() == runnerclient.EndpointHTTPS && targetKind != "remote" {
 		fmt.Fprintln(stderr, "runner: direct HTTPS endpoint profiles accept remote targets only")
 		return exitInvalidInvocation
+	}
+	boundTargetProfile := resolution.targetProfile
+	boundEndpoint := resolution.bound
+	if client.EndpointKind() == runnerclient.EndpointHTTPS {
+		if err := directEndpointTargetMatches(targetKind, targetProfile, boundTargetProfile, boundEndpoint); err != nil {
+			fmt.Fprintf(stderr, "runner: endpoint/target mismatch: %v\n", err)
+			return exitInvalidInvocation
+		}
 	}
 	if idempotencyKey == "" {
 		idempotencyKey, err = newIdempotencyKey()
@@ -226,6 +255,10 @@ func runSessionCreate(args []string, endpointName, configPath string, waitTimeou
 	cancel()
 	if err != nil {
 		fmt.Fprintf(stderr, "runner: session create failed; retry only with the same --idempotency-key %q if delivery may be uncertain: %v\n", idempotencyKey, err)
+		return 1
+	}
+	if err := acceptedDirectEndpointTargetMatches(accepted, boundTargetProfile, boundEndpoint); err != nil {
+		fmt.Fprintf(stderr, "runner: session create acceptance target mismatch: %v\n", err)
 		return 1
 	}
 	writeIdempotencyWarning(stderr, accepted)
@@ -486,14 +519,23 @@ func runOneOffJob(args []string, endpointName, configPath string, waitTimeout ti
 		fmt.Fprintln(stderr, "runner: --wait-timeout must be between 1s and 10m")
 		return exitInvalidInvocation
 	}
-	client, err := dependencies.resolver.Resolve(endpointName, configPath)
+	resolution, err := dependencies.resolver.ResolveWithBinding(endpointName, configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner: could not select endpoint profile %q: %v\n", endpointName, err)
 		return 1
 	}
+	client := resolution.client
 	if client.EndpointKind() == runnerclient.EndpointHTTPS && targetKind != "remote" {
 		fmt.Fprintln(stderr, "runner: direct HTTPS endpoint profiles accept remote targets only")
 		return exitInvalidInvocation
+	}
+	boundTargetProfile := resolution.targetProfile
+	boundEndpoint := resolution.bound
+	if client.EndpointKind() == runnerclient.EndpointHTTPS {
+		if err := directEndpointTargetMatches(targetKind, targetProfile, boundTargetProfile, boundEndpoint); err != nil {
+			fmt.Fprintf(stderr, "runner: endpoint/target mismatch: %v\n", err)
+			return exitInvalidInvocation
+		}
 	}
 	jobs, ok := client.(jobOperations)
 	if !ok {
@@ -527,6 +569,10 @@ func runOneOffJob(args []string, endpointName, configPath string, waitTimeout ti
 	}
 	if accepted.JobID == "" || accepted.SessionID == "" || accepted.CommandID == "" || accepted.ResourceID != accepted.JobID {
 		fmt.Fprintf(stderr, "runner: job acceptance was malformed; preserve idempotency key %q\n", idempotencyKey)
+		return 1
+	}
+	if err := acceptedDirectEndpointTargetMatches(accepted, boundTargetProfile, boundEndpoint); err != nil {
+		fmt.Fprintf(stderr, "runner: run acceptance target mismatch: %v\n", err)
 		return 1
 	}
 	writeIdempotencyWarning(stderr, accepted)

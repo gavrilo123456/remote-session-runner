@@ -291,6 +291,68 @@ ORDER BY created_at DESC, intent_id DESC LIMIT 1
 	})
 }
 
+// GetLocalIntentByCommand returns the one durable remote-command owner for a
+// controller. A command can be owned by either a session submit or a one-off
+// run. The lookup deliberately fails closed when corrupt data binds more than
+// one intent to the same command ID, rather than selecting an arbitrary target.
+func (s *AuthorityStore) GetLocalIntentByCommand(ctx context.Context, commandID domain.CommandID, controller domain.ControllerIdentity) (LocalIntentRecord, error) {
+	validatedCommand, err := domain.NewCommandID(string(commandID))
+	if err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("%w: command ID: %v", ErrInvalidLocalIntent, err)
+	}
+	if _, err := domain.NewControllerIdentity(controller.Type(), controller.ID()); err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("%w: controller: %v", ErrInvalidLocalIntent, err)
+	}
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+		rows, err := connection.QueryContext(ctx, `
+SELECT intent_id FROM local_intents
+WHERE command_id = ? AND controller_type = ? AND controller_id = ?
+  AND operation IN (?, ?)
+ORDER BY created_at DESC, intent_id DESC LIMIT 2
+`, string(validatedCommand), string(controller.Type()), string(controller.ID()), localIntentSubmitCommandOperation, localIntentRunOperation)
+		if err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("lookup local intent by command: %w", err)
+		}
+		defer rows.Close()
+
+		var intentIDs []domain.IntentID
+		for rows.Next() {
+			var intentID string
+			if err := rows.Scan(&intentID); err != nil {
+				return LocalIntentRecord{}, fmt.Errorf("scan local intent by command: %w", err)
+			}
+			id, err := domain.NewIntentID(intentID)
+			if err != nil {
+				return LocalIntentRecord{}, fmt.Errorf("%w: intent ID: %v", ErrLocalIntentPayloadCorrupt, err)
+			}
+			intentIDs = append(intentIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("iterate local intent by command: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("close local intent by command lookup: %w", err)
+		}
+		if len(intentIDs) == 0 {
+			return LocalIntentRecord{}, ErrLocalIntentNotFound
+		}
+		if len(intentIDs) != 1 {
+			return LocalIntentRecord{}, fmt.Errorf("%w: ambiguous command binding", ErrLocalIntentPayloadCorrupt)
+		}
+
+		record, err := readLocalIntentOnConnection(ctx, connection, intentIDs[0])
+		if err != nil {
+			return LocalIntentRecord{}, err
+		}
+		if record.CommandID != validatedCommand ||
+			(record.Operation != localIntentSubmitCommandOperation && record.Operation != localIntentRunOperation) ||
+			record.Controller.Type() != controller.Type() || record.Controller.ID() != controller.ID() {
+			return LocalIntentRecord{}, fmt.Errorf("%w: command binding identity", ErrLocalIntentPayloadCorrupt)
+		}
+		return record, nil
+	})
+}
+
 // GetLocalIntentByIdempotency reloads the exact immutable intent bound to one
 // controller/operation/key. Status readers for a mailbox exchange use the key
 // rather than the latest intent for a resource, since a resource can have

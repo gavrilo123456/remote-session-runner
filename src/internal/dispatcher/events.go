@@ -53,13 +53,14 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 	if controller.Type() == "" || controller.ID() == "" {
 		return store.RemoteEventMirrorResult{}, fmt.Errorf("%w: controller is empty", ErrRemoteEventStream)
 	}
-	var intent *store.LocalIntentRecord
-	if candidate, lookupErr := d.authority.GetLocalIntentByResource(ctx, operationSubmitCommand, string(validatedCommand), controller); lookupErr == nil {
-		intent = &candidate
-	} else if !errors.Is(lookupErr, store.ErrLocalIntentNotFound) {
+	intent, lookupErr := d.authority.GetLocalIntentByCommand(ctx, validatedCommand, controller)
+	if lookupErr != nil {
+		if errors.Is(lookupErr, store.ErrLocalIntentNotFound) {
+			return store.RemoteEventMirrorResult{}, fmt.Errorf("%w: matching remote command intent", ErrRemoteEventStream)
+		}
 		return store.RemoteEventMirrorResult{}, lookupErr
 	}
-	return d.mirrorCommandEvents(ctx, validatedCommand, controller, intent)
+	return d.mirrorCommandEventsForIntent(ctx, intent)
 }
 
 // mirrorCommandEventsForIntent mirrors events for a known remote intent. A
@@ -78,10 +79,17 @@ func (d *RemoteDriver) mirrorCommandEventsForIntent(ctx context.Context, intent 
 }
 
 func (d *RemoteDriver) mirrorCommandEvents(ctx context.Context, validatedCommand domain.CommandID, controller domain.ControllerIdentity, intent *store.LocalIntentRecord) (store.RemoteEventMirrorResult, error) {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return store.RemoteEventMirrorResult{}, ErrRemoteDriverConfiguration
 	}
-	streamer, ok := d.caller.(RemoteEventStreamer)
+	if intent == nil {
+		return store.RemoteEventMirrorResult{}, fmt.Errorf("%w: matching remote command intent", ErrRemoteEventStream)
+	}
+	caller, err := d.remoteCallerForTarget(intent.Target)
+	if err != nil {
+		return store.RemoteEventMirrorResult{}, err
+	}
+	streamer, ok := caller.(RemoteEventStreamer)
 	if !ok {
 		return store.RemoteEventMirrorResult{}, ErrRemoteEventCallerUnavailable
 	}
@@ -193,7 +201,7 @@ func (d *RemoteDriver) mirrorCommandEvents(ctx context.Context, validatedCommand
 // reconciliation. Event mirroring alone advances output cursors but does not
 // infer a terminal command state.
 func (d *RemoteDriver) RefreshCommandProjection(ctx context.Context, commandID domain.CommandID, controller domain.ControllerIdentity) (store.RemoteCommandProjection, error) {
-	if d == nil || d.authority == nil || d.caller == nil {
+	if !d.configured() {
 		return store.RemoteCommandProjection{}, ErrRemoteDriverConfiguration
 	}
 	validatedCommand, err := domain.NewCommandID(string(commandID))
@@ -230,7 +238,7 @@ func (d *RemoteDriver) refreshCommandProjectionForIntent(ctx context.Context, in
 		Operation:       sshbridge.OperationGetCommand,
 		Payload:         payload,
 	}
-	object, err := d.readRemoteProjectionObject(ctx, request, "command")
+	object, err := d.readRemoteProjectionObject(ctx, intent, request, "command")
 	if err != nil {
 		return store.RemoteCommandProjection{}, err
 	}
@@ -295,7 +303,7 @@ func (d *RemoteDriver) confirmRemoteTerminal(ctx context.Context, commandID doma
 		Operation:       sshbridge.OperationGetCommand,
 		Payload:         payload,
 	}
-	object, err := d.readRemoteProjectionObject(ctx, request, "terminal command")
+	object, err := d.readRemoteProjectionObject(ctx, intent, request, "terminal command")
 	if err != nil {
 		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: %v", ErrRemoteTerminalUnconfirmed, err)
 	}

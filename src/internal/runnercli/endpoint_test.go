@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -28,10 +29,10 @@ func TestP119EndpointResolverKeepsTheExplicitProfile(t *testing.T) {
 			if name != "linux-poc" || configPath != "/test/mac.yaml" {
 				return remoteEndpointProfile{}, ErrEndpointProfile
 			}
-			return remoteEndpointProfile{name: "linux-poc", endpoint: config.PublicEndpoint}, nil
+			return remoteEndpointProfile{name: "linux-poc", targetProfile: "linux-host", endpoint: config.PublicEndpoint}, nil
 		},
 		newHTTPSClient: func(profile remoteEndpointProfile) (sessionClient, error) {
-			if profile.name != "linux-poc" || profile.endpoint != config.PublicEndpoint {
+			if profile.name != "linux-poc" || profile.targetProfile != "linux-host" || profile.endpoint != config.PublicEndpoint {
 				t.Fatalf("unexpected HTTPS profile: %+v", profile)
 			}
 			return remoteClient, nil
@@ -57,6 +58,86 @@ func TestP119EndpointResolverKeepsTheExplicitProfile(t *testing.T) {
 	if _, err := resolver.Resolve(config.PublicEndpoint, "/test/mac.yaml"); err == nil {
 		t.Fatal("raw URL unexpectedly selected an endpoint profile")
 	}
+}
+
+func TestP151NamedV2DirectEndpointRetainsTargetBinding(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "mac-v2.yaml")
+	if err := os.WriteFile(configPath, []byte(p151V2NamedEndpointConfig()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	profile, err := loadRemoteEndpointProfile("linux-build-poc", configPath)
+	if err != nil {
+		t.Fatalf("load named v2 direct endpoint: %v", err)
+	}
+	if profile.name != "linux-build-poc" || profile.targetProfile != "linux-build-host" || profile.endpoint != "https://203.0.113.20:8443" {
+		t.Fatalf("named v2 direct endpoint lost its binding: %+v", profile)
+	}
+
+	boundProfile, bound, err := newDefaultEndpointResolver().EndpointTargetProfile("linux-build-poc", configPath)
+	if err != nil || !bound || boundProfile != "linux-build-host" {
+		t.Fatalf("production resolver endpoint binding = profile %q bound %t err %v, want linux-build-host/true/nil", boundProfile, bound, err)
+	}
+}
+
+func p151V2NamedEndpointConfig() string {
+	root := config.MacServiceRoot
+	return fmt.Sprintf(`version: 2
+mac:
+  account: %q
+  service_root: %q
+  api_socket: %q
+  locald_socket: %q
+  sqlite: %q
+  workspaces: %q
+  script_temp_root: %q
+  backups: %q
+  reconciliation_deadline: 24h
+environment_registry:
+  mac-dev:
+    base_system: macOS
+    host_class: macOS workstation
+    effective_account: %q
+    allowed_targets: [{kind: local, profile: mac-workstation}]
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers: [{type: local_user, id: %q}]
+execution_contexts:
+  mac-local:
+    environment: mac-dev
+    execution_target: {kind: local, profile: mac-workstation}
+remote_hosts:
+  linux-build-host:
+    account: %q
+    direct_endpoint:
+      name: linux-build-poc
+      url: https://203.0.113.20:8443
+      server_ca: %q
+      client_certificate: %q
+      client_private_key: %q
+mailboxes:
+  default:
+    root: %q
+    repository_aliases: []
+    default_execution: mac-local
+    allowed_execution: [mac-local]
+`,
+		config.MacAccount,
+		root,
+		filepath.Join(root, "run", "local-api.sock"),
+		filepath.Join(root, "run", "locald.sock"),
+		filepath.Join(root, "state", "local.db"),
+		filepath.Join(root, "workspaces"),
+		filepath.Join(root, "tmp", "scripts"),
+		filepath.Join(root, "backups"),
+		config.MacAccount,
+		config.MacAccount,
+		config.LinuxAccount,
+		filepath.Join(root, "secrets", "linux-build-ca.pem"),
+		filepath.Join(root, "secrets", "linux-build-client.pem"),
+		filepath.Join(root, "secrets", "linux-build-client.key"),
+		filepath.Join(root, "mailbox"),
+	)
 }
 
 func TestP119MacRemoteProfileRequiresSelectedServerCA(t *testing.T) {
