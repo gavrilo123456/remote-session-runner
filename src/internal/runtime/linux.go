@@ -753,6 +753,120 @@ func (a *LinuxProcessAdapter) ReconcileSession(ctx context.Context, sessionID, e
 	return result, nil
 }
 
+// ConfirmLostRecoveryCleanup proves the recorded process group is gone for
+// one explicit terminal-lost recovery. Unlike ordinary startup reconciliation,
+// it retains the owner marker and workspace, then durably marks that proof
+// before the caller may release any SQLite capacity. A retry that sees the
+// marker proof never inspects or signals a PID again, avoiding PID-reuse risk.
+func (a *LinuxProcessAdapter) ConfirmLostRecoveryCleanup(ctx context.Context, sessionID, expectedGeneration string, grace time.Duration) (LinuxReconciliationResult, error) {
+	result := LinuxReconciliationResult{SessionID: sessionID, Reattached: false, CapacityRetained: true}
+	if a == nil {
+		return result, ErrLinuxRuntimeAccount
+	}
+	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		result.Reason = "runtime ownership record is missing; lost recovery cannot prove cleanup"
+		return result, nil
+	}
+	if err != nil {
+		result.Reason = "runtime ownership record could not be validated"
+		return result, err
+	}
+	result.Generation, result.PID = record.Generation, record.PID
+	if expectedGeneration == "" || record.Generation != expectedGeneration {
+		result.Reason = "runtime generation does not match the selected lost session"
+		return result, fmt.Errorf("%w: recorded generation does not match selected lost session", ErrLinuxRuntimeOwnership)
+	}
+	if record.UID != a.accountUID() || record.Username != a.account.Username {
+		result.Reason = "recorded owner does not belong to the selected Linux account"
+		return result, fmt.Errorf("%w: recorded owner uid=%d user=%q", ErrLinuxRuntimeOwnership, record.UID, record.Username)
+	}
+	if record.LostRecoveryCleanupConfirmedAt != "" {
+		result.CleanupConfirmed = true
+		result.Reason = "lost runtime cleanup was durably proven; owner marker retained pending capacity release"
+		return result, nil
+	}
+	result, err = a.ReconcileProcess(ctx, LinuxProcessRecord{
+		SessionID: record.SessionID, Generation: record.Generation, Workspace: record.Workspace,
+		PID: record.PID, ProcessGroupID: record.ProcessGroupID, UID: record.UID, Username: record.Username,
+		Command: record.Command, ProcessStartIdentity: record.ProcessStartIdentity,
+	}, expectedGeneration, grace)
+	if err != nil || !result.CleanupConfirmed {
+		return result, err
+	}
+	if _, err := markLostRecoveryCleanupConfirmed(a.options.WorkspaceRoot, sessionID, record, time.Now()); err != nil {
+		result.CleanupConfirmed = false
+		result.CapacityRetained = true
+		result.Reason = "lost runtime cleanup proof could not be persisted"
+		return result, err
+	}
+	result.CapacityRetained = true
+	result.Reason = "prior process group stopped; cleanup proof and owner marker retained pending capacity release"
+	return result, nil
+}
+
+// FinalizeLostRecoveryCleanup removes only the workspace and owner record that
+// were retained after ConfirmLostRecoveryCleanup durably marked its process
+// proof. It must be called only after the paired capacity release commits. It
+// deliberately never inspects or signals the recorded PID: it could now have
+// been reused by another process.
+func (a *LinuxProcessAdapter) FinalizeLostRecoveryCleanup(ctx context.Context, sessionID, expectedGeneration string) (LinuxReconciliationResult, error) {
+	result := LinuxReconciliationResult{SessionID: sessionID, Reattached: false}
+	if a == nil {
+		return result, ErrLinuxRuntimeAccount
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		result.CleanupConfirmed = true
+		result.Reason = "lost recovery ownership record is already absent after durable capacity release"
+		return result, nil
+	}
+	if err != nil {
+		result.CapacityRetained = true
+		result.Reason = "lost recovery ownership record could not be validated"
+		return result, err
+	}
+	result.Generation, result.PID = record.Generation, record.PID
+	if expectedGeneration == "" || record.Generation != expectedGeneration {
+		result.CapacityRetained = true
+		result.Reason = "runtime generation does not match the selected lost session"
+		return result, fmt.Errorf("%w: recorded generation does not match selected lost session", ErrLinuxRuntimeOwnership)
+	}
+	if record.UID != a.accountUID() || record.Username != a.account.Username {
+		result.CapacityRetained = true
+		result.Reason = "recorded owner does not belong to the selected Linux account"
+		return result, fmt.Errorf("%w: recorded owner uid=%d user=%q", ErrLinuxRuntimeOwnership, record.UID, record.Username)
+	}
+	if record.LostRecoveryCleanupConfirmedAt == "" {
+		result.CapacityRetained = true
+		result.Reason = "lost recovery cleanup proof is absent"
+		return result, fmt.Errorf("%w: lost recovery cleanup proof is absent", ErrLinuxRuntimeOwnership)
+	}
+	if record.OwnedWorkspace {
+		if err := removeOwnedRuntimeWorkspace(a.options.WorkspaceRoot, record.Workspace); err != nil {
+			result.CapacityRetained = true
+			result.Reason = "owned lost-recovery workspace could not be removed"
+			return result, err
+		}
+	}
+	if err := removeRuntimeOwnership(a.options.WorkspaceRoot, sessionID); err != nil {
+		result.CapacityRetained = true
+		result.Reason = "lost-recovery ownership record could not be removed"
+		return result, err
+	}
+	a.mu.Lock()
+	delete(a.sessions, sessionID)
+	delete(a.prepared, sessionID)
+	a.mu.Unlock()
+	result.CleanupConfirmed = true
+	result.CapacityRetained = false
+	result.Reason = "lost recovery ownership finalized after durable capacity release"
+	return result, nil
+}
+
 // AuditOwnership verifies that all host owner markers can be matched to a
 // durable live session reservation before runnerd advertises readiness.
 func (a *LinuxProcessAdapter) AuditOwnership(ctx context.Context, attributable map[string]struct{}) error {

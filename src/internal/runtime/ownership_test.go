@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestRuntimeOwnershipRecordIsOwnerOnlyAndGenerationBound(t *testing.T) {
@@ -128,5 +129,47 @@ func runtimeOwnershipFixture(t *testing.T, sessionID string) (string, string, Ru
 		Generation: "generation-original", Workspace: workspace, OwnedWorkspace: true,
 		PID: os.Getpid(), ProcessGroupID: os.Getpid(), UID: os.Getuid(), Username: current.Username,
 		Command: "/bin/bash", ProcessStartIdentity: "start-observed-at-test-fixture",
+	}
+}
+
+func TestLostRecoveryCleanupProofIsAtomicAndIdentityBound(t *testing.T) {
+	root, _, record := runtimeOwnershipFixture(t, "session-lost-recovery-proof")
+	if err := writeRuntimeOwnership(root, record); err != nil {
+		t.Fatal(err)
+	}
+	proofTime := time.Date(2026, 9, 30, 20, 30, 0, 123456789, time.UTC)
+	marked, err := markLostRecoveryCleanupConfirmed(root, record.SessionID, record, proofTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProof := proofTime.Format(time.RFC3339Nano)
+	if marked.LostRecoveryCleanupConfirmedAt != wantProof || !sameRuntimeOwnershipIdentity(marked, record) {
+		t.Fatalf("marked ownership=%+v, want immutable identity plus proof %q", marked, wantProof)
+	}
+	path, err := runtimeOwnershipPath(root, record.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("marked ownership mode=%v err=%v, want 0600", info.Mode(), err)
+	}
+	loaded, err := readRuntimeOwnership(root, record.SessionID)
+	if err != nil || loaded != marked {
+		t.Fatalf("loaded marked ownership=%+v err=%v, want %+v", loaded, err, marked)
+	}
+	repeated, err := markLostRecoveryCleanupConfirmed(root, record.SessionID, record, proofTime.Add(time.Second))
+	if err != nil || repeated != marked {
+		t.Fatalf("idempotent proof=%+v err=%v, want %+v", repeated, err, marked)
+	}
+	changed := record
+	changed.Generation = "different-generation"
+	if _, err := markLostRecoveryCleanupConfirmed(root, record.SessionID, changed, proofTime); !errors.Is(err, ErrRuntimeOwnershipRecord) {
+		t.Fatalf("changed proof identity error=%v, want ownership rejection", err)
+	}
+	invalid := record
+	invalid.LostRecoveryCleanupConfirmedAt = "not-a-timestamp"
+	if err := writeRuntimeOwnership(root, invalid); !errors.Is(err, ErrRuntimeOwnershipRecord) {
+		t.Fatalf("invalid proof timestamp error=%v, want ownership rejection", err)
 	}
 }

@@ -247,6 +247,7 @@ ready. It does not create or rotate dispatcher authorization.
 | Direct HTTPS/mTLS failure | Public health, service journal, CA/certificate/principal map/bind | Repair host configuration without printing keys. |
 | Queued remote remains recorded, uncertain, or stale | Selected bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
 | Remote one-off ends `indeterminate` with `delivery_state=accepted` and `remote_status_unavailable` | Stable job/session/command IDs, bridge/service journal, target SQLite status and retention | The target accepted the request but Runner could not prove its terminal result in 24 hours. Do not resubmit or release retained capacity manually. ACK the terminal response if it has been recorded, preserve the IDs and idempotency key, then investigate the target boundary. |
+| P128 reports only one unreleased slot for a terminal lost command | Exact session and command IDs, owner-only runtime record, process-group state, and service cgroup | Preserve the lost result and use the explicit stopped-service recovery procedure below. It refuses any other active work and never replays the script. |
 | New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host` and `sandbox-host` evidence does not transfer. |
 | Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
 
@@ -266,6 +267,48 @@ ready. It does not create or rotate dispatcher authorization.
   terminal `remote_status_unavailable` mailbox response after 24 hours. It
   carries stable IDs but no claimed target outcome; preserve its idempotency key
   and investigate rather than replaying its script.
+- A terminal `lost` command can retain capacity until the runtime process group
+  is proven gone. Do not release that capacity with SQLite edits or a generic
+  service restart. When P128 reports exactly one retained slot and no other
+  active sessions, running commands, or unfinished jobs, use the narrow
+  recovery command with the exact session and command IDs obtained during the
+  investigation:
+
+  ```sh
+  # Selected Ubuntu host — ubuntu
+  (
+    set -eu
+    cd /home/ubuntu/projects/remote-session-runner
+    sudo systemctl stop runnerd.service
+    state="$(sudo systemctl show --property=ActiveState --value runnerd.service)"
+    test "$state" = inactive || test "$state" = failed
+
+    root='/home/ubuntu/.local/share/remote-session-runner'
+    GOTOOLCHAIN=local "$root/toolchains/go1.27.1/bin/go" run ./src/cmd/runnerd \
+      recover-lost \
+      --config "$root/config/linux.yaml" \
+      --session-id 'sess-EXACT-ID' \
+      --command-id 'cmd-EXACT-ID'
+
+    make test-p128-host-status
+    deploy/linux/install-systemd-service.sh
+  )
+  ```
+
+  `recover-lost` requires an inactive or failed `runnerd.service` with no
+  remaining cgroup processes. Its nonblocking lifecycle lock also makes a
+  concurrent service start exit with status 78, so the explicit P128 check
+  remains the gate before installation restarts the service. It validates one
+  matching `lost` session/command with no other nonterminal command or retained
+  capacity; it never executes or replays the stored script. It first records a
+  synced owner-only process-cleanup proof while retaining the workspace and
+  ownership marker, then atomically releases both capacity records, then removes
+  that workspace and marker. It leaves the command/session state as `lost` and
+  preserves the retained event and output prefix. If finalization fails after
+  the paired release, leave the service stopped and rerun the exact command: it
+  will finalize only the retained marker/workspace and will not signal a PID
+  again. An unconfirmed pre-release cleanup is a failure; leave capacity
+  retained and investigate the ownership boundary.
 - Software-crash recovery is evidenced. Physical power-loss survival remains
   unverified until a coordinated physical power-cut test passes.
 

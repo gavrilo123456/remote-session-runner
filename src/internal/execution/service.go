@@ -174,6 +174,17 @@ type RuntimeReconciler interface {
 	Reconcile(context.Context, RuntimeReconcileRequest) (RuntimeReconcileResult, error)
 }
 
+// LostRuntimeRecoverer is the explicit, two-stage repair boundary for one
+// terminal lost runtime. ReconcileLostRuntime proves that the recorded host
+// process group is gone while retaining the ownership marker. FinalizeLostRuntime
+// runs only after the paired durable capacity release and removes that marker
+// and its owned workspace. The split makes a crash between the two durable
+// boundaries retryable without releasing capacity on unproven cleanup.
+type LostRuntimeRecoverer interface {
+	ReconcileLostRuntime(context.Context, RuntimeReconcileRequest) (RuntimeReconcileResult, error)
+	FinalizeLostRuntime(context.Context, RuntimeReconcileRequest) (RuntimeReconcileResult, error)
+}
+
 // RuntimeOwnershipAuditor checks that every persisted host runtime owner can
 // be attributed to a live durable session reservation before startup makes the
 // execution profile available. An unattributed record blocks readiness; known

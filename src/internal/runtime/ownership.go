@@ -24,18 +24,19 @@ var ErrRuntimeOwnershipRecord = errors.New("runtime ownership record is invalid"
 // stop a prior session process after its executor has died. It contains no
 // script, output, or credential data and never authorizes shell reattachment.
 type RuntimeOwnershipRecord struct {
-	Version              int    `json:"version"`
-	HostOS               string `json:"host_os"`
-	SessionID            string `json:"session_id"`
-	Generation           string `json:"generation"`
-	Workspace            string `json:"workspace"`
-	OwnedWorkspace       bool   `json:"owned_workspace"`
-	PID                  int    `json:"pid"`
-	ProcessGroupID       int    `json:"process_group_id"`
-	UID                  int    `json:"uid"`
-	Username             string `json:"username"`
-	Command              string `json:"command"`
-	ProcessStartIdentity string `json:"process_start_identity"`
+	Version                        int    `json:"version"`
+	HostOS                         string `json:"host_os"`
+	SessionID                      string `json:"session_id"`
+	Generation                     string `json:"generation"`
+	Workspace                      string `json:"workspace"`
+	OwnedWorkspace                 bool   `json:"owned_workspace"`
+	PID                            int    `json:"pid"`
+	ProcessGroupID                 int    `json:"process_group_id"`
+	UID                            int    `json:"uid"`
+	Username                       string `json:"username"`
+	Command                        string `json:"command"`
+	ProcessStartIdentity           string `json:"process_start_identity"`
+	LostRecoveryCleanupConfirmedAt string `json:"lost_recovery_cleanup_confirmed_at,omitempty"`
 }
 
 const runtimeOwnershipDirectory = ".runner-runtime-ownership"
@@ -75,6 +76,56 @@ func writeRuntimeOwnership(workspaceRoot string, record RuntimeOwnershipRecord) 
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	return publishRuntimeOwnership(path, directory, record)
+}
+
+// markLostRecoveryCleanupConfirmed adds the one recovery proof that is safe
+// to publish over an existing owner record. The immutable process identity
+// must still exactly match expected. The atomic replacement and directory sync
+// ensure that a later retry never needs to inspect or signal a reused PID once
+// capacity release has begun.
+func markLostRecoveryCleanupConfirmed(workspaceRoot, sessionID string, expected RuntimeOwnershipRecord, now time.Time) (RuntimeOwnershipRecord, error) {
+	if err := validateRuntimeOwnershipRecord(expected); err != nil {
+		return RuntimeOwnershipRecord{}, err
+	}
+	if expected.SessionID != sessionID || expected.LostRecoveryCleanupConfirmedAt != "" {
+		return RuntimeOwnershipRecord{}, fmt.Errorf("%w: invalid lost-recovery ownership proof request", ErrRuntimeOwnershipRecord)
+	}
+	path, err := runtimeOwnershipPath(workspaceRoot, sessionID)
+	if err != nil {
+		return RuntimeOwnershipRecord{}, err
+	}
+	directory := filepath.Dir(path)
+	if err := validateOwnerDirectory(directory); err != nil {
+		return RuntimeOwnershipRecord{}, err
+	}
+	current, err := readRuntimeOwnershipPath(path)
+	if err != nil {
+		return RuntimeOwnershipRecord{}, err
+	}
+	if !sameRuntimeOwnershipIdentity(current, expected) {
+		return RuntimeOwnershipRecord{}, fmt.Errorf("%w: runtime ownership record changed before lost-recovery proof", ErrRuntimeOwnershipRecord)
+	}
+	if current.LostRecoveryCleanupConfirmedAt != "" {
+		return current, nil
+	}
+	current.LostRecoveryCleanupConfirmedAt = now.UTC().Format(time.RFC3339Nano)
+	if err := validateRuntimeOwnershipRecord(current); err != nil {
+		return RuntimeOwnershipRecord{}, err
+	}
+	if err := publishRuntimeOwnership(path, directory, current); err != nil {
+		return RuntimeOwnershipRecord{}, err
+	}
+	return current, nil
+}
+
+func sameRuntimeOwnershipIdentity(left, right RuntimeOwnershipRecord) bool {
+	left.LostRecoveryCleanupConfirmedAt = ""
+	right.LostRecoveryCleanupConfirmedAt = ""
+	return left == right
+}
+
+func publishRuntimeOwnership(path, directory string, record RuntimeOwnershipRecord) error {
 	encoded, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("encode runtime ownership record: %w", err)
@@ -251,8 +302,14 @@ func validateRuntimeOwnershipRecord(record RuntimeOwnershipRecord) error {
 	if record.Version != runtimeOwnershipVersion || record.HostOS != runtimeinfo.GOOS || record.SessionID == "" || record.Generation == "" || !filepath.IsAbs(record.Workspace) || record.PID <= 0 || record.ProcessGroupID != record.PID || record.UID != os.Getuid() || strings.TrimSpace(record.Username) == "" || strings.TrimSpace(record.Command) == "" || strings.TrimSpace(record.ProcessStartIdentity) == "" {
 		return fmt.Errorf("%w: required identity fields are missing or inconsistent", ErrRuntimeOwnershipRecord)
 	}
-	if strings.IndexByte(record.SessionID, 0) >= 0 || strings.IndexByte(record.Generation, 0) >= 0 || strings.IndexByte(record.Workspace, 0) >= 0 || strings.IndexByte(record.Username, 0) >= 0 || strings.IndexByte(record.Command, 0) >= 0 || strings.IndexByte(record.ProcessStartIdentity, 0) >= 0 {
+	if strings.IndexByte(record.SessionID, 0) >= 0 || strings.IndexByte(record.Generation, 0) >= 0 || strings.IndexByte(record.Workspace, 0) >= 0 || strings.IndexByte(record.Username, 0) >= 0 || strings.IndexByte(record.Command, 0) >= 0 || strings.IndexByte(record.ProcessStartIdentity, 0) >= 0 || strings.IndexByte(record.LostRecoveryCleanupConfirmedAt, 0) >= 0 {
 		return fmt.Errorf("%w: NUL is not permitted", ErrRuntimeOwnershipRecord)
+	}
+	if proof := record.LostRecoveryCleanupConfirmedAt; proof != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, proof)
+		if err != nil || !strings.HasSuffix(proof, "Z") || parsed.UTC().Format(time.RFC3339Nano) != proof {
+			return fmt.Errorf("%w: lost-recovery cleanup proof must be canonical UTC RFC3339Nano", ErrRuntimeOwnershipRecord)
+		}
 	}
 	return nil
 }

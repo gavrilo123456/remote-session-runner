@@ -12,19 +12,43 @@ import (
 
 type p027Runtime struct {
 	p020FakeRuntime
-	reconcileResult RuntimeReconcileResult
-	reconcileErr    error
-	reconcileCall   int
-	reconcileSaw    []store.SessionRecord
-	ownershipAudit  int
-	attributable    map[string]struct{}
-	ownershipErr    error
+	reconcileResult    RuntimeReconcileResult
+	reconcileErr       error
+	reconcileCall      int
+	reconcileSaw       []store.SessionRecord
+	lostRecoveryResult RuntimeReconcileResult
+	lostRecoveryErr    error
+	lostRecoveryCall   int
+	lostRecoveryHook   func(context.Context)
+	lostFinalizeResult RuntimeReconcileResult
+	lostFinalizeErr    error
+	lostFinalizeCall   int
+	lostRecoverySaw    []store.SessionRecord
+	lostFinalizeSaw    []store.SessionRecord
+	ownershipAudit     int
+	attributable       map[string]struct{}
+	ownershipErr       error
 }
 
 func (r *p027Runtime) Reconcile(_ context.Context, request RuntimeReconcileRequest) (RuntimeReconcileResult, error) {
 	r.reconcileCall++
 	r.reconcileSaw = append(r.reconcileSaw, request.Session)
 	return r.reconcileResult, r.reconcileErr
+}
+
+func (r *p027Runtime) ReconcileLostRuntime(ctx context.Context, request RuntimeReconcileRequest) (RuntimeReconcileResult, error) {
+	r.lostRecoveryCall++
+	r.lostRecoverySaw = append(r.lostRecoverySaw, request.Session)
+	if r.lostRecoveryHook != nil {
+		r.lostRecoveryHook(ctx)
+	}
+	return r.lostRecoveryResult, r.lostRecoveryErr
+}
+
+func (r *p027Runtime) FinalizeLostRuntime(_ context.Context, request RuntimeReconcileRequest) (RuntimeReconcileResult, error) {
+	r.lostFinalizeCall++
+	r.lostFinalizeSaw = append(r.lostFinalizeSaw, request.Session)
+	return r.lostFinalizeResult, r.lostFinalizeErr
 }
 
 func (r *p027Runtime) AuditOwnership(_ context.Context, attributable map[string]struct{}) error {

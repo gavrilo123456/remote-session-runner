@@ -161,6 +161,28 @@ func (r *LinuxSessionRuntime) Reconcile(ctx context.Context, request execution.R
 	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
 }
 
+// ReconcileLostRuntime proves an explicitly selected lost process boundary
+// while retaining the durable owner marker. The caller records the paired
+// SQLite release before FinalizeLostRuntime may remove that marker.
+func (r *LinuxSessionRuntime) ReconcileLostRuntime(ctx context.Context, request execution.RuntimeReconcileRequest) (execution.RuntimeReconcileResult, error) {
+	if r == nil || r.adapter == nil {
+		return execution.RuntimeReconcileResult{}, execution.ErrRuntimeUnavailable
+	}
+	result, err := r.adapter.ConfirmLostRecoveryCleanup(ctx, string(request.Session.SessionID), request.Session.RuntimeGeneration, 500*time.Millisecond)
+	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
+}
+
+// FinalizeLostRuntime removes a recovery marker only after the service has
+// durably released both the command slot and session reservation. It never
+// re-inspects the old PID, which could have been reused after the proof.
+func (r *LinuxSessionRuntime) FinalizeLostRuntime(ctx context.Context, request execution.RuntimeReconcileRequest) (execution.RuntimeReconcileResult, error) {
+	if r == nil || r.adapter == nil {
+		return execution.RuntimeReconcileResult{}, execution.ErrRuntimeUnavailable
+	}
+	result, err := r.adapter.FinalizeLostRecoveryCleanup(ctx, string(request.Session.SessionID), request.Session.RuntimeGeneration)
+	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
+}
+
 func (r *LinuxSessionRuntime) AuditOwnership(ctx context.Context, attributable map[string]struct{}) error {
 	if r == nil || r.adapter == nil {
 		return execution.ErrRuntimeUnavailable

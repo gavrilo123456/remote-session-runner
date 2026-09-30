@@ -55,6 +55,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "doctor" {
 		return runDoctor(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "recover-lost" {
+		return runRecoverLost(args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("runnerd", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Linux runnerd YAML configuration")
@@ -77,6 +80,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runnerd: Linux host configuration is required")
 		return 1
 	}
+	releaseLifecycleLock, err := acquireRunnerdLifecycleLock(settings.ServiceRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "runnerd: %v\n", err)
+		return runnerdLifecycleLockExit
+	}
+	defer releaseLifecycleLock()
 	serverKey, ok := loaded.SecretReference(config.SecretLinuxServerTLSKey)
 	if !ok {
 		fmt.Fprintln(stderr, "runnerd: Linux server key reference is missing")
