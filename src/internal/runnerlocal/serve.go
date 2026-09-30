@@ -34,7 +34,11 @@ const (
 	acceptedRemoteReconciliationInterval = time.Second
 )
 
-var errMacDatabaseNotReady = errors.New("Mac authority database is not ready")
+var (
+	errMacDatabaseNotReady                 = errors.New("Mac authority database is not ready")
+	errMacMailboxPathsNotReady             = errors.New("Mac mailbox paths are not ready")
+	errMailboxTreePreparationAfterActivate = errors.New("candidate mailbox tree needs repair after activation")
+)
 
 // Run loads the selected Mac configuration and serves local ingress until
 // launchd sends SIGTERM or the process receives an interrupt.
@@ -72,18 +76,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runValidateConfig is the installer-safe configuration check. It creates no
-// service paths and makes no remote probe. With --check-retained-mailboxes it
-// additionally opens an existing authority database read-only, so an inbox
-// removal with live work is rejected before LaunchAgents are replaced. Schema
-// 24 is checked as its implicit default inbox without migration; the later
-// activation operation is intentionally after the installer's no-rollback
-// boundary. Its output deliberately contains only schema and configured inbox
-// identifiers, never paths or secret references.
+// runValidateConfig is the installer-safe configuration check. It makes no
+// remote probe. --check-mailbox-directories is descriptor-based and
+// non-mutating, so an unsafe external parent or existing tree is rejected
+// before the installer quiesces the current LaunchAgents. With
+// --check-retained-mailboxes it additionally opens an existing authority
+// database read-only, so an inbox removal with live work is rejected before
+// LaunchAgents are replaced. Schema 24 is checked as its implicit default
+// inbox without migration. At the no-rollback boundary, activation validates
+// paths, records the complete candidate set, and only then creates a missing
+// mailbox tree. Its output deliberately contains only schema and configured
+// inbox identifiers, never paths or secret references.
 func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("runner-local validate-config", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Mac runner configuration")
+	checkMailboxDirectories := flags.Bool("check-mailbox-directories", false, "check configured mailbox paths without creating directories")
 	checkRetainedMailboxes := flags.Bool("check-retained-mailboxes", false, "read existing mailbox state before replacing services")
 	activateMailboxSet := flags.Bool("activate-mailbox-set", false, "record the candidate inbox set at the installer activation boundary")
 	if err := flags.Parse(args); err != nil {
@@ -105,6 +113,16 @@ func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runner-local validate-config: configuration is invalid")
 		return 1
 	}
+	mailboxRoots := make([]string, 0, len(mailboxes))
+	for _, mailbox := range mailboxes {
+		mailboxRoots = append(mailboxRoots, mailbox.Root)
+	}
+	if *checkMailboxDirectories {
+		if err := validateConfiguredMailboxDirectories(settings, mailboxRoots...); err != nil {
+			fmt.Fprintln(stderr, "runner-local validate-config: configured mailbox directories are not safe")
+			return 1
+		}
+	}
 	if *checkRetainedMailboxes {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -114,10 +132,20 @@ func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if *activateMailboxSet {
+		if err := validateConfiguredMailboxDirectories(settings, mailboxRoots...); err != nil {
+			fmt.Fprintln(stderr, "runner-local validate-config: configured mailbox directories are not safe to activate")
+			return 1
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := registerConfiguredMailboxWork(ctx, settings.Database, mailboxes); err != nil {
-			fmt.Fprintln(stderr, "runner-local validate-config: candidate inbox set could not be activated")
+		if err := activateMailboxSetAtBoundary(ctx, settings.Database, mailboxes, func() error {
+			return prepareConfiguredMailboxDirectories(settings, mailboxRoots...)
+		}); err != nil {
+			if errors.Is(err, errMailboxTreePreparationAfterActivate) {
+				fmt.Fprintln(stderr, "runner-local validate-config: candidate inbox set is recorded; configured mailbox directories need repair")
+			} else {
+				fmt.Fprintln(stderr, "runner-local validate-config: candidate inbox set could not be activated")
+			}
 			return 1
 		}
 	}
@@ -166,6 +194,8 @@ func macDoctorStartupFailureReport(err error) opshealth.Report {
 	component, reason := "configuration", "service_configuration_not_ready"
 	if errors.Is(err, errMacDatabaseNotReady) {
 		component, reason = "sqlite_writes", "database_migration_or_write_failed"
+	} else if errors.Is(err, errMacMailboxPathsNotReady) {
+		component, reason = "mailbox_paths", "mailbox_paths_unsafe"
 	}
 	return opshealth.NewReport("mac_ingress", time.Now(), opshealth.Check{Component: component, State: opshealth.StateNotReady, Reason: reason, RequiredForReadiness: true})
 }
@@ -180,6 +210,11 @@ type Service struct {
 	mailboxes           []mailboxRuntime
 	mailboxDefinitions  []store.MailboxConfiguration
 	legacyMailboxSet    []store.MailboxConfiguration
+	mailboxSettings     config.MacSettings
+	mailboxConfig       []config.MailboxDefinition
+	mailboxOwner        domain.ControllerIdentity
+	mailboxResolver     mailbox.MailboxExecutionResolver
+	mailboxMetrics      *mailboxMetricsSource
 	pollInterval        time.Duration
 	routerHealth        *routerHealthMonitor
 	remoteProbe         func(context.Context) map[string]error
@@ -187,6 +222,11 @@ type Service struct {
 	thresholds          *opshealth.ThresholdMonitor
 	remoteReconcileMu   sync.Mutex
 	lastRemoteReconcile time.Time
+}
+
+type mailboxMetricsSource struct {
+	importers   []*mailbox.Importer
+	definitions []config.MailboxDefinition
 }
 
 // mailboxRuntime owns the filesystem-facing components for exactly one
@@ -201,8 +241,9 @@ type mailboxRuntime struct {
 }
 
 // New constructs the Mac services from an owner-restricted selected config.
-// It creates only the configured owner-only service directories and never
-// reads or logs secret-file contents.
+// It prepares only non-mailbox service paths and never reads or logs
+// secret-file contents. Mailbox paths stay untouched until Serve has made the
+// configured set durable.
 func New(configPath string) (*Service, error) {
 	if err := ensureMacServiceRoot(config.MacServiceRoot); err != nil {
 		return nil, err
@@ -211,13 +252,9 @@ func New(configPath string) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	mailboxRoots := make([]string, 0, len(mailboxDefinitions))
-	for _, definition := range mailboxDefinitions {
-		mailboxRoots = append(mailboxRoots, definition.Root)
-	}
 	// Open only the existing state directory before validating that this
 	// configuration has not removed an inbox with durable work. The complete
-	// configured mailbox tree is created only after that check succeeds.
+	// configured mailbox tree is not created during construction.
 	if err := ensureOwnedDirectoryUnder(settings.ServiceRoot, filepath.Dir(settings.Database)); err != nil {
 		return nil, err
 	}
@@ -239,8 +276,11 @@ func New(configPath string) (*Service, error) {
 	if err := validateConfiguredMailboxWork(ctx, authority, mailboxDefinitions); err != nil {
 		return nil, fmt.Errorf("validate configured mailbox work: %w", err)
 	}
-	if err := ensureMacServicePaths(settings, mailboxRoots...); err != nil {
+	if err := ensureMacBaseServicePaths(settings); err != nil {
 		return nil, err
+	}
+	if err := validateConfiguredMailboxDirectories(settings, mailboxRoots(mailboxDefinitions)...); err != nil {
+		return nil, fmt.Errorf("%w: %w", errMacMailboxPathsNotReady, err)
 	}
 	owner, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, domain.ControllerID(settings.Account))
 	if err != nil {
@@ -249,11 +289,11 @@ func New(configPath string) (*Service, error) {
 	var routerHealth *routerHealthMonitor
 	metricsRecorder := opshealth.NewRecorder()
 	thresholds := opshealth.NewThresholdMonitor()
-	var metricsImporters []*mailbox.Importer
+	mailboxMetrics := &mailboxMetricsSource{definitions: append([]config.MailboxDefinition(nil), mailboxDefinitions...)}
 	api, err := localapi.NewServer(localapi.ServerOptions{
 		Authority: authority, Owner: owner, SocketPath: settings.APISocket,
 		HealthReport: func(ctx context.Context) opshealth.Report {
-			return macIngressHealthReportWithMetrics(ctx, authority, routerHealth, metricsImporters, metricsRecorder, thresholds)
+			return macIngressHealthReportWithMetrics(ctx, authority, routerHealth, mailboxMetrics.importers, mailboxMetrics.definitions, metricsRecorder, thresholds)
 		},
 	})
 	if err != nil {
@@ -277,17 +317,14 @@ func New(configPath string) (*Service, error) {
 		return nil, fmt.Errorf("construct remote Router driver: %w", err)
 	}
 	routerHealth = newRouterHealthMonitorForProfiles(remoteDriver.RemoteProfiles())
-	mailboxes, err := composeMailboxRuntimes(mailboxDefinitions, authority, owner, api, &loaded, settings.ReconciliationDeadline)
-	if err != nil {
-		return nil, err
-	}
-	metricsImporters = mailboxRuntimeImporters(mailboxes)
 	service := &Service{
 		database: authority, dbCloser: db, api: api, localDriver: localDriver,
-		remoteDriver: remoteDriver, mailboxes: mailboxes, routerHealth: routerHealth,
+		remoteDriver: remoteDriver, routerHealth: routerHealth,
 		mailboxDefinitions: configuredMailboxDefinitions(mailboxDefinitions),
 		legacyMailboxSet:   legacyDefaultMailboxBaseline(),
-		pollInterval:       defaultPollInterval, remoteProbe: remoteDriver.ProbeProfiles,
+		mailboxSettings:    settings, mailboxConfig: mailboxDefinitions,
+		mailboxOwner: owner, mailboxResolver: &loaded, mailboxMetrics: mailboxMetrics,
+		pollInterval: defaultPollInterval, remoteProbe: remoteDriver.ProbeProfiles,
 		metricsRecorder: metricsRecorder, thresholds: thresholds,
 	}
 	closeOnError = false
@@ -355,6 +392,24 @@ func registerConfiguredMailboxWork(ctx context.Context, databasePath string, def
 		return err
 	}
 	return authority.RegisterConfiguredMailboxSet(ctx, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline())
+}
+
+// activateMailboxSetAtBoundary records the candidate before invoking the
+// filesystem operation that can make a new mailbox root visible. A failure
+// from prepare is deliberately returned after registration so the installer
+// retains the staged candidate for repair instead of reviving a configuration
+// that does not know about the newly visible root.
+func activateMailboxSetAtBoundary(ctx context.Context, databasePath string, definitions []config.MailboxDefinition, prepare func() error) error {
+	if prepare == nil {
+		return errors.New("mailbox directory preparation is unavailable")
+	}
+	if err := registerConfiguredMailboxWork(ctx, databasePath, definitions); err != nil {
+		return err
+	}
+	if err := prepare(); err != nil {
+		return fmt.Errorf("%w: %w", errMailboxTreePreparationAfterActivate, err)
+	}
+	return nil
 }
 
 func configuredMailboxDefinitions(definitions []config.MailboxDefinition) []store.MailboxConfiguration {
@@ -429,7 +484,8 @@ func mailboxRuntimeImporters(runtimes []mailboxRuntime) []*mailbox.Importer {
 // closes the listener before returning so launchd restarts cannot inherit a
 // stale socket pathname.
 func (s *Service) Serve(ctx context.Context, stdout, stderr io.Writer) (returnErr error) {
-	if s == nil || s.api == nil || s.database == nil || s.dbCloser == nil || s.localDriver == nil || s.remoteDriver == nil || len(s.mailboxes) == 0 {
+	if s == nil || s.api == nil || s.database == nil || s.dbCloser == nil || s.localDriver == nil || s.remoteDriver == nil ||
+		(len(s.mailboxes) == 0 && len(s.mailboxConfig) == 0) {
 		return errors.New("Mac service is not configured")
 	}
 	defer func() { returnErr = errors.Join(returnErr, s.dbCloser.Close()) }()
@@ -444,13 +500,10 @@ func (s *Service) Serve(ctx context.Context, stdout, stderr io.Writer) (returnEr
 	if err := s.api.Listen(); err != nil {
 		return fmt.Errorf("listen on local API socket: %w", err)
 	}
-	// The installer records its candidate roots before handing off mac.yaml.
-	// Repeat that operation after the fully composed service acquires its
-	// listener, before mailbox workers begin, so direct starts also bind every
-	// marker the service can observe to a recorded root. A construction failure
-	// before this call leaves registry state unchanged when no installer boundary
-	// was crossed.
-	if err := s.activateConfiguredMailboxSet(ctx); err != nil {
+	// Reserve the API socket before changing the durable mailbox registry. A
+	// direct/manual start that loses this ownership race must not expose a new
+	// mailbox tree to the still-running prior service.
+	if err := s.activateAndPrepareMailboxRuntimes(ctx); err != nil {
 		_ = s.api.Close(context.Background())
 		return fmt.Errorf("activate configured mailbox set: %w", err)
 	}
@@ -494,6 +547,46 @@ func (s *Service) activateConfiguredMailboxSet(ctx context.Context) error {
 		return errors.New("Mac service mailbox configuration is unavailable")
 	}
 	return s.database.RegisterConfiguredMailboxSet(ctx, s.mailboxDefinitions, s.legacyMailboxSet)
+}
+
+// activateAndPrepareMailboxRuntimes keeps the durable mailbox registry ahead
+// of every external-root creation or mailbox constructor. Test-only services
+// may provide precomposed runtimes; production New leaves them empty.
+func (s *Service) activateAndPrepareMailboxRuntimes(ctx context.Context) error {
+	if s == nil {
+		return errors.New("Mac service is not configured")
+	}
+	if len(s.mailboxes) == 0 {
+		if err := validateConfiguredMailboxDirectories(s.mailboxSettings, mailboxRoots(s.mailboxConfig)...); err != nil {
+			return err
+		}
+	}
+	if err := s.activateConfiguredMailboxSet(ctx); err != nil {
+		return err
+	}
+	if len(s.mailboxes) != 0 {
+		return nil
+	}
+	if err := prepareConfiguredMailboxDirectories(s.mailboxSettings, mailboxRoots(s.mailboxConfig)...); err != nil {
+		return err
+	}
+	runtimes, err := composeMailboxRuntimes(s.mailboxConfig, s.database, s.mailboxOwner, s.api, s.mailboxResolver, s.mailboxSettings.ReconciliationDeadline)
+	if err != nil {
+		return err
+	}
+	s.mailboxes = runtimes
+	if s.mailboxMetrics != nil {
+		s.mailboxMetrics.importers = mailboxRuntimeImporters(runtimes)
+	}
+	return nil
+}
+
+func mailboxRoots(definitions []config.MailboxDefinition) []string {
+	roots := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		roots = append(roots, definition.Root)
+	}
+	return roots
 }
 
 func (s *Service) runWorkers(ctx context.Context, stopCycles <-chan struct{}, dispatchGate *lifecycle.Gate, stderr io.Writer) {
@@ -740,7 +833,7 @@ func (s *Service) Doctor(ctx context.Context) opshealth.Report {
 	if s == nil {
 		return opshealth.NewReport("mac_ingress", time.Now(), opshealth.Check{Component: "configuration", State: opshealth.StateNotReady, Reason: "service_configuration_not_ready", RequiredForReadiness: true})
 	}
-	return macIngressHealthReportWithMetrics(ctx, s.database, s.routerHealth, mailboxRuntimeImporters(s.mailboxes), s.metricsRecorder, s.thresholds)
+	return macIngressHealthReportWithMetrics(ctx, s.database, s.routerHealth, mailboxRuntimeImporters(s.mailboxes), s.mailboxConfig, s.metricsRecorder, s.thresholds)
 }
 
 func (s *Service) probeRemote(ctx context.Context) map[string]error {
@@ -848,7 +941,34 @@ func ensureMacServiceRoot(root string) error {
 	return nil
 }
 
+func validateMacServiceRoot(root string) error {
+	if root != config.MacServiceRoot || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return errors.New("selected Mac service root is invalid")
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		return errors.New("Mac service root is unavailable")
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Mac service root must be a real directory")
+	}
+	if err := requireCurrentOwner(info); err != nil {
+		return err
+	}
+	if info.Mode().Perm() != 0o700 || info.Mode()&(os.ModeSticky|os.ModeSetuid|os.ModeSetgid) != 0 {
+		return errors.New("Mac service root must be mode 0700")
+	}
+	return nil
+}
+
 func ensureMacServicePaths(settings config.MacSettings, mailboxRoots ...string) error {
+	if err := ensureMacBaseServicePaths(settings); err != nil {
+		return err
+	}
+	return ensureMacMailboxPaths(settings, mailboxRoots...)
+}
+
+func ensureMacBaseServicePaths(settings config.MacSettings) error {
 	paths := []string{
 		filepath.Join(settings.ServiceRoot, "bin"), filepath.Join(settings.ServiceRoot, "config"),
 		filepath.Join(settings.ServiceRoot, "logs"), filepath.Dir(settings.APISocket),
@@ -856,18 +976,109 @@ func ensureMacServicePaths(settings config.MacSettings, mailboxRoots ...string) 
 		settings.Workspaces, settings.ScriptTempRoot, settings.Backups,
 		filepath.Join(settings.ServiceRoot, "secrets"),
 	}
-	for _, mailboxRoot := range mailboxRoots {
-		paths = append(paths,
-			mailboxRoot,
-			filepath.Join(mailboxRoot, "inbox"),
-			filepath.Join(mailboxRoot, "outbox"),
-			filepath.Join(mailboxRoot, "events"),
-			filepath.Join(mailboxRoot, "acks"),
-		)
-	}
 	for _, path := range paths {
 		if err := ensureOwnedDirectoryUnder(settings.ServiceRoot, path); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func ensureMacMailboxPaths(settings config.MacSettings, mailboxRoots ...string) error {
+	return ensureMacMailboxPathsWithTrustRoot(settings, string(filepath.Separator), mailboxRoots...)
+}
+
+func prepareConfiguredMailboxDirectories(settings config.MacSettings, mailboxRoots ...string) error {
+	if err := ensureMacServiceRoot(settings.ServiceRoot); err != nil {
+		return err
+	}
+	return ensureMacMailboxPaths(settings, mailboxRoots...)
+}
+
+// validateConfiguredMailboxDirectories is the non-mutating pre-boundary
+// check. Existing directories must already be safe; missing mailbox roots are
+// intentionally allowed so they first become visible after registration.
+func validateConfiguredMailboxDirectories(settings config.MacSettings, mailboxRoots ...string) error {
+	if err := validateMacServiceRoot(settings.ServiceRoot); err != nil {
+		return err
+	}
+	return validateMacMailboxPaths(settings, mailboxRoots...)
+}
+
+func validateMacMailboxPaths(settings config.MacSettings, mailboxRoots ...string) error {
+	return validateMacMailboxPathsWithTrustRoot(settings, string(filepath.Separator), mailboxRoots...)
+}
+
+func validateMacMailboxPathsWithTrustRoot(settings config.MacSettings, externalTrustRoot string, mailboxRoots ...string) error {
+	for _, mailboxRoot := range mailboxRoots {
+		if config.IsExternalMailboxRoot(settings.ServiceRoot, mailboxRoot) {
+			if err := validateExternalMailboxTreeUnder(externalTrustRoot, mailboxRoot); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, path := range mailboxTreePaths(mailboxRoot) {
+			if err := validateExistingOwnedDirectoryUnder(settings.ServiceRoot, path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ensureMacMailboxPathsWithTrustRoot permits the external-root preparation to
+// be tested without relying on the platform's own temporary-directory
+// topology. Production always uses the filesystem root as the trust root.
+func ensureMacMailboxPathsWithTrustRoot(settings config.MacSettings, externalTrustRoot string, mailboxRoots ...string) error {
+	for _, mailboxRoot := range mailboxRoots {
+		if config.IsExternalMailboxRoot(settings.ServiceRoot, mailboxRoot) {
+			if err := prepareExternalMailboxTreeUnder(externalTrustRoot, mailboxRoot); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, path := range mailboxTreePaths(mailboxRoot) {
+			if err := ensureOwnedDirectoryUnder(settings.ServiceRoot, path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func mailboxTreePaths(root string) []string {
+	return []string{
+		root,
+		filepath.Join(root, "inbox"),
+		filepath.Join(root, "outbox"),
+		filepath.Join(root, "events"),
+		filepath.Join(root, "acks"),
+	}
+}
+
+func validateExistingOwnedDirectoryUnder(root, path string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return errors.New("service directory path is invalid")
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("service directory is outside the selected root")
+	}
+	current := root
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("service path must contain only real directories")
+		}
+		if err := requireCurrentOwner(info); err != nil {
+			return err
+		}
+		if info.Mode().Perm() != 0o700 || info.Mode()&(os.ModeSticky|os.ModeSetuid|os.ModeSetgid) != 0 {
+			return errors.New("service directory must be mode 0700")
 		}
 	}
 	return nil

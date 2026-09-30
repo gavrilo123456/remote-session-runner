@@ -621,6 +621,92 @@ func TestP150LoadsValidatedNamedMacRegistries(t *testing.T) {
 	}
 }
 
+func TestP158V2AllowsOnlyCleanExternalNonDefaultMailboxRoots(t *testing.T) {
+	const externalRoot = "/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-"
+	loaded := loadFixture(t, p158ConfigWithExternalMailbox(externalRoot))
+	mailbox, ok := loaded.Mailbox("slidestud-io")
+	if !ok || mailbox.Root != externalRoot || mailbox.DefaultExecution != "ubuntu-current" ||
+		!equalStrings(mailbox.RepositoryAliases, []string{"slidestud-io"}) ||
+		!equalStrings(mailbox.AllowedExecution, []string{"ubuntu-current"}) {
+		t.Fatalf("external mailbox = %+v, present=%v", mailbox, ok)
+	}
+
+	for _, path := range []string{
+		externalRoot,
+		"/Volumes/controlled-volume/any-location/mailbox-for-builds",
+	} {
+		if !validMailboxRoot(MacServiceRoot, "slidestud-io", path) {
+			t.Fatalf("validMailboxRoot rejected clean external root %q", path)
+		}
+	}
+	for _, path := range []string{
+		"relative/mailbox", "/tmp/../safe-mailbox", string(filepath.Separator), MacServiceRoot,
+		filepath.Join(MacServiceRoot, "unapproved-mailbox"),
+	} {
+		if validMailboxRoot(MacServiceRoot, "slidestud-io", path) {
+			t.Fatalf("validMailboxRoot accepted unsafe or ambiguous root %q", path)
+		}
+	}
+	if validMailboxRoot(MacServiceRoot, "default", externalRoot) {
+		t.Fatal("default mailbox was allowed to move outside its compatibility root")
+	}
+
+	for _, root := range []string{
+		"relative/mailbox", "/tmp/../safe-mailbox", string(filepath.Separator),
+		filepath.Join(MacServiceRoot, "unapproved-mailbox"),
+	} {
+		if _, err := parse([]byte(p158ConfigWithExternalMailbox(root))); err == nil {
+			t.Fatalf("parse accepted invalid external root %q", root)
+		}
+	}
+	defaultExternal := strings.Replace(macV2ConfigFixture,
+		`root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox"`,
+		`root: "/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-"`, 1)
+	if _, err := parse([]byte(defaultExternal)); err == nil {
+		t.Fatal("parse allowed the default mailbox to move outside its compatibility root")
+	}
+	nested := p158ConfigWithExternalMailbox(externalRoot) + `  nested:
+    root: "/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-/nested"
+    repository_aliases: [nested]
+    default_execution: ubuntu-current
+    allowed_execution: [ubuntu-current]
+`
+	if _, err := parse([]byte(nested)); err == nil {
+		t.Fatal("parse accepted nested external mailbox roots")
+	}
+	caseAlias := p158ConfigWithExternalMailbox(externalRoot) + `  alias:
+    root: "/Users/tomasz.walczuk/projects/SlideStud.IO/tmp/mailbox-"
+    repository_aliases: [alias]
+    default_execution: ubuntu-current
+    allowed_execution: [ubuntu-current]
+`
+	if _, err := parse([]byte(caseAlias)); err == nil {
+		t.Fatal("parse accepted a case-normalized alias of an external mailbox root")
+	}
+	serviceRootAlias := p158ConfigWithExternalMailbox(filepath.Join(strings.ToLower(MacServiceRoot), "mailbox-alias"))
+	if _, err := parse([]byte(serviceRootAlias)); err == nil {
+		t.Fatal("parse accepted a case-normalized alias below the service root")
+	}
+	unicodeAlias := p158ConfigWithExternalMailbox("/Volumes/controlled/Café/mailbox") + `  unicode-alias:
+    root: "/Volumes/controlled/Café/mailbox"
+    repository_aliases: [unicode-alias]
+    default_execution: ubuntu-current
+    allowed_execution: [ubuntu-current]
+`
+	if _, err := parse([]byte(unicodeAlias)); err == nil {
+		t.Fatal("parse accepted a Unicode-normalized alias of an external mailbox root")
+	}
+}
+
+func p158ConfigWithExternalMailbox(root string) string {
+	return macV2ConfigFixture + `  slidestud-io:
+    root: "` + root + `"
+    repository_aliases: [slidestud-io]
+    default_execution: ubuntu-current
+    allowed_execution: [ubuntu-current]
+`
+}
+
 func TestP150LoadsGenericLinuxV2HostProfile(t *testing.T) {
 	loaded := loadFixture(t, linuxV2ConfigFixture)
 	if loaded.SchemaVersion() != VersionV2 || loaded.Kind() != HostKindLinux {

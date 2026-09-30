@@ -110,6 +110,12 @@ test-p155-macos-multi-inbox: check-go
 test-p157-sandbox-host: check-go
 	RSR_P157_SANDBOX_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocal -run '^TestP157SandboxHostMailboxGate$$' -count=1 -v
 
+# Installed external SlideStudio inbox -> configured sandbox-host default. The
+# native mailbox client publishes one harmless marker-last request with no
+# target fields, then verifies the response, events, and exact ACK.
+test-p158-slidestud-mailbox: check-go
+	RSR_P158_SLIDESTUD_MAILBOX_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocal -run '^TestP158SlideStudioExternalMailboxDefaultSandboxGate$$' -count=1 -v
+
 # Public endpoint validation is deliberately opt-in and requires owner-only
 # credential fixtures outside the repository. The test is pinned to the
 # selected public IP and never substitutes a loopback listener.

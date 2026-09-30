@@ -57,7 +57,7 @@ func TestP154ConfiguredMailboxRuntimesCycleWithIsolatedArtifacts(t *testing.T) {
 		t.Fatalf("same client request crossed inbox namespaces: %v", exchangeIDs)
 	}
 
-	report := macIngressHealthReportWithMetrics(ctx, h.authority, nil, mailboxRuntimeImporters(h.service.mailboxes), nil, nil)
+	report := macIngressHealthReportWithMetrics(ctx, h.authority, nil, mailboxRuntimeImporters(h.service.mailboxes), nil, nil, nil)
 	if report.Metrics == nil || report.Metrics.MailboxBacklog != 2 ||
 		report.Metrics.MailboxBacklogByInbox[store.DefaultMailboxID] != 1 ||
 		report.Metrics.MailboxBacklogByInbox["analytics"] != 1 {
@@ -168,9 +168,8 @@ func TestP154FailedCandidateConstructionLeavesV1StartupAvailable(t *testing.T) {
 		t.Fatal("unsafe candidate mailbox root unexpectedly composed")
 	}
 
-	// New validates and composes before Service.Serve records an activated
-	// configuration. A construction failure therefore cannot poison the
-	// append-only registry and block the prior V1/default configuration.
+	// A pre-boundary candidate validation/construction failure must not poison
+	// the append-only registry or block the prior V1/default configuration.
 	movedDefault := []store.MailboxConfiguration{{ID: store.DefaultMailboxID, Root: filepath.Join(t.TempDir(), "moved-default")}}
 	if err := h.authority.ValidateConfiguredMailboxSet(ctx, movedDefault, nil); err != nil {
 		t.Fatalf("failed candidate registered a mailbox root: %v", err)
@@ -395,6 +394,7 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 		t.Fatalf("installer shell syntax: %v", err)
 	}
 	staticValidate := `"$staging_directory/runner-local" validate-config --config "$selected_config"`
+	checkMailboxDirectories := `"$staging_directory/runner-local" validate-config --check-mailbox-directories --config "$selected_config"`
 	finalValidate := `"$staging_directory/runner-local" validate-config --check-retained-mailboxes --config "$selected_config"`
 	activateMailboxSet := `"$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --config "$selected_config"`
 	quiesceLocal := `stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"`
@@ -405,6 +405,7 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 	recoveryGuard := `if [ "$candidate_activation_started" -eq 1 ] && [ "$candidate_config_handed_off" -eq 0 ]; then`
 	if !strings.Contains(text, "ensure_private_service_directory") || !strings.Contains(text, "ensure_launch_agents_directory") ||
 		!strings.Contains(text, staticValidate) || !strings.Contains(text, finalValidate) ||
+		!strings.Contains(text, checkMailboxDirectories) ||
 		!strings.Contains(text, activateMailboxSet) ||
 		!strings.Contains(text, quiesceLocal) || !strings.Contains(text, quiesceLocalD) ||
 		!strings.Contains(text, activationBoundary) || !strings.Contains(text, configHandoff) ||
@@ -415,6 +416,7 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 		t.Fatalf("installer lacks P154 safe configuration flow")
 	}
 	staticIndex := strings.Index(text, staticValidate)
+	checkPathsIndex := strings.Index(text, checkMailboxDirectories)
 	localIndex := strings.Index(text, quiesceLocal)
 	localDIndex := strings.Index(text, quiesceLocalD)
 	finalIndex := strings.Index(text, finalValidate)
@@ -428,11 +430,11 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 		t.Fatal("installer lacks LaunchAgent replacement loop")
 	}
 	bootstrapIndex := replacementLoop + strings.Index(text[replacementLoop:], "launchctl bootstrap")
-	if staticIndex < 0 || localIndex < 0 || localDIndex < 0 || finalIndex < 0 || activationIndex < 0 || activateMailboxSetIndex < 0 || configHandoffIndex < 0 || handoffCompleteIndex < 0 || recoveryGuardIndex < 0 || bootstrapIndex < replacementLoop {
-		t.Fatalf("installer sequence indexes static=%d local=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, localIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
+	if staticIndex < 0 || checkPathsIndex < 0 || localIndex < 0 || localDIndex < 0 || finalIndex < 0 || activationIndex < 0 || activateMailboxSetIndex < 0 || configHandoffIndex < 0 || handoffCompleteIndex < 0 || recoveryGuardIndex < 0 || bootstrapIndex < replacementLoop {
+		t.Fatalf("installer sequence indexes static=%d check_paths=%d local=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
 	}
-	if !(staticIndex < localIndex && localIndex < localDIndex && localDIndex < finalIndex && finalIndex < activationIndex && activationIndex < activateMailboxSetIndex && activateMailboxSetIndex < configHandoffIndex && configHandoffIndex < handoffCompleteIndex && handoffCompleteIndex < bootstrapIndex && recoveryGuardIndex < configHandoffIndex) {
-		t.Fatalf("installer must statically validate, quiesce local then locald, validate retained ingress, cross activation boundary, register candidate inboxes, preserve pre-handoff recovery config, hand off config, then bootstrap: static=%d local=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, localIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
+	if !(staticIndex < checkPathsIndex && checkPathsIndex < localIndex && localIndex < localDIndex && localDIndex < finalIndex && finalIndex < activationIndex && activationIndex < activateMailboxSetIndex && activateMailboxSetIndex < configHandoffIndex && configHandoffIndex < handoffCompleteIndex && handoffCompleteIndex < bootstrapIndex && recoveryGuardIndex < configHandoffIndex) {
+		t.Fatalf("installer must statically validate, check mailbox paths without creating them, quiesce local then locald, validate retained ingress, cross activation boundary, register candidate inboxes and create any missing tree, preserve pre-handoff recovery config, hand off config, then bootstrap: static=%d check_paths=%d local=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/text/unicode/norm"
+
 	"remote-session-runner/src/internal/domain"
 )
 
@@ -355,11 +357,22 @@ func validMailboxRoot(serviceRoot, id, path string) bool {
 	expected := filepath.Join(serviceRoot, "mailboxes", id)
 	if id == "default" {
 		expected = filepath.Join(serviceRoot, "mailbox")
+		return path == expected && pathUnder(serviceRoot, path)
 	}
-	return path == expected && pathUnder(serviceRoot, path)
+	return (path == expected && pathUnder(serviceRoot, path)) || IsExternalMailboxRoot(serviceRoot, path)
+}
+
+// IsExternalMailboxRoot reports whether path is a syntactically valid
+// non-service-root mailbox location. The filesystem owner, mode, parent, and
+// symlink checks happen when runner-local prepares the configured tree.
+func IsExternalMailboxRoot(serviceRoot, path string) bool {
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != string(filepath.Separator) &&
+		!mailboxPathUnder(serviceRoot, path)
 }
 
 func sameOrNestedPath(left, right string) bool {
+	left = normalizedMailboxPath(left)
+	right = normalizedMailboxPath(right)
 	if left == right {
 		return true
 	}
@@ -370,6 +383,21 @@ func sameOrNestedPath(left, right string) bool {
 		}
 	}
 	return false
+}
+
+// mailboxPathUnder deliberately uses a conservative case and Unicode-normalized
+// comparison. APFS can resolve multiple clean spellings to one directory; it
+// is safer to reject a potential service-root alias than to bind two mailbox
+// configurations to the same physical tree.
+func mailboxPathUnder(root, path string) bool {
+	root = normalizedMailboxPath(root)
+	path = normalizedMailboxPath(path)
+	relative, err := filepath.Rel(root, path)
+	return err == nil && (relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))))
+}
+
+func normalizedMailboxPath(path string) string {
+	return strings.ToLower(norm.NFC.String(path))
 }
 
 func validV2HTTPSURL(value string) bool {

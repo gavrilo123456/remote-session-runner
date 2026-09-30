@@ -1,7 +1,9 @@
 # Review this template, save it as the owner-only config/mac.next.yaml, then
 # apply it without overwriting active mac.yaml first:
 #   deploy/macos/install-launchagents.sh --config .../config/mac.next.yaml
-# The installer quiesces mailbox ingress before its final retained-work check.
+# The installer performs a non-mutating mailbox-path preflight, quiesces ingress,
+# checks retained work, records the complete candidate set, then prepares any
+# missing mailbox root/children.
 # This checked-in template intentionally starts with linux-host only. The
 # owner-only active P155/P157 policy separately contains the accepted
 # sandbox-host profile; keep its host-specific secrets outside this file.
@@ -69,6 +71,10 @@ remote_hosts:
       client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.pem"
       client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.key"
 mailboxes:
+# A non-default root may instead be a clean absolute path outside service_root.
+# Its ancestors must already be real, non-group/other-writable directories; its
+# immediate parent must be owned by tomasz.walczuk. Runner never changes those
+# ancestors and creates only the root plus inbox/outbox/events/acks at 0700.
   default:
     root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox"
     repository_aliases: [remote-session-runner]

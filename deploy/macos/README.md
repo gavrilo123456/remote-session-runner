@@ -49,18 +49,31 @@ The P157 host result is recorded in
 [`040-implementation-evidence/P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md).
 
 The installer validates the candidate while the active configuration runs. It
+first performs a descriptor-based, non-mutating check of every mailbox path,
 then stops mailbox ingress, waits for sockets to disappear, and runs a final
 read-only retained-mailbox check. A schema-24 database is read as implicit
 `default` during that check; no migration or registry write occurs before the
 activation boundary.
 
-At activation, the candidate root set is registered and the database may
-migrate to schema 27 before the staged candidate becomes active `mac.yaml`. A
-V1 binary cannot safely reopen that namespaced schema. The transition is not a
-single atomic transaction: before activation, a failure restores the previous
-services; after activation begins, the installer retains candidate state for
-repair/re-run and does not revive V1. It leaves the separately supplied
-`mac.next.yaml` in place after success. Do not copy over active `mac.yaml`.
+At activation, the complete candidate root set is registered durably before a
+missing external mailbox tree is created. Runner creates or verifies only the
+configured root and its `inbox`, `outbox`, `events`, and `acks` children. The
+database may migrate to schema 27 before the staged candidate becomes active
+`mac.yaml`. A V1 binary cannot safely reopen that namespaced schema. The
+transition is not a single atomic transaction: before activation, a failure
+restores the previous services; after activation begins, the installer retains
+candidate state for repair/re-run and does not revive V1. It leaves the
+separately supplied `mac.next.yaml` in place after success. Do not copy over
+active `mac.yaml`.
+
+A non-default mailbox root can be either
+`<service-root>/mailboxes/<inbox-id>` or a clean absolute path outside the
+service root. For an external root, every ancestor must already be a real
+directory without group or other write access, and the immediate parent must
+belong to `tomasz.walczuk`. Runner never changes those ancestors. The root and
+its four children are owner-owned `0700`; symlinks, unsafe existing paths, and
+missing parents fail closed. If the root is below another repository, exclude
+its runtime directory locally from that repository's VCS view.
 
 The mailbox registry is append-only for this PoC. Adding a root is supported;
 removing, renaming, or moving an inbox needs an explicit later migration after

@@ -12,7 +12,7 @@ selection, or automatic fallback.
 | --- | --- |
 | [Architecture](architecture.md) | Components, trust boundaries, multi-inbox routing, diagrams, and supported scope. |
 | [Configuration reference](configuration.md) | Exact paths, V1 compatibility, V2 registries, active policy, secret handling, and limits. |
-| [Setup and upgrade runbook](setup.md) | First install, V1→V2 upgrade, service deployment, bridge setup, and P157 onboarding. |
+| [Setup and upgrade runbook](setup.md) | First install, V1→V2 upgrade, safe external mailbox roots, service deployment, bridge setup, and P157 onboarding. |
 | [CLI user guide](user-guide.md) | Local, direct remote, queued remote, sessions, events, cancellation, and close. |
 | [Mailbox guide](mailbox.md) | Native safe file-mailbox integration, roots, defaults, overrides, events, ACKs, and retries. |
 | [API reference](api.md) | Direct mTLS and Unix-socket transports plus v1 HTTP/JSON behavior. |
@@ -56,7 +56,7 @@ unverified.
   permissions of `tomasz.walczuk` or `ubuntu`.
 - A session retains Bash state across discrete `exec` calls; it is not an
   interactive shell.
-- Keep keys, certificates, SQLite files, logs, and output outside Git.
+- Keep keys, certificates, SQLite files, logs, and output outside tracked source.
 - Controller ownership and endpoint route are immutable for an existing
   resource. Continue status/events/cancel/close through the same route.
 - A configuration entry means policy exists. A new physical host requires its

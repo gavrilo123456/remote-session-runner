@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
@@ -158,7 +159,7 @@ func remoteRouterHealthChecks(monitor *routerHealthMonitor, backlogDetails map[s
 	return checks
 }
 
-func macIngressHealthReportWithMetrics(ctx context.Context, authority *store.AuthorityStore, monitor *routerHealthMonitor, importers []*mailbox.Importer, recorder *opshealth.Recorder, thresholds *opshealth.ThresholdMonitor) opshealth.Report {
+func macIngressHealthReportWithMetrics(ctx context.Context, authority *store.AuthorityStore, monitor *routerHealthMonitor, importers []*mailbox.Importer, definitions []config.MailboxDefinition, recorder *opshealth.Recorder, thresholds *opshealth.ThresholdMonitor) opshealth.Report {
 	report := macIngressHealthReport(ctx, authority, monitor)
 	if authority == nil {
 		return report
@@ -177,6 +178,9 @@ func macIngressHealthReportWithMetrics(ctx context.Context, authority *store.Aut
 		MailboxBacklog: durable.MailboxBacklog,
 	}
 	mailboxBacklog, readyTotal, err := mailboxBacklogByInbox(ctx, authority, importers)
+	if len(importers) == 0 && len(definitions) != 0 {
+		mailboxBacklog, readyTotal, err = mailboxBacklogByDefinitions(ctx, authority, definitions)
+	}
 	if err != nil {
 		return report
 	}
@@ -187,6 +191,41 @@ func macIngressHealthReportWithMetrics(ctx context.Context, authority *store.Aut
 		metrics.MailboxBacklog += readyTotal
 	}
 	return opshealth.AddMetrics(report, metrics, recorder, thresholds, nil)
+}
+
+// mailboxBacklogByDefinitions preserves the doctor view before a service has
+// started its runtime. It reads only already-safe mailbox trees and treats a
+// missing tree as zero, so it cannot make a candidate mailbox visible.
+func mailboxBacklogByDefinitions(ctx context.Context, authority *store.AuthorityStore, definitions []config.MailboxDefinition) (map[string]int64, int64, error) {
+	if authority == nil {
+		return nil, 0, store.ErrNilDatabase
+	}
+	ids := make([]string, 0, len(definitions))
+	roots := make(map[string]string, len(definitions))
+	for _, definition := range definitions {
+		if definition.ID == "" || definition.Root == "" {
+			return nil, 0, fmt.Errorf("mailbox definition is not configured")
+		}
+		if _, exists := roots[definition.ID]; exists {
+			return nil, 0, fmt.Errorf("mailbox definition ID is duplicated")
+		}
+		ids = append(ids, definition.ID)
+		roots[definition.ID] = definition.Root
+	}
+	counts, err := authority.CountMailboxBacklogByInbox(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	var readyTotal int64
+	for _, mailboxID := range ids {
+		ready, err := mailbox.ReadyRequestCountAtRoot(ctx, roots[mailboxID])
+		if err != nil {
+			return nil, 0, err
+		}
+		counts[mailboxID] += ready
+		readyTotal += ready
+	}
+	return counts, readyTotal, nil
 }
 
 // mailboxBacklogByInbox combines the authority's durable accepted-exchange

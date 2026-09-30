@@ -39,12 +39,31 @@ durable identity: the same client-visible request ID and idempotency key may be
 used once in each configured root, yielding isolated durable resources,
 responses, events, retries, acknowledgements, and cleanup.
 
+## External mailbox roots
+
+A non-default root may instead be a clean absolute path outside the Runner
+service root. Its existing ancestors must be real directories without group or
+other write access, and its immediate parent must be owned by
+`tomasz.walczuk`. Runner never creates or changes an external ancestor. It
+creates or verifies only the root and the four directories shown above, all at
+`0700`. Symlinks, an unsafe existing root or child, a missing parent, and roots
+that duplicate or nest another configured root after case/Unicode normalization
+are rejected.
+
+The installer checks this path without mutation before it stops ingress. After
+retained work has been checked, it records the complete candidate root set
+durably before it makes a missing external tree visible. If a filesystem step
+then fails, repair that candidate; do not reactivate an older policy that does
+not know about the new root. If an external root is under another repository,
+exclude its runtime directory locally from that repository's VCS view.
+
 ## Use the native mailbox client
 
-`mailboxclient.New(root)` requires an absolute, owner-only root. The client is
-an internal Go package, not a published external SDK, so a runnable integration
-belongs inside this module or a supported wrapper. The sequence below is an
-integration sketch, not a shell recipe:
+`mailboxclient.New(root)` requires an absolute, owner-only configured root. It
+does not activate or prepare a mailbox tree. The client is an internal Go
+package, not a published external SDK, so a runnable integration belongs inside
+this module or a supported wrapper. The sequence below is an integration sketch,
+not a shell recipe:
 
 ```go
 client, err := mailboxclient.New(mailboxRoot)

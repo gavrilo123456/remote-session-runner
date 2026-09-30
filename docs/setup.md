@@ -4,7 +4,8 @@ Use this runbook to install or refresh the controlled PoC. Versioned source,
 tests, deployment files, and documentation are changed only in the Mac
 checkout. Commit and push the Mac work first; then fast-forward the clean
 Ubuntu checkout before any Ubuntu build, installation, or test. Runtime
-configuration, credentials, logs, databases, and output stay outside Git.
+configuration, credentials, logs, databases, and output stay outside tracked
+source.
 
 ## Before you start
 
@@ -140,6 +141,14 @@ root, and the accepted `ubuntu-sandbox` context; see
 Keep every existing registered inbox ID/root unchanged. Do not write a
 candidate over `config/mac.yaml`.
 
+For an external non-default mailbox root, choose a clean absolute path outside
+the Runner service root. Its ancestors must already be real directories without
+group or other write access, and its immediate parent must belong to
+`tomasz.walczuk`. Do not create or chmod those ancestors for Runner. If the root
+is under another checkout, add a local VCS exclude for its runtime directory.
+The installer creates the root and its four mailbox children only after the
+candidate is durable.
+
 Activate the candidate:
 
 ```sh
@@ -151,11 +160,15 @@ deploy/macos/install-launchagents.sh --config \
 
 The upgrade sequence is deliberate:
 
-1. validate the candidate while the old ingress is live;
+1. validate the candidate and perform a descriptor-based, non-mutating
+   mailbox-path preflight while the old ingress is live;
 2. quiesce the services and perform a final **read-only** retained-mailbox
    check;
-3. enter the no-rollback activation boundary, register the candidate roots,
-   hand off `mac.yaml`, and start the V2 services.
+3. enter the no-rollback activation boundary and register the complete
+   candidate mailbox set durably;
+4. create or verify only the candidate roots and their `inbox`, `outbox`,
+   `events`, and `acks` children, hand off `mac.yaml`, and start the V2
+   services.
 
 For a schema-24 database, the final pre-boundary check treats retained work as
 implicit `default` without writing it. The post-boundary activation can migrate
@@ -166,8 +179,8 @@ do not attempt to revive V1. The independently reviewed `mac.next.yaml`
 remains after a successful install while a staged copy becomes active
 `mac.yaml`.
 
-Verify both V2 mailbox trees and the running service health before publishing
-new work. Use the native mailbox-client integration in [the mailbox guide](mailbox.md),
+Verify every configured mailbox tree and the running service health before
+publishing new work. Use the native mailbox-client integration in [the mailbox guide](mailbox.md),
 not terminal-created request files.
 
 ## 4. Install or refresh an accepted Ubuntu service

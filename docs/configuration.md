@@ -1,9 +1,11 @@
 # Configuration reference
 
 All configuration, credentials, service state, output, and logs live outside
-the Git checkout. Files are loaded only when they are regular, non-symlink,
-owner-only files. The selected accounts are fixed in this PoC: Mac work runs as
-`tomasz.walczuk`; every configured remote profile runs as `ubuntu`.
+tracked source. An external mailbox can live below another local checkout only
+in a runtime directory excluded from that checkout's VCS view. Files are loaded
+only when they are regular, non-symlink, owner-only files. The selected accounts
+are fixed in this PoC: Mac work runs as `tomasz.walczuk`; every configured remote
+profile runs as `ubuntu`.
 
 ## Current controlled PoC
 
@@ -45,9 +47,11 @@ values as proof that it is ready.
 └── logs/                local*.log and locald*.log
 ```
 
-The `default` root deliberately retains the legacy `mailbox/` path. Every
-additional configured root is exactly `mailboxes/<inbox-id>/`; it is not a
-free-form path.
+The `default` root deliberately retains the legacy `mailbox/` path. A
+non-default root is either exactly `mailboxes/<inbox-id>/` under the service
+root or a clean absolute path outside it. An external root can be placed in a
+repository-local ignored runtime directory when that is useful to its file-only
+producer; Runner does not change that repository or any external ancestor.
 
 ### Ubuntu — `ubuntu`
 
@@ -63,10 +67,14 @@ free-form path.
 └── backups/             reserved state-backup location
 ```
 
-Service and mailbox directories are owned by the selected account and mode
-`0700`. Config and secret files are regular owner-only files at mode `0600`.
-The daemon rejects unsafe modes, ownership, symlinks, unknown fields, and paths
-outside the selected roots.
+Service-root directories and every configured mailbox root/child are owned by
+the selected account at mode `0700`. Config and secret files are regular
+owner-only files at mode `0600`. For an external mailbox, every pre-existing
+ancestor must be a real directory without group or other write access, and its
+immediate parent must belong to the selected Mac user. Runner creates or verifies
+only the external root and its `inbox`, `outbox`, `events`, and `acks` children.
+It rejects unsafe modes, ownership, symlinks, unknown fields, and ambiguous
+paths.
 
 ## Mac configuration schemas
 
@@ -190,9 +198,12 @@ is the only inbox that may explicitly select `ubuntu-sandbox`.
 
 - `default` is required and its root is exactly
   `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox`.
-- An extra inbox ID has root exactly
-  `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/<inbox-id>`.
-  Roots cannot duplicate, nest, or overlap.
+- An extra inbox ID has either the exact service-root form
+  `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/<inbox-id>`
+  or a clean absolute root outside the service root. External ancestors must
+  already exist and be safe; the root and its four mailbox children are
+  owner-owned `0700`. Roots cannot duplicate, nest, or overlap after
+  conservative case and Unicode normalization.
 - Each context pairs one configured environment with one allowed immutable
   target. Duplicate environment/target pairs are rejected.
 - A mailbox default must be in its `allowed_execution` list. A remote context
@@ -214,15 +225,18 @@ is the only inbox that may explicitly select `ubuntu-sandbox`.
 2. Keep the active `config/mac.yaml` untouched. Provision only referenced
    owner-only secret files; never put their contents in the candidate.
 3. Run the candidate installer described in the [setup runbook](setup.md#3-upgrade-to-version-2-or-add-an-inbox).
-4. The installer validates while the old ingress is live, quiesces the Mac
-   services, and makes a final read-only retained-mailbox check. For a
-   schema-24 database, that check treats existing work as implicit `default`;
-   it does not migrate or write the registry.
-5. At the candidate-activation boundary, the new policy is registered and the
-   database can migrate to schema 27. A version-1 binary cannot reopen that
-   namespaced schema. Before the boundary the installer restores the V1
-   services on failure. After it, it keeps the staged candidate for repair or
-   re-run and does not revive V1.
+4. The installer performs a descriptor-based, non-mutating mailbox-path
+   preflight while old ingress is live, quiesces the Mac services, and makes a
+   final read-only retained-mailbox check. For a schema-24 database, that check
+   treats existing work as implicit `default`; it does not migrate or write the
+   registry.
+5. At the candidate-activation boundary, it records the complete candidate
+   mailbox set durably before creating a missing external tree. It then creates
+   or verifies only each root and its four children, hands off `mac.yaml`, and
+   starts the services. The database can migrate to schema 27; a version-1
+   binary cannot reopen that namespaced schema. Before the boundary the
+   installer restores the V1 services on failure. After it, a filesystem failure
+   retains the staged candidate for repair or re-run and does not revive V1.
 
 The installer keeps the separately reviewed `mac.next.yaml` after a successful
 activation; it stages a copy as the active `mac.yaml`. Do not overwrite active

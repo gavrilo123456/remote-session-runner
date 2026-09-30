@@ -312,10 +312,12 @@ for name in runner runner-local runner-locald; do
 done
 
 # A configuration candidate is staged while the current ingress remains live.
-# The retained-state check must happen only after that ingress is quiesced: a
-# request accepted during the build/static-validation window is then visible to
-# the final check and cannot be stranded by an inbox removal.
+# Inspect external parent chains and any existing tree without creating a
+# candidate mailbox. The retained-state check must happen only after ingress
+# is quiesced: a request accepted during the build/static/preflight window is
+# then visible to the final check and cannot be stranded by an inbox removal.
 "$staging_directory/runner-local" validate-config --config "$selected_config"
+"$staging_directory/runner-local" validate-config --check-mailbox-directories --config "$selected_config"
 
 if service_loaded com.remote-session-runner.local; then
 	local_was_loaded=1
@@ -339,10 +341,10 @@ fi
 # marker-last request as soon as the candidate layout is visible, and the
 # activation command may migrate a schema-24 database that the prior V1 binary
 # cannot reopen. Do not revive the prior configuration after this point: the
-# staged runner-local records the complete candidate roots before mac.yaml is
-# handed off, and a failed candidate remains available for a safe repair/retry
-# rather than stranding a newly published marker or restarting V1 on a newer
-# schema.
+# staged runner-local records the complete candidate roots before it creates a
+# missing tree or hands off mac.yaml. A failed post-registration tree setup
+# leaves the candidate available for safe repair rather than stranding a newly
+# published marker or restarting V1 on a newer schema.
 candidate_activation_started=1
 if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --config "$selected_config"; then
 	printf '%s\n' 'Candidate mailbox activation could not be recorded; leaving the candidate state in place for safe repair.' >&2

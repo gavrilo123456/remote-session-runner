@@ -62,6 +62,8 @@ root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
   }
   check_mailbox_tree "$root/mailbox"
   check_mailbox_tree "$root/mailboxes/analytics"
+  # For each configured external root, call check_mailbox_tree with its exact
+  # configured absolute path after its candidate activation succeeds.
 )
 ```
 
@@ -237,6 +239,7 @@ ready. It does not create or rotate dispatcher authorization.
 | `endpoint/target mismatch` | Direct endpoint's bound target profile | Choose the endpoint that is configured for that exact remote profile; do not retry a mutation with a changed target. |
 | Partial mailbox selection | Request has only `environment` or `execution_target` | Submit neither to use the inbox default, or submit the complete allowed pair. |
 | Mailbox selection or alias rejected | Root, context allow-list, repository alias, response `inbox_id` | Use the intended root and its configured policy; do not invent aliases or host names. |
+| External mailbox preflight fails | Candidate root's real ancestor chain, owner, modes, and symlink state | Repair the external parent/path without changing its ancestors for Runner; rerun the candidate installer. If activation already began, repair the retained candidate instead of restoring an older policy. |
 | No mailbox response | Native client error/logs, root tree, response state | Keep the request identity, inspect owner/mode/path failure, and use `mailboxclient`; malformed unsafe pairs have no guaranteed response. |
 | Direct HTTPS/mTLS failure | Public health, service journal, CA/certificate/principal map/bind | Repair host configuration without printing keys. |
 | Queued remote remains recorded, uncertain, or stale | Selected bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
