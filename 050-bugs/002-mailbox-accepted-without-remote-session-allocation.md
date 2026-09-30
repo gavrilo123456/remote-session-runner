@@ -4,16 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` |
+| Status | `CLOSED` |
 | Severity | High — a file-only caller cannot receive a truthful terminal result for accepted work |
 | Priority | High |
 | Reported | 2026-09-30 |
 | Discovered by | Codex during protected Slide Studio Logger deployment control-plane work |
 | Owner | Remote Session Runner |
 | Affected component/path | Linux `runnerd` lost-result persistence, Mac remote status reconciliation, and workspace mailbox projection for `sandbox-host` |
-| Affected revision | Mac `dev` at `b2b4d6398985059bb5c4341b03fd9d10b3ba6450`; sandbox runtime SHA must be confirmed during deployment |
-| Fixed revision | Pending commit, Git handoff, and host validation |
-| Verification | Automated regression checks passing during implementation; live workspace-mailbox verification pending |
+| Affected revision | Mac `dev` at `b2b4d6398985059bb5c4341b03fd9d10b3ba6450` and the deployed sandbox runtime before recovery |
+| Fixed revision | `81096fd`, `6de5004`, and `519b4d9` on `dev` |
+| Verification | Automated gates, both Git handoffs, guarded sandbox recovery, post-restart P128, existing-response reconciliation, and a new workspace-mailbox acceptance test all passed |
 
 ## Reported behavior
 
@@ -92,38 +92,36 @@ risk. It is not established as the cause of this defect.
 
 ## Correction
 
-The candidate correction:
+1. `81096fd` bounds the Mac status projection for an unreadable remote
+   terminal boundary without replaying accepted work.
+2. `6de5004` adds `runnerd recover-lost`, an explicit operator command that
+   accepts only one exact `lost/lost` session-command pair. It proves the
+   process-group cleanup in a durable ownership marker, atomically releases
+   the matched command slot and session reservation, then finalizes the marker
+   and workspace. It never executes the stored script.
+3. `519b4d9` corrects the stopped-service guard for the observed clean systemd
+   case: `ActiveState=inactive`, `MainPID=0`, and an already removed cgroup.
+   A failed service without an inspectable cgroup remains rejected.
 
-1. persists `capture_boundary_unconfirmed` whenever a target command becomes
-   lost with incomplete output;
-2. checkpoints the one-off job as `lost` with
-   `runtime_cleanup_unconfirmed` when that command boundary is lost;
-3. migrates existing lost/incomplete command, job, and Mac projection records
-   without starting work, replaying scripts, or releasing retained capacity;
-4. records the first failed strict status read for an accepted remote one-off;
-5. clears that marker when a coherent status or strict terminal proof arrives;
-   and
-6. after 24 hours, freezes a terminal mailbox response with
-   `request_state=indeterminate`, `delivery_state=accepted`, and
-   `error.code=remote_status_unavailable`, carrying only stable IDs.
+The repair changed the affected mailbox item to a truthful terminal
+`complete/reconciled/lost` result. It makes no claim about the external Logger
+or Gitea side effect.
 
-This result is safe to acknowledge. It does not assert a command result,
-output, event cursor, teardown outcome, or external side effect.
+## Verification completed
 
-## Verification gate
+1. Mac `make test`, `make vet`, `make build`, `make smoke`, and whitespace
+   checks passed. The Linux ownership recovery test passed on the sandbox.
+2. GitHub `dev`, the original Ubuntu checkout, and the sandbox checkout all
+   matched `519b4d9a9f3d411fb1ae44839e5e034214ba92fc` before host validation.
+3. The guarded recovery released the one retained slot only after its runtime
+   proof; P128 then passed at `0/0/0/0`, and the sandbox service restarted
+   healthy.
+4. The original request became terminal `complete/reconciled/lost` without a
+   retry. A new direct workspace-mailbox `uname -a` request completed on
+   `sandbox-host` with exit code `0`, complete non-truncated output, an ordered
+   terminal event, and the exact ACK.
 
-Before closing this bug:
-
-1. Run the complete automated suite on the Mac revision and record its Git
-   handoff to both Ubuntu checkouts.
-2. Confirm both Linux checkouts match the pushed SHA and each host is quiet
-   before installing the updated service.
-3. Verify the existing sandbox request becomes either a coherent repaired
-   target result or the bounded `remote_status_unavailable` result, without
-   resubmitting its script.
-4. Publish a new harmless, unique `uname -a` request by the direct workspace
-   mailbox files, then verify `complete`, `succeeded`, exit code `0`, complete
-   untruncated output, ordered events, and the exact ACK.
+Full evidence: [BUG-002 implementation evidence](../040-implementation-evidence/BUG-002.md).
 
 ## History
 
@@ -132,3 +130,4 @@ Before closing this bug:
 | 2026-09-30 | Bug reported from an indefinitely accepted workspace mailbox request. |
 | 2026-09-30 | Target status inspection corrected the initial allocation inference and identified the malformed lost-result boundary. |
 | 2026-09-30 | Candidate correction and regression coverage started; live verification remains pending. |
+| 2026-09-30 | Guarded recovery and file-only mailbox acceptance passed; bug closed without replaying the original request. |
