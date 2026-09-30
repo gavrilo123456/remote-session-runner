@@ -138,12 +138,22 @@ installed and tested.
   exists and the whole existing ancestor chain is made of real directories
   without group or other write permission. The immediate parent must be owned
   by the selected Mac user. This permits a repository-local mailbox while
-  rejecting unsafe shared paths such as `/tmp`.
+  rejecting unsafe shared paths such as `/tmp`. The configuration rejects roots
+  that are equal or nested after conservative case and Unicode normalization,
+  so a case-insensitive filesystem cannot bind two inboxes to one tree.
 - Runner never creates or changes an external root's ancestors. It creates or
   verifies only the configured root and its `inbox`, `outbox`, `events`, and
   `acks` children. Each must be a current-user-owned real directory at mode
-  `0700`; a symlink or an unsafe ancestor fails activation before the existing
-  LaunchAgents are quiesced.
+  `0700`. Before the existing LaunchAgents are quiesced, the installer performs
+  a non-mutating descriptor-based preflight of the parent chain and any tree
+  that already exists. It never creates a candidate root during that stage.
+  After ingress is quiesced and the retained-work check passes, the irreversible
+  activation records the complete candidate mailbox set durably **before** it
+  creates or verifies a newly visible external tree. Descriptor-relative
+  `O_NOFOLLOW` traversal and creation reject symlink substitution while that
+  tree is prepared. If a post-registration filesystem step fails, the staged
+  candidate remains available for safe repair; the prior LaunchAgents are not
+  revived against the changed durable registry.
 - Each context names one configured environment and a target permitted by that
   environment's policy.
 - Each mailbox has at least one allowed context, and its default is in that
