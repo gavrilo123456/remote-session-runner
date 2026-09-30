@@ -1,7 +1,8 @@
 # Initial idea: multiple inboxes and remote machines
 
-**Status:** proposal only. This document describes a possible extension; it
-does not change the current single-inbox, single-Ubuntu-host PoC.
+**Status:** approved direction for implementation. The current single-inbox,
+single-Ubuntu-host PoC remains the compatibility baseline while the extension
+is built and tested.
 
 ## Goal
 
