@@ -11,6 +11,11 @@ the selected Go toolchain, and owner-only `authorized_keys`. It accepts one
 canonical `ssh-ed25519` **public** key. It never accepts or prints private-key
 material.
 
+It accepts only native Go 1.27.1 `linux/amd64` on `x86_64`/`amd64`, or
+`linux/arm64` on `aarch64`/`arm64`; a mismatched cross toolchain fails closed.
+Bridge builds use a private one-invocation cache below the Runner service-root
+`tmp/` directory and remove only that task-owned cache on exit.
+
 ```text
 install-queued-bridge.sh enable --dispatcher-public-key-file PATH
 install-queued-bridge.sh enable --dispatcher-public-key-stdin

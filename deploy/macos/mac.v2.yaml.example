@@ -2,8 +2,11 @@
 # apply it without overwriting active mac.yaml first:
 #   deploy/macos/install-launchagents.sh --config .../config/mac.next.yaml
 # The installer quiesces mailbox ingress before its final retained-work check.
-# It deliberately keeps the current verified linux-host only. Add another
-# remote profile only after its separate P157 host onboarding succeeds.
+# It starts with the current verified linux-host only. To prepare a P157
+# candidate, merge its profile into this complete policy (preserving every
+# active mailbox) after its independent host-key, account, Go, state, and TLS
+# prerequisites are reviewed. Do not use that profile for ordinary work until
+# its separate P157 host gate succeeds.
 version: 2
 mac:
   account: tomasz.walczuk

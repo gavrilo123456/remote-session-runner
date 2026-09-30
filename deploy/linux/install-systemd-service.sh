@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 service_root='/home/ubuntu/.local/share/remote-session-runner'
 unit_source=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/runnerd.service
@@ -7,20 +8,29 @@ entrypoint_source=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/runnerd-entryp
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 go_bin="$service_root/toolchains/go1.27.1/bin/go"
 uid=$(id -u)
+go_arch=''
+go_cache_root=''
+temporary=''
 
 if [ "$(uname -s)" != Linux ] || [ "$(id -un)" != ubuntu ] || [ "$uid" != 1001 ]; then
 	printf '%s\n' 'install-systemd-service.sh must run on the selected Linux host as ubuntu (uid 1001)' >&2
 	exit 2
 fi
+case "$(uname -m)" in
+	x86_64|amd64) go_arch=amd64 ;;
+	aarch64|arm64) go_arch=arm64 ;;
+	*) printf 'unsupported Linux architecture for Go 1.27.1: %s\n' "$(uname -m)" >&2; exit 1 ;;
+esac
 if [ ! -x "$go_bin" ]; then
 	printf 'Go 1.27.1 toolchain missing: %s\n' "$go_bin" >&2
 	exit 1
 fi
 go_version=$("$go_bin" version)
-case "$go_version" in
-	'go version go1.27.1 linux/amd64') ;;
-	*) printf 'expected Go 1.27.1 linux/amd64, got: %s\n' "$go_version" >&2; exit 1 ;;
-esac
+expected_go_version="go version go1.27.1 linux/$go_arch"
+if [ "$go_version" != "$expected_go_version" ]; then
+	printf 'expected %s, got: %s\n' "$expected_go_version" "$go_version" >&2
+	exit 1
+fi
 
 ensure_private_directory() {
 	directory=$1
@@ -69,27 +79,44 @@ if [ -e "$queued_bridge_manifest" ] || [ -L "$queued_bridge_manifest" ]; then
 fi
 
 require_no_active_work() {
-	GO="$go_bin" make -C "$repo_root" test-p128-host-status
+	GO="$go_bin" GOOS=linux GOARCH="$go_arch" GOCACHE="$go_cache_root/build" GOMODCACHE="$go_cache_root/mod" \
+		make -C "$repo_root" test-p128-host-status
 }
 
 # Replacing a binary does not replace an already-running service process.
 # Use the checked-in read-only status gate before beginning an active-service
 # update, then repeat it immediately before the controlled restart.
+cleanup() {
+	cleanup_status=$?
+	trap - EXIT
+	if [ -n "$temporary" ] && { [ -e "$temporary" ] || [ -L "$temporary" ]; }; then
+		rm -f -- "$temporary"
+	fi
+	if [ -n "$go_cache_root" ] && { [ -e "$go_cache_root" ] || [ -L "$go_cache_root" ]; }; then
+		rm -rf -- "$go_cache_root"
+	fi
+	exit "$cleanup_status"
+}
+
+go_cache_root=$(mktemp -d "$service_root/tmp/install-go-cache.XXXXXX")
+chmod 700 "$go_cache_root"
+temporary="$service_root/bin/.runnerd.$$"
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 was_active=0
 if sudo -n systemctl is-active --quiet runnerd.service; then
 	was_active=1
 	require_no_active_work
 fi
 
-temporary="$service_root/bin/.runnerd.$$"
-trap 'rm -f "$temporary"' EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-(cd "$repo_root" && GOTOOLCHAIN=local "$go_bin" build -o "$temporary" ./src/cmd/runnerd)
+(cd "$repo_root" && GOTOOLCHAIN=local GOOS=linux GOARCH="$go_arch" GOCACHE="$go_cache_root/build" GOMODCACHE="$go_cache_root/mod" \
+	"$go_bin" build -o "$temporary" ./src/cmd/runnerd)
 chmod 700 "$temporary"
 mv -f "$temporary" "$service_root/bin/runnerd"
-trap - EXIT HUP INT TERM
+temporary=''
 install -m 700 "$entrypoint_source" "$service_root/bin/runnerd-entrypoint.sh"
 
 sudo -n install -o root -g root -m 644 "$unit_source" /etc/systemd/system/runnerd.service
@@ -128,4 +155,7 @@ if [ -e "$queued_bridge_manifest" ] || [ -L "$queued_bridge_manifest" ]; then
 	"$repo_root/deploy/ssh/install-queued-bridge.sh" refresh
 fi
 
+rm -rf -- "$go_cache_root"
+go_cache_root=''
+trap - EXIT HUP INT TERM
 printf 'Installed and started runnerd.service as %s with %s\n' "$(id -un)" "$go_version"

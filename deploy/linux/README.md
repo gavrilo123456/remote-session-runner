@@ -19,6 +19,12 @@ certificate/key, and client CA. It never prints private key material. It builds
 requirements, installs and checks the unit, then enables and starts the
 service. Runtime configuration and SQLite state are not copied from Git.
 
+The installer accepts only a native Go 1.27.1 `linux/amd64` toolchain on
+`x86_64`/`amd64`, or `linux/arm64` on `aarch64`/`arm64`; it rejects any other
+architecture or a mismatched cross toolchain. It creates a private temporary
+Go build/module cache below the Runner service-root `tmp/` directory for one
+invocation, then removes only that task-owned cache.
+
 The unit uses `User=ubuntu`, `Group=ubuntu`, and `UMask=0077`. Its entrypoint
 checks the account, selected paths, launcher/runnerd binaries, config, and mTLS
 file modes before startup. Scripts retain the selected Ubuntu OS permissions;

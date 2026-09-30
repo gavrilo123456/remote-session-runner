@@ -87,7 +87,7 @@ func TestP155MacInstalledMultiInboxMailboxGate(t *testing.T) {
 	p155WaitForOwnedSocket(t, localdSocket)
 	p155RequireInstalledConfigValidation(t)
 	localHealth := p155WaitForReadyHealth(t, localSocket)
-	if localHealth.Readiness != "ready" || localHealth.Metrics.MailboxBacklog != 0 || !p155HealthCheckIs(localHealth, "remote_router", "ready") {
+	if localHealth.Readiness != "ready" || localHealth.Metrics.MailboxBacklog != 0 || !p155CurrentHostRouterReady(localHealth) {
 		t.Fatalf("initial Mac ingress health=%+v", localHealth)
 	}
 	if localdHealth := p155WaitForReadyHealth(t, localdSocket); localdHealth.Readiness != "ready" {
@@ -175,7 +175,7 @@ func TestP155MacInstalledMultiInboxMailboxGate(t *testing.T) {
 	p155WaitRequestConsumed(t, analyticsMailbox.Root, requestID)
 
 	finalHealth := p155WaitForReadyHealth(t, localSocket)
-	if finalHealth.Readiness != "ready" || finalHealth.Metrics.MailboxBacklog != 0 || !p155HealthCheckIs(finalHealth, "remote_router", "ready") {
+	if finalHealth.Readiness != "ready" || finalHealth.Metrics.MailboxBacklog != 0 || !p155CurrentHostRouterReady(finalHealth) {
 		t.Fatalf("final Mac ingress health=%+v", finalHealth)
 	}
 	t.Logf("P155 complete: request_id=%s default_command=%s analytics_command=%s", requestID, defaultResponse.CommandID, analyticsResponse.CommandID)
@@ -319,6 +319,33 @@ func p155HealthCheckIs(report p155HealthReport, component, state string) bool {
 		}
 	}
 	return false
+}
+
+// p155CurrentHostRouterReady accepts the original single-profile health name
+// and the qualified name emitted once a later P157 profile is configured.
+func p155CurrentHostRouterReady(report p155HealthReport) bool {
+	return p155HealthCheckIs(report, "remote_router", "ready") ||
+		p155HealthCheckIs(report, "remote_router/linux-host", "ready")
+}
+
+func TestP155CurrentHostRouterReadySupportsQualifiedHealth(t *testing.T) {
+	tests := []struct {
+		name   string
+		checks []p155HealthCheck
+		want   bool
+	}{
+		{name: "single profile", checks: []p155HealthCheck{{Component: "remote_router", State: "ready"}}, want: true},
+		{name: "multiple profiles", checks: []p155HealthCheck{{Component: "remote_router/linux-host", State: "ready"}}, want: true},
+		{name: "wrong profile only", checks: []p155HealthCheck{{Component: "remote_router/sandbox-host", State: "ready"}}, want: false},
+		{name: "current profile degraded", checks: []p155HealthCheck{{Component: "remote_router/linux-host", State: "degraded"}}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := p155CurrentHostRouterReady(p155HealthReport{Checks: test.checks}); got != test.want {
+				t.Fatalf("p155CurrentHostRouterReady()=%t, want %t", got, test.want)
+			}
+		})
+	}
 }
 
 func p155Request(t *testing.T, value map[string]any) []byte {

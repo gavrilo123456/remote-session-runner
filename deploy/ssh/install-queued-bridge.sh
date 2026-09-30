@@ -26,6 +26,7 @@ lock_path="$run_dir/queued-bridge-install.lock"
 max_public_key_bytes=16384
 
 uid=''
+go_arch=''
 source_commit=''
 dispatcher_fingerprint=''
 dispatcher_key_type=''
@@ -200,6 +201,11 @@ require_static_runtime() {
 		die 'must run on the selected Linux host as ubuntu (uid 1001)'
 	fi
 	uid=$(id -u)
+	case "$(uname -m)" in
+		x86_64|amd64) go_arch=amd64 ;;
+		aarch64|arm64) go_arch=arm64 ;;
+		*) die "unsupported Linux architecture for Go 1.27.1: $(uname -m)" ;;
+	esac
 	require_source_checkout
 	for required_directory in "$service_root" "$bin_dir" "$config_dir" "$run_dir" "$tmp_dir"; do
 		require_private_directory "$required_directory"
@@ -208,8 +214,9 @@ require_static_runtime() {
 		die "Go 1.27.1 toolchain is unavailable: $go_bin"
 	fi
 	go_version=$("$go_bin" version)
-	if [ "$go_version" != 'go version go1.27.1 linux/amd64' ]; then
-		die "expected Go 1.27.1 linux/amd64, got: $go_version"
+	expected_go_version="go version go1.27.1 linux/$go_arch"
+	if [ "$go_version" != "$expected_go_version" ]; then
+		die "expected $expected_go_version, got: $go_version"
 	fi
 	require_private_directory "$ssh_dir"
 	require_regular_mode "$authorized_keys" 600
@@ -644,6 +651,8 @@ rollback_refresh() {
 
 prepare_staged_artifacts() {
 	dispatcher_public_for_manifest=$1
+	work_dir=$(mktemp -d "$tmp_dir/queued-bridge-go-cache.XXXXXX")
+	chmod 700 "$work_dir"
 	stage_bridge=$(mktemp "$bin_dir/.runner-ssh-bridge.XXXXXX")
 	stage_wrapper=$(mktemp "$bin_dir/.runner-ssh-bridge-forced.sh.XXXXXX")
 	stage_map=$(mktemp "$config_dir/.ssh-controller-map.yaml.XXXXXX")
@@ -654,7 +663,8 @@ prepare_staged_artifacts() {
 		chmod 600 "$stage_public"
 		dispatcher_public_for_manifest="$stage_public"
 	fi
-	(cd "$repo_root" && GOTOOLCHAIN=local "$go_bin" build -o "$stage_bridge" ./src/cmd/runner-ssh-bridge)
+	(cd "$repo_root" && GOTOOLCHAIN=local GOOS=linux GOARCH="$go_arch" GOCACHE="$work_dir/build" GOMODCACHE="$work_dir/mod" \
+		"$go_bin" build -o "$stage_bridge" ./src/cmd/runner-ssh-bridge)
 	chmod 700 "$stage_bridge"
 	install -m 700 "$wrapper_source" "$stage_wrapper"
 	render_controller_map "$stage_map"

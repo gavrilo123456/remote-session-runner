@@ -27,8 +27,11 @@ The current Linux host binds `10.0.0.200:8443`; clients use
 "/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go" version
 ```
 
-Expected platform suffixes are `darwin/arm64` and `linux/amd64`. The deployment
-scripts do not download Go.
+Expected platform suffixes are `darwin/arm64` and, for the current host,
+`linux/amd64`. P157 supports only native Linux `amd64` (`x86_64`) and `arm64`
+(`aarch64`) toolchains; it exact-matches the host architecture rather than
+accepting a cross-compiled toolchain. The deployment scripts do not download
+Go.
 
 ## 1. Synchronize a versioned revision
 
@@ -289,6 +292,14 @@ For each new profile, complete a separate P157 evidence record:
    target; and
 5. record the evidence, including the target profile, without printing private
    keys or treating another host's acceptance as evidence.
+
+For a new Linux host, first install the selected native Go 1.27.1 toolchain
+outside Git and verify its exact `go version` platform suffix. The service and
+queued-bridge installers accept only `linux/amd64` on `x86_64`/`amd64` or
+`linux/arm64` on `aarch64`/`arm64`. They use a private, per-invocation Go cache
+below the host's Runner service-root `tmp/` directory and remove that task-owned
+cache when the invocation ends. They do not remove shared caches or download a
+toolchain.
 
 A host that is unavailable or has not been attempted is `NOT RUN`. A required
 gate that runs and fails is `FAIL`: stop, preserve the exact evidence, and do
