@@ -1,0 +1,71 @@
+# Review this template, save it as the owner-only config/mac.next.yaml, then
+# apply it without overwriting active mac.yaml first:
+#   deploy/macos/install-launchagents.sh --config .../config/mac.next.yaml
+# The installer quiesces mailbox ingress before its final retained-work check.
+# It deliberately keeps the current verified linux-host only. Add another
+# remote profile only after its separate P157 host onboarding succeeds.
+version: 2
+mac:
+  account: tomasz.walczuk
+  service_root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner"
+  api_socket: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock"
+  locald_socket: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/locald.sock"
+  sqlite: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/state/local.db"
+  workspaces: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/workspaces"
+  script_temp_root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/tmp/scripts"
+  backups: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/backups"
+  reconciliation_deadline: 24h
+environment_registry:
+  mac-dev:
+    base_system: macOS
+    host_class: macOS workstation
+    effective_account: tomasz.walczuk
+    allowed_targets:
+      - kind: local
+        profile: mac-workstation
+    allowed_source_modes: [empty, local_worktree]
+    allowed_repository_aliases: []
+    allowed_controllers:
+      - type: local_user
+        id: tomasz.walczuk
+  linux-dev:
+    base_system: Ubuntu 20.04.6 LTS
+    host_class: Ubuntu Linux host
+    effective_account: ubuntu
+    allowed_targets:
+      - kind: remote
+        profile: linux-host
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers:
+      - type: queued_mac
+        id: tomasz.walczuk
+      - type: direct_mtls
+        id: tomasz.walczuk
+execution_contexts:
+  mac-local:
+    environment: mac-dev
+    execution_target: {kind: local, profile: mac-workstation}
+  ubuntu-current:
+    environment: linux-dev
+    execution_target: {kind: remote, profile: linux-host}
+remote_hosts:
+  linux-host:
+    account: ubuntu
+    queued_bridge:
+      host: 129.151.232.40
+      port: 22
+      known_hosts: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/ssh_known_hosts"
+      private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/dispatcher_ed25519"
+    direct_endpoint:
+      name: linux-poc
+      url: https://129.151.232.40:8443
+      server_ca: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem"
+      client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.pem"
+      client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.key"
+mailboxes:
+  default:
+    root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox"
+    repository_aliases: [remote-session-runner]
+    default_execution: mac-local
+    allowed_execution: [mac-local, ubuntu-current]

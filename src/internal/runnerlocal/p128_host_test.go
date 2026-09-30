@@ -123,7 +123,7 @@ func TestP128MacIngressAcceptsDurableIntentDuringRemoteOutage(t *testing.T) {
 	api, err := localapi.NewServer(localapi.ServerOptions{
 		Authority: authority, Owner: owner, SocketPath: filepath.Join(runDir, "api.sock"),
 		HealthReport: func(ctx context.Context) opshealth.Report {
-			return macIngressHealthReportWithMetrics(ctx, authority, monitor, metricsImporter, metricsRecorder, thresholds)
+			return macIngressHealthReportWithMetrics(ctx, authority, monitor, []*mailbox.Importer{metricsImporter}, metricsRecorder, thresholds)
 		},
 	})
 	if err != nil {

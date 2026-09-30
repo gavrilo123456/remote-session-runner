@@ -2,6 +2,7 @@ package runnerlocal
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -157,7 +158,7 @@ func remoteRouterHealthChecks(monitor *routerHealthMonitor, backlogDetails map[s
 	return checks
 }
 
-func macIngressHealthReportWithMetrics(ctx context.Context, authority *store.AuthorityStore, monitor *routerHealthMonitor, importer *mailbox.Importer, recorder *opshealth.Recorder, thresholds *opshealth.ThresholdMonitor) opshealth.Report {
+func macIngressHealthReportWithMetrics(ctx context.Context, authority *store.AuthorityStore, monitor *routerHealthMonitor, importers []*mailbox.Importer, recorder *opshealth.Recorder, thresholds *opshealth.ThresholdMonitor) opshealth.Report {
 	report := macIngressHealthReport(ctx, authority, monitor)
 	if authority == nil {
 		return report
@@ -175,12 +176,54 @@ func macIngressHealthReportWithMetrics(ctx context.Context, authority *store.Aut
 		StorageErrorsTotal:     durable.StorageErrorsTotal, CleanupFailuresTotal: durable.CleanupFailuresTotal,
 		MailboxBacklog: durable.MailboxBacklog,
 	}
-	if importer != nil {
-		ready, err := importer.ReadyRequestCount(ctx)
-		if err != nil {
-			return report
-		}
-		metrics.MailboxBacklog += ready
+	mailboxBacklog, readyTotal, err := mailboxBacklogByInbox(ctx, authority, importers)
+	if err != nil {
+		return report
+	}
+	if len(mailboxBacklog) != 0 {
+		metrics.MailboxBacklogByInbox = mailboxBacklog
+		// ReadOperationalMetrics retains the complete durable total. Add only
+		// filesystem-ready work; the per-inbox values already include both.
+		metrics.MailboxBacklog += readyTotal
 	}
 	return opshealth.AddMetrics(report, metrics, recorder, thresholds, nil)
+}
+
+// mailboxBacklogByInbox combines the authority's durable accepted-exchange
+// count with each configured inbox's safe ready-marker count. It returns only
+// configured safe IDs, never paths or caller supplied labels.
+func mailboxBacklogByInbox(ctx context.Context, authority *store.AuthorityStore, importers []*mailbox.Importer) (map[string]int64, int64, error) {
+	if authority == nil {
+		return nil, 0, store.ErrNilDatabase
+	}
+	ids := make([]string, 0, len(importers))
+	byID := make(map[string]*mailbox.Importer, len(importers))
+	for _, importer := range importers {
+		if importer == nil {
+			return nil, 0, fmt.Errorf("mailbox importer is not configured")
+		}
+		mailboxID := importer.MailboxID()
+		if mailboxID == "" {
+			return nil, 0, fmt.Errorf("mailbox importer has no ID")
+		}
+		if _, exists := byID[mailboxID]; exists {
+			return nil, 0, fmt.Errorf("mailbox importer ID is duplicated")
+		}
+		byID[mailboxID] = importer
+		ids = append(ids, mailboxID)
+	}
+	counts, err := authority.CountMailboxBacklogByInbox(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	var readyTotal int64
+	for _, mailboxID := range ids {
+		ready, err := byID[mailboxID].ReadyRequestCount(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+		counts[mailboxID] += ready
+		readyTotal += ready
+	}
+	return counts, readyTotal, nil
 }

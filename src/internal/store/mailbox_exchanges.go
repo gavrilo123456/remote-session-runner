@@ -21,6 +21,10 @@ var (
 	ErrMailboxResponseExpired       = errors.New("terminal mailbox response cleanup deadline has passed")
 	ErrMailboxEventReferenceExpired = errors.New("mailbox event file cleanup has started")
 	ErrMailboxTerminalImmutable     = errors.New("terminal mailbox response is immutable")
+	// ErrMailboxConfigurationPending prevents an inbox removal or relocation
+	// from abandoning accepted work, a live response, or a marker-last request
+	// that a file-only producer can publish while the service is stopped.
+	ErrMailboxConfigurationPending = errors.New("mailbox configuration would abandon retained ingress")
 )
 
 const (

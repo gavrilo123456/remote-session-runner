@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	sqlitedriver "modernc.org/sqlite"
 )
@@ -81,6 +82,64 @@ SELECT
 	result.StorageErrorsTotal = s.storageErrors.Load()
 	result.CleanupFailuresTotal = s.cleanupFailures.Load()
 	return result, nil
+}
+
+// CountMailboxBacklogByInbox reports accepted durable exchanges for the named
+// mailbox namespaces. Callers supply configured mailbox IDs, so the returned
+// map has a stable, low-cardinality entry for every configured inbox, even
+// when its durable backlog is zero. Ready marker files are intentionally not
+// counted here; the Mac ingress owns those filesystem projections.
+func (s *AuthorityStore) CountMailboxBacklogByInbox(ctx context.Context, mailboxIDs []string) (map[string]int64, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrNilDatabase
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	counts := make(map[string]int64, len(mailboxIDs))
+	if len(mailboxIDs) == 0 {
+		return counts, nil
+	}
+	placeholders := make([]string, 0, len(mailboxIDs))
+	arguments := make([]any, 0, len(mailboxIDs))
+	for _, mailboxID := range mailboxIDs {
+		if err := validateMailboxID(mailboxID); err != nil {
+			return nil, err
+		}
+		if _, exists := counts[mailboxID]; exists {
+			return nil, ErrMailboxExchangeInvalid
+		}
+		counts[mailboxID] = 0
+		placeholders = append(placeholders, "?")
+		arguments = append(arguments, mailboxID)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT mailbox_id, COUNT(*)
+FROM mailbox_exchanges
+WHERE request_state = 'accepted' AND mailbox_id IN (`+strings.Join(placeholders, ",")+`)
+GROUP BY mailbox_id`, arguments...)
+	if err != nil {
+		if IsSQLiteError(err) {
+			s.storageErrors.Add(1)
+		}
+		return nil, fmt.Errorf("count mailbox backlog by inbox: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mailboxID string
+		var count int64
+		if err := rows.Scan(&mailboxID, &count); err != nil {
+			return nil, fmt.Errorf("scan mailbox backlog by inbox: %w", err)
+		}
+		if _, exists := counts[mailboxID]; !exists {
+			return nil, ErrMailboxExchangeInvalid
+		}
+		counts[mailboxID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate mailbox backlog by inbox: %w", err)
+	}
+	return counts, nil
 }
 
 // RecordCleanupFailure increments the process-local cleanup error counter.

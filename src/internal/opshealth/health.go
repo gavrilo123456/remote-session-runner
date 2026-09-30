@@ -59,6 +59,10 @@ type Metrics struct {
 	StorageErrorsTotal       int64 `json:"storage_errors_total"`
 	CleanupFailuresTotal     int64 `json:"cleanup_failures_total"`
 	MailboxBacklog           int64 `json:"mailbox_backlog"`
+	// MailboxBacklogByInbox is keyed only by configured safe inbox IDs. It
+	// contains durable accepted exchanges plus safely published ready markers
+	// for that inbox, while MailboxBacklog remains the aggregate gauge.
+	MailboxBacklogByInbox map[string]int64 `json:"mailbox_backlog_by_inbox,omitempty"`
 }
 
 // Recorder holds supplementary process-local cleanup failures. SQLite errors

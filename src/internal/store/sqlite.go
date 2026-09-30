@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 26
+	CurrentSchemaVersion = 27
 )
 
 var (
@@ -111,6 +111,9 @@ var mailboxNamespacesSQL string
 
 //go:embed migrations/0026_mailbox_execution_selection.sql
 var mailboxExecutionSelectionSQL string
+
+//go:embed migrations/0027_mailbox_configuration_registry.sql
+var mailboxConfigurationRegistrySQL string
 
 type migration struct {
 	version int
@@ -222,6 +225,10 @@ var migrations = []migration{{
 	version: 26,
 	name:    "mailbox_execution_selection",
 	sql:     mailboxExecutionSelectionSQL,
+}, {
+	version: 27,
+	name:    "mailbox_configuration_registry",
+	sql:     mailboxConfigurationRegistrySQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
@@ -273,6 +280,65 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+// ValidateConfiguredMailboxSetAtPath performs the retained-mailbox portion of
+// a configuration preflight without creating a database, applying migrations,
+// or making any write. A missing database is valid for a first installation;
+// an existing database is opened read-only and checked for work owned by an
+// inbox absent from mailboxIDs.
+func ValidateConfiguredMailboxSetAtPath(ctx context.Context, path string, configurations, legacyBaseline []MailboxConfiguration) error {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return ErrDatabasePath
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+			sidecarPath := path + suffix
+			sidecarInfo, sidecarErr := os.Lstat(sidecarPath)
+			if errors.Is(sidecarErr, os.ErrNotExist) {
+				continue
+			}
+			if sidecarErr != nil {
+				return fmt.Errorf("inspect SQLite sidecar: %w", sidecarErr)
+			}
+			if sidecarErr := checkPrivateSidecar(sidecarPath); sidecarErr != nil {
+				return sidecarErr
+			}
+			if sidecarInfo.Mode().IsRegular() {
+				return fmt.Errorf("%w: orphaned SQLite sidecar %s", ErrDatabasePath, filepath.Base(sidecarPath))
+			}
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect SQLite database file: %w", err)
+	}
+	if err := validateReadOnlyDatabaseFile(path, info); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if err := checkPrivateSidecar(path + suffix); err != nil {
+			return err
+		}
+	}
+	db, err := sql.Open("sqlite", sqlitePathURI(path, "ro"))
+	if err != nil {
+		return fmt.Errorf("open SQLite database read-only: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("connect to SQLite database read-only: %w", err)
+	}
+	authority, err := NewAuthorityStore(db)
+	if err != nil {
+		return err
+	}
+	return authority.ValidateConfiguredMailboxSet(ctx, configurations, legacyBaseline)
 }
 
 func dataSourceName(path string) string {
@@ -553,6 +619,22 @@ func validateDatabaseFile(path string, info os.FileInfo) error {
 		return fmt.Errorf("%w: %s", ErrDatabasePermissions, filepath.Base(path))
 	}
 	file, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrDatabasePermissions, filepath.Base(path))
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("%w: %s", ErrDatabasePermissions, filepath.Base(path))
+	}
+	return nil
+}
+
+func validateReadOnlyDatabaseFile(path string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !ownedByCurrentUser(info) {
+		return fmt.Errorf("%w: %s", ErrDatabasePermissions, filepath.Base(path))
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrDatabasePermissions, filepath.Base(path))
 	}

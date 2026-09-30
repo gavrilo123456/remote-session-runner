@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 if [ "$(uname -s)" != Darwin ] || [ "$(id -un)" != tomasz.walczuk ]; then
 	printf '%s\n' 'install-launchagents.sh must run on the selected Mac account tomasz.walczuk' >&2
@@ -12,6 +13,32 @@ config_file="$service_root/config/mac.yaml"
 launch_agents="$HOME/Library/LaunchAgents"
 go_bin="$service_root/toolchains/go1.27.1/bin/go"
 uid=$(id -u)
+config_source=''
+
+usage() {
+	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml]" >&2
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--config)
+			if [ "$#" -lt 2 ]; then
+				usage
+				exit 2
+			fi
+			config_source=$2
+			shift 2
+			;;
+		--help)
+			usage
+			exit 0
+			;;
+		*)
+			usage
+			exit 2
+			;;
+	esac
+done
 
 if [ ! -x "$go_bin" ]; then
 	printf 'Go 1.27.1 toolchain missing: %s\n' "$go_bin" >&2
@@ -24,7 +51,9 @@ ensure_private_directory() {
 		printf 'refusing symlinked service directory: %s\n' "$directory" >&2
 		exit 1
 	fi
-	mkdir -p "$directory"
+	if [ ! -e "$directory" ]; then
+		mkdir "$directory"
+	fi
 	if [ -L "$directory" ] || [ ! -d "$directory" ] || [ "$(stat -f '%u' "$directory")" != "$uid" ]; then
 		printf 'service directory must be a real directory owned by uid %s: %s\n' "$uid" "$directory" >&2
 		exit 1
@@ -32,49 +61,307 @@ ensure_private_directory() {
 	chmod 700 "$directory"
 }
 
+ensure_private_service_directory() {
+	directory=$1
+	case "$directory" in
+		"$service_root"|"$service_root"/*) ;;
+		*)
+			printf 'service directory is outside the selected root: %s\n' "$directory" >&2
+			exit 1
+			;;
+	esac
+	ensure_private_directory "$service_root"
+	if [ "$directory" = "$service_root" ]; then
+		return
+	fi
+	relative=${directory#"$service_root"/}
+	current=$service_root
+	while [ -n "$relative" ]; do
+		part=${relative%%/*}
+		current="$current/$part"
+		ensure_private_directory "$current"
+		if [ "$relative" = "$part" ]; then
+			relative=''
+		else
+			relative=${relative#*/}
+		fi
+	done
+}
+
+ensure_launch_agents_directory() {
+	if [ -L "$launch_agents" ]; then
+		printf 'refusing symlinked LaunchAgents directory: %s\n' "$launch_agents" >&2
+		exit 1
+	fi
+	if [ ! -e "$launch_agents" ]; then
+		mkdir "$launch_agents"
+	fi
+	if [ -L "$launch_agents" ] || [ ! -d "$launch_agents" ] || [ "$(stat -f '%u' "$launch_agents")" != "$uid" ]; then
+		printf 'LaunchAgents directory must be a real directory owned by uid %s: %s\n' "$uid" "$launch_agents" >&2
+		exit 1
+	fi
+	chmod 755 "$launch_agents"
+}
+
+ensure_private_regular_file() {
+	path=$1
+	label=$2
+	if [ -L "$path" ] || [ ! -f "$path" ] || [ "$(stat -f '%u' "$path")" != "$uid" ] || [ "$(stat -f '%Lp' "$path")" != 600 ]; then
+		printf '%s must be a regular file owned by this account with mode 0600: %s\n' "$label" "$path" >&2
+		exit 1
+	fi
+}
+
+validate_launchagent_files() {
+	for name in com.remote-session-runner.locald com.remote-session-runner.local; do
+		plist="$repo_root/deploy/macos/launchagents/$name.plist"
+		installed="$launch_agents/$name.plist"
+		if [ -L "$plist" ] || [ ! -f "$plist" ]; then
+			printf 'LaunchAgent source must be a regular non-symlink file: %s\n' "$plist" >&2
+			exit 1
+		fi
+		if [ -L "$installed" ]; then
+			printf 'refusing symlinked installed LaunchAgent: %s\n' "$installed" >&2
+			exit 1
+		fi
+		if [ -e "$installed" ] && { [ ! -f "$installed" ] || [ "$(stat -f '%u' "$installed")" != "$uid" ] || [ "$(stat -f '%Lp' "$installed")" != 600 ]; }; then
+			printf 'installed LaunchAgent must be a regular file owned by uid %s with mode 0600: %s\n' "$uid" "$installed" >&2
+			exit 1
+		fi
+		/usr/bin/plutil -lint "$plist" >/dev/null
+	done
+}
+
+service_loaded() {
+	launchctl print "gui/$uid/$1" >/dev/null 2>&1
+}
+
+wait_for_absent_path() {
+	path=$1
+	attempt=0
+	while [ "$attempt" -lt 75 ]; do
+		if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+			return 0
+		fi
+		sleep 0.2
+		attempt=$((attempt + 1))
+	done
+	printf 'socket remained after LaunchAgent quiescence: %s\n' "$path" >&2
+	return 1
+}
+
+stop_agent_for_config_change() {
+	label=$1
+	plist=$2
+	socket=$3
+	if service_loaded "$label"; then
+		if [ -L "$plist" ] || [ ! -f "$plist" ]; then
+			printf 'loaded LaunchAgent has no safe installed plist: %s\n' "$label" >&2
+			exit 1
+		fi
+		launchctl bootout "gui/$uid" "$plist"
+	fi
+	if service_loaded "$label"; then
+		printf 'LaunchAgent remained loaded after quiescence: %s\n' "$label" >&2
+		exit 1
+	fi
+	wait_for_absent_path "$socket"
+}
+
+restore_prior_agents() {
+	restore_failed=0
+	if [ "$locald_was_loaded" -eq 1 ] && ! service_loaded com.remote-session-runner.locald; then
+		if ! launchctl bootstrap "gui/$uid" "$launch_agents/com.remote-session-runner.locald.plist" || ! launchctl kickstart -k "gui/$uid/com.remote-session-runner.locald"; then
+			restore_failed=1
+		fi
+	fi
+	if [ "$local_was_loaded" -eq 1 ] && ! service_loaded com.remote-session-runner.local; then
+		if ! launchctl bootstrap "gui/$uid" "$launch_agents/com.remote-session-runner.local.plist" || ! launchctl kickstart -k "gui/$uid/com.remote-session-runner.local"; then
+			restore_failed=1
+		fi
+	fi
+	if [ "$restore_failed" -ne 0 ]; then
+		printf '%s\n' 'Could not restore one or more prior LaunchAgents; active mac.yaml was left unchanged.' >&2
+		return 1
+	fi
+}
+
+staging_directory=''
+config_stage=''
+local_was_loaded=0
+locald_was_loaded=0
+restore_prior_agents_on_failure=0
+candidate_activation_started=0
+candidate_config_handed_off=0
+cleanup_staging() {
+	if [ -n "$config_stage" ] && [ -e "$config_stage" ]; then
+		# Once the no-rollback boundary is crossed this staged, owner-only copy
+		# is the recovery candidate if an atomic handoff has not completed.
+		if [ "$candidate_activation_started" -eq 1 ] && [ "$candidate_config_handed_off" -eq 0 ]; then
+			:
+		elif ! rm -f "$config_stage"; then
+			printf 'could not remove installer config staging file: %s\n' "$config_stage" >&2
+		fi
+	fi
+	if [ -n "$staging_directory" ] && [ -d "$staging_directory" ] && [ ! -L "$staging_directory" ]; then
+		if ! rm -rf "$staging_directory"; then
+			printf 'could not remove installer staging directory: %s\n' "$staging_directory" >&2
+		fi
+	fi
+}
+on_exit() {
+	status=$?
+	if [ "$status" -ne 0 ] && [ "$restore_prior_agents_on_failure" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then
+		printf '%s\n' 'Install stopped before candidate activation; restoring prior LaunchAgents and active mac.yaml.' >&2
+		if ! restore_prior_agents; then
+			printf '%s\n' 'Restore failed before candidate activation.' >&2
+		fi
+	elif [ "$status" -ne 0 ] && [ "$candidate_activation_started" -eq 1 ]; then
+		if [ "$candidate_config_handed_off" -eq 1 ]; then
+			printf '%s\n' 'Candidate configuration is active; leaving services stopped for safe repair.' >&2
+		elif [ -n "$config_stage" ] && [ -f "$config_stage" ]; then
+			printf 'Candidate activation stopped before config handoff; staged candidate retained at: %s\n' "$config_stage" >&2
+			printf 'Repair by rerunning: %s --config %s\n' "$0" "$config_stage" >&2
+		elif [ -n "$config_source" ]; then
+			printf 'Candidate activation stopped before config handoff; original candidate remains at: %s\n' "$config_source" >&2
+			printf 'Repair by rerunning: %s --config %s\n' "$0" "$config_source" >&2
+		else
+			printf '%s\n' 'Candidate activation stopped; active mac.yaml is the candidate. Rerun the installer after repair.' >&2
+		fi
+	fi
+	cleanup_staging
+	trap - EXIT
+	exit "$status"
+}
+trap on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 for directory in \
 	"$service_root" "$service_root/bin" "$service_root/config" "$service_root/logs" \
 	"$service_root/run" "$service_root/state" "$service_root/mailbox" \
 	"$service_root/mailbox/inbox" "$service_root/mailbox/outbox" \
 	"$service_root/mailbox/events" "$service_root/mailbox/acks" \
 	"$service_root/workspaces" "$service_root/tmp" "$service_root/tmp/scripts" \
-	"$service_root/backups" "$service_root/secrets" "$launch_agents"; do
-	if [ "$directory" = "$launch_agents" ]; then
-		mkdir -p "$directory"
-		chmod 755 "$directory"
-	else
-		ensure_private_directory "$directory"
-	fi
+	"$service_root/backups" "$service_root/secrets"; do
+	ensure_private_service_directory "$directory"
 done
+ensure_launch_agents_directory
 
 if [ -L "$config_file" ]; then
 	printf 'refusing symlinked Mac config: %s\n' "$config_file" >&2
 	exit 1
 fi
-if [ ! -f "$config_file" ]; then
+if [ -z "$config_source" ] && [ ! -e "$config_file" ]; then
 	install -m 600 "$repo_root/deploy/macos/mac.yaml.example" "$config_file"
 	printf 'Created selected Mac config for review: %s\nRerun this installer after reviewing it.\n' "$config_file"
 	exit 0
 fi
-if [ "$(stat -f '%Lp' "$config_file")" != 600 ] || [ "$(stat -f '%u' "$config_file")" != "$uid" ]; then
-	printf 'Mac config must be owned by this account with mode 0600: %s\n' "$config_file" >&2
+
+if [ -e "$config_file" ]; then
+	ensure_private_regular_file "$config_file" 'Mac config'
+fi
+if [ -z "$config_source" ] && [ ! -f "$config_file" ]; then
+	printf 'Mac config is not a regular file: %s\n' "$config_file" >&2
 	exit 1
 fi
 
+if [ -n "$config_source" ]; then
+	config_directory=$(CDPATH= cd -- "$service_root/config" && pwd -P)
+	candidate_directory=$(CDPATH= cd -- "$(dirname -- "$config_source")" && pwd -P) || {
+		printf 'staged Mac config parent is unavailable: %s\n' "$config_source" >&2
+		exit 1
+	}
+	if [ "$candidate_directory" != "$config_directory" ]; then
+		printf 'staged Mac config must be inside the selected config directory: %s\n' "$config_source" >&2
+		exit 1
+	fi
+	config_source="$candidate_directory/$(basename -- "$config_source")"
+	if [ "$config_source" = "$config_file" ]; then
+		printf '%s\n' 'pass a separate staged config to --config; do not replace the active mac.yaml directly' >&2
+		exit 1
+	fi
+	ensure_private_regular_file "$config_source" 'Staged Mac config'
+fi
+
+validate_launchagent_files
+
+staging_directory="$service_root/tmp/installer.$$"
+if [ -e "$staging_directory" ] || [ -L "$staging_directory" ]; then
+	printf 'installer staging path already exists: %s\n' "$staging_directory" >&2
+	exit 1
+fi
+mkdir -m 700 "$staging_directory"
+
+selected_config=$config_file
+if [ -n "$config_source" ]; then
+	config_stage="$service_root/config/.mac.yaml.install.$$"
+	if [ -e "$config_stage" ] || [ -L "$config_stage" ]; then
+		printf 'installer config staging path already exists: %s\n' "$config_stage" >&2
+		exit 1
+	fi
+	install -m 600 "$config_source" "$config_stage"
+	selected_config=$config_stage
+fi
+
 for name in runner runner-local runner-locald; do
-	temporary="$service_root/bin/.${name}.$$"
-	trap 'rm -f "$temporary"' EXIT HUP INT TERM
+	temporary="$staging_directory/$name"
 	(cd "$repo_root" && GOTOOLCHAIN=local "$go_bin" build -o "$temporary" "./src/cmd/$name")
 	chmod 700 "$temporary"
-	mv -f "$temporary" "$service_root/bin/$name"
-	trap - EXIT HUP INT TERM
+done
+
+# A configuration candidate is staged while the current ingress remains live.
+# The retained-state check must happen only after that ingress is quiesced: a
+# request accepted during the build/static-validation window is then visible to
+# the final check and cannot be stranded by an inbox removal.
+"$staging_directory/runner-local" validate-config --config "$selected_config"
+
+if service_loaded com.remote-session-runner.local; then
+	local_was_loaded=1
+fi
+if service_loaded com.remote-session-runner.locald; then
+	locald_was_loaded=1
+fi
+# Until the candidate begins replacing active artifacts, any failure restores
+# exactly the pre-install LaunchAgent state. Set this before stopping either
+# job so a failure while quiescing the second job also restarts the first.
+restore_prior_agents_on_failure=1
+stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"
+stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"
+
+if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --config "$selected_config"; then
+	printf '%s\n' 'Retained mailbox validation failed after ingress quiescence.' >&2
+	exit 1
+fi
+
+# This is the irreversible boundary. A same-user file producer can publish a
+# marker-last request as soon as the candidate layout is visible. Do not revive
+# the prior configuration after this point: the staged runner-local records the
+# complete candidate roots before mac.yaml is handed off, and a failed candidate
+# remains available for a safe repair/retry rather than stranding a newly
+# published marker.
+candidate_activation_started=1
+if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --config "$selected_config"; then
+	printf '%s\n' 'Candidate mailbox activation could not be recorded; leaving the candidate state in place for safe repair.' >&2
+	exit 1
+fi
+if [ -n "$config_stage" ]; then
+	mv -f "$config_stage" "$config_file"
+	config_stage=''
+fi
+candidate_config_handed_off=1
+for name in runner runner-local runner-locald; do
+	mv -f "$staging_directory/$name" "$service_root/bin/$name"
 done
 
 for name in com.remote-session-runner.locald com.remote-session-runner.local; do
 	plist="$repo_root/deploy/macos/launchagents/$name.plist"
 	installed="$launch_agents/$name.plist"
-	/usr/bin/plutil -lint "$plist" >/dev/null
-	launchctl bootout "gui/$uid" "$installed" >/dev/null 2>&1 || true
+	if service_loaded "$name"; then
+		printf 'LaunchAgent became loaded during configuration replacement: %s\n' "$name" >&2
+		exit 1
+	fi
 	install -m 600 "$plist" "$installed"
 	launchctl bootstrap "gui/$uid" "$installed"
 	launchctl kickstart -k "gui/$uid/$name"

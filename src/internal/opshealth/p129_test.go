@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -50,7 +51,7 @@ func TestP129MetricsEndpointReturnsOnlyBoundedMetrics(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode /metrics JSON: %v", err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("/metrics = %+v, want %+v", got, want)
 	}
 	for _, forbidden := range []string{"command_id", "session_id", "controller", "script", "secret", "password", "private_key"} {
@@ -75,7 +76,7 @@ func TestP129DoctorOutputIncludesTheSameMetricsObject(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
 		t.Fatalf("decode doctor report: %v", err)
 	}
-	if got.Metrics == nil || *got.Metrics != want {
+	if got.Metrics == nil || !reflect.DeepEqual(*got.Metrics, want) {
 		t.Fatalf("doctor metrics=%+v, want %+v", got.Metrics, want)
 	}
 }

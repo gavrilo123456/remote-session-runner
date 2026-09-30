@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -478,7 +479,8 @@ func ensureOwnerDirectory(path string) error {
 	if err != nil {
 		return fmt.Errorf("%w: inspect %s: %v", ErrMailboxPath, path, err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+	stat, ownerOK := info.Sys().(*syscall.Stat_t)
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !ownerOK || int(stat.Uid) != os.Geteuid() || info.Mode().Perm() != MailboxDirectoryMode {
 		return fmt.Errorf("%w: %s must be an owner-only directory", ErrMailboxPath, path)
 	}
 	return nil

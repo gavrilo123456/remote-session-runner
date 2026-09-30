@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func TestP129PublicMetricsEndpointRemainsBehindMappedMTLS(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
 		t.Fatalf("decode mTLS /metrics: %v", err)
 	}
-	if got != metrics {
+	if !reflect.DeepEqual(got, metrics) {
 		t.Fatalf("mTLS /metrics=%+v, want %+v", got, metrics)
 	}
 
