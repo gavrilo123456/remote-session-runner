@@ -246,6 +246,7 @@ ready. It does not create or rotate dispatcher authorization.
 | No mailbox response | Publisher type, root tree, JSON/marker order, owner/mode/path, response state | Keep the request identity. For native publication, inspect `mailboxclient` errors. For direct workspace publication, verify complete JSON then an empty marker last, both exact `0644` in the configured `0700` tree. Malformed unsafe pairs have no guaranteed response. |
 | Direct HTTPS/mTLS failure | Public health, service journal, CA/certificate/principal map/bind | Repair host configuration without printing keys. |
 | Queued remote remains recorded, uncertain, or stale | Selected bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
+| Remote one-off ends `indeterminate` with `delivery_state=accepted` and `remote_status_unavailable` | Stable job/session/command IDs, bridge/service journal, target SQLite status and retention | The target accepted the request but Runner could not prove its terminal result in 24 hours. Do not resubmit or release retained capacity manually. ACK the terminal response if it has been recorded, preserve the IDs and idempotency key, then investigate the target boundary. |
 | New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host` and `sandbox-host` evidence does not transfer. |
 | Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
 
@@ -261,6 +262,10 @@ ready. It does not create or rotate dispatcher authorization.
   their last validated sequence.
 - After a Mac process restart, queued one-off recovery reads remote state and
   does not resend the mutation.
+- A remote run that remains unreadable after target acceptance ends as a
+  terminal `remote_status_unavailable` mailbox response after 24 hours. It
+  carries stable IDs but no claimed target outcome; preserve its idempotency key
+  and investigate rather than replaying its script.
 - Software-crash recovery is evidenced. Physical power-loss survival remains
   unverified until a coordinated physical power-cut test passes.
 

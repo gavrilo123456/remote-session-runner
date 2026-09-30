@@ -72,14 +72,16 @@ type RunIntent struct {
 // RunSnapshot combines the owner-scoped run intent with any matching job and
 // command snapshot. Command is nil until a command outcome is available.
 type RunSnapshot struct {
-	JobID           string
-	SessionID       string
-	CommandID       string
-	DeliveryState   string
-	JobPhase        string
-	Command         *CommandSnapshot
-	TeardownOutcome string
-	ObservedAt      time.Time
+	JobID                   string
+	SessionID               string
+	CommandID               string
+	DeliveryState           string
+	JobPhase                string
+	Command                 *CommandSnapshot
+	TeardownOutcome         string
+	ObservedAt              time.Time
+	RemoteStatusFailureAt   *time.Time
+	RemoteStatusFailureCode string
 }
 
 // SessionOperationError is a safe, structured error from the Mac session
@@ -1425,6 +1427,17 @@ func (p *SessionProcessor) reconcileAcceptedRuns(ctx context.Context) error {
 		if snapshot.JobID != previous.JobID || snapshot.SessionID != previous.SessionID || snapshot.CommandID != previous.CommandID || !validDeliveryState(snapshot.DeliveryState) {
 			return fmt.Errorf("%w: run reconciliation returned invalid identity or delivery state", ErrSessionProcessorConfiguration)
 		}
+		if (snapshot.RemoteStatusFailureAt == nil) != (snapshot.RemoteStatusFailureCode == "") ||
+			(snapshot.RemoteStatusFailureAt != nil && (snapshot.RemoteStatusFailureAt.IsZero() || snapshot.RemoteStatusFailureCode != store.RemoteStatusFailureCodeUnavailable || snapshot.DeliveryState != string(store.LocalIntentAccepted))) {
+			return fmt.Errorf("%w: run reconciliation returned an invalid remote status failure marker", ErrSessionProcessorConfiguration)
+		}
+		if snapshot.RemoteStatusFailureAt != nil {
+			if published, err := p.publishAcceptedRemoteStatusUnavailableIfExpired(ctx, record, previous, *snapshot.RemoteStatusFailureAt); err != nil {
+				return err
+			} else if published {
+				continue
+			}
+		}
 		if snapshot.Command != nil {
 			commandID, idErr := domain.NewCommandID(previous.CommandID)
 			if idErr != nil || ValidateCommandSnapshot(*snapshot.Command, commandID) != nil || string(snapshot.Command.SessionID) != previous.SessionID {
@@ -1626,6 +1639,59 @@ func (p *SessionProcessor) publishIndeterminateIfExpired(ctx context.Context, re
 		return false, err
 	}
 	return true, nil
+}
+
+// publishAcceptedRemoteStatusUnavailableIfExpired freezes a distinct bounded
+// outcome: target acceptance is known, but read-only status reconciliation
+// could not establish a terminal result. It carries stable IDs only and never
+// guesses job, command, teardown, output, or event state.
+func (p *SessionProcessor) publishAcceptedRemoteStatusUnavailableIfExpired(ctx context.Context, record store.MailboxExchangeRecord, previous runMailboxResponse, firstObservedAt time.Time) (bool, error) {
+	if p.now().UTC().Before(firstObservedAt.UTC().Add(p.uncertaintyWindow)) {
+		return false, nil
+	}
+	response := runMailboxResponse{
+		RequestID: record.RequestID, Operation: "run", RequestState: store.MailboxExchangeIndeterminate,
+		JobID: previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
+		DeliveryState: string(store.LocalIntentAccepted),
+		Error: &mailboxResponseError{
+			Code:      store.RemoteStatusFailureCodeUnavailable,
+			Message:   "remote target accepted the request but its terminal status could not be verified",
+			Retryable: false,
+		},
+	}
+	response.InboxID = p.mailboxID
+	applyRunResponseSelection(&response, record.Selection)
+	response.ResponseRevision = record.ResponseRevision + 1
+	if record.DeduplicationWarning {
+		response.IdempotencyWarning = "deduplication_not_guaranteed"
+	}
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		return false, fmt.Errorf("%w: encode accepted remote status failure response: %v", ErrOutboxResponse, err)
+	}
+	ref, err := p.recordRef(record)
+	if err != nil {
+		return false, err
+	}
+	updated, err := p.authority.PublishAcceptedRemoteStatusUnavailableInMailbox(ctx, ref, store.MailboxResponsePublication{
+		State: store.MailboxExchangeIndeterminate, Bytes: responseBytes,
+	})
+	if errors.Is(err, store.ErrMailboxRemoteStatusFailureNotEligible) {
+		return false, nil
+	}
+	if errors.Is(err, store.ErrMailboxTerminalImmutable) {
+		if publishErr := p.projector.Publish(ctx, record.RequestID); publishErr != nil {
+			return false, publishErr
+		}
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := p.projector.Publish(ctx, record.RequestID); err != nil {
+		return false, err
+	}
+	return updated.ResponseRevision > 0, nil
 }
 
 func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExchangeRecord, response sessionMailboxResponse, cursor *int64) (bool, error) {

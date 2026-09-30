@@ -85,8 +85,13 @@ type LocalIntentRecord struct {
 	// the older delivery_state=reconciled marker. It is zero for records created
 	// before that proof was introduced and does not imply target execution.
 	RemoteTerminalProofVersion int
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
+	// RemoteStatusFailureAt is set only when an accepted remote one-off run
+	// cannot be reconciled through target reads. It does not change delivery
+	// state or claim a target outcome.
+	RemoteStatusFailureAt   *time.Time
+	RemoteStatusFailureCode string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 // RemoteIntentCursor is the durable-order position used by the in-memory
@@ -560,6 +565,9 @@ INSERT INTO local_intent_lifecycle (intent_id, lifecycle_sequence, previous_stat
 VALUES (?, ?, ?, ?, ?, ?)
 `, string(validatedID), sequence, string(current.DeliveryState), string(LocalIntentReconciled), reason, formatStoredTime(now)); err != nil {
 			return LocalIntentRecord{}, fmt.Errorf("record remote terminal proof lifecycle: %w", err)
+		}
+		if _, err := connection.ExecContext(ctx, "DELETE FROM local_remote_status_failures WHERE intent_id = ?", string(validatedID)); err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("clear remote status failure after terminal proof: %w", err)
 		}
 		return readLocalIntentOnConnection(ctx, connection, validatedID)
 	})
@@ -1224,24 +1232,28 @@ func readLocalIntentOnConnection(ctx context.Context, connection *sql.Conn, id d
 	var requestHash, payload, scriptBytes, scriptHash []byte
 	var idempotencyKey, deliveryState, reason, leaseOwner string
 	var remoteTerminalProofVersion int
-	var leaseExpires sql.NullString
+	var leaseExpires, remoteStatusFailureAt sql.NullString
+	var remoteStatusFailureCode sql.NullString
 	var ordinal sql.NullInt64
 	var attemptCount int
 	var createdAt, updatedAt string
 	err := connection.QueryRowContext(ctx, `
-SELECT intent_id, operation, resource_id, session_id, command_id, job_id,
- target_kind, target_profile, environment, controller_type, controller_id,
- source_mode, source_repository_alias, source_requested_revision, source_path,
- request_hash_version, request_hash, idempotency_key, payload_json,
-	 script_bytes, script_sha256, intent_ordinal, delivery_state, reason, remote_terminal_proof_version,
-	 lease_owner, lease_expires_at, attempt_count, created_at, updated_at
-FROM local_intents WHERE intent_id = ?
+SELECT local_intents.intent_id, local_intents.operation, local_intents.resource_id, local_intents.session_id, local_intents.command_id, local_intents.job_id,
+ local_intents.target_kind, local_intents.target_profile, local_intents.environment, local_intents.controller_type, local_intents.controller_id,
+ local_intents.source_mode, local_intents.source_repository_alias, local_intents.source_requested_revision, local_intents.source_path,
+ local_intents.request_hash_version, local_intents.request_hash, local_intents.idempotency_key, local_intents.payload_json,
+	 local_intents.script_bytes, local_intents.script_sha256, local_intents.intent_ordinal, local_intents.delivery_state, local_intents.reason, local_intents.remote_terminal_proof_version,
+	 local_intents.lease_owner, local_intents.lease_expires_at, local_intents.attempt_count, local_intents.created_at, local_intents.updated_at,
+	 status_failure.first_observed_at, status_failure.reason
+FROM local_intents
+LEFT JOIN local_remote_status_failures AS status_failure ON status_failure.intent_id = local_intents.intent_id
+WHERE local_intents.intent_id = ?
 `, string(id)).Scan(&intentID, &operation, &resourceID, &sessionID, &commandID, &jobID,
 		&targetKind, &targetProfile, &environment, &controllerType, &controllerID,
 		&sourceMode, &repositoryAlias, &requestedRevision, &sourcePath,
 		&requestHashVersion, &requestHash, &idempotencyKey, &payload,
 		&scriptBytes, &scriptHash, &ordinal, &deliveryState, &reason, &remoteTerminalProofVersion,
-		&leaseOwner, &leaseExpires, &attemptCount, &createdAt, &updatedAt)
+		&leaseOwner, &leaseExpires, &attemptCount, &createdAt, &updatedAt, &remoteStatusFailureAt, &remoteStatusFailureCode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LocalIntentRecord{}, ErrLocalIntentNotFound
 	}
@@ -1295,6 +1307,20 @@ FROM local_intents WHERE intent_id = ?
 		}
 		leaseTime = &parsed
 	}
+	var statusFailureTime *time.Time
+	if remoteStatusFailureAt.Valid != remoteStatusFailureCode.Valid {
+		return LocalIntentRecord{}, fmt.Errorf("%w: remote status failure fields", ErrLocalIntentPayloadCorrupt)
+	}
+	if remoteStatusFailureAt.Valid {
+		parsed, err := parseStoredTime(remoteStatusFailureAt.String)
+		if err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("%w: remote status failure time: %v", ErrLocalIntentPayloadCorrupt, err)
+		}
+		if remoteStatusFailureCode.String != RemoteStatusFailureCodeUnavailable || operation != localIntentRunOperation || target.Kind() != domain.TargetKindRemote || deliveryState != string(LocalIntentAccepted) {
+			return LocalIntentRecord{}, fmt.Errorf("%w: remote status failure", ErrLocalIntentPayloadCorrupt)
+		}
+		statusFailureTime = &parsed
+	}
 	canonical, computedHash, err := validateLocalIntentPayload(operation, payload, scriptBytes, environment, target, source, hash)
 	if err != nil || !bytes.Equal(canonical, payload) || domain.CompareIdempotency(computedHash, hash) == domain.IdempotencyConflict {
 		if err == nil {
@@ -1306,7 +1332,7 @@ FROM local_intents WHERE intent_id = ?
 	if !bytes.Equal(computedScriptHash[:], scriptHash) {
 		return LocalIntentRecord{}, fmt.Errorf("%w: script hash mismatch", ErrLocalIntentPayloadCorrupt)
 	}
-	record = LocalIntentRecord{LocalIntentCreate: LocalIntentCreate{IntentID: validatedID, Operation: operation, ResourceID: resourceID, Target: target, Environment: environment, Controller: controller, Source: source, RequestHash: hash, IdempotencyKey: idempotencyKey, PayloadJSON: append([]byte(nil), payload...), ScriptBytes: append([]byte(nil), scriptBytes...), IntentOrdinal: intentOrdinal, DeliveryState: LocalIntentDeliveryState(deliveryState), Reason: reason, LeaseOwner: leaseOwner, LeaseExpiresAt: leaseTime, AttemptCount: attemptCount}, RemoteTerminalProofVersion: remoteTerminalProofVersion, CreatedAt: created, UpdatedAt: updated}
+	record = LocalIntentRecord{LocalIntentCreate: LocalIntentCreate{IntentID: validatedID, Operation: operation, ResourceID: resourceID, Target: target, Environment: environment, Controller: controller, Source: source, RequestHash: hash, IdempotencyKey: idempotencyKey, PayloadJSON: append([]byte(nil), payload...), ScriptBytes: append([]byte(nil), scriptBytes...), IntentOrdinal: intentOrdinal, DeliveryState: LocalIntentDeliveryState(deliveryState), Reason: reason, LeaseOwner: leaseOwner, LeaseExpiresAt: leaseTime, AttemptCount: attemptCount}, RemoteTerminalProofVersion: remoteTerminalProofVersion, RemoteStatusFailureAt: statusFailureTime, RemoteStatusFailureCode: remoteStatusFailureCode.String, CreatedAt: created, UpdatedAt: updated}
 	if sessionID != "" {
 		record.SessionID, err = domain.NewSessionID(sessionID)
 		if err != nil {

@@ -46,6 +46,15 @@ type ResponseTarget struct {
 	Profile string `json:"profile"`
 }
 
+// ResponseError is the structured terminal diagnostic carried by a mailbox
+// response. It lets file-only clients distinguish an accepted request whose
+// target result could not be verified from a normal completed command.
+type ResponseError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+}
+
 type Response struct {
 	InboxID                  string          `json:"inbox_id,omitempty"`
 	RequestID                string          `json:"request_id"`
@@ -71,6 +80,7 @@ type Response struct {
 	ExecutionSelectionSource string          `json:"execution_selection_source,omitempty"`
 	ResolvedEnvironment      string          `json:"resolved_environment,omitempty"`
 	ResolvedExecutionTarget  *ResponseTarget `json:"resolved_execution_target,omitempty"`
+	Error                    *ResponseError  `json:"error,omitempty"`
 }
 
 type Event struct {

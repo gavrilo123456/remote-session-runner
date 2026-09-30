@@ -113,8 +113,8 @@ func TestP021I02TransportFailureIsDistinctAndDoesNotRerun(t *testing.T) {
 	if !errors.Is(err, ErrCommandTransport) {
 		t.Fatalf("submit error = %v, want ErrCommandTransport", err)
 	}
-	if result.Command.State != domain.CommandStateLost {
-		t.Fatalf("command result = %+v, want lost", result.Command)
+	if result.Command.State != domain.CommandStateLost || result.Command.OutputComplete || result.Command.OutputUnavailableReason != "capture_boundary_unconfirmed" {
+		t.Fatalf("command result = %+v, want lost with an unconfirmed capture boundary", result.Command)
 	}
 	if runtime.commandCall != 1 {
 		t.Fatalf("command runtime calls = %d, want one", runtime.commandCall)

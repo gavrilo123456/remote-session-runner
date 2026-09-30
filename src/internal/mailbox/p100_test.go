@@ -20,6 +20,10 @@ func TestP100RunResponseShapesMatchV1Schema(t *testing.T) {
 			name: "proven never delivered stays intent only",
 			raw:  `{"request_id":"req-p100-never","operation":"run","request_state":"rejected","response_revision":2,"job_id":"job-p100-never","session_id":"sess-p100-never","command_id":"cmd-p100-never","delivery_state":"not_delivered","error":{"code":"runtime_unavailable","message":"run was proven not delivered","retryable":false}}`,
 		},
+		{
+			name: "accepted target with unavailable terminal status",
+			raw:  `{"request_id":"req-p100-status","operation":"run","request_state":"indeterminate","response_revision":2,"job_id":"job-p100-status","session_id":"sess-p100-status","command_id":"cmd-p100-status","delivery_state":"accepted","error":{"code":"remote_status_unavailable","message":"remote target accepted the request but its terminal status could not be verified","retryable":false}}`,
+		},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

@@ -258,9 +258,9 @@ func (s *AuthorityStore) CheckpointJob(ctx context.Context, id domain.JobID, che
 			if checkpoint.Command.FinalEventSequence != nil {
 				finalSequence = *checkpoint.Command.FinalEventSequence
 			}
-			set += ", command_state = ?, exit_code = ?, final_event_sequence = ?, output_truncated = ?, output_complete = ?"
+			set += ", command_state = ?, exit_code = ?, final_event_sequence = ?, output_truncated = ?, output_complete = ?, output_unavailable_reason = ?"
 			args = append(args, string(checkpoint.Command.State), exitCode, finalSequence,
-				boolToSQLite(checkpoint.Command.OutputTruncated), boolToSQLite(checkpoint.Command.OutputComplete))
+				boolToSQLite(checkpoint.Command.OutputTruncated), boolToSQLite(checkpoint.Command.OutputComplete), checkpoint.Command.OutputUnavailableReason)
 		}
 		if checkpoint.TeardownState != nil {
 			set += ", teardown_state = ?, teardown_reason = ?"

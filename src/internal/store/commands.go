@@ -107,6 +107,8 @@ type CommandTransition struct {
 	OutputTruncated bool
 }
 
+const outputUnavailableCaptureBoundaryUnconfirmed = "capture_boundary_unconfirmed"
+
 // AcceptCommand atomically allocates the next authoritative session ordinal,
 // inserts the immutable queued command, and inserts event sequence 1. It does
 // not call a scheduler or start a runtime.
@@ -329,11 +331,12 @@ func (s *AuthorityStore) TransitionCommand(ctx context.Context, input CommandTra
 			if input.ExitCode != nil {
 				exitCode = *input.ExitCode
 			}
+			unavailableReason := terminalOutputUnavailableReason(input)
 			if _, err := connection.ExecContext(ctx, `
 UPDATE exec_commands
-SET state = ?, exit_code = ?, final_event_sequence = ?, output_complete = ?, output_truncated = ?, updated_at = ?
+SET state = ?, exit_code = ?, final_event_sequence = ?, output_complete = ?, output_truncated = ?, output_unavailable_reason = ?, updated_at = ?
 WHERE command_id = ?
-`, string(input.NextState), exitCode, sequence, boolToSQLite(input.OutputComplete), boolToSQLite(input.OutputTruncated), formatStoredTime(now), string(commandID)); err != nil {
+`, string(input.NextState), exitCode, sequence, boolToSQLite(input.OutputComplete), boolToSQLite(input.OutputTruncated), unavailableReason, formatStoredTime(now), string(commandID)); err != nil {
 				return CommandRecord{}, fmt.Errorf("persist terminal command: %w", err)
 			}
 		} else {
@@ -401,11 +404,12 @@ func (s *AuthorityStore) CompleteRunningCommand(ctx context.Context, input Comma
 		if input.ExitCode != nil {
 			exitCode = *input.ExitCode
 		}
+		unavailableReason := terminalOutputUnavailableReason(input)
 		if _, err := connection.ExecContext(ctx, `
 UPDATE exec_commands
-SET state = ?, exit_code = ?, final_event_sequence = ?, output_complete = ?, output_truncated = ?, updated_at = ?
+SET state = ?, exit_code = ?, final_event_sequence = ?, output_complete = ?, output_truncated = ?, output_unavailable_reason = ?, updated_at = ?
 WHERE command_id = ?
-`, string(input.NextState), exitCode, sequence, boolToSQLite(input.OutputComplete), boolToSQLite(input.OutputTruncated), formatStoredTime(now), string(commandID)); err != nil {
+`, string(input.NextState), exitCode, sequence, boolToSQLite(input.OutputComplete), boolToSQLite(input.OutputTruncated), unavailableReason, formatStoredTime(now), string(commandID)); err != nil {
 			return CommandRecord{}, fmt.Errorf("persist completed command: %w", err)
 		}
 		var sessionState string
@@ -452,6 +456,17 @@ WHERE command_id = ? AND stop_confirmed_at IS NULL
 		s.publishCommandEvent(*publishedEvent)
 	}
 	return record, nil
+}
+
+// terminalOutputUnavailableReason centralizes the only runtime path whose
+// output boundary is inherently unknown: a command lost while its capture is
+// incomplete. Every terminal transition shares this persistence rule so the
+// job and remote read APIs cannot expose an ambiguous lost result.
+func terminalOutputUnavailableReason(input CommandTransition) string {
+	if input.NextState == domain.CommandStateLost && !input.OutputComplete {
+		return outputUnavailableCaptureBoundaryUnconfirmed
+	}
+	return ""
 }
 
 // ReplayCommandEvents returns a contiguous event range after afterSequence.

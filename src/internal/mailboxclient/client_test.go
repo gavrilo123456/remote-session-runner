@@ -145,3 +145,42 @@ func TestP155ClientDecodesSelectionAndTerminalRunFields(t *testing.T) {
 		t.Fatalf("decoded response=%+v", response)
 	}
 }
+
+func TestBUG002ClientDecodesAcceptedStatusUnavailableAndAcknowledgesItsTerminalRevision(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "mailbox")
+	for _, directory := range []string{"", "inbox", "outbox", "events", "acks"} {
+		path := root
+		if directory != "" {
+			path = filepath.Join(root, directory)
+		}
+		if err := os.Mkdir(path, directoryMode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBytes := []byte(`{"request_id":"req-bug002-client","operation":"run","request_state":"indeterminate","response_revision":2,"job_id":"job-bug002-client","session_id":"sess-bug002-client","command_id":"cmd-bug002-client","delivery_state":"accepted","error":{"code":"remote_status_unavailable","message":"remote target accepted the request but its terminal status could not be verified","retryable":false}}`)
+	if err := os.WriteFile(filepath.Join(root, "outbox", "req-bug002-client.json"), responseBytes, fileMode); err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.WaitResponse(context.Background(), "req-bug002-client")
+	if err != nil || response.RequestState != "indeterminate" || response.DeliveryState != "accepted" ||
+		response.JobID != "job-bug002-client" || response.SessionID != "sess-bug002-client" || response.CommandID != "cmd-bug002-client" ||
+		response.Error == nil || response.Error.Code != "remote_status_unavailable" || response.Error.Retryable ||
+		response.AvailableEventSequence != nil || response.EventsFile != "" {
+		t.Fatalf("decoded status-unavailable response=%+v err=%v", response, err)
+	}
+	if err := client.WriteAcknowledgment("req-bug002-client", response); err != nil {
+		t.Fatal(err)
+	}
+	ackBytes, err := os.ReadFile(filepath.Join(root, "acks", "req-bug002-client.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acknowledgment Acknowledgment
+	if err := json.Unmarshal(ackBytes, &acknowledgment); err != nil || acknowledgment.RequestID != response.RequestID || acknowledgment.ResponseRevision != response.ResponseRevision || acknowledgment.AvailableEventSequence != nil {
+		t.Fatalf("status-unavailable acknowledgment=%+v err=%v", acknowledgment, err)
+	}
+}

@@ -42,7 +42,7 @@
     "error": {
       "type": "object",
       "properties": {
-        "code": { "type": "string", "enum": ["invalid_request", "environment_target_mismatch", "environment_forbidden", "controller_mismatch", "session_not_ready", "idempotency_conflict", "resource_not_found", "quota_exceeded", "runtime_unavailable", "transport_uncertain", "event_history_unavailable", "retention_expired"] },
+        "code": { "type": "string", "enum": ["invalid_request", "environment_target_mismatch", "environment_forbidden", "controller_mismatch", "session_not_ready", "idempotency_conflict", "resource_not_found", "quota_exceeded", "runtime_unavailable", "transport_uncertain", "event_history_unavailable", "retention_expired", "remote_status_unavailable"] },
         "message": { "type": "string", "minLength": 1 }, "retryable": { "type": "boolean" }, "resource_id": { "type": "string", "minLength": 1 }, "details": { "type": "object" }
       },
       "required": ["code", "message", "retryable"],
@@ -62,7 +62,63 @@
     },
     {
       "if": { "properties": { "request_state": { "const": "indeterminate" } }, "required": ["request_state"] },
-      "then": { "properties": { "delivery_state": { "const": "uncertain" } }, "required": ["delivery_state"] }
+      "then": {
+        "allOf": [
+          {
+            "anyOf": [
+              { "properties": { "delivery_state": { "const": "uncertain" } }, "required": ["delivery_state"] },
+              {
+                "properties": {
+                  "operation": { "const": "run" },
+                  "delivery_state": { "const": "accepted" },
+                  "error": {
+                    "properties": {
+                      "code": { "const": "remote_status_unavailable" },
+                      "retryable": { "const": false }
+                    },
+                    "required": ["code", "retryable"]
+                  }
+                },
+                "required": ["operation", "delivery_state", "job_id", "session_id", "command_id", "error"]
+              }
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                { "required": ["session_state"] }, { "required": ["job_phase"] }, { "required": ["command_state"] },
+                { "required": ["observed_at"] }, { "required": ["exit_code"] }, { "required": ["stdout"] }, { "required": ["stderr"] },
+                { "required": ["final_event_sequence"] }, { "required": ["available_event_sequence"] }, { "required": ["output_complete"] },
+                { "required": ["output_truncated"] }, { "required": ["output_unavailable_reason"] }, { "required": ["events_file"] },
+                { "required": ["teardown_outcome"] }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error": {
+            "properties": { "code": { "const": "remote_status_unavailable" } },
+            "required": ["code"]
+          }
+        },
+        "required": ["error"]
+      },
+      "then": {
+        "properties": {
+          "operation": { "const": "run" },
+          "request_state": { "const": "indeterminate" },
+          "delivery_state": { "const": "accepted" },
+          "error": {
+            "properties": { "retryable": { "const": false } },
+            "required": ["retryable"]
+          }
+        },
+        "required": ["operation", "request_state", "delivery_state", "job_id", "session_id", "command_id", "error"]
+      }
     },
     {
       "if": { "properties": { "delivery_state": { "const": "not_delivered" } }, "required": ["delivery_state"] },

@@ -285,7 +285,8 @@ event reference. Important states are:
 | `request_state: accepted` | The Mac durably recorded the mailbox exchange. It is not target execution acceptance. |
 | `request_state: complete` | The operation reached an outcome boundary; a command can still have failed. |
 | `request_state: rejected` | A well-formed request failed semantic validation or policy. |
-| `request_state: indeterminate` | A queued remote mutation might have run but was not reconciled by the deadline. Preserve the idempotency key. |
+| `request_state: indeterminate`, `delivery_state: uncertain` | Delivery of a queued remote mutation could not be proved by the deadline. Preserve the idempotency key. |
+| `request_state: indeterminate`, `delivery_state: accepted`, `error.code: remote_status_unavailable` | The target accepted a remote one-off run, but strict status reads could not prove its terminal outcome during the bounded recovery window. The stable job, session, and command IDs identify the affected work; no target result or output is claimed. |
 | `delivery_state` | Queued progress such as `recorded`, `dispatching`, `uncertain`, `accepted`, `reconciled`, or `not_delivered`. |
 
 Read event history only through `available_event_sequence` using
@@ -298,7 +299,9 @@ Read event history only through `available_event_sequence` using
 
 `stdout` and `stderr` in a response are bounded previews. NDJSON event output
 is authoritative retained content. An incomplete response can name an
-`output_unavailable_reason`; do not invent missing bytes.
+`output_unavailable_reason`; `capture_boundary_unconfirmed` means a lost
+command crossed an unconfirmed output-capture boundary. Do not invent missing
+bytes.
 
 After the advertised event prefix is read, `WriteAcknowledgment` writes the
 exact `request_id`, `response_revision`, and available event cursor in the
@@ -312,6 +315,18 @@ After a Mac restart, a queued remote one-off request is reconciled by reads of
 the existing remote job, command, and events. Runner does not resend the
 accepted mutation. It projects a terminal response only when identity, target,
 teardown, and the retained event boundary agree.
+
+If strict remote reads are malformed, contradictory, or unavailable after an
+accepted one-off run, Runner records the first failure and continues only
+read-only reconciliation for 24 hours. A later coherent nonterminal status
+clears that marker; a strict terminal proof wins normally. If no trustworthy
+status arrives by the deadline, Runner freezes a terminal response with
+`request_state: indeterminate`, `delivery_state: accepted`, and
+`error.code: remote_status_unavailable`. It retains the job/session/command
+IDs, omits command state, events, and output, stops status polling, and never
+replays the mutation. Preserve the idempotency key, do not resubmit the script,
+and use those IDs when investigating the target. This terminal response can be
+acknowledged normally.
 
 - Unmarked drafts are eligible for cleanup after 24 hours.
 - A terminal response is eligible 24 hours after a valid ACK or seven days

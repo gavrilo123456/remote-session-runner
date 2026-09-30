@@ -146,6 +146,12 @@ type MailboxResponsePublication struct {
 	AvailableEventSequence *int64
 }
 
+// ErrMailboxRemoteStatusFailureNotEligible means a concurrent successful
+// reconciliation changed an accepted remote run before its status-unavailable
+// mailbox outcome could be frozen. The caller must reload the ordinary result;
+// it must not overwrite it with an indeterminate response.
+var ErrMailboxRemoteStatusFailureNotEligible = errors.New("mailbox remote status failure is no longer eligible")
+
 // AcceptMailboxExchange binds one request_id in the same SQLite transaction
 // used to detect a retained same-key retry. Reusing a request_id with changed
 // semantics conflicts. A new request_id with the same operation/controller/
@@ -617,6 +623,95 @@ SET request_state = ?, response_revision = ?, response_bytes = ?, response_sha25
 			if err := bindMailboxEventFileReferenceOnConnection(ctx, connection, validated, eventFileCommandID, now); err != nil {
 				return MailboxExchangeRecord{}, err
 			}
+		}
+		return readMailboxExchangeOnConnection(ctx, connection, validated)
+	})
+}
+
+// PublishAcceptedRemoteStatusUnavailableInMailbox atomically freezes the
+// bounded diagnostic outcome for an accepted remote run. It verifies that the
+// same local intent is still accepted, still has no strict terminal proof,
+// and still carries the durable status-failure marker. That prevents a racing
+// successful reconciliation from being replaced by an indeterminate receipt.
+func (s *AuthorityStore) PublishAcceptedRemoteStatusUnavailableInMailbox(ctx context.Context, ref MailboxExchangeRef, publication MailboxResponsePublication) (MailboxExchangeRecord, error) {
+	validated, err := validateMailboxExchangeRef(ref)
+	if err != nil {
+		return MailboxExchangeRecord{}, err
+	}
+	if publication.State != MailboxExchangeIndeterminate || len(publication.Bytes) == 0 || len(publication.Bytes) > domain.MaxSerializedRequestBytes || publication.AvailableEventSequence != nil {
+		return MailboxExchangeRecord{}, fmt.Errorf("%w: remote status failure publication", ErrMailboxResponseInvalid)
+	}
+	responseHash := sha256Bytes(publication.Bytes)
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+		current, err := readMailboxExchangeOnConnection(ctx, connection, validated)
+		if err != nil {
+			return MailboxExchangeRecord{}, err
+		}
+		if current.State != MailboxExchangeAccepted {
+			return MailboxExchangeRecord{}, ErrMailboxTerminalImmutable
+		}
+		var acceptedResponse struct {
+			Operation     string `json:"operation"`
+			RequestState  string `json:"request_state"`
+			JobID         string `json:"job_id"`
+			SessionID     string `json:"session_id"`
+			CommandID     string `json:"command_id"`
+			DeliveryState string `json:"delivery_state"`
+		}
+		if current.Operation != "run" || json.Unmarshal(current.ResponseBytes, &acceptedResponse) != nil ||
+			acceptedResponse.Operation != "run" || acceptedResponse.RequestState != string(MailboxExchangeAccepted) ||
+			acceptedResponse.DeliveryState != string(LocalIntentAccepted) {
+			return MailboxExchangeRecord{}, ErrMailboxRemoteStatusFailureNotEligible
+		}
+		jobID, jobErr := domain.NewJobID(acceptedResponse.JobID)
+		sessionID, sessionErr := domain.NewSessionID(acceptedResponse.SessionID)
+		commandID, commandErr := domain.NewCommandID(acceptedResponse.CommandID)
+		if jobErr != nil || sessionErr != nil || commandErr != nil {
+			return MailboxExchangeRecord{}, ErrMailboxRemoteStatusFailureNotEligible
+		}
+		var intentID, targetKind, deliveryState, intentSessionID, intentCommandID string
+		var proofVersion int
+		err = connection.QueryRowContext(ctx, `
+SELECT intent_id, target_kind, delivery_state, remote_terminal_proof_version, session_id, command_id
+FROM local_intents
+WHERE operation = 'run' AND resource_id = ? AND idempotency_key = ? AND controller_type = ? AND controller_id = ?
+ORDER BY created_at DESC, intent_id DESC
+LIMIT 1
+`, string(jobID), current.ExecutionIdempotencyKey, string(current.Controller.Type()), string(current.Controller.ID())).Scan(&intentID, &targetKind, &deliveryState, &proofVersion, &intentSessionID, &intentCommandID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return MailboxExchangeRecord{}, ErrMailboxRemoteStatusFailureNotEligible
+		}
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("read remote status failure intent for mailbox: %w", err)
+		}
+		if targetKind != string(domain.TargetKindRemote) || deliveryState != string(LocalIntentAccepted) || proofVersion >= RemoteTerminalProofP149 ||
+			intentSessionID != string(sessionID) || intentCommandID != string(commandID) {
+			return MailboxExchangeRecord{}, ErrMailboxRemoteStatusFailureNotEligible
+		}
+		var code string
+		err = connection.QueryRowContext(ctx, `
+SELECT reason FROM local_remote_status_failures WHERE intent_id = ?
+`, intentID).Scan(&code)
+		if errors.Is(err, sql.ErrNoRows) || code != RemoteStatusFailureCodeUnavailable {
+			return MailboxExchangeRecord{}, ErrMailboxRemoteStatusFailureNotEligible
+		}
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("read remote status failure for mailbox: %w", err)
+		}
+		nextRevision := current.ResponseRevision + 1
+		if nextRevision <= 0 {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: response revision overflow", ErrMailboxResponseInvalid)
+		}
+		if _, err := connection.ExecContext(ctx, `
+UPDATE mailbox_exchanges
+SET request_state = ?, response_revision = ?, response_bytes = ?, response_sha256 = ?,
+    terminal_response_bytes = ?, terminal_response_sha256 = ?, available_event_sequence = NULL,
+    response_cleanup_at = ?, updated_at = ?
+WHERE exchange_id = ? AND request_state = 'accepted'
+`, string(MailboxExchangeIndeterminate), nextRevision, publication.Bytes, responseHash,
+			publication.Bytes, responseHash, formatStoredTime(now.Add(MailboxUnackedResponseLifetime)), formatStoredTime(now), current.ExchangeID); err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("publish remote status unavailable mailbox response: %w", err)
 		}
 		return readMailboxExchangeOnConnection(ctx, connection, validated)
 	})

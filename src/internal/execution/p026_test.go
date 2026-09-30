@@ -92,6 +92,39 @@ func TestP026I04TeardownFailurePreservesCommandOutcomeAndStableRetry(t *testing.
 	}
 }
 
+func TestBUG002OneOffTransportLossPreservesCaptureBoundaryAndDoesNotReplay(t *testing.T) {
+	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
+		generation: "generation-bug002-command-lost",
+		commandErr: errors.New("runtime bridge disconnected"),
+	}}
+	service, authority, _ := newP025Service(t, runtime)
+	request := p025Request(t, "job-bug002-command-lost", "session-bug002-command-lost", "command-bug002-command-lost", "run-bug002-command-lost", "echo should-run-once")
+	result, err := service.RunJob(context.Background(), request)
+	if !errors.Is(err, ErrCommandTransport) {
+		t.Fatalf("lost command error=%v, want ErrCommandTransport", err)
+	}
+	if result.Job.Phase != store.JobPhaseLost || result.Job.TeardownState != store.JobTeardownLost || result.Job.TeardownReason != "runtime_cleanup_unconfirmed" ||
+		result.Command.State != domain.CommandStateLost || result.Command.OutputComplete || result.Command.OutputUnavailableReason != "capture_boundary_unconfirmed" ||
+		result.Job.CommandState == nil || *result.Job.CommandState != domain.CommandStateLost || result.Job.OutputComplete || result.Job.OutputUnavailableReason != "capture_boundary_unconfirmed" {
+		t.Fatalf("lost one-off result=%+v", result)
+	}
+	if runtime.commandCall != 1 {
+		t.Fatalf("initial command calls=%d, want one", runtime.commandCall)
+	}
+
+	resumed, resumeErr := service.RunJob(context.Background(), request)
+	if resumeErr != nil {
+		t.Fatalf("lost one-off retry error=%v", resumeErr)
+	}
+	if resumed.Job.Phase != store.JobPhaseLost || resumed.Job.TeardownState != store.JobTeardownLost || resumed.Command.CommandID != request.Acceptance.CommandID || runtime.commandCall != 1 {
+		t.Fatalf("lost one-off retry=%+v command calls=%d; it must not replay target work", resumed, runtime.commandCall)
+	}
+	durable, err := authority.GetJob(context.Background(), request.Acceptance.JobID)
+	if err != nil || durable.CommandState == nil || *durable.CommandState != domain.CommandStateLost || durable.OutputUnavailableReason != "capture_boundary_unconfirmed" || durable.TeardownState != store.JobTeardownLost {
+		t.Fatalf("durable lost one-off=%+v err=%v", durable, err)
+	}
+}
+
 func TestP026I04ResumeAfterCloseCommitOnlyCheckpointsResult(t *testing.T) {
 	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
 		generation:    "generation-p026-close-barrier",

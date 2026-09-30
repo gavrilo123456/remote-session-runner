@@ -43,7 +43,9 @@ type p101Response struct {
 	TeardownOutcome         string `json:"teardown_outcome"`
 	OutputUnavailableReason string `json:"output_unavailable_reason"`
 	Error                   *struct {
-		Code string `json:"code"`
+		Code      string `json:"code"`
+		Message   string `json:"message"`
+		Retryable bool   `json:"retryable"`
 	} `json:"error"`
 }
 

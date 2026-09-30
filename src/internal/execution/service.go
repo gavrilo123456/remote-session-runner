@@ -851,11 +851,16 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 				result.Command = accepted.Command
 			}
 			next := store.JobPhaseAwaitingCommand
+			var teardown *store.JobTeardownState
+			teardownReason := ""
 			if accepted.Command.State == domain.CommandStateLost || commandErr != nil && accepted.Command.State == domain.CommandStateLost {
 				next = store.JobPhaseLost
+				lost := store.JobTeardownLost
+				teardown = &lost
+				teardownReason = "runtime_cleanup_unconfirmed"
 			}
 			if accepted.Command.CommandID != "" {
-				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAcceptingCommand, NextPhase: next, Command: &accepted.Command})
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAcceptingCommand, NextPhase: next, Command: &accepted.Command, TeardownState: teardown, TeardownReason: teardownReason})
 				if err != nil {
 					return result, err
 				}
@@ -889,7 +894,8 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 				}
 				if resumeErr != nil {
 					result.Command = command
-					job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAwaitingCommand, NextPhase: store.JobPhaseLost, Command: &command})
+					lost := store.JobTeardownLost
+					job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAwaitingCommand, NextPhase: store.JobPhaseLost, Command: &command, TeardownState: &lost, TeardownReason: "runtime_cleanup_unconfirmed"})
 					if err != nil {
 						return result, err
 					}

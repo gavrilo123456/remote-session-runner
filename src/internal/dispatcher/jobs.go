@@ -196,13 +196,44 @@ func (d *RemoteDriver) ReconcileAcceptedRun(ctx context.Context, id domain.Inten
 	if intent.DeliveryState != store.LocalIntentAccepted && (intent.DeliveryState != store.LocalIntentReconciled || store.HasRemoteTerminalProof(intent)) {
 		return nil
 	}
-	return d.reconcileAcceptedRun(ctx, intent)
+	// A prior strict read established neither a terminal result nor an active
+	// status. Once that bounded diagnostic window has elapsed, the mailbox owns
+	// the truthful indeterminate result. Do not keep polling and do not replay
+	// the accepted mutation.
+	if intent.DeliveryState == store.LocalIntentAccepted && intent.RemoteStatusFailureAt != nil &&
+		!d.now().UTC().Before(intent.RemoteStatusFailureAt.Add(RemoteUncertaintyWindow)) {
+		return nil
+	}
+	err = d.reconcileAcceptedRun(ctx, intent)
+	if err != nil {
+		if remoteRunStatusFailure(err) {
+			if _, markErr := d.authority.MarkAcceptedRemoteRunStatusFailure(ctx, intent.IntentID, store.RemoteStatusFailureCodeUnavailable); markErr != nil {
+				return errors.Join(err, fmt.Errorf("record remote run status failure: %w", markErr))
+			}
+		}
+		return err
+	}
+	// A coherent active status clears an earlier transient read failure. A
+	// successful terminal proof clears it atomically in the proof transition.
+	current, readErr := d.authority.GetLocalIntent(ctx, intent.IntentID)
+	if readErr != nil {
+		return readErr
+	}
+	if current.DeliveryState == store.LocalIntentAccepted && current.RemoteStatusFailureAt != nil {
+		if _, clearErr := d.authority.ClearAcceptedRemoteRunStatusFailure(ctx, current.IntentID); clearErr != nil {
+			return clearErr
+		}
+	}
+	return nil
 }
 
 func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.LocalIntentRecord) error {
 	job, err := d.refreshJobProjectionForIntent(ctx, intent)
 	if err != nil {
 		return err
+	}
+	if remoteRunTerminalTeardownUnconfirmed(job) {
+		return fmt.Errorf("%w: terminal one-off job has no confirmed teardown", ErrRemoteResponse)
 	}
 	if !terminalRemoteJob(job) {
 		return nil
@@ -239,6 +270,9 @@ func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.Lo
 	if err != nil {
 		return err
 	}
+	if remoteRunTerminalTeardownUnconfirmed(job) {
+		return fmt.Errorf("%w: terminal one-off job has no confirmed teardown", ErrRemoteResponse)
+	}
 	if !terminalRemoteJob(job) {
 		return nil
 	}
@@ -249,6 +283,39 @@ func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.Lo
 		return err
 	}
 	return d.transitionAcceptedIntentReconciled(ctx, intent, "remote_terminal_run_reconciled")
+}
+
+// remoteRunStatusFailure identifies errors caused by target status or event
+// evidence that cannot establish a truthful terminal result. Local storage,
+// configuration, and cancellation errors remain ordinary retry failures.
+func remoteRunStatusFailure(err error) bool {
+	return errors.Is(err, ErrRemoteResponse) ||
+		errors.Is(err, ErrRemoteEventCallerUnavailable) ||
+		errors.Is(err, ErrRemoteEventStream) ||
+		errors.Is(err, ErrRemoteEventHistoryUnavailable) ||
+		errors.Is(err, ErrRemoteEventCursor) ||
+		errors.Is(err, ErrRemoteTerminalUnconfirmed) ||
+		errors.Is(err, store.ErrRemoteEventBatch) ||
+		errors.Is(err, store.ErrRemoteProjectionInvalid) ||
+		errors.Is(err, store.ErrRemoteProjectionConflict)
+}
+
+// remoteRunTerminalTeardownUnconfirmed detects a target job that has reached
+// a command-bearing terminal phase but has not recorded the corresponding
+// teardown boundary. A pre-command creation failure remains an active
+// diagnostic state and is intentionally not treated as this BUG-002 case.
+func remoteRunTerminalTeardownUnconfirmed(job store.RemoteJobProjection) bool {
+	if job.CommandState == nil {
+		return false
+	}
+	switch job.Phase {
+	case store.JobPhaseComplete:
+		return job.TeardownState != store.JobTeardownClosed
+	case store.JobPhaseLost:
+		return job.TeardownState != store.JobTeardownLost
+	default:
+		return false
+	}
 }
 
 func (d *RemoteDriver) refreshJobProjectionForIntent(ctx context.Context, intent store.LocalIntentRecord) (store.RemoteJobProjection, error) {

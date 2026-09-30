@@ -187,6 +187,71 @@ func TestP103F02UnresolvedRunPublishesImmutableIndeterminateAtDeadline(t *testin
 	}
 }
 
+func TestBUG002AcceptedRemoteRunWithUnreadableStatusPublishesBoundedIndeterminateWithoutReplay(t *testing.T) {
+	now := time.Now().UTC()
+	h := p103Harness(t, &now)
+	accepted, intent := p103MailboxRun(t, h, "req-bug002-status", "key-bug002-status")
+	transport := &p103RemoteTransport{mode: "status_malformed", now: func() time.Time { return now }}
+	driver := p103Driver(t, h, transport, &now)
+	if delivered, _, err := driver.DispatchIntent(context.Background(), intent.IntentID); err != nil || delivered.DeliveryState != store.LocalIntentAccepted || transport.mutationCommits != 1 {
+		t.Fatalf("remote run delivery=%+v commits=%d err=%v", delivered, transport.mutationCommits, err)
+	}
+	if err := driver.ReconcileAcceptedRun(context.Background(), intent.IntentID); !errors.Is(err, dispatcher.ErrRemoteResponse) {
+		t.Fatalf("malformed target status reconciliation error=%v, want ErrRemoteResponse", err)
+	}
+	marked, err := h.authority.GetLocalIntent(context.Background(), intent.IntentID)
+	if err != nil || marked.DeliveryState != store.LocalIntentAccepted || marked.RemoteStatusFailureAt == nil || marked.RemoteStatusFailureCode != store.RemoteStatusFailureCodeUnavailable {
+		t.Fatalf("status failure marker=%+v err=%v", marked, err)
+	}
+	if err := h.processor.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	beforeDeadline := p101ReadResponse(t, h, accepted.RequestID)
+	if beforeDeadline.RequestState != "accepted" || beforeDeadline.DeliveryState != string(store.LocalIntentAccepted) || beforeDeadline.Error != nil {
+		t.Fatalf("pre-deadline response=%+v", beforeDeadline)
+	}
+
+	now = marked.RemoteStatusFailureAt.Add(dispatcher.RemoteUncertaintyWindow + time.Hour)
+	if err := driver.ReconcileAcceptedRun(context.Background(), intent.IntentID); err != nil {
+		t.Fatalf("expired status reconciliation should stop polling: %v", err)
+	}
+	if transport.statusReads != 1 || transport.mutationCommits != 1 {
+		t.Fatalf("expired reconciliation made remote calls: reads=%d commits=%d", transport.statusReads, transport.mutationCommits)
+	}
+	if err := h.processor.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	terminal := p101ReadResponse(t, h, accepted.RequestID)
+	if terminal.RequestState != "indeterminate" || terminal.DeliveryState != string(store.LocalIntentAccepted) ||
+		terminal.JobID != accepted.JobID || terminal.SessionID != accepted.SessionID || terminal.CommandID != accepted.CommandID ||
+		terminal.JobPhase != "" || terminal.CommandState != "" || terminal.TeardownOutcome != "" ||
+		terminal.ExitCode != nil || terminal.FinalEventSequence != nil || terminal.AvailableEventSequence != nil ||
+		terminal.OutputComplete != nil || terminal.OutputTruncated != nil || terminal.OutputUnavailableReason != "" || terminal.EventsFile != "" ||
+		terminal.Error == nil || terminal.Error.Code != store.RemoteStatusFailureCodeUnavailable || terminal.Error.Retryable || terminal.ResponseRevision <= beforeDeadline.ResponseRevision {
+		t.Fatalf("bounded accepted status response=%+v", terminal)
+	}
+	firstBytes, err := h.outbox.Read(accepted.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.processor.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	retryID := "req-bug002-status-retry"
+	p101Import(t, h, retryID, p100RunRequest(retryID, "key-bug002-status", "remote", "linux-host", "linux-dev", "printf 'p103 recovered\\n'"))
+	secondBytes, err := h.outbox.Read(accepted.RequestID)
+	if err != nil || string(firstBytes) != string(secondBytes) {
+		t.Fatalf("terminal status response changed: err=%v first=%s second=%s", err, firstBytes, secondBytes)
+	}
+	retry := p101ReadResponse(t, h, retryID)
+	if retry.RequestState != terminal.RequestState || retry.DeliveryState != terminal.DeliveryState || retry.JobID != terminal.JobID || retry.Error == nil || retry.Error.Code != store.RemoteStatusFailureCodeUnavailable {
+		t.Fatalf("same-key retry did not preserve terminal diagnostic: retry=%+v terminal=%+v", retry, terminal)
+	}
+	if transport.statusReads != 1 || transport.mutationCommits != 1 {
+		t.Fatalf("terminal retry replayed work: reads=%d commits=%d", transport.statusReads, transport.mutationCommits)
+	}
+}
+
 func p103Harness(t *testing.T, now *time.Time) *p095Harness {
 	t.Helper()
 	h := newP095Harness(t)
@@ -226,13 +291,15 @@ func p103Driver(t *testing.T, h *p095Harness, transport *p103RemoteTransport, no
 }
 
 type p103RemoteTransport struct {
-	mode            string
-	now             func() time.Time
-	frames          []sshbridge.RequestFrame
-	streamRequests  []sshbridge.RequestFrame
-	projection      json.RawMessage
-	mutationCommits int
-	streamCalls     int
+	mode             string
+	now              func() time.Time
+	frames           []sshbridge.RequestFrame
+	streamRequests   []sshbridge.RequestFrame
+	projection       json.RawMessage
+	statusProjection json.RawMessage
+	mutationCommits  int
+	statusReads      int
+	streamCalls      int
 }
 
 func (c *p103RemoteTransport) Call(_ context.Context, frame sshbridge.RequestFrame) (sshbridge.ReplyFrame, error) {
@@ -248,6 +315,13 @@ func (c *p103RemoteTransport) Call(_ context.Context, frame sshbridge.RequestFra
 			return sshbridge.ReplyFrame{}, err
 		}
 		c.projection = projection
+		if c.mode == "status_malformed" {
+			statusProjection, statusErr := p103MalformedLostJobProjection(frame)
+			if statusErr != nil {
+				return sshbridge.ReplyFrame{}, statusErr
+			}
+			c.statusProjection = statusProjection
+		}
 		if c.mode == "commit_then_drop" {
 			return sshbridge.ReplyFrame{}, &sshclient.TransportError{Phase: sshclient.PhaseAfterSend, Err: errors.New("simulated reply loss after remote commit")}
 		}
@@ -256,10 +330,39 @@ func (c *p103RemoteTransport) Call(_ context.Context, frame sshbridge.RequestFra
 		if c.mutationCommits != 1 || len(c.projection) == 0 {
 			return sshbridge.ReplyFrame{}, errors.New("fake remote job was not committed")
 		}
+		c.statusReads++
+		if len(c.statusProjection) != 0 {
+			return p103Reply(frame.RequestID, "result", c.statusProjection), nil
+		}
 		return p103Reply(frame.RequestID, "result", c.projection), nil
 	default:
 		return sshbridge.ReplyFrame{}, errors.New("unexpected fake remote operation: " + string(frame.Operation))
 	}
+}
+
+func p103MalformedLostJobProjection(frame sshbridge.RequestFrame) (json.RawMessage, error) {
+	var request struct {
+		SessionID       string `json:"session_id"`
+		CommandID       string `json:"command_id"`
+		Environment     string `json:"environment"`
+		ExecutionTarget struct {
+			Kind    string `json:"kind"`
+			Profile string `json:"profile"`
+		} `json:"execution_target"`
+	}
+	if err := json.Unmarshal(frame.Payload, &request); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"job_id": frame.ResourceID, "session_id": request.SessionID, "command_id": request.CommandID,
+		"job_phase": string(store.JobPhaseLost), "command_state": string(domain.CommandStateLost),
+		"final_event_sequence": int64(4), "output_complete": false, "output_truncated": false,
+		"teardown_state":   string(store.JobTeardownPending),
+		"execution_target": request.ExecutionTarget, "authority": "remote",
+		"controller":  map[string]string{"controller_type": "queued_mac", "controller_id": "tomasz.walczuk"},
+		"environment": request.Environment, "source": map[string]string{"mode": "empty"},
+		"capabilities": p076APICapabilities(), "observed_at": time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC),
+	})
 }
 
 func (c *p103RemoteTransport) Stream(_ context.Context, request sshbridge.RequestFrame, receive func(sshbridge.ReplyFrame) error) error {

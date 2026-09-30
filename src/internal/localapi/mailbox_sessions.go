@@ -219,6 +219,12 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 		return snapshot, nil
 	}
 	if remoteProjectionEligible(intent) {
+		if intent.RemoteStatusFailureAt != nil {
+			observed := intent.RemoteStatusFailureAt.UTC()
+			snapshot.RemoteStatusFailureAt = &observed
+			snapshot.RemoteStatusFailureCode = intent.RemoteStatusFailureCode
+			return snapshot, nil
+		}
 		// A queued remote one-off is published to the mailbox only after the
 		// dispatcher has read and cross-checked its job, command, and retained
 		// output boundary. This prevents an initial acceptance projection (or a

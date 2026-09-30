@@ -19,7 +19,9 @@ Runner. It is the index for bug records; implementation evidence remains in
 
 ## Open and tracked defects
 
-No confirmed defect is currently registered here.
+| ID | Title | Status | Severity | Affected area | Affected revision | Next action | Updated | Record |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| BUG-002 | Accepted remote run may remain accepted after an unverified terminal boundary | `IN PROGRESS` | High | Linux lost-result persistence and workspace mailbox reconciliation for `sandbox-host` | Mac `b2b4d6398985059bb5c4341b03fd9d10b3ba6450`; sandbox SHA to be confirmed at deployment | Complete automated checks, deploy through Git, then verify the existing request without replaying it | 2026-09-30 | [BUG-002](002-mailbox-accepted-without-remote-session-allocation.md) |
 
 ## Sample format
 
