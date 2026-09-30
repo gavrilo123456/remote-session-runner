@@ -269,10 +269,7 @@ func p104RunHostMailboxTarget(t *testing.T, h *p095Harness, client *mailboxclien
 	if closed.RequestState != "accepted" || closed.SessionID != create.SessionID {
 		t.Fatalf("close acceptance=%+v", closed)
 	}
-	closeIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "close_session", "key-p104-"+targetName+"-close", p063Owner(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	closeIntent := pMailboxIntentForRequest(t, h.authority, "close_session", closeID)
 	if isRemote {
 		if _, _, err := remote.DispatchIntent(ctx, closeIntent.IntentID); err != nil {
 			t.Fatalf("queued remote close dispatch: %v", err)
@@ -343,16 +340,7 @@ func p104BestEffortCloseFailedSession(t *testing.T, h *p095Harness, client *mail
 		t.Logf("P104 cleanup close response for session %s: response=%+v err=%v", createIntent.ResourceID, response, err)
 		return
 	}
-	owner, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, domain.ControllerID("tomasz.walczuk"))
-	if err != nil {
-		t.Logf("P104 cleanup could not construct controller: %v", err)
-		return
-	}
-	closeIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "close_session", "key-p104-"+targetName+"-failure-cleanup", owner)
-	if err != nil {
-		t.Logf("P104 cleanup could not load close intent for session %s: %v", createIntent.ResourceID, err)
-		return
-	}
+	closeIntent := pMailboxIntentForRequest(t, h.authority, "close_session", requestID)
 	if isRemote {
 		_, _, err = remote.DispatchIntent(ctx, closeIntent.IntentID)
 	} else {

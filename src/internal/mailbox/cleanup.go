@@ -180,6 +180,7 @@ func removeOwnedMailboxFile(path, directory string) error {
 // ArtifactCleaner removes expired terminal responses and then event files
 // whose every durable response reference has reached its cleanup deadline.
 type ArtifactCleaner struct {
+	MailboxID  string
 	Authority  *store.AuthorityStore
 	Outbox     *Outbox
 	EventFiles *EventFiles
@@ -197,35 +198,42 @@ func (c ArtifactCleaner) Run(ctx context.Context) (ArtifactCleanupReport, error)
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	mailboxID := c.MailboxID
+	if mailboxID == "" {
+		mailboxID = store.DefaultMailboxID
+	}
+	if _, ok := safeMailboxID(mailboxID); !ok {
+		return ArtifactCleanupReport{}, ErrOutboxConfiguration
+	}
 	var report ArtifactCleanupReport
-	requestIDs, err := c.Authority.ClaimMailboxResponsesForCleanup(ctx)
+	requestRefs, err := c.Authority.ClaimMailboxResponsesForCleanupInMailbox(ctx, mailboxID)
 	if err != nil {
 		return report, err
 	}
-	for _, requestID := range requestIDs {
+	for _, requestRef := range requestRefs {
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
-		if err := c.Outbox.Remove(ctx, requestID); err != nil {
+		if err := c.Outbox.Remove(ctx, requestRef.ClientRequestID); err != nil {
 			return report, err
 		}
-		if err := c.Authority.MarkMailboxResponseFileRemoved(ctx, requestID); err != nil {
+		if err := c.Authority.MarkMailboxResponseFileRemovedInMailbox(ctx, requestRef); err != nil {
 			return report, err
 		}
 		report.ResponsesRemoved++
 	}
-	commandIDs, err := c.Authority.ClaimMailboxEventFilesForCleanup(ctx)
+	eventRefs, err := c.Authority.ClaimMailboxEventFilesForCleanupInMailbox(ctx, mailboxID)
 	if err != nil {
 		return report, err
 	}
-	for _, commandID := range commandIDs {
+	for _, eventRef := range eventRefs {
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
-		if err := c.EventFiles.Remove(ctx, commandID); err != nil {
+		if err := c.EventFiles.Remove(ctx, eventRef.CommandID); err != nil {
 			return report, err
 		}
-		if err := c.Authority.MarkMailboxEventFileRemoved(ctx, commandID); err != nil {
+		if err := c.Authority.MarkMailboxEventFileRemovedInMailbox(ctx, eventRef); err != nil {
 			return report, err
 		}
 		report.EventFilesRemoved++

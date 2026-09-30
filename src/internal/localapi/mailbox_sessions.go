@@ -37,11 +37,14 @@ func localFailure(status int, code, message string) *localOperationFailure {
 // ingress. The file-only client itself remains filesystem-only.
 func (s *Server) CreateSessionIntent(ctx context.Context, request mailbox.Request) (mailbox.SessionIntent, error) {
 	ctx = audit.WithIngress(ctx, audit.IngressMailbox)
+	if request.ExecutionIdempotencyKey == "" {
+		return mailbox.SessionIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox create request is invalid"}
+	}
 	body, err := mailboxCreateSessionBody(request.RawJSON)
 	if err != nil {
 		return mailbox.SessionIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox create request is invalid"}
 	}
-	acceptance, failure := s.acceptCreateSessionIntent(ctx, request.IdempotencyKey, body)
+	acceptance, failure := s.acceptCreateSessionIntent(ctx, request.ExecutionIdempotencyKey, body)
 	if failure != nil {
 		return mailbox.SessionIntent{}, mailboxOperationError(failure)
 	}
@@ -63,7 +66,7 @@ func (s *Server) SubmitCommandIntent(ctx context.Context, request mailbox.Reques
 	}
 	decoder := json.NewDecoder(bytes.NewReader(request.RawJSON))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || input.Operation != "submit_command" || input.RequestID != request.RequestID || input.IdempotencyKey != request.IdempotencyKey || input.SessionID != request.SessionID || input.Script == nil {
+	if err := decoder.Decode(&input); err != nil || input.Operation != "submit_command" || input.RequestID != request.RequestID || input.IdempotencyKey != request.IdempotencyKey || input.SessionID != request.SessionID || input.Script == nil || request.ExecutionIdempotencyKey == "" {
 		return mailbox.CommandIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox submit request is invalid"}
 	}
 	body, err := json.Marshal(struct {
@@ -73,7 +76,7 @@ func (s *Server) SubmitCommandIntent(ctx context.Context, request mailbox.Reques
 	if err != nil {
 		return mailbox.CommandIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox submit request is invalid"}
 	}
-	acceptance, failure := s.acceptSubmitCommandIntent(ctx, request.IdempotencyKey, request.SessionID, body)
+	acceptance, failure := s.acceptSubmitCommandIntent(ctx, request.ExecutionIdempotencyKey, request.SessionID, body)
 	if failure != nil {
 		return mailbox.CommandIntent{}, mailboxOperationError(failure)
 	}
@@ -88,13 +91,13 @@ func (s *Server) SubmitCommandIntent(ctx context.Context, request mailbox.Reques
 // cancellation request.
 func (s *Server) CancelCommandIntent(ctx context.Context, request mailbox.Request) (mailbox.CommandIntent, error) {
 	ctx = audit.WithIngress(ctx, audit.IngressMailbox)
-	if request.Operation != "cancel_command" || request.CommandID == "" || request.IdempotencyKey == "" {
+	if request.Operation != "cancel_command" || request.CommandID == "" || request.IdempotencyKey == "" || request.ExecutionIdempotencyKey == "" {
 		return mailbox.CommandIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox cancel request is invalid"}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	accepted, failure := s.acceptCancelCommandIntent(ctx, request.IdempotencyKey, request.CommandID, "")
+	accepted, failure := s.acceptCancelCommandIntent(ctx, request.ExecutionIdempotencyKey, request.CommandID, "")
 	if failure != nil {
 		return mailbox.CommandIntent{}, mailboxOperationError(failure)
 	}
@@ -144,13 +147,13 @@ func (s *Server) GetCancelCommandSnapshot(ctx context.Context, commandIDText, id
 // the mailbox importer to the API's default "cancel" policy.
 func (s *Server) CloseSessionIntent(ctx context.Context, request mailbox.Request) (mailbox.SessionIntent, error) {
 	ctx = audit.WithIngress(ctx, audit.IngressMailbox)
-	if request.Operation != "close_session" || request.SessionID == "" || request.IdempotencyKey == "" {
+	if request.Operation != "close_session" || request.SessionID == "" || request.IdempotencyKey == "" || request.ExecutionIdempotencyKey == "" {
 		return mailbox.SessionIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox close request is invalid"}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	accepted, failure := s.acceptCloseSessionIntent(ctx, request.IdempotencyKey, request.SessionID, request.ClosePolicy)
+	accepted, failure := s.acceptCloseSessionIntent(ctx, request.ExecutionIdempotencyKey, request.SessionID, request.ClosePolicy)
 	if failure != nil {
 		return mailbox.SessionIntent{}, mailboxOperationError(failure)
 	}
@@ -161,14 +164,14 @@ func (s *Server) CloseSessionIntent(ctx context.Context, request mailbox.Request
 // request hash, idempotency key, and durable local-intent path as /v1/jobs.
 func (s *Server) RunJobIntent(ctx context.Context, request mailbox.Request) (mailbox.RunIntent, error) {
 	ctx = audit.WithIngress(ctx, audit.IngressMailbox)
-	if request.Operation != "run" || request.RequestID == "" || request.IdempotencyKey == "" {
+	if request.Operation != "run" || request.RequestID == "" || request.IdempotencyKey == "" || request.ExecutionIdempotencyKey == "" {
 		return mailbox.RunIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox run request is invalid"}
 	}
 	body, err := mailboxRunJobBody(request)
 	if err != nil {
 		return mailbox.RunIntent{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "mailbox run request is invalid"}
 	}
-	acceptance, failure := s.acceptCreateJobIntent(ctx, request.IdempotencyKey, body)
+	acceptance, failure := s.acceptCreateJobIntent(ctx, request.ExecutionIdempotencyKey, body)
 	if failure != nil {
 		return mailbox.RunIntent{}, mailboxOperationError(failure)
 	}

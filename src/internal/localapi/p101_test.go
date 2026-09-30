@@ -79,10 +79,7 @@ func TestP101M10SevenOperationMatrixLocalAndQueuedRemote(t *testing.T) {
 				"request_id": cancelRequestID, "idempotency_key": "key-p101-" + target.name + "-cancel",
 				"operation": "cancel_command", "command_id": cancelCommandID,
 			})
-			cancelIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "cancel_command", "key-p101-"+target.name+"-cancel", p063Owner(t))
-			if err != nil {
-				t.Fatal(err)
-			}
+			cancelIntent := pMailboxIntentForRequest(t, h.authority, "cancel_command", cancelRequestID)
 			if target.kind == string(domain.TargetKindRemote) {
 				p101SetIntentDelivery(t, h, cancelIntent, store.LocalIntentUncertain)
 				if err := h.processor.Reconcile(ctx); err != nil {
@@ -119,10 +116,7 @@ func TestP101M10SevenOperationMatrixLocalAndQueuedRemote(t *testing.T) {
 				"request_id": closeRequestID, "idempotency_key": "key-p101-" + target.name + "-close",
 				"operation": "close_session", "session_id": sessionID,
 			})
-			closeIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "close_session", "key-p101-"+target.name+"-close", p063Owner(t))
-			if err != nil {
-				t.Fatal(err)
-			}
+			closeIntent := pMailboxIntentForRequest(t, h.authority, "close_session", closeRequestID)
 			if target.kind == string(domain.TargetKindRemote) {
 				p101SetIntentDelivery(t, h, closeIntent, store.LocalIntentUncertain)
 				if err := h.processor.Reconcile(ctx); err != nil {
@@ -166,10 +160,7 @@ func TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		cancelIntent, err := h.authority.GetLocalIntentByIdempotency(context.Background(), "cancel_command", "key-p101-cancel-undelivered-cancel", p063Owner(t))
-		if err != nil {
-			t.Fatal(err)
-		}
+		cancelIntent := pMailboxIntentForRequest(t, h.authority, "cancel_command", cancelID)
 		p101SetIntentDelivery(t, h, submitIntent, store.LocalIntentNotDelivered)
 		p101SetIntentDelivery(t, h, cancelIntent, store.LocalIntentNotDelivered)
 		if err := h.processor.Reconcile(context.Background()); err != nil {
@@ -197,10 +188,7 @@ func TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		closeIntent, err := h.authority.GetLocalIntentByIdempotency(context.Background(), "close_session", "key-p101-close-undelivered-close", p063Owner(t))
-		if err != nil {
-			t.Fatal(err)
-		}
+		closeIntent := pMailboxIntentForRequest(t, h.authority, "close_session", closeID)
 		p101SetIntentDelivery(t, h, createIntent, store.LocalIntentNotDelivered)
 		p101SetIntentDelivery(t, h, closeIntent, store.LocalIntentNotDelivered)
 		if err := h.processor.Reconcile(context.Background()); err != nil {
@@ -392,9 +380,9 @@ func TestP101RunRetryDoesNotCreateOrStartAnotherCommand(t *testing.T) {
 	if second.RequestState != "complete" || second.JobID != first.JobID || second.SessionID != first.SessionID || second.CommandID != first.CommandID || second.CommandState != first.CommandState || second.TeardownOutcome != first.TeardownOutcome || second.AvailableEventSequence == nil || *second.AvailableEventSequence != *first.AvailableEventSequence {
 		t.Fatalf("run retry did not replay original terminal result: first=%+v retry=%+v", first, second)
 	}
-	replayedIntent, err := h.authority.GetLocalIntentByIdempotency(context.Background(), "run", key, p063Owner(t))
-	if err != nil || replayedIntent.IntentID != intent.IntentID || replayedIntent.JobID != intent.JobID || replayedIntent.CommandID != intent.CommandID {
-		t.Fatalf("run retry created a second durable intent: first=%+v retry=%+v err=%v", intent, replayedIntent, err)
+	replayedIntent := pMailboxIntentForRequest(t, h.authority, "run", retryID)
+	if replayedIntent.IntentID != intent.IntentID || replayedIntent.JobID != intent.JobID || replayedIntent.CommandID != intent.CommandID {
+		t.Fatalf("run retry created a second durable intent: first=%+v retry=%+v", intent, replayedIntent)
 	}
 	job, err := h.authority.GetJob(context.Background(), intent.JobID)
 	if err != nil || job.JobID != intent.JobID || job.CommandID != intent.CommandID || job.CommandState == nil || *job.CommandState != domain.CommandStateSucceeded {

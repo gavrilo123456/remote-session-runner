@@ -235,14 +235,14 @@ WHERE command_id IN (
 )
   AND NOT EXISTS (
       SELECT 1 FROM mailbox_event_file_references r
-      JOIN mailbox_exchanges e ON e.request_id = r.request_id
+      JOIN mailbox_exchanges e ON e.exchange_id = r.exchange_id
       WHERE r.command_id = exec_command_events.command_id
         AND e.response_file_removed_at IS NULL
         AND (e.response_cleanup_at IS NULL OR e.response_cleanup_at > ?)
   )
   AND NOT EXISTS (
       SELECT 1 FROM mailbox_remote_event_file_references r
-      JOIN mailbox_exchanges e ON e.request_id = r.request_id
+      JOIN mailbox_exchanges e ON e.exchange_id = r.exchange_id
       WHERE r.command_id = exec_command_events.command_id
         AND e.response_file_removed_at IS NULL
         AND (e.response_cleanup_at IS NULL OR e.response_cleanup_at > ?)
@@ -261,14 +261,14 @@ WHERE command_id IN (
 )
   AND NOT EXISTS (
       SELECT 1 FROM mailbox_event_file_references r
-      JOIN mailbox_exchanges e ON e.request_id = r.request_id
+      JOIN mailbox_exchanges e ON e.exchange_id = r.exchange_id
       WHERE r.command_id = local_remote_events.command_id
         AND e.response_file_removed_at IS NULL
         AND (e.response_cleanup_at IS NULL OR e.response_cleanup_at > ?)
   )
   AND NOT EXISTS (
       SELECT 1 FROM mailbox_remote_event_file_references r
-      JOIN mailbox_exchanges e ON e.request_id = r.request_id
+      JOIN mailbox_exchanges e ON e.exchange_id = r.exchange_id
       WHERE r.command_id = local_remote_events.command_id
         AND e.response_file_removed_at IS NULL
         AND (e.response_cleanup_at IS NULL OR e.response_cleanup_at > ?)

@@ -122,6 +122,30 @@ func p102OneIntent(t *testing.T, h *p102Harness, operation, key string) store.Lo
 	return intent
 }
 
+// p102MailboxIntent resolves the trusted execution identity chosen by the
+// durable mailbox receipt. The client key stays in the mailbox response and
+// receipt, while local intent creation uses this scoped key.
+func p102MailboxIntent(t *testing.T, h *p102Harness, operation, requestID string) (store.MailboxExchangeRecord, store.LocalIntentRecord) {
+	t.Helper()
+	ref, err := store.NewMailboxExchangeRef(store.DefaultMailboxID, requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := h.mailbox.authority.GetMailboxExchangeInMailbox(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ExecutionIdempotencyKey == "" || receipt.ExecutionIdempotencyKey == receipt.IdempotencyKey {
+		t.Fatalf("mailbox receipt did not retain a scoped execution key: %+v", receipt)
+	}
+	intent, err := h.mailbox.authority.GetLocalIntentByIdempotency(context.Background(), operation, receipt.ExecutionIdempotencyKey, p063Owner(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p102AssertIntentCount(t, h, operation, receipt.ExecutionIdempotencyKey, 1)
+	return receipt, intent
+}
+
 func TestP102M08D05CreateSessionCrossIngressIdempotencyMatrix(t *testing.T) {
 	for _, first := range []string{"unix", "mailbox"} {
 		t.Run(first+" first", func(t *testing.T) {
@@ -151,8 +175,13 @@ func TestP102M08D05CreateSessionCrossIngressIdempotencyMatrix(t *testing.T) {
 				original = p102Decode[sessionAcceptance](t, data)
 			}
 			mailboxResponse := p101ReadResponse(t, h.mailbox, requestID)
-			if original.SessionID == "" || original.SessionID != original.ResourceID || original.IntentID == "" || mailboxResponse.SessionID != original.SessionID || mailboxResponse.RequestState != string(store.MailboxExchangeAccepted) {
-				t.Fatalf("create Unix/mailbox outcomes differ: api=%+v mailbox=%+v", original, mailboxResponse)
+			if original.SessionID == "" || original.SessionID != original.ResourceID || original.IntentID == "" ||
+				mailboxResponse.SessionID == "" || mailboxResponse.SessionID == original.SessionID || mailboxResponse.RequestState != string(store.MailboxExchangeAccepted) {
+				t.Fatalf("create execution identities were not isolated: api=%+v mailbox=%+v", original, mailboxResponse)
+			}
+			_, mailboxIntent := p102MailboxIntent(t, h, "create_session", requestID)
+			if string(mailboxIntent.SessionID) != mailboxResponse.SessionID || mailboxIntent.IntentID == domain.IntentID(original.IntentID) {
+				t.Fatalf("mailbox create intent was not isolated: api=%+v mailbox=%+v", original, mailboxIntent)
 			}
 
 			// Omitted API source and explicit mailbox source canonicalize to the same request.
@@ -168,8 +197,8 @@ func TestP102M08D05CreateSessionCrossIngressIdempotencyMatrix(t *testing.T) {
 			mailboxRetryID := requestID + "-retry"
 			mailboxCreate["request_id"] = mailboxRetryID
 			p101Import(t, h.mailbox, mailboxRetryID, mailboxCreate)
-			if got := p101ReadResponse(t, h.mailbox, mailboxRetryID); got.SessionID != original.SessionID || got.RequestState != string(store.MailboxExchangeAccepted) {
-				t.Fatalf("mailbox create retry=%+v, original session=%s", got, original.SessionID)
+			if got := p101ReadResponse(t, h.mailbox, mailboxRetryID); got.SessionID != mailboxResponse.SessionID || got.RequestState != string(store.MailboxExchangeAccepted) {
+				t.Fatalf("mailbox create retry=%+v, mailbox session=%s", got, mailboxResponse.SessionID)
 			}
 
 			p102AssertAPIConflict(t, h, http.MethodPost, "/v1/sessions", key,
@@ -225,8 +254,13 @@ func TestP102M08D05SubmitCommandCrossIngressIdempotencyMatrix(t *testing.T) {
 				original = p102Decode[commandAcceptance](t, data)
 			}
 			mailboxResponse := p101ReadResponse(t, h.mailbox, requestID)
-			if original.CommandID == "" || original.CommandID != original.ResourceID || original.SessionID != sessionID || original.IntentID == "" || mailboxResponse.CommandID != original.CommandID || mailboxResponse.SessionID != sessionID {
-				t.Fatalf("submit Unix/mailbox outcomes differ: api=%+v mailbox=%+v", original, mailboxResponse)
+			if original.CommandID == "" || original.CommandID != original.ResourceID || original.SessionID != sessionID || original.IntentID == "" ||
+				mailboxResponse.CommandID == "" || mailboxResponse.CommandID == original.CommandID || mailboxResponse.SessionID != sessionID {
+				t.Fatalf("submit execution identities were not isolated: api=%+v mailbox=%+v", original, mailboxResponse)
+			}
+			_, mailboxIntent := p102MailboxIntent(t, h, "submit_command", requestID)
+			if string(mailboxIntent.CommandID) != mailboxResponse.CommandID || string(mailboxIntent.SessionID) != sessionID || mailboxIntent.IntentID == domain.IntentID(original.IntentID) {
+				t.Fatalf("mailbox submit intent was not isolated: api=%+v mailbox=%+v", original, mailboxIntent)
 			}
 			status, retryData := p102API(t, h, http.MethodPost, path, key, `{"timeout_seconds":30,"script":"printf p102-submit"}`)
 			if status != http.StatusAccepted {
@@ -239,8 +273,8 @@ func TestP102M08D05SubmitCommandCrossIngressIdempotencyMatrix(t *testing.T) {
 			mailboxRetryID := requestID + "-retry"
 			mailboxSubmit["request_id"] = mailboxRetryID
 			p101Import(t, h.mailbox, mailboxRetryID, mailboxSubmit)
-			if got := p101ReadResponse(t, h.mailbox, mailboxRetryID); got.CommandID != original.CommandID || got.RequestState != string(store.MailboxExchangeAccepted) {
-				t.Fatalf("mailbox submit retry=%+v, original command=%s", got, original.CommandID)
+			if got := p101ReadResponse(t, h.mailbox, mailboxRetryID); got.CommandID != mailboxResponse.CommandID || got.RequestState != string(store.MailboxExchangeAccepted) {
+				t.Fatalf("mailbox submit retry=%+v, mailbox command=%s", got, mailboxResponse.CommandID)
 			}
 
 			p102AssertAPIConflict(t, h, http.MethodPost, path, key, `{"script":"printf p102-submit","timeout_seconds":31}`)
@@ -419,7 +453,7 @@ func TestP102M08D05CloseSessionPolicyCrossIngressIdempotencyMatrix(t *testing.T)
 	}
 }
 
-func TestP102M08D05RunCrossIngressIdempotencyMatrixAndSingleExecution(t *testing.T) {
+func TestP102M08D05RunCrossIngressIdempotencyMatrixAndMailboxScopedExecution(t *testing.T) {
 	for _, first := range []string{"unix", "mailbox"} {
 		t.Run(first+" first", func(t *testing.T) {
 			h := newP102Harness(t)
@@ -445,25 +479,31 @@ func TestP102M08D05RunCrossIngressIdempotencyMatrixAndSingleExecution(t *testing
 			}
 			mailboxResponse := p101ReadResponse(t, h.mailbox, requestID)
 			if original.JobID == "" || original.JobID != original.ResourceID || original.SessionID == "" || original.CommandID == "" || original.IntentID == "" ||
-				mailboxResponse.JobID != original.JobID || mailboxResponse.SessionID != original.SessionID || mailboxResponse.CommandID != original.CommandID {
-				t.Fatalf("run Unix/mailbox outcomes differ: api=%+v mailbox=%+v", original, mailboxResponse)
+				mailboxResponse.JobID == "" || mailboxResponse.SessionID == "" || mailboxResponse.CommandID == "" ||
+				mailboxResponse.JobID == original.JobID || mailboxResponse.SessionID == original.SessionID || mailboxResponse.CommandID == original.CommandID {
+				t.Fatalf("run execution identities were not isolated: api=%+v mailbox=%+v", original, mailboxResponse)
 			}
 
-			intent := p102OneIntent(t, h, "run", key)
-			if intent.JobID != domain.JobID(original.JobID) || intent.SessionID != domain.SessionID(original.SessionID) || intent.CommandID != domain.CommandID(original.CommandID) || intent.IntentID != domain.IntentID(original.IntentID) {
-				t.Fatalf("durable run intent=%+v, original=%+v", intent, original)
+			apiIntent := p102OneIntent(t, h, "run", key)
+			if apiIntent.JobID != domain.JobID(original.JobID) || apiIntent.SessionID != domain.SessionID(original.SessionID) || apiIntent.CommandID != domain.CommandID(original.CommandID) || apiIntent.IntentID != domain.IntentID(original.IntentID) {
+				t.Fatalf("Unix run intent=%+v, original=%+v", apiIntent, original)
 			}
-			p101SetIntentDelivery(t, h.mailbox, intent, store.LocalIntentAccepted)
-			p101CompleteLocalRun(t, h.mailbox, intent, "p102-once\n")
+			_, mailboxIntent := p102MailboxIntent(t, h, "run", requestID)
+			if mailboxIntent.JobID != domain.JobID(mailboxResponse.JobID) || mailboxIntent.SessionID != domain.SessionID(mailboxResponse.SessionID) || mailboxIntent.CommandID != domain.CommandID(mailboxResponse.CommandID) || mailboxIntent.IntentID == apiIntent.IntentID {
+				t.Fatalf("mailbox run intent was not isolated: api=%+v mailbox=%+v", apiIntent, mailboxIntent)
+			}
+			p101SetIntentDelivery(t, h.mailbox, mailboxIntent, store.LocalIntentAccepted)
+			p101CompleteLocalRun(t, h.mailbox, mailboxIntent, "p102-once\n")
 			if err := h.mailbox.processor.Reconcile(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			terminal := p101ReadResponse(t, h.mailbox, requestID)
-			if terminal.RequestState != string(store.MailboxExchangeComplete) || terminal.JobID != original.JobID || terminal.SessionID != original.SessionID || terminal.CommandID != original.CommandID || terminal.CommandState != string(domain.CommandStateSucceeded) || terminal.TeardownOutcome != "closed" {
-				t.Fatalf("completed original run response=%+v", terminal)
+			if terminal.RequestState != string(store.MailboxExchangeComplete) || terminal.JobID != mailboxResponse.JobID || terminal.SessionID != mailboxResponse.SessionID || terminal.CommandID != mailboxResponse.CommandID || terminal.CommandState != string(domain.CommandStateSucceeded) || terminal.TeardownOutcome != "closed" {
+				t.Fatalf("completed mailbox run response=%+v", terminal)
 			}
 
-			// Both ingress paths replay after completion and retain the same one-off execution result.
+			// Each ingress replays its own acceptance; the mailbox execution is
+			// scoped away from the unrelated Unix-socket request with the same key.
 			apiRetryBody := `{"source":{"mode":"empty"},"script":"printf p102-once","timeout_seconds":30,"execution_target":{"profile":"mac-workstation","kind":"local"},"environment":"mac-dev"}`
 			status, retryData := p102API(t, h, http.MethodPost, "/v1/jobs", key, apiRetryBody)
 			if status != http.StatusAccepted {
@@ -480,19 +520,19 @@ func TestP102M08D05RunCrossIngressIdempotencyMatrixAndSingleExecution(t *testing
 				t.Fatal(err)
 			}
 			mailboxTerminal := p101ReadResponse(t, h.mailbox, mailboxRetryID)
-			if mailboxTerminal.RequestState != string(store.MailboxExchangeComplete) || mailboxTerminal.JobID != original.JobID || mailboxTerminal.SessionID != original.SessionID || mailboxTerminal.CommandID != original.CommandID || mailboxTerminal.CommandState != terminal.CommandState || mailboxTerminal.TeardownOutcome != terminal.TeardownOutcome {
-				t.Fatalf("completed mailbox retry=%+v, original=%+v", mailboxTerminal, terminal)
+			if mailboxTerminal.RequestState != string(store.MailboxExchangeComplete) || mailboxTerminal.JobID != mailboxResponse.JobID || mailboxTerminal.SessionID != mailboxResponse.SessionID || mailboxTerminal.CommandID != mailboxResponse.CommandID || mailboxTerminal.CommandState != terminal.CommandState || mailboxTerminal.TeardownOutcome != terminal.TeardownOutcome {
+				t.Fatalf("completed mailbox retry=%+v, mailbox original=%+v", mailboxTerminal, terminal)
 			}
 
 			p102AssertAPIConflict(t, h, http.MethodPost, "/v1/jobs", key,
 				`{"environment":"mac-dev","execution_target":{"kind":"local","profile":"mac-workstation"},"script":"printf changed","timeout_seconds":30}`)
 			changedMailbox := p100RunRequest(requestID+"-changed", key, "local", "mac-workstation", "mac-dev", "printf changed")
 			p102AssertMailboxConflict(t, h, requestID+"-changed", changedMailbox)
-			intent = p102OneIntent(t, h, "run", key)
-			if intent.JobID != domain.JobID(original.JobID) || intent.IntentID != domain.IntentID(original.IntentID) {
-				t.Fatalf("run retry changed durable intent: %+v", intent)
+			apiIntent = p102OneIntent(t, h, "run", key)
+			if apiIntent.JobID != domain.JobID(original.JobID) || apiIntent.IntentID != domain.IntentID(original.IntentID) {
+				t.Fatalf("Unix run retry changed durable intent: %+v", apiIntent)
 			}
-			command, events, err := h.mailbox.authority.GetCommandWithEvents(context.Background(), domain.CommandID(original.CommandID))
+			command, events, err := h.mailbox.authority.GetCommandWithEvents(context.Background(), domain.CommandID(mailboxResponse.CommandID))
 			if err != nil || command.State != domain.CommandStateSucceeded {
 				t.Fatalf("one-off command=%+v err=%v", command, err)
 			}
@@ -503,9 +543,9 @@ func TestP102M08D05RunCrossIngressIdempotencyMatrixAndSingleExecution(t *testing
 				}
 			}
 			if starts != 1 {
-				t.Fatalf("cross-ingress retries recorded %d command starts, want exactly one", starts)
+				t.Fatalf("mailbox retries recorded %d command starts, want exactly one", starts)
 			}
-			if _, err := h.mailbox.authority.GetJob(context.Background(), domain.JobID(original.JobID)); err != nil {
+			if _, err := h.mailbox.authority.GetJob(context.Background(), domain.JobID(mailboxResponse.JobID)); err != nil {
 				t.Fatalf("run job after replay: %v", err)
 			}
 			var jobs, sessions, commands int

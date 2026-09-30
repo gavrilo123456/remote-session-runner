@@ -74,9 +74,9 @@ VALUES ('remote-command-gap-p129',2,4,5,8,'lost',0,'remote_event_gap',?)`, stamp
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(context.Background(), `
-INSERT INTO mailbox_exchanges(request_id,operation,controller_type,controller_id,idempotency_key,canonical_hash_version,
-  canonical_hash,canonical_payload,resource_id,request_state,created_at,updated_at)
-VALUES ('request-p129','run','direct_mtls','runner-test','key-p129',1,zeroblob(32),X'7b7d','job-p129','accepted',?,?)`, stamp, stamp); err != nil {
+	INSERT INTO mailbox_exchanges(exchange_id,mailbox_id,client_request_id,operation,controller_type,controller_id,client_idempotency_key,execution_idempotency_key,canonical_hash_version,
+	  canonical_hash,canonical_payload,resource_id,request_state,created_at,updated_at)
+	VALUES ('mbx-exchange-v1-64656661756c7400726571756573742d70313239','default','request-p129','run','direct_mtls','runner-test','key-p129',?,1,zeroblob(32),X'7b7d','job-p129','accepted',?,?)`, mailboxExecutionIdempotencyKey(DefaultMailboxID, "key-p129"), stamp, stamp); err != nil {
 		t.Fatal(err)
 	}
 

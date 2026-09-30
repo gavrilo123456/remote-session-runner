@@ -53,15 +53,19 @@ var requestSchemaFS embed.FS
 // the bounded bytes read from inbox and is retained for the later durable
 // receipt/import phases.
 type Request struct {
-	RequestID      string
-	IdempotencyKey string
-	Operation      string
-	Environment    string
-	SessionID      string
-	CommandID      string
-	ClosePolicy    string
-	Script         string
-	RawJSON        []byte
+	// MailboxID and ExecutionIdempotencyKey are trusted runtime fields. Neither
+	// is accepted from mailbox JSON or rendered in a response.
+	MailboxID               string
+	RequestID               string
+	IdempotencyKey          string
+	ExecutionIdempotencyKey string
+	Operation               string
+	Environment             string
+	SessionID               string
+	CommandID               string
+	ClosePolicy             string
+	Script                  string
+	RawJSON                 []byte
 }
 
 // ResultStatus describes whether a marked request passed importer validation.
@@ -97,29 +101,37 @@ type durableHandler func(context.Context, Request) (bool, error)
 // ACK directories are created below Root when absent. Handler is optional for
 // validation-only use; Clock controls the 24-hour draft cutoff.
 type Options struct {
-	Root    string
-	Handler Handler
-	Clock   func() time.Time
+	MailboxID string
+	Root      string
+	Handler   Handler
+	Clock     func() time.Time
 }
 
 // Importer implements marker-last mailbox discovery and validation.
 type Importer struct {
-	root    string
-	inbox   string
-	acks    string
-	handler Handler
-	schema  *jsonschema.Schema
-	clock   func() time.Time
+	mailboxID string
+	root      string
+	inbox     string
+	acks      string
+	handler   Handler
+	schema    *jsonschema.Schema
+	clock     func() time.Time
 }
 
 // NewImporter creates an importer for root. It creates missing root/inbox
 // directories with owner-only permissions and rejects existing unsafe modes.
 func NewImporter(root string, handler Handler) (*Importer, error) {
-	return New(Options{Root: root, Handler: handler})
+	return New(Options{MailboxID: "default", Root: root, Handler: handler})
 }
 
 // New is the options-based constructor for the mailbox importer.
 func New(options Options) (*Importer, error) {
+	if options.MailboxID == "" {
+		options.MailboxID = "default"
+	}
+	if _, ok := safeMailboxID(options.MailboxID); !ok {
+		return nil, fmt.Errorf("%w: mailbox ID", ErrImporterConfiguration)
+	}
 	if strings.TrimSpace(options.Root) == "" || !filepath.IsAbs(options.Root) || filepath.Clean(options.Root) != options.Root || strings.IndexByte(options.Root, 0) >= 0 {
 		return nil, fmt.Errorf("%w: root must be an absolute clean path", ErrImporterConfiguration)
 	}
@@ -142,7 +154,15 @@ func New(options Options) (*Importer, error) {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Importer{root: options.Root, inbox: inbox, acks: acks, handler: options.Handler, schema: schema, clock: clock}, nil
+	return &Importer{mailboxID: options.MailboxID, root: options.Root, inbox: inbox, acks: acks, handler: options.Handler, schema: schema, clock: clock}, nil
+}
+
+// MailboxID returns the trusted namespace configured for this filesystem root.
+func (i *Importer) MailboxID() string {
+	if i == nil {
+		return ""
+	}
+	return i.mailboxID
 }
 
 // InboxPath returns the configured inbox directory.
@@ -319,7 +339,7 @@ func (i *Importer) validateRequest(filenameID string, raw []byte) (Request, erro
 			return Request{}, fmt.Errorf("%w: close_policy: %v", ErrMailboxSchema, err)
 		}
 	}
-	return Request{RequestID: wire.RequestID, IdempotencyKey: wire.IdempotencyKey, Operation: wire.Operation, Environment: wire.Environment, SessionID: wire.SessionID, CommandID: wire.CommandID, ClosePolicy: closePolicy, Script: wire.Script, RawJSON: append([]byte(nil), raw...)}, nil
+	return Request{MailboxID: i.mailboxID, RequestID: wire.RequestID, IdempotencyKey: wire.IdempotencyKey, Operation: wire.Operation, Environment: wire.Environment, SessionID: wire.SessionID, CommandID: wire.CommandID, ClosePolicy: closePolicy, Script: wire.Script, RawJSON: append([]byte(nil), raw...)}, nil
 }
 
 func parseClosePolicy(raw json.RawMessage) (string, error) {
@@ -394,6 +414,10 @@ func decodeOneJSON(raw []byte) (any, error) {
 }
 
 func safeRequestID(value string) (string, bool) {
+	return value, mailboxRequestIDPattern.MatchString(value)
+}
+
+func safeMailboxID(value string) (string, bool) {
 	return value, mailboxRequestIDPattern.MatchString(value)
 }
 

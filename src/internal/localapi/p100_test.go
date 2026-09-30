@@ -97,9 +97,9 @@ func TestP100RunKeepsStableIDsForLocalAndQueuedRemoteIntents(t *testing.T) {
 			if replayed.RequestID != retryID || replayed.RequestState != "accepted" || replayed.JobID != first.JobID || replayed.SessionID != first.SessionID || replayed.CommandID != first.CommandID {
 				t.Fatalf("same-key run retry changed stable IDs: first=%+v retry=%+v", first, replayed)
 			}
-			replayedIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "run", key, p063Owner(t))
-			if err != nil || replayedIntent.IntentID != intent.IntentID {
-				t.Fatalf("same-key retry created another run intent: original=%+v replay=%+v err=%v", intent, replayedIntent, err)
+			replayedIntent := pMailboxIntentForRequest(t, h.authority, "run", retryID)
+			if replayedIntent.IntentID != intent.IntentID {
+				t.Fatalf("same-key retry created another run intent: original=%+v replay=%+v", intent, replayedIntent)
 			}
 		})
 	}

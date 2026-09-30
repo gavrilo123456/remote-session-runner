@@ -136,6 +136,7 @@ func (o *Outbox) Remove(ctx context.Context, requestID string) error {
 
 // Projector republishes the durable SQLite response snapshot after a crash.
 type Projector struct {
+	MailboxID  string
 	Authority  *store.AuthorityStore
 	Outbox     *Outbox
 	EventFiles *EventFiles
@@ -145,14 +146,18 @@ func (p Projector) Publish(ctx context.Context, requestID string) error {
 	if p.Authority == nil || p.Outbox == nil {
 		return ErrOutboxConfiguration
 	}
-	record, err := p.Authority.GetMailboxExchange(ctx, requestID)
+	ref, err := p.exchangeRef(requestID)
+	if err != nil {
+		return ErrOutboxConfiguration
+	}
+	record, err := p.Authority.GetMailboxExchangeInMailbox(ctx, ref)
 	if err != nil {
 		return err
 	}
 	if len(record.ResponseBytes) == 0 {
 		return fmt.Errorf("%w: response revision is not published", ErrOutboxResponse)
 	}
-	if err := p.Authority.EnsureMailboxResponsePublishable(ctx, requestID); err != nil {
+	if err := p.Authority.EnsureMailboxResponsePublishableInMailbox(ctx, ref); err != nil {
 		return err
 	}
 	return p.Outbox.Replace(ctx, requestID, record.ResponseBytes)
@@ -166,7 +171,11 @@ func (p Projector) PublishCommand(ctx context.Context, requestID string, command
 	if p.Authority == nil || p.Outbox == nil || p.EventFiles == nil {
 		return ErrOutboxConfiguration
 	}
-	record, err := p.Authority.GetMailboxExchange(ctx, requestID)
+	ref, err := p.exchangeRef(requestID)
+	if err != nil {
+		return ErrOutboxConfiguration
+	}
+	record, err := p.Authority.GetMailboxExchangeInMailbox(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -187,14 +196,14 @@ func (p Projector) PublishCommand(ctx context.Context, requestID string, command
 	if err != nil || response.CommandID != string(commandID) || response.EventsFile != expectedReference {
 		return fmt.Errorf("%w: event-file reference does not match command", ErrOutboxResponse)
 	}
-	if err := p.Authority.EnsureMailboxResponsePublishable(ctx, requestID); err != nil {
+	if err := p.Authority.EnsureMailboxResponsePublishableInMailbox(ctx, ref); err != nil {
 		return err
 	}
-	if err := p.Authority.BindMailboxEventFileReference(ctx, requestID, commandID); err != nil {
+	if err := p.Authority.BindMailboxEventFileReferenceInMailbox(ctx, ref, commandID); err != nil {
 		return err
 	}
 	eventProjector := EventProjector{Authority: p.Authority}
-	eventBytes, cursor, err := eventProjector.ProjectMailboxResponseThrough(ctx, requestID, commandID)
+	eventBytes, cursor, err := eventProjector.ProjectMailboxResponseThroughInMailbox(ctx, ref, commandID)
 	if err != nil {
 		return err
 	}
@@ -211,6 +220,14 @@ func (p Projector) PublishCommand(ctx context.Context, requestID string, command
 		return err
 	}
 	return p.Outbox.Replace(ctx, requestID, record.ResponseBytes)
+}
+
+func (p Projector) exchangeRef(requestID string) (store.MailboxExchangeRef, error) {
+	mailboxID := p.MailboxID
+	if mailboxID == "" {
+		mailboxID = store.DefaultMailboxID
+	}
+	return store.NewMailboxExchangeRef(mailboxID, requestID)
 }
 
 func syncDirectory(path string) error {

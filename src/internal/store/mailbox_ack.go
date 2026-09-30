@@ -16,6 +16,7 @@ var (
 // revision and its advertised event cursor. A nil cursor means the response
 // advertised no event file; a pointer to zero acknowledges an expired prefix.
 type MailboxAcknowledgement struct {
+	MailboxID              string
 	RequestID              string
 	ResponseRevision       int64
 	AvailableEventSequence *int64
@@ -26,8 +27,27 @@ type MailboxAcknowledgement struct {
 // receipt. An incomplete-output ACK acknowledges the available prefix and its
 // warning only.
 func (s *AuthorityStore) AcknowledgeMailboxExchange(ctx context.Context, ack MailboxAcknowledgement) (MailboxExchangeRecord, error) {
-	if err := validateMailboxRequestID(ack.RequestID); err != nil {
+	mailboxID := ack.MailboxID
+	if mailboxID == "" {
+		mailboxID = DefaultMailboxID
+	}
+	ref, err := NewMailboxExchangeRef(mailboxID, ack.RequestID)
+	if err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: request ID: %v", ErrMailboxAckInvalid, err)
+	}
+	return s.AcknowledgeMailboxExchangeInMailbox(ctx, ref, ack)
+}
+
+// AcknowledgeMailboxExchangeInMailbox records an ACK only for the exchange in
+// the supplied mailbox namespace.
+func (s *AuthorityStore) AcknowledgeMailboxExchangeInMailbox(ctx context.Context, ref MailboxExchangeRef, ack MailboxAcknowledgement) (MailboxExchangeRecord, error) {
+	validated, err := validateMailboxExchangeRef(ref)
+	if err != nil {
+		return MailboxExchangeRecord{}, fmt.Errorf("%w: request ID: %v", ErrMailboxAckInvalid, err)
+	}
+	if (ack.MailboxID != "" && ack.MailboxID != validated.MailboxID) ||
+		(ack.RequestID != "" && ack.RequestID != validated.ClientRequestID) {
+		return MailboxExchangeRecord{}, ErrMailboxAckInvalid
 	}
 	if ack.ResponseRevision < 1 {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: response revision", ErrMailboxAckInvalid)
@@ -37,7 +57,7 @@ func (s *AuthorityStore) AcknowledgeMailboxExchange(ctx context.Context, ack Mai
 	}
 	now := s.now().UTC()
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
-		record, err := readMailboxExchangeOnConnection(ctx, connection, ack.RequestID)
+		record, err := readMailboxExchangeOnConnection(ctx, connection, validated)
 		if err != nil {
 			return MailboxExchangeRecord{}, err
 		}
@@ -61,9 +81,9 @@ func (s *AuthorityStore) AcknowledgeMailboxExchange(ctx context.Context, ack Mai
 		}
 		if _, err := connection.ExecContext(ctx, `UPDATE mailbox_exchanges
 SET acknowledged_at = ?, response_cleanup_at = ?
-WHERE request_id = ? AND acknowledged_at IS NULL`, formatStoredTime(now), formatStoredTime(*cleanupAt), ack.RequestID); err != nil {
+WHERE exchange_id = ? AND acknowledged_at IS NULL`, formatStoredTime(now), formatStoredTime(*cleanupAt), record.ExchangeID); err != nil {
 			return MailboxExchangeRecord{}, fmt.Errorf("record mailbox acknowledgement: %w", err)
 		}
-		return readMailboxExchangeOnConnection(ctx, connection, ack.RequestID)
+		return readMailboxExchangeOnConnection(ctx, connection, validated)
 	})
 }

@@ -113,6 +113,7 @@ type SessionOperations interface {
 }
 
 type SessionProcessorOptions struct {
+	MailboxID               string
 	Importer                *Importer
 	Authority               *store.AuthorityStore
 	Controller              domain.ControllerIdentity
@@ -126,6 +127,7 @@ type SessionProcessorOptions struct {
 // SessionProcessor wires file mailbox session and command operations through
 // the Mac local API boundary. The mailbox remains an ingress/projection only.
 type SessionProcessor struct {
+	mailboxID         string
 	importer          *Importer
 	authority         *store.AuthorityStore
 	controller        domain.ControllerIdentity
@@ -149,6 +151,13 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 	if options.Now == nil {
 		options.Now = time.Now
 	}
+	mailboxID := options.MailboxID
+	if mailboxID == "" {
+		mailboxID = options.Importer.MailboxID()
+	}
+	if _, ok := safeMailboxID(mailboxID); !ok || mailboxID != options.Importer.MailboxID() {
+		return nil, fmt.Errorf("%w: mailbox ID", ErrSessionProcessorConfiguration)
+	}
 	controller, err := domain.NewControllerIdentity(options.Controller.Type(), options.Controller.ID())
 	if err != nil || controller.Type() != domain.ControllerTypeLocalUser {
 		return nil, fmt.Errorf("%w: controller must be a local user", ErrSessionProcessorConfiguration)
@@ -159,10 +168,33 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 		return nil, fmt.Errorf("%w: processor and Mac session-operation controllers must match", ErrSessionProcessorConfiguration)
 	}
 	return &SessionProcessor{
-		importer: options.Importer, authority: options.Authority, controller: controller,
-		operations: options.Operations, projector: Projector{Authority: options.Authority, Outbox: options.Outbox, EventFiles: options.EventFiles},
+		mailboxID: mailboxID, importer: options.Importer, authority: options.Authority, controller: controller,
+		operations: options.Operations, projector: Projector{MailboxID: mailboxID, Authority: options.Authority, Outbox: options.Outbox, EventFiles: options.EventFiles},
 		now: options.Now, uncertaintyWindow: options.RemoteUncertaintyWindow,
 	}, nil
+}
+
+func (p *SessionProcessor) exchangeRef(requestID string) (store.MailboxExchangeRef, error) {
+	if p == nil {
+		return store.MailboxExchangeRef{}, ErrSessionProcessorConfiguration
+	}
+	return store.NewMailboxExchangeRef(p.mailboxID, requestID)
+}
+
+func (p *SessionProcessor) recordRef(record store.MailboxExchangeRecord) (store.MailboxExchangeRef, error) {
+	if p == nil || record.MailboxID != p.mailboxID {
+		return store.MailboxExchangeRef{}, ErrSessionProcessorConfiguration
+	}
+	return store.NewMailboxExchangeRef(record.MailboxID, record.RequestID)
+}
+
+func (p *SessionProcessor) scopedRequest(request Request, record store.MailboxExchangeRecord) (Request, error) {
+	if request.MailboxID != p.mailboxID || record.MailboxID != p.mailboxID || record.RequestID != request.RequestID ||
+		(record.ExecutionIdempotencyKey == "" && request.IdempotencyKey != "") {
+		return Request{}, ErrSessionProcessorConfiguration
+	}
+	request.ExecutionIdempotencyKey = record.ExecutionIdempotencyKey
+	return request, nil
 }
 
 // Import records and projects the implemented file-only operations, then
@@ -231,6 +263,9 @@ func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 }
 
 func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, error) {
+	if request.MailboxID != p.mailboxID {
+		return false, ErrSessionProcessorConfiguration
+	}
 	if request.Operation == "submit_command" || request.Operation == "get_command" {
 		return p.processCommand(ctx, request)
 	}
@@ -250,8 +285,12 @@ func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, 
 	if err != nil {
 		return false, err
 	}
-	record, duplicate, idempotencyConflict, err := p.authority.AcceptMailboxExchangeWithConflictReceipt(ctx, store.MailboxExchangeCreate{
-		RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
+	ref, err := p.exchangeRef(request.RequestID)
+	if err != nil {
+		return false, err
+	}
+	record, duplicate, idempotencyConflict, err := p.authority.AcceptMailboxExchangeWithConflictReceiptInMailbox(ctx, ref, store.MailboxExchangeCreate{
+		MailboxID: p.mailboxID, RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
 		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
 	})
 	if err != nil {
@@ -275,7 +314,11 @@ func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, 
 		return false, fmt.Errorf("%w: terminal exchange has no response snapshot", ErrOutboxResponse)
 	}
 	if request.Operation == "create_session" {
-		intent, err := p.operations.CreateSessionIntent(ctx, request)
+		scopedRequest, err := p.scopedRequest(request, record)
+		if err != nil {
+			return false, err
+		}
+		intent, err := p.operations.CreateSessionIntent(ctx, scopedRequest)
 		if err != nil {
 			return p.publishOperationError(ctx, record, request.Operation, err)
 		}
@@ -309,8 +352,12 @@ func (p *SessionProcessor) processCommand(ctx context.Context, request Request) 
 	if err != nil {
 		return false, err
 	}
-	record, duplicate, idempotencyConflict, err := p.authority.AcceptMailboxExchangeWithConflictReceipt(ctx, store.MailboxExchangeCreate{
-		RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
+	ref, err := p.exchangeRef(request.RequestID)
+	if err != nil {
+		return false, err
+	}
+	record, duplicate, idempotencyConflict, err := p.authority.AcceptMailboxExchangeWithConflictReceiptInMailbox(ctx, ref, store.MailboxExchangeCreate{
+		MailboxID: p.mailboxID, RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
 		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
 	})
 	if err != nil {
@@ -331,7 +378,11 @@ func (p *SessionProcessor) processCommand(ctx context.Context, request Request) 
 		return false, fmt.Errorf("%w: terminal command exchange has no response snapshot", ErrOutboxResponse)
 	}
 	if request.Operation == "submit_command" {
-		intent, err := p.operations.SubmitCommandIntent(ctx, request)
+		scopedRequest, err := p.scopedRequest(request, record)
+		if err != nil {
+			return false, err
+		}
+		intent, err := p.operations.SubmitCommandIntent(ctx, scopedRequest)
 		if err != nil {
 			return p.publishOperationError(ctx, record, request.Operation, err)
 		}
@@ -384,7 +435,11 @@ func (p *SessionProcessor) processCancelCommand(ctx context.Context, request Req
 	if record.State != store.MailboxExchangeAccepted {
 		return false, fmt.Errorf("%w: terminal cancel exchange has no response snapshot", ErrOutboxResponse)
 	}
-	intent, err := p.operations.CancelCommandIntent(ctx, request)
+	scopedRequest, err := p.scopedRequest(request, record)
+	if err != nil {
+		return false, err
+	}
+	intent, err := p.operations.CancelCommandIntent(ctx, scopedRequest)
 	if err != nil {
 		return p.publishCommandOperationError(ctx, record, request.CommandID, request.Operation, err)
 	}
@@ -417,7 +472,11 @@ func (p *SessionProcessor) processCloseSession(ctx context.Context, request Requ
 	if record.State != store.MailboxExchangeAccepted {
 		return false, fmt.Errorf("%w: terminal close exchange has no response snapshot", ErrOutboxResponse)
 	}
-	intent, err := p.operations.CloseSessionIntent(ctx, request)
+	scopedRequest, err := p.scopedRequest(request, record)
+	if err != nil {
+		return false, err
+	}
+	intent, err := p.operations.CloseSessionIntent(ctx, scopedRequest)
 	if err != nil {
 		return p.publishSessionOperationError(ctx, record, request.SessionID, request.Operation, err)
 	}
@@ -451,7 +510,11 @@ func (p *SessionProcessor) processRun(ctx context.Context, request Request) (boo
 	if record.State != store.MailboxExchangeAccepted {
 		return false, fmt.Errorf("%w: terminal run exchange has no response snapshot", ErrOutboxResponse)
 	}
-	intent, err := p.operations.RunJobIntent(ctx, request)
+	scopedRequest, err := p.scopedRequest(request, record)
+	if err != nil {
+		return false, err
+	}
+	intent, err := p.operations.RunJobIntent(ctx, scopedRequest)
 	if err != nil {
 		return p.publishRunOperationError(ctx, record, err)
 	}
@@ -490,8 +553,12 @@ func (p *SessionProcessor) acceptMutationExchange(ctx context.Context, request R
 	if err != nil {
 		return store.MailboxExchangeRecord{}, false, false, err
 	}
-	return p.authority.AcceptMailboxExchangeWithConflictReceipt(ctx, store.MailboxExchangeCreate{
-		RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
+	ref, err := p.exchangeRef(request.RequestID)
+	if err != nil {
+		return store.MailboxExchangeRecord{}, false, false, err
+	}
+	return p.authority.AcceptMailboxExchangeWithConflictReceiptInMailbox(ctx, ref, store.MailboxExchangeCreate{
+		MailboxID: p.mailboxID, RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
 		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
 	})
 }
@@ -531,7 +598,7 @@ func (p *SessionProcessor) publishSessionOperationError(ctx context.Context, rec
 // target mutation. Cleanup claims deliberately suppress this repair so an
 // expired result cannot return after its removal has begun.
 func (p *SessionProcessor) reconcileTerminalArtifacts(ctx context.Context) error {
-	records, err := p.authority.ListPublishableTerminalMailboxExchanges(ctx, p.controller)
+	records, err := p.authority.ListPublishableTerminalMailboxExchangesInMailbox(ctx, p.mailboxID, p.controller)
 	if err != nil {
 		return err
 	}
@@ -673,7 +740,11 @@ func (p *SessionProcessor) terminalArtifactsCurrent(ctx context.Context, record 
 	if err != nil {
 		return false, nil
 	}
-	expected, expectedCursor, err := (EventProjector{Authority: p.authority}).ProjectMailboxResponseThrough(ctx, record.RequestID, commandID)
+	ref, err := p.recordRef(record)
+	if err != nil {
+		return false, err
+	}
+	expected, expectedCursor, err := (EventProjector{Authority: p.authority}).ProjectMailboxResponseThroughInMailbox(ctx, ref, commandID)
 	if err != nil {
 		return false, err
 	}
@@ -733,7 +804,7 @@ func (p *SessionProcessor) publishOperationError(ctx context.Context, record sto
 }
 
 func (p *SessionProcessor) reconcileAcceptedCreates(ctx context.Context) error {
-	records, err := p.authority.ListMailboxExchanges(ctx, p.controller, "create_session", store.MailboxExchangeAccepted)
+	records, err := p.authority.ListMailboxExchangesInMailbox(ctx, p.mailboxID, p.controller, "create_session", store.MailboxExchangeAccepted)
 	if err != nil {
 		return err
 	}
@@ -811,7 +882,7 @@ func (p *SessionProcessor) reconcileAcceptedCreates(ctx context.Context) error {
 }
 
 func (p *SessionProcessor) reconcileAcceptedSubmits(ctx context.Context) error {
-	records, err := p.authority.ListMailboxExchanges(ctx, p.controller, "submit_command", store.MailboxExchangeAccepted)
+	records, err := p.authority.ListMailboxExchangesInMailbox(ctx, p.mailboxID, p.controller, "submit_command", store.MailboxExchangeAccepted)
 	if err != nil {
 		return err
 	}
@@ -890,7 +961,7 @@ func (p *SessionProcessor) reconcileAcceptedSubmits(ctx context.Context) error {
 }
 
 func (p *SessionProcessor) reconcileAcceptedCancels(ctx context.Context) error {
-	records, err := p.authority.ListMailboxExchanges(ctx, p.controller, "cancel_command", store.MailboxExchangeAccepted)
+	records, err := p.authority.ListMailboxExchangesInMailbox(ctx, p.mailboxID, p.controller, "cancel_command", store.MailboxExchangeAccepted)
 	if err != nil {
 		return err
 	}
@@ -905,7 +976,7 @@ func (p *SessionProcessor) reconcileAcceptedCancels(ctx context.Context) error {
 		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "cancel_command" || previous.CommandID == "" || previous.SessionID == "" {
 			return fmt.Errorf("%w: accepted cancel response is corrupt", ErrOutboxResponse)
 		}
-		snapshot, err := p.operations.GetCancelCommandSnapshot(ctx, previous.CommandID, record.IdempotencyKey)
+		snapshot, err := p.operations.GetCancelCommandSnapshot(ctx, previous.CommandID, record.ExecutionIdempotencyKey)
 		if err != nil {
 			var operationErr *SessionOperationError
 			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
@@ -966,7 +1037,7 @@ func (p *SessionProcessor) reconcileAcceptedCancels(ctx context.Context) error {
 }
 
 func (p *SessionProcessor) reconcileAcceptedCloses(ctx context.Context) error {
-	records, err := p.authority.ListMailboxExchanges(ctx, p.controller, "close_session", store.MailboxExchangeAccepted)
+	records, err := p.authority.ListMailboxExchangesInMailbox(ctx, p.mailboxID, p.controller, "close_session", store.MailboxExchangeAccepted)
 	if err != nil {
 		return err
 	}
@@ -981,7 +1052,7 @@ func (p *SessionProcessor) reconcileAcceptedCloses(ctx context.Context) error {
 		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "close_session" || previous.SessionID == "" {
 			return fmt.Errorf("%w: accepted close response is corrupt", ErrOutboxResponse)
 		}
-		snapshot, err := p.operations.GetCloseSessionSnapshot(ctx, previous.SessionID, record.IdempotencyKey)
+		snapshot, err := p.operations.GetCloseSessionSnapshot(ctx, previous.SessionID, record.ExecutionIdempotencyKey)
 		if err != nil {
 			var operationErr *SessionOperationError
 			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
@@ -1044,7 +1115,7 @@ func (p *SessionProcessor) reconcileAcceptedCloses(ctx context.Context) error {
 }
 
 func (p *SessionProcessor) reconcileAcceptedRuns(ctx context.Context) error {
-	records, err := p.authority.ListMailboxExchanges(ctx, p.controller, "run", store.MailboxExchangeAccepted)
+	records, err := p.authority.ListMailboxExchangesInMailbox(ctx, p.mailboxID, p.controller, "run", store.MailboxExchangeAccepted)
 	if err != nil {
 		return err
 	}
@@ -1192,7 +1263,7 @@ func (p *SessionProcessor) publishIndeterminateIfExpired(ctx context.Context, re
 	if deliveryState != string(store.LocalIntentUncertain) {
 		return false, nil
 	}
-	intent, err := p.authority.GetLocalIntentByIdempotency(ctx, record.Operation, record.IdempotencyKey, record.Controller)
+	intent, err := p.authority.GetLocalIntentByIdempotency(ctx, record.Operation, record.ExecutionIdempotencyKey, record.Controller)
 	if err != nil {
 		return false, fmt.Errorf("%w: load uncertain mailbox intent: %v", ErrSessionProcessorConfiguration, err)
 	}
@@ -1282,7 +1353,11 @@ func (p *SessionProcessor) publish(ctx context.Context, current store.MailboxExc
 	if err != nil {
 		return false, fmt.Errorf("%w: encode session response: %v", ErrOutboxResponse, err)
 	}
-	updated, err := p.authority.PublishMailboxResponse(ctx, current.RequestID, store.MailboxResponsePublication{
+	ref, err := p.recordRef(current)
+	if err != nil {
+		return false, err
+	}
+	updated, err := p.authority.PublishMailboxResponseInMailbox(ctx, ref, store.MailboxResponsePublication{
 		State: response.RequestState, Bytes: responseBytes, AvailableEventSequence: cursor,
 	})
 	if err != nil {
@@ -1303,7 +1378,11 @@ func (p *SessionProcessor) publishCommandResponse(ctx context.Context, current s
 	if err != nil {
 		return false, fmt.Errorf("%w: encode command response: %v", ErrOutboxResponse, err)
 	}
-	updated, err := p.authority.PublishMailboxResponse(ctx, current.RequestID, store.MailboxResponsePublication{
+	ref, err := p.recordRef(current)
+	if err != nil {
+		return false, err
+	}
+	updated, err := p.authority.PublishMailboxResponseInMailbox(ctx, ref, store.MailboxResponsePublication{
 		State: response.RequestState, Bytes: responseBytes, AvailableEventSequence: cursor,
 	})
 	if err != nil {
@@ -1328,7 +1407,11 @@ func (p *SessionProcessor) publishRunResponse(ctx context.Context, current store
 	if err != nil {
 		return false, fmt.Errorf("%w: encode run response: %v", ErrOutboxResponse, err)
 	}
-	updated, err := p.authority.PublishMailboxResponse(ctx, current.RequestID, store.MailboxResponsePublication{
+	ref, err := p.recordRef(current)
+	if err != nil {
+		return false, err
+	}
+	updated, err := p.authority.PublishMailboxResponseInMailbox(ctx, ref, store.MailboxResponsePublication{
 		State: response.RequestState, Bytes: responseBytes, AvailableEventSequence: cursor,
 	})
 	if err != nil {

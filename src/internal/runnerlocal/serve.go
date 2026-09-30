@@ -210,7 +210,7 @@ func New(configPath string) (*Service, error) {
 		return nil, fmt.Errorf("construct remote Router driver: %w", err)
 	}
 	routerHealth = newRouterHealthMonitorForProfiles(remoteDriver.RemoteProfiles())
-	importer, err := mailbox.NewImporter(defaultMailbox.Root, nil)
+	importer, err := mailbox.New(mailbox.Options{MailboxID: store.DefaultMailboxID, Root: defaultMailbox.Root})
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox importer: %w", err)
 	}
@@ -224,21 +224,21 @@ func New(configPath string) (*Service, error) {
 		return nil, fmt.Errorf("construct mailbox event files: %w", err)
 	}
 	processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
-		Importer: importer, Authority: authority, Controller: owner, Operations: api,
+		MailboxID: store.DefaultMailboxID, Importer: importer, Authority: authority, Controller: owner, Operations: api,
 		Outbox: outbox, EventFiles: eventFiles,
 		RemoteUncertaintyWindow: settings.ReconciliationDeadline,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox processor: %w", err)
 	}
-	ackImporter, err := mailbox.NewAckImporter(mailbox.AckImporterOptions{Root: defaultMailbox.Root, Authority: authority})
+	ackImporter, err := mailbox.NewAckImporter(mailbox.AckImporterOptions{MailboxID: store.DefaultMailboxID, Root: defaultMailbox.Root, Authority: authority})
 	if err != nil {
 		return nil, fmt.Errorf("construct mailbox ACK importer: %w", err)
 	}
 	service := &Service{
 		database: authority, dbCloser: db, api: api, localDriver: localDriver,
 		remoteDriver: remoteDriver, mailbox: processor, ackImporter: ackImporter,
-		artifactCleaner: mailbox.ArtifactCleaner{Authority: authority, Outbox: outbox, EventFiles: eventFiles}, routerHealth: routerHealth,
+		artifactCleaner: mailbox.ArtifactCleaner{MailboxID: store.DefaultMailboxID, Authority: authority, Outbox: outbox, EventFiles: eventFiles}, routerHealth: routerHealth,
 		pollInterval: defaultPollInterval, remoteProbe: remoteDriver.ProbeProfiles,
 		metricsRecorder: metricsRecorder, thresholds: thresholds, mailboxImporter: metricsImporter,
 	}

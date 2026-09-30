@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 24
+	CurrentSchemaVersion = 25
 )
 
 var (
@@ -105,6 +105,9 @@ var runtimeCleanupAuditSQL string
 
 //go:embed migrations/0024_remote_terminal_proof.sql
 var remoteTerminalProofSQL string
+
+//go:embed migrations/0025_mailbox_namespaces.sql
+var mailboxNamespacesSQL string
 
 type migration struct {
 	version int
@@ -208,6 +211,10 @@ var migrations = []migration{{
 	version: 24,
 	name:    "remote_terminal_proof",
 	sql:     remoteTerminalProofSQL,
+}, {
+	version: 25,
+	name:    "mailbox_namespaces",
+	sql:     mailboxNamespacesSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection

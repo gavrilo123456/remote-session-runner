@@ -18,11 +18,13 @@ type ReceiptProcessor struct {
 	importer   *Importer
 	authority  *store.AuthorityStore
 	controller domain.ControllerIdentity
+	mailboxID  string
 	handler    Handler
 }
 
 // ReceiptProcessorOptions configures the P082 receipt boundary.
 type ReceiptProcessorOptions struct {
+	MailboxID  string
 	Importer   *Importer
 	Authority  *store.AuthorityStore
 	Controller domain.ControllerIdentity
@@ -39,7 +41,14 @@ func NewReceiptProcessor(options ReceiptProcessorOptions) (*ReceiptProcessor, er
 	if err != nil {
 		return nil, fmt.Errorf("%w: controller: %v", ErrImporterConfiguration, err)
 	}
-	return &ReceiptProcessor{importer: options.Importer, authority: options.Authority, controller: controller, handler: options.Handler}, nil
+	mailboxID := options.MailboxID
+	if mailboxID == "" {
+		mailboxID = options.Importer.MailboxID()
+	}
+	if _, ok := safeMailboxID(mailboxID); !ok || mailboxID != options.Importer.MailboxID() {
+		return nil, fmt.Errorf("%w: mailbox ID", ErrImporterConfiguration)
+	}
+	return &ReceiptProcessor{importer: options.Importer, authority: options.Authority, controller: controller, mailboxID: mailboxID, handler: options.Handler}, nil
 }
 
 // Import records each validated request before calling Handler. A terminal
@@ -54,12 +63,16 @@ func (p *ReceiptProcessor) Import(ctx context.Context) ([]Result, error) {
 }
 
 func (p *ReceiptProcessor) process(ctx context.Context, request Request) (bool, error) {
+	ref, err := store.NewMailboxExchangeRef(p.mailboxID, request.RequestID)
+	if err != nil || request.MailboxID != p.mailboxID {
+		return false, ErrImporterConfiguration
+	}
 	payload, hash, err := receiptCanonical(request)
 	if err != nil {
 		return false, err
 	}
-	record, duplicate, err := p.authority.AcceptMailboxExchange(ctx, store.MailboxExchangeCreate{
-		RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
+	record, duplicate, err := p.authority.AcceptMailboxExchangeInMailbox(ctx, ref, store.MailboxExchangeCreate{
+		MailboxID: p.mailboxID, RequestID: request.RequestID, Operation: request.Operation, Controller: p.controller,
 		IdempotencyKey: request.IdempotencyKey, RequestHash: hash, CanonicalPayload: payload,
 	})
 	if err != nil {
@@ -74,13 +87,13 @@ func (p *ReceiptProcessor) process(ctx context.Context, request Request) (bool, 
 		return false, nil
 	}
 	if err := p.handler(ctx, request); err != nil {
-		_, completeErr := p.authority.CompleteMailboxExchange(ctx, request.RequestID, store.MailboxExchangeRejected)
+		_, completeErr := p.authority.CompleteMailboxExchangeInMailbox(ctx, ref, store.MailboxExchangeRejected)
 		if completeErr != nil {
 			return false, fmt.Errorf("%w; receipt rejection: %v", err, completeErr)
 		}
 		return true, err
 	}
-	_, err = p.authority.CompleteMailboxExchange(ctx, request.RequestID, store.MailboxExchangeComplete)
+	_, err = p.authority.CompleteMailboxExchangeInMailbox(ctx, ref, store.MailboxExchangeComplete)
 	return err == nil, err
 }
 

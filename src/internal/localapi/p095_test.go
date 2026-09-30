@@ -309,7 +309,8 @@ func (h *p095Harness) createSession(t *testing.T, kind domain.TargetKind, profil
 		t.Fatal(err)
 	}
 	intent, err := h.server.CreateSessionIntent(context.Background(), mailbox.Request{
-		RequestID: requestID, IdempotencyKey: key, Operation: "create_session", RawJSON: raw,
+		MailboxID: store.DefaultMailboxID, RequestID: requestID, IdempotencyKey: key,
+		ExecutionIdempotencyKey: pMailboxTestExecutionKey(key), Operation: "create_session", RawJSON: raw,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -342,6 +343,36 @@ func (h *p095Harness) createSession(t *testing.T, kind domain.TargetKind, profil
 		t.Fatal(err)
 	}
 	return intent.SessionID
+}
+
+// pMailboxTestExecutionKey models the trusted scoped key supplied by a durable
+// mailbox receipt. Direct local-API test setup must never use the client key
+// as the executable mutation key.
+func pMailboxTestExecutionKey(clientKey string) string {
+	return "p152-test-execution-" + clientKey
+}
+
+// pMailboxIntentForRequest follows the durable mailbox receipt to the scoped
+// execution identity. Mailbox JSON keeps the client key, while local intents
+// deliberately use the trusted per-mailbox key selected after acceptance.
+func pMailboxIntentForRequest(t *testing.T, authority *store.AuthorityStore, operation, requestID string) store.LocalIntentRecord {
+	t.Helper()
+	ref, err := store.NewMailboxExchangeRef(store.DefaultMailboxID, requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := authority.GetMailboxExchangeInMailbox(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Operation != operation || receipt.ExecutionIdempotencyKey == "" || receipt.ExecutionIdempotencyKey == receipt.IdempotencyKey {
+		t.Fatalf("mailbox receipt does not hold a valid scoped execution key: %+v", receipt)
+	}
+	intent, err := authority.GetLocalIntentByIdempotency(context.Background(), operation, receipt.ExecutionIdempotencyKey, p063Owner(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return intent
 }
 
 func (h *p095Harness) submitQueuedCommand(t *testing.T, requestID, key, sessionID string) string {

@@ -123,7 +123,7 @@ response_bytes, response_sha256, acknowledged_at
 	}
 
 	var rawCleanupDeadline sql.NullString
-	if err := db.QueryRowContext(context.Background(), `SELECT response_cleanup_at FROM mailbox_exchanges WHERE request_id = ?`, "req-p091-migration").Scan(&rawCleanupDeadline); err != nil {
+	if err := db.QueryRowContext(context.Background(), `SELECT response_cleanup_at FROM mailbox_exchanges WHERE mailbox_id = 'default' AND client_request_id = ?`, "req-p091-migration").Scan(&rawCleanupDeadline); err != nil {
 		t.Fatal(err)
 	}
 	if rawCleanupDeadline.Valid {

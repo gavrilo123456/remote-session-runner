@@ -25,19 +25,19 @@ func TestP098MailboxCancelReplayAndDeliveryBoundary(t *testing.T) {
 	if first.RequestState != "accepted" || first.CommandID != commandID || first.SessionID != sessionID || first.DeliveryState != string(store.LocalIntentRecorded) || first.CommandState != "" {
 		t.Fatalf("initial cancel response invented target state: %+v", first)
 	}
-	cancelIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "cancel_command", "key-p098-cancel", p063Owner(t))
-	if err != nil || cancelIntent.ResourceID != commandID || cancelIntent.DeliveryState != store.LocalIntentRecorded {
-		t.Fatalf("cancel intent=%+v err=%v", cancelIntent, err)
+	cancelIntent := pMailboxIntentForRequest(t, h.authority, "cancel_command", "req-p098-cancel-first")
+	if cancelIntent.ResourceID != commandID || cancelIntent.DeliveryState != store.LocalIntentRecorded {
+		t.Fatalf("cancel intent=%+v", cancelIntent)
 	}
 
 	p098Import(t, h, "req-p098-cancel-replay", request("req-p098-cancel-replay"))
 	replay := readP095Response(t, h.outbox, "req-p098-cancel-replay")
-	replayedIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "cancel_command", "key-p098-cancel", p063Owner(t))
-	if err != nil || replay.RequestState != "accepted" || replay.CommandID != commandID || replayedIntent.IntentID != cancelIntent.IntentID {
-		t.Fatalf("same-key cancel replay=%+v intent=%+v err=%v", replay, replayedIntent, err)
+	replayedIntent := pMailboxIntentForRequest(t, h.authority, "cancel_command", "req-p098-cancel-replay")
+	if replay.RequestState != "accepted" || replay.CommandID != commandID || replayedIntent.IntentID != cancelIntent.IntentID {
+		t.Fatalf("same-key cancel replay=%+v intent=%+v", replay, replayedIntent)
 	}
 
-	cancelIntent, err = h.authority.TransitionLocalIntent(ctx, cancelIntent.IntentID, store.LocalIntentDispatching, "p098-cancel-dispatching")
+	cancelIntent, err := h.authority.TransitionLocalIntent(ctx, cancelIntent.IntentID, store.LocalIntentDispatching, "p098-cancel-dispatching")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,10 +80,7 @@ func TestP098MailboxCancelNotDeliveredBoundaries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cancelIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "cancel_command", "key-p098-remote-cancel", p063Owner(t))
-		if err != nil {
-			t.Fatal(err)
-		}
+		cancelIntent := pMailboxIntentForRequest(t, h.authority, "cancel_command", "req-p098-remote-cancel")
 		if _, err := h.authority.TransitionLocalIntent(ctx, submitIntent.IntentID, store.LocalIntentNotDelivered, "p098-submit-proven-not-delivered"); err != nil {
 			t.Fatal(err)
 		}
@@ -111,10 +108,7 @@ func TestP098MailboxCancelNotDeliveredBoundaries(t *testing.T) {
 		p098Import(t, h, "req-p098-live-cancel", map[string]any{
 			"request_id": "req-p098-live-cancel", "idempotency_key": "key-p098-live-cancel", "operation": "cancel_command", "command_id": commandID,
 		})
-		cancelIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "cancel_command", "key-p098-live-cancel", p063Owner(t))
-		if err != nil {
-			t.Fatal(err)
-		}
+		cancelIntent := pMailboxIntentForRequest(t, h.authority, "cancel_command", "req-p098-live-cancel")
 		if _, err := h.authority.TransitionLocalIntent(ctx, cancelIntent.IntentID, store.LocalIntentNotDelivered, "p098-cancel-proven-not-delivered"); err != nil {
 			t.Fatal(err)
 		}
@@ -147,16 +141,16 @@ func TestP098MailboxClosePolicyReplayConflictAndTerminalBoundary(t *testing.T) {
 	if first.RequestState != "accepted" || first.SessionID != sessionID || first.DeliveryState != string(store.LocalIntentRecorded) || first.SessionState != "" {
 		t.Fatalf("initial close response invented target state: %+v", first)
 	}
-	closeIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "close_session", "key-p098-close", p063Owner(t))
-	if err != nil || string(closeIntent.SessionID) != sessionID || string(closeIntent.PayloadJSON) == "" {
-		t.Fatalf("close intent=%+v err=%v", closeIntent, err)
+	closeIntent := pMailboxIntentForRequest(t, h.authority, "close_session", "req-p098-close-first")
+	if string(closeIntent.SessionID) != sessionID || string(closeIntent.PayloadJSON) == "" {
+		t.Fatalf("close intent=%+v", closeIntent)
 	}
 
 	p098Import(t, h, "req-p098-close-replay", closeRequest("req-p098-close-replay", map[string]any{"policy": "cancel"}, true))
 	replay := readP095Response(t, h.outbox, "req-p098-close-replay")
-	replayedIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "close_session", "key-p098-close", p063Owner(t))
-	if err != nil || replay.RequestState != "accepted" || replay.SessionID != sessionID || replayedIntent.IntentID != closeIntent.IntentID {
-		t.Fatalf("same-key default/cancel replay=%+v intent=%+v err=%v", replay, replayedIntent, err)
+	replayedIntent := pMailboxIntentForRequest(t, h.authority, "close_session", "req-p098-close-replay")
+	if replay.RequestState != "accepted" || replay.SessionID != sessionID || replayedIntent.IntentID != closeIntent.IntentID {
+		t.Fatalf("same-key default/cancel replay=%+v intent=%+v", replay, replayedIntent)
 	}
 
 	p098Import(t, h, "req-p098-close-conflict", closeRequest("req-p098-close-conflict", map[string]any{"policy": "drain"}, true))
@@ -165,7 +159,7 @@ func TestP098MailboxClosePolicyReplayConflictAndTerminalBoundary(t *testing.T) {
 		t.Fatalf("changed close policy did not conflict: %+v", conflict)
 	}
 
-	closeIntent, err = h.authority.TransitionLocalIntent(ctx, closeIntent.IntentID, store.LocalIntentDispatching, "p098-close-dispatching")
+	closeIntent, err := h.authority.TransitionLocalIntent(ctx, closeIntent.IntentID, store.LocalIntentDispatching, "p098-close-dispatching")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,10 +196,7 @@ func TestP098MailboxCloseNotDeliveredAndNeverCreatedOutcomes(t *testing.T) {
 		p098Import(t, h, "req-p098-live-close", map[string]any{
 			"request_id": "req-p098-live-close", "idempotency_key": "key-p098-live-close", "operation": "close_session", "session_id": sessionID,
 		})
-		intent, err := h.authority.GetLocalIntentByIdempotency(ctx, "close_session", "key-p098-live-close", p063Owner(t))
-		if err != nil {
-			t.Fatal(err)
-		}
+		intent := pMailboxIntentForRequest(t, h.authority, "close_session", "req-p098-live-close")
 		if _, err := h.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentNotDelivered, "p098-close-not-delivered"); err != nil {
 			t.Fatal(err)
 		}
@@ -229,10 +220,7 @@ func TestP098MailboxCloseNotDeliveredAndNeverCreatedOutcomes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		closeIntent, err := h.authority.GetLocalIntentByIdempotency(ctx, "close_session", "key-p098-never-created-close", p063Owner(t))
-		if err != nil {
-			t.Fatal(err)
-		}
+		closeIntent := pMailboxIntentForRequest(t, h.authority, "close_session", "req-p098-never-created-close")
 		if _, err := h.authority.TransitionLocalIntent(ctx, createIntent.IntentID, store.LocalIntentNotDelivered, "p098-create-not-delivered"); err != nil {
 			t.Fatal(err)
 		}

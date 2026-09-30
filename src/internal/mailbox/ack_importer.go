@@ -30,6 +30,7 @@ var ackSchemaFS embed.FS
 // AckImporterOptions configures safe ACK-file consumption. Clock is shared
 // with draft cleanup so tests can advance the 24-hour cutoff without waiting.
 type AckImporterOptions struct {
+	MailboxID string
 	Root      string
 	Authority *store.AuthorityStore
 	Clock     func() time.Time
@@ -38,6 +39,7 @@ type AckImporterOptions struct {
 // AckImporter records exact ACKs through the durable P089 store transaction
 // before deleting either file in the ACK pair.
 type AckImporter struct {
+	mailboxID string
 	root      string
 	inbox     string
 	acks      string
@@ -49,6 +51,12 @@ type AckImporter struct {
 // NewAckImporter creates the owner-only mailbox directories and validates the
 // embedded ACK contract before accepting files.
 func NewAckImporter(options AckImporterOptions) (*AckImporter, error) {
+	if options.MailboxID == "" {
+		options.MailboxID = "default"
+	}
+	if _, ok := safeMailboxID(options.MailboxID); !ok {
+		return nil, ErrAckImporterConfiguration
+	}
 	if strings.TrimSpace(options.Root) == "" || !filepath.IsAbs(options.Root) || filepath.Clean(options.Root) != options.Root || strings.IndexByte(options.Root, 0) >= 0 || options.Authority == nil {
 		return nil, ErrAckImporterConfiguration
 	}
@@ -71,7 +79,15 @@ func NewAckImporter(options AckImporterOptions) (*AckImporter, error) {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &AckImporter{root: options.Root, inbox: inbox, acks: acks, authority: options.Authority, schema: schema, clock: clock}, nil
+	return &AckImporter{mailboxID: options.MailboxID, root: options.Root, inbox: inbox, acks: acks, authority: options.Authority, schema: schema, clock: clock}, nil
+}
+
+// MailboxID returns the trusted namespace configured for this ACK root.
+func (i *AckImporter) MailboxID() string {
+	if i == nil {
+		return ""
+	}
+	return i.mailboxID
 }
 
 // AcksPath returns the configured ACK directory.
@@ -198,8 +214,13 @@ func (i *AckImporter) importMarker(ctx context.Context, markerName string) (Resu
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	record, err := i.authority.AcknowledgeMailboxExchange(ctx, store.MailboxAcknowledgement{
-		RequestID: wire.RequestID, ResponseRevision: wire.ResponseRevision,
+	ref, refErr := store.NewMailboxExchangeRef(i.mailboxID, wire.RequestID)
+	if refErr != nil {
+		result.Reason = refErr.Error()
+		return result, nil
+	}
+	record, err := i.authority.AcknowledgeMailboxExchangeInMailbox(ctx, ref, store.MailboxAcknowledgement{
+		MailboxID: i.mailboxID, RequestID: wire.RequestID, ResponseRevision: wire.ResponseRevision,
 		AvailableEventSequence: wire.AvailableEventSequence,
 	})
 	if err != nil {

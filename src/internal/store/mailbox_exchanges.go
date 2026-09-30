@@ -43,22 +43,33 @@ const (
 // MailboxExchangeCreate contains the immutable receipt binding. CanonicalPayload
 // must exclude request_id and idempotency_key for mutation retries.
 type MailboxExchangeCreate struct {
-	RequestID        string
-	Operation        string
-	Controller       domain.ControllerIdentity
-	IdempotencyKey   string
-	RequestHash      domain.CanonicalHash
-	CanonicalPayload []byte
-	ResourceID       string
+	// MailboxID is the durable namespace. New mailbox runtimes supply it
+	// explicitly; legacy callers without a namespace use the default wrapper.
+	MailboxID      string
+	RequestID      string
+	Operation      string
+	Controller     domain.ControllerIdentity
+	IdempotencyKey string
+	// ExecutionIdempotencyKey is the trusted internal key passed to local
+	// intents and remote frames. It is never rendered in mailbox JSON.
+	ExecutionIdempotencyKey string
+	RequestHash             domain.CanonicalHash
+	CanonicalPayload        []byte
+	ResourceID              string
 }
 
 // MailboxExchangeRecord is the durable request receipt, current response, and
 // cleanup lifecycle for its immutable request ID.
 type MailboxExchangeRecord struct {
+	MailboxID string
+	// ExchangeID is an internal durable key used by foreign keys and cleanup.
+	// It is never exposed by the mailbox wire protocol.
+	ExchangeID               string
 	RequestID                string
 	Operation                string
 	Controller               domain.ControllerIdentity
 	IdempotencyKey           string
+	ExecutionIdempotencyKey  string
 	RequestHash              domain.CanonicalHash
 	CanonicalPayload         []byte
 	ResourceID               string
@@ -95,7 +106,19 @@ type MailboxResponsePublication struct {
 // idempotency key and hash receives the original binding and state without
 // invoking a mutation a second time.
 func (s *AuthorityStore) AcceptMailboxExchange(ctx context.Context, input MailboxExchangeCreate) (record MailboxExchangeRecord, duplicate bool, err error) {
-	record, duplicate, _, err = s.acceptMailboxExchange(ctx, input, false, false)
+	record, duplicate, _, err = s.acceptMailboxExchange(ctx, input, false, false, false)
+	return record, duplicate, err
+}
+
+// AcceptMailboxExchangeInMailbox binds a receipt to an explicit mailbox
+// namespace. Mailbox runtimes must use this method; the unscoped method above
+// remains only as a default-mailbox compatibility boundary.
+func (s *AuthorityStore) AcceptMailboxExchangeInMailbox(ctx context.Context, ref MailboxExchangeRef, input MailboxExchangeCreate) (record MailboxExchangeRecord, duplicate bool, err error) {
+	input, err = mailboxRefWithInput(ref, input)
+	if err != nil {
+		return MailboxExchangeRecord{}, false, err
+	}
+	record, duplicate, _, err = s.acceptMailboxExchange(ctx, input, false, false, true)
 	return record, duplicate, err
 }
 
@@ -104,17 +127,31 @@ func (s *AuthorityStore) AcceptMailboxExchange(ctx context.Context, input Mailbo
 // binding. The final bool identifies that the new request must receive a
 // structured idempotency_conflict response and must not invoke an operation.
 func (s *AuthorityStore) AcceptMailboxExchangeWithConflictReceipt(ctx context.Context, input MailboxExchangeCreate) (record MailboxExchangeRecord, duplicate, idempotencyConflict bool, err error) {
-	return s.acceptMailboxExchange(ctx, input, true, true)
+	return s.acceptMailboxExchange(ctx, input, true, true, false)
 }
 
-func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input MailboxExchangeCreate, recordConflict, refreshDuplicate bool) (record MailboxExchangeRecord, duplicate, idempotencyConflict bool, err error) {
+// AcceptMailboxExchangeWithConflictReceiptInMailbox is the explicit mailbox
+// variant used by the session processor.
+func (s *AuthorityStore) AcceptMailboxExchangeWithConflictReceiptInMailbox(ctx context.Context, ref MailboxExchangeRef, input MailboxExchangeCreate) (record MailboxExchangeRecord, duplicate, idempotencyConflict bool, err error) {
+	input, err = mailboxRefWithInput(ref, input)
+	if err != nil {
+		return MailboxExchangeRecord{}, false, false, err
+	}
+	return s.acceptMailboxExchange(ctx, input, true, true, true)
+}
+
+func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input MailboxExchangeCreate, recordConflict, refreshDuplicate, requireExplicitMailbox bool) (record MailboxExchangeRecord, duplicate, idempotencyConflict bool, err error) {
+	_, input, err = mailboxRefFromInput(input, requireExplicitMailbox)
+	if err != nil {
+		return MailboxExchangeRecord{}, false, false, err
+	}
 	validated, err := validateMailboxExchangeCreate(input)
 	if err != nil {
 		return MailboxExchangeRecord{}, false, false, err
 	}
 	now := s.now().UTC()
 	returnValue, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
-		byID, found, err := readMailboxExchangeByIDOnConnection(ctx, connection, validated.RequestID)
+		byID, found, err := readMailboxExchangeByIDOnConnection(ctx, connection, validated.MailboxExchangeRef())
 		if err != nil {
 			return MailboxExchangeRecord{}, err
 		}
@@ -126,7 +163,7 @@ func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input Mailbo
 			return byID, nil
 		}
 		if validated.IdempotencyKey != "" {
-			existing, found, err := readLatestMailboxExchangeByKeyOnConnection(ctx, connection, validated.Controller, validated.Operation, validated.IdempotencyKey)
+			existing, found, err := readLatestMailboxExchangeByKeyOnConnection(ctx, connection, validated.MailboxID, validated.Controller, validated.Operation, validated.IdempotencyKey)
 			if err != nil {
 				return MailboxExchangeRecord{}, err
 			}
@@ -143,7 +180,7 @@ func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input Mailbo
 							return MailboxExchangeRecord{}, err
 						}
 						idempotencyConflict = true
-						return readMailboxExchangeOnConnection(ctx, connection, validated.RequestID)
+						return readMailboxExchangeOnConnection(ctx, connection, validated.MailboxExchangeRef())
 					}
 					validated.ResourceID = existing.ResourceID
 					if refreshDuplicate {
@@ -184,7 +221,7 @@ func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input Mailbo
 						if err := insertMailboxExchangeOnConnection(ctx, connection, validated); err != nil {
 							return MailboxExchangeRecord{}, err
 						}
-						return readMailboxExchangeOnConnection(ctx, connection, validated.RequestID)
+						return readMailboxExchangeOnConnection(ctx, connection, validated.MailboxExchangeRef())
 					}
 				} else {
 					// The mapping expired. This is a new operation, and its response
@@ -203,7 +240,7 @@ func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input Mailbo
 		if err := insertMailboxExchangeOnConnection(ctx, connection, validated); err != nil {
 			return MailboxExchangeRecord{}, err
 		}
-		return readMailboxExchangeOnConnection(ctx, connection, validated.RequestID)
+		return readMailboxExchangeOnConnection(ctx, connection, validated.MailboxExchangeRef())
 	})
 	if err != nil {
 		return MailboxExchangeRecord{}, false, false, err
@@ -233,13 +270,24 @@ func rebindMailboxResponseRequestID(raw []byte, requestID string) ([]byte, error
 	return result, nil
 }
 
-// GetMailboxExchange reloads and validates one durable receipt.
+// GetMailboxExchange reloads the default-mailbox compatibility receipt.
 func (s *AuthorityStore) GetMailboxExchange(ctx context.Context, requestID string) (MailboxExchangeRecord, error) {
-	if err := validateMailboxRequestID(requestID); err != nil {
+	ref, err := defaultMailboxExchangeRef(requestID)
+	if err != nil {
+		return MailboxExchangeRecord{}, err
+	}
+	return s.GetMailboxExchangeInMailbox(ctx, ref)
+}
+
+// GetMailboxExchangeInMailbox reloads one durable receipt in its mailbox
+// namespace. It never searches another mailbox with the same client ID.
+func (s *AuthorityStore) GetMailboxExchangeInMailbox(ctx context.Context, ref MailboxExchangeRef) (MailboxExchangeRecord, error) {
+	validated, err := validateMailboxExchangeRef(ref)
+	if err != nil {
 		return MailboxExchangeRecord{}, err
 	}
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
-		return readMailboxExchangeOnConnection(ctx, connection, requestID)
+		return readMailboxExchangeOnConnection(ctx, connection, validated)
 	})
 }
 
@@ -247,6 +295,14 @@ func (s *AuthorityStore) GetMailboxExchange(ctx context.Context, requestID strin
 // operation in stable creation order. It lets operation projectors resume
 // accepted asynchronous requests after restart.
 func (s *AuthorityStore) ListMailboxExchanges(ctx context.Context, controller domain.ControllerIdentity, operation string, state MailboxExchangeState) ([]MailboxExchangeRecord, error) {
+	return s.ListMailboxExchangesInMailbox(ctx, DefaultMailboxID, controller, operation, state)
+}
+
+// ListMailboxExchangesInMailbox returns exchanges from only one mailbox.
+func (s *AuthorityStore) ListMailboxExchangesInMailbox(ctx context.Context, mailboxID string, controller domain.ControllerIdentity, operation string, state MailboxExchangeState) ([]MailboxExchangeRecord, error) {
+	if err := validateMailboxID(mailboxID); err != nil {
+		return nil, err
+	}
 	validatedController, err := validateController(controller)
 	if err != nil {
 		return nil, fmt.Errorf("%w: controller: %v", ErrMailboxExchangeInvalid, err)
@@ -259,10 +315,10 @@ func (s *AuthorityStore) ListMailboxExchanges(ctx context.Context, controller do
 	}
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
 		rows, err := connection.QueryContext(ctx, `
-SELECT request_id FROM mailbox_exchanges
-WHERE controller_type = ? AND controller_id = ? AND operation = ? AND request_state = ?
-ORDER BY created_at, request_id
-`, string(validatedController.Type()), string(validatedController.ID()), operation, string(state))
+		SELECT client_request_id FROM mailbox_exchanges
+	WHERE mailbox_id = ? AND controller_type = ? AND controller_id = ? AND operation = ? AND request_state = ?
+	ORDER BY created_at, exchange_id
+	`, mailboxID, string(validatedController.Type()), string(validatedController.ID()), operation, string(state))
 		if err != nil {
 			return nil, fmt.Errorf("list mailbox exchanges: %w", err)
 		}
@@ -284,7 +340,7 @@ ORDER BY created_at, request_id
 		}
 		records := make([]MailboxExchangeRecord, 0, len(requestIDs))
 		for _, requestID := range requestIDs {
-			record, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+			record, err := readMailboxExchangeOnConnection(ctx, connection, MailboxExchangeRef{MailboxID: mailboxID, ClientRequestID: requestID})
 			if err != nil {
 				return nil, err
 			}
@@ -301,6 +357,15 @@ ORDER BY created_at, request_id
 // Cleanup ownership wins over recovery: once cleanup has started, a restart
 // must never recreate the response.
 func (s *AuthorityStore) ListPublishableTerminalMailboxExchanges(ctx context.Context, controller domain.ControllerIdentity) ([]MailboxExchangeRecord, error) {
+	return s.ListPublishableTerminalMailboxExchangesInMailbox(ctx, DefaultMailboxID, controller)
+}
+
+// ListPublishableTerminalMailboxExchangesInMailbox returns recoverable
+// terminal response projections from only one mailbox root.
+func (s *AuthorityStore) ListPublishableTerminalMailboxExchangesInMailbox(ctx context.Context, mailboxID string, controller domain.ControllerIdentity) ([]MailboxExchangeRecord, error) {
+	if err := validateMailboxID(mailboxID); err != nil {
+		return nil, err
+	}
 	validatedController, err := validateController(controller)
 	if err != nil {
 		return nil, fmt.Errorf("%w: controller: %v", ErrMailboxExchangeInvalid, err)
@@ -308,14 +373,14 @@ func (s *AuthorityStore) ListPublishableTerminalMailboxExchanges(ctx context.Con
 	now := s.now().UTC()
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
 		rows, err := connection.QueryContext(ctx, `
-SELECT request_id FROM mailbox_exchanges
-WHERE controller_type = ? AND controller_id = ?
+		SELECT client_request_id FROM mailbox_exchanges
+	WHERE mailbox_id = ? AND controller_type = ? AND controller_id = ?
   AND request_state IN ('complete', 'rejected', 'indeterminate')
   AND response_revision > 0 AND length(response_bytes) > 0
   AND response_cleanup_started_at IS NULL AND response_file_removed_at IS NULL
   AND (response_cleanup_at IS NULL OR response_cleanup_at > ?)
-ORDER BY created_at, request_id
-`, string(validatedController.Type()), string(validatedController.ID()), formatStoredTime(now))
+	ORDER BY created_at, exchange_id
+	`, mailboxID, string(validatedController.Type()), string(validatedController.ID()), formatStoredTime(now))
 		if err != nil {
 			return nil, fmt.Errorf("list publishable terminal mailbox exchanges: %w", err)
 		}
@@ -333,7 +398,7 @@ ORDER BY created_at, request_id
 		}
 		records := make([]MailboxExchangeRecord, 0, len(requestIDs))
 		for _, requestID := range requestIDs {
-			record, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+			record, err := readMailboxExchangeOnConnection(ctx, connection, MailboxExchangeRef{MailboxID: mailboxID, ClientRequestID: requestID})
 			if err != nil {
 				return nil, err
 			}
@@ -353,7 +418,17 @@ ORDER BY created_at, request_id
 // mailbox state. Repeating the same terminal state is idempotent; changing a
 // terminal outcome is rejected so a later response phase cannot rewrite it.
 func (s *AuthorityStore) CompleteMailboxExchange(ctx context.Context, requestID string, next MailboxExchangeState) (MailboxExchangeRecord, error) {
-	if err := validateMailboxRequestID(requestID); err != nil {
+	ref, err := defaultMailboxExchangeRef(requestID)
+	if err != nil {
+		return MailboxExchangeRecord{}, err
+	}
+	return s.CompleteMailboxExchangeInMailbox(ctx, ref, next)
+}
+
+// CompleteMailboxExchangeInMailbox advances a receipt in one mailbox only.
+func (s *AuthorityStore) CompleteMailboxExchangeInMailbox(ctx context.Context, ref MailboxExchangeRef, next MailboxExchangeState) (MailboxExchangeRecord, error) {
+	validated, err := validateMailboxExchangeRef(ref)
+	if err != nil {
 		return MailboxExchangeRecord{}, err
 	}
 	if next != MailboxExchangeComplete && next != MailboxExchangeRejected && next != MailboxExchangeIndeterminate {
@@ -361,7 +436,7 @@ func (s *AuthorityStore) CompleteMailboxExchange(ctx context.Context, requestID 
 	}
 	now := s.now().UTC()
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
-		current, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+		current, err := readMailboxExchangeOnConnection(ctx, connection, validated)
 		if err != nil {
 			return MailboxExchangeRecord{}, err
 		}
@@ -374,12 +449,12 @@ func (s *AuthorityStore) CompleteMailboxExchange(ctx context.Context, requestID 
 		if _, err := connection.ExecContext(ctx, `
 UPDATE mailbox_exchanges
 SET request_state = ?, updated_at = ?
-WHERE controller_type = ? AND controller_id = ? AND operation = ?
-  AND idempotency_key = ? AND canonical_hash_version = ? AND canonical_hash = ?
-`, string(next), formatStoredTime(now), string(current.Controller.Type()), string(current.Controller.ID()), current.Operation, current.IdempotencyKey, current.RequestHash.Version(), current.RequestHash.SHA256()); err != nil {
+	WHERE mailbox_id = ? AND controller_type = ? AND controller_id = ? AND operation = ?
+	  AND client_idempotency_key = ? AND canonical_hash_version = ? AND canonical_hash = ?
+	`, string(next), formatStoredTime(now), current.MailboxID, string(current.Controller.Type()), string(current.Controller.ID()), current.Operation, current.IdempotencyKey, current.RequestHash.Version(), current.RequestHash.SHA256()); err != nil {
 			return MailboxExchangeRecord{}, fmt.Errorf("complete mailbox exchange: %w", err)
 		}
-		return readMailboxExchangeOnConnection(ctx, connection, requestID)
+		return readMailboxExchangeOnConnection(ctx, connection, validated)
 	})
 }
 
@@ -387,7 +462,18 @@ WHERE controller_type = ? AND controller_id = ? AND operation = ?
 // increment response_revision; a terminal snapshot is copied into immutable
 // terminal columns and cannot be changed by a later retry of the same ID.
 func (s *AuthorityStore) PublishMailboxResponse(ctx context.Context, requestID string, publication MailboxResponsePublication) (MailboxExchangeRecord, error) {
-	if err := validateMailboxRequestID(requestID); err != nil {
+	ref, err := defaultMailboxExchangeRef(requestID)
+	if err != nil {
+		return MailboxExchangeRecord{}, err
+	}
+	return s.PublishMailboxResponseInMailbox(ctx, ref, publication)
+}
+
+// PublishMailboxResponseInMailbox stores one response revision in the
+// exchange selected by its explicit mailbox/client identity.
+func (s *AuthorityStore) PublishMailboxResponseInMailbox(ctx context.Context, ref MailboxExchangeRef, publication MailboxResponsePublication) (MailboxExchangeRecord, error) {
+	validated, err := validateMailboxExchangeRef(ref)
+	if err != nil {
 		return MailboxExchangeRecord{}, err
 	}
 	if publication.State != MailboxExchangeAccepted && publication.State != MailboxExchangeComplete && publication.State != MailboxExchangeRejected && publication.State != MailboxExchangeIndeterminate {
@@ -411,7 +497,7 @@ func (s *AuthorityStore) PublishMailboxResponse(ctx context.Context, requestID s
 	responseHash := sha256Bytes(publication.Bytes)
 	now := s.now().UTC()
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
-		current, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+		current, err := readMailboxExchangeOnConnection(ctx, connection, validated)
 		if err != nil {
 			return MailboxExchangeRecord{}, err
 		}
@@ -435,16 +521,16 @@ UPDATE mailbox_exchanges
 SET request_state = ?, response_revision = ?, response_bytes = ?, response_sha256 = ?,
     terminal_response_bytes = ?, terminal_response_sha256 = ?, available_event_sequence = ?,
     response_cleanup_at = ?, updated_at = ?
-WHERE request_id = ? AND request_state = 'accepted'
-`, string(publication.State), nextRevision, publication.Bytes, responseHash, terminalBytes, terminalHash, publication.AvailableEventSequence, responseCleanupAt, formatStoredTime(now), requestID); err != nil {
+	WHERE exchange_id = ? AND request_state = 'accepted'
+	`, string(publication.State), nextRevision, publication.Bytes, responseHash, terminalBytes, terminalHash, publication.AvailableEventSequence, responseCleanupAt, formatStoredTime(now), current.ExchangeID); err != nil {
 			return MailboxExchangeRecord{}, fmt.Errorf("publish mailbox response: %w", err)
 		}
 		if bindEventFile {
-			if err := bindMailboxEventFileReferenceOnConnection(ctx, connection, requestID, eventFileCommandID, now); err != nil {
+			if err := bindMailboxEventFileReferenceOnConnection(ctx, connection, validated, eventFileCommandID, now); err != nil {
 				return MailboxExchangeRecord{}, err
 			}
 		}
-		return readMailboxExchangeOnConnection(ctx, connection, requestID)
+		return readMailboxExchangeOnConnection(ctx, connection, validated)
 	})
 }
 
@@ -467,7 +553,8 @@ func responseEventFileCommand(response []byte) (domain.CommandID, bool, error) {
 }
 
 func validateMailboxExchangeCreate(input MailboxExchangeCreate) (validatedMailboxExchangeCreate, error) {
-	if err := validateMailboxRequestID(input.RequestID); err != nil {
+	ref, err := NewMailboxExchangeRef(input.MailboxID, input.RequestID)
+	if err != nil {
 		return validatedMailboxExchangeCreate{}, err
 	}
 	if input.Operation == "" || len(input.Operation) > 128 || strings.IndexByte(input.Operation, 0) >= 0 {
@@ -480,6 +567,13 @@ func validateMailboxExchangeCreate(input MailboxExchangeCreate) (validatedMailbo
 	if len(input.IdempotencyKey) > 256 || strings.IndexByte(input.IdempotencyKey, 0) >= 0 {
 		return validatedMailboxExchangeCreate{}, fmt.Errorf("%w: idempotency key", ErrMailboxExchangeInvalid)
 	}
+	executionKey := mailboxExecutionIdempotencyKey(ref.MailboxID, input.IdempotencyKey)
+	if input.ExecutionIdempotencyKey != "" && input.ExecutionIdempotencyKey != executionKey {
+		return validatedMailboxExchangeCreate{}, fmt.Errorf("%w: execution idempotency key is not derived from mailbox scope", ErrMailboxExchangeInvalid)
+	}
+	if err := validateExecutionIdempotencyKey(executionKey); err != nil {
+		return validatedMailboxExchangeCreate{}, fmt.Errorf("%w: execution idempotency key", ErrMailboxExchangeInvalid)
+	}
 	hash, err := domain.NewCanonicalHash(input.RequestHash.Version(), input.RequestHash.SHA256())
 	if err != nil {
 		return validatedMailboxExchangeCreate{}, fmt.Errorf("%w: request hash: %v", ErrMailboxExchangeInvalid, err)
@@ -490,7 +584,7 @@ func validateMailboxExchangeCreate(input MailboxExchangeCreate) (validatedMailbo
 	if input.ResourceID != "" && (len(input.ResourceID) > 256 || strings.IndexByte(input.ResourceID, 0) >= 0) {
 		return validatedMailboxExchangeCreate{}, fmt.Errorf("%w: resource ID", ErrMailboxExchangeInvalid)
 	}
-	return validatedMailboxExchangeCreate{MailboxExchangeCreate: MailboxExchangeCreate{RequestID: input.RequestID, Operation: input.Operation, Controller: controller, IdempotencyKey: input.IdempotencyKey, RequestHash: hash, CanonicalPayload: append([]byte(nil), input.CanonicalPayload...), ResourceID: input.ResourceID}}, nil
+	return validatedMailboxExchangeCreate{MailboxExchangeCreate: MailboxExchangeCreate{MailboxID: ref.MailboxID, RequestID: ref.ClientRequestID, Operation: input.Operation, Controller: controller, IdempotencyKey: input.IdempotencyKey, ExecutionIdempotencyKey: executionKey, RequestHash: hash, CanonicalPayload: append([]byte(nil), input.CanonicalPayload...), ResourceID: input.ResourceID}}, nil
 }
 
 type validatedMailboxExchangeCreate struct {
@@ -509,6 +603,10 @@ type validatedMailboxExchangeCreate struct {
 	UpdatedAt                time.Time
 }
 
+func (input validatedMailboxExchangeCreate) MailboxExchangeRef() MailboxExchangeRef {
+	return MailboxExchangeRef{MailboxID: input.MailboxID, ClientRequestID: input.RequestID}
+}
+
 func validateMailboxRequestID(requestID string) error {
 	if requestID == "" || len(requestID) > 256 || strings.IndexByte(requestID, 0) >= 0 {
 		return fmt.Errorf("%w: request ID must be 1..256 bytes and contain no NUL", ErrMailboxExchangeInvalid)
@@ -517,21 +615,21 @@ func validateMailboxRequestID(requestID string) error {
 }
 
 func sameMailboxBinding(existing MailboxExchangeRecord, input validatedMailboxExchangeCreate) bool {
-	return existing.Operation == input.Operation && existing.Controller.Type() == input.Controller.Type() && existing.Controller.ID() == input.Controller.ID() && existing.IdempotencyKey == input.IdempotencyKey && domain.CompareIdempotency(existing.RequestHash, input.RequestHash) == domain.IdempotencySamePayload && bytesEqual(existing.CanonicalPayload, input.CanonicalPayload)
+	return existing.MailboxID == input.MailboxID && existing.Operation == input.Operation && existing.Controller.Type() == input.Controller.Type() && existing.Controller.ID() == input.Controller.ID() && existing.IdempotencyKey == input.IdempotencyKey && domain.CompareIdempotency(existing.RequestHash, input.RequestHash) == domain.IdempotencySamePayload && bytesEqual(existing.CanonicalPayload, input.CanonicalPayload)
 }
 
 func insertMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, input validatedMailboxExchangeCreate) error {
 	_, err := connection.ExecContext(ctx, `
-INSERT INTO mailbox_exchanges (
-    request_id, operation, controller_type, controller_id, idempotency_key,
-    canonical_hash_version, canonical_hash, canonical_payload, resource_id,
+	INSERT INTO mailbox_exchanges (
+	    exchange_id, mailbox_id, client_request_id, operation, controller_type, controller_id, client_idempotency_key, execution_idempotency_key,
+	    canonical_hash_version, canonical_hash, canonical_payload, resource_id,
     request_state, response_revision, terminal_response_bytes,
     terminal_response_sha256, available_event_sequence, response_bytes,
     response_sha256, response_cleanup_at, response_cleanup_started_at,
     response_file_removed_at, idempotency_key_expires_at,
     idempotency_binding_active, deduplication_warning, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, input.RequestID, input.Operation, string(input.Controller.Type()), string(input.Controller.ID()), input.IdempotencyKey,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, mailboxExchangeID(input.MailboxExchangeRef()), input.MailboxID, input.RequestID, input.Operation, string(input.Controller.Type()), string(input.Controller.ID()), input.IdempotencyKey, input.ExecutionIdempotencyKey,
 		input.RequestHash.Version(), input.RequestHash.SHA256(), input.CanonicalPayload, input.ResourceID, string(input.State), input.ResponseRevision,
 		nullableBytes(input.TerminalResponseBytes), nullableBytes(input.TerminalResponseSHA256), input.AvailableEventSequence,
 		nullableBytes(input.ResponseBytes), nullableBytes(input.ResponseSHA256), nil, nil, nil,
@@ -550,39 +648,50 @@ func storedTimePointer(value *time.Time) any {
 	return formatStoredTime(*value)
 }
 
-func readMailboxExchangeByIDOnConnection(ctx context.Context, connection *sql.Conn, requestID string) (MailboxExchangeRecord, bool, error) {
+func readMailboxExchangeByIDOnConnection(ctx context.Context, connection *sql.Conn, ref MailboxExchangeRef) (MailboxExchangeRecord, bool, error) {
+	validated, err := validateMailboxExchangeRef(ref)
+	if err != nil {
+		return MailboxExchangeRecord{}, false, err
+	}
 	var exists int
-	if err := connection.QueryRowContext(ctx, `SELECT count(*) FROM mailbox_exchanges WHERE request_id = ?`, requestID).Scan(&exists); err != nil {
+	if err := connection.QueryRowContext(ctx, `SELECT count(*) FROM mailbox_exchanges WHERE exchange_id = ?`, mailboxExchangeID(validated)).Scan(&exists); err != nil {
 		return MailboxExchangeRecord{}, false, fmt.Errorf("lookup mailbox request ID: %w", err)
 	}
 	if exists == 0 {
 		return MailboxExchangeRecord{}, false, nil
 	}
-	record, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+	record, err := readMailboxExchangeOnConnection(ctx, connection, validated)
 	return record, true, err
 }
 
-func readLatestMailboxExchangeByKeyOnConnection(ctx context.Context, connection *sql.Conn, controller domain.ControllerIdentity, operation, key string) (MailboxExchangeRecord, bool, error) {
-	var requestID string
+func readLatestMailboxExchangeByKeyOnConnection(ctx context.Context, connection *sql.Conn, mailboxID string, controller domain.ControllerIdentity, operation, key string) (MailboxExchangeRecord, bool, error) {
+	if err := validateMailboxID(mailboxID); err != nil {
+		return MailboxExchangeRecord{}, false, err
+	}
+	var clientRequestID string
 	err := connection.QueryRowContext(ctx, `
-SELECT request_id FROM mailbox_exchanges
-WHERE controller_type = ? AND controller_id = ? AND operation = ? AND idempotency_key = ?
+SELECT client_request_id FROM mailbox_exchanges
+WHERE mailbox_id = ? AND controller_type = ? AND controller_id = ? AND operation = ? AND client_idempotency_key = ?
   AND idempotency_binding_active = 1
-ORDER BY created_at DESC, request_id DESC LIMIT 1
-`, string(controller.Type()), string(controller.ID()), operation, key).Scan(&requestID)
+ORDER BY created_at DESC, exchange_id DESC LIMIT 1
+`, mailboxID, string(controller.Type()), string(controller.ID()), operation, key).Scan(&clientRequestID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MailboxExchangeRecord{}, false, nil
 	}
 	if err != nil {
 		return MailboxExchangeRecord{}, false, fmt.Errorf("lookup mailbox idempotency key: %w", err)
 	}
-	record, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+	record, err := readMailboxExchangeOnConnection(ctx, connection, MailboxExchangeRef{MailboxID: mailboxID, ClientRequestID: clientRequestID})
 	return record, true, err
 }
 
-func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, requestID string) (MailboxExchangeRecord, error) {
+func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, ref MailboxExchangeRef) (MailboxExchangeRecord, error) {
+	validated, err := validateMailboxExchangeRef(ref)
+	if err != nil {
+		return MailboxExchangeRecord{}, err
+	}
 	var record MailboxExchangeRecord
-	var controllerType, controllerID, operation, key, payload, resourceID, state, createdAt, updatedAt string
+	var controllerType, controllerID, operation, key, executionKey, payload, resourceID, state, createdAt, updatedAt string
 	var version int
 	var digest []byte
 	var terminalBytes, terminalHash, responseBytes, responseHash []byte
@@ -591,23 +700,27 @@ func readMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, 
 	var eventFileCommandID sql.NullString
 	var idempotencyBindingActive, deduplicationWarning int
 	if err := connection.QueryRowContext(ctx, `
-SELECT request_id, operation, controller_type, controller_id, idempotency_key,
-       canonical_hash_version, canonical_hash, canonical_payload, resource_id,
+	SELECT exchange_id, mailbox_id, client_request_id, operation, controller_type, controller_id,
+         client_idempotency_key, execution_idempotency_key,
+         canonical_hash_version, canonical_hash, canonical_payload, resource_id,
        request_state, response_revision, terminal_response_bytes,
        terminal_response_sha256, available_event_sequence, response_bytes,
        response_sha256, acknowledged_at, response_cleanup_at,
        response_cleanup_started_at, response_file_removed_at,
        idempotency_key_expires_at, idempotency_binding_active, deduplication_warning,
        COALESCE(
-         (SELECT command_id FROM mailbox_event_file_references WHERE request_id = mailbox_exchanges.request_id),
-         (SELECT command_id FROM mailbox_remote_event_file_references WHERE request_id = mailbox_exchanges.request_id)
+          (SELECT command_id FROM mailbox_event_file_references WHERE exchange_id = mailbox_exchanges.exchange_id),
+          (SELECT command_id FROM mailbox_remote_event_file_references WHERE exchange_id = mailbox_exchanges.exchange_id)
        ),
        created_at, updated_at
-FROM mailbox_exchanges WHERE request_id = ?
-`, requestID).Scan(&record.RequestID, &operation, &controllerType, &controllerID, &key, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &responseCleanupAt, &responseCleanupStartedAt, &responseFileRemovedAt, &idempotencyKeyExpiresAt, &idempotencyBindingActive, &deduplicationWarning, &eventFileCommandID, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+FROM mailbox_exchanges WHERE exchange_id = ?
+`, mailboxExchangeID(validated)).Scan(&record.ExchangeID, &record.MailboxID, &record.RequestID, &operation, &controllerType, &controllerID, &key, &executionKey, &version, &digest, &payload, &resourceID, &state, &record.ResponseRevision, &terminalBytes, &terminalHash, &availableCursor, &responseBytes, &responseHash, &acknowledgedAt, &responseCleanupAt, &responseCleanupStartedAt, &responseFileRemovedAt, &idempotencyKeyExpiresAt, &idempotencyBindingActive, &deduplicationWarning, &eventFileCommandID, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return MailboxExchangeRecord{}, ErrMailboxExchangeNotFound
 	} else if err != nil {
 		return MailboxExchangeRecord{}, fmt.Errorf("read mailbox exchange: %w", err)
+	}
+	if record.ExchangeID != mailboxExchangeID(validated) || record.MailboxID != validated.MailboxID || record.RequestID != validated.ClientRequestID || !validMailboxID(record.MailboxID) {
+		return MailboxExchangeRecord{}, fmt.Errorf("%w: mailbox exchange identity", ErrMailboxExchangeInvalid)
 	}
 	controller, err := domain.NewControllerIdentity(domain.ControllerType(controllerType), domain.ControllerID(controllerID))
 	if err != nil {
@@ -682,6 +795,9 @@ FROM mailbox_exchanges WHERE request_id = ?
 	if (idempotencyBindingActive != 0 && idempotencyBindingActive != 1) || (deduplicationWarning != 0 && deduplicationWarning != 1) {
 		return MailboxExchangeRecord{}, fmt.Errorf("%w: mailbox idempotency flags", ErrMailboxExchangeInvalid)
 	}
+	if err := validateExecutionIdempotencyKey(executionKey); err != nil {
+		return MailboxExchangeRecord{}, fmt.Errorf("%w: execution idempotency key", ErrMailboxExchangeInvalid)
+	}
 	record.IdempotencyBindingActive = idempotencyBindingActive == 1
 	record.DeduplicationWarning = deduplicationWarning == 1
 	if idempotencyKeyExpiresAt.Valid {
@@ -700,7 +816,7 @@ FROM mailbox_exchanges WHERE request_id = ?
 		deadline := mailboxResponseCleanupDeadline(record.UpdatedAt, record.AcknowledgedAt)
 		record.ResponseCleanupAt = &deadline
 	}
-	record.Operation, record.Controller, record.IdempotencyKey = operation, controller, key
+	record.Operation, record.Controller, record.IdempotencyKey, record.ExecutionIdempotencyKey = operation, controller, key, executionKey
 	record.RequestHash, record.CanonicalPayload, record.ResourceID, record.State = hash, append([]byte(nil), payload...), resourceID, MailboxExchangeState(state)
 	return record, nil
 }

@@ -122,10 +122,20 @@ func (p EventProjector) ProjectThrough(ctx context.Context, commandID domain.Com
 // live terminal mailbox response. The store authorizes this exceptional read
 // through the durable response-to-command reference and cleanup deadline.
 func (p EventProjector) ProjectMailboxResponseThrough(ctx context.Context, requestID string, commandID domain.CommandID) ([]byte, int64, error) {
+	ref, err := store.NewMailboxExchangeRef(store.DefaultMailboxID, requestID)
+	if err != nil {
+		return nil, 0, err
+	}
+	return p.ProjectMailboxResponseThroughInMailbox(ctx, ref, commandID)
+}
+
+// ProjectMailboxResponseThroughInMailbox rebuilds a prefix authorized by the
+// supplied mailbox exchange rather than searching a global request ID.
+func (p EventProjector) ProjectMailboxResponseThroughInMailbox(ctx context.Context, ref store.MailboxExchangeRef, commandID domain.CommandID) ([]byte, int64, error) {
 	if p.Authority == nil {
 		return nil, 0, ErrEventProjectionConfiguration
 	}
-	command, events, err := p.Authority.MailboxResponseCommandEvents(ctx, requestID, commandID)
+	command, events, err := p.Authority.MailboxResponseCommandEventsInMailbox(ctx, ref, commandID)
 	if err != nil {
 		return nil, 0, err
 	}

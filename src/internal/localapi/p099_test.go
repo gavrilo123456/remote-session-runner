@@ -85,9 +85,9 @@ func TestP099RestartAfterMutationCommitBeforeResponsePublication(t *testing.T) {
 			if err != nil || receipt.State != store.MailboxExchangeAccepted || len(receipt.ResponseBytes) != 0 {
 				t.Fatalf("receipt at injected stop=%+v err=%v", receipt, err)
 			}
-			intentBefore, err := h.authority.GetLocalIntentByIdempotency(ctx, operation, request.key, p063Owner(t))
-			if err != nil || intentBefore.IntentID == "" {
-				t.Fatalf("committed local intent=%+v err=%v", intentBefore, err)
+			intentBefore := pMailboxIntentForRequest(t, h.authority, operation, request.requestID)
+			if intentBefore.IntentID == "" {
+				t.Fatalf("committed local intent=%+v", intentBefore)
 			}
 			p099AssertPairPresent(t, h.importer.InboxPath(), request.requestID)
 
@@ -98,9 +98,9 @@ func TestP099RestartAfterMutationCommitBeforeResponsePublication(t *testing.T) {
 			if err != nil || len(results) != 1 || !results[0].Durable || !results[0].PairRemoved {
 				t.Fatalf("restarted import results=%+v err=%v", results, err)
 			}
-			intentAfter, err := h.authority.GetLocalIntentByIdempotency(ctx, operation, request.key, p063Owner(t))
-			if err != nil || intentAfter.IntentID != intentBefore.IntentID {
-				t.Fatalf("restart created a different intent: before=%+v after=%+v err=%v", intentBefore, intentAfter, err)
+			intentAfter := pMailboxIntentForRequest(t, h.authority, operation, request.requestID)
+			if intentAfter.IntentID != intentBefore.IntentID {
+				t.Fatalf("restart created a different intent: before=%+v after=%+v", intentBefore, intentAfter)
 			}
 			response := readP095Response(t, h.outbox, request.requestID)
 			if response.RequestID != request.requestID || response.Operation != operation || response.RequestState == "rejected" || response.Error != nil {

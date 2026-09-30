@@ -105,7 +105,7 @@ func TestP140MacLinuxOrdinalGapSurvivesRestoreAndReconcilesBeforeNextDispatch(t 
 		t.Fatal(err)
 	}
 	created, err := server.CreateSessionIntent(ctx, mailbox.Request{
-		RequestID: createRequestID, IdempotencyKey: createKey, Operation: "create_session", RawJSON: createBody,
+		MailboxID: store.DefaultMailboxID, RequestID: createRequestID, IdempotencyKey: createKey, ExecutionIdempotencyKey: pMailboxTestExecutionKey(createKey), Operation: "create_session", RawJSON: createBody,
 	})
 	if err != nil {
 		t.Fatalf("record test-owned Mac create intent: %v", err)
@@ -139,7 +139,7 @@ func TestP140MacLinuxOrdinalGapSurvivesRestoreAndReconcilesBeforeNextDispatch(t 
 	}
 	cancelRequestID, cancelKey := p140RequestIDs(t, "cancel")
 	if _, err := server.CancelCommandIntent(ctx, mailbox.Request{
-		RequestID: cancelRequestID, IdempotencyKey: cancelKey, Operation: "cancel_command",
+		MailboxID: store.DefaultMailboxID, RequestID: cancelRequestID, IdempotencyKey: cancelKey, ExecutionIdempotencyKey: pMailboxTestExecutionKey(cancelKey), Operation: "cancel_command",
 		CommandID: firstCommand.CommandID, SessionID: string(sessionID),
 	}); err != nil {
 		t.Fatalf("record pre-dispatch cancel intent: %v", err)
@@ -420,7 +420,7 @@ func p140SubmitMacIntent(t *testing.T, ctx context.Context, server *Server, auth
 		t.Fatal(err)
 	}
 	accepted, err := server.SubmitCommandIntent(ctx, mailbox.Request{
-		RequestID: requestID, IdempotencyKey: key, Operation: "submit_command", SessionID: string(sessionID), RawJSON: body,
+		MailboxID: store.DefaultMailboxID, RequestID: requestID, IdempotencyKey: key, ExecutionIdempotencyKey: pMailboxTestExecutionKey(key), Operation: "submit_command", SessionID: string(sessionID), RawJSON: body,
 	})
 	if err != nil {
 		t.Fatalf("record test-owned Mac command intent: %v", err)
@@ -584,7 +584,7 @@ func p140CloseRemoteSession(t *testing.T, ctx context.Context, server *Server, a
 	t.Helper()
 	requestID, key := p140RequestIDs(t, "close")
 	if _, err := server.CloseSessionIntent(ctx, mailbox.Request{
-		RequestID: requestID, IdempotencyKey: key, Operation: "close_session", SessionID: string(sessionID), ClosePolicy: "graceful",
+		MailboxID: store.DefaultMailboxID, RequestID: requestID, IdempotencyKey: key, ExecutionIdempotencyKey: pMailboxTestExecutionKey(key), Operation: "close_session", SessionID: string(sessionID), ClosePolicy: "graceful",
 	}); err != nil {
 		t.Errorf("accept test-owned P140 remote session cleanup: %v", err)
 		return false

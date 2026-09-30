@@ -90,7 +90,7 @@ func TestP123QueuedProjectionReconcilesAfterSSHOutage(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := h.server.CreateSessionIntent(ctx, mailbox.Request{
-		RequestID: createRequestID, IdempotencyKey: createKey, Operation: "create_session", RawJSON: createBody,
+		MailboxID: store.DefaultMailboxID, RequestID: createRequestID, IdempotencyKey: createKey, ExecutionIdempotencyKey: pMailboxTestExecutionKey(createKey), Operation: "create_session", RawJSON: createBody,
 	})
 	if err != nil || created.SessionID == "" {
 		t.Fatalf("record queued session intent: acceptance=%+v err=%v", created, err)
@@ -267,7 +267,7 @@ func p123AcceptQueuedCommand(t *testing.T, ctx context.Context, h *p095Harness, 
 		t.Fatal(err)
 	}
 	accepted, err := h.server.SubmitCommandIntent(ctx, mailbox.Request{
-		RequestID: requestID, IdempotencyKey: key, Operation: "submit_command", SessionID: string(sessionID), RawJSON: body,
+		MailboxID: store.DefaultMailboxID, RequestID: requestID, IdempotencyKey: key, ExecutionIdempotencyKey: pMailboxTestExecutionKey(key), Operation: "submit_command", SessionID: string(sessionID), RawJSON: body,
 	})
 	if err != nil {
 		t.Fatalf("record queued command intent: %v", err)
@@ -362,7 +362,7 @@ func p123CleanupQueuedSession(t *testing.T, ctx context.Context, h *p095Harness,
 	key := p123LocalKey(t)
 	requestID := "req-p123-" + key[len("p123-"):] + "-close"
 	_, err := h.server.CloseSessionIntent(cleanupCtx, mailbox.Request{
-		RequestID: requestID, IdempotencyKey: key, Operation: "close_session", SessionID: string(sessionID), ClosePolicy: "graceful",
+		MailboxID: store.DefaultMailboxID, RequestID: requestID, IdempotencyKey: key, ExecutionIdempotencyKey: pMailboxTestExecutionKey(key), Operation: "close_session", SessionID: string(sessionID), ClosePolicy: "graceful",
 	})
 	if err != nil {
 		t.Errorf("accept queued session cleanup: %v", err)
