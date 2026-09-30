@@ -125,28 +125,42 @@ func runRecoverLost(args []string, stdout, stderr io.Writer) int {
 }
 
 func requireRunnerdServiceStopped() error {
-	activeState, err := runnerdSystemdValue("ActiveState")
+	return requireRunnerdServiceStoppedWith(runnerdSystemdValue, os.ReadFile)
+}
+
+func requireRunnerdServiceStoppedWith(systemdValue func(string) (string, error), readFile func(string) ([]byte, error)) error {
+	activeState, err := systemdValue("ActiveState")
 	if err != nil {
 		return fmt.Errorf("read runnerd.service active state: %w", err)
 	}
 	if activeState != "inactive" && activeState != "failed" {
 		return fmt.Errorf("runnerd.service state=%q; stop it before lost-runtime recovery", activeState)
 	}
-	mainPID, err := runnerdSystemdValue("MainPID")
+	mainPID, err := systemdValue("MainPID")
 	if err != nil {
 		return fmt.Errorf("read runnerd.service main PID: %w", err)
 	}
 	if mainPID != "0" {
 		return fmt.Errorf("runnerd.service main PID=%q; stop it before lost-runtime recovery", mainPID)
 	}
-	controlGroup, err := runnerdSystemdValue("ControlGroup")
+	controlGroup, err := systemdValue("ControlGroup")
 	if err != nil {
 		return fmt.Errorf("read runnerd.service control group: %w", err)
 	}
-	if controlGroup == "" || !filepath.IsAbs(controlGroup) || strings.Contains(controlGroup, "..") {
+	// systemd removes a unit's cgroup after a clean stop on this host. With an
+	// inactive unit and MainPID=0, an absent ControlGroup is therefore the
+	// confirmed empty-cgroup state, not a reason to reject recovery. Keep a
+	// failed unit conservative: it must still present an inspectable cgroup.
+	if controlGroup == "" {
+		if activeState == "inactive" {
+			return nil
+		}
+		return fmt.Errorf("runnerd.service control group is unavailable after %s state", activeState)
+	}
+	if !filepath.IsAbs(controlGroup) || strings.Contains(controlGroup, "..") {
 		return fmt.Errorf("runnerd.service control group=%q is invalid", controlGroup)
 	}
-	members, err := os.ReadFile("/sys/fs/cgroup" + controlGroup + "/cgroup.procs")
+	members, err := readFile("/sys/fs/cgroup" + controlGroup + "/cgroup.procs")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read runnerd.service control group: %w", err)
 	}
