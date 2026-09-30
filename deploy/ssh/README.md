@@ -58,8 +58,10 @@ controller map, or authorization line.
 This bridge proves only the profile installed on that host. `sandbox-host`
 passed its separate P157 gate with a bridge on
 `ubuntu@oracle-gustaw-janecki-ubuntu-flex-02`; its Mac route is
-`ubuntu-sandbox`, which the active policy permits through the `analytics` inbox
-for mailbox work. See [`P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md).
+`ubuntu-sandbox`, which the active policy permits as an `analytics` override
+and uses as the `slidestud-io` mailbox default. See
+[`P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md)
+and [`P158-slidestud-external-mailbox.md`](../../040-implementation-evidence/P158-slidestud-external-mailbox.md).
 
 Every later remote profile needs separate key pinning, controller authorization,
 service deployment, and P157 end-to-end acceptance. A profile not yet attempted

@@ -8,13 +8,13 @@ is a record of completed gates, not a live-health substitute. Run the checks in
 
 | Component | Accepted identity | Evidence |
 | --- | --- | --- |
-| Mac services | `tomasz.walczuk` at `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` | P155 real-process two-inbox test, private socket/readiness checks, and zero backlog. |
+| Mac services | `tomasz.walczuk` at `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` | P155 real-process two-inbox test, P158 external-mailbox activation, private socket/readiness checks, and zero backlog. |
 | Current Ubuntu host | `ubuntu@oracle-yuta-konopka-ubuntu-micro-02` / `linux-host` | P155 `runnerd.service`, listener `10.0.0.200:8443`, zero-work P128 checks, and permanent bridge status. |
 | Sandbox Ubuntu host | `ubuntu@oracle-gustaw-janecki-ubuntu-flex-02` / `sandbox-host` | P157 `runnerd.service`, listener `10.0.0.14:8443`, zero-work P128 checks, and permanent bridge status after the authorized repair. |
 | Current direct route | `linux-poc` → `https://129.151.232.40:8443` | P155 Runner application mTLS health and direct CLI evidence, separate from mailbox evidence. |
 | Sandbox direct route | `sandbox-poc` → `https://132.226.205.205:8443` | P157 Runner application mTLS readiness (`HTTP 200`), separate from the queued mailbox request. |
 | Current queued route | `ubuntu-current` → `remote/linux-host` | P155 permanent restricted bridge and an end-to-end analytics mailbox override. |
-| Sandbox queued route | `ubuntu-sandbox` → `remote/sandbox-host` | P157 permanent restricted bridge and native end-to-end analytics mailbox request. |
+| Sandbox queued route | `ubuntu-sandbox` → `remote/sandbox-host` | P157 permanent restricted bridge and native end-to-end analytics mailbox request; P158 external SlideStudio mailbox default. |
 
 The associated source and evidence closeout are:
 
@@ -25,6 +25,9 @@ The associated source and evidence closeout are:
 - P157 repair and final host-gate revision:
   `8873852ddc9ab33093c105371de93a3695d99b89`
 - Detailed record: [P157 sandbox-host evidence](../040-implementation-evidence/P157-sandbox-host.md)
+- P158 source and host-gate revision:
+  `ce74e368f2aa40f9db90d1bb049f96fd533c5753`
+- Detailed record: [P158 SlideStudio external-mailbox evidence](../040-implementation-evidence/P158-slidestud-external-mailbox.md)
 
 ## What P155 proved
 
@@ -73,9 +76,36 @@ on source revision `8873852ddc9ab33093c105371de93a3695d99b89`. It proved:
    `ubuntu`, hostname, and architecture output, read events, and wrote the
    ACK.
 
-The active policy still limits `default` to `mac-local` and `ubuntu-current`.
-Only `analytics` permits the explicit `ubuntu-sandbox` override. P157 did not
-make the sandbox an automatic destination or fallback.
+At the P157 gate, the policy limited `default` to `mac-local` and
+`ubuntu-current`, while `analytics` permitted the explicit `ubuntu-sandbox`
+override. P157 did not make the sandbox an automatic destination or fallback.
+
+## What P158 proved
+
+P158 added the owner-safe external root
+`/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` as the
+`slidestud-io` namespace. Its repository alias is `slidestud-io`, its default
+is `ubuntu-sandbox` (`sandbox-dev` / `remote/sandbox-host`), and its allowed
+contexts also include `mac-local` and `ubuntu-current`.
+
+The source implementation was pushed from the Mac and both Ubuntu checkouts
+fast-forwarded cleanly to `ce74e368f2aa40f9db90d1bb049f96fd533c5753` before
+the live request. Candidate activation verified the pre-existing external
+ancestors without changing them, then created only the root and `inbox`,
+`outbox`, `events`, and `acks` at owner-owned `0700`. The local SlideStudio
+checkout ignores `/tmp/mailbox-/` through its untracked `.git/info/exclude`.
+
+`make test-p158-slidestud-mailbox` used the native `mailboxclient` to publish
+one harmless `run` request with neither `environment` nor `execution_target`.
+It resolved from the inbox default to `sandbox-dev` / `remote/sandbox-host`,
+verified complete untruncated output from `ubuntu` on
+`oracle-gustaw-janecki-ubuntu-flex-02` (`aarch64`), read the retained event
+prefix through its final cursor, and wrote the exact ACK. The follow-up sandbox
+P128 status reported zero active sessions, running commands, unreleased slots,
+and unfinished jobs.
+
+This is queued mailbox evidence. P158 did not use the direct mTLS endpoint as
+a substitute for the mailbox result, and it did not onboard a new host.
 
 ## What is not accepted
 

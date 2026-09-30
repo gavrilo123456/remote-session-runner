@@ -25,28 +25,32 @@ and logs under the service root.
 
 `mac.v2.yaml.example` is the policy template for named inboxes and profiles. It
 intentionally starts with only `linux-host`, so the checked-in template carries
-no sandbox credentials. The active owner-only P155/P157 policy also contains
-the separately accepted `sandbox-host`. Create a reviewed owner-only candidate
-at `config/mac.next.yaml`, retain all existing registered roots, and run:
+no sandbox credentials. The active owner-only P155/P157/P158 policy also
+contains the separately accepted `sandbox-host` and the accepted external
+`slidestud-io` mailbox. Create a reviewed owner-only candidate at
+`config/mac.next.yaml`, retain all existing registered roots, and run:
 
 ```sh
 deploy/macos/install-launchagents.sh --config \
   "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml"
 ```
 
-The installed P155/P157 policy has:
+The installed P155/P157/P158 policy has:
 
 | Inbox | Root | Default | Allowed contexts |
 | --- | --- | --- | --- |
 | `default` | `.../RemoteSessionRunner/mailbox` | `mac-local` | `mac-local`, `ubuntu-current` |
 | `analytics` | `.../RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
+| `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
 
 `ubuntu-sandbox` selects `sandbox-dev` / `remote/sandbox-host`. For mailbox
-work, `analytics` permits that explicit override and `default` retains
-`mac-local` and `ubuntu-current`. The accepted `sandbox-poc` direct endpoint
-and its separate secret paths remain in the owner-only active configuration.
-The P157 host result is recorded in
-[`040-implementation-evidence/P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md).
+work, `analytics` permits that explicit override, while `slidestud-io` uses it
+as the default and `default` retains `mac-local` and `ubuntu-current`. The
+accepted `sandbox-poc` direct endpoint and its separate secret paths remain in
+the owner-only active configuration. The P157 host result and P158 external
+mailbox result are recorded in
+[`040-implementation-evidence/P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md)
+and [`040-implementation-evidence/P158-slidestud-external-mailbox.md`](../../040-implementation-evidence/P158-slidestud-external-mailbox.md).
 
 The installer validates the candidate while the active configuration runs. It
 first performs a descriptor-based, non-mutating check of every mailbox path,
@@ -77,9 +81,9 @@ its runtime directory locally from that repository's VCS view.
 
 The mailbox registry is append-only for this PoC. Adding a root is supported;
 removing, renaming, or moving an inbox needs an explicit later migration after
-its work and artifacts are retired. `sandbox-host` passed its separate P157
-host gate. A later remote host still needs its own P157 gate even if its profile
-appears in a candidate.
+its work and artifacts are retired. P158 accepted mailbox ingress only;
+`sandbox-host` passed its separate P157 host gate. A later remote host still
+needs its own P157 gate even if its profile appears in a candidate.
 
 ## Stop and restart behavior
 

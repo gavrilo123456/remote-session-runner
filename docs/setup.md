@@ -135,11 +135,13 @@ fi
 ```
 
 Edit the candidate as the owner to include the complete V2 policy. The active
-P155/P157 policy contains the legacy `default` root, the extra `analytics`
-root, and the accepted `ubuntu-sandbox` context; see
-[configuration](configuration.md#version-2-installed-multi-inbox-policy).
-Keep every existing registered inbox ID/root unchanged. Do not write a
-candidate over `config/mac.yaml`.
+P155/P157/P158 policy contains the legacy `default` root, the extra `analytics`
+root, the external `slidestud-io` root at
+`/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`, and the accepted
+`ubuntu-sandbox` context; see
+[configuration](configuration.md#version-2-installed-multi-inbox-policy). Keep
+every existing registered inbox ID/root unchanged. Do not write a candidate over
+`config/mac.yaml`.
 
 For an external non-default mailbox root, choose a clean absolute path outside
 the Runner service root. Its ancestors must already be real directories without
@@ -323,8 +325,9 @@ runner='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bi
 
 The output must identify `ubuntu`, `oracle-gustaw-janecki-ubuntu-flex-02`, and
 `aarch64`. This CLI command directly selects the queued `sandbox-host` route.
-For mailbox work, `analytics` permits the `ubuntu-sandbox` override and
-`default` retains `mac-local` and `ubuntu-current`.
+For mailbox work, `analytics` permits the `ubuntu-sandbox` override;
+`slidestud-io` defaults to it; and `default` retains `mac-local` and
+`ubuntu-current`.
 
 ## 7. Onboard each additional remote host (P157)
 

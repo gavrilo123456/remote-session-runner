@@ -10,13 +10,16 @@ profile. The PoC has no containers, tunnels, interactive PTYs, arbitrary
 account selection, arbitrary host selection, or automatic fallback.
 
 The installed Mac configuration is version 2. It preserves the legacy
-`default` mailbox and adds `analytics`, each with independent inbox, outbox,
-events, and ACK paths. Each inbox has a default execution context and can allow
-an explicit complete context override. `default` permits `mac-local` and
-`ubuntu-current`; `analytics` additionally permits `ubuntu-sandbox`. P155
-accepted `linux-host`; P157 separately accepted `sandbox-host` after its repair
-on source revision `8873852ddc9ab33093c105371de93a3695d99b89`. Other new hosts
-remain unavailable until they pass their own P157 gate.
+`default` mailbox and adds `analytics` plus the external `slidestud-io`
+mailbox, each with independent inbox, outbox, events, and ACK paths. Each inbox
+has a default execution context and can allow an explicit complete context
+override. `default` permits `mac-local` and `ubuntu-current`; `analytics`
+additionally permits an explicit `ubuntu-sandbox` override; `slidestud-io` at
+`/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` defaults to
+`ubuntu-sandbox` and also permits `mac-local` and `ubuntu-current`. P155
+accepted `linux-host`; P157 separately accepted `sandbox-host`; and P158
+accepted the native external-mailbox path to that already accepted sandbox
+host. Other new hosts remain unavailable until they pass their own P157 gate.
 
 Start with [the post-implementation documentation index](docs/README.md):
 

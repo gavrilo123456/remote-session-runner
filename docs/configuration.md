@@ -14,6 +14,7 @@ profile runs as `ubuntu`.
 | Mac account and root | `tomasz.walczuk`; `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
 | Ubuntu account and root | `ubuntu`; `/home/ubuntu/.local/share/remote-session-runner` |
 | Mac active config | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.yaml` |
+| Active mailbox roots | `default` service-root mailbox; `analytics` service-root mailbox; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` |
 | Accepted remote profiles | `linux-host`; `sandbox-host` |
 | `linux-host` direct endpoint and bind | `linux-poc`; `https://129.151.232.40:8443`; `10.0.0.200:8443` |
 | `sandbox-host` direct endpoint and bind | `sandbox-poc`; `https://132.226.205.205:8443`; `10.0.0.14:8443` |
@@ -120,9 +121,10 @@ deploy/macos/mac.v2.yaml.example
 ```
 
 The checked-in template intentionally contains only `linux-host`, so it remains
-a safe first V2 policy without sandbox credentials. The active P155/P157 policy
-is owner-only and outside Git. It adds `analytics`, the accepted
-`sandbox-host`, and its explicitly allowed `ubuntu-sandbox` override:
+a safe first V2 policy without sandbox credentials. The active P155/P157/P158
+policy is owner-only and outside Git. It adds `analytics`, the accepted
+`sandbox-host`, its explicitly allowed `ubuntu-sandbox` override, and the
+external `slidestud-io` inbox that defaults to that context:
 
 ```yaml
 version: 2
@@ -185,6 +187,11 @@ mailboxes:
     repository_aliases: [analytics-dbt]
     default_execution: mac-local
     allowed_execution: [mac-local, ubuntu-current, ubuntu-sandbox]
+  slidestud-io:
+    root: "/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-"
+    repository_aliases: [slidestud-io]
+    default_execution: ubuntu-sandbox
+    allowed_execution: [ubuntu-sandbox, mac-local, ubuntu-current]
 ```
 
 Use complete `mac` and `environment_registry` definitions in the owner-only
@@ -192,7 +199,8 @@ candidate; the abbreviated listing above omits their remaining required fields.
 The environment registry permits the local account for `mac-dev` and `ubuntu`
 for both `linux-dev` and `sandbox-dev`. The current remote source mode is
 `empty`. `default` retains only `mac-local` and `ubuntu-current`; `analytics`
-is the only inbox that may explicitly select `ubuntu-sandbox`.
+may explicitly select `ubuntu-sandbox`; `slidestud-io` uses
+`ubuntu-sandbox` as its default and also allows the other two contexts.
 
 ### Version-2 validation rules
 

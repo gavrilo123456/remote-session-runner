@@ -22,6 +22,7 @@ field.
 | --- | --- | --- | --- | --- |
 | `default` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox` | `remote-session-runner` | `mac-local` | `mac-local`, `ubuntu-current` |
 | `analytics` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `analytics-dbt` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
+| `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `slidestud-io` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
 
 Every root has this independent layout:
 
@@ -176,6 +177,26 @@ profile through a native mailbox request, event read, and ACK. The `default`
 inbox does not allow this override. Any other remote profile remains
 unavailable until its own P157 host gate passes.
 
+**Use the SlideStudio external root with its sandbox default:**
+
+```json
+{
+  "request_id": "req-slidestud-sandbox-001",
+  "idempotency_key": "key-slidestud-sandbox-001",
+  "operation": "run",
+  "repository_alias": "slidestud-io",
+  "script": "printf 'SLIDESTUD_MAILBOX_DEFAULT_SANDBOX_OK\\n'; id -un; hostname; uname -m"
+}
+```
+
+Publish this JSON through `mailboxclient.New` with
+`/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`. It deliberately
+omits both selection fields, so it resolves as
+`execution_selection_source: "inbox_default"` to `sandbox-dev` /
+`remote/sandbox-host`. P158 accepted this native marker-last route with
+complete untruncated output, retained events, and the exact ACK. It is queued
+bridge evidence, not a direct mTLS request.
+
 **Create a default-target session:**
 
 ```json
@@ -265,6 +286,6 @@ teardown, and the retained event boundary agree.
 - Software-process-crash recovery is evidenced. Physical power-loss recovery
   is not yet verified.
 
-For route and service checks, use [operations](operations.md). For the P155
-and P157 host proofs and the per-host P157 boundary, use
+For route and service checks, use [operations](operations.md). For the P155,
+P157, and P158 proofs and the per-host P157 boundary, use
 [current-host evidence](current-host-evidence.md).

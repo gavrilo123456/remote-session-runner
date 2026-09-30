@@ -144,8 +144,9 @@ Ubuntu host. Then run:
 ```
 
 Use this queued CLI route for a resource's complete lifecycle. For file
-mailbox work, only the `analytics` inbox currently permits the corresponding
-`ubuntu-sandbox` override; the `default` inbox does not.
+mailbox work, `analytics` permits the corresponding `ubuntu-sandbox` override,
+and the external `slidestud-io` inbox uses it as its default when both selection
+fields are omitted; the `default` inbox does not permit it.
 
 ## Use a persistent session
 
@@ -234,6 +235,10 @@ transport becomes uncertain.
 - Mailbox `run` and `create_session` can omit both selection fields to use
   that inbox's default, or supply an exact allowed pair as an override. See
   [mailbox](mailbox.md#new-work-target-resolution).
+- The `slidestud-io` mailbox root is
+  `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; its omitted pair
+  resolves to `sandbox-dev` / `remote/sandbox-host`. The CLI does not publish
+  mailbox files; use the native mailbox integration.
 - Direct HTTPS accepts remote targets only. A Mac-local command uses
   `--endpoint local`.
 - `run` has no standalone CLI job-status command. Preserve its IDs and use the

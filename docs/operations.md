@@ -13,16 +13,18 @@ controls.
 | Direct `linux-host` execution | Accepted on the current host | Public mTLS readiness, then a direct `linux-poc` command. |
 | Queued `linux-host` execution | Permanent restricted bridge was accepted in P155 | Fresh bridge `status` at the deployed source revision, then a queued command. |
 | Direct `sandbox-host` execution | Accepted in P157 | Public `sandbox-poc` mTLS Runner readiness. |
-| Queued `sandbox-host` execution | Accepted in P157 | Fresh sandbox bridge `status`; `analytics` is the only mailbox inbox that permits its override. |
+| Queued `sandbox-host` execution | Accepted in P157 | Fresh sandbox bridge `status`; `analytics` permits its explicit override and `slidestud-io` uses it as its default. |
 | `default` mailbox | Installed and accepted in P155 | Mac readiness, configured root ownership, and native terminal response/event/ACK. |
 | `analytics` mailbox | Installed in P155; `sandbox-host` override accepted in P157 | Same checks; each remote override additionally needs its selected bridge status. |
+| `slidestud-io` mailbox | Installed and accepted in P158 | External owner-only tree, Mac readiness, native no-selection request resolved to `sandbox-host`, complete event/ACK, and sandbox P128 zero-work status. |
 | Any additional profile | **NOT RUN** | Its own P157 service, route, and end-to-end acceptance. |
 
 P155 proved `default` local-default work and an `analytics` allowed queued
 `linux-host` override. P157 independently proved the sandbox bridge, router
 health, native mailbox request, event read, ACK, and zero-work state for
-`sandbox-host`. A successful direct mTLS request does not prove queued mailbox
-delivery.
+`sandbox-host`. P158 then proved the external `slidestud-io` inbox's sandbox
+default with the same native request/event/ACK boundary and a final zero-work
+check. A successful direct mTLS request does not prove queued mailbox delivery.
 
 ## Fast health checks
 
@@ -62,8 +64,7 @@ root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
   }
   check_mailbox_tree "$root/mailbox"
   check_mailbox_tree "$root/mailboxes/analytics"
-  # For each configured external root, call check_mailbox_tree with its exact
-  # configured absolute path after its candidate activation succeeds.
+  check_mailbox_tree "/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-"
 )
 ```
 
@@ -171,7 +172,7 @@ credentials, or resource IDs.
 | `event_gaps_total`, `output_truncations_total` | Durable retained-output problems | 1 |
 | `storage_errors_total`, `cleanup_failures_total` | Observed process/database cleanup errors | 1 |
 | `mailbox_backlog` | Aggregate durable accepted exchanges plus safely published ready markers | 32 |
-| `mailbox_backlog_by_inbox` | Same backlog, split by configured safe inbox IDs such as `default` and `analytics` | Inspect each nonzero value |
+| `mailbox_backlog_by_inbox` | Same backlog, split by configured safe inbox IDs such as `default`, `analytics`, and `slidestud-io` | Inspect each nonzero value |
 
 A zero backlog does not prove an importer, bridge, or request succeeded. It
 only shows no current counted work. Process-local error counters reset after a
@@ -261,5 +262,5 @@ ready. It does not create or rotate dispatcher authorization.
 - Software-crash recovery is evidenced. Physical power-loss survival remains
   unverified until a coordinated physical power-cut test passes.
 
-See [current-host evidence](current-host-evidence.md) for exact P155/P157 scope
-and [setup](setup.md) for deployment steps.
+See [current-host evidence](current-host-evidence.md) for exact P155/P157/P158
+scope and [setup](setup.md) for deployment steps.

@@ -1,7 +1,7 @@
 # P158 — SlideStudio external mailbox
 
-**Status:** IN PROGRESS. This phase adds and accepts one configured external
-mailbox. It does not onboard a new Ubuntu host and does not change the
+**Status:** PASS. This phase added and accepted one configured external mailbox.
+It did not onboard a new Ubuntu host and did not change the
 software-process-crash-only durability boundary.
 
 ## Objective and selected policy
@@ -119,9 +119,116 @@ installer ordering, and existing P154/P157 regressions. The source review also
 confirmed that the permanent native host gate intentionally omits both
 selection fields and asserts the `ubuntu-sandbox` default.
 
-The source implementation now awaits its Mac commit, GitHub `dev` push, and
-clean fast-forward handoff to both Ubuntu checkouts. The Mac candidate
-activation, native mailbox acceptance, exact ACK, sandbox P128 status, and
-final documentation/evidence closeout remain pending. The known sandbox root
-filesystem free-space margin must be rechecked before its host gate; it is a
-capacity risk, not a passed or failed P158 gate.
+### Source delivery — PASS
+
+The reviewed source was committed on the Mac as
+`ce74e368f2aa40f9db90d1bb049f96fd533c5753`
+(`phase(P158): support safe external mailbox roots`) and pushed to GitHub
+`origin/dev` with the prescribed Mac identity. Both clean Ubuntu `dev`
+checkouts then fast-forwarded with the prescribed Ubuntu GitHub identity:
+
+| Checkout | Result |
+| --- | --- |
+| Mac | clean `dev...origin/dev` at `ce74e368f2aa40f9db90d1bb049f96fd533c5753` |
+| `linux-host` checkout | clean `dev...origin/dev` at `ce74e368f2aa40f9db90d1bb049f96fd533c5753` |
+| `sandbox-host` checkout | clean `dev...origin/dev` at `ce74e368f2aa40f9db90d1bb049f96fd533c5753` |
+
+No project source was copied to or edited directly on either Ubuntu host.
+
+The required Git handoff used the prescribed identities:
+
+```sh
+# Mac — tomasz.walczuk
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev
+
+# Each Ubuntu checkout — ubuntu
+git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' pull --ff-only origin dev
+```
+
+### Candidate activation and Mac readiness — PASS
+
+The active owner-only candidate contained `default`, `analytics`, and
+`slidestud-io`, with the selected external root, alias, default
+`ubuntu-sandbox`, and allowed contexts `ubuntu-sandbox`, `mac-local`, and
+`ubuntu-current`. Its regular-file mode was `0600`. Before activation,
+the following non-mutating Mac command returned schema version 2 with all three
+inboxes and left the external root absent:
+
+```sh
+GOCACHE=/private/tmp/remote-session-runner-gocache \
+GOMODCACHE=/private/tmp/remote-session-runner-gomodcache \
+GOTOOLCHAIN=local \
+"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/toolchains/go1.27.1/bin/go" \
+run ./src/cmd/runner-local validate-config --check-mailbox-directories --config \
+"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml"
+```
+
+The installer command below completed successfully. It recorded the candidate
+before creating the external tree:
+
+```sh
+# Mac — tomasz.walczuk
+GOCACHE=/private/tmp/remote-session-runner-gocache \
+GOMODCACHE=/private/tmp/remote-session-runner-gomodcache \
+deploy/macos/install-launchagents.sh --config \
+"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml"
+```
+
+The active `mac.yaml` then contained all three inboxes, and only the external
+root plus `inbox`, `outbox`, `events`, and `acks` were created; every one was a
+current-user-owned real directory at mode `0700`. The pre-existing parent
+remained the current-user-owned non-group/other-writable directory required by
+the descriptor preflight. The local SlideStudio checkout now has an untracked
+`.git/info/exclude` entry `/tmp/mailbox-/` so those runtime artifacts do not
+appear as source changes.
+
+After restart, both Mac LaunchAgents were running. The Mac readiness report was
+`ready`, with `remote_router/linux-host=ready`,
+`remote_router/sandbox-host=ready`, and zero aggregate/per-inbox mailbox
+backlog.
+
+### Native external-mailbox gate — PASS
+
+On the Mac, the following permanent native gate passed:
+
+```sh
+make test-p158-slidestud-mailbox
+```
+
+Its native `mailboxclient` test published request
+`req-p158-18da276d79d6cbc0` without `environment` or
+`execution_target`. It resolved via `inbox_default` to `sandbox-dev` /
+`remote/sandbox-host`, returned complete untruncated output containing
+`SLIDESTUD_MAILBOX_DEFAULT_SANDBOX_OK`, `ubuntu`,
+`oracle-gustaw-janecki-ubuntu-flex-02`, and `aarch64`, read the retained events
+through the final cursor, and accepted the exact ACK. The command ID was
+`cmd-926a9fe479ededa25e068d4c70cde96c`.
+
+This is a file-only mailbox proof through the permanent restricted bridge. The
+separate direct mTLS route was not used as mailbox evidence.
+
+### Sandbox post-request status — PASS
+
+On `sandbox-host` as `ubuntu`, from the clean synchronized checkout, the
+following passed:
+
+```sh
+cd /home/ubuntu/projects/remote-session-runner && make test-p128-host-status
+```
+
+It reported:
+
+```text
+active_sessions=0
+running_commands=0
+unreleased_slots=0
+unfinished_jobs=0
+```
+
+The post-gate root filesystem margin was `1,383,612 KiB` free (98% used). This
+is a future operational capacity risk to monitor; it did not cause a P158 gate
+failure.
+
+P158 therefore passes its mailbox-ingress scope. It does not make any other
+host accepted, and it does not alter P143: physical power-loss recovery remains
+unverified pending a coordinated physical power-cut test.

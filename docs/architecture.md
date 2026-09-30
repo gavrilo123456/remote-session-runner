@@ -8,19 +8,20 @@ run on the Mac as `tomasz.walczuk` or on a named, accepted Ubuntu profile as
 automatic target fallback, arbitrary account selection, or free-form host
 selection.
 
-The installed Mac configuration uses version 2 and composes two file-mailbox
+The installed Mac configuration uses version 2 and composes three file-mailbox
 namespaces:
 
 | Inbox ID | Root | Default context | Allowed contexts | Repository aliases |
 | --- | --- | --- | --- | --- |
 | `default` | `~/Library/Application Support/RemoteSessionRunner/mailbox` | `mac-local` | `mac-local`, `ubuntu-current` | `remote-session-runner` |
 | `analytics` | `~/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` | `analytics-dbt` |
+| `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` | `slidestud-io` |
 
 `mac-local` means `mac-dev` and `local/mac-workstation`.
 `ubuntu-current` means `linux-dev` and `remote/linux-host`.
-`ubuntu-sandbox` means `sandbox-dev` and `remote/sandbox-host`. Both inboxes
-are independent file ingress and response-projection namespaces. They share the
-Mac Router and its local SQLite authority.
+`ubuntu-sandbox` means `sandbox-dev` and `remote/sandbox-host`. All three
+inboxes are independent file ingress and response-projection namespaces. They
+share the Mac Router and its local SQLite authority.
 
 ```mermaid
 flowchart LR
@@ -28,6 +29,7 @@ flowchart LR
     CLI[runner CLI]
     Default[default mailbox\nmailbox/]
     Analytics[analytics mailbox\nmailboxes/analytics/]
+    SlideStudio[slidestud-io mailbox\nexternal mailbox-/]
     Router[runner-local\nUnix API, Router, mailbox runtimes]
     LocalDB[(local.db)]
     LocalD[runner-locald\nlocal execution authority]
@@ -35,6 +37,7 @@ flowchart LR
 
     Default -->|native marker-last exchange| Router
     Analytics -->|native marker-last exchange| Router
+    SlideStudio -->|native marker-last exchange| Router
     CLI -->|endpoint local| Router
     Router <--> LocalDB
     Router -->|mac-local| LocalD
@@ -106,7 +109,7 @@ mode.
 | --- | --- | --- | --- |
 | Mac local | `runner --endpoint local` or a mailbox resolved to `mac-local` | `local_user/tomasz.walczuk`; Bash as `tomasz.walczuk` | Local authority. |
 | Queued current remote | `runner --endpoint local` with `linux-dev` / `remote` / `linux-host`, or a mailbox resolved to `ubuntu-current` | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches the current Ubuntu host only through its pinned restricted SSH bridge. |
-| Queued sandbox remote | `runner --endpoint local` with `sandbox-dev` / `remote` / `sandbox-host`, or an `analytics` mailbox request resolved to `ubuntu-sandbox` | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches the sandbox Ubuntu host only through its separate pinned restricted SSH bridge. `default` does not permit this context. |
+| Queued sandbox remote | `runner --endpoint local` with `sandbox-dev` / `remote` / `sandbox-host`, an `analytics` override, or a `slidestud-io` default | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches the sandbox Ubuntu host only through its separate pinned restricted SSH bridge. `default` does not permit this context. |
 | Direct current remote | `runner --endpoint linux-poc --config <mac.yaml>` with `linux-dev` / `remote` / `linux-host` | `direct_mtls/tomasz.walczuk`; Bash as `ubuntu` | Public direct HTTPS at `https://129.151.232.40:8443` with TLS 1.3 mTLS. |
 | Direct sandbox remote | `runner --endpoint sandbox-poc --config <mac.yaml>` with `sandbox-dev` / `remote` / `sandbox-host` | `direct_mtls/tomasz.walczuk`; Bash as `ubuntu` | Public direct HTTPS at `https://132.226.205.205:8443` with TLS 1.3 mTLS. |
 
@@ -129,6 +132,13 @@ sequenceDiagram
     R->>L: Resolve mac-local; execute as tomasz.walczuk
     L-->>R: Events and terminal result
     R-->>M: Same-root outbox and events
+  else Inbox slidestud-io: ubuntu-sandbox default
+    M->>R: Marker-last request with no selection pair
+    R-->>M: Durable local acceptance
+    R->>S: Fixed sandbox-host bridge protocol over pinned SSH
+    S->>U: Owner-only Unix-socket call
+    U-->>R: Authoritative state and events
+    R-->>M: Same-root projection
   else Allowed remote override
     M->>R: Complete configured remote environment and target pair
     R-->>M: Durable local acceptance
@@ -170,7 +180,7 @@ incomplete or under investigation rather than being reported as successful.
 
 | Boundary | Enforcement | Practical result |
 | --- | --- | --- |
-| Mac ingress | Owner-only Unix sockets, `0700` mailbox trees, and GUI launchd services | Only `tomasz.walczuk` should operate the local services. |
+| Mac ingress | Owner-only Unix sockets, `0700` mailbox trees, safe external ancestors, and GUI launchd services | Only `tomasz.walczuk` should operate the local services. |
 | Mailbox publication | Native exclusive-create, file and directory sync, JSON then empty marker last | A terminal request is not produced by a partially written draft. |
 | Direct Ubuntu ingress | TLS 1.3 mandatory mTLS and the certificate-principal map | A client certificate URI SAN must map to the selected controller. |
 | Queued Ubuntu ingress | Pinned SSH host key, one forced command, controller fingerprint map, owner-only Runner socket | The bridge permits no general SSH shell. |
@@ -191,6 +201,7 @@ through P157 after repair on source revision
 `8873852ddc9ab33093c105371de93a3695d99b89`: its bootstrap alias is
 `sandbox.env` (`ubuntu@132.226.205.205`), its queued context is
 `ubuntu-sandbox`, and its public direct endpoint is `sandbox-poc` at
-`https://132.226.205.205:8443`. Only `analytics` permits the sandbox queued
-override. Every other new profile remains **NOT RUN** until it completes its
-own P157 gate. See [current-host evidence](current-host-evidence.md).
+`https://132.226.205.205:8443`. `analytics` permits the sandbox queued override,
+while `slidestud-io` uses it as its default. Every other new profile remains
+**NOT RUN** until it completes its own P157 gate. See
+[current-host evidence](current-host-evidence.md).
