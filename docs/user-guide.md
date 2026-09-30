@@ -27,11 +27,14 @@ runner --endpoint <local|configured-direct-endpoint> [--config PATH] [--wait-tim
 | Local Mac | `--endpoint local`; `mac-dev`, `local`, `mac-workstation` | `tomasz.walczuk` | Use when both Mac LaunchAgents are ready. |
 | Direct current Ubuntu | `--endpoint linux-poc --config <mac.yaml>`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Direct public TLS 1.3 mTLS route for the accepted current profile. |
 | Queued current Ubuntu | `--endpoint local`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Requires current bridge `status` to be ready. |
+| Direct sandbox Ubuntu | `--endpoint sandbox-poc --config <mac.yaml>`; `sandbox-dev`, `remote`, `sandbox-host` | `ubuntu` | P157 accepted its public mTLS Runner readiness route. |
+| Queued sandbox Ubuntu | `--endpoint local`; `sandbox-dev`, `remote`, `sandbox-host` | `ubuntu` | P157 accepted its restricted bridge and native mailbox route; verify its bridge `status` before use. |
 
-`linux-poc` and `linux-host` are current configured values, not universal
-names. A future direct endpoint must be defined in the V2 `remote_hosts`
-policy, bound to exactly one target profile, and accepted by P157 before use.
-The CLI rejects an endpoint/target mismatch before it sends a mutation.
+`linux-poc`/`linux-host` and `sandbox-poc`/`sandbox-host` are configured pairs,
+not universal names. A future direct endpoint must be defined in the V2
+`remote_hosts` policy, bound to exactly one target profile, and accepted by
+P157 before use. The CLI rejects an endpoint/target mismatch before it sends a
+mutation.
 
 Use the same endpoint for a resource's complete lifecycle. Direct and queued
 remote routes use different controller identities, so a resource created by one
@@ -94,6 +97,21 @@ and closes it.
 The output should identify `ubuntu`. This verifies the direct current-host
 route. It does not test a mailbox or the queued bridge.
 
+### Direct sandbox Ubuntu
+
+```sh
+# Mac — tomasz.walczuk
+"$RUNNER" --endpoint sandbox-poc --config "$CONFIG" run \
+  --environment sandbox-dev \
+  --target remote \
+  --profile sandbox-host \
+  -- 'printf "SANDBOX_OK\\n" && id -un && hostname && uname -m'
+```
+
+P157 separately accepted this profile's Runner readiness and native mailbox
+route. This command is an operator check for the direct controller; it does
+not test mailbox delivery or the queued bridge.
+
 ### Queued current Ubuntu
 
 First verify `deploy/ssh/install-queued-bridge.sh status` on the current Ubuntu
@@ -110,6 +128,24 @@ host. Then run:
 
 The result can initially report `view: local_intent` or `view: projection` and
 `is_stale: true` while the Mac reconciles with the Ubuntu authority.
+
+### Queued sandbox Ubuntu
+
+First verify `deploy/ssh/install-queued-bridge.sh status` on the sandbox
+Ubuntu host. Then run:
+
+```sh
+# Mac — tomasz.walczuk
+"$RUNNER" --endpoint local run \
+  --environment sandbox-dev \
+  --target remote \
+  --profile sandbox-host \
+  -- 'printf "QUEUED_SANDBOX_OK\\n" && id -un && hostname && uname -m'
+```
+
+Use this queued CLI route for a resource's complete lifecycle. For file
+mailbox work, only the `analytics` inbox currently permits the corresponding
+`ubuntu-sandbox` override; the `default` inbox does not.
 
 ## Use a persistent session
 
@@ -203,7 +239,7 @@ transport becomes uncertain.
 - `run` has no standalone CLI job-status command. Preserve its IDs and use the
   same route's events for output.
 - Run `"$RUNNER" --help` or a command-specific `--help` for installed syntax.
-  The help text's `linux-poc` spelling is the current-host direct endpoint
+  The help text's `linux-poc` spelling is one configured direct endpoint
   example; V2 config can register more endpoint names after their P157 gates.
 
 See [current-host evidence](current-host-evidence.md) before treating a remote

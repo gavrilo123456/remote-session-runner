@@ -1,9 +1,11 @@
 # Permanent Linux forced-command SSH bridge
 
 Use [`install-queued-bridge.sh`](install-queued-bridge.sh) to enable, inspect,
-and refresh the optional queued route for the current accepted `linux-host`.
-Do not use the P128 fixture as a deployment path: it is temporary and refuses
-to alter a host with a permanent bridge manifest.
+and refresh the optional queued route on an accepted remote profile. It is
+installed independently on `linux-host` and `sandbox-host`; their controller
+authorization, dispatcher key, host-key pin, socket, and manifest are not
+shared. Do not use the P128 fixture as a deployment path: it is temporary and
+refuses to alter a host with a permanent bridge manifest.
 
 The permanent installer runs as `ubuntu` from a clean synchronized `dev`
 checkout. It requires an enabled `runnerd.service`, its owner-only `runnerd.sock`,
@@ -53,8 +55,13 @@ the new socket, and calls `refresh`. Refresh updates only the bridge program
 and fixed wrapper for that source revision; it does not alter the public key,
 controller map, or authorization line.
 
-This bridge proves only the profile installed on that host. Every added remote
-profile, including the supplied `sandbox.env` candidate, needs separate key
-pinning, controller authorization, service deployment, and P157 end-to-end
-acceptance. `sandbox.env` is currently **NOT RUN**; a required P157 gate that
-runs and fails is recorded as `FAIL`, not as accepted evidence.
+This bridge proves only the profile installed on that host. `sandbox-host`
+passed its separate P157 gate with a bridge on
+`ubuntu@oracle-gustaw-janecki-ubuntu-flex-02`; its Mac route is
+`ubuntu-sandbox`, which the active policy permits through the `analytics` inbox
+for mailbox work. See [`P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md).
+
+Every later remote profile needs separate key pinning, controller authorization,
+service deployment, and P157 end-to-end acceptance. A profile not yet attempted
+is `NOT RUN`; a required P157 gate that runs and fails is recorded as `FAIL`,
+not as accepted evidence.

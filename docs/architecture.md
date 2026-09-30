@@ -2,8 +2,8 @@
 
 ## Purpose and current topology
 
-Remote Session Runner is a controlled two-target proof of concept. Scripts run
-on the Mac as `tomasz.walczuk` or on the currently accepted Ubuntu host as
+Remote Session Runner is a controlled multi-target proof of concept. Scripts
+run on the Mac as `tomasz.walczuk` or on a named, accepted Ubuntu profile as
 `ubuntu`. It has no containers, tunnels, browser terminal, interactive PTY,
 automatic target fallback, arbitrary account selection, or free-form host
 selection.
@@ -14,11 +14,12 @@ namespaces:
 | Inbox ID | Root | Default context | Allowed contexts | Repository aliases |
 | --- | --- | --- | --- | --- |
 | `default` | `~/Library/Application Support/RemoteSessionRunner/mailbox` | `mac-local` | `mac-local`, `ubuntu-current` | `remote-session-runner` |
-| `analytics` | `~/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current` | `analytics-dbt` |
+| `analytics` | `~/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` | `analytics-dbt` |
 
 `mac-local` means `mac-dev` and `local/mac-workstation`.
-`ubuntu-current` means `linux-dev` and `remote/linux-host`. Both inboxes are
-independent file ingress and response-projection namespaces. They share the
+`ubuntu-current` means `linux-dev` and `remote/linux-host`.
+`ubuntu-sandbox` means `sandbox-dev` and `remote/sandbox-host`. Both inboxes
+are independent file ingress and response-projection namespaces. They share the
 Mac Router and its local SQLite authority.
 
 ```mermaid
@@ -40,18 +41,30 @@ flowchart LR
     LocalD --> MacBash
   end
 
-  subgraph Ubuntu[Current accepted host — ubuntu]
-    SSH[Restricted forced-command\nSSH bridge]
-    RunnerD[runnerd\nremote execution authority]
-    RemoteDB[(remote.db)]
-    LinuxBash[Persistent Bash\nUbuntu permissions]
-    SSH -->|owner-only runnerd.sock| RunnerD
-    RunnerD <--> RemoteDB
-    RunnerD --> LinuxBash
+  subgraph CurrentUbuntu[Current accepted Ubuntu — linux-host / ubuntu]
+    CurrentSSH[Restricted forced-command\nSSH bridge]
+    CurrentRunnerD[runnerd\nremote execution authority]
+    CurrentRemoteDB[(remote.db)]
+    CurrentLinuxBash[Persistent Bash\nUbuntu permissions]
+    CurrentSSH -->|owner-only runnerd.sock| CurrentRunnerD
+    CurrentRunnerD <--> CurrentRemoteDB
+    CurrentRunnerD --> CurrentLinuxBash
   end
 
-  Router -->|ubuntu-current only\npinned host key and restricted SSH| SSH
-  CLI -->|endpoint linux-poc\nTLS 1.3 mTLS| RunnerD
+  subgraph SandboxUbuntu[Sandbox accepted Ubuntu — sandbox-host / ubuntu]
+    SandboxSSH[Restricted forced-command\nSSH bridge]
+    SandboxRunnerD[runnerd\nremote execution authority]
+    SandboxRemoteDB[(remote.db)]
+    SandboxLinuxBash[Persistent Bash\nUbuntu permissions]
+    SandboxSSH -->|owner-only runnerd.sock| SandboxRunnerD
+    SandboxRunnerD <--> SandboxRemoteDB
+    SandboxRunnerD --> SandboxLinuxBash
+  end
+
+  Router -->|ubuntu-current\npinned host key and restricted SSH| CurrentSSH
+  Router -->|ubuntu-sandbox\npinned host key and restricted SSH| SandboxSSH
+  CLI -->|endpoint linux-poc\nTLS 1.3 mTLS| CurrentRunnerD
+  CLI -->|endpoint sandbox-poc\nTLS 1.3 mTLS| SandboxRunnerD
 ```
 
 A mailbox is neither a shell nor an execution authority. It accepts a safely
@@ -78,7 +91,7 @@ flowchart TD
   Override --> Persist
   Persist --> Route{Target kind}
   Route -->|local/mac-workstation| Local[runner-locald as tomasz.walczuk]
-  Route -->|remote/linux-host| Queue[Mac Router through restricted SSH bridge\nas ubuntu]
+  Route -->|remote/linux-host or remote/sandbox-host| Queue[Mac Router through the selected profile's\nrestricted SSH bridge as ubuntu]
 ```
 
 `repository_alias` is optional policy and audit metadata. When supplied, it
@@ -92,8 +105,10 @@ mode.
 | Route | Selection | Controller / execution account | Meaning |
 | --- | --- | --- | --- |
 | Mac local | `runner --endpoint local` or a mailbox resolved to `mac-local` | `local_user/tomasz.walczuk`; Bash as `tomasz.walczuk` | Local authority. |
-| Queued remote | `runner --endpoint local` with `linux-dev` / `remote` / `linux-host`, or a mailbox resolved to `ubuntu-current` | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches Ubuntu only through the pinned restricted SSH bridge. |
-| Direct remote | `runner --endpoint linux-poc --config <mac.yaml>` with `linux-dev` / `remote` / `linux-host` | `direct_mtls/tomasz.walczuk`; Bash as `ubuntu` | Public direct HTTPS at `https://129.151.232.40:8443` with TLS 1.3 mTLS. |
+| Queued current remote | `runner --endpoint local` with `linux-dev` / `remote` / `linux-host`, or a mailbox resolved to `ubuntu-current` | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches the current Ubuntu host only through its pinned restricted SSH bridge. |
+| Queued sandbox remote | `runner --endpoint local` with `sandbox-dev` / `remote` / `sandbox-host`, or an `analytics` mailbox request resolved to `ubuntu-sandbox` | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches the sandbox Ubuntu host only through its separate pinned restricted SSH bridge. `default` does not permit this context. |
+| Direct current remote | `runner --endpoint linux-poc --config <mac.yaml>` with `linux-dev` / `remote` / `linux-host` | `direct_mtls/tomasz.walczuk`; Bash as `ubuntu` | Public direct HTTPS at `https://129.151.232.40:8443` with TLS 1.3 mTLS. |
+| Direct sandbox remote | `runner --endpoint sandbox-poc --config <mac.yaml>` with `sandbox-dev` / `remote` / `sandbox-host` | `direct_mtls/tomasz.walczuk`; Bash as `ubuntu` | Public direct HTTPS at `https://132.226.205.205:8443` with TLS 1.3 mTLS. |
 
 The queued and direct routes use different controller identities. Resources are
 owned by the controller that created them, so status, events, cancellation, and
@@ -106,8 +121,8 @@ sequenceDiagram
   participant D as Direct mTLS client
   participant R as Mac Router and local.db
   participant L as runner-locald
-  participant S as Restricted SSH bridge
-  participant U as Ubuntu runnerd and remote.db
+  participant S as Selected restricted SSH bridge
+  participant U as Selected Ubuntu runnerd and remote.db
 
   alt Inbox default: mac-local
     M->>R: Marker-last request with no selection pair
@@ -115,14 +130,14 @@ sequenceDiagram
     L-->>R: Events and terminal result
     R-->>M: Same-root outbox and events
   else Allowed remote override
-    M->>R: Complete linux-dev + remote/linux-host pair
+    M->>R: Complete configured remote environment and target pair
     R-->>M: Durable local acceptance
-    R->>S: Fixed bridge protocol over pinned SSH
+    R->>S: Fixed selected-profile bridge protocol over pinned SSH
     S->>U: Owner-only Unix-socket call
     U-->>R: Authoritative state and events
     R-->>M: Same-root projection
   else Direct mTLS CLI
-    D->>U: mTLS request to linux-poc
+    D->>U: mTLS request to the selected named endpoint
     U-->>D: Target-authority response and events
   end
 ```
@@ -171,6 +186,11 @@ onboarding: Ubuntu service, owner-only configuration, credentials and host-key
 pin or mTLS materials, route validation, account proof, and an end-to-end
 request to that exact profile.
 
-`linux-host` is the only profile with current live acceptance evidence. The
-user-supplied `sandbox.env` candidate (`ubuntu@132.226.205.205`) is **NOT RUN**
-until its own P157 gate passes. See [current-host evidence](current-host-evidence.md).
+`linux-host` is accepted through P155. `sandbox-host` is separately accepted
+through P157 after repair on source revision
+`8873852ddc9ab33093c105371de93a3695d99b89`: its bootstrap alias is
+`sandbox.env` (`ubuntu@132.226.205.205`), its queued context is
+`ubuntu-sandbox`, and its public direct endpoint is `sandbox-poc` at
+`https://132.226.205.205:8443`. Only `analytics` permits the sandbox queued
+override. Every other new profile remains **NOT RUN** until it completes its
+own P157 gate. See [current-host evidence](current-host-evidence.md).

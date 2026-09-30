@@ -1,10 +1,17 @@
 # Linux systemd deployment
 
-This guide describes the current accepted `linux-host` only:
-`ubuntu@oracle-yuta-konopka-ubuntu-micro-02`, with listener bind
-`10.0.0.200:8443` and public client endpoint `https://129.151.232.40:8443`.
+This guide applies to the two accepted Ubuntu profiles. Each has an independent
+owner-only configuration, state database, certificate material, and queued
+bridge authorization.
+
+| Profile | Host | Listener bind | Public client endpoint | Architecture |
+| --- | --- | --- | --- | --- |
+| `linux-host` | `ubuntu@oracle-yuta-konopka-ubuntu-micro-02` | `10.0.0.200:8443` | `https://129.151.232.40:8443` | `linux/amd64` |
+| `sandbox-host` | `ubuntu@oracle-gustaw-janecki-ubuntu-flex-02` | `10.0.0.14:8443` | `https://132.226.205.205:8443` | `linux/arm64` |
+
 `runnerd.service` runs as `ubuntu` with mandatory TLS 1.3 mTLS. No tunnel or
-Podman service is involved.
+Podman service is involved. The sandbox acceptance is recorded in
+[`P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md).
 
 On the synchronized project checkout, run as `ubuntu`:
 
@@ -40,7 +47,7 @@ jobs are present. Plan a maintenance window because the gate is a snapshot and
 normal graceful shutdown handles work admitted afterward truthfully.
 
 ```sh
-# Current Ubuntu — ubuntu
+# Target Ubuntu host — ubuntu
 sudo systemctl status runnerd.service --no-pager
 make test-p128-host-status
 ```
@@ -52,7 +59,7 @@ revision. It does not create, change, or rotate the dispatcher authorization.
 Then verify:
 
 ```sh
-# Current Ubuntu — ubuntu
+# Target Ubuntu host — ubuntu
 cd /home/ubuntu/projects/remote-session-runner
 deploy/ssh/install-queued-bridge.sh status
 ```
@@ -64,5 +71,5 @@ children before systemd enforces the boundary.
 
 A new physical Ubuntu machine needs its own configuration, state, service,
 certificate/principal or bridge materials, host-key pin, and P157 evidence. Do
-not copy `linux-host` state or credentials and do not treat this host's
-listener or successful test as evidence for it.
+not copy either accepted host's state or credentials and do not treat another
+host's listener or successful test as evidence for it.

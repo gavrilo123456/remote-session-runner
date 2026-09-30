@@ -1,8 +1,9 @@
 # Operations runbook
 
-Run Mac commands as `tomasz.walczuk` and current-host commands as `ubuntu`. Do
-not print private keys, edit SQLite files, manufacture mailbox request files,
-or use host-gate test scripts as everyday service controls.
+Run Mac commands as `tomasz.walczuk` and commands on either accepted Ubuntu
+host as `ubuntu`. Do not print private keys, edit SQLite files, manufacture
+mailbox request files, or use host-gate test scripts as everyday service
+controls.
 
 ## Current availability and evidence boundary
 
@@ -11,13 +12,17 @@ or use host-gate test scripts as everyday service controls.
 | Mac local execution | Available when both Mac LaunchAgents are healthy | Both private readiness endpoints and a safe local command. |
 | Direct `linux-host` execution | Accepted on the current host | Public mTLS readiness, then a direct `linux-poc` command. |
 | Queued `linux-host` execution | Permanent restricted bridge was accepted in P155 | Fresh bridge `status` at the deployed source revision, then a queued command. |
+| Direct `sandbox-host` execution | Accepted in P157 | Public `sandbox-poc` mTLS Runner readiness. |
+| Queued `sandbox-host` execution | Accepted in P157 | Fresh sandbox bridge `status`; `analytics` is the only mailbox inbox that permits its override. |
 | `default` mailbox | Installed and accepted in P155 | Mac readiness, configured root ownership, and native terminal response/event/ACK. |
-| `analytics` mailbox | Installed and accepted in P155 | Same checks; remote override additionally needs current bridge status. |
+| `analytics` mailbox | Installed in P155; `sandbox-host` override accepted in P157 | Same checks; each remote override additionally needs its selected bridge status. |
 | Any additional profile | **NOT RUN** | Its own P157 service, route, and end-to-end acceptance. |
 
 P155 proved `default` local-default work and an `analytics` allowed queued
-`linux-host` override. It did not accept `sandbox.env` or another machine. A
-successful direct mTLS request does not prove queued mailbox delivery.
+`linux-host` override. P157 independently proved the sandbox bridge, router
+health, native mailbox request, event read, ACK, and zero-work state for
+`sandbox-host`. A successful direct mTLS request does not prove queued mailbox
+delivery.
 
 ## Fast health checks
 
@@ -74,7 +79,7 @@ tail -n 200 "$root/logs/local.stderr.log"
 tail -n 200 "$root/logs/locald.stderr.log"
 ```
 
-### Current Ubuntu — `ubuntu`
+### `linux-host` Ubuntu — `ubuntu`
 
 ```sh
 root='/home/ubuntu/.local/share/remote-session-runner'
@@ -99,7 +104,22 @@ configuration. If the source revision advanced, use the normal Linux deployer
 in a maintenance window so it refreshes the bridge artifact. Do not treat an
 old `ready` result as evidence for a later checkout.
 
-### Current public direct path — Mac
+### `sandbox-host` Ubuntu — `ubuntu`
+
+Run these commands through the selected bootstrap alias for the sandbox host:
+
+```sh
+# Sandbox Ubuntu — ubuntu
+root='/home/ubuntu/.local/share/remote-session-runner'
+sudo systemctl is-active runnerd.service
+curl --silent --show-error --fail --unix-socket "$root/run/runnerd.sock" http://runner/health/ready
+ss -lntH | grep '10.0.0.14:8443'
+sudo journalctl -u runnerd.service -n 200 --no-pager
+cd /home/ubuntu/projects/remote-session-runner
+deploy/ssh/install-queued-bridge.sh status
+```
+
+### Accepted public direct paths — Mac
 
 ```sh
 root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
@@ -110,9 +130,11 @@ curl --silent --show-error --fail --max-time 15 \
   https://129.151.232.40:8443/health/ready
 ```
 
-This checks the current Runner application, public route, mTLS identity, and
-readiness. The earlier temporary TLS probe was transport-only. Neither check
-confirms a queued bridge or a mailbox request.
+For `sandbox-host`, substitute `sandbox-direct-client.pem`,
+`sandbox-direct-client.key`, and `https://132.226.205.205:8443/health/ready`.
+Each check covers its selected Runner application, public route, mTLS identity,
+and readiness. The earlier temporary TLS probe was transport-only. Neither
+check confirms a queued bridge or a mailbox request.
 
 ## Diagnostics and metrics
 
@@ -124,7 +146,7 @@ root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
 "$root/bin/runner-local" doctor --config "$root/config/mac.yaml"
 "$root/bin/runner-locald" doctor --config "$root/config/mac.yaml"
 
-# Current Ubuntu — ubuntu
+# Selected Ubuntu host — ubuntu
 root='/home/ubuntu/.local/share/remote-session-runner'
 "$root/bin/runnerd" doctor --config "$root/config/linux.yaml"
 ```
@@ -153,10 +175,11 @@ A zero backlog does not prove an importer, bridge, or request succeeded. It
 only shows no current counted work. Process-local error counters reset after a
 daemon restart; retained counters can fall after cleanup.
 
-For a controlled current-host restart gate:
+For a controlled accepted-host restart gate, run this on the selected Ubuntu
+host:
 
 ```sh
-# Current Ubuntu — ubuntu
+# Selected Ubuntu host — ubuntu
 cd /home/ubuntu/projects/remote-session-runner
 make test-p128-host-status
 ```
@@ -190,7 +213,7 @@ launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.remote-session-
 launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.remote-session-runner.locald.plist"
 ```
 
-### Current Ubuntu — `ubuntu`
+### Selected Ubuntu host — `ubuntu`
 
 First prove its checkout is the pushed Mac commit, then deploy during a quiet
 window:
@@ -216,8 +239,8 @@ ready. It does not create or rotate dispatcher authorization.
 | Mailbox selection or alias rejected | Root, context allow-list, repository alias, response `inbox_id` | Use the intended root and its configured policy; do not invent aliases or host names. |
 | No mailbox response | Native client error/logs, root tree, response state | Keep the request identity, inspect owner/mode/path failure, and use `mailboxclient`; malformed unsafe pairs have no guaranteed response. |
 | Direct HTTPS/mTLS failure | Public health, service journal, CA/certificate/principal map/bind | Repair host configuration without printing keys. |
-| Queued remote remains recorded, uncertain, or stale | Current bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
-| New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; current `linux-host` evidence does not transfer. |
+| Queued remote remains recorded, uncertain, or stale | Selected bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
+| New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host` and `sandbox-host` evidence does not transfer. |
 | Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
 
 ## Recovery boundaries
@@ -235,5 +258,5 @@ ready. It does not create or rotate dispatcher authorization.
 - Software-crash recovery is evidenced. Physical power-loss survival remains
   unverified until a coordinated physical power-cut test passes.
 
-See [current-host evidence](current-host-evidence.md) for exact P155 scope and
-[setup](setup.md) for deployment steps.
+See [current-host evidence](current-host-evidence.md) for exact P155/P157 scope
+and [setup](setup.md) for deployment steps.

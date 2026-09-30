@@ -10,8 +10,11 @@ is a record of completed gates, not a live-health substitute. Run the checks in
 | --- | --- | --- |
 | Mac services | `tomasz.walczuk` at `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` | P155 real-process two-inbox test, private socket/readiness checks, and zero backlog. |
 | Current Ubuntu host | `ubuntu@oracle-yuta-konopka-ubuntu-micro-02` / `linux-host` | P155 `runnerd.service`, listener `10.0.0.200:8443`, zero-work P128 checks, and permanent bridge status. |
-| Direct route | `linux-poc` → `https://129.151.232.40:8443` | Runner application mTLS health and direct CLI evidence, separate from mailbox evidence. |
-| Queued route | `ubuntu-current` → `remote/linux-host` | P155 permanent restricted bridge and an end-to-end analytics mailbox override. |
+| Sandbox Ubuntu host | `ubuntu@oracle-gustaw-janecki-ubuntu-flex-02` / `sandbox-host` | P157 `runnerd.service`, listener `10.0.0.14:8443`, zero-work P128 checks, and permanent bridge status after the authorized repair. |
+| Current direct route | `linux-poc` → `https://129.151.232.40:8443` | P155 Runner application mTLS health and direct CLI evidence, separate from mailbox evidence. |
+| Sandbox direct route | `sandbox-poc` → `https://132.226.205.205:8443` | P157 Runner application mTLS readiness (`HTTP 200`), separate from the queued mailbox request. |
+| Current queued route | `ubuntu-current` → `remote/linux-host` | P155 permanent restricted bridge and an end-to-end analytics mailbox override. |
+| Sandbox queued route | `ubuntu-sandbox` → `remote/sandbox-host` | P157 permanent restricted bridge and native end-to-end analytics mailbox request. |
 
 The associated source and evidence closeout are:
 
@@ -19,10 +22,13 @@ The associated source and evidence closeout are:
 - P155 legacy-schema repair: `a3097a02d3aff6d2231b08f72ba768463a9933c0`
 - P155 evidence closeout: `e93d55e9220338b25e1f7417ca296c9e04530b80`
 - Detailed record: [P155 evidence](../040-implementation-evidence/P155.md)
+- P157 repair and final host-gate revision:
+  `8873852ddc9ab33093c105371de93a3695d99b89`
+- Detailed record: [P157 sandbox-host evidence](../040-implementation-evidence/P157-sandbox-host.md)
 
 ## What P155 proved
 
-The installed Mac V2 policy had these roots:
+At the P155 deployment, the installed Mac V2 policy had these roots:
 
 | Inbox | Root | Default | Allowed explicit contexts |
 | --- | --- | --- | --- |
@@ -45,11 +51,36 @@ identities in both roots. It proved namespace isolation and these outcomes:
 The analytics proof is queued mailbox evidence. It did not use direct mTLS as
 a substitute.
 
+## What P157 proved
+
+P157 is a separate host gate. It accepted `sandbox.env` as
+`ubuntu@132.226.205.205`, with the Runner profile `sandbox-host`, environment
+`sandbox-dev`, queued context `ubuntu-sandbox`, public direct endpoint
+`sandbox-poc`, and host listener `10.0.0.14:8443`.
+
+The final gate ran after the authorized certificate and installer-cache repair
+on source revision `8873852ddc9ab33093c105371de93a3695d99b89`. It proved:
+
+1. the sandbox service runs as `ubuntu` on
+   `oracle-gustaw-janecki-ubuntu-flex-02` (`aarch64`), with its private socket
+   and the expected listener;
+2. TLS transport and the Runner `/health/ready` application response pass over
+   mandatory mTLS at `https://132.226.205.205:8443`;
+3. the profile-specific restricted SSH bridge is ready and the Mac router
+   reports both `linux-host` and `sandbox-host` ready; and
+4. `make test-p157-sandbox-host` published a native `analytics` mailbox
+   request for `sandbox-dev` / `remote/sandbox-host`, verified its expected
+   `ubuntu`, hostname, and architecture output, read events, and wrote the
+   ACK.
+
+The active policy still limits `default` to `mac-local` and `ubuntu-current`.
+Only `analytics` permits the explicit `ubuntu-sandbox` override. P157 did not
+make the sandbox an automatic destination or fallback.
+
 ## What is not accepted
 
 | Item | Status | Reason |
 | --- | --- | --- |
-| `sandbox.env` (`ubuntu@132.226.205.205`) | **NOT RUN** | It is a supplied future P157 candidate. No source, service, credentials, bridge, mTLS route, or end-to-end request has been accepted for it. |
 | Any other new remote profile | **NOT RUN** | A configured name or successful current host does not transfer host acceptance. |
 | Physical power-loss durability | Unverified | P143 approved the software-process-crash-only path. A coordinated physical power-cut test is still required for this claim. |
 

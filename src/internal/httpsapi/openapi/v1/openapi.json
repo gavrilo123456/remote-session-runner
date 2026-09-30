@@ -6,7 +6,8 @@
     "description": "Versioned HTTP/JSON contract. The public HTTPS server is Linux remote authority and requires mutual TLS. The same paths are available through the owner-only Mac Unix socket described by x-runner-local-unix-socket; that socket authenticates through OS ownership, not HTTP TLS."
   },
   "servers": [
-    { "url": "https://129.151.232.40:8443", "description": "Direct Linux HTTPS API; TLS 1.3 and mapped-client-certificate mTLS are mandatory." }
+    { "url": "https://129.151.232.40:8443", "description": "Direct linux-host HTTPS API; TLS 1.3 and mapped-client-certificate mTLS are mandatory." },
+    { "url": "https://132.226.205.205:8443", "description": "Direct sandbox-host HTTPS API; TLS 1.3 and mapped-client-certificate mTLS are mandatory." }
   ],
   "security": [{ "mutualTLS": [] }],
   "x-runner-limits": {

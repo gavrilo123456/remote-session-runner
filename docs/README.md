@@ -17,7 +17,7 @@ selection, or automatic fallback.
 | [Mailbox guide](mailbox.md) | Native safe file-mailbox integration, roots, defaults, overrides, events, ACKs, and retries. |
 | [API reference](api.md) | Direct mTLS and Unix-socket transports plus v1 HTTP/JSON behavior. |
 | [Operations runbook](operations.md) | Health, metrics, logs, service refresh, troubleshooting, and recovery limits. |
-| [Current-host evidence](current-host-evidence.md) | What P155 accepted, what it did not accept, and the P157 per-host boundary. |
+| [Current-host evidence](current-host-evidence.md) | What P155 and P157 accepted, what remains unaccepted, and the per-host boundary. |
 
 ## Current controlled configuration
 
@@ -28,20 +28,27 @@ selection, or automatic fallback.
 | Mac service root | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
 | Ubuntu service root | `/home/ubuntu/.local/share/remote-session-runner` |
 | Active mailbox roots | `default` at `mailbox/`; `analytics` at `mailboxes/analytics/` |
-| Current remote profile | `linux-host` |
-| Direct endpoint | `linux-poc` at `https://129.151.232.40:8443` |
-| Ubuntu listener | `10.0.0.200:8443` |
+| Accepted remote profiles | `linux-host`; `sandbox-host` |
+| Current direct endpoint | `linux-poc` at `https://129.151.232.40:8443` |
+| Current Ubuntu listener | `10.0.0.200:8443` |
+| Sandbox direct endpoint | `sandbox-poc` at `https://132.226.205.205:8443` |
+| Sandbox Ubuntu listener | `10.0.0.14:8443` |
 | Direct transport | TLS 1.3 with mandatory client certificates |
 
 P155 accepted the legacy `default` inbox with a local default and the
 `analytics` inbox with an allowed queued override to the current `linux-host`.
-It did not accept another physical machine. The user-supplied `sandbox.env`
-candidate (`ubuntu@132.226.205.205`) is **NOT RUN** until its separate P157
-onboarding and end-to-end evidence pass.
+P157 separately accepted `sandbox-host` (`sandbox.env` resolves to
+`ubuntu@132.226.205.205`) after repair on source revision
+`8873852ddc9ab33093c105371de93a3695d99b89`. Its queued context is
+`ubuntu-sandbox` (`sandbox-dev` / `remote/sandbox-host`), which is permitted
+only by `analytics`; `default` does not permit it. Other physical machines
+remain **NOT RUN** until their separate P157 onboarding and end-to-end evidence
+pass.
 
-The direct mTLS route was exercised against the Runner application. A prior
-temporary TLS probe validated transport only. Software-process-crash recovery
-is evidenced; physical power-loss recovery is unverified.
+Runner application readiness over direct mTLS was exercised for both accepted
+endpoints. A prior temporary TLS probe validated transport only. Software-
+process-crash recovery is evidenced; physical power-loss recovery is
+unverified.
 
 ## Read before operating
 

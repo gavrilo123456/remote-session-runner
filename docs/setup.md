@@ -8,30 +8,32 @@ configuration, credentials, logs, databases, and output stay outside Git.
 
 ## Before you start
 
-| Requirement | Mac | Current Ubuntu host |
-| --- | --- | --- |
-| Account | `tomasz.walczuk` | `ubuntu` |
-| Checkout | `/Users/tomasz.walczuk/projects/remote-session-runner` | `/home/ubuntu/projects/remote-session-runner` |
-| Go toolchain | `.../RemoteSessionRunner/toolchains/go1.27.1/bin/go` | `.../remote-session-runner/toolchains/go1.27.1/bin/go` |
-| Service manager | GUI launchd | systemd with noninteractive `sudo` for unit installation |
-| Direct route | Client CA, certificate, and private key | Server certificate/key, trusted client CA, principal map |
+| Requirement | Mac | `linux-host` | `sandbox-host` |
+| --- | --- | --- | --- |
+| Account | `tomasz.walczuk` | `ubuntu` | `ubuntu` |
+| Checkout | `/Users/tomasz.walczuk/projects/remote-session-runner` | `/home/ubuntu/projects/remote-session-runner` | `/home/ubuntu/projects/remote-session-runner` |
+| Go toolchain | `.../RemoteSessionRunner/toolchains/go1.27.1/bin/go` | `.../remote-session-runner/toolchains/go1.27.1/bin/go` | `.../remote-session-runner/toolchains/go1.27.1/bin/go` |
+| Service manager | GUI launchd | systemd with noninteractive `sudo` for unit installation | systemd with noninteractive `sudo` for unit installation |
+| Direct bind and public endpoint | — | `10.0.0.200:8443`; `https://129.151.232.40:8443` | `10.0.0.14:8443`; `https://132.226.205.205:8443` |
+| Direct route materials | Client CA, per-profile certificate, and private key | Server certificate/key, trusted client CA, principal map | Server certificate/key, trusted client CA, principal map |
 
-The current Linux host binds `10.0.0.200:8443`; clients use
-`https://129.151.232.40:8443`. These values apply only to `linux-host`.
+The two accepted hosts have independent state, service configuration, mTLS
+leaves, queued bridge authorization, and host-key pins. Keep their materials
+separate. Every additional profile requires its own P157 gate.
 
 ```sh
 # Mac — tomasz.walczuk
 "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/toolchains/go1.27.1/bin/go" version
 
-# Current Ubuntu — ubuntu
+# Accepted Ubuntu host — ubuntu
 "/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go" version
 ```
 
-Expected platform suffixes are `darwin/arm64` and, for the current host,
-`linux/amd64`. P157 supports only native Linux `amd64` (`x86_64`) and `arm64`
-(`aarch64`) toolchains; it exact-matches the host architecture rather than
-accepting a cross-compiled toolchain. The deployment scripts do not download
-Go.
+Expected platform suffixes are `darwin/arm64`, `linux/amd64` on `linux-host`,
+and `linux/arm64` on `sandbox-host`. P157 supports only native Linux `amd64`
+(`x86_64`) and `arm64` (`aarch64`) toolchains; it exact-matches the host
+architecture rather than accepting a cross-compiled toolchain. The deployment
+scripts do not download Go.
 
 ## 1. Synchronize a versioned revision
 
@@ -46,7 +48,7 @@ git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -
 git rev-parse HEAD
 ```
 
-### Current Ubuntu — `ubuntu`
+### Each accepted Ubuntu host — `ubuntu`
 
 Only pull into a clean `dev` checkout. Do not edit tracked Runner files on
 Ubuntu or copy source there.
@@ -131,9 +133,10 @@ else
 fi
 ```
 
-Edit the candidate as the owner to include the complete V2 policy. The current
-active P155 policy contains the legacy `default` root and the extra `analytics`
-root; see [configuration](configuration.md#version-2-installed-multi-inbox-policy).
+Edit the candidate as the owner to include the complete V2 policy. The active
+P155/P157 policy contains the legacy `default` root, the extra `analytics`
+root, and the accepted `ubuntu-sandbox` context; see
+[configuration](configuration.md#version-2-installed-multi-inbox-policy).
 Keep every existing registered inbox ID/root unchanged. Do not write a
 candidate over `config/mac.yaml`.
 
@@ -167,9 +170,13 @@ Verify both V2 mailbox trees and the running service health before publishing
 new work. Use the native mailbox-client integration in [the mailbox guide](mailbox.md),
 not terminal-created request files.
 
-## 4. Install or refresh the current Ubuntu service
+## 4. Install or refresh an accepted Ubuntu service
 
-### Current Ubuntu — `ubuntu`
+### Target Ubuntu host — `ubuntu`
+
+Run this on the selected host only after its own owner-only configuration and
+the matching clean `dev` checkout are ready. `linux-host` uses
+`10.0.0.200:8443`; `sandbox-host` uses `10.0.0.14:8443`.
 
 Before first installation, provision these regular owner-only `0600` files:
 
@@ -184,7 +191,7 @@ Before first installation, provision these regular owner-only `0600` files:
 Install from the synchronized checkout:
 
 ```sh
-# Current Ubuntu — ubuntu
+# Target Ubuntu host — ubuntu
 cd /home/ubuntu/projects/remote-session-runner
 deploy/linux/install-systemd-service.sh
 sudo systemctl status runnerd.service --no-pager
@@ -199,10 +206,13 @@ outcome to work accepted after the check.
 Verify the private service and selected listener:
 
 ```sh
-# Current Ubuntu — ubuntu
+# Target Ubuntu host — ubuntu
 root='/home/ubuntu/.local/share/remote-session-runner'
 curl --silent --show-error --fail --unix-socket "$root/run/runnerd.sock" http://runner/health/ready
-ss -lntH | grep '10.0.0.200:8443'
+# Set this for the selected profile before running the check:
+expected_bind='10.0.0.200:8443' # linux-host
+# expected_bind='10.0.0.14:8443' # sandbox-host
+ss -lntH | grep "$expected_bind"
 ```
 
 ## 5. Verify the direct Runner application route
@@ -218,17 +228,35 @@ curl --silent --show-error --fail --max-time 15 \
   https://129.151.232.40:8443/health/ready
 ```
 
-A successful result proves the **current** Runner readiness endpoint, mTLS
+A successful result proves the `linux-host` Runner readiness endpoint, mTLS
 identity, and public path. The earlier temporary TLS probe proved transport
 only. Neither result proves queued bridge routing or mailbox delivery.
 
-## 6. Enable or refresh the queued bridge for `linux-host`
+For the separately accepted `sandbox-host`, use its dedicated client leaf and
+endpoint:
+
+```sh
+# Mac — tomasz.walczuk
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+curl --silent --show-error --fail --max-time 15 \
+  --cacert "$root/secrets/poc-ca.pem" \
+  --cert "$root/secrets/sandbox-direct-client.pem" \
+  --key "$root/secrets/sandbox-direct-client.key" \
+  https://132.226.205.205:8443/health/ready
+```
+
+This is a Runner application readiness check for `sandbox-poc`, not the
+earlier temporary transport probe. It does not prove the queued bridge or
+mailbox delivery.
+
+## 6. Enable or refresh a queued bridge
 
 The queued route is a separate, permanent restricted SSH bridge. It is required
 for `runner --endpoint local` remote work and mailbox remote overrides. It is
-not a general SSH shell and is independent of direct mTLS.
+not a general SSH shell and is independent of direct mTLS. Each accepted
+remote profile has its own bridge authorization and dispatcher key.
 
-### Current Ubuntu — `ubuntu`: verify or refresh
+### Target Ubuntu host — `ubuntu`: verify or refresh
 
 ```sh
 cd /home/ubuntu/projects/remote-session-runner
@@ -254,7 +282,7 @@ command, and never prints or transfers the private key. See
 [deploy/ssh/README.md](../deploy/ssh/README.md) for the exact controlled
 procedure.
 
-### Mac — `tomasz.walczuk`: route smoke test
+### Mac — `tomasz.walczuk`: route smoke test for `linux-host`
 
 ```sh
 runner='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bin/runner'
@@ -268,13 +296,33 @@ runner='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bi
 The output must identify `ubuntu`. This is a queued route check. It is separate
 from the direct mTLS health check.
 
+For `sandbox-host`, use the profile-specific queued context:
+
+```sh
+# Mac — tomasz.walczuk
+runner='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bin/runner'
+"$runner" --endpoint local run \
+  --environment sandbox-dev \
+  --target remote \
+  --profile sandbox-host \
+  -- 'id -un && hostname && uname -m'
+```
+
+The output must identify `ubuntu`, `oracle-gustaw-janecki-ubuntu-flex-02`, and
+`aarch64`. This CLI command directly selects the queued `sandbox-host` route.
+For mailbox work, `analytics` permits the `ubuntu-sandbox` override and
+`default` retains `mac-local` and `ubuntu-current`.
+
 ## 7. Onboard each additional remote host (P157)
 
-A new SSH alias, endpoint, or config profile is only a candidate. For example,
-`sandbox.env` is supplied as a future Ubuntu candidate and is **NOT RUN**
-because its P157 gate has not begun. Do not route ordinary work to it. A
-reviewed candidate activation and one controlled safe request may be part of
-P157; they do not make the host generally available until the gate passes.
+`sandbox-host` passed P157 on 2026-09-30 as the separately accepted ARM64
+Ubuntu host for `sandbox-dev` / `remote/sandbox-host`. Its direct endpoint is
+`sandbox-poc` at `https://132.226.205.205:8443`, and its queued context is
+`ubuntu-sandbox`. See the [P157 evidence record](../040-implementation-evidence/P157-sandbox-host.md).
+
+A new SSH alias, endpoint, or config profile is only a candidate. A reviewed
+candidate activation and one controlled safe request may be part of P157; they
+do not make the host generally available until the gate passes.
 
 For each new profile, complete a separate P157 evidence record:
 
@@ -305,8 +353,8 @@ build ends. They do not remove shared caches or download a toolchain.
 
 A host that is unavailable or has not been attempted is `NOT RUN`. A required
 gate that runs and fails is `FAIL`: stop, preserve the exact evidence, and do
-not mark the profile available. It must never reuse `linux-host` certificates,
-state database, bridge authorization, or proof.
+not mark the profile available. It must never reuse an accepted host's
+certificates, state database, bridge authorization, or proof.
 
 For normal use after setup, follow the [CLI guide](user-guide.md) or the
 native [mailbox guide](mailbox.md). The current accepted status is indexed in

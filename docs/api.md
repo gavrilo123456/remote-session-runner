@@ -12,17 +12,20 @@ owner-only filesystem root and is documented in [mailbox](mailbox.md).
 
 | Transport | Address | Authentication | Intended route |
 | --- | --- | --- | --- |
-| Current direct public HTTPS | `https://129.151.232.40:8443` | TLS 1.3 mandatory mTLS; mapped certificate URI SAN | Direct work only on configured `remote/linux-host`. |
+| Current direct public HTTPS (`linux-poc`) | `https://129.151.232.40:8443` | TLS 1.3 mandatory mTLS; mapped certificate URI SAN | Direct work only on configured `remote/linux-host`. |
+| Sandbox direct public HTTPS (`sandbox-poc`) | `https://132.226.205.205:8443` | TLS 1.3 mandatory mTLS; mapped certificate URI SAN | Direct work only on configured `remote/sandbox-host`. |
 | Mac Unix socket | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock` | Owner-only local Unix-socket access | Mac-local work and queued remote work through configured bridges. |
 | Current Ubuntu private socket | `/home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock` | Owner-only host-local service access | Host-local service operations; not a public client ingress. |
+| Sandbox Ubuntu private socket | `/home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock` on the sandbox host | Owner-only host-local service access | Host-local service operations; not a public client ingress. |
 
-The current direct endpoint name `linux-poc` is bound by the V2 Mac config to
-`linux-host`. It rejects a request for another profile. A new configured direct
-endpoint is usable only after that physical host completes P157; no request may
-supply a free-form URL, hostname, or account.
+The V2 Mac config binds `linux-poc` to `linux-host` and `sandbox-poc` to
+`sandbox-host`. Each endpoint rejects a request for the other profile. A new
+configured direct endpoint is usable only after that physical host completes
+P157; no request may supply a free-form URL, hostname, or account.
 
-The direct listener binds `10.0.0.200:8443` on the current Ubuntu host. That is
-server configuration, not a client URL.
+The direct listeners bind `10.0.0.200:8443` on `linux-host` and
+`10.0.0.14:8443` on `sandbox-host`. Those are server configurations, not
+client URLs.
 
 ## Direct mTLS readiness and request
 
@@ -41,6 +44,21 @@ curl --silent --show-error --fail --max-time 15 \
 This proves the current application, mTLS identity, and public route at that
 moment. The earlier temporary TLS probe was transport-only. A direct response
 is not evidence that queued bridge or mailbox delivery works.
+
+P157 accepted the sandbox Runner application readiness route separately:
+
+```sh
+# Mac — tomasz.walczuk
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+curl --silent --show-error --fail --max-time 15 \
+  --cacert "$root/secrets/poc-ca.pem" \
+  --cert "$root/secrets/sandbox-direct-client.pem" \
+  --key "$root/secrets/sandbox-direct-client.key" \
+  https://132.226.205.205:8443/health/ready
+```
+
+This uses the sandbox-only direct client identity and verifies the sandbox
+Runner application. It does not prove a direct CLI mutation.
 
 For example, create a direct current-host session with a stable idempotency
 key:

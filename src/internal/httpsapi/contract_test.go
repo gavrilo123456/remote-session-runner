@@ -235,8 +235,21 @@ func TestP003OpenAPIRoutesAndSecurity(t *testing.T) {
 		t.Fatalf("OpenAPI version = %v, want 3.1.0", document["openapi"])
 	}
 	servers := document["servers"].([]any)
-	if len(servers) != 1 || p003Object(t, servers[0], "direct server")["url"] != "https://129.151.232.40:8443" {
-		t.Fatalf("direct server URL must be the selected public HTTPS endpoint: %#v", servers)
+	var directServerURLs []string
+	for _, server := range servers {
+		url, ok := p003Object(t, server, "direct server")["url"].(string)
+		if !ok {
+			t.Fatalf("direct server has a non-string URL: %#v", server)
+		}
+		directServerURLs = append(directServerURLs, url)
+	}
+	sort.Strings(directServerURLs)
+	wantDirectServerURLs := []string{
+		"https://129.151.232.40:8443",
+		"https://132.226.205.205:8443",
+	}
+	if !reflect.DeepEqual(directServerURLs, wantDirectServerURLs) {
+		t.Fatalf("direct server URLs = %#v, want the accepted public HTTPS endpoints %#v", directServerURLs, wantDirectServerURLs)
 	}
 	security := p003Object(t, p003Object(t, document["components"], "components")["securitySchemes"], "security schemes")
 	if p003Object(t, security["mutualTLS"], "mutualTLS security scheme")["type"] != "mutualTLS" {

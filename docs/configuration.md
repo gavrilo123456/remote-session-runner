@@ -12,16 +12,17 @@ owner-only files. The selected accounts are fixed in this PoC: Mac work runs as
 | Mac account and root | `tomasz.walczuk`; `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
 | Ubuntu account and root | `ubuntu`; `/home/ubuntu/.local/share/remote-session-runner` |
 | Mac active config | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.yaml` |
-| Current remote profile | `linux-host` |
-| Direct endpoint name and URL | `linux-poc`; `https://129.151.232.40:8443` |
-| Ubuntu HTTPS bind | `10.0.0.200:8443` |
+| Accepted remote profiles | `linux-host`; `sandbox-host` |
+| `linux-host` direct endpoint and bind | `linux-poc`; `https://129.151.232.40:8443`; `10.0.0.200:8443` |
+| `sandbox-host` direct endpoint and bind | `sandbox-poc`; `https://132.226.205.205:8443`; `10.0.0.14:8443` |
 | Local target | `mac-dev` / `local` / `mac-workstation` |
-| Current remote target | `linux-dev` / `remote` / `linux-host` |
+| Remote contexts | `ubuntu-current`: `linux-dev` / `remote` / `linux-host`; `ubuntu-sandbox`: `sandbox-dev` / `remote` / `sandbox-host` |
 | Direct transport | TLS 1.3 with mandatory mTLS |
 
-The public URL is a client address. `10.0.0.200:8443` is only the current
-Ubuntu listener bind. A future named host needs its own listener, endpoint or
-bridge definition, credentials, and P157 acceptance. It must not reuse these
+Each public URL is a client address, and each private bind belongs only to its
+named Ubuntu host. The separately accepted `sandbox-host` is an ARM64 Ubuntu
+host. A later named host needs its own listener, endpoint or bridge definition,
+credentials, and P157 acceptance. It must not reuse either accepted profile's
 values as proof that it is ready.
 
 ## Service-root layout
@@ -32,7 +33,7 @@ values as proof that it is ready.
 /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/
 ├── bin/                 runner, runner-local, runner-locald
 ├── config/              mac.yaml; optional reviewed mac.next.yaml
-├── secrets/             CA, direct client certificate/key, dispatcher key, known_hosts
+├── secrets/             CA, per-profile direct client certificate/key, dispatcher keys, known_hosts
 ├── run/                 local-api.sock, locald.sock
 ├── state/               local.db
 ├── mailbox/             default inbox, outbox, events, acks
@@ -75,7 +76,8 @@ outside the selected roots.
 first-install template. It remains a valid `version: 1` configuration and is
 read as one implicit `default` inbox, `mac-local` context,
 `ubuntu-current` context, `linux-host` remote profile, and `linux-poc` direct
-endpoint. Its legacy scalar fields include `mailbox_root`,
+endpoint. It cannot express the accepted `sandbox-host` profile. Its legacy
+scalar fields include `mailbox_root`,
 `remote_endpoint_profile`, `remote_endpoint`, `ssh_host_alias`, and
 `ssh_known_hosts`.
 
@@ -109,11 +111,22 @@ Start from the complete checked-in template:
 deploy/macos/mac.v2.yaml.example
 ```
 
-The template intentionally contains only the accepted `linux-host`. The active
-P155 policy adds `analytics` outside Git, with the following effective policy:
+The checked-in template intentionally contains only `linux-host`, so it remains
+a safe first V2 policy without sandbox credentials. The active P155/P157 policy
+is owner-only and outside Git. It adds `analytics`, the accepted
+`sandbox-host`, and its explicitly allowed `ubuntu-sandbox` override:
 
 ```yaml
 version: 2
+environment_registry:
+  linux-dev:
+    effective_account: ubuntu
+    allowed_targets: [{kind: remote, profile: linux-host}]
+  sandbox-dev:
+    base_system: Ubuntu 22.04.5 LTS
+    host_class: Ubuntu Linux host
+    effective_account: ubuntu
+    allowed_targets: [{kind: remote, profile: sandbox-host}]
 execution_contexts:
   mac-local:
     environment: mac-dev
@@ -121,6 +134,9 @@ execution_contexts:
   ubuntu-current:
     environment: linux-dev
     execution_target: {kind: remote, profile: linux-host}
+  ubuntu-sandbox:
+    environment: sandbox-dev
+    execution_target: {kind: remote, profile: sandbox-host}
 
 remote_hosts:
   linux-host:
@@ -136,6 +152,19 @@ remote_hosts:
       server_ca: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem"
       client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.pem"
       client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.key"
+  sandbox-host:
+    account: ubuntu
+    queued_bridge:
+      host: 132.226.205.205
+      port: 22
+      known_hosts: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/sandbox_known_hosts"
+      private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/sandbox_dispatcher_ed25519"
+    direct_endpoint:
+      name: sandbox-poc
+      url: https://132.226.205.205:8443
+      server_ca: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem"
+      client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/sandbox-direct-client.pem"
+      client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/sandbox-direct-client.key"
 
 mailboxes:
   default:
@@ -147,13 +176,15 @@ mailboxes:
     root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics"
     repository_aliases: [analytics-dbt]
     default_execution: mac-local
-    allowed_execution: [mac-local, ubuntu-current]
+    allowed_execution: [mac-local, ubuntu-current, ubuntu-sandbox]
 ```
 
-Keep the complete `mac` and `environment_registry` sections from the template;
-the abbreviated listing above only shows the multi-inbox policy. The
-environment registry permits the local account for `mac-dev` and `ubuntu` for
-`linux-dev`. The current remote source mode is `empty`.
+Use complete `mac` and `environment_registry` definitions in the owner-only
+candidate; the abbreviated listing above omits their remaining required fields.
+The environment registry permits the local account for `mac-dev` and `ubuntu`
+for both `linux-dev` and `sandbox-dev`. The current remote source mode is
+`empty`. `default` retains only `mac-local` and `ubuntu-current`; `analytics`
+is the only inbox that may explicitly select `ubuntu-sandbox`.
 
 ### Version-2 validation rules
 
@@ -197,19 +228,25 @@ The installer keeps the separately reviewed `mac.next.yaml` after a successful
 activation; it stages a copy as the active `mac.yaml`. Do not overwrite active
 `mac.yaml` with a shell copy.
 
-## Current Ubuntu configuration
+## Accepted Ubuntu configurations
 
-The current accepted `linux-host` uses the existing Linux configuration at:
+Each physical Ubuntu host holds its own owner-only configuration under the same
+path on that host:
 
 ```text
 /home/ubuntu/.local/share/remote-session-runner/config/linux.yaml
 ```
 
-It pins `account: ubuntu`, its service root, `runnerd.sock`, the direct bind
-`10.0.0.200:8443`, public endpoint `https://129.151.232.40:8443`, TLS 1.3,
-server certificate, client CA, principal map, and host-process adapter. The
-server private key is only the owner-only file named by
-`secret_references.linux_server_private_key`; do not print or commit it.
+| Profile | Host | Direct bind | Public endpoint | Evidence |
+| --- | --- | --- | --- | --- |
+| `linux-host` | `oracle-yuta-konopka-ubuntu-micro-02` | `10.0.0.200:8443` | `https://129.151.232.40:8443` | P155 |
+| `sandbox-host` | `oracle-gustaw-janecki-ubuntu-flex-02` | `10.0.0.14:8443` | `https://132.226.205.205:8443` | [P157](../040-implementation-evidence/P157-sandbox-host.md) |
+
+Each configuration pins `account: ubuntu`, its service root, `runnerd.sock`,
+its own direct bind and public endpoint, TLS 1.3, server certificate, client
+CA, principal map, and host-process adapter. The server private key is only the
+owner-only file named by `secret_references.linux_server_private_key`; do not
+print or commit it.
 
 The direct client principal map is:
 
@@ -217,8 +254,8 @@ The direct client principal map is:
 /home/ubuntu/.local/share/remote-session-runner/config/client-principals.yaml
 ```
 
-It maps the verified direct certificate URI SAN to
-`direct_mtls/tomasz.walczuk`. The queued path has separate permanent
+It maps the profile's verified direct certificate URI SAN to its configured
+direct controller principal. The queued path has separate permanent
 bridge/controller files under the Ubuntu `config/` directory. Direct mTLS does
 not make the bridge available.
 
@@ -227,7 +264,8 @@ own `linux.remote_target_profile`. Every registered environment on that host
 must permit that remote profile, and the Linux document rejects the Mac-only
 `execution_contexts`, `remote_hosts`, and `mailboxes` sections. It needs
 independent state, listener/certificates, key pin or direct mTLS material, and
-P157 evidence; it must not copy the accepted host's state database or secrets.
+P157 evidence; it must not copy either accepted host's state database or
+secrets.
 
 ## Limits and retention
 

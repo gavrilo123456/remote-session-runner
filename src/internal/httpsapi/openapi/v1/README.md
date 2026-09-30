@@ -1,11 +1,13 @@
 # HTTP/JSON v1 contract
 
-`openapi.json` freezes the HTTP wire contract. Its listed public server
-`https://129.151.232.40:8443` is the current accepted `linux-host` direct
-endpoint; it is not a generic future-host address. That server requires TLS
-1.3 mutual TLS with an explicitly mapped client certificate. The current
-host-local listener binds `10.0.0.200:8443`; the bind is deployment
-configuration, not a client URL.
+`openapi.json` freezes the HTTP wire contract. Its listed public servers are
+the independently accepted direct endpoints: `https://129.151.232.40:8443`
+for `linux-host` and `https://132.226.205.205:8443` for `sandbox-host`. They
+are not generic future-host addresses. Each server requires TLS 1.3 mutual TLS
+with an explicitly mapped client certificate and accepts only its configured
+target profile. The host-local listeners bind `10.0.0.200:8443` and
+`10.0.0.14:8443`, respectively; binds are deployment configuration, not client
+URLs.
 
 The same paths and JSON are available through the owner-only Mac Unix socket at
 `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock`.

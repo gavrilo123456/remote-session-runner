@@ -3,8 +3,9 @@
 The mailbox is an owner-only **Mac ingress and response projection** for a
 native automation integration. It is not a shell, a terminal, or an execution
 authority. It can submit Mac-local work and, when the permanent restricted SSH
-bridge is ready, queued work on the current Ubuntu profile. It cannot create or
-manage resources made through direct mTLS HTTPS.
+bridge is ready, queued work on an accepted Ubuntu profile that the selected
+inbox permits. It cannot create or manage resources made through direct mTLS
+HTTPS.
 
 There is no `runner mailbox` CLI command. Use the [CLI guide](user-guide.md)
 for interactive operator work. A file-producing integration uses the internal
@@ -20,7 +21,7 @@ field.
 | Inbox ID | Absolute root | Current repository aliases | Default context | Allowed contexts |
 | --- | --- | --- | --- | --- |
 | `default` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox` | `remote-session-runner` | `mac-local` | `mac-local`, `ubuntu-current` |
-| `analytics` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `analytics-dbt` | `mac-local` | `mac-local`, `ubuntu-current` |
+| `analytics` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `analytics-dbt` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
 
 Every root has this independent layout:
 
@@ -135,9 +136,26 @@ The omission of `environment` and `execution_target` resolves to `mac-dev` and
 ```
 
 This chooses the configured queued bridge for `linux-host`; it is not a direct
-mTLS request. P155 proved this exact route only for the current `linux-host`.
-A different remote profile remains unavailable until its own P157 host gate
-passes.
+mTLS request. P155 proved this exact route for `linux-host`.
+
+**Use the analytics root with the accepted sandbox override:**
+
+```json
+{
+  "request_id": "req-analytics-sandbox-001",
+  "idempotency_key": "key-analytics-sandbox-001",
+  "operation": "run",
+  "repository_alias": "analytics-dbt",
+  "environment": "sandbox-dev",
+  "execution_target": {"kind": "remote", "profile": "sandbox-host"},
+  "script": "printf 'MAILBOX_SANDBOX_OK\\n'; id -un; hostname; uname -m"
+}
+```
+
+This chooses the `ubuntu-sandbox` queued context. P157 accepted this exact
+profile through a native mailbox request, event read, and ACK. The `default`
+inbox does not allow this override. Any other remote profile remains
+unavailable until its own P157 host gate passes.
 
 **Create a default-target session:**
 
@@ -229,5 +247,5 @@ teardown, and the retained event boundary agree.
   is not yet verified.
 
 For route and service checks, use [operations](operations.md). For the P155
-current-host proof and the per-host P157 boundary, use
+and P157 host proofs and the per-host P157 boundary, use
 [current-host evidence](current-host-evidence.md).

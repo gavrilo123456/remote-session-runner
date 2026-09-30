@@ -1,10 +1,10 @@
 # P157 — `sandbox-host` onboarding
 
-**Status:** IN PROGRESS after authorized remediation. The first direct mTLS
-application attempt failed and is recorded below; P157 remains unaccepted until
-all required gates pass. This is the separate physical-host acceptance gate for
-the user-supplied bootstrap alias `sandbox.env`. It does not alter the
-accepted status of `linux-host`.
+**Status:** PASS on 2026-09-30 after authorized remediation. The first direct
+mTLS application attempt failed and is retained below; the repeated required
+gates passed. This is the separate physical-host acceptance gate for the
+user-supplied bootstrap alias `sandbox.env`. It does not alter the accepted
+status of `linux-host`.
 
 ## Identity and scope
 
@@ -73,19 +73,19 @@ Host sandbox.env
 
 The pre-existing owner-only user SSH known-hosts file contains an ED25519
 entry for `132.226.205.205` with fingerprint
-`SHA256:n2i2F1TzaiIYMn4qM0VztKsKqHnh/kE5ndH/dn2znxk`. P157 will use a
-dedicated copy of that public host entry only after a strict, non-interactive
-match; it will never use `accept-new`, `ssh-keyscan`, or a Runner route that
-consults `~/.ssh/config`.
+`SHA256:n2i2F1TzaiIYMn4qM0VztKsKqHnh/kE5ndH/dn2znxk`. P157 used a dedicated
+copy of that public host entry only after a strict, non-interactive match; it
+never used `accept-new`, `ssh-keyscan`, or a Runner route that consults
+`~/.ssh/config`.
 
 The pin's current provenance is the user's pre-existing owner-only
 `known_hosts` entry, rather than a newly accepted key. An independent
 provider-console fingerprint record has not been supplied; P157 records that
 limit without treating it as direct-API, bridge, or mailbox acceptance.
 
-The host has not yet passed a P157 service, bridge, direct mTLS, selected-route
-or mailbox request gate. Until those named gates pass, `sandbox-host` remains
-**NOT RUN**.
+At this preflight point, the host had not yet passed a P157 service, bridge,
+direct mTLS, selected-route, or mailbox request gate. It was therefore
+**NOT RUN** at that point.
 
 ## Strict bootstrap preflight
 
@@ -111,11 +111,11 @@ print private key material.
 | Candidate concrete bind address | `10.0.0.14` on `enp0s3` |
 | Root filesystem | 52G total, 50G used, 2.1G free (96% used) |
 
-The public `:8443` reachability, cloud firewall rule, certificate SAN, Runner
-listener, direct mTLS application health, restricted bridge, Mac route health,
-and mailbox request are still untested. The low free-space margin is monitored
-through the candidate build; only P157-owned staged downloads and installer
-caches may be removed.
+At this point, public `:8443` reachability, cloud firewall rule, certificate
+SAN, Runner listener, direct mTLS application health, restricted bridge, Mac
+route health, and mailbox request remained untested. The low free-space margin
+was monitored through the candidate build; only P157-owned staged downloads
+and installer caches could be removed.
 
 ## Planned implementation and gates
 
@@ -154,9 +154,10 @@ stops P157. A host that has not reached a gate remains **NOT RUN**.
 | `make vet` | PASS |
 | `git diff --check` | PASS |
 
-The live `make test-p157-sandbox-host` gate has deliberately not run: the
-candidate is not yet configured, deployed, or routed. Running it earlier would
-only test the absence of the planned profile rather than a deployed P157 host.
+At this preparation point, the live `make test-p157-sandbox-host` gate had not
+run: the candidate was not yet configured, deployed, or routed. Running it
+then would only have tested the absence of the planned profile rather than a
+deployed P157 host.
 
 ## First candidate deployment attempt and failed direct mTLS gate
 
@@ -215,12 +216,12 @@ that task-owned cache. The P157 remediation changes both Linux installers to
 restore owner write permission without following symbolic links and remove only
 their own cache. The service installer preserves the active service's immediate
 zero-active-work-to-restart boundary; the bridge removes its cache after its
-build. The retry will verify that no such cache remains.
+build. The retry verified that no such cache remained.
 
-The user authorized the remediation after this recorded failure. It will issue
-new candidate-only SHA-256 leaves, repair the task-owned cache cleanup, and
-repeat the required gates from the direct mTLS check. This prior failure is not
-treated as a pass or hidden by the retry.
+The user authorized the remediation after this recorded failure. It issued new
+candidate-only SHA-256 leaves, repaired the task-owned cache cleanup, and
+repeated the required gates from the direct mTLS check. This prior failure is
+not treated as a pass or hidden by the retry.
 
 ### Pre-activation mailbox-test guard
 
@@ -233,3 +234,73 @@ mailbox client, so neither invocation published a request or ran a command on
 either Ubuntu host. This is a configuration prerequisite observation, not a
 P157 mailbox acceptance result. The controlled mailbox gate remains NOT RUN
 until the reviewed candidate configuration is activated.
+
+## Remediation and final acceptance
+
+The remediation source revision is
+`8873852ddc9ab33093c105371de93a3695d99b89`
+(`fix(P157): clean installer Go caches safely`). It was committed and pushed
+from the clean Mac `dev` checkout with the dedicated GitHub identity. Both
+Ubuntu checkouts then fast-forwarded cleanly with their specified GitHub
+identity. Immediately before final host checks, Mac `HEAD`, Mac `origin/dev`,
+the existing Ubuntu checkout, and the sandbox checkout all resolved to that
+exact revision.
+
+### Certificate and installer repair
+
+The replacement certificate operation used Mac OpenSSL 3.6.3 with explicit
+SHA-256 signing. The sandbox server kept its existing host-only RSA private
+key; only a public CSR crossed to the Mac signer. A fresh sandbox-only direct
+client key was generated on the Mac. The replacement leaves were verified
+against the existing PoC CA, matched their expected public keys, and had these
+public constraints:
+
+| Leaf | Required public constraints | Result |
+| --- | --- | --- |
+| Server | SHA-256 signature; `serverAuth`; `IP:132.226.205.205` SAN | PASS |
+| Direct client | SHA-256 signature; `clientAuth`; URI SAN `urn:remote-session-runner:controller:runner-tomasz-sandbox-direct` | PASS |
+
+The server public certificate was staged owner-only, backed up only for the
+controlled restart, and restored automatically if the installer failed. It did
+not fail. The Linux installer repeated its read-only status gate before the
+active restart, then the repaired cache cleanup removed its private
+`install-go-cache.*` tree. The bridge installer likewise removed its private
+`queued-bridge-go-cache.*` tree after its build. No shared Go cache was removed.
+
+The strict-bootstrap host-key pin remains a copied public ED25519 record from
+the user's existing owner-only known-hosts file. Its provenance limitation
+remains: no independent provider-console fingerprint record was supplied.
+
+### Required gate results after remediation
+
+| Gate | Evidence | Result |
+| --- | --- | --- |
+| Candidate service identity | `ubuntu`, `oracle-gustaw-janecki-ubuntu-flex-02`, `aarch64`; active `runnerd.service`, private socket, and listener `10.0.0.14:8443` | PASS |
+| TLS transport | OpenSSL 3 `s_client`: TLS 1.3, verified peer, SHA-256 handshake signature, and client certificate accepted | PASS |
+| Runner direct application | `curl` to `https://132.226.205.205:8443/health/ready` returned Runner readiness JSON with `direct_mtls: ready` and `HTTP 200` | PASS |
+| Restricted bridge | `queued_bridge_status=ready`, dedicated dispatcher fingerprint `SHA256:lb3XAMkTkVWaGEp/3XckUM/gMTKwXUuQoyXKz8WWuNw`, source revision `8873852…` | PASS |
+| Mac candidate activation | Owner-only `mac.next.yaml` validated, the installer quiesced and restarted both LaunchAgents, and active `mac.yaml` retained `default` plus `analytics` | PASS |
+| Mac profile health | `remote_router/linux-host=ready` and `remote_router/sandbox-host=ready`, zero mailbox backlog | PASS |
+| Native end-to-end request | `make test-p157-sandbox-host` passed; its native `mailboxclient` request used `analytics`, `sandbox-dev`, and `remote/sandbox-host`, verified exact output `P157_SANDBOX_OK`, `ubuntu`, `oracle-gustaw-janecki-ubuntu-flex-02`, `aarch64`, read events, and ACKed the response | PASS |
+| Final host status | P128 read-only counts: `active_sessions=0`, `running_commands=0`, `unreleased_slots=0`, `unfinished_jobs=0` | PASS |
+| Task-owned cleanup | No `install-go-cache.*` or `queued-bridge-go-cache.*` remained; rotation/bridge scripts, logs, staged public files, certificate scratch, and superseded candidate backup were removed | PASS |
+
+The active Mac policy leaves `default` limited to `mac-local` and
+`ubuntu-current`. It adds `ubuntu-sandbox` only to the `analytics` allow-list;
+the new profile is not an automatic target or a fallback. The direct endpoint
+is `sandbox-poc` at `https://132.226.205.205:8443` and the queued context is
+`sandbox-dev` / `remote/sandbox-host`.
+
+P157 proves this named host's service, direct mTLS application path, restricted
+queued route, and one controlled mailbox request. It does not change P143's
+software-process-crash-only durability boundary: physical power-loss recovery
+remains unverified pending a coordinated physical power-cut test.
+
+### Documentation closeout validation
+
+The post-acceptance documentation records both accepted public endpoints in the
+OpenAPI inventory. `TestP003OpenAPIRoutesAndSecurity` now requires exactly the
+`linux-host` and `sandbox-host` URLs, so a later documentation edit cannot
+silently drop either endpoint. On the Mac, that focused test, `make test`,
+`make vet`, `git diff --check`, and OpenAPI JSON parsing all passed before this
+evidence closeout was committed.

@@ -24,21 +24,29 @@ and logs under the service root.
 ## V2 multi-inbox candidate activation
 
 `mac.v2.yaml.example` is the policy template for named inboxes and profiles. It
-intentionally keeps only the accepted `linux-host`. Create a reviewed owner-only
-candidate at `config/mac.next.yaml`, retain all existing registered roots, and
-run:
+intentionally starts with only `linux-host`, so the checked-in template carries
+no sandbox credentials. The active owner-only P155/P157 policy also contains
+the separately accepted `sandbox-host`. Create a reviewed owner-only candidate
+at `config/mac.next.yaml`, retain all existing registered roots, and run:
 
 ```sh
 deploy/macos/install-launchagents.sh --config \
   "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml"
 ```
 
-The installed P155 policy has:
+The installed P155/P157 policy has:
 
 | Inbox | Root | Default | Allowed contexts |
 | --- | --- | --- | --- |
 | `default` | `.../RemoteSessionRunner/mailbox` | `mac-local` | `mac-local`, `ubuntu-current` |
-| `analytics` | `.../RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current` |
+| `analytics` | `.../RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
+
+`ubuntu-sandbox` selects `sandbox-dev` / `remote/sandbox-host`. For mailbox
+work, `analytics` permits that explicit override and `default` retains
+`mac-local` and `ubuntu-current`. The accepted `sandbox-poc` direct endpoint
+and its separate secret paths remain in the owner-only active configuration.
+The P157 host result is recorded in
+[`040-implementation-evidence/P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md).
 
 The installer validates the candidate while the active configuration runs. It
 then stops mailbox ingress, waits for sockets to disappear, and runs a final
@@ -56,8 +64,9 @@ repair/re-run and does not revive V1. It leaves the separately supplied
 
 The mailbox registry is append-only for this PoC. Adding a root is supported;
 removing, renaming, or moving an inbox needs an explicit later migration after
-its work and artifacts are retired. A new remote host needs a separate P157
-host gate even if its profile appears in a candidate.
+its work and artifacts are retired. `sandbox-host` passed its separate P157
+host gate. A later remote host still needs its own P157 gate even if its profile
+appears in a candidate.
 
 ## Stop and restart behavior
 

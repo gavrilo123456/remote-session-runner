@@ -1,19 +1,22 @@
 # Remote Session Runner
 
-Remote Session Runner is a controlled two-target execution proof of concept.
-Scripts run locally on the selected Mac account (`tomasz.walczuk`) or on a
-named, accepted Ubuntu profile as `ubuntu`. The current remote profile is
-`linux-host`; direct access uses TLS 1.3 mTLS at
-`https://129.151.232.40:8443`, while queued work uses a separately authorized
-restricted SSH bridge. The PoC has no containers, tunnels, interactive PTYs,
-arbitrary account selection, arbitrary host selection, or automatic fallback.
+Remote Session Runner is a controlled execution proof of concept. Scripts run
+locally on the selected Mac account (`tomasz.walczuk`) or on a named, accepted
+Ubuntu profile as `ubuntu`. The accepted remote profiles are `linux-host`, with
+direct access at `https://129.151.232.40:8443`, and `sandbox-host`, with direct
+access at `https://132.226.205.205:8443`. Both direct routes use TLS 1.3 mTLS;
+queued work uses a separately authorized restricted SSH bridge for the selected
+profile. The PoC has no containers, tunnels, interactive PTYs, arbitrary
+account selection, arbitrary host selection, or automatic fallback.
 
 The installed Mac configuration is version 2. It preserves the legacy
 `default` mailbox and adds `analytics`, each with independent inbox, outbox,
 events, and ACK paths. Each inbox has a default execution context and can allow
-an explicit complete context override. The `linux-host` profile is the only
-remote host with live acceptance evidence; the user-supplied `sandbox.env`
-candidate is **NOT RUN** pending its own P157 host gate.
+an explicit complete context override. `default` permits `mac-local` and
+`ubuntu-current`; `analytics` additionally permits `ubuntu-sandbox`. P155
+accepted `linux-host`; P157 separately accepted `sandbox-host` after its repair
+on source revision `8873852ddc9ab33093c105371de93a3695d99b89`. Other new hosts
+remain unavailable until they pass their own P157 gate.
 
 Start with [the post-implementation documentation index](docs/README.md):
 
