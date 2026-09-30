@@ -109,10 +109,25 @@ default must name the already accepted `ubuntu-sandbox` context
 | --- | --- | --- |
 | `P158` | Add fail-closed support for owner-safe external mailbox roots, a non-mutating preflight before service quiescence, and add `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` with default `ubuntu-sandbox`. | Config and runtime tests reject non-absolute, normalized-alias/nested, service-root-escape, symlinked, missing-parent, and group/other-writable external paths; they preserve existing roots and do not change external ancestors. Descriptor-relative preflight happens before quiescence, while durable candidate registration happens before any new external root is created. The activated inbox completes a native `mailboxclient` request with no selection pair, resolves `sandbox-dev` / `remote/sandbox-host`, returns complete untruncated output/events, accepts the exact ACK, and finishes with sandbox P128 zero active work. Direct mTLS is not mailbox evidence. |
 
-## 5. Completion and handoff
+## 5. Workspace-compatible direct-file ingress and P159
+
+`P159` follows the completed P158 external-mailbox gate. It permits a
+workspace file integration to create a complete, marker-last request or ACK
+pair at exact `0644` inside a configured mailbox's owner-only `0700` root and
+children. It preserves native `mailboxclient` publication at `0600` and keeps
+Runner-produced outbox and event files at `0600`. This is ingress compatibility
+for file-only workspace integrations; it is not a claim that direct file
+creation has the native client's exclusive-create, no-follow, sync, or
+crash-durability behavior.
+
+| Phase | Bounded deliverable | Focused exit gate |
+| --- | --- | --- |
+| `P159` | Accept exact `0644` alongside exact `0600` for client-published `inbox` and `acks` JSON/`.ready` pairs, while retaining exact `0600` validation for outbox/event projections; update cleanup and backlog accounting and document the direct workspace-file path. | Hermetic tests accept `0644` request and ACK pairs, retain native `0600` behavior, reject `0640`, `0664`, and symlinks, clean an old `0644` draft, count an eligible `0644` marker, and keep response/event files `0600`. After Mac source delivery and both Ubuntu fast-forwards, the active `slidestud-io` external root completes a direct `0644` `uname -a` request using its default `ubuntu-sandbox` route, returns complete untruncated output/events, accepts a direct `0644` exact ACK, and ends with sandbox P128 zero active work. |
+
+## 6. Completion and handoff
 
 The configurable-inbox extension is ready for the current controlled PoC only
-after P150--P156 and any later applicable phase such as P158 pass in order,
+after P150--P156 and any later applicable phase such as P158 and P159 pass in order,
 each has a phase commit and GitHub/Ubuntu handoff where required, the current
 Mac and Ubuntu evidence is current, and the documentation describes the actual
 installed behavior. Additional remote machines are ready only after their own

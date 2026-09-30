@@ -170,7 +170,13 @@ installed and tested.
 
 The marker-last filesystem protocol is unchanged. A client writes immutable
 JSON, then an empty `.ready` marker. It reads the matching response and event
-prefix, then writes the matching acknowledgement.
+prefix, then writes the matching acknowledgement. Every mailbox root and child
+directory remains exact mode `0700`. Native `mailboxclient` request and ACK
+pairs are exact `0600`; a direct workspace-file producer may publish otherwise
+valid request or ACK pairs at exact `0644`. Runner keeps response and event
+projections at exact `0600`. The `0644` compatibility path still requires
+complete JSON before the empty marker and does not claim native exclusive
+creation, no-follow, sync, or crash-durability properties.
 
 For `run` and `create_session`, `environment` and `execution_target` are
 treated as one pair:
