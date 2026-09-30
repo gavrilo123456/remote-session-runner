@@ -1,6 +1,7 @@
 package mailbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -175,6 +176,9 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err := p.reconcileTerminalArtifacts(ctx); err != nil {
+		return nil, err
+	}
 	results, err := p.importer.importWithRecorder(ctx, p.process)
 	if err != nil {
 		return results, err
@@ -208,6 +212,9 @@ func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err := p.reconcileTerminalArtifacts(ctx); err != nil {
+		return err
+	}
 	if err := p.reconcileAcceptedCreates(ctx); err != nil {
 		return err
 	}
@@ -310,7 +317,7 @@ func (p *SessionProcessor) processCommand(ctx context.Context, request Request) 
 		return false, err
 	}
 	if duplicate && len(record.ResponseBytes) > 0 {
-		return true, p.publishStoredCommandResponse(ctx, record)
+		return true, p.publishStoredTerminalResponse(ctx, record)
 	}
 	if idempotencyConflict || (record.IdempotencyKey != "" && !record.IdempotencyBindingActive) {
 		response := commandMailboxResponse{
@@ -431,7 +438,7 @@ func (p *SessionProcessor) processRun(ctx context.Context, request Request) (boo
 		return false, err
 	}
 	if duplicate && len(record.ResponseBytes) > 0 {
-		return true, p.publishStoredRunResponse(ctx, record)
+		return true, p.publishStoredTerminalResponse(ctx, record)
 	}
 	if idempotencyConflict || (record.IdempotencyKey != "" && !record.IdempotencyBindingActive) {
 		response := runMailboxResponse{
@@ -519,15 +526,191 @@ func (p *SessionProcessor) publishSessionOperationError(ctx context.Context, rec
 	return p.publish(ctx, record, response, nil)
 }
 
-func (p *SessionProcessor) publishStoredCommandResponse(ctx context.Context, record store.MailboxExchangeRecord) error {
+// reconcileTerminalArtifacts rebuilds derived files after a process stop once
+// the terminal SQLite receipt is durable. It performs no operation call or
+// target mutation. Cleanup claims deliberately suppress this repair so an
+// expired result cannot return after its removal has begun.
+func (p *SessionProcessor) reconcileTerminalArtifacts(ctx context.Context) error {
+	records, err := p.authority.ListPublishableTerminalMailboxExchanges(ctx, p.controller)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		eligible, err := p.terminalResponseEligibleForRecovery(ctx, record)
+		if err != nil {
+			return fmt.Errorf("validate terminal mailbox response %s: %w", record.RequestID, err)
+		}
+		if !eligible {
+			// This recovery pass only rebuilds absent derived files. A legacy
+			// terminal response that was already published before P149 remains
+			// an immutable delivered artifact; do not retroactively remove or
+			// rewrite it here, especially because event files can be shared.
+			continue
+		}
+		current, err := p.terminalArtifactsCurrent(ctx, record)
+		if err != nil {
+			// A cleanup claim can win after selection but before the frozen event
+			// prefix is inspected. Cleanup owns that race, so do not turn a normal
+			// expiry into a failed mailbox cycle.
+			if errors.Is(err, store.ErrMailboxResponseExpired) {
+				continue
+			}
+			return fmt.Errorf("inspect terminal mailbox response %s: %w", record.RequestID, err)
+		}
+		if current {
+			continue
+		}
+		if err := p.publishStoredTerminalResponse(ctx, record); err != nil {
+			// A cleanup claim can win between the selector and the projection.
+			// It is safe and required to leave that response absent.
+			if errors.Is(err, store.ErrMailboxResponseExpired) {
+				continue
+			}
+			return fmt.Errorf("rebuild terminal mailbox response %s: %w", record.RequestID, err)
+		}
+	}
+	return nil
+}
+
+// terminalResponseEligibleForRecovery prevents a pre-P149 reconciled remote
+// terminal result from being republished solely because a derived file is
+// absent. The Router must first revalidate it with the strict remote proof.
+func (p *SessionProcessor) terminalResponseEligibleForRecovery(ctx context.Context, record store.MailboxExchangeRecord) (bool, error) {
+	if record.State == store.MailboxExchangeAccepted {
+		return true, nil
+	}
+	var reference struct {
+		JobID           string `json:"job_id"`
+		CommandID       string `json:"command_id"`
+		CommandState    string `json:"command_state"`
+		JobPhase        string `json:"job_phase"`
+		TeardownOutcome string `json:"teardown_outcome"`
+	}
+	if err := json.Unmarshal(record.ResponseBytes, &reference); err != nil {
+		return false, fmt.Errorf("%w: terminal command response is invalid", ErrOutboxResponse)
+	}
+	// A run can reach a terminal job/teardown outcome before there is a
+	// command snapshot. Older Router versions could freeze that response with
+	// delivery_state=reconciled. It is still a target outcome, so it must not
+	// bypass the P149 proof boundary merely because command_state is absent.
+	if record.Operation == "run" && terminalJobPhase(reference.JobPhase) && reference.TeardownOutcome != "" {
+		if reference.JobID == "" || reference.CommandID == "" {
+			return false, fmt.Errorf("%w: terminal run response has no job or command ID", ErrOutboxResponse)
+		}
+		commandID, err := domain.NewCommandID(reference.CommandID)
+		if err != nil {
+			return false, fmt.Errorf("%w: terminal run response command ID: %v", ErrOutboxResponse, err)
+		}
+		intent, err := p.authority.GetLocalIntentByResource(ctx, "run", reference.JobID, p.controller)
+		if err != nil {
+			return false, err
+		}
+		if intent.CommandID != commandID {
+			return false, fmt.Errorf("%w: terminal run response command does not match its intent", ErrOutboxResponse)
+		}
+		return intent.Target.Kind() != domain.TargetKindRemote || store.HasRemoteTerminalProof(intent), nil
+	}
+	// Only a response that claims a terminal command result crosses the P149
+	// proof boundary. Generic terminal errors, resource-free outcomes, and
+	// active snapshots remain safely reproducible from their immutable receipt.
+	if reference.CommandID == "" || !domain.CommandState(reference.CommandState).IsTerminal() {
+		return true, nil
+	}
+	commandID, err := domain.NewCommandID(reference.CommandID)
+	if err != nil {
+		return false, fmt.Errorf("%w: terminal command response ID: %v", ErrOutboxResponse, err)
+	}
+	if record.Operation == "run" {
+		if reference.JobID == "" {
+			return false, fmt.Errorf("%w: terminal run response has no job ID", ErrOutboxResponse)
+		}
+		intent, err := p.authority.GetLocalIntentByResource(ctx, "run", reference.JobID, p.controller)
+		if err != nil {
+			return false, err
+		}
+		if intent.CommandID != commandID {
+			return false, fmt.Errorf("%w: terminal run response command does not match its intent", ErrOutboxResponse)
+		}
+		return intent.Target.Kind() != domain.TargetKindRemote || store.HasRemoteTerminalProof(intent), nil
+	}
+	intent, err := p.authority.GetLocalIntentByResource(ctx, "submit_command", string(commandID), p.controller)
+	if err != nil {
+		return false, err
+	}
+	return intent.Target.Kind() != domain.TargetKindRemote || store.HasRemoteTerminalProof(intent), nil
+}
+
+// terminalArtifactsCurrent checks the exact durable response image before a
+// recovery rewrite. Normal mailbox cycles therefore do not continuously
+// rewrite retained outbox files merely because they are eligible for recovery.
+func (p *SessionProcessor) terminalArtifactsCurrent(ctx context.Context, record store.MailboxExchangeRecord) (bool, error) {
+	response, err := p.projector.Outbox.Read(record.RequestID)
+	if err != nil || !bytes.Equal(response, record.ResponseBytes) {
+		return false, nil
+	}
+	if record.AvailableEventSequence == nil || *record.AvailableEventSequence < 1 {
+		return true, nil
+	}
+	var reference struct {
+		CommandID  string `json:"command_id"`
+		EventsFile string `json:"events_file"`
+	}
+	if err := json.Unmarshal(record.ResponseBytes, &reference); err != nil || reference.CommandID == "" {
+		return false, fmt.Errorf("%w: stored terminal command response is invalid", ErrOutboxResponse)
+	}
+	commandID, err := domain.NewCommandID(reference.CommandID)
+	if err != nil {
+		return false, fmt.Errorf("%w: stored terminal command response ID: %v", ErrOutboxResponse, err)
+	}
+	expectedReference, err := commandEventsFileReference(commandID)
+	if err != nil || reference.EventsFile != expectedReference {
+		return false, fmt.Errorf("%w: stored terminal response event-file reference", ErrOutboxResponse)
+	}
+	current, cursor, err := p.projector.EventFiles.Read(commandID)
+	if err != nil {
+		return false, nil
+	}
+	expected, expectedCursor, err := (EventProjector{Authority: p.authority}).ProjectMailboxResponseThrough(ctx, record.RequestID, commandID)
+	if err != nil {
+		return false, err
+	}
+	if expectedCursor != *record.AvailableEventSequence {
+		return false, fmt.Errorf("%w: projected cursor %d differs from response cursor %d", ErrOutboxResponse, expectedCursor, *record.AvailableEventSequence)
+	}
+	return cursor >= expectedCursor && bytes.HasPrefix(current, expected), nil
+}
+
+// publishStoredTerminalResponse republishes one already durable response. A
+// frozen event cursor identifies a command event-file projection; every other
+// response has only the outbox JSON artifact.
+func (p *SessionProcessor) publishStoredTerminalResponse(ctx context.Context, record store.MailboxExchangeRecord) error {
+	if record.State != store.MailboxExchangeAccepted {
+		eligible, err := p.terminalResponseEligibleForRecovery(ctx, record)
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			return nil
+		}
+	}
 	if record.AvailableEventSequence != nil && *record.AvailableEventSequence > 0 {
-		var response commandMailboxResponse
+		var response struct {
+			CommandID  string `json:"command_id"`
+			EventsFile string `json:"events_file"`
+		}
 		if err := json.Unmarshal(record.ResponseBytes, &response); err != nil || response.CommandID == "" {
-			return fmt.Errorf("%w: stored command response is invalid", ErrOutboxResponse)
+			return fmt.Errorf("%w: stored terminal command response is invalid", ErrOutboxResponse)
 		}
 		commandID, err := domain.NewCommandID(response.CommandID)
 		if err != nil {
-			return fmt.Errorf("%w: stored command response ID: %v", ErrOutboxResponse, err)
+			return fmt.Errorf("%w: stored terminal command response ID: %v", ErrOutboxResponse, err)
+		}
+		expectedReference, err := commandEventsFileReference(commandID)
+		if err != nil || response.EventsFile != expectedReference {
+			return fmt.Errorf("%w: stored terminal response event-file reference", ErrOutboxResponse)
 		}
 		return p.projector.PublishCommand(ctx, record.RequestID, commandID)
 	}
@@ -1163,21 +1346,6 @@ func (p *SessionProcessor) publishRunResponse(ctx context.Context, current store
 		return false, err
 	}
 	return updated.ResponseRevision > 0, nil
-}
-
-func (p *SessionProcessor) publishStoredRunResponse(ctx context.Context, record store.MailboxExchangeRecord) error {
-	if record.AvailableEventSequence != nil && *record.AvailableEventSequence > 0 {
-		var response runMailboxResponse
-		if err := json.Unmarshal(record.ResponseBytes, &response); err != nil || response.CommandID == "" {
-			return fmt.Errorf("%w: stored run response is invalid", ErrOutboxResponse)
-		}
-		commandID, err := domain.NewCommandID(response.CommandID)
-		if err != nil {
-			return fmt.Errorf("%w: stored run command ID: %v", ErrOutboxResponse, err)
-		}
-		return p.projector.PublishCommand(ctx, record.RequestID, commandID)
-	}
-	return p.projector.Publish(ctx, record.RequestID)
 }
 
 type sessionMailboxResponse struct {

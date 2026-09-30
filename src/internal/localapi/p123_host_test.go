@@ -165,6 +165,9 @@ func TestP123QueuedProjectionReconcilesAfterSSHOutage(t *testing.T) {
 	if err != nil || projection.IsStale || projection.State != domain.CommandStateSucceeded || !projection.OutputComplete || projection.FinalEventSequence == nil || *projection.FinalEventSequence != recovered.LastSequence {
 		t.Fatalf("reconciled projection=%+v cursor=%d err=%v", projection, recovered.LastSequence, err)
 	}
+	if err := remote.ReconcileAcceptedRemoteSubmit(ctx, commandIntent.IntentID); err != nil {
+		t.Fatalf("strict terminal command reconciliation after outage: %v", err)
+	}
 	completedIntent, err := h.authority.GetLocalIntent(ctx, commandIntent.IntentID)
 	if err != nil || completedIntent.DeliveryState != store.LocalIntentReconciled {
 		t.Fatalf("completed local delivery=%s err=%v, want reconciled", completedIntent.DeliveryState, err)
@@ -331,7 +334,18 @@ func p123WaitQueuedCommand(t *testing.T, ctx context.Context, authority *store.A
 		}
 		projection, err := remote.RefreshCommandProjection(deadline, commandID, mailboxOwner)
 		if err == nil && projection.State.IsTerminal() {
-			return projection
+			intent, lookupErr := authority.GetLocalIntentByResource(deadline, "submit_command", string(commandID), mailboxOwner)
+			if lookupErr != nil {
+				t.Fatalf("read queued command intent %s: %v", commandID, lookupErr)
+			}
+			if reconcileErr := remote.ReconcileAcceptedRemoteSubmit(deadline, intent.IntentID); reconcileErr != nil {
+				t.Fatalf("reconcile queued terminal command %s: %v", commandID, reconcileErr)
+			}
+			refreshed, refreshErr := remote.RefreshCommandProjection(deadline, commandID, mailboxOwner)
+			if refreshErr != nil {
+				t.Fatalf("refresh reconciled queued command %s: %v", commandID, refreshErr)
+			}
+			return refreshed
 		}
 		select {
 		case <-deadline.Done():

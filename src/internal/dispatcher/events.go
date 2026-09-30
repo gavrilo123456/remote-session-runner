@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -45,16 +46,44 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 	if d == nil || d.authority == nil {
 		return store.RemoteEventMirrorResult{}, ErrRemoteDriverConfiguration
 	}
-	streamer, ok := d.caller.(RemoteEventStreamer)
-	if !ok {
-		return store.RemoteEventMirrorResult{}, ErrRemoteEventCallerUnavailable
-	}
 	validatedCommand, err := domain.NewCommandID(string(commandID))
 	if err != nil {
 		return store.RemoteEventMirrorResult{}, err
 	}
 	if controller.Type() == "" || controller.ID() == "" {
 		return store.RemoteEventMirrorResult{}, fmt.Errorf("%w: controller is empty", ErrRemoteEventStream)
+	}
+	var intent *store.LocalIntentRecord
+	if candidate, lookupErr := d.authority.GetLocalIntentByResource(ctx, operationSubmitCommand, string(validatedCommand), controller); lookupErr == nil {
+		intent = &candidate
+	} else if !errors.Is(lookupErr, store.ErrLocalIntentNotFound) {
+		return store.RemoteEventMirrorResult{}, lookupErr
+	}
+	return d.mirrorCommandEvents(ctx, validatedCommand, controller, intent)
+}
+
+// mirrorCommandEventsForIntent mirrors events for a known remote intent. A
+// one-off run owns its command under operation=run, so retaining that intent
+// is required to validate an event-history-gap terminal read against the
+// correct immutable script and target context.
+func (d *RemoteDriver) mirrorCommandEventsForIntent(ctx context.Context, intent store.LocalIntentRecord) (store.RemoteEventMirrorResult, error) {
+	if intent.Target.Kind() != domain.TargetKindRemote || (intent.Operation != operationSubmitCommand && intent.Operation != "run") || intent.CommandID == "" {
+		return store.RemoteEventMirrorResult{}, fmt.Errorf("%w: remote command intent", ErrRemoteEventStream)
+	}
+	validatedCommand, err := domain.NewCommandID(string(intent.CommandID))
+	if err != nil {
+		return store.RemoteEventMirrorResult{}, err
+	}
+	return d.mirrorCommandEvents(ctx, validatedCommand, intent.Controller, &intent)
+}
+
+func (d *RemoteDriver) mirrorCommandEvents(ctx context.Context, validatedCommand domain.CommandID, controller domain.ControllerIdentity, intent *store.LocalIntentRecord) (store.RemoteEventMirrorResult, error) {
+	if d == nil || d.authority == nil || d.caller == nil {
+		return store.RemoteEventMirrorResult{}, ErrRemoteDriverConfiguration
+	}
+	streamer, ok := d.caller.(RemoteEventStreamer)
+	if !ok {
+		return store.RemoteEventMirrorResult{}, ErrRemoteEventCallerUnavailable
 	}
 	after, err := d.authority.GetRemoteEventCursor(ctx, validatedCommand)
 	if err != nil {
@@ -68,12 +97,20 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 		Payload:         payload,
 	}
 	result := store.RemoteEventMirrorResult{CommandID: validatedCommand, LastSequence: after}
+	sawStreamEnd := false
+	sawTerminalEvent := false
 	streamErr := streamer.Stream(ctx, request, func(reply sshbridge.ReplyFrame) error {
 		if reply.ProtocolVersion != sshbridge.ProtocolVersion || reply.RequestID != request.RequestID {
 			return fmt.Errorf("%w: protocol or request identity mismatch", ErrRemoteEventStream)
 		}
+		if sawStreamEnd {
+			return fmt.Errorf("%w: frame after stream end", ErrRemoteEventStream)
+		}
 		switch reply.ResponseType {
 		case "event":
+			if sawTerminalEvent {
+				return fmt.Errorf("%w: event follows a terminal command event", ErrRemoteEventStream)
+			}
 			event, err := decodeRemoteEventReply(validatedCommand, reply.Payload)
 			if err != nil {
 				return err
@@ -85,17 +122,21 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 			result.LastSequence = mirrored.LastSequence
 			result.Mirrored += mirrored.Mirrored
 			result.Duplicates += mirrored.Duplicates
+			if isRemoteTerminalEvent(event.Type) {
+				sawTerminalEvent = true
+			}
 			return nil
 		case "stream_end":
-			var end struct {
-				LastSequence int64 `json:"last_sequence"`
+			end, err := decodeRemoteStreamEnd(reply.Payload)
+			if err != nil || end != result.LastSequence {
+				return fmt.Errorf("%w: stream end last_sequence=%d cursor=%d", ErrRemoteEventCursor, end, result.LastSequence)
 			}
-			decoder := json.NewDecoder(strings.NewReader(string(reply.Payload)))
-			if err := decoder.Decode(&end); err != nil || end.LastSequence != result.LastSequence {
-				return fmt.Errorf("%w: stream end last_sequence=%d cursor=%d", ErrRemoteEventCursor, end.LastSequence, result.LastSequence)
-			}
+			sawStreamEnd = true
 			return nil
 		case "error":
+			if sawTerminalEvent {
+				return fmt.Errorf("%w: history error follows a terminal command event", ErrRemoteEventStream)
+			}
 			var payload sshbridge.ErrorPayload
 			decoder := json.NewDecoder(strings.NewReader(string(reply.Payload)))
 			if err := decoder.Decode(&payload); err != nil {
@@ -112,6 +153,9 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 			return fmt.Errorf("%w: response type %q", ErrRemoteEventStream, reply.ResponseType)
 		}
 	})
+	if streamErr == nil && !sawStreamEnd {
+		streamErr = fmt.Errorf("%w: stream ended without stream_end", ErrRemoteEventStream)
+	}
 	if streamErr != nil {
 		// A failed mirror leaves the last remote snapshot usable but explicitly
 		// stale. Missing views are harmless because acceptance may have returned
@@ -126,7 +170,7 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 		if gapErr.available != result.LastSequence {
 			return result, fmt.Errorf("%w: stream prefix %d differs from durable cursor %d", ErrRemoteEventCursor, gapErr.available, result.LastSequence)
 		}
-		gap, confirmErr := d.confirmRemoteTerminal(ctx, validatedCommand, controller, result.LastSequence)
+		gap, confirmErr := d.confirmRemoteTerminal(ctx, validatedCommand, controller, result.LastSequence, intent)
 		if confirmErr != nil {
 			return result, fmt.Errorf("%w: %w", ErrRemoteEventHistoryUnavailable, confirmErr)
 		}
@@ -143,10 +187,11 @@ func (d *RemoteDriver) MirrorCommandEvents(ctx context.Context, commandID domain
 	return result, nil
 }
 
-// RefreshCommandProjection reads the target authority and persists its current
-// command state for mailbox/API readers. A terminal target read also releases
-// the next command in the serialized remote session. Event mirroring alone
-// advances output cursors but does not infer a terminal command state.
+// RefreshCommandProjection reads and persists the target authority's current
+// command state for mailbox/API readers. It does not settle the local intent:
+// that requires the event-boundary proof performed by accepted-command
+// reconciliation. Event mirroring alone advances output cursors but does not
+// infer a terminal command state.
 func (d *RemoteDriver) RefreshCommandProjection(ctx context.Context, commandID domain.CommandID, controller domain.ControllerIdentity) (store.RemoteCommandProjection, error) {
 	if d == nil || d.authority == nil || d.caller == nil {
 		return store.RemoteCommandProjection{}, ErrRemoteDriverConfiguration
@@ -159,8 +204,21 @@ func (d *RemoteDriver) RefreshCommandProjection(ctx context.Context, commandID d
 	if err != nil {
 		return store.RemoteCommandProjection{}, err
 	}
-	if intent.Target.Kind() != domain.TargetKindRemote || (intent.DeliveryState != store.LocalIntentAccepted && intent.DeliveryState != store.LocalIntentReconciled) {
+	return d.refreshCommandProjectionForIntent(ctx, intent)
+}
+
+// refreshCommandProjectionForIntent reads an authoritative command state for
+// either a session command or the command owned by a one-off run. The latter
+// has no standalone submit_command intent, so callers that already hold its
+// run intent must use this helper rather than inventing an extra intent.
+func (d *RemoteDriver) refreshCommandProjectionForIntent(ctx context.Context, intent store.LocalIntentRecord) (store.RemoteCommandProjection, error) {
+	if intent.Target.Kind() != domain.TargetKindRemote || (intent.Operation != operationSubmitCommand && intent.Operation != "run") ||
+		(intent.DeliveryState != store.LocalIntentAccepted && intent.DeliveryState != store.LocalIntentReconciled) || intent.CommandID == "" || intent.SessionID == "" {
 		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command is not an accepted remote intent", ErrRemoteResponse)
+	}
+	validatedCommand, err := domain.NewCommandID(string(intent.CommandID))
+	if err != nil {
+		return store.RemoteCommandProjection{}, err
 	}
 	payload, err := json.Marshal(map[string]string{"command_id": string(validatedCommand)})
 	if err != nil {
@@ -168,43 +226,26 @@ func (d *RemoteDriver) RefreshCommandProjection(ctx context.Context, commandID d
 	}
 	request := sshbridge.RequestFrame{
 		ProtocolVersion: sshbridge.ProtocolVersion,
-		RequestID:       fmt.Sprintf("command-state/%s/%d", validatedCommand, d.now().UTC().UnixNano()),
+		RequestID:       fmt.Sprintf("command-state/%s/%d", validatedCommand, remoteProjectionReadSequence.Add(1)),
 		Operation:       sshbridge.OperationGetCommand,
 		Payload:         payload,
 	}
-	reply, err := d.caller.Call(ctx, request)
-	if err != nil {
-		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state read: %v", ErrRemoteResponse, err)
-	}
-	if reply.ProtocolVersion != sshbridge.ProtocolVersion || reply.RequestID != request.RequestID {
-		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state read identity mismatch", ErrRemoteResponse)
-	}
-	if reply.ResponseType != "result" {
-		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state response type %q", ErrRemoteResponse, reply.ResponseType)
-	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(reply.Payload, &object); err != nil || object == nil {
-		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state result object", ErrRemoteResponse)
-	}
-	projection, present, err := remoteCommandProjectionFromReply(intent, object, d.now())
+	object, err := d.readRemoteProjectionObject(ctx, request, "command")
 	if err != nil {
 		return store.RemoteCommandProjection{}, err
 	}
-	if !present {
-		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command state result is incomplete", ErrRemoteResponse)
-	}
-	if _, err := d.authority.UpsertRemoteCommandProjection(ctx, projection); err != nil {
+	projection, err := strictRemoteCommandProjectionFromReadReply(intent, object, d.now())
+	if err != nil {
 		return store.RemoteCommandProjection{}, err
 	}
-	if projection.State.IsTerminal() && intent.DeliveryState == store.LocalIntentAccepted {
-		if _, transitionErr := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentReconciled, "remote_terminal_command_confirmed"); transitionErr != nil {
-			current, readErr := d.authority.GetLocalIntent(ctx, intent.IntentID)
-			if readErr != nil || current.DeliveryState != store.LocalIntentReconciled {
-				return store.RemoteCommandProjection{}, transitionErr
-			}
-		}
+	stored, err := d.authority.UpsertRemoteCommandProjection(ctx, projection)
+	if err != nil {
+		return store.RemoteCommandProjection{}, err
 	}
-	return d.authority.GetRemoteCommandProjection(ctx, validatedCommand)
+	if stored.IsStale || stored.ObservedAt.After(projection.ObservedAt) {
+		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command read did not replace a stale or newer projection", ErrRemoteResponse)
+	}
+	return stored, nil
 }
 
 func remoteGapAvailableSequence(details map[string]any) (int64, bool) {
@@ -233,72 +274,86 @@ func remoteGapAvailableSequence(details map[string]any) (int64, bool) {
 // confirmRemoteTerminal performs a separate authoritative read after an
 // event-history gap. It never changes the event cursor and only accepts a
 // terminal command whose final sequence extends past the available prefix.
-func (d *RemoteDriver) confirmRemoteTerminal(ctx context.Context, commandID domain.CommandID, controller domain.ControllerIdentity, available int64) (store.RemoteEventGapRecord, error) {
+func (d *RemoteDriver) confirmRemoteTerminal(ctx context.Context, commandID domain.CommandID, controller domain.ControllerIdentity, available int64, ownedIntent *store.LocalIntentRecord) (store.RemoteEventGapRecord, error) {
+	var intent store.LocalIntentRecord
+	if ownedIntent != nil {
+		intent = *ownedIntent
+	} else {
+		var err error
+		intent, err = d.authority.GetLocalIntentByResource(ctx, operationSubmitCommand, string(commandID), controller)
+		if err != nil {
+			return store.RemoteEventGapRecord{}, fmt.Errorf("%w: read matching local command intent: %v", ErrRemoteTerminalUnconfirmed, err)
+		}
+	}
+	if intent.Target.Kind() != domain.TargetKindRemote || (intent.Operation != operationSubmitCommand && intent.Operation != "run") || intent.CommandID != commandID || intent.SessionID == "" || intent.Controller != controller {
+		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: matching remote command intent", ErrRemoteTerminalUnconfirmed)
+	}
 	payload, _ := json.Marshal(map[string]string{"command_id": string(commandID)})
 	request := sshbridge.RequestFrame{
 		ProtocolVersion: sshbridge.ProtocolVersion,
 		RequestID:       fmt.Sprintf("terminal/%s/%d", commandID, available),
 		Operation:       sshbridge.OperationGetCommand,
-		ResourceID:      string(commandID),
 		Payload:         payload,
 	}
-	reply, err := d.caller.Call(ctx, request)
+	object, err := d.readRemoteProjectionObject(ctx, request, "terminal command")
 	if err != nil {
-		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: terminal read transport: %v", ErrRemoteTerminalUnconfirmed, err)
+		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: %v", ErrRemoteTerminalUnconfirmed, err)
 	}
-	if reply.ProtocolVersion != sshbridge.ProtocolVersion || reply.RequestID != request.RequestID {
-		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: terminal read protocol or request identity mismatch", ErrRemoteTerminalUnconfirmed)
-	}
-	if reply.ResponseType == "error" {
-		var payload sshbridge.ErrorPayload
-		decoder := json.NewDecoder(strings.NewReader(string(reply.Payload)))
-		if err := decoder.Decode(&payload); err != nil {
-			return store.RemoteEventGapRecord{}, fmt.Errorf("%w: terminal error payload: %v", ErrRemoteTerminalUnconfirmed, err)
-		}
-		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: %s", ErrRemoteTerminalUnconfirmed, payload.Message)
-	}
-	if reply.ResponseType != "result" {
-		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: terminal response type %q", ErrRemoteTerminalUnconfirmed, reply.ResponseType)
-	}
-	var object map[string]json.RawMessage
-	decoder := json.NewDecoder(strings.NewReader(string(reply.Payload)))
-	if err := decoder.Decode(&object); err != nil || object == nil {
-		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: terminal result object", ErrRemoteTerminalUnconfirmed)
-	}
-	readString := func(name string) (string, error) {
-		raw, ok := object[name]
-		if !ok {
-			return "", fmt.Errorf("%w: terminal result missing %s", ErrRemoteTerminalUnconfirmed, name)
-		}
-		var value string
-		if err := json.Unmarshal(raw, &value); err != nil || strings.TrimSpace(value) == "" {
-			return "", fmt.Errorf("%w: terminal result invalid %s", ErrRemoteTerminalUnconfirmed, name)
-		}
-		return value, nil
-	}
-	if value, err := readString("command_id"); err != nil || value != string(commandID) {
-		if err != nil {
-			return store.RemoteEventGapRecord{}, err
-		}
-		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: command_id mismatch", ErrRemoteTerminalUnconfirmed)
-	}
-	stateText, err := readString("command_state")
+	projection, err := strictRemoteCommandProjectionFromReadReply(intent, object, d.now())
 	if err != nil {
-		return store.RemoteEventGapRecord{}, err
+		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: %v", ErrRemoteTerminalUnconfirmed, err)
 	}
-	state := domain.CommandState(stateText)
-	if !state.Valid() || !state.IsTerminal() {
-		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: command state %q is not terminal", ErrRemoteTerminalUnconfirmed, stateText)
-	}
-	var finalSequence int64
-	if raw, ok := object["final_event_sequence"]; !ok || json.Unmarshal(raw, &finalSequence) != nil || finalSequence <= available {
+	if !projection.State.IsTerminal() || projection.FinalEventSequence == nil || *projection.FinalEventSequence <= available {
 		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: final event sequence does not extend available prefix", ErrRemoteTerminalUnconfirmed)
 	}
+	if err := d.validateRemoteEventGapPrefix(ctx, commandID, available, projection); err != nil {
+		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: retained event prefix: %v", ErrRemoteTerminalUnconfirmed, err)
+	}
+	stored, err := d.authority.UpsertRemoteCommandProjection(ctx, projection)
+	if err != nil {
+		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: persist terminal command read: %v", ErrRemoteTerminalUnconfirmed, err)
+	}
+	if stored.IsStale || stored.ObservedAt.After(projection.ObservedAt) {
+		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: terminal command read is stale", ErrRemoteTerminalUnconfirmed)
+	}
+	projection = stored
 	return store.RemoteEventGapRecord{
-		CommandID: commandID, MissingFrom: available + 1, MissingTo: finalSequence,
-		AvailableSequence: available, FinalSequence: finalSequence, TerminalState: state,
+		CommandID: commandID, MissingFrom: available + 1, MissingTo: *projection.FinalEventSequence,
+		AvailableSequence: available, FinalSequence: *projection.FinalEventSequence, TerminalState: projection.State,
 		OutputComplete: false, OutputUnavailableReason: "remote_event_gap", ConfirmedAt: d.now().UTC(),
 	}, nil
+}
+
+// validateRemoteEventGapPrefix makes the retained event evidence part of the
+// terminal-gap proof. A missing suffix can add a truncation marker, but it can
+// never erase one already retained locally. Keeping this check in the shared
+// confirmation path protects both normal remote commands and one-off runs.
+func (d *RemoteDriver) validateRemoteEventGapPrefix(ctx context.Context, commandID domain.CommandID, available int64, projection store.RemoteCommandProjection) error {
+	cursor, err := d.authority.GetRemoteEventCursor(ctx, commandID)
+	if err != nil {
+		return err
+	}
+	if cursor != available {
+		return fmt.Errorf("%w: durable cursor %d differs from reported available sequence %d", ErrRemoteEventCursor, cursor, available)
+	}
+	events, err := d.authority.ListRemoteEvents(ctx, commandID, 0)
+	if err != nil {
+		return err
+	}
+	if int64(len(events)) != cursor || (cursor > 0 && (len(events) == 0 || events[len(events)-1].Sequence != cursor)) {
+		return fmt.Errorf("%w: retained prefix does not match cursor %d", ErrRemoteEventCursor, cursor)
+	}
+	lifecycle, err := store.InspectRemoteEventLifecycle(events)
+	if err != nil {
+		return err
+	}
+	if lifecycle.TerminalState != nil {
+		return fmt.Errorf("%w: retained prefix already has terminal state %q", ErrRemoteEventCursor, *lifecycle.TerminalState)
+	}
+	if lifecycle.OutputTruncated && !projection.OutputTruncated {
+		return fmt.Errorf("%w: target terminal projection loses retained output truncation", ErrRemoteTerminalUnconfirmed)
+	}
+	return nil
 }
 
 // reconcileIntentAfterRemoteGap settles only an already accepted/confirmed
@@ -314,16 +369,22 @@ func (d *RemoteDriver) reconcileIntentAfterRemoteGap(ctx context.Context, comman
 	}
 	switch intent.DeliveryState {
 	case store.LocalIntentAccepted:
-		_, err = d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentReconciled, "remote_terminal_confirmed_event_gap")
+		_, err = d.authority.MarkRemoteIntentTerminalProof(ctx, intent.IntentID, "remote_terminal_confirmed_event_gap")
 		return err
 	case store.LocalIntentUncertain:
 		accepted, transitionErr := d.authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentAccepted, "remote_terminal_confirmed")
 		if transitionErr != nil {
 			return transitionErr
 		}
-		_, err = d.authority.TransitionLocalIntent(ctx, accepted.IntentID, store.LocalIntentReconciled, "remote_terminal_confirmed_event_gap")
+		_, err = d.authority.MarkRemoteIntentTerminalProof(ctx, accepted.IntentID, "remote_terminal_confirmed_event_gap")
 		return err
-	case store.LocalIntentReconciled, store.LocalIntentNotDelivered:
+	case store.LocalIntentReconciled:
+		if store.HasRemoteTerminalProof(intent) {
+			return nil
+		}
+		_, err = d.authority.MarkRemoteIntentTerminalProof(ctx, intent.IntentID, "remote_terminal_confirmed_event_gap")
+		return err
+	case store.LocalIntentNotDelivered:
 		return nil
 	default:
 		return fmt.Errorf("%w: submit intent state %s", ErrRemoteTerminalUnconfirmed, intent.DeliveryState)
@@ -347,8 +408,18 @@ func decodeRemoteEventReply(commandID domain.CommandID, raw []byte) (store.Remot
 	if err := decoder.Decode(&input); err != nil {
 		return store.RemoteEventRecord{}, fmt.Errorf("%w: event payload: %v", ErrRemoteEventStream, err)
 	}
-	if input.CommandID != string(commandID) || input.Sequence <= 0 || strings.TrimSpace(input.Type) == "" || input.Timestamp.IsZero() {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return store.RemoteEventRecord{}, fmt.Errorf("%w: event payload has trailing data", ErrRemoteEventStream)
+	}
+	if input.CommandID != string(commandID) || input.Sequence <= 0 || !validRemoteEventReplyType(input.Type) || input.Timestamp.IsZero() {
 		return store.RemoteEventRecord{}, fmt.Errorf("%w: event envelope", ErrRemoteEventStream)
+	}
+	if input.Sequence == 1 && input.Type != "command_queued" {
+		return store.RemoteEventRecord{}, fmt.Errorf("%w: sequence one must be command_queued", ErrRemoteEventStream)
+	}
+	if input.Sequence > 1 && input.Type == "command_queued" {
+		return store.RemoteEventRecord{}, fmt.Errorf("%w: command_queued must be sequence one", ErrRemoteEventStream)
 	}
 	if input.ByteCount < 0 {
 		return store.RemoteEventRecord{}, fmt.Errorf("%w: negative byte count", ErrRemoteEventStream)
@@ -369,4 +440,41 @@ func decodeRemoteEventReply(commandID domain.CommandID, raw []byte) (store.Remot
 		return store.RemoteEventRecord{}, fmt.Errorf("%w: non-output payload", ErrRemoteEventStream)
 	}
 	return store.RemoteEventRecord{CommandID: commandID, Sequence: input.Sequence, Type: input.Type, Payload: payload, ByteCount: input.ByteCount, OccurredAt: input.Timestamp.UTC()}, nil
+}
+
+func decodeRemoteStreamEnd(raw []byte) (int64, error) {
+	var end struct {
+		LastSequence int64 `json:"last_sequence"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&end); err != nil {
+		return 0, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return 0, fmt.Errorf("trailing stream end data")
+	}
+	if end.LastSequence < 0 {
+		return 0, fmt.Errorf("negative stream end cursor")
+	}
+	return end.LastSequence, nil
+}
+
+func validRemoteEventReplyType(value string) bool {
+	switch value {
+	case "command_queued", "command_started", "stdout", "stderr", "output_truncated", "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost":
+		return true
+	default:
+		return false
+	}
+}
+
+func isRemoteTerminalEvent(value string) bool {
+	switch value {
+	case "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost":
+		return true
+	default:
+		return false
+	}
 }

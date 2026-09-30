@@ -294,6 +294,61 @@ ORDER BY created_at, request_id
 	})
 }
 
+// ListPublishableTerminalMailboxExchanges returns terminal responses that are
+// still within their retention period and have not been claimed for cleanup.
+// A mailbox projector uses this to rebuild derived outbox and event files
+// after a process stop between the SQLite commit and the filesystem rename.
+// Cleanup ownership wins over recovery: once cleanup has started, a restart
+// must never recreate the response.
+func (s *AuthorityStore) ListPublishableTerminalMailboxExchanges(ctx context.Context, controller domain.ControllerIdentity) ([]MailboxExchangeRecord, error) {
+	validatedController, err := validateController(controller)
+	if err != nil {
+		return nil, fmt.Errorf("%w: controller: %v", ErrMailboxExchangeInvalid, err)
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
+		rows, err := connection.QueryContext(ctx, `
+SELECT request_id FROM mailbox_exchanges
+WHERE controller_type = ? AND controller_id = ?
+  AND request_state IN ('complete', 'rejected', 'indeterminate')
+  AND response_revision > 0 AND length(response_bytes) > 0
+  AND response_cleanup_started_at IS NULL AND response_file_removed_at IS NULL
+  AND (response_cleanup_at IS NULL OR response_cleanup_at > ?)
+ORDER BY created_at, request_id
+`, string(validatedController.Type()), string(validatedController.ID()), formatStoredTime(now))
+		if err != nil {
+			return nil, fmt.Errorf("list publishable terminal mailbox exchanges: %w", err)
+		}
+		defer rows.Close()
+		var requestIDs []string
+		for rows.Next() {
+			var requestID string
+			if err := rows.Scan(&requestID); err != nil {
+				return nil, fmt.Errorf("scan publishable terminal mailbox request ID: %w", err)
+			}
+			requestIDs = append(requestIDs, requestID)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("read publishable terminal mailbox request IDs: %w", err)
+		}
+		records := make([]MailboxExchangeRecord, 0, len(requestIDs))
+		for _, requestID := range requestIDs {
+			record, err := readMailboxExchangeOnConnection(ctx, connection, requestID)
+			if err != nil {
+				return nil, err
+			}
+			// Pre-P091 terminal rows have no stored cleanup deadline. The reader
+			// derives their historical deadline from the durable publication or ACK
+			// time, so apply the same retention gate after loading them.
+			if record.ResponseCleanupAt == nil || !record.ResponseCleanupAt.After(now) {
+				continue
+			}
+			records = append(records, record)
+		}
+		return records, nil
+	})
+}
+
 // CompleteMailboxExchange advances an accepted receipt to one terminal
 // mailbox state. Repeating the same terminal state is idempotent; changing a
 // terminal outcome is rejected so a later response phase cannot rewrite it.

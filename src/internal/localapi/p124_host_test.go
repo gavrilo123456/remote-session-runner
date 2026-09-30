@@ -671,6 +671,9 @@ func p124DispatchIntent(t *testing.T, ctx context.Context, authority *store.Auth
 			return fmt.Errorf("refresh queued CLI command projection: %w", err)
 		}
 		if projection.State.IsTerminal() {
+			if err := remote.ReconcileAcceptedRemoteSubmit(ctx, accepted.IntentID); err != nil {
+				return fmt.Errorf("reconcile queued CLI terminal command: %w", err)
+			}
 			return nil
 		}
 		select {

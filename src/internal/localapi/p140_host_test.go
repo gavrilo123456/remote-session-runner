@@ -452,7 +452,18 @@ func p140WaitRemoteCommand(t *testing.T, ctx context.Context, authority *store.A
 		}
 		projection, err := remote.RefreshCommandProjection(deadline, commandID, mailboxOwner)
 		if err == nil && projection.State.IsTerminal() {
-			return projection
+			intent, lookupErr := authority.GetLocalIntentByResource(deadline, "submit_command", string(commandID), mailboxOwner)
+			if lookupErr != nil {
+				t.Fatalf("read real Ubuntu command intent %s: %v", commandID, lookupErr)
+			}
+			if reconcileErr := remote.ReconcileAcceptedRemoteSubmit(deadline, intent.IntentID); reconcileErr != nil {
+				t.Fatalf("reconcile real Ubuntu terminal command %s: %v", commandID, reconcileErr)
+			}
+			refreshed, refreshErr := remote.RefreshCommandProjection(deadline, commandID, mailboxOwner)
+			if refreshErr != nil {
+				t.Fatalf("refresh reconciled real Ubuntu command %s: %v", commandID, refreshErr)
+			}
+			return refreshed
 		}
 		select {
 		case <-deadline.Done():

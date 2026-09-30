@@ -2,7 +2,10 @@ package dispatcher
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,7 +14,7 @@ import (
 	"remote-session-runner/src/internal/store"
 )
 
-func TestP076RemoteDriverPersistsCompleteSessionAndCommandProjections(t *testing.T) {
+func TestP076RemoteDriverPersistsSessionProjectionAndDefersCommandProjectionToRead(t *testing.T) {
 	authority := p068Authority(t)
 	create := p076CreateIntent(t)
 	if _, err := authority.CreateLocalIntent(context.Background(), create); err != nil {
@@ -21,7 +24,7 @@ func TestP076RemoteDriverPersistsCompleteSessionAndCommandProjections(t *testing
 	if _, err := authority.CreateLocalIntent(context.Background(), command); err != nil {
 		t.Fatal(err)
 	}
-	caller := &p076ProjectionCaller{}
+	caller := &p076ProjectionCaller{command: command}
 	driver, err := NewRemoteDriver(authority, caller, "router-p076", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -36,15 +39,20 @@ func TestP076RemoteDriverPersistsCompleteSessionAndCommandProjections(t *testing
 	if _, _, err := driver.DispatchIntent(context.Background(), command.IntentID); err != nil {
 		t.Fatal(err)
 	}
-	projection, err := authority.GetRemoteCommandProjection(context.Background(), command.CommandID)
+	if _, err := authority.GetRemoteCommandProjection(context.Background(), command.CommandID); !errors.Is(err, store.ErrRemoteProjectionNotFound) {
+		t.Fatalf("submit mutation created a command projection: %v", err)
+	}
+	projection, err := driver.RefreshCommandProjection(context.Background(), command.CommandID, command.Controller)
 	if err != nil || projection.State != domain.CommandStateQueued || projection.Ordinal != 1 || projection.SessionID != create.SessionID {
 		t.Fatalf("command projection = %+v, %v", projection, err)
 	}
 }
 
-type p076ProjectionCaller struct{}
+type p076ProjectionCaller struct {
+	command store.LocalIntentCreate
+}
 
-func (p076ProjectionCaller) Call(_ context.Context, frame sshbridge.RequestFrame) (sshbridge.ReplyFrame, error) {
+func (c p076ProjectionCaller) Call(_ context.Context, frame sshbridge.RequestFrame) (sshbridge.ReplyFrame, error) {
 	now := "2026-09-27T13:10:00Z"
 	base := map[string]any{
 		"execution_target": map[string]any{"kind": "remote", "profile": "linux-host"},
@@ -68,6 +76,20 @@ func (p076ProjectionCaller) Call(_ context.Context, frame sshbridge.RequestFrame
 		base["command_state"] = "queued"
 		base["output_complete"] = false
 		base["output_truncated"] = false
+	case sshbridge.OperationGetCommand:
+		var payload struct {
+			CommandID string `json:"command_id"`
+		}
+		_ = json.Unmarshal(frame.Payload, &payload)
+		digest := sha256.Sum256(c.command.ScriptBytes)
+		base["command_id"] = payload.CommandID
+		base["session_id"] = string(c.command.SessionID)
+		base["ordinal"] = 1
+		base["command_state"] = "queued"
+		base["output_complete"] = false
+		base["output_truncated"] = false
+		base["script_sha256"] = hex.EncodeToString(digest[:])
+		base["script_byte_count"] = len(c.command.ScriptBytes)
 	default:
 		base["session_id"] = frame.ResourceID
 	}

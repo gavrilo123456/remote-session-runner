@@ -41,6 +41,10 @@ func (s *AuthorityStore) UpsertRemoteJobProjection(ctx context.Context, input Re
 		return RemoteJobProjection{}, err
 	}
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteJobProjection, error) {
+		validated, err = normalizeIncomingRemoteJobProjectionForEventGap(ctx, connection, validated)
+		if err != nil {
+			return RemoteJobProjection{}, err
+		}
 		stored, err := readRemoteJobProjectionOnConnection(ctx, connection, validated.JobID)
 		if errors.Is(err, ErrRemoteProjectionNotFound) {
 			_, err := connection.ExecContext(ctx, `

@@ -18,10 +18,12 @@ func TestP074RemoteEventMirrorStreamsDeduplicatesAndAdvancesCursor(t *testing.T)
 	authority := p068Authority(t)
 	commandID := domain.CommandID("command-p074-stream")
 	caller := &p074StreamCaller{replies: []sshbridge.ReplyFrame{
-		p074EventReply("events/command-p074-stream/0", commandID, 1, "stdout", []byte("one")),
-		p074EventReply("events/command-p074-stream/0", commandID, 1, "stdout", []byte("one")),
-		p074EventReply("events/command-p074-stream/0", commandID, 2, "command_succeeded", nil),
-		p074EndReply("events/command-p074-stream/0", 2),
+		p074EventReply("events/command-p074-stream/0", commandID, 1, "command_queued", nil),
+		p074EventReply("events/command-p074-stream/0", commandID, 1, "command_queued", nil),
+		p074EventReply("events/command-p074-stream/0", commandID, 2, "command_started", nil),
+		p074EventReply("events/command-p074-stream/0", commandID, 3, "stdout", []byte("one")),
+		p074EventReply("events/command-p074-stream/0", commandID, 4, "command_succeeded", nil),
+		p074EndReply("events/command-p074-stream/0", 4),
 	}}
 	driver, err := NewRemoteDriver(authority, caller, "router-p074", time.Minute)
 	if err != nil {
@@ -32,15 +34,15 @@ func TestP074RemoteEventMirrorStreamsDeduplicatesAndAdvancesCursor(t *testing.T)
 		t.Fatal(err)
 	}
 	result, err := driver.MirrorCommandEvents(context.Background(), commandID, controller)
-	if err != nil || result.LastSequence != 2 || result.Mirrored != 2 || result.Duplicates != 1 {
+	if err != nil || result.LastSequence != 4 || result.Mirrored != 4 || result.Duplicates != 1 {
 		t.Fatalf("stream mirror = %+v, %v", result, err)
 	}
 	cursor, err := authority.GetRemoteEventCursor(context.Background(), commandID)
-	if err != nil || cursor != 2 {
+	if err != nil || cursor != 4 {
 		t.Fatalf("stream cursor = %d, %v", cursor, err)
 	}
 	events, err := authority.ListRemoteEvents(context.Background(), commandID, 0)
-	if err != nil || len(events) != 2 || events[0].Sequence != 1 || events[1].Sequence != 2 {
+	if err != nil || len(events) != 4 || events[0].Sequence != 1 || events[1].Sequence != 2 || events[2].Sequence != 3 || events[3].Sequence != 4 {
 		t.Fatalf("stream events = %+v, %v", events, err)
 	}
 	if len(caller.requests) != 1 || caller.requests[0].Operation != sshbridge.OperationStreamCommandEvents || caller.requests[0].ResourceID != "" || caller.requests[0].IdempotencyKey != "" {

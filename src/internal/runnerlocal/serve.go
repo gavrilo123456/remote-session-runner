@@ -29,9 +29,10 @@ import (
 )
 
 const (
-	defaultPollInterval = 250 * time.Millisecond
-	defaultDrainLimit   = 64
-	intentLeaseDuration = 2 * time.Minute
+	defaultPollInterval                  = 250 * time.Millisecond
+	defaultDrainLimit                    = 64
+	intentLeaseDuration                  = 2 * time.Minute
+	acceptedRemoteReconciliationInterval = time.Second
 )
 
 var errMacDatabaseNotReady = errors.New("Mac authority database is not ready")
@@ -112,20 +113,22 @@ func macDoctorStartupFailureReport(err error) opshealth.Report {
 
 // Service owns the process-level composition for the Mac ingress and Router.
 type Service struct {
-	database        *store.AuthorityStore
-	dbCloser        interface{ Close() error }
-	api             *localapi.Server
-	localDriver     *dispatcher.LocalDriver
-	remoteDriver    *dispatcher.RemoteDriver
-	mailbox         *mailbox.SessionProcessor
-	ackImporter     *mailbox.AckImporter
-	artifactCleaner mailbox.ArtifactCleaner
-	pollInterval    time.Duration
-	routerHealth    *routerHealthMonitor
-	remoteProbe     func(context.Context) error
-	metricsRecorder *opshealth.Recorder
-	thresholds      *opshealth.ThresholdMonitor
-	mailboxImporter *mailbox.Importer
+	database            *store.AuthorityStore
+	dbCloser            interface{ Close() error }
+	api                 *localapi.Server
+	localDriver         *dispatcher.LocalDriver
+	remoteDriver        *dispatcher.RemoteDriver
+	mailbox             *mailbox.SessionProcessor
+	ackImporter         *mailbox.AckImporter
+	artifactCleaner     mailbox.ArtifactCleaner
+	pollInterval        time.Duration
+	routerHealth        *routerHealthMonitor
+	remoteProbe         func(context.Context) error
+	metricsRecorder     *opshealth.Recorder
+	thresholds          *opshealth.ThresholdMonitor
+	mailboxImporter     *mailbox.Importer
+	remoteReconcileMu   sync.Mutex
+	lastRemoteReconcile time.Time
 }
 
 // New constructs the Mac services from an owner-restricted selected config.
@@ -421,6 +424,45 @@ func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, st
 		}
 		s.routerHealth.update(nil, time.Now())
 	}
+	if ctx.Err() == nil && s.acceptedRemoteReconciliationDue(time.Now()) {
+		reconciledRemoteWork := false
+		release, gateErr := dispatchGate.Enter()
+		if gateErr == nil {
+			reconciledRemoteWork = true
+			err := errors.Join(
+				s.remoteDriver.ReconcileAcceptedRemoteSubmits(ctx, defaultDrainLimit),
+				s.remoteDriver.ReconcileAcceptedRemoteRuns(ctx, defaultDrainLimit),
+			)
+			release()
+			if err != nil {
+				s.recordOperationalError(err, false)
+				s.routerHealth.update(err, time.Now())
+				fmt.Fprintln(stderr, "runner-local: accepted remote work reconciliation cycle failed")
+			}
+		}
+		if reconciledRemoteWork {
+			// The first reconciliation runs before dispatch. Run it again after
+			// read-only recovery so a terminal one-off can be published in this
+			// same cycle rather than waiting for another mailbox tick.
+			if err := s.mailbox.Reconcile(ctx); err != nil && ctx.Err() == nil {
+				s.recordOperationalError(err, false)
+				fmt.Fprintln(stderr, "runner-local: post-recovery mailbox reconciliation cycle failed")
+			}
+		}
+	}
+}
+
+func (s *Service) acceptedRemoteReconciliationDue(now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	s.remoteReconcileMu.Lock()
+	defer s.remoteReconcileMu.Unlock()
+	if s.lastRemoteReconcile.IsZero() || !now.Before(s.lastRemoteReconcile.Add(acceptedRemoteReconciliationInterval)) {
+		s.lastRemoteReconcile = now
+		return true
+	}
+	return false
 }
 
 func (s *Service) recordOperationalError(err error, cleanup bool) {

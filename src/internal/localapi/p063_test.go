@@ -241,6 +241,91 @@ func TestP063OwnerOnlySocketAndNoSSHHandlerImport(t *testing.T) {
 	}
 }
 
+// TestP149LocalAPIRecoversOwnedStaleSocket proves the Mac mailbox Router can
+// restart after a software crash. A stale, owner-owned AF_UNIX path is safe to
+// remove; an active listener and any non-socket path remain protected by the
+// unixsocket helper itself.
+func TestP149LocalAPIRecoversOwnedStaleSocket(t *testing.T) {
+	root := testfixture.New(t)
+	db, err := store.Open(context.Background(), filepath.Join(root.Path(), "state", "p149-stale.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	authority, err := store.NewAuthorityStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir, err := os.MkdirTemp("/tmp", "rsr-p149-stale-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runDir) })
+	socketPath := filepath.Join(runDir, "local-api.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unixListener, ok := listener.(*net.UnixListener)
+	if !ok {
+		t.Fatal("test listener is not Unix")
+	}
+	unixListener.SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(socketPath); err != nil {
+		t.Fatalf("stale socket was not retained: %v", err)
+	}
+	server, err := NewServer(ServerOptions{Authority: authority, Owner: p063Owner(t), SocketPath: socketPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Listen(); err != nil {
+		t.Fatalf("restart on owned stale socket: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close(context.Background()) })
+}
+
+// TestP149LocalAPICloseStreamsPreservesReplacedSocket ensures graceful
+// shutdown cannot unlink a listener published by a replacement Router
+// process. The live restart proof uses SIGKILL, but this closes the nearby
+// same-account graceful-shutdown race as well.
+func TestP149LocalAPICloseStreamsPreservesReplacedSocket(t *testing.T) {
+	server, _, _, _ := p063Server(t)
+	if err := os.Remove(server.SocketPath()); err != nil {
+		t.Fatalf("detach first server socket pathname: %v", err)
+	}
+	replacement, err := net.Listen("unix", server.SocketPath())
+	if err != nil {
+		t.Fatalf("bind replacement listener: %v", err)
+	}
+	unixReplacement, ok := replacement.(*net.UnixListener)
+	if !ok {
+		_ = replacement.Close()
+		t.Fatal("replacement listener is not Unix")
+	}
+	unixReplacement.SetUnlinkOnClose(false)
+	t.Cleanup(func() {
+		_ = replacement.Close()
+		_ = os.Remove(server.SocketPath())
+	})
+	replacementInfo, err := os.Lstat(server.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.CloseStreams(); err == nil {
+		t.Fatal("first server unexpectedly removed replacement socket")
+	}
+	current, err := os.Lstat(server.SocketPath())
+	if err != nil || !os.SameFile(replacementInfo, current) {
+		t.Fatalf("replacement socket changed after first shutdown: same=%t err=%v", err == nil && os.SameFile(replacementInfo, current), err)
+	}
+}
+
 func p063Server(t *testing.T) (*Server, *store.AuthorityStore, *sql.DB, *http.Client) {
 	t.Helper()
 	root := testfixture.New(t)

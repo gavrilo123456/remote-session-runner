@@ -88,7 +88,7 @@ func RenderTerminalCommandSnapshot(command store.CommandRecord, events []store.C
 		return TerminalCommandSnapshot{}, fmt.Errorf("%w: retention cursor must be zero", ErrTerminalSnapshot)
 	}
 	if reason == "remote_event_gap" {
-		if available > finalSequence {
+		if available >= finalSequence {
 			return TerminalCommandSnapshot{}, fmt.Errorf("%w: gap prefix passes final sequence", ErrTerminalSnapshot)
 		}
 	} else if reason != "retention_expired" && available != finalSequence {
@@ -102,6 +102,15 @@ func RenderTerminalCommandSnapshot(command store.CommandRecord, events []store.C
 	}
 	if reason == "capture_boundary_unconfirmed" && (available != finalSequence || len(events) == 0 || events[len(events)-1].Type != "command_lost") {
 		return TerminalCommandSnapshot{}, fmt.Errorf("%w: capture boundary is not closed by command_lost", ErrTerminalSnapshot)
+	}
+	if reason != "remote_event_gap" && reason != "retention_expired" {
+		if len(events) == 0 || events[len(events)-1].Sequence != finalSequence {
+			return TerminalCommandSnapshot{}, fmt.Errorf("%w: final event is unavailable", ErrTerminalSnapshot)
+		}
+		expected, ok := terminalMailboxEventType(command.State)
+		if !ok || events[len(events)-1].Type != expected {
+			return TerminalCommandSnapshot{}, fmt.Errorf("%w: final event type does not match command state", ErrTerminalSnapshot)
+		}
 	}
 	if reason == "retention_expired" {
 		data = nil
@@ -132,6 +141,25 @@ func RenderTerminalCommandSnapshot(command store.CommandRecord, events []store.C
 		EventsFile:              file,
 		EventBytes:              append([]byte(nil), data...),
 	}, nil
+}
+
+func terminalMailboxEventType(state domain.CommandState) (string, bool) {
+	switch state {
+	case domain.CommandStateSucceeded:
+		return "command_succeeded", true
+	case domain.CommandStateFailed:
+		return "command_failed", true
+	case domain.CommandStateCancelled:
+		return "command_cancelled", true
+	case domain.CommandStateTimedOut:
+		return "command_timed_out", true
+	case domain.CommandStateRejected:
+		return "command_rejected", true
+	case domain.CommandStateLost:
+		return "command_lost", true
+	default:
+		return "", false
+	}
 }
 
 // FullAnswer reports the detailed-design triple condition. It is deliberately

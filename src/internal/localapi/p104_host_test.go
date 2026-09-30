@@ -559,8 +559,16 @@ func p104WaitCommand(ctx context.Context, h *p095Harness, remote *dispatcher.Rem
 			if _, err := remote.MirrorCommandEvents(ctx, domain.CommandID(commandID), controller); err != nil {
 				operationErr = err
 			}
-			if _, err := remote.RefreshCommandProjection(ctx, domain.CommandID(commandID), mailboxOwner); err != nil {
+			projection, err := remote.RefreshCommandProjection(ctx, domain.CommandID(commandID), mailboxOwner)
+			if err != nil {
 				operationErr = err
+			} else if terminal && projection.State.IsTerminal() {
+				intent, lookupErr := h.authority.GetLocalIntentByResource(ctx, "submit_command", commandID, mailboxOwner)
+				if lookupErr != nil {
+					operationErr = lookupErr
+				} else if reconcileErr := remote.ReconcileAcceptedRemoteSubmit(ctx, intent.IntentID); reconcileErr != nil {
+					operationErr = reconcileErr
+				}
 			}
 		}
 		if err := h.processor.Reconcile(ctx); err != nil {

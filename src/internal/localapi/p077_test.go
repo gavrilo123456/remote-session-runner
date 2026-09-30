@@ -28,7 +28,7 @@ func TestP077MacAPIReadsMirroredRemoteEventsAndRemoteJobProjection(t *testing.T)
 		t.Fatal(err)
 	}
 	when := time.Date(2026, 9, 27, 14, 20, 0, 0, time.UTC)
-	if _, err := authority.MirrorRemoteEvents(context.Background(), []store.RemoteEventRecord{{CommandID: intent.CommandID, Sequence: 1, Type: "command_queued", OccurredAt: when}, {CommandID: intent.CommandID, Sequence: 2, Type: "stdout", Payload: []byte("remote\n"), ByteCount: 7, OccurredAt: when.Add(time.Second)}}); err != nil {
+	if _, err := authority.MirrorRemoteEvents(context.Background(), []store.RemoteEventRecord{{CommandID: intent.CommandID, Sequence: 1, Type: "command_queued", OccurredAt: when}, {CommandID: intent.CommandID, Sequence: 2, Type: "command_started", OccurredAt: when.Add(time.Second)}, {CommandID: intent.CommandID, Sequence: 3, Type: "stdout", Payload: []byte("remote\n"), ByteCount: 7, OccurredAt: when.Add(2 * time.Second)}}); err != nil {
 		t.Fatal(err)
 	}
 	beforeProjection, err := client.Get("http://local/v1/commands/" + commandID + "/events")
@@ -70,11 +70,11 @@ func TestP077MacAPIReadsMirroredRemoteEventsAndRemoteJobProjection(t *testing.T)
 	}
 	followDone := make(chan followResult, 1)
 	go func() {
-		response, err := client.Get("http://local/v1/commands/" + commandID + "/events?after=2&follow=true")
+		response, err := client.Get("http://local/v1/commands/" + commandID + "/events?after=3&follow=true")
 		followDone <- followResult{response: response, err: err}
 	}()
 	time.Sleep(60 * time.Millisecond)
-	if _, err := authority.MirrorRemoteEvents(context.Background(), []store.RemoteEventRecord{{CommandID: intent.CommandID, Sequence: 3, Type: "command_succeeded", OccurredAt: when.Add(2 * time.Second)}}); err != nil {
+	if _, err := authority.MirrorRemoteEvents(context.Background(), []store.RemoteEventRecord{{CommandID: intent.CommandID, Sequence: 4, Type: "command_succeeded", OccurredAt: when.Add(3 * time.Second)}}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -84,11 +84,35 @@ func TestP077MacAPIReadsMirroredRemoteEventsAndRemoteJobProjection(t *testing.T)
 		}
 		data, _ := io.ReadAll(result.response.Body)
 		result.response.Body.Close()
-		if result.response.StatusCode != http.StatusOK || !strings.Contains(string(data), `"sequence":3`) || !strings.Contains(string(data), `command_succeeded`) {
-			t.Fatalf("mirrored follow status=%d body=%s", result.response.StatusCode, data)
+		if result.response.StatusCode != http.StatusOK || strings.Contains(string(data), `"sequence":4`) || strings.Contains(string(data), `command_succeeded`) {
+			t.Fatalf("unreconciled mirrored follow exposed terminal event status=%d body=%s", result.response.StatusCode, data)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("mirrored follow did not receive terminal event")
+		t.Fatal("unreconciled mirrored follow did not close before terminal event")
+	}
+	if _, err := authority.TransitionLocalIntent(context.Background(), intent.IntentID, store.LocalIntentReconciled, "p077-legacy-terminal-event-reconciled"); err != nil {
+		t.Fatal(err)
+	}
+	legacyReplay, err := client.Get("http://local/v1/commands/" + commandID + "/events?after=3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyReplayData, _ := io.ReadAll(legacyReplay.Body)
+	legacyReplay.Body.Close()
+	if legacyReplay.StatusCode != http.StatusConflict || strings.Contains(string(legacyReplayData), `"sequence":4`) {
+		t.Fatalf("legacy reconciled terminal replay status=%d body=%s", legacyReplay.StatusCode, legacyReplayData)
+	}
+	if _, err := authority.MarkRemoteIntentTerminalProof(context.Background(), intent.IntentID, "p077-terminal-event-proof-reconciled"); err != nil {
+		t.Fatal(err)
+	}
+	terminalReplay, err := client.Get("http://local/v1/commands/" + commandID + "/events?after=3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalReplayData, _ := io.ReadAll(terminalReplay.Body)
+	terminalReplay.Body.Close()
+	if terminalReplay.StatusCode != http.StatusOK || !strings.Contains(string(terminalReplayData), `"sequence":4`) || !strings.Contains(string(terminalReplayData), `command_succeeded`) {
+		t.Fatalf("reconciled terminal replay status=%d body=%s", terminalReplay.StatusCode, terminalReplayData)
 	}
 
 	jobRequest, err := http.NewRequest(http.MethodPost, "http://local/v1/jobs", strings.NewReader(`{"environment":"linux-dev","execution_target":{"kind":"remote","profile":"linux-host"},"script":"echo job"}`))
@@ -121,7 +145,31 @@ func TestP077MacAPIReadsMirroredRemoteEventsAndRemoteJobProjection(t *testing.T)
 		t.Fatal(err)
 	}
 	jobState := domain.CommandStateSucceeded
-	if _, err := authority.UpsertRemoteJobProjection(context.Background(), store.RemoteJobProjection{JobID: jobIntent.JobID, SessionID: jobIntent.SessionID, CommandID: jobIntent.CommandID, Phase: store.JobPhaseAwaitingCommand, CommandState: &jobState, OutputComplete: true, TeardownState: store.JobTeardownClosed, Target: target, Controller: jobIntent.Controller, Environment: jobIntent.Environment, Source: jobIntent.Source, Capabilities: p076APICapabilities(), ObservedAt: when.Add(3 * time.Second)}); err != nil {
+	if _, err := authority.UpsertRemoteJobProjection(context.Background(), store.RemoteJobProjection{JobID: jobIntent.JobID, SessionID: jobIntent.SessionID, CommandID: jobIntent.CommandID, Phase: store.JobPhaseComplete, CommandState: &jobState, OutputComplete: true, TeardownState: store.JobTeardownClosed, Target: target, Controller: jobIntent.Controller, Environment: jobIntent.Environment, Source: jobIntent.Source, Capabilities: p076APICapabilities(), ObservedAt: when.Add(3 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	unreconciledJob, err := client.Get("http://local/v1/jobs/" + accepted.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreconciledJobData, _ := io.ReadAll(unreconciledJob.Body)
+	unreconciledJob.Body.Close()
+	if unreconciledJob.StatusCode != http.StatusOK || !strings.Contains(string(unreconciledJobData), `"view":"local_intent"`) || strings.Contains(string(unreconciledJobData), `"command_state":"succeeded"`) {
+		t.Fatalf("unreconciled job response status=%d body=%s", unreconciledJob.StatusCode, unreconciledJobData)
+	}
+	if _, err := authority.TransitionLocalIntent(context.Background(), jobIntent.IntentID, store.LocalIntentReconciled, "p077-legacy-job-reconciled"); err != nil {
+		t.Fatal(err)
+	}
+	legacyJob, err := client.Get("http://local/v1/jobs/" + accepted.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyJobData, _ := io.ReadAll(legacyJob.Body)
+	legacyJob.Body.Close()
+	if legacyJob.StatusCode != http.StatusOK || !strings.Contains(string(legacyJobData), `"view":"local_intent"`) || strings.Contains(string(legacyJobData), `"command_state":"succeeded"`) {
+		t.Fatalf("legacy reconciled job response status=%d body=%s", legacyJob.StatusCode, legacyJobData)
+	}
+	if _, err := authority.MarkRemoteIntentTerminalProof(context.Background(), jobIntent.IntentID, "p077-job-read-reconciled"); err != nil {
 		t.Fatal(err)
 	}
 	readJob, err := client.Get("http://local/v1/jobs/" + accepted.JobID)

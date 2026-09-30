@@ -291,6 +291,14 @@ func p097GetCommand(t *testing.T, h *p095Harness, requestID, commandID string) p
 }
 
 func p097RemoteTerminal(t *testing.T, hState domain.CommandState, reason string) (*p095Harness, string, string) {
+	return p097RemoteTerminalWithProof(t, hState, reason, true)
+}
+
+// p097RemoteTerminalWithProof prepares a remote terminal projection. A false
+// proof models the legacy reconciled state written before P149; callers that
+// need a terminal file response must construct the historical receipt
+// explicitly because current mailbox reads intentionally keep it hidden.
+func p097RemoteTerminalWithProof(t *testing.T, hState domain.CommandState, reason string, terminalProof bool) (*p095Harness, string, string) {
 	t.Helper()
 	h, _ := newP096Harness(t)
 	sessionID := h.createSession(t, domain.TargetKindRemote, "linux-host", "linux-dev", false)
@@ -346,8 +354,10 @@ func p097RemoteTerminal(t *testing.T, hState domain.CommandState, reason string)
 		events[2].ByteCount = int64(len(outputText))
 		events = append(events, store.RemoteEventRecord{CommandID: intent.CommandID, Sequence: 4, Type: "command_lost", OccurredAt: when.Add(3 * time.Second)})
 	}
-	if _, err := h.authority.MirrorRemoteEvents(context.Background(), events); err != nil {
-		t.Fatal(err)
+	if reason != "retention_expired" {
+		if _, err := h.authority.MirrorRemoteEvents(context.Background(), events); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if reason == "remote_event_gap" {
 		if _, err := h.authority.RecordRemoteEventGap(context.Background(), store.RemoteEventGapRecord{
@@ -356,6 +366,16 @@ func p097RemoteTerminal(t *testing.T, hState domain.CommandState, reason string)
 		}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if terminalProof {
+		// This fixture represents an already verified target terminal result. The
+		// mailbox gate intentionally hides remote terminal projections until this
+		// durable reconciliation boundary has been crossed.
+		if _, err := h.authority.MarkRemoteIntentTerminalProof(context.Background(), intent.IntentID, "p097-remote-terminal-reconciled"); err != nil {
+			t.Fatal(err)
+		}
+	} else if _, err := h.authority.TransitionLocalIntent(context.Background(), intent.IntentID, store.LocalIntentReconciled, "p097-legacy-reconciled"); err != nil {
+		t.Fatal(err)
 	}
 	return h, sessionID, string(intent.CommandID)
 }

@@ -206,6 +206,17 @@ explicit bridge enable command in the setup guide for that one-time action.
 - Graceful service shutdown stops new admission, drains for a bounded period,
   then uses normal cancellation/close cleanup. Clients resume retained events
   after their last validated sequence.
+- After a Mac `runner-local` restart, accepted queued remote one-off jobs are
+  recovered by read-only job, command, and event queries. The Router never
+  resends the `run` mutation during this recovery. It publishes a terminal
+  mailbox result only after the remote identity, target context, script digest,
+  teardown, and complete or explicitly incomplete event boundary agree.
+  Contradictory event history, including any event after a terminal event,
+  remains blocked for investigation instead of being rendered as success.
+  This recovery repairs missing derived files only. It preserves an already
+  published immutable legacy response; do not remove it during restart
+  recovery because its shared event file may still be retained for another
+  response.
 - Software-crash recovery is the approved durability claim. Physical power
   loss has not been tested, so it remains an unverified condition. A real
   power-off test requires a coordinated maintenance window and disposable

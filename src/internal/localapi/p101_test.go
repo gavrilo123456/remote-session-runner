@@ -238,6 +238,69 @@ func TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary(t *testing.T) 
 	})
 }
 
+func TestP149RemoteSubmitTerminalProjectionWaitsForReconciliation(t *testing.T) {
+	h, _ := newP096Harness(t)
+	ctx := context.Background()
+	target := p101Targets()[1]
+	sessionID := p101CreateSession(t, h, target, "p149-terminal-gate")
+	requestID := "req-p149-remote-submit-terminal-gate"
+	p101Import(t, h, requestID, map[string]any{
+		"request_id": requestID, "idempotency_key": "key-p149-remote-submit-terminal-gate",
+		"operation": "submit_command", "session_id": sessionID, "script": "printf p149-terminal-gate", "timeout_seconds": 30,
+	})
+	accepted := p101ReadResponse(t, h, requestID)
+	intent, err := h.authority.GetLocalIntentByResource(ctx, "submit_command", accepted.CommandID, p063Owner(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p101SetIntentDelivery(t, h, intent, store.LocalIntentAccepted)
+
+	// Model a mutation reply that has left a complete-looking terminal
+	// projection and event prefix before the Router's strict GET reconciliation.
+	p101ProjectRemoteCommand(t, h, accepted.CommandID, sessionID, intent, domain.CommandStateSucceeded, "p149-terminal-gate\n", 4, time.Date(2026, 9, 30, 14, 0, 0, 0, time.UTC))
+	if err := h.processor.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	held := p101ReadResponse(t, h, requestID)
+	if held.RequestState != "accepted" || held.DeliveryState != string(store.LocalIntentAccepted) || held.CommandState != "" || held.AvailableEventSequence != nil || held.EventsFile != "" {
+		t.Fatalf("unreconciled terminal submit was published: %+v", held)
+	}
+	snapshot, err := h.server.GetCommandSnapshot(ctx, accepted.CommandID)
+	if err != nil || snapshot.State != "" || snapshot.AvailableEventSequence != 0 {
+		t.Fatalf("unreconciled terminal get-command snapshot=%+v err=%v", snapshot, err)
+	}
+
+	getRequestID := "req-p149-remote-get-terminal-gate"
+	p101Import(t, h, getRequestID, map[string]any{
+		"request_id": getRequestID, "operation": "get_command", "command_id": accepted.CommandID,
+	})
+	getHeld := p101ReadResponse(t, h, getRequestID)
+	if getHeld.CommandState != "" || getHeld.AvailableEventSequence != nil || getHeld.EventsFile != "" {
+		t.Fatalf("unreconciled terminal get-command mailbox response=%+v", getHeld)
+	}
+
+	p101SetIntentDelivery(t, h, intent, store.LocalIntentReconciled)
+	legacy, err := h.authority.GetLocalIntent(ctx, intent.IntentID)
+	if err != nil || legacy.RemoteTerminalProofVersion != 0 {
+		t.Fatalf("legacy terminal intent=%+v err=%v", legacy, err)
+	}
+	if err := h.processor.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	legacyHeld := p101ReadResponse(t, h, requestID)
+	if legacyHeld.RequestState != "accepted" || legacyHeld.CommandState != "" || legacyHeld.AvailableEventSequence != nil {
+		t.Fatalf("legacy reconciled terminal submit was published: %+v", legacyHeld)
+	}
+	p101MarkRemoteTerminalProof(t, h, intent)
+	if err := h.processor.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	completed := p101ReadResponse(t, h, requestID)
+	if completed.RequestState != "complete" || completed.DeliveryState != string(store.LocalIntentReconciled) || completed.CommandState != string(domain.CommandStateSucceeded) || completed.AvailableEventSequence == nil || *completed.AvailableEventSequence != 4 || completed.EventsFile != "events/"+accepted.CommandID+".ndjson" {
+		t.Fatalf("reconciled terminal submit response=%+v", completed)
+	}
+}
+
 func TestP101M10MailboxCannotAccessDirectCreatedResources(t *testing.T) {
 	h, _ := newP096Harness(t)
 	ctx := context.Background()
@@ -440,6 +503,8 @@ func p101Submit(t *testing.T, h *p095Harness, target p101Target, sessionID, suff
 		}
 	} else if finish {
 		p101ProjectRemoteCommand(t, h, accepted.CommandID, sessionID, intent, domain.CommandStateSucceeded, "p101-"+suffix+"\n", 4, time.Date(2026, 9, 27, 12, 1, 0, 0, time.UTC))
+		p101SetIntentDelivery(t, h, intent, store.LocalIntentReconciled)
+		p101MarkRemoteTerminalProof(t, h, intent)
 	} else {
 		p101ProjectRemoteCommand(t, h, accepted.CommandID, sessionID, intent, domain.CommandStateQueued, "", 1, time.Date(2026, 9, 27, 12, 1, 0, 0, time.UTC))
 	}
@@ -574,6 +639,8 @@ func p101RunAndComplete(t *testing.T, h *p095Harness, target p101Target, suffix 
 		p101CompleteLocalRun(t, h, intent, "p101-run\n")
 	} else {
 		p101CompleteRemoteRun(t, h, intent, "p101-run\n")
+		p101SetIntentDelivery(t, h, intent, store.LocalIntentReconciled)
+		p101MarkRemoteTerminalProof(t, h, intent)
 	}
 	if err := h.processor.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
@@ -757,6 +824,13 @@ func p101SetIntentDelivery(t *testing.T, h *p095Harness, intent store.LocalInten
 		if _, err := h.authority.TransitionLocalIntent(ctx, current.IntentID, next, "p101-"+string(next)); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func p101MarkRemoteTerminalProof(t *testing.T, h *p095Harness, intent store.LocalIntentRecord) {
+	t.Helper()
+	if _, err := h.authority.MarkRemoteIntentTerminalProof(context.Background(), intent.IntentID, "p101-terminal-proof-reconciled"); err != nil {
+		t.Fatal(err)
 	}
 }
 

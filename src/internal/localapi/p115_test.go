@@ -354,6 +354,17 @@ func p115UpsertRemoteProjection(t *testing.T, authority *store.AuthorityStore, i
 	if _, err := authority.UpsertRemoteCommandProjection(context.Background(), projection); err != nil {
 		t.Fatal(err)
 	}
+	if state.IsTerminal() {
+		current, err := authority.GetLocalIntent(context.Background(), intent.IntentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.DeliveryState == store.LocalIntentAccepted {
+			if _, err := authority.MarkRemoteIntentTerminalProof(context.Background(), current.IntentID, "P115 terminal proof reconciled"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }
 
 func p115AppendAuthorityEvent(t *testing.T, authority *store.AuthorityStore, commandID, eventType string, payload []byte) {

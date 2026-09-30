@@ -86,6 +86,32 @@ func TestP076RemoteProjectionReadsExposeAuthorityAndStaleness(t *testing.T) {
 	if _, err := authority.UpsertRemoteCommandProjection(context.Background(), store.RemoteCommandProjection{CommandID: commandIntent.CommandID, SessionID: commandIntent.SessionID, Ordinal: *commandIntent.IntentOrdinal, State: domain.CommandStateSucceeded, FinalEventSequence: &finalSequence, OutputComplete: true, Target: target, Controller: commandIntent.Controller, Environment: commandIntent.Environment, Source: commandIntent.Source, Capabilities: p076APICapabilities(), ObservedAt: time.Date(2026, 9, 27, 13, 21, 0, 0, time.UTC)}); err != nil {
 		t.Fatal(err)
 	}
+	// A complete-looking terminal row from an old Router must stay behind the
+	// strict reconciliation boundary for direct API readers as well.
+	unreconciledResponse, err := client.Get("http://local/v1/commands/" + accepted.CommandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreconciledData, _ := io.ReadAll(unreconciledResponse.Body)
+	unreconciledResponse.Body.Close()
+	if unreconciledResponse.StatusCode != http.StatusOK || !strings.Contains(string(unreconciledData), `"view":"local_intent"`) || strings.Contains(string(unreconciledData), `"command_state":"succeeded"`) {
+		t.Fatalf("unreconciled terminal projection response status=%d body=%s", unreconciledResponse.StatusCode, unreconciledData)
+	}
+	if _, err := authority.TransitionLocalIntent(context.Background(), commandIntent.IntentID, store.LocalIntentReconciled, "p076-legacy-terminal-reconciled"); err != nil {
+		t.Fatal(err)
+	}
+	legacyResponse, err := client.Get("http://local/v1/commands/" + accepted.CommandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyData, _ := io.ReadAll(legacyResponse.Body)
+	legacyResponse.Body.Close()
+	if legacyResponse.StatusCode != http.StatusOK || !strings.Contains(string(legacyData), `"view":"local_intent"`) || strings.Contains(string(legacyData), `"command_state":"succeeded"`) {
+		t.Fatalf("legacy reconciled terminal projection response status=%d body=%s", legacyResponse.StatusCode, legacyData)
+	}
+	if _, err := authority.MarkRemoteIntentTerminalProof(context.Background(), commandIntent.IntentID, "p076-terminal-proof-reconciled"); err != nil {
+		t.Fatal(err)
+	}
 	commandResponse, err := client.Get("http://local/v1/commands/" + accepted.CommandID)
 	if err != nil {
 		t.Fatal(err)

@@ -458,6 +458,13 @@ func mustP047Registry(t *testing.T) *execution.EnvironmentRegistry {
 }
 
 func newP046Service(t *testing.T, runtimeAdapter execution.SessionRuntime) (*execution.Service, *store.AuthorityStore) {
+	return newP046ServiceWithResolver(t, runtimeAdapter, nil)
+}
+
+// newP046ServiceWithResolver constructs the normal private-server fixture but
+// permits a test to make capability resolution unavailable after a durable
+// mutation has completed.
+func newP046ServiceWithResolver(t *testing.T, runtimeAdapter execution.SessionRuntime, resolver execution.EnvironmentResolver) (*execution.Service, *store.AuthorityStore) {
 	t.Helper()
 	fixture := testfixture.New(t)
 	db, err := store.Open(context.Background(), filepath.Join(fixture.Path(), "state", "state.db"))
@@ -497,11 +504,14 @@ func newP046Service(t *testing.T, runtimeAdapter execution.SessionRuntime) (*exe
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resolver == nil {
+		resolver = registry
+	}
 	authority, err := store.NewAuthorityStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := execution.NewExecutionService(authority, runtimeAdapter, registry, execution.RealClock{}, nil)
+	service, err := execution.NewExecutionService(authority, runtimeAdapter, resolver, execution.RealClock{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

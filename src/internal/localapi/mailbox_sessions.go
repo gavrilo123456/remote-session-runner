@@ -208,6 +208,13 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 		return snapshot, nil
 	}
 	if remoteProjectionEligible(intent) {
+		// A queued remote one-off is published to the mailbox only after the
+		// dispatcher has read and cross-checked its job, command, and retained
+		// output boundary. This prevents an initial acceptance projection (or a
+		// stale row left across a Mac restart) from being rendered as terminal.
+		if !store.HasRemoteTerminalProof(intent) {
+			return snapshot, nil
+		}
 		projection, projectionErr := s.authority.GetRemoteJobProjection(ctx, jobID)
 		if errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
 			return snapshot, nil
@@ -484,6 +491,13 @@ func (s *Server) GetCommandSnapshot(ctx context.Context, commandIDText string) (
 		if projection.CommandID != commandID || projection.SessionID != intent.SessionID || projection.Target.Kind() != domain.TargetKindRemote || projection.Target.Profile() != intent.Target.Profile() ||
 			projection.Controller.Type() != s.owner.Type() || projection.Controller.ID() != s.owner.ID() || projection.Environment != intent.Environment {
 			return mailbox.CommandSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "remote command projection does not match its accepted intent", Retryable: true}
+		}
+		// Mutation replies can be intentionally sparse-compatible. A terminal
+		// remote projection therefore becomes mailbox-visible only after the
+		// Router has completed its authoritative reconciliation; otherwise an
+		// accepted mutation reply could be mistaken for terminal proof.
+		if projection.State.IsTerminal() && !store.HasRemoteTerminalProof(intent) {
+			return base, nil
 		}
 		snapshot, err := mailbox.SnapshotRemoteCommand(projection, events, time.Now().UTC())
 		if err != nil {

@@ -76,7 +76,7 @@ func TestP092M07PinnedMirroredEventsExpireForNewReadsButRemainForFrozenResponse(
 	authority := newP019Store(t, clock)
 	target, _ := domain.NewExecutionTarget(domain.TargetKindRemote, "linux-host")
 	controller, _ := domain.NewControllerIdentity(domain.ControllerTypeQueuedMac, "tomasz.walczuk")
-	final := int64(2)
+	final := int64(4)
 	exitCode := 0
 	projection := RemoteCommandProjection{
 		CommandID: "command-p092-remote", SessionID: "session-p092-remote", Ordinal: 1,
@@ -88,13 +88,15 @@ func TestP092M07PinnedMirroredEventsExpireForNewReadsButRemainForFrozenResponse(
 		t.Fatal(err)
 	}
 	events := []RemoteEventRecord{
-		{CommandID: projection.CommandID, Sequence: 1, Type: "stdout", Payload: []byte("remote\n"), ByteCount: 7, OccurredAt: base},
-		{CommandID: projection.CommandID, Sequence: 2, Type: "command_succeeded", OccurredAt: base.Add(time.Second)},
+		{CommandID: projection.CommandID, Sequence: 1, Type: "command_queued", OccurredAt: base},
+		{CommandID: projection.CommandID, Sequence: 2, Type: "command_started", OccurredAt: base.Add(time.Second)},
+		{CommandID: projection.CommandID, Sequence: 3, Type: "stdout", Payload: []byte("remote\n"), ByteCount: 7, OccurredAt: base.Add(2 * time.Second)},
+		{CommandID: projection.CommandID, Sequence: 4, Type: "command_succeeded", OccurredAt: base.Add(3 * time.Second)},
 	}
 	if _, err := authority.MirrorRemoteEvents(ctx, events); err != nil {
 		t.Fatal(err)
 	}
-	p092PublishEventResponse(t, authority, "req-p092-remote", projection.CommandID, 2)
+	p092PublishEventResponse(t, authority, "req-p092-remote", projection.CommandID, 4)
 	record, err := authority.GetMailboxExchange(ctx, "req-p092-remote")
 	if err != nil || record.EventFileCommandID != string(projection.CommandID) {
 		t.Fatalf("atomic remote event reference = %+v err=%v", record, err)
@@ -113,7 +115,7 @@ func TestP092M07PinnedMirroredEventsExpireForNewReadsButRemainForFrozenResponse(
 		t.Fatalf("ordinary mirrored event read error = %v, want retention expired", err)
 	}
 	_, pinned, err := authority.MailboxResponseCommandEvents(ctx, "req-p092-remote", projection.CommandID)
-	if err != nil || len(pinned) != 2 || string(pinned[0].Payload) != "remote\n" || pinned[1].Type != "command_succeeded" {
+	if err != nil || len(pinned) != 4 || string(pinned[2].Payload) != "remote\n" || pinned[3].Type != "command_succeeded" {
 		t.Fatalf("frozen remote response prefix = %+v err=%v", pinned, err)
 	}
 
@@ -125,7 +127,7 @@ func TestP092M07PinnedMirroredEventsExpireForNewReadsButRemainForFrozenResponse(
 	}
 	clock.Advance(6 * 24 * time.Hour)
 	report, err = authority.CollectGarbage(ctx, GarbageCollectionOptions{OutputRetention: 24 * time.Hour})
-	if err != nil || report.RemoteCommandEventsDeleted != 2 {
+	if err != nil || report.RemoteCommandEventsDeleted != 4 {
 		t.Fatalf("post-deadline mirrored GC = %+v err=%v", report, err)
 	}
 }

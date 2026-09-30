@@ -60,7 +60,10 @@ func TestP140RemoteAuthorityOrdinalMayFollowCancelledMacIntentGap(t *testing.T) 
 	if ordinal, ok := positiveRemoteAuthorityOrdinal(response); !ok || ordinal != 1 {
 		t.Fatalf("Linux authority ordinal=%d present=%v, want 1", ordinal, ok)
 	}
-	projection, err := authority.GetRemoteCommandProjection(ctx, intent.CommandID)
+	if _, err := authority.GetRemoteCommandProjection(ctx, intent.CommandID); !errors.Is(err, store.ErrRemoteProjectionNotFound) {
+		t.Fatalf("submit mutation created Linux projection: %v", err)
+	}
+	projection, err := driver.RefreshCommandProjection(ctx, intent.CommandID, intent.Controller)
 	if err != nil || projection.Ordinal != 1 {
 		t.Fatalf("stored Linux projection ordinal=%d err=%v, want 1", projection.Ordinal, err)
 	}
@@ -108,7 +111,10 @@ func TestP140ReconciliationKeepsStableIDsAndIndependentLinuxOrdinal(t *testing.T
 	if accepted.DeliveryState != store.LocalIntentAccepted || len(caller.frames) != 2 || caller.frames[1].Operation != sshbridge.OperationGetCommand {
 		t.Fatalf("reconciliation state=%s frames=%+v; expected one read and no resubmit", accepted.DeliveryState, caller.frames)
 	}
-	projection, err := authority.GetRemoteCommandProjection(ctx, intent.CommandID)
+	if _, err := authority.GetRemoteCommandProjection(ctx, intent.CommandID); !errors.Is(err, store.ErrRemoteProjectionNotFound) {
+		t.Fatalf("uncertainty reconciliation created mutation projection: %v", err)
+	}
+	projection, err := driver.RefreshCommandProjection(ctx, intent.CommandID, intent.Controller)
 	if err != nil || projection.CommandID != intent.CommandID || projection.SessionID != intent.SessionID || projection.Ordinal != 1 {
 		t.Fatalf("reconciled projection=%+v err=%v; IDs and Linux ordinal must be preserved", projection, err)
 	}
@@ -207,8 +213,10 @@ func p140CommandReplyJSON(intent store.LocalIntentRecord, ordinal int64, state s
 	digest := sha256.Sum256(intent.ScriptBytes)
 	return json.Marshal(map[string]any{
 		"command_id": string(intent.CommandID), "session_id": string(intent.SessionID), "ordinal": ordinal,
-		"script_sha256": hex.EncodeToString(digest[:]), "command_state": state,
+		"script_sha256": hex.EncodeToString(digest[:]), "script_byte_count": len(intent.ScriptBytes), "command_state": state,
+		"output_complete": false, "output_truncated": false,
 		"execution_target": map[string]string{"kind": "remote", "profile": "linux-host"},
+		"authority":        "remote",
 		"controller":       map[string]string{"controller_type": string(intent.Controller.Type()), "controller_id": string(intent.Controller.ID())},
 		"environment":      intent.Environment, "source": map[string]string{"mode": "empty"},
 		"capabilities": map[string]any{"host_class": "Ubuntu Linux host", "isolation": "os-user", "effective_account": "ubuntu", "service_limits": map[string]any{"running_commands_per_host": 4}},

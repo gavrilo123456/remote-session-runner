@@ -113,6 +113,7 @@ func TestP103F02AfterCommitAndStreamLossReconcileStableRunThroughMailbox(t *test
 	}
 	p101CompleteRemoteRun(t, h, intent, "p103 recovered\n")
 	p101SetIntentDelivery(t, h, intent, store.LocalIntentReconciled)
+	p101MarkRemoteTerminalProof(t, h, intent)
 	if err := h.processor.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}

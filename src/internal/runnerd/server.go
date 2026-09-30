@@ -511,25 +511,49 @@ type runJobRequest struct {
 }
 
 type jobResponse struct {
-	JobID                   string            `json:"job_id"`
-	SessionID               string            `json:"session_id"`
-	CommandID               string            `json:"command_id"`
-	JobPhase                string            `json:"job_phase"`
-	CommandState            *string           `json:"command_state,omitempty"`
-	ExitCode                *int              `json:"exit_code,omitempty"`
-	FinalEventSequence      *int64            `json:"final_event_sequence,omitempty"`
-	OutputComplete          bool              `json:"output_complete"`
-	OutputTruncated         bool              `json:"output_truncated"`
-	OutputUnavailableReason string            `json:"output_unavailable_reason,omitempty"`
-	TeardownState           string            `json:"teardown_state"`
-	TeardownReason          string            `json:"teardown_reason,omitempty"`
-	ExecutionTarget         targetResponse    `json:"execution_target"`
-	Authority               string            `json:"authority"`
-	Controller              controllerRequest `json:"controller"`
-	ObservedAt              time.Time         `json:"observed_at"`
-	Environment             string            `json:"environment"`
-	Source                  sourceResponse    `json:"source"`
-	Duplicate               bool              `json:"duplicate,omitempty"`
+	JobID                   string                      `json:"job_id"`
+	SessionID               string                      `json:"session_id"`
+	CommandID               string                      `json:"command_id"`
+	JobPhase                string                      `json:"job_phase"`
+	CommandState            *string                     `json:"command_state,omitempty"`
+	ExitCode                *int                        `json:"exit_code,omitempty"`
+	FinalEventSequence      *int64                      `json:"final_event_sequence,omitempty"`
+	OutputComplete          bool                        `json:"output_complete"`
+	OutputTruncated         bool                        `json:"output_truncated"`
+	OutputUnavailableReason string                      `json:"output_unavailable_reason,omitempty"`
+	TeardownState           string                      `json:"teardown_state"`
+	TeardownReason          string                      `json:"teardown_reason,omitempty"`
+	ExecutionTarget         targetResponse              `json:"execution_target"`
+	Authority               string                      `json:"authority"`
+	Controller              controllerRequest           `json:"controller"`
+	ObservedAt              time.Time                   `json:"observed_at"`
+	Environment             string                      `json:"environment"`
+	Source                  sourceResponse              `json:"source"`
+	Capabilities            commandCapabilitiesResponse `json:"capabilities"`
+	Duplicate               bool                        `json:"duplicate,omitempty"`
+}
+
+// These identity-only acceptance envelopes are used only when a durable
+// mutation succeeded but optional projection enrichment is unavailable. A
+// later strict read supplies terminal state; the acknowledgement itself never
+// looks like a terminal snapshot.
+type sessionAcceptanceResponse struct {
+	SessionID string `json:"session_id"`
+	Duplicate bool   `json:"duplicate,omitempty"`
+}
+
+type commandAcceptanceResponse struct {
+	CommandID string `json:"command_id"`
+	SessionID string `json:"session_id"`
+	Ordinal   int64  `json:"ordinal"`
+	Duplicate bool   `json:"duplicate,omitempty"`
+}
+
+type jobAcceptanceResponse struct {
+	JobID     string `json:"job_id"`
+	SessionID string `json:"session_id"`
+	CommandID string `json:"command_id"`
+	Duplicate bool   `json:"duplicate,omitempty"`
 }
 
 func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, request *http.Request, pathSessionID string) {
@@ -606,7 +630,7 @@ func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, reques
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
 		if result.Command.CommandID != "" {
-			writeJSON(response, status, commandResponseFromRecord(result.Command, result.Duplicate))
+			s.writeCommandMutationResponse(response, request, result.Command, controller, result.Duplicate)
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
@@ -617,7 +641,7 @@ func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, reques
 			_, _ = s.service.ResumeCommand(context.Background(), result.Command.CommandID, controller)
 		})
 	}
-	writeJSON(response, http.StatusAccepted, commandResponseFromRecord(result.Command, result.Duplicate))
+	s.writeCommandMutationResponse(response, request, result.Command, controller, result.Duplicate)
 }
 
 func (s *PrivateServer) handleCancelCommand(response http.ResponseWriter, request *http.Request, pathCommandID string) {
@@ -655,13 +679,13 @@ func (s *PrivateServer) handleCancelCommand(response http.ResponseWriter, reques
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
 		if result.Command.CommandID != "" {
-			writeJSON(response, status, commandResponseFromRecord(result.Command, result.Duplicate))
+			s.writeCommandMutationResponse(response, request, result.Command, controller, result.Duplicate)
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
-	writeJSON(response, http.StatusAccepted, commandResponseFromRecord(result.Command, result.Duplicate))
+	s.writeCommandMutationResponse(response, request, result.Command, controller, result.Duplicate)
 }
 
 func (s *PrivateServer) handleCloseSession(response http.ResponseWriter, request *http.Request) {
@@ -715,13 +739,13 @@ func (s *PrivateServer) handleCloseSession(response http.ResponseWriter, request
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
 		if result.Session.SessionID != "" {
-			s.writeSessionResponse(response, request, status, result.Session, result.Duplicate)
+			s.writeSessionMutationResponse(response, request, result.Session, result.Duplicate)
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
-	s.writeSessionResponse(response, request, http.StatusAccepted, result.Session, result.Duplicate)
+	s.writeSessionMutationResponse(response, request, result.Session, result.Duplicate)
 }
 
 func (s *PrivateServer) handleRunJob(response http.ResponseWriter, request *http.Request) {
@@ -805,13 +829,13 @@ func (s *PrivateServer) handleRunJob(response http.ResponseWriter, request *http
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
 		if result.Job.JobID != "" {
-			writeJSON(response, status, jobResponseFromRecord(result.Job, false))
+			s.writeJobMutationResponse(response, request, result.Job, false)
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
-	writeJSON(response, http.StatusAccepted, jobResponseFromRecord(result.Job, false))
+	s.writeJobMutationResponse(response, request, result.Job, false)
 }
 
 func (s *PrivateServer) handleGetJob(response http.ResponseWriter, request *http.Request) {
@@ -837,7 +861,7 @@ func (s *PrivateServer) handleGetJob(response http.ResponseWriter, request *http
 		writePrivateError(response, privateStatusForError(err), err.Error())
 		return
 	}
-	writeJSON(response, http.StatusOK, jobResponseFromRecord(job, false))
+	s.writeJobReadResponse(response, request, http.StatusOK, job, false)
 }
 
 func canonicalRunPayload(environment string, target domain.ExecutionTarget, source domain.Source, script string, limits domain.RequestedLimits, isolation domain.IsolationRequirements, policy map[string]any) ([]byte, error) {
@@ -898,15 +922,10 @@ func (s *PrivateServer) handleGetCommand(response http.ResponseWriter, request *
 		writePrivateError(response, privateStatusForError(err), err.Error())
 		return
 	}
-	result, err := s.commandReadResponse(request.Context(), command, controller)
-	if err != nil {
-		writePrivateError(response, privateStatusForError(err), "command session policy is unavailable")
-		return
-	}
-	writeJSON(response, http.StatusOK, result)
+	s.writeCommandReadResponse(response, request, http.StatusOK, command, controller, false)
 }
 
-func (s *PrivateServer) commandReadResponse(ctx context.Context, command store.CommandRecord, controller domain.ControllerIdentity) (commandReadResponse, error) {
+func (s *PrivateServer) commandReadResponse(ctx context.Context, command store.CommandRecord, controller domain.ControllerIdentity, duplicate bool) (commandReadResponse, error) {
 	session, err := s.service.GetSession(ctx, command.SessionID, controller)
 	if err != nil {
 		return commandReadResponse{}, err
@@ -920,7 +939,7 @@ func (s *PrivateServer) commandReadResponse(ctx context.Context, command store.C
 		authority = "local"
 	}
 	return commandReadResponse{
-		commandResponse: commandResponseFromRecord(command, false),
+		commandResponse: commandResponseFromRecord(command, duplicate),
 		ExecutionTarget: targetResponse{Kind: string(session.Target.Kind()), Profile: session.Target.Profile()},
 		Authority:       authority,
 		Controller:      controllerRequest{Type: string(session.Controller.Type()), ID: string(session.Controller.ID())},
@@ -1048,7 +1067,7 @@ func commandResponseFromRecord(record store.CommandRecord, duplicate bool) comma
 	}
 }
 
-func jobResponseFromRecord(record store.JobRecord, duplicate bool) jobResponse {
+func jobResponseFromRecord(record store.JobRecord, duplicate bool, environment domain.Environment) jobResponse {
 	portable := record.Source.Portable()
 	source := sourceResponse{
 		Mode:              string(record.Source.Mode()),
@@ -1069,8 +1088,21 @@ func jobResponseFromRecord(record store.JobRecord, duplicate bool) jobResponse {
 		OutputUnavailableReason: record.OutputUnavailableReason, TeardownState: string(record.TeardownState),
 		TeardownReason: record.TeardownReason, ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		Authority: authority, Controller: controllerRequest{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())},
-		ObservedAt: record.UpdatedAt.UTC(), Environment: record.Environment, Source: source, Duplicate: duplicate,
+		ObservedAt: record.UpdatedAt.UTC(), Environment: record.Environment, Source: source,
+		Capabilities: capabilitiesResponseFromEnvironment(environment), Duplicate: duplicate,
 	}
+}
+
+func sessionAcceptanceResponseFromRecord(record store.SessionRecord, duplicate bool) sessionAcceptanceResponse {
+	return sessionAcceptanceResponse{SessionID: string(record.SessionID), Duplicate: duplicate}
+}
+
+func commandAcceptanceResponseFromRecord(record store.CommandRecord, duplicate bool) commandAcceptanceResponse {
+	return commandAcceptanceResponse{CommandID: string(record.CommandID), SessionID: string(record.SessionID), Ordinal: record.Ordinal, Duplicate: duplicate}
+}
+
+func jobAcceptanceResponseFromRecord(record store.JobRecord, duplicate bool) jobAcceptanceResponse {
+	return jobAcceptanceResponse{JobID: string(record.JobID), SessionID: string(record.SessionID), CommandID: string(record.CommandID), Duplicate: duplicate}
 }
 
 func commandStatePointer(state *domain.CommandState) *string {
@@ -1169,13 +1201,13 @@ func (s *PrivateServer) handleCreateSession(response http.ResponseWriter, reques
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
 		if result.Session.SessionID != "" {
-			s.writeSessionResponse(response, request, status, result.Session, result.Duplicate)
+			s.writeSessionMutationResponse(response, request, result.Session, result.Duplicate)
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
-	s.writeSessionResponse(response, request, http.StatusAccepted, result.Session, result.Duplicate)
+	s.writeSessionMutationResponse(response, request, result.Session, result.Duplicate)
 }
 
 func (s *PrivateServer) handleGetSession(response http.ResponseWriter, request *http.Request) {
@@ -1201,7 +1233,7 @@ func (s *PrivateServer) handleGetSession(response http.ResponseWriter, request *
 		writePrivateError(response, privateStatusForError(err), err.Error())
 		return
 	}
-	s.writeSessionResponse(response, request, http.StatusOK, record, false)
+	s.writeSessionReadResponse(response, request, http.StatusOK, record, false)
 }
 
 func isSessionCollectionPath(path string) bool {
@@ -1319,13 +1351,63 @@ func parseIsolation(input *isolationRequest) domain.IsolationRequirements {
 	}
 }
 
-func (s *PrivateServer) writeSessionResponse(response http.ResponseWriter, request *http.Request, status int, record store.SessionRecord, duplicate bool) {
+func (s *PrivateServer) writeSessionMutationResponse(response http.ResponseWriter, request *http.Request, record store.SessionRecord, duplicate bool) {
+	environment, err := s.service.ResolveEnvironment(request.Context(), record.Environment)
+	if err != nil {
+		writeJSON(response, http.StatusAccepted, sessionAcceptanceResponseFromRecord(record, duplicate))
+		return
+	}
+	writeJSON(response, http.StatusAccepted, sessionResponseFromRecord(record, duplicate, environment))
+}
+
+func (s *PrivateServer) writeSessionReadResponse(response http.ResponseWriter, request *http.Request, status int, record store.SessionRecord, duplicate bool) {
 	environment, err := s.service.ResolveEnvironment(request.Context(), record.Environment)
 	if err != nil {
 		writePrivateError(response, http.StatusServiceUnavailable, "session capabilities are unavailable")
 		return
 	}
 	writeJSON(response, status, sessionResponseFromRecord(record, duplicate, environment))
+}
+
+// writeCommandMutationResponse preserves a durable acceptance if only
+// optional projection enrichment is unavailable. The Mac later performs a
+// strict read before it presents a terminal result.
+func (s *PrivateServer) writeCommandMutationResponse(response http.ResponseWriter, request *http.Request, record store.CommandRecord, controller domain.ControllerIdentity, duplicate bool) {
+	result, err := s.commandReadResponse(request.Context(), record, controller, duplicate)
+	if err != nil {
+		writeJSON(response, http.StatusAccepted, commandAcceptanceResponseFromRecord(record, duplicate))
+		return
+	}
+	writeJSON(response, http.StatusAccepted, result)
+}
+
+func (s *PrivateServer) writeCommandReadResponse(response http.ResponseWriter, request *http.Request, status int, record store.CommandRecord, controller domain.ControllerIdentity, duplicate bool) {
+	result, err := s.commandReadResponse(request.Context(), record, controller, duplicate)
+	if err != nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "command capabilities are unavailable")
+		return
+	}
+	writeJSON(response, status, result)
+}
+
+// writeJobMutationResponse preserves a durable run result if optional
+// capability enrichment cannot be read at response time.
+func (s *PrivateServer) writeJobMutationResponse(response http.ResponseWriter, request *http.Request, record store.JobRecord, duplicate bool) {
+	environment, err := s.service.ResolveEnvironment(request.Context(), record.Environment)
+	if err != nil {
+		writeJSON(response, http.StatusAccepted, jobAcceptanceResponseFromRecord(record, duplicate))
+		return
+	}
+	writeJSON(response, http.StatusAccepted, jobResponseFromRecord(record, duplicate, environment))
+}
+
+func (s *PrivateServer) writeJobReadResponse(response http.ResponseWriter, request *http.Request, status int, record store.JobRecord, duplicate bool) {
+	environment, err := s.service.ResolveEnvironment(request.Context(), record.Environment)
+	if err != nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "job capabilities are unavailable")
+		return
+	}
+	writeJSON(response, status, jobResponseFromRecord(record, duplicate, environment))
 }
 
 func sessionResponseFromRecord(record store.SessionRecord, duplicate bool, environment domain.Environment) sessionResponse {

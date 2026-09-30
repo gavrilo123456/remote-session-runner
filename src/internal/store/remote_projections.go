@@ -152,6 +152,10 @@ func (s *AuthorityStore) UpsertRemoteCommandProjection(ctx context.Context, inpu
 		return RemoteCommandProjection{}, err
 	}
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteCommandProjection, error) {
+		validated, err = normalizeIncomingRemoteCommandProjectionForEventGap(ctx, connection, validated)
+		if err != nil {
+			return RemoteCommandProjection{}, err
+		}
 		stored, err := readRemoteCommandProjectionOnConnection(ctx, connection, validated.CommandID)
 		if errors.Is(err, ErrRemoteProjectionNotFound) {
 			_, err := connection.ExecContext(ctx, `
@@ -238,6 +242,9 @@ func (s *AuthorityStore) GetRemoteCommandWithEvents(ctx context.Context, id doma
 		}
 		if cursor != int64(len(events)) {
 			return snapshot{}, fmt.Errorf("%w: cursor %d differs from retained prefix %d", ErrRemoteEventGap, cursor, len(events))
+		}
+		if _, err := InspectRemoteEventLifecycle(events); err != nil {
+			return snapshot{}, fmt.Errorf("%w: retained remote event lifecycle: %v", ErrRemoteProjectionInvalid, err)
 		}
 		return snapshot{projection: projection, events: events}, nil
 	})

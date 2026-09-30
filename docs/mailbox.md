@@ -204,6 +204,33 @@ it. Reusing an idempotency key with a changed payload produces
 single-use while retained. After 90-day idempotency retention, a response may
 warn `deduplication_not_guaranteed`; a new operation could then occur.
 
+## Queued remote `run` recovery after a Mac restart
+
+If a queued Ubuntu `run` request was accepted and the Mac restarts before its
+terminal mailbox response is published, `runner-local` scans accepted remote
+one-off jobs after it starts. The recovery path reads the remote job, command,
+and retained event stream through the restricted SSH bridge. It does **not**
+send the script, `run` mutation, or a new idempotency key again.
+
+Runner publishes a terminal mailbox result only after those reads agree on the
+job, session, command, controller, target, environment, script digest, output
+flags, teardown state, and terminal event boundary. A retained terminal event
+must be the final retained event. If an event suffix has expired, the retained
+prefix must contain no terminal event and the response remains incomplete with
+`output_unavailable_reason: "remote_event_gap"`.
+
+If any proof is unavailable, malformed, contradictory, or still nonterminal,
+the request remains nonterminal. Keep the original idempotency key, inspect
+the Mac `runner-local` log and queued-route health, and wait for the normal
+reconciliation window. Do not create a second `run` request to compensate for
+an interrupted response.
+
+This restart path only regenerates an outbox or event artifact that is missing
+after a durable SQLite receipt was committed. A terminal artifact that was
+already published by an earlier Runner version remains an immutable delivered
+file; recovery does not remove or rewrite it, because a shared event file may
+also serve other retained responses.
+
 ## Interpret mailbox states
 
 | Field | Meaning |

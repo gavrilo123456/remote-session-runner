@@ -31,8 +31,14 @@ func TestP138D14MigratesV22AuditRowsAndAddsCleanupFailureRecords(t *testing.T) {
 	if _, err := legacy.Exec(schemaMigrationsSQL); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := legacy.Exec(auditRecordsSQL); err != nil {
-		t.Fatal(err)
+	// Build an actual v22 database before declaring its migration ledger. The
+	// P138 fixture used to create only the audit table, which happened to work
+	// until a later migration legitimately depended on local_intents from v8.
+	// Applying the historical migrations makes this a real upgrade test.
+	for _, migration := range migrations[1:22] { // v1 is schemaMigrationsSQL above.
+		if _, err := legacy.Exec(migration.sql); err != nil {
+			t.Fatalf("apply legacy migration %d: %v", migration.version, err)
+		}
 	}
 	if _, err := legacy.Exec(`INSERT INTO runner_audit_records (
 		id, principal_type, principal_id, ingress, action, outcome, reason_code, occurred_at
@@ -57,8 +63,8 @@ func TestP138D14MigratesV22AuditRowsAndAddsCleanupFailureRecords(t *testing.T) {
 		t.Fatalf("migrate v22 database: %v", err)
 	}
 	defer db.Close()
-	if version := readUserVersion(t, db); version != 23 {
-		t.Fatalf("migrated schema version=%d, want 23", version)
+	if version := readUserVersion(t, db); version != CurrentSchemaVersion {
+		t.Fatalf("migrated schema version=%d, want %d", version, CurrentSchemaVersion)
 	}
 	authority, err := NewAuthorityStore(db)
 	if err != nil {
@@ -92,7 +98,7 @@ func TestP138D14MigratesV22AuditRowsAndAddsCleanupFailureRecords(t *testing.T) {
 		t.Fatal("audit append-only trigger was not restored by migration")
 	}
 	var count int
-	if err := db.QueryRow("SELECT count(*) FROM runner_schema_migrations").Scan(&count); err != nil || count != 23 {
-		t.Fatalf("migration ledger count=%d err=%v, want 23", count, err)
+	if err := db.QueryRow("SELECT count(*) FROM runner_schema_migrations").Scan(&count); err != nil || count != CurrentSchemaVersion {
+		t.Fatalf("migration ledger count=%d err=%v, want %d", count, err, CurrentSchemaVersion)
 	}
 }

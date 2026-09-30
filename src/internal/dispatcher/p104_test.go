@@ -2,6 +2,8 @@ package dispatcher
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,9 +115,9 @@ func TestP104RefreshCommandProjectionReadsAuthoritativeTerminalState(t *testing.
 	if projection.CommandID != intent.CommandID || projection.SessionID != intent.SessionID || projection.State != domain.CommandStateSucceeded || projection.FinalEventSequence == nil || *projection.FinalEventSequence != 4 || !projection.OutputComplete || projection.IsStale {
 		t.Fatalf("refreshed command projection=%+v", projection)
 	}
-	reconciled, err := authority.GetLocalIntent(ctx, intent.IntentID)
-	if err != nil || reconciled.DeliveryState != store.LocalIntentReconciled {
-		t.Fatalf("terminal target read did not reconcile the intent: state=%s err=%v", reconciled.DeliveryState, err)
+	accepted, err := authority.GetLocalIntent(ctx, intent.IntentID)
+	if err != nil || accepted.DeliveryState != store.LocalIntentAccepted {
+		t.Fatalf("terminal target read bypassed event-boundary reconciliation: state=%s err=%v", accepted.DeliveryState, err)
 	}
 	if len(caller.frames) != 1 || caller.frames[0].Operation != sshbridge.OperationGetCommand || caller.frames[0].ResourceID != "" || caller.frames[0].IdempotencyKey != "" {
 		t.Fatalf("command state read frame=%+v, want frozen read fields only", caller.frames)
@@ -139,11 +141,14 @@ func (c *p104RefreshCommandCaller) Call(_ context.Context, frame sshbridge.Reque
 	if frame.Operation != sshbridge.OperationGetCommand {
 		return sshbridge.ReplyFrame{}, fmt.Errorf("unexpected operation %s", frame.Operation)
 	}
+	digest := sha256.Sum256(c.intent.ScriptBytes)
 	payload, err := json.Marshal(map[string]any{
 		"command_id": string(c.intent.CommandID), "session_id": string(c.intent.SessionID), "ordinal": 1,
 		"command_state": "succeeded", "exit_code": 0, "final_event_sequence": 4,
 		"output_complete": true, "output_truncated": false,
+		"script_sha256": hex.EncodeToString(digest[:]), "script_byte_count": len(c.intent.ScriptBytes),
 		"execution_target": map[string]string{"kind": "remote", "profile": "linux-host"},
+		"authority":        "remote",
 		"controller":       map[string]string{"controller_type": "queued_mac", "controller_id": "tomasz.walczuk"},
 		"environment":      "dev", "source": map[string]string{"mode": "empty"},
 		"capabilities": map[string]any{

@@ -59,6 +59,9 @@ type RemoteDriver struct {
 	now           func() time.Time
 	sessionMu     sync.RWMutex
 	sessionStates map[domain.SessionID]domain.SessionState
+	reconcileMu   sync.Mutex
+	runCursor     *store.RemoteIntentCursor
+	submitCursor  *store.RemoteIntentCursor
 }
 
 // NewRemoteDriver constructs a lease-owning remote driver.

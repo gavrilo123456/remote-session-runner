@@ -107,7 +107,7 @@ response_bytes, response_sha256, acknowledged_at
 		t.Fatal(err)
 	}
 	defer db.Close()
-	authority, err := NewAuthorityStore(db)
+	authority, err := NewAuthorityStoreWithClock(db, func() time.Time { return base.Add(time.Hour) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +120,31 @@ response_bytes, response_sha256, acknowledged_at
 	wantAckDeadline := ackTime.Add(MailboxAckedResponseLifetime)
 	if err != nil || ackedRecord.AcknowledgedAt == nil || !ackedRecord.AcknowledgedAt.Equal(ackTime) || ackedRecord.ResponseCleanupAt == nil || !ackedRecord.ResponseCleanupAt.Equal(wantAckDeadline) {
 		t.Fatalf("migrated acknowledged response=%+v err=%v, want cleanup deadline %s", ackedRecord, err, wantAckDeadline)
+	}
+
+	var rawCleanupDeadline sql.NullString
+	if err := db.QueryRowContext(context.Background(), `SELECT response_cleanup_at FROM mailbox_exchanges WHERE request_id = ?`, "req-p091-migration").Scan(&rawCleanupDeadline); err != nil {
+		t.Fatal(err)
+	}
+	if rawCleanupDeadline.Valid {
+		t.Fatalf("migration unexpectedly persisted cleanup deadline %q", rawCleanupDeadline.String)
+	}
+	controller, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, "tomasz.walczuk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishable, err := authority.ListPublishableTerminalMailboxExchanges(context.Background(), controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotPublishable := map[string]bool{}
+	for _, exchange := range publishable {
+		gotPublishable[exchange.RequestID] = true
+	}
+	for _, requestID := range []string{"req-p091-migration", "req-p091-migration-ack"} {
+		if !gotPublishable[requestID] {
+			t.Fatalf("publishable historical records=%v, missing %s", gotPublishable, requestID)
+		}
 	}
 }
 

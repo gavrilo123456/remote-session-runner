@@ -76,9 +76,25 @@ type LocalIntentCreate struct {
 // ScriptBytes are exact copies of the accepted request data.
 type LocalIntentRecord struct {
 	LocalIntentCreate
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// RemoteTerminalProofVersion distinguishes P149 strict terminal proof from
+	// the older delivery_state=reconciled marker. It is zero for records created
+	// before that proof was introduced and does not imply target execution.
+	RemoteTerminalProofVersion int
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
 }
+
+// RemoteIntentCursor is the durable-order position used by the in-memory
+// Router recovery scan. It is an exclusive cursor: the next page begins after
+// this (created_at, intent_id) pair.
+type RemoteIntentCursor struct {
+	CreatedAt time.Time
+	IntentID  domain.IntentID
+}
+
+// RemoteTerminalProofP149 identifies the durable strict-read and event-boundary
+// proof used before a remote terminal projection becomes externally visible.
+const RemoteTerminalProofP149 = 1
 
 // LocalIntentLifecycleRecord is one immutable local intent lifecycle entry.
 type LocalIntentLifecycleRecord struct {
@@ -422,6 +438,65 @@ VALUES (?, ?, ?, ?, ?, ?)
 	})
 }
 
+// HasRemoteTerminalProof reports whether a remote submit or one-off run has
+// crossed the durable P149 terminal-proof boundary. delivery_state alone is
+// insufficient because older Router versions used reconciled for a weaker
+// terminal observation.
+func HasRemoteTerminalProof(record LocalIntentRecord) bool {
+	return record.Target.Kind() == domain.TargetKindRemote &&
+		(record.Operation == localIntentSubmitCommandOperation || record.Operation == localIntentRunOperation) &&
+		record.DeliveryState == LocalIntentReconciled &&
+		record.RemoteTerminalProofVersion >= RemoteTerminalProofP149
+}
+
+// MarkRemoteIntentTerminalProof atomically records the strict terminal proof
+// after the dispatcher has performed its target GET and event-boundary checks.
+// It can upgrade a legacy reconciled row, but never dispatches or replays the
+// immutable mutation.
+func (s *AuthorityStore) MarkRemoteIntentTerminalProof(ctx context.Context, id domain.IntentID, reason string) (LocalIntentRecord, error) {
+	validatedID, err := domain.NewIntentID(string(id))
+	if err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("%w: intent ID: %v", ErrInvalidLocalIntent, err)
+	}
+	if strings.TrimSpace(reason) == "" || len(reason) > 256 || strings.IndexByte(reason, 0) >= 0 {
+		return LocalIntentRecord{}, fmt.Errorf("%w: terminal proof reason", ErrLocalIntentTransition)
+	}
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+		current, err := readLocalIntentOnConnection(ctx, connection, validatedID)
+		if err != nil {
+			return LocalIntentRecord{}, err
+		}
+		if current.Target.Kind() != domain.TargetKindRemote || (current.Operation != localIntentSubmitCommandOperation && current.Operation != localIntentRunOperation) {
+			return LocalIntentRecord{}, fmt.Errorf("%w: terminal proof requires a remote submit or run", ErrLocalIntentTransition)
+		}
+		if current.DeliveryState != LocalIntentAccepted && current.DeliveryState != LocalIntentReconciled {
+			return LocalIntentRecord{}, fmt.Errorf("%w: terminal proof from %s", ErrLocalIntentTransition, current.DeliveryState)
+		}
+		if HasRemoteTerminalProof(current) {
+			return current, nil
+		}
+		now := s.now().UTC()
+		if _, err := connection.ExecContext(ctx, `
+UPDATE local_intents
+SET delivery_state = ?, remote_terminal_proof_version = ?, reason = ?, updated_at = ?
+WHERE intent_id = ?
+`, string(LocalIntentReconciled), RemoteTerminalProofP149, reason, formatStoredTime(now), string(validatedID)); err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("record remote terminal proof: %w", err)
+		}
+		var sequence int64
+		if err := connection.QueryRowContext(ctx, `SELECT COALESCE(MAX(lifecycle_sequence), 0) + 1 FROM local_intent_lifecycle WHERE intent_id = ?`, string(validatedID)).Scan(&sequence); err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("allocate remote terminal proof lifecycle sequence: %w", err)
+		}
+		if _, err := connection.ExecContext(ctx, `
+INSERT INTO local_intent_lifecycle (intent_id, lifecycle_sequence, previous_state, new_state, reason, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, string(validatedID), sequence, string(current.DeliveryState), string(LocalIntentReconciled), reason, formatStoredTime(now)); err != nil {
+			return LocalIntentRecord{}, fmt.Errorf("record remote terminal proof lifecycle: %w", err)
+		}
+		return readLocalIntentOnConnection(ctx, connection, validatedID)
+	})
+}
+
 // ClaimLocalIntent claims one eligible recorded intent for owner and assigns
 // a bounded lease. The claim, state transition, attempt increment, and
 // lifecycle row commit together.
@@ -502,6 +577,82 @@ func (s *AuthorityStore) ListEligibleLocalIntents(ctx context.Context, limit int
 		rows, err := connection.QueryContext(ctx, eligibleLocalIntentQuery+" LIMIT ?", formatStoredTime(now), limit)
 		if err != nil {
 			return nil, fmt.Errorf("list eligible local intents: %w", err)
+		}
+		defer rows.Close()
+		return readLocalIntentRows(ctx, connection, rows)
+	})
+}
+
+// ListAcceptedRemoteRunIntents returns one-off remote runs whose target
+// accepted the immutable mutation but whose terminal job, command, and event
+// projection still needs reconciliation on the Mac. Selection is deliberately
+// ingress-neutral: a Router restart must recover API and mailbox runs alike.
+func (s *AuthorityStore) ListAcceptedRemoteRunIntents(ctx context.Context, limit int) ([]LocalIntentRecord, error) {
+	return s.ListAcceptedRemoteRunIntentsAfter(ctx, limit, nil)
+}
+
+// ListAcceptedRemoteRunIntentsAfter returns the next recovery page after an
+// exclusive durable-order cursor. The cursor lets a bounded Router cycle rotate
+// through older active records instead of repeatedly pinning the first page.
+func (s *AuthorityStore) ListAcceptedRemoteRunIntentsAfter(ctx context.Context, limit int, after *RemoteIntentCursor) ([]LocalIntentRecord, error) {
+	return s.listAcceptedRemoteIntentsAfter(ctx, localIntentRunOperation, limit, after)
+}
+
+// ListAcceptedRemoteSubmitIntents returns remote session commands whose target
+// accepted the immutable mutation but whose target state and event boundary
+// have not yet been reconciled on the Mac. Selection is ingress-neutral so a
+// Router restart recovers API and mailbox commands in the same way.
+func (s *AuthorityStore) ListAcceptedRemoteSubmitIntents(ctx context.Context, limit int) ([]LocalIntentRecord, error) {
+	return s.ListAcceptedRemoteSubmitIntentsAfter(ctx, limit, nil)
+}
+
+// ListAcceptedRemoteSubmitIntentsAfter returns the next recovery page after
+// an exclusive durable-order cursor. It has the same selection semantics as
+// ListAcceptedRemoteSubmitIntents and changes only which bounded page is read.
+func (s *AuthorityStore) ListAcceptedRemoteSubmitIntentsAfter(ctx context.Context, limit int, after *RemoteIntentCursor) ([]LocalIntentRecord, error) {
+	return s.listAcceptedRemoteIntentsAfter(ctx, localIntentSubmitCommandOperation, limit, after)
+}
+
+func (s *AuthorityStore) listAcceptedRemoteIntentsAfter(ctx context.Context, operation string, limit int, after *RemoteIntentCursor) ([]LocalIntentRecord, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		return nil, fmt.Errorf("%w: accepted remote %s limit exceeds 1000", ErrInvalidLocalIntent, operation)
+	}
+	if operation != localIntentRunOperation && operation != localIntentSubmitCommandOperation {
+		return nil, fmt.Errorf("%w: accepted remote operation %q", ErrInvalidLocalIntent, operation)
+	}
+	var cursor *RemoteIntentCursor
+	if after != nil {
+		if after.CreatedAt.IsZero() {
+			return nil, fmt.Errorf("%w: accepted remote cursor time", ErrInvalidLocalIntent)
+		}
+		intentID, err := domain.NewIntentID(string(after.IntentID))
+		if err != nil {
+			return nil, fmt.Errorf("%w: accepted remote cursor intent ID: %v", ErrInvalidLocalIntent, err)
+		}
+		cursor = &RemoteIntentCursor{CreatedAt: after.CreatedAt.UTC(), IntentID: intentID}
+	}
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]LocalIntentRecord, error) {
+		query := `
+SELECT intent_id FROM local_intents
+WHERE operation = ? AND target_kind = 'remote'
+  AND (delivery_state = 'accepted' OR (delivery_state = 'reconciled' AND remote_terminal_proof_version < ?))`
+		arguments := []any{operation, RemoteTerminalProofP149}
+		if cursor != nil {
+			query += `
+  AND (created_at > ? OR (created_at = ? AND intent_id > ?))`
+			createdAt := formatStoredTime(cursor.CreatedAt)
+			arguments = append(arguments, createdAt, createdAt, string(cursor.IntentID))
+		}
+		query += `
+ORDER BY created_at, intent_id
+LIMIT ?`
+		arguments = append(arguments, limit)
+		rows, err := connection.QueryContext(ctx, query, arguments...)
+		if err != nil {
+			return nil, fmt.Errorf("list accepted remote %s intents: %w", operation, err)
 		}
 		defer rows.Close()
 		return readLocalIntentRows(ctx, connection, rows)
@@ -990,6 +1141,7 @@ func readLocalIntentOnConnection(ctx context.Context, connection *sql.Conn, id d
 	var requestHashVersion int
 	var requestHash, payload, scriptBytes, scriptHash []byte
 	var idempotencyKey, deliveryState, reason, leaseOwner string
+	var remoteTerminalProofVersion int
 	var leaseExpires sql.NullString
 	var ordinal sql.NullInt64
 	var attemptCount int
@@ -999,14 +1151,14 @@ SELECT intent_id, operation, resource_id, session_id, command_id, job_id,
  target_kind, target_profile, environment, controller_type, controller_id,
  source_mode, source_repository_alias, source_requested_revision, source_path,
  request_hash_version, request_hash, idempotency_key, payload_json,
- script_bytes, script_sha256, intent_ordinal, delivery_state, reason,
- lease_owner, lease_expires_at, attempt_count, created_at, updated_at
+	 script_bytes, script_sha256, intent_ordinal, delivery_state, reason, remote_terminal_proof_version,
+	 lease_owner, lease_expires_at, attempt_count, created_at, updated_at
 FROM local_intents WHERE intent_id = ?
 `, string(id)).Scan(&intentID, &operation, &resourceID, &sessionID, &commandID, &jobID,
 		&targetKind, &targetProfile, &environment, &controllerType, &controllerID,
 		&sourceMode, &repositoryAlias, &requestedRevision, &sourcePath,
 		&requestHashVersion, &requestHash, &idempotencyKey, &payload,
-		&scriptBytes, &scriptHash, &ordinal, &deliveryState, &reason,
+		&scriptBytes, &scriptHash, &ordinal, &deliveryState, &reason, &remoteTerminalProofVersion,
 		&leaseOwner, &leaseExpires, &attemptCount, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LocalIntentRecord{}, ErrLocalIntentNotFound
@@ -1034,7 +1186,7 @@ FROM local_intents WHERE intent_id = ?
 	if err != nil {
 		return LocalIntentRecord{}, fmt.Errorf("%w: request hash: %v", ErrLocalIntentPayloadCorrupt, err)
 	}
-	if !validLocalIntentOperation(operation) || !validLocalIntentDeliveryState(deliveryState) || attemptCount < 0 {
+	if !validLocalIntentOperation(operation) || !validLocalIntentDeliveryState(deliveryState) || remoteTerminalProofVersion < 0 || attemptCount < 0 {
 		return LocalIntentRecord{}, fmt.Errorf("%w: state metadata", ErrLocalIntentPayloadCorrupt)
 	}
 	var intentOrdinal *int64
@@ -1072,7 +1224,7 @@ FROM local_intents WHERE intent_id = ?
 	if !bytes.Equal(computedScriptHash[:], scriptHash) {
 		return LocalIntentRecord{}, fmt.Errorf("%w: script hash mismatch", ErrLocalIntentPayloadCorrupt)
 	}
-	record = LocalIntentRecord{LocalIntentCreate: LocalIntentCreate{IntentID: validatedID, Operation: operation, ResourceID: resourceID, Target: target, Environment: environment, Controller: controller, Source: source, RequestHash: hash, IdempotencyKey: idempotencyKey, PayloadJSON: append([]byte(nil), payload...), ScriptBytes: append([]byte(nil), scriptBytes...), IntentOrdinal: intentOrdinal, DeliveryState: LocalIntentDeliveryState(deliveryState), Reason: reason, LeaseOwner: leaseOwner, LeaseExpiresAt: leaseTime, AttemptCount: attemptCount}, CreatedAt: created, UpdatedAt: updated}
+	record = LocalIntentRecord{LocalIntentCreate: LocalIntentCreate{IntentID: validatedID, Operation: operation, ResourceID: resourceID, Target: target, Environment: environment, Controller: controller, Source: source, RequestHash: hash, IdempotencyKey: idempotencyKey, PayloadJSON: append([]byte(nil), payload...), ScriptBytes: append([]byte(nil), scriptBytes...), IntentOrdinal: intentOrdinal, DeliveryState: LocalIntentDeliveryState(deliveryState), Reason: reason, LeaseOwner: leaseOwner, LeaseExpiresAt: leaseTime, AttemptCount: attemptCount}, RemoteTerminalProofVersion: remoteTerminalProofVersion, CreatedAt: created, UpdatedAt: updated}
 	if sessionID != "" {
 		record.SessionID, err = domain.NewSessionID(sessionID)
 		if err != nil {

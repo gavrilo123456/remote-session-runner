@@ -26,6 +26,7 @@ import (
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
+	"remote-session-runner/src/internal/unixsocket"
 )
 
 const DefaultMaxBodyBytes int64 = domain.MaxSerializedRequestBytes
@@ -60,6 +61,8 @@ type Server struct {
 	maxBodyBytes   int64
 	httpServer     *http.Server
 	listener       net.Listener
+	socketCreated  bool
+	socketInfo     os.FileInfo
 	requestGate    *lifecycle.Gate
 	cancelRequests context.CancelFunc
 	mu             sync.Mutex
@@ -121,8 +124,16 @@ func (s *Server) Listen() error {
 	if s == nil {
 		return ErrConfiguration
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listener != nil {
 		return nil
+	}
+	// A process crash leaves the AF_UNIX pathname behind. Remove only a stale
+	// socket owned by this account; a live listener, a non-socket path, and an
+	// object owned by somebody else remain a hard failure.
+	if err := unixsocket.RemoveStaleOwned(s.socketPath); err != nil {
+		return fmt.Errorf("%w: %v", ErrSocketPath, err)
 	}
 	if info, err := os.Lstat(s.socketPath); err == nil {
 		return fmt.Errorf("%w: socket path already exists as %s", ErrSocketPath, info.Mode().Type())
@@ -133,12 +144,27 @@ func (s *Server) Listen() error {
 	if err != nil {
 		return fmt.Errorf("%w: listen: %v", ErrSocketPath, err)
 	}
+	unixListener, ok := listener.(*net.UnixListener)
+	if !ok {
+		_ = listener.Close()
+		return fmt.Errorf("%w: listener is not a Unix socket", ErrSocketPath)
+	}
+	unixListener.SetUnlinkOnClose(false)
+	socketInfo, err := os.Lstat(s.socketPath)
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("%w: inspect newly created socket: %v", ErrSocketPath, err)
+	}
 	if err := os.Chmod(s.socketPath, 0o600); err != nil {
 		_ = listener.Close()
-		_ = os.Remove(s.socketPath)
+		if current, statErr := os.Lstat(s.socketPath); statErr == nil && os.SameFile(socketInfo, current) {
+			_ = os.Remove(s.socketPath)
+		}
 		return fmt.Errorf("%w: chmod socket: %v", ErrSocketPath, err)
 	}
 	s.listener = listener
+	s.socketCreated = true
+	s.socketInfo = socketInfo
 	s.httpServer.Handler = http.HandlerFunc(s.serveHTTP)
 	return nil
 }
@@ -204,7 +230,9 @@ func (s *Server) CancelRequests() {
 	}
 }
 
-// CloseStreams closes active HTTP streams and removes the owned socket path.
+// CloseStreams closes active HTTP streams and removes only the Unix socket
+// pathname this server created. A later replacement listener must be left
+// untouched, even when both processes run as the same Mac account.
 func (s *Server) CloseStreams() error {
 	if s == nil {
 		return ErrConfiguration
@@ -216,6 +244,10 @@ func (s *Server) CloseStreams() error {
 	}
 	s.closed = true
 	listener := s.listener
+	socketCreated := s.socketCreated
+	socketInfo := s.socketInfo
+	s.socketCreated = false
+	s.socketInfo = nil
 	s.mu.Unlock()
 	s.CancelRequests()
 
@@ -228,11 +260,23 @@ func (s *Server) CloseStreams() error {
 	if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 		closeErr = errors.Join(closeErr, err)
 	}
-	removeErr := os.Remove(s.socketPath)
-	if errors.Is(removeErr, os.ErrNotExist) {
-		removeErr = nil
+	if !socketCreated {
+		return closeErr
 	}
-	return errors.Join(closeErr, removeErr)
+	info, err := os.Lstat(s.socketPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return closeErr
+	}
+	if err != nil {
+		return errors.Join(closeErr, fmt.Errorf("inspect local API socket during shutdown: %w", err))
+	}
+	if info.Mode()&os.ModeSocket == 0 || socketInfo == nil || !os.SameFile(socketInfo, info) {
+		return errors.Join(closeErr, fmt.Errorf("refuse to remove replaced local API socket path %q", s.socketPath))
+	}
+	if err := os.Remove(s.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		closeErr = errors.Join(closeErr, fmt.Errorf("remove local API socket: %w", err))
+	}
+	return closeErr
 }
 
 func (s *Server) Close(ctx context.Context) error {
@@ -998,10 +1042,13 @@ func (s *Server) handleGetCommand(response http.ResponseWriter, request *http.Re
 	if remoteProjectionEligible(record) {
 		projection, projectionErr := s.authority.GetRemoteCommandProjection(request.Context(), commandID)
 		if projectionErr == nil {
-			writeJSON(response, http.StatusOK, commandRead{View: "projection", IsStale: projection.IsStale, Resource: commandProjectionResourceFromProjection(projection)})
-			return
-		}
-		if !errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
+			// Terminal remote state must cross the same durable strict-proof
+			// boundary for direct API readers as it does for mailbox readers.
+			if !projection.State.IsTerminal() || store.HasRemoteTerminalProof(record) {
+				writeJSON(response, http.StatusOK, commandRead{View: "projection", IsStale: projection.IsStale, Resource: commandProjectionResourceFromProjection(projection)})
+				return
+			}
+		} else if !errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
 			status, code := statusForStoreError(projectionErr)
 			writeError(response, status, code, sanitizeError(projectionErr))
 			return
@@ -1083,7 +1130,7 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 			writeError(response, http.StatusConflict, "events_unavailable", "remote command events are not available before remote acceptance")
 			return
 		}
-		s.handleMirroredRemoteEvents(response, request, commandID, after, follow)
+		s.handleMirroredRemoteEvents(response, request, commandID, after, follow, intent)
 		return
 	}
 	command, err := s.authority.GetCommand(request.Context(), commandID)
@@ -1240,7 +1287,7 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 // handleMirroredRemoteEvents serves only the durable Mac mirror. It does not
 // contact the remote authority; the Router owns transport and advances the
 // cursor before an event becomes visible here.
-func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, request *http.Request, commandID domain.CommandID, after int64, follow bool) {
+func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, request *http.Request, commandID domain.CommandID, after int64, follow bool, intent store.LocalIntentRecord) {
 	projection, projectionErr := s.authority.GetRemoteCommandProjection(request.Context(), commandID)
 	if errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
 		writeError(response, http.StatusConflict, "events_unavailable", "remote command events are not available until the authoritative command ordinal is projected")
@@ -1253,6 +1300,10 @@ func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, reques
 	}
 	if projection.Ordinal < 1 {
 		writeError(response, http.StatusConflict, "events_unavailable", "remote command events are not available until the authoritative command ordinal is projected")
+		return
+	}
+	if projection.State.IsTerminal() && !store.HasRemoteTerminalProof(intent) {
+		writeError(response, http.StatusConflict, "events_unavailable", "terminal remote command events await reconciliation")
 		return
 	}
 	ordinal := projection.Ordinal
@@ -1291,6 +1342,10 @@ func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, reques
 		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "stored remote events could not be encoded")
 		return
 	}
+	if remoteEventsContainTerminal(events) && !store.HasRemoteTerminalProof(intent) {
+		writeError(response, http.StatusConflict, "events_unavailable", "terminal remote command events await reconciliation")
+		return
+	}
 	lastSequence := after
 	if len(events) > 0 {
 		lastSequence = events[len(events)-1].Sequence
@@ -1317,6 +1372,9 @@ func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, reques
 		for index, event := range values {
 			if event.Sequence <= last {
 				continue
+			}
+			if isTerminalLocalAPIEvent(event.Type) && !s.remoteCommandTerminalReconciled(request.Context(), commandID) {
+				return false
 			}
 			var frame []byte
 			if index < len(prepared) {
@@ -1361,6 +1419,23 @@ func (s *Server) handleMirroredRemoteEvents(response http.ResponseWriter, reques
 			}
 		}
 	}
+}
+
+func remoteEventsContainTerminal(events []store.RemoteEventRecord) bool {
+	for _, event := range events {
+		if isTerminalLocalAPIEvent(event.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteCommandTerminalReconciled reloads the intent because an event follower
+// may have started while the Router was still reconciling. A terminal event
+// crosses this API boundary only after that strict reconciliation completed.
+func (s *Server) remoteCommandTerminalReconciled(ctx context.Context, commandID domain.CommandID) bool {
+	intent, err := s.authority.GetLocalIntentByResource(ctx, "submit_command", string(commandID), s.owner)
+	return err == nil && store.HasRemoteTerminalProof(intent)
 }
 
 func encodeRemoteAPIEvent(event store.RemoteEventRecord, ordinal int64) ([]byte, error) {
@@ -1893,7 +1968,7 @@ func (s *Server) handleGetJob(response http.ResponseWriter, request *http.Reques
 		writeError(response, status, code, sanitizeError(err))
 		return
 	}
-	if remoteProjectionEligible(record) {
+	if remoteProjectionReconciled(record) {
 		projection, projectionErr := s.authority.GetRemoteJobProjection(request.Context(), jobID)
 		if projectionErr == nil {
 			writeJSON(response, http.StatusOK, jobProjectionRead{View: "projection", IsStale: projection.IsStale, Resource: jobProjectionResourceFromProjection(projection)})
@@ -2036,6 +2111,14 @@ func sessionIntentResourceFromRecord(record store.LocalIntentRecord) sessionInte
 
 func remoteProjectionEligible(record store.LocalIntentRecord) bool {
 	return record.Target.Kind() == domain.TargetKindRemote && (record.DeliveryState == store.LocalIntentAccepted || record.DeliveryState == store.LocalIntentReconciled)
+}
+
+// remoteProjectionReconciled permits a remote one-off-job projection to cross
+// the local API boundary only after the Router has independently read and
+// checked its job, command, and event boundary. An accepted job mutation
+// response alone is never sufficient evidence for a terminal result.
+func remoteProjectionReconciled(record store.LocalIntentRecord) bool {
+	return store.HasRemoteTerminalProof(record)
 }
 
 func capabilitiesResponseFromProjection(capabilities store.RemoteCapabilities) capabilitiesResponse {

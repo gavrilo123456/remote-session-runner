@@ -3,6 +3,8 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -13,11 +15,18 @@ import (
 	"remote-session-runner/src/internal/store"
 )
 
-// upsertRemoteProjectionFromReply records a complete remote snapshot when the
-// authority returned the projection fields. Older bridge fixtures intentionally
-// return only acceptance identity; those replies remain valid but cannot
-// manufacture a status projection.
+// upsertRemoteProjectionFromReply records a complete remote snapshot only for
+// session lifecycle mutations. Command and one-off run mutation replies prove
+// acceptance identity, not terminal state: their projections are written only
+// by strict target reads plus the matching event boundary.
 func (d *RemoteDriver) upsertRemoteProjectionFromReply(ctx context.Context, intent store.LocalIntentRecord, reply sshbridge.ReplyFrame) error {
+	// Status data in a command or run mutation reply is intentionally
+	// sparse-compatible, so it cannot become a locally trusted projection.
+	// Reconciliation persists command/job projections only from strict reads and
+	// the matching durable event boundary.
+	if intent.Operation == operationSubmitCommand || intent.Operation == "run" {
+		return nil
+	}
 	if reply.ResponseType != "result" {
 		return nil
 	}
@@ -32,22 +41,6 @@ func (d *RemoteDriver) upsertRemoteProjectionFromReply(ctx context.Context, inte
 			return err
 		}
 		_, err = d.authority.UpsertRemoteSessionProjection(ctx, projection)
-		return err
-	}
-	if intent.Operation == operationSubmitCommand {
-		projection, present, err := remoteCommandProjectionFromReply(intent, object, d.now())
-		if err != nil || !present {
-			return err
-		}
-		_, err = d.authority.UpsertRemoteCommandProjection(ctx, projection)
-		return err
-	}
-	if intent.Operation == "run" {
-		projection, present, err := remoteJobProjectionFromReply(intent, object, d.now())
-		if err != nil || !present {
-			return err
-		}
-		_, err = d.authority.UpsertRemoteJobProjection(ctx, projection)
 		return err
 	}
 	return nil
@@ -194,6 +187,272 @@ func remoteCommandProjectionFromReply(intent store.LocalIntentRecord, object map
 		result.OutputUnavailableReason = value
 	}
 	return result, true, nil
+}
+
+// strictRemoteCommandProjectionFromReadReply accepts only the complete
+// authoritative read contract. Mutation replies remain deliberately
+// sparse-compatible, but a recovery read must never fill missing identity or
+// authority context from the local intent and then treat it as target proof.
+func strictRemoteCommandProjectionFromReadReply(intent store.LocalIntentRecord, object map[string]json.RawMessage, fallback time.Time) (store.RemoteCommandProjection, error) {
+	if err := requireRemoteProjectionReadContext(intent, object); err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	if err := requireProjectionIdentity(object, "command_id", string(intent.CommandID), "command"); err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	if err := requireProjectionIdentity(object, "session_id", string(intent.SessionID), "command session"); err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	if err := requireProjectionScriptHash(object, intent.ScriptBytes); err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	if err := requireProjectionScriptByteCount(object, len(intent.ScriptBytes)); err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	if err := requireProjectionBools(object); err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	projection, present, err := remoteCommandProjectionFromReply(intent, object, fallback)
+	if err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	if !present {
+		return store.RemoteCommandProjection{}, fmt.Errorf("%w: command projection is incomplete", ErrRemoteResponse)
+	}
+	if err := validateStrictProjectionOutput(projection.State, projection.ExitCode, projection.FinalEventSequence, projection.OutputComplete, projection.OutputUnavailableReason); err != nil {
+		return store.RemoteCommandProjection{}, err
+	}
+	return projection, nil
+}
+
+// strictRemoteJobProjectionFromReadReply is the one-off-job counterpart to
+// strictRemoteCommandProjectionFromReadReply. It is used only by read-only
+// recovery, where a partial reply is not evidence that a completed job belongs
+// to the accepted local intent.
+func strictRemoteJobProjectionFromReadReply(intent store.LocalIntentRecord, object map[string]json.RawMessage, fallback time.Time) (store.RemoteJobProjection, error) {
+	if err := requireRemoteProjectionReadContext(intent, object); err != nil {
+		return store.RemoteJobProjection{}, err
+	}
+	if err := requireProjectionIdentity(object, "job_id", string(intent.JobID), "job"); err != nil {
+		return store.RemoteJobProjection{}, err
+	}
+	if err := requireProjectionIdentity(object, "session_id", string(intent.SessionID), "job session"); err != nil {
+		return store.RemoteJobProjection{}, err
+	}
+	if err := requireProjectionIdentity(object, "command_id", string(intent.CommandID), "job command"); err != nil {
+		return store.RemoteJobProjection{}, err
+	}
+	if err := requireProjectionBools(object); err != nil {
+		return store.RemoteJobProjection{}, err
+	}
+	projection, present, err := remoteJobProjectionFromReply(intent, object, fallback)
+	if err != nil {
+		return store.RemoteJobProjection{}, err
+	}
+	if !present {
+		return store.RemoteJobProjection{}, fmt.Errorf("%w: job projection is incomplete", ErrRemoteResponse)
+	}
+	if projection.CommandState != nil {
+		if err := validateStrictProjectionOutput(*projection.CommandState, projection.ExitCode, projection.FinalEventSequence, projection.OutputComplete, projection.OutputUnavailableReason); err != nil {
+			return store.RemoteJobProjection{}, err
+		}
+	} else if projection.ExitCode != nil || projection.FinalEventSequence != nil || projection.OutputComplete || projection.OutputTruncated || projection.OutputUnavailableReason != "" {
+		return store.RemoteJobProjection{}, fmt.Errorf("%w: job without command carries command output", ErrRemoteResponse)
+	}
+	return projection, nil
+}
+
+// requireRemoteProjectionReadContext checks context which would otherwise be
+// silently inherited from a local intent by the sparse-compatible parser.
+func requireRemoteProjectionReadContext(intent store.LocalIntentRecord, object map[string]json.RawMessage) error {
+	if _, present := object["execution_target"]; !present {
+		return fmt.Errorf("%w: missing projection execution_target", ErrRemoteResponse)
+	}
+	if _, err := projectionTarget(object, intent.Target); err != nil {
+		return err
+	}
+	expectedController, err := queuedRemoteController(intent.Controller)
+	if err != nil {
+		return err
+	}
+	if _, present := object["controller"]; !present {
+		return fmt.Errorf("%w: missing projection controller", ErrRemoteResponse)
+	}
+	if _, err := projectionController(object, expectedController); err != nil {
+		return err
+	}
+	authority, present, err := readProjectionString(object, "authority")
+	if err != nil || !present || authority != "remote" {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: projection authority", ErrRemoteResponse)
+	}
+	environment, present, err := readProjectionString(object, "environment")
+	if err != nil || !present || environment != intent.Environment {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: projection environment", ErrRemoteResponse)
+	}
+	if err := requireProjectionSource(object, intent.Source); err != nil {
+		return err
+	}
+	capabilities, present, err := projectionCapabilities(object)
+	if err != nil || !present {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: missing projection capabilities", ErrRemoteResponse)
+	}
+	if capabilities.HostClass == "" || capabilities.Isolation != string(domain.IsolationOSUser) || capabilities.EffectiveAccount != "ubuntu" || capabilities.ServiceLimits == nil {
+		return fmt.Errorf("%w: projection capabilities", ErrRemoteResponse)
+	}
+	if _, present, err := projectionObservedAt(object, time.Time{}); err != nil || !present {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: missing projection observed_at", ErrRemoteResponse)
+	}
+	return nil
+}
+
+func requireProjectionSource(object map[string]json.RawMessage, expected domain.Source) error {
+	raw, present := object["source"]
+	if !present || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: missing projection source", ErrRemoteResponse)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return fmt.Errorf("%w: projection source", ErrRemoteResponse)
+	}
+	modeRaw, present := fields["mode"]
+	if !present || bytes.Equal(bytes.TrimSpace(modeRaw), []byte("null")) {
+		return fmt.Errorf("%w: projection source mode", ErrRemoteResponse)
+	}
+	var mode string
+	if err := json.Unmarshal(modeRaw, &mode); err != nil || mode == "" || mode != string(expected.Mode()) {
+		return fmt.Errorf("%w: projection source mode", ErrRemoteResponse)
+	}
+	_, _, sourcePresent, err := projectionSource(object, expected)
+	if err != nil || !sourcePresent {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: missing projection source", ErrRemoteResponse)
+	}
+	return nil
+}
+
+func requireProjectionScriptHash(object map[string]json.RawMessage, script []byte) error {
+	actual, present, err := readProjectionString(object, "script_sha256")
+	if err != nil || !present {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: missing projection script_sha256", ErrRemoteResponse)
+	}
+	sum := sha256.Sum256(script)
+	if actual != hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("%w: projection script_sha256", ErrRemoteResponse)
+	}
+	return nil
+}
+
+func requireProjectionScriptByteCount(object map[string]json.RawMessage, expected int) error {
+	raw, present := object["script_byte_count"]
+	if !present || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: missing projection script_byte_count", ErrRemoteResponse)
+	}
+	var actual int
+	if err := json.Unmarshal(raw, &actual); err != nil || actual != expected {
+		return fmt.Errorf("%w: projection script_byte_count", ErrRemoteResponse)
+	}
+	return nil
+}
+
+func requireProjectionBools(object map[string]json.RawMessage) error {
+	for _, name := range []string{"output_complete", "output_truncated"} {
+		raw, present := object[name]
+		if !present || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return fmt.Errorf("%w: missing projection %s", ErrRemoteResponse, name)
+		}
+		var value bool
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return fmt.Errorf("%w: projection %s", ErrRemoteResponse, name)
+		}
+	}
+	return nil
+}
+
+func validateStrictProjectionOutput(state domain.CommandState, exitCode *int, final *int64, complete bool, reason string) error {
+	if !state.IsTerminal() {
+		if reason != "" || complete || final != nil {
+			return fmt.Errorf("%w: active command output contract", ErrRemoteResponse)
+		}
+		return nil
+	}
+	if final == nil || *final <= 0 {
+		return fmt.Errorf("%w: terminal command final event sequence", ErrRemoteResponse)
+	}
+	if minimum := minimumTerminalEventSequence(state); *final < minimum {
+		return fmt.Errorf("%w: terminal command final event sequence %d precedes required boundary %d", ErrRemoteResponse, *final, minimum)
+	}
+	if state == domain.CommandStateLost && complete {
+		return fmt.Errorf("%w: lost command claims complete output", ErrRemoteResponse)
+	}
+	if complete {
+		if reason != "" {
+			return fmt.Errorf("%w: complete command unavailable reason", ErrRemoteResponse)
+		}
+	} else {
+		switch reason {
+		case "capture_boundary_unconfirmed":
+			if state != domain.CommandStateLost {
+				return fmt.Errorf("%w: capture boundary requires lost command", ErrRemoteResponse)
+			}
+		case "remote_event_gap", "retention_expired":
+			// A remote suffix or an expired retained prefix makes output
+			// incomplete independently of the terminal command state.
+		default:
+			return fmt.Errorf("%w: terminal command unavailable reason", ErrRemoteResponse)
+		}
+	}
+	switch state {
+	case domain.CommandStateSucceeded:
+		if exitCode == nil || *exitCode != 0 {
+			return fmt.Errorf("%w: succeeded command exit code", ErrRemoteResponse)
+		}
+	case domain.CommandStateFailed:
+		if exitCode == nil || *exitCode == 0 {
+			return fmt.Errorf("%w: failed command exit code", ErrRemoteResponse)
+		}
+	}
+	return nil
+}
+
+// minimumTerminalEventSequence is implied by the frozen command-event
+// lifecycle. Every accepted command first emits command_queued. Only
+// cancellation and rejection can terminate directly from queued; every other
+// terminal state requires command_started before its terminal event.
+func minimumTerminalEventSequence(state domain.CommandState) int64 {
+	switch state {
+	case domain.CommandStateCancelled, domain.CommandStateRejected:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func requireProjectionIdentity(object map[string]json.RawMessage, field, expected, label string) error {
+	actual, present, err := readProjectionString(object, field)
+	if err != nil {
+		return err
+	}
+	if !present || actual != expected {
+		return fmt.Errorf("%w: %s identity", ErrRemoteResponse, label)
+	}
+	return nil
 }
 
 func readProjectionString(object map[string]json.RawMessage, name string) (string, bool, error) {

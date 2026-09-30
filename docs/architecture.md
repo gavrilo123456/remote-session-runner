@@ -118,6 +118,12 @@ Clients resume event reading from the last received sequence. A complete output
 claim requires a complete retained event history and `output_complete: true`
 without `output_truncated: true`.
 
+A terminal event closes the command event history: no later event is valid.
+For queued remote one-off work recovered after a Mac restart, the Mac Router
+reads the remote job, command, and event state but never resends the accepted
+run. It presents a terminal result only when the identity, target context,
+teardown, and retained event boundary form one consistent snapshot.
+
 ## Security and operating boundaries
 
 | Boundary | What enforces it | Practical consequence |
