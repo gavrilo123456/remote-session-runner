@@ -1,43 +1,40 @@
-# Setup runbook
+# Setup and upgrade runbook
 
-Use this runbook to install or refresh the selected two-host PoC. Make
-versioned changes in the Mac checkout, commit and push them, then fast-forward
-the Ubuntu checkout before building or installing there. Keep all runtime
-configuration, keys, certificates, database files, and logs outside Git.
+Use this runbook to install or refresh the controlled PoC. Versioned source,
+tests, deployment files, and documentation are changed only in the Mac
+checkout. Commit and push the Mac work first; then fast-forward the clean
+Ubuntu checkout before any Ubuntu build, installation, or test. Runtime
+configuration, credentials, logs, databases, and output stay outside Git.
 
 ## Before you start
 
-| Requirement | Mac | Ubuntu |
+| Requirement | Mac | Current Ubuntu host |
 | --- | --- | --- |
-| Selected account | `tomasz.walczuk` | `ubuntu` (UID `1001`) |
+| Account | `tomasz.walczuk` | `ubuntu` |
 | Checkout | `/Users/tomasz.walczuk/projects/remote-session-runner` | `/home/ubuntu/projects/remote-session-runner` |
-| Go toolchain | `.../toolchains/go1.27.1/bin/go` below the Mac service root | `.../toolchains/go1.27.1/bin/go` below the Ubuntu service root |
+| Go toolchain | `.../RemoteSessionRunner/toolchains/go1.27.1/bin/go` | `.../remote-session-runner/toolchains/go1.27.1/bin/go` |
 | Service manager | GUI launchd | systemd with noninteractive `sudo` for unit installation |
-| Direct remote transport | Direct client CA, certificate, and private key | Server certificate/key, trusted client CA, principal map |
+| Direct route | Client CA, certificate, and private key | Server certificate/key, trusted client CA, principal map |
 
-The Linux host must have the configured address `10.0.0.200:8443`; clients use
-the public URL `https://129.151.232.40:8443`. The listener binds to the former,
-not the latter.
-
-The deployment scripts intentionally do not download a compiler. Provision the
-selected verified Go 1.27.1 toolchain at the exact service-root path before
-installing a service, then verify it on each host:
+The current Linux host binds `10.0.0.200:8443`; clients use
+`https://129.151.232.40:8443`. These values apply only to `linux-host`.
 
 ```sh
-# Mac - tomasz.walczuk
+# Mac — tomasz.walczuk
 "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/toolchains/go1.27.1/bin/go" version
-# Expected platform suffix: darwin/arm64
 
-# Ubuntu - ubuntu
+# Current Ubuntu — ubuntu
 "/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go" version
-# Expected platform suffix: linux/amd64
 ```
 
-## 1. Synchronize source before a host deployment
+Expected platform suffixes are `darwin/arm64` and `linux/amd64`. The deployment
+scripts do not download Go.
 
-Run these commands only after reviewing and committing the intended change.
+## 1. Synchronize a versioned revision
 
-### Mac - `tomasz.walczuk`
+Perform this after reviewing and committing the intended change.
+
+### Mac — `tomasz.walczuk`
 
 ```sh
 cd /Users/tomasz.walczuk/projects/remote-session-runner
@@ -46,10 +43,10 @@ git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -
 git rev-parse HEAD
 ```
 
-### Ubuntu - `ubuntu`
+### Current Ubuntu — `ubuntu`
 
 Only pull into a clean `dev` checkout. Do not edit tracked Runner files on
-Ubuntu and do not copy source files there.
+Ubuntu or copy source there.
 
 ```sh
 cd /home/ubuntu/projects/remote-session-runner
@@ -58,29 +55,29 @@ git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o Identit
 git rev-parse HEAD
 ```
 
-Compare the two commit IDs before an Ubuntu build or test. If either worktree
-is dirty or the pull cannot fast-forward, stop and resolve that Git state first.
+Compare the resulting commit IDs. If either checkout is dirty or the pull
+cannot fast-forward, stop at that Git state. Do not reset, force-push, or run a
+host deployment against an unpushed revision.
 
-## 2. Install the Mac services
+## 2. First Mac installation
 
-### Mac - `tomasz.walczuk`
+### Mac — `tomasz.walczuk`
 
-The first installer run creates the selected config file then intentionally
-stops for review:
+The first installer invocation creates the V1 compatibility config and stops:
 
 ```sh
 cd /Users/tomasz.walczuk/projects/remote-session-runner
 deploy/macos/install-launchagents.sh
 ```
 
-Review the created file:
+Review the created owner-only file:
 
 ```text
 /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.yaml
 ```
 
-Before the second run, provision these owner-only regular files beneath the
-Mac service root. Do not print their contents:
+Before the second invocation, provision these regular owner-only files beneath
+the Mac service root. Do not print their contents:
 
 ```text
 secrets/poc-ca.pem
@@ -90,21 +87,23 @@ secrets/dispatcher_ed25519
 secrets/ssh_known_hosts
 ```
 
-Set config and secrets to mode `0600`, then rerun the installer:
+Set config and secret files to mode `0600`, then install:
 
 ```sh
+# Mac — tomasz.walczuk
 cd /Users/tomasz.walczuk/projects/remote-session-runner
 deploy/macos/install-launchagents.sh
 ```
 
-It builds `runner`, `runner-local`, and `runner-locald`, installs two
-LaunchAgents, and restarts them in the current GUI user domain. Schedule a
-refresh while no important work is running, because shutdown first drains then
-cancels or closes remaining work within its bounded shutdown window.
+The installer builds `runner`, `runner-local`, and `runner-locald`, installs
+two LaunchAgents, and starts them in the current GUI user domain. Use a quiet
+window because service shutdown first drains and then cancels or closes bounded
+remaining work.
 
-Verify the two services and their private health endpoints:
+Verify both services:
 
 ```sh
+# Mac — tomasz.walczuk
 root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
 launchctl print "gui/$(id -u)/com.remote-session-runner.local"
 launchctl print "gui/$(id -u)/com.remote-session-runner.locald"
@@ -112,12 +111,64 @@ curl --silent --show-error --fail --unix-socket "$root/run/local-api.sock" http:
 curl --silent --show-error --fail --unix-socket "$root/run/locald.sock" http://runner/health/ready
 ```
 
-## 3. Install the Ubuntu service
+## 3. Upgrade to version 2 or add an inbox
 
-### Ubuntu - `ubuntu`
+### Mac — `tomasz.walczuk`
 
-Before running the Linux installer, provision these regular owner-only files
-with mode `0600`:
+Use a reviewed candidate, not an in-place edit of the active config. Create
+one only when it does not already exist:
+
+```sh
+candidate='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml'
+if test -e "$candidate"; then
+  printf '%s\n' 'Candidate already exists; review it instead of overwriting it.'
+else
+  cp deploy/macos/mac.v2.yaml.example "$candidate"
+  chmod 600 "$candidate"
+fi
+```
+
+Edit the candidate as the owner to include the complete V2 policy. The current
+active P155 policy contains the legacy `default` root and the extra `analytics`
+root; see [configuration](configuration.md#version-2-installed-multi-inbox-policy).
+Keep every existing registered inbox ID/root unchanged. Do not write a
+candidate over `config/mac.yaml`.
+
+Activate the candidate:
+
+```sh
+# Mac — tomasz.walczuk
+cd /Users/tomasz.walczuk/projects/remote-session-runner
+deploy/macos/install-launchagents.sh --config \
+  "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml"
+```
+
+The upgrade sequence is deliberate:
+
+1. validate the candidate while the old ingress is live;
+2. quiesce the services and perform a final **read-only** retained-mailbox
+   check;
+3. enter the no-rollback activation boundary, register the candidate roots,
+   hand off `mac.yaml`, and start the V2 services.
+
+For a schema-24 database, the final pre-boundary check treats retained work as
+implicit `default` without writing it. The post-boundary activation can migrate
+to schema 27 and record the inbox registry. A V1 binary cannot safely reopen
+that namespaced database. Before the boundary, a failed candidate restores the
+prior services. After it, the staged candidate is retained for repair/re-run;
+do not attempt to revive V1. The independently reviewed `mac.next.yaml`
+remains after a successful install while a staged copy becomes active
+`mac.yaml`.
+
+Verify both V2 mailbox trees and the running service health before publishing
+new work. Use the native mailbox-client integration in [the mailbox guide](mailbox.md),
+not terminal-created request files.
+
+## 4. Install or refresh the current Ubuntu service
+
+### Current Ubuntu — `ubuntu`
+
+Before first installation, provision these regular owner-only `0600` files:
 
 ```text
 /home/ubuntu/.local/share/remote-session-runner/config/linux.yaml
@@ -127,40 +178,33 @@ with mode `0600`:
 /home/ubuntu/.local/share/remote-session-runner/secrets/client-ca.pem
 ```
 
-Use the selected values in [configuration](configuration.md). All service
-directories must be owned by `ubuntu` and mode `0700`.
-
 Install from the synchronized checkout:
 
 ```sh
+# Current Ubuntu — ubuntu
 cd /home/ubuntu/projects/remote-session-runner
 deploy/linux/install-systemd-service.sh
 sudo systemctl status runnerd.service --no-pager
 ```
 
-The installer builds `runnerd`, verifies its systemd unit, and enables the
-service. When upgrading an already active instance, it runs the checked-in
-read-only zero-active-work gate before the build and again immediately before
-restart, then restarts the service itself so the new binary is in use. It
-refuses the upgrade if either gate finds live sessions, commands, unreleased
-slots, or unfinished jobs. Schedule this during a maintenance window because
-the gate is not an admission fence; a request accepted after it is handled by
-the normal graceful shutdown path and has a truthful durable outcome.
+On an active service, the installer runs the checked-in zero-active-work test
+before build and immediately before restart. It refuses deployment if it sees
+sessions, commands, unreleased slots, or unfinished jobs. This is a
+point-in-time maintenance gate; normal graceful shutdown gives an honest
+outcome to work accepted after the check.
 
-Verify the private socket and expected listener:
+Verify the private service and selected listener:
 
 ```sh
+# Current Ubuntu — ubuntu
 root='/home/ubuntu/.local/share/remote-session-runner'
 curl --silent --show-error --fail --unix-socket "$root/run/runnerd.sock" http://runner/health/ready
 ss -lntH | grep '10.0.0.200:8443'
 ```
 
-## 4. Verify direct mTLS from the Mac
+## 5. Verify the direct Runner application route
 
-### Mac - `tomasz.walczuk`
-
-This checks the running Runner application through the public endpoint while
-keeping private-key contents private:
+### Mac — `tomasz.walczuk`
 
 ```sh
 root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
@@ -171,87 +215,43 @@ curl --silent --show-error --fail --max-time 15 \
   https://129.151.232.40:8443/health/ready
 ```
 
-A successful result proves the Runner readiness endpoint, mTLS identity, and
-public path at that moment. It does not configure the optional queued SSH
-route.
+A successful result proves the **current** Runner readiness endpoint, mTLS
+identity, and public path. The earlier temporary TLS probe proved transport
+only. Neither result proves queued bridge routing or mailbox delivery.
 
-## Optional: enable the queued SSH route
+## 6. Enable or refresh the queued bridge for `linux-host`
 
-The queued route is opt-in. It uses a permanent, restricted SSH bridge on
-Ubuntu and the existing owner-only Mac dispatcher key. It is separate from the
-direct mTLS route: a successful public HTTPS check does not make queued CLI or
-mailbox work available.
+The queued route is a separate, permanent restricted SSH bridge. It is required
+for `runner --endpoint local` remote work and mailbox remote overrides. It is
+not a general SSH shell and is independent of direct mTLS.
 
-Perform these steps only when this route is required and the Ubuntu service is
-already healthy.
-
-### Mac - `tomasz.walczuk`: install the permanent bridge
-
-The command derives and streams only the dispatcher **public** key. It does
-not print or copy the private key:
+### Current Ubuntu — `ubuntu`: verify or refresh
 
 ```sh
-root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
-ssh-keygen -y -f "$root/secrets/dispatcher_ed25519" |
-  ssh -F /dev/null \
-    -i /Users/tomasz.walczuk/.ssh/remote-session-runner \
-    -o IdentitiesOnly=yes \
-    -o BatchMode=yes \
-    -o StrictHostKeyChecking=yes \
-    -o GlobalKnownHostsFile=/dev/null \
-    -o 'UserKnownHostsFile="/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/ssh_known_hosts"' \
-    ubuntu@129.151.232.40 \
-    'cd /home/ubuntu/projects/remote-session-runner && deploy/ssh/install-queued-bridge.sh enable --dispatcher-public-key-stdin'
+cd /home/ubuntu/projects/remote-session-runner
+deploy/ssh/install-queued-bridge.sh status
 ```
 
-The installer refuses a different or duplicate dispatcher identity, unsafe
-paths or modes, a partial earlier installation, a dirty Ubuntu checkout, and a
-missing active `runnerd.service` socket. It creates these Ubuntu-owned files:
+The status command is read-only with respect to bridge authorization and
+persistent configuration. It checks the selected account, active service,
+private socket, path modes, pinned dispatcher identity, exact restricted
+`authorized_keys` entry, controller map, wrapper, and source revision. A
+source checkout advance must be followed by the normal Linux deployment so the
+bridge binary and manifest match the checked-out source revision.
+
+For a first installation, follow the bridge guide's public-key streaming
+procedure exactly:
 
 ```text
-/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge
-/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge-forced.sh
-/home/ubuntu/.local/share/remote-session-runner/config/ssh-controller-map.yaml
-/home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-dispatcher.pub
-/home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-bridge.manifest
+deploy/ssh/install-queued-bridge.sh enable --dispatcher-public-key-stdin
 ```
 
-It records one exact `restrict,command=...` key in
-`/home/ubuntu/.ssh/authorized_keys` only after the bridge files have been
-staged and validated. The bridge permits only `runner-ssh-bridge --stdio`,
-forwards only to `runnerd.sock`, and does not create a general remote shell.
+It accepts only the dispatcher **public** key, records a constrained forced
+command, and never prints or transfers the private key. See
+[deploy/ssh/README.md](../deploy/ssh/README.md) for the exact controlled
+procedure.
 
-### Ubuntu - `ubuntu`: verify the permanent route
-
-```sh
-cd /home/ubuntu/projects/remote-session-runner
-deploy/ssh/install-queued-bridge.sh status
-```
-
-`status` does not change the bridge authorization or durable configuration. It
-prints the public-key fingerprint and artifact hashes, never private-key
-material. It verifies the selected account, service, socket, path modes, one
-exact restricted key line, controller map, and current source revision.
-
-Future regular Ubuntu deployments refresh the bridge automatically:
-
-```sh
-cd /home/ubuntu/projects/remote-session-runner
-deploy/linux/install-systemd-service.sh
-deploy/ssh/install-queued-bridge.sh status
-```
-
-The Linux installer calls `refresh` only when the permanent manifest already
-exists. Before it replaces `runnerd`, it preflights the existing bridge
-identity and runs the read-only zero-active-work gate before restarting an
-active service, including an immediate pre-restart repeat; after the new
-`runnerd` has created its owner-only socket, refresh updates the bridge binary
-and fixed wrapper for the checked-out revision. It does not add, replace, or
-rotate the dispatcher authorization. The Ubuntu checkout must be clean `dev`
-with `HEAD` equal to `origin/dev`; identity mismatch or partial state fails
-closed for inspection.
-
-### Mac - `tomasz.walczuk`: confirm the queued route
+### Mac — `tomasz.walczuk`: route smoke test
 
 ```sh
 runner='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bin/runner'
@@ -262,25 +262,39 @@ runner='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bi
   -- 'id -un && hostname'
 ```
 
-The output must identify `ubuntu`. If it fails, leave the request and service
-state intact for diagnosis rather than relaxing SSH restrictions. The direct
-route remains usable independently.
+The output must identify `ubuntu`. This is a queued route check. It is separate
+from the direct mTLS health check.
 
-## Confirm installed versions
+## 7. Onboard each additional remote host (P157)
 
-### Mac - `tomasz.walczuk`
+A new SSH alias, endpoint, or config profile is only a candidate. For example,
+`sandbox.env` is supplied as a future Ubuntu candidate and is **NOT RUN**
+because its P157 gate has not begun. Do not route ordinary work to it. A
+reviewed candidate activation and one controlled safe request may be part of
+P157; they do not make the host generally available until the gate passes.
 
-```sh
-cd /Users/tomasz.walczuk/projects/remote-session-runner
-git rev-parse HEAD
-```
+For each new profile, complete a separate P157 evidence record:
 
-### Ubuntu - `ubuntu`
+1. create independent owner-only Linux configuration, state root, mTLS
+   certificate/principal map or pinned bridge materials, and service;
+2. add its exact environment, target profile, and `remote_hosts` route to a
+   reviewed Mac V2 candidate. Add it to a mailbox allow-list only when it has
+   a queued bridge; a direct-only profile is validated by its direct endpoint
+   and CLI rather than a mailbox request;
+3. activate that reviewed candidate for the controlled P157 test, and
+   fast-forward the exact host's clean checkout before installing its service
+   from that checkout;
+4. prove `ubuntu`, the expected listener or restricted bridge, host-key pin,
+   per-profile route health, and a safe end-to-end request selecting that exact
+   target; and
+5. record the evidence, including the target profile, without printing private
+   keys or treating another host's acceptance as evidence.
 
-```sh
-cd /home/ubuntu/projects/remote-session-runner
-git rev-parse HEAD
-```
+A host that is unavailable or has not been attempted is `NOT RUN`. A required
+gate that runs and fails is `FAIL`: stop, preserve the exact evidence, and do
+not mark the profile available. It must never reuse `linux-host` certificates,
+state database, bridge authorization, or proof.
 
-The commit IDs must match before remote testing. For everyday use, continue
-with the [CLI user guide](user-guide.md) or [mailbox guide](mailbox.md).
+For normal use after setup, follow the [CLI guide](user-guide.md) or the
+native [mailbox guide](mailbox.md). The current accepted status is indexed in
+[current-host evidence](current-host-evidence.md).

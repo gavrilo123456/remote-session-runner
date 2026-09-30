@@ -1,49 +1,59 @@
 # Configuration reference
 
-All configuration and credentials live outside the Git checkout. The selected
-PoC validates exact account names, service roots, environment names, profiles,
-and endpoint values. Do not generalize these files by adding aliases or a third
-environment unless the code and tests are changed together.
+All configuration, credentials, service state, output, and logs live outside
+the Git checkout. Files are loaded only when they are regular, non-symlink,
+owner-only files. The selected accounts are fixed in this PoC: Mac work runs as
+`tomasz.walczuk`; every configured remote profile runs as `ubuntu`.
 
-## Fixed values
+## Current controlled PoC
 
-| Setting | Value |
+| Setting | Current value |
 | --- | --- |
-| Mac account | `tomasz.walczuk` |
-| Ubuntu account | `ubuntu` |
-| Mac config | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.yaml` |
-| Ubuntu config | `/home/ubuntu/.local/share/remote-session-runner/config/linux.yaml` |
-| Direct public URL | `https://129.151.232.40:8443` |
+| Mac account and root | `tomasz.walczuk`; `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
+| Ubuntu account and root | `ubuntu`; `/home/ubuntu/.local/share/remote-session-runner` |
+| Mac active config | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.yaml` |
+| Current remote profile | `linux-host` |
+| Direct endpoint name and URL | `linux-poc`; `https://129.151.232.40:8443` |
 | Ubuntu HTTPS bind | `10.0.0.200:8443` |
-| Direct endpoint profile | `linux-poc` |
-| Direct TLS version | TLS 1.3 |
-| Local profile | `mac-workstation` |
-| Remote profile | `linux-host` |
+| Local target | `mac-dev` / `local` / `mac-workstation` |
+| Current remote target | `linux-dev` / `remote` / `linux-host` |
+| Direct transport | TLS 1.3 with mandatory mTLS |
+
+The public URL is a client address. `10.0.0.200:8443` is only the current
+Ubuntu listener bind. A future named host needs its own listener, endpoint or
+bridge definition, credentials, and P157 acceptance. It must not reuse these
+values as proof that it is ready.
 
 ## Service-root layout
 
-### Mac
+### Mac — `tomasz.walczuk`
 
 ```text
 /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/
 ├── bin/                 runner, runner-local, runner-locald
-├── config/              mac.yaml
-├── secrets/             CA, direct client cert/key, dispatcher key, known_hosts
+├── config/              mac.yaml; optional reviewed mac.next.yaml
+├── secrets/             CA, direct client certificate/key, dispatcher key, known_hosts
 ├── run/                 local-api.sock, locald.sock
 ├── state/               local.db
-├── mailbox/             inbox, outbox, events, acks
+├── mailbox/             default inbox, outbox, events, acks
+├── mailboxes/
+│   └── analytics/       analytics inbox, outbox, events, acks
 ├── workspaces/          session working directories
 ├── tmp/scripts/         temporary submitted-script files
 ├── backups/             reserved state-backup location
-└── logs/                local.stdout.log, local.stderr.log, locald.stdout.log, locald.stderr.log
+└── logs/                local*.log and locald*.log
 ```
 
-### Ubuntu
+The `default` root deliberately retains the legacy `mailbox/` path. Every
+additional configured root is exactly `mailboxes/<inbox-id>/`; it is not a
+free-form path.
+
+### Ubuntu — `ubuntu`
 
 ```text
 /home/ubuntu/.local/share/remote-session-runner/
-├── bin/                 runnerd, entrypoint, optional SSH bridge/wrapper
-├── config/              linux.yaml, client-principals.yaml, optional queued-SSH map/key/manifest
+├── bin/                 runnerd, entrypoint, optional bridge and wrapper
+├── config/              linux.yaml, principal map, optional queued-SSH map/key/manifest
 ├── secrets/             server certificate/key and trusted client CA
 ├── run/                 runnerd.sock
 ├── state/               remote.db
@@ -52,176 +62,174 @@ environment unless the code and tests are changed together.
 └── backups/             reserved state-backup location
 ```
 
-The directories above must be owned by the selected account and mode `0700`.
-Config and secret files must be regular owner-only files (mode `0600`), with no
-symlinks. The daemon rejects unsafe permissions rather than weakening them.
+Service and mailbox directories are owned by the selected account and mode
+`0700`. Config and secret files are regular owner-only files at mode `0600`.
+The daemon rejects unsafe modes, ownership, symlinks, unknown fields, and paths
+outside the selected roots.
 
-## Service-manager files
+## Mac configuration schemas
 
-| Host | Installed service definition | Runtime logs |
-| --- | --- | --- |
-| Mac | `$HOME/Library/LaunchAgents/com.remote-session-runner.local.plist` and `com.remote-session-runner.locald.plist` | `<Mac service root>/logs/local*.log` and `<Mac service root>/logs/locald*.log` |
-| Ubuntu | `/etc/systemd/system/runnerd.service` | `journalctl -u runnerd.service` |
+### Version 1: compatibility bootstrap
 
-## Mac configuration
+[`deploy/macos/mac.yaml.example`](../deploy/macos/mac.yaml.example) is the
+first-install template. It remains a valid `version: 1` configuration and is
+read as one implicit `default` inbox, `mac-local` context,
+`ubuntu-current` context, `linux-host` remote profile, and `linux-poc` direct
+endpoint. Its legacy scalar fields include `mailbox_root`,
+`remote_endpoint_profile`, `remote_endpoint`, `ssh_host_alias`, and
+`ssh_known_hosts`.
 
-The first Mac installer run copies
-[`deploy/macos/mac.yaml.example`](../deploy/macos/mac.yaml.example) to the
-selected config path and stops. Review it, provision the external secret files,
-then rerun the installer.
+Use version 1 only for the initial compatibility installation. Do not add
+multiple inboxes or another host by appending fields to it.
 
-The selected Mac file contains these important fields:
+### Version 2: installed multi-inbox policy
 
-| Field | Why it matters |
+The current Mac installation uses `version: 2`. Version 2 requires `mac`,
+`environment_registry`, `execution_contexts`, and `mailboxes`; every configured
+remote context also needs its matching `remote_hosts` entry. The active policy
+uses these top-level sections:
+
+| Section | Purpose |
 | --- | --- |
-| `mac.account`, `mac.service_root` | Pins the selected macOS account and root. |
-| `api_socket`, `locald_socket`, `sqlite`, `mailbox_root` | Private local ingress, executor, state, and mailbox paths. |
-| `workspaces`, `script_temp_root`, `backups` | Runtime working paths below the service root. |
-| `remote_endpoint_profile`, `remote_endpoint` | Names `linux-poc` and the public direct HTTPS endpoint. |
-| `remote_server_ca_certificate` | CA file that validates the Ubuntu server certificate. |
-| `ssh_host_alias`, `ssh_known_hosts` | Pinned host identity for the queued remote route. |
-| `direct_client_certificate`, `direct_client_private_key` | Direct mTLS identity. The private-key value is a file reference. |
-| `dispatcher_ssh_key` | Private key reference for the restricted queued SSH bridge. |
-| `reconciliation_deadline` | Maximum time before a queued remote mutation becomes indeterminate. |
+| `mac` | Account, service root, private sockets, database, runtime paths, and reconciliation deadline. |
+| `environment_registry` | Allowed environment, account, controller, target, source-mode, and repository-alias policy. |
+| `execution_contexts` | Named immutable `{environment, execution_target}` pairs. |
+| `remote_hosts` | Named `ubuntu` profiles and their pinned queued bridge and optional direct mTLS endpoint. |
+| `mailboxes` | Named mailbox root, repository aliases, default context, and allowed contexts. |
 
-The file must use `version: 1`. Its environment registry must retain the two
-selected entries:
+Version 2 deliberately rejects the version-1 scalar mailbox, SSH, direct
+endpoint, and top-level secret-reference fields. Its bridge, CA, certificate,
+and private-key entries are owner-only file paths beneath `secrets/`, nested
+under the matching `remote_hosts` entry. No credential contents belong in YAML
+or Git.
 
-```yaml
-environment_registry:
-  mac-dev:
-    base_system: macOS
-    host_class: macOS workstation
-    effective_account: tomasz.walczuk
-    allowed_targets:
-      - kind: local
-        profile: mac-workstation
-    allowed_source_modes: [empty, local_worktree]
-    allowed_repository_aliases: []
-    allowed_controllers:
-      - type: local_user
-        id: tomasz.walczuk
-  linux-dev:
-    base_system: Ubuntu 20.04.6 LTS
-    host_class: Ubuntu Linux host
-    effective_account: ubuntu
-    allowed_targets:
-      - kind: remote
-        profile: linux-host
-    allowed_source_modes: [empty]
-    allowed_repository_aliases: []
-    allowed_controllers:
-      - type: queued_mac
-        id: tomasz.walczuk
-      - type: direct_mtls
-        id: tomasz.walczuk
-```
-
-The supplied example is the source of truth for the complete selected Mac
-configuration. Keep its exact absolute paths unless the implementation is
-changed as well.
-
-## Ubuntu configuration
-
-Create the owner-only Linux config before installing `runnerd.service`:
-
-```yaml
-version: 1
-linux:
-  account: ubuntu
-  service_root: /home/ubuntu/.local/share/remote-session-runner
-  sqlite: /home/ubuntu/.local/share/remote-session-runner/state/remote.db
-  private_socket: /home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock
-  workspaces: /home/ubuntu/.local/share/remote-session-runner/workspaces
-  script_temp_root: /home/ubuntu/.local/share/remote-session-runner/tmp/scripts
-  backups: /home/ubuntu/.local/share/remote-session-runner/backups
-  direct_https_bind: 10.0.0.200:8443
-  direct_public_endpoint: https://129.151.232.40:8443
-  server_cert: /home/ubuntu/.local/share/remote-session-runner/secrets/server.pem
-  client_ca: /home/ubuntu/.local/share/remote-session-runner/secrets/client-ca.pem
-  client_principal_map: /home/ubuntu/.local/share/remote-session-runner/config/client-principals.yaml
-  tls_min_version: '1.3'
-  runtime_adapter: linux-host-process
-secret_references:
-  linux_server_private_key:
-    file: /home/ubuntu/.local/share/remote-session-runner/secrets/server.key
-environment_registry:
-  mac-dev:
-    base_system: macOS
-    host_class: macOS workstation
-    effective_account: tomasz.walczuk
-    allowed_targets:
-      - kind: local
-        profile: mac-workstation
-    allowed_source_modes: [empty, local_worktree]
-    allowed_repository_aliases: []
-    allowed_controllers:
-      - type: local_user
-        id: tomasz.walczuk
-  linux-dev:
-    base_system: Ubuntu 20.04.6 LTS
-    host_class: Ubuntu Linux host
-    effective_account: ubuntu
-    allowed_targets:
-      - kind: remote
-        profile: linux-host
-    allowed_source_modes: [empty]
-    allowed_repository_aliases: []
-    allowed_controllers:
-      - type: queued_mac
-        id: tomasz.walczuk
-      - type: direct_mtls
-        id: tomasz.walczuk
-```
-
-The server private key remains in the external file named by
-`linux_server_private_key`; never place its contents in this document, the
-config, a commit, or command output.
-
-### Direct-client principal map
-
-`runnerd` accepts a direct client certificate only when its URI SAN maps to a
-known controller. The selected map is
-`/home/ubuntu/.local/share/remote-session-runner/config/client-principals.yaml`:
-
-```yaml
-version: 1
-principals:
-  - uri_san: urn:remote-session-runner:controller:runner-tomasz-direct
-    controller_type: direct_mtls
-    controller_id: tomasz.walczuk
-```
-
-Provision a client certificate whose URI SAN exactly matches that value, signed
-by `client-ca.pem`. The certificate and private key stay on the Mac under
-`secrets/`; the server receives only the certificate during the TLS handshake.
-
-### Queued SSH controller map
-
-Queued remote execution is a different route from direct mTLS. When it is
-needed, use the permanent installer described in the
-[setup runbook](setup.md#optional-enable-the-queued-ssh-route). It creates
-these owner-only files:
+Start from the complete checked-in template:
 
 ```text
-/home/ubuntu/.local/share/remote-session-runner/config/ssh-controller-map.yaml
-/home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-dispatcher.pub
-/home/ubuntu/.local/share/remote-session-runner/config/queued-ssh-bridge.manifest
+deploy/macos/mac.v2.yaml.example
 ```
 
-The map pins one SHA-256 public-key fingerprint to
-`queued_mac/tomasz.walczuk`; the public-key copy and manifest let the installer
-detect key or artifact drift without reading a private key. All three files
-must remain regular `ubuntu`-owned mode-`0600` files. The bridge and its fixed
-wrapper are regular `ubuntu`-owned mode-`0700` files in `bin/`.
+The template intentionally contains only the accepted `linux-host`. The active
+P155 policy adds `analytics` outside Git, with the following effective policy:
 
-The matching public key gets exactly one `restrict,command=...` entry in
-Ubuntu `authorized_keys`. The installer creates it only after validating the
-bridge and keeps unrelated entries byte-for-byte intact. Use
-`deploy/ssh/install-queued-bridge.sh status` on Ubuntu to verify it. Direct
-mTLS does not make this queue bridge available.
+```yaml
+version: 2
+execution_contexts:
+  mac-local:
+    environment: mac-dev
+    execution_target: {kind: local, profile: mac-workstation}
+  ubuntu-current:
+    environment: linux-dev
+    execution_target: {kind: remote, profile: linux-host}
 
-## Service limits and retention
+remote_hosts:
+  linux-host:
+    account: ubuntu
+    queued_bridge:
+      host: 129.151.232.40
+      port: 22
+      known_hosts: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/ssh_known_hosts"
+      private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/dispatcher_ed25519"
+    direct_endpoint:
+      name: linux-poc
+      url: https://129.151.232.40:8443
+      server_ca: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem"
+      client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.pem"
+      client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.key"
+
+mailboxes:
+  default:
+    root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox"
+    repository_aliases: [remote-session-runner]
+    default_execution: mac-local
+    allowed_execution: [mac-local, ubuntu-current]
+  analytics:
+    root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics"
+    repository_aliases: [analytics-dbt]
+    default_execution: mac-local
+    allowed_execution: [mac-local, ubuntu-current]
+```
+
+Keep the complete `mac` and `environment_registry` sections from the template;
+the abbreviated listing above only shows the multi-inbox policy. The
+environment registry permits the local account for `mac-dev` and `ubuntu` for
+`linux-dev`. The current remote source mode is `empty`.
+
+### Version-2 validation rules
+
+- `default` is required and its root is exactly
+  `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox`.
+- An extra inbox ID has root exactly
+  `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/<inbox-id>`.
+  Roots cannot duplicate, nest, or overlap.
+- Each context pairs one configured environment with one allowed immutable
+  target. Duplicate environment/target pairs are rejected.
+- A mailbox default must be in its `allowed_execution` list. A remote context
+  allowed in a mailbox needs a configured queued bridge; mailbox work never
+  switches to direct mTLS.
+- A direct endpoint name binds exactly one remote target profile. The CLI
+  rejects an endpoint/target mismatch before a mutation.
+- Inbox IDs, aliases, contexts, profile names, and endpoint names are bounded
+  safe identifiers. `repository_aliases` are audit/policy labels only.
+- The mailbox registry is append-only in this PoC. Adding a root is supported;
+  removing, renaming, or relocating one requires a later explicit migration
+  after its durable work and files are retired.
+
+## Safe Mac V1 → V2 upgrade
+
+1. **Mac — `tomasz.walczuk`:** copy and review the V2 template as the
+   owner-only candidate
+   `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml`.
+2. Keep the active `config/mac.yaml` untouched. Provision only referenced
+   owner-only secret files; never put their contents in the candidate.
+3. Run the candidate installer described in the [setup runbook](setup.md#3-upgrade-to-version-2-or-add-an-inbox).
+4. The installer validates while the old ingress is live, quiesces the Mac
+   services, and makes a final read-only retained-mailbox check. For a
+   schema-24 database, that check treats existing work as implicit `default`;
+   it does not migrate or write the registry.
+5. At the candidate-activation boundary, the new policy is registered and the
+   database can migrate to schema 27. A version-1 binary cannot reopen that
+   namespaced schema. Before the boundary the installer restores the V1
+   services on failure. After it, it keeps the staged candidate for repair or
+   re-run and does not revive V1.
+
+The installer keeps the separately reviewed `mac.next.yaml` after a successful
+activation; it stages a copy as the active `mac.yaml`. Do not overwrite active
+`mac.yaml` with a shell copy.
+
+## Current Ubuntu configuration
+
+The current accepted `linux-host` uses the existing Linux configuration at:
+
+```text
+/home/ubuntu/.local/share/remote-session-runner/config/linux.yaml
+```
+
+It pins `account: ubuntu`, its service root, `runnerd.sock`, the direct bind
+`10.0.0.200:8443`, public endpoint `https://129.151.232.40:8443`, TLS 1.3,
+server certificate, client CA, principal map, and host-process adapter. The
+server private key is only the owner-only file named by
+`secret_references.linux_server_private_key`; do not print or commit it.
+
+The direct client principal map is:
+
+```text
+/home/ubuntu/.local/share/remote-session-runner/config/client-principals.yaml
+```
+
+It maps the verified direct certificate URI SAN to
+`direct_mtls/tomasz.walczuk`. The queued path has separate permanent
+bridge/controller files under the Ubuntu `config/` directory. Direct mTLS does
+not make the bridge available.
+
+A future host can use a `version: 2` Linux configuration, which requires its
+own `linux.remote_target_profile`. Every registered environment on that host
+must permit that remote profile, and the Linux document rejects the Mac-only
+`execution_contexts`, `remote_hosts`, and `mailboxes` sections. It needs
+independent state, listener/certificates, key pin or direct mTLS material, and
+P157 evidence; it must not copy the accepted host's state database or secrets.
+
+## Limits and retention
 
 | Limit | Selected value |
 | --- | ---: |
@@ -229,31 +237,17 @@ mTLS does not make this queue bridge available.
 | Running commands | 4 |
 | Serialized request | 1 MiB |
 | Script bytes | 128 KiB UTF-8 |
-| Command timeout | 30 minutes |
-| Idle session timeout | 30 minutes |
+| Command and idle timeout | 30 minutes |
 | Maximum session lifetime | 4 hours |
 | Output per command | 100 MiB |
 | Subscriber buffer | 1 MiB |
 | Persistence queue | 16 MiB |
 | Metadata and idempotency retention | 90 days |
 | Output retention | 30 days |
-| Mailbox valid-ACK cleanup | 24 hours after ACK |
-| Mailbox unacknowledged terminal cleanup | 7 days after publication |
+| Valid-ACK cleanup | 24 hours after ACK |
+| Unacknowledged terminal cleanup | 7 days after publication |
 
-These are service limits reported in session status. A successful request is
-not evidence that an eventual command result will fit below every limit; always
-inspect its terminal state and output flags.
-
-## Validation and safe handling
-
-- Configuration files reject unknown fields, aliases, wrong account names,
-  insecure modes, symlinks, and paths outside the fixed service roots.
-- The Mac config and secret references must be readable only by
-  `tomasz.walczuk`; Ubuntu equivalents only by `ubuntu`.
-- `runner-local doctor`, `runner-locald doctor`, and `runnerd doctor` validate
-  their respective runtime configuration. See [operations](operations.md) for
-  commands. A doctor probe writes a timestamp-only SQLite health record, so it
-  is diagnostic rather than read-only.
-- Restart a service after a configuration change. Do not edit an installed
-  config while a deployment script is replacing service files without first
-  following the relevant setup runbook.
+`runner-local doctor`, `runner-locald doctor`, and `runnerd doctor` validate
+their respective runtime configuration. A doctor command writes a timestamp
+health record to SQLite, so it is diagnostic rather than read-only. Use the
+[operations runbook](operations.md) for command examples.

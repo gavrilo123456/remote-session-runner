@@ -1,41 +1,80 @@
 # Operations runbook
 
-Use these checks to understand the health of the running PoC. Run Mac commands
-as `tomasz.walczuk` and Ubuntu commands as `ubuntu`. Do not print private keys,
-manually edit SQLite databases, or use host-gate test scripts as a routine
-service-control mechanism.
+Run Mac commands as `tomasz.walczuk` and current-host commands as `ubuntu`. Do
+not print private keys, edit SQLite files, manufacture mailbox request files,
+or use host-gate test scripts as everyday service controls.
 
-## What is currently available
+## Current availability and evidence boundary
 
-| Capability | State | Evidence to require before use |
+| Capability | Current state | What to verify before use |
 | --- | --- | --- |
-| Mac local execution | Available when both Mac LaunchAgents are healthy | Mac private socket health and a local test command. |
-| Direct Ubuntu execution | Available when `runnerd.service` and public mTLS health are healthy | Public mTLS `/health/ready`, then a direct `linux-poc` command. |
-| Queued Ubuntu execution | Not configured by default | A reviewed restricted SSH bridge deployment and an explicit queued-route test. Direct mTLS success does not prove it. |
-| Local file mailbox | Available with healthy `runner-local` | Marker-last exchange, terminal response, event file, and ACK. |
-| Queued remote mailbox | Depends on the queued SSH bridge | Same bridge and a new queued mailbox request. |
+| Mac local execution | Available when both Mac LaunchAgents are healthy | Both private readiness endpoints and a safe local command. |
+| Direct `linux-host` execution | Accepted on the current host | Public mTLS readiness, then a direct `linux-poc` command. |
+| Queued `linux-host` execution | Permanent restricted bridge was accepted in P155 | Fresh bridge `status` at the deployed source revision, then a queued command. |
+| `default` mailbox | Installed and accepted in P155 | Mac readiness, configured root ownership, and native terminal response/event/ACK. |
+| `analytics` mailbox | Installed and accepted in P155 | Same checks; remote override additionally needs current bridge status. |
+| Any additional profile | **NOT RUN** | Its own P157 service, route, and end-to-end acceptance. |
+
+P155 proved `default` local-default work and an `analytics` allowed queued
+`linux-host` override. It did not accept `sandbox.env` or another machine. A
+successful direct mTLS request does not prove queued mailbox delivery.
 
 ## Fast health checks
 
-### Mac - `tomasz.walczuk`
+### Mac — `tomasz.walczuk`
 
 ```sh
 root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
 launchctl print "gui/$(id -u)/com.remote-session-runner.local"
 launchctl print "gui/$(id -u)/com.remote-session-runner.locald"
+test -S "$root/run/local-api.sock"
+test -S "$root/run/locald.sock"
 curl --silent --show-error --fail --unix-socket "$root/run/local-api.sock" http://runner/health/ready
 curl --silent --show-error --fail --unix-socket "$root/run/locald.sock" http://runner/health/ready
 ```
 
-Inspect the current Mac service logs:
+The `runner-local` report contains a `remote_router` check for one queued
+profile. With several queued profiles it reports `remote_router/<profile>` per
+profile. `ready` means the periodic read-only bridge ping reached that
+configured bridge and Runner service. `degraded` means local mailbox ingress
+can still be ready, while that queued profile is not currently proven
+routable.
+
+Inspect active V2 policy without changing it:
 
 ```sh
+# Mac — tomasz.walczuk
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+"$root/bin/runner-local" validate-config --config "$root/config/mac.yaml"
+(
+  set -e
+  check_mailbox_tree() {
+    mailbox=$1
+    test -d "$mailbox/inbox"
+    test -d "$mailbox/outbox"
+    test -d "$mailbox/events"
+    test -d "$mailbox/acks"
+  }
+  check_mailbox_tree "$root/mailbox"
+  check_mailbox_tree "$root/mailboxes/analytics"
+)
+```
+
+`validate-config` checks file safety and policy only when invoked without
+activation flags. It does not make a candidate active. Use the V2 candidate
+procedure in [setup](setup.md#3-upgrade-to-version-2-or-add-an-inbox) for a
+policy change.
+
+Mac logs:
+
+```sh
+# Mac — tomasz.walczuk
 root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
 tail -n 200 "$root/logs/local.stderr.log"
 tail -n 200 "$root/logs/locald.stderr.log"
 ```
 
-### Ubuntu - `ubuntu`
+### Current Ubuntu — `ubuntu`
 
 ```sh
 root='/home/ubuntu/.local/share/remote-session-runner'
@@ -45,24 +84,22 @@ ss -lntH | grep '10.0.0.200:8443'
 sudo journalctl -u runnerd.service -n 200 --no-pager
 ```
 
-If the optional queued route is enabled, verify its permanent bridge separately:
+Verify the permanent bridge separately:
 
 ```sh
+# Current Ubuntu — ubuntu
 cd /home/ubuntu/projects/remote-session-runner
 deploy/ssh/install-queued-bridge.sh status
 ```
 
-This check does not change the bridge authorization or durable configuration.
-It validates the selected `ubuntu` account, active enabled service, owner-only
-socket and files, pinned dispatcher fingerprint, exact restricted
-authorization, controller map, wrapper, and source revision. A regular
-`deploy/linux/install-systemd-service.sh` deployment refreshes the bridge only
-when this permanent route is already configured. It preflights the permanent
-identity, uses the read-only zero-active-work gate before restarting an active
-service, then refreshes after the new private socket is ready. It never changes
-the dispatcher key.
+`status` checks account, enabled service, private socket, modes, pinned
+identity, exact restricted authorization, controller map, wrapper, and checked
+out source revision. It does not alter bridge authorization or durable
+configuration. If the source revision advanced, use the normal Linux deployer
+in a maintenance window so it refreshes the bridge artifact. Do not treat an
+old `ready` result as evidence for a later checkout.
 
-### Public direct path - Mac
+### Current public direct path — Mac
 
 ```sh
 root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
@@ -73,154 +110,130 @@ curl --silent --show-error --fail --max-time 15 \
   https://129.151.232.40:8443/health/ready
 ```
 
-The direct HTTPS readiness result is an application check. A previous
-temporary TLS probe was only a transport check and must not be treated as
-proof that Runner was running.
+This checks the current Runner application, public route, mTLS identity, and
+readiness. The earlier temporary TLS probe was transport-only. Neither check
+confirms a queued bridge or a mailbox request.
 
-## Diagnostics
+## Diagnostics and metrics
 
-Run a doctor command when diagnosing configuration, paths, or storage:
+Use a doctor command for configuration, paths, or storage diagnosis:
 
 ```sh
-# Mac - tomasz.walczuk
+# Mac — tomasz.walczuk
 root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
 "$root/bin/runner-local" doctor --config "$root/config/mac.yaml"
 "$root/bin/runner-locald" doctor --config "$root/config/mac.yaml"
 
-# Ubuntu - ubuntu
+# Current Ubuntu — ubuntu
 root='/home/ubuntu/.local/share/remote-session-runner'
 "$root/bin/runnerd" doctor --config "$root/config/linux.yaml"
 ```
 
-A doctor command writes a timestamp-only SQLite health-probe record. It is a
-safe diagnostic but not a read-only inspection.
+A doctor writes a timestamp-only SQLite health record, so it is diagnostic and
+not read-only.
 
-For a controlled Ubuntu restart gate, the checked-in status test reports
-active sessions, running commands, unreleased slots, and unfinished jobs:
+`/metrics` is available through each private socket and the mTLS HTTPS
+listener. It includes bounded counters and no scripts, paths, output,
+credentials, or resource IDs.
+
+| Metric | Meaning | Warning threshold |
+| --- | --- | ---: |
+| `active_session_slots` | Session capacity reservations awaiting cleanup confirmation | 16 |
+| `active_command_slots` | Command slots awaiting stop confirmation | 4 |
+| `queued_commands` | Authoritative commands still queued | 16 |
+| `queued_intents` | Local intents recorded, dispatching, or uncertain | 32 |
+| `reconciliation_age_seconds` | Oldest uncertain intent | 300 seconds |
+| `event_lag_events` | Remote final sequence minus locally mirrored sequence | 32 |
+| `event_gaps_total`, `output_truncations_total` | Durable retained-output problems | 1 |
+| `storage_errors_total`, `cleanup_failures_total` | Observed process/database cleanup errors | 1 |
+| `mailbox_backlog` | Aggregate durable accepted exchanges plus safely published ready markers | 32 |
+| `mailbox_backlog_by_inbox` | Same backlog, split by configured safe inbox IDs such as `default` and `analytics` | Inspect each nonzero value |
+
+A zero backlog does not prove an importer, bridge, or request succeeded. It
+only shows no current counted work. Process-local error counters reset after a
+daemon restart; retained counters can fall after cleanup.
+
+For a controlled current-host restart gate:
 
 ```sh
+# Current Ubuntu — ubuntu
 cd /home/ubuntu/projects/remote-session-runner
 make test-p128-host-status
 ```
 
-Run controlled host-gate tests only with an appropriate maintenance plan; they
-are evidence tools, not general service commands.
+This evidence test reports active sessions, running commands, unreleased slots,
+and unfinished jobs. Use it in a maintenance plan; it is not a general
+service-control command.
 
-## Metrics and thresholds
+## Refresh services
 
-Runner exposes `GET /health/live`, `GET /health/ready`, and `GET /metrics`.
-Mac ingress and local execution expose metrics over owner-only Unix sockets.
-Linux exposes them over its owner-only Unix socket and public direct HTTPS;
-the HTTPS listener requires TLS 1.3 mTLS.
+### Mac — `tomasz.walczuk`
 
-`/metrics` returns bounded JSON counters and gauges. The same metric object
-is included in successful doctor output and readiness reports. It contains no
-session or command IDs, user labels, paths, scripts, output, or credentials.
-
-| Metric | Meaning | Warning threshold |
-| --- | --- | ---: |
-| `active_session_slots` | Session capacity reservations whose runtime cleanup is not confirmed | 16 |
-| `active_command_slots` | Command execution slots whose stop is not confirmed | 4 |
-| `queued_commands` | Authoritative commands still queued | 16 |
-| `queued_intents` | Local intents recorded, dispatching, or uncertain | 32 |
-| `dispatch_attempts_total` | Sum of recorded local-intent dispatch attempts | Reported; no absolute-total warning |
-| `reconciliation_age_seconds` | Age of the oldest intent with uncertain delivery | 300 seconds |
-| `event_lag_events` | Final remote event sequence minus the last locally mirrored sequence | 32 |
-| `event_gaps_total` | Durable remote event gaps | 1 |
-| `output_truncations_total` | Durable output truncation events | 1 |
-| `storage_errors_total` | SQLite engine failures observed by this daemon process | 1 |
-| `cleanup_failures_total` | Runtime or mailbox cleanup failures observed by this process | 1 |
-| `mailbox_backlog` | Accepted mailbox exchanges; on Mac ingress, also safe ready markers not yet imported | 32 |
-
-Daemons sample metrics at startup and every 30 seconds; health requests also
-check thresholds. A warning is logged when a threshold is first reached and an
-informational record is logged when it clears. Process-local storage and
-cleanup counters reset after that daemon restarts. Retention cleanup can lower
-historical dispatch, event-gap, and truncation counts.
-
-A healthy Mac ingress proves only Mac ingress readiness. It does not make the
-optional queued remote route available.
-
-## Service lifecycle
-
-### Refresh Mac services
-
-Run on the **Mac** while important sessions are closed:
+For an unchanged active policy:
 
 ```sh
 cd /Users/tomasz.walczuk/projects/remote-session-runner
 deploy/macos/install-launchagents.sh
 ```
 
-The installer rebuilds the binaries and replaces/restarts both LaunchAgents.
-To stop them explicitly, use the current GUI UID:
+For mailbox, context, or route policy changes, use an owner-only V2 candidate
+and `install-launchagents.sh --config <mac.next.yaml>` as described in
+[setup](setup.md#3-upgrade-to-version-2-or-add-an-inbox). Do not modify active
+`mac.yaml`, remove a registered inbox, or attempt a V1 rollback after a V2
+activation boundary.
+
+To unload the services explicitly:
 
 ```sh
+# Mac — tomasz.walczuk
 launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.remote-session-runner.local.plist"
 launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.remote-session-runner.locald.plist"
 ```
 
-### Refresh Ubuntu service
+### Current Ubuntu — `ubuntu`
 
-Run on **Ubuntu** only after its checkout is fast-forwarded to the intended
-Mac commit and active work has reached zero:
+First prove its checkout is the pushed Mac commit, then deploy during a quiet
+window:
 
 ```sh
 cd /home/ubuntu/projects/remote-session-runner
 deploy/linux/install-systemd-service.sh
 sudo systemctl is-active runnerd.service
+deploy/ssh/install-queued-bridge.sh status
 ```
 
-The normal installer deploys and starts `runnerd`; when it replaces an active
-service, it runs the checked-in read-only zero-active-work gate before the
-build and again immediately before restart so the new binary is actually in
-use. Schedule this during a maintenance window: the gate is a point-in-time
-check, and a request admitted after it is handled by the service's graceful
-shutdown, which stops admission, drains, or cancels remaining work truthfully.
-When the restricted SSH bridge has already been enabled, the installer also
-verifies its source checkout and refreshes the bridge program and forced-command
-wrapper. It does not create or change the dispatcher authorization; use the
-explicit bridge enable command in the setup guide for that one-time action.
+The normal installer repeats the zero-active-work check before restart and
+refreshes an already enabled permanent bridge after the new private socket is
+ready. It does not create or rotate dispatcher authorization.
 
 ## Triage guide
 
 | Symptom | Check | Correct response |
 | --- | --- | --- |
-| `runner endpoint profile is unavailable or invalid` | Confirm owner-only Mac config exists at `config/mac.yaml`, then check its exact selected `linux-poc` profile and secret references. | Run the Mac installer once to create a missing config, review/provision the external files, then rerun it. Do not weaken file modes. |
-| Mac local socket unavailable | `launchctl print`, Mac socket health, and `local*.stderr.log`. | Repair the LaunchAgent/config cause; rerun the Mac installer after review. |
-| Direct HTTPS or mTLS failure | Run the public curl health check; inspect Ubuntu service state and journal. | Check CA, client certificate, private-key mode, principal map, server certificate, listener bind, and network path. Do not print keys. |
-| Queued remote remains recorded/uncertain or reports stale view | Check whether the bridge is intentionally absent; then inspect the pinned host key, forced command, controller map, and `runnerd.service`. | Preserve the idempotency key and use the same route to observe reconciliation. Do not resend with a new key. |
-| Mailbox request has no response | Verify JSON was closed before an empty matching `.ready`, correct ID/mode, and Mac logs. | Correct malformed drafts or create a new valid exchange; unsafe/malformed pairs have no guaranteed outbox response. |
-| Command output incomplete | Inspect `output_complete`, `output_truncated`, cursor, and `output_unavailable_reason`. | Save available output; do not claim full output if retention or gaps prevent it. |
-| Command cancellation accepted | Read events/status on the same endpoint. | Acceptance is a request, not proof of final cancellation. |
+| `runner endpoint profile is unavailable or invalid` | Active config, endpoint name, and V2 direct endpoint definition | Review the owner-only config and its secret paths; use candidate activation for changes. |
+| `endpoint/target mismatch` | Direct endpoint's bound target profile | Choose the endpoint that is configured for that exact remote profile; do not retry a mutation with a changed target. |
+| Partial mailbox selection | Request has only `environment` or `execution_target` | Submit neither to use the inbox default, or submit the complete allowed pair. |
+| Mailbox selection or alias rejected | Root, context allow-list, repository alias, response `inbox_id` | Use the intended root and its configured policy; do not invent aliases or host names. |
+| No mailbox response | Native client error/logs, root tree, response state | Keep the request identity, inspect owner/mode/path failure, and use `mailboxclient`; malformed unsafe pairs have no guaranteed response. |
+| Direct HTTPS/mTLS failure | Public health, service journal, CA/certificate/principal map/bind | Repair host configuration without printing keys. |
+| Queued remote remains recorded, uncertain, or stale | Current bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
+| New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; current `linux-host` evidence does not transfer. |
+| Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
 
 ## Recovery boundaries
 
-- Do not manually alter `local.db` or `remote.db`.
-- The `backups/` directories are reserved for the tested backup/restore
-  implementation, but the PoC has no supported production backup scheduler,
-  backup CLI, or live restore runbook. Do not use `cp` to copy a live SQLite
-  database.
-- A restore does not reattach old runtime processes; affected running work is
-  marked lost and reconciliation must finish before new dispatch.
-- Graceful service shutdown stops new admission, drains for a bounded period,
-  then uses normal cancellation/close cleanup. Clients resume retained events
-  after their last validated sequence.
-- After a Mac `runner-local` restart, accepted queued remote one-off jobs are
-  recovered by read-only job, command, and event queries. The Router never
-  resends the `run` mutation during this recovery. It publishes a terminal
-  mailbox result only after the remote identity, target context, script digest,
-  teardown, and complete or explicitly incomplete event boundary agree.
-  Contradictory event history, including any event after a terminal event,
-  remains blocked for investigation instead of being rendered as success.
-  This recovery repairs missing derived files only. It preserves an already
-  published immutable legacy response; do not remove it during restart
-  recovery because its shared event file may still be retained for another
-  response.
-- Software-crash recovery is the approved durability claim. Physical power
-  loss has not been tested, so it remains an unverified condition. A real
-  power-off test requires a coordinated maintenance window and disposable
-  representative state.
+- Do not manually edit `local.db` or `remote.db`, or copy a live SQLite file.
+- `backups/` is reserved for the tested backup/restore implementation; this
+  PoC has no public backup scheduler, backup CLI, or live-restore runbook.
+- A restore does not reattach previous runtime processes. Lost work and
+  reconciliation must finish before new dispatch.
+- Graceful shutdown stops admission, drains for a bounded period, then uses
+  normal cancellation/close cleanup. Clients resume retained events after
+  their last validated sequence.
+- After a Mac process restart, queued one-off recovery reads remote state and
+  does not resend the mutation.
+- Software-crash recovery is evidenced. Physical power-loss survival remains
+  unverified until a coordinated physical power-cut test passes.
 
-For deployment details, see [setup](setup.md). For user operations, see the
-[CLI guide](user-guide.md) and [mailbox guide](mailbox.md).
+See [current-host evidence](current-host-evidence.md) for exact P155 scope and
+[setup](setup.md) for deployment steps.

@@ -1,0 +1,73 @@
+# Current-host evidence index
+
+This page indexes the accepted deployment evidence for the controlled PoC. It
+is a record of completed gates, not a live-health substitute. Run the checks in
+[operations](operations.md) before operating a service today.
+
+## Accepted current topology
+
+| Component | Accepted identity | Evidence |
+| --- | --- | --- |
+| Mac services | `tomasz.walczuk` at `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` | P155 real-process two-inbox test, private socket/readiness checks, and zero backlog. |
+| Current Ubuntu host | `ubuntu@oracle-yuta-konopka-ubuntu-micro-02` / `linux-host` | P155 `runnerd.service`, listener `10.0.0.200:8443`, zero-work P128 checks, and permanent bridge status. |
+| Direct route | `linux-poc` → `https://129.151.232.40:8443` | Runner application mTLS health and direct CLI evidence, separate from mailbox evidence. |
+| Queued route | `ubuntu-current` → `remote/linux-host` | P155 permanent restricted bridge and an end-to-end analytics mailbox override. |
+
+The associated source and evidence closeout are:
+
+- P155 implementation: `359979b39995121c2f8e1b118f5c9160be1e1bff`
+- P155 legacy-schema repair: `a3097a02d3aff6d2231b08f72ba768463a9933c0`
+- P155 evidence closeout: `e93d55e9220338b25e1f7417ca296c9e04530b80`
+- Detailed record: [P155 evidence](../040-implementation-evidence/P155.md)
+
+## What P155 proved
+
+The installed Mac V2 policy had these roots:
+
+| Inbox | Root | Default | Allowed explicit contexts |
+| --- | --- | --- | --- |
+| `default` | `.../RemoteSessionRunner/mailbox` | `mac-local` | `mac-local`, `ubuntu-current` |
+| `analytics` | `.../RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current` |
+
+The native P155 mailbox test used the same visible request and idempotency
+identities in both roots. It proved namespace isolation and these outcomes:
+
+1. `default` omitted the selection pair, resolved to `mac-dev` /
+   `local/mac-workstation`, and ran as `tomasz.walczuk`.
+2. `analytics` supplied the complete allowed `linux-dev` /
+   `remote/linux-host` pair, resolved as `request_override`, and ran through
+   the restricted queued bridge as `ubuntu`.
+3. The roots produced different job/session/command IDs, isolated event files,
+   complete untruncated terminal output, and isolated ACK cleanup.
+4. Post-test Mac and Ubuntu zero-work checks passed. The bridge status was
+   ready for the deployed P155 source revision.
+
+The analytics proof is queued mailbox evidence. It did not use direct mTLS as
+a substitute.
+
+## What is not accepted
+
+| Item | Status | Reason |
+| --- | --- | --- |
+| `sandbox.env` (`ubuntu@132.226.205.205`) | **NOT RUN** | It is a supplied future P157 candidate. No source, service, credentials, bridge, mTLS route, or end-to-end request has been accepted for it. |
+| Any other new remote profile | **NOT RUN** | A configured name or successful current host does not transfer host acceptance. |
+| Physical power-loss durability | Unverified | P143 approved the software-process-crash-only path. A coordinated physical power-cut test is still required for this claim. |
+
+## Required per-host P157 gate
+
+For every new profile, P157 must record all of the following for that exact
+machine:
+
+1. clean source fast-forward from the Mac commit and matching commit proof;
+2. owner-only host configuration, selected `ubuntu` account, service state,
+   and private socket;
+3. host-key pin and restricted bridge or direct mTLS materials, without
+   exposing private keys;
+4. expected listener/identity and profile-specific route health; and
+5. a safe end-to-end request that selects the exact new target profile and
+   proves the account/result.
+
+If a named step is unavailable or has not been attempted, the host is `NOT
+RUN`. If a required step runs and fails, record it as `FAIL` and stop with its
+evidence. See the [setup P157 runbook](setup.md#7-onboard-each-additional-remote-host-p157)
+and the [operations guide](operations.md) for current checks.

@@ -1,36 +1,67 @@
 # Mailbox v1 wire contract
 
 These schemas freeze the JSON request, response, ACK, and per-command NDJSON
-event records. The schemas do not implement the owner-only directory, marker
-publication, no-symlink checks, atomic writes, syncing, importer, projector,
-retention, or cleanup behavior.
+event records. They do not implement owner-only directories, no-symlink checks,
+exclusive creation, JSON/marker publication, file or directory sync, importer,
+projection, retention, or cleanup. Use the native in-module
+`mailboxclient` integration described in [docs/mailbox.md](../../../../../docs/mailbox.md)
+for those semantics.
 
-Requests cover the seven detailed-design operations. Each mutation has a new
-exchange `request_id` and a stable `idempotency_key`; reads have no idempotency
-key. A later retry uses a new request ID and the same key and canonical
-payload. `source`, `limits`, and `policy` remain objects for later domain
-validation. `close_policy` is an optional object with an optional `policy`
-string; the mailbox defaults an omitted or empty value to `cancel` and rejects
-unknown members. It maps to the existing Mac API close-policy field. This
-records requested policy intent and does not claim the target has applied it.
-An omitted source has the design's meaning of empty.
+## Namespace and selection
+
+A configured filesystem root selects the mailbox namespace. A request has no
+`inbox_id`; the response includes `inbox_id` so a client can audit which root
+processed it. Durable request and idempotency identity is scoped by that inbox,
+so the same visible request ID/key can occur independently in distinct roots.
+Events, responses, acknowledgements, retries, and cleanup stay in that root.
+
+For `create_session` and `run`, `environment` and `execution_target` are
+optional together:
+
+| Request fields | Contract result |
+| --- | --- |
+| Both omitted | Resolve the selected inbox's configured default; response has `execution_selection_source: "inbox_default"`. |
+| Both present | Resolve only the exact configured and allow-listed context; response has `execution_selection_source: "request_override"`. |
+| Exactly one, unknown, mismatched, or disallowed | Terminal rejected response before durable resource acceptance or remote work. |
+
+`submit_command` inherits the session's immutable target. It does not carry an
+override. A new-work `repository_alias` is optional policy/audit metadata; it
+must match the selected inbox's configured aliases and never selects or
+materializes a checkout.
+
+New-work responses may add `execution_selection_source`,
+`resolved_environment`, and `resolved_execution_target`. These fields describe
+the accepted immutable selection; they do not permit later selection changes.
+
+## Operations and idempotency
+
+Requests cover seven operations. Each mutation uses a request ID and stable
+idempotency key; reads have no idempotency key. For a delivery-uncertain retry,
+use a new request ID and the same key and canonical payload in the same inbox.
+Reusing a key with a changed payload returns `idempotency_conflict`.
+
+`source`, `limits`, and `policy` remain objects for domain validation. Omitted
+source has the configured empty-source meaning. `close_policy` is optional and
+maps to the Mac API close-policy field; the mailbox defaults omitted or empty
+to `cancel`. It records requested intent and does not claim the target already
+applied it.
 
 Responses distinguish mailbox `request_state` from session, command, delivery,
-and job state. `accepted` is only Mac receipt; it carries no authoritative
-resource state. A `not_delivered` outcome carries no fabricated target state,
-terminal event cursor, or event file. A positive available-event cursor names
-the command ID and relative `events/<command-id>.ndjson` file. Terminal command
-output flags and event cursors follow P002; ACKs echo the exact response
-revision and optionally its advertised cursor (including zero after expiry).
-Mutation responses may include `idempotency_warning: "deduplication_not_guaranteed"`
-when the supplied key's earlier 90-day mapping had expired. That request may
-create a new resource; clients must not treat the old key as preventing a
-duplicate operation. Reusing the same `request_id` remains single-use while
-its mapping is retained, and its response is never replaced by a later retry.
+and job state. `accepted` is only a durable Mac receipt. A `not_delivered`
+outcome has no fabricated target state, terminal cursor, or event file. A
+positive available cursor names the relative
+`events/<command-id>.ndjson` file.
 
-Mailbox stdout/stderr events preserve command ID, sequence, type, timestamp,
-and byte count. A whole valid UTF-8 chunk uses `encoding: "utf8"` and `text`;
-other bytes use `encoding: "base64"` and `data_base64`. Both encodings retain
-the 16 KiB raw-event ceiling from the bridge contract. The schema contract
-does not prove that an ACK matches stored response state or that any file was
-durably published.
+ACKs echo the exact response revision and optional advertised cursor. A valid
+ACK must be durably recorded before cleanup; an ACK cannot make incomplete
+output complete. A terminal response may include
+`idempotency_warning: "deduplication_not_guaranteed"` after the 90-day mapping
+window. Reusing a request ID remains prohibited while its mapping is retained.
+
+## Event records
+
+Mailbox stdout/stderr events retain command ID, sequence, type, timestamp, and
+byte count. A valid UTF-8 chunk has `encoding: "utf8"` and `text`; other bytes
+have `encoding: "base64"` and `data_base64`. Both use the 16 KiB raw-event
+ceiling. The schema alone does not prove durable publication, ACK matching, or
+output completeness.

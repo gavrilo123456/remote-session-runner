@@ -1,147 +1,176 @@
 # Architecture
 
-## Purpose and fixed topology
+## Purpose and current topology
 
-Remote Session Runner accepts a script request on a Mac and runs it on one of
-two fixed targets:
+Remote Session Runner is a controlled two-target proof of concept. Scripts run
+on the Mac as `tomasz.walczuk` or on the currently accepted Ubuntu host as
+`ubuntu`. It has no containers, tunnels, browser terminal, interactive PTY,
+automatic target fallback, arbitrary account selection, or free-form host
+selection.
 
-- **Local target:** macOS as `tomasz.walczuk`.
-- **Remote target:** Ubuntu as `ubuntu`.
+The installed Mac configuration uses version 2 and composes two file-mailbox
+namespaces:
 
-The remote target uses a direct public HTTPS endpoint for mTLS clients. A
-separate queued route can pass through the Mac Router and a restricted SSH
-bridge, but that bridge must be explicitly installed and authorized on Ubuntu.
-There is no automatic target fallback. No Podman container and no tunnel forms
-part of this PoC.
+| Inbox ID | Root | Default context | Allowed contexts | Repository aliases |
+| --- | --- | --- | --- | --- |
+| `default` | `~/Library/Application Support/RemoteSessionRunner/mailbox` | `mac-local` | `mac-local`, `ubuntu-current` | `remote-session-runner` |
+| `analytics` | `~/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current` | `analytics-dbt` |
+
+`mac-local` means `mac-dev` and `local/mac-workstation`.
+`ubuntu-current` means `linux-dev` and `remote/linux-host`. Both inboxes are
+independent file ingress and response-projection namespaces. They share the
+Mac Router and its local SQLite authority.
 
 ```mermaid
 flowchart LR
-  subgraph Mac[Mac - tomasz.walczuk]
+  subgraph Mac[Mac — tomasz.walczuk]
     CLI[runner CLI]
-    MB[File mailbox]
-    LocalAPI[runner-local<br/>owner-only Unix API and Router]
+    Default[default mailbox\nmailbox/]
+    Analytics[analytics mailbox\nmailboxes/analytics/]
+    Router[runner-local\nUnix API, Router, mailbox runtimes]
     LocalDB[(local.db)]
-    LocalD[runner-locald<br/>local execution authority]
-    MacBash[Persistent Bash<br/>macOS permissions]
-    CLI -->|endpoint local| LocalAPI
-    MB -->|JSON then ready marker| LocalAPI
-    LocalAPI <--> LocalDB
-    LocalAPI -->|local target| LocalD
+    LocalD[runner-locald\nlocal execution authority]
+    MacBash[Persistent Bash\nmacOS permissions]
+
+    Default -->|native marker-last exchange| Router
+    Analytics -->|native marker-last exchange| Router
+    CLI -->|endpoint local| Router
+    Router <--> LocalDB
+    Router -->|mac-local| LocalD
     LocalD --> MacBash
   end
 
-  subgraph Ubuntu[Ubuntu - ubuntu]
-    SSH[Restricted forced-command<br/>SSH bridge]
-    RunnerD[runnerd<br/>remote execution authority]
+  subgraph Ubuntu[Current accepted host — ubuntu]
+    SSH[Restricted forced-command\nSSH bridge]
+    RunnerD[runnerd\nremote execution authority]
     RemoteDB[(remote.db)]
-    LinuxBash[Persistent Bash<br/>Ubuntu permissions]
-    SSH -->|owner-only Unix socket| RunnerD
+    LinuxBash[Persistent Bash\nUbuntu permissions]
+    SSH -->|owner-only runnerd.sock| RunnerD
     RunnerD <--> RemoteDB
     RunnerD --> LinuxBash
   end
 
-  LocalAPI -->|queued remote only<br/>pinned host key and restricted SSH| SSH
-  CLI -->|endpoint linux-poc<br/>TLS 1.3 mTLS| RunnerD
+  Router -->|ubuntu-current only\npinned host key and restricted SSH| SSH
+  CLI -->|endpoint linux-poc\nTLS 1.3 mTLS| RunnerD
 ```
 
-`runner-local`, `runner-locald`, and `runnerd` persist durable metadata and
-event records in their own SQLite database. A mailbox does not execute work or
-become an authority; it is a Mac file ingress and response projection.
+A mailbox is neither a shell nor an execution authority. It accepts a safely
+published request, stores an auditable exchange in the Mac authority, projects
+responses and events into the same mailbox root, and uses the configured route
+only after policy resolution. Direct mTLS never passes through a mailbox.
 
-## Three access routes
+## Context selection for mailbox work
 
-| Route | CLI or client selection | Authority and execution | Availability and meaning |
+The `environment` and `execution_target` fields are one pair for new
+`run` and `create_session` mailbox requests. The configured inbox selects a
+context before durable resource acceptance. A session stores the resolved
+target; later `submit_command` requests inherit it and cannot override it.
+
+```mermaid
+flowchart TD
+  Start[New run or create_session\nin a selected mailbox] --> Pair{Are environment and\nexecution_target both present?}
+  Pair -->|Neither| Default[Resolve the inbox default\nsource: inbox_default]
+  Pair -->|Both| Match{Does exact pair match an\nallowed configured context?}
+  Pair -->|Only one| Reject[Reject before resource\nacceptance or remote work]
+  Match -->|Yes| Override[Resolve the explicit context\nsource: request_override]
+  Match -->|No| Reject
+  Default --> Persist[Persist immutable environment\nand target with inbox ID]
+  Override --> Persist
+  Persist --> Route{Target kind}
+  Route -->|local/mac-workstation| Local[runner-locald as tomasz.walczuk]
+  Route -->|remote/linux-host| Queue[Mac Router through restricted SSH bridge\nas ubuntu]
+```
+
+`repository_alias` is optional policy and audit metadata. When supplied, it
+must appear in the selected inbox's configured alias list. It does not select a
+checkout, create a source tree, select a host, or permit source
+materialization. The current remote context permits only the empty source
+mode.
+
+## Access routes and authority
+
+| Route | Selection | Controller / execution account | Meaning |
 | --- | --- | --- | --- |
-| Mac local | `--endpoint local`, `mac-dev`, `local`, `mac-workstation` | `runner-locald` runs Bash as `tomasz.walczuk` | Normal local route. The local Unix socket authenticates the Mac OS user. |
-| Queued remote | `--endpoint local`, `linux-dev`, `remote`, `linux-host` | Mac Router durably records an intent, then the restricted SSH bridge calls `runnerd`, which runs Bash as `ubuntu` | Requires the separate SSH bridge and controller-map host setup. It is deliberately not assumed to be available just because direct HTTPS works. |
-| Direct remote | `--endpoint linux-poc`, `linux-dev`, `remote`, `linux-host` | Public mTLS HTTPS goes directly to `runnerd`, which runs Bash as `ubuntu` | Direct target authority. It requires the selected CA, client certificate, private key, and server-side certificate principal map. |
+| Mac local | `runner --endpoint local` or a mailbox resolved to `mac-local` | `local_user/tomasz.walczuk`; Bash as `tomasz.walczuk` | Local authority. |
+| Queued remote | `runner --endpoint local` with `linux-dev` / `remote` / `linux-host`, or a mailbox resolved to `ubuntu-current` | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches Ubuntu only through the pinned restricted SSH bridge. |
+| Direct remote | `runner --endpoint linux-poc --config <mac.yaml>` with `linux-dev` / `remote` / `linux-host` | `direct_mtls/tomasz.walczuk`; Bash as `ubuntu` | Public direct HTTPS at `https://129.151.232.40:8443` with TLS 1.3 mTLS. |
 
-The session target is immutable. Commands do not include a target; they inherit
-the session's target and profile.
-
-## Authority and visibility
+The queued and direct routes use different controller identities. Resources are
+owned by the controller that created them, so status, events, cancellation, and
+close use the same route. A queued view can be `local_intent` or `projection`
+and report `is_stale: true`; direct mTLS reads target authority.
 
 ```mermaid
 sequenceDiagram
-  participant C as Client
-  participant M as Mac Router and local.db
+  participant M as Mailbox client
+  participant D as Direct mTLS client
+  participant R as Mac Router and local.db
+  participant L as runner-locald
   participant S as Restricted SSH bridge
-  participant R as Ubuntu runnerd and remote.db
-  participant B as Bash session
+  participant U as Ubuntu runnerd and remote.db
 
-  alt Mac local
-    C->>M: Create local session
-    M->>B: runner-locald creates Bash as tomasz.walczuk
-  else Queued remote
-    C->>M: Create remote session
-    M-->>C: Durable local intent accepted
-    M->>S: Fixed bridge protocol over pinned SSH
-    S->>R: Forward to owner-only runnerd socket
-    R->>B: Create Bash as ubuntu
-    R-->>M: Authoritative state and events
-  else Direct remote
-    C->>R: mTLS create remote session
-    R->>B: Create Bash as ubuntu
-    R-->>C: Target-authority response and events
+  alt Inbox default: mac-local
+    M->>R: Marker-last request with no selection pair
+    R->>L: Resolve mac-local; execute as tomasz.walczuk
+    L-->>R: Events and terminal result
+    R-->>M: Same-root outbox and events
+  else Allowed remote override
+    M->>R: Complete linux-dev + remote/linux-host pair
+    R-->>M: Durable local acceptance
+    R->>S: Fixed bridge protocol over pinned SSH
+    S->>U: Owner-only Unix-socket call
+    U-->>R: Authoritative state and events
+    R-->>M: Same-root projection
+  else Direct mTLS CLI
+    D->>U: mTLS request to linux-poc
+    U-->>D: Target-authority response and events
   end
 ```
 
-The controller identity differs by ingress:
-
-| Ingress | Controller identity | Read view |
-| --- | --- | --- |
-| Mac local Unix socket | `local_user/tomasz.walczuk` | Local authority for Mac work; local intent or projection for queued work. |
-| Queued remote through Mac | `queued_mac/tomasz.walczuk` | Mac may report `local_intent` or `projection`; `is_stale: true` means its view can lag Ubuntu. |
-| Direct HTTPS | `direct_mtls/tomasz.walczuk` | Ubuntu target authority with `is_stale: false` when authoritative. |
-
-Resources are controller-owned. A direct mTLS session cannot be managed from
-the Mac mailbox or queued route, and a queued session cannot be managed through
-the direct route. This stops one route from guessing or changing work owned by
-another controller.
-
-## Session and event lifecycle
+## Session, event, and recovery lifecycle
 
 ```mermaid
 stateDiagram-v2
   [*] --> ready: Session accepted
   ready --> running: Command started
-  running --> ready: Command reaches terminal state
+  running --> ready: Command reaches a terminal state
   ready --> closed: Close accepted
-  running --> closed: Close cancels or drains work
+  running --> closed: Close drains or cancels work
   closed --> [*]
 ```
 
-A command produces ordered events beginning with `command_queued`, then
-`command_started`, zero or more `stdout` or `stderr` events, and a terminal
-event such as `command_succeeded`, `command_failed`, or `command_cancelled`.
-Clients resume event reading from the last received sequence. A complete output
-claim requires a complete retained event history and `output_complete: true`
-without `output_truncated: true`.
+A command publishes ordered events beginning with `command_queued`, then
+`command_started`, zero or more `stdout` or `stderr` events, and one terminal
+event. Event readers resume from their last validated sequence. Complete output
+requires a read through the final sequence, `output_complete: true`, and
+`output_truncated: false`.
 
-A terminal event closes the command event history: no later event is valid.
-For queued remote one-off work recovered after a Mac restart, the Mac Router
-reads the remote job, command, and event state but never resends the accepted
-run. It presents a terminal result only when the identity, target context,
-teardown, and retained event boundary form one consistent snapshot.
+For a queued one-off job after a Mac process restart, the Router reads the
+already accepted remote job, command, and retained events. It does not resend
+the mutation. It publishes a terminal response only when identity, target,
+teardown, and event boundary agree. A missing or contradictory proof remains
+incomplete or under investigation rather than being reported as successful.
 
 ## Security and operating boundaries
 
-| Boundary | What enforces it | Practical consequence |
+| Boundary | Enforcement | Practical result |
 | --- | --- | --- |
-| Mac local ingress | Owner-only Unix sockets and launchd services in the selected GUI user domain | Only the selected Mac account should operate local services. |
-| Direct Ubuntu ingress | TLS 1.3 mTLS and the server certificate-principal map | The client key alone is insufficient; its certificate URI SAN must map to the selected controller. |
-| Queued Ubuntu ingress | Pinned SSH host key, one restricted forced command, controller fingerprint map, owner-only runnerd socket | General SSH shell access is never part of the queued transport. |
-| Script execution | OS account permissions | Workspaces are not containment. Review scripts before submitting them. |
-| Persistent records | Separate SQLite state and retained event output | State can be recovered after a software process crash; physical power-cut behavior remains unverified. |
+| Mac ingress | Owner-only Unix sockets, `0700` mailbox trees, and GUI launchd services | Only `tomasz.walczuk` should operate the local services. |
+| Mailbox publication | Native exclusive-create, file and directory sync, JSON then empty marker last | A terminal request is not produced by a partially written draft. |
+| Direct Ubuntu ingress | TLS 1.3 mandatory mTLS and the certificate-principal map | A client certificate URI SAN must map to the selected controller. |
+| Queued Ubuntu ingress | Pinned SSH host key, one forced command, controller fingerprint map, owner-only Runner socket | The bridge permits no general SSH shell. |
+| Script execution | OS-account permissions | A workspace is a starting directory, not containment. |
+| Durable state | Separate Mac and Ubuntu SQLite records plus retained events | Software-process-crash recovery is supported by evidence; physical power-cut recovery is unverified. |
 
-## Supported scope and limits
+## Named remote hosts and host evidence
 
-The PoC provides discrete script execution, persistent Bash session state,
-event replay, cancellation requests, session close, one-off jobs, direct mTLS,
-and the Mac mailbox protocol. It does not provide an interactive terminal,
-arbitrary profile creation, arbitrary account selection, a web UI, container
-isolation, or a public backup/restore command.
+The configuration model can contain more named remote profiles. A profile can
+have a pinned queued bridge, a named direct mTLS endpoint, or both. Adding a
+profile does not make a physical machine usable. Each host needs its own P157
+onboarding: Ubuntu service, owner-only configuration, credentials and host-key
+pin or mTLS materials, route validation, account proof, and an end-to-end
+request to that exact profile.
 
-Software-crash recovery was exercised as the approved durability path. Do not
-claim power-loss recovery until a coordinated physical power-cut test is run
-and recorded.
+`linux-host` is the only profile with current live acceptance evidence. The
+user-supplied `sandbox.env` candidate (`ubuntu@132.226.205.205`) is **NOT RUN**
+until its own P157 gate passes. See [current-host evidence](current-host-evidence.md).

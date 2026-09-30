@@ -1,26 +1,33 @@
 # API reference
 
-The v1 API is documented by the checked-in
-[OpenAPI document](../src/internal/httpsapi/openapi/v1/openapi.json). This
-page explains how to select its transport and how to interpret its common
-results. Use the OpenAPI file for exact request/response schemas.
+The checked-in [OpenAPI document](../src/internal/httpsapi/openapi/v1/openapi.json)
+freezes the v1 HTTP/JSON wire contract. This guide explains how the current
+configuration selects its transports and how to read the common result fields.
+Use the OpenAPI document for exact schemas.
 
-## Transports
+The HTTP API has no `inbox_id` selector. File-mailbox selection is made by the
+owner-only filesystem root and is documented in [mailbox](mailbox.md).
+
+## Transports and profile binding
 
 | Transport | Address | Authentication | Intended route |
-| --- | --- | --- |
-| Direct public HTTPS | `https://129.151.232.40:8443` | TLS 1.3 mandatory mTLS; mapped client certificate URI SAN | Direct Ubuntu remote work only. |
-| Mac Unix socket | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock` | Owner-only Unix-socket access as `tomasz.walczuk` | Mac local work and queued remote work when the SSH bridge exists. |
-| Ubuntu private Unix socket | `/home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock` | Owner-only local service access as `ubuntu` | Host-local service operations; not a public client ingress. |
+| --- | --- | --- | --- |
+| Current direct public HTTPS | `https://129.151.232.40:8443` | TLS 1.3 mandatory mTLS; mapped certificate URI SAN | Direct work only on configured `remote/linux-host`. |
+| Mac Unix socket | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock` | Owner-only local Unix-socket access | Mac-local work and queued remote work through configured bridges. |
+| Current Ubuntu private socket | `/home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock` | Owner-only host-local service access | Host-local service operations; not a public client ingress. |
 
-The HTTPS listener binds to `10.0.0.200:8443` on Ubuntu. That is a server
-configuration address, not a client URL. The Mac uses the public URL above.
+The current direct endpoint name `linux-poc` is bound by the V2 Mac config to
+`linux-host`. It rejects a request for another profile. A new configured direct
+endpoint is usable only after that physical host completes P157; no request may
+supply a free-form URL, hostname, or account.
 
-## Direct mTLS request
+The direct listener binds `10.0.0.200:8443` on the current Ubuntu host. That is
+server configuration, not a client URL.
 
-Run on the **Mac** as `tomasz.walczuk`. This readiness request proves the
-current Runner HTTPS service, TLS chain, client authentication, and public
-path without exposing private-key contents:
+## Direct mTLS readiness and request
+
+Run on the **Mac** as `tomasz.walczuk`. The command reads the current Runner
+application readiness endpoint without exposing private-key contents:
 
 ```sh
 root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
@@ -31,13 +38,15 @@ curl --silent --show-error --fail --max-time 15 \
   https://129.151.232.40:8443/health/ready
 ```
 
-The same credential pattern applies to `/health/live`, `/metrics`, and
-`/v1/...` API calls. The earlier temporary TLS transport probe is separate
-from Runner application evidence and must not be cited as an API test.
+This proves the current application, mTLS identity, and public route at that
+moment. The earlier temporary TLS probe was transport-only. A direct response
+is not evidence that queued bridge or mailbox delivery works.
 
-For example, create a direct remote session with a stable idempotency key:
+For example, create a direct current-host session with a stable idempotency
+key:
 
 ```sh
+# Mac — tomasz.walczuk
 root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
 key='example-create-key-keep-this-for-retry'
 curl --silent --show-error --fail \
@@ -50,8 +59,8 @@ curl --silent --show-error --fail \
   https://129.151.232.40:8443/v1/sessions
 ```
 
-Keep the key when retrying an uncertain mutation. Direct HTTPS rejects a
-`local` target.
+Keep the key for a retry of an uncertain mutation. Direct HTTPS rejects a local
+target and an endpoint/target mismatch.
 
 ## Endpoint inventory
 
@@ -60,64 +69,53 @@ Keep the key when retrying an uncertain mutation. Direct HTTPS rejects a
 | `POST /v1/sessions` | Create a persistent session. |
 | `GET /v1/sessions/{session_id}` | Read a session snapshot. |
 | `DELETE /v1/sessions/{session_id}` | Request session close. |
-| `POST /v1/sessions/{session_id}/commands` | Submit a script to a session. The target comes from the session. |
+| `POST /v1/sessions/{session_id}/commands` | Submit a script; target comes from the session. |
 | `GET /v1/commands/{command_id}` | Read a command snapshot. |
-| `GET /v1/commands/{command_id}/events` | Read command events as NDJSON; supports resume/follow parameters from OpenAPI. |
+| `GET /v1/commands/{command_id}/events` | Read command events as NDJSON and resume/follow as OpenAPI defines. |
 | `POST /v1/commands/{command_id}/cancel` | Request cancellation. |
 | `POST /v1/jobs` | Create a one-off run job. |
 | `GET /v1/jobs/{job_id}` | Read a one-off job snapshot. |
-| `GET /health/live` | Liveness state. |
-| `GET /health/ready` | Readiness state plus checks and bounded metrics. |
-| `GET /metrics` | Bounded operational metrics with no scripts, output, paths, or credentials. |
+| `GET /health/live`, `GET /health/ready`, `GET /metrics` | Health and bounded operational metrics. |
 
-The CLI exposes session and command functions plus one-off `run`. The API also
-has `GET /v1/jobs/{job_id}`; there is no matching `runner job status` CLI
-command.
+The CLI exposes session/command functions and one-off `run`. The API also has
+job status; there is no matching `runner job status` command.
 
 ## Acceptance, authority, and snapshots
 
-Mutation responses use an idempotency key and return an acceptance envelope.
+Mutation responses carry an idempotency key and an acceptance envelope.
 Acceptance is not terminal completion:
 
 | Route | Acceptance scope | Meaning |
 | --- | --- | --- |
-| Mac local or queued remote | `local_intent` | The Mac durable intent exists. For queued remote work, Ubuntu authority might not yet have accepted it. |
-| Direct mTLS remote | `target_authority` | Ubuntu `runnerd` accepted the request. The command or session can still later fail. |
+| Mac local or queued remote | `local_intent` | The Mac recorded a durable intent. Ubuntu may not yet have accepted queued work. |
+| Direct mTLS remote | `target_authority` | The current target accepted the request. The command or session can still fail later. |
 
-Read snapshots use this wrapper:
+Read snapshots use:
 
 ```json
 {"view":"authority|projection|local_intent","is_stale":false,"resource":{}}
 ```
 
-`authority` comes from the target authority. A queued Mac response may be
-`projection` or `local_intent`; `is_stale: true` says its state may lag Ubuntu.
-A retained `not_delivered` local intent contains no fabricated remote resource
-state.
+`authority` comes from the target authority. Queued Mac reads can be
+`projection` or `local_intent` with `is_stale: true`. A retained
+`not_delivered` local intent contains no fabricated remote resource state.
 
-## Events and output
+## Events, limits, and ownership
 
-The events endpoint is NDJSON: one command-event object per line. Each event
-has an ordered sequence. Persist the highest validated sequence and resume from
-it after a disconnect. Event responses include `X-Runner-View` and
-`X-Runner-Stale` headers.
-
-If a requested event range has expired or has an irrecoverable gap, Runner
-returns `410 event_history_unavailable` with `output_complete: false`. This
-means the complete historical output cannot be reconstructed from retained
-events.
-
-## Request limits and ownership
+Events are NDJSON, one command-event object per line. Persist the highest
+validated sequence and resume after a disconnect. Event responses include
+`X-Runner-View` and `X-Runner-Stale` headers. An expired or irrecoverably
+gapped range returns `410 event_history_unavailable` with
+`output_complete: false`.
 
 - Scripts are UTF-8 strings of at most `131072` bytes.
 - Serialized request bodies are at most `1048576` bytes.
-- `Idempotency-Key` is required for mutating operations.
-- A command request contains no target; it inherits the session's immutable
-  `execution_target`.
-- Resources are controller-owned. Use the same ingress for later reads, events,
-  cancellation, and close. Cross-controller access is denied.
-- Mac local and direct HTTPS transport are separate authentication boundaries.
-  Direct mTLS does not grant access to Mac local resources.
+- `Idempotency-Key` is required for mutations.
+- A command request has no target; it inherits the session's immutable target.
+- Resources are controller-owned. Continue with the same ingress for reads,
+  events, cancellation, and close.
+- Direct mTLS and the Mac local/queued route are separate trust boundaries.
 
-For a user-focused workflow, prefer the [CLI guide](user-guide.md). For
-filesystem automation, use the [mailbox guide](mailbox.md).
+For user-facing flows, use the [CLI guide](user-guide.md). For owner-only
+filesystem automation, use the native [mailbox guide](mailbox.md). Current
+host evidence and P157 status live in [current-host evidence](current-host-evidence.md).

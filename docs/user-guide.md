@@ -6,29 +6,38 @@ The installed CLI is:
 /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bin/runner
 ```
 
-It submits discrete scripts. It does **not** open an interactive Bash prompt or
-allocate a PTY. A session does keep a Bash process, so shell state can persist
+It submits discrete scripts. It does not open an interactive Bash prompt or
+allocate a PTY. A session keeps one Bash process, so shell state can persist
 between `exec` requests in that same session.
+
+The CLI selects an ingress endpoint and target profile. It does **not** select
+a file inbox; mailbox roots and their default/override policy belong to the
+native [mailbox integration](mailbox.md).
 
 ## Select the route first
 
 Put global options before the command:
 
 ```text
-runner --endpoint <local|profile> [--config PATH] [--wait-timeout DURATION] COMMAND
+runner --endpoint <local|configured-direct-endpoint> [--config PATH] [--wait-timeout DURATION] COMMAND
 ```
 
-| Intended work | Endpoint and target | Execution account | Current condition |
+| Intended work | Endpoint and target | Execution account | Current evidence |
 | --- | --- | --- | --- |
-| Local Mac | `--endpoint local`; `mac-dev`, `local`, `mac-workstation` | `tomasz.walczuk` | Available when the two Mac LaunchAgents are healthy. |
-| Remote Ubuntu, direct | `--endpoint linux-poc --config <mac.yaml>`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Uses direct public TLS 1.3 mTLS. This is the currently verified remote route. |
-| Remote Ubuntu, queued | `--endpoint local`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Requires the separately installed permanent restricted SSH bridge. Verify it on Ubuntu with `deploy/ssh/install-queued-bridge.sh status`. |
+| Local Mac | `--endpoint local`; `mac-dev`, `local`, `mac-workstation` | `tomasz.walczuk` | Use when both Mac LaunchAgents are ready. |
+| Direct current Ubuntu | `--endpoint linux-poc --config <mac.yaml>`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Direct public TLS 1.3 mTLS route for the accepted current profile. |
+| Queued current Ubuntu | `--endpoint local`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Requires current bridge `status` to be ready. |
 
-Use the same endpoint for the complete resource lifecycle. The queued and
-direct remote routes use different controller identities, so a resource made
-by one is not visible or controllable through the other.
+`linux-poc` and `linux-host` are current configured values, not universal
+names. A future direct endpoint must be defined in the V2 `remote_hosts`
+policy, bound to exactly one target profile, and accepted by P157 before use.
+The CLI rejects an endpoint/target mismatch before it sends a mutation.
 
-Set convenient shell variables on the **Mac**:
+Use the same endpoint for a resource's complete lifecycle. Direct and queued
+remote routes use different controller identities, so a resource created by one
+is not visible through the other.
+
+Set convenient variables on the **Mac**:
 
 ```sh
 RUNNER='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bin/runner'
@@ -47,23 +56,23 @@ cancel [--idempotency-key KEY] COMMAND_ID
 run --environment NAME --target local|remote --profile NAME [--idempotency-key KEY] -- SCRIPT
 ```
 
-`--wait-timeout` accepts `1s` through `10m` and defaults to one minute.
-It bounds CLI waiting, not the accepted command's lifetime. A wait timeout
-does not cancel accepted work.
+`--wait-timeout` accepts `1s` through `10m` and defaults to one minute. It
+bounds the CLI wait, not an accepted command's lifetime. A timeout does not
+cancel accepted work.
 
-The CLI generates and prints an idempotency key for each mutation if you omit
-`--idempotency-key`. Keep that key if delivery becomes uncertain. Retry the
-same semantic mutation with the same key; do not generate a new key until the
-outcome is known.
+The CLI generates and prints an idempotency key for each mutation when you omit
+`--idempotency-key`. Preserve it if delivery is uncertain. Retry the same
+semantic mutation with the same key; do not create a replacement mutation.
 
 ## Run a one-off command
 
-A one-off `run` creates an ephemeral session, runs one script, emits its
-events, and closes the session.
+A one-off `run` creates an ephemeral session, runs one script, emits its events,
+and closes it.
 
 ### Mac local
 
 ```sh
+# Mac — tomasz.walczuk
 "$RUNNER" --endpoint local run \
   --environment mac-dev \
   --target local \
@@ -71,9 +80,10 @@ events, and closes the session.
   -- 'printf "LOCAL_OK\\n" && id -un && hostname'
 ```
 
-### Direct Ubuntu
+### Direct current Ubuntu
 
 ```sh
+# Mac — tomasz.walczuk
 "$RUNNER" --endpoint linux-poc --config "$CONFIG" run \
   --environment linux-dev \
   --target remote \
@@ -81,26 +91,43 @@ events, and closes the session.
   -- 'printf "REMOTE_OK\\n" && id -un && hostname'
 ```
 
-The remote output should identify `ubuntu`. Treat a returned command ID as the
-handle for later event replay if output streaming is interrupted.
+The output should identify `ubuntu`. This verifies the direct current-host
+route. It does not test a mailbox or the queued bridge.
+
+### Queued current Ubuntu
+
+First verify `deploy/ssh/install-queued-bridge.sh status` on the current Ubuntu
+host. Then run:
+
+```sh
+# Mac — tomasz.walczuk
+"$RUNNER" --endpoint local run \
+  --environment linux-dev \
+  --target remote \
+  --profile linux-host \
+  -- 'printf "QUEUED_REMOTE_OK\\n" && id -un && hostname'
+```
+
+The result can initially report `view: local_intent` or `view: projection` and
+`is_stale: true` while the Mac reconciles with the Ubuntu authority.
 
 ## Use a persistent session
 
-Create a direct remote session:
+Create a direct current-host session:
 
 ```sh
+# Mac — tomasz.walczuk
 "$RUNNER" --endpoint linux-poc --config "$CONFIG" session create \
   --environment linux-dev \
   --target remote \
   --profile linux-host
 ```
 
-The command prints `session_id`, `endpoint`, `execution_target`, and its
-idempotency key. Save the session ID. The default command waits until the
-session is ready; add `--no-wait` to return after durable acceptance and then
-use `session status` to observe readiness.
+The CLI prints `session_id`, endpoint, target, and idempotency key. Save the
+session ID. The default waits for readiness; `--no-wait` returns after durable
+acceptance, then `session status` can observe readiness.
 
-Run a first script, replacing `SESSION_ID` with the printed value:
+Run a first script, replacing `SESSION_ID`:
 
 ```sh
 "$RUNNER" --endpoint linux-poc --config "$CONFIG" exec SESSION_ID -- \
@@ -114,32 +141,22 @@ Run a second script in the same session:
   'printf "VALUE=%s\\n" "$RSR_DEMO_VALUE"'
 ```
 
-This demonstrates persistent Bash state without turning the CLI into an
-interactive terminal. A new session starts a new Bash process and does not
-inherit this shell variable.
+A new session starts a new Bash process, so it does not inherit this variable.
 
-Inspect the session at any time:
+Inspect and close the session through the same endpoint:
 
 ```sh
 "$RUNNER" --endpoint linux-poc --config "$CONFIG" session status SESSION_ID
-```
-
-Status includes the state, target, authority view, effective account,
-isolation model, staleness flag, and applied service limits.
-
-Close the session once its work is complete:
-
-```sh
 "$RUNNER" --endpoint linux-poc --config "$CONFIG" session close \
   --policy graceful SESSION_ID
 ```
 
-The CLI close policy defaults to `graceful`. The close response is accepted
-first, followed by a status observation of the teardown outcome.
+The CLI close policy defaults to `graceful`. A close response is accepted first,
+then the CLI reads the teardown outcome.
 
 ## Read or resume command output
 
-Every command has an ordered event sequence. Read retained history once:
+Each command has ordered events. Read retained history once:
 
 ```sh
 "$RUNNER" --endpoint linux-poc --config "$CONFIG" events COMMAND_ID --after 0
@@ -151,17 +168,17 @@ Follow a running command from a known cursor:
 "$RUNNER" --endpoint linux-poc --config "$CONFIG" events COMMAND_ID --after 12 --follow
 ```
 
-The CLI writes command stdout and stderr to their matching streams and prints
-lifecycle/status fields separately. A complete history read has all of these:
+The CLI writes command stdout/stderr to their matching streams and lifecycle
+fields separately. A complete read has all of:
 
-- started at `--after 0`
-- `event_cursor` equal to `final_event_sequence`
-- `output_complete: true`
-- `output_truncated: false`
-- `event_history_complete_this_read: true`
+- a read starting at `--after 0`;
+- `event_cursor` equal to `final_event_sequence`;
+- `output_complete: true`;
+- `output_truncated: false`; and
+- `event_history_complete_this_read: true`.
 
-If history has expired or has an irrecoverable gap, the command reports
-`output_unavailable_reason`. It must not be described as complete output.
+If output retention expired or history has an irrecoverable gap, the command
+reports `output_unavailable_reason`. It must not be described as complete.
 
 ## Cancel a command
 
@@ -170,37 +187,24 @@ If history has expired or has an irrecoverable gap, the command reports
 "$RUNNER" --endpoint linux-poc --config "$CONFIG" events COMMAND_ID --after 0 --follow
 ```
 
-`cancel` confirms a cancellation request, not an eventual `cancelled` terminal
-state. Read events or status after it. Preserve the printed idempotency key if
-the cancellation transport result is uncertain.
+`cancel` confirms a cancellation request, not a final cancelled state. Read
+status/events through the same endpoint and preserve the idempotency key if
+transport becomes uncertain.
 
-## Queued remote session after bridge setup
+## Mailbox and profile choices
 
-After the restricted SSH bridge is deliberately installed and verified, the
-same session workflow uses the Mac endpoint:
-
-```sh
-"$RUNNER" --endpoint local session create \
-  --environment linux-dev \
-  --target remote \
-  --profile linux-host
-```
-
-Use `--endpoint local` for later `session status`, `exec`, `events`, `cancel`,
-and `session close` on that session. A queued response can show
-`view: local_intent` or `view: projection` and `is_stale: true` while Mac
-reconciles with Ubuntu. The direct mTLS endpoint should not be substituted.
-
-## Useful behavior to remember
-
-- The CLI does not expose source selection, custom service limits, or a
-  per-command timeout request. Current CLI requests use the configured empty
-  source mode and service defaults.
-- Direct HTTPS accepts only the remote target. A local command always uses
+- `--profile` names a configured execution target. It never selects an inbox.
+- The CLI has no interactive terminal and no mailbox selector.
+- Mailbox `run` and `create_session` can omit both selection fields to use
+  that inbox's default, or supply an exact allowed pair as an override. See
+  [mailbox](mailbox.md#new-work-target-resolution).
+- Direct HTTPS accepts remote targets only. A Mac-local command uses
   `--endpoint local`.
-- `run` has no standalone CLI job-status command. Save the printed IDs and
-  use the same route's command events for output.
-- Output data can be large or retained only for the configured period. Save
-  important results outside Runner before retention cleanup.
-- Run `"$RUNNER" --help` or a command-specific `--help` for the installed
-  command syntax.
+- `run` has no standalone CLI job-status command. Preserve its IDs and use the
+  same route's events for output.
+- Run `"$RUNNER" --help` or a command-specific `--help` for installed syntax.
+  The help text's `linux-poc` spelling is the current-host direct endpoint
+  example; V2 config can register more endpoint names after their P157 gates.
+
+See [current-host evidence](current-host-evidence.md) before treating a remote
+profile as available.
