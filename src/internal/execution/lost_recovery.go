@@ -18,7 +18,8 @@ var (
 	ErrLostRuntimeRecoveryUnconfirmed = errors.New("lost runtime cleanup remains unconfirmed")
 	// ErrLostRuntimeRecoveryFinalization means paired capacity release is
 	// durable, but its retained ownership marker and workspace could not yet be
-	// finalized. Keep runnerd stopped and rerun the same explicit repair.
+	// finalized. The same explicit repair may retry finalization later; normal
+	// dispatch may proceed because the paired capacity release already committed.
 	ErrLostRuntimeRecoveryFinalization = errors.New("lost runtime recovery finalization remains unconfirmed")
 )
 
@@ -234,9 +235,10 @@ func (s *Service) RecoverLostRuntime(ctx context.Context, request LostRuntimeRec
 }
 
 // finalizeLostRuntimeRecovery removes the retained ownership evidence only
-// after the paired durable capacity release exists. A failure here deliberately
-// leaves runnerd stopped: a retry sees the already-released pair and performs
-// only this idempotent finalization, never a script replay or capacity write.
+// after the paired durable capacity release exists. A failure here leaves the
+// retained ownership evidence for a later idempotent finalization retry;
+// normal dispatch may proceed because capacity is already released. A retry
+// never replays a script or writes capacity again.
 func (s *Service) finalizeLostRuntimeRecovery(ctx context.Context, request LostRuntimeRecoveryRequest, result LostRuntimeRecoveryResult, recoverer LostRuntimeRecoverer) (LostRuntimeRecoveryResult, error) {
 	finalized, finalizeErr := recoverer.FinalizeLostRuntime(ctx, RuntimeReconcileRequest{Session: result.Session})
 	result.Runtime = finalized

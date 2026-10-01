@@ -34,6 +34,7 @@ const (
 
 var (
 	ErrDatabasePath        = errors.New("database path must be an absolute clean file path")
+	ErrDatabaseMissing     = errors.New("authority database must already exist")
 	ErrDatabasePermissions = errors.New("database path must be owned by the current user with owner-only modes")
 	ErrSchemaVersion       = errors.New("database schema version is unsupported")
 	ErrSchemaHistory       = errors.New("database schema migration history is inconsistent")
@@ -316,6 +317,118 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// OpenExistingCurrent opens an already-existing private authority database for
+// an online owner-only maintenance operation. Unlike Open, it never creates a
+// directory or database file, changes journal mode or file permissions, or
+// applies a migration. The database must already have the complete current
+// schema and verified migration history.
+//
+// Validation first uses a read-only, query-only connection. The returned
+// connection is writable so the caller can make the narrowly authorised
+// authority change after validation. Opening it with mode=rw prevents SQLite
+// from creating a missing database during the transition.
+func OpenExistingCurrent(ctx context.Context, path string) (*sql.DB, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := validateExistingCurrentDatabasePath(path); err != nil {
+		return nil, err
+	}
+	if err := validateExistingCurrentDatabaseReadOnly(ctx, path); err != nil {
+		return nil, err
+	}
+
+	db, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "rw"))
+	if err != nil {
+		return nil, fmt.Errorf("open existing SQLite database: %w", err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("connect to existing SQLite database: %w", err)
+	}
+	// Recheck after opening the writable handle, so the function never returns
+	// a database whose schema/history changed after the read-only preflight.
+	if err := verifyCurrentSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := verifyPragmas(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// A connection can create a SQLite sidecar while it is being opened. Do not
+	// repair its permissions here; reject it if it fails the same private-file
+	// contract as the authority database instead.
+	if err := validateExistingCurrentDatabasePath(path); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func validateExistingCurrentDatabasePath(path string) error {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return ErrDatabasePath
+	}
+	parent := filepath.Dir(path)
+	parentInfo, err := os.Lstat(parent)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: database directory does not exist", ErrDatabaseMissing)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect private database directory: %w", err)
+	}
+	if !parentInfo.IsDir() || parentInfo.Mode().Perm() != 0o700 || !ownedByCurrentUser(parentInfo) {
+		return fmt.Errorf("%w: database directory", ErrDatabasePermissions)
+	}
+
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+			if sidecarErr := checkPrivateSidecar(path + suffix); sidecarErr != nil {
+				return sidecarErr
+			}
+		}
+		return fmt.Errorf("%w: %s", ErrDatabaseMissing, filepath.Base(path))
+	}
+	if err != nil {
+		return fmt.Errorf("inspect existing SQLite database file: %w", err)
+	}
+	if err := validateDatabaseFile(path, info); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if err := checkPrivateSidecar(path + suffix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateExistingCurrentDatabaseReadOnly(ctx context.Context, path string) error {
+	db, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "ro"))
+	if err != nil {
+		return fmt.Errorf("open existing SQLite database read-only: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("connect to existing SQLite database read-only: %w", err)
+	}
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire existing SQLite database read-only connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
+		return fmt.Errorf("enable SQLite read-only validation: %w", err)
+	}
+	if err := verifyCurrentSchemaConnection(ctx, connection); err != nil {
+		return err
+	}
+	return verifyPragmasConnection(ctx, connection)
+}
+
 // ValidateConfiguredMailboxSetAtPath performs the retained-mailbox portion of
 // a configuration preflight without creating a database, applying migrations,
 // or making any write. A missing database is valid for a first installation.
@@ -439,8 +552,19 @@ func isLegacySingleMailboxSchema(ctx context.Context, db *sql.DB) (bool, error) 
 }
 
 func dataSourceName(path string) string {
+	return sqliteDataSourceName(path, "")
+}
+
+func existingCurrentDataSourceName(path, mode string) string {
+	return sqliteDataSourceName(path, mode)
+}
+
+func sqliteDataSourceName(path, mode string) string {
 	uri := url.URL{Scheme: "file", Path: path}
 	query := url.Values{}
+	if mode != "" {
+		query.Set("mode", mode)
+	}
 	query.Set("_busy_timeout", strconv.FormatInt(BusyTimeout.Milliseconds(), 10))
 	query.Set("_foreign_keys", "on")
 	query.Set("_synchronous", "FULL")
@@ -504,7 +628,10 @@ func verifyPragmas(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("acquire SQLite connection: %w", err)
 	}
 	defer connection.Close()
+	return verifyPragmasConnection(ctx, connection)
+}
 
+func verifyPragmasConnection(ctx context.Context, connection *sql.Conn) error {
 	var journalMode string
 	var foreignKeys, busyTimeout, synchronous int64
 	if err := connection.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journalMode); err != nil {
@@ -539,6 +666,26 @@ func checkSupportedSchemaVersion(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("%w: got %d, current %d", ErrSchemaVersion, version, CurrentSchemaVersion)
 	}
 	return nil
+}
+
+func verifyCurrentSchema(ctx context.Context, db *sql.DB) error {
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire SQLite current-schema connection: %w", err)
+	}
+	defer connection.Close()
+	return verifyCurrentSchemaConnection(ctx, connection)
+}
+
+func verifyCurrentSchemaConnection(ctx context.Context, connection *sql.Conn) error {
+	version, err := userVersion(ctx, connection)
+	if err != nil {
+		return err
+	}
+	if version != CurrentSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d", ErrSchemaVersion, version, CurrentSchemaVersion)
+	}
+	return verifyMigrationHistory(ctx, connection, version)
 }
 
 func applyMigrations(ctx context.Context, db *sql.DB) error {
