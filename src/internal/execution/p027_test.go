@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -293,6 +294,12 @@ func commandIDForP027(t *testing.T, value string) domain.CommandID {
 
 func newP027Service(t *testing.T, runtime *p027Runtime) (*Service, *store.AuthorityStore) {
 	t.Helper()
+	service, authority, _ := newP027ServiceWithDatabase(t, runtime)
+	return service, authority
+}
+
+func newP027ServiceWithDatabase(t *testing.T, runtime *p027Runtime) (*Service, *store.AuthorityStore, *sql.DB) {
+	t.Helper()
 	db, err := store.Open(context.Background(), t.TempDir()+"/state/p027.db")
 	if err != nil {
 		t.Fatal(err)
@@ -311,5 +318,5 @@ func newP027Service(t *testing.T, runtime *p027Runtime) (*Service, *store.Author
 	if err != nil {
 		t.Fatal(err)
 	}
-	return service, authority
+	return service, authority, db
 }

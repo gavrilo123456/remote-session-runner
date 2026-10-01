@@ -155,6 +155,106 @@ func TestRecoverLostRuntimeRefusesMismatchedCommandBeforeRuntimeAction(t *testin
 	pRecoveryAssertRetained(t, authority, session.SessionID, command.CommandID)
 }
 
+func TestRecoverLostRuntimeUsesMetadataWhenScriptIsCorrupt(t *testing.T) {
+	runtime := &p027Runtime{
+		p020FakeRuntime:    p020FakeRuntime{generation: "generation-lost-recovery-corrupt-script", cancelResult: RuntimeCommandStopResult{}},
+		lostRecoveryResult: RuntimeReconcileResult{RuntimeGeneration: "generation-lost-recovery-corrupt-script", CleanupConfirmed: true},
+		lostFinalizeResult: RuntimeReconcileResult{RuntimeGeneration: "generation-lost-recovery-corrupt-script", CleanupConfirmed: true},
+	}
+	service, authority, database := newP027ServiceWithDatabase(t, runtime)
+	session, command := pRecoveryLostPair(t, service, authority, "corrupt-script")
+	if _, err := database.Exec(`UPDATE exec_commands SET script_bytes = ? WHERE command_id = ?`, []byte("tampered"), string(command.CommandID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.GetCommand(context.Background(), command.CommandID); !errors.Is(err, store.ErrCommandPayloadCorrupt) {
+		t.Fatalf("fixture command error=%v, want corrupt payload", err)
+	}
+
+	result, err := service.RecoverLostRuntime(context.Background(), LostRuntimeRecoveryRequest{SessionID: session.SessionID, CommandID: command.CommandID})
+	if err != nil || result.Command.CommandID != command.CommandID || runtime.lostRecoveryCall != 1 || runtime.lostFinalizeCall != 1 {
+		t.Fatalf("metadata-only recovery=%+v err=%v recovery=%d finalize=%d", result, err, runtime.lostRecoveryCall, runtime.lostFinalizeCall)
+	}
+	pRecoveryAssertReleased(t, authority, session.SessionID, command.CommandID)
+}
+
+func TestRecoverLostRuntimeBatchProvesAllPairsBeforeAtomicRelease(t *testing.T) {
+	runtime := &p027Runtime{
+		p020FakeRuntime:    p020FakeRuntime{generation: "generation-lost-recovery-batch", cancelResult: RuntimeCommandStopResult{}},
+		lostRecoveryResult: RuntimeReconcileResult{RuntimeGeneration: "generation-lost-recovery-batch", CleanupConfirmed: true},
+		lostFinalizeResult: RuntimeReconcileResult{RuntimeGeneration: "generation-lost-recovery-batch", CleanupConfirmed: true},
+	}
+	service, authority := newP027Service(t, runtime)
+	firstSession, firstCommand := pRecoveryLostPair(t, service, authority, "batch-first")
+	secondSession, secondCommand := pRecoveryLostPair(t, service, authority, "batch-second")
+	beforeStart, beforeExecute := runtime.startCall, runtime.commandCall
+
+	results, err := service.RecoverLostRuntimeBatch(context.Background(), []LostRuntimeRecoveryRequest{
+		{SessionID: firstSession.SessionID, CommandID: firstCommand.CommandID},
+		{SessionID: secondSession.SessionID, CommandID: secondCommand.CommandID},
+	})
+	if err != nil || len(results) != 2 || runtime.lostRecoveryCall != 2 || runtime.lostFinalizeCall != 2 || runtime.startCall != beforeStart || runtime.commandCall != beforeExecute {
+		t.Fatalf("batch results=%+v err=%v recovery=%d finalize=%d start=%d execute=%d", results, err, runtime.lostRecoveryCall, runtime.lostFinalizeCall, runtime.startCall, runtime.commandCall)
+	}
+	pRecoveryAssertReleased(t, authority, firstSession.SessionID, firstCommand.CommandID)
+	pRecoveryAssertReleased(t, authority, secondSession.SessionID, secondCommand.CommandID)
+}
+
+func TestRecoverLostRuntimeBatchRetainsEveryPairWhenOneProofFails(t *testing.T) {
+	runtime := &p027Runtime{
+		p020FakeRuntime:    p020FakeRuntime{generation: "generation-lost-recovery-batch-failure", cancelResult: RuntimeCommandStopResult{}},
+		lostRecoveryResult: RuntimeReconcileResult{RuntimeGeneration: "generation-lost-recovery-batch-failure", CleanupConfirmed: false},
+		lostFinalizeResult: RuntimeReconcileResult{RuntimeGeneration: "generation-lost-recovery-batch-failure", CleanupConfirmed: true},
+	}
+	service, authority := newP027Service(t, runtime)
+	firstSession, firstCommand := pRecoveryLostPair(t, service, authority, "batch-failure-first")
+	secondSession, secondCommand := pRecoveryLostPair(t, service, authority, "batch-failure-second")
+	beforeStart, beforeExecute := runtime.startCall, runtime.commandCall
+
+	_, err := service.RecoverLostRuntimeBatch(context.Background(), []LostRuntimeRecoveryRequest{
+		{SessionID: firstSession.SessionID, CommandID: firstCommand.CommandID},
+		{SessionID: secondSession.SessionID, CommandID: secondCommand.CommandID},
+	})
+	if !errors.Is(err, ErrLostRuntimeRecoveryUnconfirmed) || runtime.lostRecoveryCall != 1 || runtime.lostFinalizeCall != 0 || runtime.startCall != beforeStart || runtime.commandCall != beforeExecute {
+		t.Fatalf("batch proof failure err=%v recovery=%d finalize=%d start=%d execute=%d", err, runtime.lostRecoveryCall, runtime.lostFinalizeCall, runtime.startCall, runtime.commandCall)
+	}
+	pRecoveryAssertRetained(t, authority, firstSession.SessionID, firstCommand.CommandID)
+	pRecoveryAssertRetained(t, authority, secondSession.SessionID, secondCommand.CommandID)
+}
+
+func TestRecoverLostRuntimeBatchRetainsEveryPairWhenLaterProofFailsThenRetries(t *testing.T) {
+	runtime := &p027Runtime{
+		p020FakeRuntime:    p020FakeRuntime{generation: "generation-lost-recovery-batch-later-failure", cancelResult: RuntimeCommandStopResult{}},
+		lostRecoveryResult: RuntimeReconcileResult{RuntimeGeneration: "generation-lost-recovery-batch-later-failure", CleanupConfirmed: true},
+		lostFinalizeResult: RuntimeReconcileResult{RuntimeGeneration: "generation-lost-recovery-batch-later-failure", CleanupConfirmed: true},
+	}
+	runtime.lostRecoveryHook = func(context.Context) {
+		if runtime.lostRecoveryCall == 2 {
+			runtime.lostRecoveryResult.CleanupConfirmed = false
+		}
+	}
+	service, authority := newP027Service(t, runtime)
+	firstSession, firstCommand := pRecoveryLostPair(t, service, authority, "batch-later-failure-first")
+	secondSession, secondCommand := pRecoveryLostPair(t, service, authority, "batch-later-failure-second")
+	requests := []LostRuntimeRecoveryRequest{
+		{SessionID: firstSession.SessionID, CommandID: firstCommand.CommandID},
+		{SessionID: secondSession.SessionID, CommandID: secondCommand.CommandID},
+	}
+
+	if _, err := service.RecoverLostRuntimeBatch(context.Background(), requests); !errors.Is(err, ErrLostRuntimeRecoveryUnconfirmed) || runtime.lostRecoveryCall != 2 || runtime.lostFinalizeCall != 0 {
+		t.Fatalf("later proof failure err=%v recovery=%d finalize=%d", err, runtime.lostRecoveryCall, runtime.lostFinalizeCall)
+	}
+	pRecoveryAssertRetained(t, authority, firstSession.SessionID, firstCommand.CommandID)
+	pRecoveryAssertRetained(t, authority, secondSession.SessionID, secondCommand.CommandID)
+
+	runtime.lostRecoveryHook = nil
+	runtime.lostRecoveryResult.CleanupConfirmed = true
+	if _, err := service.RecoverLostRuntimeBatch(context.Background(), requests); err != nil || runtime.lostRecoveryCall != 4 || runtime.lostFinalizeCall != 2 {
+		t.Fatalf("later proof retry err=%v recovery=%d finalize=%d", err, runtime.lostRecoveryCall, runtime.lostFinalizeCall)
+	}
+	pRecoveryAssertReleased(t, authority, firstSession.SessionID, firstCommand.CommandID)
+	pRecoveryAssertReleased(t, authority, secondSession.SessionID, secondCommand.CommandID)
+}
+
 func pRecoveryLostFixture(t *testing.T, reconcile RuntimeReconcileResult, reconcileErr error) (*Service, *store.AuthorityStore, *p027Runtime, store.SessionRecord, store.CommandRecord) {
 	t.Helper()
 	runtime := &p027Runtime{
@@ -164,16 +264,22 @@ func pRecoveryLostFixture(t *testing.T, reconcile RuntimeReconcileResult, reconc
 		lostFinalizeResult: RuntimeReconcileResult{RuntimeGeneration: reconcile.RuntimeGeneration, CleanupConfirmed: true},
 	}
 	service, authority := newP027Service(t, runtime)
-	request := p020Request(t, "session-lost-recovery", "key-lost-recovery", p020Target(t, domain.TargetKindLocal, "mac-workstation"))
+	session, command := pRecoveryLostPair(t, service, authority, "single")
+	return service, authority, runtime, session, command
+}
+
+func pRecoveryLostPair(t *testing.T, service *Service, authority *store.AuthorityStore, suffix string) (store.SessionRecord, store.CommandRecord) {
+	t.Helper()
+	request := p020Request(t, "session-lost-recovery-"+suffix, "key-lost-recovery-"+suffix, p020Target(t, domain.TargetKindLocal, "mac-workstation"))
 	created, err := service.CreateSession(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := p022QueueCommand(t, authority, created.Session, "command-lost-recovery", "key-command-lost-recovery")
+	command := p022QueueCommand(t, authority, created.Session, "command-lost-recovery-"+suffix, "key-command-lost-recovery-"+suffix)
 	if _, err := authority.StartNextEligibleCommand(context.Background(), store.DefaultRunningCommandLimit); err != nil {
 		t.Fatal(err)
 	}
-	closed, err := service.CloseSession(context.Background(), p022CloseRequest(t, created.Session.SessionID, "close-lost-recovery", "graceful"))
+	closed, err := service.CloseSession(context.Background(), p022CloseRequest(t, created.Session.SessionID, "close-lost-recovery-"+suffix, "graceful"))
 	if !errors.Is(err, ErrStopUnconfirmed) || closed.Session.State != domain.SessionStateLost {
 		t.Fatalf("seed lost session result=%+v err=%v", closed, err)
 	}
@@ -181,7 +287,7 @@ func pRecoveryLostFixture(t *testing.T, reconcile RuntimeReconcileResult, reconc
 	if err != nil || lost.State != domain.CommandStateLost || lost.OutputComplete {
 		t.Fatalf("seed lost command=%+v err=%v", lost, err)
 	}
-	return service, authority, runtime, closed.Session, lost
+	return closed.Session, lost
 }
 
 func pRecoveryAssertReleased(t *testing.T, authority *store.AuthorityStore, sessionID domain.SessionID, commandID domain.CommandID) {

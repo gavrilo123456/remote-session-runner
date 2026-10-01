@@ -276,6 +276,7 @@ ready. It does not create or rotate dispatcher authorization.
 | Queued remote remains recorded, uncertain, or stale | Selected bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
 | Remote one-off ends `indeterminate` with `delivery_state=accepted` and `remote_status_unavailable` | Stable job/session/command IDs, bridge/service journal, target SQLite status and retention | The target accepted the request but Runner could not prove its terminal result in 24 hours. Do not resubmit or release retained capacity manually. ACK the terminal response if it has been recorded, preserve the IDs and idempotency key, then investigate the target boundary. |
 | P128 reports only one unreleased slot for a terminal lost command | Exact session and command IDs, owner-only runtime record, process-group state, and service cgroup | Preserve the lost result and use the explicit stopped-service recovery procedure below. It refuses any other active work and never replays the script. |
+| P128 reports several retained `lost` slots and only already-cancelled one-off jobs | Exact list of every retained `lost` session/command pair and every nonterminal job, owner-only markers, and the stopped service cgroup | Use `recover-stalled` below only after the complete inventory is known. It rejects extra work and never dispatches or replays a script. |
 | New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host` and `sandbox-host` evidence does not transfer. |
 | Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
 
@@ -341,6 +342,51 @@ ready. It does not create or rotate dispatcher authorization.
   will finalize only the retained marker/workspace and will not signal a PID
   again. An unconfirmed pre-release cleanup is a failure; leave capacity
   retained and investigate the ownership boundary.
+- When P128 reports a complete set of several terminal `lost` records plus
+  stranded one-off jobs whose commands are already `cancelled`, use the batch
+  repair only with **every** affected ID. It is for recovery records, not for
+  a normal queued request or a way to bypass a host gate. The command rejects
+  any active session or running command, any extra pending job, any extra
+  retained slot/reservation, or an unknown ownership marker. It requires each
+  listed job to prove the narrow pre-execution history
+  `command_queued → command_cancelled`, with a closed session and released
+  reservation. It never reads a request body for execution, starts a
+  dispatcher, or sources a script.
+
+  ```sh
+  # Selected Ubuntu host — ubuntu
+  (
+    set -eu
+    cd /home/ubuntu/projects/remote-session-runner
+    sudo systemctl stop runnerd.service
+    state="$(sudo systemctl show --property=ActiveState --value runnerd.service)"
+    test "$state" = inactive || test "$state" = failed
+
+    root='/home/ubuntu/.local/share/remote-session-runner'
+    GOTOOLCHAIN=local "$root/toolchains/go1.27.1/bin/go" run ./src/cmd/runnerd \
+      recover-stalled \
+      --config "$root/config/linux.yaml" \
+      --apply \
+      --job-id 'job-EXACT-CANCELLED-JOB-1' \
+      --job-id 'job-EXACT-CANCELLED-JOB-2' \
+      --lost-pair 'sess-EXACT-LOST-1:cmd-EXACT-LOST-1' \
+      --lost-pair 'sess-EXACT-LOST-2:cmd-EXACT-LOST-2'
+
+    # Required before an installer can restart runnerd.
+    make test-p128-host-status
+    deploy/linux/install-systemd-service.sh
+  )
+  ```
+
+  `recover-stalled` settles the proven cancelled jobs in one SQLite
+  transaction. It then proves every listed lost process boundary while all
+  capacity remains held, releases all listed slot/reservation pairs in one
+  transaction, and only then removes proven owner markers and workspaces. If
+  any proof or database write fails, it leaves lost capacity retained. If a
+  final marker cleanup fails after release, leave the service stopped and run
+  the identical command again; the retry finalizes only the retained marker
+  and does not signal a PID or replay work. A successful command still needs
+  the explicit P128 zero-work result before installation or service start.
 - Software-crash recovery is evidenced. Physical power-loss survival remains
   unverified until a coordinated physical power-cut test passes.
 
