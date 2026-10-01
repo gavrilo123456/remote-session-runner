@@ -4,16 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `HOST VALIDATION BLOCKED` — F1–F4 source work and handoff passed; F5 installed-host acceptance stopped at the mandatory zero-work gate |
+| Status | `RESOLVED` — F1–F5 source work, guarded recovery, installed-host rollout, and fresh harmless mailbox acceptance passed |
 | Severity | High — can strand protected control-plane work after a safe queued boundary |
 | Priority | High |
 | Reported | 2026-10-01 |
 | Discovered by | Codex during protected Slide Studio Logger deployment work |
 | Owner | Remote Session Runner |
 | Affected component/path | Linux `runnerd` durable command slots, one-off scheduling, and queued-job resumption for remote mailbox work |
-| Affected revision | `sandbox-host` checkout observed at `98e26aa470ddf9794c30e3874da5e84b719b1b84`; installed `runnerd` binary and bridge revisions remain unverified |
-| Fixed revision | N/A |
-| Verification | Pending deterministic post-capacity/eligibility queue-resumption coverage and installed end-to-end mailbox acceptance |
+| Affected revision | At discovery, `sandbox-host` checkout was `98e26aa470ddf9794c30e3874da5e84b719b1b84`; the later installed `runnerd` and bridge revision was verified at `6498f6e7f6ef6230ece722a6824ea73463abfe02` |
+| Fixed revision | `9732e4049935ce4a5706b7f64bc9a1a20f199aed` adds the durable dispatcher; installed descendant `6498f6e7f6ef6230ece722a6824ea73463abfe02` adds the guarded stalled-record recovery used for the historical host cleanup |
+| Verification | Source scheduler/restart coverage passed; the installed sandbox completed one fresh native file-only request and ended with P128 zero active work |
 
 ## Reported behavior
 
@@ -340,26 +340,51 @@ must remain unchanged.
   terminal mailbox projection tests; v30 migration, audit metadata, and
   append-only tests; and affected legacy migration fixtures.
 
-### F5 blocked before service update
+### F5 initial block, then guarded recovery and installed acceptance
 
-The synchronized sandbox checkout reported `active_sessions=2`,
-`running_commands=0`, `unreleased_slots=4`, and `unfinished_jobs=2` through
-the required read-only P128 host-status gate. That gate refused restart, so no
-installer, service restart, bridge refresh, live mailbox test, cancellation,
-retry, or modification of either real Logger request occurred. The source
-repair is delivered, but installed acceptance remains pending a later fresh
-zero-work gate and harmless new-request test. See
-`040-implementation-evidence/BUG-007.md` for exact commands and evidence.
+The first synchronized sandbox P128 gate reported `active_sessions=2`,
+`running_commands=0`, `unreleased_slots=4`, and `unfinished_jobs=2`; it
+correctly refused the rollout at that point. A later controlled recovery used
+the installed descendant `6498f6e7f6ef6230ece722a6824ea73463abfe02` only
+while `runnerd.service` was stopped. It accepted an explicit inventory of the
+two already-cancelled jobs and four retained lost-capacity pairs. It verified
+that each selected job had exactly `command_queued` then `command_cancelled`
+with no `command_started`, and made no runtime execution or script call.
 
-No live Logger request, lost-slot record, or service process has been changed
-while preparing or source-testing this repair.
+The two previously queued requests reached truthful terminal projections:
+
+- `req-codex-inspect-run-index-shape-20261001-70` is `complete` with
+  `command_state=cancelled`, event cursor `2`, and `teardown_outcome=closed`.
+- `req-codex-mailbox-bridge-probe-20261001-73` is `complete` with
+  `command_state=cancelled`, event cursor `2`, and `teardown_outcome=closed`.
+
+Neither request was replayed or retried. After recovery, the mandatory P128
+gate reported zero active sessions, running commands, unreleased slots, and
+unfinished jobs. The versioned Linux installer then rebuilt and started
+`runnerd`, refreshed the queued bridge, and verified its source revision at
+`6498f6e7f6ef6230ece722a6824ea73463abfe02`.
+
+F5 then ran one new native file-only P158 request through `slidestud-io`, with
+no target fields so the configured default selected `sandbox-dev` /
+`remote/sandbox-host`. It completed as `ubuntu` on
+`oracle-gustaw-janecki-ubuntu-flex-02` (`aarch64`), with terminal
+`request_state=complete`, `command_state=succeeded`, exit code `0`, contiguous
+events through cursor `5`, complete non-truncated output, and exact ACK
+cleanup. The post-request P128 gate again reported all four counts as zero.
+See `040-implementation-evidence/BUG-007.md` for the machine-labelled command
+results.
 
 ## Resolution
 
-The source correction is delivered but not installed or closed. Do not treat
-full lost-slot capacity as permission to restart, delete, or replay the
-affected Logger work. Record the installed revision and live verification
-evidence here before closing this bug.
+Resolved. The Linux-owned dispatcher now makes durable queued one-off work
+eligible for a bounded wake and periodic retry after capacity or eligibility
+returns. The controlled recovery is intentionally separate: it only settles
+the exact historical records whose event and runtime proofs show no execution
+boundary. It must not be used for arbitrary queued or lost work.
+
+The acceptance test proves a fresh ordinary remote mailbox command on the
+installed sandbox route. It does not claim a physical-power-loss durability
+test or replay safety beyond the source-level deterministic coverage.
 
 ## History
 
@@ -370,3 +395,4 @@ evidence here before closing this bug.
 | 2026-10-01 | Added phased F1–F5 repair plan: exact-claim runtime ownership, Linux durable dispatcher, conservative restart settlement, automated gates, and a zero-work-only sandbox rollout. |
 | 2026-10-01 | Refined F3 after implementation review: durable jobs now retain trusted ingress for background audit provenance; v31 preserves truthful `unknown` provenance for historic queued rows. |
 | 2026-10-01 | Committed and handed off `9732e4049935ce4a5706b7f64bc9a1a20f199aed`; sandbox F5 stopped before service update because P128 reported two active sessions, four unreleased slots, and two unfinished jobs. |
+| 2026-10-01 | Completed guarded recovery at `6498f6e`, installed the descendant on sandbox, passed fresh P158 native file-only mailbox acceptance, and passed P128 zero-work postflight. |
