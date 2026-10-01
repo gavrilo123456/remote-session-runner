@@ -225,13 +225,6 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 			snapshot.RemoteStatusFailureCode = intent.RemoteStatusFailureCode
 			return snapshot, nil
 		}
-		// A queued remote one-off is published to the mailbox only after the
-		// dispatcher has read and cross-checked its job, command, and retained
-		// output boundary. This prevents an initial acceptance projection (or a
-		// stale row left across a Mac restart) from being rendered as terminal.
-		if !store.HasRemoteTerminalProof(intent) {
-			return snapshot, nil
-		}
 		projection, projectionErr := s.authority.GetRemoteJobProjection(ctx, jobID)
 		if errors.Is(projectionErr, store.ErrRemoteProjectionNotFound) {
 			return snapshot, nil
@@ -240,10 +233,35 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 			status, code := statusForStoreError(projectionErr)
 			return mailbox.RunSnapshot{}, mailboxOperationError(localFailure(status, code, sanitizeError(projectionErr)))
 		}
-		if projection.JobID != intent.JobID || projection.SessionID != intent.SessionID || projection.CommandID != intent.CommandID ||
-			projection.Target.Kind() != domain.TargetKindRemote || projection.Target.Profile() != intent.Target.Profile() ||
-			projection.Controller.Type() != s.owner.Type() || projection.Controller.ID() != s.owner.ID() ||
-			projection.Environment != intent.Environment || projection.Source != intent.Source {
+		projectionMatchesIntent := projection.JobID == intent.JobID && projection.SessionID == intent.SessionID && projection.CommandID == intent.CommandID &&
+			projection.Target.Kind() == domain.TargetKindRemote && projection.Target.Profile() == intent.Target.Profile() &&
+			projection.Controller == intent.Controller &&
+			projection.Environment == intent.Environment && projection.Source == intent.Source
+
+		// An accepted remote run may expose only a fresh, identity-checked,
+		// nonterminal job projection. This gives the file-only requestor a
+		// durable explanation for an accepted request that is still waiting,
+		// without treating a target status read as output or terminal proof.
+		// Stale, mismatched, and terminal rows stay hidden until the existing
+		// strict terminal proof path below can validate them.
+		if !store.HasRemoteTerminalProof(intent) {
+			if !projectionMatchesIntent || projection.IsStale || projection.Phase == store.JobPhaseComplete || projection.Phase == store.JobPhaseFailed || projection.Phase == store.JobPhaseLost ||
+				(projection.CommandState != nil && projection.CommandState.IsTerminal() && projection.Phase != store.JobPhaseClosingSession) || intent.DeliveryState != store.LocalIntentAccepted {
+				return snapshot, nil
+			}
+			active := mailbox.ActiveRemoteRunProjection{JobPhase: projection.Phase}
+			// A one-off can enter closing_session after its command has a
+			// terminal state. Until strict terminal proof exists, expose only
+			// that cleanup is pending; never publish the terminal command state
+			// or any associated result fields through an accepted receipt.
+			if projection.CommandState != nil && !projection.CommandState.IsTerminal() {
+				state := *projection.CommandState
+				active.CommandState = &state
+			}
+			snapshot.ActiveRemoteProjection = &active
+			return snapshot, nil
+		}
+		if !projectionMatchesIntent {
 			return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "remote job projection does not match its accepted intent", Retryable: true}
 		}
 		snapshot.JobPhase = string(projection.Phase)
@@ -260,7 +278,7 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 			}
 			if commandProjection.CommandID != intent.CommandID || commandProjection.SessionID != intent.SessionID ||
 				commandProjection.Target.Kind() != domain.TargetKindRemote || commandProjection.Target.Profile() != intent.Target.Profile() ||
-				commandProjection.Controller.Type() != s.owner.Type() || commandProjection.Controller.ID() != s.owner.ID() ||
+				commandProjection.Controller != intent.Controller ||
 				commandProjection.Environment != intent.Environment || commandProjection.Source != intent.Source ||
 				commandProjection.State != *projection.CommandState ||
 				!sameLocalInt(commandProjection.ExitCode, projection.ExitCode) ||

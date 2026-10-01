@@ -222,6 +222,8 @@ type Service struct {
 	remoteProbe                  func(context.Context) map[string]error
 	metricsRecorder              *opshealth.Recorder
 	thresholds                   *opshealth.ThresholdMonitor
+	remoteProjectionFreshnessMu  sync.Mutex
+	remoteProjectionFreshnessSet bool
 	remoteReconcileMu            sync.Mutex
 	lastRemoteReconcile          time.Time
 	terminalArtifactRecoveryMu   sync.Mutex
@@ -517,6 +519,10 @@ func (s *Service) Serve(ctx context.Context, stdout, stderr io.Writer) (returnEr
 		_ = s.api.Close(context.Background())
 		return fmt.Errorf("activate configured mailbox set: %w", err)
 	}
+	if err := s.initializeRemoteProjectionFreshness(ctx); err != nil {
+		_ = s.api.Close(context.Background())
+		return fmt.Errorf("initialize remote projection freshness: %w", err)
+	}
 	fmt.Fprintf(stdout, "runner-local listening on %s\n", s.api.SocketPath())
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- s.api.Serve() }()
@@ -679,6 +685,11 @@ func withRecorder(metrics opshealth.Metrics, recorder *opshealth.Recorder) opshe
 }
 
 func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, stderr io.Writer) {
+	if err := s.initializeRemoteProjectionFreshness(ctx); err != nil {
+		s.recordOperationalError(err, false)
+		fmt.Fprintln(stderr, "runner-local: remote projection freshness initialization failed")
+		return
+	}
 	s.runMailboxCycles(ctx, stderr)
 	for i := 0; i < defaultDrainLimit && ctx.Err() == nil; i++ {
 		release, gateErr := dispatchGate.Enter()
@@ -734,6 +745,27 @@ func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, st
 			s.reconcileMailboxRuntimes(ctx, stderr, "post-recovery")
 		}
 	}
+}
+
+// initializeRemoteProjectionFreshness creates a process-start boundary for
+// accepted remote one-off status. A retained projection cannot be exposed by
+// the mailbox until the current relay has obtained and persisted a successful
+// strict GET-job response. Tests that invoke runCycle directly use the same
+// boundary as Serve.
+func (s *Service) initializeRemoteProjectionFreshness(ctx context.Context) error {
+	if s == nil || s.database == nil {
+		return errors.New("remote projection freshness authority is unavailable")
+	}
+	s.remoteProjectionFreshnessMu.Lock()
+	defer s.remoteProjectionFreshnessMu.Unlock()
+	if s.remoteProjectionFreshnessSet {
+		return nil
+	}
+	if _, err := s.database.MarkAcceptedRemoteRunProjectionsStale(ctx); err != nil {
+		return err
+	}
+	s.remoteProjectionFreshnessSet = true
+	return nil
 }
 
 // runMailboxCycles services every configured mailbox in deterministic config

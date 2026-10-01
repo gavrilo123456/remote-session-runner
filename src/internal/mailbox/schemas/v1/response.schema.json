@@ -58,7 +58,47 @@
     },
     {
       "if": { "properties": { "request_state": { "const": "accepted" } }, "required": ["request_state"] },
-      "then": { "not": { "anyOf": [{ "required": ["session_state"] }, { "required": ["command_state"] }, { "required": ["job_phase"] }] } }
+      "then": {
+        "anyOf": [
+          {
+            "not": {
+              "anyOf": [
+                { "required": ["session_state"] }, { "required": ["command_state"] }, { "required": ["job_phase"] },
+                { "required": ["exit_code"] }, { "required": ["stdout"] }, { "required": ["stderr"] },
+                { "required": ["final_event_sequence"] }, { "required": ["available_event_sequence"] },
+                { "required": ["output_complete"] }, { "required": ["output_truncated"] },
+                { "required": ["output_unavailable_reason"] }, { "required": ["events_file"] },
+                { "required": ["teardown_outcome"] }, { "required": ["error"] }
+              ]
+            }
+          },
+          {
+            "properties": {
+              "operation": { "const": "run" },
+              "delivery_state": { "const": "accepted" },
+              "job_phase": { "enum": ["creating_session", "accepting_command", "awaiting_command", "closing_session"] }
+            },
+            "required": ["operation", "delivery_state", "job_id", "session_id", "command_id", "job_phase"],
+            "allOf": [
+              {
+                "if": { "required": ["command_state"] },
+                "then": { "properties": { "command_state": { "enum": ["queued", "running", "cancelling"] } } }
+              },
+              {
+                "not": {
+                  "anyOf": [
+                    { "required": ["session_state"] }, { "required": ["observed_at"] }, { "required": ["exit_code"] },
+                    { "required": ["stdout"] }, { "required": ["stderr"] }, { "required": ["final_event_sequence"] },
+                    { "required": ["available_event_sequence"] }, { "required": ["output_complete"] }, { "required": ["output_truncated"] },
+                    { "required": ["output_unavailable_reason"] }, { "required": ["events_file"] }, { "required": ["teardown_outcome"] },
+                    { "required": ["error"] }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "if": { "properties": { "request_state": { "const": "indeterminate" } }, "required": ["request_state"] },
@@ -153,7 +193,17 @@
       "then": { "required": ["session_id"] }
     },
     {
-      "if": { "required": ["command_state"] },
+      "if": {
+        "allOf": [
+          { "required": ["command_state"] },
+          {
+            "not": {
+              "properties": { "request_state": { "const": "accepted" } },
+              "required": ["request_state"]
+            }
+          }
+        ]
+      },
       "then": { "required": ["command_id", "output_complete", "output_truncated"] }
     },
     {

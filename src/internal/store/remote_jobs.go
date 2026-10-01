@@ -111,6 +111,80 @@ func (s *AuthorityStore) MarkRemoteJobProjectionStale(ctx context.Context, id do
 	return err
 }
 
+// MarkAcceptedRemoteRunProjectionsStale invalidates retained remote one-off
+// job views at a new Mac relay process boundary. Only a later successful
+// read-only target status query may replace a marked row with a fresh view.
+// It deliberately selects accepted remote runs only: completed receipts and
+// unrelated remote projections retain their established terminal semantics.
+func (s *AuthorityStore) MarkAcceptedRemoteRunProjectionsStale(ctx context.Context) (int64, error) {
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (int64, error) {
+		rows, err := connection.QueryContext(ctx, `
+SELECT intent_id FROM local_intents
+WHERE operation = ? AND target_kind = 'remote' AND delivery_state = 'accepted'
+`, localIntentRunOperation)
+		if err != nil {
+			return 0, fmt.Errorf("list accepted remote run projections for staleness: %w", err)
+		}
+		var intentIDs []domain.IntentID
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&raw); err != nil {
+				_ = rows.Close()
+				return 0, fmt.Errorf("scan accepted remote run projection staleness intent: %w", err)
+			}
+			intentID, err := domain.NewIntentID(raw)
+			if err != nil {
+				_ = rows.Close()
+				return 0, fmt.Errorf("accepted remote run projection staleness intent ID: %w", err)
+			}
+			intentIDs = append(intentIDs, intentID)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("iterate accepted remote run projection staleness intents: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return 0, fmt.Errorf("close accepted remote run projection staleness intents: %w", err)
+		}
+
+		var marked int64
+		for _, intentID := range intentIDs {
+			intent, err := readLocalIntentOnConnection(ctx, connection, intentID)
+			if err != nil {
+				return 0, fmt.Errorf("read accepted remote run projection staleness intent: %w", err)
+			}
+			projection, err := readRemoteJobProjectionOnConnection(ctx, connection, intent.JobID)
+			if errors.Is(err, ErrRemoteProjectionNotFound) {
+				continue
+			}
+			if err != nil {
+				return 0, fmt.Errorf("read accepted remote run projection for staleness: %w", err)
+			}
+			if projection.IsStale || !acceptedRemoteRunProjectionMatchesIntent(intent, projection) {
+				continue
+			}
+			result, err := connection.ExecContext(ctx, `UPDATE local_remote_job_projections SET is_stale = 1 WHERE job_id = ? AND is_stale = 0`, string(projection.JobID))
+			if err != nil {
+				return 0, fmt.Errorf("mark accepted remote run projection stale: %w", err)
+			}
+			count, err := result.RowsAffected()
+			if err != nil {
+				return 0, fmt.Errorf("count marked accepted remote run projection: %w", err)
+			}
+			marked += count
+		}
+		return marked, nil
+	})
+}
+
+func acceptedRemoteRunProjectionMatchesIntent(intent LocalIntentRecord, projection RemoteJobProjection) bool {
+	return intent.Operation == localIntentRunOperation && intent.Target.Kind() == domain.TargetKindRemote &&
+		intent.DeliveryState == LocalIntentAccepted && intent.JobID == projection.JobID &&
+		intent.SessionID == projection.SessionID && intent.CommandID == projection.CommandID &&
+		intent.Target == projection.Target && intent.Controller == projection.Controller &&
+		intent.Environment == projection.Environment && sourcesEqual(intent.Source, projection.Source)
+}
+
 func validateRemoteJobProjection(input RemoteJobProjection) (RemoteJobProjection, string, string, error) {
 	jobID, err := domain.NewJobID(string(input.JobID))
 	if err != nil {

@@ -363,6 +363,7 @@ type p162RemoteCaller struct {
 type p162RemoteJob struct {
 	jobID, sessionID, commandID, environment, profile, script string
 	statusFailure                                             bool
+	activeStatus                                              bool
 }
 
 func newP162RemoteCaller(now func() time.Time) *p162RemoteCaller {
@@ -397,6 +398,7 @@ func (c *p162RemoteCaller) Call(_ context.Context, frame sshbridge.RequestFrame)
 			jobID: frame.ResourceID, sessionID: payload.SessionID, commandID: payload.CommandID,
 			environment: payload.Environment, profile: payload.ExecutionTarget.Profile, script: payload.Script,
 			statusFailure: strings.Contains(payload.Script, "P162_STATUS_FAILURE"),
+			activeStatus:  strings.Contains(payload.Script, "P162_ACTIVE_STATUS"),
 		}
 		c.jobs[job.jobID] = job
 		c.mutations[job.jobID]++
@@ -480,6 +482,18 @@ func (c *p162RemoteCaller) jobForCommand(commandID string) *p162RemoteJob {
 }
 
 func (c *p162RemoteCaller) jobPayload(job *p162RemoteJob) map[string]any {
+	if job.activeStatus {
+		return map[string]any{
+			"job_id": job.jobID, "session_id": job.sessionID, "command_id": job.commandID,
+			"job_phase": string(store.JobPhaseAwaitingCommand), "command_state": string(domain.CommandStateQueued),
+			"output_complete": false, "output_truncated": false, "teardown_state": string(store.JobTeardownPending),
+			"execution_target": map[string]string{"kind": "remote", "profile": job.profile}, "authority": "remote",
+			"controller":  map[string]string{"controller_type": "queued_mac", "controller_id": config.MacAccount},
+			"environment": job.environment, "source": map[string]string{"mode": "empty"},
+			"capabilities": map[string]any{"host_class": "Ubuntu Linux host", "isolation": "os-user", "effective_account": "ubuntu", "service_limits": map[string]any{"running_commands": 4}},
+			"observed_at":  c.observedAt(),
+		}
+	}
 	return map[string]any{
 		"job_id": job.jobID, "session_id": job.sessionID, "command_id": job.commandID,
 		"job_phase": string(store.JobPhaseComplete), "command_state": string(domain.CommandStateSucceeded),
