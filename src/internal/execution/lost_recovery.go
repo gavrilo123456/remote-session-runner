@@ -105,6 +105,77 @@ func (s *Service) RecoverLostRuntimeBatch(ctx context.Context, requests []LostRu
 	return results, nil
 }
 
+// CheckLostRuntimeRecoveryBatchPreservingQueuedOneOffs validates the narrow
+// online-repair shape that can retain ready one-off sessions with queued work
+// only when the complete configured command capacity is retained by selected
+// terminal-lost pairs. It neither reconciles a runtime nor changes any durable
+// record. The existing CheckLostRuntimeRecoveryBatch remains the stricter
+// offline operation.
+func (s *Service) CheckLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ctx context.Context, requests []LostRuntimeRecoveryRequest) ([]LostRuntimeRecoveryResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return nil, ErrExecutionServiceConfiguration
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	results, _, err := s.checkLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ctx, requests)
+	return results, err
+}
+
+// RecoverLostRuntimeBatchPreservingQueuedOneOffs proves and atomically
+// releases explicitly selected terminal-lost runtime capacity while leaving
+// unrelated, already-queued one-off work untouched. It never claims a queued
+// command, starts a session, executes stored script bytes, or changes the
+// preserved job/session/command identities.
+//
+// The store confirms the same scoped shape in the release transaction after
+// every runtime proof. This means an unsafe preflight cannot invoke runtime
+// cleanup, while a concurrent durable change cannot turn a prior safe read
+// into an unsafe paired release.
+func (s *Service) RecoverLostRuntimeBatchPreservingQueuedOneOffs(ctx context.Context, requests []LostRuntimeRecoveryRequest) ([]LostRuntimeRecoveryResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return nil, ErrExecutionServiceConfiguration
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+
+	results, pairs, err := s.checkLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ctx, requests)
+	if err != nil {
+		return results, err
+	}
+	recoverer, ok := s.runtime.(LostRuntimeRecoverer)
+	if !ok {
+		return results, fmt.Errorf("%w: runtime does not support lost-runtime recovery", ErrLostRuntimeRecoveryIneligible)
+	}
+	for index := range results {
+		if results[index].AlreadyRecovered {
+			continue
+		}
+		runtimeResult, reconcileErr := recoverer.ReconcileLostRuntime(ctx, RuntimeReconcileRequest{Session: results[index].Session})
+		results[index].Runtime = runtimeResult
+		if reconcileErr != nil {
+			s.store.RecordCleanupFailure()
+			auditErr := s.recordRuntimeCleanupFailure(ctx, results[index].Session, string(requests[index].CommandID))
+			return results, errors.Join(fmt.Errorf("%w: %v", ErrLostRuntimeRecoveryUnconfirmed, reconcileErr), auditErr)
+		}
+		if !runtimeResult.CleanupConfirmed {
+			s.store.RecordCleanupFailure()
+			auditErr := s.recordRuntimeCleanupFailure(ctx, results[index].Session, string(requests[index].CommandID))
+			return results, errors.Join(ErrLostRuntimeRecoveryUnconfirmed, auditErr)
+		}
+	}
+	if err := s.store.ConfirmLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ctx, pairs); err != nil {
+		return results, fmt.Errorf("record queue-preserving recovered runtime capacity: %w", err)
+	}
+	for index := range results {
+		finalized, finalizeErr := s.finalizeLostRuntimeRecovery(ctx, requests[index], results[index], recoverer)
+		results[index] = finalized
+		if finalizeErr != nil {
+			return results, finalizeErr
+		}
+	}
+	return results, nil
+}
+
 // CheckLostRuntimeRecovery verifies either one fully retained lost runtime or
 // a previously released pair whose marker may still need finalization. It
 // performs no runtime action and no durable write.
@@ -254,6 +325,39 @@ func (s *Service) checkLostRuntimeRecoveryBatch(ctx context.Context, requests []
 	}
 	if liveSlots != retained || liveReservations != retained {
 		return results, nil, fmt.Errorf("%w: live command slots=%d live session reservations=%d, want %d selected retained runtimes", ErrLostRuntimeRecoveryIneligible, liveSlots, liveReservations, retained)
+	}
+	return results, pairs, nil
+}
+
+func (s *Service) checkLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ctx context.Context, requests []LostRuntimeRecoveryRequest) ([]LostRuntimeRecoveryResult, []store.LostRuntimeRecoveryPair, error) {
+	if len(requests) == 0 {
+		return nil, nil, fmt.Errorf("%w: at least one lost runtime is required", ErrLostRuntimeRecoveryIneligible)
+	}
+	results := make([]LostRuntimeRecoveryResult, 0, len(requests))
+	pairs := make([]store.LostRuntimeRecoveryPair, 0, len(requests))
+	seenSessions := make(map[domain.SessionID]struct{}, len(requests))
+	seenCommands := make(map[domain.CommandID]struct{}, len(requests))
+	for _, request := range requests {
+		if request.SessionID == "" || request.CommandID == "" {
+			return results, nil, fmt.Errorf("%w: session and command IDs are required", ErrLostRuntimeRecoveryIneligible)
+		}
+		if _, exists := seenSessions[request.SessionID]; exists {
+			return results, nil, fmt.Errorf("%w: duplicate session %s", ErrLostRuntimeRecoveryIneligible, request.SessionID)
+		}
+		if _, exists := seenCommands[request.CommandID]; exists {
+			return results, nil, fmt.Errorf("%w: duplicate command %s", ErrLostRuntimeRecoveryIneligible, request.CommandID)
+		}
+		seenSessions[request.SessionID] = struct{}{}
+		seenCommands[request.CommandID] = struct{}{}
+		result, err := s.checkLostRuntimeRecoveryTarget(ctx, request)
+		if err != nil {
+			return results, nil, err
+		}
+		results = append(results, result)
+		pairs = append(pairs, store.LostRuntimeRecoveryPair{SessionID: request.SessionID, CommandID: request.CommandID})
+	}
+	if err := s.store.CheckLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ctx, pairs); err != nil {
+		return results, nil, fmt.Errorf("check queue-preserving lost runtime recovery: %w", err)
 	}
 	return results, pairs, nil
 }
