@@ -418,32 +418,41 @@ fixture; every rejected variant; cleanup-proof failure; atomic rollback; and
 stable identities with no script invocation. Existing strict offline recovery
 tests remain unchanged.
 
-### B008-P2 — Add a private online recovery coordinator
+### B008-P2 — Add a guarded online recovery command
 
-**Deliverable.** Add an owner-only Unix-socket maintenance operation and
-operator command for repeated explicit `session_id:command_id` pairs plus an
-explicit apply switch. It is absent from the public HTTPS API, SSH bridge, and
-mailbox request schema.
+**Deliverable.** Add an owner-only local `runnerd` maintenance command for
+repeated explicit `session_id:command_id` pairs plus an explicit apply switch.
+It opens the configured SQLite authority as the selected `ubuntu` account
+while the already-installed service remains active. It is absent from the
+public HTTPS API, SSH bridge, and mailbox request schema.
 
-**Rules.** A reversible dispatcher maintenance barrier stops new command
-claims, waits for existing claims to leave the critical section, runs the
-B008-P1 proof/release operation, finalizes only the selected ownership
-records, then releases the barrier and wakes the ordinary dispatcher. New
-work may still be durably accepted while the barrier is held, but cannot
-start. The operation reports only supplied IDs, counts, and sanitized reasons.
-It never runs a command, reuses an ID, or directly reaps an arbitrary PID.
+**Rules.** The command does not acquire the service lifecycle lock, stop or
+restart `runnerd`, or need a new route in the old running binary. Before it
+can release anything, B008-P1's immediate transaction proves that *every*
+live command slot is a supplied terminal-lost pair and that no command is
+running or cancelling. The installed dispatcher therefore has no free slot to
+claim before that transaction commits. After the paired releases commit, the
+existing durable dispatcher sees newly available capacity on its normal wake
+or bounded tick and starts the existing queued IDs. New work may be durably
+accepted during the operation but must pass the same transaction inventory.
+The command reports only supplied IDs, counts, and sanitized reasons. It never
+runs a command, reuses an ID, or directly reaps an arbitrary PID.
 
-Where an in-memory Linux adapter still owns the exact, already-proven stopped
-shell, finalization may reap that known child through its own `exec.Cmd`
-handle before removing its owner record. A fresh/offline adapter must not
-attempt PID reaping.
+The fresh recovery adapter retains the existing ownership-proof sequence:
+verify the recorded account, generation, process-start identity, and absence
+of live process-group members; persist the owner-marker proof; atomically
+release capacity; then remove only the selected marker/workspace. A zombie
+owned by the still-running old service may be reaped later by that service or
+its supervisor; it cannot be reaped by the helper and is never treated as a
+live runnable process or targeted by a raw PID action.
 
-**Gate.** Runnerd integration and race tests prove that command claims cannot
-race the barrier; the original queued command ID starts once after wake; the
-next queued command follows normal order; failed proof/finalization retains
-capacity and starts nothing; and the private route is not reachable through
-HTTPS. A Linux fixture proves safe known-child zombie reaping without a raw
-PID action.
+**Gate.** Command, store, execution, and CLI tests prove the command does not
+take the lifecycle lock or stop a service; the original queued command ID
+starts once after the atomic release; the next queued command follows normal
+order; failed proof/finalization retains capacity and starts nothing; and no
+public HTTPS, SSH bridge, or mailbox route can invoke maintenance recovery. A
+Linux fixture proves that zombie-only group members are not mistaken for a
+runnable process and that no raw PID reaping occurs.
 
 ### B008-P3 — Make accepted remote queue state visible
 
