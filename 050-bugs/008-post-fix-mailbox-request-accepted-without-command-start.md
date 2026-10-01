@@ -334,10 +334,198 @@ Required gates:
    `accepted` records without an event file, including the explicit
    prohibition on replaying the original request.
 
+## Confirmed cause
+
+Read-only correlation of the Mac authority, the sandbox authority, and the
+installed sandbox service established the following facts on 2026-10-01:
+
+1. Requests 103 and 104 were accepted once by the Mac, accepted once by the
+   sandbox authority, and have stable job, session, and command identities.
+   Their remote jobs are `awaiting_command` and their commands are `queued`.
+   They have not started, so neither is a failed Gitea dispatch.
+2. The sandbox has its configured four live command slots fully occupied by
+   four older terminal `lost` command/session pairs. Each retains its paired
+   command slot and session reservation because its capture/cleanup boundary
+   was not confirmed at the time it was marked `lost`.
+3. The four retained pairs existed before either affected request was
+   accepted. The normal dispatcher correctly declines to claim another queued
+   command while all slots remain retained.
+4. The current mailbox projection deliberately hides a nonterminal remote
+   job until strict terminal proof exists. It therefore left the two outbox
+   responses at revision 2 / `accepted`, even though the local database had a
+   safe remote `awaiting_command` / `queued` projection.
+
+The missing feature is a safe, online way to recover **explicitly selected,
+proven stopped** lost capacity while preserving unrelated ready sessions and
+queued commands. The existing `runnerd recover-stalled` and
+`runnerd recover-lost` paths are intentionally offline and require all live
+capacity to be named. They must remain that way: stopping `runnerd` while
+103/104 are ready with queued commands would close or lose those sessions and
+would violate the no-replay requirement.
+
+The underlying reason each of the four earlier commands became `lost` is not
+fully established by this incident. This fix must preserve the conservative
+`lost` decision whenever output or cleanup is uncertain; it must only prevent
+proven stopped runtimes from permanently blocking unrelated work.
+
+## Phased remediation plan
+
+This plan follows the repository's serial phase protocol. Before each phase,
+the implementer rereads the current initial design, detailed design, detailed
+phased plan, preimplementation decisions, repository instructions, this bug,
+and all code/tests/configuration relevant to that phase. Each phase records
+its file-read inventory, pre-phase commit, commands, results, limitations,
+and next step in a dedicated BUG-008 evidence record. A phase may start only
+after the preceding phase is committed, pushed from the Mac checkout, and
+fast-forwarded to every host used for its test.
+
+### B008-P0 — Freeze the incident contract and source fixture
+
+**Deliverable.** Add a source-only fixture representing four fully retained
+terminal-lost pairs and two separate ready sessions with queued one-off jobs.
+Document the exact no-replay invariants for 103/104.
+
+**Invariants.** The original request, job, session, and command IDs are never
+reaccepted, replayed, cancelled, deleted, edited, or acknowledged by this
+repair. A selected pair must be one terminal `lost` session, its matching
+terminal `lost` command, a final `command_lost` event, incomplete output, and
+unreleased paired capacity. Preserved work may be only an identity-matched
+ready session with a queued command. No raw SQLite edit, PID-only release,
+script logging, or secret logging is permitted.
+
+**Gate.** Focused store/execution fixture tests prove that the inventory is
+accepted only in the stated shape and that invalid inventories make no
+capacity, queued-job, or runtime mutation.
+
+### B008-P1 — Add scoped, queue-preserving capacity recovery
+
+**Deliverable.** Keep the existing offline recovery APIs unchanged. Add a
+separate store/execution operation that releases only a complete, explicitly
+selected set of terminal-lost pairs while allowing unrelated *ready/queued*
+reservations to remain live.
+
+**Rules.** In one immediate transaction, every live command slot must belong
+to a selected pair; there may be no running or cancelling command. Extra live
+reservations may belong only to identity-checked ready sessions whose command
+is still queued. Creating, busy, closing, unknown, partial, mismatched, or
+unselected lost state rejects the whole operation before any release. Runtime
+cleanup proof remains mandatory before the transaction. Capacity release is
+atomic across each pair and never changes a queued job, session, command,
+idempotency key, ordinal, or event history.
+
+**Gate.** Store and execution tests cover the valid four-lost/two-queued
+fixture; every rejected variant; cleanup-proof failure; atomic rollback; and
+stable identities with no script invocation. Existing strict offline recovery
+tests remain unchanged.
+
+### B008-P2 — Add a private online recovery coordinator
+
+**Deliverable.** Add an owner-only Unix-socket maintenance operation and
+operator command for repeated explicit `session_id:command_id` pairs plus an
+explicit apply switch. It is absent from the public HTTPS API, SSH bridge, and
+mailbox request schema.
+
+**Rules.** A reversible dispatcher maintenance barrier stops new command
+claims, waits for existing claims to leave the critical section, runs the
+B008-P1 proof/release operation, finalizes only the selected ownership
+records, then releases the barrier and wakes the ordinary dispatcher. New
+work may still be durably accepted while the barrier is held, but cannot
+start. The operation reports only supplied IDs, counts, and sanitized reasons.
+It never runs a command, reuses an ID, or directly reaps an arbitrary PID.
+
+Where an in-memory Linux adapter still owns the exact, already-proven stopped
+shell, finalization may reap that known child through its own `exec.Cmd`
+handle before removing its owner record. A fresh/offline adapter must not
+attempt PID reaping.
+
+**Gate.** Runnerd integration and race tests prove that command claims cannot
+race the barrier; the original queued command ID starts once after wake; the
+next queued command follows normal order; failed proof/finalization retains
+capacity and starts nothing; and the private route is not reachable through
+HTTPS. A Linux fixture proves safe known-child zombie reaping without a raw
+PID action.
+
+### B008-P3 — Make accepted remote queue state visible
+
+**Deliverable.** Preserve the current strict terminal-proof boundary, while
+allowing an accepted `run` response to publish a later revision containing a
+validated nonterminal remote job phase and command state.
+
+**Rules.** The active projection must match the local intent's job, session,
+command, controller, environment, source, and target; be non-stale; and come
+from a successful read-only remote status query. It may expose only safe
+nonterminal phases (`creating_session`, `accepting_command`,
+`awaiting_command`, `closing_session`) and states (`queued`, `running`,
+`cancelling`). It must expose no output, event file/cursor, exit code,
+teardown result, terminal command result, process ID, script, header, token,
+or private material. Unchanged polls must not churn response revisions.
+
+Add an optional aggregate queue-status reason only when the target durably
+proves it. Allowed reasons are `queued_for_dispatch`,
+`waiting_for_command_capacity`, and `blocked_by_unconfirmed_cleanup`; counts
+are aggregate only. A queued state alone must never be labelled as a capacity
+blocker. Extend local health with aggregate accepted-active/queued work and
+retained-lost capacity so the correct remote profile can degrade without
+making local ingress unready.
+
+**Gate.** Local API, mailbox schema, dispatcher projection, target response,
+store metrics, and health tests prove one revision advance per semantic change,
+no fabricated terminal result, safe handling of stale/mismatched/unavailable
+projections, and no identifiers or private data in aggregate health.
+
+### B008-P4 — Regression suite, operator documentation, and source handoff
+
+**Deliverable.** Update the architecture, mailbox, and operations guides with
+the difference between initial local admission, remote accepted/queued work,
+terminal proof, ACK eligibility, and the new queue-preserving recovery
+procedure. The procedure must explicitly prohibit service restart, offline
+recovery, cancellation, or replay while preserving queued work. Add build
+revision/provenance checks so a stale Mac service is not mistaken for the
+current source revision.
+
+**Gate.** Run formatting, `git diff --check`, focused tests, the full
+hermetic suite, vet/build/smoke gates, and race tests for changed concurrent
+packages. Commit the scoped change on the Mac; push with the configured Mac
+GitHub key; fast-forward each test-host checkout with its configured key; and
+verify matching commit IDs before host work. A successful TLS probe remains
+transport evidence only.
+
+### B008-P5 — Live incident recovery and proof
+
+**Precondition.** This is a separately approved live operation because it can
+allow the existing 103/104 commands to execute. Before applying it, inspect
+the installed revision, service state, exact selected lost-pair inventory,
+preserved 103/104 states, and zero-running-command condition. Stop if any
+field differs from the B008-P1 contract.
+
+**Action and gate.** Invoke the private recovery route with only the proven
+selected pairs. Do not restart the service or submit another request. Prove
+that 103/104 retain their existing IDs, transition from queued to started at
+most once, reach correlated terminal outbox/event evidence, and are ACKed only
+after terminal validation. Record a postflight zero-active-work check. If any
+proof fails, leave capacity retained and report it; do not call this phase
+passed.
+
+### B008-P6 — Fresh harmless end-to-end regression
+
+After B008-P5 has reached a terminal zero-active-work state, perform a normal
+installed-service revision attestation and submit one fresh harmless native
+file-only mailbox request. Prove the complete non-truncated terminal outbox,
+contiguous event file, ACK cleanup, and healthy no-retained-capacity status.
+This is separate from the 103/104 recovery and from the mTLS transport probe.
+
+## Completion criteria
+
+BUG-008 is resolved only after B008-P1 through B008-P4 source gates pass and
+the appropriate live B008-P5/B008-P6 gates are completed with their stated
+evidence. Until then, the incident remains open and 103/104 remain preserved
+durable evidence.
+
 ## Resolution
 
-Open. No root cause or corrective action is claimed. Requests 103 and 104 are
-durable, unacknowledged evidence. Logger rollout remains paused until this
+Open. The retained-capacity cause and required repair path are documented, but
+no corrective code or live recovery has yet been claimed. Requests 103 and 104
+are durable, unacknowledged evidence. Logger rollout remains paused until this
 path reaches a safe terminal state or Runner is repaired and independently
 accepted.
 
@@ -347,3 +535,4 @@ accepted.
 | --- | --- |
 | 2026-10-01 | Registered a post-fix recurrence from two independently scoped, valid, read-only requests admitted by the same mailbox route but never reaching a visible command-start boundary. |
 | 2026-10-01 | Reconciled the BUG-007 register row to `RESOLVED`, matching its own documented fix and installed-host verification; retained this recurrence separately as BUG-008. |
+| 2026-10-01 | Recorded the confirmed retained-capacity cause and serial B008-P0–P6 remediation plan. |
