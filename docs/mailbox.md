@@ -46,6 +46,49 @@ durable identity: the same client-visible request ID and idempotency key may be 
 configured root, yielding isolated durable resources, responses, events,
 retries, acknowledgements, and cleanup.
 
+## Find a request result
+
+Use the request ID as the deterministic file-correlation key. A normal mailbox
+consumer does **not** need to query SQLite while retained mailbox files exist.
+
+| Situation | File to read | Meaning |
+| --- | --- | --- |
+| Published request | `inbox/<request_id>.json` and `.ready` | Client input. Runner removes a durably accepted pair, so its later absence is expected. |
+| Normal exchange or well-formed policy rejection | `outbox/<request_id>.json` | The same response is revised as progress is learned. It carries job, session, and command IDs when known. |
+| Command events | `events/<command_id>.ndjson` | Read the file named by the response's `command_id`, only through its `available_event_sequence`. |
+| Safe ingress-validation rejection before acceptance | `diagnostics/<request_id>.json` | No outbox, command, event file, or ACK exists. |
+| Client acknowledgement | `acks/<request_id>.json` and `.ready` | Confirms receipt of the response and advertised event prefix. It is not a response. |
+
+For a normal exchange, follow this exact chain:
+
+```text
+request_id
+→ outbox/<request_id>.json
+→ command_id in that response
+→ events/<command_id>.ndjson
+```
+
+Wait until `request_state` in the outbox is terminal: `complete`, `rejected`,
+or `indeterminate`. `complete` means Runner reached a final response boundary;
+it does not by itself mean a command succeeded. Also inspect `command_state`,
+`exit_code`, `output_complete`, and `output_truncated` before treating a
+command result as successful. The `idempotency_key` links a retry to the same
+mutation, while the `request_id` names that retry's own files.
+
+Runner-generated outbox, event, and diagnostic files are private `0600`, and
+mailbox directories are `0700`. A workspace tool may be allowed to create
+direct exact-`0644` ingress files while still being unable to traverse or read
+those private results. That is a deliberate access boundary, not a reason to
+query SQLite or relax output permissions. Give the integration a deliberately
+scoped read-only mailbox capability, or hand the request ID to an operator who
+can read the configured root as the selected Mac user.
+
+If neither the matching outbox nor diagnostic exists, the request can still be
+awaiting pickup or can be an unsafe inert pair. Check the configured root,
+complete JSON, marker-last order, zero-byte marker, owner, mode, and Runner
+health. Read the terminal response and retained events before publishing an
+ACK; normal response retention is bounded.
+
 ## External mailbox roots
 
 A non-default root may instead be a clean absolute path outside the Runner

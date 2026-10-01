@@ -14,7 +14,7 @@ selection, or automatic fallback.
 | [Configuration reference](configuration.md) | Exact paths, V1 compatibility, V2 registries, active policy, secret handling, and limits. |
 | [Setup and upgrade runbook](setup.md) | First install, V1→V2 upgrade, safe external mailbox roots, service deployment, bridge setup, and P157 onboarding. |
 | [CLI user guide](user-guide.md) | Local, direct remote, queued remote, sessions, events, cancellation, and close. |
-| [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, events, ACKs, retries, and safe invalid-input diagnostics. |
+| [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, deterministic request-result lookup, events, ACKs, retries, and safe invalid-input diagnostics. |
 | [API reference](api.md) | Direct mTLS and Unix-socket transports plus v1 HTTP/JSON behavior. |
 | [Operations runbook](operations.md) | Health, metrics, logs, service refresh, diagnostic triage, and recovery limits. |
 | [Current-host evidence](current-host-evidence.md) | What P155, P157, P158, P159, and P166 accepted, what remains unaccepted, and the per-host boundary. |
