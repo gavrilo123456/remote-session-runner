@@ -25,6 +25,7 @@ Runner. It is the index for bug records; implementation evidence remains in
 | BUG-003 | `runner-local` reconciliation stalls mailbox completion | `CLOSED` | High | macOS mailbox relay and remote-result reconciliation | Fixed through `121eae5289cf874d52d59fafb3aa690cede7c05b` | Verification complete; retain and diagnose any irreparably corrupt durable receipt rather than inventing a target outcome | 2026-10-01 | [BUG-003](003-runner-local-reconciliation-stalls-mailbox-outbox.md) |
 | BUG-004 | Terminal mailbox result missing after Gitea dispatch | `NEW` | High | macOS mailbox relay and remote-result reconciliation | Current deployed revision unknown | Produce a correlated terminal result or redacted indeterminate failure; prove short, read-only HTTPS, and no-op dispatch paths | 2026-10-01 | [BUG-004](004-mailbox-terminal-result-missing-after-gitea-dispatch.md) |
 | BUG-005 | Idempotent mailbox-retry pickup investigation | `NOT A BUG` | N/A | mailbox polling and remote-result reconciliation | `98e26aa` investigation baseline | Request was accepted and received a terminal `lost` result; do not replay it | 2026-10-01 | [BUG-005](005-mailbox-idempotency-retry-terminal-status-missing.md) |
+| BUG-006 | Safe marked schema-invalid mailbox request has no diagnostic | `IN PROGRESS` | High | macOS mailbox ingress | `c3114fa` investigation baseline | Implement private durable ingress diagnostics without replaying Logger work | 2026-10-01 | [BUG-006](006-safe-marked-schema-invalid-mailbox-request-has-no-diagnostic.md) |
 
 ## Sample format
 

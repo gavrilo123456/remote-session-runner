@@ -1,6 +1,6 @@
 # Initial idea: malformed mailbox request feedback
 
-**Status:** proposed improvement; no implementation has started.
+**Status:** approved for implementation on 2026-10-01.
 
 ## Problem
 
@@ -9,8 +9,17 @@ pair whose JSON cannot be parsed or does not meet the request schema. Runner
 correctly must not execute that input, but the requestor currently has no
 mailbox response explaining why it remains unprocessed.
 
-This was observed during BUG-004 investigation: the affected request was never
-accepted or dispatched because its `script` field contained malformed JSON.
+This was confirmed during investigation of
+`req-codex-logger-migration-review-controller-20261001-02`. Its empty,
+owner-owned direct-workspace marker was safely discovered, but its request used
+the configuration context name `ubuntu-current` as a scalar
+`execution_target`. The wire format requires an object target and, for an
+override, the complete environment/target pair. It was therefore rejected
+before receipt creation, target selection, command creation, or any Gitea
+call. The importer retained the pair but exposed neither a diagnostic artifact
+nor a correlated log line.
+
+This is tracked as [BUG-006](../../050-bugs/006-safe-marked-schema-invalid-mailbox-request-has-no-diagnostic.md).
 
 ## Goal
 
@@ -47,17 +56,5 @@ name. A corrected retry must use a new request ID and idempotency key.
 - The design must decide how diagnostics are acknowledged, retained, and
   cleaned up before implementation starts.
 
-## Open design questions
-
-1. Should the feedback be an additive ingress-diagnostic artifact or a new
-   variant of the existing terminal response contract?
-2. What durable receipt, fingerprint, and cleanup state are needed to make it
-   idempotent across service restarts without retaining raw input?
-3. Should malformed input remain in place, be quarantined, or be removed only
-   after a durable diagnostic is published?
-4. How should health and backlog metrics distinguish actionable work from an
-   already-diagnosed malformed pair?
-
-The detailed design and phased implementation plan below are intentionally
-placeholders until these questions are decided against the current mailbox
-contract and recovery model.
+The approved detailed design resolves the lifecycle, retention, and recovery
+questions in [010-malformed-mailbox-request-feedback-detailed-design.md](010-malformed-mailbox-request-feedback-detailed-design.md).
