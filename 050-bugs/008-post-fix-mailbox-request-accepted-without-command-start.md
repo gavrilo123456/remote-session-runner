@@ -73,10 +73,11 @@ output. Remote scripts referenced only approved remote secret paths. No SSH,
 direct Runner API, terminal-created inbox file, or source-download API route
 was used.
 
-The two affected inbox pairs were consumed. Neither has an ingress diagnostic.
-They are deliberately unacknowledged because acknowledgement is valid only
-after a terminal outbox response and final event. Do not edit, delete, cancel,
-retry, or replay either request.
+The two affected inbox pairs were consumed. Neither had an ingress diagnostic.
+At incident capture they were deliberately left unacknowledged because
+acknowledgement is valid only after a terminal outbox response and final
+event. The later user-authorized cancellation is recorded in the phased plan
+and history below; it did not replay either request.
 
 ## Reproduction evidence
 
@@ -385,9 +386,13 @@ fast-forwarded to every host used for its test.
 terminal-lost pairs and two separate ready sessions with queued one-off jobs.
 Document the exact no-replay invariants for 103/104.
 
-**Invariants.** The original request, job, session, and command IDs are never
-reaccepted, replayed, cancelled, deleted, edited, or acknowledged by this
-repair. A selected pair must be one terminal `lost` session, its matching
+**Invariants.** At the time this incident contract was frozen, the original
+request, job, session, and command IDs were not to be reaccepted, replayed,
+cancelled, deleted, edited, or acknowledged by the repair. The user later
+explicitly authorized cancellation of the two pending historical commands;
+that separate cleanup does not authorize replay, deletion, edit, or reuse of
+their identities. A selected pair must be one terminal `lost` session, its
+matching
 terminal `lost` command, a final `command_lost` event, incomplete output, and
 unreleased paired capacity. Preserved work may be only an identity-matched
 ready session with a queued command. No raw SQLite edit, PID-only release,
@@ -449,8 +454,10 @@ live runnable process or targeted by a raw PID action.
 **Gate.** Command, store, execution, and CLI tests prove the command does not
 take the lifecycle lock or stop a service; the original queued command ID
 starts once after the atomic release; the next queued command follows normal
-order; failed proof/finalization retains capacity and starts nothing; and no
-public HTTPS, SSH bridge, or mailbox route can invoke maintenance recovery. A
+order; a failed cleanup proof retains capacity and starts nothing; and a
+post-release finalization failure leaves only a retryable ownership-marker
+cleanup while normal dispatch may proceed. No public HTTPS, SSH bridge, or
+mailbox route can invoke maintenance recovery. A
 Linux fixture proves that zombie-only group members are not mistaken for a
 runnable process and that no raw PID reaping occurs.
 
@@ -499,25 +506,23 @@ GitHub key; fast-forward each test-host checkout with its configured key; and
 verify matching commit IDs before host work. A successful TLS probe remains
 transport evidence only.
 
-### B008-P5 — Live incident recovery and proof
+### B008-P5 — Historic incident disposition (completed by explicit user authorization)
 
-**Precondition.** This is a separately approved live operation because it can
-allow the existing 103/104 commands to execute. Before applying it, inspect
-the installed revision, service state, exact selected lost-pair inventory,
-preserved 103/104 states, and zero-running-command condition. Stop if any
-field differs from the B008-P1 contract.
+The user chose to cancel the two pending historical commands instead of
+preserving them for an online recovery. The existing guarded offline
+`recover-stalled` operation cancelled exactly their two job IDs and recovered
+the four identified retained lost pairs. The result was
+`command_queued -> command_cancelled` with no start event for either command,
+followed by a zero-active-work P128 report and an active `runnerd.service`.
 
-**Action and gate.** Invoke the private recovery route with only the proven
-selected pairs. Do not restart the service or submit another request. Prove
-that 103/104 retain their existing IDs, transition from queued to started at
-most once, reach correlated terminal outbox/event evidence, and are ACKed only
-after terminal validation. Record a postflight zero-active-work check. If any
-proof fails, leave capacity retained and report it; do not call this phase
-passed.
+This is an incident cleanup record, not validation of the new B008-P2 online
+command: it used the existing offline procedure and did not prove that queued
+work survives an online capacity release. It does prove no Logger workflow was
+replayed by this cleanup.
 
 ### B008-P6 — Fresh harmless end-to-end regression
 
-After B008-P5 has reached a terminal zero-active-work state, perform a normal
+After B008-P4 is installed on a zero-active-work host, perform a normal
 installed-service revision attestation and submit one fresh harmless native
 file-only mailbox request. Prove the complete non-truncated terminal outbox,
 contiguous event file, ACK cleanup, and healthy no-retained-capacity status.
@@ -526,17 +531,17 @@ This is separate from the 103/104 recovery and from the mTLS transport probe.
 ## Completion criteria
 
 BUG-008 is resolved only after B008-P1 through B008-P4 source gates pass and
-the appropriate live B008-P5/B008-P6 gates are completed with their stated
-evidence. Until then, the incident remains open and 103/104 remain preserved
-durable evidence.
+B008-P6 provides the stated installed-service evidence. The historic B008-P5
+cleanup does not replace the online-recovery regression because it cancelled,
+rather than preserved, the two original queued commands.
 
 ## Resolution
 
-Open. The retained-capacity cause and required repair path are documented, but
-no corrective code or live recovery has yet been claimed. Requests 103 and 104
-are durable, unacknowledged evidence. Logger rollout remains paused until this
-path reaches a safe terminal state or Runner is repaired and independently
-accepted.
+Open. B008-P1's source boundary is committed, pushed, and synchronized, but
+the guarded online command, active mailbox projection, complete regression
+suite, installation, and fresh harmless end-to-end proof remain. Requests 103
+and 104 are terminal cancelled historic evidence; Logger rollout still needs
+an independently accepted fresh request after the repair is installed.
 
 ## History
 
@@ -545,3 +550,5 @@ accepted.
 | 2026-10-01 | Registered a post-fix recurrence from two independently scoped, valid, read-only requests admitted by the same mailbox route but never reaching a visible command-start boundary. |
 | 2026-10-01 | Reconciled the BUG-007 register row to `RESOLVED`, matching its own documented fix and installed-host verification; retained this recurrence separately as BUG-008. |
 | 2026-10-01 | Recorded the confirmed retained-capacity cause and serial B008-P0–P6 remediation plan. |
+| 2026-10-01 | User explicitly authorized cancellation of the two pending historic commands. The existing guarded offline procedure cancelled only those commands, recovered the four proven retained lost pairs, returned P128 to zero active work, and restarted `runnerd.service`. |
+| 2026-10-01 | B008-P1 added and synchronized the queue-preserving recovery foundation; source tests passed. |
