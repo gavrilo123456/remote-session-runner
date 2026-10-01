@@ -135,6 +135,31 @@ func TestBUG007F1ResumeStoredJobUsesCanonicalPolicy(t *testing.T) {
 	}
 }
 
+func TestBUG007F1ResumeStoredJobAcceptsInheritedLegacyPolicy(t *testing.T) {
+	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
+		generation:    "generation-bug007-f1-legacy-policy",
+		stopConfirmed: true,
+		commandResult: RuntimeCommandResult{ExitCode: 0},
+	}}
+	service, authority, _ := newP025Service(t, runtime)
+	request := p025Request(t, "job-bug007-f1-legacy-policy", "session-bug007-f1-legacy-policy", "command-bug007-f1-legacy-policy", "run-bug007-f1-legacy-policy", "echo inherited policy")
+	accepted, duplicate, err := authority.AcceptJob(context.Background(), request.Acceptance)
+	if err != nil || duplicate {
+		t.Fatalf("accept legacy stored job = %+v duplicate=%v err=%v", accepted, duplicate, err)
+	}
+
+	resumed, err := service.ResumeStoredJob(context.Background(), accepted.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Job.Phase != store.JobPhaseComplete || resumed.Command.State != domain.CommandStateSucceeded || resumed.Session.State != domain.SessionStateClosed {
+		t.Fatalf("resumed legacy stored job = %+v", resumed)
+	}
+	if resumed.Session.Limits.CommandTimeout != p025Environment(t).ServiceLimits().CommandTimeout {
+		t.Fatalf("inherited command timeout = %s, want environment default %s", resumed.Session.Limits.CommandTimeout, p025Environment(t).ServiceLimits().CommandTimeout)
+	}
+}
+
 func bug007F1StoredPolicyRequest(t *testing.T, jobID, sessionID, commandID, key, script string) RunJobRequest {
 	t.Helper()
 	request := p025Request(t, jobID, sessionID, commandID, key, script)

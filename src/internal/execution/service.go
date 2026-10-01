@@ -842,6 +842,9 @@ func storedJobResumeOptions(job store.JobRecord) (RunJobRequest, error) {
 	if err := json.Unmarshal(job.CanonicalPayload, &payload); err != nil {
 		return RunJobRequest{}, fmt.Errorf("%w: decode canonical run policy: %v", store.ErrJobPayloadCorrupt, err)
 	}
+	// Older canonical payloads did not serialize optional policy fields. Their
+	// zero values have the existing meaning of inherited limits and no required
+	// host isolation; no policy value is synthesized during recovery.
 	limits, err := decodeStoredRequestedLimits(payload["requested_limits"])
 	if err != nil {
 		return RunJobRequest{}, err
