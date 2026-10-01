@@ -235,6 +235,12 @@ transport becomes uncertain.
 - Mailbox `run` and `create_session` can omit both selection fields to use
   that inbox's default, or supply an exact allowed pair as an override. See
   [mailbox](mailbox.md#new-work-target-resolution).
+- A context name such as `ubuntu-current` is configuration, never a scalar
+  `execution_target` wire value. A mailbox override needs both an environment
+  and an object target such as `{"kind":"remote","profile":"linux-host"}`.
+  A safe ingress-validation failure receives a private diagnostic rather than
+  an ordinary CLI or outbox result; see the [mailbox correction
+  flow](mailbox.md#safe-invalid-input-diagnostics).
 - The `slidestud-io` mailbox root is
   `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; its omitted pair
   resolves to `sandbox-dev` / `remote/sandbox-host`. The CLI does not publish

@@ -27,9 +27,9 @@ share the Mac Router and its local SQLite authority.
 flowchart LR
   subgraph Mac[Mac — tomasz.walczuk]
     CLI[runner CLI]
-    Default[default mailbox\nmailbox/]
-    Analytics[analytics mailbox\nmailboxes/analytics/]
-    SlideStudio[slidestud-io mailbox\nexternal mailbox-/]
+    Default[default mailbox\ninbox, outbox, events, acks, diagnostics]
+    Analytics[analytics mailbox\ninbox, outbox, events, acks, diagnostics]
+    SlideStudio[slidestud-io mailbox\ninbox, outbox, events, acks, diagnostics]
     Router[runner-local\nUnix API, Router, mailbox runtimes]
     LocalDB[(local.db)]
     LocalD[runner-locald\nlocal execution authority]
@@ -74,6 +74,34 @@ A mailbox is neither a shell nor an execution authority. It accepts a safely
 published request, stores an auditable exchange in the Mac authority, projects
 responses and events into the same mailbox root, and uses the configured route
 only after policy resolution. Direct mTLS never passes through a mailbox.
+
+## Safe ingress validation and diagnostics
+
+Every configured mailbox has a fifth private child, `diagnostics/`. It is for
+input that passed the filesystem safety boundary but failed safe ingress
+validation: malformed JSON, v1 request schema, request identity, script
+representation, or bounded-size validation. It is deliberately separate from
+`outbox/`: no accepted exchange,
+target selection, local intent, session, command, bridge call, or remote
+workflow exists for this path.
+
+```mermaid
+flowchart TD
+  Publish[Complete JSON then empty ready marker] --> Safety{Safe basename, owner, regular files, mode, marker, and bounded read?}
+  Safety -->|No| Inert[Leave input inert\nNo diagnostic and no work]
+  Safety -->|Yes| Valid{Safe ingress validation passes?}
+  Valid -->|Yes| Exchange[Normal durable mailbox exchange\nThen normal response, events, and ACK]
+  Valid -->|No| Ledger[Freeze redacted diagnostic\nin the Mac rejection ledger]
+  Ledger --> Projection[Write diagnostics/request-id.json\nprivate 0600]
+  Projection --> Cleanup[Revalidate and consume only\nthe matching input pair]
+  Cleanup --> NoWork[No local intent, session, command,\nremote bridge call, or workflow dispatch]
+```
+
+The same safe invalid pair is handled on a later scan whether its empty marker
+was newly created or replaced an earlier unsafe marker. A missing pair, nonempty
+marker, unsafe path/mode/owner, symlink, or read race stays inert and produces
+no diagnostic. A retained rejected request ID cannot later become accepted
+work; correction uses a new request ID and idempotency key.
 
 ## Context selection for mailbox work
 

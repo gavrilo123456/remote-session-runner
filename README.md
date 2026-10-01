@@ -11,17 +11,21 @@ account selection, arbitrary host selection, or automatic fallback.
 
 The installed Mac configuration is version 2. It preserves the legacy
 `default` mailbox and adds `analytics` plus the external `slidestud-io`
-mailbox, each with independent inbox, outbox, events, and ACK paths. Each inbox
-has a default execution context and can allow an explicit complete context
-override. `default` permits `mac-local` and `ubuntu-current`; `analytics`
-additionally permits an explicit `ubuntu-sandbox` override; `slidestud-io` at
+mailbox, each with independent inbox, outbox, events, ACK, and diagnostic
+paths. Each inbox has a default execution context and can allow an explicit
+complete context override. `default` permits `mac-local` and `ubuntu-current`;
+`analytics` additionally permits an explicit `ubuntu-sandbox` override; `slidestud-io` at
 `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` defaults to
 `ubuntu-sandbox` and also permits `mac-local` and `ubuntu-current`. P155
 accepted `linux-host`; P157 separately accepted `sandbox-host`; P158 accepted
 the native external-mailbox path to that already accepted sandbox host; and
 P159 accepted selected-user-owned direct workspace `0644` request/ACK pairs
-while retaining private `0600` responses and events. Other new hosts remain
-unavailable until they pass their own P157 gate.
+while retaining private `0600` responses and events. Each mailbox also has a
+private `diagnostics/` path: a safely published request that fails safe ingress
+validation is rejected there without becoming accepted work or
+contacting a remote host. This includes malformed JSON, request-schema,
+identity, script-representation, and bounded-size failures. Other new hosts
+remain unavailable until they pass their own P157 gate.
 
 Start with [the post-implementation documentation index](docs/README.md):
 

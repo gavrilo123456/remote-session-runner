@@ -39,9 +39,9 @@ values as proof that it is ready.
 ├── secrets/             CA, per-profile direct client certificate/key, dispatcher keys, known_hosts
 ├── run/                 local-api.sock, locald.sock
 ├── state/               local.db
-├── mailbox/             default inbox, outbox, events, acks
+├── mailbox/             default inbox, outbox, events, acks, diagnostics
 ├── mailboxes/
-│   └── analytics/       analytics inbox, outbox, events, acks
+│   └── analytics/       analytics inbox, outbox, events, acks, diagnostics
 ├── workspaces/          session working directories
 ├── tmp/scripts/         temporary submitted-script files
 ├── backups/             reserved state-backup location
@@ -72,12 +72,12 @@ Service-root directories and every configured mailbox root/child are owned by
 the selected account at mode `0700`. Config and secret files are regular
 owner-only files at mode `0600`. Mailbox ingress JSON and `.ready` files may be
 exact `0600` from the native publisher or exact `0644` from a direct workspace
-publisher; Runner-generated outbox and event files remain `0600`. For an
-external mailbox, every pre-existing ancestor must be a real directory without
-group or other write access, and its immediate parent must belong to the
-selected Mac user. Runner creates or verifies only the external root and its
-`inbox`, `outbox`, `events`, and `acks` children. It rejects unsafe modes,
-ownership, symlinks, unknown fields, and ambiguous paths.
+publisher. Runner-generated outbox, event, and diagnostic files remain `0600`.
+For an external mailbox, every pre-existing ancestor must be a real directory
+without group or other write access, and its immediate parent must belong to
+the selected Mac user. Runner creates or verifies only the external root and
+its `inbox`, `outbox`, `events`, `acks`, and `diagnostics` children. It rejects
+unsafe modes, ownership, symlinks, unknown fields, and ambiguous paths.
 
 ## Mac configuration schemas
 
@@ -211,7 +211,7 @@ may explicitly select `ubuntu-sandbox`; `slidestud-io` uses
 - An extra inbox ID has either the exact service-root form
   `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/<inbox-id>`
   or a clean absolute root outside the service root. External ancestors must
-  already exist and be safe; the root and its four mailbox children are
+  already exist and be safe; the root and its five mailbox children are
   owner-owned `0700`. Roots cannot duplicate, nest, or overlap after
   conservative case and Unicode normalization.
 - Each context pairs one configured environment with one allowed immutable
@@ -242,7 +242,7 @@ may explicitly select `ubuntu-sandbox`; `slidestud-io` uses
    registry.
 5. At the candidate-activation boundary, it records the complete candidate
    mailbox set durably before creating a missing external tree. It then creates
-   or verifies only each root and its four children, hands off `mac.yaml`, and
+   or verifies only each root and its five children, hands off `mac.yaml`, and
    starts the services. The database can migrate to schema 27; a version-1
    binary cannot reopen that namespaced schema. Before the boundary the
    installer restores the V1 services on failure. After it, a filesystem failure

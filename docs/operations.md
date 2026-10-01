@@ -2,8 +2,8 @@
 
 Run Mac commands as `tomasz.walczuk` and commands on either accepted Ubuntu
 host as `ubuntu`. Do not print private keys, edit SQLite files, manufacture
-mailbox request files, or use host-gate test scripts as everyday service
-controls.
+mailbox input outside the documented publisher/integration path, or use
+host-gate test scripts as everyday service controls.
 
 ## Current availability and evidence boundary
 
@@ -26,7 +26,10 @@ health, native mailbox request, event read, ACK, and zero-work state for
 default with the same native request/event/ACK boundary. P159 added the
 selected-user-owned exact-`0644` direct workspace-file request and ACK path,
 with private `0600` response/event projections and a final zero-work check. A
-successful direct mTLS request does not prove queued mailbox delivery.
+successful direct mTLS request does not prove queued mailbox delivery. P166
+then accepted safe malformed mailbox ingress on the Mac: it wrote a private
+diagnostic and created no remote work. It did not run a new host, bridge, or
+direct-mTLS gate.
 
 ## Fast health checks
 
@@ -63,6 +66,7 @@ root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
     test -d "$mailbox/outbox"
     test -d "$mailbox/events"
     test -d "$mailbox/acks"
+    test -d "$mailbox/diagnostics"
   }
   check_mailbox_tree "$root/mailbox"
   check_mailbox_tree "$root/mailboxes/analytics"
@@ -83,6 +87,30 @@ root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
 tail -n 200 "$root/logs/local.stderr.log"
 tail -n 200 "$root/logs/locald.stderr.log"
 ```
+
+For a new safe malformed ingress record, `runner-local` emits one sanitized
+line with `mailbox`, `request_id`, `idempotency_key=unavailable`,
+`execution_target=not_selected`, `remote_command_id=not_created`,
+`lifecycle_phase=ingress_validation`, and a stable `failure_class`. It must
+not include a request body, script, token, Authorization header, or private-key
+material.
+
+### Inspect a safe invalid-input diagnostic
+
+Use this only with the trusted request ID you published to a configured
+mailbox. It reads the private Runner-produced record and does not alter it.
+
+```sh
+# Mac — tomasz.walczuk
+mailbox='/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-'
+request_id='req-EXACT-ID'
+/usr/bin/python3 -m json.tool "$mailbox/diagnostics/$request_id.json"
+```
+
+The record confirms `accepted: false`, `executed: false`, and the fixed
+ingress-validation code. It has no ACK. Correct the source request, then
+publish a new JSON/zero-byte-marker pair under a new request ID and idempotency
+key. Do not reuse or edit the retained rejected identity.
 
 ### `linux-host` Ubuntu — `ubuntu`
 
@@ -243,7 +271,7 @@ ready. It does not create or rotate dispatcher authorization.
 | Partial mailbox selection | Request has only `environment` or `execution_target` | Submit neither to use the inbox default, or submit the complete allowed pair. |
 | Mailbox selection or alias rejected | Root, context allow-list, repository alias, response `inbox_id` | Use the intended root and its configured policy; do not invent aliases or host names. |
 | External mailbox preflight fails | Candidate root's real ancestor chain, owner, modes, and symlink state | Repair the external parent/path without changing its ancestors for Runner; rerun the candidate installer. If activation already began, repair the retained candidate instead of restoring an older policy. |
-| No mailbox response | Publisher type, root tree, JSON/marker order, owner/mode/path, response state | Keep the request identity. For native publication, inspect `mailboxclient` errors. For direct workspace publication, verify complete JSON then an empty marker last, both exact `0644` in the configured `0700` tree. Malformed unsafe pairs have no guaranteed response. |
+| No mailbox response | Publisher type, root tree, JSON/marker order, owner/mode/path, response state | For a pair that passed safety but failed ingress validation, inspect `diagnostics/<request_id>.json`: it is private `0600`, has no ACK, and requires a new request ID/key for correction. A missing, nonempty, unsafe, or unreadable pair stays inert with no diagnostic. For a valid request, inspect the normal outbox lifecycle. |
 | Direct HTTPS/mTLS failure | Public health, service journal, CA/certificate/principal map/bind | Repair host configuration without printing keys. |
 | Queued remote remains recorded, uncertain, or stale | Selected bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
 | Remote one-off ends `indeterminate` with `delivery_state=accepted` and `remote_status_unavailable` | Stable job/session/command IDs, bridge/service journal, target SQLite status and retention | The target accepted the request but Runner could not prove its terminal result in 24 hours. Do not resubmit or release retained capacity manually. ACK the terminal response if it has been recorded, preserve the IDs and idempotency key, then investigate the target boundary. |
@@ -267,6 +295,10 @@ ready. It does not create or rotate dispatcher authorization.
   terminal `remote_status_unavailable` mailbox response after 24 hours. It
   carries stable IDs but no claimed target outcome; preserve its idempotency key
   and investigate rather than replaying its script.
+- A private ingress diagnostic has no ACK and is eligible for cleanup seven
+  days after observation. Its durable rejection-ledger identity remains through
+  normal 90-day metadata retention; do not try to revive it by editing its old
+  request files.
 - A terminal `lost` command can retain capacity until the runtime process group
   is proven gone. Do not release that capacity with SQLite edits or a generic
   service restart. When P128 reports exactly one retained slot and no other
@@ -312,5 +344,5 @@ ready. It does not create or rotate dispatcher authorization.
 - Software-crash recovery is evidenced. Physical power-loss survival remains
   unverified until a coordinated physical power-cut test passes.
 
-See [current-host evidence](current-host-evidence.md) for exact P155/P157/P158
-scope and [setup](setup.md) for deployment steps.
+See [current-host evidence](current-host-evidence.md) for exact P155/P157/P158/
+P159/P166 scope and [setup](setup.md) for deployment steps.

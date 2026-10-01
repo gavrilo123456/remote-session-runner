@@ -33,15 +33,16 @@ $MAILBOX_ROOT/
 ├── inbox/     <request_id>.json and <request_id>.ready, written by the client
 ├── outbox/    <request_id>.json, projected by Runner
 ├── events/    <command_id>.ndjson, projected by Runner
-└── acks/      <request_id>.json and <request_id>.ready, written by the client
+├── acks/      <request_id>.json and <request_id>.ready, written by the client
+└── diagnostics/  <request_id>.json, private ingress diagnostic projected by Runner
 ```
 
-The root and its four children are selected-user-owned `0700`. Client request
+The root and its five children are selected-user-owned `0700`. Client request
 and ACK JSON plus their empty `.ready` markers must be selected-user-owned,
 regular non-symlink files at exact `0600` (native publisher) or exact `0644`
 (direct workspace publisher). Runner-produced `outbox` JSON and `events`
-NDJSON remain exact `0600`. The namespace is part of the durable identity: the
-same client-visible request ID and idempotency key may be used once in each
+NDJSON and `diagnostics` JSON remain exact `0600`. The namespace is part of the
+durable identity: the same client-visible request ID and idempotency key may be used once in each
 configured root, yielding isolated durable resources, responses, events,
 retries, acknowledgements, and cleanup.
 
@@ -51,7 +52,7 @@ A non-default root may instead be a clean absolute path outside the Runner
 service root. Its existing ancestors must be real directories without group or
 other write access, and its immediate parent must be owned by
 `tomasz.walczuk`. Runner never creates or changes an external ancestor. It
-creates or verifies only the root and the four directories shown above, all at
+creates or verifies only the root and the five directories shown above, all at
 `0700`. Symlinks, an unsafe existing root or child, a missing parent, and roots
 that duplicate or nest another configured root after case/Unicode normalization
 are rejected.
@@ -108,7 +109,7 @@ properties.
 
 Use this path when a workspace automation or coding agent can create ordinary
 files but cannot call the native Go package. It is accepted only inside an
-already configured mailbox root whose root and four child directories are
+already configured mailbox root whose root and five child directories are
 selected-user-owned `0700`.
 
 1. Choose the configured root and generate a new safe request ID. Do not reuse
@@ -117,10 +118,11 @@ selected-user-owned `0700`.
    `inbox/<request_id>.json` at exact `0644`.
 3. Close that JSON file. Do not change it afterward.
 4. Create an empty `inbox/<request_id>.ready` at exact `0644` **last**.
-5. Read `outbox/<request_id>.json` until its `request_state` is terminal, then
-   read its advertised event prefix from `events/` through
-   `available_event_sequence`.
-6. Create an ACK JSON at `acks/<request_id>.json` containing the exact
+5. If Runner accepts the request, read `outbox/<request_id>.json` until its
+   `request_state` is terminal, then read its advertised event prefix from
+   `events/` through `available_event_sequence`.
+6. For that accepted exchange, create an ACK JSON at `acks/<request_id>.json`
+   containing the exact
    `request_id`, `response_revision`, and `available_event_sequence` from the
    response. Then create its empty exact-`0644` `.ready` marker last.
 
@@ -131,6 +133,48 @@ pair. Direct-file publication supports ordinary workspace tools; it does not
 provide native exclusive-create, no-follow, file-sync, directory-sync, or
 crash-durability guarantees.
 
+## Safe invalid-input diagnostics
+
+A pair that passes every filesystem safety check but fails safe ingress
+validation does not become an accepted exchange. That includes malformed JSON,
+v1 request-schema, request-identity, script-representation, and bounded-size
+failures. Runner writes one
+private exact-`0600` diagnostic at
+`diagnostics/<request_id>.json`; it has no `outbox` response, event file, or
+ACK. Its schema contains `inbox_id`, `request_id`,
+`diagnostic_revision: 1`, `lifecycle_phase: "ingress_validation"`,
+`accepted: false`, `executed: false`, a stable `code` and `message`, and
+`observed_at`. It never includes the request script, raw JSON, idempotency key,
+target selection, credentials, headers, or private-key material.
+
+For a native integration that intentionally tests or handles this case,
+`mailboxclient.Client.WaitDiagnostic(ctx, requestID)` and `ReadDiagnostic` are
+read-only helpers for this private artifact. They never publish a diagnostic or
+create an ACK.
+
+The diagnostic codes are `malformed_json`, `invalid_request_schema`,
+`request_identity_mismatch`, `invalid_script`, and `request_too_large`. A
+well-formed request that later fails semantic or policy validation uses the
+normal terminal `outbox` rejection instead.
+
+Read the private diagnostic using the known request ID. Correct the source
+document, then publish a **new** request ID and idempotency key with complete
+JSON followed by a new empty marker last. Do not alter or reuse a retained
+rejected identity. The rejection ledger retains that identity through normal
+90-day metadata retention, and the diagnostic file is eligible for cleanup
+seven days after observation. Diagnostics have no ACK protocol.
+
+If a later safe pair reuses a retained rejected request ID, Runner retains the
+original diagnostic, removes the duplicate pair, and logs
+`request_id_reused_after_rejection`. That is a lifecycle log class, not a new
+diagnostic or accepted exchange.
+
+Unsafe input remains intentionally inert: a missing pair, nonempty marker,
+unsafe name/mode/owner, symlink, non-regular file, read race, or unreadable
+input produces neither a diagnostic nor remote work. A later rescan detects a
+safe zero-byte marker whether it is newly created or replaces an earlier unsafe
+marker, but the supported correction flow is still a newly named complete pair.
+
 ## New-work target resolution
 
 For mailbox `run` and `create_session`, `environment` and
@@ -140,12 +184,22 @@ For mailbox `run` and `create_session`, `environment` and
 | --- | --- |
 | Both omitted | Runner resolves the selected root's `default_execution`; response source is `inbox_default`. |
 | Both supplied | Runner accepts only the exact configured context in this inbox's `allowed_execution`; response source is `request_override`. |
-| Exactly one supplied | Runner returns a terminal rejected response before resource acceptance or remote work. |
-| Unknown, mismatched, or disallowed pair | Runner returns a terminal rejected response before resource acceptance or remote work. |
+| Exactly one supplied | A well-formed request returns a terminal rejected response before resource acceptance or remote work. |
+| Unknown, mismatched, or disallowed pair | A well-formed request returns a terminal rejected response before resource acceptance or remote work. |
 
 `submit_command` inherits its session's immutable target and has no execution
 override. `get_session`, `get_command`, `cancel_command`, and `close_session`
 read or mutate an existing resource; they do not select a new target.
+
+An execution context name is configuration, not a request wire value. For
+example, scalar `"execution_target": "ubuntu-current"` is schema-invalid and
+gets the private diagnostic path. An override supplies both the environment and
+the target object, for example:
+
+```json
+"environment": "linux-dev",
+"execution_target": {"kind": "remote", "profile": "linux-host"}
+```
 
 `repository_alias` is optional only for new `run` or `create_session` work. If
 present, it must be in the selected mailbox's configured alias list. It is
@@ -332,9 +386,12 @@ acknowledged normally.
 - A terminal response is eligible 24 hours after a valid ACK or seven days
   after terminal publication without one.
 - Event output follows the 30-day retention policy.
+- A private ingress diagnostic has no ACK and is eligible for cleanup seven
+  days after observation. Its durable rejection-ledger identity remains through
+  normal 90-day metadata retention.
 - Software-process-crash recovery is evidenced. Physical power-loss recovery
   is not yet verified.
 
 For route and service checks, use [operations](operations.md). For the P155,
-P157, P158, and P159 evidence and the per-host P157 boundary, use
+P157, P158, P159, and P166 evidence and the per-host P157 boundary, use
 [current-host evidence](current-host-evidence.md).

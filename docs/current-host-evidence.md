@@ -8,7 +8,7 @@ is a record of completed gates, not a live-health substitute. Run the checks in
 
 | Component | Accepted identity | Evidence |
 | --- | --- | --- |
-| Mac services | `tomasz.walczuk` at `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` | P155 real-process two-inbox test, P158 external-mailbox activation, P159 direct-workspace mailbox test, private socket/readiness checks, and zero backlog. |
+| Mac services | `tomasz.walczuk` at `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` | P155 real-process two-inbox test, P158 external-mailbox activation, P159 direct-workspace mailbox test, P166 safe malformed-ingress diagnostic acceptance, private socket/readiness checks, and zero-work evidence. |
 | Current Ubuntu host | `ubuntu@oracle-yuta-konopka-ubuntu-micro-02` / `linux-host` | P155 `runnerd.service`, listener `10.0.0.200:8443`, zero-work P128 checks, and permanent bridge status. |
 | Sandbox Ubuntu host | `ubuntu@oracle-gustaw-janecki-ubuntu-flex-02` / `sandbox-host` | P157 `runnerd.service`, listener `10.0.0.14:8443`, zero-work P128 checks, and permanent bridge status after the authorized repair. |
 | Current direct route | `linux-poc` → `https://129.151.232.40:8443` | P155 Runner application mTLS health and direct CLI evidence, separate from mailbox evidence. |
@@ -31,6 +31,9 @@ The associated source and evidence closeout are:
 - P159 source and host-gate revision:
   `ee140ec5e4eefcdd5716a356bbbfec0f62c014b7`
 - Detailed record: [P159 workspace-compatible mailbox evidence](../040-implementation-evidence/P159.md)
+- P165 malformed-ingress source: `e8171cb0430309b2d6284043762c65d7c8531980`
+- P165 evidence closeout: `b8673580f02d834d26bd33c91fda54180524f1d5`
+- Detailed record: [P166 malformed-ingress acceptance](../040-implementation-evidence/P166.md)
 
 ## What P155 proved
 
@@ -97,6 +100,7 @@ the live request. Candidate activation verified the pre-existing external
 ancestors without changing them, then created only the root and `inbox`,
 `outbox`, `events`, and `acks` at owner-owned `0700`. The local SlideStudio
 checkout ignores `/tmp/mailbox-/` through its untracked `.git/info/exclude`.
+P165 later added the fifth `diagnostics` child to every configured root.
 
 `make test-p158-slidestud-mailbox` used the native `mailboxclient` to publish
 one harmless `run` request with neither `environment` nor `execution_target`.
@@ -134,6 +138,24 @@ sessions, running commands, unreleased slots, and unfinished jobs.
 
 This is queued mailbox evidence. It does not replace a direct mTLS test and it
 does not add or accept another remote host.
+
+## What P166 proved
+
+P166 installed the already handed-off P165 source on the Mac and used one new,
+harmless direct-workspace `0644` request/zero-byte-marker pair in the
+`slidestud-io` root. The JSON deliberately used a scalar `execution_target`,
+so it was schema-invalid. Runner produced exactly one private exact-`0600`
+`diagnostics/<request_id>.json` record with `invalid_request_schema`, consumed
+the matching input pair, and kept the Mac service ready.
+
+Read-only Mac authority checks found no mailbox exchange, local intent, job,
+or command for the test identity. The queued Router dispatch-attempt count
+remained unchanged at 49. No remote command, Gitea API request, Logger
+workflow, bridge action, or normal outbox/event response was created. The real
+Logger request identities were not replayed.
+
+P166 is Mac mailbox-ingress acceptance only. It does not pass a new Ubuntu
+host, queued bridge, direct mTLS endpoint, or physical power-loss gate.
 
 ## What is not accepted
 

@@ -1,6 +1,7 @@
 # BUG-006 — Safe marked schema-invalid mailbox request has no diagnostic
 
-**Status:** IN PROGRESS
+**Status:** IN PROGRESS — P166 installed-Mac acceptance and Mac gates passed;
+GitHub/primary-Ubuntu source handoff remains pending.
 
 **Severity:** High
 
@@ -81,3 +82,30 @@ and no remote call. Do not use a protected Gitea workflow.
 ## Fix plan
 
 Implement the approved [malformed-request feedback plan](../040-improvments/020-malformed-mailbox-request-feedback/015-malformed-mailbox-request-feedback-phased-implementation-plan.md): durable rejection ledger, private diagnostics projection, safe input cleanup and recovery, sanitized structured logs, automated tests, a harmless installed-Mac acceptance, and documentation.
+
+## Fix and P166 acceptance — 2026-10-01
+
+P164 added the durable redacted ingress-diagnostic ledger. P165 added the
+trusted safe-pair classifier, private `diagnostics/<request_id>.json`
+projection, fingerprint-bound cleanup and restart recovery, retained-ID
+protection, sanitized lifecycle logging, fifth mailbox child, and read-only
+client decoding.
+
+P166 installed that Mac relay revision and published one newly named harmless
+direct-workspace `0644` request/zero-byte-marker pair. Its only defect was a
+deliberately scalar `execution_target`, so its script could not run. The live
+result was:
+
+- exactly one private exact-`0600` diagnostic with code
+  `invalid_request_schema`, `accepted: false`, and `executed: false`;
+- removal of the matching test JSON and marker pair;
+- no ordinary outbox or event projection and no ACK; and
+- no matching Mac mailbox exchange, local intent, job, or command. The Router
+  dispatch-attempt count stayed at 49 and readiness stayed `ready`.
+
+No remote command, bridge action, Gitea API call, or Logger workflow was
+created. Neither real Logger request was replayed. The corrected historical
+Logger request was safely diagnosed by the same installed behavior. A later
+orphan marker under the original retry ID remains inert because it has no
+matching JSON; that is separate from the prior accepted exchange for the same
+ID.

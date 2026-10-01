@@ -148,7 +148,7 @@ the Runner service root. Its ancestors must already be real directories without
 group or other write access, and its immediate parent must belong to
 `tomasz.walczuk`. Do not create or chmod those ancestors for Runner. If the root
 is under another checkout, add a local VCS exclude for its runtime directory.
-The installer creates the root and its four mailbox children only after the
+The installer creates the root and its five mailbox children only after the
 candidate is durable.
 
 Activate the candidate:
@@ -169,7 +169,8 @@ The upgrade sequence is deliberate:
 3. enter the no-rollback activation boundary and register the complete
    candidate mailbox set durably;
 4. create or verify only the candidate roots and their `inbox`, `outbox`,
-   `events`, and `acks` children, hand off `mac.yaml`, and start the V2
+   `events`, `acks`, and `diagnostics` children, hand off `mac.yaml`, and
+   start the V2
    services.
 
 For a schema-24 database, the final pre-boundary check treats retained work as

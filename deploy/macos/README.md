@@ -61,8 +61,8 @@ activation boundary.
 
 At activation, the complete candidate root set is registered durably before a
 missing external mailbox tree is created. Runner creates or verifies only the
-configured root and its `inbox`, `outbox`, `events`, and `acks` children. The
-database may migrate to schema 27 before the staged candidate becomes active
+configured root and its `inbox`, `outbox`, `events`, `acks`, and `diagnostics`
+children. The database may migrate to schema 27 before the staged candidate becomes active
 `mac.yaml`. A V1 binary cannot safely reopen that namespaced schema. The
 transition is not a single atomic transaction: before activation, a failure
 restores the previous services; after activation begins, the installer retains
@@ -75,7 +75,7 @@ A non-default mailbox root can be either
 service root. For an external root, every ancestor must already be a real
 directory without group or other write access, and the immediate parent must
 belong to `tomasz.walczuk`. Runner never changes those ancestors. The root and
-its four children are owner-owned `0700`; symlinks, unsafe existing paths, and
+its five children are owner-owned `0700`; symlinks, unsafe existing paths, and
 missing parents fail closed. If the root is below another repository, exclude
 its runtime directory locally from that repository's VCS view.
 

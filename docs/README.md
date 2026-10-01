@@ -14,10 +14,10 @@ selection, or automatic fallback.
 | [Configuration reference](configuration.md) | Exact paths, V1 compatibility, V2 registries, active policy, secret handling, and limits. |
 | [Setup and upgrade runbook](setup.md) | First install, V1→V2 upgrade, safe external mailbox roots, service deployment, bridge setup, and P157 onboarding. |
 | [CLI user guide](user-guide.md) | Local, direct remote, queued remote, sessions, events, cancellation, and close. |
-| [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, events, ACKs, and retries. |
+| [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, events, ACKs, retries, and safe invalid-input diagnostics. |
 | [API reference](api.md) | Direct mTLS and Unix-socket transports plus v1 HTTP/JSON behavior. |
-| [Operations runbook](operations.md) | Health, metrics, logs, service refresh, troubleshooting, and recovery limits. |
-| [Current-host evidence](current-host-evidence.md) | What P155, P157, P158, and P159 accepted, what remains unaccepted, and the per-host boundary. |
+| [Operations runbook](operations.md) | Health, metrics, logs, service refresh, diagnostic triage, and recovery limits. |
+| [Current-host evidence](current-host-evidence.md) | What P155, P157, P158, P159, and P166 accepted, what remains unaccepted, and the per-host boundary. |
 
 ## Current controlled configuration
 
@@ -45,8 +45,11 @@ it as an explicit complete override; the external `slidestud-io` inbox defaults
 to it. P158 accepted the latter through its native marker-last exchange. P159
 then accepted its direct workspace-file `0644` request/ACK path with private
 `0600` response/event projections, complete events, and a sandbox zero-work
-check. `default` does not permit it. Other physical machines remain **NOT RUN**
-until their separate P157 onboarding and end-to-end evidence pass.
+check. P165/P166 added and accepted the separate private `0600` malformed-
+ingress diagnostic path; it does not create an accepted exchange or remote
+work. `default` does not permit `ubuntu-sandbox`. Other physical machines
+remain **NOT RUN** until their separate P157 onboarding and end-to-end evidence
+pass.
 
 Runner application readiness over direct mTLS was exercised for both accepted
 endpoints. A prior temporary TLS probe validated transport only. Software-
