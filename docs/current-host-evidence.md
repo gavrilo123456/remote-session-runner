@@ -33,6 +33,8 @@ The associated source and evidence closeout are:
 - Detailed record: [P159 workspace-compatible mailbox evidence](../040-implementation-evidence/P159.md)
 - P165 malformed-ingress source: `e8171cb0430309b2d6284043762c65d7c8531980`
 - P165 evidence closeout: `b8673580f02d834d26bd33c91fda54180524f1d5`
+- P166 source and primary-Ubuntu handoff:
+  `50e5fe3f11bb2a4317df3ab830b4fbce828647b3`
 - Detailed record: [P166 malformed-ingress acceptance](../040-implementation-evidence/P166.md)
 
 ## What P155 proved

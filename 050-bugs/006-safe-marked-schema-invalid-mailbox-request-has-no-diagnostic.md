@@ -1,7 +1,7 @@
 # BUG-006 — Safe marked schema-invalid mailbox request has no diagnostic
 
-**Status:** IN PROGRESS — P166 installed-Mac acceptance and Mac gates passed;
-GitHub/primary-Ubuntu source handoff remains pending.
+**Status:** CLOSED — P166 installed-Mac acceptance and required source handoff
+passed.
 
 **Severity:** High
 
@@ -109,3 +109,9 @@ Logger request was safely diagnosed by the same installed behavior. A later
 orphan marker under the original retry ID remains inert because it has no
 matching JSON; that is separate from the prior accepted exchange for the same
 ID.
+
+The corrective source commit is
+`50e5fe3f11bb2a4317df3ab830b4fbce828647b3`
+(`phase(P166): close malformed mailbox diagnostics`). Its GitHub push and clean
+primary-Ubuntu fast-forward are recorded in
+[`P166`](../040-implementation-evidence/P166.md).
