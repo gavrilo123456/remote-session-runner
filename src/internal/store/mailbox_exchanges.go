@@ -138,6 +138,15 @@ type MailboxExchangeRecord struct {
 	UpdatedAt                time.Time
 }
 
+// MailboxTerminalArtifactCursor identifies the last durable exchange examined
+// by a bounded terminal-artifact recovery pass. It is intentionally based on
+// the stable storage ordering rather than a client-visible request ID, which
+// is only unique inside its mailbox namespace.
+type MailboxTerminalArtifactCursor struct {
+	CreatedAt  time.Time
+	ExchangeID string
+}
+
 // MailboxResponsePublication is one response snapshot. Accepted snapshots
 // may be replaced by a higher revision; terminal snapshots become immutable.
 type MailboxResponsePublication struct {
@@ -513,6 +522,23 @@ func (s *AuthorityStore) ListPublishableTerminalMailboxExchanges(ctx context.Con
 // ListPublishableTerminalMailboxExchangesInMailbox returns recoverable
 // terminal response projections from only one mailbox root.
 func (s *AuthorityStore) ListPublishableTerminalMailboxExchangesInMailbox(ctx context.Context, mailboxID string, controller domain.ControllerIdentity) ([]MailboxExchangeRecord, error) {
+	return s.listPublishableTerminalMailboxExchangesInMailbox(ctx, mailboxID, controller, nil, 0)
+}
+
+// ListPublishableTerminalMailboxExchangesPageInMailbox returns at most limit
+// recoverable terminal response projections from one mailbox root, beginning
+// strictly after after in created_at/exchange_id order. A nil cursor begins at
+// the oldest eligible exchange. It is for a bounded recovery pass; callers
+// that need the historical compatibility behavior should use the unbounded
+// ListPublishableTerminalMailboxExchangesInMailbox method above.
+func (s *AuthorityStore) ListPublishableTerminalMailboxExchangesPageInMailbox(ctx context.Context, mailboxID string, controller domain.ControllerIdentity, after *MailboxTerminalArtifactCursor, limit int) ([]MailboxExchangeRecord, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: terminal mailbox exchange page limit", ErrMailboxExchangeInvalid)
+	}
+	return s.listPublishableTerminalMailboxExchangesInMailbox(ctx, mailboxID, controller, after, limit)
+}
+
+func (s *AuthorityStore) listPublishableTerminalMailboxExchangesInMailbox(ctx context.Context, mailboxID string, controller domain.ControllerIdentity, after *MailboxTerminalArtifactCursor, limit int) ([]MailboxExchangeRecord, error) {
 	if err := validateMailboxID(mailboxID); err != nil {
 		return nil, err
 	}
@@ -520,17 +546,65 @@ func (s *AuthorityStore) ListPublishableTerminalMailboxExchangesInMailbox(ctx co
 	if err != nil {
 		return nil, fmt.Errorf("%w: controller: %v", ErrMailboxExchangeInvalid, err)
 	}
+	validatedAfter, err := validateMailboxTerminalArtifactCursor(after)
+	if err != nil {
+		return nil, err
+	}
 	now := s.now().UTC()
+	storedNow := formatStoredTime(now)
+	legacyUnackedLifetimeDays := MailboxUnackedResponseLifetime.Hours() / (24 * time.Hour).Hours()
+	legacyAckedLifetimeDays := MailboxAckedResponseLifetime.Hours() / (24 * time.Hour).Hours()
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
-		rows, err := connection.QueryContext(ctx, `
+		var rows *sql.Rows
+		if limit == 0 {
+			rows, err = connection.QueryContext(ctx, `
+		SELECT client_request_id FROM mailbox_exchanges
+	WHERE mailbox_id = ? AND controller_type = ? AND controller_id = ?
+  AND request_state IN ('complete', 'rejected', 'indeterminate')
+	  AND response_revision > 0 AND length(response_bytes) > 0
+	  AND response_cleanup_started_at IS NULL AND response_file_removed_at IS NULL
+	  AND (response_cleanup_at IS NULL OR response_cleanup_at > ?)
+		ORDER BY created_at, exchange_id
+		`, mailboxID, string(validatedController.Type()), string(validatedController.ID()), storedNow)
+		} else if validatedAfter == nil {
+			rows, err = connection.QueryContext(ctx, `
 		SELECT client_request_id FROM mailbox_exchanges
 	WHERE mailbox_id = ? AND controller_type = ? AND controller_id = ?
   AND request_state IN ('complete', 'rejected', 'indeterminate')
   AND response_revision > 0 AND length(response_bytes) > 0
   AND response_cleanup_started_at IS NULL AND response_file_removed_at IS NULL
-  AND (response_cleanup_at IS NULL OR response_cleanup_at > ?)
-	ORDER BY created_at, exchange_id
-	`, mailboxID, string(validatedController.Type()), string(validatedController.ID()), formatStoredTime(now))
+  AND (
+    response_cleanup_at > ?
+    OR (
+      response_cleanup_at IS NULL
+      AND julianday(updated_at) + ? > julianday(?)
+      AND (acknowledged_at IS NULL OR julianday(acknowledged_at) + ? > julianday(?))
+    )
+  )
+		ORDER BY created_at, exchange_id
+		LIMIT ?
+		`, mailboxID, string(validatedController.Type()), string(validatedController.ID()), storedNow, legacyUnackedLifetimeDays, storedNow, legacyAckedLifetimeDays, storedNow, limit)
+		} else {
+			cursorTime := formatStoredTime(validatedAfter.CreatedAt)
+			rows, err = connection.QueryContext(ctx, `
+		SELECT client_request_id FROM mailbox_exchanges
+	WHERE mailbox_id = ? AND controller_type = ? AND controller_id = ?
+  AND request_state IN ('complete', 'rejected', 'indeterminate')
+  AND response_revision > 0 AND length(response_bytes) > 0
+  AND response_cleanup_started_at IS NULL AND response_file_removed_at IS NULL
+  AND (
+    response_cleanup_at > ?
+    OR (
+      response_cleanup_at IS NULL
+      AND julianday(updated_at) + ? > julianday(?)
+      AND (acknowledged_at IS NULL OR julianday(acknowledged_at) + ? > julianday(?))
+    )
+  )
+  AND (created_at > ? OR (created_at = ? AND exchange_id > ?))
+		ORDER BY created_at, exchange_id
+		LIMIT ?
+		`, mailboxID, string(validatedController.Type()), string(validatedController.ID()), storedNow, legacyUnackedLifetimeDays, storedNow, legacyAckedLifetimeDays, storedNow, cursorTime, cursorTime, validatedAfter.ExchangeID, limit)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("list publishable terminal mailbox exchanges: %w", err)
 		}
@@ -562,6 +636,18 @@ func (s *AuthorityStore) ListPublishableTerminalMailboxExchangesInMailbox(ctx co
 		}
 		return records, nil
 	})
+}
+
+func validateMailboxTerminalArtifactCursor(cursor *MailboxTerminalArtifactCursor) (*MailboxTerminalArtifactCursor, error) {
+	if cursor == nil {
+		return nil, nil
+	}
+	if cursor.CreatedAt.IsZero() || cursor.ExchangeID == "" || strings.IndexByte(cursor.ExchangeID, 0) >= 0 {
+		return nil, fmt.Errorf("%w: terminal mailbox exchange cursor", ErrMailboxExchangeInvalid)
+	}
+	validated := *cursor
+	validated.CreatedAt = validated.CreatedAt.UTC()
+	return &validated, nil
 }
 
 // CompleteMailboxExchange advances an accepted receipt to one terminal

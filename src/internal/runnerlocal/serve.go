@@ -32,6 +32,7 @@ const (
 	defaultDrainLimit                    = 64
 	intentLeaseDuration                  = 2 * time.Minute
 	acceptedRemoteReconciliationInterval = time.Second
+	terminalArtifactRecoveryInterval     = time.Second
 )
 
 var (
@@ -202,27 +203,30 @@ func macDoctorStartupFailureReport(err error) opshealth.Report {
 
 // Service owns the process-level composition for the Mac ingress and Router.
 type Service struct {
-	database            *store.AuthorityStore
-	dbCloser            interface{ Close() error }
-	api                 *localapi.Server
-	localDriver         *dispatcher.LocalDriver
-	remoteDriver        *dispatcher.RemoteDriver
-	remoteEndpoints     map[string]string
-	mailboxes           []mailboxRuntime
-	mailboxDefinitions  []store.MailboxConfiguration
-	legacyMailboxSet    []store.MailboxConfiguration
-	mailboxSettings     config.MacSettings
-	mailboxConfig       []config.MailboxDefinition
-	mailboxOwner        domain.ControllerIdentity
-	mailboxResolver     mailbox.MailboxExecutionResolver
-	mailboxMetrics      *mailboxMetricsSource
-	pollInterval        time.Duration
-	routerHealth        *routerHealthMonitor
-	remoteProbe         func(context.Context) map[string]error
-	metricsRecorder     *opshealth.Recorder
-	thresholds          *opshealth.ThresholdMonitor
-	remoteReconcileMu   sync.Mutex
-	lastRemoteReconcile time.Time
+	database                     *store.AuthorityStore
+	dbCloser                     interface{ Close() error }
+	api                          *localapi.Server
+	localDriver                  *dispatcher.LocalDriver
+	remoteDriver                 *dispatcher.RemoteDriver
+	remoteEndpoints              map[string]string
+	mailboxes                    []mailboxRuntime
+	mailboxDefinitions           []store.MailboxConfiguration
+	legacyMailboxSet             []store.MailboxConfiguration
+	mailboxSettings              config.MacSettings
+	mailboxConfig                []config.MailboxDefinition
+	mailboxOwner                 domain.ControllerIdentity
+	mailboxResolver              mailbox.MailboxExecutionResolver
+	mailboxMetrics               *mailboxMetricsSource
+	pollInterval                 time.Duration
+	routerHealth                 *routerHealthMonitor
+	remoteProbe                  func(context.Context) map[string]error
+	metricsRecorder              *opshealth.Recorder
+	thresholds                   *opshealth.ThresholdMonitor
+	remoteReconcileMu            sync.Mutex
+	lastRemoteReconcile          time.Time
+	terminalArtifactRecoveryMu   sync.Mutex
+	lastTerminalArtifactRecovery time.Time
+	nextTerminalArtifactMailbox  int
 }
 
 type mailboxMetricsSource struct {
@@ -457,7 +461,7 @@ func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *s
 		processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
 			MailboxID: definition.ID, Importer: importer, Authority: authority, Controller: owner, Operations: operations,
 			Outbox: outbox, EventFiles: eventFiles, ExecutionResolver: resolver,
-			RemoteUncertaintyWindow: reconciliationDeadline,
+			RemoteUncertaintyWindow: reconciliationDeadline, DeferTerminalArtifactRecovery: true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("construct mailbox processor for %s: %w", definition.ID, err)
@@ -729,35 +733,80 @@ func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, st
 }
 
 // runMailboxCycles services every configured mailbox in deterministic config
-// order. An error from one root is recorded and reported without starving the
-// remaining configured roots in the same cycle.
+// order. Fresh inbox input, acknowledgement, and cleanup work for every root
+// complete before one bounded terminal-artifact repair pass. This prevents a
+// retained crash-recovery backlog in one mailbox from monopolizing the relay
+// or delaying input in another mailbox.
 func (s *Service) runMailboxCycles(ctx context.Context, stderr io.Writer) {
 	if s == nil {
 		return
 	}
+	runtimes := s.configuredMailboxRuntimes(stderr)
+	for _, runtime := range runtimes {
+		if _, err := runtime.processor.Import(ctx); err != nil && ctx.Err() == nil {
+			s.recordOperationalError(err, false)
+			s.logMailboxReconciliationError(stderr, runtime.id, "import", err)
+		}
+	}
+	for _, runtime := range runtimes {
+		if err := runtime.processor.Reconcile(ctx); err != nil && ctx.Err() == nil {
+			s.recordOperationalError(err, false)
+			s.logMailboxReconciliationError(stderr, runtime.id, "reconcile", err)
+		}
+	}
+	for _, runtime := range runtimes {
+		if _, err := runtime.ackImporter.Import(ctx); err != nil && ctx.Err() == nil {
+			s.recordOperationalError(err, false)
+			fmt.Fprintf(stderr, "runner-local: mailbox %s ACK cycle failed\n", runtime.id)
+		}
+	}
+	for _, runtime := range runtimes {
+		if _, err := runtime.artifactCleaner.Run(ctx); err != nil && ctx.Err() == nil {
+			s.recordOperationalError(err, true)
+			fmt.Fprintf(stderr, "runner-local: mailbox %s cleanup cycle failed\n", runtime.id)
+		}
+	}
+	if runtime, ok := s.nextTerminalArtifactRecoveryRuntime(runtimes, time.Now()); ok {
+		if err := runtime.processor.RecoverTerminalArtifacts(ctx); err != nil && ctx.Err() == nil {
+			s.recordOperationalError(err, false)
+			s.logMailboxReconciliationError(stderr, runtime.id, "terminal_artifact", err)
+		}
+	}
+}
+
+func (s *Service) configuredMailboxRuntimes(stderr io.Writer) []mailboxRuntime {
+	if s == nil {
+		return nil
+	}
+	runtimes := make([]mailboxRuntime, 0, len(s.mailboxes))
 	for _, runtime := range s.mailboxes {
 		if runtime.processor == nil || runtime.ackImporter == nil {
 			s.recordOperationalError(errors.New("mailbox runtime is not configured"), false)
 			fmt.Fprintf(stderr, "runner-local: mailbox %s runtime is not configured\n", runtime.id)
 			continue
 		}
-		if _, err := runtime.processor.Import(ctx); err != nil && ctx.Err() == nil {
-			s.recordOperationalError(err, false)
-			s.logMailboxReconciliationError(stderr, runtime.id, "import", err)
-		}
-		if err := runtime.processor.Reconcile(ctx); err != nil && ctx.Err() == nil {
-			s.recordOperationalError(err, false)
-			s.logMailboxReconciliationError(stderr, runtime.id, "reconcile", err)
-		}
-		if _, err := runtime.ackImporter.Import(ctx); err != nil && ctx.Err() == nil {
-			s.recordOperationalError(err, false)
-			fmt.Fprintf(stderr, "runner-local: mailbox %s ACK cycle failed\n", runtime.id)
-		}
-		if _, err := runtime.artifactCleaner.Run(ctx); err != nil && ctx.Err() == nil {
-			s.recordOperationalError(err, true)
-			fmt.Fprintf(stderr, "runner-local: mailbox %s cleanup cycle failed\n", runtime.id)
-		}
+		runtimes = append(runtimes, runtime)
 	}
+	return runtimes
+}
+
+// nextTerminalArtifactRecoveryRuntime gives one mailbox a bounded background
+// repair turn at most once per interval. The cursor inside each processor
+// supplies per-mailbox progress; this process-level rotation bounds total
+// filesystem projection work when several roots retain history.
+func (s *Service) nextTerminalArtifactRecoveryRuntime(runtimes []mailboxRuntime, now time.Time) (mailboxRuntime, bool) {
+	if s == nil || len(runtimes) == 0 {
+		return mailboxRuntime{}, false
+	}
+	s.terminalArtifactRecoveryMu.Lock()
+	defer s.terminalArtifactRecoveryMu.Unlock()
+	if !s.lastTerminalArtifactRecovery.IsZero() && now.Before(s.lastTerminalArtifactRecovery.Add(terminalArtifactRecoveryInterval)) {
+		return mailboxRuntime{}, false
+	}
+	index := s.nextTerminalArtifactMailbox % len(runtimes)
+	s.nextTerminalArtifactMailbox = (index + 1) % len(runtimes)
+	s.lastTerminalArtifactRecovery = now
+	return runtimes[index], true
 }
 
 func (s *Service) reconcileMailboxRuntimes(ctx context.Context, stderr io.Writer, stage string) {

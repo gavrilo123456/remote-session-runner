@@ -294,6 +294,7 @@ func p162MailboxRuntime(t *testing.T, root string, authority *store.AuthoritySto
 		MailboxID: p162MailboxID, Importer: importer, Authority: authority, Controller: owner, Operations: operations,
 		Outbox: outbox, EventFiles: eventFiles, ExecutionResolver: p162MailboxResolver{},
 		Now: func() time.Time { return now.UTC() }, RemoteUncertaintyWindow: dispatcher.RemoteUncertaintyWindow,
+		DeferTerminalArtifactRecovery: true,
 	})
 	if err != nil {
 		t.Fatal(err)

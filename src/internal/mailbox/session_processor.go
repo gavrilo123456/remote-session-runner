@@ -16,6 +16,12 @@ import (
 
 var ErrSessionProcessorConfiguration = errors.New("mailbox session processor configuration is invalid")
 
+// DefaultTerminalArtifactRecoveryBatchLimit bounds one background repair pass.
+// Terminal projection remains synchronous for ordinary work; this limit applies
+// only to recovery after SQLite committed a terminal receipt before the derived
+// filesystem artifacts could be published.
+const DefaultTerminalArtifactRecoveryBatchLimit = 4
+
 // SessionIntent is the durable Mac-side acceptance returned by create_session.
 type SessionIntent struct {
 	SessionID     string
@@ -136,21 +142,31 @@ type SessionProcessorOptions struct {
 	ExecutionResolver       MailboxExecutionResolver
 	Now                     func() time.Time
 	RemoteUncertaintyWindow time.Duration
+	// TerminalArtifactRecoveryBatchLimit bounds a background repair pass. Zero
+	// selects DefaultTerminalArtifactRecoveryBatchLimit.
+	TerminalArtifactRecoveryBatchLimit int
+	// DeferTerminalArtifactRecovery lets a process-level scheduler place
+	// recovery after fresh input, ACK, and cleanup work across every mailbox.
+	// The default preserves the standalone processor reconciliation contract.
+	DeferTerminalArtifactRecovery bool
 }
 
 // SessionProcessor wires file mailbox session and command operations through
 // the Mac local API boundary. The mailbox remains an ingress/projection only.
 type SessionProcessor struct {
-	mailboxID         string
-	importer          *Importer
-	authority         *store.AuthorityStore
-	controller        domain.ControllerIdentity
-	operations        SessionOperations
-	projector         Projector
-	executionResolver MailboxExecutionResolver
-	now               func() time.Time
-	uncertaintyWindow time.Duration
-	mu                sync.Mutex
+	mailboxID                          string
+	importer                           *Importer
+	authority                          *store.AuthorityStore
+	controller                         domain.ControllerIdentity
+	operations                         SessionOperations
+	projector                          Projector
+	executionResolver                  MailboxExecutionResolver
+	now                                func() time.Time
+	uncertaintyWindow                  time.Duration
+	terminalArtifactRecoveryBatchLimit int
+	terminalArtifactRecoveryCursor     *store.MailboxTerminalArtifactCursor
+	deferTerminalArtifactRecovery      bool
+	mu                                 sync.Mutex
 }
 
 func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, error) {
@@ -162,6 +178,12 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 	}
 	if options.RemoteUncertaintyWindow == 0 {
 		options.RemoteUncertaintyWindow = store.DefaultRemoteUncertaintyWindow
+	}
+	if options.TerminalArtifactRecoveryBatchLimit < 0 {
+		return nil, fmt.Errorf("%w: negative terminal artifact recovery batch limit", ErrSessionProcessorConfiguration)
+	}
+	if options.TerminalArtifactRecoveryBatchLimit == 0 {
+		options.TerminalArtifactRecoveryBatchLimit = DefaultTerminalArtifactRecoveryBatchLimit
 	}
 	if options.Now == nil {
 		options.Now = time.Now
@@ -186,6 +208,8 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 		mailboxID: mailboxID, importer: options.Importer, authority: options.Authority, controller: controller,
 		operations: options.Operations, projector: Projector{MailboxID: mailboxID, Authority: options.Authority, Outbox: options.Outbox, EventFiles: options.EventFiles},
 		executionResolver: options.ExecutionResolver, now: options.Now, uncertaintyWindow: options.RemoteUncertaintyWindow,
+		terminalArtifactRecoveryBatchLimit: options.TerminalArtifactRecoveryBatchLimit,
+		deferTerminalArtifactRecovery:      options.DeferTerminalArtifactRecovery,
 	}, nil
 }
 
@@ -234,11 +258,13 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var result error
-	if err := p.reconcileTerminalArtifacts(ctx); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	if !p.deferTerminalArtifactRecovery {
+		if err := p.reconcileTerminalArtifacts(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			result = errors.Join(result, mailboxStageError(p.mailboxID, "terminal_artifact", err))
 		}
-		result = errors.Join(result, mailboxStageError(p.mailboxID, "terminal_artifact", err))
 	}
 	results, err := p.importer.importWithRecorder(ctx, p.process)
 	if err != nil {
@@ -278,18 +304,24 @@ func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	var result error
-	for _, stage := range []struct {
+	stages := []struct {
 		name string
 		run  func(context.Context) error
 	}{
-		{name: "terminal_artifact", run: p.reconcileTerminalArtifacts},
 		{name: "accepted_create", run: p.reconcileAcceptedCreates},
 		{name: "accepted_submit", run: p.reconcileAcceptedSubmits},
 		{name: "accepted_cancel", run: p.reconcileAcceptedCancels},
 		{name: "accepted_close", run: p.reconcileAcceptedCloses},
 		{name: "accepted_run", run: p.reconcileAcceptedRuns},
-	} {
+	}
+	if !p.deferTerminalArtifactRecovery {
+		stages = append([]struct {
+			name string
+			run  func(context.Context) error
+		}{{name: "terminal_artifact", run: p.reconcileTerminalArtifacts}}, stages...)
+	}
+	var result error
+	for _, stage := range stages {
 		if err := stage.run(ctx); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -298,6 +330,21 @@ func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 		}
 	}
 	return result
+}
+
+// RecoverTerminalArtifacts repairs a bounded page of derived outbox and event
+// artifacts after fresh mailbox intake, reconciliation, ACK, and cleanup work
+// have had their turn. It never calls a session operation or target mutation.
+func (p *SessionProcessor) RecoverTerminalArtifacts(ctx context.Context) error {
+	if p == nil || p.authority == nil || p.operations == nil {
+		return ErrSessionProcessorConfiguration
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.reconcileTerminalArtifacts(ctx)
 }
 
 func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, error) {
@@ -897,9 +944,16 @@ func (p *SessionProcessor) publishSessionOperationError(ctx context.Context, rec
 // target mutation. Cleanup claims deliberately suppress this repair so an
 // expired result cannot return after its removal has begun.
 func (p *SessionProcessor) reconcileTerminalArtifacts(ctx context.Context) error {
-	records, err := p.authority.ListPublishableTerminalMailboxExchangesInMailbox(ctx, p.mailboxID, p.controller)
+	records, err := p.authority.ListPublishableTerminalMailboxExchangesPageInMailbox(ctx, p.mailboxID, p.controller, p.terminalArtifactRecoveryCursor, p.terminalArtifactRecoveryBatchLimit)
 	if err != nil {
 		return err
+	}
+	if len(records) == 0 {
+		// A completed sweep starts again from the oldest retained receipt on a
+		// later bounded pass. This keeps recovery eventual after a transient
+		// filesystem error without allowing a full scan to monopolize intake.
+		p.terminalArtifactRecoveryCursor = nil
+		return nil
 	}
 	var result error
 	for _, record := range records {
@@ -909,6 +963,16 @@ func (p *SessionProcessor) reconcileTerminalArtifacts(ctx context.Context) error
 		if err := p.reconcileTerminalArtifact(ctx, record); err != nil {
 			result = errors.Join(result, mailboxReconciliationIssue(record, "terminal_artifact", err))
 		}
+		// A malformed or unavailable single artifact must not keep later
+		// retained receipts behind it from being repaired. The durable response
+		// is unchanged; a later full sweep can retry this record.
+		p.terminalArtifactRecoveryCursor = &store.MailboxTerminalArtifactCursor{CreatedAt: record.CreatedAt, ExchangeID: record.ExchangeID}
+	}
+	if len(records) < p.terminalArtifactRecoveryBatchLimit {
+		// This completed page was the end of the current sweep. Reset now so
+		// a durable proof or transient filesystem condition that changes after
+		// this pass is eligible on the next bounded turn.
+		p.terminalArtifactRecoveryCursor = nil
 	}
 	return result
 }
