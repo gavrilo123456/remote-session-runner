@@ -87,7 +87,17 @@ If neither the matching outbox nor diagnostic exists, the request can still be
 awaiting pickup or can be an unsafe inert pair. Check the configured root,
 complete JSON, marker-last order, zero-byte marker, owner, mode, and Runner
 health. Read the terminal response and retained events before publishing an
-ACK; normal response retention is bounded.
+ACK. The relevant retention periods are:
+
+- terminal outbox response: eligible for cleanup 24 hours after a valid ACK,
+  or seven days after terminal publication without an ACK;
+- command event output: 30 days;
+- private ingress diagnostic: seven days after observation; and
+- metadata and idempotency identity: 90 days.
+
+These are retention limits, not guarantees that a file remains available until
+the last moment. Preserve the terminal response and event prefix you need
+before publishing an ACK.
 
 ## External mailbox roots
 
