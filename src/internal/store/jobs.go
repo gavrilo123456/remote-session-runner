@@ -195,6 +195,82 @@ func (s *AuthorityStore) GetJob(ctx context.Context, id domain.JobID) (JobRecord
 	return readJobOnConnection(ctx, connection, validatedID)
 }
 
+// GetJobByCommandID reads the one-off job bound to commandID. Command IDs are
+// unique across jobs, so a command can belong to at most one durable one-off
+// coordinator. It returns ErrJobNotFound when the command is not a one-off
+// job command.
+func (s *AuthorityStore) GetJobByCommandID(ctx context.Context, commandID domain.CommandID) (JobRecord, error) {
+	validatedID, err := domain.NewCommandID(string(commandID))
+	if err != nil {
+		return JobRecord{}, err
+	}
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return JobRecord{}, fmt.Errorf("acquire job-by-command connection: %w", err)
+	}
+	defer connection.Close()
+	var jobID string
+	if err := connection.QueryRowContext(ctx, "SELECT job_id FROM exec_jobs WHERE command_id = ?", string(validatedID)).Scan(&jobID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return JobRecord{}, ErrJobNotFound
+		}
+		return JobRecord{}, fmt.Errorf("read job by command: %w", err)
+	}
+	validatedJobID, err := domain.NewJobID(jobID)
+	if err != nil {
+		return JobRecord{}, fmt.Errorf("%w: job ID", ErrJobPayloadCorrupt)
+	}
+	return readJobOnConnection(ctx, connection, validatedJobID)
+}
+
+// ListNonterminalJobs reads coordinator jobs that still need recovery or
+// completion work. Finished, failed, and lost jobs are intentionally absent:
+// their durable state is final and a scheduler must not resume them.
+func (s *AuthorityStore) ListNonterminalJobs(ctx context.Context) ([]JobRecord, error) {
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire nonterminal jobs connection: %w", err)
+	}
+	defer connection.Close()
+	rows, err := connection.QueryContext(ctx, `
+SELECT job_id
+FROM exec_jobs
+WHERE phase IN (?, ?, ?, ?)
+ORDER BY created_at, job_id
+`, string(JobPhaseCreatingSession), string(JobPhaseAcceptingCommand), string(JobPhaseAwaitingCommand), string(JobPhaseClosingSession))
+	if err != nil {
+		return nil, fmt.Errorf("query nonterminal jobs: %w", err)
+	}
+	defer rows.Close()
+	var jobIDs []domain.JobID
+	for rows.Next() {
+		var jobID string
+		if err := rows.Scan(&jobID); err != nil {
+			return nil, fmt.Errorf("scan nonterminal job: %w", err)
+		}
+		validatedID, err := domain.NewJobID(jobID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: job ID", ErrJobPayloadCorrupt)
+		}
+		jobIDs = append(jobIDs, validatedID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate nonterminal jobs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close nonterminal jobs: %w", err)
+	}
+	jobs := make([]JobRecord, 0, len(jobIDs))
+	for _, jobID := range jobIDs {
+		job, err := readJobOnConnection(ctx, connection, jobID)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
+}
+
 // CheckpointJob durably records a one-off coordinator phase after the
 // underlying session or command transaction has committed. Repeating an
 // already-applied checkpoint is harmless; an unexpected current phase is a

@@ -1,12 +1,14 @@
 package execution
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -580,6 +582,145 @@ func (s *Service) AcceptCommand(ctx context.Context, request SubmitCommandReques
 	return SubmitCommandResult{Command: accepted, Duplicate: duplicate, IdempotencyWarning: accepted.IdempotencyWarning}, nil
 }
 
+// ClaimNextEligibleCommand atomically chooses the global oldest eligible
+// command and records its running boundary. The caller owns the returned
+// claim and must pass it to ExecuteClaimedCommand; this method never starts a
+// runtime before the durable transaction commits.
+func (s *Service) ClaimNextEligibleCommand(ctx context.Context) (store.CommandRecord, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return store.CommandRecord{}, ErrExecutionServiceConfiguration
+	}
+	return s.store.StartNextEligibleCommand(ctx, store.DefaultRunningCommandLimit)
+}
+
+// ExecuteClaimedCommand runs exactly one command that ClaimNextEligibleCommand
+// durably claimed. It reloads the command and session from the authority so a
+// caller cannot substitute script bytes or execute a different command. A
+// terminal winner from a concurrent cancellation or completion is returned
+// without another runtime call.
+func (s *Service) ExecuteClaimedCommand(ctx context.Context, claim store.CommandRecord) (SubmitCommandResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return SubmitCommandResult{}, ErrExecutionServiceConfiguration
+	}
+	commandID, err := domain.NewCommandID(string(claim.CommandID))
+	if err != nil {
+		return SubmitCommandResult{}, err
+	}
+	sessionID, err := domain.NewSessionID(string(claim.SessionID))
+	if err != nil {
+		return SubmitCommandResult{}, err
+	}
+	if claim.State != domain.CommandStateRunning {
+		return SubmitCommandResult{}, fmt.Errorf("%w: claimed command state %q", ErrCommandNotReady, claim.State)
+	}
+	command, err := s.store.GetCommand(ctx, commandID)
+	if err != nil {
+		return SubmitCommandResult{}, err
+	}
+	if command.SessionID != sessionID {
+		return SubmitCommandResult{Command: command}, fmt.Errorf("%w: claimed command session differs", ErrCommandNotReady)
+	}
+	if command.State.IsTerminal() || command.State == domain.CommandStateCancelling {
+		return SubmitCommandResult{Command: command}, nil
+	}
+	if command.State != domain.CommandStateRunning {
+		return SubmitCommandResult{Command: command}, fmt.Errorf("%w: current command state %q", ErrCommandNotReady, command.State)
+	}
+	currentSession, err := s.store.GetSession(ctx, command.SessionID)
+	if err != nil {
+		return SubmitCommandResult{Command: command}, err
+	}
+	commandRuntime, ok := s.runtime.(CommandRuntime)
+	if !ok {
+		return s.finishCommandFailure(ctx, currentSession, command, ErrCommandTransport, "command_transport_failed")
+	}
+	request := RuntimeCommandRequest{Session: currentSession, Command: command}
+	var streamed atomic.Bool
+	var runtimeResult RuntimeCommandResult
+	var runtimeErr error
+	if streamingRuntime, ok := s.runtime.(StreamingCommandRuntime); ok {
+		runtimeResult, runtimeErr = streamingRuntime.ExecuteCommandStream(ctx, request, func(stream string, payload []byte) error {
+			if len(payload) == 0 {
+				return nil
+			}
+			if stream != "stdout" && stream != "stderr" {
+				return fmt.Errorf("%w: invalid output stream", ErrExecutionServiceConfiguration)
+			}
+			if _, err := s.store.AppendCommandEvent(ctx, store.CommandEventAppend{
+				CommandID: command.CommandID,
+				Type:      stream,
+				Payload:   payload,
+				ByteCount: int64(len(payload)),
+			}); err != nil {
+				if control, ok := s.runtime.(RuntimeCommandControl); ok {
+					cleanupParent := ctx
+					if cleanupParent == nil {
+						cleanupParent = context.Background()
+					}
+					cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(cleanupParent), 2*time.Second)
+					_, _ = control.CancelCommand(cleanupContext, request)
+					cancel()
+				}
+				return err
+			}
+			streamed.Store(true)
+			return nil
+		})
+	} else {
+		runtimeResult, runtimeErr = commandRuntime.ExecuteCommand(ctx, request)
+	}
+	if runtimeErr != nil {
+		return s.finishCommandFailure(ctx, currentSession, command, runtimeErr, "command_transport_failed")
+	}
+	if !streamed.Load() {
+		for _, output := range []struct {
+			eventType string
+			payload   []byte
+		}{
+			{eventType: "stdout", payload: runtimeResult.Stdout},
+			{eventType: "stderr", payload: runtimeResult.Stderr},
+		} {
+			if len(output.payload) == 0 {
+				continue
+			}
+			if _, err := s.store.AppendCommandEvent(ctx, store.CommandEventAppend{
+				CommandID: command.CommandID,
+				Type:      output.eventType,
+				Payload:   output.payload,
+				ByteCount: int64(len(output.payload)),
+			}); err != nil {
+				return s.finishCommandFailure(ctx, currentSession, command, err, "command_output_persistence_failed")
+			}
+		}
+	}
+	if runtimeResult.ShellExited {
+		return s.finishCommandFailure(ctx, currentSession, command, ErrShellExited, "shell_exited")
+	}
+	nextState := domain.CommandStateSucceeded
+	if runtimeResult.ExitCode != 0 {
+		nextState = domain.CommandStateFailed
+	}
+	exitCode := runtimeResult.ExitCode
+	completed, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{
+		CommandID:      command.CommandID,
+		NextState:      nextState,
+		ExitCode:       &exitCode,
+		OutputComplete: true,
+	}, domain.SessionStateReady, "command_completed", true)
+	if err != nil {
+		if raced, terminal, readErr := s.terminalCommandOutcome(ctx, command.CommandID); readErr != nil {
+			return SubmitCommandResult{Command: command}, errors.Join(err, readErr)
+		} else if terminal {
+			return SubmitCommandResult{Command: raced}, nil
+		}
+		if store.IsSQLiteError(err) {
+			return s.finishCommandFailure(ctx, currentSession, command, err, "command_completion_persistence_failed")
+		}
+		return SubmitCommandResult{Command: command}, err
+	}
+	return SubmitCommandResult{Command: completed}, nil
+}
+
 // ResumeCommand continues an accepted queued command using its durable script
 // bytes. A queued command is started at most once by the scheduler; a running
 // command is returned without being sourced again, which is the conservative
@@ -605,109 +746,30 @@ func (s *Service) ResumeCommand(ctx context.Context, commandID domain.CommandID,
 	if command.State != domain.CommandStateQueued {
 		return SubmitCommandResult{}, fmt.Errorf("%w: current command state %q", ErrCommandNotReady, command.State)
 	}
-	started, startErr := s.store.StartNextEligibleCommand(ctx, store.DefaultRunningCommandLimit)
+	started, startErr := s.ClaimNextEligibleCommand(ctx)
 	if startErr != nil {
 		if errors.Is(startErr, store.ErrCommandSlotsFull) || errors.Is(startErr, store.ErrCommandNotEligible) {
 			return SubmitCommandResult{Command: command}, nil
 		}
 		return SubmitCommandResult{Command: command}, startErr
 	}
-	if started.CommandID != command.CommandID {
-		return SubmitCommandResult{Command: command}, nil
+	if started.CommandID == command.CommandID {
+		return s.ExecuteClaimedCommand(ctx, started)
 	}
-	currentSession, err := s.store.GetSession(ctx, command.SessionID)
+
+	// The global scheduler is allowed to choose older work from another
+	// session. This caller made that durable claim and must execute it before
+	// returning; otherwise the older command would remain running with no
+	// runtime owner. Preserve this caller's own observable result below.
+	foreign, executeErr := s.ExecuteClaimedCommand(ctx, started)
+	if executeErr != nil && !foreign.Command.State.IsTerminal() {
+		return SubmitCommandResult{Command: command}, fmt.Errorf("execute foreign scheduler claim %s: %w", started.CommandID, executeErr)
+	}
+	refreshed, err := s.store.GetCommand(ctx, command.CommandID)
 	if err != nil {
-		return SubmitCommandResult{Command: started}, err
+		return SubmitCommandResult{Command: command}, err
 	}
-	commandRuntime, ok := s.runtime.(CommandRuntime)
-	if !ok {
-		return s.finishCommandFailure(ctx, currentSession, started, ErrCommandTransport, "command_transport_failed")
-	}
-	request := RuntimeCommandRequest{Session: currentSession, Command: started}
-	var streamed atomic.Bool
-	var runtimeResult RuntimeCommandResult
-	var runtimeErr error
-	if streamingRuntime, ok := s.runtime.(StreamingCommandRuntime); ok {
-		runtimeResult, runtimeErr = streamingRuntime.ExecuteCommandStream(ctx, request, func(stream string, payload []byte) error {
-			if len(payload) == 0 {
-				return nil
-			}
-			if stream != "stdout" && stream != "stderr" {
-				return fmt.Errorf("%w: invalid output stream", ErrExecutionServiceConfiguration)
-			}
-			if _, err := s.store.AppendCommandEvent(ctx, store.CommandEventAppend{
-				CommandID: started.CommandID,
-				Type:      stream,
-				Payload:   payload,
-				ByteCount: int64(len(payload)),
-			}); err != nil {
-				if control, ok := s.runtime.(RuntimeCommandControl); ok {
-					cleanupParent := ctx
-					if cleanupParent == nil {
-						cleanupParent = context.Background()
-					}
-					cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(cleanupParent), 2*time.Second)
-					_, _ = control.CancelCommand(cleanupContext, request)
-					cancel()
-				}
-				return err
-			}
-			streamed.Store(true)
-			return nil
-		})
-	} else {
-		runtimeResult, runtimeErr = commandRuntime.ExecuteCommand(ctx, request)
-	}
-	if runtimeErr != nil {
-		return s.finishCommandFailure(ctx, currentSession, started, runtimeErr, "command_transport_failed")
-	}
-	if !streamed.Load() {
-		for _, output := range []struct {
-			eventType string
-			payload   []byte
-		}{
-			{eventType: "stdout", payload: runtimeResult.Stdout},
-			{eventType: "stderr", payload: runtimeResult.Stderr},
-		} {
-			if len(output.payload) == 0 {
-				continue
-			}
-			if _, err := s.store.AppendCommandEvent(ctx, store.CommandEventAppend{
-				CommandID: started.CommandID,
-				Type:      output.eventType,
-				Payload:   output.payload,
-				ByteCount: int64(len(output.payload)),
-			}); err != nil {
-				return s.finishCommandFailure(ctx, currentSession, started, err, "command_output_persistence_failed")
-			}
-		}
-	}
-	if runtimeResult.ShellExited {
-		return s.finishCommandFailure(ctx, currentSession, started, ErrShellExited, "shell_exited")
-	}
-	nextState := domain.CommandStateSucceeded
-	if runtimeResult.ExitCode != 0 {
-		nextState = domain.CommandStateFailed
-	}
-	exitCode := runtimeResult.ExitCode
-	completed, err := s.store.CompleteRunningCommand(ctx, store.CommandTransition{
-		CommandID:      started.CommandID,
-		NextState:      nextState,
-		ExitCode:       &exitCode,
-		OutputComplete: true,
-	}, domain.SessionStateReady, "command_completed", true)
-	if err != nil {
-		if raced, terminal, readErr := s.terminalCommandOutcome(ctx, started.CommandID); readErr != nil {
-			return SubmitCommandResult{Command: started}, errors.Join(err, readErr)
-		} else if terminal {
-			return SubmitCommandResult{Command: raced}, nil
-		}
-		if store.IsSQLiteError(err) {
-			return s.finishCommandFailure(ctx, currentSession, started, err, "command_completion_persistence_failed")
-		}
-		return SubmitCommandResult{Command: started}, err
-	}
-	return SubmitCommandResult{Command: completed}, nil
+	return SubmitCommandResult{Command: refreshed}, nil
 }
 
 // RunJob accepts a durable one-off row and advances it through session
@@ -754,6 +816,161 @@ func (s *Service) ResumeJob(ctx context.Context, id domain.JobID, controller dom
 		IdempotencyRetention: options.IdempotencyRetention,
 	}
 	return s.resumeJob(ctx, options, job)
+}
+
+// ResumeStoredJob reconstructs the policy inputs needed to continue one
+// durable job. IDs, controller, target, source, and script come only from the
+// immutable job row; requested limits and isolation come only from the
+// immutable canonical payload that was accepted with the job.
+func (s *Service) ResumeStoredJob(ctx context.Context, id domain.JobID) (RunJobResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil || s.resolver == nil {
+		return RunJobResult{}, ErrExecutionServiceConfiguration
+	}
+	job, err := s.store.GetJob(ctx, id)
+	if err != nil {
+		return RunJobResult{}, err
+	}
+	options, err := storedJobResumeOptions(job)
+	if err != nil {
+		return RunJobResult{Job: job, IdempotencyWarning: job.IdempotencyWarning}, err
+	}
+	return s.ResumeJob(ctx, job.JobID, job.Controller, options)
+}
+
+func storedJobResumeOptions(job store.JobRecord) (RunJobRequest, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(job.CanonicalPayload, &payload); err != nil {
+		return RunJobRequest{}, fmt.Errorf("%w: decode canonical run policy: %v", store.ErrJobPayloadCorrupt, err)
+	}
+	limits, err := decodeStoredRequestedLimits(payload["requested_limits"])
+	if err != nil {
+		return RunJobRequest{}, err
+	}
+	var isolation domain.IsolationRequirements
+	if raw := bytes.TrimSpace(payload["isolation"]); len(raw) != 0 && !bytes.Equal(raw, []byte("null")) {
+		if err := json.Unmarshal(raw, &isolation); err != nil {
+			return RunJobRequest{}, fmt.Errorf("%w: decode canonical isolation: %v", store.ErrJobPayloadCorrupt, err)
+		}
+	}
+	return RunJobRequest{
+		RequestedLimits:      limits,
+		Isolation:            isolation,
+		MaxActiveSessions:    store.DefaultActiveSessionLimit,
+		IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	}, nil
+}
+
+func decodeStoredRequestedLimits(raw json.RawMessage) (domain.RequestedLimits, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return domain.RequestedLimits{}, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return domain.RequestedLimits{}, fmt.Errorf("%w: decode canonical requested limits: %v", store.ErrJobPayloadCorrupt, err)
+	}
+	commandTimeout, err := decodeCanonicalInt64(fields["CommandTimeout"], "CommandTimeout")
+	if err != nil {
+		return domain.RequestedLimits{}, err
+	}
+	idleTimeout, err := decodeCanonicalInt64(fields["IdleTimeout"], "IdleTimeout")
+	if err != nil {
+		return domain.RequestedLimits{}, err
+	}
+	sessionMaxLifetime, err := decodeCanonicalInt64(fields["SessionMaxLifetime"], "SessionMaxLifetime")
+	if err != nil {
+		return domain.RequestedLimits{}, err
+	}
+	outputBytes, err := decodeCanonicalInt64(fields["OutputBytesPerCommand"], "OutputBytesPerCommand")
+	if err != nil {
+		return domain.RequestedLimits{}, err
+	}
+	return domain.RequestedLimits{
+		CommandTimeout:        time.Duration(commandTimeout),
+		IdleTimeout:           time.Duration(idleTimeout),
+		SessionMaxLifetime:    time.Duration(sessionMaxLifetime),
+		OutputBytesPerCommand: outputBytes,
+	}, nil
+}
+
+// decodeCanonicalInt64 accepts canonical JSON integer values even when the
+// canonicalizer renders a large integral duration as exponent notation. It
+// rejects fractional or out-of-range values instead of silently rounding a
+// policy limit during restart recovery.
+func decodeCanonicalInt64(raw json.RawMessage, name string) (int64, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return 0, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var number json.Number
+	if err := decoder.Decode(&number); err != nil {
+		return 0, fmt.Errorf("%w: decode canonical requested limit %s: %v", store.ErrJobPayloadCorrupt, name, err)
+	}
+	value, err := canonicalNumberInt64(number.String())
+	if err != nil {
+		return 0, fmt.Errorf("%w: canonical requested limit %s: %v", store.ErrJobPayloadCorrupt, name, err)
+	}
+	return value, nil
+}
+
+func canonicalNumberInt64(value string) (int64, error) {
+	negative := false
+	if strings.HasPrefix(value, "-") {
+		negative = true
+		value = value[1:]
+	}
+	exponent := int64(0)
+	if index := strings.IndexAny(value, "eE"); index >= 0 {
+		parsed, err := strconv.ParseInt(value[index+1:], 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("invalid exponent %q", value[index+1:])
+		}
+		exponent = parsed
+		value = value[:index]
+	}
+	integer, fraction, hasFraction := strings.Cut(value, ".")
+	if integer == "" || (hasFraction && fraction == "") {
+		return 0, fmt.Errorf("invalid number %q", value)
+	}
+	digits := strings.TrimLeft(integer+fraction, "0")
+	if digits == "" {
+		return 0, nil
+	}
+	for _, digit := range digits {
+		if digit < '0' || digit > '9' {
+			return 0, fmt.Errorf("invalid number %q", value)
+		}
+	}
+	scale := exponent - int64(len(fraction))
+	if scale < 0 {
+		remove := -scale
+		if remove > int64(len(digits)) {
+			return 0, fmt.Errorf("fractional number %q", value)
+		}
+		for _, digit := range digits[len(digits)-int(remove):] {
+			if digit != '0' {
+				return 0, fmt.Errorf("fractional number %q", value)
+			}
+		}
+		digits = strings.TrimLeft(digits[:len(digits)-int(remove)], "0")
+		if digits == "" {
+			return 0, nil
+		}
+	} else if int64(len(digits))+scale > 19 {
+		return 0, fmt.Errorf("integer out of range %q", value)
+	} else {
+		digits += strings.Repeat("0", int(scale))
+	}
+	if negative {
+		digits = "-" + digits
+	}
+	parsed, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("integer out of range %q", value)
+	}
+	return parsed, nil
 }
 
 func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job store.JobRecord) (RunJobResult, error) {
