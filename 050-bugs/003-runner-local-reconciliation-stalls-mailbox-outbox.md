@@ -2,7 +2,7 @@
 
 ## Status
 
-`IN PROGRESS`
+`CLOSED`
 
 ## Summary
 
@@ -46,12 +46,15 @@ therefore unsafe for protected delivery workflows.
 
 ## Expected behavior
 
-For every accepted mailbox request, `runner-local` must eventually do exactly
-one of the following:
+For accepted remote one-off runs whose terminal target state cannot be read,
+`runner-local` must keep the existing bounded, no-replay reconciliation rule
+and eventually write its truthful terminal `indeterminate` result. A failure
+for one durable mailbox record must not prevent an independent record from
+being imported, reconciled, projected, or acknowledged.
 
-- write a terminal outbox response with complete state and events; or
-- write a terminal rejected/lost response explaining why completion could not
-  be reconciled.
+It must write safe diagnostics that connect the failure to the affected
+mailbox record without exposing request payloads, command output, credentials,
+or nested transport errors.
 
 Completed outbox responses acknowledged through the mailbox must be retired by
 the defined lifecycle, or explicitly moved to a durable archive, without
@@ -72,28 +75,90 @@ cursor, event replay, or persistence error.
   evidence.
 - Inbox accumulation makes retry/idempotency and cleanup ambiguous.
 
-## Required fix
+## Source-level stalling mechanism
 
-1. Log the root reconciliation error with request ID, command ID, session ID,
-   remote endpoint, retry count, and failure class; never log credentials.
-2. Persist reconciliation progress and retry safely after `runner-local`
-   restart.
-3. Guarantee a terminal outbox record for every accepted request, including
-   irrecoverable reconciliation failures.
-4. Implement mailbox-aware acknowledgement cleanup/archival only after a
-   terminal record and a matching ACK are durably observed.
-5. Add an integration regression test that:
+The historic generic logs do not identify the precise transport or persistence
+event that caused every past stall. Source review identified a stalling
+mechanism consistent with the observed behavior: the mailbox importer,
+accepted-work reconciliation stages, and terminal-artifact recovery returned
+immediately when one record failed. A temporary remote status-read failure for
+an accepted remote `run` was persisted for the existing bounded recovery path,
+but its returned error stopped the current mailbox cycle before later
+independent records and cleanup work could run. `runner-local` then logged only
+a generic cycle failure.
+
+For a newly accepted `run`, the durable mailbox receipt has no resource ID at
+the time it is written. The diagnostic path therefore also needed a safe way
+to correlate the local intent back to its receipt through the scoped execution
+idempotency binding.
+
+## Correction
+
+1. Continue deterministic processing after an independent inbox marker,
+   accepted-work record, or terminal-artifact recovery record fails. Return a
+   safe aggregate diagnostic after the remaining work has been attempted.
+2. Persist an accepted remote `run` status-failure attempt count while keeping
+   the original bounded deadline and no-replay guarantee across restart.
+3. Emit redacted structured diagnostics with request, job, session, command,
+   mailbox, target profile, bridge endpoint, failure class, and retry count.
+   The underlying error, script, output, credential, private-key path, and
+   response bytes are never logged.
+4. Correlate `run` diagnostics to its receipt through the durable scoped
+   execution-idempotency binding.
+5. Keep the existing ACK lifecycle: only terminal responses with matching ACKs
+   are retired. An irreparably corrupt durable receipt is retained and reported
+   as `stored_response_invalid`; Runner does not fabricate a target outcome or
+   delete unresolved work.
+6. Add an integration regression test that:
 
    - submits two consecutive remote commands through the `slidestud-io`
      mailbox;
    - forces one reconciliation interruption;
    - restarts `runner-local`;
-   - proves each request obtains exactly one terminal outbox result; and
+   - proves the later independent request completes while the interrupted run
+     receives its bounded, immutable `indeterminate` result; and
    - proves acknowledged records are retired or archived without deleting an
      unresolved request.
+
+## Verification completed
+
+- Fix revision:
+  `121eae5289cf874d52d59fafb3aa690cede7c05b` on `dev`.
+- Mac focused tests, full `make test`, serial `go test -race -p 1 ./...`,
+  `make vet`, and whitespace check passed. The focused service regression
+  covers an interrupted accepted remote `run`, a later successful remote run,
+  restart, bounded immutable result, safe diagnostics, no mutation replay,
+  and native ACK retention.
+- The revision was pushed to GitHub `dev`. Both Ubuntu checkouts at
+  `/home/ubuntu/projects/remote-session-runner` fast-forwarded cleanly and
+  matched that exact SHA before live validation.
+- The Mac `runner-local` and `runner-locald` services were reinstalled and
+  reported ready. The local relay reported both `linux-host` and
+  `sandbox-host` routes ready with no pending or uncertain intents.
+- On the configured external `slidestud-io` mailbox, P159 published a new
+  ordinary `0644` marker-last `uname -a` request using the mailbox default
+  `remote/sandbox-host`. It completed as request
+  `req-p159-18da3f189dbc0b28`, command
+  `cmd-6583fa6eae390f4eac02fd652e31879b`; the gate verified its complete
+  remote response, ordered event projection, and matching ACK cleanup.
+- The read-only sandbox P128 gate reported zero active sessions, running
+  commands, unreleased slots, and unfinished jobs both before and after the
+  live mailbox request.
+
+A direct public HTTPS/mTLS probe was not used as Runner mailbox acceptance
+evidence.
+
+Full delivery and live-test evidence: [BUG-003 implementation evidence](../040-implementation-evidence/BUG-003.md).
 
 ## Non-goals
 
 - Do not weaken mTLS, authorization, idempotency, event replay, or the
   marker-last mailbox protocol.
 - Do not solve this by deleting unacknowledged inbox files.
+
+## History
+
+| Date | Change |
+| --- | --- |
+| 2026-09-30 | Bug reported from repeated generic reconciliation-cycle failures and stalled mailbox artifacts. |
+| 2026-10-01 | Isolated-cycle repair, durable diagnostics, local regression gates, Git handoff, and file-only sandbox mailbox acceptance passed; bug closed. |

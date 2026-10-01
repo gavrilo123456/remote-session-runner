@@ -22,7 +22,7 @@ Runner. It is the index for bug records; implementation evidence remains in
 | ID | Title | Status | Severity | Affected area | Affected revision | Next action | Updated | Record |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | BUG-002 | Accepted remote run may remain accepted after an unverified terminal boundary | `CLOSED` | High | Linux lost-result persistence and workspace mailbox reconciliation for `sandbox-host` | Fixed through `519b4d9a9f3d411fb1ae44839e5e034214ba92fc` | Verification complete; do not replay the original Logger request | 2026-09-30 | [BUG-002](002-mailbox-accepted-without-remote-session-allocation.md) |
-| BUG-003 | `runner-local` reconciliation stalls mailbox completion | `NEW` | High | macOS mailbox relay and remote-result reconciliation | Unknown | Diagnose and persist the root reconciliation failure; prove terminal outbox and ACK cleanup across restart | 2026-09-30 | [BUG-003](003-runner-local-reconciliation-stalls-mailbox-outbox.md) |
+| BUG-003 | `runner-local` reconciliation stalls mailbox completion | `CLOSED` | High | macOS mailbox relay and remote-result reconciliation | Fixed through `121eae5289cf874d52d59fafb3aa690cede7c05b` | Verification complete; retain and diagnose any irreparably corrupt durable receipt rather than inventing a target outcome | 2026-10-01 | [BUG-003](003-runner-local-reconciliation-stalls-mailbox-outbox.md) |
 
 ## Sample format
 
