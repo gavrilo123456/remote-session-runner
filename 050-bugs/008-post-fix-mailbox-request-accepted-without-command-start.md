@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner |
 | Affected component/path | Direct workspace mailbox ingress; local relay/projection; remote bridge/dispatch; Linux `runnerd` durable one-off scheduling |
 | Affected revision | Installed `runnerd` and bridge revision at recurrence are unverified. Do not infer them from the documented BUG-007 source or checkout revision. |
-| Fixed revision | B008-P4 source handoff: `ccb32e4a0c35f1fe41e6ef8e16001b8545bd7649`; B008-P6 remains required for resolution. |
-| Verification | B008-P1 through B008-P4 source gates passed, including full regression, build provenance, documentation, and source synchronization. B008-P2's Linux-only host gate passed. Installed-service and fresh end-to-end evidence remain pending. |
+| Fixed revision | B008-P4 source handoff: `ccb32e4a0c35f1fe41e6ef8e16001b8545bd7649`; B008-P4a installer-cache correction: `90fc6eeadc89f9cba929da1ff70e428e9e8d5bc1`; B008-P6 remains required for resolution. |
+| Verification | B008-P1 through B008-P4 source gates passed, including full regression, build provenance, documentation, and source synchronization. B008-P4a's full source suite, focused race check, and both Ubuntu fast-forward handoffs passed. B008-P2's Linux-only host gate passed. Installed-service and fresh end-to-end evidence remain pending. |
 
 ## Reported behavior
 
@@ -505,6 +505,27 @@ GitHub key; fast-forward each test-host checkout with its configured key; and
 verify matching commit IDs before host work. A successful TLS probe remains
 transport evidence only.
 
+### B008-P4a — Installer cache reuse corrective follow-up
+
+**Reason.** P6 preflight showed that normal Linux service updates created a
+disposable private Go module cache, causing repeated dependency retrieval and
+avoidable disk pressure before the installer could reach its controlled
+restart boundary.
+
+**Deliverable.** Reuse the selected `ubuntu` account's normal Go build and
+module caches in both the `runnerd` installer and its queued-bridge refresh.
+Never delete, chmod, or otherwise manage those shared caches. Update the P126
+host gate to tolerate historic orphaned private-cache directories while
+detecting a newly persistent one, and statically forbid either historic
+private-cache pattern in either installer. Update the Linux and bridge
+runbooks.
+
+**Gate.** Run shell syntax validation, focused installer/bridge tests, the
+full hermetic suite, vet/build/smoke, and the focused race check. Commit and
+push from the Mac source checkout, fast-forward both clean Ubuntu checkouts
+with their configured keys, and verify all three `HEAD`s match. This follow-up
+does not replace B008-P6 host installation and native mailbox acceptance.
+
 ### B008-P5 — Historic incident disposition (completed by explicit user authorization)
 
 The user chose to cancel the two pending historical commands instead of
@@ -529,10 +550,10 @@ This is separate from the 103/104 recovery and from the mTLS transport probe.
 
 ## Completion criteria
 
-BUG-008 is resolved only after B008-P1 through B008-P4 source gates pass and
-B008-P6 provides the stated installed-service evidence. The historic B008-P5
-cleanup does not replace the online-recovery regression because it cancelled,
-rather than preserved, the two original queued commands.
+BUG-008 is resolved only after B008-P1 through B008-P4 and B008-P4a source
+gates pass and B008-P6 provides the stated installed-service evidence. The
+historic B008-P5 cleanup does not replace the online-recovery regression
+because it cancelled, rather than preserved, the two original queued commands.
 
 ## Resolution
 
@@ -541,10 +562,12 @@ their stated gates. B008-P3 gives an accepted remote request a narrowly safe,
 fresh active status when a strict read-only target query can prove it; it does
 not fabricate a terminal result or diagnose an aggregate queue blocker.
 B008-P4 adds source-revision attestation for the running service and the
-operator documentation, but it has not installed or exercised that revision.
-The fresh harmless installed-service end-to-end proof remains. Requests 103
-and 104 are terminal cancelled historic evidence; Logger rollout still needs
-an independently accepted fresh request after the repair is installed.
+operator documentation. B008-P4a removes the disposable Go cache from normal
+Linux service and bridge updates, but neither source revision has yet received
+the required fresh installed-service acceptance. The fresh harmless
+end-to-end proof remains. Requests 103 and 104 are terminal cancelled historic
+evidence; Logger rollout still needs an independently accepted fresh request
+after the repair is installed.
 
 ## History
 
@@ -558,3 +581,4 @@ an independently accepted fresh request after the repair is installed.
 | 2026-10-01 | B008-P2 added, pushed, and synchronized the guarded owner-only online retained-capacity command. Focused Mac source gates and Linux zombie-only process-group gates passed on both Ubuntu hosts without a service restart. |
 | 2026-10-01 | B008-P3 added, pushed, and synchronized the identity-checked active remote mailbox projection. Focused and full Mac source gates, vet/build/smoke, and the focused changed-path race gate passed. No host application validation occurred in this phase. |
 | 2026-10-01 | B008-P4 added, pushed, and synchronized strict running-service build-revision attestation, full source regression/race coverage, and the related mailbox/recovery operator documentation. No host service was installed, restarted, or exercised; B008-P6 remains required. |
+| 2026-10-01 | B008-P4a removed the per-invocation Go caches from normal Linux service and queued-bridge updates, added static and host-gate coverage for both historic cache names, updated the runbooks, passed full Mac source verification and a focused race check, and was pushed and synchronized to both Ubuntu checkouts. No P6 service installation or mailbox acceptance occurred in this follow-up. |
