@@ -227,6 +227,7 @@ func (i *Importer) importWithRecorder(ctx context.Context, handler durableHandle
 		return nil, fmt.Errorf("%w: read inbox: %v", ErrMailboxPath, err)
 	}
 	results := make([]Result, 0)
+	var importErrors error
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return results, err
@@ -239,13 +240,19 @@ func (i *Importer) importWithRecorder(ctx context.Context, handler durableHandle
 		}
 		result, importErr := i.importMarker(ctx, name, handler)
 		if importErr != nil {
-			return results, importErr
+			if ctx.Err() != nil {
+				return results, ctx.Err()
+			}
+			// A handler may have retained a valid marker for retry. Do not let
+			// that one record prevent a later, independent ready pair from being
+			// inspected in this cycle.
+			importErrors = errors.Join(importErrors, importErr)
 		}
 		if result.Status != "" {
 			results = append(results, result)
 		}
 	}
-	return results, nil
+	return results, importErrors
 }
 
 func (i *Importer) importMarker(ctx context.Context, markerName string, handler durableHandler) (Result, error) {

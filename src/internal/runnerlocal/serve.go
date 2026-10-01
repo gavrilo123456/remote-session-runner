@@ -207,6 +207,7 @@ type Service struct {
 	api                 *localapi.Server
 	localDriver         *dispatcher.LocalDriver
 	remoteDriver        *dispatcher.RemoteDriver
+	remoteEndpoints     map[string]string
 	mailboxes           []mailboxRuntime
 	mailboxDefinitions  []store.MailboxConfiguration
 	legacyMailboxSet    []store.MailboxConfiguration
@@ -320,6 +321,7 @@ func New(configPath string) (*Service, error) {
 	service := &Service{
 		database: authority, dbCloser: db, api: api, localDriver: localDriver,
 		remoteDriver: remoteDriver, routerHealth: routerHealth,
+		remoteEndpoints:    queuedBridgeEndpoints(loaded),
 		mailboxDefinitions: configuredMailboxDefinitions(mailboxDefinitions),
 		legacyMailboxSet:   legacyDefaultMailboxBaseline(),
 		mailboxSettings:    settings, mailboxConfig: mailboxDefinitions,
@@ -714,7 +716,7 @@ func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, st
 			release()
 			if err != nil {
 				s.recordOperationalError(err, false)
-				fmt.Fprintln(stderr, "runner-local: accepted remote work reconciliation cycle failed")
+				s.logRemoteReconciliationError(stderr, err)
 			}
 		}
 		if reconciledRemoteWork {
@@ -741,11 +743,11 @@ func (s *Service) runMailboxCycles(ctx context.Context, stderr io.Writer) {
 		}
 		if _, err := runtime.processor.Import(ctx); err != nil && ctx.Err() == nil {
 			s.recordOperationalError(err, false)
-			fmt.Fprintf(stderr, "runner-local: mailbox %s import cycle failed\n", runtime.id)
+			s.logMailboxReconciliationError(stderr, runtime.id, "import", err)
 		}
 		if err := runtime.processor.Reconcile(ctx); err != nil && ctx.Err() == nil {
 			s.recordOperationalError(err, false)
-			fmt.Fprintf(stderr, "runner-local: mailbox %s reconciliation cycle failed\n", runtime.id)
+			s.logMailboxReconciliationError(stderr, runtime.id, "reconcile", err)
 		}
 		if _, err := runtime.ackImporter.Import(ctx); err != nil && ctx.Err() == nil {
 			s.recordOperationalError(err, false)
@@ -770,7 +772,7 @@ func (s *Service) reconcileMailboxRuntimes(ctx context.Context, stderr io.Writer
 		}
 		if err := runtime.processor.Reconcile(ctx); err != nil && ctx.Err() == nil {
 			s.recordOperationalError(err, false)
-			fmt.Fprintf(stderr, "runner-local: mailbox %s %s reconciliation cycle failed\n", runtime.id, stage)
+			s.logMailboxReconciliationError(stderr, runtime.id, stage, err)
 		}
 	}
 }
@@ -795,6 +797,86 @@ func (s *Service) recordOperationalError(err error, cleanup bool) {
 	if cleanup && s.metricsRecorder != nil {
 		s.metricsRecorder.RecordCleanupFailure()
 	}
+}
+
+// logRemoteReconciliationError writes only fields constructed from durable
+// identifiers and validated configuration. Do not render err: nested transport
+// errors can carry arbitrary remote output or credential-bearing text.
+func (s *Service) logRemoteReconciliationError(stderr io.Writer, err error) {
+	issues := dispatcher.RemoteReconciliationIssues(err)
+	if len(issues) == 0 {
+		fmt.Fprintln(stderr, "runner-local: remote_reconciliation mailbox=not_applicable request_id=not_applicable failure_class=remote_reconciliation_failed")
+		return
+	}
+	for _, issue := range issues {
+		records := s.mailboxRecordsForRemoteIssue(issue)
+		if len(records) == 0 {
+			s.writeRemoteReconciliationIssue(stderr, issue, "not_applicable", "not_applicable")
+			continue
+		}
+		for _, record := range records {
+			s.writeRemoteReconciliationIssue(stderr, issue, record.MailboxID, record.RequestID)
+		}
+	}
+}
+
+func (s *Service) writeRemoteReconciliationIssue(stderr io.Writer, issue dispatcher.RemoteReconciliationIssue, mailboxID, requestID string) {
+	fmt.Fprintf(stderr, "runner-local: remote_reconciliation mailbox=%s request_id=%s operation=%s intent_id=%s job_id=%s session_id=%s command_id=%s target_profile=%s endpoint=%s failure_class=%s retry_count=%d\n",
+		mailboxID, requestID, issue.Operation, issue.IntentID, issue.JobID, issue.SessionID, issue.CommandID,
+		issue.TargetProfile, s.remoteEndpoint(issue.TargetProfile), issue.FailureClass, issue.RetryCount)
+}
+
+// mailboxRecordsForRemoteIssue correlates a queued remote intent with its
+// durable file-ingress receipt. It deliberately queries only stable intent
+// identity and returns no payload, script, response, or idempotency material.
+// Direct API work has no mailbox receipt and is logged as not_applicable.
+func (s *Service) mailboxRecordsForRemoteIssue(issue dispatcher.RemoteReconciliationIssue) []store.MailboxExchangeRecord {
+	if s == nil || s.database == nil {
+		return nil
+	}
+	controller, err := domain.NewControllerIdentity(domain.ControllerType(issue.ControllerType), domain.ControllerID(issue.ControllerID))
+	if err != nil {
+		return nil
+	}
+	intentID, err := domain.NewIntentID(issue.IntentID)
+	if err != nil {
+		return nil
+	}
+	records, err := s.database.ListMailboxExchangesForIntent(context.Background(), controller, issue.Operation, intentID)
+	if err != nil {
+		return nil
+	}
+	return records
+}
+
+// logMailboxReconciliationError follows the same redaction rule for the
+// mailbox projector and artifact-recovery path.
+func (s *Service) logMailboxReconciliationError(stderr io.Writer, mailboxID, fallbackStage string, err error) {
+	issues := mailbox.ReconciliationIssues(err)
+	if len(issues) == 0 {
+		fmt.Fprintf(stderr, "runner-local: mailbox_reconciliation mailbox=%s stage=%s failure_class=reconciliation_failed\n", mailboxID, fallbackStage)
+		return
+	}
+	for _, issue := range issues {
+		stage := issue.Stage
+		if stage == "" {
+			stage = fallbackStage
+		}
+		box := issue.MailboxID
+		if box == "" {
+			box = mailboxID
+		}
+		fmt.Fprintf(stderr, "runner-local: mailbox_reconciliation mailbox=%s stage=%s operation=%s request_id=%s job_id=%s session_id=%s command_id=%s target_profile=%s endpoint=%s failure_class=%s retry_count=0\n",
+			box, stage, issue.Operation, issue.RequestID, issue.JobID, issue.SessionID,
+			issue.CommandID, issue.TargetProfile, s.remoteEndpoint(issue.TargetProfile), issue.FailureClass)
+	}
+}
+
+func (s *Service) remoteEndpoint(profile string) string {
+	if s != nil && s.remoteEndpoints != nil && s.remoteEndpoints[profile] != "" {
+		return s.remoteEndpoints[profile]
+	}
+	return "unconfigured"
 }
 
 func (s *Service) runRemoteHealthProbe(ctx context.Context) {

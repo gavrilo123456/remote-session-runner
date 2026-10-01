@@ -182,7 +182,7 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 		_ = db.Close()
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28)`); err != nil {
+	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28, 29)`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}

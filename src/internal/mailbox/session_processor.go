@@ -233,29 +233,38 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	var result error
 	if err := p.reconcileTerminalArtifacts(ctx); err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		result = errors.Join(result, mailboxStageError(p.mailboxID, "terminal_artifact", err))
 	}
 	results, err := p.importer.importWithRecorder(ctx, p.process)
 	if err != nil {
-		return results, err
+		if ctx.Err() != nil {
+			return results, ctx.Err()
+		}
+		result = errors.Join(result, mailboxStageError(p.mailboxID, "import", err))
 	}
-	if err := p.reconcileAcceptedCreates(ctx); err != nil {
-		return results, err
+	for _, stage := range []struct {
+		name string
+		run  func(context.Context) error
+	}{
+		{name: "accepted_create", run: p.reconcileAcceptedCreates},
+		{name: "accepted_submit", run: p.reconcileAcceptedSubmits},
+		{name: "accepted_cancel", run: p.reconcileAcceptedCancels},
+		{name: "accepted_close", run: p.reconcileAcceptedCloses},
+		{name: "accepted_run", run: p.reconcileAcceptedRuns},
+	} {
+		if err := stage.run(ctx); err != nil {
+			if ctx.Err() != nil {
+				return results, ctx.Err()
+			}
+			result = errors.Join(result, mailboxStageError(p.mailboxID, stage.name, err))
+		}
 	}
-	if err := p.reconcileAcceptedSubmits(ctx); err != nil {
-		return results, err
-	}
-	if err := p.reconcileAcceptedCancels(ctx); err != nil {
-		return results, err
-	}
-	if err := p.reconcileAcceptedCloses(ctx); err != nil {
-		return results, err
-	}
-	if err := p.reconcileAcceptedRuns(ctx); err != nil {
-		return results, err
-	}
-	return results, nil
+	return results, result
 }
 
 // Reconcile advances accepted mutation responses after local intents or remote
@@ -269,22 +278,26 @@ func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if err := p.reconcileTerminalArtifacts(ctx); err != nil {
-		return err
+	var result error
+	for _, stage := range []struct {
+		name string
+		run  func(context.Context) error
+	}{
+		{name: "terminal_artifact", run: p.reconcileTerminalArtifacts},
+		{name: "accepted_create", run: p.reconcileAcceptedCreates},
+		{name: "accepted_submit", run: p.reconcileAcceptedSubmits},
+		{name: "accepted_cancel", run: p.reconcileAcceptedCancels},
+		{name: "accepted_close", run: p.reconcileAcceptedCloses},
+		{name: "accepted_run", run: p.reconcileAcceptedRuns},
+	} {
+		if err := stage.run(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			result = errors.Join(result, mailboxStageError(p.mailboxID, stage.name, err))
+		}
 	}
-	if err := p.reconcileAcceptedCreates(ctx); err != nil {
-		return err
-	}
-	if err := p.reconcileAcceptedSubmits(ctx); err != nil {
-		return err
-	}
-	if err := p.reconcileAcceptedCancels(ctx); err != nil {
-		return err
-	}
-	if err := p.reconcileAcceptedCloses(ctx); err != nil {
-		return err
-	}
-	return p.reconcileAcceptedRuns(ctx)
+	return result
 }
 
 func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, error) {
@@ -888,42 +901,45 @@ func (p *SessionProcessor) reconcileTerminalArtifacts(ctx context.Context) error
 	if err != nil {
 		return err
 	}
+	var result error
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(result, err)
 		}
-		eligible, err := p.terminalResponseEligibleForRecovery(ctx, record)
-		if err != nil {
-			return fmt.Errorf("validate terminal mailbox response %s: %w", record.RequestID, err)
+		if err := p.reconcileTerminalArtifact(ctx, record); err != nil {
+			result = errors.Join(result, mailboxReconciliationIssue(record, "terminal_artifact", err))
 		}
-		if !eligible {
-			// This recovery pass only rebuilds absent derived files. A legacy
-			// terminal response that was already published before P149 remains
-			// an immutable delivered artifact; do not retroactively remove or
-			// rewrite it here, especially because event files can be shared.
-			continue
+	}
+	return result
+}
+
+func (p *SessionProcessor) reconcileTerminalArtifact(ctx context.Context, record store.MailboxExchangeRecord) error {
+	eligible, err := p.terminalResponseEligibleForRecovery(ctx, record)
+	if err != nil {
+		return fmt.Errorf("validate terminal mailbox response %s: %w", record.RequestID, err)
+	}
+	if !eligible {
+		// This recovery pass only rebuilds absent derived files. A legacy
+		// terminal response that was already published before P149 remains an
+		// immutable delivered artifact; do not retroactively remove or rewrite it.
+		return nil
+	}
+	current, err := p.terminalArtifactsCurrent(ctx, record)
+	if err != nil {
+		// Cleanup owns a concurrent expiry claim, so it is not a failed cycle.
+		if errors.Is(err, store.ErrMailboxResponseExpired) {
+			return nil
 		}
-		current, err := p.terminalArtifactsCurrent(ctx, record)
-		if err != nil {
-			// A cleanup claim can win after selection but before the frozen event
-			// prefix is inspected. Cleanup owns that race, so do not turn a normal
-			// expiry into a failed mailbox cycle.
-			if errors.Is(err, store.ErrMailboxResponseExpired) {
-				continue
-			}
-			return fmt.Errorf("inspect terminal mailbox response %s: %w", record.RequestID, err)
+		return fmt.Errorf("inspect terminal mailbox response %s: %w", record.RequestID, err)
+	}
+	if current {
+		return nil
+	}
+	if err := p.publishStoredTerminalResponse(ctx, record); err != nil {
+		if errors.Is(err, store.ErrMailboxResponseExpired) {
+			return nil
 		}
-		if current {
-			continue
-		}
-		if err := p.publishStoredTerminalResponse(ctx, record); err != nil {
-			// A cleanup claim can win between the selector and the projection.
-			// It is safe and required to leave that response absent.
-			if errors.Is(err, store.ErrMailboxResponseExpired) {
-				continue
-			}
-			return fmt.Errorf("rebuild terminal mailbox response %s: %w", record.RequestID, err)
-		}
+		return fmt.Errorf("rebuild terminal mailbox response %s: %w", record.RequestID, err)
 	}
 	return nil
 }
@@ -1094,77 +1110,79 @@ func (p *SessionProcessor) reconcileAcceptedCreates(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var result error
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(result, err)
 		}
-		if len(record.ResponseBytes) == 0 {
-			continue
-		}
-		var previous sessionMailboxResponse
-		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "create_session" || previous.SessionID == "" {
-			return fmt.Errorf("%w: accepted create response is corrupt", ErrOutboxResponse)
-		}
-		snapshot, err := p.operations.GetSession(ctx, previous.SessionID)
-		if err != nil {
-			var operationErr *SessionOperationError
-			if errors.As(err, &operationErr) && operationErr.Retryable {
-				continue
-			}
-			// A missing local intent here does not prove that a queued remote
-			// create was never delivered. Keep the receipt unresolved.
-			if errors.As(err, &operationErr) && operationErr.Code == "resource_not_found" {
-				continue
-			}
-			return err
-		}
-		if snapshot.SessionID == "" {
-			snapshot.SessionID = previous.SessionID
-		}
-		if string(snapshot.SessionID) != previous.SessionID {
-			return fmt.Errorf("%w: reconciliation returned a different session ID", ErrSessionProcessorConfiguration)
-		}
-		if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
-			response := sessionMailboxResponse{
-				RequestID: record.RequestID, Operation: record.Operation,
-				RequestState: store.MailboxExchangeRejected, SessionID: snapshot.SessionID,
-				DeliveryState: snapshot.DeliveryState,
-				Error:         &mailboxResponseError{Code: "resource_not_found", Message: "session creation was proven not delivered"},
-			}
-			if _, err := p.publish(ctx, record, response, nil); err != nil {
-				return err
-			}
-			continue
-		}
-		if snapshot.SessionState != "" && snapshot.SessionState != string(domain.SessionStateRequested) && snapshot.SessionState != string(domain.SessionStateCreating) {
-			response := responseFromSnapshot(record.RequestID, record.Operation, store.MailboxExchangeComplete, snapshot)
-			if _, err := p.publish(ctx, record, response, nil); err != nil {
-				return err
-			}
-			continue
-		}
-		if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.DeliveryState); err != nil {
-			return err
-		} else if published {
-			continue
-		}
-		if snapshot.DeliveryState != "" && snapshot.DeliveryState != previous.DeliveryState {
-			response := sessionMailboxResponse{
-				RequestID: record.RequestID, Operation: record.Operation,
-				RequestState: store.MailboxExchangeAccepted, SessionID: snapshot.SessionID,
-				DeliveryState: snapshot.DeliveryState,
-				ObservedAt:    mailboxTime(snapshot.ObservedAt),
-			}
-			if _, err := p.publish(ctx, record, response, nil); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := p.projector.Publish(ctx, record.RequestID); err != nil {
-			return err
+		if err := p.reconcileAcceptedCreate(ctx, record); err != nil {
+			result = errors.Join(result, mailboxReconciliationIssue(record, "accepted_create", err))
 		}
 	}
-	return nil
+	return result
+}
+
+// reconcileAcceptedCreate advances one accepted create receipt. A malformed
+// or temporarily unavailable record remains available for a later cycle
+// without blocking an independent create request in the same mailbox.
+func (p *SessionProcessor) reconcileAcceptedCreate(ctx context.Context, record store.MailboxExchangeRecord) error {
+	if len(record.ResponseBytes) == 0 {
+		return nil
+	}
+	var previous sessionMailboxResponse
+	if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "create_session" || previous.SessionID == "" {
+		return fmt.Errorf("%w: accepted create response is corrupt", ErrOutboxResponse)
+	}
+	snapshot, err := p.operations.GetSession(ctx, previous.SessionID)
+	if err != nil {
+		var operationErr *SessionOperationError
+		if errors.As(err, &operationErr) && operationErr.Retryable {
+			return nil
+		}
+		// A missing local intent here does not prove that a queued remote
+		// create was never delivered. Keep the receipt unresolved.
+		if errors.As(err, &operationErr) && operationErr.Code == "resource_not_found" {
+			return nil
+		}
+		return err
+	}
+	if snapshot.SessionID == "" {
+		snapshot.SessionID = previous.SessionID
+	}
+	if string(snapshot.SessionID) != previous.SessionID {
+		return fmt.Errorf("%w: reconciliation returned a different session ID", ErrSessionProcessorConfiguration)
+	}
+	if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
+		response := sessionMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation,
+			RequestState: store.MailboxExchangeRejected, SessionID: snapshot.SessionID,
+			DeliveryState: snapshot.DeliveryState,
+			Error:         &mailboxResponseError{Code: "resource_not_found", Message: "session creation was proven not delivered"},
+		}
+		_, err := p.publish(ctx, record, response, nil)
+		return err
+	}
+	if snapshot.SessionState != "" && snapshot.SessionState != string(domain.SessionStateRequested) && snapshot.SessionState != string(domain.SessionStateCreating) {
+		response := responseFromSnapshot(record.RequestID, record.Operation, store.MailboxExchangeComplete, snapshot)
+		_, err := p.publish(ctx, record, response, nil)
+		return err
+	}
+	if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.DeliveryState); err != nil {
+		return err
+	} else if published {
+		return nil
+	}
+	if snapshot.DeliveryState != "" && snapshot.DeliveryState != previous.DeliveryState {
+		response := sessionMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation,
+			RequestState: store.MailboxExchangeAccepted, SessionID: snapshot.SessionID,
+			DeliveryState: snapshot.DeliveryState,
+			ObservedAt:    mailboxTime(snapshot.ObservedAt),
+		}
+		_, err := p.publish(ctx, record, response, nil)
+		return err
+	}
+	return p.projector.Publish(ctx, record.RequestID)
 }
 
 func (p *SessionProcessor) reconcileAcceptedSubmits(ctx context.Context) error {
@@ -1172,78 +1190,77 @@ func (p *SessionProcessor) reconcileAcceptedSubmits(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var result error
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(result, err)
 		}
-		if len(record.ResponseBytes) == 0 {
-			continue
-		}
-		var previous commandMailboxResponse
-		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "submit_command" || previous.CommandID == "" || previous.SessionID == "" {
-			return fmt.Errorf("%w: accepted submit response is corrupt", ErrOutboxResponse)
-		}
-		snapshot, err := p.operations.GetCommandSnapshot(ctx, previous.CommandID)
-		if err != nil {
-			var operationErr *SessionOperationError
-			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
-				continue
-			}
-			return err
-		}
-		commandID, err := domain.NewCommandID(previous.CommandID)
-		if err != nil {
-			return fmt.Errorf("%w: accepted submit command ID: %v", ErrOutboxResponse, err)
-		}
-		if err := ValidateCommandSnapshot(snapshot, commandID); err != nil {
-			return fmt.Errorf("%w: %v", ErrSessionProcessorConfiguration, err)
-		}
-		if string(snapshot.SessionID) != previous.SessionID {
-			return fmt.Errorf("%w: submit reconciliation returned a different session ID", ErrSessionProcessorConfiguration)
-		}
-		if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
-			response := commandMailboxResponse{
-				RequestID: record.RequestID, Operation: record.Operation, RequestState: store.MailboxExchangeRejected,
-				CommandID: previous.CommandID, SessionID: previous.SessionID, DeliveryState: snapshot.DeliveryState,
-				Error: &mailboxResponseError{Code: "resource_not_found", Message: "command submission was proven not delivered"},
-			}
-			if _, err := p.publishCommandResponse(ctx, record, response, nil); err != nil {
-				return err
-			}
-			continue
-		}
-		if snapshot.State.IsTerminal() {
-			response := commandResponseFromSnapshot(record.RequestID, record.Operation, snapshot)
-			var cursor *int64
-			value := snapshot.AvailableEventSequence
-			cursor = &value
-			if _, err := p.publishCommandResponse(ctx, record, response, cursor); err != nil {
-				return err
-			}
-			continue
-		}
-		if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.DeliveryState); err != nil {
-			return err
-		} else if published {
-			continue
-		}
-		if snapshot.DeliveryState != previous.DeliveryState {
-			response := commandMailboxResponse{
-				RequestID: record.RequestID, Operation: record.Operation, RequestState: store.MailboxExchangeAccepted,
-				CommandID: previous.CommandID, SessionID: previous.SessionID,
-				DeliveryState: snapshot.DeliveryState,
-				ObservedAt:    mailboxTime(snapshot.ObservedAt),
-			}
-			if _, err := p.publishCommandResponse(ctx, record, response, nil); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := p.projector.Publish(ctx, record.RequestID); err != nil {
-			return err
+		if err := p.reconcileAcceptedSubmit(ctx, record); err != nil {
+			result = errors.Join(result, mailboxReconciliationIssue(record, "accepted_submit", err))
 		}
 	}
-	return nil
+	return result
+}
+
+// reconcileAcceptedSubmit advances one accepted submit receipt independently
+// so a bad response image cannot starve a later command submission.
+func (p *SessionProcessor) reconcileAcceptedSubmit(ctx context.Context, record store.MailboxExchangeRecord) error {
+	if len(record.ResponseBytes) == 0 {
+		return nil
+	}
+	var previous commandMailboxResponse
+	if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "submit_command" || previous.CommandID == "" || previous.SessionID == "" {
+		return fmt.Errorf("%w: accepted submit response is corrupt", ErrOutboxResponse)
+	}
+	snapshot, err := p.operations.GetCommandSnapshot(ctx, previous.CommandID)
+	if err != nil {
+		var operationErr *SessionOperationError
+		if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
+			return nil
+		}
+		return err
+	}
+	commandID, err := domain.NewCommandID(previous.CommandID)
+	if err != nil {
+		return fmt.Errorf("%w: accepted submit command ID: %v", ErrOutboxResponse, err)
+	}
+	if err := ValidateCommandSnapshot(snapshot, commandID); err != nil {
+		return fmt.Errorf("%w: %v", ErrSessionProcessorConfiguration, err)
+	}
+	if string(snapshot.SessionID) != previous.SessionID {
+		return fmt.Errorf("%w: submit reconciliation returned a different session ID", ErrSessionProcessorConfiguration)
+	}
+	if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
+		response := commandMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation, RequestState: store.MailboxExchangeRejected,
+			CommandID: previous.CommandID, SessionID: previous.SessionID, DeliveryState: snapshot.DeliveryState,
+			Error: &mailboxResponseError{Code: "resource_not_found", Message: "command submission was proven not delivered"},
+		}
+		_, err := p.publishCommandResponse(ctx, record, response, nil)
+		return err
+	}
+	if snapshot.State.IsTerminal() {
+		response := commandResponseFromSnapshot(record.RequestID, record.Operation, snapshot)
+		value := snapshot.AvailableEventSequence
+		_, err := p.publishCommandResponse(ctx, record, response, &value)
+		return err
+	}
+	if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.DeliveryState); err != nil {
+		return err
+	} else if published {
+		return nil
+	}
+	if snapshot.DeliveryState != previous.DeliveryState {
+		response := commandMailboxResponse{
+			RequestID: record.RequestID, Operation: record.Operation, RequestState: store.MailboxExchangeAccepted,
+			CommandID: previous.CommandID, SessionID: previous.SessionID,
+			DeliveryState: snapshot.DeliveryState,
+			ObservedAt:    mailboxTime(snapshot.ObservedAt),
+		}
+		_, err := p.publishCommandResponse(ctx, record, response, nil)
+		return err
+	}
+	return p.projector.Publish(ctx, record.RequestID)
 }
 
 func (p *SessionProcessor) reconcileAcceptedCancels(ctx context.Context) error {
@@ -1251,75 +1268,81 @@ func (p *SessionProcessor) reconcileAcceptedCancels(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var result error
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(result, err)
 		}
-		if len(record.ResponseBytes) == 0 {
-			continue
-		}
-		var previous commandMailboxResponse
-		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "cancel_command" || previous.CommandID == "" || previous.SessionID == "" {
-			return fmt.Errorf("%w: accepted cancel response is corrupt", ErrOutboxResponse)
-		}
-		snapshot, err := p.operations.GetCancelCommandSnapshot(ctx, previous.CommandID, record.ExecutionIdempotencyKey)
-		if err != nil {
-			var operationErr *SessionOperationError
-			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
-				continue
-			}
-			return err
-		}
-		if snapshot.CommandID != previous.CommandID || snapshot.SessionID != previous.SessionID {
-			return fmt.Errorf("%w: cancel reconciliation returned a different resource", ErrSessionProcessorConfiguration)
-		}
-		if snapshot.CommandState != "" && !domain.CommandState(snapshot.CommandState).Valid() {
-			return fmt.Errorf("%w: cancel reconciliation returned invalid command state %q", ErrSessionProcessorConfiguration, snapshot.CommandState)
-		}
-		if !validDeliveryState(snapshot.CancelDeliveryState) || (snapshot.CommandDeliveryState != "" && !validDeliveryState(snapshot.CommandDeliveryState)) {
-			return fmt.Errorf("%w: cancel reconciliation returned invalid delivery state", ErrSessionProcessorConfiguration)
-		}
-		if !domain.CommandState(snapshot.CommandState).IsTerminal() && snapshot.CommandDeliveryState != string(store.LocalIntentNotDelivered) {
-			if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.CancelDeliveryState); err != nil {
-				return err
-			} else if published {
-				continue
-			}
-		}
-		response := commandMailboxResponse{
-			RequestID: record.RequestID, Operation: record.Operation,
-			CommandID: previous.CommandID, SessionID: previous.SessionID,
-			DeliveryState: snapshot.CancelDeliveryState,
-		}
-		switch {
-		case domain.CommandState(snapshot.CommandState).IsTerminal():
-			response.RequestState = store.MailboxExchangeComplete
-		case snapshot.CommandDeliveryState == string(store.LocalIntentNotDelivered):
-			// The dispatcher atomically settled the original submit before it
-			// could reach the target, so no authoritative command state exists.
-			response.RequestState = store.MailboxExchangeComplete
-			response.DeliveryState = string(store.LocalIntentNotDelivered)
-		case snapshot.CancelDeliveryState == string(store.LocalIntentAccepted) || snapshot.CancelDeliveryState == string(store.LocalIntentReconciled):
-			// Target acceptance confirms the cancellation request, not its eventual
-			// effect on a command that may still be running.
-			response.RequestState = store.MailboxExchangeComplete
-		case snapshot.CancelDeliveryState == string(store.LocalIntentNotDelivered):
-			response.RequestState = store.MailboxExchangeRejected
-			response.Error = &mailboxResponseError{Code: "runtime_unavailable", Message: "cancellation request was proven not delivered"}
-		default:
-			response.RequestState = store.MailboxExchangeAccepted
-		}
-		if response.RequestState == store.MailboxExchangeAccepted && response.DeliveryState == previous.DeliveryState {
-			if err := p.projector.Publish(ctx, record.RequestID); err != nil {
-				return err
-			}
-			continue
-		}
-		if _, err := p.publishCommandResponse(ctx, record, response, nil); err != nil {
-			return err
+		if err := p.reconcileAcceptedCancel(ctx, record); err != nil {
+			result = errors.Join(result, mailboxReconciliationIssue(record, "accepted_cancel", err))
 		}
 	}
-	return nil
+	return result
+}
+
+// reconcileAcceptedCancel advances one accepted cancellation receipt
+// independently so one corrupted or temporarily unreadable record does not
+// prevent a later cancellation from reaching its durable mailbox response.
+func (p *SessionProcessor) reconcileAcceptedCancel(ctx context.Context, record store.MailboxExchangeRecord) error {
+	if len(record.ResponseBytes) == 0 {
+		return nil
+	}
+	var previous commandMailboxResponse
+	if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "cancel_command" || previous.CommandID == "" || previous.SessionID == "" {
+		return fmt.Errorf("%w: accepted cancel response is corrupt", ErrOutboxResponse)
+	}
+	snapshot, err := p.operations.GetCancelCommandSnapshot(ctx, previous.CommandID, record.ExecutionIdempotencyKey)
+	if err != nil {
+		var operationErr *SessionOperationError
+		if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
+			return nil
+		}
+		return err
+	}
+	if snapshot.CommandID != previous.CommandID || snapshot.SessionID != previous.SessionID {
+		return fmt.Errorf("%w: cancel reconciliation returned a different resource", ErrSessionProcessorConfiguration)
+	}
+	if snapshot.CommandState != "" && !domain.CommandState(snapshot.CommandState).Valid() {
+		return fmt.Errorf("%w: cancel reconciliation returned invalid command state %q", ErrSessionProcessorConfiguration, snapshot.CommandState)
+	}
+	if !validDeliveryState(snapshot.CancelDeliveryState) || (snapshot.CommandDeliveryState != "" && !validDeliveryState(snapshot.CommandDeliveryState)) {
+		return fmt.Errorf("%w: cancel reconciliation returned invalid delivery state", ErrSessionProcessorConfiguration)
+	}
+	if !domain.CommandState(snapshot.CommandState).IsTerminal() && snapshot.CommandDeliveryState != string(store.LocalIntentNotDelivered) {
+		if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.CancelDeliveryState); err != nil {
+			return err
+		} else if published {
+			return nil
+		}
+	}
+	response := commandMailboxResponse{
+		RequestID: record.RequestID, Operation: record.Operation,
+		CommandID: previous.CommandID, SessionID: previous.SessionID,
+		DeliveryState: snapshot.CancelDeliveryState,
+	}
+	switch {
+	case domain.CommandState(snapshot.CommandState).IsTerminal():
+		response.RequestState = store.MailboxExchangeComplete
+	case snapshot.CommandDeliveryState == string(store.LocalIntentNotDelivered):
+		// The dispatcher atomically settled the original submit before it
+		// could reach the target, so no authoritative command state exists.
+		response.RequestState = store.MailboxExchangeComplete
+		response.DeliveryState = string(store.LocalIntentNotDelivered)
+	case snapshot.CancelDeliveryState == string(store.LocalIntentAccepted) || snapshot.CancelDeliveryState == string(store.LocalIntentReconciled):
+		// Target acceptance confirms the cancellation request, not its eventual
+		// effect on a command that may still be running.
+		response.RequestState = store.MailboxExchangeComplete
+	case snapshot.CancelDeliveryState == string(store.LocalIntentNotDelivered):
+		response.RequestState = store.MailboxExchangeRejected
+		response.Error = &mailboxResponseError{Code: "runtime_unavailable", Message: "cancellation request was proven not delivered"}
+	default:
+		response.RequestState = store.MailboxExchangeAccepted
+	}
+	if response.RequestState == store.MailboxExchangeAccepted && response.DeliveryState == previous.DeliveryState {
+		return p.projector.Publish(ctx, record.RequestID)
+	}
+	_, err = p.publishCommandResponse(ctx, record, response, nil)
+	return err
 }
 
 func (p *SessionProcessor) reconcileAcceptedCloses(ctx context.Context) error {
@@ -1327,77 +1350,83 @@ func (p *SessionProcessor) reconcileAcceptedCloses(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var result error
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(result, err)
 		}
-		if len(record.ResponseBytes) == 0 {
-			continue
-		}
-		var previous sessionMailboxResponse
-		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "close_session" || previous.SessionID == "" {
-			return fmt.Errorf("%w: accepted close response is corrupt", ErrOutboxResponse)
-		}
-		snapshot, err := p.operations.GetCloseSessionSnapshot(ctx, previous.SessionID, record.ExecutionIdempotencyKey)
-		if err != nil {
-			var operationErr *SessionOperationError
-			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
-				continue
-			}
-			return err
-		}
-		if snapshot.SessionID != previous.SessionID || !validDeliveryState(snapshot.CloseDeliveryState) ||
-			(snapshot.SessionDeliveryState != "" && !validDeliveryState(snapshot.SessionDeliveryState)) {
-			return fmt.Errorf("%w: close reconciliation returned invalid identity or delivery state", ErrSessionProcessorConfiguration)
-		}
-		if snapshot.SessionState != "" && !domain.SessionState(snapshot.SessionState).Valid() {
-			return fmt.Errorf("%w: close reconciliation returned invalid session state %q", ErrSessionProcessorConfiguration, snapshot.SessionState)
-		}
-		if !domain.SessionState(snapshot.SessionState).IsTerminal() && !(snapshot.SessionState == "" && snapshot.SessionDeliveryState == string(store.LocalIntentNotDelivered)) {
-			if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.CloseDeliveryState); err != nil {
-				return err
-			} else if published {
-				continue
-			}
-		}
-		response := sessionMailboxResponse{
-			RequestID: record.RequestID, Operation: record.Operation,
-			SessionID: previous.SessionID, DeliveryState: snapshot.CloseDeliveryState,
-		}
-		switch {
-		case domain.SessionState(snapshot.SessionState).IsTerminal():
-			response.RequestState = store.MailboxExchangeComplete
-			response.SessionState = snapshot.SessionState
-			if snapshot.SessionState == string(domain.SessionStateLost) {
-				response.TeardownOutcome = "lost"
-			} else {
-				response.TeardownOutcome = "closed"
-			}
-		case snapshot.SessionState == "" && snapshot.SessionDeliveryState == string(store.LocalIntentNotDelivered):
-			// The create intent was proven never delivered; closure is a local
-			// no-op and must not invent a target session state.
-			response.RequestState = store.MailboxExchangeComplete
-			response.DeliveryState = string(store.LocalIntentNotDelivered)
-			response.TeardownOutcome = "not_created"
-		case snapshot.CloseDeliveryState == string(store.LocalIntentAccepted) || snapshot.CloseDeliveryState == string(store.LocalIntentReconciled):
-			response.RequestState = store.MailboxExchangeAccepted
-		case snapshot.CloseDeliveryState == string(store.LocalIntentNotDelivered):
-			response.RequestState = store.MailboxExchangeRejected
-			response.Error = &mailboxResponseError{Code: "runtime_unavailable", Message: "close request was proven not delivered"}
-		default:
-			response.RequestState = store.MailboxExchangeAccepted
-		}
-		if response.RequestState == store.MailboxExchangeAccepted && response.DeliveryState == previous.DeliveryState {
-			if err := p.projector.Publish(ctx, record.RequestID); err != nil {
-				return err
-			}
-			continue
-		}
-		if _, err := p.publish(ctx, record, response, nil); err != nil {
-			return err
+		if err := p.reconcileAcceptedClose(ctx, record); err != nil {
+			result = errors.Join(result, mailboxReconciliationIssue(record, "accepted_close", err))
 		}
 	}
-	return nil
+	return result
+}
+
+// reconcileAcceptedClose advances one accepted close receipt independently so
+// a malformed or temporarily unavailable record cannot starve a later close
+// request in the same mailbox.
+func (p *SessionProcessor) reconcileAcceptedClose(ctx context.Context, record store.MailboxExchangeRecord) error {
+	if len(record.ResponseBytes) == 0 {
+		return nil
+	}
+	var previous sessionMailboxResponse
+	if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "close_session" || previous.SessionID == "" {
+		return fmt.Errorf("%w: accepted close response is corrupt", ErrOutboxResponse)
+	}
+	snapshot, err := p.operations.GetCloseSessionSnapshot(ctx, previous.SessionID, record.ExecutionIdempotencyKey)
+	if err != nil {
+		var operationErr *SessionOperationError
+		if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
+			return nil
+		}
+		return err
+	}
+	if snapshot.SessionID != previous.SessionID || !validDeliveryState(snapshot.CloseDeliveryState) ||
+		(snapshot.SessionDeliveryState != "" && !validDeliveryState(snapshot.SessionDeliveryState)) {
+		return fmt.Errorf("%w: close reconciliation returned invalid identity or delivery state", ErrSessionProcessorConfiguration)
+	}
+	if snapshot.SessionState != "" && !domain.SessionState(snapshot.SessionState).Valid() {
+		return fmt.Errorf("%w: close reconciliation returned invalid session state %q", ErrSessionProcessorConfiguration, snapshot.SessionState)
+	}
+	if !domain.SessionState(snapshot.SessionState).IsTerminal() && !(snapshot.SessionState == "" && snapshot.SessionDeliveryState == string(store.LocalIntentNotDelivered)) {
+		if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.CloseDeliveryState); err != nil {
+			return err
+		} else if published {
+			return nil
+		}
+	}
+	response := sessionMailboxResponse{
+		RequestID: record.RequestID, Operation: record.Operation,
+		SessionID: previous.SessionID, DeliveryState: snapshot.CloseDeliveryState,
+	}
+	switch {
+	case domain.SessionState(snapshot.SessionState).IsTerminal():
+		response.RequestState = store.MailboxExchangeComplete
+		response.SessionState = snapshot.SessionState
+		if snapshot.SessionState == string(domain.SessionStateLost) {
+			response.TeardownOutcome = "lost"
+		} else {
+			response.TeardownOutcome = "closed"
+		}
+	case snapshot.SessionState == "" && snapshot.SessionDeliveryState == string(store.LocalIntentNotDelivered):
+		// The create intent was proven never delivered; closure is a local
+		// no-op and must not invent a target session state.
+		response.RequestState = store.MailboxExchangeComplete
+		response.DeliveryState = string(store.LocalIntentNotDelivered)
+		response.TeardownOutcome = "not_created"
+	case snapshot.CloseDeliveryState == string(store.LocalIntentAccepted) || snapshot.CloseDeliveryState == string(store.LocalIntentReconciled):
+		response.RequestState = store.MailboxExchangeAccepted
+	case snapshot.CloseDeliveryState == string(store.LocalIntentNotDelivered):
+		response.RequestState = store.MailboxExchangeRejected
+		response.Error = &mailboxResponseError{Code: "runtime_unavailable", Message: "close request was proven not delivered"}
+	default:
+		response.RequestState = store.MailboxExchangeAccepted
+	}
+	if response.RequestState == store.MailboxExchangeAccepted && response.DeliveryState == previous.DeliveryState {
+		return p.projector.Publish(ctx, record.RequestID)
+	}
+	_, err = p.publish(ctx, record, response, nil)
+	return err
 }
 
 func (p *SessionProcessor) reconcileAcceptedRuns(ctx context.Context) error {
@@ -1405,93 +1434,95 @@ func (p *SessionProcessor) reconcileAcceptedRuns(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var result error
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(result, err)
 		}
-		if len(record.ResponseBytes) == 0 {
-			continue
-		}
-		var previous runMailboxResponse
-		if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "run" || previous.JobID == "" || previous.SessionID == "" || previous.CommandID == "" {
-			return fmt.Errorf("%w: accepted run response is corrupt", ErrOutboxResponse)
-		}
-		snapshot, err := p.operations.GetRunSnapshot(ctx, previous.JobID)
-		if err != nil {
-			var operationErr *SessionOperationError
-			if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
-				continue
-			}
-			return err
-		}
-		if snapshot.JobID != previous.JobID || snapshot.SessionID != previous.SessionID || snapshot.CommandID != previous.CommandID || !validDeliveryState(snapshot.DeliveryState) {
-			return fmt.Errorf("%w: run reconciliation returned invalid identity or delivery state", ErrSessionProcessorConfiguration)
-		}
-		if (snapshot.RemoteStatusFailureAt == nil) != (snapshot.RemoteStatusFailureCode == "") ||
-			(snapshot.RemoteStatusFailureAt != nil && (snapshot.RemoteStatusFailureAt.IsZero() || snapshot.RemoteStatusFailureCode != store.RemoteStatusFailureCodeUnavailable || snapshot.DeliveryState != string(store.LocalIntentAccepted))) {
-			return fmt.Errorf("%w: run reconciliation returned an invalid remote status failure marker", ErrSessionProcessorConfiguration)
-		}
-		if snapshot.RemoteStatusFailureAt != nil {
-			if published, err := p.publishAcceptedRemoteStatusUnavailableIfExpired(ctx, record, previous, *snapshot.RemoteStatusFailureAt); err != nil {
-				return err
-			} else if published {
-				continue
-			}
-		}
-		if snapshot.Command != nil {
-			commandID, idErr := domain.NewCommandID(previous.CommandID)
-			if idErr != nil || ValidateCommandSnapshot(*snapshot.Command, commandID) != nil || string(snapshot.Command.SessionID) != previous.SessionID {
-				return fmt.Errorf("%w: run reconciliation returned an invalid command snapshot", ErrSessionProcessorConfiguration)
-			}
-		}
-		if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
-			if snapshot.JobPhase != "" || snapshot.Command != nil || snapshot.TeardownOutcome != "" {
-				return fmt.Errorf("%w: never-delivered run contains authoritative job state", ErrSessionProcessorConfiguration)
-			}
-			response := runMailboxResponse{
-				RequestID: record.RequestID, Operation: "run", RequestState: store.MailboxExchangeRejected,
-				JobID: previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
-				DeliveryState: snapshot.DeliveryState,
-				Error:         &mailboxResponseError{Code: "runtime_unavailable", Message: "run was proven not delivered"},
-			}
-			if _, err := p.publishRunResponse(ctx, record, response, nil); err != nil {
-				return err
-			}
-			continue
-		}
-		if (snapshot.JobPhase != "" && !validJobPhase(snapshot.JobPhase)) || (snapshot.TeardownOutcome != "" && !validTeardownOutcome(snapshot.TeardownOutcome)) ||
-			(snapshot.JobPhase == "" && (snapshot.Command != nil || snapshot.TeardownOutcome != "")) ||
-			(snapshot.JobPhase == string(store.JobPhaseComplete) && snapshot.Command == nil) {
-			return fmt.Errorf("%w: run reconciliation returned an invalid job or teardown state", ErrSessionProcessorConfiguration)
-		}
-		if terminalJobPhase(snapshot.JobPhase) && snapshot.TeardownOutcome != "" && (snapshot.Command == nil || snapshot.Command.State.IsTerminal()) {
-			response, cursor := runResponseFromSnapshot(record.RequestID, snapshot)
-			if _, err := p.publishRunResponse(ctx, record, response, cursor); err != nil {
-				return err
-			}
-			continue
-		}
-		if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.DeliveryState); err != nil {
-			return err
-		} else if published {
-			continue
-		}
-		if snapshot.DeliveryState == previous.DeliveryState {
-			if err := p.projector.Publish(ctx, record.RequestID); err != nil {
-				return err
-			}
-			continue
-		}
-		response := runMailboxResponse{
-			RequestID: record.RequestID, Operation: "run", RequestState: store.MailboxExchangeAccepted,
-			JobID: previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
-			DeliveryState: snapshot.DeliveryState, ObservedAt: mailboxTime(snapshot.ObservedAt),
-		}
-		if _, err := p.publishRunResponse(ctx, record, response, nil); err != nil {
-			return err
+		if err := p.reconcileAcceptedRun(ctx, record); err != nil {
+			result = errors.Join(result, mailboxReconciliationIssue(record, "accepted_run", err))
 		}
 	}
-	return nil
+	return result
+}
+
+// reconcileAcceptedRun advances one accepted one-off receipt. Keeping this
+// per-record lets a corrupted or temporarily unreadable receipt remain intact
+// without preventing a later independent mailbox request from being projected.
+func (p *SessionProcessor) reconcileAcceptedRun(ctx context.Context, record store.MailboxExchangeRecord) error {
+	if len(record.ResponseBytes) == 0 {
+		return nil
+	}
+	var previous runMailboxResponse
+	if err := json.Unmarshal(record.ResponseBytes, &previous); err != nil || previous.RequestID != record.RequestID || previous.Operation != "run" || previous.JobID == "" || previous.SessionID == "" || previous.CommandID == "" {
+		return fmt.Errorf("%w: accepted run response is corrupt", ErrOutboxResponse)
+	}
+	snapshot, err := p.operations.GetRunSnapshot(ctx, previous.JobID)
+	if err != nil {
+		var operationErr *SessionOperationError
+		if errors.As(err, &operationErr) && (operationErr.Retryable || operationErr.Code == "resource_not_found") {
+			return nil
+		}
+		return err
+	}
+	if snapshot.JobID != previous.JobID || snapshot.SessionID != previous.SessionID || snapshot.CommandID != previous.CommandID || !validDeliveryState(snapshot.DeliveryState) {
+		return fmt.Errorf("%w: run reconciliation returned invalid identity or delivery state", ErrSessionProcessorConfiguration)
+	}
+	if (snapshot.RemoteStatusFailureAt == nil) != (snapshot.RemoteStatusFailureCode == "") ||
+		(snapshot.RemoteStatusFailureAt != nil && (snapshot.RemoteStatusFailureAt.IsZero() || snapshot.RemoteStatusFailureCode != store.RemoteStatusFailureCodeUnavailable || snapshot.DeliveryState != string(store.LocalIntentAccepted))) {
+		return fmt.Errorf("%w: run reconciliation returned an invalid remote status failure marker", ErrSessionProcessorConfiguration)
+	}
+	if snapshot.RemoteStatusFailureAt != nil {
+		if published, err := p.publishAcceptedRemoteStatusUnavailableIfExpired(ctx, record, previous, *snapshot.RemoteStatusFailureAt); err != nil {
+			return err
+		} else if published {
+			return nil
+		}
+	}
+	if snapshot.Command != nil {
+		commandID, idErr := domain.NewCommandID(previous.CommandID)
+		if idErr != nil || ValidateCommandSnapshot(*snapshot.Command, commandID) != nil || string(snapshot.Command.SessionID) != previous.SessionID {
+			return fmt.Errorf("%w: run reconciliation returned an invalid command snapshot", ErrSessionProcessorConfiguration)
+		}
+	}
+	if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
+		if snapshot.JobPhase != "" || snapshot.Command != nil || snapshot.TeardownOutcome != "" {
+			return fmt.Errorf("%w: never-delivered run contains authoritative job state", ErrSessionProcessorConfiguration)
+		}
+		response := runMailboxResponse{
+			RequestID: record.RequestID, Operation: "run", RequestState: store.MailboxExchangeRejected,
+			JobID: previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
+			DeliveryState: snapshot.DeliveryState,
+			Error:         &mailboxResponseError{Code: "runtime_unavailable", Message: "run was proven not delivered"},
+		}
+		_, err := p.publishRunResponse(ctx, record, response, nil)
+		return err
+	}
+	if (snapshot.JobPhase != "" && !validJobPhase(snapshot.JobPhase)) || (snapshot.TeardownOutcome != "" && !validTeardownOutcome(snapshot.TeardownOutcome)) ||
+		(snapshot.JobPhase == "" && (snapshot.Command != nil || snapshot.TeardownOutcome != "")) ||
+		(snapshot.JobPhase == string(store.JobPhaseComplete) && snapshot.Command == nil) {
+		return fmt.Errorf("%w: run reconciliation returned an invalid job or teardown state", ErrSessionProcessorConfiguration)
+	}
+	if terminalJobPhase(snapshot.JobPhase) && snapshot.TeardownOutcome != "" && (snapshot.Command == nil || snapshot.Command.State.IsTerminal()) {
+		response, cursor := runResponseFromSnapshot(record.RequestID, snapshot)
+		_, err := p.publishRunResponse(ctx, record, response, cursor)
+		return err
+	}
+	if published, err := p.publishIndeterminateIfExpired(ctx, record, snapshot.DeliveryState); err != nil {
+		return err
+	} else if published {
+		return nil
+	}
+	if snapshot.DeliveryState == previous.DeliveryState {
+		return p.projector.Publish(ctx, record.RequestID)
+	}
+	response := runMailboxResponse{
+		RequestID: record.RequestID, Operation: "run", RequestState: store.MailboxExchangeAccepted,
+		JobID: previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
+		DeliveryState: snapshot.DeliveryState, ObservedAt: mailboxTime(snapshot.ObservedAt),
+	}
+	_, err = p.publishRunResponse(ctx, record, response, nil)
+	return err
 }
 
 func runResponseFromSnapshot(requestID string, snapshot RunSnapshot) (runMailboxResponse, *int64) {

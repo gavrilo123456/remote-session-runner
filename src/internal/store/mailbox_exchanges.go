@@ -444,6 +444,62 @@ func (s *AuthorityStore) ListMailboxExchangesInMailbox(ctx context.Context, mail
 	})
 }
 
+// ListMailboxExchangesForIntent returns every mailbox receipt bound to one
+// local intent. The durable join is the private execution idempotency key:
+// mailbox acceptance records it before the local intent is created, and the
+// scoped request supplies that same key to the local API. This lets a later
+// remote reconciliation find its file-ingress receipt after a restart without
+// exposing the key, payload, script, or response body.
+func (s *AuthorityStore) ListMailboxExchangesForIntent(ctx context.Context, controller domain.ControllerIdentity, operation string, intentID domain.IntentID) ([]MailboxExchangeRecord, error) {
+	validatedController, err := validateController(controller)
+	if err != nil {
+		return nil, fmt.Errorf("%w: controller: %v", ErrMailboxExchangeInvalid, err)
+	}
+	if strings.TrimSpace(operation) == "" || len(operation) > 128 || strings.IndexByte(operation, 0) >= 0 {
+		return nil, fmt.Errorf("%w: operation", ErrMailboxExchangeInvalid)
+	}
+	validatedIntentID, err := domain.NewIntentID(string(intentID))
+	if err != nil {
+		return nil, fmt.Errorf("%w: intent ID", ErrMailboxExchangeInvalid)
+	}
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
+		rows, err := connection.QueryContext(ctx, `
+		SELECT exchange.mailbox_id, exchange.client_request_id
+		FROM mailbox_exchanges AS exchange
+		JOIN local_intents AS local_intent
+		  ON local_intent.idempotency_key = exchange.execution_idempotency_key
+		WHERE exchange.controller_type = ? AND exchange.controller_id = ? AND exchange.operation = ?
+		  AND local_intent.intent_id = ? AND local_intent.controller_type = ? AND local_intent.controller_id = ? AND local_intent.operation = ?
+		ORDER BY exchange.mailbox_id, exchange.created_at, exchange.exchange_id
+		`, string(validatedController.Type()), string(validatedController.ID()), operation,
+			string(validatedIntentID), string(validatedController.Type()), string(validatedController.ID()), operation)
+		if err != nil {
+			return nil, fmt.Errorf("list mailbox exchanges for intent: %w", err)
+		}
+		defer rows.Close()
+		refs := make([]MailboxExchangeRef, 0)
+		for rows.Next() {
+			var mailboxID, requestID string
+			if err := rows.Scan(&mailboxID, &requestID); err != nil {
+				return nil, fmt.Errorf("scan mailbox exchange intent reference: %w", err)
+			}
+			refs = append(refs, MailboxExchangeRef{MailboxID: mailboxID, ClientRequestID: requestID})
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("read mailbox exchange intent references: %w", err)
+		}
+		records := make([]MailboxExchangeRecord, 0, len(refs))
+		for _, ref := range refs {
+			record, err := readMailboxExchangeOnConnection(ctx, connection, ref)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, record)
+		}
+		return records, nil
+	})
+}
+
 // ListPublishableTerminalMailboxExchanges returns terminal responses that are
 // still within their retention period and have not been claimed for cleanup.
 // A mailbox projector uses this to rebuild derived outbox and event files

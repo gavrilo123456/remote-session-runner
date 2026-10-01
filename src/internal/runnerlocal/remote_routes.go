@@ -3,11 +3,27 @@ package runnerlocal
 import (
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/dispatcher"
 	"remote-session-runner/src/internal/sshclient"
 )
+
+// queuedBridgeEndpoints returns display-only route labels for safe operational
+// diagnostics. The map contains no credential paths or key material.
+func queuedBridgeEndpoints(loaded config.Config) map[string]string {
+	endpoints := make(map[string]string)
+	for _, profile := range loaded.RemoteHostNames() {
+		host, ok := loaded.RemoteHost(profile)
+		if !ok || host.QueuedBridge == nil {
+			continue
+		}
+		endpoints[profile] = net.JoinHostPort(host.QueuedBridge.Host, strconv.Itoa(host.QueuedBridge.Port))
+	}
+	return endpoints
+}
 
 type sshBridgeClientFactory func(sshclient.Config) (dispatcher.RemoteCaller, error)
 

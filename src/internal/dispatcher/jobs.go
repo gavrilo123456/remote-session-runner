@@ -51,7 +51,7 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteRuns(ctx context.Context, limit in
 			return errors.Join(result, err)
 		}
 		if err := d.ReconcileAcceptedRun(ctx, intent.IntentID); err != nil {
-			result = errors.Join(result, fmt.Errorf("reconcile accepted remote run %s: %w", intent.JobID, err))
+			result = errors.Join(result, remoteReconciliationIssueFor(intent, "run", err))
 		}
 	}
 	return result
@@ -76,7 +76,7 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteSubmits(ctx context.Context, limit
 			return errors.Join(result, err)
 		}
 		if err := d.ReconcileAcceptedRemoteSubmit(ctx, intent.IntentID); err != nil {
-			result = errors.Join(result, fmt.Errorf("reconcile accepted remote submit %s: %w", intent.CommandID, err))
+			result = errors.Join(result, remoteReconciliationIssueFor(intent, "submit_command", err))
 		}
 	}
 	return result
@@ -207,9 +207,11 @@ func (d *RemoteDriver) ReconcileAcceptedRun(ctx context.Context, id domain.Inten
 	err = d.reconcileAcceptedRun(ctx, intent)
 	if err != nil {
 		if remoteRunStatusFailure(err) {
-			if _, markErr := d.authority.MarkAcceptedRemoteRunStatusFailure(ctx, intent.IntentID, store.RemoteStatusFailureCodeUnavailable); markErr != nil {
+			marked, markErr := d.authority.MarkAcceptedRemoteRunStatusFailure(ctx, intent.IntentID, store.RemoteStatusFailureCodeUnavailable)
+			if markErr != nil {
 				return errors.Join(err, fmt.Errorf("record remote run status failure: %w", markErr))
 			}
+			return remoteReconciliationIssue(intent, "run", store.RemoteStatusFailureCodeUnavailable, marked.RemoteStatusFailureAttempts, err)
 		}
 		return err
 	}

@@ -34,9 +34,10 @@ func (s *AuthorityStore) MarkAcceptedRemoteRunStatusFailure(ctx context.Context,
 			return LocalIntentRecord{}, fmt.Errorf("%w: remote status failure requires an accepted remote run", ErrInvalidLocalIntent)
 		}
 		if _, err := connection.ExecContext(ctx, `
-INSERT INTO local_remote_status_failures(intent_id, first_observed_at, reason)
-VALUES (?, ?, ?)
-ON CONFLICT(intent_id) DO NOTHING
+INSERT INTO local_remote_status_failures(intent_id, first_observed_at, reason, reconciliation_attempts)
+VALUES (?, ?, ?, 1)
+ON CONFLICT(intent_id) DO UPDATE
+SET reconciliation_attempts = reconciliation_attempts + 1
 `, string(validatedID), formatStoredTime(now), code); err != nil {
 			return LocalIntentRecord{}, fmt.Errorf("record remote status failure: %w", err)
 		}
