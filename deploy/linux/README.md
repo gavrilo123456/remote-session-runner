@@ -28,12 +28,11 @@ service. Runtime configuration and SQLite state are not copied from Git.
 
 The installer accepts only a native Go 1.27.1 `linux/amd64` toolchain on
 `x86_64`/`amd64`, or `linux/arm64` on `aarch64`/`arm64`; it rejects any other
-architecture or a mismatched cross toolchain. It creates a private temporary
-Go build/module cache below the Runner service-root `tmp/` directory for one
-invocation and restores owner write permission on Go's read-only module files
-before removing only that task-owned cache. For a stopped service it cleans the
-cache before start; for an active service it preserves the immediate
-zero-active-work-to-restart boundary and cleans it after the healthy transition.
+architecture or a mismatched cross toolchain. It reuses Ubuntu's normal Go
+build and module caches at `/home/ubuntu/.cache/go-build` and
+`/home/ubuntu/go/pkg/mod`, and never deletes those shared account caches.
+The normal queued-bridge refresh uses the same caches. This avoids a full
+module download and disposable cache tree for every service update.
 
 The unit uses `User=ubuntu`, `Group=ubuntu`, and `UMask=0077`. Its entrypoint
 checks the account, selected paths, launcher/runnerd binaries, config, and mTLS

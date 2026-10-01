@@ -34,7 +34,12 @@ dispatcher_key_data=''
 manifest_source_commit=''
 manifest_bridge_hash=''
 manifest_wrapper_hash=''
-work_dir=''
+# Reuse the selected ubuntu account's normal Go caches. Bridge refresh is part
+# of a normal Runner service update, so a new private module cache would force
+# unnecessary downloads and temporary disk pressure on every refresh. These
+# shared caches are never removed by this script.
+go_build_cache='/home/ubuntu/.cache/go-build'
+go_mod_cache='/home/ubuntu/go/pkg/mod'
 input_public=''
 enable_public=''
 normalized_public=''
@@ -104,9 +109,6 @@ cleanup() {
 			cleanup_preserve_recovery=1
 		fi
 	fi
-	if ! remove_go_cache; then
-		cleanup_status=1
-	fi
 	for cleanup_path in \
 		"$input_public" "$enable_public" "$normalized_public" "$expected_map" \
 		"$expected_authorized" "$stage_bridge" "$stage_wrapper" "$stage_public" \
@@ -130,26 +132,6 @@ remove_temporary_path() {
 	if [ -n "$1" ] && { [ -e "$1" ] || [ -L "$1" ]; }; then
 		rm -rf -- "$1"
 	fi
-}
-
-remove_go_cache() {
-	if [ -z "$work_dir" ]; then
-		return 0
-	fi
-	if [ -L "$work_dir" ] || [ ! -d "$work_dir" ]; then
-		printf 'queued bridge: refusing unsafe private Go cache path: %s\n' "$work_dir" >&2
-		return 1
-	fi
-	# Go makes extracted module directories read-only. This path was made by
-	# mktemp under the private Runner tmp directory for this invocation only.
-	# Restore owner permission without following links, then remove that one tree.
-	if ! find -P "$work_dir" -type d -exec chmod u+rwx {} + \
-		|| ! find -P "$work_dir" -type f -exec chmod u+rw {} + \
-		|| ! rm -rf -- "$work_dir"; then
-		printf 'queued bridge: could not remove private Go cache: %s\n' "$work_dir" >&2
-		return 1
-	fi
-	work_dir=''
 }
 
 trap cleanup EXIT
@@ -674,8 +656,6 @@ rollback_refresh() {
 
 prepare_staged_artifacts() {
 	dispatcher_public_for_manifest=$1
-	work_dir=$(mktemp -d "$tmp_dir/queued-bridge-go-cache.XXXXXX")
-	chmod 700 "$work_dir"
 	stage_bridge=$(mktemp "$bin_dir/.runner-ssh-bridge.XXXXXX")
 	stage_wrapper=$(mktemp "$bin_dir/.runner-ssh-bridge-forced.sh.XXXXXX")
 	stage_map=$(mktemp "$config_dir/.ssh-controller-map.yaml.XXXXXX")
@@ -686,11 +666,8 @@ prepare_staged_artifacts() {
 		chmod 600 "$stage_public"
 		dispatcher_public_for_manifest="$stage_public"
 	fi
-	(cd "$repo_root" && GOTOOLCHAIN=local GOOS=linux GOARCH="$go_arch" GOCACHE="$work_dir/build" GOMODCACHE="$work_dir/mod" \
+	(cd "$repo_root" && GOTOOLCHAIN=local GOOS=linux GOARCH="$go_arch" GOCACHE="$go_build_cache" GOMODCACHE="$go_mod_cache" \
 		"$go_bin" build -o "$stage_bridge" ./src/cmd/runner-ssh-bridge)
-	if ! remove_go_cache; then
-		die 'could not remove private Go cache after bridge build'
-	fi
 	chmod 700 "$stage_bridge"
 	install -m 700 "$wrapper_source" "$stage_wrapper"
 	render_controller_map "$stage_map"

@@ -9,7 +9,12 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 go_bin="$service_root/toolchains/go1.27.1/bin/go"
 uid=$(id -u)
 go_arch=''
-go_cache_root=''
+# Reuse the selected ubuntu account's normal Go caches. An installer-owned
+# module cache forces a full download on every normal service update, produces
+# avoidable temporary disk pressure, and can outlive a disconnected installer.
+# These shared account caches are never removed by this script.
+go_build_cache='/home/ubuntu/.cache/go-build'
+go_mod_cache='/home/ubuntu/go/pkg/mod'
 temporary=''
 source_revision=''
 source_origin_revision=''
@@ -155,28 +160,8 @@ if [ -e "$queued_bridge_manifest" ] || [ -L "$queued_bridge_manifest" ]; then
 fi
 
 require_no_active_work() {
-	GO="$go_bin" GOOS=linux GOARCH="$go_arch" GOCACHE="$go_cache_root/build" GOMODCACHE="$go_cache_root/mod" \
+	GO="$go_bin" GOOS=linux GOARCH="$go_arch" GOCACHE="$go_build_cache" GOMODCACHE="$go_mod_cache" \
 		make -C "$repo_root" test-p128-host-status
-}
-
-remove_go_cache() {
-	if [ -z "$go_cache_root" ]; then
-		return 0
-	fi
-	if [ -L "$go_cache_root" ] || [ ! -d "$go_cache_root" ]; then
-		printf 'refusing unsafe private Go cache path: %s\n' "$go_cache_root" >&2
-		return 1
-	fi
-	# Go makes extracted module directories read-only. Restore write/search
-	# permission on this installer-owned tree before removing it; do not touch
-	# shared Go caches or follow symbolic links.
-	if ! find -P "$go_cache_root" -type d -exec chmod u+rwx {} + \
-		|| ! find -P "$go_cache_root" -type f -exec chmod u+rw {} + \
-		|| ! rm -rf -- "$go_cache_root"; then
-		printf 'could not remove private Go cache: %s\n' "$go_cache_root" >&2
-		return 1
-	fi
-	go_cache_root=''
 }
 
 # Replacing a binary does not replace an already-running service process.
@@ -202,14 +187,9 @@ cleanup() {
 			cleanup_status=1
 		fi
 	fi
-	if ! remove_go_cache; then
-		cleanup_status=1
-	fi
 	exit "$cleanup_status"
 }
 
-go_cache_root=$(mktemp -d "$service_root/tmp/install-go-cache.XXXXXX")
-chmod 700 "$go_cache_root"
 temporary="$service_root/bin/.runnerd.$$"
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -222,7 +202,7 @@ if sudo -n systemctl is-active --quiet runnerd.service; then
 	require_no_active_work
 fi
 
-(cd "$repo_root" && GOTOOLCHAIN=local GOOS=linux GOARCH="$go_arch" GOCACHE="$go_cache_root/build" GOMODCACHE="$go_cache_root/mod" \
+(cd "$repo_root" && GOTOOLCHAIN=local GOOS=linux GOARCH="$go_arch" GOCACHE="$go_build_cache" GOMODCACHE="$go_mod_cache" \
 	"$go_bin" build -ldflags "$build_ldflags" -o "$temporary" ./src/cmd/runnerd)
 chmod 700 "$temporary"
 mv -f "$temporary" "$service_root/bin/runnerd"
@@ -239,9 +219,6 @@ if [ "$was_active" -eq 1 ]; then
 	candidate_service_quiesced=0
 	sudo -n systemctl restart runnerd.service
 else
-	if ! remove_go_cache; then
-		exit 1
-	fi
 	candidate_startup_attempted=1
 	candidate_service_quiesced=0
 	sudo -n systemctl start runnerd.service
@@ -275,10 +252,6 @@ if ! wait_for_build_revision "$service_root/run/runnerd.sock" 'runnerd.service';
 	else
 		printf '%s\n' 'Could not verify candidate runnerd.service quiescence after build-revision verification failed.' >&2
 	fi
-	exit 1
-fi
-
-if ! remove_go_cache; then
 	exit 1
 fi
 

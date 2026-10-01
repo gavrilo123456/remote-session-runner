@@ -15,9 +15,10 @@ material.
 
 It accepts only native Go 1.27.1 `linux/amd64` on `x86_64`/`amd64`, or
 `linux/arm64` on `aarch64`/`arm64`; a mismatched cross toolchain fails closed.
-Bridge builds use a private one-invocation cache below the Runner service-root
-`tmp/` directory. They restore owner write permission on Go's read-only module
-files and remove only that task-owned cache immediately after the build.
+Bridge builds reuse the selected `ubuntu` account's normal Go build and module
+caches at `/home/ubuntu/.cache/go-build` and `/home/ubuntu/go/pkg/mod`. The
+bridge never deletes those shared account caches or creates a disposable
+per-invocation cache tree.
 
 ```text
 install-queued-bridge.sh enable --dispatcher-public-key-file PATH
