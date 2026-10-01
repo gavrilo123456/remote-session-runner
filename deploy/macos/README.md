@@ -21,6 +21,14 @@ external owner-only secret files, then rerun the installer. The installer builds
 and bootstraps them with fixed executable/config paths, an owner-only umask,
 and logs under the service root.
 
+For an installation that starts services, the checkout must be clean `dev` at
+the synchronized `origin/dev` revision. The installer embeds that full revision
+in the binaries and verifies that the live `runner-local` response through
+`local-api.sock` has the same `build_revision`. This verifies the process that
+will accept mailbox work. `--version`, a file checksum, or a fresh `doctor`
+process does not attest an already-running LaunchAgent. See the exact
+[Mac revision-attestation command](../../docs/setup.md#attest-the-running-mac-revision).
+
 ## V2 multi-inbox candidate activation
 
 `mac.v2.yaml.example` is the policy template for named inboxes and profiles. It
@@ -100,6 +108,12 @@ then closes streams and removes its socket. The shared cleanup stage is bounded
 to five seconds; the 13-second total fits within each plist's 15-second
 `ExitTimeOut`. Run `make test-p131-macos-shutdown` on the selected Mac account
 to exercise the real LaunchAgent stop/restart path.
+
+Do not restart the Mac Router merely to make a queued remote response look
+newer. A restart withdraws any previously persisted active remote projection
+until the new Router process completes a fresh identity-checked read-only
+target status query. It does not replay the queued mutation. The active status
+is not ACK eligible; wait for terminal proof. See [mailbox recovery](../../docs/mailbox.md#recovery-and-retention).
 
 See [docs/setup.md](../../docs/setup.md) for the full install and upgrade
 runbook and [docs/mailbox.md](../../docs/mailbox.md) for native mailbox use.

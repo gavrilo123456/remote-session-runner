@@ -44,7 +44,7 @@ func TestP128MacHealthKeepsDurableIngressReadyWhenRouterIsDegraded(t *testing.T)
 	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Readiness != opshealth.StateReady || len(report.Checks) != 2 || report.Checks[1].State != opshealth.StateDegraded || report.Checks[1].Details["pending_intents"] != 2 || report.Checks[1].Details["uncertain_intents"] != 1 {
+	if report.BuildRevision != "unattested" || report.Readiness != opshealth.StateReady || len(report.Checks) != 2 || report.Checks[1].State != opshealth.StateDegraded || report.Checks[1].Details["pending_intents"] != 2 || report.Checks[1].Details["uncertain_intents"] != 1 {
 		t.Fatalf("Mac health report=%+v; remote failure must remain separate from durable ingress readiness", report)
 	}
 }

@@ -180,6 +180,30 @@ sequenceDiagram
   end
 ```
 
+## Mailbox response evidence for queued remote work
+
+Each `outbox/<request_id>.json` file is a revision of one durable mailbox
+exchange. For a queued remote `run`, three different boundaries deliberately
+have different meanings:
+
+| Boundary | What it proves | Safe information that may be shown | What it does not prove |
+| --- | --- | --- | --- |
+| Initial local admission | The Mac Router durably accepted and recorded the mailbox exchange. | `request_state: accepted`, the selected route, and durable resource IDs when they are known. | Target acceptance, command start, queue position, capacity, reachability, output, or an outcome. |
+| Fresh active remote projection | A successful **read-only** target status query currently matches the local intent's job, session, command, controller, environment, source, target, and profile. The matching target work is still nonterminal. | The stable IDs, `delivery_state: accepted`, one safe nonterminal job phase (`creating_session`, `accepting_command`, `awaiting_command`, or `closing_session`), and optionally `command_state` (`queued`, `running`, or `cancelling`). | A terminal result, an explanation for why work is queued, event history, output, cursor, exit code, teardown result, process details, script, header, token, or private material. |
+| Strict terminal proof | The Router has identity, target, teardown, and retained event-boundary evidence for a terminal response. | The terminal response and, where available, its validated event cursor and result fields. | That a failed command succeeded; callers must still inspect command state, exit code, output completeness, and truncation. |
+
+The active projection is observational and is never a second dispatch path. If
+the status becomes stale, mismatched, unavailable, or retryably unreadable, or
+if the Router starts again, Runner withdraws any persisted active projection to
+an identity-only `accepted` receipt. The target job is not changed and its
+mutation is not replayed. A later fresh, identity-checked read may publish a
+new active revision; strict terminal proof remains the only way to publish a
+terminal result.
+
+Only a terminal outbox response (`complete`, `rejected`, or `indeterminate`) is
+eligible for the mailbox ACK protocol. An active `accepted` projection has no
+terminal event boundary to acknowledge.
+
 ## Session, event, and recovery lifecycle
 
 ```mermaid
@@ -198,11 +222,14 @@ event. Event readers resume from their last validated sequence. Complete output
 requires a read through the final sequence, `output_complete: true`, and
 `output_truncated: false`.
 
-For a queued one-off job after a Mac process restart, the Router reads the
-already accepted remote job, command, and retained events. It does not resend
-the mutation. It publishes a terminal response only when identity, target,
-teardown, and event boundary agree. A missing or contradictory proof remains
-incomplete or under investigation rather than being reported as successful.
+For a queued one-off job after a Mac process restart, the Router first treats
+any previously stored active remote projection as stale. It then reads the
+already accepted remote job, command, and retained events without resending the
+mutation. A newly read nonterminal status can become an active projection only
+after the full identity check. It publishes a terminal response only when
+identity, target, teardown, and event boundary agree. A missing or
+contradictory proof remains incomplete or under investigation rather than being
+reported as successful.
 
 ## Security and operating boundaries
 

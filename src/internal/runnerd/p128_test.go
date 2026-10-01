@@ -37,7 +37,7 @@ func TestP128RunnerdReadinessReportsDatabaseAndRequiredTLSFailure(t *testing.T) 
 	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Component != "linux_runnerd" || report.Checks[2].Reason != "mtls_configuration_not_ready" {
+	if report.Component != "linux_runnerd" || report.BuildRevision != "unattested" || report.Checks[2].Reason != "mtls_configuration_not_ready" {
 		t.Fatalf("runnerd health report=%+v", report)
 	}
 }

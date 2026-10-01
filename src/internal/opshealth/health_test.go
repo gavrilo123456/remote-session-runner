@@ -15,8 +15,25 @@ func TestP128OptionalRouterDegradationKeepsIngressReady(t *testing.T) {
 		Check{Component: "sqlite_writes", State: StateReady, RequiredForReadiness: true},
 		Check{Component: "remote_router", State: StateDegraded, Reason: "remote_transport_unavailable"},
 	)
-	if report.Readiness != StateReady || len(report.Checks) != 2 || report.Checks[1].State != StateDegraded {
+	if report.BuildRevision != "unattested" || report.Readiness != StateReady || len(report.Checks) != 2 || report.Checks[1].State != StateDegraded {
 		t.Fatalf("report = %+v; remote outage must degrade Router without taking down ingress", report)
+	}
+}
+
+func TestBUG008ReadinessAttestsServingBuildRevision(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/health/ready", nil)
+	response := httptest.NewRecorder()
+	if !ServeHealth("mac_ingress", response, request, func(context.Context) Report {
+		return Report{Component: "mac_ingress", BuildRevision: "untrusted-callback-value", Readiness: StateReady}
+	}) {
+		t.Fatal("readiness path was not handled")
+	}
+	var report Report
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatalf("decode readiness: %v", err)
+	}
+	if report.BuildRevision != "unattested" {
+		t.Fatalf("readiness build revision = %q, want serving build revision unattested", report.BuildRevision)
 	}
 }
 

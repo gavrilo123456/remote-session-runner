@@ -11,6 +11,11 @@ uid=$(id -u)
 go_arch=''
 go_cache_root=''
 temporary=''
+source_revision=''
+source_origin_revision=''
+build_ldflags=''
+candidate_startup_attempted=0
+candidate_service_quiesced=0
 
 if [ "$(uname -s)" != Linux ] || [ "$(id -un)" != ubuntu ] || [ "$uid" != 1001 ]; then
 	printf '%s\n' 'install-systemd-service.sh must run on the selected Linux host as ubuntu (uid 1001)' >&2
@@ -31,6 +36,77 @@ if [ "$go_version" != "$expected_go_version" ]; then
 	printf 'expected %s, got: %s\n' "$expected_go_version" "$go_version" >&2
 	exit 1
 fi
+
+require_source_checkout() {
+	if [ ! -d "$repo_root/.git" ] || ! git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		printf 'expected checked-out repository is unavailable: %s\n' "$repo_root" >&2
+		exit 1
+	fi
+	if [ "$(git -C "$repo_root" branch --show-current)" != dev ]; then
+		printf '%s\n' 'repository must be on dev before installing runnerd.service' >&2
+		exit 1
+	fi
+	if [ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]; then
+		printf '%s\n' 'repository must be clean before installing runnerd.service' >&2
+		exit 1
+	fi
+	source_revision=$(git -C "$repo_root" rev-parse HEAD) || {
+		printf '%s\n' 'could not resolve checked-out source revision' >&2
+		exit 1
+	}
+	source_origin_revision=$(git -C "$repo_root" rev-parse origin/dev 2>/dev/null) || {
+		printf '%s\n' 'repository does not have origin/dev for runnerd.service installation' >&2
+		exit 1
+	}
+	if ! printf '%s' "$source_revision" | grep -Eq '^[0-9a-f]{40}$'; then
+		printf '%s\n' 'source revision has an unexpected format' >&2
+		exit 1
+	fi
+	if [ "$source_revision" != "$source_origin_revision" ]; then
+		printf '%s\n' 'repository HEAD does not match origin/dev for runnerd.service installation' >&2
+		exit 1
+	fi
+	build_ldflags="-X remote-session-runner/src/internal/buildinfo.SourceRevision=$source_revision"
+}
+
+health_reports_build_revision() {
+	socket=$1
+	health=$(curl --silent --show-error --fail --unix-socket "$socket" http://runner/health/ready 2>/dev/null) || return 1
+	printf '%s' "$health" |
+		/usr/bin/python3 -c 'import json,sys; report=json.load(sys.stdin); sys.exit(0 if report.get("build_revision") == sys.argv[1] else 1)' "$source_revision" >/dev/null 2>&1
+}
+
+wait_for_build_revision() {
+	socket=$1
+	label=$2
+	for attempt in $(seq 1 40); do
+		if health_reports_build_revision "$socket"; then
+			return 0
+		fi
+		sleep 0.25
+	done
+	printf 'service did not report expected build revision after start: %s\n' "$label" >&2
+	return 1
+}
+
+quiesce_candidate_service_after_start_failure() {
+	if ! sudo -n systemctl stop runnerd.service; then
+		printf '%s\n' 'could not stop runnerd.service after candidate startup failed' >&2
+		return 1
+	fi
+	for attempt in $(seq 1 40); do
+		if ! sudo -n systemctl is-active --quiet runnerd.service \
+			&& [ ! -e "$service_root/run/runnerd.sock" ] \
+			&& [ ! -L "$service_root/run/runnerd.sock" ]; then
+			return 0
+		fi
+		sleep 0.25
+	done
+	printf '%s\n' 'runnerd.service or its private socket remained active after candidate startup failed' >&2
+	return 1
+}
+
+require_source_checkout
 
 ensure_private_directory() {
 	directory=$1
@@ -112,6 +188,15 @@ cleanup() {
 	# Do not let a second ordinary termination signal interrupt safe cleanup of
 	# the installer-owned temporary tree.
 	trap '' HUP INT TERM
+	if [ "$cleanup_status" -ne 0 ] && [ "$candidate_startup_attempted" -eq 1 ] && [ "$candidate_service_quiesced" -eq 0 ]; then
+		printf '%s\n' 'Candidate startup was attempted; stopping candidate runnerd.service without attempting a rollback.' >&2
+		if quiesce_candidate_service_after_start_failure; then
+			candidate_service_quiesced=1
+		else
+			printf '%s\n' 'Could not verify candidate runnerd.service quiescence after candidate startup failed.' >&2
+			cleanup_status=1
+		fi
+	fi
 	if [ -n "$temporary" ] && { [ -e "$temporary" ] || [ -L "$temporary" ]; }; then
 		if ! rm -f -- "$temporary"; then
 			cleanup_status=1
@@ -138,7 +223,7 @@ if sudo -n systemctl is-active --quiet runnerd.service; then
 fi
 
 (cd "$repo_root" && GOTOOLCHAIN=local GOOS=linux GOARCH="$go_arch" GOCACHE="$go_cache_root/build" GOMODCACHE="$go_cache_root/mod" \
-	"$go_bin" build -o "$temporary" ./src/cmd/runnerd)
+	"$go_bin" build -ldflags "$build_ldflags" -o "$temporary" ./src/cmd/runnerd)
 chmod 700 "$temporary"
 mv -f "$temporary" "$service_root/bin/runnerd"
 temporary=''
@@ -150,11 +235,15 @@ sudo -n systemd-analyze verify /etc/systemd/system/runnerd.service
 sudo -n systemctl enable runnerd.service
 if [ "$was_active" -eq 1 ]; then
 	require_no_active_work
+	candidate_startup_attempted=1
+	candidate_service_quiesced=0
 	sudo -n systemctl restart runnerd.service
 else
 	if ! remove_go_cache; then
 		exit 1
 	fi
+	candidate_startup_attempted=1
+	candidate_service_quiesced=0
 	sudo -n systemctl start runnerd.service
 fi
 if ! sudo -n systemctl is-active --quiet runnerd.service; then
@@ -179,6 +268,16 @@ if [ "$socket_ready" -ne 1 ]; then
 	exit 1
 fi
 
+if ! wait_for_build_revision "$service_root/run/runnerd.sock" 'runnerd.service'; then
+	printf '%s\n' 'Build-revision verification failed; stopping candidate runnerd.service without attempting a rollback.' >&2
+	if quiesce_candidate_service_after_start_failure; then
+		candidate_service_quiesced=1
+	else
+		printf '%s\n' 'Could not verify candidate runnerd.service quiescence after build-revision verification failed.' >&2
+	fi
+	exit 1
+fi
+
 if ! remove_go_cache; then
 	exit 1
 fi
@@ -188,4 +287,4 @@ if [ -e "$queued_bridge_manifest" ] || [ -L "$queued_bridge_manifest" ]; then
 fi
 
 trap - EXIT HUP INT TERM
-printf 'Installed and started runnerd.service as %s with %s\n' "$(id -un)" "$go_version"
+printf 'Installed and started runnerd.service as %s with %s at source revision %s\n' "$(id -un)" "$go_version" "$source_revision"

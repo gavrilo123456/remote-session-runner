@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"remote-session-runner/src/internal/buildinfo"
 )
 
 type State string
@@ -36,12 +38,13 @@ type Check struct {
 // optional component, such as the Mac remote Router, does not take down the
 // readiness of durable local ingress.
 type Report struct {
-	Component  string    `json:"component"`
-	Liveness   string    `json:"liveness"`
-	Readiness  State     `json:"readiness"`
-	ObservedAt time.Time `json:"observed_at"`
-	Checks     []Check   `json:"checks"`
-	Metrics    *Metrics  `json:"metrics,omitempty"`
+	Component     string    `json:"component"`
+	BuildRevision string    `json:"build_revision"`
+	Liveness      string    `json:"liveness"`
+	Readiness     State     `json:"readiness"`
+	ObservedAt    time.Time `json:"observed_at"`
+	Checks        []Check   `json:"checks"`
+	Metrics       *Metrics  `json:"metrics,omitempty"`
 }
 
 // Metrics contains bounded, low-cardinality operational measurements. It has
@@ -202,7 +205,7 @@ func NewReport(component string, observedAt time.Time, checks ...Check) Report {
 			break
 		}
 	}
-	return Report{Component: component, Liveness: "not_checked", Readiness: readiness, ObservedAt: observedAt, Checks: append([]Check{}, checks...)}
+	return Report{Component: component, BuildRevision: buildinfo.Revision(), Liveness: "not_checked", Readiness: readiness, ObservedAt: observedAt, Checks: append([]Check{}, checks...)}
 }
 
 // AddMetrics attaches a bounded snapshot and emits only threshold transitions.
@@ -250,6 +253,9 @@ func ServeHealth(component string, w http.ResponseWriter, r *http.Request, repor
 		_ = json.NewEncoder(w).Encode(current.Metrics)
 		return true
 	}
+	// Readiness is served by the process whose source revision is being
+	// attested. Do not trust a value supplied by a report callback.
+	current.BuildRevision = buildinfo.Revision()
 	current.Liveness = "live"
 	if current.Readiness != StateReady {
 		w.WriteHeader(http.StatusServiceUnavailable)

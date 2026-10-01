@@ -14,6 +14,9 @@ launch_agents="$HOME/Library/LaunchAgents"
 go_bin="$service_root/toolchains/go1.27.1/bin/go"
 uid=$(id -u)
 config_source=''
+source_revision=''
+source_origin_revision=''
+build_ldflags=''
 
 usage() {
 	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml]" >&2
@@ -44,6 +47,60 @@ if [ ! -x "$go_bin" ]; then
 	printf 'Go 1.27.1 toolchain missing: %s\n' "$go_bin" >&2
 	exit 1
 fi
+
+require_source_checkout() {
+	if [ ! -d "$repo_root/.git" ] || ! git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		printf 'expected checked-out repository is unavailable: %s\n' "$repo_root" >&2
+		exit 1
+	fi
+	if [ "$(git -C "$repo_root" branch --show-current)" != dev ]; then
+		printf '%s\n' 'repository must be on dev before installing LaunchAgents' >&2
+		exit 1
+	fi
+	if [ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]; then
+		printf '%s\n' 'repository must be clean before installing LaunchAgents' >&2
+		exit 1
+	fi
+	source_revision=$(git -C "$repo_root" rev-parse HEAD) || {
+		printf '%s\n' 'could not resolve checked-out source revision' >&2
+		exit 1
+	}
+	source_origin_revision=$(git -C "$repo_root" rev-parse origin/dev 2>/dev/null) || {
+		printf '%s\n' 'repository does not have origin/dev for LaunchAgent installation' >&2
+		exit 1
+	}
+	if ! printf '%s' "$source_revision" | /usr/bin/grep -Eq '^[0-9a-f]{40}$'; then
+		printf '%s\n' 'source revision has an unexpected format' >&2
+		exit 1
+	fi
+	if [ "$source_revision" != "$source_origin_revision" ]; then
+		printf '%s\n' 'repository HEAD does not match origin/dev for LaunchAgent installation' >&2
+		exit 1
+	fi
+	build_ldflags="-X remote-session-runner/src/internal/buildinfo.SourceRevision=$source_revision"
+}
+
+health_reports_build_revision() {
+	socket=$1
+	health=$(/usr/bin/curl --silent --show-error --fail --unix-socket "$socket" http://runner/health/ready 2>/dev/null) || return 1
+	printf '%s' "$health" |
+		/usr/bin/python3 -c 'import json,sys; report=json.load(sys.stdin); sys.exit(0 if report.get("build_revision") == sys.argv[1] else 1)' "$source_revision" >/dev/null 2>&1
+}
+
+wait_for_build_revision() {
+	socket=$1
+	label=$2
+	attempt=0
+	while [ "$attempt" -lt 75 ]; do
+		if health_reports_build_revision "$socket"; then
+			return 0
+		fi
+		sleep 0.2
+		attempt=$((attempt + 1))
+	done
+	printf 'LaunchAgent did not report expected build revision after start: %s\n' "$label" >&2
+	return 1
+}
 
 ensure_private_directory() {
 	directory=$1
@@ -168,6 +225,36 @@ stop_agent_for_config_change() {
 	wait_for_absent_path "$socket"
 }
 
+stop_candidate_agent_after_start_failure() {
+	label=$1
+	plist=$2
+	socket=$3
+	failed=0
+	if service_loaded "$label" && ! launchctl bootout "gui/$uid" "$plist"; then
+		printf 'could not stop candidate LaunchAgent after candidate startup failed: %s\n' "$label" >&2
+		failed=1
+	fi
+	if service_loaded "$label"; then
+		printf 'candidate LaunchAgent remained loaded after candidate startup failed: %s\n' "$label" >&2
+		failed=1
+	fi
+	if ! wait_for_absent_path "$socket"; then
+		failed=1
+	fi
+	return "$failed"
+}
+
+quiesce_candidate_agents_after_start_failure() {
+	failed=0
+	if ! stop_candidate_agent_after_start_failure com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"; then
+		failed=1
+	fi
+	if ! stop_candidate_agent_after_start_failure com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"; then
+		failed=1
+	fi
+	return "$failed"
+}
+
 restore_prior_agents() {
 	restore_failed=0
 	if [ "$locald_was_loaded" -eq 1 ] && ! service_loaded com.remote-session-runner.locald; then
@@ -193,6 +280,8 @@ locald_was_loaded=0
 restore_prior_agents_on_failure=0
 candidate_activation_started=0
 candidate_config_handed_off=0
+candidate_startup_attempted=0
+candidate_services_quiesced=0
 cleanup_staging() {
 	if [ -n "$config_stage" ] && [ -e "$config_stage" ]; then
 		# Once the no-rollback boundary is crossed this staged, owner-only copy
@@ -218,7 +307,19 @@ on_exit() {
 		fi
 	elif [ "$status" -ne 0 ] && [ "$candidate_activation_started" -eq 1 ]; then
 		if [ "$candidate_config_handed_off" -eq 1 ]; then
-			printf '%s\n' 'Candidate configuration is active; leaving services stopped for safe repair.' >&2
+			if [ "$candidate_startup_attempted" -eq 1 ] && [ "$candidate_services_quiesced" -eq 0 ]; then
+				printf '%s\n' 'Candidate startup was attempted; quiescing candidate LaunchAgents without rolling back the active candidate configuration.' >&2
+				if quiesce_candidate_agents_after_start_failure; then
+					candidate_services_quiesced=1
+				else
+					printf '%s\n' 'Could not verify candidate LaunchAgent quiescence after candidate startup failed.' >&2
+				fi
+			fi
+			if [ "$candidate_services_quiesced" -eq 1 ]; then
+				printf '%s\n' 'Candidate configuration is active; candidate LaunchAgents are confirmed stopped for safe repair.' >&2
+			else
+				printf '%s\n' 'Candidate configuration is active; candidate LaunchAgent quiescence was not confirmed. Inspect launchd and both private sockets before repair.' >&2
+			fi
 		elif [ -n "$config_stage" ] && [ -f "$config_stage" ]; then
 			printf 'Candidate activation stopped before config handoff; staged candidate retained at: %s\n' "$config_stage" >&2
 			printf 'Repair by rerunning: %s --config %s\n' "$0" "$config_stage" >&2
@@ -285,6 +386,8 @@ if [ -n "$config_source" ]; then
 	ensure_private_regular_file "$config_source" 'Staged Mac config'
 fi
 
+require_source_checkout
+
 validate_launchagent_files
 
 staging_directory="$service_root/tmp/installer.$$"
@@ -307,7 +410,7 @@ fi
 
 for name in runner runner-local runner-locald; do
 	temporary="$staging_directory/$name"
-	(cd "$repo_root" && GOTOOLCHAIN=local "$go_bin" build -o "$temporary" "./src/cmd/$name")
+	(cd "$repo_root" && GOTOOLCHAIN=local "$go_bin" build -ldflags "$build_ldflags" -o "$temporary" "./src/cmd/$name")
 	chmod 700 "$temporary"
 done
 
@@ -331,6 +434,7 @@ fi
 restore_prior_agents_on_failure=1
 stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"
 stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"
+candidate_services_quiesced=1
 
 if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --config "$selected_config"; then
 	printf '%s\n' 'Retained mailbox validation failed after ingress quiescence.' >&2
@@ -367,6 +471,26 @@ for name in com.remote-session-runner.locald com.remote-session-runner.local; do
 		exit 1
 	fi
 	install -m 600 "$plist" "$installed"
+	candidate_startup_attempted=1
+	candidate_services_quiesced=0
 	launchctl bootstrap "gui/$uid" "$installed"
 	launchctl kickstart -k "gui/$uid/$name"
 done
+
+provenance_failed=0
+if ! wait_for_build_revision "$service_root/run/locald.sock" 'runner-locald'; then
+	provenance_failed=1
+fi
+if [ "$provenance_failed" -eq 0 ] && ! wait_for_build_revision "$service_root/run/local-api.sock" 'runner-local'; then
+	provenance_failed=1
+fi
+if [ "$provenance_failed" -ne 0 ]; then
+	printf '%s\n' 'Build-revision verification failed; quiescing candidate LaunchAgents without rolling back the active candidate configuration.' >&2
+	if quiesce_candidate_agents_after_start_failure; then
+		candidate_services_quiesced=1
+	else
+		printf '%s\n' 'Could not verify candidate LaunchAgent quiescence after build-revision verification failed.' >&2
+	fi
+	exit 1
+fi
+printf 'Installed and started Mac LaunchAgents at source revision %s\n' "$source_revision"

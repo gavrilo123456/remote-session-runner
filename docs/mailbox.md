@@ -75,6 +75,21 @@ it does not by itself mean a command succeeded. Also inspect `command_state`,
 command result as successful. The `idempotency_key` links a retry to the same
 mutation, while the `request_id` names that retry's own files.
 
+A queued remote `run` can have an earlier, nonterminal outbox revision with
+`request_state: accepted` and `delivery_state: accepted`. When that revision
+also has a safe nonterminal `job_phase` and optional `command_state`, it is a
+fresh **active remote projection**: Runner made a successful read-only target
+status query and matched its job, session, command, controller, environment,
+source, target, and profile to the local intent. It may show only
+`creating_session`, `accepting_command`, `awaiting_command`, or
+`closing_session`, and only `queued`, `running`, or `cancelling` command state.
+It is useful progress information, but it does not prove queue position,
+capacity, reachability, command start, output, events, or a terminal result.
+
+Do not ACK an active `accepted` revision. It has no terminal event boundary.
+Continue reading the same outbox file until it becomes terminal, then read the
+advertised event prefix and ACK that exact terminal response revision.
+
 Runner-generated outbox, event, and diagnostic files are private `0600`, and
 mailbox directories are `0700`. A workspace tool may be allowed to create
 direct exact-`0644` ingress files while still being unable to traverse or read
@@ -87,7 +102,8 @@ If neither the matching outbox nor diagnostic exists, the request can still be
 awaiting pickup or can be an unsafe inert pair. Check the configured root,
 complete JSON, marker-last order, zero-byte marker, owner, mode, and Runner
 health. Read the terminal response and retained events before publishing an
-ACK. The relevant retention periods are:
+ACK. An active `accepted` projection is never an ACK candidate. The relevant
+retention periods are:
 
 - terminal outbox response: eligible for cleanup 24 hours after a valid ACK,
   or seven days after terminal publication without an ACK;
@@ -383,13 +399,16 @@ information:
 }
 ```
 
-It also contains `request_state`, `response_revision`, resource IDs,
-`delivery_state`, command/session state when known, output flags, and a relative
-event reference. Important states are:
+Every response contains its `request_state`, `response_revision`, and durable
+identity information when known. A strictly proven terminal response can also
+contain command/session result fields, output flags, and a relative event
+reference. An active accepted projection deliberately cannot contain those
+terminal-result fields. Important states are:
 
 | Field/value | Meaning |
 | --- | --- |
-| `request_state: accepted` | The Mac durably recorded the mailbox exchange. It is not target execution acceptance. |
+| `request_state: accepted` without a safe active phase/state | The Mac durably recorded the mailbox exchange. It is not target execution acceptance. |
+| `request_state: accepted`, `delivery_state: accepted`, and a safe nonterminal `job_phase` (with optional safe `command_state`) | A fresh read-only target status query strictly matched the local remote intent and found accepted nonterminal work. It is a status observation, not proof of command start, queue cause, output, or a final result. |
 | `request_state: complete` | The operation reached an outcome boundary; a command can still have failed. |
 | `request_state: rejected` | A well-formed request failed semantic validation or policy. |
 | `request_state: indeterminate`, `delivery_state: uncertain` | Delivery of a queued remote mutation could not be proved by the deadline. Preserve the idempotency key. |
@@ -414,14 +433,25 @@ After the advertised event prefix is read, `WriteAcknowledgment` writes the
 exact `request_id`, `response_revision`, and available event cursor in the
 same mailbox root. A direct workspace publisher writes those same fields into
 its exact-`0644` ACK pair. A valid ACK is durably recorded before its pair is
-removed. An ACK in one root cannot clean an artifact in another root.
+removed. Write an ACK only for `complete`, `rejected`, or `indeterminate`, not
+for an `accepted` receipt or active projection. An ACK in one root cannot clean
+an artifact in another root.
 
 ## Recovery and retention
 
 After a Mac restart, a queued remote one-off request is reconciled by reads of
 the existing remote job, command, and events. Runner does not resend the
-accepted mutation. It projects a terminal response only when identity, target,
-teardown, and the retained event boundary agree.
+accepted mutation. Before the first mailbox pass after that restart, it marks a
+persisted active remote projection stale and withdraws it to the identity-only
+`accepted` receipt. It projects a fresh active state only after another
+successful read-only status query strictly matches the complete local intent.
+
+The same withdrawal happens when an active status is stale, mismatched,
+unavailable, or retryably unreadable. Withdrawal means only that Runner cannot
+currently make the narrow active-status claim; it does not change the target
+job, cancel work, release capacity, or replay the mutation. A later qualified
+read may restore an active projection. Runner publishes a terminal response
+only when identity, target, teardown, and the retained event boundary agree.
 
 If strict remote reads are malformed, contradictory, or unavailable after an
 accepted one-off run, Runner records the first failure and continues only

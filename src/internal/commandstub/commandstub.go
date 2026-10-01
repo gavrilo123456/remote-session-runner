@@ -5,9 +5,18 @@ package commandstub
 import (
 	"fmt"
 	"io"
+
+	"remote-session-runner/src/internal/buildinfo"
 )
 
 const Version = "0.0.0-dev"
+
+// VersionString is shared by every executable version surface so an operator
+// can distinguish an ordinary development build from one embedded by an
+// installer at a specific source revision.
+func VersionString(name string) string {
+	return fmt.Sprintf("%s %s build_revision=%s", name, Version, buildinfo.Revision())
+}
 
 // Run handles the only supported P001 command-line arguments and returns an
 // exit status for the small executable entrypoints.
@@ -18,7 +27,7 @@ func Run(name, summary string, args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(args) == 1 && (args[0] == "--version" || args[0] == "version") {
-		fmt.Fprintf(stdout, "%s %s\n", name, Version)
+		fmt.Fprintln(stdout, VersionString(name))
 		return 0
 	}
 

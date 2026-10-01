@@ -14,6 +14,7 @@ local_plist="$launch_agents/com.remote-session-runner.local.plist"
 locald_plist="$launch_agents/com.remote-session-runner.locald.plist"
 api_socket="$service_root/run/local-api.sock"
 locald_socket="$service_root/run/locald.sock"
+expected_build_revision=$(git -C "$repo_root" rev-parse HEAD)
 success=0
 
 wait_for_stopped() {
@@ -93,8 +94,32 @@ wait_for_socket() {
 	return 1
 }
 
+health_reports_build_revision() {
+	socket=$1
+	health=$(/usr/bin/curl --silent --show-error --fail --unix-socket "$socket" http://runner/health/ready 2>/dev/null) || return 1
+	printf '%s' "$health" |
+		/usr/bin/python3 -c 'import json,sys; report=json.load(sys.stdin); sys.exit(0 if report.get("build_revision") == sys.argv[1] else 1)' "$expected_build_revision" >/dev/null 2>&1
+}
+
+wait_for_build_revision() {
+	socket=$1
+	label=$2
+	i=0
+	while [ "$i" -lt 50 ]; do
+		if health_reports_build_revision "$socket"; then
+			return 0
+		fi
+		sleep 0.2
+		i=$((i + 1))
+	done
+	printf 'LaunchAgent did not attest expected build revision after start: %s\n' "$label" >&2
+	return 1
+}
+
 wait_for_socket "$api_socket"
 wait_for_socket "$locald_socket"
+wait_for_build_revision "$locald_socket" 'runner-locald initial start'
+wait_for_build_revision "$api_socket" 'runner-local initial start'
 check_mode "$service_root" 700
 check_mode "$service_root/config" 700
 check_mode "$service_root/config/mac.yaml" 600
@@ -209,6 +234,8 @@ launchctl bootstrap "gui/$uid" "$locald_plist"
 launchctl bootstrap "gui/$uid" "$local_plist"
 wait_for_socket "$locald_socket"
 wait_for_socket "$api_socket"
+wait_for_build_revision "$locald_socket" 'runner-locald restart'
+wait_for_build_revision "$api_socket" 'runner-local restart'
 check_mode "$api_socket" 600
 check_mode "$locald_socket" 600
 api_result=$(/usr/bin/curl --silent --show-error --unix-socket "$api_socket" http://localhost/v1/sessions/sess-p125-missing 2>&1 || true)
@@ -219,4 +246,4 @@ esac
 
 cleanup_fixture
 success=1
-printf 'P125 PASS: launchd start/stop/restart, local API socket, local execution as %s, marker-last mailbox create/exec/events/close, and owner-only modes\n' "$(id -un)"
+printf 'P125 PASS: launchd start/stop/restart, source-revision readiness attestation, local API socket, local execution as %s, marker-last mailbox create/exec/events/close, and owner-only modes\n' "$(id -un)"

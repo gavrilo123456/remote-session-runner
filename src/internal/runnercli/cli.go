@@ -136,7 +136,7 @@ func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies c
 		return 0
 	}
 	if version {
-		fmt.Fprintf(stdout, "runner %s\n", commandstub.Version)
+		fmt.Fprintln(stdout, commandstub.VersionString("runner"))
 		return 0
 	}
 	if configPath == "" {

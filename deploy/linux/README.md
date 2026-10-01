@@ -40,11 +40,26 @@ checks the account, selected paths, launcher/runnerd binaries, config, and mTLS
 file modes before startup. Scripts retain the selected Ubuntu OS permissions;
 the workspace is not a containment boundary.
 
+The installer requires a clean `dev` checkout at the synchronized `origin/dev`
+revision. It embeds that full revision in `runnerd` and verifies the live
+private-socket `/health/ready` `build_revision` after systemd starts the
+service. This attests the running process, unlike `runnerd --version`, a bridge
+manifest, a binary checksum, or a separately launched `doctor` command. Use
+the exact [Ubuntu revision-attestation command](../../docs/setup.md#attest-the-running-ubuntu-revision)
+when recording an install.
+
 For an active-service upgrade, the installer runs the checked-in read-only
 zero-active-work gate before the build and immediately before restart. It
 refuses the restart when sessions, commands, unreleased slots, or unfinished
 jobs are present. Plan a maintenance window because the gate is a snapshot and
 normal graceful shutdown handles work admitted afterward truthfully.
+
+Do not use this restart-based installer to clear retained capacity while ready
+sessions with queued commands must survive. Keep `runnerd.service` active and
+use the guarded owner-only
+[queue-preserving online recovery](../../docs/operations.md#queue-preserving-online-retained-capacity-recovery)
+instead. That procedure prohibits this installer, offline recovery,
+cancellation, and replay until the retained capacity is safely released.
 
 ```sh
 # Target Ubuntu host — ubuntu
@@ -73,3 +88,7 @@ A new physical Ubuntu machine needs its own configuration, state, service,
 certificate/principal or bridge materials, host-key pin, and P157 evidence. Do
 not copy either accepted host's state or credentials and do not treat another
 host's listener or successful test as evidence for it.
+
+A matching `build_revision` proves only which service binary is live. It does
+not replace direct-route, queued-bridge, mailbox terminal-response, or B008-P6
+end-to-end evidence.

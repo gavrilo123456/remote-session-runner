@@ -31,6 +31,11 @@ then accepted safe malformed mailbox ingress on the Mac: it wrote a private
 diagnostic and created no remote work. It did not run a new host, bridge, or
 direct-mTLS gate.
 
+BUG-008 source work adds a queue-preserving recovery command and a narrow
+active remote mailbox projection, but its fresh installed-service regression
+(B008-P6) has not run yet. The recovery and attestation procedures below are
+operating instructions; following one is not evidence that B008-P6 passed.
+
 ## Fast health checks
 
 ### Mac — `tomasz.walczuk`
@@ -44,6 +49,39 @@ test -S "$root/run/locald.sock"
 curl --silent --show-error --fail --unix-socket "$root/run/local-api.sock" http://runner/health/ready
 curl --silent --show-error --fail --unix-socket "$root/run/locald.sock" http://runner/health/ready
 ```
+
+### Verify the running Mac build revision
+
+Use the live `runner-local` health response to prove that the process accepting
+mailbox work came from the synchronized source revision. Run this after an
+installer refresh and before treating a Mac LaunchAgent as current:
+
+```sh
+# Mac — tomasz.walczuk
+repo='/Users/tomasz.walczuk/projects/remote-session-runner'
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+expected="$(git -C "$repo" rev-parse HEAD)"
+test "$(git -C "$repo" branch --show-current)" = dev
+test -z "$(git -C "$repo" status --porcelain)"
+test "$expected" = "$(git -C "$repo" rev-parse origin/dev)"
+actual="$(
+  curl --silent --show-error --fail \
+    --unix-socket "$root/run/local-api.sock" \
+    http://runner/health/ready |
+    /usr/bin/python3 -c 'import json, sys; print(json.load(sys.stdin).get("build_revision", ""))'
+)"
+test "$actual" = "$expected"
+printf 'runner-local live build_revision=%s\n' "$actual"
+```
+
+The Mac installer derives the full 40-character Git revision from a clean
+`dev` checkout, embeds it in the installed binaries, and requires this live
+socket check before it reports success. `build_revision: unattested` means the
+binary was not installer-attested and must not be treated as the current
+source. `runner-local --version`, a binary checksum, or a newly invoked
+`doctor` command identify a file or a new diagnostic process; none identifies
+the already-running LaunchAgent. `doctor` also writes a timestamp-only health
+record. They are useful diagnostics, but not runtime provenance evidence.
 
 The `runner-local` report contains a `remote_router` check for one queued
 profile. With several queued profiles it reports `remote_router/<profile>` per
@@ -152,6 +190,37 @@ cd /home/ubuntu/projects/remote-session-runner
 deploy/ssh/install-queued-bridge.sh status
 ```
 
+### Verify a running Ubuntu service build revision
+
+After `install-systemd-service.sh` completes on either accepted host, attest the
+live `runnerd.service` process through its private Unix socket. This is the
+Linux counterpart of the Mac LaunchAgent check and is required source evidence
+for a later B008-P6 host regression; it is not that regression itself.
+
+```sh
+# Selected Ubuntu host — ubuntu
+repo='/home/ubuntu/projects/remote-session-runner'
+root='/home/ubuntu/.local/share/remote-session-runner'
+expected="$(git -C "$repo" rev-parse HEAD)"
+test "$(git -C "$repo" branch --show-current)" = dev
+test -z "$(git -C "$repo" status --porcelain)"
+test "$expected" = "$(git -C "$repo" rev-parse origin/dev)"
+actual="$(
+  curl --silent --show-error --fail \
+    --unix-socket "$root/run/runnerd.sock" \
+    http://runner/health/ready |
+    /usr/bin/python3 -c 'import json, sys; print(json.load(sys.stdin).get("build_revision", ""))'
+)"
+test "$actual" = "$expected"
+printf 'runnerd live build_revision=%s\n' "$actual"
+```
+
+As on the Mac, `--version`, a bridge manifest, and a freshly launched `doctor`
+command do not attest the running `runnerd.service` process. The installer
+requires the exact live `build_revision` after it builds and starts the
+service. A matching field proves the service revision, not a mailbox terminal
+result or a B008-P6 pass.
+
 ### Accepted public direct paths — Mac
 
 ```sh
@@ -185,7 +254,9 @@ root='/home/ubuntu/.local/share/remote-session-runner'
 ```
 
 A doctor writes a timestamp-only SQLite health record, so it is diagnostic and
-not read-only.
+not read-only. It starts the executable named on the command line; it does not
+attest the revision of an already-running LaunchAgent or `runnerd.service`.
+Use the live private-socket `build_revision` checks above for that purpose.
 
 `/metrics` is available through each private socket and the mTLS HTTPS
 listener. It includes bounded counters and no scripts, paths, output,
@@ -232,6 +303,12 @@ cd /Users/tomasz.walczuk/projects/remote-session-runner
 deploy/macos/install-launchagents.sh
 ```
 
+The installer requires a clean synchronized `dev` revision and verifies the
+live `runner-local` `build_revision` through `local-api.sock`. Preserve that
+success output or repeat [the live Mac check](#verify-the-running-mac-build-revision)
+before calling the running LaunchAgent current. Do not substitute `--version`
+or `doctor` for the socket attestation.
+
 For mailbox, context, or route policy changes, use an owner-only V2 candidate
 and `install-launchagents.sh --config <mac.next.yaml>` as described in
 [setup](setup.md#3-upgrade-to-version-2-or-add-an-inbox). Do not modify active
@@ -260,7 +337,11 @@ deploy/ssh/install-queued-bridge.sh status
 
 The normal installer repeats the zero-active-work check before restart and
 refreshes an already enabled permanent bridge after the new private socket is
-ready. It does not create or rotate dispatcher authorization.
+ready. It also requires the live `runnerd` `build_revision` to equal the clean
+checkout revision. It does not create or rotate dispatcher authorization. Do
+not use this installer or a service restart as an attempt to clear retained
+capacity while queued work must survive; use the online recovery procedure
+below.
 
 ## Triage guide
 
@@ -274,13 +355,75 @@ ready. It does not create or rotate dispatcher authorization.
 | No mailbox response | Publisher type, root tree, JSON/marker order, owner/mode/path, response state | Follow the deterministic [`request ID → outbox → command ID → events` lookup](mailbox.md#find-a-request-result). For a pair that passed safety but failed ingress validation, inspect `diagnostics/<request_id>.json`: it is private `0600`, has no ACK, and requires a new request ID/key for correction. A missing, nonempty, unsafe, or unreadable pair stays inert with no diagnostic. |
 | Direct HTTPS/mTLS failure | Public health, service journal, CA/certificate/principal map/bind | Repair host configuration without printing keys. |
 | Queued remote remains recorded, uncertain, or stale | Selected bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
+| Remote outbox is `accepted` with `delivery_state=accepted` and a safe nonterminal phase/state | The same response's stable job/session/command IDs, selected target/profile, and response revision | Runner has a fresh identity-checked read-only target status for accepted nonterminal work. Do not infer a queue blocker, command start, output, or terminal outcome; do not ACK or replay it. Continue observing the same request. |
+| Earlier active phase/state disappeared and the outbox is now identity-only `accepted` | Router restart, `is_stale`, target status/read error, or a strict identity mismatch | Runner withdrew an unsafe-to-repeat active status claim. It did not cancel, release, or replay the target job. Preserve the request ID and idempotency key; wait for a fresh qualified read or terminal proof. |
 | Remote one-off ends `indeterminate` with `delivery_state=accepted` and `remote_status_unavailable` | Stable job/session/command IDs, bridge/service journal, target SQLite status and retention | The target accepted the request but Runner could not prove its terminal result in 24 hours. Do not resubmit or release retained capacity manually. ACK the terminal response if it has been recorded, preserve the IDs and idempotency key, then investigate the target boundary. |
-| P128 reports only one unreleased slot for a terminal lost command | Exact session and command IDs, owner-only runtime record, process-group state, and service cgroup | Preserve the lost result and use the explicit stopped-service recovery procedure below. It refuses any other active work and never replays the script. |
-| P128 reports several retained `lost` slots and only already-cancelled one-off jobs | Exact list of every retained `lost` session/command pair and every nonterminal job, owner-only markers, and the stopped service cgroup | Use `recover-stalled` below only after the complete inventory is known. It rejects extra work and never dispatches or replays a script. |
+| Terminal `lost` capacity blocks ready sessions with queued commands that must survive | Complete exact inventory of every terminal-lost session/command pair, every retained ready/queued session/command, owner-only markers, and a live `runnerd.service` | Use the queue-preserving **online** recovery below with every selected lost pair. Keep the service running; do not restart it, run offline recovery, cancel queued commands, or replay work. |
+| P128 reports only one unreleased slot for a terminal lost command and no work must survive | Exact session and command IDs, owner-only runtime record, process-group state, and service cgroup | Preserve the lost result and use the explicit stopped-service recovery procedure below. It refuses any other active work and never replays the script. |
+| P128 reports several retained `lost` slots and only already-cancelled one-off jobs, with no queued work to preserve | Exact list of every retained `lost` session/command pair and every nonterminal job, owner-only markers, and the stopped service cgroup | Use `recover-stalled` below only after the complete inventory is known. It rejects extra work and never dispatches or replays a script. |
 | New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host` and `sandbox-host` evidence does not transfer. |
 | Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
 
 ## Recovery boundaries
+
+### Queue-preserving online retained-capacity recovery
+
+Use this procedure only when terminal `lost` capacity blocks one or more
+identity-checked ready sessions with queued commands that must remain queued.
+It is an owner-only local Ubuntu `runnerd` maintenance command. Public HTTPS,
+the SSH bridge, the mailbox, and normal requester CLI routes cannot invoke it.
+Before invoking it, record a complete
+inventory of every retained `lost` session/command pair and every preserved
+ready/queued session, command, and job. The selected lost pairs must account
+for every live command slot; the service must be active; and there must be no
+running or cancelling command. The command rejects a partial, extra,
+nonterminal, or mismatched inventory.
+
+While work is being preserved, do **not** stop or restart `runnerd.service`,
+run `deploy/linux/install-systemd-service.sh`, use the offline `recover-lost`
+or `recover-stalled` commands, cancel or close the queued session/command, edit
+SQLite, release a slot manually, or publish a replacement/replay request. Each
+of those actions changes or discards the work the online procedure is designed
+to preserve.
+
+```sh
+# Selected Ubuntu host — ubuntu
+(
+  set -eu
+  root='/home/ubuntu/.local/share/remote-session-runner'
+
+  # This must remain active for the whole operation.
+  sudo systemctl is-active --quiet runnerd.service
+
+  "$root/bin/runnerd" recover-retained-capacity \
+    --config "$root/config/linux.yaml" \
+    --online \
+    --apply \
+    --lost-pair 'sess-EXACT-LOST-1:cmd-EXACT-LOST-1' \
+    --lost-pair 'sess-EXACT-LOST-2:cmd-EXACT-LOST-2'
+)
+```
+
+The explicit `--online --apply` flags and every `--lost-pair` are required. The
+operation holds the exact selected capacity until each runtime cleanup proof is
+complete, then releases the selected pairs in one authority transaction. It
+does not execute a stored script. Only after that transaction can the normal
+running dispatcher claim the **original** queued command ID in normal order.
+If cleanup proof or inventory validation fails, capacity and preserved work
+remain unchanged; stop and investigate the reported sanitized reason. Do not
+try a different recovery mode to force progress.
+
+After a successful release, observe the original request through its existing
+outbox, event file, and terminal ACK sequence. A service revision match or a
+successful capacity release is not command completion. B008-P6 remains the
+separate fresh harmless installed-service regression.
+
+### Offline recovery only when no queued work must survive
+
+The legacy stopped-service procedures below are intentionally stricter. They
+are valid only when the complete inventory proves there is no queued work to
+preserve, or when the work has already reached a separately authorized terminal
+disposition. Never use them as a substitute for the online procedure above.
 
 - Do not manually edit `local.db` or `remote.db`, or copy a live SQLite file.
 - `backups/` is reserved for the tested backup/restore implementation; this

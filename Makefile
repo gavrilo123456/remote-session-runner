@@ -265,7 +265,8 @@ smoke: check-go
 	for name in $(COMMANDS); do \
 	  GOTOOLCHAIN=local "$(GO)" build -o "$$tmpdir/$$name" "./src/cmd/$$name"; \
 	  "$$tmpdir/$$name" --help >/dev/null; \
-	  "$$tmpdir/$$name" --version >/dev/null; \
+	  version=$$("$$tmpdir/$$name" --version); \
+	  case "$$version" in *"build_revision="*) ;; *) printf 'missing build revision in %s version output: %s\n' "$$name" "$$version" >&2; exit 1 ;; esac; \
 	done
 
 check: test vet smoke

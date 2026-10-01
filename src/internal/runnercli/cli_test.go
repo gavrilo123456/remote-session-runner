@@ -27,7 +27,7 @@ func TestP119HelpAndVersion(t *testing.T) {
 	if code := runWithDependencies([]string{"--version"}, &stdout, &stderr, cliDependencies{}); code != 0 {
 		t.Fatalf("version exit code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout.String(), "runner 0.0.0-dev") || stderr.Len() != 0 {
+	if !strings.Contains(stdout.String(), "runner 0.0.0-dev build_revision=unattested") || stderr.Len() != 0 {
 		t.Fatalf("version output=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }

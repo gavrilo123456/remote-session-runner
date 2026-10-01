@@ -8,6 +8,7 @@ invalid_config=''
 invalid_output=''
 tmp_mode_changed=0
 installed=0
+expected_build_revision=$(git -C "$repo_root" rev-parse HEAD)
 
 if [ "$(uname -s)" != Linux ] || [ "$(id -un)" != ubuntu ] || [ "$(id -u)" != 1001 ]; then
 	printf '%s\n' 'test-systemd-service.sh must run on the selected Linux host as ubuntu (uid 1001)' >&2
@@ -36,6 +37,11 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 check_active() {
+	health_reports_build_revision() {
+		health=$(curl --silent --show-error --fail --unix-socket "$service_root/run/runnerd.sock" http://runner/health/ready 2>/dev/null) || return 1
+		printf '%s' "$health" |
+			/usr/bin/python3 -c 'import json,sys; report=json.load(sys.stdin); sys.exit(0 if report.get("build_revision") == sys.argv[1] else 1)' "$expected_build_revision" >/dev/null 2>&1
+	}
 	ready=0
 	for attempt in $(seq 1 40); do
 		if sudo -n systemctl is-active --quiet runnerd.service; then
@@ -43,7 +49,8 @@ check_active() {
 			if [ "$main_pid" -gt 1 ] \
 				&& [ "$(ps -o user= -p "$main_pid" | tr -d ' ')" = ubuntu ] \
 				&& [ "$(stat -c '%u:%a' "$service_root/run/runnerd.sock" 2>/dev/null || true)" = "1001:600" ] \
-				&& ss -H -ltn 'sport = :8443' | grep -q '10\.0\.0\.200:8443'; then
+				&& ss -H -ltn 'sport = :8443' | grep -q '10\.0\.0\.200:8443' \
+				&& health_reports_build_revision; then
 				ready=1
 				break
 			fi
@@ -52,7 +59,7 @@ check_active() {
 	done
 	if [ "$ready" -ne 1 ] || ! sudo -n systemctl is-active --quiet runnerd.service; then
 		sudo -n systemctl status --no-pager runnerd.service >&2 || true
-		printf '%s\n' 'runnerd did not become ready with its private socket and HTTPS listener' >&2
+		printf '%s\n' 'runnerd did not become ready with its private socket, HTTPS listener, and expected build revision' >&2
 		return 1
 	fi
 	main_pid=$(sudo -n systemctl show -p MainPID --value runnerd.service)
@@ -178,4 +185,4 @@ sudo -n systemctl reset-failed runnerd.service
 sudo -n systemctl start runnerd.service
 check_active
 
-printf 'P126 PASS: systemd start/stop/restart as ubuntu, owner-only socket, mTLS listener lifecycle, invalid profile rejection, and insecure service-path readiness rejection\n'
+printf 'P126 PASS: systemd start/stop/restart as ubuntu, owner-only socket, mTLS listener lifecycle, source-revision readiness attestation, invalid profile rejection, and insecure service-path readiness rejection\n'

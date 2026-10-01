@@ -13,7 +13,7 @@ func TestP001HelpAndVersion(t *testing.T) {
 		want string
 	}{
 		{name: "help", args: []string{"--help"}, want: "Usage: runner [--help|--version]"},
-		{name: "version", args: []string{"--version"}, want: "runner 0.0.0-dev"},
+		{name: "version", args: []string{"--version"}, want: "runner 0.0.0-dev build_revision=unattested"},
 	}
 
 	for _, tt := range tests {

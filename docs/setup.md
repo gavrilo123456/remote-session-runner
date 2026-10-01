@@ -117,6 +117,36 @@ curl --silent --show-error --fail --unix-socket "$root/run/local-api.sock" http:
 curl --silent --show-error --fail --unix-socket "$root/run/locald.sock" http://runner/health/ready
 ```
 
+### Attest the running Mac revision
+
+The installer requires a clean `dev` checkout whose `HEAD` equals `origin/dev`,
+embeds that full 40-character revision in the installed binaries, and verifies
+the live Router after it starts. Keep the installer result and run this
+read-only confirmation whenever a stale LaunchAgent is possible:
+
+```sh
+# Mac — tomasz.walczuk
+repo='/Users/tomasz.walczuk/projects/remote-session-runner'
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+expected="$(git -C "$repo" rev-parse HEAD)"
+test "$(git -C "$repo" branch --show-current)" = dev
+test -z "$(git -C "$repo" status --porcelain)"
+test "$expected" = "$(git -C "$repo" rev-parse origin/dev)"
+actual="$(
+  curl --silent --show-error --fail \
+    --unix-socket "$root/run/local-api.sock" \
+    http://runner/health/ready |
+    /usr/bin/python3 -c 'import json, sys; print(json.load(sys.stdin).get("build_revision", ""))'
+)"
+test "$actual" = "$expected"
+printf 'runner-local live build_revision=%s\n' "$actual"
+```
+
+This reads the process that owns `local-api.sock`; it is the required running
+service provenance check. `runner-local --version`, a file checksum, or a
+fresh `doctor` invocation does not identify that existing LaunchAgent. A
+`build_revision` of `unattested` is not valid current-source evidence.
+
 ## 3. Upgrade to version 2 or add an inbox
 
 ### Mac — `tomasz.walczuk`
@@ -232,6 +262,36 @@ expected_bind='10.0.0.200:8443' # linux-host
 # expected_bind='10.0.0.14:8443' # sandbox-host
 ss -lntH | grep "$expected_bind"
 ```
+
+### Attest the running Ubuntu revision
+
+The Linux installer applies the same clean-`dev`, embedded-revision, live
+health contract. Confirm that the socket belongs to the revision you pushed
+from the Mac:
+
+```sh
+# Target Ubuntu host — ubuntu
+repo='/home/ubuntu/projects/remote-session-runner'
+root='/home/ubuntu/.local/share/remote-session-runner'
+expected="$(git -C "$repo" rev-parse HEAD)"
+test "$(git -C "$repo" branch --show-current)" = dev
+test -z "$(git -C "$repo" status --porcelain)"
+test "$expected" = "$(git -C "$repo" rev-parse origin/dev)"
+actual="$(
+  curl --silent --show-error --fail \
+    --unix-socket "$root/run/runnerd.sock" \
+    http://runner/health/ready |
+    /usr/bin/python3 -c 'import json, sys; print(json.load(sys.stdin).get("build_revision", ""))'
+)"
+test "$actual" = "$expected"
+printf 'runnerd live build_revision=%s\n' "$actual"
+```
+
+`runnerd --version`, bridge status, and a separately launched `doctor` do not
+prove the running systemd process revision. A matching live `build_revision`
+proves only revision identity; it does not replace a direct route or mailbox
+end-to-end test. B008-P6 remains unrun until its own fresh harmless request,
+terminal outbox, event, ACK, and zero-work gates are recorded.
 
 ## 5. Verify the direct Runner application route
 
