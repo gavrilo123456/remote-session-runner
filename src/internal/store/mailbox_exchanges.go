@@ -212,6 +212,9 @@ func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input Mailbo
 	}
 	now := s.now().UTC()
 	returnValue, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+		if err := rejectMailboxExchangeIngressDiagnosticCollision(ctx, connection, validated.MailboxExchangeRef()); err != nil {
+			return MailboxExchangeRecord{}, err
+		}
 		byID, found, err := readMailboxExchangeByIDOnConnection(ctx, connection, validated.MailboxExchangeRef())
 		if err != nil {
 			return MailboxExchangeRecord{}, err

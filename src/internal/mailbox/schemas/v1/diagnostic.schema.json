@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/src/internal/mailbox/schemas/v1/diagnostic.schema.json",
+  "title": "Remote Session Runner v1 mailbox ingress diagnostic",
+  "type": "object",
+  "properties": {
+    "inbox_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "diagnostic_revision": { "const": 1 },
+    "lifecycle_phase": { "const": "ingress_validation" },
+    "accepted": { "const": false },
+    "executed": { "const": false },
+    "code": {
+      "type": "string",
+      "enum": [
+        "malformed_json",
+        "invalid_request_schema",
+        "request_identity_mismatch",
+        "invalid_script",
+        "request_too_large"
+      ]
+    },
+    "message": { "type": "string" },
+    "observed_at": { "type": "string", "format": "date-time" }
+  },
+  "required": [
+    "inbox_id",
+    "request_id",
+    "diagnostic_revision",
+    "lifecycle_phase",
+    "accepted",
+    "executed",
+    "code",
+    "message",
+    "observed_at"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "code": { "const": "malformed_json" },
+            "message": { "const": "request is not valid JSON" }
+          },
+          "required": ["code", "message"]
+        },
+        {
+          "properties": {
+            "code": { "const": "invalid_request_schema" },
+            "message": { "const": "request does not satisfy the mailbox request format" }
+          },
+          "required": ["code", "message"]
+        },
+        {
+          "properties": {
+            "code": { "const": "request_identity_mismatch" },
+            "message": { "const": "request ID does not match the marker filename" }
+          },
+          "required": ["code", "message"]
+        },
+        {
+          "properties": {
+            "code": { "const": "invalid_script" },
+            "message": { "const": "request script is invalid" }
+          },
+          "required": ["code", "message"]
+        },
+        {
+          "properties": {
+            "code": { "const": "request_too_large" },
+            "message": { "const": "request exceeds the mailbox size limit" }
+          },
+          "required": ["code", "message"]
+        }
+      ]
+    }
+  ]
+}

@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 29
+	CurrentSchemaVersion = 30
 
 	// legacySingleMailboxSchemaVersion is the last schema that represented all
 	// mailbox work in the implicit default inbox. It is accepted only by the
@@ -126,6 +126,9 @@ var bug002RemoteStatusRecoverySQL string
 
 //go:embed migrations/0029_bug003_reconciliation_attempts.sql
 var bug003ReconciliationAttemptsSQL string
+
+//go:embed migrations/0030_mailbox_ingress_diagnostics.sql
+var mailboxIngressDiagnosticsSQL string
 
 type migration struct {
 	version int
@@ -249,6 +252,10 @@ var migrations = []migration{{
 	version: 29,
 	name:    "bug003_reconciliation_attempts",
 	sql:     bug003ReconciliationAttemptsSQL,
+}, {
+	version: 30,
+	name:    "mailbox_ingress_diagnostics",
+	sql:     mailboxIngressDiagnosticsSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection

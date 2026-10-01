@@ -1,0 +1,75 @@
+{
+  "cases": [
+    {
+      "name": "does not claim acceptance",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-accepted",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": true,
+        "executed": false,
+        "code": "invalid_request_schema",
+        "message": "request does not satisfy the mailbox request format",
+        "observed_at": "2026-10-01T12:00:00Z"
+      }
+    },
+    {
+      "name": "does not claim execution",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-executed",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": false,
+        "executed": true,
+        "code": "invalid_request_schema",
+        "message": "request does not satisfy the mailbox request format",
+        "observed_at": "2026-10-01T12:00:00Z"
+      }
+    },
+    {
+      "name": "message cannot disclose a parser excerpt",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-message",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": false,
+        "executed": false,
+        "code": "invalid_request_schema",
+        "message": "request does not satisfy the mailbox request format: execution_target is invalid",
+        "observed_at": "2026-10-01T12:00:00Z"
+      }
+    },
+    {
+      "name": "normal response fields are forbidden",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-response-field",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": false,
+        "executed": false,
+        "code": "invalid_request_schema",
+        "message": "request does not satisfy the mailbox request format",
+        "observed_at": "2026-10-01T12:00:00Z",
+        "operation": "run"
+      }
+    },
+    {
+      "name": "retained-ID reuse is a lifecycle log class not a new artifact",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-reused",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": false,
+        "executed": false,
+        "code": "request_id_reused_after_rejection",
+        "message": "request ID is retained for a previous rejected request",
+        "observed_at": "2026-10-01T12:00:00Z"
+      }
+    }
+  ]
+}

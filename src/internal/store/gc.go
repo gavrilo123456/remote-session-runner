@@ -32,14 +32,15 @@ type GarbageCollectionOptions struct {
 // Live session reservations and live command slots deliberately do not appear
 // in the deletion counts: they pin their parent records beyond retention.
 type GarbageCollectionReport struct {
-	IdempotencyRecordsDeleted   int
-	CommandsOutputExpired       int
-	CommandEventsDeleted        int
-	RemoteCommandsOutputExpired int
-	RemoteCommandEventsDeleted  int
-	JobsDeleted                 int
-	CommandsDeleted             int
-	SessionsDeleted             int
+	IdempotencyRecordsDeleted        int
+	CommandsOutputExpired            int
+	CommandEventsDeleted             int
+	RemoteCommandsOutputExpired      int
+	RemoteCommandEventsDeleted       int
+	JobsDeleted                      int
+	CommandsDeleted                  int
+	SessionsDeleted                  int
+	MailboxIngressDiagnosticsDeleted int
 }
 
 // CollectGarbage expires output payloads at the 30-day boundary, removes
@@ -339,6 +340,22 @@ WHERE command_id IN (
 				return report, err
 			}
 			report.SessionsDeleted += changed
+		}
+
+		// A malformed-input record reserves its request ID for the normal
+		// metadata window. It is eligible only after both the safe input pair
+		// and its private diagnostic projection have been durably removed.
+		result, err = connection.ExecContext(ctx, `
+DELETE FROM mailbox_ingress_diagnostics
+WHERE observed_at <= ?
+  AND input_pair_removed_at IS NOT NULL
+  AND diagnostic_file_removed_at IS NOT NULL
+`, formatStoredTime(metadataCutoff))
+		if err != nil {
+			return report, fmt.Errorf("delete mailbox ingress diagnostic metadata: %w", err)
+		}
+		if report.MailboxIngressDiagnosticsDeleted, err = rowsAffected(result); err != nil {
+			return report, err
 		}
 		return report, nil
 	})

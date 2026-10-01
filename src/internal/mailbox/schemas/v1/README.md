@@ -1,7 +1,8 @@
 # Mailbox v1 wire contract
 
-These schemas freeze the JSON request, response, ACK, and per-command NDJSON
-event records. They do not implement owner-only directories, no-symlink checks,
+These schemas freeze the JSON request, response, ACK, private ingress
+diagnostic, and per-command NDJSON event records. They do not implement
+owner-only directories, no-symlink checks,
 exclusive creation, JSON/marker publication, file or directory sync, importer,
 projection, retention, or cleanup. Use the native in-module
 `mailboxclient` integration described in [docs/mailbox.md](../../../../../docs/mailbox.md)
@@ -57,6 +58,20 @@ ACK must be durably recorded before cleanup; an ACK cannot make incomplete
 output complete. A terminal response may include
 `idempotency_warning: "deduplication_not_guaranteed"` after the 90-day mapping
 window. Reusing a request ID remains prohibited while its mapping is retained.
+
+## Ingress diagnostics
+
+A safe marked input that fails before normal mailbox acceptance has no trusted
+operation, idempotency key, execution selection, session, command, response
+revision, event cursor, or ACK lifecycle. It is therefore represented only by
+the separate `diagnostic.schema.json` private artifact. Its fields prove that
+the request was not accepted or executed and restrict its code/message pair to
+fixed redacted vocabulary. The artifact is retained and cleaned up separately
+from normal mailbox responses.
+
+`request_id_reused_after_rejection` is a retained-ledger and structured-log
+lifecycle class. It does not overwrite the first frozen private diagnostic or
+create a new diagnostic artifact for the reused ID.
 
 ## Event records
 

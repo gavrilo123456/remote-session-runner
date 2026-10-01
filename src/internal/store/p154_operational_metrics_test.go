@@ -182,7 +182,22 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 		_ = db.Close()
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28, 29)`); err != nil {
+	// Keep this fixture at the exact P153 schema. P164 adds a separate
+	// malformed-ingress ledger and triggers that reference it, so remove that
+	// later schema before truncating the migration ledger to version 26.
+	for _, statement := range []string{
+		`DROP TRIGGER mailbox_exchanges_reject_ingress_diagnostic_identity`,
+		`DROP TRIGGER mailbox_ingress_diagnostics_reject_exchange_identity`,
+		`DROP TRIGGER mailbox_ingress_diagnostics_monotonic_lifecycle`,
+		`DROP TRIGGER mailbox_ingress_diagnostics_frozen_core`,
+		`DROP TABLE mailbox_ingress_diagnostics`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			_ = db.Close()
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28, 29, 30)`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}

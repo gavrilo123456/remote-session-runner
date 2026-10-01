@@ -1,0 +1,74 @@
+{
+  "cases": [
+    {
+      "name": "malformed JSON is safe and not accepted",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-malformed",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": false,
+        "executed": false,
+        "code": "malformed_json",
+        "message": "request is not valid JSON",
+        "observed_at": "2026-10-01T12:00:00Z"
+      }
+    },
+    {
+      "name": "schema rejection is safe and not executed",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-schema",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": false,
+        "executed": false,
+        "code": "invalid_request_schema",
+        "message": "request does not satisfy the mailbox request format",
+        "observed_at": "2026-10-01T12:00:01Z"
+      }
+    },
+    {
+      "name": "identity mismatch has only the trusted marker request ID",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-identity",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": false,
+        "executed": false,
+        "code": "request_identity_mismatch",
+        "message": "request ID does not match the marker filename",
+        "observed_at": "2026-10-01T12:00:02Z"
+      }
+    },
+    {
+      "name": "invalid script has fixed redacted text",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-script",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": false,
+        "executed": false,
+        "code": "invalid_script",
+        "message": "request script is invalid",
+        "observed_at": "2026-10-01T12:00:03Z"
+      }
+    },
+    {
+      "name": "oversized request has fixed redacted text",
+      "document": {
+        "inbox_id": "slidestud-io",
+        "request_id": "req-diagnostic-size",
+        "diagnostic_revision": 1,
+        "lifecycle_phase": "ingress_validation",
+        "accepted": false,
+        "executed": false,
+        "code": "request_too_large",
+        "message": "request exceeds the mailbox size limit",
+        "observed_at": "2026-10-01T12:00:04Z"
+      }
+    }
+  ]
+}

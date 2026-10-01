@@ -25,7 +25,7 @@ var p004MailboxFiles embed.FS
 
 const p004MailboxSchemaBase = "https://remote-session-runner.invalid/src/internal/mailbox/schemas/v1/"
 
-var p004MailboxSchemaNames = []string{"request", "response", "ack", "event"}
+var p004MailboxSchemaNames = []string{"request", "response", "ack", "event", "diagnostic"}
 
 type p004MailboxFixtureFile struct {
 	Cases []struct {
