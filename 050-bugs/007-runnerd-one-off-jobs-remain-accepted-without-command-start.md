@@ -173,31 +173,124 @@ the installed `sandbox-host` binary was built from the reviewed source. The
 repair must record the deployed revision and prove the durable transition on
 the installed host.
 
-## Fix and verification
+## Detailed fix plan
 
-1. Add a `runnerd`-owned serialized dispatcher/resumer that owns both claiming
-   and runtime execution for the exact claimed command. Do not make Mac
-   reconciliation replay remote work.
-2. Wake that dispatcher after job acceptance, capacity release, and eligibility
-   transitions. It must start eligible queued commands exactly once and retain
-   their existing command IDs.
-3. Define the pre-start restart path explicitly: safely resume it with stable
-   identity or publish a truthful terminal/retryable result.
-4. Persist and expose a safe reason for a queued command, such as awaiting
-   capacity or eligibility, plus scheduler wake/resume decisions.
-5. Add focused automated tests for:
-   - an immediately eligible accepted one-off command;
-   - a temporarily ineligible/slot-full command that starts automatically once
-     eligible;
-   - restart while queued, followed by exactly one start; and
-   - terminal cancellation/rejection that is never resumed.
-6. Perform an installed end-to-end mailbox acceptance using a harmless command:
-   require a terminal private outbox response, contiguous event sequence,
-   complete non-truncated output, reconciled delivery, and normal ACK cleanup.
+This plan keeps the existing dual-target model and fixes the Linux authority.
+The Mac mailbox remains an ingress and read-only projection; it must not retry
+or execute remote work to compensate for a Linux scheduler failure.
+
+### F1 — Preserve the durable scheduling boundary
+
+1. Keep `StartNextEligibleCommand` as the single transaction that chooses the
+   oldest globally eligible command, reserves its host slot, records
+   `command_started`, and changes it to `running`.
+2. Extract the runtime portion of `ResumeCommand` into an operation that can
+   execute only the exact durable `running` command it was given. The caller
+   that receives a successful scheduler claim owns that command through its
+   runtime completion or truthful loss outcome.
+3. Remove the current cross-claim path where a request for command A can claim
+   older command B and then return without starting B's runtime.
+4. Add read-only store helpers to list nonterminal one-off jobs and find the
+   job for a command. `exec_jobs` already indexes phase and has a unique
+   command ID, so this must not add a schema migration.
+5. Reconstruct resume inputs from the immutable canonical job payload. Do not
+   invent limits, isolation, script bytes, controller identity, or IDs during
+   recovery.
+
+**F1 automated exit gate:** focused store and execution tests prove one global
+claim produces one `command_started` event and one slot; a claimed command is
+executed exactly once; a request cannot strand a different older command; and
+lost slots remain unavailable until separately proven safe to release.
+
+### F2 — Add the Linux-owned durable dispatcher
+
+1. Start a small `runnerd` dispatcher only after startup reconciliation has
+   completed successfully.
+2. Give it a coalesced wake signal and a bounded periodic recovery tick. A wake
+   is sent after durable job acceptance, command completion, a slot release,
+   and an eligibility transition.
+3. On each pass, settle durable nonterminal one-off jobs, then fill available
+   capacity by claiming commands in global scheduler order and launching a
+   bounded worker for each exact claim.
+4. Each worker executes the command it claimed, updates its associated one-off
+   job through command completion and teardown, then wakes the dispatcher for
+   the next eligible work.
+5. Enter the shutdown dispatch gate before the durable claim. Keep that gate
+   lease with the worker only after a successful claim, so shutdown cannot
+   create a durable `running` record with no runtime worker.
+6. Replace handler-specific asynchronous resumes with dispatcher wakes after
+   the durable acceptance response is prepared. A request may still return
+   `accepted` while capacity is full; its stable job and command IDs do not
+   change.
+
+**F2 automated exit gate:** a held full-capacity fixture accepts a one-off
+request, releases one confirmed slot, and proves the same queued command ID
+starts and finishes once without a second request. A multi-command fixture
+proves global order and that every claim has a corresponding runtime call.
+
+### F3 — Make restart and terminal behavior explicit
+
+1. Run the existing conservative `ReconcileStartup` policy before dispatch.
+   It never reattaches or re-executes an uncertain pre-crash shell.
+2. After reconciliation, resume stored jobs only to record their durable
+   outcome. A queued command rejected because its pre-crash session is lost
+   must move its job to a truthful terminal lost/failed outcome; it must not
+   run in a replacement shell.
+3. A job accepted before any session was created may resume from its stored
+   canonical request only when no runtime execution boundary was crossed.
+4. Cancelled, rejected, terminal, and unreleased-lost commands never enter the
+   dispatcher runtime path.
+
+**F3 automated exit gate:** restart-after-queued coverage proves no second
+script execution and a truthful terminal job result; cancellation/rejection
+coverage proves no later start; lifecycle tests prove the dispatcher cannot
+claim new work after shutdown begins.
+
+### F4 — Source validation and handoff
+
+1. Run focused execution, store, and `runnerd` tests, including the race suite
+   for each changed concurrency boundary. Then run the repository's required
+   `make test`, `make vet`, `make build`, and `make smoke` gates.
+2. Inspect formatting and the staged diff. Commit the implementation and its
+   evidence only after every required local gate passes.
+3. Push from the Mac with the required GitHub identity. Fast-forward each
+   clean Ubuntu checkout with its required GitHub identity and verify its HEAD
+   equals the pushed commit before any host validation.
+
+**F4 exit gate:** clean Mac worktree, matching Mac/GitHub/Ubuntu commit, and
+machine-labelled evidence containing every command and result.
+
+### F5 — Safe host rollout and acceptance
+
+1. Treat `sandbox-host` as the affected route and keep the two real Logger
+   requests untouched. Do not cancel, delete, retry, replay, or restart them
+   to clear capacity.
+2. Before a service update on a host, run its read-only active-work gate. If it
+   reports active sessions, running commands, unreleased slots, or unfinished
+   jobs, stop the rollout on that host. Do not mark its bridge or application
+   current merely because its Git checkout advanced.
+3. On a zero-work host only, use the versioned Linux installer to rebuild,
+   restart, and refresh the already-authorized bridge. Verify readiness,
+   listener, bridge source revision, and the post-install active-work gate.
+4. Run one new harmless mailbox request through `slidestud-io` to
+   `sandbox-host`; require a terminal outbox response, contiguous events,
+   complete non-truncated output, and ACK cleanup. The deterministic slot and
+   restart gates remain automated test evidence; do not use the real Logger
+   requests as a live capacity test.
+
+**F5 exit gate:** installed binary/bridge revision equals the fixing commit,
+the harmless mailbox request completes correctly, and the two original
+requests retain their documented history. If the sandbox active-work gate does
+not reach zero, record the source fix and leave installed acceptance pending.
 
 All existing mailbox validation, `0644` request/marker publication rules,
 private `0600` result permissions, idempotency, and acknowledgement semantics
 must remain unchanged.
+
+## Fix and verification
+
+Implementation is pending F1 through F5. No live request, lost-slot record, or
+service process has been changed while preparing this plan.
 
 ## Resolution
 
@@ -212,3 +305,4 @@ before closing this bug.
 | --- | --- |
 | 2026-10-01 | Registered from two accepted-but-never-started remote mailbox commands during Logger deployment reconciliation. |
 | 2026-10-01 | Refined after runtime inspection: both jobs had sequence-1 `command_queued` events and were blocked while 4/4 slots were retained by older lost commands; retained the source-level post-capacity/eligibility liveness defect separately from the immediate capacity blockage. |
+| 2026-10-01 | Added phased F1–F5 repair plan: exact-claim runtime ownership, Linux durable dispatcher, conservative restart settlement, automated gates, and a zero-work-only sandbox rollout. |
