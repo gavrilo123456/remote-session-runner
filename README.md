@@ -33,6 +33,7 @@ Start with [the post-implementation documentation index](docs/README.md):
 - [Configuration reference](docs/configuration.md)
 - [Setup and upgrade runbook](docs/setup.md)
 - [CLI user guide](docs/user-guide.md)
+- [LLM client guide (placeholder)](docs/llm-client-guide.md)
 - [Mailbox guide](docs/mailbox.md)
 - [API reference](docs/api.md)
 - [Operations runbook](docs/operations.md)
