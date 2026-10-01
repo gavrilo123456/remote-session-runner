@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` |
+| Status | `IN PROGRESS` — B008-P6 acceptance passed; evidence handoff pending |
 | Severity | High — can strand protected control-plane work indefinitely after safe mailbox admission |
 | Priority | High |
 | Reported | 2026-10-01 |
@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner |
 | Affected component/path | Direct workspace mailbox ingress; local relay/projection; remote bridge/dispatch; Linux `runnerd` durable one-off scheduling |
 | Affected revision | Installed `runnerd` and bridge revision at recurrence are unverified. Do not infer them from the documented BUG-007 source or checkout revision. |
-| Fixed revision | B008-P4 source handoff: `ccb32e4a0c35f1fe41e6ef8e16001b8545bd7649`; B008-P4a installer-cache correction: `90fc6eeadc89f9cba929da1ff70e428e9e8d5bc1`; B008-P6 remains required for resolution. |
-| Verification | B008-P1 through B008-P4 source gates passed, including full regression, build provenance, documentation, and source synchronization. B008-P4a's full source suite, focused race check, and both Ubuntu fast-forward handoffs passed. B008-P2's Linux-only host gate passed. Installed-service and fresh end-to-end evidence remain pending. |
+| Fixed revision | B008-P4 source handoff: `ccb32e4a0c35f1fe41e6ef8e16001b8545bd7649`; B008-P4a installer-cache correction: `90fc6eeadc89f9cba929da1ff70e428e9e8d5bc1`; fresh installed-service acceptance ran at `6de73daaa6a9c3512e2bb944e94f41adda4f3424`. |
+| Verification | B008-P1 through B008-P4 source gates passed, including full regression, build provenance, documentation, and source synchronization. B008-P4a's full source suite, focused race check, and both Ubuntu fast-forward handoffs passed. B008-P2's Linux-only host gate passed. B008-P6 installed the current sandbox service and bridge, completed native request `req-p158-18da838efb1ddb10` as command `cmd-eb041dc69a5c49af89cfc80176943f4a`, validated its acknowledged full terminal chain, and finished with zero-work P128 counts. The closure status changes only after this evidence is pushed and synchronized. |
 
 ## Reported behavior
 
@@ -548,26 +548,40 @@ file-only mailbox request. Prove the complete non-truncated terminal outbox,
 contiguous event file, ACK cleanup, and healthy no-retained-capacity status.
 This is separate from the 103/104 recovery and from the mTLS transport probe.
 
+**Result: passed.** The normal Mac and sandbox installations attested the
+tested `6de73daaa6a9c3512e2bb944e94f41adda4f3424` revision. The sandbox
+queued bridge was ready at the same source commit. The native external-mailbox
+gate published only fresh harmless request `req-p158-18da838efb1ddb10`, which
+deliberately used the `slidestud-io` inbox default and completed as command
+`cmd-eb041dc69a5c49af89cfc80176943f4a` on `sandbox-dev` /
+remote `sandbox-host`. It proved complete succeeded exit-zero output,
+contiguous events, ACK cleanup, request-pair cleanup, and a post-request P128
+zero-work result. No historical request was replayed.
+
 ## Completion criteria
 
-BUG-008 is resolved only after B008-P1 through B008-P4 and B008-P4a source
-gates pass and B008-P6 provides the stated installed-service evidence. The
-historic B008-P5 cleanup does not replace the online-recovery regression
-because it cancelled, rather than preserved, the two original queued commands.
+**Acceptance satisfied; handoff pending.** B008-P1 through B008-P4 and B008-P4a
+source gates passed, and B008-P6 provided the stated installed-service
+evidence. The historic B008-P5 cleanup does not replace the online-recovery
+regression because it cancelled, rather than preserved, the two original
+queued commands. The Mac evidence commit must be pushed and fast-forwarded to
+both Ubuntu checkouts before the bug status changes to resolved.
 
 ## Resolution
 
-Open. B008-P1 through B008-P4 are committed, pushed, synchronized, and passed
-their stated gates. B008-P3 gives an accepted remote request a narrowly safe,
-fresh active status when a strict read-only target query can prove it; it does
-not fabricate a terminal result or diagnose an aggregate queue blocker.
-B008-P4 adds source-revision attestation for the running service and the
-operator documentation. B008-P4a removes the disposable Go cache from normal
-Linux service and bridge updates, but neither source revision has yet received
-the required fresh installed-service acceptance. The fresh harmless
-end-to-end proof remains. Requests 103 and 104 are terminal cancelled historic
-evidence; Logger rollout still needs an independently accepted fresh request
-after the repair is installed.
+Pending evidence handoff. B008-P1 through B008-P4 and B008-P4a are committed,
+pushed, synchronized, and passed their stated source gates. B008-P3 gives an
+accepted remote request a narrowly safe, fresh active status when a strict
+read-only target query can prove it; it does not fabricate a terminal result
+or diagnose an aggregate queue blocker. B008-P4 provides running-service
+source-revision attestation and the operator documentation; B008-P4a removes
+disposable Go caches from normal Linux service and bridge updates. B008-P6
+then installed and attested the current Mac and sandbox services, and its one
+fresh harmless native external-mailbox request completed through the sandbox
+default with terminal, event, and ACK proof. Requests 103 and 104 remain
+terminal cancelled historic evidence and were not replayed. The
+physical-power-loss durability claim remains outside this resolution; P143 is
+software-crash-only.
 
 ## History
 
@@ -582,3 +596,4 @@ after the repair is installed.
 | 2026-10-01 | B008-P3 added, pushed, and synchronized the identity-checked active remote mailbox projection. Focused and full Mac source gates, vet/build/smoke, and the focused changed-path race gate passed. No host application validation occurred in this phase. |
 | 2026-10-01 | B008-P4 added, pushed, and synchronized strict running-service build-revision attestation, full source regression/race coverage, and the related mailbox/recovery operator documentation. No host service was installed, restarted, or exercised; B008-P6 remains required. |
 | 2026-10-01 | B008-P4a removed the per-invocation Go caches from normal Linux service and queued-bridge updates, added static and host-gate coverage for both historic cache names, updated the runbooks, passed full Mac source verification and a focused race check, and was pushed and synchronized to both Ubuntu checkouts. No P6 service installation or mailbox acceptance occurred in this follow-up. |
+| 2026-10-01 | B008-P6 installed and attested the current Mac and sandbox services, then completed fresh harmless native external-mailbox request `req-p158-18da838efb1ddb10` as `cmd-eb041dc69a5c49af89cfc80176943f4a` through the sandbox default. The acknowledged complete result, contiguous events, inbox/ACK cleanup, and post-request P128 zero-work gate passed. Neither historical command was replayed; the closing evidence handoff remains required. |
