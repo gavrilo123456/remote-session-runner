@@ -152,6 +152,95 @@ Request 102 is unrelated: it reached a truthful terminal `lost`
 result after non-interactive Git authentication failed. BUG-008 concerns the
 different pre-start condition in requests 103 and 104.
 
+## Sanitized latest-20 mailbox command chronology
+
+The following is the exact latest-20 outbox history at investigation time,
+ordered newest first. Every row is a `run` request submitted through
+the same direct workspace mailbox, with
+`repository_alias=slidestud-io`,
+`environment=sandbox-dev`, and
+`execution_target=remote/sandbox-host`. It deliberately includes no
+script body, standard output, standard error, authorization header, or secret
+value.
+
+| Order | Observed UTC | Request ID | Command ID | Result | Event evidence |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 2026-10-01T17:18:42.36534Z | req-codex-probe-mailbox-gitea-status-20261001-104 | cmd-169a82402cd66869eaccb398a8977874 | accepted, no command state | no event file |
+| 2 | 2026-10-01T17:13:50.526819Z | req-codex-verify-logger-release-manifest-bot-20261001-103 | cmd-579d4be20b7dbbd6db1b6942af60d819 | accepted, no command state | no event file |
+| 3 | 2026-10-01T17:12:55.661029041Z | req-codex-verify-logger-release-manifest-20261001-102 | cmd-2f7824fdfbd7b0473af55bbaa5bca4db | complete, lost | terminal command_lost, sequence 4 |
+| 4 | 2026-10-01T17:11:37.197948631Z | req-codex-inspect-logger-redis-provenance-20261001-101 | cmd-da407d9eb9b7e1a84f017e9104acf015 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 5 |
+| 5 | 2026-10-01T17:09:55.302233801Z | req-codex-monitor-logger-redis-build-20261001-100 | cmd-8df8013aed9104a2c33c4b1874e4df04 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 5 |
+| 6 | 2026-10-01T17:07:20.731971803Z | req-codex-identify-logger-redis-build-run-20261001-99 | cmd-5ca2707d1527f43546b0331586a2fef4 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 4 |
+| 7 | 2026-10-01T17:06:24.796341444Z | req-codex-build-logger-redis-release-20261001-98 | cmd-38e2540ad0040fc925e8ecc32cc881cb | complete, succeeded, exit 0 | terminal command_succeeded, sequence 4 |
+| 8 | 2026-10-01T17:00:19.341955948Z | req-codex-read-logger-supersession-failure-20261001-97 | cmd-642cfea218a47d52c5eb1e2e1f92d2b4 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 5 |
+| 9 | 2026-10-01T16:59:13.251551822Z | req-codex-identify-logger-supersession-run-corrected-20261001-96 | cmd-309824ffdba500f4566ed8cac7c3dd72 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 4 |
+| 10 | 2026-10-01T16:58:06.99417915Z | req-codex-identify-logger-supersession-run-20261001-95 | cmd-c8ebef2c140200d96987cac12eede43e | complete, lost | terminal command_lost, sequence 4 |
+| 11 | 2026-10-01T16:57:07.825135946Z | req-codex-logger-g0-supersession-20261001-94 | cmd-8416534133917ee2a75e0f81cef808fc | complete, succeeded, exit 0 | terminal command_succeeded, sequence 4 |
+| 12 | 2026-10-01T16:55:59.437245538Z | req-codex-extract-logger-reservation-identity-20261001-93 | cmd-c8a152828ad624a759a221546c37b98a | complete, succeeded, exit 0 | terminal command_succeeded, sequence 5 |
+| 13 | 2026-10-01T16:54:23.43490314Z | req-codex-read-logger-reservation-evidence-20261001-92 | cmd-f67d95770307f1af5dd36548a23fb0da | complete, succeeded, exit 0 | terminal command_succeeded, sequence 5 |
+| 14 | 2026-10-01T16:52:13.525298472Z | req-codex-identify-logger-reservation-run-20261001-91 | cmd-8b43c236c998637240372d44d94d6a69 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 4 |
+| 15 | 2026-10-01T16:12:52.325727101Z | req-codex-reserve-logger-release-5d431944-20261001-90 | cmd-a3edc13a679405868cc138ec1e7f4165 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 4 |
+| 16 | 2026-10-01T16:10:41.844994123Z | req-codex-verify-guarded-import-3769-20261001-89 | cmd-abf2b00bd21069e50694d44f70c89ba3 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 8 |
+| 17 | 2026-10-01T16:09:41.379173274Z | req-codex-identify-guarded-import-run-20261001-88 | cmd-1d1a3cbdc7d8de06c60c0919dcaff507 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 4 |
+| 18 | 2026-10-01T16:08:47.787281339Z | req-codex-import-dev-validated-5d431944-20261001-87 | cmd-1c2cd85166b3b226e28263661258c495 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 5 |
+| 19 | 2026-10-01T16:07:46.882300245Z | req-codex-verify-trusted-status-fields-20261001-86 | cmd-6be4a2fa03b3f0152b890ffed1ed649a | complete, succeeded, exit 0 | terminal command_succeeded, sequence 4 |
+| 20 | 2026-10-01T16:06:47.603177845Z | req-codex-verify-trusted-status-20261001-85 | cmd-01e5482d67024b4608da5c17b3293d14 | complete, succeeded, exit 0 | terminal command_succeeded, sequence 6 |
+
+The chronology establishes three facts relevant to diagnosis:
+
+1. The mailbox did execute many commands successfully immediately before the
+   incident, so BUG-008 is not evidence that all direct-file intake or all
+   sandbox routing was down.
+2. Two completed terminal `lost` commands exist in the same short
+   sequence (95 and 102); they need scheduler/bridge correlation but are not
+   evidence that any later command did not execute.
+3. The shift is sharp: 101 completed normally, while fresh 103 and then the
+   simpler independent probe 104 were admitted without any visible remote
+   queue/start event. That makes malformed JSON, marker mode/order, request
+   identity reuse, the Git read in 103, and the Gitea status GET in 104
+   insufficient explanations on their own.
+
+## Broader sanitized mailbox baseline
+
+The same mailbox contains 136 durable outbox records at this observation
+point. Their terminal/projection shape is:
+
+| Outbox shape | Count |
+| --- | ---: |
+| complete / succeeded / reconciled / event file present | 118 |
+| complete / lost / reconciled / event file present | 10 |
+| complete / failed / reconciled / event file present | 1 |
+| complete / cancelled / reconciled / event file present | 2 |
+| rejected before command creation | 3 |
+| accepted / no command state / no event file | 2 |
+
+The final category contains exactly requests 103 and 104. This reinforces
+that their durable admission is real and that the incident is not an ordinary
+terminal failure projection. It does not prove that any historical terminal
+`lost` record leaked a slot, session, lease, or bridge state.
+
+For correlation, the complete historical terminal `lost` set found
+in this mailbox is:
+
+| Observed UTC | Request ID | Command ID |
+| --- | --- | --- |
+| 2026-09-30T18:35:34.522209907Z | req-codex-logger-rerun-migration-20260930-02 | cmd-45d688bf05fbb319e79641f6e8f277a5 |
+| 2026-10-01T05:53:34.83479306Z | req-codex-logger-migration-review-retry-20261001-01 | cmd-ee52b581dad5546b8e069b36c4ac7b53 |
+| 2026-10-01T09:01:02.29911464Z | req-codex-logger-migration-review-linux-dev-20261001-03 | cmd-447c9b8fba53b9b7a598ad51ac05d667 |
+| 2026-10-01T10:48:55.921214533Z | req-codex-logger-reservation-runs-20261001-45 | cmd-f5c1a59d1f4fdf686449013e032700a6 |
+| 2026-10-01T10:56:11.225414547Z | req-codex-create-trusted-control-review-ref-20261001-52 | cmd-bad71a16b9c88e8f4f7eecc6377889c2 |
+| 2026-10-01T11:15:08.374849088Z | req-codex-find-import-dev-run-20261001-69 | cmd-9bdbdc5841736473d45f8a254668fee2 |
+| 2026-10-01T15:50:27.706549654Z | req-codex-inspect-import-workflow-20261001-75 | cmd-b20e70fd473a1d4c0a8b2a218e938551 |
+| 2026-10-01T15:57:37.959903574Z | req-codex-logger-trusted-source-validation-20261001-78 | cmd-495eb7b6a9ec0b80f572e2e3693e3556 |
+| 2026-10-01T16:58:06.99417915Z | req-codex-identify-logger-supersession-run-20261001-95 | cmd-c8ebef2c140200d96987cac12eede43e |
+| 2026-10-01T17:12:55.661029041Z | req-codex-verify-logger-release-manifest-20261001-102 | cmd-2f7824fdfbd7b0473af55bbaa5bca4db |
+
+The implementer should inspect the remote durable records and every associated
+slot/session/lease/reconciliation transition for this set, then compare them
+with successful requests 85 through 101. The table is an investigation index,
+not permission to use any terminal `lost` result as proof of
+non-execution or to release capacity without the existing guarded evidence.
+
 ## Safe reproduction
 
 Use an isolated harmless request, not a protected deployment or a
