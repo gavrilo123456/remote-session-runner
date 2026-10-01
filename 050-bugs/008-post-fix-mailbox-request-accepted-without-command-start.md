@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner |
 | Affected component/path | Direct workspace mailbox ingress; local relay/projection; remote bridge/dispatch; Linux `runnerd` durable one-off scheduling |
 | Affected revision | Installed `runnerd` and bridge revision at recurrence are unverified. Do not infer them from the documented BUG-007 source or checkout revision. |
-| Fixed revision | Pending B008-P3, B008-P4, and B008-P6 completion |
-| Verification | B008-P1 and B008-P2 source and host gates passed; the remaining visibility, full-regression, installation, and fresh end-to-end gates are pending. |
+| Fixed revision | B008-P3 implementation: `05de6f3ad75fc3bdbc0e816d9e3bf7db585718d8`; B008-P4 and B008-P6 remain required for resolution. |
+| Verification | B008-P1 through B008-P3 source gates passed, and B008-P2's Linux-only host gate passed. Full regression/documentation, installation, and fresh end-to-end gates remain pending. |
 
 ## Reported behavior
 
@@ -536,12 +536,14 @@ rather than preserved, the two original queued commands.
 
 ## Resolution
 
-Open. B008-P1 and B008-P2 are committed, pushed, synchronized, and passed
-their stated source/host gates. The active mailbox projection, complete
-regression suite, installation, and fresh harmless end-to-end proof remain.
-Requests 103 and 104 are terminal cancelled historic evidence; Logger rollout
-still needs an independently accepted fresh request after the repair is
-installed.
+Open. B008-P1 through B008-P3 are committed, pushed, synchronized, and passed
+their stated gates. B008-P3 gives an accepted remote request a narrowly safe,
+fresh active status when a strict read-only target query can prove it; it does
+not fabricate a terminal result or diagnose an aggregate queue blocker. The
+complete regression/documentation gate, installation, and fresh harmless
+end-to-end proof remain. Requests 103 and 104 are terminal cancelled historic
+evidence; Logger rollout still needs an independently accepted fresh request
+after the repair is installed.
 
 ## History
 
@@ -553,3 +555,4 @@ installed.
 | 2026-10-01 | User explicitly authorized cancellation of the two pending historic commands. The existing guarded offline procedure cancelled only those commands, recovered the four proven retained lost pairs, returned P128 to zero active work, and restarted `runnerd.service`. |
 | 2026-10-01 | B008-P1 added and synchronized the queue-preserving recovery foundation; source tests passed. |
 | 2026-10-01 | B008-P2 added, pushed, and synchronized the guarded owner-only online retained-capacity command. Focused Mac source gates and Linux zombie-only process-group gates passed on both Ubuntu hosts without a service restart. |
+| 2026-10-01 | B008-P3 added, pushed, and synchronized the identity-checked active remote mailbox projection. Focused and full Mac source gates, vet/build/smoke, and the focused changed-path race gate passed. No host application validation occurred in this phase. |
