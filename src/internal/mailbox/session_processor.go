@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -136,6 +137,11 @@ type SessionProcessorOptions struct {
 	Operations SessionOperations
 	Outbox     *Outbox
 	EventFiles *EventFiles
+	// Diagnostics optionally supplies the private ingress-diagnostic
+	// projection directory. Production composition shares this instance with
+	// ArtifactCleaner; legacy callers may omit it and receive a validated
+	// instance rooted beneath Importer.
+	Diagnostics *DiagnosticFiles
 	// ExecutionResolver resolves trusted mailbox defaults and allow-listed
 	// overrides for create_session and run. It is mandatory: allowing a nil
 	// resolver would let a miswired mailbox runtime bypass configured policy.
@@ -160,6 +166,7 @@ type SessionProcessor struct {
 	controller                         domain.ControllerIdentity
 	operations                         SessionOperations
 	projector                          Projector
+	diagnostics                        *DiagnosticFiles
 	executionResolver                  MailboxExecutionResolver
 	now                                func() time.Time
 	uncertaintyWindow                  time.Duration
@@ -167,6 +174,10 @@ type SessionProcessor struct {
 	terminalArtifactRecoveryCursor     *store.MailboxTerminalArtifactCursor
 	deferTerminalArtifactRecovery      bool
 	mu                                 sync.Mutex
+	ingressDiagnosticEventsMu          sync.Mutex
+	ingressDiagnosticEvents            []IngressDiagnosticEvent
+	ingressDiagnosticRecoveryFailures  map[string]struct{}
+	ingressDiagnosticReuseFailures     map[string]struct{}
 }
 
 func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, error) {
@@ -204,12 +215,26 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 	if err != nil || operationsController.Type() != controller.Type() || operationsController.ID() != controller.ID() {
 		return nil, fmt.Errorf("%w: processor and Mac session-operation controllers must match", ErrSessionProcessorConfiguration)
 	}
+	diagnostics := options.Diagnostics
+	if diagnostics == nil {
+		var err error
+		diagnostics, err = NewDiagnosticFiles(options.Importer.root)
+		if err != nil {
+			return nil, fmt.Errorf("%w: diagnostic files", ErrSessionProcessorConfiguration)
+		}
+	}
+	if diagnostics.root == "" || filepath.Dir(diagnostics.root) != options.Importer.root {
+		return nil, fmt.Errorf("%w: diagnostics root", ErrSessionProcessorConfiguration)
+	}
 	return &SessionProcessor{
 		mailboxID: mailboxID, importer: options.Importer, authority: options.Authority, controller: controller,
 		operations: options.Operations, projector: Projector{MailboxID: mailboxID, Authority: options.Authority, Outbox: options.Outbox, EventFiles: options.EventFiles},
+		diagnostics:       diagnostics,
 		executionResolver: options.ExecutionResolver, now: options.Now, uncertaintyWindow: options.RemoteUncertaintyWindow,
 		terminalArtifactRecoveryBatchLimit: options.TerminalArtifactRecoveryBatchLimit,
 		deferTerminalArtifactRecovery:      options.DeferTerminalArtifactRecovery,
+		ingressDiagnosticRecoveryFailures:  make(map[string]struct{}),
+		ingressDiagnosticReuseFailures:     make(map[string]struct{}),
 	}, nil
 }
 
@@ -266,7 +291,23 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 			result = errors.Join(result, mailboxStageError(p.mailboxID, "terminal_artifact", err))
 		}
 	}
-	results, err := p.importer.importWithRecorder(ctx, p.process)
+	// A durable malformed-input record can have an unmarked JSON remnant after
+	// a stop between marker and JSON unlink. Repair it before Import invokes the
+	// ordinary unmarked-draft cleanup, otherwise that cleanup could erase the
+	// only fingerprint-bound recovery evidence.
+	diagnosticRecoveryReady := true
+	if err := p.recoverIngressDiagnostics(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		diagnosticRecoveryReady = false
+		result = errors.Join(result, mailboxStageError(p.mailboxID, "ingress_diagnostic", err))
+	}
+	// When recovery could not complete, still inspect safely marked independent
+	// work but defer ordinary unmarked-draft cleanup. A crash after the marker
+	// unlink leaves an unmarked source JSON whose fingerprint-bound recovery
+	// must get another chance before generic age cleanup can remove it.
+	results, err := p.importer.importWithIngressHandlersAfterRecovery(ctx, p.process, p.processIngressDiagnostic, p.processRetainedIngressDiagnostic, diagnosticRecoveryReady)
 	if err != nil {
 		if ctx.Err() != nil {
 			return results, ctx.Err()

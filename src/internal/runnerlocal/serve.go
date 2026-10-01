@@ -458,9 +458,13 @@ func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *s
 		if err != nil {
 			return nil, fmt.Errorf("construct mailbox event files for %s: %w", definition.ID, err)
 		}
+		diagnostics, err := mailbox.NewDiagnosticFiles(definition.Root)
+		if err != nil {
+			return nil, fmt.Errorf("construct mailbox diagnostics for %s: %w", definition.ID, err)
+		}
 		processor, err := mailbox.NewSessionProcessor(mailbox.SessionProcessorOptions{
 			MailboxID: definition.ID, Importer: importer, Authority: authority, Controller: owner, Operations: operations,
-			Outbox: outbox, EventFiles: eventFiles, ExecutionResolver: resolver,
+			Outbox: outbox, EventFiles: eventFiles, Diagnostics: diagnostics, ExecutionResolver: resolver,
 			RemoteUncertaintyWindow: reconciliationDeadline, DeferTerminalArtifactRecovery: true,
 		})
 		if err != nil {
@@ -472,7 +476,7 @@ func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *s
 		}
 		runtimes = append(runtimes, mailboxRuntime{
 			id: definition.ID, importer: importer, processor: processor, ackImporter: ackImporter,
-			artifactCleaner: mailbox.ArtifactCleaner{MailboxID: definition.ID, Authority: authority, Outbox: outbox, EventFiles: eventFiles},
+			artifactCleaner: mailbox.ArtifactCleaner{MailboxID: definition.ID, Authority: authority, Outbox: outbox, EventFiles: eventFiles, Diagnostics: diagnostics},
 		})
 	}
 	return runtimes, nil
@@ -743,9 +747,13 @@ func (s *Service) runMailboxCycles(ctx context.Context, stderr io.Writer) {
 	}
 	runtimes := s.configuredMailboxRuntimes(stderr)
 	for _, runtime := range runtimes {
-		if _, err := runtime.processor.Import(ctx); err != nil && ctx.Err() == nil {
+		_, err := runtime.processor.Import(ctx)
+		s.logMailboxIngressDiagnosticEvents(stderr, runtime.id, runtime.processor.TakeIngressDiagnosticEvents())
+		if err != nil && ctx.Err() == nil {
 			s.recordOperationalError(err, false)
-			s.logMailboxReconciliationError(stderr, runtime.id, "import", err)
+			if !mailbox.IsMailboxIngressDiagnosticFailure(err) {
+				s.logMailboxReconciliationError(stderr, runtime.id, "import", err)
+			}
 		}
 	}
 	for _, runtime := range runtimes {
@@ -918,6 +926,45 @@ func (s *Service) logMailboxReconciliationError(stderr io.Writer, mailboxID, fal
 		fmt.Fprintf(stderr, "runner-local: mailbox_reconciliation mailbox=%s stage=%s operation=%s request_id=%s job_id=%s session_id=%s command_id=%s target_profile=%s endpoint=%s failure_class=%s retry_count=0\n",
 			box, stage, issue.Operation, issue.RequestID, issue.JobID, issue.SessionID,
 			issue.CommandID, issue.TargetProfile, s.remoteEndpoint(issue.TargetProfile), issue.FailureClass)
+	}
+}
+
+// logMailboxIngressDiagnosticEvents renders only the fixed correlation fields
+// for a trusted P165 ingress event. It never renders an importer or storage
+// error because those can contain untrusted request content. The runtime's
+// configured mailbox ID remains authoritative over the event field.
+func (s *Service) logMailboxIngressDiagnosticEvents(stderr io.Writer, mailboxID string, events []mailbox.IngressDiagnosticEvent) {
+	for _, event := range events {
+		fmt.Fprintf(stderr, "runner-local: mailbox_ingress_rejected mailbox=%s request_id=%s idempotency_key=unavailable execution_target=not_selected remote_command_id=not_created lifecycle_phase=ingress_validation failure_class=%s\n",
+			safeMailboxIngressLogToken(mailboxID, "not_applicable"),
+			safeMailboxIngressLogToken(event.RequestID, "unavailable"),
+			safeMailboxIngressFailureClass(event.FailureClass),
+		)
+	}
+}
+
+func safeMailboxIngressLogToken(value, fallback string) string {
+	if len(value) == 0 || len(value) > 128 {
+		return fallback
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '.' && character != '_' && character != '-' {
+			return fallback
+		}
+	}
+	return value
+}
+
+func safeMailboxIngressFailureClass(value string) string {
+	switch value {
+	case "malformed_json", "invalid_request_schema", "request_identity_mismatch", "invalid_script", "request_too_large", "request_id_reused_after_rejection", "recovery_failed":
+		return value
+	default:
+		return "recovery_failed"
 	}
 }
 
@@ -1184,6 +1231,7 @@ func mailboxTreePaths(root string) []string {
 		filepath.Join(root, "outbox"),
 		filepath.Join(root, "events"),
 		filepath.Join(root, "acks"),
+		filepath.Join(root, "diagnostics"),
 	}
 }
 

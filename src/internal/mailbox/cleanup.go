@@ -188,11 +188,16 @@ type ArtifactCleaner struct {
 	Authority  *store.AuthorityStore
 	Outbox     *Outbox
 	EventFiles *EventFiles
+	// Diagnostics is optional for compatibility with earlier mailbox-only
+	// harnesses. Production composition supplies it so seven-day private
+	// ingress diagnostics follow their durable store cleanup lifecycle.
+	Diagnostics *DiagnosticFiles
 }
 
 type ArtifactCleanupReport struct {
-	ResponsesRemoved  int
-	EventFilesRemoved int
+	ResponsesRemoved   int
+	EventFilesRemoved  int
+	DiagnosticsRemoved int
 }
 
 func (c ArtifactCleaner) Run(ctx context.Context) (ArtifactCleanupReport, error) {
@@ -241,6 +246,28 @@ func (c ArtifactCleaner) Run(ctx context.Context) (ArtifactCleanupReport, error)
 			return report, err
 		}
 		report.EventFilesRemoved++
+	}
+	if c.Diagnostics != nil {
+		diagnostics, err := c.Authority.ClaimMailboxIngressDiagnosticsForCleanupInMailbox(ctx, mailboxID, 0)
+		if err != nil {
+			return report, err
+		}
+		for _, diagnostic := range diagnostics {
+			if err := ctx.Err(); err != nil {
+				return report, err
+			}
+			if err := c.Diagnostics.Remove(ctx, diagnostic.RequestID); err != nil {
+				return report, err
+			}
+			ref, err := store.NewMailboxIngressDiagnosticRef(mailboxID, diagnostic.RequestID)
+			if err != nil {
+				return report, err
+			}
+			if _, err := c.Authority.MarkMailboxIngressDiagnosticFileRemovedInMailbox(ctx, ref); err != nil {
+				return report, err
+			}
+			report.DiagnosticsRemoved++
+		}
 	}
 	return report, nil
 }

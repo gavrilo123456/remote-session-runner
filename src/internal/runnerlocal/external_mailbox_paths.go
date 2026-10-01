@@ -84,7 +84,7 @@ func prepareExternalMailboxTreeUnder(trustRoot, root string) error {
 	return nil
 }
 
-var externalMailboxChildNames = []string{"inbox", "outbox", "events", "acks"}
+var externalMailboxChildNames = []string{"inbox", "outbox", "events", "acks", "diagnostics"}
 
 func openExternalMailboxParentUnder(trustRoot, root string) (int, string, error) {
 	if !filepath.IsAbs(trustRoot) || filepath.Clean(trustRoot) != trustRoot ||

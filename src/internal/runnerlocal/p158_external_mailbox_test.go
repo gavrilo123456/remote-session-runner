@@ -162,11 +162,11 @@ func TestP158ExistingExternalMailboxDirectoriesMustAlreadyBeSafe(t *testing.T) {
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	inbox := filepath.Join(root, "inbox")
-	if err := os.Mkdir(inbox, 0o755); err != nil {
+	diagnostics := filepath.Join(root, "diagnostics")
+	if err := os.Mkdir(diagnostics, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(inbox, 0o755); err != nil {
+	if err := os.Chmod(diagnostics, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateExternalMailboxTreeUnder(trustRoot, root); err == nil {
@@ -175,7 +175,7 @@ func TestP158ExistingExternalMailboxDirectoriesMustAlreadyBeSafe(t *testing.T) {
 	if err := prepareExternalMailboxTreeUnder(trustRoot, root); err == nil {
 		t.Fatal("preparation accepted an unsafe existing child")
 	}
-	info, err = os.Lstat(inbox)
+	info, err = os.Lstat(diagnostics)
 	if err != nil || info.Mode().Perm() != 0o755 {
 		t.Fatalf("unsafe existing child was changed: info=%v err=%v", info, err)
 	}

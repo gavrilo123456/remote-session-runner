@@ -242,7 +242,7 @@ func p155OwnedSocketError(path string) error {
 
 func p155RequireMailboxTree(t *testing.T, root string) {
 	t.Helper()
-	for _, child := range []string{"", "inbox", "outbox", "events", "acks"} {
+	for _, child := range []string{"", "inbox", "outbox", "events", "acks", "diagnostics"} {
 		path := root
 		if child != "" {
 			path = filepath.Join(root, child)

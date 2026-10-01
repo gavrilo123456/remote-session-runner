@@ -4,6 +4,7 @@ package mailboxclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -29,6 +30,7 @@ var (
 	ErrConfiguration  = errors.New("mailbox client configuration is invalid")
 	ErrRequest        = errors.New("mailbox request file is invalid")
 	ErrResponse       = errors.New("mailbox response file is invalid")
+	ErrDiagnostic     = errors.New("mailbox ingress diagnostic file is invalid")
 	ErrEvents         = errors.New("mailbox event file is invalid")
 	ErrAcknowledgment = errors.New("mailbox acknowledgment is invalid")
 	requestIDPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -81,6 +83,21 @@ type Response struct {
 	ResolvedEnvironment      string          `json:"resolved_environment,omitempty"`
 	ResolvedExecutionTarget  *ResponseTarget `json:"resolved_execution_target,omitempty"`
 	Error                    *ResponseError  `json:"error,omitempty"`
+}
+
+// Diagnostic is the private, read-only result of a safe mailbox input that
+// failed before normal exchange acceptance. It deliberately has no operation,
+// target, idempotency, response, event, or acknowledgement fields.
+type Diagnostic struct {
+	InboxID            string `json:"inbox_id"`
+	RequestID          string `json:"request_id"`
+	DiagnosticRevision int64  `json:"diagnostic_revision"`
+	LifecyclePhase     string `json:"lifecycle_phase"`
+	Accepted           bool   `json:"accepted"`
+	Executed           bool   `json:"executed"`
+	Code               string `json:"code"`
+	Message            string `json:"message"`
+	ObservedAt         string `json:"observed_at"`
 }
 
 type Event struct {
@@ -166,6 +183,110 @@ func (c *Client) WaitResponse(ctx context.Context, requestID string) (Response, 
 			return Response{}, ctx.Err()
 		case <-ticker.C:
 		}
+	}
+}
+
+// ReadDiagnostic reads one owner-only private ingress diagnostic. Diagnostics
+// are generated only by Runner after safe marker/file admission; this client
+// has no method to publish one.
+func (c *Client) ReadDiagnostic(requestID string) (Diagnostic, error) {
+	if c == nil || !validRequestID(requestID) {
+		return Diagnostic{}, ErrDiagnostic
+	}
+	diagnostics := filepath.Join(c.root, "diagnostics")
+	if err := validateOwnerDirectory(diagnostics); err != nil {
+		return Diagnostic{}, fmt.Errorf("%w: diagnostics: %v", ErrDiagnostic, err)
+	}
+	raw, err := readExactOwnerFile(filepath.Join(diagnostics, requestID+".json"), maxRequestBytes)
+	if err != nil {
+		return Diagnostic{}, fmt.Errorf("%w: read diagnostics: %w", ErrDiagnostic, err)
+	}
+	diagnostic, err := decodeDiagnostic(raw)
+	if err != nil || diagnostic.RequestID != requestID {
+		return Diagnostic{}, ErrDiagnostic
+	}
+	return diagnostic, nil
+}
+
+// WaitDiagnostic polls the private diagnostic path until a matching frozen
+// diagnostic becomes visible. It intentionally does not create an ACK because
+// diagnostics have their own seven-day retention lifecycle.
+func (c *Client) WaitDiagnostic(ctx context.Context, requestID string) (Diagnostic, error) {
+	if c == nil || !validRequestID(requestID) {
+		return Diagnostic{}, ErrDiagnostic
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		diagnostic, err := c.ReadDiagnostic(requestID)
+		if err == nil {
+			return diagnostic, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return Diagnostic{}, err
+		}
+		select {
+		case <-ctx.Done():
+			return Diagnostic{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func decodeDiagnostic(raw []byte) (Diagnostic, error) {
+	var wire struct {
+		InboxID            *string `json:"inbox_id"`
+		RequestID          *string `json:"request_id"`
+		DiagnosticRevision *int64  `json:"diagnostic_revision"`
+		LifecyclePhase     *string `json:"lifecycle_phase"`
+		Accepted           *bool   `json:"accepted"`
+		Executed           *bool   `json:"executed"`
+		Code               *string `json:"code"`
+		Message            *string `json:"message"`
+		ObservedAt         *string `json:"observed_at"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return Diagnostic{}, ErrDiagnostic
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return Diagnostic{}, ErrDiagnostic
+	}
+	if wire.InboxID == nil || !validRequestID(*wire.InboxID) || wire.RequestID == nil || !validRequestID(*wire.RequestID) ||
+		wire.DiagnosticRevision == nil || *wire.DiagnosticRevision != 1 || wire.LifecyclePhase == nil || *wire.LifecyclePhase != "ingress_validation" ||
+		wire.Accepted == nil || *wire.Accepted || wire.Executed == nil || *wire.Executed || wire.Code == nil || wire.Message == nil ||
+		wire.ObservedAt == nil || !validDiagnosticCodeMessage(*wire.Code, *wire.Message) {
+		return Diagnostic{}, ErrDiagnostic
+	}
+	if observedAt, err := time.Parse(time.RFC3339Nano, *wire.ObservedAt); err != nil || observedAt.IsZero() {
+		return Diagnostic{}, ErrDiagnostic
+	}
+	return Diagnostic{
+		InboxID: *wire.InboxID, RequestID: *wire.RequestID, DiagnosticRevision: *wire.DiagnosticRevision,
+		LifecyclePhase: *wire.LifecyclePhase, Accepted: *wire.Accepted, Executed: *wire.Executed,
+		Code: *wire.Code, Message: *wire.Message, ObservedAt: *wire.ObservedAt,
+	}, nil
+}
+
+func validDiagnosticCodeMessage(code, message string) bool {
+	switch code {
+	case "malformed_json":
+		return message == "request is not valid JSON"
+	case "invalid_request_schema":
+		return message == "request does not satisfy the mailbox request format"
+	case "request_identity_mismatch":
+		return message == "request ID does not match the marker filename"
+	case "invalid_script":
+		return message == "request script is invalid"
+	case "request_too_large":
+		return message == "request exceeds the mailbox size limit"
+	default:
+		return false
 	}
 }
 
@@ -305,11 +426,23 @@ func validateOwnerDirectory(path string) error {
 }
 
 func openOwnerFile(path string) (*os.File, error) {
+	return openPrivateFile(path, false)
+}
+
+// openExactOwnerFile accepts only Runner-produced private artifacts. Unlike
+// ordinary owner-only mailbox input, the diagnostic contract requires exact
+// 0600 permissions so a caller never treats a differently-modeled file as a
+// frozen Runner projection.
+func openExactOwnerFile(path string) (*os.File, error) {
+	return openPrivateFile(path, true)
+}
+
+func openPrivateFile(path string, requireExactMode bool) (*os.File, error) {
 	before, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	if !before.Mode().IsRegular() || before.Mode().Perm()&0o077 != 0 {
+	if !before.Mode().IsRegular() || before.Mode().Perm()&0o077 != 0 || (requireExactMode && before.Mode().Perm() != fileMode) {
 		return nil, fmt.Errorf("file must be regular and owner-only")
 	}
 	stat, ok := before.Sys().(*syscall.Stat_t)
@@ -322,7 +455,7 @@ func openOwnerFile(path string) (*os.File, error) {
 	}
 	file := os.NewFile(uintptr(fd), path)
 	after, err := file.Stat()
-	if err != nil || !os.SameFile(before, after) || !after.Mode().IsRegular() || after.Mode().Perm()&0o077 != 0 {
+	if err != nil || !os.SameFile(before, after) || !after.Mode().IsRegular() || after.Mode().Perm()&0o077 != 0 || (requireExactMode && after.Mode().Perm() != fileMode) {
 		_ = file.Close()
 		return nil, fmt.Errorf("file changed while opening")
 	}
@@ -331,6 +464,22 @@ func openOwnerFile(path string) (*os.File, error) {
 
 func readOwnerFile(path string, limit int) ([]byte, error) {
 	file, err := openOwnerFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > limit {
+		return nil, fmt.Errorf("file exceeds byte limit")
+	}
+	return data, nil
+}
+
+func readExactOwnerFile(path string, limit int) ([]byte, error) {
+	file, err := openExactOwnerFile(path)
 	if err != nil {
 		return nil, err
 	}

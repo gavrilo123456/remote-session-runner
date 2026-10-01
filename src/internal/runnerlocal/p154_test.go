@@ -360,6 +360,7 @@ func TestP154ServicePathsSecureEveryConfiguredMailboxDirectory(t *testing.T) {
 		filepath.Join(root, "mailboxes"), mailboxRoot,
 		filepath.Join(mailboxRoot, "inbox"), filepath.Join(mailboxRoot, "outbox"),
 		filepath.Join(mailboxRoot, "events"), filepath.Join(mailboxRoot, "acks"),
+		filepath.Join(mailboxRoot, "diagnostics"),
 	} {
 		info, err := os.Lstat(path)
 		if err != nil {

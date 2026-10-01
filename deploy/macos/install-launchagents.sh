@@ -242,7 +242,7 @@ for directory in \
 	"$service_root" "$service_root/bin" "$service_root/config" "$service_root/logs" \
 	"$service_root/run" "$service_root/state" "$service_root/mailbox" \
 	"$service_root/mailbox/inbox" "$service_root/mailbox/outbox" \
-	"$service_root/mailbox/events" "$service_root/mailbox/acks" \
+	"$service_root/mailbox/events" "$service_root/mailbox/acks" "$service_root/mailbox/diagnostics" \
 	"$service_root/workspaces" "$service_root/tmp" "$service_root/tmp/scripts" \
 	"$service_root/backups" "$service_root/secrets"; do
 	ensure_private_service_directory "$directory"

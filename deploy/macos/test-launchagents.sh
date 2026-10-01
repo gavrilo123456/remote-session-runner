@@ -101,7 +101,7 @@ check_mode "$service_root/config/mac.yaml" 600
 check_mode "$service_root/run" 700
 check_mode "$api_socket" 600
 check_mode "$locald_socket" 600
-for path in "$service_root/mailbox" "$service_root/mailbox/inbox" "$service_root/mailbox/outbox" "$service_root/mailbox/events" "$service_root/mailbox/acks"; do
+for path in "$service_root/mailbox" "$service_root/mailbox/inbox" "$service_root/mailbox/outbox" "$service_root/mailbox/events" "$service_root/mailbox/acks" "$service_root/mailbox/diagnostics"; do
 	check_mode "$path" 700
 done
 
