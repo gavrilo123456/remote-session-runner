@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IMPLEMENTATION IN PROGRESS` — F1–F3 source work is complete; F4 source handoff and F5 installed-host acceptance remain pending |
+| Status | `HOST VALIDATION BLOCKED` — F1–F4 source work and handoff passed; F5 installed-host acceptance stopped at the mandatory zero-work gate |
 | Severity | High — can strand protected control-plane work after a safe queued boundary |
 | Priority | High |
 | Reported | 2026-10-01 |
@@ -308,7 +308,7 @@ must remain unchanged.
 
 ## Fix and verification
 
-### Source implementation completed, pending F4 handoff
+### Source implementation and F4 handoff completed
 
 - **F1:** `runnerd` now uses the durable global scheduler claim as the sole
   command-start boundary. The worker that receives a claim executes that exact
@@ -331,22 +331,35 @@ must remain unchanged.
   The repair stores ingress in `exec_jobs`, restores it for resumption, and
   migrates historical jobs to `unknown`. The `unknown` value is valid only for
   historic read/recovery records; new job acceptance rejects it.
+- **F4 passed:** source review, focused and full Mac gates, commit
+  `9732e4049935ce4a5706b7f64bc9a1a20f199aed`, GitHub `dev` push, and clean
+  primary/sandbox Ubuntu fast-forward handoffs all completed. Both Ubuntu
+  checkouts matched that exact code revision before host validation.
 - **Focused Mac gates passed:** scheduler capacity/order/cancellation/restart
   tests; direct mTLS and private SSH queue-backed provenance tests; exact
   terminal mailbox projection tests; v30 migration, audit metadata, and
-  append-only tests; and affected legacy migration fixtures. The remaining
-  F4 full-suite and handoff gates are still required before this is called
-  delivered.
+  append-only tests; and affected legacy migration fixtures.
+
+### F5 blocked before service update
+
+The synchronized sandbox checkout reported `active_sessions=2`,
+`running_commands=0`, `unreleased_slots=4`, and `unfinished_jobs=2` through
+the required read-only P128 host-status gate. That gate refused restart, so no
+installer, service restart, bridge refresh, live mailbox test, cancellation,
+retry, or modification of either real Logger request occurred. The source
+repair is delivered, but installed acceptance remains pending a later fresh
+zero-work gate and harmless new-request test. See
+`040-implementation-evidence/BUG-007.md` for exact commands and evidence.
 
 No live Logger request, lost-slot record, or service process has been changed
 while preparing or source-testing this repair.
 
 ## Resolution
 
-The source correction is not yet delivered or installed. Do not treat full
-lost-slot capacity as permission to restart, delete, or replay the affected
-Logger work. Record the fixing commit, deployed revision, and installed
-verification evidence here before closing this bug.
+The source correction is delivered but not installed or closed. Do not treat
+full lost-slot capacity as permission to restart, delete, or replay the
+affected Logger work. Record the installed revision and live verification
+evidence here before closing this bug.
 
 ## History
 
@@ -356,3 +369,4 @@ verification evidence here before closing this bug.
 | 2026-10-01 | Refined after runtime inspection: both jobs had sequence-1 `command_queued` events and were blocked while 4/4 slots were retained by older lost commands; retained the source-level post-capacity/eligibility liveness defect separately from the immediate capacity blockage. |
 | 2026-10-01 | Added phased F1–F5 repair plan: exact-claim runtime ownership, Linux durable dispatcher, conservative restart settlement, automated gates, and a zero-work-only sandbox rollout. |
 | 2026-10-01 | Refined F3 after implementation review: durable jobs now retain trusted ingress for background audit provenance; v31 preserves truthful `unknown` provenance for historic queued rows. |
+| 2026-10-01 | Committed and handed off `9732e4049935ce4a5706b7f64bc9a1a20f199aed`; sandbox F5 stopped before service update because P128 reported two active sessions, four unreleased slots, and two unfinished jobs. |
