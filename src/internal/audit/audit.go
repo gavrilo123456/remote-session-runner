@@ -23,15 +23,40 @@ const (
 type Ingress string
 
 const (
-	IngressLocalUnix        Ingress = "local_unix"
-	IngressMailbox          Ingress = "mailbox"
-	IngressLocalWorker      Ingress = "local_executor"
-	IngressSSHBridge        Ingress = "ssh_bridge"
-	IngressDirectMTLS       Ingress = "direct_mtls"
-	IngressInternal         Ingress = "internal"
+	IngressLocalUnix   Ingress = "local_unix"
+	IngressMailbox     Ingress = "mailbox"
+	IngressLocalWorker Ingress = "local_executor"
+	IngressSSHBridge   Ingress = "ssh_bridge"
+	IngressDirectMTLS  Ingress = "direct_mtls"
+	IngressInternal    Ingress = "internal"
+	// IngressUnknown is retained only for durable work accepted before a
+	// version that recorded its adapter provenance. It is truthful historical
+	// metadata, never a new live adapter label.
+	IngressUnknown          Ingress = "unknown"
 	IngressServiceLifecycle Ingress = IngressInternal
 	IngressInternalTest     Ingress = IngressInternal
 )
+
+// ValidIngress reports whether ingress is one of the bounded server-side
+// adapter labels, or the migration-only unknown value, that may be retained
+// with durable work or an audit record. It deliberately does not accept an
+// empty value: a caller that has no trusted adapter provenance must choose the
+// explicit internal label.
+func ValidIngress(ingress Ingress) bool {
+	switch ingress {
+	case IngressLocalUnix, IngressMailbox, IngressLocalWorker, IngressSSHBridge, IngressDirectMTLS, IngressInternal, IngressUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// TrustedForAcceptance reports whether ingress may label newly accepted
+// durable work. Unknown is valid only when reading historical pre-migration
+// data; no live adapter may create new work with that label.
+func (ingress Ingress) TrustedForAcceptance() bool {
+	return ingress != IngressUnknown && ValidIngress(ingress)
+}
 
 type Action string
 
@@ -240,9 +265,7 @@ func (record Record) Validate() error {
 	if _, err := domain.NewControllerIdentity(record.Principal.Type(), record.Principal.ID()); err != nil {
 		return fmt.Errorf("%w: principal", ErrInvalidRecord)
 	}
-	switch record.Ingress {
-	case IngressLocalUnix, IngressMailbox, IngressLocalWorker, IngressSSHBridge, IngressDirectMTLS, IngressInternal:
-	default:
+	if !ValidIngress(record.Ingress) {
 		return fmt.Errorf("%w: ingress", ErrInvalidRecord)
 	}
 	switch record.Action {

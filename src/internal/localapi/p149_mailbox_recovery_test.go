@@ -5,11 +5,84 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"os"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/store"
 )
+
+// TestP149MailboxPublishesProvenRemotePreSessionFailureWithoutEventFile
+// composes the exact remote job proof with the file-only mailbox projection.
+// A job that failed before allocating a session has stable IDs but no command
+// or event stream, so its one terminal outbox result must say failed/not_created
+// and must not fabricate an event artifact.
+func TestP149MailboxPublishesProvenRemotePreSessionFailureWithoutEventFile(t *testing.T) {
+	ctx := context.Background()
+	h := newP095Harness(t)
+	requestID := "req-p149-proven-pre-session-failure"
+	p101Import(t, h, requestID, p100RunRequest(requestID, "key-p149-proven-pre-session-failure", "remote", "linux-host", "linux-dev", "printf must-not-run"))
+	accepted := p101ReadResponse(t, h, requestID)
+	intent, err := h.authority.GetLocalIntentByResource(ctx, "run", accepted.JobID, p063Owner(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p101SetIntentDelivery(t, h, intent, store.LocalIntentAccepted)
+	if _, err := h.authority.UpsertRemoteJobProjection(ctx, store.RemoteJobProjection{
+		JobID: intent.JobID, SessionID: intent.SessionID, CommandID: intent.CommandID,
+		Phase: store.JobPhaseFailed, TeardownState: store.JobTeardownNotCreated,
+		Target: intent.Target, Controller: intent.Controller, Environment: intent.Environment, Source: intent.Source,
+		Capabilities: p076APICapabilities(), ObservedAt: time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p101MarkRemoteTerminalProof(t, h, intent)
+
+	if err := h.processor.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	response := p101ReadResponse(t, h, requestID)
+	if response.RequestState != string(store.MailboxExchangeComplete) || response.ResponseRevision != 2 ||
+		response.JobID != accepted.JobID || response.SessionID != accepted.SessionID || response.CommandID != accepted.CommandID ||
+		response.DeliveryState != string(store.LocalIntentReconciled) || response.JobPhase != string(store.JobPhaseFailed) ||
+		response.TeardownOutcome != string(store.JobTeardownNotCreated) || response.CommandState != "" ||
+		response.ExitCode != nil || response.FinalEventSequence != nil || response.AvailableEventSequence != nil ||
+		response.OutputComplete != nil || response.OutputTruncated != nil || response.OutputUnavailableReason != "" ||
+		response.EventsFile != "" || response.Stdout != "" || response.Error != nil {
+		t.Fatalf("proven pre-session mailbox response=%+v", response)
+	}
+	before, err := h.outbox.Read(requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := h.authority.GetMailboxExchange(ctx, requestID)
+	if err != nil || receipt.State != store.MailboxExchangeComplete || receipt.ResponseRevision != 2 || receipt.AvailableEventSequence != nil {
+		t.Fatalf("proven pre-session receipt=%+v err=%v", receipt, err)
+	}
+	eventPath, err := h.eventFiles.Path(intent.CommandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(eventPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("proven pre-session failure created event artifact %q: %v", eventPath, err)
+	}
+
+	// A later reconciliation must replay the frozen terminal response, not
+	// create a second revision or manufacture a command/event projection.
+	if err := h.processor.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, err := h.outbox.Read(requestID)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("proven pre-session outbox changed=%v err=%v", !bytes.Equal(after, before), err)
+	}
+	afterReceipt, err := h.authority.GetMailboxExchange(ctx, requestID)
+	if err != nil || afterReceipt.ResponseRevision != receipt.ResponseRevision || !bytes.Equal(afterReceipt.ResponseBytes, receipt.ResponseBytes) {
+		t.Fatalf("proven pre-session receipt changed before=%+v after=%+v err=%v", receipt, afterReceipt, err)
+	}
+}
 
 // TestP149RestartDoesNotRepublishLegacyRetentionExpiredTerminalReceipt proves
 // that an old reconciled marker is not enough to recreate a terminal mailbox

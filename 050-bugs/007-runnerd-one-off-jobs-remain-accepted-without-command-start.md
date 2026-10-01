@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `TRIAGED` |
+| Status | `IMPLEMENTATION IN PROGRESS` — F1–F3 source work is complete; F4 source handoff and F5 installed-host acceptance remain pending |
 | Severity | High — can strand protected control-plane work after a safe queued boundary |
 | Priority | High |
 | Reported | 2026-10-01 |
@@ -240,11 +240,30 @@ proves global order and that every claim has a corresponding runtime call.
    canonical request only when no runtime execution boundary was crossed.
 4. Cancelled, rejected, terminal, and unreleased-lost commands never enter the
    dispatcher runtime path.
+5. Persist the trusted server-side ingress selected at durable job acceptance.
+   A later dispatcher or restart resumption must restore that saved ingress
+   before creating a session or recording a denial audit. It must never turn a
+   direct-mTLS or SSH-bridge request into an `internal` audit merely because
+   the worker uses a background context.
+6. Add a forward-only SQLite migration for the new immutable job field. Jobs
+   accepted before the migration receive `unknown`, which is truthful
+   historical provenance and cannot be used to accept new work. Rebuild the
+   append-only audit table only as needed to permit an old unknown-ingress job
+   to record its later denial, preserving audit IDs, mailbox-selection fields,
+   indexes, and update/delete triggers.
+7. Keep deterministic configuration and policy failures as command-less
+   `failed` / `not_created` jobs only after their denial audit commits. Generic
+   resolver, store, audit, and checkpoint failures remain retryable and are
+   deferred to the bounded recovery tick.
 
 **F3 automated exit gate:** restart-after-queued coverage proves no second
 script execution and a truthful terminal job result; cancellation/rejection
 coverage proves no later start; lifecycle tests prove the dispatcher cannot
-claim new work after shutdown begins.
+claim new work after shutdown begins. Direct mTLS and private SSH-bridge
+queue-backed tests prove the saved ingress reaches both the durable job and its
+background pre-session denial audit. A real v30-to-v31 fixture proves legacy
+jobs retain `unknown`, mailbox-selection audit metadata survives, and the
+rebuilt audit table remains append-only.
 
 ### F4 — Source validation and handoff
 
@@ -289,15 +308,45 @@ must remain unchanged.
 
 ## Fix and verification
 
-Implementation is pending F1 through F5. No live request, lost-slot record, or
-service process has been changed while preparing this plan.
+### Source implementation completed, pending F4 handoff
+
+- **F1:** `runnerd` now uses the durable global scheduler claim as the sole
+  command-start boundary. The worker that receives a claim executes that exact
+  command, and the store exposes nonterminal one-off jobs and job lookup by
+  command ID for recovery.
+- **F2:** `runnerd` now owns a bounded durable dispatcher with a coalesced
+  wake and periodic retry tick. Production direct HTTPS and private SSH bridge
+  routes persist an accepted job then wake the dispatcher; they no longer run
+  one-off runtime work in the request handler. Expected full-slot and
+  not-eligible states remain wake-driven; unexpected scheduler or authority
+  failures are deferred to the periodic tick.
+- **F3:** startup reconciliation remains before dispatch. Jobs before a
+  session boundary can resume from their canonical durable input; pre-crash
+  queued/rejected/cancelled/lost work cannot be sourced again. Deterministic
+  missing-environment and pre-session policy failures terminalize as
+  `failed` / `not_created` without a session, command, slot, or event file.
+- **Ingress correction added during implementation:** the original background
+  dispatcher used `context.Background()`, which would have recorded
+  `internal` rather than the trusted adapter source in follow-on audit rows.
+  The repair stores ingress in `exec_jobs`, restores it for resumption, and
+  migrates historical jobs to `unknown`. The `unknown` value is valid only for
+  historic read/recovery records; new job acceptance rejects it.
+- **Focused Mac gates passed:** scheduler capacity/order/cancellation/restart
+  tests; direct mTLS and private SSH queue-backed provenance tests; exact
+  terminal mailbox projection tests; v30 migration, audit metadata, and
+  append-only tests; and affected legacy migration fixtures. The remaining
+  F4 full-suite and handoff gates are still required before this is called
+  delivered.
+
+No live Logger request, lost-slot record, or service process has been changed
+while preparing or source-testing this repair.
 
 ## Resolution
 
-No correction has been implemented. Do not treat full lost-slot capacity as
-permission to restart, delete, or replay the affected Logger work. Record the
-fixing commit, deployed revision, and installed verification evidence here
-before closing this bug.
+The source correction is not yet delivered or installed. Do not treat full
+lost-slot capacity as permission to restart, delete, or replay the affected
+Logger work. Record the fixing commit, deployed revision, and installed
+verification evidence here before closing this bug.
 
 ## History
 
@@ -306,3 +355,4 @@ before closing this bug.
 | 2026-10-01 | Registered from two accepted-but-never-started remote mailbox commands during Logger deployment reconciliation. |
 | 2026-10-01 | Refined after runtime inspection: both jobs had sequence-1 `command_queued` events and were blocked while 4/4 slots were retained by older lost commands; retained the source-level post-capacity/eligibility liveness defect separately from the immediate capacity blockage. |
 | 2026-10-01 | Added phased F1–F5 repair plan: exact-claim runtime ownership, Linux durable dispatcher, conservative restart settlement, automated gates, and a zero-work-only sandbox rollout. |
+| 2026-10-01 | Refined F3 after implementation review: durable jobs now retain trusted ingress for background audit provenance; v31 preserves truthful `unknown` provenance for historic queued rows. |

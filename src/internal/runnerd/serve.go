@@ -153,7 +153,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	)
 	requestGate := lifecycle.NewGate()
 	dispatchGate := lifecycle.NewGate()
-	directHandler, err := newDirectHTTPSAPIHandler(service, requestGate, dispatchGate)
+	dispatcher, err := NewRunnerDispatcher(RunnerDispatcherOptions{
+		Service: service, Authority: authority, DispatchGate: dispatchGate,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "runnerd: construct queued dispatcher: %v\n", err)
+		return 1
+	}
+	directHandler, err := newDirectHTTPSAPIHandlerWithQueueWake(service, requestGate, dispatchGate, dispatcher.Wake)
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: construct direct HTTPS API: %v\n", err)
 		return 1
@@ -173,7 +180,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	server, err := NewPrivateServer(PrivateServerOptions{
 		Service: service, SocketPath: settings.PrivateSocket, HealthReport: healthReport,
-		RequestGate: requestGate, DispatchGate: dispatchGate,
+		RequestGate: requestGate, DispatchGate: dispatchGate, QueueWake: dispatcher.Wake,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: construct private API: %v\n", err)
@@ -201,6 +208,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runnerd: configure shutdown: %v\n", err)
 		return 1
 	}
+	if err := dispatcher.RecoverNonterminalJobs(signalContext); err != nil {
+		_ = coordinator.Shutdown(context.Background())
+		fmt.Fprintf(stderr, "runnerd: recover queued jobs after startup reconciliation: %v\n", err)
+		return 1
+	}
+	dispatcher.Start(signalContext)
 	metricsObserverDone := make(chan struct{})
 	go func() {
 		defer close(metricsObserverDone)
@@ -211,6 +224,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	serveErr := serveUntilCoordinator(signalContext, server, httpsServer, coordinator)
 	stopSignals()
 	<-metricsObserverDone
+	dispatcher.Stop()
+	dispatcherWaitContext, cancelDispatcherWait := context.WithTimeout(context.Background(), time.Second)
+	dispatcherWaitErr := dispatcher.Wait(dispatcherWaitContext)
+	cancelDispatcherWait()
+	if dispatcherWaitErr != nil {
+		serveErr = errors.Join(serveErr, fmt.Errorf("stop queued dispatcher: %w", dispatcherWaitErr))
+	}
 	if serveErr != nil {
 		fmt.Fprintf(stderr, "runnerd: serve: %v\n", serveErr)
 		return 1

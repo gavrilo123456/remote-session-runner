@@ -24,8 +24,21 @@ var (
 	// not supplied when constructing the service.
 	ErrExecutionServiceConfiguration = errors.New("execution service configuration is incomplete")
 	// ErrEnvironmentUnavailable means the named environment could not be
-	// resolved before authoritative session acceptance.
+	// resolved before authoritative session acceptance. It is retained as the
+	// general public resolver compatibility sentinel; it is not by itself proof
+	// that a durable one-off job can never succeed.
 	ErrEnvironmentUnavailable = errors.New("environment unavailable")
+	// ErrEnvironmentNotConfigured marks the deterministic in-memory registry
+	// result that no configured environment has the requested name. It wraps
+	// ErrEnvironmentUnavailable at the registry boundary so existing callers
+	// retain their public error contract, while durable recovery can distinguish
+	// this permanent condition from a transient resolver failure.
+	ErrEnvironmentNotConfigured = errors.New("environment not configured")
+	// ErrSessionPolicyDenied means a resolved environment rejected the
+	// requested target, source, controller, limits, or isolation before a
+	// durable session existed. The wrapped policy error remains available to
+	// ingress-specific error mapping.
+	ErrSessionPolicyDenied = errors.New("session policy denied")
 	// ErrRuntimeUnavailable means the selected runtime could not prepare or
 	// start a session.
 	ErrRuntimeUnavailable = errors.New("runtime unavailable")
@@ -75,6 +88,7 @@ type EnvironmentResolver interface {
 type EnvironmentRegistry struct {
 	mu           sync.RWMutex
 	environments map[string]domain.Environment
+	ordered      []domain.Environment
 }
 
 // NewEnvironmentRegistry constructs a resolver from immutable environments.
@@ -88,6 +102,7 @@ func NewEnvironmentRegistry(environments ...domain.Environment) (*EnvironmentReg
 			return nil, fmt.Errorf("%w: duplicate environment %q", domain.ErrInvalidEnvironment, environment.Name())
 		}
 		registry.environments[environment.Name()] = environment
+		registry.ordered = append(registry.ordered, environment)
 	}
 	return registry, nil
 }
@@ -101,9 +116,29 @@ func (r *EnvironmentRegistry) ResolveEnvironment(_ context.Context, name string)
 	environment, ok := r.environments[name]
 	r.mu.RUnlock()
 	if !ok {
-		return domain.Environment{}, fmt.Errorf("%w: %q", ErrEnvironmentUnavailable, name)
+		return domain.Environment{}, fmt.Errorf("%w: %w: %q", ErrEnvironmentUnavailable, ErrEnvironmentNotConfigured, name)
 	}
 	return environment, nil
+}
+
+// FallbackEnvironmentForTarget returns a configured host capability profile
+// that owns target for a read-only terminal job whose requested environment no
+// longer resolves. It never authorizes work or supplies policy for a new
+// session; the stored job remains the source of its target, controller,
+// source, and terminal state. Returning no profile is safer than reporting a
+// different host's capability envelope.
+func (r *EnvironmentRegistry) FallbackEnvironmentForTarget(target domain.ExecutionTarget) (domain.Environment, bool) {
+	if r == nil {
+		return domain.Environment{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, environment := range r.ordered {
+		if environment.AllowsTarget(target) {
+			return environment, true
+		}
+	}
+	return domain.Environment{}, false
 }
 
 // RuntimePrepareRequest contains the immutable request and the authoritative
@@ -352,6 +387,16 @@ type RunJobResult struct {
 	Job                store.JobRecord
 	Session            store.SessionRecord
 	Command            store.CommandRecord
+	Duplicate          bool
+	IdempotencyWarning bool
+}
+
+// AcceptJobResult is the durable acceptance result for a one-off job. It
+// deliberately contains no runtime snapshots: callers that use it have only
+// committed immutable work for the runnerd-owned dispatcher to advance.
+type AcceptJobResult struct {
+	Job                store.JobRecord
+	Duplicate          bool
 	IdempotencyWarning bool
 }
 
@@ -397,12 +442,18 @@ func (s *Service) CreateSession(ctx context.Context, request CreateSessionReques
 	}
 	environment, err := s.resolver.ResolveEnvironment(ctx, request.Environment)
 	if err != nil {
-		cause := fmt.Errorf("%w: %v", ErrEnvironmentUnavailable, err)
-		denial := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionCreate, audit.OutcomeDenied)
-		denial.Environment = request.Environment
-		denial.SessionID = request.SessionID
-		denial.ReasonCode = audit.ReasonEnvironmentDenied
-		return CreateSessionResult{}, s.recordDenial(ctx, denial, cause)
+		if errors.Is(err, ErrEnvironmentNotConfigured) {
+			denial := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionCreate, audit.OutcomeDenied)
+			denial.Environment = request.Environment
+			denial.SessionID = request.SessionID
+			denial.ReasonCode = audit.ReasonEnvironmentDenied
+			// Only the immutable registry's explicit missing-name marker is a
+			// stable configuration result. Generic resolver errors, including
+			// errors that retain the public ErrEnvironmentUnavailable sentinel,
+			// may be temporary and must stay retryable.
+			return CreateSessionResult{}, s.recordPreSessionDenial(ctx, denial, err)
+		}
+		return CreateSessionResult{}, err
 	}
 	source := request.Source
 	if source.Mode() == "" {
@@ -420,7 +471,7 @@ func (s *Service) CreateSession(ctx context.Context, request CreateSessionReques
 		denial.Environment = request.Environment
 		denial.SessionID = request.SessionID
 		denial.ReasonCode = audit.ReasonPolicyDenied
-		return CreateSessionResult{}, s.recordDenial(ctx, denial, err)
+		return CreateSessionResult{}, s.recordPreSessionDenial(ctx, denial, fmt.Errorf("%w: %w", ErrSessionPolicyDenied, err))
 	}
 	actionAudit := audit.NewRecord(request.Controller, audit.IngressFromContext(ctx), audit.ActionCreate, audit.OutcomeAllowed)
 	actionAudit.Environment = environment.Name()
@@ -772,18 +823,38 @@ func (s *Service) ResumeCommand(ctx context.Context, commandID domain.CommandID,
 	return SubmitCommandResult{Command: refreshed}, nil
 }
 
+// AcceptJob commits one immutable one-off job without entering a runtime path.
+// runnerd production ingress uses this boundary and wakes its dispatch-gated
+// worker afterward. The durable job can therefore survive process shutdown or
+// capacity exhaustion before a session exists.
+func (s *Service) AcceptJob(ctx context.Context, acceptance store.JobAcceptance) (AcceptJobResult, error) {
+	if s == nil || s.store == nil {
+		return AcceptJobResult{}, ErrExecutionServiceConfiguration
+	}
+	job, duplicate, err := s.store.AcceptJob(ctx, acceptance)
+	if err != nil {
+		return AcceptJobResult{}, err
+	}
+	return AcceptJobResult{Job: job, Duplicate: duplicate, IdempotencyWarning: job.IdempotencyWarning}, nil
+}
+
 // RunJob accepts a durable one-off row and advances it through session
 // creation, exactly one command, and confirmed teardown. Recalling this method
 // after a restart reads the stored phase and resumes the same stable resources.
+// It remains the synchronous compatibility path; runnerd production handlers
+// use AcceptJob so all runtime work belongs to the dispatch-gated worker.
 func (s *Service) RunJob(ctx context.Context, request RunJobRequest) (RunJobResult, error) {
 	if s == nil || s.store == nil || s.runtime == nil || s.resolver == nil {
 		return RunJobResult{}, ErrExecutionServiceConfiguration
 	}
-	job, _, err := s.store.AcceptJob(ctx, request.Acceptance)
+	accepted, err := s.AcceptJob(ctx, request.Acceptance)
 	if err != nil {
 		return RunJobResult{}, err
 	}
-	return s.resumeJob(ctx, request, job)
+	result, err := s.resumeJob(ctx, request, accepted.Job)
+	result.Duplicate = accepted.Duplicate
+	result.IdempotencyWarning = accepted.IdempotencyWarning
+	return result, err
 }
 
 // ResumeJob reloads one previously accepted one-off job and advances it with
@@ -832,9 +903,67 @@ func (s *Service) ResumeStoredJob(ctx context.Context, id domain.JobID) (RunJobR
 	}
 	options, err := storedJobResumeOptions(job)
 	if err != nil {
-		return RunJobResult{Job: job, IdempotencyWarning: job.IdempotencyWarning}, err
+		result := RunJobResult{Job: job, IdempotencyWarning: job.IdempotencyWarning}
+		checkpointed, terminalized, checkpointErr := s.checkpointPreSessionFailure(ctx, job, err)
+		if terminalized {
+			result.Job = checkpointed
+		}
+		if checkpointErr != nil {
+			return result, errors.Join(err, checkpointErr)
+		}
+		return result, err
 	}
 	return s.ResumeJob(ctx, job.JobID, job.Controller, options)
+}
+
+// checkpointPreSessionFailure records a permanent failure only while the job
+// is still before session creation. A missing session row proves no runtime
+// boundary was crossed, so failed/not_created is a truthful terminal result.
+// Capacity, database, context, and generic resolver failures intentionally
+// remain nonterminal for the dispatcher recovery tick.
+func (s *Service) checkpointPreSessionFailure(ctx context.Context, job store.JobRecord, cause error) (store.JobRecord, bool, error) {
+	reason, permanent := preSessionFailureReason(cause)
+	if !permanent || job.Phase != store.JobPhaseCreatingSession {
+		return job, false, nil
+	}
+	_, err := s.store.GetSession(ctx, job.SessionID)
+	if err == nil {
+		return job, false, nil
+	}
+	if !errors.Is(err, store.ErrSessionNotFound) {
+		return job, false, fmt.Errorf("inspect pre-session failure boundary: %w", err)
+	}
+	teardown := store.JobTeardownNotCreated
+	checkpointed, err := s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{
+		ExpectedPhase:  store.JobPhaseCreatingSession,
+		NextPhase:      store.JobPhaseFailed,
+		TeardownState:  &teardown,
+		TeardownReason: reason,
+	})
+	if err == nil {
+		return checkpointed, true, nil
+	}
+	if !errors.Is(err, store.ErrJobPhaseConflict) {
+		return job, false, fmt.Errorf("record pre-session terminal failure: %w", err)
+	}
+	// A concurrent owner may have advanced or settled the same durable job.
+	// Read its state rather than overwriting it with stale recovery work.
+	current, readErr := s.store.GetJob(ctx, job.JobID)
+	if readErr != nil {
+		return job, false, fmt.Errorf("read conflicting pre-session job: %w", readErr)
+	}
+	return current, current.Phase == store.JobPhaseComplete || current.Phase == store.JobPhaseFailed || current.Phase == store.JobPhaseLost, nil
+}
+
+func preSessionFailureReason(err error) (string, bool) {
+	switch {
+	case errors.Is(err, ErrEnvironmentNotConfigured):
+		return "environment_not_configured", true
+	case errors.Is(err, ErrSessionPolicyDenied):
+		return "session_policy_denied", true
+	default:
+		return "", false
+	}
 }
 
 func storedJobResumeOptions(job store.JobRecord) (RunJobRequest, error) {
@@ -977,12 +1106,24 @@ func canonicalNumberInt64(value string) (int64, error) {
 }
 
 func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job store.JobRecord) (RunJobResult, error) {
+	// One-off jobs can be resumed by a background dispatcher after their
+	// original HTTP/SSH request has ended. Restore the immutable trusted
+	// ingress recorded at acceptance so every later allow/deny audit row keeps
+	// the same adapter provenance rather than falling back to internal.
+	ctx = audit.WithIngress(ctx, job.Ingress)
 	result := RunJobResult{Job: job, IdempotencyWarning: job.IdempotencyWarning}
 	for {
 		switch job.Phase {
 		case store.JobPhaseCreatingSession:
 			createHash, err := oneOffCreateHash(job, request)
 			if err != nil {
+				checkpointed, terminalized, checkpointErr := s.checkpointPreSessionFailure(ctx, job, err)
+				if terminalized {
+					result.Job = checkpointed
+				}
+				if checkpointErr != nil {
+					return result, errors.Join(err, checkpointErr)
+				}
 				return result, err
 			}
 			created, createErr := s.CreateSession(ctx, CreateSessionRequest{
@@ -1010,6 +1151,15 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 						return result, err
 					}
 					result.Job = job
+				} else {
+					checkpointed, terminalized, checkpointErr := s.checkpointPreSessionFailure(ctx, job, createErr)
+					if terminalized {
+						job = checkpointed
+						result.Job = job
+					}
+					if checkpointErr != nil {
+						return result, errors.Join(createErr, checkpointErr)
+					}
 				}
 				return result, createErr
 			}
@@ -1650,6 +1800,24 @@ func (s *Service) ResolveEnvironment(ctx context.Context, name string) (domain.E
 	return s.resolver.ResolveEnvironment(ctx, name)
 }
 
+// FallbackEnvironmentForTarget exposes a configured capability profile for
+// the same target only when read-only reporting needs to describe a job that
+// failed before its requested environment could be resolved. It is
+// intentionally unavailable for custom resolvers that do not make such a
+// stable target-bound profile explicit.
+func (s *Service) FallbackEnvironmentForTarget(target domain.ExecutionTarget) (domain.Environment, bool) {
+	if s == nil || s.resolver == nil {
+		return domain.Environment{}, false
+	}
+	resolver, ok := s.resolver.(interface {
+		FallbackEnvironmentForTarget(domain.ExecutionTarget) (domain.Environment, bool)
+	})
+	if !ok {
+		return domain.Environment{}, false
+	}
+	return resolver.FallbackEnvironmentForTarget(target)
+}
+
 // GetCommand returns an authoritative command snapshot after checking the
 // immutable controller of its parent session. Command reads therefore use the
 // same ownership rule as session reads and cannot disclose another controller's
@@ -1745,6 +1913,17 @@ func (s *Service) GetJob(ctx context.Context, id domain.JobID, controller domain
 func (s *Service) recordDenial(ctx context.Context, record audit.Record, cause error) error {
 	if err := s.store.RecordAudit(ctx, record); err != nil {
 		return errors.Join(cause, fmt.Errorf("persist authorization denial audit: %w", err))
+	}
+	return cause
+}
+
+// recordPreSessionDenial returns a permanent policy/configuration marker only
+// after its denial audit record committed. If audit storage is unavailable,
+// the accepted one-off job must remain retryable rather than being falsely
+// terminalized without the required authorization evidence.
+func (s *Service) recordPreSessionDenial(ctx context.Context, record audit.Record, cause error) error {
+	if err := s.store.RecordAudit(ctx, record); err != nil {
+		return fmt.Errorf("persist pre-session denial audit: %w", err)
 	}
 	return cause
 }

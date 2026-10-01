@@ -160,6 +160,59 @@ func TestBUG007F1ResumeStoredJobAcceptsInheritedLegacyPolicy(t *testing.T) {
 	}
 }
 
+// TestBUG007F3ResumeStoredJobAdvancesExistingReadySession models a transient
+// failure after the durable session creation transaction committed but before
+// the one-off coordinator checkpoint did. A retry must reuse that exact
+// session-create idempotency key, advance the job, and execute its command
+// once; it must not leave the job stranded in creating_session or construct a
+// second runtime session.
+func TestBUG007F3ResumeStoredJobAdvancesExistingReadySession(t *testing.T) {
+	ctx := context.Background()
+	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
+		generation:    "generation-bug007-f3-existing-ready",
+		stopConfirmed: true,
+		commandResult: RuntimeCommandResult{ExitCode: 0},
+	}}
+	service, authority, _ := newP025Service(t, runtime)
+	request := p025Request(t, "job-bug007-f3-existing-ready", "session-bug007-f3-existing-ready", "command-bug007-f3-existing-ready", "run-bug007-f3-existing-ready", "echo checkpoint-retry")
+	accepted, err := service.AcceptJob(ctx, request.Acceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := storedJobResumeOptions(accepted.Job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createHash, err := oneOffCreateHash(accepted.Job, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreateSession(ctx, CreateSessionRequest{
+		SessionID: accepted.Job.SessionID, IdempotencyKey: jobStepKey(accepted.Job.JobID, "create_session"), RequestHash: createHash,
+		Environment: accepted.Job.Environment, Target: accepted.Job.Target, Controller: accepted.Job.Controller, Source: accepted.Job.Source,
+		RequestedLimits: options.RequestedLimits, Isolation: options.Isolation, MaxActiveSessions: options.MaxActiveSessions,
+		IdempotencyRetention: options.IdempotencyRetention,
+	})
+	if err != nil || created.Session.State != domain.SessionStateReady {
+		t.Fatalf("pre-checkpoint session create=%+v err=%v", created, err)
+	}
+	pending, err := authority.GetJob(ctx, accepted.Job.JobID)
+	if err != nil || pending.Phase != store.JobPhaseCreatingSession {
+		t.Fatalf("pre-checkpoint job=%+v err=%v", pending, err)
+	}
+
+	resumed, err := service.ResumeStoredJob(ctx, accepted.Job.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Job.Phase != store.JobPhaseComplete || resumed.Command.State != domain.CommandStateSucceeded || resumed.Session.State != domain.SessionStateClosed {
+		t.Fatalf("checkpoint retry result=%+v", resumed)
+	}
+	if runtime.prepareCall != 1 || runtime.startCall != 1 || runtime.commandCall != 1 {
+		t.Fatalf("checkpoint retry runtime calls prepare=%d start=%d command=%d, want one each", runtime.prepareCall, runtime.startCall, runtime.commandCall)
+	}
+}
+
 func bug007F1StoredPolicyRequest(t *testing.T, jobID, sessionID, commandID, key, script string) RunJobRequest {
 	t.Helper()
 	request := p025Request(t, jobID, sessionID, commandID, key, script)

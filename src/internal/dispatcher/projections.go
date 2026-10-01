@@ -262,6 +262,18 @@ func strictRemoteJobProjectionFromReadReply(intent store.LocalIntentRecord, obje
 	return projection, nil
 }
 
+// provenPreSessionTerminalRemoteJob is the sole command-less terminal shape
+// accepted from a remote runner. The immutable job row proves that no session
+// or command was created, while not_created proves a real teardown was never
+// required. Other failed/lost command-less reports stay diagnostic so they
+// cannot settle a mailbox request without enough evidence.
+func provenPreSessionTerminalRemoteJob(job store.RemoteJobProjection) bool {
+	return job.Phase == store.JobPhaseFailed && job.CommandState == nil &&
+		job.TeardownState == store.JobTeardownNotCreated && job.ExitCode == nil &&
+		job.FinalEventSequence == nil && !job.OutputComplete && !job.OutputTruncated &&
+		job.OutputUnavailableReason == ""
+}
+
 // requireRemoteProjectionReadContext checks context which would otherwise be
 // silently inherited from a local intent by the sparse-compatible parser.
 func requireRemoteProjectionReadContext(intent store.LocalIntentRecord, object map[string]json.RawMessage) error {

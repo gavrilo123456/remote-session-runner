@@ -234,6 +234,13 @@ func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.Lo
 	if err != nil {
 		return err
 	}
+	if provenPreSessionTerminalRemoteJob(job) {
+		// The Linux authority durably proved that the accepted request failed
+		// before a session or command existed. There is no command event stream
+		// to fetch, and asking for one would turn a truthful terminal result
+		// into an indefinite accepted mailbox request.
+		return d.transitionAcceptedIntentReconciled(ctx, intent, "remote_pre_session_failure_reconciled")
+	}
 	if remoteRunTerminalTeardownUnconfirmed(job) {
 		return fmt.Errorf("%w: terminal one-off job has no confirmed teardown", ErrRemoteResponse)
 	}

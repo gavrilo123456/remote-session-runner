@@ -54,6 +54,10 @@ type PrivateServerOptions struct {
 	HealthReport func(context.Context) opshealth.Report
 	RequestGate  *lifecycle.Gate
 	DispatchGate *lifecycle.Gate
+	// QueueWake notifies the Linux-owned durable dispatcher after an accepted
+	// mutation can make queued work eligible. A nil callback keeps the
+	// fixture-compatible one-shot command behavior used outside runnerd.Run.
+	QueueWake func()
 }
 
 // PrivateServer serves only the P046 create/read session subset.
@@ -70,6 +74,7 @@ type PrivateServer struct {
 	requestGate   *lifecycle.Gate
 	dispatchGate  *lifecycle.Gate
 	healthReport  func(context.Context) opshealth.Report
+	queueWake     func()
 }
 
 // NewPrivateServer validates the owner-only socket location but does not
@@ -92,6 +97,7 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 		requestGate:  options.RequestGate,
 		dispatchGate: options.DispatchGate,
 		healthReport: options.HealthReport,
+		queueWake:    options.QueueWake,
 	}, nil
 }
 
@@ -636,12 +642,14 @@ func (s *PrivateServer) handleSubmitCommand(response http.ResponseWriter, reques
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
-	if result.Command.State == domain.CommandStateQueued {
+	s.writeCommandMutationResponse(response, request, result.Command, controller, result.Duplicate)
+	if result.Command.State == domain.CommandStateQueued && s.queueWake != nil {
+		s.queueWake()
+	} else if result.Command.State == domain.CommandStateQueued {
 		launchRunnerWork(s.dispatchGate, func() {
 			_, _ = s.service.ResumeCommand(context.Background(), result.Command.CommandID, controller)
 		})
 	}
-	s.writeCommandMutationResponse(response, request, result.Command, controller, result.Duplicate)
 }
 
 func (s *PrivateServer) handleCancelCommand(response http.ResponseWriter, request *http.Request, pathCommandID string) {
@@ -680,12 +688,14 @@ func (s *PrivateServer) handleCancelCommand(response http.ResponseWriter, reques
 		status := privateStatusForError(serviceErr)
 		if result.Command.CommandID != "" {
 			s.writeCommandMutationResponse(response, request, result.Command, controller, result.Duplicate)
+			s.wakeQueue()
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
 	s.writeCommandMutationResponse(response, request, result.Command, controller, result.Duplicate)
+	s.wakeQueue()
 }
 
 func (s *PrivateServer) handleCloseSession(response http.ResponseWriter, request *http.Request) {
@@ -740,12 +750,14 @@ func (s *PrivateServer) handleCloseSession(response http.ResponseWriter, request
 		status := privateStatusForError(serviceErr)
 		if result.Session.SessionID != "" {
 			s.writeSessionMutationResponse(response, request, result.Session, result.Duplicate)
+			s.wakeQueue()
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
 	s.writeSessionMutationResponse(response, request, result.Session, result.Duplicate)
+	s.wakeQueue()
 }
 
 func (s *PrivateServer) handleRunJob(response http.ResponseWriter, request *http.Request) {
@@ -816,7 +828,7 @@ func (s *PrivateServer) handleRunJob(response http.ResponseWriter, request *http
 		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
 		return
 	}
-	result, serviceErr := s.service.RunJob(request.Context(), execution.RunJobRequest{
+	jobRequest := execution.RunJobRequest{
 		Acceptance: store.JobAcceptance{
 			JobID: jobID, SessionID: sessionID, CommandID: commandID, Controller: controller,
 			IdempotencyKey: input.IdempotencyKey, RequestHash: hash, Environment: environment,
@@ -825,17 +837,40 @@ func (s *PrivateServer) handleRunJob(response http.ResponseWriter, request *http
 		},
 		RequestedLimits: limits, Isolation: isolation, MaxActiveSessions: store.DefaultActiveSessionLimit,
 		IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
-	})
+	}
+	if s.queueWake != nil {
+		accepted, serviceErr := s.service.AcceptJob(request.Context(), jobRequest.Acceptance)
+		if serviceErr != nil {
+			writePrivateError(response, privateStatusForError(serviceErr), serviceErr.Error())
+			return
+		}
+		// runnerd owns production runtime work through its dispatch-gated
+		// worker; this private route only commits the durable job boundary.
+		s.writeJobMutationResponse(response, request, accepted.Job, accepted.Duplicate)
+		s.wakeQueue()
+		return
+	}
+	// Keep the standalone private-server fixture behavior synchronous when no
+	// runnerd dispatcher callback has been supplied.
+	result, serviceErr := s.service.RunJob(request.Context(), jobRequest)
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
 		if result.Job.JobID != "" {
-			s.writeJobMutationResponse(response, request, result.Job, false)
+			s.writeJobMutationResponse(response, request, result.Job, result.Duplicate)
+			s.wakeQueue()
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
 	}
-	s.writeJobMutationResponse(response, request, result.Job, false)
+	s.writeJobMutationResponse(response, request, result.Job, result.Duplicate)
+	s.wakeQueue()
+}
+
+func (s *PrivateServer) wakeQueue() {
+	if s != nil && s.queueWake != nil {
+		s.queueWake()
+	}
 }
 
 func (s *PrivateServer) handleGetJob(response http.ResponseWriter, request *http.Request) {
@@ -1068,6 +1103,18 @@ func commandResponseFromRecord(record store.CommandRecord, duplicate bool) comma
 }
 
 func jobResponseFromRecord(record store.JobRecord, duplicate bool, environment domain.Environment) jobResponse {
+	return jobResponseFromRecordWithCapabilities(record, duplicate, capabilitiesResponseFromEnvironment(environment))
+}
+
+// jobResponseFromPreSessionTerminalRecord exposes the durable outcome when a
+// job failed before its requested environment could create a session. The
+// capability envelope comes from a configured host profile only; it does not
+// authorize the stored request or replace its missing environment policy.
+func jobResponseFromPreSessionTerminalRecord(record store.JobRecord, duplicate bool, hostProfile domain.Environment) jobResponse {
+	return jobResponseFromRecordWithCapabilities(record, duplicate, capabilitiesResponseFromEnvironment(hostProfile))
+}
+
+func jobResponseFromRecordWithCapabilities(record store.JobRecord, duplicate bool, capabilities commandCapabilitiesResponse) jobResponse {
 	portable := record.Source.Portable()
 	source := sourceResponse{
 		Mode:              string(record.Source.Mode()),
@@ -1089,8 +1136,15 @@ func jobResponseFromRecord(record store.JobRecord, duplicate bool, environment d
 		TeardownReason: record.TeardownReason, ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		Authority: authority, Controller: controllerRequest{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())},
 		ObservedAt: record.UpdatedAt.UTC(), Environment: record.Environment, Source: source,
-		Capabilities: capabilitiesResponseFromEnvironment(environment), Duplicate: duplicate,
+		Capabilities: capabilities, Duplicate: duplicate,
 	}
+}
+
+func isPreSessionTerminalJob(record store.JobRecord) bool {
+	return record.Phase == store.JobPhaseFailed && record.CommandState == nil &&
+		record.TeardownState == store.JobTeardownNotCreated && record.ExitCode == nil &&
+		record.FinalEventSequence == nil && !record.OutputComplete && !record.OutputTruncated &&
+		record.OutputUnavailableReason == ""
 }
 
 func sessionAcceptanceResponseFromRecord(record store.SessionRecord, duplicate bool) sessionAcceptanceResponse {
@@ -1404,6 +1458,12 @@ func (s *PrivateServer) writeJobMutationResponse(response http.ResponseWriter, r
 func (s *PrivateServer) writeJobReadResponse(response http.ResponseWriter, request *http.Request, status int, record store.JobRecord, duplicate bool) {
 	environment, err := s.service.ResolveEnvironment(request.Context(), record.Environment)
 	if err != nil {
+		if isPreSessionTerminalJob(record) {
+			if hostProfile, available := s.service.FallbackEnvironmentForTarget(record.Target); available {
+				writeJSON(response, status, jobResponseFromPreSessionTerminalRecord(record, duplicate, hostProfile))
+				return
+			}
+		}
 		writePrivateError(response, http.StatusServiceUnavailable, "job capabilities are unavailable")
 		return
 	}

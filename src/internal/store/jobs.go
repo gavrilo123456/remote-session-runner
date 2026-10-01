@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 )
 
@@ -93,6 +94,7 @@ type JobRecord struct {
 	SessionID               domain.SessionID
 	CommandID               domain.CommandID
 	Controller              domain.ControllerIdentity
+	Ingress                 audit.Ingress
 	Environment             string
 	Target                  domain.ExecutionTarget
 	Source                  domain.Source
@@ -131,6 +133,10 @@ type JobCheckpoint struct {
 // same-key/same-payload retry returns the original row without another job;
 // changed payloads return ErrIdempotencyConflict.
 func (s *AuthorityStore) AcceptJob(ctx context.Context, input JobAcceptance) (record JobRecord, duplicate bool, err error) {
+	ingress := audit.IngressFromContext(ctx)
+	if !ingress.TrustedForAcceptance() {
+		return JobRecord{}, false, fmt.Errorf("%w: ingress", ErrInvalidJob)
+	}
 	validated, err := validateJobAcceptance(input)
 	if err != nil {
 		return JobRecord{}, false, err
@@ -167,7 +173,7 @@ func (s *AuthorityStore) AcceptJob(ctx context.Context, input JobAcceptance) (re
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return JobRecord{}, fmt.Errorf("check job identity: %w", err)
 		}
-		if err := insertJobOnConnection(ctx, connection, validated, now, warning); err != nil {
+		if err := insertJobOnConnection(ctx, connection, validated, ingress, now, warning); err != nil {
 			return JobRecord{}, err
 		}
 		created, err := readJobOnConnection(ctx, connection, validated.JobID)
@@ -455,18 +461,20 @@ func validateRunPayload(raw []byte, script, environment string, target domain.Ex
 	return append([]byte(nil), canonical...), hash, nil
 }
 
-func insertJobOnConnection(ctx context.Context, connection *sql.Conn, input JobAcceptance, now time.Time, idempotencyWarning bool) error {
+func insertJobOnConnection(ctx context.Context, connection *sql.Conn, input JobAcceptance, ingress audit.Ingress, now time.Time, idempotencyWarning bool) error {
 	scriptBytes := []byte(input.Script)
 	scriptHash := sha256.Sum256(scriptBytes)
 	if _, err := connection.ExecContext(ctx, `
 INSERT INTO exec_jobs (
     job_id, session_id, command_id, controller_type, controller_id,
+	    ingress,
     target_kind, target_profile, environment,
     source_mode, source_repository_alias, source_requested_revision, source_path,
     request_hash_version, request_hash, idempotency_key, payload_json,
     script_bytes, script_sha256, phase, teardown_state, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, string(input.JobID), string(input.SessionID), string(input.CommandID), string(input.Controller.Type()), string(input.Controller.ID()),
+		string(ingress),
 		string(input.Target.Kind()), input.Target.Profile(), input.Environment,
 		string(input.Source.Mode()), input.Source.RepositoryAlias(), input.Source.RequestedRevision(), input.Source.Path(),
 		input.RequestHash.Version(), input.RequestHash.SHA256(), input.IdempotencyKey, input.CanonicalPayload,
@@ -490,7 +498,7 @@ INSERT INTO exec_jobs (
 
 func readJobOnConnection(ctx context.Context, connection *sql.Conn, id domain.JobID) (JobRecord, error) {
 	var record JobRecord
-	var jobID, sessionID, commandID, controllerType, controllerID string
+	var jobID, sessionID, commandID, controllerType, controllerID, ingress string
 	var targetKind, targetProfile, environment string
 	var sourceMode, repositoryAlias, requestedRevision, sourcePath string
 	var requestHashVersion int
@@ -503,6 +511,7 @@ func readJobOnConnection(ctx context.Context, connection *sql.Conn, id domain.Jo
 	var createdAt, updatedAt string
 	if err := connection.QueryRowContext(ctx, `
 SELECT job_id, session_id, command_id, controller_type, controller_id,
+	       ingress,
        target_kind, target_profile, environment,
        source_mode, source_repository_alias, source_requested_revision, source_path,
        request_hash_version, request_hash, idempotency_key, payload_json,
@@ -511,7 +520,7 @@ SELECT job_id, session_id, command_id, controller_type, controller_id,
        teardown_state, teardown_reason, created_at, updated_at
 FROM exec_jobs WHERE job_id = ?
 `, string(id)).Scan(&jobID, &sessionID, &commandID, &controllerType, &controllerID,
-		&targetKind, &targetProfile, &environment, &sourceMode, &repositoryAlias, &requestedRevision, &sourcePath,
+		&ingress, &targetKind, &targetProfile, &environment, &sourceMode, &repositoryAlias, &requestedRevision, &sourcePath,
 		&requestHashVersion, &requestHash, &idempotencyKey, &payload, &scriptBytes, &scriptHash, &phase, &commandState,
 		&exitCode, &finalSequence, &outputTruncated, &outputComplete, &outputUnavailableReason, &teardownState, &teardownReason, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -534,6 +543,10 @@ FROM exec_jobs WHERE job_id = ?
 	record.Controller, err = domain.NewControllerIdentity(domain.ControllerType(controllerType), domain.ControllerID(controllerID))
 	if err != nil {
 		return JobRecord{}, fmt.Errorf("%w: controller", ErrJobPayloadCorrupt)
+	}
+	record.Ingress = audit.Ingress(ingress)
+	if !audit.ValidIngress(record.Ingress) {
+		return JobRecord{}, fmt.Errorf("%w: ingress", ErrJobPayloadCorrupt)
 	}
 	record.Target, err = domain.NewExecutionTarget(domain.TargetKind(targetKind), targetProfile)
 	if err != nil {

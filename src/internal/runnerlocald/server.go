@@ -1210,7 +1210,7 @@ func intentAcceptanceFailure(err error) (string, string) {
 		return "controller_mismatch", "session controller does not match the local owner"
 	case errors.Is(err, execution.ErrSessionNotReady), errors.Is(err, store.ErrCommandSessionState):
 		return "session_not_ready", "session is not ready to accept this command"
-	case errors.Is(err, execution.ErrEnvironmentUnavailable):
+	case errors.Is(err, execution.ErrEnvironmentNotConfigured):
 		return "environment_forbidden", "configured environment is unavailable"
 	case errors.Is(err, domain.ErrEnvironmentTargetMismatch), errors.Is(err, domain.ErrEnvironmentSourceMismatch), errors.Is(err, domain.ErrUnsupportedIsolationRequirement):
 		return "environment_target_mismatch", "request is incompatible with the configured environment"

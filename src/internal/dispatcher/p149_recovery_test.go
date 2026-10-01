@@ -641,6 +641,43 @@ func TestP149AcceptedRemoteRunKeepsAcceptedForPreCommandTerminalWithoutTeardownP
 	}
 }
 
+// TestP149AcceptedRemoteRunReconcilesProvenPreSessionFailure permits the one
+// exact command-less terminal shape that Runner can prove: failed before any
+// session/command row existed, with teardown=not_created. It must not ask the
+// target for a command or events that cannot exist.
+func TestP149AcceptedRemoteRunReconcilesProvenPreSessionFailure(t *testing.T) {
+	ctx := context.Background()
+	authority := p068Authority(t)
+	intent := p149AcceptRemoteRun(t, authority, "proven-pre-session-failure")
+	caller := &p149RecoveryCaller{
+		intent:                  intent,
+		preCommandTerminalPhase: store.JobPhaseFailed,
+		preCommandTeardown:      store.JobTeardownNotCreated,
+	}
+	driver, err := NewRemoteDriver(authority, caller, "router-p149-proven-pre-session", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.ReconcileAcceptedRun(ctx, intent.IntentID); err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err := authority.GetLocalIntent(ctx, intent.IntentID)
+	if err != nil || reconciled.DeliveryState != store.LocalIntentReconciled || !store.HasRemoteTerminalProof(reconciled) {
+		t.Fatalf("proven pre-session intent=%+v err=%v", reconciled, err)
+	}
+	job, err := authority.GetRemoteJobProjection(ctx, intent.JobID)
+	if err != nil || job.Phase != store.JobPhaseFailed || job.CommandState != nil || job.TeardownState != store.JobTeardownNotCreated ||
+		job.ExitCode != nil || job.FinalEventSequence != nil || job.OutputComplete || job.OutputTruncated || job.OutputUnavailableReason != "" {
+		t.Fatalf("proven pre-session job=%+v err=%v", job, err)
+	}
+	if _, err := authority.GetRemoteCommandProjection(ctx, intent.CommandID); !errors.Is(err, store.ErrRemoteProjectionNotFound) {
+		t.Fatalf("proven pre-session failure created command projection: %v", err)
+	}
+	if caller.runCalls != 0 || caller.getJobCalls != 1 || caller.getCommandCalls != 0 || caller.streamCalls != 0 {
+		t.Fatalf("proven pre-session calls run=%d get_job=%d get_command=%d stream=%d", caller.runCalls, caller.getJobCalls, caller.getCommandCalls, caller.streamCalls)
+	}
+}
+
 func p149RemoteRunIntent(t *testing.T, suffix string) store.LocalIntentCreate {
 	t.Helper()
 	target, err := domain.NewExecutionTarget(domain.TargetKindRemote, "linux-host")
@@ -723,6 +760,7 @@ type p149RecoveryCaller struct {
 	gap                     bool
 	truncatedEvents         bool
 	preCommandTerminalPhase store.JobPhase
+	preCommandTeardown      store.JobTeardownState
 	mutateJob               func(map[string]any)
 	mutateCommand           func(map[string]any)
 	terminalEventType       string
@@ -910,9 +948,13 @@ func (c *p149RecoveryCaller) Stream(_ context.Context, request sshbridge.Request
 
 func (c *p149RecoveryCaller) jobPayload() []byte {
 	if c.preCommandTerminalPhase != "" {
+		teardown := c.preCommandTeardown
+		if teardown == "" {
+			teardown = store.JobTeardownPending
+		}
 		payload, _ := json.Marshal(map[string]any{
 			"job_id": string(c.intent.JobID), "session_id": string(c.intent.SessionID), "command_id": string(c.intent.CommandID),
-			"job_phase": string(c.preCommandTerminalPhase), "output_complete": false, "output_truncated": false, "teardown_state": string(store.JobTeardownPending),
+			"job_phase": string(c.preCommandTerminalPhase), "output_complete": false, "output_truncated": false, "teardown_state": string(teardown),
 			"execution_target": map[string]string{"kind": "remote", "profile": c.intent.Target.Profile()}, "authority": "remote",
 			"controller":  map[string]string{"controller_type": "queued_mac", "controller_id": "tomasz.walczuk"},
 			"environment": c.intent.Environment, "source": map[string]string{"mode": "empty"},

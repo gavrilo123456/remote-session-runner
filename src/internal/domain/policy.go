@@ -284,6 +284,14 @@ func (e Environment) EffectiveAccount() string { return e.effectiveAccount }
 // ServiceLimits returns this environment's Runner-enforced service ceilings.
 func (e Environment) ServiceLimits() ServiceLimits { return e.serviceLimits }
 
+// AllowsTarget reports whether this configured environment owns the supplied
+// target profile. It is intentionally narrower than ValidateSessionPolicy:
+// read-only capability reporting can select the host profile without
+// authorizing a controller, source, requested limit, or isolation request.
+func (e Environment) AllowsTarget(target ExecutionTarget) bool {
+	return containsTarget(e.allowedTargets, target)
+}
+
 // Capabilities reports the OS-user boundary and actual Runner service limits.
 // It intentionally has no field that can advertise per-session host isolation.
 func (e Environment) Capabilities() Capabilities {

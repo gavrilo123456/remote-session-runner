@@ -30,6 +30,7 @@ type directHTTPSAPI struct {
 	service        *execution.Service
 	requestGate    *lifecycle.Gate
 	dispatchGate   *lifecycle.Gate
+	queueWake      func()
 	maxBodyBytes   int64
 	allocateRunIDs func() (domain.JobID, domain.SessionID, domain.CommandID, error)
 }
@@ -204,11 +205,15 @@ func NewDirectHTTPSAPIHandler(service *execution.Service) (http.Handler, error) 
 }
 
 func newDirectHTTPSAPIHandler(service *execution.Service, requestGate, dispatchGate *lifecycle.Gate) (http.Handler, error) {
+	return newDirectHTTPSAPIHandlerWithQueueWake(service, requestGate, dispatchGate, nil)
+}
+
+func newDirectHTTPSAPIHandlerWithQueueWake(service *execution.Service, requestGate, dispatchGate *lifecycle.Gate, queueWake func()) (http.Handler, error) {
 	if service == nil {
 		return nil, ErrDirectHTTPSAPIConfiguration
 	}
 	return &directHTTPSAPI{
-		service: service, requestGate: requestGate, dispatchGate: dispatchGate,
+		service: service, requestGate: requestGate, dispatchGate: dispatchGate, queueWake: queueWake,
 		maxBodyBytes: domain.MaxSerializedRequestBytes, allocateRunIDs: newDirectRunIDs,
 	}, nil
 }
@@ -536,7 +541,7 @@ func (s *directHTTPSAPI) handleRunJob(response http.ResponseWriter, request *htt
 		writeDirectError(response, http.StatusServiceUnavailable, "runtime_unavailable", "could not allocate job identities")
 		return
 	}
-	result, serviceErr := s.service.RunJob(request.Context(), execution.RunJobRequest{
+	jobRequest := execution.RunJobRequest{
 		Acceptance: store.JobAcceptance{
 			JobID: jobID, SessionID: sessionID, CommandID: commandID, Controller: principal.Controller,
 			IdempotencyKey: idempotencyKey, RequestHash: hash, Environment: input.Environment,
@@ -545,7 +550,25 @@ func (s *directHTTPSAPI) handleRunJob(response http.ResponseWriter, request *htt
 		},
 		RequestedLimits: limits, MaxActiveSessions: store.DefaultActiveSessionLimit,
 		IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
-	})
+	}
+	if s.queueWake != nil {
+		accepted, serviceErr := s.service.AcceptJob(request.Context(), jobRequest.Acceptance)
+		if serviceErr != nil {
+			status, code, message := directJobError(serviceErr)
+			writeDirectError(response, status, code, message)
+			return
+		}
+		// A durable job row is the acceptance boundary. Production runnerd
+		// runtime work begins only in its dispatch-gated queued worker.
+		writeJSON(response, http.StatusAccepted, directJobAcceptanceFromRecord(accepted.Job, accepted.IdempotencyWarning))
+		// Publish the durable acceptance before another worker can expose a
+		// later runtime state for this request.
+		s.wakeQueue()
+		return
+	}
+	// This handler is also used by focused fixtures without runnerd's queued
+	// worker. Preserve their synchronous compatibility behavior there.
+	result, serviceErr := s.service.RunJob(request.Context(), jobRequest)
 	if serviceErr != nil && result.Job.JobID == "" {
 		status, code, message := directJobError(serviceErr)
 		writeDirectError(response, status, code, message)
@@ -554,6 +577,7 @@ func (s *directHTTPSAPI) handleRunJob(response http.ResponseWriter, request *htt
 	// A durable job row is the acceptance boundary. The read route returns its
 	// command and teardown outcomes even when the coordinator reports failure.
 	writeJSON(response, http.StatusAccepted, directJobAcceptanceFromRecord(result.Job, result.IdempotencyWarning))
+	s.wakeQueue()
 }
 
 func (s *directHTTPSAPI) handleGetJob(response http.ResponseWriter, request *http.Request) {
@@ -575,6 +599,14 @@ func (s *directHTTPSAPI) handleGetJob(response http.ResponseWriter, request *htt
 	}
 	environment, err := s.service.ResolveEnvironment(request.Context(), record.Environment)
 	if err != nil {
+		if isPreSessionTerminalJob(record) {
+			if hostProfile, available := s.service.FallbackEnvironmentForTarget(record.Target); available {
+				writeJSON(response, http.StatusOK, directJobReadResponse{
+					View: "authority", IsStale: false, Resource: directJobResourceFromPreSessionTerminalRecord(record, hostProfile),
+				})
+				return
+			}
+		}
 		writeDirectError(response, http.StatusServiceUnavailable, "runtime_unavailable", "job capabilities are unavailable")
 		return
 	}
@@ -597,6 +629,14 @@ func directJobAcceptanceFromRecord(record store.JobRecord, idempotencyWarning bo
 }
 
 func directJobResourceFromRecord(record store.JobRecord, environment domain.Environment) directJobResource {
+	return directJobResourceFromRecordWithCapabilities(record, capabilitiesResponseFromEnvironment(environment))
+}
+
+func directJobResourceFromPreSessionTerminalRecord(record store.JobRecord, hostProfile domain.Environment) directJobResource {
+	return directJobResourceFromRecordWithCapabilities(record, capabilitiesResponseFromEnvironment(hostProfile))
+}
+
+func directJobResourceFromRecordWithCapabilities(record store.JobRecord, capabilities commandCapabilitiesResponse) directJobResource {
 	authority := "remote"
 	if record.Target.Kind() == domain.TargetKindLocal {
 		authority = "local"
@@ -609,7 +649,7 @@ func directJobResourceFromRecord(record store.JobRecord, environment domain.Envi
 		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()}, Authority: authority,
 		Controller: controllerRequest{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())},
 		ObservedAt: record.UpdatedAt.UTC(), Environment: record.Environment, Source: sourceResponseFromJobRecord(record),
-		Capabilities: capabilitiesResponseFromEnvironment(environment),
+		Capabilities: capabilities,
 	}
 }
 
@@ -769,14 +809,16 @@ func (s *directHTTPSAPI) handleSubmitCommand(response http.ResponseWriter, reque
 		writeDirectError(response, status, code, message)
 		return
 	}
-	if result.Command.State == domain.CommandStateQueued {
+	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target, result.IdempotencyWarning))
+	if result.Command.State == domain.CommandStateQueued && s.queueWake != nil {
+		s.queueWake()
+	} else if result.Command.State == domain.CommandStateQueued {
 		acceptedID := result.Command.CommandID
 		controller := principal.Controller
 		launchRunnerWork(s.dispatchGate, func() {
 			_, _ = s.service.ResumeCommand(context.Background(), acceptedID, controller)
 		})
 	}
-	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target, result.IdempotencyWarning))
 }
 
 func (s *directHTTPSAPI) handleGetCommand(response http.ResponseWriter, request *http.Request) {
@@ -1087,6 +1129,7 @@ func (s *directHTTPSAPI) handleCancelCommand(response http.ResponseWriter, reque
 	// A populated record means the authority durably accepted the cancel request.
 	// Report its current state even when the runtime could not confirm a stop.
 	writeJSON(response, http.StatusAccepted, directCommandAcceptanceFromRecord(result.Command, session.Target, result.IdempotencyWarning))
+	s.wakeQueue()
 }
 
 func (s *directHTTPSAPI) handleCloseSession(response http.ResponseWriter, request *http.Request) {
@@ -1132,6 +1175,13 @@ func (s *directHTTPSAPI) handleCloseSession(response http.ResponseWriter, reques
 	// The session record is the acceptance result; closed/lost is reported as
 	// known state, not hidden behind a transport-shaped error.
 	writeJSON(response, http.StatusAccepted, directSessionAcceptanceFromRecord(result.Session, result.IdempotencyWarning))
+	s.wakeQueue()
+}
+
+func (s *directHTTPSAPI) wakeQueue() {
+	if s != nil && s.queueWake != nil {
+		s.queueWake()
+	}
 }
 
 func directCommandTimeout(raw json.RawMessage) (time.Duration, error) {
@@ -1444,7 +1494,7 @@ func directSessionError(err error) (int, string, string) {
 		return http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for a different request"
 	case errors.Is(err, store.ErrSessionCapacityExceeded):
 		return http.StatusTooManyRequests, "quota_exceeded", "active session capacity is full"
-	case errors.Is(err, execution.ErrEnvironmentUnavailable):
+	case errors.Is(err, execution.ErrEnvironmentNotConfigured):
 		return http.StatusUnprocessableEntity, "invalid_request", "environment is not configured"
 	case errors.Is(err, domain.ErrEnvironmentSourceMismatch), errors.Is(err, domain.ErrRepositoryAliasNotAllowed), errors.Is(err, domain.ErrUnsupportedIsolationRequirement), errors.Is(err, domain.ErrInvalidRequestedLimits), errors.Is(err, domain.ErrLimitExceedsServiceCeiling), errors.Is(err, domain.ErrInvalidSource), errors.Is(err, domain.ErrInvalidTargetKind), errors.Is(err, domain.ErrEmptyTargetProfile), errors.Is(err, store.ErrIdempotencyKey):
 		return http.StatusUnprocessableEntity, "invalid_request", "session request is not allowed by the selected environment"
@@ -1488,7 +1538,7 @@ func directJobError(err error) (int, string, string) {
 		return http.StatusRequestEntityTooLarge, "invalid_request", "script exceeds the 128 KiB UTF-8 limit"
 	case errors.Is(err, store.ErrSessionCapacityExceeded):
 		return http.StatusTooManyRequests, "quota_exceeded", "active session capacity is full"
-	case errors.Is(err, execution.ErrEnvironmentUnavailable):
+	case errors.Is(err, execution.ErrEnvironmentNotConfigured):
 		return http.StatusUnprocessableEntity, "invalid_request", "environment is not configured"
 	case errors.Is(err, domain.ErrEnvironmentTargetMismatch):
 		return http.StatusUnprocessableEntity, "environment_target_mismatch", "environment does not allow the requested target"

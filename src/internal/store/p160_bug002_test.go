@@ -220,7 +220,7 @@ INSERT INTO local_remote_job_projections (
 		want  []any
 	}{
 		{`SELECT output_unavailable_reason FROM exec_commands WHERE command_id = 'command-bug002-migration'`, []any{"capture_boundary_unconfirmed"}},
-		{`SELECT output_unavailable_reason, teardown_state, teardown_reason FROM exec_jobs WHERE job_id = 'job-bug002-migration'`, []any{"capture_boundary_unconfirmed", "lost", "runtime_cleanup_unconfirmed"}},
+		{`SELECT output_unavailable_reason, teardown_state, teardown_reason, ingress FROM exec_jobs WHERE job_id = 'job-bug002-migration'`, []any{"capture_boundary_unconfirmed", "lost", "runtime_cleanup_unconfirmed", "unknown"}},
 		{`SELECT output_unavailable_reason FROM local_remote_command_projections WHERE command_id = 'command-bug002-projection'`, []any{"capture_boundary_unconfirmed"}},
 		{`SELECT output_unavailable_reason, teardown_state, teardown_reason FROM local_remote_job_projections WHERE job_id = 'job-bug002-projection'`, []any{"capture_boundary_unconfirmed", "lost", "runtime_cleanup_unconfirmed"}},
 	} {
