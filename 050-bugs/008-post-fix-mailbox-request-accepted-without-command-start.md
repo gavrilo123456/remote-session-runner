@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `NEW` |
+| Status | `IN PROGRESS` |
 | Severity | High — can strand protected control-plane work indefinitely after safe mailbox admission |
 | Priority | High |
 | Reported | 2026-10-01 |
@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner |
 | Affected component/path | Direct workspace mailbox ingress; local relay/projection; remote bridge/dispatch; Linux `runnerd` durable one-off scheduling |
 | Affected revision | Installed `runnerd` and bridge revision at recurrence are unverified. Do not infer them from the documented BUG-007 source or checkout revision. |
-| Fixed revision | N/A |
-| Verification | Pending: reproduce safely, identify the installed dispatch path, correct it, and pass the live regression gates below. |
+| Fixed revision | Pending B008-P3, B008-P4, and B008-P6 completion |
+| Verification | B008-P1 and B008-P2 source and host gates passed; the remaining visibility, full-regression, installation, and fresh end-to-end gates are pending. |
 
 ## Reported behavior
 
@@ -476,18 +476,17 @@ nonterminal phases (`creating_session`, `accepting_command`,
 teardown result, terminal command result, process ID, script, header, token,
 or private material. Unchanged polls must not churn response revisions.
 
-Add an optional aggregate queue-status reason only when the target durably
-proves it. Allowed reasons are `queued_for_dispatch`,
-`waiting_for_command_capacity`, and `blocked_by_unconfirmed_cleanup`; counts
-are aggregate only. A queued state alone must never be labelled as a capacity
-blocker. Extend local health with aggregate accepted-active/queued work and
-retained-lost capacity so the correct remote profile can degrade without
-making local ingress unready.
+This phase deliberately does not add aggregate queue blocker reasons or local
+health/metric projections. A queued state alone cannot truthfully distinguish
+dispatch order, capacity, reachability, or unconfirmed cleanup. Those
+aggregate features need separately designed, target-durable evidence and are
+deferred to a later scoped improvement. B008-P3 remains a simple per-request
+active-state projection.
 
-**Gate.** Local API, mailbox schema, dispatcher projection, target response,
-store metrics, and health tests prove one revision advance per semantic change,
-no fabricated terminal result, safe handling of stale/mismatched/unavailable
-projections, and no identifiers or private data in aggregate health.
+**Gate.** Local API, mailbox schema, dispatcher projection, and target-response
+tests prove one revision advance per semantic change, no fabricated terminal
+result, safe handling of stale/mismatched/unavailable projections, and no
+private data in an active response.
 
 ### B008-P4 — Regression suite, operator documentation, and source handoff
 
@@ -537,11 +536,12 @@ rather than preserved, the two original queued commands.
 
 ## Resolution
 
-Open. B008-P1's source boundary is committed, pushed, and synchronized, but
-the guarded online command, active mailbox projection, complete regression
-suite, installation, and fresh harmless end-to-end proof remain. Requests 103
-and 104 are terminal cancelled historic evidence; Logger rollout still needs
-an independently accepted fresh request after the repair is installed.
+Open. B008-P1 and B008-P2 are committed, pushed, synchronized, and passed
+their stated source/host gates. The active mailbox projection, complete
+regression suite, installation, and fresh harmless end-to-end proof remain.
+Requests 103 and 104 are terminal cancelled historic evidence; Logger rollout
+still needs an independently accepted fresh request after the repair is
+installed.
 
 ## History
 
@@ -552,3 +552,4 @@ an independently accepted fresh request after the repair is installed.
 | 2026-10-01 | Recorded the confirmed retained-capacity cause and serial B008-P0–P6 remediation plan. |
 | 2026-10-01 | User explicitly authorized cancellation of the two pending historic commands. The existing guarded offline procedure cancelled only those commands, recovered the four proven retained lost pairs, returned P128 to zero active work, and restarted `runnerd.service`. |
 | 2026-10-01 | B008-P1 added and synchronized the queue-preserving recovery foundation; source tests passed. |
+| 2026-10-01 | B008-P2 added, pushed, and synchronized the guarded owner-only online retained-capacity command. Focused Mac source gates and Linux zombie-only process-group gates passed on both Ubuntu hosts without a service restart. |
