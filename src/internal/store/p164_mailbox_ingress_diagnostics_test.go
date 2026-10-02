@@ -33,9 +33,9 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 		_ = fresh.Close()
 		t.Fatalf("fresh schema version=%d, want current %d", version, CurrentSchemaVersion)
 	}
-	if CurrentSchemaVersion != 32 {
+	if CurrentSchemaVersion != 33 {
 		_ = fresh.Close()
-		t.Fatalf("CurrentSchemaVersion=%d, want 32", CurrentSchemaVersion)
+		t.Fatalf("CurrentSchemaVersion=%d, want 33", CurrentSchemaVersion)
 	}
 	var migrationName string
 	if err := fresh.QueryRowContext(ctx, `SELECT name FROM runner_schema_migrations WHERE version = 30`).Scan(&migrationName); err != nil || migrationName != "mailbox_ingress_diagnostics" {
@@ -50,6 +50,10 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 		_ = fresh.Close()
 		t.Fatalf("fresh migration 32=%q err=%v", migrationName, err)
 	}
+	if err := fresh.QueryRowContext(ctx, `SELECT name FROM runner_schema_migrations WHERE version = 33`).Scan(&migrationName); err != nil || migrationName != "bug009_queue_blocked_reason" {
+		_ = fresh.Close()
+		t.Fatalf("fresh migration 33=%q err=%v", migrationName, err)
+	}
 	if err := fresh.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +67,15 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 		t.Fatalf("migrate v29 database: %v", err)
 	}
 	t.Cleanup(func() { _ = migrated.Close() })
-	if version := readUserVersion(t, migrated); version != 32 {
-		t.Fatalf("migrated schema version=%d, want 32", version)
+	if version := readUserVersion(t, migrated); version != 33 {
+		t.Fatalf("migrated schema version=%d, want 33", version)
 	}
 	var columnCount int
 	if err := migrated.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('mailbox_ingress_diagnostics')`).Scan(&columnCount); err != nil || columnCount != 14 {
 		t.Fatalf("mailbox ingress diagnostic columns=%d err=%v, want 14", columnCount, err)
+	}
+	if err := migrated.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('local_remote_job_projections') WHERE name = 'queue_blocked_reason'`).Scan(&columnCount); err != nil || columnCount != 1 {
+		t.Fatalf("queue blocked reason projection column=%d err=%v, want 1", columnCount, err)
 	}
 }
 

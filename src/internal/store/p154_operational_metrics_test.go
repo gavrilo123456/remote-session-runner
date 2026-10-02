@@ -183,9 +183,10 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 		t.Fatal(err)
 	}
 	// Model the P153 migration ledger used by read-only mailbox preflight. P164
-	// adds a malformed-ingress ledger and BUG-007 adds unrelated job/audit
-	// provenance columns; remove ledger entries later than P153 so migration
-	// history remains internally consistent for this legacy-only check.
+	// adds a malformed-ingress ledger, BUG-007 adds unrelated job/audit
+	// provenance columns, and B009-P3 adds a remote-projection status column;
+	// remove ledger entries later than P153 so migration history remains
+	// internally consistent for this legacy-only check.
 	for _, statement := range []string{
 		`DROP TABLE exec_lost_runtime_recovery_finalizations`,
 		`DROP TRIGGER mailbox_exchanges_reject_ingress_diagnostic_identity`,
@@ -199,7 +200,7 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32)`); err != nil {
+	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32, 33)`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}

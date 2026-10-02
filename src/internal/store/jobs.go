@@ -23,7 +23,15 @@ var (
 	ErrJobPayloadCorrupt = errors.New("job payload is corrupt")
 )
 
-const runJobOperation = "run"
+const (
+	runJobOperation = "run"
+
+	// QueueBlockedReasonLostCapacityRecoveryPending is the sole safe
+	// nonterminal explanation for a queued one-off whose command can start as
+	// soon as the bounded retained-lost-capacity recovery obtains process-group
+	// proof. It is a volatile status projection, never job or idempotency data.
+	QueueBlockedReasonLostCapacityRecoveryPending = "lost_capacity_recovery_pending"
+)
 
 // JobPhase is the durable one-off coordinator checkpoint. P024 starts every
 // accepted job before session creation; later phases advance it after each
@@ -110,6 +118,7 @@ type JobRecord struct {
 	OutputTruncated         bool
 	OutputComplete          bool
 	OutputUnavailableReason string
+	QueueBlockedReason      string
 	TeardownState           JobTeardownState
 	TeardownReason          string
 	CreatedAt               time.Time
@@ -199,6 +208,71 @@ func (s *AuthorityStore) GetJob(ctx context.Context, id domain.JobID) (JobRecord
 	}
 	defer connection.Close()
 	return readJobOnConnection(ctx, connection, validatedID)
+}
+
+// GetJobStatus reads a job with the optional safe queue-block explanation
+// derived in the same read transaction. It never mutates the job, capacity,
+// idempotency, or scheduler state. Omission means the exact P2 inventory
+// could not prove that retained lost capacity is the reason this queued job
+// cannot start.
+func (s *AuthorityStore) GetJobStatus(ctx context.Context, id domain.JobID) (JobRecord, error) {
+	validatedID, err := domain.NewJobID(string(id))
+	if err != nil {
+		return JobRecord{}, err
+	}
+	if s == nil || s.db == nil {
+		return JobRecord{}, ErrJobNotFound
+	}
+	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (JobRecord, error) {
+		job, err := readJobOnConnection(ctx, connection, validatedID)
+		if err != nil {
+			return JobRecord{}, err
+		}
+		blocked, err := queuedLostCapacityRecoveryBlocksJob(ctx, connection, job)
+		if err != nil {
+			return JobRecord{}, err
+		}
+		if blocked {
+			job.QueueBlockedReason = QueueBlockedReasonLostCapacityRecoveryPending
+		}
+		return job, nil
+	})
+}
+
+// queuedLostCapacityRecoveryBlocksJob proves only the narrow B009-P2
+// condition in one authoritative snapshot. A candidate list alone is not
+// sufficient: the existing preservation predicate also verifies that all
+// live slots are the exact terminal-lost set and this job is an untouched,
+// scheduler-eligible queued one-off behind them.
+func queuedLostCapacityRecoveryBlocksJob(ctx context.Context, connection *sql.Conn, job JobRecord) (bool, error) {
+	if job.Phase != JobPhaseAwaitingCommand || job.CommandState == nil || *job.CommandState != domain.CommandStateQueued {
+		return false, nil
+	}
+	pairs, err := listRetainedLostRuntimeRecoveryPairsOnConnection(ctx, connection)
+	if err != nil {
+		return false, err
+	}
+	if len(pairs) != DefaultRunningCommandLimit {
+		return false, nil
+	}
+	unreleased, err := checkLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ctx, connection, pairs)
+	if err != nil {
+		if errors.Is(err, ErrLostRuntimeRecoveryNotReleasable) {
+			return false, nil
+		}
+		return false, err
+	}
+	if len(unreleased) != DefaultRunningCommandLimit {
+		return false, nil
+	}
+	queuedJobID, queuedCommandID, err := requireSafeQueuedOneOffReservation(ctx, connection, job.SessionID)
+	if err != nil {
+		if errors.Is(err, ErrLostRuntimeRecoveryNotReleasable) {
+			return false, nil
+		}
+		return false, err
+	}
+	return queuedJobID == job.JobID && queuedCommandID == job.CommandID, nil
 }
 
 // GetJobByCommandID reads the one-off job bound to commandID. Command IDs are

@@ -69,6 +69,7 @@ type Response struct {
 	CommandID                string          `json:"command_id,omitempty"`
 	DeliveryState            string          `json:"delivery_state,omitempty"`
 	CommandState             string          `json:"command_state,omitempty"`
+	QueueBlockedReason       string          `json:"queue_blocked_reason,omitempty"`
 	ExitCode                 *int            `json:"exit_code,omitempty"`
 	Stdout                   string          `json:"stdout,omitempty"`
 	Stderr                   string          `json:"stderr,omitempty"`

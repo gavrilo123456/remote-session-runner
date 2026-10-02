@@ -358,7 +358,7 @@
           "job_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "command_id": { "type": "string", "minLength": 1 },
           "phase": { "type": "string", "enum": ["creating_session", "accepting_command", "awaiting_command", "closing_session", "complete", "failed", "lost"] },
           "command_state": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/commandState" }, "exit_code": { "type": "integer" }, "final_event_sequence": { "type": "integer", "minimum": 1 },
-          "output_complete": { "type": "boolean" }, "output_truncated": { "type": "boolean" }, "output_unavailable_reason": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/outputUnavailableReason" },
+          "output_complete": { "type": "boolean" }, "output_truncated": { "type": "boolean" }, "output_unavailable_reason": { "$ref": "../../../domain/schemas/v1/states.schema.json#/$defs/outputUnavailableReason" }, "queue_blocked_reason": { "type": "string", "enum": ["lost_capacity_recovery_pending"] },
           "teardown_state": { "type": "string", "enum": ["pending", "closed", "failed", "lost", "not_created"] },
           "execution_target": { "$ref": "#/components/schemas/ExecutionTarget" }, "authority": { "type": "string", "enum": ["local", "remote"] },
           "controller": { "type": "object", "properties": { "controller_type": { "type": "string" }, "controller_id": { "type": "string" } }, "required": ["controller_type", "controller_id"], "additionalProperties": false },
@@ -375,6 +375,26 @@
           {
             "if": { "properties": { "command_state": { "enum": ["succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] }, "output_complete": { "const": false } }, "required": ["command_state", "output_complete"] },
             "then": { "required": ["output_unavailable_reason"] }
+          },
+          {
+            "if": { "required": ["queue_blocked_reason"] },
+            "then": {
+              "properties": {
+                "phase": { "const": "awaiting_command" },
+                "command_state": { "const": "queued" },
+                "output_complete": { "const": false },
+                "output_truncated": { "const": false },
+                "teardown_state": { "const": "pending" }
+              },
+              "required": ["phase", "command_state", "output_complete", "output_truncated", "teardown_state"],
+              "not": {
+                "anyOf": [
+                  { "required": ["exit_code"] },
+                  { "required": ["final_event_sequence"] },
+                  { "required": ["output_unavailable_reason"] }
+                ]
+              }
+            }
           }
         ]
       },

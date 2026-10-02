@@ -15,6 +15,7 @@
     "session_state": { "type": "string", "enum": ["requested", "creating", "ready", "busy", "closing", "closed", "expired", "failed", "lost"] },
     "command_id": { "type": "string", "minLength": 1 },
     "command_state": { "type": "string", "enum": ["queued", "running", "cancelling", "succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] },
+    "queue_blocked_reason": { "type": "string", "enum": ["lost_capacity_recovery_pending"] },
     "job_id": { "type": "string", "minLength": 1 },
     "job_phase": { "type": "string", "enum": ["creating_session", "accepting_command", "awaiting_command", "closing_session", "complete", "failed", "lost"] },
     "observed_at": { "type": "string", "format": "date-time" },
@@ -64,6 +65,7 @@
             "not": {
               "anyOf": [
                 { "required": ["session_state"] }, { "required": ["command_state"] }, { "required": ["job_phase"] },
+                { "required": ["queue_blocked_reason"] },
                 { "required": ["exit_code"] }, { "required": ["stdout"] }, { "required": ["stderr"] },
                 { "required": ["final_event_sequence"] }, { "required": ["available_event_sequence"] },
                 { "required": ["output_complete"] }, { "required": ["output_truncated"] },
@@ -127,6 +129,7 @@
             "not": {
               "anyOf": [
                 { "required": ["session_state"] }, { "required": ["job_phase"] }, { "required": ["command_state"] },
+                { "required": ["queue_blocked_reason"] },
                 { "required": ["observed_at"] }, { "required": ["exit_code"] }, { "required": ["stdout"] }, { "required": ["stderr"] },
                 { "required": ["final_event_sequence"] }, { "required": ["available_event_sequence"] }, { "required": ["output_complete"] },
                 { "required": ["output_truncated"] }, { "required": ["output_unavailable_reason"] }, { "required": ["events_file"] },
@@ -166,6 +169,7 @@
         "not": {
           "anyOf": [
             { "required": ["session_state"] }, { "required": ["command_state"] }, { "required": ["job_phase"] },
+            { "required": ["queue_blocked_reason"] },
             { "required": ["final_event_sequence"] }, { "required": ["events_file"] },
             { "properties": { "available_event_sequence": { "minimum": 1 } }, "required": ["available_event_sequence"] }
           ]
@@ -209,6 +213,19 @@
     {
       "if": { "required": ["job_phase"] },
       "then": { "required": ["job_id"] }
+    },
+    {
+      "if": { "required": ["queue_blocked_reason"] },
+      "then": {
+        "properties": {
+          "operation": { "const": "run" },
+          "request_state": { "const": "accepted" },
+          "delivery_state": { "const": "accepted" },
+          "job_phase": { "const": "awaiting_command" },
+          "command_state": { "const": "queued" }
+        },
+        "required": ["operation", "request_state", "delivery_state", "job_id", "session_id", "command_id", "job_phase", "command_state"]
+      }
     },
     {
       "if": { "properties": { "command_state": { "enum": ["succeeded", "failed", "cancelled", "timed_out", "rejected", "lost"] }, "output_complete": { "const": false } }, "required": ["command_state", "output_complete"] },

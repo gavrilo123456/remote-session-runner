@@ -527,6 +527,7 @@ type jobResponse struct {
 	OutputComplete          bool                        `json:"output_complete"`
 	OutputTruncated         bool                        `json:"output_truncated"`
 	OutputUnavailableReason string                      `json:"output_unavailable_reason,omitempty"`
+	QueueBlockedReason      string                      `json:"queue_blocked_reason,omitempty"`
 	TeardownState           string                      `json:"teardown_state"`
 	TeardownReason          string                      `json:"teardown_reason,omitempty"`
 	ExecutionTarget         targetResponse              `json:"execution_target"`
@@ -1132,7 +1133,8 @@ func jobResponseFromRecordWithCapabilities(record store.JobRecord, duplicate boo
 		JobPhase: string(record.Phase), CommandState: commandStatePointer(record.CommandState),
 		ExitCode: record.ExitCode, FinalEventSequence: record.FinalEventSequence,
 		OutputComplete: record.OutputComplete, OutputTruncated: record.OutputTruncated,
-		OutputUnavailableReason: record.OutputUnavailableReason, TeardownState: string(record.TeardownState),
+		OutputUnavailableReason: record.OutputUnavailableReason, QueueBlockedReason: record.QueueBlockedReason,
+		TeardownState:  string(record.TeardownState),
 		TeardownReason: record.TeardownReason, ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()},
 		Authority: authority, Controller: controllerRequest{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())},
 		ObservedAt: record.UpdatedAt.UTC(), Environment: record.Environment, Source: source,

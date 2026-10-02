@@ -397,6 +397,7 @@ type JobResource struct {
 	OutputComplete          bool         `json:"output_complete,omitempty"`
 	OutputTruncated         bool         `json:"output_truncated,omitempty"`
 	OutputUnavailableReason string       `json:"output_unavailable_reason,omitempty"`
+	QueueBlockedReason      string       `json:"queue_blocked_reason,omitempty"`
 	TeardownState           string       `json:"teardown_state,omitempty"`
 	TeardownReason          string       `json:"teardown_reason,omitempty"`
 	DeliveryState           string       `json:"delivery_state,omitempty"`

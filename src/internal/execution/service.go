@@ -1907,7 +1907,10 @@ func (s *Service) GetJob(ctx context.Context, id domain.JobID, controller domain
 		denial.ReasonCode = audit.ReasonControllerDenied
 		return store.JobRecord{}, s.recordDenial(ctx, denial, ErrSessionController)
 	}
-	return job, nil
+	// Only an authorized controller may request the volatile queue status.
+	// The status read has its own single authority snapshot so the explanation
+	// cannot be mixed with a later capacity or command transition.
+	return s.store.GetJobStatus(ctx, id)
 }
 
 func (s *Service) recordDenial(ctx context.Context, record audit.Record, cause error) error {

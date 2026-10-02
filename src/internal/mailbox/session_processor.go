@@ -101,8 +101,9 @@ type RunSnapshot struct {
 // separate from CommandSnapshot: a CommandSnapshot includes output and event
 // boundary data that belong only in a complete terminal response.
 type ActiveRemoteRunProjection struct {
-	JobPhase     store.JobPhase
-	CommandState *domain.CommandState
+	JobPhase           store.JobPhase
+	CommandState       *domain.CommandState
+	QueueBlockedReason string
 }
 
 // SessionOperationError is a safe, structured error from the Mac session
@@ -1726,6 +1727,12 @@ func validateActiveRemoteRunProjection(snapshot RunSnapshot) error {
 	if active.CommandState != nil && (!active.CommandState.Valid() || active.CommandState.IsTerminal()) {
 		return fmt.Errorf("%w: active remote command state is invalid", ErrSessionProcessorConfiguration)
 	}
+	if active.QueueBlockedReason != "" &&
+		(active.QueueBlockedReason != store.QueueBlockedReasonLostCapacityRecoveryPending ||
+			active.JobPhase != store.JobPhaseAwaitingCommand || active.CommandState == nil ||
+			*active.CommandState != domain.CommandStateQueued) {
+		return fmt.Errorf("%w: active remote queue blocked reason is invalid", ErrSessionProcessorConfiguration)
+	}
 	return nil
 }
 
@@ -1736,7 +1743,8 @@ func validateActiveRemoteRunProjection(snapshot RunSnapshot) error {
 func sameAcceptedRemoteRunProgress(previous runMailboxResponse, snapshot RunSnapshot) bool {
 	active := snapshot.ActiveRemoteProjection
 	if active == nil || previous.RequestState != store.MailboxExchangeAccepted || previous.DeliveryState != snapshot.DeliveryState ||
-		previous.JobPhase != string(active.JobPhase) || previous.TeardownOutcome != "" || previous.ObservedAt != nil ||
+		previous.JobPhase != string(active.JobPhase) || previous.QueueBlockedReason != active.QueueBlockedReason ||
+		previous.TeardownOutcome != "" || previous.ObservedAt != nil ||
 		previous.ExitCode != nil || previous.Stdout != "" || previous.Stderr != "" || previous.FinalEventSequence != nil ||
 		previous.AvailableEventSequence != nil || previous.OutputComplete != nil || previous.OutputTruncated != nil ||
 		previous.OutputUnavailableReason != "" || previous.EventsFile != "" || previous.Error != nil {
@@ -1777,6 +1785,7 @@ func acceptedRemoteRunProgressResponse(requestID string, snapshot RunSnapshot) r
 	if active.CommandState != nil {
 		response.CommandState = string(*active.CommandState)
 	}
+	response.QueueBlockedReason = active.QueueBlockedReason
 	return response
 }
 
@@ -2099,6 +2108,7 @@ type runMailboxResponse struct {
 	SessionID                string                     `json:"session_id,omitempty"`
 	DeliveryState            string                     `json:"delivery_state,omitempty"`
 	CommandState             string                     `json:"command_state,omitempty"`
+	QueueBlockedReason       string                     `json:"queue_blocked_reason,omitempty"`
 	ObservedAt               *time.Time                 `json:"observed_at,omitempty"`
 	ExitCode                 *int                       `json:"exit_code,omitempty"`
 	Stdout                   string                     `json:"stdout,omitempty"`

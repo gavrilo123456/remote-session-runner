@@ -118,6 +118,14 @@ Read snapshots use:
 `projection` or `local_intent` with `is_stale: true`. A retained
 `not_delivered` local intent contains no fabricated remote resource state.
 
+A remote `JobResource` may include optional
+`queue_blocked_reason: "lost_capacity_recovery_pending"`. It is valid only
+with `phase: "awaiting_command"`, `command_state: "queued"`,
+`output_complete: false`, `output_truncated: false`, and
+`teardown_state: "pending"`, with no terminal-result fields. It is a current,
+narrow capacity observation, not a queue position, error outcome, or recovery
+guarantee.
+
 ## Events, limits, and ownership
 
 Events are NDJSON, one command-event object per line. Persist the highest

@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/testfixture"
 )
@@ -12,10 +15,12 @@ func TestBUG009MigrationLeavesHistoricalReleasedLostPairsOutsideNewWorkList(t *t
 	ctx := context.Background()
 	root := testfixture.New(t)
 	path := filepath.Join(root.Path(), "state", "bug009-v31.db")
-	database, err := Open(ctx, path)
+	pBUG009BuildV32Database(t, ctx, path)
+	database, err := sql.Open("sqlite", dataSourceName(path))
 	if err != nil {
 		t.Fatal(err)
 	}
+	database.SetMaxOpenConns(1)
 	authority, err := NewAuthorityStore(database)
 	if err != nil {
 		_ = database.Close()
@@ -62,5 +67,43 @@ func TestBUG009MigrationLeavesHistoricalReleasedLostPairsOutsideNewWorkList(t *t
 	}
 	if pending, err := migratedAuthority.ListPendingLostRuntimeRecoveryFinalizations(ctx); err != nil || len(pending) != 0 {
 		t.Fatalf("historical released pair entered finalization work list=%+v err=%v", pending, err)
+	}
+}
+
+// pBUG009BuildV32Database constructs the actual migration-32 boundary before
+// it seeds an old-style released pair. Opening a current database and deleting
+// ledger rows would leave future schema artifacts behind and cannot prove an
+// upgrade behaves correctly.
+func pBUG009BuildV32Database(t *testing.T, ctx context.Context, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite", dataSourceName(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	for _, migration := range migrations[:32] {
+		if _, err := database.ExecContext(ctx, migration.sql); err != nil {
+			t.Fatalf("apply v%d migration: %v", migration.version, err)
+		}
+	}
+	when := time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)
+	for _, migration := range migrations[:32] {
+		if _, err := database.ExecContext(ctx, `INSERT INTO runner_schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`, migration.version, migration.name, migrationChecksum(migration), formatStoredTime(when)); err != nil {
+			t.Fatalf("record v%d migration: %v", migration.version, err)
+		}
+	}
+	if _, err := database.ExecContext(ctx, `PRAGMA user_version = 32`); err != nil {
+		t.Fatal(err)
 	}
 }

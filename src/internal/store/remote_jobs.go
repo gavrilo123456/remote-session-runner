@@ -24,6 +24,7 @@ type RemoteJobProjection struct {
 	OutputComplete          bool
 	OutputTruncated         bool
 	OutputUnavailableReason string
+	QueueBlockedReason      string
 	TeardownState           JobTeardownState
 	TeardownReason          string
 	Target                  domain.ExecutionTarget
@@ -50,12 +51,12 @@ func (s *AuthorityStore) UpsertRemoteJobProjection(ctx context.Context, input Re
 			_, err := connection.ExecContext(ctx, `
 INSERT INTO local_remote_job_projections (
  job_id, session_id, command_id, job_phase, command_state, exit_code, final_event_sequence,
- output_complete, output_truncated, output_unavailable_reason, teardown_state, teardown_reason,
+ output_complete, output_truncated, output_unavailable_reason, queue_blocked_reason, teardown_state, teardown_reason,
  target_kind, target_profile, controller_type, controller_id, environment, source_json,
  capabilities_json, observed_at, is_stale
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'remote', ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'remote', ?, ?, ?, ?, ?, ?, ?, ?)
 `, string(validated.JobID), string(validated.SessionID), string(validated.CommandID), string(validated.Phase), nullableCommandState(validated.CommandState), nullableInt(validated.ExitCode), nullableInt64(validated.FinalEventSequence),
-				boolInt(validated.OutputComplete), boolInt(validated.OutputTruncated), validated.OutputUnavailableReason, string(validated.TeardownState), validated.TeardownReason,
+				boolInt(validated.OutputComplete), boolInt(validated.OutputTruncated), validated.OutputUnavailableReason, validated.QueueBlockedReason, string(validated.TeardownState), validated.TeardownReason,
 				validated.Target.Profile(), string(validated.Controller.Type()), string(validated.Controller.ID()), validated.Environment, sourceJSON, capabilitiesJSON, formatStoredTime(validated.ObservedAt), boolInt(validated.IsStale))
 			if err != nil {
 				return RemoteJobProjection{}, fmt.Errorf("insert remote job projection: %w", err)
@@ -73,9 +74,9 @@ INSERT INTO local_remote_job_projections (
 		}
 		_, err = connection.ExecContext(ctx, `
 UPDATE local_remote_job_projections SET job_phase = ?, command_state = ?, exit_code = ?, final_event_sequence = ?,
- output_complete = ?, output_truncated = ?, output_unavailable_reason = ?, teardown_state = ?, teardown_reason = ?,
+ output_complete = ?, output_truncated = ?, output_unavailable_reason = ?, queue_blocked_reason = ?, teardown_state = ?, teardown_reason = ?,
  capabilities_json = ?, observed_at = ?, is_stale = ? WHERE job_id = ?
-`, string(validated.Phase), nullableCommandState(validated.CommandState), nullableInt(validated.ExitCode), nullableInt64(validated.FinalEventSequence), boolInt(validated.OutputComplete), boolInt(validated.OutputTruncated), validated.OutputUnavailableReason, string(validated.TeardownState), validated.TeardownReason, capabilitiesJSON, formatStoredTime(validated.ObservedAt), boolInt(validated.IsStale), string(validated.JobID))
+`, string(validated.Phase), nullableCommandState(validated.CommandState), nullableInt(validated.ExitCode), nullableInt64(validated.FinalEventSequence), boolInt(validated.OutputComplete), boolInt(validated.OutputTruncated), validated.OutputUnavailableReason, validated.QueueBlockedReason, string(validated.TeardownState), validated.TeardownReason, capabilitiesJSON, formatStoredTime(validated.ObservedAt), boolInt(validated.IsStale), string(validated.JobID))
 		if err != nil {
 			return RemoteJobProjection{}, fmt.Errorf("update remote job projection: %w", err)
 		}
@@ -212,6 +213,13 @@ func validateRemoteJobProjection(input RemoteJobProjection) (RemoteJobProjection
 	if input.CommandState != nil && !input.CommandState.Valid() {
 		return RemoteJobProjection{}, "", "", fmt.Errorf("%w: command state", ErrRemoteProjectionInvalid)
 	}
+	if input.QueueBlockedReason != "" &&
+		(input.QueueBlockedReason != QueueBlockedReasonLostCapacityRecoveryPending ||
+			input.Phase != JobPhaseAwaitingCommand || input.CommandState == nil || *input.CommandState != domain.CommandStateQueued ||
+			input.ExitCode != nil || input.FinalEventSequence != nil || input.OutputComplete || input.OutputTruncated ||
+			input.OutputUnavailableReason != "" || input.TeardownState != JobTeardownPending || input.TeardownReason != "") {
+		return RemoteJobProjection{}, "", "", fmt.Errorf("%w: queue blocked reason", ErrRemoteProjectionInvalid)
+	}
 	sourceJSON, err := marshalProjectionSource(input.Source, "")
 	if err != nil {
 		return RemoteJobProjection{}, "", "", err
@@ -235,17 +243,17 @@ func validateRemoteJobProjectionIdentity(stored, incoming RemoteJobProjection) e
 
 func readRemoteJobProjectionOnConnection(ctx context.Context, connection *sql.Conn, id domain.JobID) (RemoteJobProjection, error) {
 	var result RemoteJobProjection
-	var sessionID, commandID, phase, targetKind, targetProfile, controllerType, controllerID, environment, sourceJSON, capabilitiesJSON, observed, teardownState, teardownReason, outputReason string
+	var sessionID, commandID, phase, targetKind, targetProfile, controllerType, controllerID, environment, sourceJSON, capabilitiesJSON, observed, teardownState, teardownReason, outputReason, queueBlockedReason string
 	var outputComplete, outputTruncated, stale int64
 	var exitCode, finalSequence sql.NullInt64
 	var commandStateSQL sql.NullString
 	err := connection.QueryRowContext(ctx, `
 SELECT session_id, command_id, job_phase, command_state, exit_code, final_event_sequence,
- output_complete, output_truncated, output_unavailable_reason, teardown_state, teardown_reason,
+ output_complete, output_truncated, output_unavailable_reason, queue_blocked_reason, teardown_state, teardown_reason,
  target_kind, target_profile, controller_type, controller_id, environment, source_json,
  capabilities_json, observed_at, is_stale
 FROM local_remote_job_projections WHERE job_id = ?
-`, string(id)).Scan(&sessionID, &commandID, &phase, &commandStateSQL, &exitCode, &finalSequence, &outputComplete, &outputTruncated, &outputReason, &teardownState, &teardownReason, &targetKind, &targetProfile, &controllerType, &controllerID, &environment, &sourceJSON, &capabilitiesJSON, &observed, &stale)
+`, string(id)).Scan(&sessionID, &commandID, &phase, &commandStateSQL, &exitCode, &finalSequence, &outputComplete, &outputTruncated, &outputReason, &queueBlockedReason, &teardownState, &teardownReason, &targetKind, &targetProfile, &controllerType, &controllerID, &environment, &sourceJSON, &capabilitiesJSON, &observed, &stale)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RemoteJobProjection{}, ErrRemoteProjectionNotFound
 	}
@@ -296,7 +304,7 @@ FROM local_remote_job_projections WHERE job_id = ?
 		value := finalSequence.Int64
 		result.FinalEventSequence = &value
 	}
-	result = RemoteJobProjection{JobID: id, SessionID: session, CommandID: command, Phase: JobPhase(phase), CommandState: result.CommandState, ExitCode: result.ExitCode, FinalEventSequence: result.FinalEventSequence, OutputComplete: outputComplete != 0, OutputTruncated: outputTruncated != 0, OutputUnavailableReason: outputReason, TeardownState: JobTeardownState(teardownState), TeardownReason: teardownReason, Target: target, Controller: controller, Environment: environment, Source: source, Capabilities: capabilities, ObservedAt: observedAt, IsStale: stale != 0}
+	result = RemoteJobProjection{JobID: id, SessionID: session, CommandID: command, Phase: JobPhase(phase), CommandState: result.CommandState, ExitCode: result.ExitCode, FinalEventSequence: result.FinalEventSequence, OutputComplete: outputComplete != 0, OutputTruncated: outputTruncated != 0, OutputUnavailableReason: outputReason, QueueBlockedReason: queueBlockedReason, TeardownState: JobTeardownState(teardownState), TeardownReason: teardownReason, Target: target, Controller: controller, Environment: environment, Source: source, Capabilities: capabilities, ObservedAt: observedAt, IsStale: stale != 0}
 	if _, _, _, err := validateRemoteJobProjection(result); err != nil {
 		return RemoteJobProjection{}, err
 	}

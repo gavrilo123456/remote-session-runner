@@ -834,6 +834,9 @@ func writeJobStatus(output io.Writer, endpointName string, snapshot runnerclient
 		fmt.Fprintf(output, "final_event_sequence: %d\n", finalSequence)
 	}
 	fmt.Fprintf(output, "output_complete: %t\noutput_truncated: %t\noutput_unavailable_reason: %s\n", resource.OutputComplete, resource.OutputTruncated, valueOrUnknown(resource.OutputUnavailableReason))
+	if resource.QueueBlockedReason != "" {
+		fmt.Fprintf(output, "queue_blocked_reason: %s\n", resource.QueueBlockedReason)
+	}
 	completeRead := requestedAfter == 0 && finalSequence >= 0 && cursor == finalSequence && resource.OutputComplete && !resource.OutputTruncated
 	fmt.Fprintf(output, "event_history_complete_this_read: %t\nteardown_state: %s\n", completeRead, valueOrUnknown(resource.TeardownState))
 	if resource.TeardownReason != "" {

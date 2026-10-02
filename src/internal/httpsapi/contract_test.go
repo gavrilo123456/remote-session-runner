@@ -574,6 +574,46 @@ func TestP003ContractFixtures(t *testing.T) {
 	}
 }
 
+func TestP003JobQueueBlockedReasonContractIsNarrow(t *testing.T) {
+	document := p003OpenAPIDoc(t)
+	compiler := p003CompileSchemas(t, document)
+	schema := p003CompileRef(t, compiler, "#/components/schemas/JobResource")
+	valid := map[string]any{
+		"job_id": "job-bug009", "session_id": "sess-bug009", "command_id": "cmd-bug009",
+		"phase": "awaiting_command", "command_state": "queued",
+		"output_complete": false, "output_truncated": false, "teardown_state": "pending",
+		"queue_blocked_reason": "lost_capacity_recovery_pending",
+		"execution_target":     map[string]any{"kind": "remote", "profile": "linux-host"}, "authority": "remote",
+		"controller":  map[string]any{"controller_type": "queued_mac", "controller_id": "tomasz.walczuk"},
+		"observed_at": "2026-10-02T09:20:00Z", "environment": "linux-dev", "source": map[string]any{"mode": "empty"},
+		"capabilities": map[string]any{"host_class": "Ubuntu Linux host", "isolation": "os-user", "effective_account": "ubuntu", "service_limits": map[string]any{}},
+	}
+	if err := schema.Validate(valid); err != nil {
+		t.Fatalf("valid queue-block job resource rejected: %v", err)
+	}
+	for _, fixture := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "running", mutate: func(resource map[string]any) { resource["command_state"] = "running" }},
+		{name: "terminal field", mutate: func(resource map[string]any) { resource["final_event_sequence"] = 3 }},
+		{name: "closed teardown", mutate: func(resource map[string]any) { resource["teardown_state"] = "closed" }},
+		{name: "unknown literal", mutate: func(resource map[string]any) { resource["queue_blocked_reason"] = "unknown" }},
+	} {
+		fixture := fixture
+		t.Run(fixture.name, func(t *testing.T) {
+			resource := make(map[string]any, len(valid))
+			for key, value := range valid {
+				resource[key] = value
+			}
+			fixture.mutate(resource)
+			if err := schema.Validate(resource); err == nil {
+				t.Fatalf("unsafe queue-block resource accepted: %#v", resource)
+			}
+		})
+	}
+}
+
 func p003ValidateRequestLimits(value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {

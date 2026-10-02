@@ -707,5 +707,16 @@ func remoteJobProjectionFromReply(intent store.LocalIntentRecord, object map[str
 	} else if present {
 		result.TeardownReason = value
 	}
+	if value, present, readErr := readProjectionString(object, "queue_blocked_reason"); readErr != nil {
+		return store.RemoteJobProjection{}, false, readErr
+	} else if present {
+		if value != store.QueueBlockedReasonLostCapacityRecoveryPending || result.Phase != store.JobPhaseAwaitingCommand ||
+			result.CommandState == nil || *result.CommandState != domain.CommandStateQueued || result.ExitCode != nil ||
+			result.FinalEventSequence != nil || result.OutputComplete || result.OutputTruncated ||
+			result.OutputUnavailableReason != "" || result.TeardownState != store.JobTeardownPending || result.TeardownReason != "" {
+			return store.RemoteJobProjection{}, false, fmt.Errorf("%w: queue_blocked_reason", ErrRemoteResponse)
+		}
+		result.QueueBlockedReason = value
+	}
 	return result, true, nil
 }

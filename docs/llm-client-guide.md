@@ -109,6 +109,14 @@ For a terminal accepted exchange, validate all applicable evidence:
 The outbox may be revised while a command progresses. Always use its latest
 revision and cursor, not a cached intermediate response.
 
+If an accepted remote `run` includes
+`queue_blocked_reason: "lost_capacity_recovery_pending"`, record its response
+revision and the stable request, job, session, and command IDs, then keep
+observing the same outbox file. It is a narrow nonterminal capacity observation
+and neither failure nor success. Do not create a duplicate request, ACK it,
+cancel it, restart a service, or manually release capacity because of this
+field. A later revision can remove it without becoming terminal.
+
 ## 4. Acknowledge only after preserving evidence
 
 After terminal validation, create:
@@ -156,6 +164,7 @@ transport path before issuing more work.
 | Terminal `rejected` outbox | Read its error code and message. Do not alter or reuse the rejected identity. |
 | `complete` but command failed | Read every advertised event, preserve stderr/stdout, then correct the remote command or protected workflow input in a new request. |
 | Accepted request has no `command_started` event | Do not create duplicate work or infer failure. Inspect the existing durable job/command state through an approved read-only route; this is a Runner transport/scheduling issue. |
+| Accepted queued remote run has `queue_blocked_reason: lost_capacity_recovery_pending` | Keep the same request/job/session/command IDs and observe later revisions. The guarded retained-capacity recovery path is relevant, but the result remains nonterminal. Do not ACK or duplicate the request. |
 | Output is truncated or incomplete | Do not claim success and do not ACK until the needed evidence is retained or an approved investigation route exists. |
 | ACK files disappear | This is normally successful ACK consumption. Confirm the pair was valid before interpreting it. |
 

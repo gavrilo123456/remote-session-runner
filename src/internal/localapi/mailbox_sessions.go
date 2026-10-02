@@ -258,6 +258,11 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 				state := *projection.CommandState
 				active.CommandState = &state
 			}
+			if projection.QueueBlockedReason == store.QueueBlockedReasonLostCapacityRecoveryPending &&
+				projection.Phase == store.JobPhaseAwaitingCommand && projection.CommandState != nil &&
+				*projection.CommandState == domain.CommandStateQueued {
+				active.QueueBlockedReason = projection.QueueBlockedReason
+			}
 			snapshot.ActiveRemoteProjection = &active
 			return snapshot, nil
 		}

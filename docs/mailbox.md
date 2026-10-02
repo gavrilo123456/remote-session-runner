@@ -86,6 +86,18 @@ source, target, and profile to the local intent. It may show only
 It is useful progress information, but it does not prove queue position,
 capacity, reachability, command start, output, events, or a terminal result.
 
+The sole queue explanation Runner can expose is
+`queue_blocked_reason: "lost_capacity_recovery_pending"`. It appears only on
+an `accepted` remote `run` with `delivery_state: accepted`,
+`job_phase: awaiting_command`, and `command_state: queued`, when a fresh
+remote read proves that this one-off is behind the complete retained
+terminal-`lost` command-capacity set. It is nonterminal, does not promise that
+recovery will succeed, and contains no process, path, credential, or raw error
+detail. Preserve the same request, job, session, and command IDs and keep
+reading that outbox revision chain. Do not ACK, replay, cancel, restart, or
+manually release capacity because of this field. Its absence does not prove
+that capacity is free or healthy.
+
 Do not ACK an active `accepted` revision. It has no terminal event boundary.
 Continue reading the same outbox file until it becomes terminal, then read the
 advertised event prefix and ACK that exact terminal response revision.
@@ -409,11 +421,17 @@ terminal-result fields. Important states are:
 | --- | --- |
 | `request_state: accepted` without a safe active phase/state | The Mac durably recorded the mailbox exchange. It is not target execution acceptance. |
 | `request_state: accepted`, `delivery_state: accepted`, and a safe nonterminal `job_phase` (with optional safe `command_state`) | A fresh read-only target status query strictly matched the local remote intent and found accepted nonterminal work. It is a status observation, not proof of command start, queue cause, output, or a final result. |
+| `queue_blocked_reason: lost_capacity_recovery_pending` with the accepted queued remote-run shape | The current target status strictly proved the full retained terminal-`lost` capacity boundary for this queued one-off. Continue observing the same response chain. The field is nonterminal and is not a recovery promise. |
 | `request_state: complete` | The operation reached an outcome boundary; a command can still have failed. |
 | `request_state: rejected` | A well-formed request failed semantic validation or policy. |
 | `request_state: indeterminate`, `delivery_state: uncertain` | Delivery of a queued remote mutation could not be proved by the deadline. Preserve the idempotency key. |
 | `request_state: indeterminate`, `delivery_state: accepted`, `error.code: remote_status_unavailable` | The target accepted a remote one-off run, but strict status reads could not prove its terminal outcome during the bounded recovery window. The stable job, session, and command IDs identify the affected work; no target result or output is claimed. |
 | `delivery_state` | Queued progress such as `recorded`, `dispatching`, `uncertain`, `accepted`, `reconciled`, or `not_delivered`. |
+
+The queue explanation can disappear in a later `response_revision` when
+capacity is released, the command starts, the work becomes terminal, or a
+fresh read no longer proves the narrow condition. That disappearance is still
+nonterminal; retain the stable IDs and continue observing the same outbox.
 
 Read event history only through `available_event_sequence` using
 `ReadEventsThroughCursor`. Complete command output needs all of:

@@ -32,7 +32,16 @@ func (s *AuthorityStore) ListRetainedLostRuntimeRecoveryPairs(ctx context.Contex
 		return nil, ErrLostRuntimeRecoveryNotReleasable
 	}
 	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LostRuntimeRecoveryPair, error) {
-		rows, err := connection.QueryContext(ctx, `
+		return listRetainedLostRuntimeRecoveryPairsOnConnection(ctx, connection)
+	})
+}
+
+// listRetainedLostRuntimeRecoveryPairsOnConnection is the transaction-local
+// form of ListRetainedLostRuntimeRecoveryPairs. Status reads use it with the
+// job record in the same SQLite snapshot so they cannot report a capacity
+// block after that command has already started.
+func listRetainedLostRuntimeRecoveryPairsOnConnection(ctx context.Context, connection *sql.Conn) ([]LostRuntimeRecoveryPair, error) {
+	rows, err := connection.QueryContext(ctx, `
 SELECT session.session_id, command.command_id
 FROM exec_commands AS command
 JOIN exec_sessions AS session ON session.session_id = command.session_id
@@ -52,33 +61,32 @@ WHERE command.state = ?
   AND reservation.cleanup_confirmed_at IS NULL
   AND reservation.released_at IS NULL
 ORDER BY slot.reserved_at, command.command_id`,
-			string(domain.CommandStateLost), string(domain.SessionStateLost), schedulerHostKey, reservationHostKey)
-		if err != nil {
-			return nil, fmt.Errorf("query retained lost runtime recovery pairs: %w", err)
-		}
-		defer rows.Close()
+		string(domain.CommandStateLost), string(domain.SessionStateLost), schedulerHostKey, reservationHostKey)
+	if err != nil {
+		return nil, fmt.Errorf("query retained lost runtime recovery pairs: %w", err)
+	}
+	defer rows.Close()
 
-		pairs := make([]LostRuntimeRecoveryPair, 0)
-		for rows.Next() {
-			var sessionIDValue, commandIDValue string
-			if err := rows.Scan(&sessionIDValue, &commandIDValue); err != nil {
-				return nil, fmt.Errorf("scan retained lost runtime recovery pair: %w", err)
-			}
-			sessionID, err := domain.NewSessionID(sessionIDValue)
-			if err != nil {
-				return nil, fmt.Errorf("%w: retained lost recovery session identity", ErrLostRuntimeRecoveryNotReleasable)
-			}
-			commandID, err := domain.NewCommandID(commandIDValue)
-			if err != nil {
-				return nil, fmt.Errorf("%w: retained lost recovery command identity", ErrLostRuntimeRecoveryNotReleasable)
-			}
-			pairs = append(pairs, LostRuntimeRecoveryPair{SessionID: sessionID, CommandID: commandID})
+	pairs := make([]LostRuntimeRecoveryPair, 0)
+	for rows.Next() {
+		var sessionIDValue, commandIDValue string
+		if err := rows.Scan(&sessionIDValue, &commandIDValue); err != nil {
+			return nil, fmt.Errorf("scan retained lost runtime recovery pair: %w", err)
 		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate retained lost runtime recovery pairs: %w", err)
+		sessionID, err := domain.NewSessionID(sessionIDValue)
+		if err != nil {
+			return nil, fmt.Errorf("%w: retained lost recovery session identity", ErrLostRuntimeRecoveryNotReleasable)
 		}
-		return pairs, nil
-	})
+		commandID, err := domain.NewCommandID(commandIDValue)
+		if err != nil {
+			return nil, fmt.Errorf("%w: retained lost recovery command identity", ErrLostRuntimeRecoveryNotReleasable)
+		}
+		pairs = append(pairs, LostRuntimeRecoveryPair{SessionID: sessionID, CommandID: commandID})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate retained lost runtime recovery pairs: %w", err)
+	}
+	return pairs, nil
 }
 
 // ListPendingLostRuntimeRecoveryFinalizations returns released terminal-lost
