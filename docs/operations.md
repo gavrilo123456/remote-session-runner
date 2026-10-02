@@ -117,6 +117,31 @@ activation flags. It does not make a candidate active. Use the V2 candidate
 procedure in [setup](setup.md#3-upgrade-to-version-2-or-add-an-inbox) for a
 policy change.
 
+### Inspect mailbox lifecycle without writes
+
+Use the owner-only local API only on the **Mac** as `tomasz.walczuk`. This is a
+read-only status query; it does not run `doctor`, import a request, create an
+audit row, change an inbox file, or contact a remote host.
+
+```sh
+# Mac — tomasz.walczuk
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+inbox_id='slidestud-io'
+request_id='req-EXACT-ID'
+curl --silent --show-error \
+  --unix-socket "$root/run/local-api.sock" \
+  --get --data-urlencode "request_id=$request_id" \
+  "http://runner.local/v1/mailboxes/$inbox_id/lifecycle" |
+  /usr/bin/python3 -m json.tool
+```
+
+The query accepts only an active configured `inbox_id` and an optional safe
+`request_id`; it never accepts a mailbox path. `404 mailbox_not_found` means
+the configured inbox name is unknown. `503` with `available: false` means the
+configured tree or durable lifecycle source could not be read, so no lifecycle
+state was inferred. See [mailbox lifecycle status](mailbox.md#read-only-lifecycle-status)
+for its metadata-only contract and labels.
+
 Mac logs:
 
 ```sh
@@ -272,7 +297,7 @@ credentials, or resource IDs.
 | `event_lag_events` | Remote final sequence minus locally mirrored sequence | 32 |
 | `event_gaps_total`, `output_truncations_total` | Durable retained-output problems | 1 |
 | `storage_errors_total`, `cleanup_failures_total` | Observed process/database cleanup errors | 1 |
-| `mailbox_backlog` | Aggregate durable accepted exchanges plus safely published ready markers | 32 |
+| `mailbox_backlog` | Durable accepted exchanges plus safe complete zero-byte JSON/marker pairs with no durable exchange or diagnostic | 32 |
 | `mailbox_backlog_by_inbox` | Same backlog, split by configured safe inbox IDs such as `default`, `analytics`, and `slidestud-io` | Inspect each nonzero value |
 
 A zero backlog does not prove an importer, bridge, or request succeeded. It
@@ -315,6 +340,12 @@ and `install-launchagents.sh --config <mac.next.yaml>` as described in
 `mac.yaml`, remove a registered inbox, or attempt a V1 rollback after a V2
 activation boundary.
 
+`durable_orphan_cleanup` is a separate per-inbox owner decision. Review its
+lifecycle status output first. A candidate that enables it is activated through
+the same V2 procedure and then requires this Mac service refresh; do not enable
+it merely because `mailbox_backlog` is nonzero. The bounded pass removes only
+durable-proven marker-only residue and never replays work.
+
 To unload the services explicitly:
 
 ```sh
@@ -352,7 +383,10 @@ below.
 | Partial mailbox selection | Request has only `environment` or `execution_target` | Submit neither to use the inbox default, or submit the complete allowed pair. |
 | Mailbox selection or alias rejected | Root, context allow-list, repository alias, response `inbox_id` | Use the intended root and its configured policy; do not invent aliases or host names. |
 | External mailbox preflight fails | Candidate root's real ancestor chain, owner, modes, and symlink state | Repair the external parent/path without changing its ancestors for Runner; rerun the candidate installer. If activation already began, repair the retained candidate instead of restoring an older policy. |
-| No mailbox response | Publisher type, root tree, JSON/marker order, owner/mode/path, response state | Follow the deterministic [`request ID → outbox → command ID → events` lookup](mailbox.md#find-a-request-result). For a pair that passed safety but failed ingress validation, inspect `diagnostics/<request_id>.json`: it is private `0600`, has no ACK, and requires a new request ID/key for correction. A missing, nonempty, unsafe, or unreadable pair stays inert with no diagnostic. |
+| No mailbox response | Read-only lifecycle status, then publisher type, root tree, JSON/marker order, owner/mode/path | Follow the deterministic [`request ID → outbox → command ID → events` lookup](mailbox.md#find-a-request-result). For a pair that passed safety but failed ingress validation, inspect `diagnostics/<request_id>.json`: it is private `0600`, has no ACK, and requires a new request ID/key for correction. `request_marker_only`, `ack_marker_only`, or `unsafe_inert` means a marker is not execution evidence; preserve `retain_unproven_inert` entries for review. |
+| Lifecycle status is `terminal_unacknowledged` | The matching retained outbox, command ID, event prefix, and response revision | Preserve the terminal evidence, then publish a valid ACK pair. A terminal flag does not mean the command succeeded. |
+| Lifecycle status is `terminal_acknowledged` | The durable acknowledgement flag and any retained outbox/event files | The durable record confirms the ACK. Do not recreate an ACK marker just because an old marker is absent. |
+| Lifecycle status is `unsafe_inert` or action is `retain_unproven_inert` | The selected root and exact publisher rules | Do not edit, retry, ACK, replay, or enable cleanup from this inference. Correct work through a new complete marker-last pair under a new request ID when appropriate. |
 | Direct HTTPS/mTLS failure | Public health, service journal, CA/certificate/principal map/bind | Repair host configuration without printing keys. |
 | Queued remote remains recorded, uncertain, or stale | Selected bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
 | Remote outbox is `accepted` with `delivery_state=accepted` and a safe nonterminal phase/state, without `queue_blocked_reason` | The same response's stable job/session/command IDs, selected target/profile, and response revision | Runner has a fresh identity-checked read-only target status for accepted nonterminal work. Do not infer a queue blocker, command start, output, or terminal outcome; do not ACK or replay it. Continue observing the same request. |

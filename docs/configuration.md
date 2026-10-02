@@ -184,6 +184,7 @@ mailboxes:
     repository_aliases: [remote-session-runner]
     default_execution: mac-local
     allowed_execution: [mac-local, ubuntu-current]
+    durable_orphan_cleanup: false
   analytics:
     root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics"
     repository_aliases: [analytics-dbt]
@@ -203,6 +204,15 @@ for both `linux-dev` and `sandbox-dev`. The current remote source mode is
 `empty`. `default` retains only `mac-local` and `ubuntu-current`; `analytics`
 may explicitly select `ubuntu-sandbox`; `slidestud-io` uses
 `ubuntu-sandbox` as its default and also allows the other two contexts.
+
+`durable_orphan_cleanup` is optional and defaults to `false` for every inbox.
+It is a per-inbox owner decision after lifecycle-status review, not a retention
+setting or a way to replay work. When explicitly `true`, the Mac's bounded
+reconciliation pass can remove only a safe marker-only artifact tied to
+durable proof that it cannot execute. It never removes JSON drafts, outbox
+responses, event files, diagnostics, durable records, or remote work. Activate
+the policy through a reviewed V2 candidate and refresh the Mac service; do not
+edit the active file in place.
 
 ### Version-2 validation rules
 
@@ -308,6 +318,9 @@ secrets.
 | Output retention | 30 days |
 | Valid-ACK cleanup | 24 hours after ACK |
 | Unacknowledged terminal cleanup | 7 days after publication |
+| Unmarked mailbox draft cleanup | 24 hours |
+| Private ingress diagnostic cleanup | 7 days after observation |
+| Marker-only residue | No ordinary age cleanup; review lifecycle status |
 
 `runner-local doctor`, `runner-locald doctor`, and `runnerd doctor` validate
 their respective runtime configuration. A doctor command writes a timestamp

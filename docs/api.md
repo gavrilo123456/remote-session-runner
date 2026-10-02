@@ -5,8 +5,11 @@ freezes the v1 HTTP/JSON wire contract. This guide explains how the current
 configuration selects its transports and how to read the common result fields.
 Use the OpenAPI document for exact schemas.
 
-The HTTP API has no `inbox_id` selector. File-mailbox selection is made by the
-owner-only filesystem root and is documented in [mailbox](mailbox.md).
+The shared HTTP/OpenAPI v1 contract has no `inbox_id` selector. File-mailbox
+selection is made by the owner-only filesystem root and is documented in
+[mailbox](mailbox.md). The Mac Unix socket has one separate owner-only
+lifecycle-status extension; it is documented below and is never served through
+direct HTTPS.
 
 ## Transports and profile binding
 
@@ -97,6 +100,49 @@ target and an endpoint/target mismatch.
 
 The CLI exposes session/command functions and one-off `run`. The API also has
 job status; there is no matching `runner job status` command.
+
+## Mac-only mailbox lifecycle extension
+
+This route is intentionally outside `openapi.json` because it inspects
+configured Mac mailbox metadata and is unavailable to direct mTLS clients:
+
+```text
+GET /v1/mailboxes/{inbox_id}/lifecycle[?request_id=<safe-request-id>]
+```
+
+It is available only through the owner-only Mac Unix socket. `{inbox_id}` is
+looked up in the active in-memory mailbox registry; it is never a path. The
+optional `request_id` is a bounded safe filename stem. No request ID gives an
+aggregate of current metadata-only artifact classifications; an exact request
+ID adds one inspection.
+
+```json
+{
+  "inbox_id": "slidestud-io",
+  "available": true,
+  "counts": {
+    "request_input_shapes": {"publishable_pair": 0},
+    "acknowledgement_input_shapes": {"ack_marker_only": 0},
+    "durable_states": {"terminal_unacknowledged": 0},
+    "request_actions": {"retain_unproven_inert": 0},
+    "acknowledgement_actions": {"none": 0},
+    "actionable_unaccepted_pairs": 0
+  }
+}
+```
+
+The optional `request` value contains only `request_id`, request/ACK
+`input_shape`, `durable_state`, `action`, and `terminal`, `acknowledged`, and
+`ingress_diagnostic` flags. The labels are defined in the
+[mailbox guide](mailbox.md#read-only-lifecycle-status). The response excludes
+payloads, scripts, idempotency keys, outbox responses, output, resource IDs,
+credentials, headers, keys, paths, and raw storage/filesystem errors.
+
+Unknown inboxes return `404 mailbox_not_found`; malformed selection returns
+`400 invalid_request`. If the configured tree or durable source cannot be
+read, the route returns `503` with `available: false` and
+`mailbox_lifecycle_unavailable`, rather than inferring a lifecycle from an
+orphan marker.
 
 ## Acceptance, authority, and snapshots
 

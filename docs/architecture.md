@@ -103,6 +103,33 @@ marker, unsafe path/mode/owner, symlink, or read race stays inert and produces
 no diagnostic. A retained rejected request ID cannot later become accepted
 work; correction uses a new request ID and idempotency key.
 
+## Mailbox lifecycle visibility and proven-orphan cleanup
+
+The owner-only local API can classify a configured inbox without reading a
+request body or treating a marker as work. It combines filename metadata with
+the existing Mac durable exchange/acknowledgement/diagnostic records. It does
+not replace the normal `request_id → outbox → command_id → events` result path.
+
+```mermaid
+flowchart LR
+  Operator[Owner-scoped operator or LLM capability] -->|GET lifecycle by configured inbox_id| Status[Mac local Unix API]
+  Status --> Metadata[Lstat and directory metadata]
+  Status --> Durable[Mac durable exchange, ACK, and diagnostic records]
+  Metadata --> Labels[Input shape, durable state, action, aggregate counts]
+  Durable --> Labels
+  Labels --> Review{Durable proof and explicit\nper-inbox cleanup opt-in?}
+  Review -->|No| Retain[retain_unproven_inert\nNo mutation or replay]
+  Review -->|Yes, marker-only only| Bounded[Bounded marker removal\nmaximum 64 per cycle]
+  Bounded --> Preserve[Preserve JSON, outbox, events, diagnostics,\ndurable records, and remote work]
+```
+
+The status route accepts no filesystem path and returns no request body,
+script, idempotency key, output, credential, or raw error. A missing or unsafe
+tree is reported as unavailable instead of producing a marker-based guess.
+`durable_orphan_cleanup` is omitted/false by default. It removes only a
+durable-proven safe zero-byte marker and does not call an operation, bridge, or
+remote host.
+
 ## Context selection for mailbox work
 
 The `environment` and `execution_target` fields are one pair for new

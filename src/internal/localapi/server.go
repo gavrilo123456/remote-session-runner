@@ -46,28 +46,30 @@ var (
 // ServerOptions configures the Mac-local owner-only API. The server uses only
 // local SQLite and an AF_UNIX listener; it has no remote transport dependency.
 type ServerOptions struct {
-	Authority    *store.AuthorityStore
-	Owner        domain.ControllerIdentity
-	SocketPath   string
-	MaxBodyBytes int64
-	HealthReport func(context.Context) opshealth.Report
+	Authority              *store.AuthorityStore
+	Owner                  domain.ControllerIdentity
+	SocketPath             string
+	MaxBodyBytes           int64
+	HealthReport           func(context.Context) opshealth.Report
+	MailboxLifecycleStatus MailboxLifecycleStatusProvider
 }
 
 // Server is the Mac-local HTTP/JSON adapter over an owner-only Unix socket.
 type Server struct {
-	authority      *store.AuthorityStore
-	owner          domain.ControllerIdentity
-	socketPath     string
-	maxBodyBytes   int64
-	httpServer     *http.Server
-	listener       net.Listener
-	socketCreated  bool
-	socketInfo     os.FileInfo
-	requestGate    *lifecycle.Gate
-	cancelRequests context.CancelFunc
-	mu             sync.Mutex
-	closed         bool
-	healthReport   func(context.Context) opshealth.Report
+	authority              *store.AuthorityStore
+	owner                  domain.ControllerIdentity
+	socketPath             string
+	maxBodyBytes           int64
+	httpServer             *http.Server
+	listener               net.Listener
+	socketCreated          bool
+	socketInfo             os.FileInfo
+	requestGate            *lifecycle.Gate
+	cancelRequests         context.CancelFunc
+	mu                     sync.Mutex
+	closed                 bool
+	healthReport           func(context.Context) opshealth.Report
+	mailboxLifecycleStatus MailboxLifecycleStatusProvider
 	// afterIntentCommit is a private crash-test seam. The production service
 	// composition never sets it; package tests use it to stop the real HTTP
 	// process after SQLite committed an idempotent local receipt.
@@ -107,9 +109,10 @@ func NewServer(options ServerOptions) (*Server, error) {
 		httpServer: &http.Server{BaseContext: func(net.Listener) context.Context {
 			return requestContext
 		}},
-		requestGate:    lifecycle.NewGate(),
-		cancelRequests: cancelRequests,
-		healthReport:   options.HealthReport,
+		requestGate:            lifecycle.NewGate(),
+		cancelRequests:         cancelRequests,
+		healthReport:           options.HealthReport,
+		mailboxLifecycleStatus: options.MailboxLifecycleStatus,
 	}, nil
 }
 
@@ -435,12 +438,24 @@ func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) 
 		writeError(response, http.StatusNotFound, "resource_not_found", "local API route not found")
 	case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/events") && strings.HasPrefix(request.URL.Path, "/v1/commands/"):
 		s.handleCommandEvents(response, request)
-	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/commands/"):
-		s.handleGetCommand(response, request)
-	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/sessions/"):
-		s.handleGetSession(response, request)
-	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/jobs/"):
-		s.handleGetJob(response, request)
+	case request.Method == http.MethodGet:
+		if inboxID, ok := mailboxLifecycleStatusPath(request.URL.Path); ok {
+			s.handleMailboxLifecycleStatus(response, request, inboxID)
+			return
+		}
+		if strings.HasPrefix(request.URL.Path, "/v1/commands/") {
+			s.handleGetCommand(response, request)
+			return
+		}
+		if strings.HasPrefix(request.URL.Path, "/v1/sessions/") {
+			s.handleGetSession(response, request)
+			return
+		}
+		if strings.HasPrefix(request.URL.Path, "/v1/jobs/") {
+			s.handleGetJob(response, request)
+			return
+		}
+		writeError(response, http.StatusNotFound, "resource_not_found", "local API route not found")
 	default:
 		writeError(response, http.StatusNotFound, "resource_not_found", "local API route not found")
 	}

@@ -9,7 +9,7 @@ target profile. The host-local listeners bind `10.0.0.200:8443` and
 `10.0.0.14:8443`, respectively; binds are deployment configuration, not client
 URLs.
 
-The same paths and JSON are available through the owner-only Mac Unix socket at
+The same OpenAPI-listed paths and JSON are available through the owner-only Mac Unix socket at
 `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock`.
 The `x-runner-local-unix-socket` extension records that ingress because OpenAPI
 security schemes cannot represent kernel-authenticated Unix sockets. The local
@@ -18,6 +18,12 @@ socket uses the `tomasz.walczuk` account and
 Local mutation responses use `acceptance_scope: local_intent`. Direct HTTPS
 uses `(direct_mtls, tomasz.walczuk)` and returns target-authority acceptance for
 remote targets.
+
+The Mac Unix socket also has one deliberately separate local-only extension,
+`GET /v1/mailboxes/{inbox_id}/lifecycle`. It is not in this OpenAPI contract
+and is never exposed by a direct HTTPS listener because it reports configured
+Mac mailbox lifecycle metadata. See `docs/mailbox.md` for its read-only
+contract.
 
 A V2 direct endpoint name is bound to one configured remote target profile.
 The API and CLI reject an endpoint/target mismatch before mutation. A future

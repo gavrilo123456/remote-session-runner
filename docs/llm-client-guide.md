@@ -31,6 +31,8 @@ Before publishing work:
   intended execution context are allowed;
 - choose a new, safe `request_id` and an `idempotency_key` appropriate to the
   operation;
+- retain `{inbox_id, request_id, idempotency_key}` in the task ledger before
+  publishing;
 - keep the requested script bounded, non-interactive, and explicit about
   failure (`set -euo pipefail` for shell work is normally appropriate);
 - prefer one small read, dispatch, or inspection per request; and
@@ -40,6 +42,14 @@ The root selects the inbox. Do not add an `inbox_id` field to a request. If the
 root has a safe default context, omit both `environment` and
 `execution_target`. Otherwise supply both fields as one allowed, exact pair;
 never supply only one.
+
+An LLM that has been separately granted owner-scoped **read-only** access to
+the Mac local API may use
+[`GET /v1/mailboxes/{inbox_id}/lifecycle`](mailbox.md#read-only-lifecycle-status)
+to classify a missing result or residue. That query does not replace file-only
+publication and must never be used as a way to submit work. It returns labels,
+safe IDs, flags, and aggregate counts only; it does not reveal scripts,
+idempotency keys, output, or secrets.
 
 ## 2. Publish a request efficiently
 
@@ -92,8 +102,10 @@ request_id
 ```
 
 Poll the outbox until `request_state` is terminal: `complete`, `rejected`, or
-`indeterminate`. Do not infer a result from the inbox, a missing marker, a
-workflow dispatch HTTP response, or partial standard output.
+`indeterminate`. Do not infer a result from the inbox, a missing input pair, a
+lone request/ACK marker, a workflow dispatch HTTP response, or partial
+standard output. The lifecycle status query explains residue; the outbox/event
+chain remains terminal-result proof.
 
 For a terminal accepted exchange, validate all applicable evidence:
 
@@ -160,7 +172,7 @@ transport path before issuing more work.
 
 | Observation | Safe next action |
 | --- | --- |
-| No outbox yet | Check for `diagnostics/<request_id>.json`; otherwise verify the complete JSON, native `0644` mode, zero-byte marker, marker-last order, and mailbox health. |
+| No outbox yet | Check for `diagnostics/<request_id>.json`, then use lifecycle status if the scoped read-only capability is available. `request_marker_only`, `ack_marker_only`, `unsafe_inert`, and `retain_unproven_inert` do not authorize a retry, ACK, cleanup, replay, or edit. Otherwise verify the complete JSON, native `0600` or direct-workspace `0644` mode, zero-byte marker, marker-last order, and mailbox health. |
 | Terminal `rejected` outbox | Read its error code and message. Do not alter or reuse the rejected identity. |
 | `complete` but command failed | Read every advertised event, preserve stderr/stdout, then correct the remote command or protected workflow input in a new request. |
 | Accepted request has no `command_started` event | Do not create duplicate work or infer failure. Inspect the existing durable job/command state through an approved read-only route; this is a Runner transport/scheduling issue. |
@@ -170,8 +182,8 @@ transport path before issuing more work.
 
 ## 7. Efficient operating patterns
 
-- Keep a small local ledger of request ID, idempotency key, purpose, terminal
-  response revision, command ID, and ACK status.
+- Keep a small local ledger of inbox ID, request ID, idempotency key, purpose,
+  terminal response revision, command ID, lifecycle status, and ACK status.
 - Separate control-plane mutations from observations: dispatch once, then
   monitor with distinct read-only requests rather than re-dispatching.
 - Use concise, structured remote output (for example one JSON object per
@@ -185,6 +197,14 @@ transport path before issuing more work.
 - If a queue or bridge is unhealthy, stop creating new work. Existing durable
   requests should be observed and repaired through their identity, not
   duplicated.
+- Marker-only residue has no normal age cleanup. `retain_unproven_inert` stays
+  inert for review. Per-inbox `durable_orphan_cleanup` is an owner policy that
+  the LLM must not enable; even when enabled it removes only durable-proven
+  markers and never replays work.
+- Preserve needed evidence before retention: unmarked drafts are eligible after
+  24 hours, acknowledged terminal responses after 24 hours, unacknowledged
+  terminal responses and private ingress diagnostics after seven days, command
+  event output after 30 days, and metadata/idempotency identity after 90 days.
 
 ## References
 

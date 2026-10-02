@@ -7,8 +7,10 @@ restricted SSH bridge is ready, queued work on an accepted Ubuntu profile that
 the selected inbox permits. It cannot create or manage resources made through
 direct mTLS HTTPS.
 
-There is no `runner mailbox` CLI command. Use the [CLI guide](user-guide.md)
-for interactive operator work. The internal in-module
+There is no `runner mailbox` CLI command for publishing requests or ACKs. The
+read-only lifecycle-status query is documented below for an owner-scoped
+operator or integration. Use the [CLI guide](user-guide.md) for interactive
+operator work. The internal in-module
 `src/internal/mailboxclient` package is the preferred publisher because it
 performs JSON creation, exclusive creation, no-follow checks, file sync,
 directory sync, and marker-last publication together. A workspace integration
@@ -110,22 +112,83 @@ query SQLite or relax output permissions. Give the integration a deliberately
 scoped read-only mailbox capability, or hand the request ID to an operator who
 can read the configured root as the selected Mac user.
 
-If neither the matching outbox nor diagnostic exists, the request can still be
-awaiting pickup or can be an unsafe inert pair. Check the configured root,
-complete JSON, marker-last order, zero-byte marker, owner, mode, and Runner
-health. Read the terminal response and retained events before publishing an
-ACK. An active `accepted` projection is never an ACK candidate. The relevant
-retention periods are:
+If neither the matching outbox nor diagnostic exists, use the read-only
+lifecycle status query below before concluding that the request is awaiting
+pickup. A missing input pair or a lonely request/ACK marker never proves
+publication, acceptance, pending work, a terminal result, or acknowledgement.
+Read the terminal response and retained events before publishing an ACK. An
+active `accepted` projection is never an ACK candidate. The relevant retention
+periods are:
 
 - terminal outbox response: eligible for cleanup 24 hours after a valid ACK,
   or seven days after terminal publication without an ACK;
 - command event output: 30 days;
 - private ingress diagnostic: seven days after observation; and
+- unmarked JSON draft: 24 hours; and
 - metadata and idempotency identity: 90 days.
 
 These are retention limits, not guarantees that a file remains available until
 the last moment. Preserve the terminal response and event prefix you need
 before publishing an ACK.
+
+## Read-only lifecycle status
+
+The Mac-local API exposes a narrow status route for configured inboxes:
+
+```text
+GET /v1/mailboxes/{inbox_id}/lifecycle[?request_id=<safe-request-id>]
+```
+
+It is available only through the existing owner-only Unix socket. It is not
+part of the shared direct HTTPS/OpenAPI contract and cannot be selected through
+an mTLS endpoint. The `inbox_id` is a configured name such as `slidestud-io`;
+the API never accepts a mailbox root or another filesystem path. With no
+`request_id`, it returns aggregate counts only. With a safe `request_id`, it
+adds that request's metadata-only lifecycle view.
+
+```sh
+# Mac — tomasz.walczuk; this reads no request body and changes no file.
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+inbox_id='slidestud-io'
+request_id='req-EXACT-ID'
+curl --silent --show-error \
+  --unix-socket "$root/run/local-api.sock" \
+  --get --data-urlencode "request_id=$request_id" \
+  "http://runner.local/v1/mailboxes/$inbox_id/lifecycle" |
+  /usr/bin/python3 -m json.tool
+```
+
+The response contains only `inbox_id`, an optional `request_id`, aggregate
+counts, these labels, and derived flags:
+
+| Dimension | Values |
+| --- | --- |
+| `input_shape` | `absent`, `publishable_pair`, `json_draft`, `request_marker_only`, `ack_marker_only`, `unsafe_inert` |
+| `durable_state` | `none`, `accepted`, `terminal_unacknowledged`, `terminal_acknowledged`, `ingress_diagnostic` |
+| `action` | `none`, `eligible_durable_orphan_cleanup`, `retain_unproven_inert` |
+| Flags | `terminal`, `acknowledged`, `ingress_diagnostic` |
+
+`terminal_acknowledged` and `acknowledged: true` come from the durable Mac
+record. A lonely ACK marker is never acknowledgement evidence. The route does
+not return a request body, script, idempotency key, outbox response, output,
+command/job/session ID, token, header, certificate, key, raw path, or raw
+filesystem/store error. Use the ordinary
+`request_id → outbox → command_id → events` chain for terminal result proof.
+
+`404 mailbox_not_found` means the named inbox is not in the active registry.
+Invalid IDs or query fields return `400 invalid_request`. A `503` response with
+`available: false` and `mailbox_lifecycle_unavailable` means Runner could not
+inspect the configured mailbox tree or durable source; it deliberately does
+not infer an answer from a marker.
+
+`retain_unproven_inert` means leave the entry alone for review. Marker-only
+residue has no normal age-based cleanup. The bounded proven-orphan cleanup is
+off unless that inbox explicitly sets `durable_orphan_cleanup: true`; when
+enabled it removes at most 64 durable-proven marker-only artifacts per cycle.
+It never removes JSON drafts, responses, events, diagnostics, durable records,
+or remote work. Review lifecycle status first, then use the normal candidate
+configuration activation and Mac service refresh for an explicit cleanup
+policy change.
 
 ## External mailbox roots
 
@@ -490,6 +553,9 @@ acknowledged normally.
 - A private ingress diagnostic has no ACK and is eligible for cleanup seven
   days after observation. Its durable rejection-ledger identity remains through
   normal 90-day metadata retention.
+- Marker-only residue has no ordinary age cleanup. It remains inert until
+  reviewed; only explicit per-inbox `durable_orphan_cleanup` can remove
+  durable-proven markers, and it never replays their original work.
 - Software-process-crash recovery is evidenced. Physical power-loss recovery
   is not yet verified.
 

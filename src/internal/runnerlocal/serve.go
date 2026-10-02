@@ -298,8 +298,16 @@ func New(configPath string) (*Service, error) {
 	metricsRecorder := opshealth.NewRecorder()
 	thresholds := opshealth.NewThresholdMonitor()
 	mailboxMetrics := &mailboxMetricsSource{definitions: append([]config.MailboxDefinition(nil), mailboxDefinitions...)}
+	lifecycleStatus, err := mailbox.NewLifecycleStatusRegistry(mailbox.LifecycleStatusRegistryOptions{
+		Authority: authority,
+		Mailboxes: lifecycleStatusMailboxes(mailboxDefinitions),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct mailbox lifecycle status: %w", err)
+	}
 	api, err := localapi.NewServer(localapi.ServerOptions{
 		Authority: authority, Owner: owner, SocketPath: settings.APISocket,
+		MailboxLifecycleStatus: lifecycleStatus,
 		HealthReport: func(ctx context.Context) opshealth.Report {
 			return macIngressHealthReportWithMetrics(ctx, authority, routerHealth, mailboxMetrics.importers, mailboxMetrics.definitions, metricsRecorder, thresholds)
 		},
@@ -425,6 +433,14 @@ func configuredMailboxDefinitions(definitions []config.MailboxDefinition) []stor
 	mailboxes := make([]store.MailboxConfiguration, 0, len(definitions))
 	for _, definition := range definitions {
 		mailboxes = append(mailboxes, store.MailboxConfiguration{ID: definition.ID, Root: definition.Root})
+	}
+	return mailboxes
+}
+
+func lifecycleStatusMailboxes(definitions []config.MailboxDefinition) []mailbox.LifecycleStatusMailbox {
+	mailboxes := make([]mailbox.LifecycleStatusMailbox, 0, len(definitions))
+	for _, definition := range definitions {
+		mailboxes = append(mailboxes, mailbox.LifecycleStatusMailbox{ID: definition.ID, Root: definition.Root})
 	}
 	return mailboxes
 }
