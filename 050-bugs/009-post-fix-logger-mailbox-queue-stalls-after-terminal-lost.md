@@ -4,13 +4,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` |
+| Status | `BLOCKED` |
 | Severity | High |
 | Priority | High |
 | Reported | 2026-10-02 |
 | Discovered by | Codex during protected Slide Studio Logger DEV delivery |
 | Affected area | `slidestud-io` direct workspace mailbox, Mac projection, remote `sandbox-host` bridge, Linux `runnerd` one-off scheduling and recovery |
-| Affected runtime revision | Unknown — must be attested from the running Mac relay, selected bridge, and `runnerd.service`; do not infer it from a source checkout |
+| Affected runtime revision | Serving Mac relay and sandbox `runnerd.service`: `21a84774093dc3a93c43304a86ea56078ed7739e`; candidate source fix: `259a808d418d009e262a6aa46afe5ec6e79050e0`. The candidate is not installed. |
 | Related records | [BUG-007](007-runnerd-one-off-jobs-remain-accepted-without-command-start.md) is resolved historical scheduler work; [BUG-008](008-post-fix-mailbox-request-accepted-without-command-start.md) is an earlier post-fix recurrence. This is a new, independently correlated sequence after several normal terminal requests. |
 
 ## Reported behavior
@@ -323,3 +323,4 @@ Do not use a Logger deployment request as the fixture.
 | 2026-10-02 | B009-P1 passed: a read-only durable query now discovers only fully retained terminal-lost recovery candidates. It made no capacity release, host change, service restart, mailbox publication, or Logger workflow dispatch. See [BUG-009 evidence](../040-implementation-evidence/BUG-009.md). |
 | 2026-10-02 | B009-P2 source work passed in `22d44ce4e4492bf932afcf15dbcda304e09b7992`: the bounded dispatcher can recover only an exact fully retained lost-capacity set after process-group proof, preserve the original queued identity, and retry post-release marker finalization durably. The commit is synchronized to both Ubuntu source checkouts, but it has not been installed or live-validated; request 145 remains untouched. B009-P3 is next. |
 | 2026-10-02 | B009-P3 source work passed in `259a808d418d009e262a6aa46afe5ec6e79050e0`: a queued job can now report only `lost_capacity_recovery_pending` when the exact retained-capacity proof applies, and the reason retracts when recovery or command progress removes that condition. The commit is synchronized to both Ubuntu source checkouts, but it is not installed or live-validated; request 145 remains untouched. Step 4 is next. |
+| 2026-10-02 | B009 Step 4 installed-host preflight was **NO-GO**: all source checkouts were clean at `173d0bdd3cc31809cb0437269c475cabcad7553c`, but the serving Mac relay and sandbox `runnerd` were still `21a84774093dc3a93c43304a86ea56078ed7739e`. The Mac mailbox backlog was one; sandbox P128 reported one active session, four unreleased slots, and one unfinished job. A read-only schema-verified query confirmed four exact retained terminal-lost pairs. No installer, bridge refresh, restart, recovery mutation, mailbox publication, or change to request 145 occurred. The candidate cannot be installed until an explicit safe path through the active-work stop is selected. |
