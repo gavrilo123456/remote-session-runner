@@ -22,6 +22,65 @@ type LostRuntimeRecoveryPair struct {
 	CommandID domain.CommandID
 }
 
+// ListRetainedLostRuntimeRecoveryPairs returns the exact terminal-lost
+// session/command pairs whose matching command-slot and session-capacity
+// reservations are both still retained. It intentionally reads neither script
+// bytes nor event payloads. Callers must still use the recovery transaction as
+// the final concurrency and inventory boundary before releasing capacity.
+func (s *AuthorityStore) ListRetainedLostRuntimeRecoveryPairs(ctx context.Context) ([]LostRuntimeRecoveryPair, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrLostRuntimeRecoveryNotReleasable
+	}
+	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LostRuntimeRecoveryPair, error) {
+		rows, err := connection.QueryContext(ctx, `
+SELECT session.session_id, command.command_id
+FROM exec_commands AS command
+JOIN exec_sessions AS session ON session.session_id = command.session_id
+JOIN exec_command_slots AS slot ON slot.command_id = command.command_id
+JOIN exec_capacity_reservations AS reservation ON reservation.session_id = session.session_id
+JOIN exec_command_events AS event ON event.command_id = command.command_id
+    AND event.sequence = command.final_event_sequence
+WHERE command.state = ?
+  AND session.state = ?
+  AND command.output_complete = 0
+  AND command.final_event_sequence IS NOT NULL
+  AND event.event_type = 'command_lost'
+  AND slot.host_key = ?
+  AND slot.stop_confirmed_at IS NULL
+  AND slot.released_at IS NULL
+  AND reservation.host_key = ?
+  AND reservation.cleanup_confirmed_at IS NULL
+  AND reservation.released_at IS NULL
+ORDER BY slot.reserved_at, command.command_id`,
+			string(domain.CommandStateLost), string(domain.SessionStateLost), schedulerHostKey, reservationHostKey)
+		if err != nil {
+			return nil, fmt.Errorf("query retained lost runtime recovery pairs: %w", err)
+		}
+		defer rows.Close()
+
+		pairs := make([]LostRuntimeRecoveryPair, 0)
+		for rows.Next() {
+			var sessionIDValue, commandIDValue string
+			if err := rows.Scan(&sessionIDValue, &commandIDValue); err != nil {
+				return nil, fmt.Errorf("scan retained lost runtime recovery pair: %w", err)
+			}
+			sessionID, err := domain.NewSessionID(sessionIDValue)
+			if err != nil {
+				return nil, fmt.Errorf("%w: retained lost recovery session identity", ErrLostRuntimeRecoveryNotReleasable)
+			}
+			commandID, err := domain.NewCommandID(commandIDValue)
+			if err != nil {
+				return nil, fmt.Errorf("%w: retained lost recovery command identity", ErrLostRuntimeRecoveryNotReleasable)
+			}
+			pairs = append(pairs, LostRuntimeRecoveryPair{SessionID: sessionID, CommandID: commandID})
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate retained lost runtime recovery pairs: %w", err)
+		}
+		return pairs, nil
+	})
+}
+
 // ConfirmLostRuntimeRecovery atomically records the cleanup proof for one
 // already-lost command and its session. Callers must durably establish the
 // runtime process-group proof first while retaining its ownership marker. The
