@@ -3,6 +3,7 @@ package runnerlocal
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -96,6 +97,64 @@ func TestP154ConfiguredMailboxRuntimesCycleWithIsolatedArtifacts(t *testing.T) {
 				t.Fatalf("mailbox %s cleanup path=%s err=%v", runtime.id, path, err)
 			}
 		}
+	}
+}
+
+func TestBUG010MailboxBacklogExcludesMarkerOnlyResidue(t *testing.T) {
+	ctx := context.Background()
+	h := newP154MailboxHarness(t)
+	runtime := h.service.mailboxes[0]
+	markerOnly := filepath.Join(runtime.importer.InboxPath(), "req-b010-marker-only.ready")
+	if err := os.WriteFile(markerOnly, nil, mailbox.MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(markerOnly, mailbox.MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+	counts, readyTotal, err := mailboxBacklogByInbox(ctx, h.authority, mailboxRuntimeImporters(h.service.mailboxes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readyTotal != 0 || counts[store.DefaultMailboxID] != 0 {
+		t.Fatalf("marker-only residue inflated backlog: counts=%v ready=%d", counts, readyTotal)
+	}
+
+	p154WriteMailboxRequest(t, runtime.importer, "req-b010-complete-pair", map[string]any{
+		"request_id": "req-b010-complete-pair", "operation": "run", "script": "printf B010",
+	})
+	counts, readyTotal, err = mailboxBacklogByInbox(ctx, h.authority, mailboxRuntimeImporters(h.service.mailboxes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readyTotal != 1 || counts[store.DefaultMailboxID] != 1 {
+		t.Fatalf("complete pair backlog=%v ready=%d, want one", counts, readyTotal)
+	}
+
+	retainedID := "req-b010-retained-accepted"
+	ref, err := store.NewMailboxExchangeRef(store.DefaultMailboxID, retainedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("p154-b010-retained"))
+	hash, err := domain.NewCanonicalHash(domain.CanonicalizationVersionV1, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.authority.AcceptMailboxExchangeInMailbox(ctx, ref, store.MailboxExchangeCreate{
+		MailboxID: store.DefaultMailboxID, RequestID: retainedID, Operation: "get_session", Controller: h.owner,
+		RequestHash: hash, CanonicalPayload: []byte("{}"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p154WriteMailboxRequest(t, runtime.importer, retainedID, map[string]any{
+		"request_id": retainedID, "operation": "get_session", "session_id": "sess-00000000000000000000000000000000",
+	})
+	counts, readyTotal, err = mailboxBacklogByInbox(ctx, h.authority, mailboxRuntimeImporters(h.service.mailboxes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readyTotal != 1 || counts[store.DefaultMailboxID] != 2 {
+		t.Fatalf("accepted retained pair was double-counted: counts=%v ready=%d", counts, readyTotal)
 	}
 }
 

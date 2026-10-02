@@ -3,6 +3,7 @@ package runnerlocal
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -218,7 +219,13 @@ func mailboxBacklogByDefinitions(ctx context.Context, authority *store.Authority
 	}
 	var readyTotal int64
 	for _, mailboxID := range ids {
-		ready, err := mailbox.ReadyRequestCountAtRoot(ctx, roots[mailboxID])
+		classifier, err := mailbox.NewLifecycleClassifier(mailbox.LifecycleClassifierOptions{
+			MailboxID: mailboxID, Root: roots[mailboxID], Authority: authority,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		ready, err := classifier.ActionableRequestCount(ctx)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -257,7 +264,13 @@ func mailboxBacklogByInbox(ctx context.Context, authority *store.AuthorityStore,
 	}
 	var readyTotal int64
 	for _, mailboxID := range ids {
-		ready, err := byID[mailboxID].ReadyRequestCount(ctx)
+		classifier, err := mailbox.NewLifecycleClassifier(mailbox.LifecycleClassifierOptions{
+			MailboxID: mailboxID, Root: filepath.Dir(byID[mailboxID].InboxPath()), Authority: authority,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		ready, err := classifier.ActionableRequestCount(ctx)
 		if err != nil {
 			return nil, 0, err
 		}

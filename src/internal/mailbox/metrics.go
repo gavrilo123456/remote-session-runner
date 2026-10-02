@@ -9,9 +9,11 @@ import (
 	"strings"
 )
 
-// ReadyRequestCount reports published regular request markers waiting in the
-// inbox. It never creates a mailbox directory, opens request bodies, or
-// follows symlinks.
+// ReadyRequestCount reports safe complete marker-last request pairs visible in
+// the inbox. It never creates a mailbox directory, opens request bodies, or
+// follows symlinks. Durable receipt state is intentionally outside this
+// filesystem-only helper; LifecycleClassifier provides the actionable count
+// used by health metrics.
 func (i *Importer) ReadyRequestCount(ctx context.Context) (int64, error) {
 	if i == nil || i.root == "" {
 		return 0, ErrImporterConfiguration
@@ -19,9 +21,10 @@ func (i *Importer) ReadyRequestCount(ctx context.Context) (int64, error) {
 	return ReadyRequestCountAtRoot(ctx, i.root)
 }
 
-// ReadyRequestCountAtRoot reports a safe ready-marker count without creating
-// a missing root or inbox. A missing tree has no publishable request and is
-// therefore counted as zero; an existing unsafe tree is rejected.
+// ReadyRequestCountAtRoot reports a safe complete marker-last pair count
+// without creating a missing root or inbox. A missing tree has no publishable
+// request and is therefore counted as zero; an existing unsafe tree is
+// rejected.
 func ReadyRequestCountAtRoot(ctx context.Context, root string) (int64, error) {
 	if strings.TrimSpace(root) == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root || strings.IndexByte(root, 0) >= 0 {
 		return 0, ErrImporterConfiguration
@@ -74,15 +77,15 @@ func readyRequestCountAtInbox(ctx context.Context, inbox string) (int64, error) 
 		if !strings.HasSuffix(entry.Name(), ReadySuffix) {
 			continue
 		}
-		// ReadDir returns names; always inspect beneath the validated inbox.
-		info, err := os.Lstat(filepath.Join(inbox, entry.Name()))
-		if errors.Is(err, os.ErrNotExist) {
+		requestID, ok := safeRequestID(strings.TrimSuffix(entry.Name(), ReadySuffix))
+		if !ok {
 			continue
 		}
+		shape, err := lifecycleInputShape(inbox, requestID, true)
 		if err != nil {
-			return count, fmt.Errorf("%w: inspect inbox marker: %v", ErrMailboxPath, err)
+			return count, err
 		}
-		if safeIngressFileInfo(info) {
+		if shape == LifecycleInputPublishablePair {
 			count++
 		}
 	}

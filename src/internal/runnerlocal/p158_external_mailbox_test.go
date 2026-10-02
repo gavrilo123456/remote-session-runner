@@ -314,6 +314,13 @@ func TestP158DoctorMetricsUseConfiguredRootsWithoutCreatingMissingTree(t *testin
 	h := newP154MailboxHarness(t)
 	defaultRuntime := h.service.mailboxes[0]
 	marker := filepath.Join(defaultRuntime.importer.InboxPath(), "req-p158-metrics.ready")
+	request := filepath.Join(defaultRuntime.importer.InboxPath(), "req-p158-metrics.json")
+	if err := os.WriteFile(request, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(request, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(marker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -7,13 +7,19 @@ import (
 	"testing"
 )
 
-func TestP129ReadyRequestCountCountsOnlyRegularIngressMarkers(t *testing.T) {
+func TestP129ReadyRequestCountCountsOnlySafeCompleteIngressPairs(t *testing.T) {
 	importer, err := NewImporter(filepath.Join(t.TempDir(), "mailbox"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	inbox := importer.InboxPath()
 	native := filepath.Join(inbox, "native-p129"+ReadySuffix)
+	if err := os.WriteFile(filepath.Join(inbox, "native-p129"+RequestSuffix), []byte("{}"), MailboxFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(inbox, "native-p129"+RequestSuffix), MailboxFileMode); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(native, nil, MailboxFileMode); err != nil {
 		t.Fatal(err)
 	}
@@ -21,6 +27,12 @@ func TestP129ReadyRequestCountCountsOnlyRegularIngressMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	workspace := filepath.Join(inbox, "workspace-p129"+ReadySuffix)
+	if err := os.WriteFile(filepath.Join(inbox, "workspace-p129"+RequestSuffix), []byte("{}"), MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(inbox, "workspace-p129"+RequestSuffix), MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(workspace, nil, MailboxWorkspaceIngressFileMode); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +57,12 @@ func TestP129ReadyRequestCountCountsOnlyRegularIngressMarkers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(inbox, "draft-p129"+RequestSuffix), []byte("ignored"), MailboxFileMode); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(inbox, "nonempty-p129"+RequestSuffix), []byte("{}"), MailboxFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inbox, "nonempty-p129"+ReadySuffix), []byte("x"), MailboxFileMode); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(native, filepath.Join(inbox, "linked-p129"+ReadySuffix)); err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +71,6 @@ func TestP129ReadyRequestCountCountsOnlyRegularIngressMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got != 2 {
-		t.Fatalf("ready marker count=%d, want two exact-mode regular markers", got)
+		t.Fatalf("ready pair count=%d, want two exact-mode complete pairs", got)
 	}
 }
