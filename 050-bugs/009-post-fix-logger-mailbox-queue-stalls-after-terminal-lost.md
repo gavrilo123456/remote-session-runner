@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `NEW` |
+| Status | `IN PROGRESS` |
 | Severity | High |
 | Priority | High |
 | Reported | 2026-10-02 |
@@ -320,3 +320,4 @@ Do not use a Logger deployment request as the fixture.
 | Date | Change |
 | --- | --- |
 | 2026-10-02 | Registered after a user-declared Runner fix, seven normal terminal mailbox operations, one terminal `lost` Git-read operation, and then a fresh read-only Gitea run-list command that remained durably accepted/queued with no start event. |
+| 2026-10-02 | B009-P1 passed: a read-only durable query now discovers only fully retained terminal-lost recovery candidates. It made no capacity release, host change, service restart, mailbox publication, or Logger workflow dispatch. See [BUG-009 evidence](../040-implementation-evidence/BUG-009.md). |
