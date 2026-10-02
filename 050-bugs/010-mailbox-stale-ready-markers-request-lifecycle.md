@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IMPLEMENTING — B010-P1 through B010-P3 PASS; B010-P4 pending` |
+| Status | `CLOSED — B010-P1 through B010-P4 PASS; durable-orphan cleanup remains disabled pending separate authorization` |
 | Severity | High |
 | Priority | High — the file-only client can mistake inert residue for pending protected-control work |
 | Reported | 2026-10-02 |
@@ -12,9 +12,9 @@
 | Owner | Unassigned |
 | Affected component/path | Mac `runner-local`, workspace mailbox lifecycle, metrics, and `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-/` |
 | Affected live revision | Mac relay `9ad2fb01d85952161cbbc387188b3fc774a103f1`; P165 malformed-ingress behavior is included |
-| Checked-out source | `fc8e564be7bdc0deaae5132dd6e7fcc95a42460a` (B010-P3 implementation) |
-| Fixed revision | N/A |
-| Verification | B010-P1 through B010-P4 below; no current mailbox artifact is to be deleted, ACKed, retried, or replayed during investigation |
+| Verified installed revision | `9ce4b219921c67f462af94c89ce2ae7a3ba4f9f6` on Mac `runner-local`/`runner-locald` and sandbox `runnerd` |
+| Fixed source revision | `fc8e564be7bdc0deaae5132dd6e7fcc95a42460a` (B010-P3 lifecycle-status implementation); live proof used the later clean `9ce4b219921c67f462af94c89ce2ae7a3ba4f9f6` source revision |
+| Verification | B010-P1 through B010-P4 passed; implementation evidence is in `040-implementation-evidence/BUG-010.md`. Historic residue was neither deleted, ACKed, retried, nor replayed. |
 
 ## Confirmed problem
 
@@ -368,9 +368,25 @@ BUG-010 can be resolved only when all of the following hold:
 
 ## Resolution
 
-Open. The current 50 orphan markers are classified as inert and not pending
-execution. They remain preserved until the planned implementation and an
-explicitly reviewed cleanup step are complete.
+Resolved. B010-P1 corrected actionable mailbox backlog and introduced safe
+lifecycle classification; B010-P2 added bounded opt-in durable-orphan
+reconciliation; B010-P3 added the metadata-only Mac-local lifecycle query;
+and B010-P4 validated the installed Mac path with one fresh harmless
+direct-workspace request, a durable ACK, a supported service restart, a
+no-replay hash/cursor proof, the P159 workspace-mailbox gate, and the sandbox
+P128 zero-work gate.
+
+P128 initially found three separate terminal-lost sandbox slots with no active
+work. The documented complete-set recovery proved their process boundaries and
+released only those terminal slots before `runnerd` was started again. It did
+not replay any stored command. This host recovery is recorded in the phase
+evidence and does not change the B010 mailbox cleanup policy.
+
+The current 50 request markers and 43 ACK markers remain classified and
+preserved. `durable_orphan_cleanup` remains disabled, so this resolution does
+not delete historic artifacts. Physical power-loss durability remains outside
+this bug; P143 is software-crash-only until a separately coordinated
+physical-power-cut test passes.
 
 ## History
 
@@ -381,3 +397,4 @@ explicitly reviewed cleanup step are complete.
 | 2026-10-02 | B010-P1 committed, pushed, and fast-forwarded to both Ubuntu checkouts; see `040-implementation-evidence/BUG-010.md`. |
 | 2026-10-02 | B010-P2 committed, pushed, and fast-forwarded to both Ubuntu checkouts; it is disabled by default per inbox until B010-P3 status review and separately authorized live activation. |
 | 2026-10-02 | B010-P3 committed, pushed, and fast-forwarded to both Ubuntu checkouts. It adds the Mac-local metadata-only lifecycle status route and complete operator/LLM documentation; B010-P4 remains the live proof and does not enable cleanup. |
+| 2026-10-02 | B010-P4 passed its installed Mac lifecycle proof, no-replay restart proof, P159 workspace-mailbox gate, and final sandbox P128 zero-work gate. A complete-set recovery released three unrelated terminal-lost sandbox slots before the final P128 check; cleanup remains disabled and historic SlideStudio residue remains untouched. |
