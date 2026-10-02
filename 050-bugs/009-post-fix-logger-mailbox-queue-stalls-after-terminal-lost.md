@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` |
+| Status | `FIXED — PENDING VERIFICATION` |
 | Severity | High |
 | Priority | High |
 | Reported | 2026-10-02 |
@@ -47,8 +47,8 @@ Once a request is safely accepted, the existing durable command should either:
 
 1. reach `command_started` and then a truthful terminal result exactly once;
    or
-2. expose a bounded, truthful, nonterminal/retryable state that allows the
-   caller to distinguish a dispatcher/bridge capacity issue from execution.
+2. expose a bounded, truthful, nonterminal/retryable state when the exact
+   verified retained-lost-capacity condition prevents execution.
 
 An accepted command must not remain indefinitely queued with no event and no
 operator-visible safe reason after unrelated terminal mailbox traffic. A
@@ -322,3 +322,4 @@ Do not use a Logger deployment request as the fixture.
 | 2026-10-02 | Registered after a user-declared Runner fix, seven normal terminal mailbox operations, one terminal `lost` Git-read operation, and then a fresh read-only Gitea run-list command that remained durably accepted/queued with no start event. |
 | 2026-10-02 | B009-P1 passed: a read-only durable query now discovers only fully retained terminal-lost recovery candidates. It made no capacity release, host change, service restart, mailbox publication, or Logger workflow dispatch. See [BUG-009 evidence](../040-implementation-evidence/BUG-009.md). |
 | 2026-10-02 | B009-P2 source work passed in `22d44ce4e4492bf932afcf15dbcda304e09b7992`: the bounded dispatcher can recover only an exact fully retained lost-capacity set after process-group proof, preserve the original queued identity, and retry post-release marker finalization durably. The commit is synchronized to both Ubuntu source checkouts, but it has not been installed or live-validated; request 145 remains untouched. B009-P3 is next. |
+| 2026-10-02 | B009-P3 source work passed in `259a808d418d009e262a6aa46afe5ec6e79050e0`: a queued job can now report only `lost_capacity_recovery_pending` when the exact retained-capacity proof applies, and the reason retracts when recovery or command progress removes that condition. The commit is synchronized to both Ubuntu source checkouts, but it is not installed or live-validated; request 145 remains untouched. Step 4 is next. |
