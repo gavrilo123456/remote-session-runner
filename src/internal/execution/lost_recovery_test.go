@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"remote-session-runner/src/internal/domain"
@@ -253,6 +254,94 @@ func TestRecoverLostRuntimeBatchRetainsEveryPairWhenLaterProofFailsThenRetries(t
 	}
 	pRecoveryAssertReleased(t, authority, firstSession.SessionID, firstCommand.CommandID)
 	pRecoveryAssertReleased(t, authority, secondSession.SessionID, secondCommand.CommandID)
+}
+
+func TestFinalizeReleasedLostRuntimeRecoveryBatchPreflightsEveryPair(t *testing.T) {
+	runtime := &p027Runtime{
+		p020FakeRuntime:    p020FakeRuntime{generation: "generation-finalization-preflight"},
+		lostRecoveryResult: RuntimeReconcileResult{RuntimeGeneration: "generation-finalization-preflight", CleanupConfirmed: true},
+		lostFinalizeResult: RuntimeReconcileResult{RuntimeGeneration: "generation-finalization-preflight", CleanupConfirmed: true},
+		lostFinalizeErr:    errors.New("fixture finalization failure"),
+	}
+	service, authority := newP027Service(t, runtime)
+	releasedSession, releasedCommand := pRecoveryLostPair(t, service, authority, "finalization-preflight-released")
+	if _, err := service.RecoverLostRuntime(context.Background(), LostRuntimeRecoveryRequest{SessionID: releasedSession.SessionID, CommandID: releasedCommand.CommandID}); !errors.Is(err, ErrLostRuntimeRecoveryFinalization) {
+		t.Fatalf("seed released finalization error=%v, want pending finalization", err)
+	}
+	if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background()); err != nil || len(pending) != 1 {
+		t.Fatalf("seed pending finalizations=%+v err=%v, want one", pending, err)
+	}
+	unreleasedSession, unreleasedCommand := pRecoveryLostPair(t, service, authority, "finalization-preflight-unreleased")
+
+	_, err := service.FinalizeReleasedLostRuntimeRecoveryBatch(context.Background(), []LostRuntimeRecoveryRequest{
+		{SessionID: releasedSession.SessionID, CommandID: releasedCommand.CommandID},
+		{SessionID: unreleasedSession.SessionID, CommandID: unreleasedCommand.CommandID},
+	})
+	if !errors.Is(err, ErrLostRuntimeRecoveryIneligible) {
+		t.Fatalf("mixed finalization batch error=%v, want ineligible", err)
+	}
+	if runtime.lostFinalizeCall != 1 {
+		t.Fatalf("finalizer calls after rejected mixed batch=%d, want only the seed call", runtime.lostFinalizeCall)
+	}
+	if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background()); err != nil || len(pending) != 1 || pending[0].CommandID != releasedCommand.CommandID {
+		t.Fatalf("pending finalization after rejected mixed batch=%+v err=%v", pending, err)
+	}
+}
+
+func TestReconcileStartupFinalizesPendingLostRecoveryBeforeOwnershipAudit(t *testing.T) {
+	runtime := &p027Runtime{
+		p020FakeRuntime:    p020FakeRuntime{generation: "generation-startup-finalization"},
+		lostRecoveryResult: RuntimeReconcileResult{RuntimeGeneration: "generation-startup-finalization", CleanupConfirmed: true},
+		lostFinalizeResult: RuntimeReconcileResult{RuntimeGeneration: "generation-startup-finalization", CleanupConfirmed: true},
+		lostFinalizeErr:    errors.New("fixture finalization failure"),
+	}
+	service, authority := newP027Service(t, runtime)
+	session, command := pRecoveryLostPair(t, service, authority, "startup-finalization")
+	if _, err := service.RecoverLostRuntime(context.Background(), LostRuntimeRecoveryRequest{SessionID: session.SessionID, CommandID: command.CommandID}); !errors.Is(err, ErrLostRuntimeRecoveryFinalization) {
+		t.Fatalf("seed pending finalization error=%v, want pending finalization", err)
+	}
+
+	runtime.lostFinalizeErr = nil
+	runtime.ownershipHook = func() error {
+		pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background())
+		if err != nil {
+			return err
+		}
+		if len(pending) != 0 {
+			return fmt.Errorf("pending finalizations remain before ownership audit: %v", pending)
+		}
+		return nil
+	}
+	if report, err := service.ReconcileStartup(context.Background()); err != nil || report.SessionsInspected != 0 {
+		t.Fatalf("startup reconciliation=%+v err=%v, want only pending finalization cleanup", report, err)
+	}
+	if runtime.ownershipAudit != 1 || runtime.lostFinalizeCall != 2 {
+		t.Fatalf("startup calls audit=%d finalization=%d, want 1/2", runtime.ownershipAudit, runtime.lostFinalizeCall)
+	}
+}
+
+func TestReconcileStartupBlocksOwnershipAuditWhenPendingLostFinalizationFails(t *testing.T) {
+	runtime := &p027Runtime{
+		p020FakeRuntime:    p020FakeRuntime{generation: "generation-startup-finalization-fails"},
+		lostRecoveryResult: RuntimeReconcileResult{RuntimeGeneration: "generation-startup-finalization-fails", CleanupConfirmed: true},
+		lostFinalizeResult: RuntimeReconcileResult{RuntimeGeneration: "generation-startup-finalization-fails", CleanupConfirmed: true},
+		lostFinalizeErr:    errors.New("fixture finalization failure"),
+	}
+	service, authority := newP027Service(t, runtime)
+	session, command := pRecoveryLostPair(t, service, authority, "startup-finalization-fails")
+	if _, err := service.RecoverLostRuntime(context.Background(), LostRuntimeRecoveryRequest{SessionID: session.SessionID, CommandID: command.CommandID}); !errors.Is(err, ErrLostRuntimeRecoveryFinalization) {
+		t.Fatalf("seed pending finalization error=%v, want pending finalization", err)
+	}
+
+	if _, err := service.ReconcileStartup(context.Background()); !errors.Is(err, ErrLostRuntimeRecoveryFinalization) {
+		t.Fatalf("startup finalization error=%v, want finalization pending", err)
+	}
+	if runtime.ownershipAudit != 0 {
+		t.Fatalf("ownership audit ran despite unresolved finalization: %d", runtime.ownershipAudit)
+	}
+	if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background()); err != nil || len(pending) != 1 {
+		t.Fatalf("pending finalization after blocked startup=%+v err=%v, want one", pending, err)
+	}
 }
 
 func pRecoveryLostFixture(t *testing.T, reconcile RuntimeReconcileResult, reconcileErr error) (*Service, *store.AuthorityStore, *p027Runtime, store.SessionRecord, store.CommandRecord) {

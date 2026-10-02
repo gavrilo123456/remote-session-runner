@@ -14,7 +14,10 @@ import (
 	"remote-session-runner/src/internal/store"
 )
 
-const defaultRunnerDispatcherRecoveryInterval = time.Second
+const (
+	defaultRunnerDispatcherRecoveryInterval                     = time.Second
+	defaultRunnerDispatcherRetainedLostCapacityRecoveryInterval = time.Minute
+)
 
 var ErrRunnerDispatcherConfiguration = errors.New("runnerd queued dispatcher configuration is incomplete")
 
@@ -22,22 +25,24 @@ var ErrRunnerDispatcherConfiguration = errors.New("runnerd queued dispatcher con
 // authority and lifecycle boundary that already govern runnerd command work.
 // It never owns an ingress listener or a second scheduler transaction.
 type RunnerDispatcherOptions struct {
-	Service          *execution.Service
-	Authority        *store.AuthorityStore
-	DispatchGate     *lifecycle.Gate
-	RecoveryInterval time.Duration
-	Logger           *slog.Logger
+	Service                              *execution.Service
+	Authority                            *store.AuthorityStore
+	DispatchGate                         *lifecycle.Gate
+	RecoveryInterval                     time.Duration
+	RetainedLostCapacityRecoveryInterval time.Duration
+	Logger                               *slog.Logger
 }
 
 // RunnerDispatcher turns durable queued commands into bounded runtime workers.
 // A durable claim always belongs to exactly one worker, while the store remains
 // the source of truth for ordering, capacity, and terminal outcomes.
 type RunnerDispatcher struct {
-	service          *execution.Service
-	authority        *store.AuthorityStore
-	dispatchGate     *lifecycle.Gate
-	recoveryInterval time.Duration
-	logger           *slog.Logger
+	service                              *execution.Service
+	authority                            *store.AuthorityStore
+	dispatchGate                         *lifecycle.Gate
+	recoveryInterval                     time.Duration
+	retainedLostCapacityRecoveryInterval time.Duration
+	logger                               *slog.Logger
 
 	wake chan struct{}
 	done chan struct{}
@@ -52,7 +57,17 @@ type RunnerDispatcher struct {
 	// prevents unrelated ingress wakes from turning an unavailable authority
 	// into an unbounded scheduler loop.
 	passDeferred bool
-	jobWorkers   chan struct{}
+	// nextRetainedLostCapacityRecoveryAttempt throttles only runtime proof
+	// attempts after the read-only candidate discovery has found a complete
+	// retained set. A failed proof records a durable cleanup audit, so trying
+	// again on every one-second scheduler tick would cause avoidable audit
+	// growth while the process state is unchanged.
+	nextRetainedLostCapacityRecoveryAttempt time.Time
+	// nextLostRuntimeFinalizationAttempt is deliberately independent from
+	// retained-capacity recovery. A transient ownership-marker cleanup failure
+	// must not postpone a later proof that can release every occupied slot.
+	nextLostRuntimeFinalizationAttempt time.Time
+	jobWorkers                         chan struct{}
 }
 
 // NewRunnerDispatcher validates a process-local dispatcher. The durable store
@@ -65,20 +80,24 @@ func NewRunnerDispatcher(options RunnerDispatcherOptions) (*RunnerDispatcher, er
 	if options.RecoveryInterval <= 0 {
 		options.RecoveryInterval = defaultRunnerDispatcherRecoveryInterval
 	}
+	if options.RetainedLostCapacityRecoveryInterval <= 0 {
+		options.RetainedLostCapacityRecoveryInterval = defaultRunnerDispatcherRetainedLostCapacityRecoveryInterval
+	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
 	return &RunnerDispatcher{
-		service:          options.Service,
-		authority:        options.Authority,
-		dispatchGate:     options.DispatchGate,
-		recoveryInterval: options.RecoveryInterval,
-		logger:           options.Logger,
-		wake:             make(chan struct{}, 1),
-		done:             make(chan struct{}),
-		activeJobs:       make(map[domain.JobID]struct{}),
-		deferred:         make(map[domain.JobID]struct{}),
-		jobWorkers:       make(chan struct{}, store.DefaultRunningCommandLimit),
+		service:                              options.Service,
+		authority:                            options.Authority,
+		dispatchGate:                         options.DispatchGate,
+		recoveryInterval:                     options.RecoveryInterval,
+		retainedLostCapacityRecoveryInterval: options.RetainedLostCapacityRecoveryInterval,
+		logger:                               options.Logger,
+		wake:                                 make(chan struct{}, 1),
+		done:                                 make(chan struct{}),
+		activeJobs:                           make(map[domain.JobID]struct{}),
+		deferred:                             make(map[domain.JobID]struct{}),
+		jobWorkers:                           make(chan struct{}, store.DefaultRunningCommandLimit),
 	}, nil
 }
 
@@ -198,14 +217,21 @@ func (d *RunnerDispatcher) run(ctx context.Context) {
 			continue
 		}
 		d.clearSchedulingPassDeferral()
-		if err := d.dispatch(ctx); err != nil {
+		if retryDeferred {
+			if err := d.finalizePendingLostRuntimeRecoveries(ctx); err != nil {
+				d.logger.Warn("runnerd queued dispatcher could not finalize recovered lost runtime ownership", "lifecycle_phase", "lost_capacity_finalization", "reason", queuedDispatcherFailureReason(err))
+				d.deferSchedulingPass()
+				continue
+			}
+		}
+		if err := d.dispatch(ctx, retryDeferred); err != nil {
 			d.logger.Warn("runnerd queued dispatcher could not claim command", "lifecycle_phase", "command_claim", "reason", queuedDispatcherFailureReason(err))
 			d.deferSchedulingPass()
 		}
 	}
 }
 
-func (d *RunnerDispatcher) dispatch(ctx context.Context) error {
+func (d *RunnerDispatcher) dispatch(ctx context.Context, recoveryTick bool) error {
 	for {
 		if ctx != nil && ctx.Err() != nil {
 			return nil
@@ -223,14 +249,130 @@ func (d *RunnerDispatcher) dispatch(ctx context.Context) error {
 		}
 		claim, err := d.service.ClaimNextEligibleCommand(context.Background())
 		if err != nil {
+			if errors.Is(err, store.ErrCommandSlotsFull) {
+				if recoveryTick {
+					recovered, recoveryErr := d.recoverRetainedLostCapacity(ctx)
+					release()
+					if recoveryErr != nil {
+						return recoveryErr
+					}
+					if recovered {
+						d.Wake()
+					}
+					return nil
+				}
+				release()
+				return nil
+			}
 			release()
-			if errors.Is(err, store.ErrCommandSlotsFull) || errors.Is(err, store.ErrCommandNotEligible) {
+			if errors.Is(err, store.ErrCommandNotEligible) {
 				return nil
 			}
 			return fmt.Errorf("claim next eligible command: %w", err)
 		}
 		go d.executeClaim(claim, release)
 	}
+}
+
+// finalizePendingLostRuntimeRecoveries retries only post-release ownership
+// finalization. It runs on the bounded tick before ordinary dispatch so a
+// crash after durable capacity release cannot leave an unattributed marker for
+// the next runnerd startup. It cannot release capacity or execute a script.
+func (d *RunnerDispatcher) finalizePendingLostRuntimeRecoveries(ctx context.Context) error {
+	pairs, err := d.authority.ListPendingLostRuntimeRecoveryFinalizations(ctx)
+	if err != nil {
+		return fmt.Errorf("list pending lost runtime recovery finalizations: %w", err)
+	}
+	if len(pairs) == 0 || !d.beginLostRuntimeFinalizationAttempt(time.Now()) {
+		return nil
+	}
+	release, err := d.dispatchGate.Enter()
+	if err != nil {
+		return nil
+	}
+	defer release()
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	requests := make([]execution.LostRuntimeRecoveryRequest, 0, len(pairs))
+	for _, pair := range pairs {
+		requests = append(requests, execution.LostRuntimeRecoveryRequest{SessionID: pair.SessionID, CommandID: pair.CommandID})
+	}
+	_, err = d.service.FinalizeReleasedLostRuntimeRecoveryBatch(ctx, requests)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, execution.ErrLostRuntimeRecoveryFinalization) ||
+		errors.Is(err, execution.ErrLostRuntimeRecoveryIneligible) ||
+		errors.Is(err, store.ErrLostRuntimeRecoveryNotReleasable) {
+		d.logger.Warn("runnerd retained lost capacity finalization remains pending", "lifecycle_phase", "lost_capacity_finalization", "reason", retainedCapacityRecoveryFailureReason(err))
+		return nil
+	}
+	return fmt.Errorf("finalize recovered lost runtime ownership: %w", err)
+}
+
+// recoverRetainedLostCapacity is deliberately called only after the normal
+// scheduler has established that all command slots are full on a bounded tick.
+// It discovers candidates without reading scripts, then delegates process
+// proof and the single durable paired release to the existing queue-preserving
+// recovery service. It never claims or replays a lost command.
+func (d *RunnerDispatcher) recoverRetainedLostCapacity(ctx context.Context) (bool, error) {
+	pairs, err := d.authority.ListRetainedLostRuntimeRecoveryPairs(ctx)
+	if err != nil {
+		return false, fmt.Errorf("list retained lost runtime recovery pairs: %w", err)
+	}
+	if len(pairs) != store.DefaultRunningCommandLimit {
+		return false, nil
+	}
+	if !d.beginRetainedLostCapacityRecoveryAttempt(time.Now()) {
+		return false, nil
+	}
+
+	requests := make([]execution.LostRuntimeRecoveryRequest, 0, len(pairs))
+	for _, pair := range pairs {
+		requests = append(requests, execution.LostRuntimeRecoveryRequest{
+			SessionID: pair.SessionID,
+			CommandID: pair.CommandID,
+		})
+	}
+	_, err = d.service.RecoverLostRuntimeBatchPreservingQueuedOneOffs(ctx, requests)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, execution.ErrLostRuntimeRecoveryFinalization) {
+		// The paired durable release has already committed. Keep the separate
+		// finalization warning truthful, but let the original queued command
+		// proceed on the normal dispatcher path.
+		d.logger.Warn("runnerd retained lost capacity recovery finalization is pending", "lifecycle_phase", "lost_capacity_recovery", "reason", retainedCapacityRecoveryFailureReason(err))
+		return true, nil
+	}
+	if errors.Is(err, execution.ErrLostRuntimeRecoveryUnconfirmed) ||
+		errors.Is(err, execution.ErrLostRuntimeRecoveryIneligible) ||
+		errors.Is(err, store.ErrLostRuntimeRecoveryNotReleasable) {
+		d.logger.Warn("runnerd retained lost capacity recovery remains pending", "lifecycle_phase", "lost_capacity_recovery", "reason", retainedCapacityRecoveryFailureReason(err))
+		return false, nil
+	}
+	return false, fmt.Errorf("recover retained lost capacity: %w", err)
+}
+
+func (d *RunnerDispatcher) beginRetainedLostCapacityRecoveryAttempt(now time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if now.Before(d.nextRetainedLostCapacityRecoveryAttempt) {
+		return false
+	}
+	d.nextRetainedLostCapacityRecoveryAttempt = now.Add(d.retainedLostCapacityRecoveryInterval)
+	return true
+}
+
+func (d *RunnerDispatcher) beginLostRuntimeFinalizationAttempt(now time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if now.Before(d.nextLostRuntimeFinalizationAttempt) {
+		return false
+	}
+	d.nextLostRuntimeFinalizationAttempt = now.Add(d.retainedLostCapacityRecoveryInterval)
+	return true
 }
 
 func (d *RunnerDispatcher) executeClaim(claim store.CommandRecord, release func()) {

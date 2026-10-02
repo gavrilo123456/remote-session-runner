@@ -71,6 +71,9 @@ END`, string(secondSessionID))
 	for _, pair := range pairs {
 		pStalledRecoveryAssertLostPairRetained(t, authority, pair)
 	}
+	if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background()); err != nil || len(pending) != 0 {
+		t.Fatalf("rolled-back batch finalizations=%+v err=%v, want none", pending, err)
+	}
 }
 
 func TestConfirmLostRuntimeRecoveryBatchRejectsWrongHostAndEmptyInput(t *testing.T) {

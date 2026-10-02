@@ -23,6 +23,20 @@ func TestConfirmLostRuntimeRecoveryReleasesBothCapacityRecords(t *testing.T) {
 	if err != nil || reservation.CleanupConfirmedAt == nil || reservation.ReleasedAt == nil {
 		t.Fatalf("session reservation=%+v err=%v", reservation, err)
 	}
+	pair := LostRuntimeRecoveryPair{SessionID: sessionID, CommandID: commandID}
+	pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background())
+	if err != nil || len(pending) != 1 || pending[0] != pair {
+		t.Fatalf("pending finalizations=%+v err=%v, want [%+v]", pending, err, pair)
+	}
+	if err := authority.CompleteLostRuntimeRecoveryFinalization(context.Background(), pair); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background()); err != nil || len(pending) != 0 {
+		t.Fatalf("completed finalizations=%+v err=%v, want none", pending, err)
+	}
+	if err := authority.CompleteLostRuntimeRecoveryFinalization(context.Background(), pair); err != nil {
+		t.Fatalf("idempotent finalization completion: %v", err)
+	}
 	if err := authority.ConfirmLostRuntimeRecovery(context.Background(), sessionID, commandID); err != nil {
 		t.Fatalf("idempotent recovery: %v", err)
 	}
@@ -50,6 +64,9 @@ END`, string(sessionID))
 	reservation, err := authority.GetSessionReservation(context.Background(), sessionID)
 	if err != nil || reservation.CleanupConfirmedAt != nil || reservation.ReleasedAt != nil {
 		t.Fatalf("session reservation was partially released: %+v err=%v", reservation, err)
+	}
+	if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background()); err != nil || len(pending) != 0 {
+		t.Fatalf("rolled-back recovery finalizations=%+v err=%v, want none", pending, err)
 	}
 }
 
@@ -101,6 +118,9 @@ END`,
 			reservation, err := authority.GetSessionReservation(context.Background(), sessionID)
 			if err != nil || reservation.CleanupConfirmedAt != nil || reservation.ReleasedAt != nil {
 				t.Fatalf("session reservation was partially released: %+v err=%v", reservation, err)
+			}
+			if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background()); err != nil || len(pending) != 0 {
+				t.Fatalf("ignored-update recovery finalizations=%+v err=%v, want none", pending, err)
 			}
 		})
 	}

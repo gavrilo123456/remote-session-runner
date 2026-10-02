@@ -423,6 +423,10 @@ WHERE c.state IN (?, ?, ?, ?, ?, ?)
   AND NOT EXISTS (
       SELECT 1 FROM exec_jobs j WHERE j.command_id = c.command_id
   )
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_lost_runtime_recovery_finalizations f
+      WHERE f.command_id = c.command_id
+  )
 `, string(domain.CommandStateSucceeded), string(domain.CommandStateFailed), string(domain.CommandStateCancelled),
 		string(domain.CommandStateTimedOut), string(domain.CommandStateRejected), string(domain.CommandStateLost), formatStoredTime(cutoff),
 		string(domain.SessionStateClosed), string(domain.SessionStateExpired), string(domain.SessionStateFailed), string(domain.SessionStateLost), formatStoredTime(cutoff))
@@ -454,6 +458,10 @@ WHERE s.state IN (?, ?, ?, ?)
   AND r.cleanup_confirmed_at IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM exec_commands c WHERE c.session_id = s.session_id)
   AND NOT EXISTS (SELECT 1 FROM exec_jobs j WHERE j.session_id = s.session_id)
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_lost_runtime_recovery_finalizations f
+      WHERE f.session_id = s.session_id
+  )
 `, string(domain.SessionStateClosed), string(domain.SessionStateExpired), string(domain.SessionStateFailed), string(domain.SessionStateLost), formatStoredTime(cutoff))
 	if err != nil {
 		return nil, fmt.Errorf("select session metadata for GC: %w", err)

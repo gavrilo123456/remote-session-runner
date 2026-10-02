@@ -128,3 +128,49 @@ func TestP028D15LiveSessionAndCommandSlotsPinMetadataBeyondNinetyDays(t *testing
 		t.Fatalf("pinned command after cleanup = %v, want ErrCommandNotFound", err)
 	}
 }
+
+func TestBUG009PendingLostRuntimeFinalizationPinsMetadataUntilComplete(t *testing.T) {
+	ctx := context.Background()
+	clock := &p019Clock{value: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)}
+	authority := newP019Store(t, clock)
+	sessionID, commandID := pStalledRecoveryLostPair(t, authority, "bug009-finalization-gc")
+	pair := LostRuntimeRecoveryPair{SessionID: sessionID, CommandID: commandID}
+	if err := authority.ConfirmLostRuntimeRecovery(ctx, sessionID, commandID); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(ctx); err != nil || len(pending) != 1 || pending[0] != pair {
+		t.Fatalf("pending finalization=%+v err=%v, want [%+v]", pending, err, pair)
+	}
+
+	clock.Advance(91 * 24 * time.Hour)
+	report, err := authority.CollectGarbage(ctx, GarbageCollectionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CommandsDeleted != 0 || report.SessionsDeleted != 0 {
+		t.Fatalf("GC deleted pending-finalization metadata: %+v", report)
+	}
+	if _, err := authority.GetCommand(ctx, commandID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.GetSession(ctx, sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := authority.CompleteLostRuntimeRecoveryFinalization(ctx, pair); err != nil {
+		t.Fatal(err)
+	}
+	report, err = authority.CollectGarbage(ctx, GarbageCollectionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CommandsDeleted != 1 || report.SessionsDeleted != 1 {
+		t.Fatalf("GC after finalization completion=%+v, want one command and session", report)
+	}
+	if _, err := authority.GetCommand(ctx, commandID); !errors.Is(err, ErrCommandNotFound) {
+		t.Fatalf("command after finalization completion=%v, want %v", err, ErrCommandNotFound)
+	}
+	if _, err := authority.GetSession(ctx, sessionID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("session after finalization completion=%v, want %v", err, ErrSessionNotFound)
+	}
+}

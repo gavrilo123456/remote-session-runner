@@ -96,14 +96,15 @@ func (s *Service) RecoverLostRuntimeBatch(ctx context.Context, requests []LostRu
 	if err := s.store.ConfirmLostRuntimeRecoveryBatch(ctx, pairs); err != nil {
 		return results, fmt.Errorf("record recovered runtime capacity: %w", err)
 	}
+	var finalizationErrors []error
 	for index := range results {
 		finalized, finalizeErr := s.finalizeLostRuntimeRecovery(ctx, requests[index], results[index], recoverer)
 		results[index] = finalized
 		if finalizeErr != nil {
-			return results, finalizeErr
+			finalizationErrors = append(finalizationErrors, finalizeErr)
 		}
 	}
-	return results, nil
+	return results, errors.Join(finalizationErrors...)
 }
 
 // CheckLostRuntimeRecoveryBatchPreservingQueuedOneOffs validates the narrow
@@ -167,14 +168,93 @@ func (s *Service) RecoverLostRuntimeBatchPreservingQueuedOneOffs(ctx context.Con
 	if err := s.store.ConfirmLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ctx, pairs); err != nil {
 		return results, fmt.Errorf("record queue-preserving recovered runtime capacity: %w", err)
 	}
+	var finalizationErrors []error
 	for index := range results {
 		finalized, finalizeErr := s.finalizeLostRuntimeRecovery(ctx, requests[index], results[index], recoverer)
 		results[index] = finalized
 		if finalizeErr != nil {
-			return results, finalizeErr
+			finalizationErrors = append(finalizationErrors, finalizeErr)
 		}
 	}
-	return results, nil
+	return results, errors.Join(finalizationErrors...)
+}
+
+// FinalizeReleasedLostRuntimeRecoveryBatch retries only the post-release
+// ownership-marker and workspace finalization for already recovered terminal
+// lost pairs. It cannot inspect or signal an old PID, release capacity, claim
+// a queued command, or execute a stored script.
+func (s *Service) FinalizeReleasedLostRuntimeRecoveryBatch(ctx context.Context, requests []LostRuntimeRecoveryRequest) ([]LostRuntimeRecoveryResult, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return nil, ErrExecutionServiceConfiguration
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	return s.finalizeReleasedLostRuntimeRecoveryBatch(ctx, requests)
+}
+
+func (s *Service) finalizeReleasedLostRuntimeRecoveryBatch(ctx context.Context, requests []LostRuntimeRecoveryRequest) ([]LostRuntimeRecoveryResult, error) {
+	if len(requests) == 0 {
+		return nil, fmt.Errorf("%w: at least one released lost runtime is required", ErrLostRuntimeRecoveryIneligible)
+	}
+	recoverer, ok := s.runtime.(LostRuntimeRecoverer)
+	if !ok {
+		return nil, fmt.Errorf("%w: runtime does not support lost-runtime finalization", ErrLostRuntimeRecoveryIneligible)
+	}
+	results := make([]LostRuntimeRecoveryResult, 0, len(requests))
+	seenSessions := make(map[domain.SessionID]struct{}, len(requests))
+	seenCommands := make(map[domain.CommandID]struct{}, len(requests))
+	for _, request := range requests {
+		if request.SessionID == "" || request.CommandID == "" {
+			return results, fmt.Errorf("%w: session and command IDs are required", ErrLostRuntimeRecoveryIneligible)
+		}
+		if _, exists := seenSessions[request.SessionID]; exists {
+			return results, fmt.Errorf("%w: duplicate session %s", ErrLostRuntimeRecoveryIneligible, request.SessionID)
+		}
+		if _, exists := seenCommands[request.CommandID]; exists {
+			return results, fmt.Errorf("%w: duplicate command %s", ErrLostRuntimeRecoveryIneligible, request.CommandID)
+		}
+		seenSessions[request.SessionID] = struct{}{}
+		seenCommands[request.CommandID] = struct{}{}
+
+		result, err := s.checkLostRuntimeRecoveryTarget(ctx, request)
+		if err != nil {
+			return results, err
+		}
+		if !result.AlreadyRecovered {
+			return results, fmt.Errorf("%w: capacity release is not durable", ErrLostRuntimeRecoveryIneligible)
+		}
+		results = append(results, result)
+	}
+	var finalizationErrors []error
+	for index, request := range requests {
+		finalized, err := s.finalizeLostRuntimeRecovery(ctx, request, results[index], recoverer)
+		results[index] = finalized
+		if err != nil {
+			finalizationErrors = append(finalizationErrors, err)
+		}
+	}
+	return results, errors.Join(finalizationErrors...)
+}
+
+// finalizePendingLostRuntimeRecoveries is called while mutationMu is already
+// held during startup reconciliation. It clears only durable post-release
+// finalization work before host ownership is audited, so a crash between
+// capacity release and marker removal cannot make the next runnerd start
+// reject its own provably recovered marker.
+func (s *Service) finalizePendingLostRuntimeRecoveries(ctx context.Context) error {
+	pairs, err := s.store.ListPendingLostRuntimeRecoveryFinalizations(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+	requests := make([]LostRuntimeRecoveryRequest, 0, len(pairs))
+	for _, pair := range pairs {
+		requests = append(requests, LostRuntimeRecoveryRequest{SessionID: pair.SessionID, CommandID: pair.CommandID})
+	}
+	_, err = s.finalizeReleasedLostRuntimeRecoveryBatch(ctx, requests)
+	return err
 }
 
 // CheckLostRuntimeRecovery verifies either one fully retained lost runtime or
@@ -251,6 +331,11 @@ func (s *Service) finalizeLostRuntimeRecovery(ctx context.Context, request LostR
 		s.store.RecordCleanupFailure()
 		auditErr := s.recordRuntimeCleanupFailure(ctx, result.Session, string(request.CommandID))
 		return result, errors.Join(ErrLostRuntimeRecoveryFinalization, auditErr)
+	}
+	if err := s.store.CompleteLostRuntimeRecoveryFinalization(ctx, store.LostRuntimeRecoveryPair{SessionID: request.SessionID, CommandID: request.CommandID}); err != nil {
+		s.store.RecordCleanupFailure()
+		auditErr := s.recordRuntimeCleanupFailure(ctx, result.Session, string(request.CommandID))
+		return result, errors.Join(fmt.Errorf("%w: record finalization: %v", ErrLostRuntimeRecoveryFinalization, err), auditErr)
 	}
 	var err error
 	result.CommandSlot, err = s.store.GetCommandSlot(ctx, request.CommandID)

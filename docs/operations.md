@@ -31,10 +31,10 @@ then accepted safe malformed mailbox ingress on the Mac: it wrote a private
 diagnostic and created no remote work. It did not run a new host, bridge, or
 direct-mTLS gate.
 
-BUG-008 source work adds a queue-preserving recovery command and a narrow
-active remote mailbox projection, but its fresh installed-service regression
-(B008-P6) has not run yet. The recovery and attestation procedures below are
-operating instructions; following one is not evidence that B008-P6 passed.
+BUG-008's queue-preserving recovery work and its fresh installed-service
+regression (B008-P6) passed. The recovery and attestation procedures below are
+operating instructions; following one does not prove a later Runner revision
+is installed or that a separate incident is resolved.
 
 ## Fast health checks
 
@@ -358,7 +358,7 @@ below.
 | Remote outbox is `accepted` with `delivery_state=accepted` and a safe nonterminal phase/state | The same response's stable job/session/command IDs, selected target/profile, and response revision | Runner has a fresh identity-checked read-only target status for accepted nonterminal work. Do not infer a queue blocker, command start, output, or terminal outcome; do not ACK or replay it. Continue observing the same request. |
 | Earlier active phase/state disappeared and the outbox is now identity-only `accepted` | Router restart, `is_stale`, target status/read error, or a strict identity mismatch | Runner withdrew an unsafe-to-repeat active status claim. It did not cancel, release, or replay the target job. Preserve the request ID and idempotency key; wait for a fresh qualified read or terminal proof. |
 | Remote one-off ends `indeterminate` with `delivery_state=accepted` and `remote_status_unavailable` | Stable job/session/command IDs, bridge/service journal, target SQLite status and retention | The target accepted the request but Runner could not prove its terminal result in 24 hours. Do not resubmit or release retained capacity manually. ACK the terminal response if it has been recorded, preserve the IDs and idempotency key, then investigate the target boundary. |
-| Terminal `lost` capacity blocks ready sessions with queued commands that must survive | Complete exact inventory of every terminal-lost session/command pair, every retained ready/queued session/command, owner-only markers, and a live `runnerd.service` | Use the queue-preserving **online** recovery below with every selected lost pair. Keep the service running; do not restart it, run offline recovery, cancel queued commands, or replay work. |
+| Terminal `lost` capacity blocks ready sessions with queued commands that must survive | The same request/job/session/command IDs, current retained-lost inventory, owner-only markers, and live `runnerd.service` | On a `runnerd` revision containing B009-P2, preserve the original IDs and let its bounded dispatcher tick attempt proof-based automatic recovery. It runs only after a normal claim finds all slots full and only for the exact complete retained-lost set; it never replays a lost script. If proof remains unavailable, follow the guarded **online** recovery below as the owner-only fallback. Keep the service running; do not restart it, run offline recovery, cancel queued commands, or replay work. |
 | P128 reports only one unreleased slot for a terminal lost command and no work must survive | Exact session and command IDs, owner-only runtime record, process-group state, and service cgroup | Preserve the lost result and use the explicit stopped-service recovery procedure below. It refuses any other active work and never replays the script. |
 | P128 reports several retained `lost` slots and only already-cancelled one-off jobs, with no queued work to preserve | Exact list of every retained `lost` session/command pair and every nonterminal job, owner-only markers, and the stopped service cgroup | Use `recover-stalled` below only after the complete inventory is known. It rejects extra work and never dispatches or replays a script. |
 | New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host` and `sandbox-host` evidence does not transfer. |
@@ -368,11 +368,19 @@ below.
 
 ### Queue-preserving online retained-capacity recovery
 
-Use this procedure only when terminal `lost` capacity blocks one or more
+On a `runnerd` revision containing B009-P2, the normal first action is to
+preserve the original request, job, session, and command IDs and let the
+bounded dispatcher tick try proof-based recovery. It does this only after its
+normal scheduler claim sees full command capacity and only for the complete,
+exact retained-lost inventory. A successful proof releases paired capacity and
+wakes the existing dispatcher to claim the original queued command. It never
+replays a terminal-lost script or creates replacement work.
+
+Use this owner-only local Ubuntu maintenance procedure only as a guarded
+fallback when terminal `lost` capacity still blocks one or more
 identity-checked ready sessions with queued commands that must remain queued.
-It is an owner-only local Ubuntu `runnerd` maintenance command. Public HTTPS,
-the SSH bridge, the mailbox, and normal requester CLI routes cannot invoke it.
-Before invoking it, record a complete
+Public HTTPS, the SSH bridge, the mailbox, and normal requester CLI routes
+cannot invoke it. Before invoking it, record a complete
 inventory of every retained `lost` session/command pair and every preserved
 ready/queued session, command, and job. The selected lost pairs must account
 for every live command slot; the service must be active; and there must be no
@@ -415,8 +423,9 @@ try a different recovery mode to force progress.
 
 After a successful release, observe the original request through its existing
 outbox, event file, and terminal ACK sequence. A service revision match or a
-successful capacity release is not command completion. B008-P6 remains the
-separate fresh harmless installed-service regression.
+successful capacity release is not command completion. B008-P6 is historical
+evidence for BUG-008; it does not prove a later B009 revision is installed or
+that this request reached a terminal outcome.
 
 ### Offline recovery only when no queued work must survive
 

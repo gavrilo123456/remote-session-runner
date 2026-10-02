@@ -81,6 +81,116 @@ ORDER BY slot.reserved_at, command.command_id`,
 	})
 }
 
+// ListPendingLostRuntimeRecoveryFinalizations returns released terminal-lost
+// pairs whose ownership-marker finalization has not yet been durably completed.
+// The returned pairs have no live capacity and can only be used for the
+// idempotent no-PID finalization path; they cannot authorize another release.
+func (s *AuthorityStore) ListPendingLostRuntimeRecoveryFinalizations(ctx context.Context) ([]LostRuntimeRecoveryPair, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrLostRuntimeRecoveryNotReleasable
+	}
+	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LostRuntimeRecoveryPair, error) {
+		rows, err := connection.QueryContext(ctx, `
+SELECT finalization.session_id, finalization.command_id,
+       command.session_id, command.state, session.state,
+       slot.host_key, slot.stop_confirmed_at, slot.released_at,
+       reservation.host_key, reservation.cleanup_confirmed_at, reservation.released_at
+FROM exec_lost_runtime_recovery_finalizations AS finalization
+JOIN exec_commands AS command ON command.command_id = finalization.command_id
+JOIN exec_sessions AS session ON session.session_id = finalization.session_id
+JOIN exec_command_slots AS slot ON slot.command_id = finalization.command_id
+JOIN exec_capacity_reservations AS reservation ON reservation.session_id = finalization.session_id
+ORDER BY finalization.capacity_released_at, finalization.command_id`)
+		if err != nil {
+			return nil, fmt.Errorf("query pending lost runtime recovery finalizations: %w", err)
+		}
+		defer rows.Close()
+
+		pairs := make([]LostRuntimeRecoveryPair, 0)
+		for rows.Next() {
+			var sessionIDValue, commandIDValue, commandSessionID, commandState, sessionState, slotHostKey, reservationHost string
+			var slotStop, slotRelease, reservationCleanup, reservationRelease sql.NullString
+			if err := rows.Scan(
+				&sessionIDValue, &commandIDValue,
+				&commandSessionID, &commandState, &sessionState,
+				&slotHostKey, &slotStop, &slotRelease,
+				&reservationHost, &reservationCleanup, &reservationRelease,
+			); err != nil {
+				return nil, fmt.Errorf("scan pending lost runtime recovery finalization: %w", err)
+			}
+			sessionID, err := domain.NewSessionID(sessionIDValue)
+			if err != nil {
+				return nil, fmt.Errorf("%w: pending lost recovery session identity", ErrLostRuntimeRecoveryNotReleasable)
+			}
+			commandID, err := domain.NewCommandID(commandIDValue)
+			if err != nil {
+				return nil, fmt.Errorf("%w: pending lost recovery command identity", ErrLostRuntimeRecoveryNotReleasable)
+			}
+			if commandSessionID != string(sessionID) || commandState != string(domain.CommandStateLost) || sessionState != string(domain.SessionStateLost) ||
+				slotHostKey != schedulerHostKey || reservationHost != reservationHostKey ||
+				!slotStop.Valid || !slotRelease.Valid || !reservationCleanup.Valid || !reservationRelease.Valid {
+				return nil, fmt.Errorf("%w: pending lost recovery finalization inventory", ErrLostRuntimeRecoveryNotReleasable)
+			}
+			pairs = append(pairs, LostRuntimeRecoveryPair{SessionID: sessionID, CommandID: commandID})
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate pending lost runtime recovery finalizations: %w", err)
+		}
+		return pairs, nil
+	})
+}
+
+// CompleteLostRuntimeRecoveryFinalization removes the durable work item after
+// successful ownership-marker finalization. Repeating it after a completed
+// finalization is harmless only when the matching pair still proves released.
+func (s *AuthorityStore) CompleteLostRuntimeRecoveryFinalization(ctx context.Context, pair LostRuntimeRecoveryPair) error {
+	if s == nil || s.db == nil {
+		return ErrLostRuntimeRecoveryNotReleasable
+	}
+	validated, err := validateLostRuntimeRecoveryPairs([]LostRuntimeRecoveryPair{pair})
+	if err != nil {
+		return err
+	}
+	_, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+		var storedSessionID string
+		if err := connection.QueryRowContext(ctx, `
+SELECT session_id
+FROM exec_lost_runtime_recovery_finalizations
+	WHERE command_id = ?`, string(validated[0].CommandID)).Scan(&storedSessionID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				alreadyReleased, checkErr := checkLostRuntimeRecoveryPair(ctx, connection, validated[0])
+				if checkErr != nil || !alreadyReleased {
+					return struct{}{}, ErrLostRuntimeRecoveryNotReleasable
+				}
+				return struct{}{}, nil
+			}
+			return struct{}{}, fmt.Errorf("read pending lost runtime recovery finalization: %w", err)
+		}
+		if storedSessionID != string(validated[0].SessionID) {
+			return struct{}{}, ErrLostRuntimeRecoveryNotReleasable
+		}
+		alreadyReleased, checkErr := checkLostRuntimeRecoveryPair(ctx, connection, validated[0])
+		if checkErr != nil || !alreadyReleased {
+			return struct{}{}, ErrLostRuntimeRecoveryNotReleasable
+		}
+		result, err := connection.ExecContext(ctx, `
+	DELETE FROM exec_lost_runtime_recovery_finalizations
+WHERE command_id = ? AND session_id = ?`, string(validated[0].CommandID), string(validated[0].SessionID))
+		if err != nil {
+			return struct{}{}, fmt.Errorf("complete lost runtime recovery finalization: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return struct{}{}, fmt.Errorf("read lost runtime recovery finalization completion result: %w", err)
+		}
+		if changed != 1 {
+			return struct{}{}, ErrLostRuntimeRecoveryNotReleasable
+		}
+		return struct{}{}, nil
+	})
+	return err
+}
+
 // ConfirmLostRuntimeRecovery atomically records the cleanup proof for one
 // already-lost command and its session. Callers must durably establish the
 // runtime process-group proof first while retaining its ownership marker. The
@@ -697,6 +807,20 @@ WHERE session_id = ?`, string(pair.SessionID)).Scan(&confirmedSessionCleanup, &c
 	}
 	if !confirmedSessionCleanup.Valid || !confirmedSessionRelease.Valid {
 		return fmt.Errorf("%w: session reservation update did not persist both timestamps", ErrLostRuntimeRecoveryNotReleasable)
+	}
+	result, err := connection.ExecContext(ctx, `
+INSERT INTO exec_lost_runtime_recovery_finalizations (
+    command_id, session_id, capacity_released_at
+) VALUES (?, ?, ?)`, string(pair.CommandID), string(pair.SessionID), formatStoredTime(now))
+	if err != nil {
+		return fmt.Errorf("record lost runtime recovery finalization: %w", err)
+	}
+	changed, err = result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read lost runtime recovery finalization record result: %w", err)
+	}
+	if changed != 1 {
+		return fmt.Errorf("%w: lost runtime recovery finalization record changed %d rows", ErrLostRuntimeRecoveryNotReleasable, changed)
 	}
 	return nil
 }

@@ -29,6 +29,7 @@ type p027Runtime struct {
 	ownershipAudit     int
 	attributable       map[string]struct{}
 	ownershipErr       error
+	ownershipHook      func() error
 }
 
 func (r *p027Runtime) Reconcile(_ context.Context, request RuntimeReconcileRequest) (RuntimeReconcileResult, error) {
@@ -57,6 +58,11 @@ func (r *p027Runtime) AuditOwnership(_ context.Context, attributable map[string]
 	r.attributable = make(map[string]struct{}, len(attributable))
 	for sessionID := range attributable {
 		r.attributable[sessionID] = struct{}{}
+	}
+	if r.ownershipHook != nil {
+		if err := r.ownershipHook(); err != nil {
+			return err
+		}
 	}
 	return r.ownershipErr
 }

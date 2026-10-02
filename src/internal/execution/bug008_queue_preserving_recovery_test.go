@@ -199,6 +199,9 @@ func TestBUG008QueuePreservingRecoveryFinalizesAlreadyReleasedPairsAfterQueuedWo
 	for _, request := range requests {
 		pRecoveryAssertReleased(t, authority, request.SessionID, request.CommandID)
 	}
+	if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background()); err != nil || len(pending) != len(requests) {
+		t.Fatalf("initial pending finalizations=%+v err=%v, want %d", pending, err, len(requests))
+	}
 	started, err := authority.StartNextEligibleCommand(context.Background(), store.DefaultRunningCommandLimit)
 	if err != nil || started.CommandID != queued.CommandID {
 		t.Fatalf("start queued work after release=%+v err=%v, want %s", started, err, queued.CommandID)
@@ -214,8 +217,11 @@ func TestBUG008QueuePreservingRecoveryFinalizesAlreadyReleasedPairsAfterQueuedWo
 			t.Fatalf("finalization retry result=%+v, want already recovered", result)
 		}
 	}
-	if runtime.lostRecoveryCall != 4 || runtime.lostFinalizeCall != 5 {
-		t.Fatalf("runtime calls recovery=%d finalization=%d, want 4/5", runtime.lostRecoveryCall, runtime.lostFinalizeCall)
+	if runtime.lostRecoveryCall != 4 || runtime.lostFinalizeCall != 8 {
+		t.Fatalf("runtime calls recovery=%d finalization=%d, want 4/8", runtime.lostRecoveryCall, runtime.lostFinalizeCall)
+	}
+	if pending, err := authority.ListPendingLostRuntimeRecoveryFinalizations(context.Background()); err != nil || len(pending) != 0 {
+		t.Fatalf("pending finalizations after retry=%+v err=%v, want none", pending, err)
 	}
 }
 

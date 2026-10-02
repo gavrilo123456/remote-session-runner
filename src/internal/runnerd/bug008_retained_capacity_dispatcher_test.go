@@ -18,12 +18,12 @@ import (
 )
 
 // TestBUG008DispatcherStartsPreservedQueuedOneOffsAfterRetainedCapacityRelease
-// exercises the online-recovery concurrency boundary with a real dispatcher.
-// Four terminal-lost pairs occupy every command slot while two durable one-off
-// jobs remain ready/queued. The dispatcher is already ticking before recovery
-// and receives no manual post-release wake: the bounded normal tick must claim
-// the original queued IDs after P1 atomically releases only the selected lost
-// capacity.
+// exercises the manual online-recovery preservation boundary with a real
+// dispatcher. Four terminal-lost pairs occupy every command slot while two
+// durable one-off jobs remain ready/queued. B009 later made the dispatcher
+// recover that exact shape automatically; this test therefore performs the
+// explicit B008 service recovery before starting the dispatcher, then proves
+// the preserved original queued IDs execute normally.
 func TestBUG008DispatcherStartsPreservedQueuedOneOffsAfterRetainedCapacityRelease(t *testing.T) {
 	ctx := context.Background()
 	runtime, service, authority, database := b008NewDispatcherRecoveryService(t, true)
@@ -32,15 +32,9 @@ func TestBUG008DispatcherStartsPreservedQueuedOneOffsAfterRetainedCapacityReleas
 	first := b008SeedQueuedOneOff(t, service, authority, controller, "release-first")
 	second := b008SeedQueuedOneOff(t, service, authority, controller, "release-second")
 
-	interval := 25 * time.Millisecond
-	dispatcher := bug007NewDispatcher(t, service, authority, lifecycle.NewGate(), interval)
-	dispatcher.Start(t.Context())
-	t.Cleanup(func() { bug007StopDispatcher(t, dispatcher) })
-
-	// The already-active dispatcher has more than one opportunity to inspect
-	// the queue before recovery, but all four slots are retained so neither
-	// original command can start.
-	time.Sleep(3 * interval)
+	// No dispatcher owns a claim before the explicit recovery, so the exact
+	// original queued boundary can be asserted without relying on the later
+	// automatic B009 recovery policy.
 	b008AssertQueuedNotStarted(t, authority, first)
 	b008AssertQueuedNotStarted(t, authority, second)
 	if got := runtime.commandCalls.Load(); got != 0 {
@@ -58,8 +52,12 @@ func TestBUG008DispatcherStartsPreservedQueuedOneOffsAfterRetainedCapacityReleas
 		t.Fatalf("lost runtime finalizations=%d, want %d", got, len(lostRequests))
 	}
 
-	// Do not call dispatcher.Wake here. Completion proves the active dispatcher's
-	// bounded normal tick observed the released capacity.
+	dispatcher := bug007NewDispatcher(t, service, authority, lifecycle.NewGate(), 25*time.Millisecond)
+	dispatcher.Start(t.Context())
+	t.Cleanup(func() { bug007StopDispatcher(t, dispatcher) })
+
+	// Starting the ordinary dispatcher after the explicit release must claim
+	// the same queued identities; it does not replay a lost script.
 	firstTerminal := bug007WaitForTerminalJob(t, authority, first.JobID)
 	secondTerminal := bug007WaitForTerminalJob(t, authority, second.JobID)
 	for _, terminal := range []store.JobRecord{firstTerminal, secondTerminal} {
@@ -78,9 +76,9 @@ func TestBUG008DispatcherStartsPreservedQueuedOneOffsAfterRetainedCapacityReleas
 }
 
 // TestBUG008DispatcherDoesNotStartQueuedWorkWhenLostCleanupIsUnconfirmed
-// proves a failed proof retains all four slots even while the dispatcher gets
-// several normal ticks. No queued command may cross command_started before a
-// later successful explicit recovery.
+// proves a failed explicit proof retains all four slots. B009 separately
+// covers automatic tick recovery and its retry throttle. No queued command may
+// cross command_started before a later successful explicit recovery.
 func TestBUG008DispatcherDoesNotStartQueuedWorkWhenLostCleanupIsUnconfirmed(t *testing.T) {
 	ctx := context.Background()
 	runtime, service, authority, _ := b008NewDispatcherRecoveryService(t, false)
@@ -88,11 +86,6 @@ func TestBUG008DispatcherDoesNotStartQueuedWorkWhenLostCleanupIsUnconfirmed(t *t
 	lostRequests := b008SeedFourLostPairs(t, service, authority, controller, "unconfirmed")
 	first := b008SeedQueuedOneOff(t, service, authority, controller, "unconfirmed-first")
 	second := b008SeedQueuedOneOff(t, service, authority, controller, "unconfirmed-second")
-
-	interval := 25 * time.Millisecond
-	dispatcher := bug007NewDispatcher(t, service, authority, lifecycle.NewGate(), interval)
-	dispatcher.Start(t.Context())
-	t.Cleanup(func() { bug007StopDispatcher(t, dispatcher) })
 
 	if _, err := service.RecoverLostRuntimeBatchPreservingQueuedOneOffs(ctx, lostRequests); !errors.Is(err, execution.ErrLostRuntimeRecoveryUnconfirmed) {
 		t.Fatalf("queue-preserving recovery error=%v, want cleanup unconfirmed", err)
@@ -104,10 +97,8 @@ func TestBUG008DispatcherDoesNotStartQueuedWorkWhenLostCleanupIsUnconfirmed(t *t
 		t.Fatalf("lost runtime finalization calls=%d, want 0", got)
 	}
 
-	// Give the active dispatcher more than one bounded recovery interval. It
-	// must continue to see the retained full capacity and leave the original
-	// commands at their exact queued boundary.
-	time.Sleep(3 * interval)
+	// The recovery returned without a durable capacity release. The original
+	// commands must retain their exact queued boundary.
 	if live, err := authority.CountLiveCommandSlots(ctx); err != nil || live != store.DefaultRunningCommandLimit {
 		t.Fatalf("live retained slots=%d err=%v, want %d", live, err, store.DefaultRunningCommandLimit)
 	}
@@ -120,7 +111,8 @@ func TestBUG008DispatcherDoesNotStartQueuedWorkWhenLostCleanupIsUnconfirmed(t *t
 
 type b008DispatcherRuntime struct {
 	generation        string
-	cleanupConfirmed  bool
+	cleanupConfirmed  atomic.Bool
+	finalizeFailures  atomic.Int32
 	commandCalls      atomic.Int32
 	lostRecoveryCalls atomic.Int32
 	lostFinalizeCalls atomic.Int32
@@ -145,11 +137,20 @@ func (r *b008DispatcherRuntime) ExecuteCommand(_ context.Context, request execut
 
 func (r *b008DispatcherRuntime) ReconcileLostRuntime(_ context.Context, request execution.RuntimeReconcileRequest) (execution.RuntimeReconcileResult, error) {
 	r.lostRecoveryCalls.Add(1)
-	return execution.RuntimeReconcileResult{RuntimeGeneration: request.Session.RuntimeGeneration, CleanupConfirmed: r.cleanupConfirmed}, nil
+	return execution.RuntimeReconcileResult{RuntimeGeneration: request.Session.RuntimeGeneration, CleanupConfirmed: r.cleanupConfirmed.Load()}, nil
 }
 
 func (r *b008DispatcherRuntime) FinalizeLostRuntime(_ context.Context, request execution.RuntimeReconcileRequest) (execution.RuntimeReconcileResult, error) {
 	r.lostFinalizeCalls.Add(1)
+	for {
+		remaining := r.finalizeFailures.Load()
+		if remaining <= 0 {
+			break
+		}
+		if r.finalizeFailures.CompareAndSwap(remaining, remaining-1) {
+			return execution.RuntimeReconcileResult{RuntimeGeneration: request.Session.RuntimeGeneration, CleanupConfirmed: true}, errors.New("fixture finalization failure")
+		}
+	}
 	return execution.RuntimeReconcileResult{RuntimeGeneration: request.Session.RuntimeGeneration, CleanupConfirmed: true}, nil
 }
 
@@ -178,7 +179,8 @@ func b008NewDispatcherRecoveryService(t *testing.T, cleanupConfirmed bool) (*b00
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := &b008DispatcherRuntime{generation: "bug008-dispatcher-generation", cleanupConfirmed: cleanupConfirmed}
+	runtime := &b008DispatcherRuntime{generation: "bug008-dispatcher-generation"}
+	runtime.cleanupConfirmed.Store(cleanupConfirmed)
 	service, err := execution.NewExecutionService(authority, runtime, bug007DirectLinuxRegistry(t), execution.RealClock{}, nil)
 	if err != nil {
 		t.Fatal(err)

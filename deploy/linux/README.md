@@ -54,10 +54,13 @@ jobs are present. Plan a maintenance window because the gate is a snapshot and
 normal graceful shutdown handles work admitted afterward truthfully.
 
 Do not use this restart-based installer to clear retained capacity while ready
-sessions with queued commands must survive. Keep `runnerd.service` active and
-use the guarded owner-only
+sessions with queued commands must survive. On a `runnerd` revision containing
+B009-P2, keep `runnerd.service` active and let the bounded dispatcher tick
+attempt its automatic proof-based recovery first. It preserves the original
+queued identity and never replays a terminal-lost script. If proof remains
+unavailable, use the guarded owner-only
 [queue-preserving online recovery](../../docs/operations.md#queue-preserving-online-retained-capacity-recovery)
-instead. That procedure prohibits this installer, offline recovery,
+as the fallback. That procedure prohibits this installer, offline recovery,
 cancellation, and replay until the retained capacity is safely released.
 
 ```sh
