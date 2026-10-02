@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IMPLEMENTING — B010-P1 PASS; B010-P2 in progress; B010-P3 through B010-P4 pending` |
+| Status | `IMPLEMENTING — B010-P1 and B010-P2 PASS; B010-P3 through B010-P4 pending` |
 | Severity | High |
 | Priority | High — the file-only client can mistake inert residue for pending protected-control work |
 | Reported | 2026-10-02 |
@@ -12,7 +12,7 @@
 | Owner | Unassigned |
 | Affected component/path | Mac `runner-local`, workspace mailbox lifecycle, metrics, and `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-/` |
 | Affected live revision | Mac relay `9ad2fb01d85952161cbbc387188b3fc774a103f1`; P165 malformed-ingress behavior is included |
-| Checked-out source | `2c23ab00f9578fff460a30430e078151d80bd2c1` (B010-P1) |
+| Checked-out source | `9aa08cd2de5de1b7d63b072a1ce23fd5b66e13a6` (B010-P2) |
 | Fixed revision | N/A |
 | Verification | B010-P1 through B010-P4 below; no current mailbox artifact is to be deleted, ACKed, retried, or replayed during investigation |
 
@@ -379,3 +379,4 @@ explicitly reviewed cleanup step are complete.
 | 2026-10-02 | Initial recurrence report created. |
 | 2026-10-02 | Read-only source, runtime, and full mailbox inventory completed; record refined and B010-P1 through B010-P4 plan added. |
 | 2026-10-02 | B010-P1 committed, pushed, and fast-forwarded to both Ubuntu checkouts; see `040-implementation-evidence/BUG-010.md`. |
+| 2026-10-02 | B010-P2 committed, pushed, and fast-forwarded to both Ubuntu checkouts; it is disabled by default per inbox until B010-P3 status review and separately authorized live activation. |
