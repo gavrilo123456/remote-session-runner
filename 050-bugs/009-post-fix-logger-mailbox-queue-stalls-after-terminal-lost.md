@@ -242,6 +242,69 @@ The implementation must prove all of the following through automated tests:
    command; and
 4. the mailbox reports the safe blocked reason while proof is unavailable.
 
+## Focused implementation plan
+
+**Scope:** reuse the existing BUG-008 lost-runtime recovery transaction and
+the existing `runnerd` dispatcher tick. Do not add a second scheduler, a new
+daemon, a new queue, a new mailbox operation, or automatic replay of a lost
+script. The persistent-shell cause of individual `lost` results remains a
+separate follow-up; this fix prevents retained capacity from permanently
+blocking later work.
+
+### Step 1 — Discover only safe recovery candidates
+
+Add one read-only store query, `ListRetainedLostRuntimeRecoveryPairs`, that
+returns only matching lost-session/lost-command pairs with fully unreleased
+command-slot and session-capacity records. It must not read script bytes or
+mutate state.
+
+Add focused store tests for a complete retained set, mixed terminal states,
+partially released records, and live/non-lost records. A test failure stops
+work before Step 2.
+
+### Step 2 — Recover on the bounded dispatcher tick
+
+When the normal dispatcher sees `ErrCommandSlotsFull` on its bounded recovery
+tick, it must read the candidate set and call the existing
+`RecoverLostRuntimeBatchPreservingQueuedOneOffs` service method. That method
+already performs process-group proof, durable owner-marker proof, atomic paired
+release, idempotent finalization, and queued-work preservation.
+
+On successful recovery, wake the existing dispatcher so it claims the original
+queued command. On cleanup-unconfirmed, ineligible, or runtime-proof failure,
+retain all capacity and wait for the next bounded tick. Do not change the
+normal claim or execute paths.
+
+Add dispatcher tests that prove zombie-confirmed full capacity starts the same
+queued command ID exactly once, while live/unknown/descendant process evidence
+does not release a slot or start work. Prove restart/retry idempotence before
+starting Step 3.
+
+### Step 3 — Expose one safe queued-block reason
+
+Add one optional fixed-value status field,
+`queue_blocked_reason: lost_capacity_recovery_pending`, to the remote job snapshot and
+existing Mac projection/mailbox response path. Derive it only while a command
+is still queued and exact retained-lost capacity prevents a claim; omit it as
+soon as recovery succeeds or the command starts. It must contain no process,
+path, credential, or raw-error detail.
+
+Add one projection/schema test that proves the reason reaches the matching
+outbox response, remains nonterminal, disappears on `command_started`, and
+does not alter request, job, command, or idempotency identity.
+
+### Step 4 — Deliver and prove the complete path
+
+Run the focused store, execution, dispatcher, projection, and mailbox tests,
+then the required full test suite. Commit the completed change on the Mac,
+push `dev`, fast-forward Ubuntu, and verify matching commits before host
+validation.
+
+Use a harmless sandbox mailbox request for host evidence. It must show the
+original accepted command progressing from queued to started and terminal after
+proven capacity recovery, with no replacement request or duplicated execution.
+Do not use a Logger deployment request as the fixture.
+
 ## Impact
 
 - Blocks protected Logger delivery at a safe pre-deployment gate.
