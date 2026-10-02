@@ -93,6 +93,42 @@ mode/JSON validation, marker-last publication, and the documented
 | 9 | `req-codex-list-existing-logger-transitions-20261002-144` | Remote Git read only: authenticated `git fetch --no-tags <Gitea repo> refs/heads/dev` into the existing approved checkout, then `git ls-tree` under `infra/infra-docker-cmdb/releases/compatible-release-transitions/logging-platform` | Terminal `lost`; output was absent except `From https://gitea.devnull.group/admin/slidestud.io`. No terminal exit/result was projected. Treat this as a possible antecedent, not a proven cause. It was acknowledged only after terminal evidence. |
 | 10 | `req-codex-list-logger-control-run-range-20261002-145` | Read-only `GET /actions/runs?limit=100`, normalized and filtered to run IDs `3760..3790` | **Stuck nonterminal:** `accepted`, revision `6`, `queued`, no event file records, no `command_started`, no output, no terminal state, no ACK. |
 
+### Complete correlated mailbox ledger
+
+This is the complete, sanitized history of every mailbox command submitted
+after the user's prompt `ok - bug fixed - continue logger deployment to dev`
+and before this incident report was created. It was reconciled against every
+retained `outbox/<request_id>.json` record; no request IDs are omitted.
+
+All ten requests explicitly selected `sandbox-dev` and
+`remote/sandbox-host`. No request carried a token or secret value: remote
+scripts read the approved token from `$HOME/.tokens/gitea-admin` without
+printing it.
+
+| Order | Request ID | Command ID | Requested remote operation | Result / terminal evidence |
+| ---: | --- | --- | --- | --- |
+| 1 | `req-codex-logger-g0-supersession-20261002-136` | `cmd-8bc50f019a3e0943e451ebe57730e297` | Dispatch `record-compatible-release-transition.yml`, inputs `logging-platform`, `g0-supersession`, `2026.10.01.000` | `complete` / `succeeded`, exit `0`, event `4/4`, output complete and not truncated, delivery `reconciled`, teardown `closed`; remote dispatch returned HTTP `204`. |
+| 2 | `req-codex-inspect-logger-g0-supersession-20261002-137` | `cmd-9e2c91df7b0176d3b05e8bfb3d11b4ef` | Read-only attempted `GET /actions/workflows/record-compatible-release-transition.yml/runs?limit=10` | `complete` / terminal `lost`, event `4/4`, delivery `reconciled`, teardown `lost`; the endpoint returned HTTP `404`. This is not a queue stall. |
+| 3 | `req-codex-list-logger-control-runs-20261002-138` | `cmd-b63120111673a117b8e0c4eba6e81e63` | Read-only `GET /actions/runs?limit=30`, normalize supported response shapes | `complete` / `succeeded`, exit `0`, event `4/4`, output complete and not truncated, delivery `reconciled`, teardown `closed`. |
+| 4 | `req-codex-read-logger-g0-run-20261002-139` | `cmd-7eac2084184fb9b1a031b7f4609e6b6b` | Read-only `GET /actions/runs?limit=100`, filter the Logger transition run | `complete` / `succeeded`, exit `0`, event `4/4`, output complete and not truncated, delivery `reconciled`, teardown `closed`; identified Gitea run `3779`. |
+| 5 | `req-codex-inspect-logger-g0-failure-20261002-140` | `cmd-fd868a397d93a38cfeff0e067aa55d08` | Read-only `GET /actions/runs/3779` and `GET /actions/runs/3779/jobs` | `complete` / `succeeded`, exit `0`, event `4/4`, output complete and not truncated, delivery `reconciled`, teardown `closed`; identified job `6029`. |
+| 6 | `req-codex-read-logger-g0-job-log-20261002-141` | `cmd-6d04eda9d435fb130b5a7a933380d3eb` | Read-only `GET /actions/jobs/6029/logs`, bounded diagnostic output | `complete` / `succeeded`, exit `0`, event `6/6`, output complete and not truncated, delivery `reconciled`, teardown `closed`. |
+| 7 | `req-codex-read-filtered-logger-g0-log-20261002-142` | `cmd-6b06d77719d73abe7ad8e271387eb742` | Read-only `GET /actions/jobs/6029/logs`, filter command/runner expressions | `complete` / `succeeded`, exit `0`, event `7/7`, output complete and not truncated, delivery `reconciled`, teardown `closed`. |
+| 8 | `req-codex-extract-logger-g0-terminal-error-20261002-143` | `cmd-22b8fdb1c34556851aa999945472e9f3` | Read-only `GET /actions/jobs/6029/logs`, extract terminal errors | `complete` / `succeeded`, exit `0`, event `6/6`, output complete and not truncated, delivery `reconciled`, teardown `closed`; extracted the existing-G0 rejection. |
+| 9 | `req-codex-list-existing-logger-transitions-20261002-144` | `cmd-32b87cc939513534a368142695797901` | Approved remote Git read only: fetch Gitea `dev` into the existing checkout, then list the Logger transition tree | `complete` / terminal `lost`, event `4/4`, delivery `reconciled`, teardown `lost`; no projected exit code or complete output. Treat as an antecedent, not a proven cause. |
+| 10 | `req-codex-list-logger-control-run-range-20261002-145` | `cmd-048dbda18d9d1bc7b9d47d254a6375aa` | Read-only `GET /actions/runs?limit=100`, normalize and filter run IDs `3760..3790` | **Nonterminal:** `accepted`, revision `6`, job phase `awaiting_command`, delivery `accepted`, command `queued`; no event sequence, output, teardown, or ACK exists. |
+
+#### Retention limitation, recorded explicitly
+
+The Runner's retained outbox record preserves the correlation identity,
+target, lifecycle, terminal metadata, and sanitized output, but not the full
+request script after its inbox pair has been ACKed and removed. The exact
+script for the still-nonterminal request `145` remains below. For requests
+`136` through `144`, the exact remote operation and all retained correlation
+evidence are recorded above; their byte-for-byte scripts must not be invented
+or reconstructed from memory. A durable, sanitized request-script digest or
+audit copy would make future incident reports even more precise.
+
 ### Exact stalled remote script (sanitized; no secret value)
 
 ```sh
