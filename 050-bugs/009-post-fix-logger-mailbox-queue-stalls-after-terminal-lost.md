@@ -214,6 +214,34 @@ eligible commands. If an existing command is blocked by capacity, bridge
 freshness, or uncertain reconciliation, the Runner must publish a bounded,
 truthful safe state and resume the same identity once it becomes eligible.
 
+### Agreed correction direction — proof-based automatic lost-capacity recovery
+
+The agreed direction is a bounded automatic recovery pass for terminal `lost`
+commands. It must inspect the exact Linux process group owned by each lost
+session and release capacity only after durable proof that the group has
+stopped. A zombie-only group may count as stopped only after validating the
+recorded session, runtime generation, owner account, process-group identity,
+and absence of live descendants.
+
+After that proof, one durable transaction must record the cleanup proof and
+release the matching command slot and session-capacity reservation. The
+dispatcher must then wake and continue the already accepted queued command
+using its existing job, command, and idempotency identities.
+
+The recovery pass must never re-run a terminal-lost command. When cleanup
+cannot be proven, it must retain capacity and publish a truthful mailbox-visible
+blocked/recovery-pending reason instead of leaving later work silently queued.
+
+The implementation must prove all of the following through automated tests:
+
+1. zombie-only owned groups release capacity and start the original queued
+   command without a replacement mailbox request;
+2. a live process, unknown process identity, or live descendant retains
+   capacity and prevents automatic release;
+3. recovery remains idempotent across service restart and cannot duplicate a
+   command; and
+4. the mailbox reports the safe blocked reason while proof is unavailable.
+
 ## Impact
 
 - Blocks protected Logger delivery at a safe pre-deployment gate.
