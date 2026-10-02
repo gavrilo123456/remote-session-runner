@@ -165,6 +165,56 @@ func TestP165ZeroMarkerReplacementAndUnsafeIngressRemainCorrectlyClassified(t *t
 	}
 }
 
+func TestP165SameInodeNonemptyMarkerTruncateReevaluatesExactlyOnce(t *testing.T) {
+	h := newP165Harness(t)
+	const requestID = "req-p165-same-inode-truncate"
+	p165WritePair(t, h.importer, requestID, p165InvalidSchemaRequest(requestID), MailboxWorkspaceIngressFileMode, []byte("x"), MailboxWorkspaceIngressFileMode)
+
+	results, err := h.processor.Import(context.Background())
+	if err != nil || len(results) != 1 || results[0].Status != ResultRejected || results[0].Durable || results[0].PairRemoved {
+		t.Fatalf("nonempty marker results=%+v err=%v", results, err)
+	}
+	p165AssertDiagnosticAbsent(t, h, requestID)
+	p165AssertNoExchange(t, h, requestID)
+
+	marker := filepath.Join(h.importer.InboxPath(), requestID+ReadySuffix)
+	before, err := os.Lstat(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(marker, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncMailboxDirectory(h.importer.InboxPath()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Lstat(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) || after.Size() != 0 {
+		t.Fatalf("marker was not truncated in place: before=%+v after=%+v", before, after)
+	}
+
+	results, err = h.processor.Import(context.Background())
+	if err != nil || len(results) != 1 || results[0].Status != ResultRejected || !results[0].Durable || !results[0].PairRemoved {
+		t.Fatalf("truncated marker results=%+v err=%v", results, err)
+	}
+	p165ReadDiagnostic(t, h, requestID)
+	p165AssertOneSafeEvent(t, h.processor.TakeIngressDiagnosticEvents(), requestID, string(store.MailboxIngressDiagnosticInvalidRequestSchema))
+
+	results, err = h.processor.Import(context.Background())
+	if err != nil || len(results) != 0 {
+		t.Fatalf("truncated marker replay results=%+v err=%v", results, err)
+	}
+	if events := h.processor.TakeIngressDiagnosticEvents(); len(events) != 0 {
+		t.Fatalf("truncated marker replay emitted events=%+v", events)
+	}
+	if len(h.operations.runRequests) != 0 {
+		t.Fatalf("truncated malformed request reached operations: %+v", h.operations.runRequests)
+	}
+}
+
 func TestP165RecoveryPrecedesDraftCleanupAndRepairsMissingArtifact(t *testing.T) {
 	h := newP165Harness(t)
 	const requestID = "req-p165-recovery-seam"

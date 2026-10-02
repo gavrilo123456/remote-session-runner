@@ -698,6 +698,27 @@ func TestP158V2AllowsOnlyCleanExternalNonDefaultMailboxRoots(t *testing.T) {
 	}
 }
 
+func TestBUG010MailboxDurableOrphanCleanupRequiresExplicitOptIn(t *testing.T) {
+	loaded := loadFixture(t, macV2ConfigFixture)
+	defaultMailbox, ok := loaded.Mailbox("default")
+	if !ok || defaultMailbox.DurableOrphanCleanup {
+		t.Fatalf("omitted durable orphan cleanup=%+v, want false", defaultMailbox)
+	}
+
+	optedIn := strings.Replace(macV2ConfigFixture,
+		"    root: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox\"\n    repository_aliases: [remote-session-runner]",
+		"    root: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox\"\n    durable_orphan_cleanup: true\n    repository_aliases: [remote-session-runner]", 1)
+	loaded = loadFixture(t, optedIn)
+	defaultMailbox, ok = loaded.Mailbox("default")
+	if !ok || !defaultMailbox.DurableOrphanCleanup {
+		t.Fatalf("opted-in durable orphan cleanup=%+v, want true", defaultMailbox)
+	}
+	analytics, ok := loaded.Mailbox("analytics")
+	if !ok || analytics.DurableOrphanCleanup {
+		t.Fatalf("unconfigured analytics cleanup=%+v, want false", analytics)
+	}
+}
+
 func p158ConfigWithExternalMailbox(root string) string {
 	return macV2ConfigFixture + `  slidestud-io:
     root: "` + root + `"

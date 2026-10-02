@@ -178,12 +178,15 @@ type RemoteHostProfile struct {
 
 // MailboxDefinition is one named Mac file-ingress root and its permitted
 // execution contexts. Repository aliases are policy/audit metadata only.
+// DurableOrphanCleanup is an explicit, opt-in removal policy for marker-only
+// input that the durable authority has already proved cannot execute.
 type MailboxDefinition struct {
-	ID                string
-	Root              string
-	RepositoryAliases []string
-	DefaultExecution  string
-	AllowedExecution  []string
+	ID                   string
+	Root                 string
+	RepositoryAliases    []string
+	DefaultExecution     string
+	AllowedExecution     []string
+	DurableOrphanCleanup bool
 }
 
 // Config is an immutable, validated host config and environment registry.
@@ -431,10 +434,11 @@ type remoteHostDocument struct {
 }
 
 type mailboxDocument struct {
-	Root              string   `yaml:"root"`
-	RepositoryAliases []string `yaml:"repository_aliases"`
-	DefaultExecution  string   `yaml:"default_execution"`
-	AllowedExecution  []string `yaml:"allowed_execution"`
+	Root                 string   `yaml:"root"`
+	RepositoryAliases    []string `yaml:"repository_aliases"`
+	DefaultExecution     string   `yaml:"default_execution"`
+	AllowedExecution     []string `yaml:"allowed_execution"`
+	DurableOrphanCleanup bool     `yaml:"durable_orphan_cleanup"`
 }
 
 type secretReferencesDocument struct {

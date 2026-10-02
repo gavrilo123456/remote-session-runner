@@ -158,6 +158,97 @@ func TestBUG010MailboxBacklogExcludesMarkerOnlyResidue(t *testing.T) {
 	}
 }
 
+func TestBUG010MailboxCyclesReconcileProvenOrphansAfterIntake(t *testing.T) {
+	ctx := context.Background()
+	h := newP154MailboxHarness(t)
+	runtime := h.service.mailboxes[0]
+	if runtime.orphanReconciler == nil {
+		t.Fatal("configured durable orphan reconciler is missing")
+	}
+	commandID := h.createTerminalCommand(t)
+
+	terminalID := "req-b010-cycle-terminal"
+	p154WriteMailboxRequest(t, runtime.importer, terminalID, map[string]any{
+		"request_id": terminalID, "operation": "get_command", "command_id": string(commandID),
+	})
+	h.service.runMailboxCycles(ctx, io.Discard)
+	_, terminalResponsePath := p154ReadResponse(t, runtime, terminalID)
+	terminalBefore, err := os.ReadFile(terminalResponsePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runtime.importer.InboxPath(), terminalID+mailbox.ReadySuffix), nil, mailbox.MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(runtime.importer.InboxPath(), terminalID+mailbox.ReadySuffix), mailbox.MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+
+	ackID := "req-b010-cycle-ack"
+	p154WriteMailboxRequest(t, runtime.importer, ackID, map[string]any{
+		"request_id": ackID, "operation": "get_command", "command_id": string(commandID),
+	})
+	h.service.runMailboxCycles(ctx, io.Discard)
+	ackResponse, ackResponsePath := p154ReadResponse(t, runtime, ackID)
+	ackBefore, err := os.ReadFile(ackResponsePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p154WriteAck(t, runtime, ackID, ackResponse.ResponseRevision, ackResponse.AvailableEventSequence)
+	h.service.runMailboxCycles(ctx, io.Discard)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(runtime.importer.InboxPath()), "acks", ackID+mailbox.ReadySuffix), nil, mailbox.MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(filepath.Dir(runtime.importer.InboxPath()), "acks", ackID+mailbox.ReadySuffix), mailbox.MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+
+	unknownID := "req-b010-cycle-unknown"
+	if err := os.WriteFile(filepath.Join(runtime.importer.InboxPath(), unknownID+mailbox.ReadySuffix), nil, mailbox.MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(runtime.importer.InboxPath(), unknownID+mailbox.ReadySuffix), mailbox.MailboxWorkspaceIngressFileMode); err != nil {
+		t.Fatal(err)
+	}
+
+	h.service.runMailboxCycles(ctx, io.Discard)
+	assertP154PathAbsent(t, filepath.Join(runtime.importer.InboxPath(), terminalID+mailbox.ReadySuffix))
+	assertP154PathAbsent(t, filepath.Join(filepath.Dir(runtime.importer.InboxPath()), "acks", ackID+mailbox.ReadySuffix))
+	assertP154PathPresent(t, filepath.Join(runtime.importer.InboxPath(), unknownID+mailbox.ReadySuffix))
+	if terminalAfter, err := os.ReadFile(terminalResponsePath); err != nil || string(terminalAfter) != string(terminalBefore) {
+		t.Fatalf("terminal response changed=%q err=%v", terminalAfter, err)
+	}
+	if ackAfter, err := os.ReadFile(ackResponsePath); err != nil || string(ackAfter) != string(ackBefore) {
+		t.Fatalf("acknowledged response changed=%q err=%v", ackAfter, err)
+	}
+	evidence, err := h.authority.LookupMailboxLifecycleEvidenceForRequestIDsInMailbox(ctx, runtime.id, []string{terminalID, ackID, unknownID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !evidence[terminalID].ExchangeExists || !evidence[ackID].ExchangeAcknowledged || evidence[unknownID].ExchangeExists {
+		t.Fatalf("cycle durable evidence=%+v", evidence)
+	}
+}
+
+func TestBUG010MailboxDurableOrphanCleanupIsExplicitPerInbox(t *testing.T) {
+	h := newP154MailboxHarness(t)
+	root := filepath.Dir(h.service.mailboxes[0].importer.InboxPath())
+	withoutOptIn, err := composeMailboxRuntimes([]config.MailboxDefinition{{ID: store.DefaultMailboxID, Root: root}}, h.authority, h.owner, h.api, p154Resolver{}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withoutOptIn) != 1 || withoutOptIn[0].orphanReconciler != nil {
+		t.Fatalf("cleanup was active without opt-in: %+v", withoutOptIn)
+	}
+	withOptIn, err := composeMailboxRuntimes([]config.MailboxDefinition{{ID: store.DefaultMailboxID, Root: root, DurableOrphanCleanup: true}}, h.authority, h.owner, h.api, p154Resolver{}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withOptIn) != 1 || withOptIn[0].orphanReconciler == nil {
+		t.Fatalf("cleanup was not active after opt-in: %+v", withOptIn)
+	}
+}
+
 func TestP154RefusesInboxRemovalWhileItsAcceptedWorkIsPending(t *testing.T) {
 	ctx := context.Background()
 	h := newP154MailboxHarness(t)
@@ -543,8 +634,8 @@ func newP154MailboxHarness(t *testing.T) *p154MailboxHarness {
 	}
 	t.Cleanup(func() { _ = api.Close(context.Background()) })
 	definitions := []config.MailboxDefinition{
-		{ID: store.DefaultMailboxID, Root: filepath.Join(root, "mailbox")},
-		{ID: "analytics", Root: filepath.Join(root, "mailboxes", "analytics")},
+		{ID: store.DefaultMailboxID, Root: filepath.Join(root, "mailbox"), DurableOrphanCleanup: true},
+		{ID: "analytics", Root: filepath.Join(root, "mailboxes", "analytics"), DurableOrphanCleanup: true},
 	}
 	runtimes, err := composeMailboxRuntimes(definitions, h.authority, owner, api, p154Resolver{}, 24*time.Hour)
 	if err != nil {
@@ -751,6 +842,20 @@ func p154WriteAck(t *testing.T, runtime mailboxRuntime, requestID string, revisi
 		if err := os.Chmod(path, mailbox.MailboxFileMode); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func assertP154PathAbsent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("path %q remains or cannot be inspected: %v", path, err)
+	}
+}
+
+func assertP154PathPresent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("path %q is missing: %v", path, err)
 	}
 }
 

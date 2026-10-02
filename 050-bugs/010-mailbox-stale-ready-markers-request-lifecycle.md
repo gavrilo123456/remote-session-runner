@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IMPLEMENTING — B010-P1 PASS; B010-P2 through B010-P4 pending` |
+| Status | `IMPLEMENTING — B010-P1 PASS; B010-P2 in progress; B010-P3 through B010-P4 pending` |
 | Severity | High |
 | Priority | High — the file-only client can mistake inert residue for pending protected-control work |
 | Reported | 2026-10-02 |
@@ -259,8 +259,11 @@ classifier.
 **Goal:** remove only residue that durable evidence proves is non-executable.
 
 After normal request and ACK intake, add a bounded reconciliation pass using
-the B010-P1 classifier. It may remove **only the marker file** when all of the
-following are true:
+the B010-P1 classifier. It is deliberately disabled unless the configured
+mailbox sets `durable_orphan_cleanup: true`; omitted is `false`. This keeps
+existing reviewed residue intact through the B010-P3 status review and makes
+later cleanup an explicit mailbox-owner action. When enabled, it may remove
+**only the marker file** when all of the following are true:
 
 - it is a safe regular exact-`0600` or exact-`0644` zero-byte marker;
 - its paired JSON is still absent immediately before unlink;
@@ -285,7 +288,9 @@ remote mutation.
    marker is re-evaluated exactly once. Cover the same-inode truncate variant
    if the direct workspace publisher continues to use it.
 5. An unsafe replacement remains inert while independent fresh work progresses.
-6. Focused tests, then `make test` and `make vet` on the Mac.
+6. Omitted configuration leaves reconciliation inactive; an explicit per-inbox
+   opt-in activates it only for that mailbox.
+7. Focused tests, then `make test` and `make vet` on the Mac.
 
 ### B010-P3 — Read-only operator status and documentation
 
@@ -334,9 +339,11 @@ and `docs/README.md` to explain:
 4. Run the applicable workspace-mailbox host gate and sandbox P128 zero-work
    status. Do not mark a new host gate passed from this evidence.
 5. Run lifecycle status against the existing 50 artifacts. Only after its
-   output is reviewed may a separately authorized B010-P2 cleanup pass remove
-   the rows with durable proof. Preserve every `retain_unproven_inert` row and
-   do not replay Logger workflows.
+   output is reviewed may a separately authorized change set
+   `durable_orphan_cleanup: true` for that mailbox and refresh the Mac service.
+   The bounded B010-P2 pass may then remove only rows with durable proof.
+   Preserve every `retain_unproven_inert` row and do not replay Logger
+   workflows.
 6. Record Mac/Ubuntu commit parity, installed Mac build revision, commands,
    sanitized status evidence, and host evidence in implementation evidence.
 

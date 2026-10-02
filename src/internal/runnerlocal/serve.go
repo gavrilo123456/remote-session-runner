@@ -240,11 +240,12 @@ type mailboxMetricsSource struct {
 // configured inbox. The authority, local API, Router, and dispatcher remain
 // shared process services; a mailbox never becomes an execution authority.
 type mailboxRuntime struct {
-	id              string
-	importer        *mailbox.Importer
-	processor       *mailbox.SessionProcessor
-	ackImporter     *mailbox.AckImporter
-	artifactCleaner mailbox.ArtifactCleaner
+	id               string
+	importer         *mailbox.Importer
+	processor        *mailbox.SessionProcessor
+	ackImporter      *mailbox.AckImporter
+	orphanReconciler *mailbox.DurableOrphanReconciler
+	artifactCleaner  mailbox.ArtifactCleaner
 }
 
 // New constructs the Mac services from an owner-restricted selected config.
@@ -476,8 +477,17 @@ func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *s
 		if err != nil {
 			return nil, fmt.Errorf("construct mailbox ACK importer for %s: %w", definition.ID, err)
 		}
+		var orphanReconciler *mailbox.DurableOrphanReconciler
+		if definition.DurableOrphanCleanup {
+			orphanReconciler, err = mailbox.NewDurableOrphanReconciler(mailbox.DurableOrphanReconcilerOptions{
+				MailboxID: definition.ID, Root: definition.Root, Authority: authority,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("construct mailbox durable orphan reconciler for %s: %w", definition.ID, err)
+			}
+		}
 		runtimes = append(runtimes, mailboxRuntime{
-			id: definition.ID, importer: importer, processor: processor, ackImporter: ackImporter,
+			id: definition.ID, importer: importer, processor: processor, ackImporter: ackImporter, orphanReconciler: orphanReconciler,
 			artifactCleaner: mailbox.ArtifactCleaner{MailboxID: definition.ID, Authority: authority, Outbox: outbox, EventFiles: eventFiles, Diagnostics: diagnostics},
 		})
 	}
@@ -798,6 +808,15 @@ func (s *Service) runMailboxCycles(ctx context.Context, stderr io.Writer) {
 		if _, err := runtime.ackImporter.Import(ctx); err != nil && ctx.Err() == nil {
 			s.recordOperationalError(err, false)
 			fmt.Fprintf(stderr, "runner-local: mailbox %s ACK cycle failed\n", runtime.id)
+		}
+	}
+	for _, runtime := range runtimes {
+		if runtime.orphanReconciler == nil {
+			continue
+		}
+		if _, err := runtime.orphanReconciler.Run(ctx); err != nil && ctx.Err() == nil {
+			s.recordOperationalError(err, false)
+			fmt.Fprintf(stderr, "runner-local: mailbox %s durable orphan reconciliation failed\n", runtime.id)
 		}
 	}
 	for _, runtime := range runtimes {

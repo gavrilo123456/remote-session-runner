@@ -81,3 +81,5 @@ mailboxes:
     repository_aliases: [remote-session-runner]
     default_execution: mac-local
     allowed_execution: [mac-local, ubuntu-current]
+    # Keep this false until lifecycle status has been reviewed for this inbox.
+    durable_orphan_cleanup: false

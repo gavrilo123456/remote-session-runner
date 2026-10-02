@@ -322,6 +322,7 @@ func validateMailboxDefinition(serviceRoot, id string, document mailboxDocument,
 	return MailboxDefinition{
 		ID: id, Root: document.Root, RepositoryAliases: aliases,
 		DefaultExecution: document.DefaultExecution, AllowedExecution: allowed,
+		DurableOrphanCleanup: document.DurableOrphanCleanup,
 	}, nil
 }
 
