@@ -15,6 +15,7 @@ import (
 	"remote-session-runner/src/internal/execution"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
+	"remote-session-runner/src/internal/queueworker"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 	"syscall"
@@ -113,13 +114,24 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		"commands_rejected", reconciliation.CommandsRejected,
 		"cleanup_unconfirmed", reconciliation.CleanupUnconfirmed,
 	)
+	dispatchGate := lifecycle.NewGate()
+	worker, err := queueworker.New(queueworker.Options{
+		Service: service, Authority: authority, DispatchGate: dispatchGate,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "runner-locald: construct queued worker: %v\n", err)
+		return 1
+	}
 	owner, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, domain.ControllerID(settings.Account))
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: owner controller: %v\n", err)
 		return 1
 	}
 	thresholds := opshealth.NewThresholdMonitor()
-	server, err := NewPrivateServer(PrivateServerOptions{Authority: authority, Service: service, Owner: owner, SocketPath: settings.LocalDSocket, Thresholds: thresholds})
+	server, err := NewPrivateServer(PrivateServerOptions{
+		Authority: authority, Service: service, Owner: owner, SocketPath: settings.LocalDSocket,
+		Thresholds: thresholds, DispatchGate: dispatchGate, QueueWake: worker.Wake,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: construct private API: %v\n", err)
 		return 1
@@ -128,6 +140,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runner-locald: listen: %v\n", err)
 		return 1
 	}
+	coordinator, err := lifecycle.NewCoordinator(&privateServerShutdown{server: server, worker: worker}, lifecycle.RealClock{}, lifecycle.Config{
+		DrainTimeout: macShutdownDrainTimeout, CleanupTimeout: macShutdownCleanupTimeout,
+	})
+	if err != nil {
+		stop()
+		_ = server.Close(context.Background())
+		fmt.Fprintf(stderr, "runner-locald: configure shutdown: %v\n", err)
+		return 1
+	}
+	if err := worker.RecoverNonterminalJobs(signalContext); err != nil {
+		shutdownErr := coordinator.Shutdown(context.Background())
+		stop()
+		fmt.Fprintf(stderr, "runner-locald: recover queued jobs after startup reconciliation: %v\n", errors.Join(err, shutdownErr))
+		return 1
+	}
+	worker.Start(signalContext)
 	metricsObserverDone := make(chan struct{})
 	go func() {
 		defer close(metricsObserverDone)
@@ -136,16 +164,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "runner-locald listening on %s\n", settings.LocalDSocket)
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- server.Serve() }()
-	coordinator, err := lifecycle.NewCoordinator(&privateServerShutdown{server: server}, lifecycle.RealClock{}, lifecycle.Config{
-		DrainTimeout: macShutdownDrainTimeout, CleanupTimeout: macShutdownCleanupTimeout,
-	})
-	if err != nil {
-		stop()
-		_ = server.Close(context.Background())
-		<-metricsObserverDone
-		fmt.Fprintf(stderr, "runner-locald: configure shutdown: %v\n", err)
-		return 1
-	}
 	select {
 	case serveErr := <-serveErrors:
 		shutdownErr := coordinator.Shutdown(context.Background())
@@ -169,6 +187,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 type privateServerShutdown struct {
 	server  *PrivateServer
+	worker  *queueworker.Worker
 	stopErr error
 }
 
@@ -179,8 +198,17 @@ func (h *privateServerShutdown) StopAccepting() {
 }
 
 func (h *privateServerShutdown) StopDispatch() {
-	if h != nil && h.server != nil {
+	if h == nil {
+		return
+	}
+	if h.server != nil {
 		h.server.StopDispatch()
+	}
+	// Close the shared admission gate before stopping the wake loop. A worker
+	// that is between wake delivery and its next claim cannot enter after
+	// shutdown dispatch begins; already admitted work remains drainable.
+	if h.worker != nil {
+		h.worker.Stop()
 	}
 }
 
@@ -188,7 +216,11 @@ func (h *privateServerShutdown) Drain(ctx context.Context) error {
 	if h == nil || h.server == nil {
 		return errors.New("runner-locald shutdown is not configured")
 	}
-	return errors.Join(h.stopErr, h.server.Drain(ctx))
+	var workerErr error
+	if h.worker != nil {
+		workerErr = h.worker.Wait(ctx)
+	}
+	return errors.Join(h.stopErr, workerErr, h.server.Drain(ctx))
 }
 
 func (h *privateServerShutdown) CancelRemaining(ctx context.Context) error {

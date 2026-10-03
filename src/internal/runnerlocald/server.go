@@ -54,6 +54,12 @@ type PrivateServerOptions struct {
 	MaxBodyBytes int64
 	HealthReport func(context.Context) opshealth.Report
 	Thresholds   *opshealth.ThresholdMonitor
+	// DispatchGate is the one local scheduler admission boundary. Production
+	// runner-locald supplies the same gate to its shared queue worker.
+	DispatchGate *lifecycle.Gate
+	// QueueWake notifies the shared queue worker after durable acceptance. The
+	// private API never starts a command or one-off job itself.
+	QueueWake func()
 }
 
 type PrivateServer struct {
@@ -71,11 +77,15 @@ type PrivateServer struct {
 	closed         bool
 	healthReport   func(context.Context) opshealth.Report
 	thresholds     *opshealth.ThresholdMonitor
+	queueWake      func()
 }
 
 func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 	if options.Authority == nil || options.Service == nil {
 		return nil, ErrPrivateAPIConfiguration
+	}
+	if options.QueueWake != nil && options.DispatchGate == nil {
+		return nil, fmt.Errorf("%w: queue wake requires the shared dispatch gate", ErrPrivateAPIConfiguration)
 	}
 	if err := validatePrivateSocketPath(options.SocketPath); err != nil {
 		return nil, err
@@ -98,14 +108,20 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 	if thresholds == nil {
 		thresholds = opshealth.NewThresholdMonitor()
 	}
+	dispatchGate := options.DispatchGate
+	if dispatchGate == nil {
+		// Standalone private-server fixtures retain a bounded gate for their
+		// shutdown checks. They do not get an execution path without QueueWake.
+		dispatchGate = lifecycle.NewGate()
+	}
 	requestContext, cancelRequests := context.WithCancel(context.Background())
 	return &PrivateServer{
 		authority: options.Authority, service: options.Service, owner: owner,
 		socketPath: options.SocketPath, maxBodyBytes: options.MaxBodyBytes,
 		httpServer: &http.Server{BaseContext: func(net.Listener) context.Context {
 			return requestContext
-		}}, requestGate: lifecycle.NewGate(),
-		dispatchGate: lifecycle.NewGate(), healthReport: options.HealthReport,
+		}}, requestGate: lifecycle.NewGate(), dispatchGate: dispatchGate,
+		healthReport: options.HealthReport, queueWake: options.QueueWake,
 		cancelRequests: cancelRequests, thresholds: thresholds,
 	}, nil
 }
@@ -308,17 +324,16 @@ func (s *PrivateServer) closeLocalSessions(ctx context.Context) error {
 	return errors.Join(results...)
 }
 
-func (s *PrivateServer) resumeAcceptedCommand(commandID domain.CommandID, controller domain.ControllerIdentity) {
-	release, err := s.dispatchGate.Enter()
-	if err != nil {
-		// The command acceptance is already durable. Leaving it queued is
-		// truthful; startup recovery or a later worker can reconcile it.
-		return
+func (s *PrivateServer) wakeQueue() {
+	if s != nil && s.queueWake != nil {
+		s.queueWake()
 	}
-	go func() {
-		defer release()
-		_, _ = s.service.ResumeCommand(context.Background(), commandID, controller)
-	}()
+}
+
+func (s *PrivateServer) wakeQueueAfterAcceptedIntent(accepted intentAcceptanceResponse) {
+	if accepted.Operation == "run" || accepted.CommandState == string(domain.CommandStateQueued) {
+		s.wakeQueue()
+	}
 }
 
 type acceptIntentRequest struct {
@@ -457,6 +472,10 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	writeJSON(response, http.StatusAccepted, accepted)
+	// The durable acceptance response is the public boundary. Wake only after
+	// it is written so the shared worker cannot expose a later local runtime
+	// state before the caller can observe that acceptance.
+	s.wakeQueueAfterAcceptedIntent(accepted)
 }
 
 func (s *PrivateServer) currentHealthReport(ctx context.Context) opshealth.Report {
@@ -527,9 +546,6 @@ func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalInte
 		}
 		base.CommandState = string(result.Command.State)
 		base.Duplicate = result.Duplicate
-		if result.Command.State == domain.CommandStateQueued {
-			s.resumeAcceptedCommand(result.Command.CommandID, intent.Controller)
-		}
 	case "cancel_command":
 		result, err := s.service.CancelCommand(ctx, execution.CancelCommandRequest{CommandID: intent.CommandID, Controller: intent.Controller, IdempotencyKey: intent.IdempotencyKey, RequestHash: intent.RequestHash})
 		if err != nil {
@@ -545,42 +561,18 @@ func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalInte
 		base.SessionState = string(result.Session.State)
 		base.Duplicate = result.Duplicate
 	case "run":
-		result, err := s.service.RunJob(ctx, execution.RunJobRequest{
-			Acceptance: store.JobAcceptance{
-				JobID: intent.JobID, SessionID: intent.SessionID, CommandID: intent.CommandID,
-				Controller: intent.Controller, IdempotencyKey: intent.IdempotencyKey,
-				RequestHash: intent.RequestHash, Environment: intent.Environment, Target: intent.Target,
-				Source: intent.Source, Script: string(intent.ScriptBytes), CanonicalPayload: intent.PayloadJSON,
-				IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
-			},
-			RequestedLimits: payload.RequestedLimits, Isolation: payload.Isolation,
-			MaxActiveSessions:    store.DefaultActiveSessionLimit,
+		result, err := s.service.AcceptJob(ctx, store.JobAcceptance{
+			JobID: intent.JobID, SessionID: intent.SessionID, CommandID: intent.CommandID,
+			Controller: intent.Controller, IdempotencyKey: intent.IdempotencyKey,
+			RequestHash: intent.RequestHash, Environment: intent.Environment, Target: intent.Target,
+			Source: intent.Source, Script: string(intent.ScriptBytes), CanonicalPayload: intent.PayloadJSON,
 			IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
 		})
 		if err != nil {
-			if result.Job.JobID != "" {
-				base.JobPhase = string(result.Job.Phase)
-				if result.Session.SessionID != "" {
-					base.SessionState = string(result.Session.State)
-				}
-				if result.Command.CommandID != "" {
-					base.CommandState = string(result.Command.State)
-				}
-				// The target job row is durable even when command teardown is
-				// lost. A 202 acceptance keeps the Mac intent accepted so a
-				// later read/resume observes that outcome instead of claiming
-				// that the job was never delivered.
-				return base, nil
-			}
 			return intentAcceptanceResponse{}, err
 		}
 		base.JobPhase = string(result.Job.Phase)
-		if result.Session.SessionID != "" {
-			base.SessionState = string(result.Session.State)
-		}
-		if result.Command.CommandID != "" {
-			base.CommandState = string(result.Command.State)
-		}
+		base.Duplicate = result.Duplicate
 	default:
 		return intentAcceptanceResponse{}, fmt.Errorf("%w: operation %q is not wired", ErrIntentRequest, intent.Operation)
 	}

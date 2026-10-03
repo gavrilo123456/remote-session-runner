@@ -14,15 +14,7 @@ import (
 func TestP078AcceptIntentRunsQueuedJobWithStableCheckpoints(t *testing.T) {
 	authority, service := newP060Service(t)
 	intent := p078LocalRunIntent(t, authority)
-	server, serveErr := p060StartServer(t, authority, service, p060SocketPath(t))
-	defer func() {
-		if err := server.Close(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if err := <-serveErr; err != nil {
-			t.Fatal(err)
-		}
-	}()
+	server, _ := startBUG011P4PrivateServer(t, authority, service, p060SocketPath(t))
 	client := p060UnixClient(server.SocketPath())
 	body := []byte(fmt.Sprintf(`{"intent_id":%q,"request_hash":%q}`, intent.IntentID, intent.RequestHash.String()))
 	first := p060DoJSON(t, client, http.MethodPost, "http://locald/internal/v1/accept-intent", body)
@@ -31,13 +23,10 @@ func TestP078AcceptIntentRunsQueuedJobWithStableCheckpoints(t *testing.T) {
 	}
 	var accepted intentAcceptanceResponse
 	p060DecodeJSON(t, first, &accepted)
-	if accepted.JobPhase != string(store.JobPhaseComplete) || accepted.SessionState != string(domain.SessionStateClosed) || accepted.CommandState != string(domain.CommandStateSucceeded) {
+	if accepted.JobPhase != string(store.JobPhaseCreatingSession) || accepted.SessionState != "" || accepted.CommandState != "" {
 		t.Fatalf("first run acceptance = %+v", accepted)
 	}
-	job, err := authority.GetJob(context.Background(), intent.JobID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	job := waitBUG011P4Job(t, authority, intent.JobID, store.JobPhaseComplete)
 	if job.JobID != intent.JobID || job.SessionID != intent.SessionID || job.CommandID != intent.CommandID || job.Phase != store.JobPhaseComplete || string(job.ScriptBytes) != string(intent.ScriptBytes) {
 		t.Fatalf("job checkpoint = %+v", job)
 	}

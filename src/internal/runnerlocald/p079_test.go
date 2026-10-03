@@ -3,6 +3,7 @@ package runnerlocald
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 
 	"remote-session-runner/src/internal/domain"
@@ -12,6 +13,7 @@ import (
 )
 
 type p079UnconfirmedRuntime struct {
+	mu           sync.Mutex
 	commandCalls int
 	stopCalls    int
 }
@@ -26,29 +28,31 @@ func (*p079UnconfirmedRuntime) Cleanup(context.Context, execution.RuntimeCleanup
 	return nil
 }
 func (r *p079UnconfirmedRuntime) ExecuteCommand(context.Context, execution.RuntimeCommandRequest) (execution.RuntimeCommandResult, error) {
+	r.mu.Lock()
 	r.commandCalls++
+	r.mu.Unlock()
 	return execution.RuntimeCommandResult{Stdout: []byte("p079-output\n"), ExitCode: 0}, nil
 }
 func (*p079UnconfirmedRuntime) CancelCommand(context.Context, execution.RuntimeCommandRequest) (execution.RuntimeCommandStopResult, error) {
 	return execution.RuntimeCommandStopResult{Confirmed: false}, nil
 }
 func (r *p079UnconfirmedRuntime) StopSession(context.Context, store.SessionRecord) (bool, error) {
+	r.mu.Lock()
 	r.stopCalls++
+	r.mu.Unlock()
 	return false, nil
+}
+
+func (r *p079UnconfirmedRuntime) callCounts() (commands, stops int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.commandCalls, r.stopCalls
 }
 
 func TestP079LocaldReturnsDurableLostJobAfterTeardownFailure(t *testing.T) {
 	authority, service, runtime := newP079Service(t)
 	intent := p078LocalRunIntent(t, authority)
-	server, serveErr := p060StartServer(t, authority, service, p060SocketPath(t))
-	defer func() {
-		if err := server.Close(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if err := <-serveErr; err != nil {
-			t.Fatal(err)
-		}
-	}()
+	server, _ := startBUG011P4PrivateServer(t, authority, service, p060SocketPath(t))
 	client := p060UnixClient(server.SocketPath())
 	body := []byte(`{"intent_id":"intent-p078-local","request_hash":"` + intent.RequestHash.String() + `"}`)
 	first := p060DoJSON(t, client, http.MethodPost, "http://locald/internal/v1/accept-intent", body)
@@ -57,10 +61,11 @@ func TestP079LocaldReturnsDurableLostJobAfterTeardownFailure(t *testing.T) {
 	}
 	var accepted intentAcceptanceResponse
 	p060DecodeJSON(t, first, &accepted)
-	if accepted.JobPhase != string(store.JobPhaseLost) || accepted.SessionState != string(domain.SessionStateLost) || accepted.CommandState != string(domain.CommandStateSucceeded) {
+	if accepted.JobPhase != string(store.JobPhaseCreatingSession) || accepted.SessionState != "" || accepted.CommandState != "" {
 		t.Fatalf("teardown failure acceptance = %+v", accepted)
 	}
-	job, err := authority.GetJob(context.Background(), intent.JobID)
+	job := waitBUG011P4Job(t, authority, intent.JobID, store.JobPhaseLost)
+	var err error
 	if err != nil || job.Phase != store.JobPhaseLost || job.TeardownState != store.JobTeardownLost || job.CommandState == nil || *job.CommandState != domain.CommandStateSucceeded {
 		t.Fatalf("durable lost job = %+v err=%v", job, err)
 	}
@@ -68,8 +73,9 @@ func TestP079LocaldReturnsDurableLostJobAfterTeardownFailure(t *testing.T) {
 	if second.StatusCode != http.StatusAccepted {
 		t.Fatalf("lost job retry status = %d body=%s", second.StatusCode, p060ReadBody(t, second))
 	}
-	if runtime.commandCalls != 1 || runtime.stopCalls != 1 {
-		t.Fatalf("lost retry reran work: commands=%d stops=%d", runtime.commandCalls, runtime.stopCalls)
+	commands, stops := runtime.callCounts()
+	if commands != 1 || stops != 1 {
+		t.Fatalf("lost retry reran work: commands=%d stops=%d", commands, stops)
 	}
 }
 

@@ -16,6 +16,8 @@ import (
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/lifecycle"
+	"remote-session-runner/src/internal/queueworker"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 	"remote-session-runner/src/internal/testfixture"
@@ -125,6 +127,7 @@ type p062Harness struct {
 	authority *store.AuthorityStore
 	service   *execution.Service
 	server    *PrivateServer
+	worker    *queueworker.Worker
 	serveErr  <-chan error
 	client    *http.Client
 }
@@ -158,17 +161,33 @@ func newP062Harness(t *testing.T) *p062Harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.ReconcileStartup(context.Background()); err != nil {
+		t.Fatalf("reconcile temporary Mac locald startup: %v", err)
+	}
 	socketPath := p060SocketPath(t)
-	server, err := NewPrivateServer(PrivateServerOptions{Authority: authority, Service: service, Owner: controller, SocketPath: socketPath})
+	dispatchGate := lifecycle.NewGate()
+	worker, err := queueworker.New(queueworker.Options{Service: service, Authority: authority, DispatchGate: dispatchGate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewPrivateServer(PrivateServerOptions{
+		Authority: authority, Service: service, Owner: controller, SocketPath: socketPath,
+		DispatchGate: dispatchGate, QueueWake: worker.Wake,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := server.Listen(); err != nil {
 		t.Fatal(err)
 	}
+	if err := worker.RecoverNonterminalJobs(context.Background()); err != nil {
+		_ = server.Close(context.Background())
+		t.Fatal(err)
+	}
+	worker.Start(context.Background())
 	actualServeErr := make(chan error, 1)
 	go func() { actualServeErr <- server.Serve() }()
-	return &p062Harness{root: root, authority: authority, service: service, server: server, serveErr: actualServeErr, client: p060UnixClient(socketPath)}
+	return &p062Harness{root: root, authority: authority, service: service, server: server, worker: worker, serveErr: actualServeErr, client: p060UnixClient(socketPath)}
 }
 
 func (h *p062Harness) acceptCreate(t *testing.T, intentID, sessionID string, source domain.Source, key string) store.SessionRecord {
@@ -306,7 +325,15 @@ func (h *p062Harness) stop(t *testing.T) {
 	if h == nil || h.server == nil {
 		return
 	}
-	if err := h.server.Close(context.Background()); err != nil {
+	shutdown := &privateServerShutdown{server: h.server, worker: h.worker}
+	shutdown.StopAccepting()
+	shutdown.StopDispatch()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := shutdown.Drain(ctx); err != nil {
+		t.Error(err)
+	}
+	if err := h.server.CloseStreams(); err != nil {
 		t.Error(err)
 	}
 	if err := <-h.serveErr; err != nil {

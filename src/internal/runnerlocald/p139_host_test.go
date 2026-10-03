@@ -19,6 +19,7 @@ import (
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
 	"remote-session-runner/src/internal/lifecycle"
+	"remote-session-runner/src/internal/queueworker"
 	"remote-session-runner/src/internal/store"
 	"remote-session-runner/src/internal/testfixture"
 )
@@ -239,23 +240,36 @@ func p139MacLocaldHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := NewPrivateServer(PrivateServerOptions{Authority: authority, Service: service, SocketPath: socketPath})
+	dispatchGate := lifecycle.NewGate()
+	worker, err := queueworker.New(queueworker.Options{Service: service, Authority: authority, DispatchGate: dispatchGate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewPrivateServer(PrivateServerOptions{
+		Authority: authority, Service: service, SocketPath: socketPath,
+		DispatchGate: dispatchGate, QueueWake: worker.Wake,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := server.Listen(); err != nil {
 		t.Fatal(err)
 	}
-	serveErrors := make(chan error, 1)
-	go func() { serveErrors <- server.Serve() }()
 	signalContext, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stopSignals()
-	coordinator, err := lifecycle.NewCoordinator(&privateServerShutdown{server: server}, lifecycle.RealClock{}, lifecycle.Config{
+	coordinator, err := lifecycle.NewCoordinator(&privateServerShutdown{server: server, worker: worker}, lifecycle.RealClock{}, lifecycle.Config{
 		DrainTimeout: macShutdownDrainTimeout, CleanupTimeout: macShutdownCleanupTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := worker.RecoverNonterminalJobs(signalContext); err != nil {
+		_ = coordinator.Shutdown(context.Background())
+		t.Fatal(err)
+	}
+	worker.Start(signalContext)
+	serveErrors := make(chan error, 1)
+	go func() { serveErrors <- server.Serve() }()
 	if err := testfixture.PublishPhaseResult(reporter, p139MacServiceResult{Ready: true, PID: os.Getpid(), Report: report}); err != nil {
 		t.Fatal(err)
 	}

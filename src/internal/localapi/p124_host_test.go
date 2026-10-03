@@ -163,26 +163,16 @@ func TestP124CommonCLISmokeAcrossRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	localdSocket := filepath.Join(filepath.Dir(localAPISocket), "locald.sock")
-	locald, err := runnerlocald.NewPrivateServer(runnerlocald.PrivateServerOptions{
-		Authority: h.authority, Service: localService, Owner: owner, SocketPath: localdSocket,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := locald.Listen(); err != nil {
-		t.Fatal(err)
-	}
-	localdServeErr := make(chan error, 1)
-	go func() { localdServeErr <- locald.Serve() }()
+	locald := p080StartLocald(t, h.authority, localService, owner, localdSocket)
 	t.Cleanup(func() {
-		if err := locald.Close(context.Background()); err != nil {
-			t.Errorf("close temporary Mac locald: %v", err)
-		}
-		if err := <-localdServeErr; err != nil {
-			t.Errorf("serve temporary Mac locald: %v", err)
+		closeContext, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+		closeErr := locald.Close(closeContext)
+		cancelClose()
+		if closeErr != nil {
+			t.Errorf("close temporary Mac locald: %v", closeErr)
 		}
 	})
-	localdClient, err := dispatcher.NewLocaldClient(localdSocket)
+	localdClient, err := dispatcher.NewLocaldClient(locald.SocketPath())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,12 +10,7 @@ import (
 
 func TestP131PrivateServerDrainFinishesAcceptedWorkAndClosesLocalRuntime(t *testing.T) {
 	authority, service := newP060Service(t)
-	server, err := NewPrivateServer(PrivateServerOptions{
-		Authority: authority, Service: service, SocketPath: p060SocketPath(t),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	server, worker := startBUG011P4PrivateServer(t, authority, service, p060SocketPath(t))
 
 	createIntent := p060CreateIntent(t, authority, "intent-p131-create", "session-p131-create", "key-p131-create")
 	if _, err := server.acceptIntent(context.Background(), createIntent); err != nil {
@@ -33,17 +28,21 @@ func TestP131PrivateServerDrainFinishesAcceptedWorkAndClosesLocalRuntime(t *test
 	if accepted.CommandState != string(domain.CommandStateQueued) {
 		t.Fatalf("command acceptance state = %q, want queued", accepted.CommandState)
 	}
-
-	if err := server.StopAccepting(); err != nil {
-		t.Fatalf("stop acceptance: %v", err)
+	server.wakeQueueAfterAcceptedIntent(accepted)
+	command := waitBUG011P4Command(t, authority, submitIntent.CommandID, domain.CommandStateSucceeded)
+	if !command.OutputComplete {
+		t.Fatalf("worker command output_complete=%v, want true", command.OutputComplete)
 	}
-	server.StopDispatch()
+
+	shutdown := &privateServerShutdown{server: server, worker: worker}
+	shutdown.StopAccepting()
+	shutdown.StopDispatch()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := server.Drain(ctx); err != nil {
+	if err := shutdown.Drain(ctx); err != nil {
 		t.Fatalf("drain local executor: %v", err)
 	}
-	command, err := authority.GetCommand(context.Background(), submitIntent.CommandID)
+	command, err = authority.GetCommand(context.Background(), submitIntent.CommandID)
 	if err != nil {
 		t.Fatal(err)
 	}

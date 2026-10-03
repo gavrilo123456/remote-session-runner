@@ -87,27 +87,17 @@ func TestP104TwoHostFileOnlyMailboxClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	localdSocket := filepath.Join(socketDir, "locald.sock")
-	localdServer, err := runnerlocald.NewPrivateServer(runnerlocald.PrivateServerOptions{
-		Authority: h.authority, Service: service, Owner: owner, SocketPath: localdSocket,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := localdServer.Listen(); err != nil {
-		t.Fatal(err)
-	}
-	localdServeErr := make(chan error, 1)
-	go func() { localdServeErr <- localdServer.Serve() }()
+	localdServer := p080StartLocald(t, h.authority, service, owner, localdSocket)
 	t.Cleanup(func() {
-		if err := localdServer.Close(context.Background()); err != nil {
-			t.Error(err)
-		}
-		if err := <-localdServeErr; err != nil {
-			t.Error(err)
+		closeContext, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+		closeErr := localdServer.Close(closeContext)
+		cancelClose()
+		if closeErr != nil {
+			t.Error(closeErr)
 		}
 		_ = os.RemoveAll(socketDir)
 	})
-	localAcceptor, err := dispatcher.NewLocaldClient(localdSocket)
+	localAcceptor, err := dispatcher.NewLocaldClient(localdServer.SocketPath())
 	if err != nil {
 		t.Fatal(err)
 	}

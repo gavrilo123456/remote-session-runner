@@ -20,6 +20,8 @@ import (
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/lifecycle"
+	"remote-session-runner/src/internal/queueworker"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 	"remote-session-runner/src/internal/testfixture"
@@ -195,22 +197,48 @@ func p135MacLocaldHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := NewPrivateServer(PrivateServerOptions{Authority: authority, Service: service, SocketPath: socketPath})
+	dispatchGate := lifecycle.NewGate()
+	worker, err := queueworker.New(queueworker.Options{Service: service, Authority: authority, DispatchGate: dispatchGate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewPrivateServer(PrivateServerOptions{
+		Authority: authority, Service: service, SocketPath: socketPath,
+		DispatchGate: dispatchGate, QueueWake: worker.Wake,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := server.Listen(); err != nil {
 		t.Fatal(err)
 	}
+	coordinator, err := lifecycle.NewCoordinator(&privateServerShutdown{server: server, worker: worker}, lifecycle.RealClock{}, lifecycle.Config{
+		DrainTimeout: macShutdownDrainTimeout, CleanupTimeout: macShutdownCleanupTimeout,
+	})
+	if err != nil {
+		_ = server.Close(context.Background())
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := worker.RecoverNonterminalJobs(context.Background()); err != nil {
+		shutdownErr := coordinator.Shutdown(context.Background())
+		closeErr := db.Close()
+		t.Fatalf("recover queued jobs after startup reconciliation: %v", errors.Join(err, shutdownErr, closeErr))
+	}
+	worker.Start(context.Background())
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve() }()
 	if err := testfixture.PublishPhaseResult(reporter, p135StartupResult{Ready: true, Report: report}); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-serveErr; err != nil {
+	serveErrResult := <-serveErr
+	shutdownErr := coordinator.Shutdown(context.Background())
+	if serveErrResult != nil || shutdownErr != nil {
+		t.Fatal(errors.Join(serveErrResult, shutdownErr))
+	}
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_ = db.Close()
 }
 
 func p135MacService(databasePath, workspaceRoot string) (*sql.DB, *store.AuthorityStore, *execution.Service, error) {

@@ -19,6 +19,8 @@ import (
 	"remote-session-runner/src/internal/dispatcher"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/lifecycle"
+	"remote-session-runner/src/internal/queueworker"
 	"remote-session-runner/src/internal/runnerlocald"
 	"remote-session-runner/src/internal/store"
 	"remote-session-runner/src/internal/testfixture"
@@ -66,7 +68,7 @@ func TestP080CrossComponentRestartPreservesExactScriptAndExecutesOnce(t *testing
 
 	db, authority = p080Open(t, databasePath)
 	service := p080Service(t, authority, runtime, owner)
-	locald, localdErr := p080StartLocald(t, authority, service, owner, filepath.Join(socketDir, "locald.sock"))
+	locald := p080StartLocald(t, authority, service, owner, filepath.Join(socketDir, "locald.sock"))
 	localdClient, err := dispatcher.NewLocaldClient(locald.SocketPath())
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +81,7 @@ func TestP080CrossComponentRestartPreservesExactScriptAndExecutesOnce(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if acceptance.IntentID != accepted.IntentID || acceptance.JobPhase != string(store.JobPhaseComplete) || acceptance.AcceptanceScope != "target_authority" {
+	if acceptance.IntentID != accepted.IntentID || acceptance.JobPhase != string(store.JobPhaseCreatingSession) || acceptance.AcceptanceScope != "target_authority" {
 		t.Fatalf("target acceptance = %+v", acceptance)
 	}
 	if intent.DeliveryState != store.LocalIntentAccepted {
@@ -94,10 +96,7 @@ func TestP080CrossComponentRestartPreservesExactScriptAndExecutesOnce(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := authority.GetJob(context.Background(), jobID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	job := p080WaitJobPhase(t, authority, jobID, store.JobPhaseComplete)
 	command, err := authority.GetCommand(context.Background(), job.CommandID)
 	if err != nil {
 		t.Fatal(err)
@@ -113,24 +112,24 @@ func TestP080CrossComponentRestartPreservesExactScriptAndExecutesOnce(t *testing
 	// Restart locald/executor after the job is complete and replay the same
 	// identity-only request. The durable job checkpoint makes this a duplicate,
 	// so the executor must not run the script a second time.
-	if err := locald.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-localdErr; err != nil {
-		t.Fatal(err)
+	closeContext, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+	closeErr := locald.Close(closeContext)
+	cancelClose()
+	if closeErr != nil {
+		t.Fatal(closeErr)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 	db, authority = p080Open(t, databasePath)
 	service = p080Service(t, authority, runtime, owner)
-	locald, localdErr = p080StartLocald(t, authority, service, owner, filepath.Join(socketDir, "locald-restarted.sock"))
+	locald = p080StartLocald(t, authority, service, owner, filepath.Join(socketDir, "locald-restarted.sock"))
 	defer func() {
-		if err := locald.Close(context.Background()); err != nil {
-			t.Error(err)
-		}
-		if err := <-localdErr; err != nil {
-			t.Error(err)
+		closeContext, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+		closeErr := locald.Close(closeContext)
+		cancelClose()
+		if closeErr != nil {
+			t.Error(closeErr)
 		}
 		if err := db.Close(); err != nil {
 			t.Error(err)
@@ -321,19 +320,109 @@ func p080StartAPI(t *testing.T, authority *store.AuthorityStore, owner domain.Co
 	return server, client, serveErr
 }
 
-func p080StartLocald(t *testing.T, authority *store.AuthorityStore, service *execution.Service, owner domain.ControllerIdentity, socketPath string) (*runnerlocald.PrivateServer, <-chan error) {
+type p080LocaldHarness struct {
+	server *runnerlocald.PrivateServer
+	worker *queueworker.Worker
+	serve  <-chan error
+
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (h *p080LocaldHarness) SocketPath() string {
+	if h == nil || h.server == nil {
+		return ""
+	}
+	return h.server.SocketPath()
+}
+
+func (h *p080LocaldHarness) Close(ctx context.Context) error {
+	if h == nil || h.server == nil || h.worker == nil {
+		return errors.New("P080 locald harness is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h.closeOnce.Do(func() {
+		var result []error
+		if err := h.server.StopAccepting(); err != nil {
+			result = append(result, err)
+		}
+		// This is the same claim barrier ordering as runner-locald.Run: stop
+		// the shared gate before the wake loop, then drain already admitted work.
+		h.server.StopDispatch()
+		h.worker.Stop()
+		if err := h.worker.Wait(ctx); err != nil {
+			result = append(result, err)
+		}
+		if err := h.server.Drain(ctx); err != nil {
+			result = append(result, err)
+		}
+		if err := h.server.Flush(ctx); err != nil {
+			result = append(result, err)
+		}
+		if err := h.server.CloseStreams(); err != nil {
+			result = append(result, err)
+		}
+		if err := <-h.serve; err != nil {
+			result = append(result, err)
+		}
+		h.closeErr = errors.Join(result...)
+	})
+	return h.closeErr
+}
+
+func p080StartLocald(t *testing.T, authority *store.AuthorityStore, service *execution.Service, owner domain.ControllerIdentity, socketPath string) *p080LocaldHarness {
 	t.Helper()
 	p080PrivateSocketParent(t, socketPath)
-	server, err := runnerlocald.NewPrivateServer(runnerlocald.PrivateServerOptions{Authority: authority, Service: service, Owner: owner, SocketPath: socketPath})
+	if _, err := service.ReconcileStartup(context.Background()); err != nil {
+		t.Fatalf("reconcile temporary locald startup: %v", err)
+	}
+	gate := lifecycle.NewGate()
+	worker, err := queueworker.New(queueworker.Options{Service: service, Authority: authority, DispatchGate: gate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := runnerlocald.NewPrivateServer(runnerlocald.PrivateServerOptions{
+		Authority: authority, Service: service, Owner: owner, SocketPath: socketPath,
+		DispatchGate: gate, QueueWake: worker.Wake,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := server.Listen(); err != nil {
 		t.Fatal(err)
 	}
+	if err := worker.RecoverNonterminalJobs(context.Background()); err != nil {
+		_ = server.Close(context.Background())
+		t.Fatal(err)
+	}
+	worker.Start(context.Background())
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve() }()
-	return server, serveErr
+	harness := &p080LocaldHarness{server: server, worker: worker, serve: serveErr}
+	t.Cleanup(func() {
+		closeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := harness.Close(closeContext); err != nil {
+			t.Errorf("close temporary P080 locald harness: %v", err)
+		}
+	})
+	return harness
+}
+
+func p080WaitJobPhase(t *testing.T, authority *store.AuthorityStore, jobID domain.JobID, phase store.JobPhase) store.JobRecord {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		job, err := authority.GetJob(context.Background(), jobID)
+		if err == nil && job.Phase == phase {
+			return job
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for job %s phase %s", jobID, phase)
+	return store.JobRecord{}
 }
 
 func p080PrivateSocketParent(t *testing.T, socketPath string) {
