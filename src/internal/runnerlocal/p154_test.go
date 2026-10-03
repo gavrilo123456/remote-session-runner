@@ -800,6 +800,104 @@ func TestBUG011ControlledRestartInstallerFreezesThenHardStopsOnlyAfterPlan(t *te
 	}
 }
 
+func TestBUG013InstallerRunsExplicitMacStalledRecoveryBeforeNormalRestartPreflight(t *testing.T) {
+	repositoryRoot := p154RepositoryRoot(t)
+	script := filepath.Join(repositoryRoot, "deploy", "macos", "install-launchagents.sh")
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("sh", "-n", script).Run(); err != nil {
+		t.Fatalf("installer shell syntax: %v", err)
+	}
+	text := string(data)
+	for _, required := range []string{
+		"--recover-stalled",
+		"--lost-pair",
+		"run_mac_recover_stalled() {",
+		"capture_loaded_agent_pid() {",
+		"wait_for_inert_or_absent_agent_pid() {",
+		"mac_recovery_old_process_boundary_confirmed=0",
+		`set -- recover-stalled --config "$config_file" --apply`,
+		`set -- "$@" --lost-pair "$pair"`,
+		"Stalled recovery must use the active mac.yaml",
+		"Stalled Mac recovery did not complete; restoring the prior LaunchAgents.",
+		"prior LaunchAgents were not restarted automatically.",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("stalled-recovery installer omits %q", required)
+		}
+	}
+
+	branchStart := strings.LastIndex(text, `if [ "$mac_recover_stalled_mode" -eq 1 ]; then`)
+	preflight := strings.LastIndex(text, "\tpreflight_active_locald_restart\n")
+	branchEnd := strings.LastIndex(text[:preflight], "\tfi\n")
+	if branchStart < 0 || preflight < 0 || branchEnd <= branchStart {
+		t.Fatalf("could not isolate stalled-recovery installer branch: start=%d end=%d preflight=%d", branchStart, branchEnd, preflight)
+	}
+	branch := text[branchStart:branchEnd]
+	recover := strings.Index(branch, "run_mac_recover_stalled")
+	captureLocal := strings.LastIndex(text[:branchStart], `mac_recovery_local_pid=$(capture_loaded_agent_pid com.remote-session-runner.local)`)
+	captureLocalD := strings.LastIndex(text[:branchStart], `mac_recovery_locald_pid=$(capture_loaded_agent_pid com.remote-session-runner.locald)`)
+	boundaryIntent := strings.LastIndex(text[:branchStart], "mac_recovery_old_process_boundary_confirmed=0")
+	ingressStop := strings.LastIndex(text[:branchStart], `stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"`)
+	waitLocal := strings.LastIndex(text[:branchStart], `wait_for_inert_or_absent_agent_pid "$mac_recovery_local_pid" com.remote-session-runner.local`)
+	localdStop := strings.LastIndex(text[:branchStart], `stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"`)
+	waitLocalD := strings.LastIndex(text[:branchStart], `wait_for_inert_or_absent_agent_pid "$mac_recovery_locald_pid" com.remote-session-runner.locald`)
+	boundaryConfirmed := strings.LastIndex(text[:branchStart], "mac_recovery_old_process_boundary_confirmed=1")
+	if captureLocal < 0 || captureLocalD < 0 || boundaryIntent < 0 || ingressStop < 0 || waitLocal < 0 || localdStop < 0 || waitLocalD < 0 || boundaryConfirmed < 0 || recover < 0 || !(captureLocal < captureLocalD && captureLocalD < boundaryIntent && boundaryIntent < ingressStop && ingressStop < waitLocal && waitLocal < localdStop && localdStop < waitLocalD && waitLocalD < boundaryConfirmed && boundaryConfirmed < branchStart && branchStart < preflight) {
+		t.Fatalf("stalled recovery must capture then prove both old process boundaries before repair: capture_local=%d capture_locald=%d boundary_intent=%d ingress_stop=%d wait_local=%d locald_stop=%d wait_locald=%d boundary_confirmed=%d branch=%d preflight=%d recover=%d", captureLocal, captureLocalD, boundaryIntent, ingressStop, waitLocal, localdStop, waitLocalD, boundaryConfirmed, branchStart, preflight, recover)
+	}
+	if strings.Contains(branch, "controlled_restart_suspend_locald") || strings.Contains(branch, "prepare-controlled-restart") {
+		t.Fatalf("stalled recovery must not enter the B011 queued-work handoff: %s", branch)
+	}
+	unsafeRestoreBranch := `elif [ "$status" -ne 0 ] && [ "$restore_prior_agents_on_failure" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ] && [ "$mac_recovery_old_process_boundary_confirmed" -eq 0 ]; then`
+	unsafeRestoreIndex := strings.Index(text, unsafeRestoreBranch)
+	if unsafeRestoreIndex < 0 {
+		t.Fatal("installer lacks the no-duplicate-process rollback boundary")
+	}
+	unsafeRestoreTail := text[unsafeRestoreIndex:]
+	if next := strings.Index(unsafeRestoreTail, "\nelif "); next > 0 {
+		unsafeRestoreTail = unsafeRestoreTail[:next]
+	}
+	if strings.Contains(unsafeRestoreTail, "\trestore_prior_agents") {
+		t.Fatalf("unproven old process boundary must not restore old LaunchAgents: %s", unsafeRestoreTail)
+	}
+}
+
+func TestBUG013InstallerStalledRecoveryProcessBoundaryFailsClosed(t *testing.T) {
+	repositoryRoot := p154RepositoryRoot(t)
+	script := filepath.Join(repositoryRoot, "deploy", "macos", "install-launchagents.sh")
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, "agent_pid_presence() {")
+	end := strings.Index(text[start:], "\nwait_for_absent_path() {")
+	if start < 0 || end < 0 {
+		t.Fatal("could not isolate stalled-recovery process-boundary helpers")
+	}
+	helpers := text[start : start+end]
+	run := func(presence, pid string) ([]byte, error) {
+		// Override only the small presence observation in this hermetic shell.
+		// The production helper remains in the extracted text, while the real
+		// /bin/ps call proves a claimed-live PID cannot pass on an empty state.
+		harness := "set -eu\nsleep() { :; }\n" + helpers + "\nagent_pid_presence() { printf '%s\\n' '" + presence + "'; }\nwait_for_inert_or_absent_agent_pid '" + pid + "' test-agent\n"
+		return exec.Command("sh", "-c", harness).CombinedOutput()
+	}
+
+	if output, err := run("absent", "1"); err != nil {
+		t.Fatalf("absent process boundary error=%v output=%s", err, output)
+	}
+	if output, err := run("present", "2147483647"); err == nil || !strings.Contains(string(output), "Could not inspect a still-present LaunchAgent process state") {
+		t.Fatalf("uninspectable present process error=%v output=%s", err, output)
+	}
+	if output, err := run("present", strconv.Itoa(os.Getpid())); err == nil || (!strings.Contains(string(output), "LaunchAgent process remained live after quiescence") && !strings.Contains(string(output), "Could not inspect a still-present LaunchAgent process state")) {
+		t.Fatalf("live process boundary error=%v output=%s", err, output)
+	}
+}
+
 // The installer must have rollback intent set before, rather than after, each
 // launchctl call that can change the old executor's state. This harness sends
 // HUP, INT, or TERM from a fake launchctl immediately after a successful

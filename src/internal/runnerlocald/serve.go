@@ -66,6 +66,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "controlled-restart-socket-boundary" {
 		return runControlledRestartSocketBoundary(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "recover-stalled" {
+		return runRecoverStalled(args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("runner-locald", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Mac runner configuration")
@@ -88,6 +91,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runner-locald: Mac host configuration is required")
 		return 1
 	}
+	releaseLifecycleLock, err := acquireRunnerLocaldLifecycleLock(settings.ServiceRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "runner-locald: %v\n", err)
+		return runnerLocaldLifecycleLockExit
+	}
+	defer releaseLifecycleLock()
 	ctx := context.Background()
 	authorityDB, err := store.Open(ctx, settings.Database)
 	if err != nil {

@@ -37,6 +37,7 @@ type bug011P4Runtime struct {
 	recoveryEntered    chan struct{}
 	recoveryRelease    <-chan struct{}
 	recoveryErr        error
+	finalizeErr        error
 	executionEntered   chan domain.CommandID
 	executionRelease   <-chan struct{}
 	blockedExecutionID domain.CommandID
@@ -124,8 +125,9 @@ func (r *bug011P4Runtime) ReconcileLostRuntime(_ context.Context, request execut
 func (r *bug011P4Runtime) FinalizeLostRuntime(_ context.Context, request execution.RuntimeReconcileRequest) (execution.RuntimeReconcileResult, error) {
 	r.mu.Lock()
 	r.finalizeCalls++
+	finalizeErr := r.finalizeErr
 	r.mu.Unlock()
-	return execution.RuntimeReconcileResult{RuntimeGeneration: request.Session.RuntimeGeneration, CleanupConfirmed: true}, nil
+	return execution.RuntimeReconcileResult{RuntimeGeneration: request.Session.RuntimeGeneration, CleanupConfirmed: finalizeErr == nil}, finalizeErr
 }
 
 func (r *bug011P4Runtime) markRetained(sessionID domain.SessionID) {
@@ -167,6 +169,12 @@ func (r *bug011P4Runtime) blockRecovery(t *testing.T) (<-chan struct{}, func()) 
 func (r *bug011P4Runtime) setRecoveryError(err error) {
 	r.mu.Lock()
 	r.recoveryErr = err
+	r.mu.Unlock()
+}
+
+func (r *bug011P4Runtime) setFinalizationError(err error) {
+	r.mu.Lock()
+	r.finalizeErr = err
 	r.mu.Unlock()
 }
 

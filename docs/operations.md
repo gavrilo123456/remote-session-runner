@@ -501,6 +501,59 @@ Mac executor can release proven capacity and start the original queued identity;
 that requires explicit approval after a fresh read-only preflight records the
 affected state and expected effect.
 
+### Explicit Mac offline recovery for a fully idle retained-lost set
+
+Use this procedure only when a fresh inventory proves that **no work must
+survive** and every retained Mac session/command capacity record belongs to a
+known terminal `lost` pair. It is a narrow offline maintenance route for a
+fully idle Mac authority. It is not a mailbox operation, public API, normal
+Runner CLI command, or a way to clear a queued request.
+
+Before starting, preserve the complete inventory. Every retained terminal-lost
+session/command pair must be supplied as an exact `--lost-pair` argument. The
+recovery refuses an extra, omitted, duplicate, nonterminal, or mismatched pair;
+any running command, active unknown reservation, queued command, resumable
+one-off job, unreadable database, or uncertain runtime ownership also refuses
+the operation. Do not use it while any request or command needs to survive.
+
+Run only the installer-mediated command from the authoritative Mac checkout:
+
+```sh
+# Mac — tomasz.walczuk
+cd /Users/tomasz.walczuk/projects/remote-session-runner
+deploy/macos/install-launchagents.sh --recover-stalled \
+  --lost-pair 'sess-EXACT-LOST-1:cmd-EXACT-LOST-1' \
+  --lost-pair 'sess-EXACT-LOST-2:cmd-EXACT-LOST-2'
+```
+
+Do **not** run `launchctl` manually, call `runner-locald recover-stalled` with
+`go run` or an installed binary, edit or copy `local.db`, release a slot, or
+signal a recorded child process yourself. Those actions bypass the lifecycle
+and ownership checks.
+
+The installer stages the candidate binaries, captures the old Router and locald
+process identities, stops ingress and then locald, and proves that both old
+processes have exited or are inert before it invokes the staged shared recovery
+operation. The recovery holds an exclusive lifecycle lock, checks the complete
+durable inventory, proves the selected runtime cleanup boundary, and releases
+only the supplied pairs. It never reads, starts, or replays a stored script.
+
+If paired capacity was already released but the durable marker/workspace
+finalization remains pending, retry the **same** installer command only when
+every pending pair is again supplied explicitly and the fresh idle inventory
+still passes. The retry finalizes only that retained cleanup; it does not signal
+the runtime again or replay work. A missing, extra, or unrelated pending pair
+is a refusal. The current BUG-014 inventory has no pending finalization.
+
+On success, its postflight requires zero active session slots, zero active
+command slots, zero running commands, zero live reservations, and zero
+nonterminal jobs before the installer performs the ordinary candidate restart.
+If any check fails, stop at the reported sanitized reason and investigate; do
+not try another recovery mode or manually change the state. After restart,
+prove the installed revision and all-zero Mac authority status, then use one
+fresh harmless mailbox request for live acceptance. Preserve the old lost
+records and do not reuse their request or idempotency identities.
+
 ### Linux-only queue-preserving online retained-capacity recovery
 
 This procedure is only for the selected Ubuntu `runnerd` authority and its
@@ -576,9 +629,10 @@ that this request reached a terminal outcome.
 The legacy stopped-service procedures below are intentionally stricter. They
 are valid only when the complete inventory proves there is no queued work to
 preserve, or when the work has already reached a separately authorized terminal
-disposition. They are Linux `runnerd` procedures; the Mac has no equivalent
-public retained-capacity command in this PoC. Never use them as a substitute for
-the online procedure above.
+disposition. They are Linux `runnerd` procedures. The separate Mac procedure
+above remains installer-mediated and is not a public retained-capacity command.
+Never use either stopped-service procedure as a substitute for the online
+procedure above.
 
 - Do not manually edit `local.db` or `remote.db`, or copy a live SQLite file.
 - `backups/` is reserved for the tested backup/restore implementation; this

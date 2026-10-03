@@ -124,6 +124,47 @@ may exist. The preflight does not call `doctor`, write a health record, recover
 capacity, clean up work, or release a slot. It protects queued local work from
 an installer refresh; it is not a recovery procedure.
 
+### Approved Mac offline recovery when no work must survive
+
+`--recover-stalled` is an installer-only exception for a fully idle Mac
+authority whose complete retained capacity consists of explicitly named,
+terminal `lost` session/command pairs. It must not be used for a queued,
+running, unknown, or otherwise preserved request.
+
+From the authoritative Mac checkout, give every retained pair exactly once:
+
+```sh
+# Mac — tomasz.walczuk
+cd /Users/tomasz.walczuk/projects/remote-session-runner
+deploy/macos/install-launchagents.sh --recover-stalled \
+  --lost-pair 'sess-EXACT-LOST-1:cmd-EXACT-LOST-1' \
+  --lost-pair 'sess-EXACT-LOST-2:cmd-EXACT-LOST-2'
+```
+
+The installer builds and stages the candidate first, stops the Router and
+local executor in order, and proves the old processes are exited or inert
+before the staged shared recovery is allowed to touch `local.db`. That recovery
+requires an exact idle inventory and selected runtime ownership proof; it
+never executes or replays a stored script. Its postflight must show zero active
+session slots, command slots, running commands, live reservations, and
+nonterminal jobs before the ordinary LaunchAgent restart begins.
+
+If capacity was released but an owner-only marker/workspace finalization remains
+pending, retry the same installer command only with every pending pair named
+again and only after the fresh idle inventory passes. That retry finalizes the
+retained cleanup; it does not signal a runtime or replay a script. Any missing,
+extra, or unrelated pending pair is refused.
+
+Do not call `launchctl` directly, invoke `runner-locald recover-stalled` via
+`go run` or the installed binary, edit/copy SQLite, manually release capacity,
+or signal a recorded child process. If the installer refuses any check, leave
+the state unchanged and investigate. After a successful restart, attest the
+installed revision and use a new harmless mailbox request for live acceptance;
+do not replay historical lost work. See the [operations recovery
+boundary](operations.md#explicit-mac-offline-recovery-for-a-fully-idle-retained-lost-set)
+and [BUG-014](../050-bugs/014-idle-mac-retained-lost-capacity-recovery.md) for
+the full constraints and verification record.
+
 Verify both services:
 
 ```sh
