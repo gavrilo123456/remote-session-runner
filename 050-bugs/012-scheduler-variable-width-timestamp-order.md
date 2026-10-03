@@ -4,15 +4,15 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` — source correction prepared; required source gates remain to run |
+| Status | `CLOSED` — source correction and required source-only verification passed; it is not installed on a service |
 | Severity | High |
 | Priority | High — the fair scheduler contract chooses the oldest eligible durable command |
 | Reported | 2026-10-03 |
 | Discovered by | Required B011-P4 primary Ubuntu source regression |
 | Affected component/path | `src/internal/store/scheduler.go`; the B008 regression helper used the same incorrect text ordering |
 | Affected revision | Confirmed at `68b962f45fac6e7f9bbb1c06f9ba01903c39fbcd`; its P4 diff did not modify `runnerd`, `queueworker`, or `store` |
-| Fixed revision | Pending |
-| Verification | Focused store/B008 regression, full Mac source gates, and clean matching Ubuntu source regressions. No installed service restart is part of this correction. |
+| Fixed revision | `70283c97d0b54f34dd743f3f5798095bdb16851f` (`fix(BUG-012): preserve chronological queue ordering`) |
+| Verification | Focused store/B008 regression, full Mac source gates, clean matching primary and sandbox Ubuntu source regressions; no installed service restart. |
 
 ## Reported behavior
 
@@ -94,8 +94,38 @@ claimed fixed by this record.
    and a corruption regression that retains the queued boundary.
 7. Repeat the halted B011-P4 gates and both clean Ubuntu source regressions.
 
+## Correction and verification
+
+The correction reads every eligible candidate's `created_at`, parses it with
+the existing `parseStoredTime`, and orders candidates chronologically before it
+makes the current durable claim. An invalid candidate timestamp returns
+`ErrCommandOrderCorrupt` before command state or capacity changes. The B008
+helper now parses event timestamps before it verifies start order.
+
+Mac source verification passed at the fixed source revision:
+
+- focused scheduler and corruption tests;
+- B008 retained-capacity test repeated ten times;
+- B011-P4 locald, local API, shared-worker, compile-only, race, full test,
+  vet/build/smoke, import-boundary, formatting, and diff gates.
+
+The Mac pushed `70283c97d0b54f34dd743f3f5798095bdb16851f` to GitHub `dev`
+with the configured explicit key. Both clean Ubuntu `dev` checkouts
+fast-forwarded with their configured explicit GitHub keys and matched that
+exact SHA:
+
+| Host | Source-only result |
+| --- | --- |
+| `ubuntu@oracle-yuta-konopka-ubuntu-micro-02` | shared-worker regression **PASS**; `TestP019D17Scheduler.*` **PASS** |
+| `ubuntu@oracle-gustaw-janecki-ubuntu-flex-02` | shared-worker regression **PASS**; `TestP019D17Scheduler.*` **PASS** |
+
+These runs used only the project checkouts and selected Go toolchains. They
+did not restart, install, stop, or reconfigure a service; they did not touch a
+mailbox, live database, public endpoint, or live command.
+
 ## History
 
 | Date | Change |
 | --- | --- |
 | 2026-10-03 | Recorded after the primary Ubuntu B011-P4 source regression failed. No installed service was restarted, installed, or reconfigured. |
+| 2026-10-03 | Fixed in `70283c97d0b54f34dd743f3f5798095bdb16851f`; Mac and both clean Ubuntu source regressions passed. No installed service was restarted, installed, or reconfigured. |
