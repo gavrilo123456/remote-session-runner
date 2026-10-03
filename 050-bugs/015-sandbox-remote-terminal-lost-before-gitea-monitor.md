@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | FIX IMPLEMENTED — DEPLOYMENT PENDING |
+| Status | RESOLVED |
 | Severity | High |
 | Priority | P1 — blocks protected DEV deployment verification |
 | Reported | 2026-10-03 |
@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner maintainer |
 | Affected component/path | slidestud-io workspace mailbox; Mac relay/result projection; remote sandbox-host bridge and runnerd one-off execution |
 | Affected revision | First attempt: revision not retained; second controlled recurrence: `1b68a3c1f37e41aed2f536ed77d7f5bf43f5649f` on sandbox `runnerd` |
-| Fixed revision | None |
-| Verification | Local automated checks PASS; host deployment and live sandbox mailbox validation pending |
+| Fixed revision | `cc3f6f0fc00733781c5c99fb37fcb56f403a28ed` |
+| Verification | PASS — local automated checks, installed-build attestation on all three hosts, fresh native SlideStudio-to-sandbox failed-command control, exact ACK, and final sandbox P128 zero-work check |
 
 ## Reported behavior
 
@@ -435,6 +435,43 @@ do not prove the deployed sandbox service or mailbox result projection; that
 requires the Git handoff, normal host guards, installed-service restart, and a
 fresh harmless sandbox request.
 
+## Deployment and live validation
+
+The Mac source commit was pushed to `origin/dev`, then both Ubuntu checkouts
+fast-forwarded cleanly to the same full SHA before installation. The normal Mac
+installer and both normal Linux installers installed that revision. The running
+Mac `runner-local` and `runner-locald`, primary `runnerd`, and sandbox `runnerd`
+each reported the same live `build_revision` through their private health
+sockets.
+
+The first sandbox install attempt was correctly blocked by P128 because the
+second recorded BUG-015 command retained exactly one slot. Read-only inventory
+proved it was only terminal-lost
+`sess-daa701fbd8470460bb7912e4319765f6` /
+`cmd-f7917a7deaaa882359a0a45ec033119e`, with no running work or unfinished
+job. The documented stopped-service `runnerd recover-lost` operation proved
+its recorded process boundary, released only that pair, and did not replay its
+script. Its postflight P128 check passed before the normal sandbox install.
+
+Fresh native mailbox control `req-bug015-errexit-18db26fabb0ec920` then
+published through the configured `slidestud-io` inbox without target fields.
+It therefore resolved through `inbox_default` to `sandbox-dev` /
+`remote/sandbox-host`. Its harmless script emitted fixed stdout/stderr markers,
+enabled `set -euo pipefail`, and exited with status 7 before an after-marker.
+The correlated terminal response for
+`cmd-219ba2c7199a172aa1d0afdc69bcfc3f` was:
+
+- `request_state=complete`, `job_phase=complete`, and `command_state=failed`;
+- exit code `7`, complete non-truncated stdout/stderr, and no output-unavailable
+  reason;
+- `teardown_outcome=closed`; and
+- an event stream ending in `command_failed`, followed by an accepted exact ACK.
+
+The final sandbox P128 result reported zero active sessions, running commands,
+unreleased slots, and unfinished jobs. This is Runner mailbox application
+evidence; it does not replay or establish a result for either historical Logger
+monitor request.
+
 ## Acceptance criteria for a correction
 
 1. Both safe reproduction controls return exactly one terminal
@@ -457,8 +494,9 @@ fresh harmless sandbox request.
 
 ## Resolution
 
-Open. Root cause is confirmed and the source correction is locally verified;
-deployment and a live sandbox mailbox control remain required.
+Resolved. An ordinary strict-shell failure now becomes a complete nonzero
+command result while an actual persistent-shell exit remains conservatively
+`lost`. The deployed sandbox mailbox control verified this behavior end to end.
 
 ## History
 
@@ -468,3 +506,4 @@ deployment and a live sandbox mailbox control remain required.
 | 2026-10-04 | Fresh controlled remote monitor reproduced the exact one-byte stderr then command_lost signature; correlated terminal record was ACKed with no deployment action. |
 | 2026-10-04 | Added two-attempt timing/capture comparison and a staged, safe reproduction matrix that isolates shell, credential-file, curl/TLS, and authenticated Gitea monitor boundaries. |
 | 2026-10-04 | Confirmed `persistent_shell_exited` in the current sandbox service journal; implemented and locally verified a shared persistent-shell `errexit` boundary correction. |
+| 2026-10-04 | Pushed and installed `cc3f6f0` on the Mac, primary Ubuntu, and sandbox Ubuntu. Guarded recovery released the sole terminal-lost sandbox pair; a new native SlideStudio inbox default control completed `failed` with exit 7, complete output/events, closed teardown, ACK, and final P128 zero work. |
