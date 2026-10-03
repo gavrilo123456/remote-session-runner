@@ -44,6 +44,18 @@ type CommandSlotRecord struct {
 // command_started, and sets the command running. No runtime is started here;
 // the caller starts it only after this durable transaction commits.
 func (s *AuthorityStore) StartNextEligibleCommand(ctx context.Context, maxSlots int) (CommandRecord, error) {
+	return s.startNextEligibleCommand(ctx, maxSlots, false)
+}
+
+// StartNextDispatchableCommand is the queue-worker claim boundary. It accepts
+// regular queued commands and one-off commands whose coordinator has already
+// recorded awaiting_command, preventing a worker from racing the durable
+// acceptance-to-handoff checkpoint.
+func (s *AuthorityStore) StartNextDispatchableCommand(ctx context.Context, maxSlots int) (CommandRecord, error) {
+	return s.startNextEligibleCommand(ctx, maxSlots, true)
+}
+
+func (s *AuthorityStore) startNextEligibleCommand(ctx context.Context, maxSlots int, requireOneOffHandoff bool) (CommandRecord, error) {
 	if maxSlots == 0 {
 		maxSlots = DefaultRunningCommandLimit
 	}
@@ -82,12 +94,22 @@ WHERE host_key = ? AND stop_confirmed_at IS NULL
 			return CommandRecord{}, ErrCommandSlotsFull
 		}
 
-		rows, err := connection.QueryContext(ctx, `
+		candidateQuery := `
 SELECT c.command_id, c.session_id, c.created_at, c.ordinal
 FROM exec_commands c
 JOIN exec_sessions s ON s.session_id = c.session_id
 WHERE c.state = ? AND s.state = ?
-`, string(domain.CommandStateQueued), string(domain.SessionStateReady))
+		`
+		candidateArgs := []any{string(domain.CommandStateQueued), string(domain.SessionStateReady)}
+		if requireOneOffHandoff {
+			candidateQuery += `AND NOT EXISTS (
+    SELECT 1 FROM exec_jobs j
+    WHERE j.command_id = c.command_id AND j.phase <> ?
+)
+`
+			candidateArgs = append(candidateArgs, string(JobPhaseAwaitingCommand))
+		}
+		rows, err := connection.QueryContext(ctx, candidateQuery, candidateArgs...)
 		if err != nil {
 			return CommandRecord{}, fmt.Errorf("query scheduler candidates: %w", err)
 		}

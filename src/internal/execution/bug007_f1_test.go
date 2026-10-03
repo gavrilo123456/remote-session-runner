@@ -124,14 +124,21 @@ func TestBUG007F1ResumeStoredJobUsesCanonicalPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Job.Phase != store.JobPhaseComplete || resumed.Command.State != domain.CommandStateSucceeded || resumed.Session.State != domain.SessionStateClosed {
-		t.Fatalf("resumed stored job = %+v", resumed)
+	if resumed.Job.Phase != store.JobPhaseAwaitingCommand || resumed.Command.State != domain.CommandStateQueued || resumed.Session.State != domain.SessionStateReady {
+		t.Fatalf("stored job after coordinator handoff = %+v", resumed)
 	}
 	if resumed.Session.Limits.CommandTimeout != 42*time.Second {
 		t.Fatalf("stored command timeout = %s, want 42s", resumed.Session.Limits.CommandTimeout)
 	}
-	if runtime.prepareCall != 1 || runtime.startCall != 1 || runtime.commandCall != 1 {
-		t.Fatalf("runtime calls prepare=%d start=%d command=%d, want 1/1/1", runtime.prepareCall, runtime.startCall, runtime.commandCall)
+	if runtime.prepareCall != 1 || runtime.startCall != 1 || runtime.commandCall != 0 {
+		t.Fatalf("coordinator runtime calls prepare=%d start=%d command=%d, want 1/1/0", runtime.prepareCall, runtime.startCall, runtime.commandCall)
+	}
+	settled := bug013ExecuteAndSettleStoredJob(t, service, authority, accepted.JobID)
+	if settled.Job.Phase != store.JobPhaseComplete || settled.Command.State != domain.CommandStateSucceeded || settled.Session.State != domain.SessionStateClosed {
+		t.Fatalf("settled stored job = %+v", settled)
+	}
+	if runtime.commandCall != 1 {
+		t.Fatalf("worker command calls = %d, want 1", runtime.commandCall)
 	}
 }
 
@@ -152,11 +159,18 @@ func TestBUG007F1ResumeStoredJobAcceptsInheritedLegacyPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Job.Phase != store.JobPhaseComplete || resumed.Command.State != domain.CommandStateSucceeded || resumed.Session.State != domain.SessionStateClosed {
-		t.Fatalf("resumed legacy stored job = %+v", resumed)
+	if resumed.Job.Phase != store.JobPhaseAwaitingCommand || resumed.Command.State != domain.CommandStateQueued || resumed.Session.State != domain.SessionStateReady {
+		t.Fatalf("legacy stored job after coordinator handoff = %+v", resumed)
 	}
 	if resumed.Session.Limits.CommandTimeout != p025Environment(t).ServiceLimits().CommandTimeout {
 		t.Fatalf("inherited command timeout = %s, want environment default %s", resumed.Session.Limits.CommandTimeout, p025Environment(t).ServiceLimits().CommandTimeout)
+	}
+	if runtime.commandCall != 0 {
+		t.Fatalf("legacy coordinator command calls = %d, want 0", runtime.commandCall)
+	}
+	settled := bug013ExecuteAndSettleStoredJob(t, service, authority, accepted.JobID)
+	if settled.Job.Phase != store.JobPhaseComplete || settled.Command.State != domain.CommandStateSucceeded || settled.Session.State != domain.SessionStateClosed || runtime.commandCall != 1 {
+		t.Fatalf("settled legacy stored job=%+v calls=%d", settled, runtime.commandCall)
 	}
 }
 
@@ -205,12 +219,35 @@ func TestBUG007F3ResumeStoredJobAdvancesExistingReadySession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Job.Phase != store.JobPhaseComplete || resumed.Command.State != domain.CommandStateSucceeded || resumed.Session.State != domain.SessionStateClosed {
-		t.Fatalf("checkpoint retry result=%+v", resumed)
+	if resumed.Job.Phase != store.JobPhaseAwaitingCommand || resumed.Command.State != domain.CommandStateQueued || resumed.Session.State != domain.SessionStateReady {
+		t.Fatalf("checkpoint retry coordinator result=%+v", resumed)
 	}
-	if runtime.prepareCall != 1 || runtime.startCall != 1 || runtime.commandCall != 1 {
-		t.Fatalf("checkpoint retry runtime calls prepare=%d start=%d command=%d, want one each", runtime.prepareCall, runtime.startCall, runtime.commandCall)
+	if runtime.prepareCall != 1 || runtime.startCall != 1 || runtime.commandCall != 0 {
+		t.Fatalf("checkpoint retry coordinator calls prepare=%d start=%d command=%d, want 1/1/0", runtime.prepareCall, runtime.startCall, runtime.commandCall)
 	}
+	settled := bug013ExecuteAndSettleStoredJob(t, service, authority, accepted.Job.JobID)
+	if settled.Job.Phase != store.JobPhaseComplete || settled.Command.State != domain.CommandStateSucceeded || settled.Session.State != domain.SessionStateClosed {
+		t.Fatalf("checkpoint retry settled result=%+v", settled)
+	}
+	if runtime.commandCall != 1 {
+		t.Fatalf("checkpoint retry worker command calls=%d, want one", runtime.commandCall)
+	}
+}
+
+func bug013ExecuteAndSettleStoredJob(t *testing.T, service *Service, authority *store.AuthorityStore, jobID domain.JobID) RunJobResult {
+	t.Helper()
+	claim, err := service.ClaimNextEligibleCommand(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ExecuteClaimedCommand(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := service.ResumeStoredJob(context.Background(), jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return settled
 }
 
 func bug007F1StoredPolicyRequest(t *testing.T, jobID, sessionID, commandID, key, script string) RunJobRequest {

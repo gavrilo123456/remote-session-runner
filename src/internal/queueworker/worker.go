@@ -11,6 +11,7 @@ import (
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
 	"remote-session-runner/src/internal/lifecycle"
+	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 )
 
@@ -248,7 +249,7 @@ func (d *Worker) dispatch(ctx context.Context, recoveryTick bool) error {
 			release()
 			return nil
 		}
-		claim, err := d.service.ClaimNextEligibleCommand(context.Background())
+		claim, err := d.service.ClaimNextDispatchableCommand(context.Background())
 		if err != nil {
 			if errors.Is(err, store.ErrCommandSlotsFull) {
 				if recoveryTick {
@@ -378,6 +379,26 @@ func (d *Worker) beginLostRuntimeFinalizationAttempt(now time.Time) bool {
 
 func (d *Worker) executeClaim(claim store.CommandRecord, release func()) {
 	defer release()
+	// The durable scheduler has already made this command running. Its strict
+	// one-off query permits this claim only after the coordinator committed
+	// awaiting_command. Reflect the running claim before entering the runtime
+	// so accepted mailbox views can report active work without exposing output
+	// or a terminal result. A checkpoint failure must not abandon a durable
+	// running claim; normal terminal settlement will retry the coordinator
+	// boundary.
+	if job, err := d.authority.GetJobByCommandID(context.Background(), claim.CommandID); err == nil {
+		if job.Phase == store.JobPhaseAwaitingCommand {
+			if _, checkpointErr := d.authority.CheckpointJob(context.Background(), job.JobID, store.JobCheckpoint{
+				ExpectedPhase: job.Phase,
+				NextPhase:     job.Phase,
+				Command:       &claim,
+			}); checkpointErr != nil {
+				d.logger.Warn("queue worker could not record claimed command on job", "job_id", job.JobID, "command_id", claim.CommandID, "lifecycle_phase", "command_claim_checkpoint", "reason", workerFailureReason(checkpointErr))
+			}
+		}
+	} else if !errors.Is(err, store.ErrJobNotFound) {
+		d.logger.Warn("queue worker could not find command job before execution", "command_id", claim.CommandID, "lifecycle_phase", "command_claim_checkpoint", "reason", workerFailureReason(err))
+	}
 	if _, err := d.service.ExecuteClaimedCommand(context.Background(), claim); err != nil {
 		d.logger.Warn("queue worker command finished with service error", "command_id", claim.CommandID, "lifecycle_phase", "command_execution", "reason", workerFailureReason(err))
 	}
@@ -523,6 +544,16 @@ func terminalJobPhase(phase store.JobPhase) bool {
 
 func workerFailureReason(err error) string {
 	switch {
+	case errors.Is(err, hostruntime.ErrOutputBoundary):
+		return "output_boundary_timeout"
+	case errors.Is(err, hostruntime.ErrOutputCallback):
+		return "output_persistence_failed"
+	case errors.Is(err, execution.ErrShellExited), errors.Is(err, hostruntime.ErrPersistentShellExited):
+		return "persistent_shell_exited"
+	case errors.Is(err, hostruntime.ErrPersistentShellLost):
+		return "persistent_shell_unavailable"
+	case errors.Is(err, hostruntime.ErrPersistentShellCommand):
+		return "persistent_shell_io_failed"
 	case errors.Is(err, context.Canceled):
 		return "context_cancelled"
 	case errors.Is(err, context.DeadlineExceeded):

@@ -20,6 +20,7 @@ func TestBUG011PersistentBoundaryErrorsRecordLostWithoutReplay(t *testing.T) {
 	}{
 		{name: "persistent shell exited", failure: hostruntime.ErrPersistentShellExited},
 		{name: "output boundary unconfirmed", failure: hostruntime.ErrOutputBoundary},
+		{name: "output callback failed", failure: hostruntime.ErrOutputCallback},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runtime := &p020FakeRuntime{generation: "generation-bug011-boundary", commandErr: test.failure}

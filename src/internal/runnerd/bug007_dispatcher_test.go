@@ -442,6 +442,11 @@ func TestBUG007DispatcherRecoveryStartsOnlyJobBeforeSessionBoundary(t *testing.T
 	if err := dispatcher.RecoverNonterminalJobs(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Recovery advances the durable coordinator only. The shared worker owns
+	// the later queued-command claim and runtime call, so start it before
+	// asserting the recovered command reaches its terminal state.
+	dispatcher.Start(ctx)
+	t.Cleanup(func() { bug007StopDispatcher(t, dispatcher) })
 	completed := bug007WaitForTerminalJob(t, authority, accepted.JobID)
 	if completed.Phase != store.JobPhaseComplete || completed.CommandState == nil || *completed.CommandState != domain.CommandStateSucceeded {
 		t.Fatalf("recovered pre-session job=%+v, want complete/succeeded", completed)

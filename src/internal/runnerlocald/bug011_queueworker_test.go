@@ -468,6 +468,48 @@ func TestBUG011LocalRunIsDurablyAcceptedBeforeWorkerExecution(t *testing.T) {
 	}
 }
 
+// TestBUG013LocalOneOffRecordsRunningBeforeBlockedRuntimeCompletes proves the
+// one-off coordinator hands command execution to the shared worker. A long
+// local command must be visible as awaiting_command/running while it runs,
+// rather than remaining at accepting_command until its terminal result.
+func TestBUG013LocalOneOffRecordsRunningBeforeBlockedRuntimeCompletes(t *testing.T) {
+	authority, service, runtime := newBUG011P4Service(t, true)
+	server, _ := startBUG011P4PrivateServer(t, authority, service, p060SocketPath(t))
+	intent := p078LocalRunIntent(t, authority)
+	executionEntered, releaseExecution := runtime.blockExecution(t, intent.CommandID)
+	defer releaseExecution()
+
+	accepted, err := server.acceptIntent(context.Background(), intent)
+	if err != nil || accepted.JobPhase != string(store.JobPhaseCreatingSession) || accepted.CommandState != "" {
+		t.Fatalf("accepted local one-off=%+v err=%v", accepted, err)
+	}
+	server.wakeQueueAfterAcceptedIntent(accepted)
+	select {
+	case got := <-executionEntered:
+		if got != intent.CommandID {
+			t.Fatalf("blocked execution command=%s, want %s", got, intent.CommandID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("local worker did not enter blocked one-off execution")
+	}
+
+	running := waitBUG011P4Command(t, authority, intent.CommandID, domain.CommandStateRunning)
+	job, err := authority.GetJob(context.Background(), intent.JobID)
+	if err != nil || job.Phase != store.JobPhaseAwaitingCommand || job.CommandState == nil || *job.CommandState != domain.CommandStateRunning || running.CommandID != intent.CommandID {
+		t.Fatalf("active one-off job=%+v command=%+v err=%v, want awaiting/running", job, running, err)
+	}
+	if runtime.executionCount(intent.CommandID) != 1 {
+		t.Fatalf("active one-off executions=%d, want exactly one", runtime.executionCount(intent.CommandID))
+	}
+
+	releaseExecution()
+	completed := waitBUG011P4Job(t, authority, intent.JobID, store.JobPhaseComplete)
+	command := waitBUG011P4Command(t, authority, intent.CommandID, domain.CommandStateSucceeded)
+	if completed.SessionID != intent.SessionID || completed.CommandID != intent.CommandID || command.ExitCode == nil || *command.ExitCode != 0 || !command.OutputComplete {
+		t.Fatalf("completed one-off job=%+v command=%+v", completed, command)
+	}
+}
+
 func TestBUG011LocalSharedDispatchGateStopsWorkerClaims(t *testing.T) {
 	authority, service, runtime := newBUG011P4Service(t, true)
 	gate := lifecycle.NewGate()

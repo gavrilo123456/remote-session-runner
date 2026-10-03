@@ -23,6 +23,7 @@ var (
 	ErrPersistentShellExited  = errors.New("persistent shell exited")
 	ErrPersistentShellLost    = errors.New("persistent shell is lost")
 	ErrOutputBoundary         = errors.New("command output boundary is unconfirmed")
+	ErrOutputCallback         = errors.New("command output delivery callback failed")
 	ErrNoActiveCommand        = errors.New("no active persistent-shell command")
 )
 
@@ -41,6 +42,15 @@ const (
 		"IFS= read -r -n 1 runner_startup_extra <&5 && exit 0\n" +
 		"unset runner_startup_commit runner_startup_extra\n" +
 		"exec 5<&-\n"
+)
+
+const (
+	// Output callbacks persist live chunks to the authority. A normal SQLite
+	// write can briefly outlast the physical FIFO grace, so give an in-flight
+	// callback a bounded chance to return before declaring the boundary lost.
+	// This does not extend the no-callback physical EOF policy.
+	maxOutputCallbackBoundaryGrace = 5 * time.Second
+	outputCallbackBoundaryPoll     = 10 * time.Millisecond
 )
 
 // PersistentShellOptions controls the real Bash process used for one session.
@@ -437,12 +447,13 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	stdoutDone := make(chan outputDrainResult, 1)
 	stderrDone := make(chan outputDrainResult, 1)
 	var sequence atomic.Uint64
+	var callbacksInFlight atomic.Int32
 	limiter := &outputLimiter{max: s.maxOutputBytes}
 	go func() {
-		stdoutDone <- drainOutputFIFO(ctx, stdoutRead, OutputStreamStdout, &sequence, limiter, onOutput)
+		stdoutDone <- drainOutputFIFO(ctx, stdoutRead, OutputStreamStdout, &sequence, limiter, onOutput, &callbacksInFlight)
 	}()
 	go func() {
-		stderrDone <- drainOutputFIFO(ctx, stderrRead, OutputStreamStderr, &sequence, limiter, onOutput)
+		stderrDone <- drainOutputFIFO(ctx, stderrRead, OutputStreamStderr, &sequence, limiter, onOutput, &callbacksInFlight)
 	}()
 
 	started := ControlFrame{Version: ControlProtocolVersion, Type: FrameTypeCommandStarted, SessionID: s.parser.sessionID, CommandID: commandID, Generation: s.parser.generation}
@@ -512,7 +523,7 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	// drainers, establishing the P032 output boundary for this precursor.
 	_ = stdoutKeepalive.Close()
 	_ = stderrKeepalive.Close()
-	stdoutResult, stderrResult, drainErr := waitForOutputBoundary(stdoutDone, stderrDone, s.boundaryTimeout, stdoutRead, stderrRead)
+	stdoutResult, stderrResult, drainErr := waitForOutputBoundary(stdoutDone, stderrDone, s.boundaryTimeout, stdoutRead, stderrRead, &callbacksInFlight)
 	if drainErr != nil {
 		s.lost = true
 		return PersistentShellResult{}, drainErr
@@ -743,9 +754,10 @@ func (s *PersistentShell) CapacityRetained() bool {
 	return s.lost && !s.cleanupConfirmed
 }
 
-func waitForOutputBoundary(stdoutDone, stderrDone <-chan outputDrainResult, timeout time.Duration, stdoutRead, stderrRead *os.File) (outputDrainResult, outputDrainResult, error) {
+func waitForOutputBoundary(stdoutDone, stderrDone <-chan outputDrainResult, timeout time.Duration, stdoutRead, stderrRead *os.File, callbacksInFlight *atomic.Int32) (outputDrainResult, outputDrainResult, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	var callbackGraceDeadline time.Time
 	var stdoutResult, stderrResult outputDrainResult
 	stdoutReady, stderrReady := false, false
 	for !stdoutReady || !stderrReady {
@@ -755,6 +767,27 @@ func waitForOutputBoundary(stdoutDone, stderrDone <-chan outputDrainResult, time
 		case stderrResult = <-stderrDone:
 			stderrReady = true
 		case <-timer.C:
+			if callbacksInFlight != nil && callbacksInFlight.Load() > 0 {
+				now := time.Now()
+				if callbackGraceDeadline.IsZero() {
+					callbackGraceDeadline = now.Add(maxOutputCallbackBoundaryGrace)
+				}
+				if now.Before(callbackGraceDeadline) {
+					timer.Reset(outputCallbackBoundaryPoll)
+					continue
+				}
+			}
+			// A callback may have returned just before this timer tick. Prefer an
+			// already-completed drainer over a false boundary loss.
+			select {
+			case stdoutResult = <-stdoutDone:
+				stdoutReady = true
+				continue
+			case stderrResult = <-stderrDone:
+				stderrReady = true
+				continue
+			default:
+			}
 			_ = stdoutRead.Close()
 			_ = stderrRead.Close()
 			return outputDrainResult{}, outputDrainResult{}, fmt.Errorf("%w: timed out after %s", ErrOutputBoundary, timeout)
@@ -886,8 +919,23 @@ func createOutputFIFO(dir, pattern string) (string, *os.File, *os.File, error) {
 	return path, read, keepalive, nil
 }
 
-func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, sequence *atomic.Uint64, limiter *outputLimiter, onOutput func(OutputChunk) error) outputDrainResult {
+func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, sequence *atomic.Uint64, limiter *outputLimiter, onOutput func(OutputChunk) error, callbacksInFlight *atomic.Int32) outputDrainResult {
 	var result outputDrainResult
+	recordCallbackError := func(err error) {
+		if err != nil && result.err == nil {
+			result.err = fmt.Errorf("%w: %v", ErrOutputCallback, err)
+		}
+	}
+	runCallback := func(chunk OutputChunk) {
+		if onOutput == nil {
+			return
+		}
+		if callbacksInFlight != nil {
+			callbacksInFlight.Add(1)
+			defer callbacksInFlight.Add(-1)
+		}
+		recordCallbackError(onOutput(chunk))
+	}
 	buffer := make([]byte, MaxOutputChunkBytes)
 	pending := make([]byte, 0, MaxOutputChunkBytes)
 	publishedFirstChunk := false
@@ -900,9 +948,7 @@ func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, se
 		result.chunks = append(result.chunks, chunk)
 		if onOutput != nil {
 			publishedFirstChunk = true
-			if err := onOutput(chunk); err != nil && result.err == nil {
-				result.err = err
-			}
+			runCallback(chunk)
 		}
 		pending = pending[:0]
 	}
@@ -926,9 +972,7 @@ func drainOutputFIFO(ctx context.Context, file *os.File, stream OutputStream, se
 				result.chunks = append(result.chunks, chunk)
 				if onOutput != nil {
 					publishedFirstChunk = true
-					if callbackErr := onOutput(chunk); callbackErr != nil && result.err == nil {
-						result.err = callbackErr
-					}
+					runCallback(chunk)
 				}
 				pending = pending[MaxOutputChunkBytes:]
 			}

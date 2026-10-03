@@ -644,6 +644,17 @@ func (s *Service) ClaimNextEligibleCommand(ctx context.Context) (store.CommandRe
 	return s.store.StartNextEligibleCommand(ctx, store.DefaultRunningCommandLimit)
 }
 
+// ClaimNextDispatchableCommand is the shared queue worker's stricter claim
+// boundary. It waits for a one-off job to record awaiting_command before a
+// runtime can own it, while retaining ClaimNextEligibleCommand for synchronous
+// compatibility callers that already own their coordinator step.
+func (s *Service) ClaimNextDispatchableCommand(ctx context.Context) (store.CommandRecord, error) {
+	if s == nil || s.store == nil || s.runtime == nil {
+		return store.CommandRecord{}, ErrExecutionServiceConfiguration
+	}
+	return s.store.StartNextDispatchableCommand(ctx, store.DefaultRunningCommandLimit)
+}
+
 // ExecuteClaimedCommand runs exactly one command that ClaimNextEligibleCommand
 // durably claimed. It reloads the command and session from the authority so a
 // caller cannot substitute script bytes or execute a different command. A
@@ -851,7 +862,10 @@ func (s *Service) RunJob(ctx context.Context, request RunJobRequest) (RunJobResu
 	if err != nil {
 		return RunJobResult{}, err
 	}
-	result, err := s.resumeJob(ctx, request, accepted.Job)
+	// RunJob remains the synchronous compatibility path. Production ingress
+	// persists work with AcceptJob and lets the shared queue worker execute the
+	// queued command after this coordinator has recorded its handoff.
+	result, err := s.resumeJob(ctx, request, accepted.Job, false)
 	result.Duplicate = accepted.Duplicate
 	result.IdempotencyWarning = accepted.IdempotencyWarning
 	return result, err
@@ -886,7 +900,7 @@ func (s *Service) ResumeJob(ctx context.Context, id domain.JobID, controller dom
 		CanonicalPayload:     job.CanonicalPayload,
 		IdempotencyRetention: options.IdempotencyRetention,
 	}
-	return s.resumeJob(ctx, options, job)
+	return s.resumeJob(ctx, options, job, false)
 }
 
 // ResumeStoredJob reconstructs the policy inputs needed to continue one
@@ -913,7 +927,24 @@ func (s *Service) ResumeStoredJob(ctx context.Context, id domain.JobID) (RunJobR
 		}
 		return result, err
 	}
-	return s.ResumeJob(ctx, job.JobID, job.Controller, options)
+	options.Acceptance = store.JobAcceptance{
+		JobID:                job.JobID,
+		SessionID:            job.SessionID,
+		CommandID:            job.CommandID,
+		Controller:           job.Controller,
+		IdempotencyKey:       job.IdempotencyKey,
+		RequestHash:          job.RequestHash,
+		Environment:          job.Environment,
+		Target:               job.Target,
+		Source:               job.Source,
+		Script:               string(job.ScriptBytes),
+		CanonicalPayload:     job.CanonicalPayload,
+		IdempotencyRetention: options.IdempotencyRetention,
+	}
+	// Stored jobs are advanced by the queue worker. It owns the durable command
+	// claim and runtime execution, so this coordinator may accept and checkpoint
+	// a command but must never source it inline.
+	return s.resumeJob(ctx, options, job, true)
 }
 
 // checkpointPreSessionFailure records a permanent failure only while the job
@@ -1105,7 +1136,11 @@ func canonicalNumberInt64(value string) (int64, error) {
 	return parsed, nil
 }
 
-func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job store.JobRecord) (RunJobResult, error) {
+// resumeJob advances durable one-off coordination. When deferCommandExecution
+// is true, it stops after the command is accepted and checkpointed; the shared
+// queue worker then claims and executes it. The false path retains RunJob's
+// synchronous compatibility contract for callers outside that worker.
+func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job store.JobRecord, deferCommandExecution bool) (RunJobResult, error) {
 	// One-off jobs can be resumed by a background dispatcher after their
 	// original HTTP/SSH request has ended. Restore the immutable trusted
 	// ingress recorded at acceptance so every later allow/deny audit row keeps
@@ -1215,7 +1250,7 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 			if err != nil {
 				return result, err
 			}
-			accepted, commandErr := s.SubmitCommand(ctx, SubmitCommandRequest{
+			commandRequest := SubmitCommandRequest{
 				CommandID:            job.CommandID,
 				SessionID:            job.SessionID,
 				Controller:           job.Controller,
@@ -1224,13 +1259,23 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 				Script:               string(job.ScriptBytes),
 				Timeout:              session.Limits.CommandTimeout,
 				IdempotencyRetention: request.IdempotencyRetention,
-			})
-			if commandErr == nil && accepted.Command.State == domain.CommandStateQueued {
-				accepted, commandErr = s.ResumeCommand(ctx, job.CommandID, job.Controller)
+			}
+			// Stored jobs are owned by the queue worker. It must durably accept
+			// and checkpoint the command before that worker may claim it, rather
+			// than using SubmitCommand's synchronous execution convenience path.
+			var accepted SubmitCommandResult
+			var commandErr error
+			if deferCommandExecution {
+				accepted, commandErr = s.AcceptCommand(ctx, commandRequest)
+			} else {
+				accepted, commandErr = s.SubmitCommand(ctx, commandRequest)
 			}
 			if accepted.Command.CommandID != "" {
 				result.Command = accepted.Command
 			}
+			// Keep the established lost-command checkpoint ordering: a
+			// synchronous execution failure is only returned after the durable
+			// coordinator row describes the truthful lost boundary.
 			next := store.JobPhaseAwaitingCommand
 			var teardown *store.JobTeardownState
 			teardownReason := ""
@@ -1241,7 +1286,13 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 				teardownReason = "runtime_cleanup_unconfirmed"
 			}
 			if accepted.Command.CommandID != "" {
-				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{ExpectedPhase: store.JobPhaseAcceptingCommand, NextPhase: next, Command: &accepted.Command, TeardownState: teardown, TeardownReason: teardownReason})
+				job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{
+					ExpectedPhase:  store.JobPhaseAcceptingCommand,
+					NextPhase:      next,
+					Command:        &accepted.Command,
+					TeardownState:  teardown,
+					TeardownReason: teardownReason,
+				})
 				if err != nil {
 					return result, err
 				}
@@ -1249,6 +1300,44 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 			}
 			if commandErr != nil {
 				return result, commandErr
+			}
+			if accepted.Command.CommandID == "" {
+				return result, fmt.Errorf("%w: accepted one-off command is missing", ErrCommandNotReady)
+			}
+			if deferCommandExecution && !accepted.Command.State.IsTerminal() {
+				return result, nil
+			}
+			// Synchronous compatibility callers still execute after the durable
+			// one-off handoff. The scheduler deliberately withholds an accepting
+			// job, so retry the convenience resume after its awaiting checkpoint.
+			if accepted.Command.State == domain.CommandStateQueued {
+				accepted, commandErr = s.ResumeCommand(ctx, job.CommandID, job.Controller)
+				if accepted.Command.CommandID != "" {
+					result.Command = accepted.Command
+					next := store.JobPhaseAwaitingCommand
+					var teardown *store.JobTeardownState
+					teardownReason := ""
+					if accepted.Command.State == domain.CommandStateLost || commandErr != nil && accepted.Command.State == domain.CommandStateLost {
+						next = store.JobPhaseLost
+						lost := store.JobTeardownLost
+						teardown = &lost
+						teardownReason = "runtime_cleanup_unconfirmed"
+					}
+					job, err = s.store.CheckpointJob(ctx, job.JobID, store.JobCheckpoint{
+						ExpectedPhase:  store.JobPhaseAwaitingCommand,
+						NextPhase:      next,
+						Command:        &accepted.Command,
+						TeardownState:  teardown,
+						TeardownReason: teardownReason,
+					})
+					if err != nil {
+						return result, err
+					}
+					result.Job = job
+				}
+				if commandErr != nil {
+					return result, commandErr
+				}
 			}
 			if accepted.Command.State.IsTerminal() {
 				continue
@@ -1266,6 +1355,10 @@ func (s *Service) resumeJob(ctx context.Context, request RunJobRequest, job stor
 				return result, err
 			}
 			if !command.State.IsTerminal() {
+				if deferCommandExecution {
+					result.Command = command
+					return result, nil
+				}
 				resumed, resumeErr := s.ResumeCommand(ctx, job.CommandID, job.Controller)
 				if resumed.Command.CommandID != "" {
 					command = resumed.Command
