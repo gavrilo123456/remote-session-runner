@@ -464,11 +464,38 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	if err != nil {
 		return PersistentShellResult{}, err
 	}
+	// User scripts are sourced into the existing Bash so state survives across
+	// commands. A script may deliberately enable errexit, though. Without a
+	// boundary here, a normal nonzero child status (for example curl --fail)
+	// makes that long-lived Bash exit before it can write the completion frame.
+	//
+	// The short-lived helper function keeps sourcing semantics while its ERR
+	// trap turns that one ordinary errexit boundary into the command's exit
+	// status. The trap is intentionally conditional on errexit: ERR is also
+	// raised for non-errexit failures, which must keep their usual source-file
+	// behavior. An explicit exit, exec, or reserved-FD damage still kills the
+	// persistent Bash and remains a lost runtime boundary.
 	wrapper := startedWire + "\n" +
 		"runner_interrupt=0\n" +
 		"trap 'runner_interrupt=1' INT\n" +
+		"runner_errexit_status=\n" +
+		"runner_previous_err_trap=\"$(trap -p ERR)\"\n" +
+		"runner_run_sourced_script() {\n" +
+		"trap 'runner_trap_status=$?; case $- in *e*) runner_errexit_status=$runner_trap_status; return 0 ;; esac; :' ERR\n" +
+		"runner_guard_err_trap=\"$(trap -p ERR)\"\n" +
 		"source " + shellQuote(scriptPath) + " >" + shellQuote(stdoutPath) + " 2>" + shellQuote(stderrPath) + "\n" +
+		"return $?\n" +
+		"}\n" +
+		"runner_run_sourced_script\n" +
 		"runner_status=$?\n" +
+		"runner_current_err_trap=\"$(trap -p ERR)\"\n" +
+		"if [ \"$runner_current_err_trap\" = \"$runner_guard_err_trap\" ]; then\n" +
+		"trap - ERR\n" +
+		"if [ -n \"$runner_previous_err_trap\" ]; then eval \"$runner_previous_err_trap\"; fi\n" +
+		"fi\n" +
+		"if [ -n \"$runner_errexit_status\" ]; then runner_status=$runner_errexit_status; fi\n" +
+		"unset -f runner_run_sourced_script\n" +
+		"unset runner_trap_status runner_errexit_status runner_previous_err_trap runner_guard_err_trap runner_current_err_trap\n" +
 		"trap - INT\n" +
 		"\n" +
 		"if [ \"$runner_status\" -gt 127 ]; then runner_status=$((runner_status-256)); fi\n" +

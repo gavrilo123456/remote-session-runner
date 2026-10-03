@@ -74,10 +74,13 @@ func TestBUG013SlowOutputDeliveryDoesNotFakeOutputBoundary(t *testing.T) {
 // false success.
 func TestBUG013BlockedOutputDeliveryStillRetainsTheUnsafeBoundary(t *testing.T) {
 	shell, err := StartPersistentShell(context.Background(), PersistentShellOptions{
-		SessionID:             "session-bug013-blocked-delivery",
-		Generation:            "generation-bug013-blocked-delivery",
-		Workspace:             t.TempDir(),
-		OutputBoundaryTimeout: 40 * time.Millisecond,
+		SessionID:  "session-bug013-blocked-delivery",
+		Generation: "generation-bug013-blocked-delivery",
+		Workspace:  t.TempDir(),
+		// The short physical-boundary case is covered separately. This test
+		// exercises a callback that has begun but does not return, so give the
+		// drainer normal startup time before its bounded callback grace applies.
+		OutputBoundaryTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +110,9 @@ func TestBUG013BlockedOutputDeliveryStillRetainsTheUnsafeBoundary(t *testing.T) 
 
 	select {
 	case <-callbackEntered:
-	case <-time.After(time.Second):
+	case runErr := <-done:
+		t.Fatalf("run ended before output callback started: %v", runErr)
+	case <-time.After(2 * time.Second):
 		t.Fatal("output callback did not start")
 	}
 

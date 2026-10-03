@@ -95,8 +95,8 @@ func TestMacSessionRuntimeRebuildQueuedOneOffRejectsGenerationMismatchBeforeClea
 
 func TestMacSessionRuntimeRebuildQueuedOneOffRejectsDetachedZombie(t *testing.T) {
 	fixture := newControlledRestartMacFixture(t, "reject-zombie")
-	if _, err := fixture.shell.RunScript(context.Background(), "controlled-restart-detached-zombie", []byte("set -e\nfalse\n")); !errors.Is(err, hostruntime.ErrPersistentShellExited) {
-		t.Fatalf("source errexit error = %v, want persistent-shell exit", err)
+	if _, err := fixture.shell.RunScript(context.Background(), "controlled-restart-detached-zombie", []byte("exit 1\n")); !errors.Is(err, hostruntime.ErrPersistentShellExited) {
+		t.Fatalf("explicit exit error = %v, want persistent-shell exit", err)
 	}
 	if err := syscall.Kill(fixture.record.PID, 0); err != nil {
 		t.Fatalf("detached zombie is unexpectedly absent before rebuild: %v", err)

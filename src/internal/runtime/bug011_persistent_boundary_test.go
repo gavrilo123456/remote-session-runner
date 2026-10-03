@@ -49,19 +49,54 @@ func TestBUG011PersistentShellBoundaryContract(t *testing.T) {
 		}
 	})
 
-	t.Run("sourced_errexit_exits_before_completion", func(t *testing.T) {
+	t.Run("sourced_errexit_is_a_complete_command_failure", func(t *testing.T) {
 		shell := bug011StartShell(t, "sourced-errexit", 0)
-		defer func() { _ = shell.Close() }() // Bash exited after false by design.
+		defer func() { _ = shell.Close() }()
 
-		_, err := shell.RunScript(context.Background(), "command-bug011-sourced-errexit", []byte("set -e\nfalse\nprintf 'must-not-reach\\n'\n"))
-		if !errors.Is(err, ErrPersistentShellExited) {
-			t.Fatalf("sourced errexit error = %v, want ErrPersistentShellExited", err)
+		result, err := shell.RunScript(context.Background(), "command-bug011-sourced-errexit", []byte("cd /tmp\nexport RSR_BUG015_STATE=before-errexit\nrsr_bug015_function() { printf function; }\nprintf 'stdout-before-errexit\\n'\nprintf 'stderr-before-errexit\\n' >&2\nset -euo pipefail\n/bin/sh -c 'exit 1'\nprintf 'must-not-reach\\n'\n"))
+		if err != nil {
+			t.Fatalf("sourced errexit error = %v", err)
 		}
-		if !shell.CapacityRetained() {
-			t.Fatal("sourced errexit did not retain uncertain capacity")
+		if result.CommandComplete.ExitCode == nil || *result.CommandComplete.ExitCode != 1 {
+			t.Fatalf("sourced errexit completion = %+v, want exit 1", result.CommandComplete)
 		}
-		if _, err := shell.RunScript(context.Background(), "command-bug011-sourced-errexit-after", []byte("printf 'must-not-run\\n'\n")); !errors.Is(err, ErrPersistentShellLost) {
-			t.Fatalf("post-errexit command error = %v, want ErrPersistentShellLost", err)
+		if got, want := string(result.Stdout), "stdout-before-errexit\n"; got != want {
+			t.Fatalf("sourced errexit stdout = %q, want %q", got, want)
+		}
+		if got, want := string(result.Stderr), "stderr-before-errexit\n"; got != want {
+			t.Fatalf("sourced errexit stderr = %q, want %q", got, want)
+		}
+		if shell.CapacityRetained() || !shell.processAlive() {
+			t.Fatalf("sourced errexit left shell unavailable: retained=%t alive=%t", shell.CapacityRetained(), shell.processAlive())
+		}
+		after, err := shell.RunScript(context.Background(), "command-bug011-sourced-errexit-after", []byte("printf 'state=%s|%s|%s\\n' \"$PWD\" \"$RSR_BUG015_STATE\" \"$(rsr_bug015_function)\"\n"))
+		if err != nil {
+			t.Fatalf("post-errexit command error = %v", err)
+		}
+		if got, want := string(after.Stdout), "state=/tmp|before-errexit|function\n"; got != want {
+			t.Fatalf("post-errexit state = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("sourced_errexit_command_substitution_is_a_complete_command_failure", func(t *testing.T) {
+		shell := bug011StartShell(t, "sourced-errexit-command-substitution", 0)
+		defer func() { _ = shell.Close() }()
+
+		result, err := shell.RunScript(context.Background(), "command-bug011-sourced-errexit-command-substitution", []byte("set -euo pipefail\nvalue=$(false)\nprintf 'must-not-reach\\n'\n"))
+		if err != nil {
+			t.Fatalf("sourced errexit command substitution error = %v", err)
+		}
+		if result.CommandComplete.ExitCode == nil || *result.CommandComplete.ExitCode != 1 {
+			t.Fatalf("sourced errexit command substitution completion = %+v, want exit 1", result.CommandComplete)
+		}
+		if got := string(result.Stdout); got != "" {
+			t.Fatalf("sourced errexit command substitution stdout = %q, want empty", got)
+		}
+		if got := string(result.Stderr); got != "" {
+			t.Fatalf("sourced errexit command substitution stderr = %q, want empty", got)
+		}
+		if shell.CapacityRetained() || !shell.processAlive() {
+			t.Fatalf("sourced errexit command substitution left shell unavailable: retained=%t alive=%t", shell.CapacityRetained(), shell.processAlive())
 		}
 	})
 

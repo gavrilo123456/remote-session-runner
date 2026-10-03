@@ -365,7 +365,7 @@ func bug011MacPrepareFourLostPairsAndQueuedOneOff(t *testing.T, fixture *bug011M
 	lost := make([]bug011MacLostCommand, 0, store.DefaultRunningCommandLimit)
 	for index := 0; index < store.DefaultRunningCommandLimit-1; index++ {
 		suffix := fmt.Sprintf("%d", index+1)
-		lossScript := "set -e\n/bin/false\n"
+		lossScript := "exit 1\n"
 		if firstHasLiveChild && index == 0 {
 			lossScript = bug011MacLossWithLiveChildScript(filepath.Join(fixture.root, "unproven-child.pid"))
 		}
@@ -947,14 +947,14 @@ func bug011MacPublishRelease(path string) error {
 }
 
 func bug011MacLossAfterReleaseScript(releasePath string) string {
-	return "while [ ! -f " + bug011MacShellQuote(releasePath) + " ]; do /bin/sleep 0.02; done\nset -e\n/bin/false\n"
+	return "while [ ! -f " + bug011MacShellQuote(releasePath) + " ]; do /bin/sleep 0.02; done\nexit 1\n"
 }
 
 func bug011MacLossWithLiveChildScript(childPIDPath string) string {
 	// The persistent Bash reserves descriptor 3 for its read side and 4 for
 	// control frames. Closing both in the background subshell prevents the
 	// sentinel from holding the Runner control pipe open after Bash exits.
-	return "( exec 3>&- 4>&-; exec /bin/sleep 30 ) </dev/null >/dev/null 2>&1 &\nprintf '%s\\n' \"$!\" > " + bug011MacShellQuote(childPIDPath) + "\nset -e\n/bin/false\n"
+	return "( exec 3>&- 4>&-; exec /bin/sleep 30 ) </dev/null >/dev/null 2>&1 &\nprintf '%s\\n' \"$!\" > " + bug011MacShellQuote(childPIDPath) + "\nexit 1\n"
 }
 
 func bug011MacShellQuote(value string) string {

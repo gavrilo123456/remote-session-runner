@@ -20,8 +20,8 @@ import (
 
 func TestBUG011MacLostRecoveryReapsOwnedZombieThenFinalizes(t *testing.T) {
 	fixture := newBUG011MacFixture(t, "zombie")
-	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-mac-zombie", []byte("set -e\nfalse\n")); !errors.Is(err, ErrPersistentShellExited) {
-		t.Fatalf("sourced errexit error = %v, want ErrPersistentShellExited", err)
+	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-mac-zombie", []byte("exit 1\n")); !errors.Is(err, ErrPersistentShellExited) {
+		t.Fatalf("explicit exit error = %v, want ErrPersistentShellExited", err)
 	}
 	bug011WaitForMacZombie(t, fixture.record.PID, fixture.record.ProcessGroupID)
 
@@ -198,8 +198,8 @@ func TestBUG011MacLostRecoveryRejectsIdentityMismatchBeforeSignal(t *testing.T) 
 
 func TestBUG011MacProofRetryNeverSignalsReplacementPID(t *testing.T) {
 	fixture := newBUG011MacFixture(t, "proof-retry-no-pid")
-	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-proof-retry-no-pid", []byte("set -e\nfalse\n")); !errors.Is(err, ErrPersistentShellExited) {
-		t.Fatalf("sourced errexit error = %v, want ErrPersistentShellExited", err)
+	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-proof-retry-no-pid", []byte("exit 1\n")); !errors.Is(err, ErrPersistentShellExited) {
+		t.Fatalf("explicit exit error = %v, want ErrPersistentShellExited", err)
 	}
 	bug011WaitForMacZombie(t, fixture.record.PID, fixture.record.ProcessGroupID)
 	if _, err := fixture.adapter.ConfirmLostRecoveryCleanup(context.Background(), fixture.prepared.SessionID, fixture.prepared.Generation, 500*time.Millisecond); err != nil {
@@ -247,8 +247,8 @@ func TestBUG011MacProofRetryNeverSignalsReplacementPID(t *testing.T) {
 
 func TestBUG011MacLostRecoveryRetainsDetachedZombie(t *testing.T) {
 	fixture := newBUG011MacFixture(t, "detached-zombie")
-	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-detached-zombie", []byte("set -e\nfalse\n")); !errors.Is(err, ErrPersistentShellExited) {
-		t.Fatalf("sourced errexit error = %v, want ErrPersistentShellExited", err)
+	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-detached-zombie", []byte("exit 1\n")); !errors.Is(err, ErrPersistentShellExited) {
+		t.Fatalf("explicit exit error = %v, want ErrPersistentShellExited", err)
 	}
 	bug011WaitForMacZombie(t, fixture.record.PID, fixture.record.ProcessGroupID)
 	current, err := user.Current()
@@ -405,8 +405,8 @@ func TestBUG011MacExactReconcileRejectsAbsentRootWithSurvivingGroupWithoutSignal
 
 func TestBUG011MacExactReconcileRejectsDetachedZombie(t *testing.T) {
 	fixture := newBUG011MacFixture(t, "exact-detached-zombie")
-	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-exact-detached-zombie", []byte("set -e\nfalse\n")); !errors.Is(err, ErrPersistentShellExited) {
-		t.Fatalf("source errexit error = %v, want ErrPersistentShellExited", err)
+	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-exact-detached-zombie", []byte("exit 1\n")); !errors.Is(err, ErrPersistentShellExited) {
+		t.Fatalf("explicit exit error = %v, want ErrPersistentShellExited", err)
 	}
 	bug011WaitForMacZombie(t, fixture.record.PID, fixture.record.ProcessGroupID)
 
@@ -438,8 +438,8 @@ func TestBUG011MacLostRecoveryFinalizationRetriesAfterPostProofFailure(t *testin
 		t.Skip("directory permission fixture cannot force removal failure as root")
 	}
 	fixture := newBUG011MacFixture(t, "finalization-retry")
-	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-finalization-retry", []byte("set -e\nfalse\n")); !errors.Is(err, ErrPersistentShellExited) {
-		t.Fatalf("sourced errexit error = %v, want ErrPersistentShellExited", err)
+	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-finalization-retry", []byte("exit 1\n")); !errors.Is(err, ErrPersistentShellExited) {
+		t.Fatalf("explicit exit error = %v, want ErrPersistentShellExited", err)
 	}
 	bug011WaitForMacZombie(t, fixture.record.PID, fixture.record.ProcessGroupID)
 	if _, err := fixture.adapter.ConfirmLostRecoveryCleanup(context.Background(), fixture.prepared.SessionID, fixture.prepared.Generation, 500*time.Millisecond); err != nil {
@@ -464,8 +464,8 @@ func TestBUG011MacLostRecoveryFinalizationRetriesAfterPostProofFailure(t *testin
 
 func TestBUG011MacFinalizationNeverSignalsReplacementPID(t *testing.T) {
 	fixture := newBUG011MacFixture(t, "finalization-no-pid")
-	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-finalization-no-pid", []byte("set -e\nfalse\n")); !errors.Is(err, ErrPersistentShellExited) {
-		t.Fatalf("sourced errexit error = %v, want ErrPersistentShellExited", err)
+	if _, err := fixture.shell.RunScript(context.Background(), "command-bug011-finalization-no-pid", []byte("exit 1\n")); !errors.Is(err, ErrPersistentShellExited) {
+		t.Fatalf("explicit exit error = %v, want ErrPersistentShellExited", err)
 	}
 	bug011WaitForMacZombie(t, fixture.record.PID, fixture.record.ProcessGroupID)
 	if _, err := fixture.adapter.ConfirmLostRecoveryCleanup(context.Background(), fixture.prepared.SessionID, fixture.prepared.Generation, 500*time.Millisecond); err != nil {

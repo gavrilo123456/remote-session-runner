@@ -4,16 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | NEW |
+| Status | FIX IMPLEMENTED — DEPLOYMENT PENDING |
 | Severity | High |
 | Priority | P1 — blocks protected DEV deployment verification |
 | Reported | 2026-10-03 |
 | Discovered by | Codex during protected Logger DEV validation monitoring |
 | Owner | Remote Session Runner maintainer |
 | Affected component/path | slidestud-io workspace mailbox; Mac relay/result projection; remote sandbox-host bridge and runnerd one-off execution |
-| Affected revision | Installed Runner/bridge revision was not independently captured in this incident |
+| Affected revision | First attempt: revision not retained; second controlled recurrence: `1b68a3c1f37e41aed2f536ed77d7f5bf43f5649f` on sandbox `runnerd` |
 | Fixed revision | None |
-| Verification | Not started |
+| Verification | Local automated checks PASS; host deployment and live sandbox mailbox validation pending |
 
 ## Reported behavior
 
@@ -350,6 +350,91 @@ state, and capacity/lease gauges alongside the request/job/session/command
 correlation. These facts are required to distinguish a child failure from a
 capture or reconciliation failure.
 
+## Root cause
+
+**Confirmed for the second controlled recurrence; high confidence for the
+identical first recurrence.** The sandbox `runnerd` process was started at
+`2026-10-03T22:09:53Z` from revision
+`1b68a3c1f37e41aed2f536ed77d7f5bf43f5649f`; the second command started at
+`22:14:21Z`, so this was not a service restart during command execution. Its
+sanitized worker journal records:
+
+~~~text
+command_id=cmd-f7917a7deaaa882359a0a45ec033119e
+lifecycle_phase=command_execution
+reason=persistent_shell_exited
+~~~
+
+The durable command and one-off job both became `lost` with
+`capture_boundary_unconfirmed`; the session ownership record identifies the
+corresponding Bash PID/process group, which was subsequently observed as a
+defunct child of `runnerd`. The accepted bridge create/submit audit records and
+the durable `command_started` event prove that mailbox intake, bridge delivery,
+and command admission had already completed.
+
+`src/internal/runtime/persistent.go` directly sources each user script into the
+long-lived Bash so session state can survive. The submitted monitor begins with
+`set -euo pipefail`. If its bounded `curl` returns nonzero, Bash exits before
+the wrapper can write its command-complete control frame. The existing
+`TestBUG011PersistentShellBoundaryContract` reproduced this exact behavior with
+`set -e; false`. The one captured `c` is consistent with the beginning of the
+curl diagnostic, but it does not establish why curl failed or whether Gitea was
+reached. The Runner defect is the conversion of this ordinary shell failure
+into a dead persistent shell and `command_lost` outcome.
+
+## Fix plan
+
+1. Change the one shared persistent-shell wrapper used by Mac and Linux. Run
+   the sourced user script inside a short-lived wrapper function with a
+   temporary `ERR` trap. When `errexit` is active, the trap records the real
+   failing status and returns from that wrapper function, allowing the
+   long-lived Bash to emit its normal command-complete control frame. Preserve
+   state changes made before the failure, output redirection, and the existing
+   source-based session semantics. Restore an earlier `ERR` trap when the user
+   script did not replace it.
+2. Keep genuine persistent-shell corruption as `lost`: an explicit `exit`,
+   `exec`, reserved-control-descriptor damage, and an unconfirmed output
+   boundary must still prevent reuse and retain the current conservative
+   lifecycle behavior.
+3. Replace the obsolete runtime test that expects `set -e; false` to lose the
+   shell. Add a hermetic regression test that proves a `set -e` child failure
+   returns exit code 1, captures complete stdout/stderr, stops before its
+   after-marker, retains state created before the failure, and leaves the shell
+   usable for a following command. Retain explicit `exit` and `exec` loss
+   tests, and update lost-recovery fixtures to use an actual shell-exit
+   boundary.
+4. Run focused runtime and execution tests, then the full Go suite. Commit the
+   Mac-only change, push `dev`, fast-forward both Ubuntu checkouts, and restart
+   the Mac, primary Linux, and sandbox Linux services only after their normal
+   zero-active-work guards pass. Verify the deployed build revision and run a
+   fresh harmless sandbox mailbox control before asking the Logger deployer to
+   retry its monitor.
+
+## Local implementation and verification
+
+The shared wrapper has been corrected in `src/internal/runtime/persistent.go`.
+It now catches an ordinary `errexit` failure at the sourced-script boundary,
+emits the normal completion control frame with the actual nonzero exit status,
+and leaves the persistent session usable. The existing actual-shell-loss tests
+now use explicit `exit 1` fixtures, so they continue to prove conservative
+recovery without treating an ordinary strict-shell failure as process loss.
+
+The following Mac checks passed using the selected Go 1.27.1 toolchain and the
+shared Runner caches:
+
+- `TestBUG011PersistentShellBoundaryContract`, including `set -euo pipefail`
+  and command-substitution failures, complete stdout/stderr, preserved state,
+  and a usable following command.
+- `TestP044MacSharedPersistentShellAndUnsafeBoundaries` and the focused
+  execution nonzero-outcome tests.
+- The opt-in isolated `TestBUG011MacOnlineLostCapacityRecovery` host gate.
+- `go test ./...`.
+
+These checks prove the source change and local lifecycle behavior only. They
+do not prove the deployed sandbox service or mailbox result projection; that
+requires the Git handoff, normal host guards, installed-service restart, and a
+fresh harmless sandbox request.
+
 ## Acceptance criteria for a correction
 
 1. Both safe reproduction controls return exactly one terminal
@@ -372,7 +457,8 @@ capture or reconciliation failure.
 
 ## Resolution
 
-Open. Root cause is not yet established.
+Open. Root cause is confirmed and the source correction is locally verified;
+deployment and a live sandbox mailbox control remain required.
 
 ## History
 
@@ -381,3 +467,4 @@ Open. Root cause is not yet established.
 | 2026-10-03 | BUG-015 recorded with correlated terminal outbox/event evidence. |
 | 2026-10-04 | Fresh controlled remote monitor reproduced the exact one-byte stderr then command_lost signature; correlated terminal record was ACKed with no deployment action. |
 | 2026-10-04 | Added two-attempt timing/capture comparison and a staged, safe reproduction matrix that isolates shell, credential-file, curl/TLS, and authenticated Gitea monitor boundaries. |
+| 2026-10-04 | Confirmed `persistent_shell_exited` in the current sandbox service journal; implemented and locally verified a shared persistent-shell `errexit` boundary correction. |
