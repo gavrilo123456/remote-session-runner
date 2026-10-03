@@ -188,6 +188,8 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 	// remove ledger entries later than P153 so migration history remains
 	// internally consistent for this legacy-only check.
 	for _, statement := range []string{
+		`DROP TABLE exec_controlled_restart_plan_lost_pairs`,
+		`DROP TABLE exec_controlled_restart_plans`,
 		`DROP TABLE exec_lost_runtime_recovery_finalizations`,
 		`DROP TRIGGER mailbox_exchanges_reject_ingress_diagnostic_identity`,
 		`DROP TRIGGER mailbox_ingress_diagnostics_reject_exchange_identity`,
@@ -200,7 +202,7 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32, 33)`); err != nil {
+	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32, 33, 34)`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}

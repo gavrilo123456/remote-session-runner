@@ -13,23 +13,27 @@ import (
 
 type p027Runtime struct {
 	p020FakeRuntime
-	reconcileResult    RuntimeReconcileResult
-	reconcileErr       error
-	reconcileCall      int
-	reconcileSaw       []store.SessionRecord
-	lostRecoveryResult RuntimeReconcileResult
-	lostRecoveryErr    error
-	lostRecoveryCall   int
-	lostRecoveryHook   func(context.Context)
-	lostFinalizeResult RuntimeReconcileResult
-	lostFinalizeErr    error
-	lostFinalizeCall   int
-	lostRecoverySaw    []store.SessionRecord
-	lostFinalizeSaw    []store.SessionRecord
-	ownershipAudit     int
-	attributable       map[string]struct{}
-	ownershipErr       error
-	ownershipHook      func() error
+	reconcileResult         RuntimeReconcileResult
+	reconcileErr            error
+	reconcileCall           int
+	reconcileSaw            []store.SessionRecord
+	lostRecoveryResult      RuntimeReconcileResult
+	lostRecoveryErr         error
+	lostRecoveryCall        int
+	lostRecoveryHook        func(context.Context)
+	lostFinalizeResult      RuntimeReconcileResult
+	lostFinalizeErr         error
+	lostFinalizeCall        int
+	lostRecoverySaw         []store.SessionRecord
+	lostFinalizeSaw         []store.SessionRecord
+	ownershipAudit          int
+	attributable            map[string]struct{}
+	ownershipErr            error
+	ownershipHook           func() error
+	controlledRestartResult RuntimeStarted
+	controlledRestartErr    error
+	controlledRestartCalls  int
+	controlledRestartSaw    []store.SessionRecord
 }
 
 func (r *p027Runtime) Reconcile(_ context.Context, request RuntimeReconcileRequest) (RuntimeReconcileResult, error) {
@@ -65,6 +69,15 @@ func (r *p027Runtime) AuditOwnership(_ context.Context, attributable map[string]
 		}
 	}
 	return r.ownershipErr
+}
+
+func (r *p027Runtime) RebuildQueuedOneOff(_ context.Context, session store.SessionRecord) (RuntimeStarted, error) {
+	r.controlledRestartCalls++
+	r.controlledRestartSaw = append(r.controlledRestartSaw, session)
+	if r.controlledRestartResult.RuntimeGeneration == "" {
+		r.controlledRestartResult.RuntimeGeneration = session.RuntimeGeneration
+	}
+	return r.controlledRestartResult, r.controlledRestartErr
 }
 
 func TestP137StartupOwnershipAuditKeepsKnownResidualAttributedUntilRelease(t *testing.T) {

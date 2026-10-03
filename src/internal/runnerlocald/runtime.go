@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
@@ -17,12 +19,28 @@ import (
 // account. It mirrors the Linux adapter shape; all authoritative state remains
 // in the shared AuthorityStore.
 type MacSessionRuntime struct {
-	adapter  *hostruntime.MacProcessAdapter
-	mu       sync.Mutex
-	prepared map[string]hostruntime.MacPrepared
+	adapter   *hostruntime.MacProcessAdapter
+	mu        sync.Mutex
+	prepared  map[string]hostruntime.MacPrepared
+	restartMu sync.Mutex
 }
 
 var _ execution.LostRuntimeRecoverer = (*MacSessionRuntime)(nil)
+
+// ErrControlledRestartRehydration reports that the deliberately narrow
+// controlled-restart runtime path cannot safely rebuild its one queued shell.
+// The later durable restart-plan boundary decides whether that condition stays
+// pending or becomes terminal; this runtime seam never executes the command.
+var ErrControlledRestartRehydration = errors.New("controlled restart rehydration is unavailable")
+
+// ControlledRestartRehydrator is the Mac-only runtime seam used by a future
+// durable restart plan. It is intentionally separate from normal startup
+// reconciliation: it builds a new shell and never reattaches the old one.
+type ControlledRestartRehydrator interface {
+	RebuildQueuedOneOff(context.Context, store.SessionRecord) (execution.RuntimeStarted, error)
+}
+
+var _ ControlledRestartRehydrator = (*MacSessionRuntime)(nil)
 
 func NewMacSessionRuntime(adapter *hostruntime.MacProcessAdapter) (*MacSessionRuntime, error) {
 	if adapter == nil {
@@ -66,6 +84,66 @@ func (r *MacSessionRuntime) StartAgent(ctx context.Context, request execution.Ru
 	}
 	if err := r.adapter.StartAgent(context.WithoutCancel(ctx), prepared); err != nil {
 		return execution.RuntimeStarted{}, err
+	}
+	return execution.RuntimeStarted{RuntimeGeneration: prepared.Generation}, nil
+}
+
+// RebuildQueuedOneOff replaces an already-gone local empty-source shell after
+// a controlled executor restart. It requires the exact durable generation,
+// reconciles the old process group without adopting it, and creates one fresh
+// Bash process with the same durable generation. It deliberately accepts no
+// command bytes and cannot execute the queued command.
+//
+// The caller must first prove the durable queued-one-off and restart-plan
+// boundaries. This method only owns the Mac runtime part of that operation.
+func (r *MacSessionRuntime) RebuildQueuedOneOff(ctx context.Context, session store.SessionRecord) (execution.RuntimeStarted, error) {
+	if r == nil || r.adapter == nil {
+		return execution.RuntimeStarted{}, execution.ErrRuntimeUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if session.SessionID == "" || session.RuntimeGeneration == "" || session.State != domain.SessionStateReady ||
+		session.Target.Kind() != domain.TargetKindLocal || session.Target.Profile() == "" ||
+		session.Source.Mode() != domain.SourceModeEmpty {
+		return execution.RuntimeStarted{}, fmt.Errorf("%w: expected a ready local empty-source session with a durable runtime generation", ErrControlledRestartRehydration)
+	}
+
+	r.restartMu.Lock()
+	defer r.restartMu.Unlock()
+
+	sessionID := string(session.SessionID)
+	r.mu.Lock()
+	_, alreadyPrepared := r.prepared[sessionID]
+	r.mu.Unlock()
+	if alreadyPrepared {
+		return execution.RuntimeStarted{}, fmt.Errorf("%w: replacement shell is already prepared", ErrControlledRestartRehydration)
+	}
+
+	reconciled, err := r.adapter.ReconcileExactSession(ctx, sessionID, session.RuntimeGeneration, 500*time.Millisecond)
+	if err != nil {
+		return execution.RuntimeStarted{}, fmt.Errorf("%w: reconcile prior Mac shell: %v", ErrControlledRestartRehydration, err)
+	}
+	if !reconciled.CleanupConfirmed || reconciled.Generation != session.RuntimeGeneration {
+		return execution.RuntimeStarted{}, fmt.Errorf("%w: prior Mac shell cleanup is not proven for the durable generation", ErrControlledRestartRehydration)
+	}
+
+	prepared, err := r.adapter.Prepare(ctx, sessionID, session.RuntimeGeneration)
+	if err != nil {
+		return execution.RuntimeStarted{}, fmt.Errorf("%w: prepare replacement Mac shell: %v", ErrControlledRestartRehydration, err)
+	}
+	r.mu.Lock()
+	r.prepared[sessionID] = prepared
+	r.mu.Unlock()
+	if err := r.adapter.StartExactReplacementAgent(context.WithoutCancel(ctx), prepared); err != nil {
+		r.mu.Lock()
+		delete(r.prepared, sessionID)
+		r.mu.Unlock()
+		discardErr := r.adapter.DiscardExactReplacementPreparation(sessionID, session.RuntimeGeneration)
+		if discardErr != nil {
+			return execution.RuntimeStarted{}, fmt.Errorf("%w: start replacement Mac shell: %v; discard replacement preparation: %v", ErrControlledRestartRehydration, err, discardErr)
+		}
+		return execution.RuntimeStarted{}, fmt.Errorf("%w: start replacement Mac shell: %v", ErrControlledRestartRehydration, err)
 	}
 	return execution.RuntimeStarted{RuntimeGeneration: prepared.Generation}, nil
 }

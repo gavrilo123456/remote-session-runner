@@ -78,12 +78,13 @@ type MacPrepared struct {
 // MacProcessAdapter starts the persistent shell under the current configured
 // macOS account. A worktree remains a starting directory, never a boundary.
 type MacProcessAdapter struct {
-	mu         sync.Mutex
-	options    MacRuntimeOptions
-	account    *user.User
-	sessions   map[string]*PersistentShell
-	prepared   map[string]MacPrepared
-	identities map[string]MacProcessRecord
+	mu           sync.Mutex
+	options      MacRuntimeOptions
+	account      *user.User
+	sessions     map[string]*PersistentShell
+	prepared     map[string]MacPrepared
+	identities   map[string]MacProcessRecord
+	replacements map[string]RuntimeOwnershipRecord
 }
 
 func NewMacProcessAdapter(options MacRuntimeOptions) (*MacProcessAdapter, error) {
@@ -112,6 +113,7 @@ func NewMacProcessAdapter(options MacRuntimeOptions) (*MacProcessAdapter, error)
 	return &MacProcessAdapter{
 		options: options, account: current, sessions: make(map[string]*PersistentShell),
 		prepared: make(map[string]MacPrepared), identities: make(map[string]MacProcessRecord),
+		replacements: make(map[string]RuntimeOwnershipRecord),
 	}, nil
 }
 
@@ -205,17 +207,53 @@ func (a *MacProcessAdapter) StartAgent(ctx context.Context, prepared MacPrepared
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.startAgentLocked(ctx, prepared, nil)
+}
+
+// StartExactReplacementAgent starts a replacement only after
+// ReconcileExactSession has retained and staged the exact prior owner record.
+// Its atomic owner-record replacement ensures that an interrupted handoff
+// leaves either the old durable record or the new one, never no record.
+func (a *MacProcessAdapter) StartExactReplacementAgent(ctx context.Context, prepared MacPrepared) error {
+	if a == nil {
+		return ErrMacRuntimeSession
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	prior, ok := a.replacements[prepared.SessionID]
+	if !ok || prior.SessionID != prepared.SessionID || prior.Generation != prepared.Generation ||
+		prior.LostRecoveryCleanupConfirmedAt != "" || prepared.Source.Mode != MacSourceEmpty || !prepared.OwnedWorkspace {
+		return fmt.Errorf("%w: exact controlled-restart owner handoff is not staged", ErrRuntimeOwnershipRecord)
+	}
+	return a.startAgentLocked(ctx, prepared, &prior)
+}
+
+func (a *MacProcessAdapter) startAgentLocked(ctx context.Context, prepared MacPrepared, prior *RuntimeOwnershipRecord) error {
 	if existing := a.sessions[prepared.SessionID]; existing != nil {
 		return fmt.Errorf("%w: session already started", ErrMacRuntimeSession)
 	}
 	if a.prepared[prepared.SessionID] != prepared {
 		return fmt.Errorf("%w: preparation mismatch", ErrMacRuntimeSession)
 	}
+	if prior != nil {
+		if err := a.validateExactReplacementLocked(*prior, prepared); err != nil {
+			return err
+		}
+	}
 	shellPath := a.options.ShellPath
 	if shellPath == "" {
 		shellPath = "/bin/bash"
 	}
-	shell, err := StartPersistentShell(ctx, PersistentShellOptions{SessionID: prepared.SessionID, Generation: prepared.Generation, ShellPath: shellPath, Workspace: prepared.Workspace})
+	shellOptions := PersistentShellOptions{SessionID: prepared.SessionID, Generation: prepared.Generation, ShellPath: shellPath, Workspace: prepared.Workspace}
+	var shell *PersistentShell
+	var err error
+	if prior == nil {
+		shell, err = StartPersistentShell(ctx, shellOptions)
+	} else {
+		// A controlled-restart replacement cannot enter its ordinary Bash loop
+		// until the old ownership marker has been atomically replaced below.
+		shell, err = startPersistentShellAwaitingCommit(ctx, shellOptions)
+	}
 	if err != nil {
 		return err
 	}
@@ -231,12 +269,17 @@ func (a *MacProcessAdapter) StartAgent(ctx context.Context, prepared MacPrepared
 			PID: pid, ProcessGroupID: processGroupID, UID: os.Getuid(), Username: a.account.Username,
 			Command: shellPath, ProcessStartIdentity: startIdentity,
 		}
-		err = writeRuntimeOwnership(a.options.WorkspaceRoot, RuntimeOwnershipRecord{
+		owner := RuntimeOwnershipRecord{
 			Version: runtimeOwnershipVersion, HostOS: runtime.GOOS, SessionID: prepared.SessionID,
 			Generation: prepared.Generation, Workspace: prepared.Workspace, OwnedWorkspace: prepared.OwnedWorkspace,
 			PID: record.PID, ProcessGroupID: record.ProcessGroupID, UID: record.UID, Username: record.Username,
 			Command: record.Command, ProcessStartIdentity: record.ProcessStartIdentity,
-		})
+		}
+		if prior == nil {
+			err = writeRuntimeOwnership(a.options.WorkspaceRoot, owner)
+		} else {
+			err = replaceRuntimeOwnership(a.options.WorkspaceRoot, *prior, owner)
+		}
 		if err == nil {
 			a.identities[prepared.SessionID] = record
 		}
@@ -246,6 +289,84 @@ func (a *MacProcessAdapter) StartAgent(ctx context.Context, prepared MacPrepared
 		_ = shell.Close()
 		return fmt.Errorf("record Mac runtime ownership: %w", err)
 	}
+	if prior != nil {
+		if err := shell.commitStartup(); err != nil {
+			// The new record is already durable. Closing the still-gated shell
+			// leaves that record available for a fresh exact reconciliation if
+			// the commit pipe itself failed; do not restore or erase it here.
+			delete(a.sessions, prepared.SessionID)
+			delete(a.identities, prepared.SessionID)
+			_ = shell.Close()
+			return fmt.Errorf("commit replacement Mac runtime ownership: %w", err)
+		}
+	}
+	if prior != nil {
+		delete(a.replacements, prepared.SessionID)
+		// The old owner record was replaced atomically above. Its now-unreferenced
+		// private empty-source workspace may be removed only after that durable
+		// handoff; a cleanup failure cannot turn a successful replacement into a
+		// failed one and cause the new marker to be removed.
+		if prior.OwnedWorkspace && prior.Workspace != prepared.Workspace {
+			_ = removeOwnedRuntimeWorkspace(a.options.WorkspaceRoot, prior.Workspace)
+		}
+	}
+	return nil
+}
+
+func (a *MacProcessAdapter) validateExactReplacementLocked(prior RuntimeOwnershipRecord, prepared MacPrepared) error {
+	current, err := readRuntimeOwnership(a.options.WorkspaceRoot, prepared.SessionID)
+	if err != nil {
+		return fmt.Errorf("read staged Mac replacement owner: %w", err)
+	}
+	if current != prior {
+		return fmt.Errorf("%w: staged Mac replacement owner changed before replacement start", ErrRuntimeOwnershipRecord)
+	}
+	state, err := exactMacControlledRestartGroupState(prior)
+	if err != nil {
+		return err
+	}
+	if state != macControlledRestartRootAbsentGroupEmpty {
+		return fmt.Errorf("%w: prior Mac runtime is not absent before replacement start", ErrRuntimeOwnershipRecord)
+	}
+	return nil
+}
+
+// DiscardExactReplacementPreparation removes only a failed replacement's
+// newly-created workspace. It intentionally retains the staged old owner
+// record, so the durable queued identity remains available to a later fresh
+// controlled-restart attempt.
+func (a *MacProcessAdapter) DiscardExactReplacementPreparation(sessionID, expectedGeneration string) error {
+	if a == nil {
+		return ErrMacRuntimeSession
+	}
+	a.mu.Lock()
+	prior, staged := a.replacements[sessionID]
+	prepared, preparedOK := a.prepared[sessionID]
+	if a.sessions[sessionID] != nil || !staged || !preparedOK || expectedGeneration == "" ||
+		prior.Generation != expectedGeneration || prepared.Generation != expectedGeneration ||
+		prepared.SessionID != sessionID || prepared.Workspace == prior.Workspace {
+		a.mu.Unlock()
+		return fmt.Errorf("%w: failed replacement preparation is not safely discardable", ErrRuntimeOwnershipRecord)
+	}
+	a.mu.Unlock()
+
+	current, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
+	if err != nil {
+		return fmt.Errorf("read staged Mac replacement owner before discard: %w", err)
+	}
+	if current != prior {
+		return fmt.Errorf("%w: staged Mac replacement owner changed before discard", ErrRuntimeOwnershipRecord)
+	}
+	if prepared.OwnedWorkspace {
+		if err := removeOwnedRuntimeWorkspace(a.options.WorkspaceRoot, prepared.Workspace); err != nil {
+			return err
+		}
+	}
+	a.mu.Lock()
+	if currentPrepared, ok := a.prepared[sessionID]; ok && currentPrepared == prepared {
+		delete(a.prepared, sessionID)
+	}
+	a.mu.Unlock()
 	return nil
 }
 
@@ -440,6 +561,79 @@ func (a *MacProcessAdapter) ReconcileSession(ctx context.Context, sessionID, exp
 	return result, nil
 }
 
+// ReconcileExactSession is the controlled-restart variant of reconciliation.
+// It permits replacement only after a fresh snapshot proves that the recorded
+// root is absent with an empty group, or after it has safely stopped the sole
+// exact recorded root. It deliberately does not share ReconcileSession's
+// broad historical group-stop path: a restart must never signal a group with
+// an extra member, a zombie, or an absent recorded root.
+func (a *MacProcessAdapter) ReconcileExactSession(ctx context.Context, sessionID, expectedGeneration string, grace time.Duration) (MacReconciliationResult, error) {
+	result := MacReconciliationResult{SessionID: sessionID, Reattached: false}
+	if a == nil || a.account == nil {
+		return result, ErrMacRuntimeAccount
+	}
+	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		result.Reason = "runtime ownership record is missing; controlled restart cannot replace a shell"
+		return result, nil
+	}
+	if err != nil {
+		result.Reason = "runtime ownership record could not be validated"
+		result.CapacityRetained = true
+		return result, err
+	}
+	result.Generation, result.PID = record.Generation, record.PID
+	if expectedGeneration == "" || record.Generation != expectedGeneration {
+		result.CapacityRetained = true
+		result.Reason = "recorded runtime generation does not match controlled restart session"
+		return result, fmt.Errorf("%w: recorded runtime generation does not match controlled restart session", ErrRuntimeOwnershipRecord)
+	}
+	if record.LostRecoveryCleanupConfirmedAt != "" {
+		result.CapacityRetained = true
+		result.Reason = "recorded runtime owner is already reserved for lost-runtime cleanup"
+		return result, fmt.Errorf("%w: controlled restart cannot replace a lost-runtime cleanup owner", ErrRuntimeOwnershipRecord)
+	}
+	if record.UID != os.Getuid() || record.Username != a.account.Username || record.ProcessGroupID <= 0 {
+		result.CapacityRetained = true
+		result.Reason = "recorded process identity does not belong to the selected Mac account"
+		return result, fmt.Errorf("%w: recorded uid=%d user=%q", ErrMacRuntimeAccount, record.UID, record.Username)
+	}
+	if _, err := os.Stat(record.Workspace); err != nil && !errors.Is(err, os.ErrNotExist) {
+		result.CapacityRetained = true
+		return result, err
+	}
+	if _, err := os.Stat(record.Workspace); err == nil && !filepath.IsAbs(record.Workspace) {
+		result.CapacityRetained = true
+		return result, fmt.Errorf("%w: recorded workspace is not absolute", ErrRuntimeOwnershipRecord)
+	}
+
+	state, err := stopExactMacControlledRestartGroup(ctx, record, grace)
+	if err != nil {
+		result.CapacityRetained = true
+		result.Reason = "recorded Mac process group remains unproven after exact controlled-restart cleanup"
+		return result, err
+	}
+	result.Quarantined = true
+	if state != macControlledRestartRootAbsentGroupEmpty {
+		result.CapacityRetained = true
+		result.Reason = "recorded Mac process group did not become absent after exact controlled-restart cleanup"
+		return result, fmt.Errorf("%w: recorded Mac process group %d remains before controlled restart replacement", ErrRuntimeOwnershipRecord, record.ProcessGroupID)
+	}
+	// Keep the prior marker and workspace until StartExactReplacementAgent has
+	// successfully published its replacement owner record with an atomic rename.
+	// A crash or a prepare/start failure before that point therefore leaves the
+	// exact durable queued-session identity available for a future fresh adapter.
+	a.mu.Lock()
+	a.replacements[sessionID] = record
+	delete(a.sessions, sessionID)
+	delete(a.prepared, sessionID)
+	delete(a.identities, sessionID)
+	a.mu.Unlock()
+	result.CleanupConfirmed = true
+	result.Reason = "exact recorded Mac root and process group are absent; owner marker retained pending atomic replacement"
+	return result, nil
+}
+
 // ConfirmLostRecoveryCleanup proves the exact Mac runtime for one terminal
 // lost command can no longer execute. It retains the owner record and owned
 // workspace, then durably stamps that proof before the caller may release any
@@ -477,6 +671,31 @@ func (a *MacProcessAdapter) ConfirmLostRecoveryCleanup(ctx context.Context, sess
 	if record.LostRecoveryCleanupConfirmedAt != "" {
 		result.CleanupConfirmed = true
 		result.Reason = "lost runtime cleanup was durably proven; owner marker retained pending capacity release"
+		return result, nil
+	}
+
+	// A fresh daemon cannot reap a zombie because it does not own the prior
+	// exec.Cmd wait handle. It can, however, prove that the exact recorded
+	// process is already gone when both the root PID and its process group are
+	// absent. Keep the owner marker until the paired SQLite capacity release;
+	// FinalizeLostRecoveryCleanup deliberately does not inspect or signal PIDs.
+	if identityErr := verifyMacProcessIdentity(record); errors.Is(identityErr, os.ErrProcessDone) {
+		members, inspectErr := inspectMacProcessGroupMembers(record.ProcessGroupID)
+		if inspectErr != nil {
+			result.Reason = "recorded Mac process group could not be inspected after root exit"
+			return result, inspectErr
+		}
+		if len(members) != 0 {
+			result.Reason = "recorded Mac process group still has members after root exit"
+			return result, fmt.Errorf("%w: recorded Mac process group %d remains nonempty after root exit", ErrRuntimeOwnershipRecord, record.ProcessGroupID)
+		}
+		if _, err := markLostRecoveryCleanupConfirmed(a.options.WorkspaceRoot, sessionID, record, time.Now()); err != nil {
+			result.Reason = "lost runtime cleanup proof could not be persisted"
+			return result, err
+		}
+		result.CleanupConfirmed = true
+		result.Quarantined = true
+		result.Reason = "recorded Mac root and process group are absent; cleanup proof and owner marker retained pending capacity release"
 		return result, nil
 	}
 
@@ -666,6 +885,174 @@ func containsMacLostRecoveryZombie(record RuntimeOwnershipRecord, members []macP
 		}
 	}
 	return false
+}
+
+// macControlledRestartGroupState describes the only two states that can lead
+// to a controlled-restart replacement. Anything else is deliberately an
+// error, retaining the durable reservation and the owner record.
+type macControlledRestartGroupState uint8
+
+const (
+	macControlledRestartRootAbsentGroupEmpty macControlledRestartGroupState = iota + 1
+	macControlledRestartRootLive
+)
+
+// exactMacControlledRestartGroupState takes bounded process-table snapshots
+// around an exact root identity check. A group signal is safe only when every
+// fresh observation contains precisely the recorded runnable root and no
+// zombie or extra member. A root that is absent while the group remains
+// nonempty is intentionally not a signal target.
+func exactMacControlledRestartGroupState(record RuntimeOwnershipRecord) (macControlledRestartGroupState, error) {
+	members, err := inspectMacProcessGroupMembers(record.ProcessGroupID)
+	if err != nil {
+		return 0, err
+	}
+	if len(members) == 0 {
+		if err := verifyMacProcessIdentity(record); errors.Is(err, os.ErrProcessDone) {
+			return macControlledRestartRootAbsentGroupEmpty, nil
+		} else if err == nil {
+			return 0, fmt.Errorf("%w: recorded Mac root remains live while its process-group snapshot is empty", ErrRuntimeOwnershipRecord)
+		} else {
+			return 0, fmt.Errorf("%w: could not prove recorded Mac root absence with an empty process group: %v", ErrRuntimeOwnershipRecord, err)
+		}
+	}
+	if err := validateExactMacControlledRestartGroup(record, members); err != nil {
+		return 0, err
+	}
+	if err := verifyExactMacControlledRestartRootLive(record); err != nil {
+		return 0, err
+	}
+
+	// A second snapshot narrows the interval between inspection and a later
+	// TERM/KILL signal. Darwin has no atomic validate-and-signal operation, so
+	// any change seen here fails closed before the caller can signal the group.
+	members, err = inspectMacProcessGroupMembers(record.ProcessGroupID)
+	if err != nil {
+		return 0, err
+	}
+	if err := validateExactMacControlledRestartGroup(record, members); err != nil {
+		return 0, err
+	}
+	if err := verifyExactMacControlledRestartRootLive(record); err != nil {
+		return 0, err
+	}
+	return macControlledRestartRootLive, nil
+}
+
+func validateExactMacControlledRestartGroup(record RuntimeOwnershipRecord, members []macProcessGroupMember) error {
+	if len(members) != 1 {
+		return fmt.Errorf("%w: recorded Mac process group %d has %d members; controlled restart requires exactly one", ErrRuntimeOwnershipRecord, record.ProcessGroupID, len(members))
+	}
+	member := members[0]
+	if !member.runnable() {
+		return fmt.Errorf("%w: recorded Mac process group %d contains a zombie; controlled restart will not signal it", ErrRuntimeOwnershipRecord, record.ProcessGroupID)
+	}
+	if member.PID != record.PID || member.ProcessGroupID != record.ProcessGroupID || member.UID != record.UID {
+		return fmt.Errorf("%w: recorded Mac process group does not contain the exact recorded live root", ErrRuntimeOwnershipRecord)
+	}
+	return nil
+}
+
+// verifyExactMacControlledRestartRootLive avoids verifyMacProcessIdentity's
+// legacy "root absent but group alive" compatibility case. The controlled
+// restart path needs a positive proof that the recorded PID is still live,
+// remains the recorded session leader, and still has the recorded start
+// identity immediately before it can signal the process group.
+func verifyExactMacControlledRestartRootLive(record RuntimeOwnershipRecord) error {
+	if record.UID != os.Getuid() || record.ProcessGroupID != record.PID {
+		return fmt.Errorf("%w: persisted process identity is not a current-user session leader", ErrRuntimeOwnershipRecord)
+	}
+	if err := syscall.Kill(record.PID, 0); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("%w: recorded Mac root is absent while its process group is nonempty", ErrRuntimeOwnershipRecord)
+		}
+		if !errors.Is(err, syscall.EPERM) {
+			return fmt.Errorf("inspect recorded Mac root: %w", err)
+		}
+	}
+	group, err := syscall.Getpgid(record.PID)
+	if err != nil || group != record.ProcessGroupID {
+		return fmt.Errorf("%w: recorded Mac root PID %d process group changed", ErrRuntimeOwnershipRecord, record.PID)
+	}
+	startIdentity, err := inspectMacProcessStartIdentity(record.PID)
+	if err != nil || startIdentity != record.ProcessStartIdentity {
+		return fmt.Errorf("%w: recorded Mac root PID %d start identity changed", ErrRuntimeOwnershipRecord, record.PID)
+	}
+	return nil
+}
+
+// stopExactMacControlledRestartGroup rechecks the exact safe target directly
+// before each signal. It returns an absent-and-empty proof only; a zombie,
+// extra member, or a root that disappears while another member remains is an
+// error and leaves the owner record and capacity reservation intact.
+func stopExactMacControlledRestartGroup(ctx context.Context, record RuntimeOwnershipRecord, grace time.Duration) (macControlledRestartGroupState, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if grace <= 0 {
+		grace = 500 * time.Millisecond
+	}
+	state, err := signalExactMacControlledRestartGroup(record, syscall.SIGTERM)
+	if err != nil || state == macControlledRestartRootAbsentGroupEmpty {
+		return state, err
+	}
+	state, err = waitExactMacControlledRestartGroupState(ctx, record, grace)
+	if err != nil || state == macControlledRestartRootAbsentGroupEmpty {
+		return state, err
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	state, err = signalExactMacControlledRestartGroup(record, syscall.SIGKILL)
+	if err != nil || state == macControlledRestartRootAbsentGroupEmpty {
+		return state, err
+	}
+	state, err = waitExactMacControlledRestartGroupState(context.Background(), record, 2*time.Second)
+	if err != nil || state == macControlledRestartRootAbsentGroupEmpty {
+		return state, err
+	}
+	return 0, fmt.Errorf("%w: recorded Mac process group %d remains after exact controlled-restart cleanup", ErrRuntimeOwnershipRecord, record.ProcessGroupID)
+}
+
+// signalExactMacControlledRestartGroup performs the last bounded exact check
+// immediately before a group signal. The remaining kernel scheduling window
+// cannot be made atomic on Darwin; all observable ambiguity fails closed.
+func signalExactMacControlledRestartGroup(record RuntimeOwnershipRecord, signal syscall.Signal) (macControlledRestartGroupState, error) {
+	state, err := exactMacControlledRestartGroupState(record)
+	if err != nil || state == macControlledRestartRootAbsentGroupEmpty {
+		return state, err
+	}
+	if err := signalOwnedProcessGroup(record.ProcessGroupID, signal); err != nil {
+		return 0, fmt.Errorf("signal exact recorded Mac process group with %s: %w", signal, err)
+	}
+	return state, nil
+}
+
+func waitExactMacControlledRestartGroupState(ctx context.Context, record RuntimeOwnershipRecord, timeout time.Duration) (macControlledRestartGroupState, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		state, err := exactMacControlledRestartGroupState(record)
+		if err != nil || state == macControlledRestartRootAbsentGroupEmpty {
+			return state, err
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-deadline.C:
+			return exactMacControlledRestartGroupState(record)
+		case <-ticker.C:
+		}
+	}
 }
 
 // stopLostRecoveryMacGroup narrows the unavoidable signal race by taking an

@@ -26,6 +26,23 @@ var (
 	ErrNoActiveCommand        = errors.New("no active persistent-shell command")
 )
 
+const (
+	// persistentShellStartupCommitByte is deliberately a single ordinary byte:
+	// it is sent only by the in-process exact-replacement handoff after the
+	// replacement ownership record has been published.
+	persistentShellStartupCommitByte = "R"
+
+	// The replacement shell reads this fixed prelude from stdin before it can
+	// enter the ordinary command loop. fd 5 is a private parent-to-child pipe.
+	// The parent closes its write end immediately after one expected byte, so
+	// EOF before that byte, a wrong byte, or a second byte makes Bash exit.
+	persistentShellStartupCommitPrelude = "IFS= read -r -n 1 runner_startup_commit <&5 || exit 0\n" +
+		"[ \"$runner_startup_commit\" = \"" + persistentShellStartupCommitByte + "\" ] || exit 0\n" +
+		"IFS= read -r -n 1 runner_startup_extra <&5 && exit 0\n" +
+		"unset runner_startup_commit runner_startup_extra\n" +
+		"exec 5<&-\n"
+)
+
 // PersistentShellOptions controls the real Bash process used for one session.
 // Workspace is private to the session when omitted; a supplied workspace is
 // used as-is and must already be owned by the caller's account.
@@ -128,6 +145,8 @@ type PersistentShell struct {
 	cmd                *exec.Cmd
 	stdin              io.WriteCloser
 	control            io.ReadCloser
+	startupCommit      io.WriteCloser
+	startupCommitWait  bool
 	parser             *ControlParser
 	workspace          string
 	removeOnClose      bool
@@ -147,6 +166,18 @@ type PersistentShell struct {
 // StartPersistentShell starts one Bash process with a dedicated control-write
 // descriptor. It deliberately does not create a replacement shell after exit.
 func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (*PersistentShell, error) {
+	return startPersistentShell(ctx, options, false)
+}
+
+// startPersistentShellAwaitingCommit is private to the controlled Mac
+// replacement path. The child Bash blocks in a fixed prelude until
+// commitStartup sends its one byte after the durable ownership record has been
+// atomically replaced. Normal persistent shells never use this path.
+func startPersistentShellAwaitingCommit(ctx context.Context, options PersistentShellOptions) (*PersistentShell, error) {
+	return startPersistentShell(ctx, options, true)
+}
+
+func startPersistentShell(ctx context.Context, options PersistentShellOptions, awaitStartupCommit bool) (*PersistentShell, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: nil context", ErrPersistentShellCommand)
 	}
@@ -218,6 +249,21 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 		}
 		return nil, fmt.Errorf("%w: reserved read descriptor: %v", ErrPersistentShellCommand, err)
 	}
+	var startupCommitRead, startupCommitWrite *os.File
+	if awaitStartupCommit {
+		startupCommitRead, startupCommitWrite, err = os.Pipe()
+		if err != nil {
+			_ = devNull.Close()
+			_ = stdinReader.Close()
+			_ = stdinWriter.Close()
+			_ = controlRead.Close()
+			_ = controlWrite.Close()
+			if removeOnClose {
+				_ = os.RemoveAll(workspace)
+			}
+			return nil, fmt.Errorf("%w: startup commit pipe: %v", ErrPersistentShellCommand, err)
+		}
+	}
 
 	cmd := exec.CommandContext(ctx, shellPath, "--noprofile", "--norc", "-s")
 	cmd.Dir = workspace
@@ -226,12 +272,21 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	cmd.ExtraFiles = []*os.File{devNull, controlWrite}
+	if startupCommitRead != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, startupCommitRead)
+	}
 	if err := cmd.Start(); err != nil {
 		_ = devNull.Close()
 		_ = stdinReader.Close()
 		_ = stdinWriter.Close()
 		_ = controlRead.Close()
 		_ = controlWrite.Close()
+		if startupCommitRead != nil {
+			_ = startupCommitRead.Close()
+		}
+		if startupCommitWrite != nil {
+			_ = startupCommitWrite.Close()
+		}
 		if removeOnClose {
 			_ = os.RemoveAll(workspace)
 		}
@@ -242,6 +297,21 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 	_ = devNull.Close()
 	_ = controlWrite.Close()
 	_ = stdinReader.Close()
+	if startupCommitRead != nil {
+		_ = startupCommitRead.Close()
+	}
+	if awaitStartupCommit {
+		if _, err := io.WriteString(stdinWriter, persistentShellStartupCommitPrelude); err != nil {
+			_ = startupCommitWrite.Close()
+			_ = stdinWriter.Close()
+			_ = controlRead.Close()
+			_ = cmd.Wait()
+			if removeOnClose {
+				_ = os.RemoveAll(workspace)
+			}
+			return nil, fmt.Errorf("%w: initialize startup commit prelude: %v", ErrPersistentShellCommand, err)
+		}
+	}
 	inspector := options.ProcessInspector
 	if inspector == nil {
 		inspector = inspectProcessDescendants
@@ -250,7 +320,41 @@ func StartPersistentShell(ctx context.Context, options PersistentShellOptions) (
 	if killer == nil {
 		killer = signalDescendants
 	}
-	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, parser: parser, workspace: workspace, removeOnClose: removeOnClose, boundaryTimeout: boundaryTimeout, maxOutputBytes: maxOutputBytes, inspectDescendants: inspector, killDescendants: killer}, nil
+	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, startupCommit: startupCommitWrite, startupCommitWait: awaitStartupCommit, parser: parser, workspace: workspace, removeOnClose: removeOnClose, boundaryTimeout: boundaryTimeout, maxOutputBytes: maxOutputBytes, inspectDescendants: inspector, killDescendants: killer}, nil
+}
+
+// commitStartup releases a private controlled-restart replacement Bash only
+// after its owner record has been atomically published. It closes the pipe
+// immediately, allowing the child's fixed prelude to prove there was exactly
+// one expected byte before entering the normal shell loop.
+func (s *PersistentShell) commitStartup() error {
+	if s == nil {
+		return ErrPersistentShellClosed
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrPersistentShellClosed
+	}
+	if !s.startupCommitWait || s.startupCommit == nil {
+		return fmt.Errorf("%w: startup commit is unavailable", ErrPersistentShellCommand)
+	}
+	commit := s.startupCommit
+	s.startupCommit = nil
+	s.startupCommitWait = false
+	n, writeErr := io.WriteString(commit, persistentShellStartupCommitByte)
+	closeErr := commit.Close()
+	if writeErr != nil || n != len(persistentShellStartupCommitByte) || closeErr != nil {
+		s.lost = true
+		if writeErr != nil {
+			return fmt.Errorf("%w: write startup commit: %v", ErrPersistentShellCommand, writeErr)
+		}
+		if n != len(persistentShellStartupCommitByte) {
+			return fmt.Errorf("%w: partial startup commit: wrote %d bytes", ErrPersistentShellCommand, n)
+		}
+		return fmt.Errorf("%w: close startup commit: %v", ErrPersistentShellCommand, closeErr)
+	}
+	return nil
 }
 
 // RunScript atomically materializes a private script, sources it in the
@@ -273,6 +377,9 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	}
 	if s.lost {
 		return PersistentShellResult{}, ErrPersistentShellLost
+	}
+	if s.startupCommitWait {
+		return PersistentShellResult{}, fmt.Errorf("%w: startup commit is pending", ErrPersistentShellCommand)
 	}
 	if ctx == nil {
 		return PersistentShellResult{}, fmt.Errorf("%w: nil context", ErrPersistentShellCommand)
@@ -668,6 +775,11 @@ func (s *PersistentShell) Close() error {
 		return nil
 	}
 	s.closed = true
+	if s.startupCommit != nil {
+		_ = s.startupCommit.Close()
+		s.startupCommit = nil
+	}
+	s.startupCommitWait = false
 	_ = s.stdin.Close()
 	_ = s.control.Close()
 	waitErr := s.cmd.Wait()

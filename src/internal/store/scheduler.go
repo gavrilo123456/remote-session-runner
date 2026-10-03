@@ -55,6 +55,22 @@ func (s *AuthorityStore) StartNextEligibleCommand(ctx context.Context, maxSlots 
 	now := s.now().UTC()
 	var publishedEvent *CommandEventRecord
 	record, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+		var controlledRestartPlan *ControlledRestartPlan
+		plan, err := readControlledRestartPlanOnConnection(ctx, connection)
+		switch {
+		case err == nil:
+			controlledRestartPlan = &plan
+		case !errors.Is(err, ErrControlledRestartPlanNotFound):
+			return CommandRecord{}, err
+		}
+		// Preparing a controlled restart deliberately closes scheduler
+		// admission for every command, including the planned one. Only the
+		// startup path that has already rebuilt the exact durable runtime
+		// generation may activate the plan and reopen this narrow claim.
+		if controlledRestartPlan != nil && !controlledRestartPlan.Activated {
+			return CommandRecord{}, ErrControlledRestartPlanNotActive
+		}
+
 		var liveSlots int
 		if err := connection.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM exec_command_slots
@@ -121,6 +137,14 @@ WHERE c.state = ? AND s.state = ?
 			return left.commandID < right.commandID
 		})
 		for _, candidateRow := range candidates {
+			// A prepared controlled-restart boundary is a scheduler admission
+			// hold. Until its exact queued one-off can be claimed, no later or
+			// unrelated queued command may use the capacity released by that
+			// controlled recovery.
+			if controlledRestartPlan != nil &&
+				(candidateRow.commandID != string(controlledRestartPlan.CommandID) || candidateRow.sessionID != string(controlledRestartPlan.SessionID)) {
+				continue
+			}
 			commandID, err := domain.NewCommandID(candidateRow.commandID)
 			if err != nil {
 				return CommandRecord{}, fmt.Errorf("%w: command ID: %v", ErrCommandOrderCorrupt, err)
@@ -160,6 +184,14 @@ WHERE command_id = ? AND state = ?
 			}
 			if err := transitionSessionOnConnection(ctx, connection, sessionID, domain.SessionStateBusy, "command_started", now); err != nil {
 				return CommandRecord{}, err
+			}
+			if controlledRestartPlan != nil {
+				if candidate.CommandID != controlledRestartPlan.CommandID || candidate.SessionID != controlledRestartPlan.SessionID {
+					return CommandRecord{}, ErrControlledRestartPlanCorrupt
+				}
+				if err := consumeControlledRestartPlanOnClaim(ctx, connection, *controlledRestartPlan); err != nil {
+					return CommandRecord{}, err
+				}
 			}
 			event := CommandEventRecord{CommandID: commandID, Sequence: sequence, Type: "command_started", Payload: []byte{}, ByteCount: 0, OccurredAt: now}
 			publishedEvent = &event

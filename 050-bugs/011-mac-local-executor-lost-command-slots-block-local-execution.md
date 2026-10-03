@@ -438,6 +438,101 @@ separately from hermetic results.
 Mac/Ubuntu SHA parity. If the Mac host gate is unavailable or fails, record
 `NOT RUN` or `FAIL` accurately and stop; it is not replaced by a fake test.
 
+### B011-P7 — Preserve one verified queued one-off through a controlled Mac restart
+
+**Why this phase is required.** The first live deployment preflight found the
+expected four retained `lost` pairs plus one real queued one-off. The normal
+installer correctly refuses that state. A normal `runner-locald` shutdown also
+closes local sessions, and ordinary startup rejects queued work behind a prior
+runtime. Releasing the four slots alone would therefore lose the queued
+command. B011-P7 adds a deliberately narrow recovery handoff; it does not
+weaken ordinary restart behavior.
+
+**Deliverable.** Add one owner-only durable controlled-restart plan that may
+be created only for this exact state:
+
+1. all four configured command slots are held by the selected terminal-lost
+   pairs, with their matching retained session reservations;
+2. there is no running or cancelling command;
+3. there is exactly one other live reservation, and it is one untouched,
+   empty-source, ready/awaiting/queued one-off with only its initial
+   `command_queued` event and no command slot; and
+4. every selected identifier is written durably before the old local executor
+   is stopped. The plan contains IDs, the durable generation, and timestamps;
+   it contains no script, output, credential, or request payload.
+
+The default `ReconcileStartup` contract remains unchanged. Only the explicit
+plan path may rebuild the selected queued session. The Mac adapter must first
+prove that the recorded queued-session root is absent and its exact recorded
+process group is empty, then prepare a replacement persistent Bash under the
+same durable generation. It retains the old owner marker and workspace until
+the replacement has atomically published its owner record. The replacement
+shell waits on a private one-byte commit pipe: it enters its ordinary loop
+only after that atomic publication, and exits if its parent dies or closes the
+pipe first. It may not reattach a prior shell or source the queued script
+during this rebuild. The shared worker then uses the existing queue-preserving
+lost-capacity recovery transaction for the four terminal-lost pairs. The plan
+is consumed atomically only when the scheduler claims its exact queued
+command; a crash before that claim leaves the plan and the unchanged queued
+identity available for another safe rebuild. A crash after claim follows the
+existing running-command no-replay rule.
+
+The installer treats the durable state as the rollback boundary. Before a new
+plan exists it observes `legacy`; after preparation it must read one of
+`prepared`, `active`, or `migrated-without-plan` using a read-only status
+command. It may revive the old local daemon only when that durable read still
+returns `legacy`. A `prepared` plan may be resumed after an interrupted
+handoff; an `active` plan may be resumed only after its candidate is stopped;
+and `migrated-without-plan`, an unreadable database, or an unexpected state
+fails closed for explicit repair. A plan that is already active is never
+treated as a new preparation and cannot trigger another hard stop.
+
+For a fresh Mac adapter, terminal-lost cleanup may be confirmed only when the
+recorded root PID is absent **and** a Darwin inspection reports that its exact
+recorded process group has no members. This branch writes only the durable
+cleanup-proof stamp. It never signals, reaps, removes a marker, or removes a
+workspace. A detached zombie, a live member, a reused or mismatched PID, or an
+inspection failure retains capacity.
+
+Add an explicit installer mode, `--b011-controlled-restart`. It keeps the
+ordinary installer preflight unchanged. Its dedicated path validates and
+persists the plan after ingress is quiesced, then uses a tested hard-stop
+handoff for only `runner-locald` so the old daemon cannot run its graceful
+session-closure path. The candidate locald starts the plan path before generic
+startup reconciliation.
+
+The exact `launchctl` handoff records rollback intent before both state-changing
+calls, then proceeds in this order: disable the old label; freeze its process
+with `SIGSTOP`; persist the durable plan; boot out the frozen label; prove the
+label unloaded; run `runner-locald controlled-restart-socket-boundary`; enable
+the label; wait the full `ThrottleInterval` from the source locald plist; and
+only then bootstrap the candidate. Label-unloaded alone is insufficient. The
+socket-boundary command opens no authority database, validates the selected
+owner-only Mac service root and locald socket, and removes only a stale owned
+socket. A live listener, unsafe root, foreign or non-socket path, path
+replacement, or any check error blocks candidate startup fail-closed.
+
+The isolated owner-account `KeepAlive` host gate proves that a `SIGTERM`
+handler in the frozen old helper never runs and that no old instance restarts
+during the full post-enable throttle interval before candidate bootstrap. The
+fixture may directly `SIGKILL` only its detached, frozen test helper after the
+label is already unloaded; production never sends that direct signal. The live
+installer relies on the socket boundary instead. The host gate also showed that
+disable alone does not prevent a still-loaded `KeepAlive` job from restarting.
+
+**Required gates.** Store/schema tests cover all plan rejection shapes and
+atomic plan consumption. Shared execution tests cover default-startup legacy
+behavior, rehydration without script execution, and crash boundaries before
+claim and after claim. Darwin tests cover fresh-adapter absence, detached-zombie
+retention, socket-boundary refusal for live/unsafe/replaced paths, and the
+isolated hard-stop/restart scenario. A shell harness injects HUP, INT, and TERM
+immediately after successful disable and SIGSTOP, proving rollback re-enables
+and, where required, kickstarts the old label. The host gate holds the complete
+post-enable source-plist throttle interval before candidate bootstrap. The full
+source and race gates, `make test`, `make vet build smoke`, `git diff --check`,
+a scoped commit/push, and both clean Ubuntu fast-forward/source validations
+remain mandatory. No live record may be used until those gates pass.
+
 ### Separately authorized live deployment and acceptance
 
 This is deliberately outside the automatic phases. The current installed Mac
@@ -445,14 +540,17 @@ has four retained lost commands and one queued real command. Installing or
 restarting the corrected daemon may safely release capacity and cause that
 fifth original command to run. That is a real side effect, so it requires the
 user's explicit approval after a fresh read-only preflight records the exact
-IDs, metrics, ownership state, and expected effect.
+IDs, metrics, ownership state, durable controlled-restart status, source
+revision, and expected effect. Any mismatch stops the live path before
+installation.
 
 Only after that approval may the corrected service be installed or restarted.
-The acceptance record must prove that each of the four lost scripts was never
-replayed, the fifth original identity started at most once, terminal event and
-output evidence is truthful, and a final zero-active-work check passes. A
-fresh harmless local CLI/mailbox test may follow. This work makes no physical
-power-loss claim; the existing P143 limitation remains unchanged.
+The acceptance record must prove the candidate revision and health, that each
+of the four lost scripts was never replayed, that the fifth original identity
+started at most once, that terminal event and output evidence is truthful, and
+that a final zero-active-work check passes. A fresh harmless local CLI/mailbox
+test may follow. This work makes no physical-power-loss claim; the existing
+P143 limitation remains unchanged.
 
 ## Fix and verification
 

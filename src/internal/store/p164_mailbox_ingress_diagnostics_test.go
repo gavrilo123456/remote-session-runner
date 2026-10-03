@@ -33,9 +33,9 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 		_ = fresh.Close()
 		t.Fatalf("fresh schema version=%d, want current %d", version, CurrentSchemaVersion)
 	}
-	if CurrentSchemaVersion != 33 {
+	if CurrentSchemaVersion != 34 {
 		_ = fresh.Close()
-		t.Fatalf("CurrentSchemaVersion=%d, want 33", CurrentSchemaVersion)
+		t.Fatalf("CurrentSchemaVersion=%d, want 34", CurrentSchemaVersion)
 	}
 	var migrationName string
 	if err := fresh.QueryRowContext(ctx, `SELECT name FROM runner_schema_migrations WHERE version = 30`).Scan(&migrationName); err != nil || migrationName != "mailbox_ingress_diagnostics" {
@@ -54,6 +54,10 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 		_ = fresh.Close()
 		t.Fatalf("fresh migration 33=%q err=%v", migrationName, err)
 	}
+	if err := fresh.QueryRowContext(ctx, `SELECT name FROM runner_schema_migrations WHERE version = 34`).Scan(&migrationName); err != nil || migrationName != "controlled_restart_plan" {
+		_ = fresh.Close()
+		t.Fatalf("fresh migration 34=%q err=%v", migrationName, err)
+	}
 	if err := fresh.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +71,8 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 		t.Fatalf("migrate v29 database: %v", err)
 	}
 	t.Cleanup(func() { _ = migrated.Close() })
-	if version := readUserVersion(t, migrated); version != 33 {
-		t.Fatalf("migrated schema version=%d, want 33", version)
+	if version := readUserVersion(t, migrated); version != 34 {
+		t.Fatalf("migrated schema version=%d, want 34", version)
 	}
 	var columnCount int
 	if err := migrated.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('mailbox_ingress_diagnostics')`).Scan(&columnCount); err != nil || columnCount != 14 {

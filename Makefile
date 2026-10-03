@@ -40,10 +40,10 @@ test-p133-barrier-harness: check-go
 test-p134-macos-restart: check-go
 	GOTOOLCHAIN=local "$(GO)" test ./src/internal/localapi ./src/internal/dispatcher -run '^TestP134' -count=1 -v
 
-# Actual Mac locald and Ubuntu runnerd executor SIGKILL/restart recovery with
-# an owned, known surviving Bash child and a queued command that must not run.
+# Isolated Mac B011 recovery fixture plus a disposable unique-label launchd
+# KeepAlive handoff fixture; neither touches an installed Runner LaunchAgent.
 test-b011-macos-host: check-go
-	RSR_B011_MAC_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocald -run '^TestBUG011MacOnlineLostCapacityRecovery$$' -count=1 -v
+	RSR_B011_MAC_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocald -run '^(TestBUG011MacOnlineLostCapacityRecovery|TestBUG011MacLaunchctlKeepAliveHandoff)$$' -count=1 -v
 
 test-p135-macos-host: check-go
 	RSR_P135_MAC_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocald -run '^TestP135MacLocaldRestartWithKnownSurvivingChild$$' -count=1 -v

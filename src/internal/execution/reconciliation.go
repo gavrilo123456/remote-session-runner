@@ -41,6 +41,17 @@ func (s *Service) ReconcileStartup(ctx context.Context) (StartupReconciliationRe
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
+	return s.reconcileStartupLocked(ctx, "")
+}
+
+// reconcileStartupLocked is the common startup sweep. A nonempty preserved
+// session is deliberately excluded only by the controlled-restart handoff
+// after it has rebuilt a new shell for the exact durable generation. Ordinary
+// startup always passes an empty value and retains its legacy no-reattachment
+// behavior for every nonterminal session.
+//
+// The caller holds mutationMu.
+func (s *Service) reconcileStartupLocked(ctx context.Context, preserved domain.SessionID) (StartupReconciliationReport, error) {
 	var report StartupReconciliationReport
 	if err := s.finalizePendingLostRuntimeRecoveries(ctx); err != nil {
 		return report, fmt.Errorf("finalize pending lost runtime recovery: %w", err)
@@ -68,6 +79,9 @@ func (s *Service) ReconcileStartup(ctx context.Context) (StartupReconciliationRe
 	var runtimeFailures []error
 	for _, session := range sessions {
 		if session.State.IsTerminal() {
+			continue
+		}
+		if preserved != "" && session.SessionID == preserved {
 			continue
 		}
 		report.SessionsInspected++

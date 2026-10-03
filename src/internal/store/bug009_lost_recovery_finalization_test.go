@@ -26,6 +26,15 @@ func TestBUG009MigrationLeavesHistoricalReleasedLostPairsOutsideNewWorkList(t *t
 		_ = database.Close()
 		t.Fatal(err)
 	}
+	// The current scheduler consults the controlled-restart plan table before
+	// it claims a command. This fixture intentionally begins at the v32
+	// boundary to create historical lost state, so add only that mechanical
+	// table for the current scheduler and remove it again before modelling the
+	// actual v31 upgrade below. It is never recorded in the migration ledger.
+	if _, err := database.ExecContext(ctx, controlledRestartPlanSQL); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
 	sessionID, commandID := pStalledRecoveryLostPair(t, authority, "bug009-v31")
 	if err := authority.ConfirmLostRuntimeRecovery(ctx, sessionID, commandID); err != nil {
 		_ = database.Close()
@@ -40,6 +49,14 @@ func TestBUG009MigrationLeavesHistoricalReleasedLostPairsOutsideNewWorkList(t *t
 	// migration existed. The new work list is intentionally only for the new
 	// two-stage Linux recovery transaction, so activation must not reinterpret
 	// old ordinary-reconciliation records as pending finalization work.
+	if _, err := database.ExecContext(ctx, `DROP TABLE exec_controlled_restart_plan_lost_pairs`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `DROP TABLE exec_controlled_restart_plans`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
 	if _, err := database.ExecContext(ctx, `DROP TABLE exec_lost_runtime_recovery_finalizations`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)

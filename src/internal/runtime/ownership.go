@@ -79,6 +79,40 @@ func writeRuntimeOwnership(workspaceRoot string, record RuntimeOwnershipRecord) 
 	return publishRuntimeOwnership(path, directory, record)
 }
 
+// replaceRuntimeOwnership atomically hands a session owner record from one
+// proven-gone runtime to its already-started replacement. It never removes the
+// old record first: a crash before rename retains expected, while a completed
+// rename leaves replacement. The immutable session and generation must not
+// change across this narrow handoff.
+func replaceRuntimeOwnership(workspaceRoot string, expected, replacement RuntimeOwnershipRecord) error {
+	if err := validateRuntimeOwnershipRecord(expected); err != nil {
+		return err
+	}
+	if err := validateRuntimeOwnershipRecord(replacement); err != nil {
+		return err
+	}
+	if expected.SessionID != replacement.SessionID || expected.Generation != replacement.Generation ||
+		expected.LostRecoveryCleanupConfirmedAt != "" || replacement.LostRecoveryCleanupConfirmedAt != "" {
+		return fmt.Errorf("%w: invalid controlled-restart ownership replacement", ErrRuntimeOwnershipRecord)
+	}
+	path, err := runtimeOwnershipPath(workspaceRoot, expected.SessionID)
+	if err != nil {
+		return err
+	}
+	directory := filepath.Dir(path)
+	if err := validateOwnerDirectory(directory); err != nil {
+		return err
+	}
+	current, err := readRuntimeOwnershipPath(path)
+	if err != nil {
+		return err
+	}
+	if current != expected {
+		return fmt.Errorf("%w: runtime ownership record changed before controlled-restart replacement", ErrRuntimeOwnershipRecord)
+	}
+	return publishRuntimeOwnership(path, directory, replacement)
+}
+
 // markLostRecoveryCleanupConfirmed adds the one recovery proof that is safe
 // to publish over an existing owner record. The immutable process identity
 // must still exactly match expected. The atomic replacement and directory sync

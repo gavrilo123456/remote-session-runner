@@ -57,6 +57,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "preflight-restart" {
 		return runRestartPreflight(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "prepare-controlled-restart" {
+		return runPrepareControlledRestart(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "controlled-restart-status" {
+		return runControlledRestartStatus(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "controlled-restart-socket-boundary" {
+		return runControlledRestartSocketBoundary(args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("runner-locald", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Mac runner configuration")
@@ -105,7 +114,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runner-locald: construct execution service: %v\n", err)
 		return 1
 	}
-	reconciliation, err := service.ReconcileStartup(ctx)
+	reconciliation, controlledRestart, err := service.ReconcileStartupWithControlledRestartPlan(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: startup runtime reconciliation: %v\n", err)
 		return 1
@@ -117,6 +126,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		"commands_rejected", reconciliation.CommandsRejected,
 		"cleanup_unconfirmed", reconciliation.CleanupUnconfirmed,
 	)
+	if controlledRestart.Plan != nil {
+		slog.Info("runner-locald controlled restart shell rehydrated",
+			"job_id", controlledRestart.Plan.JobID,
+			"session_id", controlledRestart.Plan.SessionID,
+			"command_id", controlledRestart.Plan.CommandID,
+			"lost_pair_count", len(controlledRestart.Plan.LostPairs),
+		)
+	}
 	dispatchGate := lifecycle.NewGate()
 	worker, err := queueworker.New(queueworker.Options{
 		Service: service, Authority: authority, DispatchGate: dispatchGate,

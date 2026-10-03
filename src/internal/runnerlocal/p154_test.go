@@ -555,7 +555,6 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 	preflightInvocation := `if "$staging_directory/runner-locald" preflight-restart --config "$config_file"; then`
 	trueFirstInstall := "is_true_first_locald_install() {"
 	missingAuthorityAllowance := `if [ "$preflight_status" -eq 3 ] && is_true_first_locald_install; then`
-	preflightCall := "preflight_active_locald_restart\n" + quiesceLocalD
 	activationBoundary := "candidate_activation_started=1"
 	configHandoff := `mv -f "$config_stage" "$config_file"`
 	handoffComplete := "candidate_config_handed_off=1"
@@ -573,17 +572,19 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 		!strings.Contains(text, handoffComplete) || !strings.Contains(text, recoveryGuard) ||
 		!strings.Contains(text, "restore_prior_agents_on_failure=1") ||
 		!strings.Contains(text, "--config") || !strings.Contains(text, "mac.yaml.example") ||
-		strings.Contains(text, `if [ "$locald_was_loaded" -ne 1 ]; then`) ||
 		strings.Contains(text, "--register-mailboxes") {
 		t.Fatalf("installer lacks P154 safe configuration flow")
 	}
 	staticIndex := strings.Index(text, staticValidate)
 	checkPathsIndex := strings.Index(text, checkMailboxDirectories)
 	localIndex := strings.Index(text, quiesceLocal)
-	preflightIndex := strings.LastIndex(text, preflightCall)
-	localDIndex := strings.Index(text, quiesceLocalD)
+	// The controlled-restart branch now has its own safe handoff. Keep this
+	// check pinned to the ordinary branch, whose strict preflight and graceful
+	// locald quiescence remain the default install contract.
+	preflightIndex := strings.LastIndex(text, "\tpreflight_active_locald_restart\n")
+	localDIndex := strings.LastIndex(text, quiesceLocalD)
 	finalIndex := strings.Index(text, finalValidate)
-	activationIndex := strings.Index(text, activationBoundary)
+	activationIndex := strings.LastIndex(text, activationBoundary)
 	activateMailboxSetIndex := strings.Index(text, activateMailboxSet)
 	configHandoffIndex := strings.Index(text, configHandoff)
 	handoffCompleteIndex := strings.LastIndex(text, handoffComplete)
@@ -598,6 +599,9 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 	}
 	if !(staticIndex < checkPathsIndex && checkPathsIndex < localIndex && localIndex < preflightIndex && preflightIndex < localDIndex && localDIndex < finalIndex && finalIndex < activationIndex && activationIndex < activateMailboxSetIndex && activateMailboxSetIndex < configHandoffIndex && configHandoffIndex < handoffCompleteIndex && handoffCompleteIndex < bootstrapIndex && recoveryGuardIndex < configHandoffIndex) {
 		t.Fatalf("installer must statically validate, check mailbox paths without creating them, quiesce ingress, prove local executor quiescence without writing, quiesce locald, validate retained ingress, cross activation boundary, register candidate inboxes and create any missing tree, preserve pre-handoff recovery config, hand off config, then bootstrap: static=%d check_paths=%d local=%d preflight=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, preflightIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
+	}
+	if strings.Contains(text[preflightIndex:localDIndex], `if [ "$locald_was_loaded" -ne 1 ]; then`) {
+		t.Fatal("ordinary installer branch unexpectedly requires a loaded local executor")
 	}
 }
 
@@ -689,6 +693,229 @@ func TestBUG011InstallerRestartPreflightPropagatesSafeOutcomes(t *testing.T) {
 				t.Fatalf("isolated preflight harness attempted service control: %s", output)
 			}
 		})
+	}
+}
+
+func TestBUG011ControlledRestartInstallerFreezesThenHardStopsOnlyAfterPlan(t *testing.T) {
+	repositoryRoot := p154RepositoryRoot(t)
+	script := filepath.Join(repositoryRoot, "deploy", "macos", "install-launchagents.sh")
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("sh", "-n", script).Run(); err != nil {
+		t.Fatalf("installer shell syntax: %v", err)
+	}
+	text := string(data)
+	for _, required := range []string{
+		"--b011-controlled-restart",
+		"controlled_restart_suspend_locald() {",
+		"controlled_restart_hard_stop_locald() {",
+		"controlled_restart_prove_old_locald_socket_boundary() {",
+		"controlled_restart_wait_for_launchd_throttle() {",
+		"controlled_restart_enable_candidate_locald() {",
+		"controlled_restart_read_state() {",
+		"controlled_restart_refresh_failure_boundary() {",
+		"controlled_restart_prepare_invoked=1",
+		"controlled-restart-status --config \"$config_file\"",
+		"migrated-without-plan)",
+		"launchctl disable \"gui/$uid/$label\"",
+		"launchctl kill SIGSTOP \"gui/$uid/$label\"",
+		`"$staging_directory/runner-locald" prepare-controlled-restart --config "$config_file"`,
+		"controlled_restart_plan_prepared=1",
+		"launchctl bootout \"gui/$uid\" \"$plist\"",
+		"controlled-restart-socket-boundary --config \"$config_file\"",
+		"/usr/libexec/PlistBuddy -c 'Print :ThrottleInterval' \"$plist\"",
+		"sleep \"$throttle\"",
+		"launchctl enable \"gui/$uid/$label\"",
+		"controlled_restart_restore_suspended_locald",
+		"Controlled restart must use the active mac.yaml",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("controlled restart installer omits %q", required)
+		}
+	}
+
+	suspend := strings.Index(text, "controlled_restart_suspend_locald\n")
+	prepare := strings.Index(text, `"$staging_directory/runner-locald" prepare-controlled-restart --config "$config_file"`)
+	prepared := strings.Index(text, "controlled_restart_plan_prepared=1")
+	hardStop := strings.Index(text, "controlled_restart_hard_stop_locald\n")
+	if suspend < 0 || prepare < 0 || prepared < 0 || hardStop < 0 || !(suspend < prepare && prepare < prepared && prepared < hardStop) {
+		t.Fatalf("controlled restart ordering suspend=%d prepare=%d prepared=%d hard_stop=%d", suspend, prepare, prepared, hardStop)
+	}
+	suspendFunctionStart := strings.Index(text, "controlled_restart_suspend_locald() {")
+	suspendFunctionEnd := strings.Index(text, "controlled_restart_restore_suspended_locald() {")
+	hardStopFunctionStart := strings.Index(text, "controlled_restart_hard_stop_locald() {")
+	hardStopFunctionEnd := strings.Index(text, "controlled_restart_prove_old_locald_socket_boundary() {")
+	socketBoundaryFunctionStart := hardStopFunctionEnd
+	socketBoundaryFunctionEnd := strings.Index(text, "controlled_restart_wait_for_launchd_throttle() {")
+	throttleFunctionStart := socketBoundaryFunctionEnd
+	throttleFunctionEnd := strings.Index(text, "controlled_restart_enable_candidate_locald() {")
+	candidateEnableFunctionStart := throttleFunctionEnd
+	candidateEnableFunctionEnd := strings.Index(text, "# This command opens the existing authority read-only")
+	candidateEnableCall := strings.LastIndex(text, "\tif ! controlled_restart_enable_candidate_locald; then\n")
+	if suspendFunctionStart < 0 || suspendFunctionEnd < 0 || hardStopFunctionStart < 0 || hardStopFunctionEnd < 0 || socketBoundaryFunctionStart < 0 || socketBoundaryFunctionEnd < 0 || throttleFunctionStart < 0 || throttleFunctionEnd < 0 || candidateEnableFunctionStart < 0 || candidateEnableFunctionEnd < 0 || candidateEnableCall < 0 {
+		t.Fatalf("controlled restart launchd function boundaries suspend=%d/%d hard_stop=%d/%d socket=%d/%d throttle=%d/%d candidate_enable=%d/%d call=%d", suspendFunctionStart, suspendFunctionEnd, hardStopFunctionStart, hardStopFunctionEnd, socketBoundaryFunctionStart, socketBoundaryFunctionEnd, throttleFunctionStart, throttleFunctionEnd, candidateEnableFunctionStart, candidateEnableFunctionEnd, candidateEnableCall)
+	}
+	suspendFunction := text[suspendFunctionStart:suspendFunctionEnd]
+	hardStopFunction := text[hardStopFunctionStart:hardStopFunctionEnd]
+	socketBoundaryFunction := text[socketBoundaryFunctionStart:socketBoundaryFunctionEnd]
+	throttleFunction := text[throttleFunctionStart:throttleFunctionEnd]
+	candidateEnableFunction := text[candidateEnableFunctionStart:candidateEnableFunctionEnd]
+	disable := strings.Index(suspendFunction, "launchctl disable \"gui/$uid/$label\"")
+	freeze := strings.Index(suspendFunction, "launchctl kill SIGSTOP \"gui/$uid/$label\"")
+	bootout := strings.Index(hardStopFunction, "launchctl bootout \"gui/$uid\" \"$plist\"")
+	proveUnloaded := strings.Index(hardStopFunction, "if service_loaded \"$label\"; then")
+	disableIntent := strings.Index(suspendFunction, "controlled_locald_disabled=1")
+	freezeIntent := strings.Index(suspendFunction, "controlled_locald_suspended=1")
+	clearSocket := strings.Index(socketBoundaryFunction, "controlled-restart-socket-boundary --config \"$config_file\"")
+	readThrottle := strings.Index(throttleFunction, "/usr/libexec/PlistBuddy -c 'Print :ThrottleInterval' \"$plist\"")
+	waitThrottle := strings.Index(throttleFunction, "sleep \"$throttle\"")
+	enable := strings.Index(candidateEnableFunction, "launchctl enable \"gui/$uid/$label\"")
+	callThrottle := strings.Index(candidateEnableFunction, "controlled_restart_wait_for_launchd_throttle")
+	if disable < 0 || freeze < 0 || bootout < 0 || proveUnloaded < 0 || disableIntent < 0 || freezeIntent < 0 || clearSocket < 0 || readThrottle < 0 || waitThrottle < 0 || enable < 0 || callThrottle < 0 || !(disableIntent < disable && disable < freezeIntent && freezeIntent < freeze) || !(bootout < proveUnloaded) || !(readThrottle < waitThrottle) || !(enable < callThrottle) {
+		t.Fatalf("controlled restart must record rollback before disable/freeze, then bootout/prove unload, clear socket, and hold ThrottleInterval after enable: disable_intent=%d disable=%d freeze_intent=%d freeze=%d bootout=%d prove_unloaded=%d clear_socket=%d read_throttle=%d wait_throttle=%d enable=%d call_throttle=%d", disableIntent, disable, freezeIntent, freeze, bootout, proveUnloaded, clearSocket, readThrottle, waitThrottle, enable, callThrottle)
+	}
+	if strings.Contains(hardStopFunction, "launchctl kill SIGKILL") {
+		t.Fatal("controlled restart must not SIGKILL a still loaded KeepAlive label before bootout")
+	}
+	socketBoundaryCall := strings.LastIndex(text, "\tif ! controlled_restart_prove_old_locald_socket_boundary; then\n")
+	if !(hardStop < socketBoundaryCall && socketBoundaryCall < candidateEnableCall) {
+		t.Fatalf("candidate label enable must follow controlled hard-stop and old-socket proof: hard_stop=%d socket_boundary=%d candidate_enable=%d", hardStop, socketBoundaryCall, candidateEnableCall)
+	}
+	stateRead := strings.Index(text, "controlled_restart_state=$(controlled_restart_read_state)")
+	stopIngress := strings.Index(text, "stop_agent_for_config_change com.remote-session-runner.local")
+	if stateRead < 0 || stopIngress < 0 || stateRead > stopIngress {
+		t.Fatalf("controlled restart must inspect durable state before ingress quiescence: state=%d ingress=%d", stateRead, stopIngress)
+	}
+	if strings.Contains(text, "controlled_restart_plan_prepared=0 ]; then\n\t\treturn 0") {
+		t.Fatal("controlled restart restoration still relies only on an in-memory plan flag")
+	}
+	// The ordinary preflight remains present in the non-controlled branch. The
+	// special path must not use it because its sole job is to reject the exact
+	// retained-capacity state the controlled plan protects.
+	branch := text[suspend : hardStop+len("controlled_restart_hard_stop_locald\n")]
+	if strings.Contains(branch, "preflight_active_locald_restart") || strings.Contains(branch, "stop_agent_for_config_change com.remote-session-runner.locald") {
+		t.Fatalf("controlled installer branch fell back to ordinary locald shutdown: %s", branch)
+	}
+}
+
+// The installer must have rollback intent set before, rather than after, each
+// launchctl call that can change the old executor's state. This harness sends
+// HUP, INT, or TERM from a fake launchctl immediately after a successful
+// disable or SIGSTOP. It proves the real EXIT-trap restoration route sees the
+// intent and re-enables/kickstarts the old test label instead of stranding it.
+func TestBUG011ControlledRestartSuspendRestoresAfterSignalAtEachLaunchctlBoundary(t *testing.T) {
+	repositoryRoot := p154RepositoryRoot(t)
+	script := filepath.Join(repositoryRoot, "deploy", "macos", "install-launchagents.sh")
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, "controlled_restart_suspend_locald() {")
+	end := strings.Index(text, "# A prior local executor may own")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatalf("could not isolate controlled restart suspend/restore functions: start=%d end=%d", start, end)
+	}
+	functions := text[start:end]
+
+	for _, boundary := range []struct {
+		name            string
+		stage           string
+		expectKickstart bool
+	}{
+		{name: "after_disable", stage: "disable"},
+		{name: "after_sigstop", stage: "sigstop", expectKickstart: true},
+	} {
+		for _, signalName := range []string{"HUP", "INT", "TERM"} {
+			t.Run(boundary.name+"_"+strings.ToLower(signalName), func(t *testing.T) {
+				root := t.TempDir()
+				bin := filepath.Join(root, "bin")
+				agents := filepath.Join(root, "agents")
+				if err := os.Mkdir(bin, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(agents, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				const label = "com.remote-session-runner.locald"
+				if err := os.WriteFile(filepath.Join(agents, label+".plist"), []byte("fixture"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				logPath := filepath.Join(root, "launchctl.log")
+				fakeLaunchctl := filepath.Join(bin, "launchctl")
+				fake := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$RSR_B011_LAUNCHCTL_LOG"
+case "${1:-}" in
+disable)
+	if [ "$RSR_B011_LAUNCHCTL_SIGNAL_STAGE" = disable ]; then
+		kill -"$RSR_B011_LAUNCHCTL_SIGNAL" "$PPID"
+	fi
+	;;
+kill)
+	if [ "${2:-}" = SIGSTOP ] && [ "$RSR_B011_LAUNCHCTL_SIGNAL_STAGE" = sigstop ]; then
+		kill -"$RSR_B011_LAUNCHCTL_SIGNAL" "$PPID"
+	fi
+	;;
+esac
+exit 0
+`
+				if err := os.WriteFile(fakeLaunchctl, []byte(fake), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				harness := "set -eu\n" +
+					"uid=501\n" +
+					"locald_was_loaded=1\n" +
+					"launch_agents=$1\n" +
+					"staging_directory=$2\n" +
+					"config_file=$3\n" +
+					"repo_root=$4\n" +
+					"controlled_locald_disabled=0\n" +
+					"controlled_locald_suspended=0\n" +
+					"controlled_restart_plan_prepared=0\n" +
+					"controlled_restart_prepare_invoked=0\n" +
+					"controlled_restart_old_agents_restore_allowed=1\n" +
+					"candidate_activation_started=0\n" +
+					"restore_prior_agents_on_failure=1\n" +
+					"service_loaded() { launchctl print \"gui/$uid/$1\" >/dev/null 2>&1; }\n" +
+					functions + "\n" +
+					"on_exit() { status=$?; if [ \"$status\" -ne 0 ] && [ \"$restore_prior_agents_on_failure\" -eq 1 ] && [ \"$candidate_activation_started\" -eq 0 ]; then controlled_restart_restore_suspended_locald; fi; trap - EXIT; exit \"$status\"; }\n" +
+					"trap on_exit EXIT\n" +
+					"trap 'exit 129' HUP\n" +
+					"trap 'exit 130' INT\n" +
+					"trap 'exit 143' TERM\n" +
+					"controlled_restart_suspend_locald\n" +
+					"printf '%s\\n' after-suspend-sentinel\n"
+				command := exec.Command("sh", "-c", harness, "bug011-suspend-signal", agents, root, filepath.Join(root, "mac.yaml"), repositoryRoot)
+				command.Env = append(os.Environ(),
+					"PATH="+bin+":"+os.Getenv("PATH"),
+					"RSR_B011_LAUNCHCTL_LOG="+logPath,
+					"RSR_B011_LAUNCHCTL_SIGNAL_STAGE="+boundary.stage,
+					"RSR_B011_LAUNCHCTL_SIGNAL="+signalName,
+				)
+				output, runErr := command.CombinedOutput()
+				if runErr == nil || strings.Contains(string(output), "after-suspend-sentinel") {
+					t.Fatalf("signal boundary harness err=%v output=%s, want interrupted before sentinel", runErr, output)
+				}
+				log, err := os.ReadFile(logPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				logText := string(log)
+				if !strings.Contains(logText, "disable gui/501/"+label) || !strings.Contains(logText, "enable gui/501/"+label) {
+					t.Fatalf("signal boundary=%s signal=%s launchctl log=%q, want disable then rollback enable", boundary.stage, signalName, logText)
+				}
+				if boundary.expectKickstart {
+					if !strings.Contains(logText, "kill SIGSTOP gui/501/"+label) || !strings.Contains(logText, "kickstart -k gui/501/"+label) {
+						t.Fatalf("SIGSTOP boundary signal=%s launchctl log=%q, want frozen old label kickstarted", signalName, logText)
+					}
+				} else if strings.Contains(logText, "kickstart -k gui/501/"+label) {
+					t.Fatalf("disable boundary signal=%s launchctl log=%q, should not kickstart before SIGSTOP", signalName, logText)
+				}
+			})
+		}
 	}
 }
 

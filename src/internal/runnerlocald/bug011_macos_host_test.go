@@ -88,6 +88,10 @@ type bug011MacFixture struct {
 // process gate. It uses a source-built helper and fixture paths below /tmp;
 // it never reads or changes an installed Runner service, mailbox, or database.
 func TestBUG011MacOnlineLostCapacityRecovery(t *testing.T) {
+	if os.Getenv(bug011MacControlledRestartHelperEnv) == "1" {
+		bug011MacControlledRestartHelper(t)
+		return
+	}
 	if os.Getenv(bug011MacHelperEnv) == "1" {
 		bug011MacLocaldHelper(t)
 		return
@@ -132,6 +136,10 @@ func TestBUG011MacOnlineLostCapacityRecovery(t *testing.T) {
 		bug011MacStopKnownLiveChild(t, fixture, lost[0])
 		bug011MacRestoreFirstOwnership(t, fixture, lost[0])
 		bug011MacAssertRecoveredQueuedOneOff(t, fixture, lost, queued)
+	})
+
+	t.Run("controlled_restart_preserves_queued_one_off_across_candidate_crash", func(t *testing.T) {
+		bug011MacControlledRestartP7(t)
 	})
 }
 

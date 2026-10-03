@@ -17,9 +17,10 @@ config_source=''
 source_revision=''
 source_origin_revision=''
 build_ldflags=''
+controlled_restart_mode=0
 
 usage() {
-	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml]" >&2
+	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml] [--b011-controlled-restart]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -31,6 +32,10 @@ while [ "$#" -gt 0 ]; do
 			fi
 			config_source=$2
 			shift 2
+			;;
+		--b011-controlled-restart)
+			controlled_restart_mode=1
+			shift
 			;;
 		--help)
 			usage
@@ -225,6 +230,168 @@ stop_agent_for_config_change() {
 	wait_for_absent_path "$socket"
 }
 
+# The controlled-restart route is deliberately separate from normal service
+# replacement. It freezes only the old local executor before a durable plan is
+# written, so its queue worker cannot claim the preserved command between plan
+# preparation and hard-stop. KeepAlive is disabled first. A suspended process
+# that still owns a SQLite write transaction makes plan preparation fail
+# closed; it is restored before the installer exits without a plan.
+#
+# On the selected Mac, a disposable KeepAlive LaunchAgent proved that disable
+# alone does not suppress an already loaded job after SIGKILL. The safe
+# handoff therefore keeps the old executor SIGSTOPed, bootouts the label while
+# it is frozen, proves it unloaded, and only then re-enables that label for a
+# candidate bootstrap. The frozen old process cannot run graceful cleanup in
+# that interval. A booted-out label alone is not proof that its frozen process
+# exited, so the socket-boundary gate below must pass before a candidate can
+# be enabled.
+controlled_restart_suspend_locald() {
+	label=com.remote-session-runner.locald
+	if [ "$locald_was_loaded" -ne 1 ] || ! service_loaded "$label"; then
+		printf '%s\n' 'Controlled restart requires the active runner-locald LaunchAgent to be loaded.' >&2
+		return 1
+	fi
+	if [ -L "$launch_agents/$label.plist" ] || [ ! -f "$launch_agents/$label.plist" ]; then
+		printf 'controlled restart has no safe installed LaunchAgent plist: %s\n' "$label" >&2
+		return 1
+	fi
+	# Record rollback intent before every signal-affecting launchctl call. A
+	# HUP/INT/TERM is delivered after the shell regains control, so the EXIT trap
+	# can re-enable or kickstart even if launchctl succeeded immediately before
+	# the signal. Keep the intent on reported failure too: launchd may have
+	# changed state before returning a failure.
+	controlled_locald_disabled=1
+	if ! launchctl disable "gui/$uid/$label"; then
+		printf 'could not disable runner-locald KeepAlive before controlled restart: %s\n' "$label" >&2
+		return 1
+	fi
+	controlled_locald_suspended=1
+	if ! launchctl kill SIGSTOP "gui/$uid/$label"; then
+		printf 'could not suspend runner-locald before controlled restart: %s\n' "$label" >&2
+		return 1
+	fi
+	if ! service_loaded "$label"; then
+		printf 'runner-locald disappeared while being suspended for controlled restart: %s\n' "$label" >&2
+		return 1
+	fi
+}
+
+controlled_restart_restore_suspended_locald() {
+	label=com.remote-session-runner.locald
+	controlled_restart_refresh_failure_boundary
+	if [ "$controlled_restart_plan_prepared" -ne 0 ] || [ "$controlled_restart_old_agents_restore_allowed" -ne 1 ]; then
+		return 0
+	fi
+	if [ "$controlled_locald_disabled" -ne 0 ]; then
+		if ! launchctl enable "gui/$uid/$label"; then
+			printf 'could not re-enable runner-locald after controlled-restart preparation failure: %s\n' "$label" >&2
+			return 1
+		fi
+		controlled_locald_disabled=0
+	fi
+	if [ "$controlled_locald_suspended" -ne 0 ]; then
+		if ! launchctl kickstart -k "gui/$uid/$label"; then
+			printf 'could not restart runner-locald after controlled-restart preparation failure: %s\n' "$label" >&2
+			return 1
+		fi
+		controlled_locald_suspended=0
+	fi
+}
+
+controlled_restart_hard_stop_locald() {
+	label=com.remote-session-runner.locald
+	plist="$launch_agents/$label.plist"
+	if [ "$controlled_restart_plan_prepared" -ne 1 ] || [ "$controlled_locald_suspended" -ne 1 ]; then
+		printf '%s\n' 'Controlled restart hard-stop requires a prepared plan and suspended old local executor.' >&2
+		return 1
+	fi
+	if ! launchctl bootout "gui/$uid" "$plist"; then
+		printf 'could not unload frozen runner-locald after controlled-restart plan preparation: %s\n' "$label" >&2
+		return 1
+	fi
+	if service_loaded "$label"; then
+		printf 'runner-locald remained loaded after controlled frozen bootout: %s\n' "$label" >&2
+		return 1
+	fi
+	controlled_locald_suspended=0
+}
+
+# launchd can report a label as unloaded while a frozen old process still owns
+# its Unix listener. The staged helper opens no database; it validates the
+# active owner-only config/root and removes only a stale socket. A live,
+# foreign, non-socket, or changing path fails closed before any candidate is
+# enabled.
+controlled_restart_prove_old_locald_socket_boundary() {
+	if ! "$staging_directory/runner-locald" controlled-restart-socket-boundary --config "$config_file"; then
+		printf '%s\n' 'Could not prove that the old runner-locald process boundary is clear before candidate bootstrap.' >&2
+		return 1
+	fi
+}
+
+# The label was disabled while the old executor was frozen. Hold for the
+# exact ThrottleInterval declared by the source plist after clearing that
+# override, before its first candidate bootstrap.
+controlled_restart_wait_for_launchd_throttle() {
+	label=com.remote-session-runner.locald
+	plist="$repo_root/deploy/macos/launchagents/$label.plist"
+	throttle=$(/usr/libexec/PlistBuddy -c 'Print :ThrottleInterval' "$plist" 2>/dev/null) || {
+		printf 'could not read runner-locald ThrottleInterval for controlled restart: %s\n' "$label" >&2
+		return 1
+	}
+	case "$throttle" in
+		''|*[!0-9]*)
+			printf 'runner-locald ThrottleInterval is invalid for controlled restart: %s\n' "$label" >&2
+			return 1
+			;;
+	esac
+	if [ "$throttle" -le 0 ]; then
+		printf 'runner-locald ThrottleInterval is invalid for controlled restart: %s\n' "$label" >&2
+		return 1
+	fi
+	sleep "$throttle"
+}
+
+# A prepared or active durable plan may be resumed after a shell crash between
+# frozen bootout and candidate bootstrap. Always clear only this Runner label's
+# disabled override before installing the candidate, including that resume.
+controlled_restart_enable_candidate_locald() {
+	label=com.remote-session-runner.locald
+	if ! launchctl enable "gui/$uid/$label"; then
+		printf 'could not re-enable runner-locald for candidate bootstrap: %s\n' "$label" >&2
+		return 1
+	fi
+	controlled_locald_disabled=0
+	controlled_restart_wait_for_launchd_throttle
+}
+
+# This command opens the existing authority read-only and reports only its
+# durable restart boundary: legacy, prepared, active, or migrated-without-plan.
+# A read failure is unsafe for rollback because prepare may already have
+# migrated the database before this shell observed its result.
+controlled_restart_read_state() {
+	"$staging_directory/runner-locald" controlled-restart-status --config "$config_file"
+}
+
+# Once prepare-controlled-restart has been invoked, a signal can arrive after
+# its migration commits but before this installer stores a shell variable. The
+# decision to revive old agents must therefore come from the durable database,
+# not from whether this script reached its next line.
+controlled_restart_refresh_failure_boundary() {
+	if [ "$controlled_restart_prepare_invoked" -ne 1 ]; then
+		return 0
+	fi
+	controlled_restart_old_agents_restore_allowed=0
+	if state=$(controlled_restart_read_state 2>/dev/null); then
+		controlled_restart_state=$state
+		if [ "$state" = legacy ]; then
+			controlled_restart_old_agents_restore_allowed=1
+			return 0
+		fi
+	fi
+	candidate_activation_started=1
+	return 0
+}
+
 # A prior local executor may own local processes or durable work even when its
 # LaunchAgent is down. After ingress is quiesced, always check the active
 # authority before stopping or replacing runner-locald. The staged binary opens
@@ -296,12 +463,15 @@ quiesce_candidate_agents_after_start_failure() {
 
 restore_prior_agents() {
 	restore_failed=0
-	if [ "$locald_was_loaded" -eq 1 ] && ! service_loaded com.remote-session-runner.locald; then
+	if ! controlled_restart_restore_suspended_locald; then
+		restore_failed=1
+	fi
+	if [ "$controlled_restart_old_agents_restore_allowed" -eq 1 ] && [ "$locald_was_loaded" -eq 1 ] && ! service_loaded com.remote-session-runner.locald; then
 		if ! launchctl bootstrap "gui/$uid" "$launch_agents/com.remote-session-runner.locald.plist" || ! launchctl kickstart -k "gui/$uid/com.remote-session-runner.locald"; then
 			restore_failed=1
 		fi
 	fi
-	if [ "$local_was_loaded" -eq 1 ] && ! service_loaded com.remote-session-runner.local; then
+	if [ "$controlled_restart_old_agents_restore_allowed" -eq 1 ] && [ "$local_was_loaded" -eq 1 ] && ! service_loaded com.remote-session-runner.local; then
 		if ! launchctl bootstrap "gui/$uid" "$launch_agents/com.remote-session-runner.local.plist" || ! launchctl kickstart -k "gui/$uid/com.remote-session-runner.local"; then
 			restore_failed=1
 		fi
@@ -316,6 +486,12 @@ staging_directory=''
 config_stage=''
 local_was_loaded=0
 locald_was_loaded=0
+controlled_locald_disabled=0
+controlled_locald_suspended=0
+controlled_restart_plan_prepared=0
+controlled_restart_prepare_invoked=0
+controlled_restart_old_agents_restore_allowed=1
+controlled_restart_state=''
 restore_prior_agents_on_failure=0
 candidate_activation_started=0
 candidate_config_handed_off=0
@@ -332,13 +508,18 @@ cleanup_staging() {
 		fi
 	fi
 	if [ -n "$staging_directory" ] && [ -d "$staging_directory" ] && [ ! -L "$staging_directory" ]; then
-		if ! rm -rf "$staging_directory"; then
+		if [ "$candidate_activation_started" -eq 1 ] && [ "$candidate_config_handed_off" -eq 0 ]; then
+			:
+		elif ! rm -rf "$staging_directory"; then
 			printf 'could not remove installer staging directory: %s\n' "$staging_directory" >&2
 		fi
 	fi
 }
 on_exit() {
 	status=$?
+	if [ "$status" -ne 0 ] && [ "$controlled_restart_mode" -eq 1 ] && [ "$controlled_restart_prepare_invoked" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then
+		controlled_restart_refresh_failure_boundary
+	fi
 	if [ "$status" -ne 0 ] && [ "$restore_prior_agents_on_failure" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then
 		printf '%s\n' 'Install stopped before candidate activation; restoring prior LaunchAgents and active mac.yaml.' >&2
 		if ! restore_prior_agents; then
@@ -408,6 +589,10 @@ if [ -z "$config_source" ] && [ ! -f "$config_file" ]; then
 fi
 
 if [ -n "$config_source" ]; then
+	if [ "$controlled_restart_mode" -ne 0 ]; then
+		printf '%s\n' 'Controlled restart must use the active mac.yaml; it cannot combine a staged configuration change with live queued-work preservation.' >&2
+		exit 1
+	fi
 	config_directory=$(CDPATH= cd -- "$service_root/config" && pwd -P)
 	candidate_directory=$(CDPATH= cd -- "$(dirname -- "$config_source")" && pwd -P) || {
 		printf 'staged Mac config parent is unavailable: %s\n' "$config_source" >&2
@@ -467,13 +652,92 @@ fi
 if service_loaded com.remote-session-runner.locald; then
 	locald_was_loaded=1
 fi
+if [ "$controlled_restart_mode" -eq 1 ]; then
+	if ! controlled_restart_state=$(controlled_restart_read_state); then
+		printf '%s\n' 'Could not read the durable controlled-restart state without changing the active authority.' >&2
+		exit 1
+	fi
+	case "$controlled_restart_state" in
+	legacy)
+		if [ "$locald_was_loaded" -ne 1 ]; then
+			printf '%s\n' 'A new controlled restart requires the active runner-locald LaunchAgent; no durable plan exists to resume.' >&2
+			exit 1
+		fi
+		;;
+	prepared)
+		# A prior installer may have created the plan and stopped the old
+		# executor before its candidate bootstrap completed. Resume it below.
+		;;
+	active)
+		if [ "$locald_was_loaded" -eq 1 ]; then
+			printf '%s\n' 'An active controlled restart still has a loaded executor; refusing to interrupt its candidate runtime.' >&2
+			exit 1
+		fi
+		;;
+	migrated-without-plan)
+		printf '%s\n' 'The authority has the controlled-restart schema but no durable plan; refusing to revive or replace the executor automatically.' >&2
+		exit 1
+		;;
+	*)
+		printf '%s\n' 'The durable controlled-restart state is invalid; refusing service replacement.' >&2
+		exit 1
+		;;
+	esac
+fi
 # Until the candidate begins replacing active artifacts, any failure restores
 # exactly the pre-install LaunchAgent state. Set this before stopping either
 # job so a failure while quiescing the second job also restarts the first.
 restore_prior_agents_on_failure=1
 stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"
-preflight_active_locald_restart
-stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"
+if [ "$controlled_restart_mode" -eq 1 ]; then
+	case "$controlled_restart_state" in
+	legacy)
+		controlled_restart_suspend_locald
+		# This flag comes before the candidate invocation so the EXIT trap uses
+		# durable state even if it receives a signal between the migration commit
+		# and the next shell assignment.
+		controlled_restart_prepare_invoked=1
+		if ! "$staging_directory/runner-locald" prepare-controlled-restart --config "$config_file"; then
+			controlled_restart_refresh_failure_boundary
+			if [ "$controlled_restart_old_agents_restore_allowed" -eq 1 ]; then
+				printf '%s\n' 'Controlled restart preparation did not change the authority; restoring the suspended active executor.' >&2
+			else
+				printf '%s\n' 'Controlled restart preparation crossed a candidate boundary; retaining the candidate for safe repair or resume.' >&2
+			fi
+			exit 1
+		fi
+		controlled_restart_plan_prepared=1
+		# The durable plan migration makes the prior binary unsafe to revive. The
+		# hard-stop sequence was proved against a disposable KeepAlive LaunchAgent:
+		# disabled -> SIGSTOP -> bootout frozen old label -> enable, then candidate
+		# bootstrap below. Never SIGKILL a still loaded KeepAlive label.
+		candidate_activation_started=1
+		controlled_restart_hard_stop_locald
+		;;
+	prepared)
+		controlled_restart_plan_prepared=1
+		candidate_activation_started=1
+		if [ "$locald_was_loaded" -eq 1 ]; then
+			controlled_restart_suspend_locald
+			controlled_restart_hard_stop_locald
+		fi
+		;;
+	active)
+		# The candidate died after activation but before its exact scheduler
+		# claim. Restarting the current candidate rehydrates the same generation.
+		candidate_activation_started=1
+		;;
+	esac
+	if ! controlled_restart_prove_old_locald_socket_boundary; then
+		exit 1
+	fi
+	if ! controlled_restart_enable_candidate_locald; then
+		exit 1
+	fi
+else
+	preflight_active_locald_restart
+	stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"
+fi
 candidate_services_quiesced=1
 
 if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --config "$selected_config"; then

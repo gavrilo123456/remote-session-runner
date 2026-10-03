@@ -72,6 +72,39 @@ func TestRuntimeOwnershipRecordIsOwnerOnlyAndGenerationBound(t *testing.T) {
 	}
 }
 
+func TestReplaceRuntimeOwnershipKeepsExpectedIdentityBound(t *testing.T) {
+	root, workspace, expected := runtimeOwnershipFixture(t, "session-owner-replacement")
+	if err := writeRuntimeOwnership(root, expected); err != nil {
+		t.Fatal(err)
+	}
+	replacementWorkspace := filepath.Join(root, "replacement-workspace")
+	if err := os.Mkdir(replacementWorkspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	replacement := expected
+	replacement.Workspace = replacementWorkspace
+	replacement.PID++
+	replacement.ProcessGroupID = replacement.PID
+	replacement.ProcessStartIdentity = "replacement-start-identity"
+	if err := replaceRuntimeOwnership(root, expected, replacement); err != nil {
+		t.Fatalf("replace exact owner: %v", err)
+	}
+	loaded, err := readRuntimeOwnership(root, expected.SessionID)
+	if err != nil || loaded != replacement {
+		t.Fatalf("replacement owner = %+v err=%v, want %+v", loaded, err, replacement)
+	}
+	if err := replaceRuntimeOwnership(root, expected, expected); !errors.Is(err, ErrRuntimeOwnershipRecord) {
+		t.Fatalf("stale expected owner replacement error=%v, want identity rejection", err)
+	}
+	loaded, err = readRuntimeOwnership(root, expected.SessionID)
+	if err != nil || loaded != replacement {
+		t.Fatalf("stale replacement changed owner: loaded=%+v err=%v", loaded, err)
+	}
+	if _, err := os.Stat(workspace); err != nil {
+		t.Fatalf("atomic replacement removed expected workspace: %v", err)
+	}
+}
+
 func TestRuntimeOwnershipRecordRejectsUnsafeFileAndDirectory(t *testing.T) {
 	root, _, record := runtimeOwnershipFixture(t, "session-unsafe-record")
 	if err := writeRuntimeOwnership(root, record); err != nil {

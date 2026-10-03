@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 33
+	CurrentSchemaVersion = 34
 
 	// legacySingleMailboxSchemaVersion is the last schema that represented all
 	// mailbox work in the implicit default inbox. It is accepted only by the
@@ -139,6 +139,9 @@ var lostRuntimeRecoveryFinalizationsSQL string
 
 //go:embed migrations/0033_bug009_queue_blocked_reason.sql
 var bug009QueueBlockedReasonSQL string
+
+//go:embed migrations/0034_controlled_restart_plan.sql
+var controlledRestartPlanSQL string
 
 type migration struct {
 	version int
@@ -278,6 +281,10 @@ var migrations = []migration{{
 	version: 33,
 	name:    "bug009_queue_blocked_reason",
 	sql:     bug009QueueBlockedReasonSQL,
+}, {
+	version: 34,
+	name:    "controlled_restart_plan",
+	sql:     controlledRestartPlanSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
@@ -397,6 +404,16 @@ func OpenExistingCurrentReadOnly(ctx context.Context, path string) (*sql.DB, err
 // read-only and never creates a database, sidecar, or migration.
 func OpenExistingRestartPreflightReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	return openExistingReadOnly(ctx, path, verifyRestartPreflightSchemaConnection)
+}
+
+// OpenExistingControlledRestartStatusReadOnly opens an existing private
+// authority database solely to inspect the durable controlled-restart state.
+// It accepts the current schema and the immediately preceding schema, which
+// predates the controlled-restart plan. The returned handle is read-only and
+// never creates a database or sidecar, changes SQLite settings, or applies a
+// migration.
+func OpenExistingControlledRestartStatusReadOnly(ctx context.Context, path string) (*sql.DB, error) {
+	return openExistingReadOnly(ctx, path, verifyControlledRestartStatusSchemaConnection)
 }
 
 type existingReadOnlySchemaVerifier func(context.Context, *sql.Conn) error
@@ -797,6 +814,40 @@ func verifyRestartPreflightSchemaConnection(ctx context.Context, connection *sql
 		return fmt.Errorf("%w: got %d, require current %d or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, legacySingleMailboxSchemaVersion)
 	}
 	return verifyMigrationHistory(ctx, connection, version)
+}
+
+// verifyControlledRestartStatusSchemaConnection recognizes only the two
+// schema shapes whose controlled-restart state this source can interpret. A
+// schema-33 authority has no durable plan table; the current schema has both
+// plan tables. Any other version or table shape fails closed.
+func verifyControlledRestartStatusSchemaConnection(ctx context.Context, connection *sql.Conn) error {
+	version, err := userVersion(ctx, connection)
+	if err != nil {
+		return err
+	}
+	if version != controlledRestartStatusLegacySchemaVersion && version != CurrentSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d or prior %d", ErrSchemaVersion, version, CurrentSchemaVersion, controlledRestartStatusLegacySchemaVersion)
+	}
+	if err := verifyMigrationHistory(ctx, connection, version); err != nil {
+		return err
+	}
+	plansPresent, pairsPresent, err := controlledRestartPlanTablesPresent(ctx, connection)
+	if err != nil {
+		return err
+	}
+	switch version {
+	case controlledRestartStatusLegacySchemaVersion:
+		if plansPresent || pairsPresent {
+			return fmt.Errorf("%w: schema %d unexpectedly contains controlled restart plan tables", ErrSchemaVersion, version)
+		}
+	case CurrentSchemaVersion:
+		if !plansPresent || !pairsPresent {
+			return fmt.Errorf("%w: schema %d is missing controlled restart plan tables", ErrSchemaVersion, version)
+		}
+	default:
+		return ErrSchemaVersion
+	}
+	return nil
 }
 
 func applyMigrations(ctx context.Context, db *sql.DB) error {
