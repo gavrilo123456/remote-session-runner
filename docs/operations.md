@@ -300,6 +300,48 @@ credentials, or resource IDs.
 | `mailbox_backlog` | Durable accepted exchanges plus safe complete zero-byte JSON/marker pairs with no durable exchange or diagnostic | 32 |
 | `mailbox_backlog_by_inbox` | Same backlog, split by configured safe inbox IDs such as `default`, `analytics`, and `slidestud-io` | Inspect each nonzero value |
 
+### How the four queue and slot gauges fit together
+
+These are four durable state gauges, not four separate physical queues. Read
+them from the Runner process that returned the health response; do not add a
+Mac value to a Linux value.
+
+For a **queued remote** one-off request, the usual path is:
+
+```mermaid
+flowchart TD
+    A[Mac queued mailbox or local Router] --> B[Mac: queued_intents<br/>delivery to the target is not yet proved]
+    B --> C[Selected Linux Runner accepts a session and command]
+    X[Direct mTLS one-off request] --> C
+    C --> D[Linux: active_session_slots +1<br/>held until session cleanup is confirmed]
+    C --> E[Linux: queued_commands +1<br/>accepted command waits to start]
+    E --> F[Linux: active_command_slots +1<br/>command has started]
+    F --> G[Command reaches a terminal state<br/>and process stop is confirmed]
+    G --> H[Command slot is released]
+    G --> I[Session becomes ready for another command<br/>or closes]
+    I --> J[Session cleanup is confirmed]
+    J --> K[Session slot is released]
+```
+
+| Gauge | Simple meaning | When it normally drops |
+| --- | --- | --- |
+| `queued_intents` | A Mac-side request whose delivery outcome is not yet proved. It can represent `run`, session creation, command submission, cancellation, or session close. It is **not** a remote-command queue. | The target result is reconciled or the request is conclusively not delivered. |
+| `queued_commands` | A command accepted by the selected Runner authority but waiting for execution. It can wait for a free command slot, a ready session, or an earlier command in the same session. This count does not give a queue position or a general reason for the delay. | The scheduler starts it or it reaches a terminal pre-start outcome. |
+| `active_command_slots` | A durable execution reservation for a command that has started. The current PoC permits four running commands per authority host. | Runner has both a terminal command result and proof that the process stopped. |
+| `active_session_slots` | A durable session-capacity reservation, normally held from session creation until workspace/runtime cleanup is confirmed. The current PoC permits 20 active sessions per authority host. | The session is closed and cleanup is durably confirmed. |
+
+A ready session with no running command still uses an `active_session_slots`
+reservation. Likewise, a terminal `lost` command can continue to occupy an
+`active_command_slots` reservation when Runner cannot prove that its process
+stopped. That deliberately blocks further starts rather than risk running more
+processes than the configured safety limit.
+
+Direct mTLS requests go straight to the selected Linux Runner, so they do not
+first create a Mac `queued_intents` record. The selected Linux authority owns
+`queued_commands` and the two slot gauges for its work. The preceding numbers
+in the metrics table are operational warning thresholds; the active policy's
+service limits control admission and concurrent execution.
+
 A zero backlog does not prove an importer, bridge, or request succeeded. It
 only shows no current counted work. Process-local error counters reset after a
 daemon restart; retained counters can fall after cleanup.

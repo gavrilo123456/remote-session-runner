@@ -17,7 +17,7 @@ selection, or automatic fallback.
 | [LLM client guide](llm-client-guide.md) | Practical guide for LLMs and coding agents: route selection, mailbox work, results, ACKs, retries, lifecycle status, and safe failure handling. |
 | [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, deterministic request-result lookup, lifecycle status, events, ACKs, retries, and safe invalid-input diagnostics. |
 | [API reference](api.md) | Direct mTLS and Unix-socket transports, shared v1 HTTP/JSON behavior, and the Mac-only lifecycle-status extension. |
-| [Operations runbook](operations.md) | Health, metrics, logs, read-only lifecycle triage, service refresh, diagnostic triage, and recovery limits. |
+| [Operations runbook](operations.md) | Health, queue and slot gauges, metrics, logs, read-only lifecycle triage, service refresh, diagnostic triage, and recovery limits. |
 | [Current-host evidence](current-host-evidence.md) | What P155, P157, P158, P159, and P166 accepted, what remains unaccepted, and the per-host boundary. |
 
 ## Current controlled configuration

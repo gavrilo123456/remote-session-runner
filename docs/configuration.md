@@ -322,6 +322,12 @@ secrets.
 | Private ingress diagnostic cleanup | 7 days after observation |
 | Marker-only residue | No ordinary age cleanup; review lifecycle status |
 
+The active-session and running-command limits apply independently to each
+Runner authority/host. They are durable safety reservations, so a count can
+remain nonzero until cleanup or process stop is confirmed. See
+[how the four queue and slot gauges fit together](operations.md#how-the-four-queue-and-slot-gauges-fit-together)
+for the lifecycle and the distinction between limits, queues, and warnings.
+
 `runner-local doctor`, `runner-locald doctor`, and `runnerd doctor` validate
 their respective runtime configuration. A doctor command writes a timestamp
 health record to SQLite, so it is diagnostic rather than read-only. Use the
