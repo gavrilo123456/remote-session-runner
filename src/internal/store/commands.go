@@ -25,7 +25,7 @@ var (
 	ErrCommandPayloadCorrupt = errors.New("command script payload is corrupt")
 	// ErrCommandEvent means a durable command event failed store validation.
 	ErrCommandEvent = errors.New("invalid command event")
-	// ErrCommandOrderCorrupt means authoritative ordinals are not contiguous.
+	// ErrCommandOrderCorrupt means authoritative scheduler order data is invalid.
 	ErrCommandOrderCorrupt = errors.New("authoritative command order is corrupt")
 	// ErrCommandNotEligible means no queued command can run for the session.
 	ErrCommandNotEligible = errors.New("no eligible command")

@@ -73,6 +73,68 @@ func TestP019D17SchedulerFairnessAndStartedEventTransaction(t *testing.T) {
 	}
 }
 
+// TestP019D17SchedulerOrdersVariableWidthTimestampTextChronologically
+// protects the authoritative fairness rule for variable-width RFC3339Nano
+// durable text. SQLite TEXT order places the
+// later .100000001Z before the earlier .1Z, so the scheduler must parse the
+// stored timestamp before it claims the next command.
+func TestP019D17SchedulerOrdersVariableWidthTimestampTextChronologically(t *testing.T) {
+	clock := &p019Clock{value: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)}
+	authority := newP019Store(t, clock)
+
+	firstSession := p019ReadySession(t, authority, "session-p019-variable-time-first", "key-p019-variable-time-first")
+	secondSession := p019ReadySession(t, authority, "session-p019-variable-time-second", "key-p019-variable-time-second")
+	first := p019Command(t, authority, firstSession, "command-p019-variable-time-first", "key-p019-variable-time-first")
+	second := p019Command(t, authority, secondSession, "command-p019-variable-time-second", "key-p019-variable-time-second")
+
+	base := time.Date(2026, 10, 3, 12, 1, 0, 0, time.UTC)
+	firstCreatedAt := base.Add(100 * time.Millisecond)
+	secondCreatedAt := firstCreatedAt.Add(time.Nanosecond)
+	firstText := firstCreatedAt.Format(time.RFC3339Nano)
+	secondText := secondCreatedAt.Format(time.RFC3339Nano)
+	if firstText <= secondText {
+		t.Fatalf("fixture timestamps unexpectedly preserve lexical chronology: first=%q second=%q", firstText, secondText)
+	}
+	if _, err := authority.db.ExecContext(context.Background(), `UPDATE exec_commands SET created_at = ? WHERE command_id = ?`, firstText, string(first.CommandID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.db.ExecContext(context.Background(), `UPDATE exec_commands SET created_at = ? WHERE command_id = ?`, secondText, string(second.CommandID)); err != nil {
+		t.Fatal(err)
+	}
+
+	started, err := authority.StartNextEligibleCommand(context.Background(), DefaultRunningCommandLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.CommandID != first.CommandID {
+		t.Fatalf("scheduled command=%s, want chronological first %s before %s", started.CommandID, first.CommandID, second.CommandID)
+	}
+}
+
+func TestP019D17SchedulerRejectsCorruptCandidateTimestampBeforeClaim(t *testing.T) {
+	clock := &p019Clock{value: time.Date(2026, 10, 3, 12, 2, 0, 0, time.UTC)}
+	authority := newP019Store(t, clock)
+	session := p019ReadySession(t, authority, "session-p019-corrupt-time", "key-p019-corrupt-time")
+	queued := p019Command(t, authority, session, "command-p019-corrupt-time", "key-p019-corrupt-time")
+	if _, err := authority.db.ExecContext(context.Background(), `UPDATE exec_commands SET created_at = 'not-a-timestamp' WHERE command_id = ?`, string(queued.CommandID)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := authority.StartNextEligibleCommand(context.Background(), DefaultRunningCommandLimit); !errors.Is(err, ErrCommandOrderCorrupt) {
+		t.Fatalf("start with corrupt scheduler timestamp error=%v, want ErrCommandOrderCorrupt", err)
+	}
+	var state string
+	if err := authority.db.QueryRowContext(context.Background(), `SELECT state FROM exec_commands WHERE command_id = ?`, string(queued.CommandID)).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if domain.CommandState(state) != domain.CommandStateQueued {
+		t.Fatalf("corrupt scheduler timestamp command state=%s, want queued", state)
+	}
+	if live, err := authority.CountLiveCommandSlots(context.Background()); err != nil || live != 0 {
+		t.Fatalf("corrupt scheduler timestamp live slots=%d err=%v, want 0", live, err)
+	}
+}
+
 func TestP019D17FourLiveSlotsRetainLostReservationUntilConfirmedStop(t *testing.T) {
 	store := newP019Store(t, &p019Clock{value: time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)})
 	commands := make([]CommandRecord, 0, 5)

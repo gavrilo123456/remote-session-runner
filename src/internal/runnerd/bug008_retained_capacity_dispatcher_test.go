@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -259,28 +260,45 @@ func b008AssertQueuedNotStarted(t *testing.T, authority *store.AuthorityStore, j
 func b008DurableCommandStartOrder(t *testing.T, database *sql.DB, first, second domain.CommandID) []domain.CommandID {
 	t.Helper()
 	rows, err := database.QueryContext(context.Background(), `
-SELECT command_id
+SELECT command_id, occurred_at
 FROM exec_command_events
-WHERE event_type = 'command_started' AND command_id IN (?, ?)
-ORDER BY occurred_at, command_id`, string(first), string(second))
+WHERE event_type = 'command_started' AND command_id IN (?, ?)`, string(first), string(second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	var result []domain.CommandID
+	type startedEvent struct {
+		commandID  domain.CommandID
+		occurredAt time.Time
+	}
+	var events []startedEvent
 	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
+		var value, occurredAtValue string
+		if err := rows.Scan(&value, &occurredAtValue); err != nil {
 			t.Fatal(err)
 		}
 		id, err := domain.NewCommandID(value)
 		if err != nil {
 			t.Fatal(err)
 		}
-		result = append(result, id)
+		occurredAt, err := time.Parse(time.RFC3339Nano, occurredAtValue)
+		if err != nil {
+			t.Fatalf("parse command-start timestamp %q: %v", occurredAtValue, err)
+		}
+		events = append(events, startedEvent{commandID: id, occurredAt: occurredAt.UTC()})
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
+	}
+	sort.Slice(events, func(i, j int) bool {
+		if !events[i].occurredAt.Equal(events[j].occurredAt) {
+			return events[i].occurredAt.Before(events[j].occurredAt)
+		}
+		return events[i].commandID < events[j].commandID
+	})
+	result := make([]domain.CommandID, 0, len(events))
+	for _, event := range events {
+		result = append(result, event.commandID)
 	}
 	return result
 }

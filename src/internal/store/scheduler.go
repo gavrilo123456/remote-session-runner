@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -66,23 +67,33 @@ WHERE host_key = ? AND stop_confirmed_at IS NULL
 		}
 
 		rows, err := connection.QueryContext(ctx, `
-SELECT c.command_id, c.session_id
+SELECT c.command_id, c.session_id, c.created_at, c.ordinal
 FROM exec_commands c
 JOIN exec_sessions s ON s.session_id = c.session_id
 WHERE c.state = ? AND s.state = ?
-ORDER BY c.created_at, c.session_id, c.ordinal
 `, string(domain.CommandStateQueued), string(domain.SessionStateReady))
 		if err != nil {
 			return CommandRecord{}, fmt.Errorf("query scheduler candidates: %w", err)
 		}
 		var candidates []schedulerCandidate
 		for rows.Next() {
-			var commandIDValue, sessionIDValue string
-			if err := rows.Scan(&commandIDValue, &sessionIDValue); err != nil {
+			var commandIDValue, sessionIDValue, createdAtValue string
+			var ordinal int64
+			if err := rows.Scan(&commandIDValue, &sessionIDValue, &createdAtValue, &ordinal); err != nil {
 				_ = rows.Close()
 				return CommandRecord{}, fmt.Errorf("scan scheduler candidate: %w", err)
 			}
-			candidates = append(candidates, schedulerCandidate{commandID: commandIDValue, sessionID: sessionIDValue})
+			createdAt, err := parseStoredTime(createdAtValue)
+			if err != nil {
+				_ = rows.Close()
+				return CommandRecord{}, fmt.Errorf("%w: command %q created_at: %v", ErrCommandOrderCorrupt, commandIDValue, err)
+			}
+			candidates = append(candidates, schedulerCandidate{
+				commandID: commandIDValue,
+				sessionID: sessionIDValue,
+				createdAt: createdAt,
+				ordinal:   ordinal,
+			})
 		}
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()
@@ -91,6 +102,24 @@ ORDER BY c.created_at, c.session_id, c.ordinal
 		if err := rows.Close(); err != nil {
 			return CommandRecord{}, fmt.Errorf("close scheduler candidates: %w", err)
 		}
+		// RFC3339Nano permits variable-width fractional seconds. Durable rows
+		// therefore cannot be ordered chronologically with a SQL
+		// TEXT comparison alone (for example, .1Z sorts after .100000001Z).
+		// Parse every eligible candidate before choosing the durable claim so
+		// the oldest-command contract holds for all valid RFC3339Nano values.
+		sort.Slice(candidates, func(i, j int) bool {
+			left, right := candidates[i], candidates[j]
+			if !left.createdAt.Equal(right.createdAt) {
+				return left.createdAt.Before(right.createdAt)
+			}
+			if left.sessionID != right.sessionID {
+				return left.sessionID < right.sessionID
+			}
+			if left.ordinal != right.ordinal {
+				return left.ordinal < right.ordinal
+			}
+			return left.commandID < right.commandID
+		})
 		for _, candidateRow := range candidates {
 			commandID, err := domain.NewCommandID(candidateRow.commandID)
 			if err != nil {
@@ -150,6 +179,8 @@ WHERE command_id = ? AND state = ?
 type schedulerCandidate struct {
 	commandID string
 	sessionID string
+	createdAt time.Time
+	ordinal   int64
 }
 
 // CountLiveCommandSlots counts host reservations whose stop boundary is not
