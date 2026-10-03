@@ -69,6 +69,24 @@ The monitor only queried recent deploy-dev.yml workflow runs for protected
 Gitea DEV head f55013cc09d3a953b3f9bb4501888a9b0a9b2437. It did not dispatch,
 import, deploy, modify repository state, or change a target host.
 
+### Actual redacted execution shape
+
+Both failed attempts used the same non-secret remote script shape:
+
+1. Enable strict shell error handling.
+2. Read the approved remote Gitea credential file without printing it.
+3. Make one bounded, authenticated, read-only Gitea GET for recent
+   deploy-dev.yml workflow runs.
+4. Parse the response with jq and emit one compact JSON object for the exact
+   protected Gitea DEV head.
+5. Clear the shell token variable.
+
+The expected useful output was one compact JSON workflow-status record only
+after the bounded GET and jq parse completed. Neither the request JSON nor
+the expected output contains a token value, credential content, or private
+key material. The request explicitly selected sandbox-dev and remote
+sandbox-host; its outbox records execution_selection_source=request_override.
+
 ### Terminal outbox response
 
 ~~~json
@@ -105,14 +123,127 @@ outbox revision and event cursor were acknowledged after inspection. No second
 request was created as a retry for this operation, and no Logger deployment was
 started from this incident.
 
+### Two-attempt comparison
+
+| Property | Attempt 1 | Attempt 2 |
+| --- | --- | --- |
+| Request ID | req-codex-logger-fixed-bundle-validation-monitor-20261003-01 | req-codex-logger-fixed-bundle-validation-monitor-20261004-01 |
+| Started (UTC) | 2026-10-03T21:14:19.545352580Z | 2026-10-03T22:14:21.044774752Z |
+| Lost (UTC) | 2026-10-03T21:14:19.622101206Z | 2026-10-03T22:14:21.086351629Z |
+| Started to lost | 76.748626 ms | 41.576877 ms |
+| Captured stderr | exactly one byte: "c" | exactly one byte: "c" |
+| output_unavailable_reason | capture_boundary_unconfirmed | capture_boundary_unconfirmed |
+| Terminal envelope | complete / lost / reconciled / lost teardown | complete / lost / reconciled / lost teardown |
+
+The attempts began 3,601.499422 seconds apart and independently produced the
+same signature. The second raw UTC timestamp is 00:14 on 2026-10-04 in
+Europe/Warsaw, so its recorded local report date and UTC event date are
+consistent.
+
+The complete request envelope is terminal, but it is not proof that the child
+process reached its intended Gitea call. It only proves the Runner recorded a
+terminal lost projection after accepting and starting a command.
+
 ## Safe reproduction
 
-Run these as separate fresh mailbox requests against
-slidestud-io → sandbox-dev → remote/sandbox-host:
+Run this staged matrix as separate fresh mailbox requests against
+slidestud-io → sandbox-dev → remote/sandbox-host. Complete correlation and
+ACK for each stage before submitting the next; never turn a lost stage into an
+automatic retry.
 
-1. A harmless control such as printf with deterministic stdout/stderr.
-2. A bounded read-only HTTPS/Gitea status GET that uses an approved remote
-   credential file but never places a token in the mailbox JSON or output.
+| Stage | Safe remote action | What it isolates |
+| --- | --- | --- |
+| A | Shell built-ins print a distinct non-secret marker to stdout, stderr, then stdout again | shell setup, dual-stream capture, framing, durable capture, and result relay |
+| B | Explicit /usr/bin/printf child prints the same three-marker pattern | child spawn/exec separately from shell built-ins |
+| C | /usr/bin/curl --version then an after-marker, without network access | curl child launch, exit, capture, and relay |
+| D | Bounded unauthenticated HTTPS Gitea API version GET with an after-marker | DNS, TLS, curl networking, outbound routing, and output capture |
+| E | Bounded authenticated read-only Gitea Actions-status GET with response discarded and an after-marker | approved credential-file use plus authenticated Actions API class |
+| F | Exact bounded Logger workflow-monitor shape, including response parse for the fixed protected head | jq parse and the actual production monitor shape |
+
+Use a distinct non-secret correlation ID in each request's printed probe text
+and, where the proxy/application safely retains custom request metadata, in a
+non-secret request-correlation header. This permits endpoint-side logs to
+confirm arrival without exposing a credential or relying on an ambiguous
+partial output fragment.
+
+Use these test bodies without modification other than the non-secret
+correlation text and, for stage F, the protected head expected by the test.
+They are one-at-a-time diagnostic probes, not a deployment route.
+
+### Stage A — shell and dual-stream capture
+
+~~~sh
+set -eu
+printf 'RSR_SHELL_STDOUT\n'
+printf 'RSR_SHELL_STDERR\n' >&2
+printf 'RSR_SHELL_AFTER\n'
+~~~
+
+### Stage B — explicit child and dual-stream capture
+
+~~~sh
+set -eu
+/usr/bin/printf 'RSR_CHILD_STDOUT\n'
+/usr/bin/printf 'RSR_CHILD_STDERR\n' >&2
+printf 'RSR_CHILD_AFTER\n'
+~~~
+
+### Stage C — curl executable only
+
+~~~sh
+set -eu
+/usr/bin/curl --version
+printf 'RSR_CURL_EXEC_AFTER\n'
+~~~
+
+### Stage D — bounded anonymous HTTPS control
+
+~~~sh
+set -u
+if /usr/bin/curl --silent --show-error --fail --connect-timeout 5 --max-time 15 \
+  --request GET --output /dev/null \
+  --write-out 'RSR_GITEA_VERSION_HTTP=%{http_code}\n' \
+  https://gitea.devnull.group/api/v1/version
+then
+  rc=0
+else
+  rc=$?
+fi
+printf 'RSR_GITEA_VERSION_AFTER_RC=%s\n' "$rc"
+exit "$rc"
+~~~
+
+### Stage E — bounded authenticated Actions-status control
+
+~~~sh
+set -u
+token_file=/home/ubuntu/.tokens/gitea-admin
+if [ ! -r "$token_file" ]; then
+  printf 'RSR_GITEA_TOKEN_FILE_UNREADABLE\n' >&2
+  exit 64
+fi
+token=$(/usr/bin/tr -d '\r\n' < "$token_file")
+if /usr/bin/curl --silent --show-error --fail --connect-timeout 5 --max-time 15 \
+  --request GET -H "Authorization: token $token" --output /dev/null \
+  --write-out 'RSR_GITEA_ACTIONS_HTTP=%{http_code}\n' \
+  'https://gitea.devnull.group/api/v1/repos/admin/slidestud.io/actions/runs?limit=1'
+then
+  rc=0
+else
+  rc=$?
+fi
+unset token
+printf 'RSR_GITEA_ACTIONS_AFTER_RC=%s\n' "$rc"
+exit "$rc"
+~~~
+
+### Stage F — exact Logger monitor
+
+Use the same approved token-file handling and bounded authenticated GET as
+stage E, then fetch the current workflow-list response (not /dev/null) and
+jq-select the known protected head. Its only useful output must be one compact
+JSON status object. Do not record a token value, raw Authorization header, or
+unredacted response body in the bug record or diagnostic logs.
 
 For each request:
 
@@ -122,7 +253,7 @@ For each request:
 4. Read only through available_event_sequence.
 5. ACK only the exact terminal response revision and event cursor.
 6. If terminal state is lost or indeterminate, do not automatically retry;
-   retain the complete safe evidence.
+   retain the complete safe evidence and stop the ladder immediately.
 
 The defect reproduces if a valid remote command becomes lost before a
 trustworthy success/failure result, especially if captured output is a partial
@@ -199,14 +330,25 @@ Correlate the request, job, session, and command IDs across:
 Add safe redacted diagnostics for:
 
 - child spawn result, PID lifecycle, exit status/signal, and exec/cwd failure;
+- whether command_started means the remote child was spawned, which actor wrote
+  it, and the actor/path that later persisted command_lost;
 - stdout/stderr byte counts, capture boundary, and persistence/transport
-  category;
+  category, including whether each fragment originated in the child, bridge,
+  relay, or Runner itself;
 - bridge relay/reconciliation failure category;
-- scheduler slot/lease state and teardown reason;
+- scheduler slot/lease state, teardown owner, and teardown reason;
 - durable record transition that converts an active command into command_lost.
 
 Do not log command secrets, tokens, request headers, private key material, or
 raw credential-file content.
+
+For both existing attempts, retain safe redacted logs and diagnostics for at
+least plus/minus 60 seconds around the UTC windows above from the Mac relay,
+Mac locald, sandbox bridge, and sandbox runnerd. Record installed component
+revisions, configuration digest, service uptime/restart history, host clock
+state, and capacity/lease gauges alongside the request/job/session/command
+correlation. These facts are required to distinguish a child failure from a
+capture or reconciliation failure.
 
 ## Acceptance criteria for a correction
 
@@ -238,3 +380,4 @@ Open. Root cause is not yet established.
 | --- | --- |
 | 2026-10-03 | BUG-015 recorded with correlated terminal outbox/event evidence. |
 | 2026-10-04 | Fresh controlled remote monitor reproduced the exact one-byte stderr then command_lost signature; correlated terminal record was ACKed with no deployment action. |
+| 2026-10-04 | Added two-attempt timing/capture comparison and a staged, safe reproduction matrix that isolates shell, credential-file, curl/TLS, and authenticated Gitea monitor boundaries. |
