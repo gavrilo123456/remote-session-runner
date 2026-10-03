@@ -195,10 +195,248 @@ Any later fix must:
    stopped process group, a live/mismatched process, restart recovery, and no
    duplicate execution with automated tests.
 
+## Design decision — one shared queue and recovery implementation
+
+Using physically shared code is the right correction here. The durable queue,
+lost-capacity inventory, proof-before-release transaction, post-release
+finalization retry, and wake behavior have the same required semantics on both
+hosts. They must therefore have one implementation, rather than a Linux copy
+and a Mac copy that can drift.
+
+`src/internal/runnerd/queued_dispatcher.go` is already platform-neutral in
+its dependencies. Its implementation will be moved, without copying it, into
+a neutral internal package (planned name: `src/internal/queueworker`). Both
+`runnerd` and `runner-locald` will construct that same worker with their
+authority store, shared execution service, and lifecycle gate. A thin
+compatibility wrapper is acceptable during the move; a second scheduler,
+queue, recovery transaction, or `runnerd` import from `runner-locald` is not.
+
+| One physical shared implementation | Small host-specific adapter |
+| --- | --- |
+| durable command/job claiming and wake coalescing | Linux or Darwin process inspection and process-group operations |
+| bounded full-capacity recovery and pending-finalization retry | platform-correct PID, process-start, UID, PGID, and descendant proof |
+| `execution.LostRuntimeRecoverer` transaction sequencing | reaping a known direct child on the host that owns it |
+| store inventory, paired slot/reservation release, finalization records, and `lost_capacity_recovery_pending` | service installation and shutdown wiring |
+
+The existing shared `store` and `execution` recovery code remains the source
+of truth: `ListRetainedLostRuntimeRecoveryPairs`,
+`RecoverLostRuntimeBatchPreservingQueuedOneOffs`, and the paired release and
+finalization records are reused unchanged. The Mac adapter will implement the
+same two-stage `LostRuntimeRecoverer` contract as Linux. It must not turn an
+unproven loss into a successful command or replay a lost script.
+
+## Detailed phased fix plan
+
+### Rules for every B011 phase
+
+1. Start in a fresh context. Read this record; root `AGENTS.md`; the initial
+   design; the detailed design; the detailed phased plan; the preimplementation
+   decisions; BUG-008 and BUG-009; prior B011 evidence; and the relevant
+   current source and tests. Record the pre-phase Mac `HEAD`, relevant file
+   inventory, and intended gate in
+   `040-implementation-evidence/BUG-011.md`.
+2. Make tracked changes only in the Mac checkout. Run focused tests first,
+   then the currently available full hermetic suite (`make test`, `make vet
+   build smoke`), changed-package race tests, and the import-boundary test when
+   packages or imports change. Run `git diff --check`, inspect the diff, and
+   record machine, command, exit status, fixture, result, and limitations.
+3. A phase passes only after all of its required gates pass, its evidence says
+   `PASS`, it has one non-empty scoped commit named
+   `phase(B011-Pn): <deliverable>`, and the Mac worktree is clean. Push that
+   commit from the Mac with the configured explicit GitHub key. Before remote
+   validation or the next phase, fast-forward the clean primary and sandbox
+   Ubuntu `dev` checkouts with their explicit keys and record equal commit
+   SHAs. Do not edit tracked project files directly on either Ubuntu host.
+4. A failed or unavailable required gate stops the sequence. A fake adapter or
+   source test is never evidence for a real Mac process gate. Do not expose
+   scripts, output, mailbox payloads, credentials, headers, or private keys in
+   code, logs, tests, or evidence.
+5. No phase may use the five current live records as a fixture or alter them.
+   Until a separately authorized live gate, do not release, restart, cancel,
+   replay, ACK, delete, or edit those records or their mailbox files.
+
+### B011-P1 — Freeze the safe fault and recovery contract
+
+**Deliverable.** Add test-owned, hermetic fixtures only. They use temporary
+SQLite databases, workspace roots, ownership records, sockets, and child
+processes; they never use the installed service root, a mailbox, a repository,
+or a real user command.
+
+The fixtures must distinguish the two plausible loss mechanisms without Git
+or network access:
+
+- a normal non-zero control (`/bin/false` without `set -e`) reaches a complete
+  failed result and leaves a later harmless command possible;
+- `set -e` followed by `/bin/false` reproduces the sourced persistent-Bash
+  exit shape, with no explicit `exit`, and records the truthful incomplete
+  `lost` boundary; and
+- a test-owned background child with a short test-only output-boundary timeout
+  produces `ErrOutputBoundary` independently of the sourced-`errexit` case.
+
+Add read-only safety tests for the complete four-retained-lost plus one
+eligible-queued shape. Partial, mixed, missing, or mismatched inventories must
+not call a runtime adapter, release capacity, or replay a script. This phase
+records the current local restart limit: it does **not** promise that a queued
+direct command survives a daemon restart, because current startup
+reconciliation deliberately will not reattach that old persistent shell.
+
+**Required gates.** Focused persistent-runtime, store, and execution tests;
+the common phase rules; and a review that test fixtures contain no real Git,
+token, mailbox, or live service dependency.
+
+### B011-P2 — Extract the existing worker into one neutral package
+
+**Deliverable.** Move the existing `runnerd` queued dispatcher implementation
+and its tests into `src/internal/queueworker` (or the reviewed equivalent
+neutral package). Keep its behavior intact while changing its name and log
+component from Linux-specific to generic. `runnerd` must use that exact shared
+implementation after the move; it may retain a small wrapper for source
+compatibility.
+
+The worker continues to own one bounded queue loop: durable job settlement,
+one command claim at a time, the one-second retry tick, minute-throttled
+retained-lost proof, independent finalization retry, wake after a paired
+release, and exactly-once command execution. It must not add a schema,
+mailbox operation, scheduler, daemon, or automatic target fallback. This
+phase does not yet wire `runner-locald` to the worker.
+
+**Required gates.** Existing BUG-007, BUG-008, and BUG-009 dispatcher/recovery
+tests retain their behavioral assertions; new neutral-package tests exercise
+the same worker; existing shared execution/store recovery tests pass; changed
+package race tests pass; and the common phase rules pass. A Linux host test is
+only a regression gate after the commit has reached the matching Ubuntu SHA.
+
+### B011-P3 — Add the Mac two-stage process-proof adapter
+
+**Deliverable.** Add Mac equivalents of
+`ConfirmLostRecoveryCleanup` and `FinalizeLostRecoveryCleanup` to
+`runtime.MacProcessAdapter`, then make `runnerlocald.MacSessionRuntime`
+implement the existing `execution.LostRuntimeRecoverer` interface. Reuse the
+shared execution and store transaction without a Mac-specific release path.
+
+Stage A must validate the retained owner marker and exact session, generation,
+selected account/UID, PID start identity, and PGID before it acts. For an
+exact, known local child, it may boundedly stop and reap the owned group. A
+known zombie owned by the still-running local daemon must be reaped through
+the owned `PersistentShell`/`cmd.Wait` path while its workspace and owner
+marker remain. Darwin process inspection must distinguish a zombie-only group
+from a runnable member; `kill(-pgid, 0)` alone is insufficient.
+
+Stage A writes `LostRecoveryCleanupConfirmedAt` durably and retains the
+marker/workspace. The shared service then atomically releases the matching
+command slot and session reservation. Stage C runs only after that durable
+release, removes only the proved owner marker/workspace, and never inspects or
+signals the old PID again.
+
+Any malformed owner record, foreign or uninspectable process, live unknown
+descendant, PID/start/generation/account mismatch, or failure to persist proof
+leaves all capacity retained and starts nothing.
+
+**Required gates.** Darwin-only test-owned process tests cover a reaped owned
+zombie, a matching live owned group, a live/unknown descendant, every identity
+mismatch, and a finalization retry after a forced post-proof failure. Shared
+execution tests prove proof precedes paired release, finalization is
+idempotent, and no lost script is sourced again. Then run the common phase
+rules. No installed LaunchAgent, production database, or live mailbox is
+changed.
+
+### B011-P4 — Run the shared worker from `runner-locald`
+
+**Deliverable.** After successful startup reconciliation, construct the
+neutral worker with the same local authority, execution service, and **one
+shared dispatch gate** used by the private server. Run nonterminal job
+settlement before starting it; stop and wait for it during normal locald
+shutdown.
+
+Replace `PrivateServer.resumeAcceptedCommand`'s detached direct
+`ResumeCommand` path with a worker wake. Change local `run` acceptance from
+synchronous `RunJob` to durable `AcceptJob` plus the same wake; wake after a
+local `submit_command` acceptance too. This leaves the shared worker as the
+only scheduler/execution owner and preserves the durable accepted
+job/session/command identity. The private API may truthfully return queued or
+awaiting acceptance while the worker advances it later.
+
+Online recovery can then release a complete, proved retained set and start the
+already queued identity once. It runs only after a normal claim reports full
+capacity on the bounded tick. A lost script is never retried. Restart tests
+must prove no duplicate claim, no replay, and safe pending-finalization retry;
+they must not claim queued direct-command survival across a locald restart
+unless a separate reviewed change extends the existing restart contract.
+
+**Required gates.** The test-owned four-lost/one-queued scenario proves the
+original queued command starts exactly once only after the shared paired
+release; unconfirmed or mismatched ownership leaves it queued; shutdown
+prevents new claims; and runnerd retains the same behavior through the same
+package. Run race tests over `queueworker`, `runnerlocald`, `execution`, and
+`store`, followed by the common phase rules.
+
+### B011-P5 — Make the safe blocked state visible and protect deployment
+
+**Deliverable.** Reuse the existing durable
+`lost_capacity_recovery_pending` value through the local status and mailbox
+projection where the local path currently discards `GetJobStatus`. It is shown
+only for the exact `awaiting_command` plus queued state and is removed when
+capacity is released or work starts. Do not add a state, schema migration, raw
+process detail, or new mailbox protocol.
+
+Add a small read-only installer preflight before a locald bootout/restart. It
+must refuse a refresh when the active local service cannot prove zero active
+sessions, zero active command slots, and zero queued commands. This prevents
+an installer run from silently causing the current queued live command to
+start. It does not clean up or repair anything.
+
+Update the architecture and operator documentation under `docs/`, this bug
+record, and `040-implementation-evidence/BUG-011.md`: explain the shared
+worker, the host-specific proof boundary, how to read the narrow blocked
+reason, and the no-live-remediation rule.
+
+**Required gates.** Local API and mailbox projection tests prove the precise
+field and its retraction while retaining response revisions and IDs; installer
+positive and refusal tests prove the read-only preflight; documentation links
+are checked; then run the common phase rules.
+
+### B011-P6 — Prove the behavior on an isolated real Mac fixture
+
+**Deliverable.** Add and run an opt-in host gate, for example
+`make test-b011-macos-host` guarded by `RSR_B011_MAC_HOST_GATE=1`, as
+`tomasz.walczuk` on Darwin. It creates a test-owned `0700` temporary database,
+workspaces, socket, owner markers, and helper `runner-locald` process. It must
+not touch `~/Library/Application Support/RemoteSessionRunner`, installed
+LaunchAgents, real inbox/outbox files, either Linux host, a Git checkout, or
+current user work.
+
+The gate induces the harmless sourced `set -e; /bin/false` loss, proves the
+owned zombie/process boundary, observes automatic recovery through the shared
+worker, and proves that the test-owned queued command runs once with its
+original identity and that capacity returns to zero. A live/mismatched fixture
+must remain retained. Record this as a real Mac process result, separately
+from hermetic results.
+
+**Required gates.** The opt-in Darwin host gate, the common source gates, and
+Mac/Ubuntu SHA parity. If the Mac host gate is unavailable or fails, record
+`NOT RUN` or `FAIL` accurately and stop; it is not replaced by a fake test.
+
+### Separately authorized live deployment and acceptance
+
+This is deliberately outside the automatic phases. The current installed Mac
+has four retained lost commands and one queued real command. Installing or
+restarting the corrected daemon may safely release capacity and cause that
+fifth original command to run. That is a real side effect, so it requires the
+user's explicit approval after a fresh read-only preflight records the exact
+IDs, metrics, ownership state, and expected effect.
+
+Only after that approval may the corrected service be installed or restarted.
+The acceptance record must prove that each of the four lost scripts was never
+replayed, the fifth original identity started at most once, terminal event and
+output evidence is truthful, and a final zero-active-work check passes. A
+fresh harmless local CLI/mailbox test may follow. This work makes no physical
+power-loss claim; the existing P143 limitation remains unchanged.
+
 ## Fix and verification
 
-Pending a separately approved implementation plan. No fix, service change, or
-live recovery has been attempted.
+The plan above is ready for later source implementation. No fix, service
+change, or live recovery has been attempted. The separately authorized live
+deployment gate remains pending.
 
 ## History
 
@@ -206,3 +444,4 @@ live recovery has been attempted.
 | --- | --- |
 | 2026-10-03 | Created from live Mac health metrics and read-only durable capacity evidence. |
 | 2026-10-03 | Triaged from read-only lifecycle, ownership, process-state, log, and source-path evidence; confirmed the Mac-local recovery gap. |
+| 2026-10-03 | Added the serial B011 fix plan. It requires one shared queue/recovery worker for Linux and Mac, with only host process proof/reaping in adapters; no live remediation was authorized. |
