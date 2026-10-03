@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` — B011-P1 through B011-P5 source work and source handoffs are PASS. B011-P6 isolated Mac fixture and source gates are PASS; its required GitHub-to-Ubuntu source handoff is pending. No live recovery, service change, or installed-state inspection has been attempted |
+| Status | `IN PROGRESS` — B011-P1 through B011-P6 source work and source handoffs are PASS. The separately authorized live deployment and acceptance gate remains pending; no live recovery, service change, or installed-state inspection has been attempted |
 | Severity | High |
 | Priority | High — the local Mac execution route cannot accept more running work while all four command slots remain retained |
 | Reported | 2026-10-03 |
@@ -457,12 +457,12 @@ power-loss claim; the existing P143 limitation remains unchanged.
 ## Fix and verification
 
 B011-P1 through B011-P5 source changes and source handoffs are complete.
-B011-P6 has passed its opt-in isolated Darwin fixture gate and all Mac source
-gates. The scoped source commit, explicit-key GitHub push, clean
-fast-forward/source validation on both Ubuntu checkouts, and exact-SHA proof
-remain pending; hermetic coverage does not replace the Darwin gate. No service
-change, live recovery, or production-state inspection has been attempted. The
-separately authorized live deployment gate remains pending.
+B011-P6 has passed its opt-in isolated Darwin fixture gate, all Mac source
+gates, the explicit-key GitHub handoff, and clean source-only validation at an
+exact matching SHA on both Ubuntu checkouts. Hermetic coverage does not replace
+the Darwin gate. No service change, live recovery, or production-state
+inspection has been attempted. The separately authorized live deployment gate
+remains pending.
 
 ## History
 
@@ -472,3 +472,4 @@ separately authorized live deployment gate remains pending.
 | 2026-10-03 | Triaged from read-only lifecycle, ownership, process-state, log, and source-path evidence; confirmed the Mac-local recovery gap. |
 | 2026-10-03 | Added the serial B011 fix plan. It requires one shared queue/recovery worker for Linux and Mac, with only host process proof/reaping in adapters; no live remediation was authorized. |
 | 2026-10-03 | B011-P6 added an opt-in, test-owned Darwin recovery gate. It passed the four-lost-pairs/one-queued identity scenario and the unproven identity-mismatch negative scenario; GitHub and Ubuntu source handoff remain pending. |
+| 2026-10-03 | B011-P6 source commit was pushed and fast-forwarded to both Ubuntu source checkouts. The focused source regression passed on both at the exact matching SHA; no installed service was changed. |
