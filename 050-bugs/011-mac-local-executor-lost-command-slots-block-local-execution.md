@@ -390,7 +390,9 @@ Add a small read-only installer preflight before a locald bootout/restart. It
 must refuse a refresh when the active local service cannot prove zero active
 sessions, zero active command slots, and zero queued commands. This prevents
 an installer run from silently causing the current queued live command to
-start. It does not clean up or repair anything.
+start. It does not clean up or repair anything. It must use active locald
+health data or a read-only database query; `runner-locald doctor` is not an
+acceptable preflight because its writable-health check mutates SQLite.
 
 Update the architecture and operator documentation under `docs/`, this bug
 record, and `040-implementation-evidence/BUG-011.md`: explain the shared
