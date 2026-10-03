@@ -156,6 +156,36 @@ fragment without a safe explanatory reason.
 The successful control immediately beforehand makes a permanent configuration
 error less likely, but it does not identify a root cause.
 
+### Controlled recurrence
+
+After the user explicitly requested a fresh attempt on 2026-10-04
+(Europe/Warsaw), a new monitor request was published with a new request ID and
+idempotency key, preserving the same safe read-only scope and marker-last
+protocol:
+
+| Field | Value |
+| --- | --- |
+| Request ID | req-codex-logger-fixed-bundle-validation-monitor-20261004-01 |
+| Job ID | job-9a15b6c2530e8c052f8e695fbd7e836d |
+| Session ID | sess-daa701fbd8470460bb7912e4319765f6 |
+| Command ID | cmd-f7917a7deaaa882359a0a45ec033119e |
+| Terminal result | request_state=complete; job_phase=lost; command_state=lost; exit_code=null; output_complete=false; output_truncated=false; delivery_state=reconciled; teardown_outcome=lost |
+| Response/event cursor | response_revision=2; available_event_sequence=4 |
+
+The second event prefix is the same failure signature:
+
+~~~text
+1  2026-10-03T22:14:21.039297820Z  command_queued
+2  2026-10-03T22:14:21.044774752Z  command_started
+3  2026-10-03T22:14:21.081828105Z  stderr  text="c"  byte_count=1
+4  2026-10-03T22:14:21.086351629Z  command_lost
+~~~
+
+This recurrence was correlated and ACKed. It was not automatically retried,
+and it did not trigger a Logger deployment. It strengthens the evidence that
+the failure is in the remote sandbox execution/result path, but it still does
+not prove whether the remote Gitea API endpoint was reached.
+
 ## Required investigation and diagnostics
 
 Correlate the request, job, session, and command IDs across:
@@ -207,4 +237,4 @@ Open. Root cause is not yet established.
 | Date | Change |
 | --- | --- |
 | 2026-10-03 | BUG-015 recorded with correlated terminal outbox/event evidence. |
-
+| 2026-10-04 | Fresh controlled remote monitor reproduced the exact one-byte stderr then command_lost signature; correlated terminal record was ACKed with no deployment action. |
