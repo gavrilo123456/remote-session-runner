@@ -32,8 +32,9 @@ is promoted to `qas`, and finally the same accepted commit is promoted to
 `prd`.
 
 `lane` is a deployment/release identity. It is deliberately separate from an
-existing Runner execution environment such as `linux-dev` or `sandbox-dev`,
-which remains a target policy and execution-account description.
+existing execution-policy label such as `linux-dev` or `sandbox-dev`, which
+remains a target policy and execution-account description rather than a lane
+service or runtime-path name.
 
 ## Settled naming and compatibility rule
 
@@ -148,7 +149,8 @@ mailbox locations. Dev and QAS are introduced as fresh isolated instances with
 their `-dev` and `-qas` names. Existing mailboxes must not be silently moved or
 retargeted. A specific production mailbox may move to Dev or QAS only after the
 new lane has passed end-to-end acceptance and the migration is explicitly
-performed.
+performed. That mailbox cutover never renames or moves the unsuffixed PRD
+service or runtime root.
 
 The detailed design must provide a reversible, evidence-backed migration for
 runtime roots, existing retained mailbox artifacts, active work, and installed
