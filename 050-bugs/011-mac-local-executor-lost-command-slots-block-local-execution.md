@@ -562,6 +562,16 @@ the Darwin gate. No service change, live recovery, or production-state
 inspection has been attempted. The separately authorized live deployment gate
 remains pending.
 
+B011-P7 has passed its Mac source, race, full-suite, vet/build/smoke, and
+isolated Darwin LaunchAgent gates; its exact commit was pushed to GitHub and
+fast-forwarded cleanly to both Ubuntu source checkouts. Each Ubuntu host passed
+the P7-specific source scope at that exact SHA. A broader unfiltered Ubuntu
+diagnostic remains recorded as FAIL because existing P158/P165 Linux fixture
+tests reject a sticky `/tmp` ancestor, and the primary also timed out in an
+unrelated SQLite `fsync` test. Those failures are not counted as passing tests
+and did not cause any service change. The live deployment gate remains pending
+a fresh preflight.
+
 ## History
 
 | Date | Change |
