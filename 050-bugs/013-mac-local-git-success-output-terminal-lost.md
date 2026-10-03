@@ -1,4 +1,4 @@
-# BUG-013 — Mac-local Git command completes successfully but Runner records `lost`
+# BUG-013 — Mac-local execution fails to produce a trustworthy terminal result after success or accepted dispatch
 
 ## Summary
 
@@ -6,7 +6,7 @@
 | --- | --- |
 | Status | `NEW` |
 | Severity | High |
-| Priority | High — prevents the required mailbox-based Mac Git handoff from producing an acknowledgeable terminal result |
+| Priority | High — prevents the required mailbox-based Mac Git handoff and local verification from producing acknowledgeable terminal results |
 | Reported | 2026-10-03 |
 | Discovered by | Codex during an approved Mac-local mailbox Git transport smoke test |
 | Owner | Unassigned |
@@ -14,7 +14,7 @@
 | Affected mailbox | `slidestud-io` external workspace mailbox |
 | Affected execution context | `mac-dev` → `local/mac-workstation` |
 | Affected source / installed revision | Not established by this observation; capture both before triage |
-| Related records | [BUG-011](011-mac-local-executor-lost-command-slots-block-local-execution.md) covers retained local lost-command capacity. BUG-013 is a separate success-output-to-lost result-finalization defect. |
+| Related records | [BUG-011](011-mac-local-executor-lost-command-slots-block-local-execution.md) covers retained local lost-command capacity. BUG-013 records terminal-result and dispatch-lifecycle evidence which may share an execution path but does not assume the same root cause. |
 
 ## Reported behavior
 
@@ -28,6 +28,15 @@ reported `Everything up-to-date`; the shell then executed a marker printed
 The previous test without an explicit identity failed with
 `Permission denied (publickey)`. The explicit-identity retry did **not** have
 that error. This is therefore not a GitHub-key authentication defect.
+
+On the same date, a new harmless, non-Git local test request was durably
+accepted but never progressed beyond `job_phase=accepting_command`. It had a
+different request ID and idempotency key, no network or credential action, and
+was observed repeatedly without a later outbox revision, output, event cursor,
+or terminal result. This does not prove that the dispatch stall and the prior
+success-to-`lost` result have the same cause; it proves that Mac-local work is
+still unable to produce a trustworthy outcome across more than one command
+shape.
 
 ## Expected behavior
 
@@ -49,6 +58,11 @@ If Runner cannot prove the completion boundary, it must retain the conservative
 `lost` result; however, a normal successful shell completion must not be
 misclassified as `lost` merely because the command used Git or wrote ordinary
 status output to stderr.
+
+Likewise, a safely accepted Mac-local `run` must either start and eventually
+produce a terminal result, or report a bounded, truthful terminal failure. It
+must not remain indefinitely at `accepting_command` without output, an event
+cursor, or a terminal state.
 
 ## Confirmed evidence
 
@@ -94,6 +108,34 @@ script with `set -euo pipefail`. Consequently, the shell reached event 4 only
 if the Git command returned zero. That is strong evidence that the child Git
 operation completed successfully before Runner lost its completion boundary.
 It is not a substitute for the missing authoritative exit result.
+
+### Fresh non-Git recurrence: accepted local test request stalls before command start
+
+| Field | Value |
+| --- | --- |
+| Request ID | `req-codex-logger-bundle-binding-tests-20261003-02` |
+| Job ID | `job-e3152a1c4bbc2ec01ccfae7ff3f40156` |
+| Session ID | `sess-7ceabfb97a62c5df2cb737d98140b316` |
+| Command ID | `cmd-4e3698e56fd5720a46b4fe0a1751b9c4` |
+| Mailbox / selection | `slidestud-io`; explicit `mac-dev` → `local/mac-workstation` |
+| Script purpose | Run two focused local Python unit-test modules for the Logger bundle binding; no Git transport, network operation, token, or secret was included. |
+| Latest correlated outbox | `request_state=accepted`, `response_revision=3`, `job_phase=accepting_command`, `delivery_state=accepted`; no `command_state`, exit code, output fields, `available_event_sequence`, or terminal state. |
+| Publication | Fresh request ID and fresh idempotency key; complete JSON was published before a new empty `.ready` marker. |
+| Operator response | No second retry, cancellation, restart, or ACK was issued. The request remains the sole correlated observation. |
+
+The exact harmless script was:
+
+```bash
+set -eu
+cd /Users/tomasz.walczuk/projects/slidestud.io
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 infra/infra-docker-cmdb/ci/tests/test_compatible_release_bundle.py
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 infra/infra-docker-cmdb/ci/tests/test_logger_cutover_preflight.py
+printf 'LOGGER_BUNDLE_BINDING_TESTS_OK\n'
+```
+
+This is intentionally recorded as a lifecycle/dispatch recurrence, not as
+proof that either focused test would pass or fail. Runner never began the
+command and did not project test output.
 
 ## Safe reproduction
 
@@ -179,6 +221,14 @@ reports an accurate non-success outcome without claiming a false success.
 5. Do `runner-local` and `runner-locald` logs or their authoritative local
    state contain a redacted completion-frame, wait, process-group, or cleanup
    error correlated with command `cmd-3de63fa2b336439dda9262f78e52ce61`?
+6. Why did the later command `cmd-4e3698e56fd5720a46b4fe0a1751b9c4` remain at
+   `accepting_command` after durable acceptance? Inspect the local dispatcher,
+   session creation, command admission, capacity/lease state, and outbox
+   projector without inferring that it was ever started.
+7. Can a prior `lost` command or its retained cleanup state block a subsequent
+   independent local request before `command_started`, and if so, is the
+   blocking state exposed as a truthful bounded result rather than an
+   indefinitely active projection?
 
 ## Required correction properties
 
@@ -196,6 +246,10 @@ reports an accurate non-success outcome without claiming a false success.
 6. Prove the correction with the hermetic fixture, an ordinary Mac-local
    smoke request, and a post-fix mailbox result that is terminal,
    acknowledged, and complete/non-truncated.
+7. Add a regression test for an accepted Mac-local `run` which exercises the
+   same session/command admission path and proves it advances from
+   `accepting_command` to either `command_started` plus a terminal result, or
+   a bounded, truthful terminal rejection/indeterminate outcome.
 
 ## Resolution
 
@@ -208,3 +262,4 @@ this defect.
 | Date | Change |
 | --- | --- |
 | 2026-10-03 | Reported with correlated mailbox/outbox/event evidence and a safe dry-run reproduction. |
+| 2026-10-03 | Added a fresh, non-Git Mac-local request that remains at `accepting_command`; no replay, ACK, or root-cause attribution was made. |
