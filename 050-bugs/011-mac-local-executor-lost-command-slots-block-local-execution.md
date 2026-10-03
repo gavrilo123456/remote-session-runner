@@ -348,6 +348,11 @@ shared dispatch gate** used by the private server. Run nonterminal job
 settlement before starting it; stop and wait for it during normal locald
 shutdown.
 
+`runnerlocald.Run` must create that gate once and pass its exact pointer to
+both the private server and the worker. The private-server options receive a
+queue-wake callback, so intent acceptance has no hidden scheduler of its own.
+It must not create a second local dispatch gate.
+
 Replace `PrivateServer.resumeAcceptedCommand`'s detached direct
 `ResumeCommand` path with a worker wake. Change local `run` acceptance from
 synchronous `RunJob` to durable `AcceptJob` plus the same wake; wake after a
@@ -377,7 +382,9 @@ package. Run race tests over `queueworker`, `runnerlocald`, `execution`, and
 projection where the local path currently discards `GetJobStatus`. It is shown
 only for the exact `awaiting_command` plus queued state and is removed when
 capacity is released or work starts. Do not add a state, schema migration, raw
-process detail, or new mailbox protocol.
+process detail, or new mailbox protocol. Reuse the existing nonterminal
+projection shape through a target-neutral path; do not attach this queue reason
+to a terminal command/output snapshot.
 
 Add a small read-only installer preflight before a locald bootout/restart. It
 must refuse a refresh when the active local service cannot prove zero active
