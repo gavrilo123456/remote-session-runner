@@ -4,15 +4,15 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — source candidate is awaiting commit, host handoff, and live acceptance |
+| Status | `CLOSED` |
 | Severity | High |
 | Priority | High — retained slots prevent new Mac-local mailbox work from reaching the executor |
 | Reported | 2026-10-03 |
 | Discovered by | Codex while preparing the approved BUG-013 Mac service refresh and harmless live acceptance test |
 | Owner | Codex |
 | Affected area | Mac `runner-local`, `runner-locald`, `local.db`, LaunchAgent installation, and Mac-local mailbox execution |
-| Installed revision | `697939806b18a560e0992a43b7ce1c1558523219` before this recovery candidate; no live installation has occurred for this record |
-| Source baseline | `a1a0613fbade5e58a540e37f6a38917152d97d79`; the correction is currently a Mac worktree candidate and has no committed fix SHA yet |
+| Installed revision | `476182c819b84c2f813eb41c2a5df2183898ca18` |
+| Source correction | Commit `476182c819b84c2f813eb41c2a5df2183898ca18` from baseline `a1a0613fbade5e58a540e37f6a38917152d97d79` |
 | Related records | [BUG-011](011-mac-local-executor-lost-command-slots-block-local-execution.md) closed its earlier four-lost-plus-queued controlled restart. [BUG-013](013-mac-local-git-success-output-terminal-lost.md) records the preserved terminal-lost commands whose capacity is now retained. |
 
 ## Reported behavior
@@ -115,31 +115,29 @@ does not send a process signal or replay a script. Any omitted, extra, or
 unrelated pending pair is refused. The current three-pair evidence has no
 pending finalization.
 
-## Required verification
+## Verification completed
 
-Before this record can close:
-
-1. Run focused parser, inventory, lifecycle-lock, process-boundary, and
-   no-execution regression tests, followed by the required full Mac source
-   gates.
-2. Inspect the diff; commit only the intended source, test, documentation, and
-   BUG-014 files on Mac `dev`; push with the configured Mac GitHub key.
-3. Fast-forward the primary Ubuntu checkout with its configured Ubuntu key and
-   verify it matches the committed Mac SHA. This source handoff does not itself
-   change a Mac service.
-4. Under the already-approved quiet maintenance window, invoke the installer
-   with exactly the three listed pairs. It must either refuse safely or finish
-   with both services attested at the new revision and all active/running/
-   queued/nonterminal capacity counts zero.
-5. Confirm the three historical commands are still `lost`, with no additional
-   execution or replay events.
-6. Publish one fresh harmless Mac-local mailbox request with a new request ID
-   and idempotency key. Require a terminal succeeded result, complete
-   non-truncated output, a closed teardown, terminal event, and normal ACK
-   before calling the live acceptance passed.
-
-No live installation, restart, pair release, or fresh acceptance request has
-been performed for BUG-014 at the time this record was created.
+1. Focused parser, inventory, lifecycle-lock, process-boundary, pending
+   finalization retry, and no-execution tests passed; full `make check` passed.
+2. The intended change was committed as
+   `476182c819b84c2f813eb41c2a5df2183898ca18`, pushed to GitHub `dev`, and the
+   clean primary Ubuntu checkout fast-forwarded to the same SHA.
+3. Immediately before maintenance, both Mac LaunchAgents were ready at old
+   revision `697939806b18a560e0992a43b7ce1c1558523219`; their health reports
+   showed exactly 3 active session slots, 3 active command slots, and zero
+   queued commands, intents, and mailbox backlog.
+4. The approved installer command named exactly the three pairs above. Its
+   staged recovery reported `recovered_lost_pairs=3` and its normal restart
+   preflight reported local execution quiescent.
+5. Both restarted services reported ready at
+   `476182c819b84c2f813eb41c2a5df2183898ca18` with zero active session slots,
+   command slots, queued commands, intents, and mailbox backlog. The
+   read-only authority check retained all three historical commands as
+   `lost`, with `output_complete=false` and final event type `command_lost`.
+6. Fresh native file-only request `req-bug014-live-18db1d4633c6fbf8` through
+   the default Mac mailbox completed successfully on `mac-dev` /
+   `local/mac-workstation`: complete non-truncated output, closed teardown,
+   terminal event history, and a consumed marker-last ACK.
 
 ## Safety limits
 
@@ -162,3 +160,4 @@ been performed for BUG-014 at the time this record was created.
 | --- | --- |
 | 2026-10-03 | Created from the read-only fully idle three-pair retained-capacity inventory. No historical request, command, outbox, event file, or ACK was changed. |
 | 2026-10-03 | Added the installer-mediated source candidate and runbook. Commit, cross-host source handoff, installed-service recovery, and fresh mailbox acceptance remain pending. |
+| 2026-10-03 | Commit `476182c819b84c2f813eb41c2a5df2183898ca18` passed source gates, was pushed and fast-forwarded to primary Ubuntu, then was installed through the exact three-pair recovery. Both Mac services are ready at that revision with zero live work; the fresh native mailbox acceptance passed. |

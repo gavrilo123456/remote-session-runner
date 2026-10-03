@@ -4,16 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` |
+| Status | `CLOSED` |
 | Severity | High |
 | Priority | High — prevents the required mailbox-based Mac Git handoff and local verification from producing acknowledgeable terminal results |
 | Reported | 2026-10-03 |
 | Discovered by | Codex during an approved Mac-local mailbox Git transport smoke test |
-| Owner | Codex — source correction complete; controlled live verification remains |
+| Owner | Codex — source correction and controlled live verification complete |
 | Affected area | Shared one-off coordinator/queue-worker handoff, Mac-local persistent-shell output capture, and terminal outbox projection |
 | Affected mailbox | `slidestud-io` external workspace mailbox |
 | Affected execution context | `mac-dev` → `local/mac-workstation` |
-| Affected source / installed revision | Source correction `c173ab03e867a7c7bac47ae8c7fc7269a1773553`; installed Mac service deliberately remains on its prior revision while the two recorded requests are preserved |
+| Affected source / installed revision | Source correction `c173ab03e867a7c7bac47ae8c7fc7269a1773553`; installed Mac service `476182c819b84c2f813eb41c2a5df2183898ca18` |
 | Related records | [BUG-011](011-mac-local-executor-lost-command-slots-block-local-execution.md) covers retained local lost-command capacity. BUG-013 records terminal-result and dispatch-lifecycle evidence which may share an execution path but does not assume the same root cause. |
 
 ## Reported behavior
@@ -307,19 +307,28 @@ post-install harmless mailbox request rather than an inference from old state.
    `accepting_command` to either `command_started` plus a terminal result, or
    a bounded, truthful terminal rejection/indeterminate outcome.
 
-## Resolution and required live verification
+## Resolution and live verification
 
 Source correction `c173ab03e867a7c7bac47ae8c7fc7269a1773553` passed the full
-Mac `make test` suite, was pushed to GitHub `dev`, and was fast-forwarded into
-the Ubuntu checkout. The installed Mac service has deliberately not been
-restarted or replaced while the two recorded requests are preserved. Do not
-replay, ACK, cancel, manually release, or otherwise alter either recorded
-request as part of this work.
+Mac `make check` gate. The installed Mac service was then updated through the
+separate BUG-014 exact-pair recovery route to
+`476182c819b84c2f813eb41c2a5df2183898ca18`; the Mac and primary Ubuntu source
+checkouts were both verified at that same commit before the installation.
 
-After the source commit is installed under a separately approved service
-restart, publish one **fresh**, harmless Mac-local mailbox request that writes
-a stderr status line followed by a stdout marker. Require one correlated
-terminal outbox result with:
+A fresh harmless SlideStudio mailbox request proved the affected route after
+the restart:
+
+| Field | Value |
+| --- | --- |
+| Request ID | `req-bug013-live-18db1d629e84a9d8` |
+| Command ID | `cmd-27944c5bcf50fc97df32233e768173ab` |
+| Session ID | `sess-b2da8336e5f38f48105c7eb4757c2fe7` |
+| Mailbox / selection | `slidestud-io`; explicit `mac-dev` → `local/mac-workstation`; `request_override` |
+| Script evidence | Harmless stderr status marker, stdout status marker, then `id -un`; no network, Git, token, or secret access |
+| Terminal result | `request_state=complete`, `command_state=succeeded`, exit `0`, complete non-truncated output, teardown `closed` |
+| Events and ACK | Both marker streams were read through the advertised cursor, the final event was `command_succeeded`, and the native marker-last ACK was consumed |
+
+The terminal result met the required proof:
 
 ```text
 request_state=complete
@@ -330,9 +339,10 @@ output_truncated=false
 teardown_outcome=closed
 ```
 
-Read the events through the advertised cursor, confirm the final
-`command_succeeded`, then publish the normal ACK. Keep this record at
-`FIXED — PENDING VERIFICATION` until that post-install result is preserved.
+The original recorded requests were not replayed, ACKed, cancelled, or edited.
+The post-recovery read-only authority check retained their conservative `lost`
+states and `command_lost` final events. The fresh result establishes the normal
+completion path without rewriting historical evidence.
 
 ## History
 
@@ -341,3 +351,4 @@ Read the events through the advertised cursor, confirm the final
 | 2026-10-03 | Reported with correlated mailbox/outbox/event evidence and a safe dry-run reproduction. |
 | 2026-10-03 | Added a fresh, non-Git Mac-local request that remains at `accepting_command`; no replay, ACK, or root-cause attribution was made. |
 | 2026-10-03 | Identified the synchronous coordinator/queue-worker handoff defect and the bounded output-callback false-loss class. Source correction `c173ab03e867a7c7bac47ae8c7fc7269a1773553` passed full Mac tests, was pushed to `dev`, and was fast-forwarded to Ubuntu; installation and a fresh live mailbox proof remain pending. |
+| 2026-10-03 | Installed descendant `476182c819b84c2f813eb41c2a5df2183898ca18` through BUG-014 recovery. Fresh SlideStudio request `req-bug013-live-18db1d629e84a9d8` completed successfully with stderr and stdout markers, terminal events, and a consumed ACK; record closed. |
