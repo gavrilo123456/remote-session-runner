@@ -22,6 +22,8 @@ type MacSessionRuntime struct {
 	prepared map[string]hostruntime.MacPrepared
 }
 
+var _ execution.LostRuntimeRecoverer = (*MacSessionRuntime)(nil)
+
 func NewMacSessionRuntime(adapter *hostruntime.MacProcessAdapter) (*MacSessionRuntime, error) {
 	if adapter == nil {
 		return nil, fmt.Errorf("%w: Mac adapter is nil", execution.ErrRuntimeUnavailable)
@@ -141,6 +143,28 @@ func (r *MacSessionRuntime) Reconcile(ctx context.Context, request execution.Run
 		return execution.RuntimeReconcileResult{}, execution.ErrRuntimeUnavailable
 	}
 	result, err := r.adapter.ReconcileSession(ctx, string(request.Session.SessionID), request.Session.RuntimeGeneration, 500*time.Millisecond)
+	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
+}
+
+// ReconcileLostRuntime proves an explicitly selected lost local runtime while
+// retaining its owner record. The shared execution service records the paired
+// SQLite release before FinalizeLostRuntime may remove that record.
+func (r *MacSessionRuntime) ReconcileLostRuntime(ctx context.Context, request execution.RuntimeReconcileRequest) (execution.RuntimeReconcileResult, error) {
+	if r == nil || r.adapter == nil {
+		return execution.RuntimeReconcileResult{}, execution.ErrRuntimeUnavailable
+	}
+	result, err := r.adapter.ConfirmLostRecoveryCleanup(ctx, string(request.Session.SessionID), request.Session.RuntimeGeneration, 500*time.Millisecond)
+	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
+}
+
+// FinalizeLostRuntime removes the retained local owner record only after the
+// shared service has durably released both matching capacity records. It does
+// not inspect or signal the old process identity.
+func (r *MacSessionRuntime) FinalizeLostRuntime(ctx context.Context, request execution.RuntimeReconcileRequest) (execution.RuntimeReconcileResult, error) {
+	if r == nil || r.adapter == nil {
+		return execution.RuntimeReconcileResult{}, execution.ErrRuntimeUnavailable
+	}
+	result, err := r.adapter.FinalizeLostRecoveryCleanup(ctx, string(request.Session.SessionID), request.Session.RuntimeGeneration)
 	return execution.RuntimeReconcileResult{RuntimeGeneration: result.Generation, CleanupConfirmed: result.CleanupConfirmed}, err
 }
 

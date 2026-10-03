@@ -440,6 +440,349 @@ func (a *MacProcessAdapter) ReconcileSession(ctx context.Context, sessionID, exp
 	return result, nil
 }
 
+// ConfirmLostRecoveryCleanup proves the exact Mac runtime for one terminal
+// lost command can no longer execute. It retains the owner record and owned
+// workspace, then durably stamps that proof before the caller may release any
+// SQLite capacity. A retry that sees the stamp returns without inspecting or
+// signalling the old PID, which avoids PID-reuse risk.
+func (a *MacProcessAdapter) ConfirmLostRecoveryCleanup(ctx context.Context, sessionID, expectedGeneration string, grace time.Duration) (MacReconciliationResult, error) {
+	result := MacReconciliationResult{SessionID: sessionID, Reattached: false, CapacityRetained: true}
+	if a == nil || a.account == nil {
+		return result, ErrMacRuntimeAccount
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		result.Reason = "runtime ownership record is missing; lost recovery cannot prove cleanup"
+		return result, nil
+	}
+	if err != nil {
+		result.Reason = "runtime ownership record could not be validated"
+		return result, err
+	}
+	result.Generation, result.PID = record.Generation, record.PID
+	if expectedGeneration == "" || record.Generation != expectedGeneration {
+		result.Reason = "runtime generation does not match the selected lost session"
+		return result, fmt.Errorf("%w: recorded generation does not match selected lost session", ErrRuntimeOwnershipRecord)
+	}
+	if record.UID != os.Getuid() || record.Username != a.account.Username {
+		result.Reason = "recorded owner does not belong to the selected Mac account"
+		return result, fmt.Errorf("%w: recorded owner uid=%d user=%q", ErrMacRuntimeAccount, record.UID, record.Username)
+	}
+	if record.LostRecoveryCleanupConfirmedAt != "" {
+		result.CleanupConfirmed = true
+		result.Reason = "lost runtime cleanup was durably proven; owner marker retained pending capacity release"
+		return result, nil
+	}
+
+	// Reaping an exited child requires the same adapter's exec.Cmd wait handle.
+	// A new daemon must retain capacity rather than pretending it can reap or
+	// safely prove an arbitrary prior process.
+	shell, err := a.trackedLostRecoveryShell(sessionID, record)
+	if err != nil {
+		result.Reason = "current Mac adapter does not own the recorded lost runtime"
+		return result, err
+	}
+
+	members, err := inspectMacProcessGroupMembers(record.ProcessGroupID)
+	if err != nil {
+		result.Reason = "recorded Mac process group could not be inspected"
+		return result, err
+	}
+	hasRunnable, err := validateMacLostRecoveryGroup(record, members)
+	if err != nil {
+		result.Reason = "recorded Mac process group contains an unproven member"
+		return result, err
+	}
+	if hasRunnable {
+		if err := a.stopLostRecoveryMacGroup(ctx, record, grace); err != nil {
+			result.Quarantined = true
+			result.Reason = "recorded Mac process group remains unproven after bounded cleanup"
+			return result, err
+		}
+	}
+	// The known direct child must still be represented as a non-runnable
+	// member before Close calls its owned cmd.Wait. An empty or unrelated
+	// snapshot is unproven rather than permission to close a live shell.
+	members, err = inspectMacProcessGroupMembers(record.ProcessGroupID)
+	if err != nil {
+		result.Reason = "recorded Mac process group could not be reinspected before reaping"
+		return result, err
+	}
+	if hasRunnable, err = validateMacLostRecoveryGroup(record, members); err != nil {
+		result.Reason = "recorded Mac process group changed before reaping"
+		return result, err
+	} else if hasRunnable || !containsMacLostRecoveryZombie(record, members) {
+		result.Reason = "recorded Mac Bash child is not proven non-runnable before reaping"
+		return result, fmt.Errorf("%w: recorded Mac Bash child is not a proven zombie", ErrRuntimeOwnershipRecord)
+	}
+	if err := closeLostRecoveryShell(shell); err != nil {
+		result.Reason = "recorded Mac Bash child could not be reaped"
+		return result, err
+	}
+
+	// Do not write proof until a new bounded snapshot confirms that no member
+	// of the owned group remains runnable. Zombies are harmless, but the direct
+	// child above was reaped through the adapter that owns its wait handle.
+	members, err = inspectMacProcessGroupMembers(record.ProcessGroupID)
+	if err != nil {
+		result.Reason = "recorded Mac process group could not be verified after cleanup"
+		return result, err
+	}
+	if hasRunnable, err = validateMacLostRecoveryGroup(record, members); err != nil {
+		result.Reason = "recorded Mac process group changed during cleanup verification"
+		return result, err
+	} else if hasRunnable {
+		result.Quarantined = true
+		result.Reason = "recorded Mac process group still has runnable members"
+		return result, fmt.Errorf("%w: recorded Mac process group %d remains runnable", ErrRuntimeOwnershipRecord, record.ProcessGroupID)
+	}
+	if _, err := markLostRecoveryCleanupConfirmed(a.options.WorkspaceRoot, sessionID, record, time.Now()); err != nil {
+		result.Reason = "lost runtime cleanup proof could not be persisted"
+		return result, err
+	}
+	result.CleanupConfirmed = true
+	result.Quarantined = true
+	result.Reason = "prior Mac process group stopped; cleanup proof and owner marker retained pending capacity release"
+	return result, nil
+}
+
+// FinalizeLostRecoveryCleanup removes only the workspace and owner record
+// retained after ConfirmLostRecoveryCleanup persisted its process proof. It is
+// intentionally free of PID inspection and signalling because the original
+// PID may now belong to an unrelated process.
+func (a *MacProcessAdapter) FinalizeLostRecoveryCleanup(ctx context.Context, sessionID, expectedGeneration string) (MacReconciliationResult, error) {
+	result := MacReconciliationResult{SessionID: sessionID, Reattached: false}
+	if a == nil || a.account == nil {
+		return result, ErrMacRuntimeAccount
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		result.CleanupConfirmed = true
+		result.Reason = "lost recovery ownership record is already absent after durable capacity release"
+		return result, nil
+	}
+	if err != nil {
+		result.CapacityRetained = true
+		result.Reason = "lost recovery ownership record could not be validated"
+		return result, err
+	}
+	result.Generation, result.PID = record.Generation, record.PID
+	if expectedGeneration == "" || record.Generation != expectedGeneration {
+		result.CapacityRetained = true
+		result.Reason = "runtime generation does not match the selected lost session"
+		return result, fmt.Errorf("%w: recorded generation does not match selected lost session", ErrRuntimeOwnershipRecord)
+	}
+	if record.UID != os.Getuid() || record.Username != a.account.Username {
+		result.CapacityRetained = true
+		result.Reason = "recorded owner does not belong to the selected Mac account"
+		return result, fmt.Errorf("%w: recorded owner uid=%d user=%q", ErrMacRuntimeAccount, record.UID, record.Username)
+	}
+	if record.LostRecoveryCleanupConfirmedAt == "" {
+		result.CapacityRetained = true
+		result.Reason = "lost recovery cleanup proof is absent"
+		return result, fmt.Errorf("%w: lost recovery cleanup proof is absent", ErrRuntimeOwnershipRecord)
+	}
+	if record.OwnedWorkspace {
+		if err := removeOwnedRuntimeWorkspace(a.options.WorkspaceRoot, record.Workspace); err != nil {
+			result.CapacityRetained = true
+			result.Reason = "owned lost-recovery workspace could not be removed"
+			return result, err
+		}
+	}
+	if err := removeRuntimeOwnership(a.options.WorkspaceRoot, sessionID); err != nil {
+		result.CapacityRetained = true
+		result.Reason = "lost-recovery ownership record could not be removed"
+		return result, err
+	}
+	a.mu.Lock()
+	delete(a.sessions, sessionID)
+	delete(a.prepared, sessionID)
+	delete(a.identities, sessionID)
+	a.mu.Unlock()
+	result.CleanupConfirmed = true
+	result.CapacityRetained = false
+	result.Reason = "lost recovery ownership finalized after durable capacity release"
+	return result, nil
+}
+
+func (a *MacProcessAdapter) trackedLostRecoveryShell(sessionID string, record RuntimeOwnershipRecord) (*PersistentShell, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	shell := a.sessions[sessionID]
+	prepared, preparedOK := a.prepared[sessionID]
+	identity, identityOK := a.identities[sessionID]
+	if shell == nil || !preparedOK || !identityOK || shell.cmd == nil || shell.cmd.Process == nil || shell.cmd.ProcessState != nil {
+		return nil, fmt.Errorf("%w: no current-adapter shell handle for lost runtime", ErrMacRuntimeSession)
+	}
+	if prepared.SessionID != record.SessionID || prepared.Generation != record.Generation || prepared.Workspace != record.Workspace || prepared.OwnedWorkspace != record.OwnedWorkspace {
+		return nil, fmt.Errorf("%w: current-adapter preparation differs from lost runtime owner", ErrRuntimeOwnershipRecord)
+	}
+	if shell.cmd.Process.Pid != record.PID || identity.PID != record.PID || identity.ProcessGroupID != record.ProcessGroupID || identity.UID != record.UID || identity.Username != record.Username || identity.Command != record.Command || identity.ProcessStartIdentity != record.ProcessStartIdentity {
+		return nil, fmt.Errorf("%w: current-adapter process identity differs from lost runtime owner", ErrRuntimeOwnershipRecord)
+	}
+	return shell, nil
+}
+
+// validateMacLostRecoveryGroup permits only the exact, direct Bash root known
+// to this adapter. Any extra runnable member is deliberately unknown for
+// lost-runtime repair, even if it appears to descend from Bash: a group signal
+// would otherwise broaden the recovery action beyond the recorded child.
+func validateMacLostRecoveryGroup(record RuntimeOwnershipRecord, members []macProcessGroupMember) (bool, error) {
+	foundRoot := false
+	for _, member := range members {
+		if !member.runnable() {
+			continue
+		}
+		if member.PID <= 0 || member.ProcessGroupID != record.ProcessGroupID || member.UID != record.UID {
+			return false, fmt.Errorf("%w: runnable Mac process-group member is not owned by the selected runtime", ErrRuntimeOwnershipRecord)
+		}
+		if member.PID != record.PID || foundRoot {
+			return true, fmt.Errorf("%w: recorded Mac process group contains an additional runnable member", ErrRuntimeOwnershipRecord)
+		}
+		foundRoot = true
+	}
+	if !foundRoot {
+		return false, nil
+	}
+	return true, nil
+}
+
+func containsMacLostRecoveryZombie(record RuntimeOwnershipRecord, members []macProcessGroupMember) bool {
+	for _, member := range members {
+		if member.PID == record.PID && member.ProcessGroupID == record.ProcessGroupID && !member.runnable() {
+			return true
+		}
+	}
+	return false
+}
+
+// stopLostRecoveryMacGroup narrows the unavoidable signal race by taking an
+// exact direct-root snapshot immediately before each signal. Darwin exposes no
+// atomic "validate then signal group" primitive; when either recheck sees an
+// extra or mismatched member, the method returns unconfirmed without sending
+// the next signal.
+func (a *MacProcessAdapter) stopLostRecoveryMacGroup(ctx context.Context, record RuntimeOwnershipRecord, grace time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if grace <= 0 {
+		grace = 500 * time.Millisecond
+	}
+	ready, err := macLostRecoverySignalTarget(record)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return nil
+	}
+	if err := signalOwnedProcessGroup(record.ProcessGroupID, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("signal recorded Mac process group with TERM: %w", err)
+	}
+	stopped, err := waitLostRecoveryMacGroupStopped(ctx, record, grace)
+	if err != nil {
+		return err
+	}
+	if stopped {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ready, err = macLostRecoverySignalTarget(record)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return nil
+	}
+	if err := signalOwnedProcessGroup(record.ProcessGroupID, syscall.SIGKILL); err != nil {
+		return fmt.Errorf("signal recorded Mac process group with KILL: %w", err)
+	}
+	stopped, err = waitLostRecoveryMacGroupStopped(context.Background(), record, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	if stopped {
+		return nil
+	}
+	return fmt.Errorf("%w: recorded Mac process group %d remains after bounded cleanup", ErrRuntimeOwnershipRecord, record.ProcessGroupID)
+}
+
+func waitLostRecoveryMacGroupStopped(ctx context.Context, record RuntimeOwnershipRecord, timeout time.Duration) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		stopped, err := lostRecoveryMacGroupStopped(record)
+		if err != nil || stopped {
+			return stopped, err
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-deadline.C:
+			return lostRecoveryMacGroupStopped(record)
+		case <-ticker.C:
+		}
+	}
+}
+
+func lostRecoveryMacGroupStopped(record RuntimeOwnershipRecord) (bool, error) {
+	members, err := inspectMacProcessGroupMembers(record.ProcessGroupID)
+	if err != nil {
+		return false, err
+	}
+	hasRunnable, err := validateMacLostRecoveryGroup(record, members)
+	if err != nil {
+		return false, err
+	}
+	return !hasRunnable, nil
+}
+
+func macLostRecoverySignalTarget(record RuntimeOwnershipRecord) (bool, error) {
+	members, err := inspectMacProcessGroupMembers(record.ProcessGroupID)
+	if err != nil {
+		return false, err
+	}
+	ready, err := validateMacLostRecoveryGroup(record, members)
+	if err != nil || !ready {
+		return ready, err
+	}
+	if err := verifyMacProcessIdentity(record); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func closeLostRecoveryShell(shell *PersistentShell) error {
+	if err := shell.Close(); err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return err
+		}
+	}
+	return nil
+}
+
 // AuditOwnership verifies that all host owner markers can be matched to a
 // durable live session reservation before runner-locald advertises readiness.
 func (a *MacProcessAdapter) AuditOwnership(ctx context.Context, attributable map[string]struct{}) error {
