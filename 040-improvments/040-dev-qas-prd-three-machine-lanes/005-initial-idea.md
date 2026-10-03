@@ -35,15 +35,35 @@ is promoted to `qas`, and finally the same accepted commit is promoted to
 existing Runner execution environment such as `linux-dev` or `sandbox-dev`,
 which remains a target policy and execution-account description.
 
+## Settled naming and compatibility rule
+
+`prd` is the release-lane identity, not a suffix on production resources. The
+current unsuffixed installation is the initial PRD lane and keeps its existing
+names, paths, listener, and mailbox roots. Only the new Dev and QAS instances
+carry lane suffixes:
+
+| Resource | Dev | QAS | PRD (current and unsuffixed) |
+| --- | --- | --- | --- |
+| Mac processes | `runner-local-dev`, `runner-locald-dev` | `runner-local-qas`, `runner-locald-qas` | `runner-local`, `runner-locald` |
+| Linux systemd unit | `runnerd-dev.service` | `runnerd-qas.service` | `runnerd.service` |
+| Mac runtime root | `~/Library/Application Support/RemoteSessionRunner-dev` | `~/Library/Application Support/RemoteSessionRunner-qas` | `~/Library/Application Support/RemoteSessionRunner` |
+| Linux runtime root | `~/.local/share/remote-session-runner-dev` | `~/.local/share/remote-session-runner-qas` | `~/.local/share/remote-session-runner` |
+| Direct HTTPS port on each Linux host | `8444` | `8445` | `8443` |
+
+PRD still reports its lane explicitly in health, status, configuration, and
+build metadata. The absence of a `-prd` suffix must never make a resource
+ambiguous. This is a naming decision only; it does not authorize installation
+or migration work.
+
 ## Intended topology
 
 ```text
                          Mac                     linux-host              sandbox-host
                      tomasz.walczuk                ubuntu                   ubuntu
 
-Dev       runner-local-dev / locald-dev       runnerd-dev :8443       runnerd-dev :8443
-QAS       runner-local-qas / locald-qas       runnerd-qas :8444       runnerd-qas :8444
-PRD       runner-local-prd / locald-prd       runnerd-prd :8445       runnerd-prd :8445
+Dev       runner-local-dev / runner-locald-dev runnerd-dev :8444       runnerd-dev :8444
+QAS       runner-local-qas / runner-locald-qas runnerd-qas :8445       runnerd-qas :8445
+PRD       runner-local / runner-locald        runnerd :8443           runnerd :8443
 ```
 
 The same lane port is used on both Linux hosts because the hosts have separate
@@ -52,9 +72,9 @@ per-request value:
 
 | Lane | Direct HTTPS port on each Linux host |
 | --- | ---: |
-| `dev` | `8443` |
-| `qas` | `8444` |
-| `prd` | `8445` |
+| `dev` | `8444` |
+| `qas` | `8445` |
+| `prd` | `8443` |
 
 All direct endpoints remain public HTTPS with mandatory mTLS. The queued
 mailbox route remains the restricted SSH bridge. This proposal does not add
@@ -122,11 +142,13 @@ lane's SQLite database, socket, workspace, bridge socket, or response tree.
 
 ## Compatibility and migration direction
 
-The current live installation should remain operational as the initial Dev
-instance while QAS and PRD are introduced as fresh isolated instances. Existing
-mailboxes must not be silently moved or retargeted. In particular, the current
-SlideStudio mailbox may become a QAS mailbox only after its new QAS instance
-has passed end-to-end acceptance and its migration is explicitly performed.
+The current live installation remains operational as the initial PRD instance.
+It keeps the unsuffixed service labels, runtime roots, port `8443`, and existing
+mailbox locations. Dev and QAS are introduced as fresh isolated instances with
+their `-dev` and `-qas` names. Existing mailboxes must not be silently moved or
+retargeted. A specific production mailbox may move to Dev or QAS only after the
+new lane has passed end-to-end acceptance and the migration is explicitly
+performed.
 
 The detailed design must provide a reversible, evidence-backed migration for
 runtime roots, existing retained mailbox artifacts, active work, and installed
@@ -174,15 +196,15 @@ service labels.
 - A lane reports the expected lane and build SHA on the Mac and on both Linux
   hosts before its acceptance tests start.
 - Fast-forward-only promotion proves the exact Dev-to-QAS-to-PRD SHA chain.
-- Existing Dev service and mailbox state migrate without lost or duplicate
+- Existing PRD service and mailbox state remain available without lost or duplicate
   work, and rollback of an incomplete migration is documented and tested.
 - Per-lane capacity and retention controls prevent one lane's generated output
   from exhausting the shared host disk.
 
 ## Open design questions
 
-1. What exact approved runtime-root and worktree paths best preserve the
-   existing Dev state while making QAS and PRD paths unmistakable?
+1. What exact worktree paths best preserve the existing PRD state while making
+   Dev and QAS paths unmistakable?
 2. Should QAS and PRD permit any Mac-local execution, or should their mailboxes
    be remote-only from the first release?
 3. What issuer/identity arrangement gives straightforward per-lane mTLS
