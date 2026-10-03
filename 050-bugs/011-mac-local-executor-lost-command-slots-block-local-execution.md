@@ -113,9 +113,11 @@ explicit `mac-local` execution-context override, `mac-dev` environment, and
    persistent Bash process. A sourced script that enables `errexit` can end
    that Bash before Runner emits its command-complete control frame. This is a
    strong code-consistent explanation for the observed `started -> stderr ->
-   lost` sequence. The same loss shape can also result from an unconfirmed
-   output boundary, so a harmless fixture is required to prove the precise
-   transport trigger.
+   lost` sequence. The default output-boundary timeout is one second, which
+   also matches the 0.876 to 1.049 second loss times. The scripts are short
+   (84 or 143 bytes) and contain no literal `exit` or `sleep`. The same loss
+   shape can therefore result from an unconfirmed output boundary, so a
+   harmless fixture is required to prove the precise transport trigger.
 7. The retained runtime ownership records identify four Bash process groups:
    `16723`, `17712`, `71890`, and `72168`. At the investigation time each was
    a zombie (`Z`, `<defunct>`), parented by the still-running `runner-locald`
