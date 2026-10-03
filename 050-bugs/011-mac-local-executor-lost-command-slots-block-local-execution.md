@@ -4,14 +4,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` — B011-P1 through B011-P6 source work and source handoffs are PASS. The separately authorized live deployment and acceptance gate remains pending; no live recovery, service change, or installed-state inspection has been attempted |
+| Status | `RESOLVED` — B011-P1 through B011-P7 source work, handoffs, and the separately authorized live deployment/acceptance gate are PASS. The original queued Mac command completed once after the controlled restart; the four prior lost commands were not replayed. |
 | Severity | High |
 | Priority | High — the local Mac execution route cannot accept more running work while all four command slots remain retained |
 | Reported | 2026-10-03 |
 | Discovered by | Codex while preparing a harmless local-Mac executor smoke test |
 | Owner | Unassigned |
 | Affected area | Mac `runner-locald`, local durable command-slot/session-reservation cleanup, and `slidestud-io` requests that explicitly select `mac-local` / `local:mac-workstation` |
-| Affected live revision | `ced9c4387a9dde34f93610dbefbb9c4e619e8c3e` reported by the live Mac private health endpoints |
+| Affected live revision | `697939806b18a560e0992a43b7ce1c1558523219` installed and verified by the final Mac and Ubuntu readiness checks |
 | Source checkout at discovery | `6ee9d09a8faa7d05bf3deffad6f8161fa0629124`; commits after the installed revision are documentation-only |
 | Related records | [BUG-008](008-post-fix-mailbox-request-accepted-without-command-start.md) and [BUG-009](009-post-fix-logger-mailbox-queue-stalls-after-terminal-lost.md) address remote Linux retained-capacity behavior. This record concerns the separate Mac-local executor and `local.db`. |
 
@@ -568,9 +568,61 @@ fast-forwarded cleanly to both Ubuntu source checkouts. Each Ubuntu host passed
 the P7-specific source scope at that exact SHA. A broader unfiltered Ubuntu
 diagnostic remains recorded as FAIL because existing P158/P165 Linux fixture
 tests reject a sticky `/tmp` ancestor, and the primary also timed out in an
-unrelated SQLite `fsync` test. Those failures are not counted as passing tests
-and did not cause any service change. The live deployment gate remains pending
-a fresh preflight.
+unrelated SQLite `fsync` test. Those failures are not counted as passing tests.
+The live deployment evidence below was run only after fresh preflight and
+explicit user authorization.
+
+## Live deployment and acceptance — 2026-10-03
+
+The user explicitly authorized restarting Runner on the Mac and both Ubuntu
+hosts. The P7 code commit was
+`635f65f2f8f3738029861a2bbc694e61ae515e5a`; the clean Mac, primary-Ubuntu,
+and sandbox-Ubuntu checkouts were at source-handoff revision
+`697939806b18a560e0992a43b7ce1c1558523219` before their installed-service
+actions.
+
+| Host | Guarded recovery and install | Acceptance |
+| --- | --- | --- |
+| Primary Ubuntu `oracle-yuta-konopka-ubuntu-micro-02` | With `runnerd.service` stopped, the exact retained terminal-lost pair was repaired through `runnerd recover-lost`. P128 then reported zero active sessions, running commands, unreleased slots, and unfinished jobs. The checked-in installer started revision `697939806b18a560e0992a43b7ce1c1558523219`. | From the Mac, mandatory-mTLS `GET https://129.151.232.40:8443/health/ready` returned HTTP 200, `live`, `ready`, the installed revision, and zero active/queued work. |
+| Sandbox Ubuntu `oracle-gustaw-janecki-ubuntu-flex-02` | The initial single-pair recovery refused before mutation because the authoritative inventory contained two retained pairs. Read-only inspection then proved exactly two terminal-lost retained pairs and zero nonterminal jobs. `runnerd recover-stalled --apply` was run with exactly those pairs and reported `recovered_lost_pairs=2`; P128 then reported zero active work and the installer started revision `697939806b18a560e0992a43b7ce1c1558523219`. | From the Mac, mandatory-mTLS `GET https://132.226.205.205:8443/health/ready` returned HTTP 200, `live`, `ready`, the installed revision, and zero active/queued work. |
+
+The first sandbox refusal was a correct guard: it prevented a one-pair
+operation from releasing capacity while a second retained pair existed.
+
+### Mac controlled restart
+
+Fresh read-only Mac preflight found `controlled-restart-status=legacy`, both
+LaunchAgents loaded, the four retained lost pairs recorded above, and this
+single queued one-off:
+
+```text
+job-cd2f9207d45b14fea77b8ee9e19d95dc
+sess-588ec33a14db48a61a3b023c9af78f08
+cmd-16c7b4f2a581f920f55e15f965833d11
+```
+
+The metrics were five active session reservations, four active command slots,
+one queued command, and one resumable job. The authorized command
+`deploy/macos/install-launchagents.sh --b011-controlled-restart` prepared the
+exact durable plan, froze and unloaded the old executor, proved its socket
+boundary, and started the candidate LaunchAgents at revision
+`697939806b18a560e0992a43b7ce1c1558523219`.
+
+The queued identity completed exactly once: job `complete`, session `closed`,
+command `succeeded`, exit code zero, output complete, final event sequence
+four. Its ordered event types were `command_queued`, `command_started`, one
+`stderr` event, and `command_succeeded`. The plan was consumed. Each of the four
+old pairs remains `lost`/`lost`, output-incomplete, with original final event
+sequence four; no lost command was replayed.
+
+Final Mac counts were zero active session reservations, command slots,
+running/cancelling commands, and nonterminal jobs. Both
+`com.remote-session-runner.locald` and `com.remote-session-runner.local` were
+loaded; their private readiness endpoints reported `live`, `ready`, build
+revision `697939806b18a560e0992a43b7ce1c1558523219`, and zero mailbox backlog.
+
+This resolves BUG-011. It is software-crash/restart evidence only; P143's
+physical-power-loss limitation remains unchanged.
 
 ## History
 
@@ -581,3 +633,4 @@ a fresh preflight.
 | 2026-10-03 | Added the serial B011 fix plan. It requires one shared queue/recovery worker for Linux and Mac, with only host process proof/reaping in adapters; no live remediation was authorized. |
 | 2026-10-03 | B011-P6 added an opt-in, test-owned Darwin recovery gate. It passed the four-lost-pairs/one-queued identity scenario and the unproven identity-mismatch negative scenario; GitHub and Ubuntu source handoff remain pending. |
 | 2026-10-03 | B011-P6 source commit was pushed and fast-forwarded to both Ubuntu source checkouts. The focused source regression passed on both at the exact matching SHA; no installed service was changed. |
+| 2026-10-03 | B011-P7 was deployed under explicit authorization on the Mac and both Ubuntu hosts. Guarded Ubuntu recovery returned capacity to zero; the Mac controlled restart completed the original queued identity once without replaying the four lost commands. |
