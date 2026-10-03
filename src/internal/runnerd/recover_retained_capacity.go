@@ -2,7 +2,6 @@ package runnerd
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,7 +10,7 @@ import (
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
-	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/queueworker"
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 )
@@ -166,16 +165,5 @@ func requireRunnerdServiceActiveWith(systemdValue func(string) (string, error)) 
 // actionable without serializing runtime details, SQL state, paths, scripts,
 // credentials, headers, or process information.
 func retainedCapacityRecoveryFailureReason(err error) string {
-	switch {
-	case errors.Is(err, execution.ErrLostRuntimeRecoveryUnconfirmed):
-		return "cleanup_unconfirmed"
-	case errors.Is(err, execution.ErrLostRuntimeRecoveryFinalization):
-		return "finalization_unconfirmed"
-	case errors.Is(err, execution.ErrLostRuntimeRecoveryIneligible), errors.Is(err, store.ErrLostRuntimeRecoveryNotReleasable):
-		return "inventory_not_eligible"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "deadline_exceeded"
-	default:
-		return "operation_failed"
-	}
+	return queueworker.RetainedCapacityRecoveryFailureReason(err)
 }
