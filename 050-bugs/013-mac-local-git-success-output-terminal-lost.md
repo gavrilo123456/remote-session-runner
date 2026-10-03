@@ -4,16 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `NEW` |
+| Status | `FIXED — PENDING VERIFICATION` |
 | Severity | High |
 | Priority | High — prevents the required mailbox-based Mac Git handoff and local verification from producing acknowledgeable terminal results |
 | Reported | 2026-10-03 |
 | Discovered by | Codex during an approved Mac-local mailbox Git transport smoke test |
-| Owner | Unassigned |
-| Affected area | `runner-local`, `runner-locald`, Mac-local `run` result finalization, event/control-frame capture, and terminal outbox projection |
+| Owner | Codex — source correction complete; controlled live verification remains |
+| Affected area | Shared one-off coordinator/queue-worker handoff, Mac-local persistent-shell output capture, and terminal outbox projection |
 | Affected mailbox | `slidestud-io` external workspace mailbox |
 | Affected execution context | `mac-dev` → `local/mac-workstation` |
-| Affected source / installed revision | Not established by this observation; capture both before triage |
+| Affected source / installed revision | Source correction `c173ab03e867a7c7bac47ae8c7fc7269a1773553`; installed Mac service deliberately remains on its prior revision while the two recorded requests are preserved |
 | Related records | [BUG-011](011-mac-local-executor-lost-command-slots-block-local-execution.md) covers retained local lost-command capacity. BUG-013 records terminal-result and dispatch-lifecycle evidence which may share an execution path but does not assume the same root cause. |
 
 ## Reported behavior
@@ -30,13 +30,14 @@ The previous test without an explicit identity failed with
 that error. This is therefore not a GitHub-key authentication defect.
 
 On the same date, a new harmless, non-Git local test request was durably
-accepted but never progressed beyond `job_phase=accepting_command`. It had a
-different request ID and idempotency key, no network or credential action, and
-was observed repeatedly without a later outbox revision, output, event cursor,
-or terminal result. This does not prove that the dispatch stall and the prior
-success-to-`lost` result have the same cause; it proves that Mac-local work is
-still unable to produce a trustworthy outcome across more than one command
-shape.
+accepted but its outbox projection remained at `job_phase=accepting_command`.
+It had a different request ID and idempotency key, no network or credential
+action, and was observed without a later terminal outbox revision, output, or
+event cursor. Subsequent source analysis established that this projection did
+not prove the command had not started: the old coordinator could start the
+command synchronously before persisting its `awaiting_command` handoff. The
+outbox could therefore keep displaying its older accepted snapshot while the
+command lifecycle advanced elsewhere.
 
 ## Expected behavior
 
@@ -109,7 +110,7 @@ if the Git command returned zero. That is strong evidence that the child Git
 operation completed successfully before Runner lost its completion boundary.
 It is not a substitute for the missing authoritative exit result.
 
-### Fresh non-Git recurrence: accepted local test request stalls before command start
+### Fresh non-Git recurrence: accepted local test request kept a stale outbox state
 
 | Field | Value |
 | --- | --- |
@@ -134,8 +135,8 @@ printf 'LOGGER_BUNDLE_BINDING_TESTS_OK\n'
 ```
 
 This is intentionally recorded as a lifecycle/dispatch recurrence, not as
-proof that either focused test would pass or fail. Runner never began the
-command and did not project test output.
+proof that either focused test would pass or fail. The accepted outbox response
+did not establish whether the runtime had started or what outcome it reached.
 
 ## Safe reproduction
 
@@ -179,10 +180,10 @@ published by writing the complete JSON first and an empty ready marker last.
 4. Do not ACK a `lost` response. Do not replay the same request or
    idempotency key. Do not turn the dry-run into a real push while diagnosing.
 
-### Regression fixture required
+### Regression coverage
 
-Add a hermetic local-executor fixture; do not rely on a real SSH key or live
-GitHub. The fixture should imitate a Git-like child which:
+The hermetic local-executor coverage does not rely on a real SSH key or live
+GitHub. It imitates a Git-like child which:
 
 1. writes a harmless status line to stderr;
 2. exits `0`;
@@ -207,28 +208,83 @@ reports an accurate non-success outcome without claiming a false success.
   simple Mac-local control above passed, so this is not evidence that all
   Mac-local commands fail.
 
-## Investigation questions
+## Root cause and source correction
 
-1. Why did `runner-locald` lose the command-complete boundary after the shell
-   executed the post-Git marker?
-2. Does the persistent-shell protocol mishandle a successful child that emits
-   stderr, an SSH child, EOF timing, or a post-command control frame?
-3. Why does the outbox use `request_state=complete` with
-   `command_state=lost` and `teardown_outcome=lost` rather than preserving a
-   recoverable, truthful terminal classification?
-4. Did this event retain a command slot/session reservation, and if so can
-   the existing BUG-011 recovery contract prove cleanup without replaying it?
-5. Do `runner-local` and `runner-locald` logs or their authoritative local
-   state contain a redacted completion-frame, wait, process-group, or cleanup
-   error correlated with command `cmd-3de63fa2b336439dda9262f78e52ce61`?
-6. Why did the later command `cmd-4e3698e56fd5720a46b4fe0a1751b9c4` remain at
-   `accepting_command` after durable acceptance? Inspect the local dispatcher,
-   session creation, command admission, capacity/lease state, and outbox
-   projector without inferring that it was ever started.
-7. Can a prior `lost` command or its retained cleanup state block a subsequent
-   independent local request before `command_started`, and if so, is the
-   blocking state exposed as a truthful bounded result rather than an
-   indefinitely active projection?
+### Accepted work could start before its durable handoff
+
+`ResumeStoredJob` previously used the synchronous `SubmitCommand` path while
+the one-off job was still in `accepting_command`. That convenience path could
+claim and start the command before the coordinator checkpointed
+`awaiting_command`. If the process then ran slowly, the mailbox projector could
+continue to publish the earlier accepted job snapshot even though a command had
+already started. It also left two execution owners for a one-off request: the
+coordinator and the shared queue worker.
+
+The correction separates those responsibilities:
+
+1. The stored-job coordinator creates the session, accepts the command, and
+   durably checkpoints `awaiting_command`.
+2. The queue worker uses a stricter scheduler claim which excludes one-off
+   commands until that checkpoint exists.
+3. The worker records its durable `running` claim in the job before invoking
+   the runtime, then resumes the coordinator only to settle the terminal
+   command and close the session.
+
+The direct synchronous compatibility API remains available to its existing
+callers; production mailbox jobs use the shared queue-worker path.
+
+### Ordinary output persistence could exhaust the physical EOF grace
+
+The old persistent-shell implementation started the physical FIFO EOF timer
+after receiving the completion control frame. A durable output callback still
+running at that point prevented a FIFO drainer from reporting EOF. An ordinary
+SQLite event write that lasted beyond the one-second physical grace could
+therefore be recorded as `command_lost`, even after a successful child wrote
+its status and following marker.
+
+The exact low-level reason for the historical Git command cannot be recovered
+from its durable record: it intentionally retained only the conservative lost
+boundary, not private process or callback details. The correction covers the
+concrete false-loss class without rewriting that history. It gives an
+in-flight output callback a bounded five-second completion grace. If the
+callback returns, normal output and exit status are retained. If it remains
+blocked or fails, the command still becomes a retained, truthful `lost`
+boundary; the original no-callback one-second EOF rule remains unchanged.
+
+Queue-worker error logs now map these cases to sanitized reason codes,
+including `output_boundary_timeout`, `output_persistence_failed`, and the
+existing persistent-shell boundary classes. The mapping adds no output, token,
+header, private-key, or path payloads.
+
+### Hermetic source evidence
+
+The source correction adds or updates these regression checks:
+
+- a real persistent shell with stderr status, a post-command success marker,
+  and a deliberately slow output callback; it must succeed with complete
+  output and allow a follow-up command;
+- a permanently blocked callback; it must reach the bounded retained
+  `ErrOutputBoundary` result and reject a follow-up command;
+- an output callback failure; it must remain a durable lost boundary through
+  the execution service and cannot be replayed;
+- a scheduler handoff fixture proving a one-off command cannot be claimed
+  while its job is `accepting_command`;
+- a local queue-worker fixture proving a blocked runtime is observable as
+  `awaiting_command` plus `running`, executes exactly once, and then settles
+  normally.
+
+Focused Mac package tests and the full `make test` suite passed after the
+source change. This is source evidence only; it does not prove the installed
+Mac service has switched revision or that either recorded mailbox request has
+been repaired.
+
+## Remaining limits
+
+The historical Git command's exact low-level failure cannot be reconstructed
+from its deliberately conservative lost record. The source correction does
+not alter its command, session, retained capacity, events, or mailbox files.
+The two recorded requests remain untouched, so the required proof is a fresh,
+post-install harmless mailbox request rather than an inference from old state.
 
 ## Required correction properties
 
@@ -251,11 +307,32 @@ reports an accurate non-success outcome without claiming a false success.
    `accepting_command` to either `command_started` plus a terminal result, or
    a bounded, truthful terminal rejection/indeterminate outcome.
 
-## Resolution
+## Resolution and required live verification
 
-Unresolved. Do not replay or ACK the recorded lost command. No source change,
-service change, Git commit, or live capacity action has been performed for
-this defect.
+Source correction `c173ab03e867a7c7bac47ae8c7fc7269a1773553` passed the full
+Mac `make test` suite, was pushed to GitHub `dev`, and was fast-forwarded into
+the Ubuntu checkout. The installed Mac service has deliberately not been
+restarted or replaced while the two recorded requests are preserved. Do not
+replay, ACK, cancel, manually release, or otherwise alter either recorded
+request as part of this work.
+
+After the source commit is installed under a separately approved service
+restart, publish one **fresh**, harmless Mac-local mailbox request that writes
+a stderr status line followed by a stdout marker. Require one correlated
+terminal outbox result with:
+
+```text
+request_state=complete
+command_state=succeeded
+exit_code=0
+output_complete=true
+output_truncated=false
+teardown_outcome=closed
+```
+
+Read the events through the advertised cursor, confirm the final
+`command_succeeded`, then publish the normal ACK. Keep this record at
+`FIXED — PENDING VERIFICATION` until that post-install result is preserved.
 
 ## History
 
@@ -263,3 +340,4 @@ this defect.
 | --- | --- |
 | 2026-10-03 | Reported with correlated mailbox/outbox/event evidence and a safe dry-run reproduction. |
 | 2026-10-03 | Added a fresh, non-Git Mac-local request that remains at `accepting_command`; no replay, ACK, or root-cause attribution was made. |
+| 2026-10-03 | Identified the synchronous coordinator/queue-worker handoff defect and the bounded output-callback false-loss class. Source correction `c173ab03e867a7c7bac47ae8c7fc7269a1773553` passed full Mac tests, was pushed to `dev`, and was fast-forwarded to Ubuntu; installation and a fresh live mailbox proof remain pending. |
