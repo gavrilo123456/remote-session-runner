@@ -9,7 +9,7 @@ host-gate test scripts as everyday service controls.
 
 | Capability | Current state | What to verify before use |
 | --- | --- | --- |
-| Mac local execution | Route is available when both Mac LaunchAgents are healthy | Both private readiness endpoints, the running revision, and a safe local command. Health alone does not prove that retained capacity is free. |
+| Mac local execution | Route is health-addressable when both Mac LaunchAgents are healthy | Both private readiness endpoints, installed revision, and a current authority-capacity check; only then a safe local command. Health alone does not prove retained capacity is free. |
 | Direct `linux-host` execution | Accepted on the current host | Public mTLS readiness, then a direct `linux-poc` command. |
 | Queued `linux-host` execution | Permanent restricted bridge was accepted in P155 | Fresh bridge `status` at the deployed source revision, then a queued command. |
 | Direct `sandbox-host` execution | Accepted in P157 | Public `sandbox-poc` mTLS Runner readiness. |

@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` — B011-P5 source work is underway; no live recovery or service change has been attempted |
+| Status | `IN PROGRESS` — B011-P1 through B011-P5 source work and source handoffs are PASS. B011-P6 isolated Mac fixture and source gates are PASS; its required GitHub-to-Ubuntu source handoff is pending. No live recovery, service change, or installed-state inspection has been attempted |
 | Severity | High |
 | Priority | High — the local Mac execution route cannot accept more running work while all four command slots remain retained |
 | Reported | 2026-10-03 |
@@ -426,9 +426,13 @@ current user work.
 The gate induces the harmless sourced `set -e; /bin/false` loss, proves the
 owned zombie/process boundary, observes automatic recovery through the shared
 worker, and proves that the test-owned queued command runs once with its
-original identity and that capacity returns to zero. A live/mismatched fixture
-must remain retained. Record this as a real Mac process result, separately
-from hermetic results.
+original identity and that capacity returns to zero. In a separate temporary
+authority fixture, an *unproven* recovery candidate—an identity-mismatched
+marker or a foreign or extra live descendant—must retain capacity, leave queued
+work unstarted, and receive no signal or reap action. A matching owned live
+root is not a retained-negative case: the Mac adapter may boundedly stop and
+reap it only after full proof. Record this as a real Mac process result,
+separately from hermetic results.
 
 **Required gates.** The opt-in Darwin host gate, the common source gates, and
 Mac/Ubuntu SHA parity. If the Mac host gate is unavailable or fails, record
@@ -452,9 +456,13 @@ power-loss claim; the existing P143 limitation remains unchanged.
 
 ## Fix and verification
 
-The plan above is ready for later source implementation. No fix, service
-change, or live recovery has been attempted. The separately authorized live
-deployment gate remains pending.
+B011-P1 through B011-P5 source changes and source handoffs are complete.
+B011-P6 has passed its opt-in isolated Darwin fixture gate and all Mac source
+gates. The scoped source commit, explicit-key GitHub push, clean
+fast-forward/source validation on both Ubuntu checkouts, and exact-SHA proof
+remain pending; hermetic coverage does not replace the Darwin gate. No service
+change, live recovery, or production-state inspection has been attempted. The
+separately authorized live deployment gate remains pending.
 
 ## History
 
@@ -463,3 +471,4 @@ deployment gate remains pending.
 | 2026-10-03 | Created from live Mac health metrics and read-only durable capacity evidence. |
 | 2026-10-03 | Triaged from read-only lifecycle, ownership, process-state, log, and source-path evidence; confirmed the Mac-local recovery gap. |
 | 2026-10-03 | Added the serial B011 fix plan. It requires one shared queue/recovery worker for Linux and Mac, with only host process proof/reaping in adapters; no live remediation was authorized. |
+| 2026-10-03 | B011-P6 added an opt-in, test-owned Darwin recovery gate. It passed the four-lost-pairs/one-queued identity scenario and the unproven identity-mismatch negative scenario; GitHub and Ubuntu source handoff remain pending. |
