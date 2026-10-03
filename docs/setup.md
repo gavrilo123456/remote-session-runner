@@ -106,6 +106,24 @@ two LaunchAgents, and starts them in the current GUI user domain. Use a quiet
 window because service shutdown first drains and then cancels or closes bounded
 remaining work.
 
+After it stops mailbox ingress and before executor bootout, the installer runs
+the staged `runner-locald preflight-restart` command against the **active**
+`mac.yaml` and its active `local.db`, not the candidate configuration. The
+guard runs even when launchd does not report a loaded locald, because durable
+work can outlive a stopped executor. The
+SQLite read-only gate requires zero active session slots, active command slots,
+queued commands, and resumable one-off jobs in `creating_session`,
+`accepting_command`, `awaiting_command`, or `closing_session`. It accepts the
+supported pre-upgrade schema-24 or current schema without migrating either.
+
+Any nonzero count, unreadable database, unsupported schema, or path uncertainty
+blocks the refresh before `runner-locald` is stopped. A missing database is
+allowed only for a true first local-executor install: no loaded old locald,
+previous locald binary, LaunchAgent plist, socket, database, or SQLite sidecar
+may exist. The preflight does not call `doctor`, write a health record, recover
+capacity, clean up work, or release a slot. It protects queued local work from
+an installer refresh; it is not a recovery procedure.
+
 Verify both services:
 
 ```sh
@@ -205,7 +223,7 @@ The upgrade sequence is deliberate:
 
 For a schema-24 database, the final pre-boundary check treats retained work as
 implicit `default` without writing it. The post-boundary activation can migrate
-to schema 27 and record the inbox registry. A V1 binary cannot safely reopen
+to the current schema and record the inbox registry. A V1 binary cannot safely reopen
 that namespaced database. Before the boundary, a failed candidate restores the
 prior services. After it, the staged candidate is retained for repair/re-run;
 do not attempt to revive V1. The independently reviewed `mac.next.yaml`

@@ -207,22 +207,22 @@ sequenceDiagram
   end
 ```
 
-## Mailbox response evidence for queued remote work
+## Mailbox response evidence for accepted one-off work
 
 Each `outbox/<request_id>.json` file is a revision of one durable mailbox
-exchange. For a queued remote `run`, three different boundaries deliberately
+exchange. For an accepted `run`, three different boundaries deliberately
 have different meanings:
 
 | Boundary | What it proves | Safe information that may be shown | What it does not prove |
 | --- | --- | --- | --- |
 | Initial local admission | The Mac Router durably accepted and recorded the mailbox exchange. | `request_state: accepted`, the selected route, and durable resource IDs when they are known. | Target acceptance, command start, queue position, capacity, reachability, output, or an outcome. |
-| Fresh active remote projection | A successful **read-only** target status query currently matches the local intent's job, session, command, controller, environment, source, target, and profile. The matching target work is still nonterminal. | The stable IDs, `delivery_state: accepted`, one safe nonterminal job phase (`creating_session`, `accepting_command`, `awaiting_command`, or `closing_session`), and optionally `command_state` (`queued`, `running`, or `cancelling`). The sole queue explanation is optional `queue_blocked_reason: lost_capacity_recovery_pending`, valid only for the strict queued retained-capacity condition. | A terminal result, a general explanation for why work is queued, event history, output, cursor, exit code, teardown result, process details, script, header, token, or private material. |
+| Fresh active run projection | A successful **read-only** authoritative status currently matches the local intent's job, session, command, controller, environment, source, target, and profile. For remote work it is a target projection; for Mac-local work it is the same Mac authority. The matching work is still nonterminal. | The stable IDs, `delivery_state: accepted`, one safe nonterminal job phase (`creating_session`, `accepting_command`, `awaiting_command`, or `closing_session`), and optionally `command_state` (`queued`, `running`, or `cancelling`). The sole queue explanation is optional `queue_blocked_reason: lost_capacity_recovery_pending`, valid only for the strict queued retained-capacity condition. | A terminal result, a general explanation for why work is queued, event history, output, cursor, exit code, teardown result, process details, script, header, token, or private material. |
 | Strict terminal proof | The Router has identity, target, teardown, and retained event-boundary evidence for a terminal response. | The terminal response and, where available, its validated event cursor and result fields. | That a failed command succeeded; callers must still inspect command state, exit code, output completeness, and truncation. |
 
 The active projection is observational and is never a second dispatch path. If
 the status becomes stale, mismatched, unavailable, or retryably unreadable, or
 if the Router starts again, Runner withdraws any persisted active projection to
-an identity-only `accepted` receipt. The target job is not changed and its
+an identity-only `accepted` receipt. The authority job is not changed and its
 mutation is not replayed. A later fresh, identity-checked read may publish a
 new active revision; strict terminal proof remains the only way to publish a
 terminal result.
@@ -249,12 +249,51 @@ event. Event readers resume from their last validated sequence. Complete output
 requires a read through the final sequence, `output_complete: true`, and
 `output_truncated: false`.
 
-For a queued one-off job after a Mac process restart, the Router first treats
-any previously stored active remote projection as stale. It then reads the
-already accepted remote job, command, and retained events without resending the
-mutation. A newly read nonterminal status can become an active projection only
-after the full identity check. It publishes a terminal response only when
-identity, target, teardown, and event boundary agree. A missing or
+## Shared queue worker and host-specific proof
+
+`runner-locald` and `runnerd` use the same `queueworker.Worker` implementation
+for durable one-off jobs. When a normal claim finds all command capacity held,
+the worker can perform bounded retained-capacity recovery only for the exact
+complete terminal-`lost` set. It can start the original queued command only
+after that authority has enough proven capacity; it never replays a
+terminal-`lost` script or invents replacement work.
+
+```mermaid
+flowchart TD
+  Job[Durable one-off job and queued command] --> Worker[Shared queueworker.Worker]
+  Worker --> ClaimAttempt[Normal claim attempt]
+  ClaimAttempt -->|Full command capacity| Recover[Check exact retained lost capacity]
+  Recover --> Authority{Selected authority}
+  Authority --> Mac[Mac authority: local.db]
+  Authority --> Linux[Ubuntu authority: runnerd and remote.db]
+  Mac --> MacProof[Mac runtime adapter proves its own process state]
+  Linux --> LinuxProof[Linux runtime adapter proves its own process state]
+  ClaimAttempt -->|Capacity available| Claim[Claim the original queued command]
+  MacProof --> Claim
+  LinuxProof --> Claim
+```
+
+The durable data and process proof are deliberately host-specific. Mac-local
+work is owned by `runner-locald` and `local.db`; remote work is owned by the
+selected Ubuntu `runnerd` and that host's `remote.db`. The shared worker does
+not make a Mac process proof evidence for an Ubuntu process, or the reverse.
+The optional `queue_blocked_reason: lost_capacity_recovery_pending` is only a
+fresh authority observation for the narrow `awaiting_command` plus `queued`
+case. It neither changes capacity nor authorizes a manual recovery action.
+
+Source tests prove the shared worker contract. They do not prove which binary
+is installed, that a specific host still owns the required runtime records, or
+that a real retained-capacity recovery completed. Each Mac or Ubuntu authority
+needs its own current revision, health, and host-specific evidence before an
+operator treats that host as recovered.
+
+After a Mac Router restart, it first treats any stored active run projection as
+stale. It then reads the already accepted authority record without resending the
+mutation: the shared Mac authority in `local.db` for Mac-local work, whose
+executor is `runner-locald`, or the selected `runnerd`/`remote.db` for queued
+remote work. A newly read nonterminal status can become an active projection
+only after the full identity check. Runner publishes a terminal response only
+when identity, target, teardown, and event boundary agree. A missing or
 contradictory proof remains incomplete or under investigation rather than being
 reported as successful.
 

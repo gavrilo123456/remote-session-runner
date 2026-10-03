@@ -570,6 +570,7 @@ type jobProjectionResource struct {
 	OutputComplete          bool                 `json:"output_complete"`
 	OutputTruncated         bool                 `json:"output_truncated"`
 	OutputUnavailableReason string               `json:"output_unavailable_reason,omitempty"`
+	QueueBlockedReason      string               `json:"queue_blocked_reason,omitempty"`
 	TeardownState           string               `json:"teardown_state"`
 	TeardownReason          string               `json:"teardown_reason,omitempty"`
 	ExecutionTarget         targetResponse       `json:"execution_target"`
@@ -1997,7 +1998,7 @@ func (s *Server) handleGetJob(response http.ResponseWriter, request *http.Reques
 		}
 	}
 	if record.Target.Kind() == domain.TargetKindLocal && (record.DeliveryState == store.LocalIntentAccepted || record.DeliveryState == store.LocalIntentReconciled) {
-		job, jobErr := s.authority.GetJob(request.Context(), jobID)
+		job, jobErr := s.authority.GetJobStatus(request.Context(), jobID)
 		if jobErr == nil {
 			writeJSON(response, http.StatusOK, jobAuthorityRead{View: "authority", IsStale: false, Resource: jobAuthorityResourceFromRecord(job)})
 			return
@@ -2201,7 +2202,8 @@ func jobProjectionResourceFromProjection(projection store.RemoteJobProjection) j
 		JobID: string(projection.JobID), SessionID: string(projection.SessionID), CommandID: string(projection.CommandID), JobPhase: string(projection.Phase),
 		CommandState: commandState, ExitCode: projection.ExitCode, FinalEventSequence: projection.FinalEventSequence,
 		OutputComplete: projection.OutputComplete, OutputTruncated: projection.OutputTruncated, OutputUnavailableReason: projection.OutputUnavailableReason,
-		TeardownState: string(projection.TeardownState), TeardownReason: projection.TeardownReason,
+		QueueBlockedReason: projection.QueueBlockedReason,
+		TeardownState:      string(projection.TeardownState), TeardownReason: projection.TeardownReason,
 		ExecutionTarget: targetResponse{Kind: string(projection.Target.Kind()), Profile: projection.Target.Profile()}, Authority: "remote",
 		Controller: controllerView{Type: string(projection.Controller.Type()), ID: string(projection.Controller.ID())}, ObservedAt: projection.ObservedAt.UTC(),
 		Environment: projection.Environment, Source: sourceResponseFromDomain(projection.Source), Capabilities: capabilitiesResponseFromProjection(projection.Capabilities), IsStale: projection.IsStale,
@@ -2218,7 +2220,8 @@ func jobAuthorityResourceFromRecord(record store.JobRecord) jobProjectionResourc
 		JobID: string(record.JobID), SessionID: string(record.SessionID), CommandID: string(record.CommandID), JobPhase: string(record.Phase),
 		CommandState: commandState, ExitCode: record.ExitCode, FinalEventSequence: record.FinalEventSequence,
 		OutputComplete: record.OutputComplete, OutputTruncated: record.OutputTruncated, OutputUnavailableReason: record.OutputUnavailableReason,
-		TeardownState: string(record.TeardownState), TeardownReason: record.TeardownReason,
+		QueueBlockedReason: record.QueueBlockedReason,
+		TeardownState:      string(record.TeardownState), TeardownReason: record.TeardownReason,
 		ExecutionTarget: targetResponse{Kind: string(record.Target.Kind()), Profile: record.Target.Profile()}, Authority: "local",
 		Controller: controllerView{Type: string(record.Controller.Type()), ID: string(record.Controller.ID())}, ObservedAt: record.UpdatedAt.UTC(),
 		Environment: record.Environment, Source: sourceResponseFromDomain(record.Source), Capabilities: capabilitiesResponse{HostClass: record.Target.Profile(), Isolation: string(domain.IsolationOSUser), EffectiveAccount: string(record.Controller.ID()), ServiceLimits: map[string]any{}},

@@ -246,14 +246,26 @@ edit the active file in place.
    owner-only secret files; never put their contents in the candidate.
 3. Run the candidate installer described in the [setup runbook](setup.md#3-upgrade-to-version-2-or-add-an-inbox).
 4. The installer performs a descriptor-based, non-mutating mailbox-path
-   preflight while old ingress is live, quiesces the Mac services, and makes a
+   preflight while old ingress is live. After it quiesces `runner-local` and
+   before executor bootout, the staged `runner-locald preflight-restart` command
+   opens the authority selected by the **active** `mac.yaml` in SQLite read-only
+   mode; it does not use the candidate database setting. The guard runs even
+   when launchd does not report a loaded locald. It permits the restart
+   only when active session slots, active command slots, queued commands, and
+   resumable one-off jobs in `creating_session`, `accepting_command`,
+   `awaiting_command`, or `closing_session` are all zero. The guard accepts the
+   supported schema-24 or current schema without migration. A missing,
+   unreadable, unsupported, or ambiguous database fails closed, except for a
+   true first local-executor install with no old locald, binary, LaunchAgent
+   plist, socket, database, or SQLite sidecar. The check performs no health
+   write, recovery, cleanup, migration, or registry write. It then makes the
    final read-only retained-mailbox check. For a schema-24 database, that check
    treats existing work as implicit `default`; it does not migrate or write the
    registry.
 5. At the candidate-activation boundary, it records the complete candidate
    mailbox set durably before creating a missing external tree. It then creates
    or verifies only each root and its five children, hands off `mac.yaml`, and
-   starts the services. The database can migrate to schema 27; a version-1
+   starts the services. The database can migrate to the current schema; a version-1
    binary cannot reopen that namespaced schema. Before the boundary the
    installer restores the V1 services on failure. After it, a filesystem failure
    retains the staged candidate for repair or re-run and does not revive V1.

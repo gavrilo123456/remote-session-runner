@@ -62,15 +62,29 @@ and [`040-implementation-evidence/P158-slidestud-external-mailbox.md`](../../040
 
 The installer validates the candidate while the active configuration runs. It
 first performs a descriptor-based, non-mutating check of every mailbox path,
-then stops mailbox ingress, waits for sockets to disappear, and runs a final
-read-only retained-mailbox check. A schema-24 database is read as implicit
-`default` during that check; no migration or registry write occurs before the
-activation boundary.
+then stops mailbox ingress and waits for its socket to disappear. Before
+executor bootout, the staged `runner-locald preflight-restart` reads the
+authority selected by the **active** `mac.yaml` in SQLite read-only mode, not
+the candidate database setting. The guard runs even when launchd does not
+report a loaded locald. It requires zero active session slots, active
+command slots, queued commands, and resumable one-off jobs in
+`creating_session`, `accepting_command`, `awaiting_command`, or
+`closing_session`. It accepts the supported schema-24 or current schema without
+migration.
+
+A nonzero count, unreadable database, unsupported schema, or database-path
+uncertainty refuses the refresh. A missing database is accepted only for a true
+first local-executor install with no loaded old locald, prior locald binary,
+LaunchAgent plist, socket, database, or SQLite sidecar. The guard does not
+write health data, recover capacity, clean up work, or release a slot. The
+installer then runs its final read-only retained-mailbox check. A schema-24
+database is read as implicit `default` during that check; no migration or
+registry write occurs before the activation boundary.
 
 At activation, the complete candidate root set is registered durably before a
 missing external mailbox tree is created. Runner creates or verifies only the
 configured root and its `inbox`, `outbox`, `events`, `acks`, and `diagnostics`
-children. The database may migrate to schema 27 before the staged candidate becomes active
+children. The database may migrate to the current schema before the staged candidate becomes active
 `mac.yaml`. A V1 binary cannot safely reopen that namespaced schema. The
 transition is not a single atomic transaction: before activation, a failure
 restores the previous services; after activation begins, the installer retains
@@ -109,11 +123,13 @@ to five seconds; the 13-second total fits within each plist's 15-second
 `ExitTimeOut`. Run `make test-p131-macos-shutdown` on the selected Mac account
 to exercise the real LaunchAgent stop/restart path.
 
-Do not restart the Mac Router merely to make a queued remote response look
-newer. A restart withdraws any previously persisted active remote projection
-until the new Router process completes a fresh identity-checked read-only
-target status query. It does not replay the queued mutation. The active status
-is not ACK eligible; wait for terminal proof. See [mailbox recovery](../../docs/mailbox.md#recovery-and-retention).
+Do not restart the Mac Router merely to make an accepted one-off response look
+newer. A restart withdraws any previously persisted active run projection until
+the new Router completes a fresh identity-checked read-only authority query:
+the shared Mac authority in `local.db` for Mac-local work (`runner-locald` is
+the executor), or the selected `runnerd` for queued remote work. It does not
+replay the mutation. The active status is not ACK eligible; wait for terminal
+proof. See [mailbox recovery](../../docs/mailbox.md#recovery-and-retention).
 
 See [docs/setup.md](../../docs/setup.md) for the full install and upgrade
 runbook and [docs/mailbox.md](../../docs/mailbox.md) for native mailbox use.

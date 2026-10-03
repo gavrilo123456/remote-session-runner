@@ -164,7 +164,7 @@ Read snapshots use:
 `projection` or `local_intent` with `is_stale: true`. A retained
 `not_delivered` local intent contains no fabricated remote resource state.
 
-A remote `JobResource` may include optional
+A local or remote authoritative `JobResource` may include optional
 `queue_blocked_reason: "lost_capacity_recovery_pending"`. It is valid only
 with `phase: "awaiting_command"`, `command_state: "queued"`,
 `output_complete: false`, `output_truncated: false`, and

@@ -13,16 +13,16 @@ func TestBUG009MailboxQueueBlockedReasonIsNarrowAndRetractable(t *testing.T) {
 	snapshot := RunSnapshot{
 		JobID: "job-bug009-mailbox", SessionID: "sess-bug009-mailbox", CommandID: "cmd-bug009-mailbox",
 		DeliveryState: string(store.LocalIntentAccepted),
-		ActiveRemoteProjection: &ActiveRemoteRunProjection{
+		ActiveRunProjection: &ActiveRunProjection{
 			JobPhase:           store.JobPhaseAwaitingCommand,
 			CommandState:       &queued,
 			QueueBlockedReason: store.QueueBlockedReasonLostCapacityRecoveryPending,
 		},
 	}
-	if err := validateActiveRemoteRunProjection(snapshot); err != nil {
+	if err := validateActiveRunProjection(snapshot); err != nil {
 		t.Fatalf("valid queue-block projection rejected: %v", err)
 	}
-	response := acceptedRemoteRunProgressResponse("req-bug009-mailbox", snapshot)
+	response := acceptedRunProgressResponse("req-bug009-mailbox", snapshot)
 	response.ResponseRevision = 1
 	if response.RequestState != store.MailboxExchangeAccepted || response.DeliveryState != string(store.LocalIntentAccepted) ||
 		response.JobID != snapshot.JobID || response.SessionID != snapshot.SessionID || response.CommandID != snapshot.CommandID ||
@@ -45,7 +45,7 @@ func TestBUG009MailboxQueueBlockedReasonIsNarrowAndRetractable(t *testing.T) {
 		t.Fatalf("queue-block response does not match mailbox semantics: %v", err)
 	}
 	p166AssertNoQueueBlockedResultFields(t, raw)
-	if !sameAcceptedRemoteRunProgress(response, snapshot) {
+	if !sameAcceptedRunProgress(response, snapshot) {
 		t.Fatalf("identical queue-block status should be stable: %+v", response)
 	}
 
@@ -53,11 +53,11 @@ func TestBUG009MailboxQueueBlockedReasonIsNarrowAndRetractable(t *testing.T) {
 	// command. The next response must remove the reason even though phase and
 	// command state are unchanged.
 	cleared := snapshot
-	cleared.ActiveRemoteProjection = &ActiveRemoteRunProjection{JobPhase: store.JobPhaseAwaitingCommand, CommandState: &queued}
-	if sameAcceptedRemoteRunProgress(response, cleared) {
+	cleared.ActiveRunProjection = &ActiveRunProjection{JobPhase: store.JobPhaseAwaitingCommand, CommandState: &queued}
+	if sameAcceptedRunProgress(response, cleared) {
 		t.Fatal("clearing queue-block reason did not require a new response revision")
 	}
-	clearedResponse := acceptedRemoteRunProgressResponse("req-bug009-mailbox", cleared)
+	clearedResponse := acceptedRunProgressResponse("req-bug009-mailbox", cleared)
 	clearedResponse.ResponseRevision = response.ResponseRevision + 1
 	clearedRaw, err := json.Marshal(clearedResponse)
 	if err != nil {
@@ -82,26 +82,26 @@ func TestBUG009MailboxQueueBlockedReasonRejectsUnsafeState(t *testing.T) {
 	}{
 		{
 			name: "unknown literal",
-			snapshot: RunSnapshot{DeliveryState: string(store.LocalIntentAccepted), ActiveRemoteProjection: &ActiveRemoteRunProjection{
+			snapshot: RunSnapshot{DeliveryState: string(store.LocalIntentAccepted), ActiveRunProjection: &ActiveRunProjection{
 				JobPhase: store.JobPhaseAwaitingCommand, CommandState: &queued, QueueBlockedReason: "unknown",
 			}},
 		},
 		{
 			name: "running command",
-			snapshot: RunSnapshot{DeliveryState: string(store.LocalIntentAccepted), ActiveRemoteProjection: &ActiveRemoteRunProjection{
+			snapshot: RunSnapshot{DeliveryState: string(store.LocalIntentAccepted), ActiveRunProjection: &ActiveRunProjection{
 				JobPhase: store.JobPhaseAwaitingCommand, CommandState: &running, QueueBlockedReason: store.QueueBlockedReasonLostCapacityRecoveryPending,
 			}},
 		},
 		{
 			name: "wrong phase",
-			snapshot: RunSnapshot{DeliveryState: string(store.LocalIntentAccepted), ActiveRemoteProjection: &ActiveRemoteRunProjection{
+			snapshot: RunSnapshot{DeliveryState: string(store.LocalIntentAccepted), ActiveRunProjection: &ActiveRunProjection{
 				JobPhase: store.JobPhaseCreatingSession, CommandState: &queued, QueueBlockedReason: store.QueueBlockedReasonLostCapacityRecoveryPending,
 			}},
 		},
 	} {
 		fixture := fixture
 		t.Run(fixture.name, func(t *testing.T) {
-			if err := validateActiveRemoteRunProjection(fixture.snapshot); err == nil {
+			if err := validateActiveRunProjection(fixture.snapshot); err == nil {
 				t.Fatalf("unsafe queue-block projection accepted: %+v", fixture.snapshot)
 			}
 		})

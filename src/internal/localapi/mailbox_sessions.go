@@ -249,7 +249,7 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 				(projection.CommandState != nil && projection.CommandState.IsTerminal() && projection.Phase != store.JobPhaseClosingSession) || intent.DeliveryState != store.LocalIntentAccepted {
 				return snapshot, nil
 			}
-			active := mailbox.ActiveRemoteRunProjection{JobPhase: projection.Phase}
+			active := mailbox.ActiveRunProjection{JobPhase: projection.Phase}
 			// A one-off can enter closing_session after its command has a
 			// terminal state. Until strict terminal proof exists, expose only
 			// that cleanup is pending; never publish the terminal command state
@@ -263,7 +263,7 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 				*projection.CommandState == domain.CommandStateQueued {
 				active.QueueBlockedReason = projection.QueueBlockedReason
 			}
-			snapshot.ActiveRemoteProjection = &active
+			snapshot.ActiveRunProjection = &active
 			return snapshot, nil
 		}
 		if !projectionMatchesIntent {
@@ -304,7 +304,7 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 	if intent.Target.Kind() != domain.TargetKindLocal || (intent.DeliveryState != store.LocalIntentAccepted && intent.DeliveryState != store.LocalIntentReconciled) {
 		return snapshot, nil
 	}
-	job, err := s.authority.GetJob(ctx, jobID)
+	job, err := s.authority.GetJobStatus(ctx, jobID)
 	if errors.Is(err, store.ErrJobNotFound) {
 		return snapshot, nil
 	}
@@ -318,6 +318,25 @@ func (s *Server) GetRunSnapshot(ctx context.Context, jobIDText string) (mailbox.
 		domain.CompareIdempotency(job.RequestHash, intent.RequestHash) != domain.IdempotencySamePayload ||
 		!bytes.Equal(job.CanonicalPayload, intent.PayloadJSON) || !bytes.Equal(job.ScriptBytes, intent.ScriptBytes) {
 		return mailbox.RunSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "local job authority does not match its accepted intent", Retryable: true}
+	}
+	// Match the deliberately narrow accepted-receipt shape used by remote
+	// runs. A local execution status can advance a receipt only while it is a
+	// nonterminal, identity-checked view. The volatile queue reason is carried
+	// only on its exact safe boundary; it never turns a queued command into an
+	// output or terminal-result claim.
+	if intent.DeliveryState == store.LocalIntentAccepted && job.Phase != store.JobPhaseComplete && job.Phase != store.JobPhaseFailed && job.Phase != store.JobPhaseLost &&
+		(job.CommandState == nil || !job.CommandState.IsTerminal() || job.Phase == store.JobPhaseClosingSession) {
+		active := mailbox.ActiveRunProjection{JobPhase: job.Phase}
+		if job.CommandState != nil && !job.CommandState.IsTerminal() {
+			state := *job.CommandState
+			active.CommandState = &state
+		}
+		if job.QueueBlockedReason == store.QueueBlockedReasonLostCapacityRecoveryPending && job.Phase == store.JobPhaseAwaitingCommand &&
+			job.CommandState != nil && *job.CommandState == domain.CommandStateQueued {
+			active.QueueBlockedReason = job.QueueBlockedReason
+		}
+		snapshot.ActiveRunProjection = &active
+		return snapshot, nil
 	}
 	snapshot.JobPhase = string(job.Phase)
 	snapshot.TeardownOutcome = mailboxJobTeardownOutcome(job.TeardownState)

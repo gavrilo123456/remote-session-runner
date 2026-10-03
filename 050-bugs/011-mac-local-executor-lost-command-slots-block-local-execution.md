@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `TRIAGED` — root cause established; no fix or live recovery attempted |
+| Status | `IN PROGRESS` — B011-P5 source work is underway; no live recovery or service change has been attempted |
 | Severity | High |
 | Priority | High — the local Mac execution route cannot accept more running work while all four command slots remain retained |
 | Reported | 2026-10-03 |
@@ -386,13 +386,22 @@ process detail, or new mailbox protocol. Reuse the existing nonterminal
 projection shape through a target-neutral path; do not attach this queue reason
 to a terminal command/output snapshot.
 
-Add a small read-only installer preflight before a locald bootout/restart. It
-must refuse a refresh when the active local service cannot prove zero active
-sessions, zero active command slots, and zero queued commands. This prevents
-an installer run from silently causing the current queued live command to
-start. It does not clean up or repair anything. It must use active locald
-health data or a read-only database query; `runner-locald doctor` is not an
-acceptable preflight because its writable-health check mutates SQLite.
+Add a small read-only installer preflight after ingress quiescence and before a
+locald bootout/restart. It must load the **active** `mac.yaml`, not the
+candidate, and inspect its authority database in read-only mode. It must refuse
+a refresh unless active session slots, active command slots, queued commands,
+and resumable one-off jobs in `creating_session`, `accepting_command`,
+`awaiting_command`, or `closing_session` are all zero. The guard must run even
+when launchd does not report a loaded locald. A missing database may proceed
+only for a true first local-executor install with no prior locald binary,
+LaunchAgent plist, socket, database, or SQLite sidecar; every other missing,
+invalid, unreadable, or unsupported authority fails closed. It accepts the
+supported schema-24 or current schema without migration.
+
+This prevents an installer run from silently causing the current queued live
+command to start. It does not clean up or repair anything. It must use the
+active read-only database query; `runner-locald doctor` is not acceptable
+because its writable-health check mutates SQLite.
 
 Update the architecture and operator documentation under `docs/`, this bug
 record, and `040-implementation-evidence/BUG-011.md`: explain the shared

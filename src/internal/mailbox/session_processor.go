@@ -85,22 +85,22 @@ type RunSnapshot struct {
 	DeliveryState string
 	JobPhase      string
 	Command       *CommandSnapshot
-	// ActiveRemoteProjection is a deliberately narrow, nonterminal view of a
-	// remote one-off job. It never carries output, event, teardown, exit, or
+	// ActiveRunProjection is a deliberately narrow, nonterminal view of an
+	// accepted one-off job. It never carries output, event, teardown, exit, or
 	// terminal-result fields. The mailbox response can use it only while the
 	// local delivery state remains accepted.
-	ActiveRemoteProjection  *ActiveRemoteRunProjection
+	ActiveRunProjection     *ActiveRunProjection
 	TeardownOutcome         string
 	ObservedAt              time.Time
 	RemoteStatusFailureAt   *time.Time
 	RemoteStatusFailureCode string
 }
 
-// ActiveRemoteRunProjection is the identity-checked nonterminal status that
-// may advance an accepted remote run mailbox receipt. It is intentionally
+// ActiveRunProjection is the identity-checked nonterminal status that
+// may advance an accepted run mailbox receipt. It is intentionally
 // separate from CommandSnapshot: a CommandSnapshot includes output and event
 // boundary data that belong only in a complete terminal response.
-type ActiveRemoteRunProjection struct {
+type ActiveRunProjection struct {
 	JobPhase           store.JobPhase
 	CommandState       *domain.CommandState
 	QueueBlockedReason string
@@ -1586,8 +1586,8 @@ func (p *SessionProcessor) reconcileAcceptedRun(ctx context.Context, record stor
 			// exchange is still writable, rather than leaving an unmarked stale
 			// queued/running state in the outbox. The identity-only receipt makes
 			// no claim about the current target state and retries normally later.
-			if hasAcceptedRemoteRunProgress(previous) {
-				response := acceptedRemoteRunReceiptFromPrevious(record.RequestID, previous)
+			if hasAcceptedRunProgress(previous) {
+				response := acceptedRunReceiptFromPrevious(record.RequestID, previous)
 				_, publishErr := p.publishRunResponse(ctx, record, response, nil)
 				return publishErr
 			}
@@ -1615,11 +1615,11 @@ func (p *SessionProcessor) reconcileAcceptedRun(ctx context.Context, record stor
 			return fmt.Errorf("%w: run reconciliation returned an invalid command snapshot", ErrSessionProcessorConfiguration)
 		}
 	}
-	if err := validateActiveRemoteRunProjection(snapshot); err != nil {
+	if err := validateActiveRunProjection(snapshot); err != nil {
 		return err
 	}
 	if snapshot.DeliveryState == string(store.LocalIntentNotDelivered) {
-		if snapshot.JobPhase != "" || snapshot.Command != nil || snapshot.ActiveRemoteProjection != nil || snapshot.TeardownOutcome != "" {
+		if snapshot.JobPhase != "" || snapshot.Command != nil || snapshot.ActiveRunProjection != nil || snapshot.TeardownOutcome != "" {
 			return fmt.Errorf("%w: never-delivered run contains authoritative job state", ErrSessionProcessorConfiguration)
 		}
 		response := runMailboxResponse{
@@ -1646,11 +1646,11 @@ func (p *SessionProcessor) reconcileAcceptedRun(ctx context.Context, record stor
 	} else if published {
 		return nil
 	}
-	if snapshot.ActiveRemoteProjection != nil {
-		if sameAcceptedRemoteRunProgress(previous, snapshot) {
+	if snapshot.ActiveRunProjection != nil {
+		if sameAcceptedRunProgress(previous, snapshot) {
 			return p.projector.Publish(ctx, record.RequestID)
 		}
-		response := acceptedRemoteRunProgressResponse(record.RequestID, snapshot)
+		response := acceptedRunProgressResponse(record.RequestID, snapshot)
 		_, err := p.publishRunResponse(ctx, record, response, nil)
 		return err
 	}
@@ -1659,8 +1659,8 @@ func (p *SessionProcessor) reconcileAcceptedRun(ctx context.Context, record stor
 		// source becomes stale, mismatched, unavailable, or terminal without
 		// strict proof, retract the previously published phase/state instead
 		// of leaving a requester with an unmarked historical status.
-		if hasAcceptedRemoteRunProgress(previous) {
-			response := acceptedRemoteRunReceiptResponse(record.RequestID, snapshot)
+		if hasAcceptedRunProgress(previous) {
+			response := acceptedRunReceiptResponse(record.RequestID, snapshot)
 			_, err := p.publishRunResponse(ctx, record, response, nil)
 			return err
 		}
@@ -1709,39 +1709,39 @@ func validJobPhase(value string) bool {
 	return store.JobPhase(value).Valid()
 }
 
-// validateActiveRemoteRunProjection ensures that an accepted mailbox response
-// cannot accidentally carry a richer remote snapshot. The active projection
+// validateActiveRunProjection ensures that an accepted mailbox response
+// cannot accidentally carry a richer target snapshot. The active projection
 // is intentionally limited to nonterminal phase/state labels; strict
 // terminal proof continues through RunSnapshot.Command and
 // runResponseFromSnapshot.
-func validateActiveRemoteRunProjection(snapshot RunSnapshot) error {
-	active := snapshot.ActiveRemoteProjection
+func validateActiveRunProjection(snapshot RunSnapshot) error {
+	active := snapshot.ActiveRunProjection
 	if active == nil {
 		return nil
 	}
 	if snapshot.DeliveryState != string(store.LocalIntentAccepted) || snapshot.JobPhase != "" || snapshot.Command != nil ||
 		snapshot.TeardownOutcome != "" || snapshot.RemoteStatusFailureAt != nil || snapshot.RemoteStatusFailureCode != "" ||
 		!active.JobPhase.Valid() || terminalJobPhase(string(active.JobPhase)) {
-		return fmt.Errorf("%w: active remote run projection is invalid", ErrSessionProcessorConfiguration)
+		return fmt.Errorf("%w: active run projection is invalid", ErrSessionProcessorConfiguration)
 	}
 	if active.CommandState != nil && (!active.CommandState.Valid() || active.CommandState.IsTerminal()) {
-		return fmt.Errorf("%w: active remote command state is invalid", ErrSessionProcessorConfiguration)
+		return fmt.Errorf("%w: active command state is invalid", ErrSessionProcessorConfiguration)
 	}
 	if active.QueueBlockedReason != "" &&
 		(active.QueueBlockedReason != store.QueueBlockedReasonLostCapacityRecoveryPending ||
 			active.JobPhase != store.JobPhaseAwaitingCommand || active.CommandState == nil ||
 			*active.CommandState != domain.CommandStateQueued) {
-		return fmt.Errorf("%w: active remote queue blocked reason is invalid", ErrSessionProcessorConfiguration)
+		return fmt.Errorf("%w: active queue blocked reason is invalid", ErrSessionProcessorConfiguration)
 	}
 	return nil
 }
 
-// sameAcceptedRemoteRunProgress prevents reconciliation from repeatedly
-// replacing an accepted outbox response when only the remote observation time
+// sameAcceptedRunProgress prevents reconciliation from repeatedly
+// replacing an accepted outbox response when only an observation time
 // changed. The response intentionally carries no observation timestamp or
 // output boundary for this active status.
-func sameAcceptedRemoteRunProgress(previous runMailboxResponse, snapshot RunSnapshot) bool {
-	active := snapshot.ActiveRemoteProjection
+func sameAcceptedRunProgress(previous runMailboxResponse, snapshot RunSnapshot) bool {
+	active := snapshot.ActiveRunProjection
 	if active == nil || previous.RequestState != store.MailboxExchangeAccepted || previous.DeliveryState != snapshot.DeliveryState ||
 		previous.JobPhase != string(active.JobPhase) || previous.QueueBlockedReason != active.QueueBlockedReason ||
 		previous.TeardownOutcome != "" || previous.ObservedAt != nil ||
@@ -1757,12 +1757,12 @@ func sameAcceptedRemoteRunProgress(previous runMailboxResponse, snapshot RunSnap
 	return previous.CommandState == commandState
 }
 
-func hasAcceptedRemoteRunProgress(response runMailboxResponse) bool {
+func hasAcceptedRunProgress(response runMailboxResponse) bool {
 	return response.RequestState == store.MailboxExchangeAccepted &&
 		response.DeliveryState == string(store.LocalIntentAccepted) && response.JobPhase != ""
 }
 
-func acceptedRemoteRunReceiptResponse(requestID string, snapshot RunSnapshot) runMailboxResponse {
+func acceptedRunReceiptResponse(requestID string, snapshot RunSnapshot) runMailboxResponse {
 	return runMailboxResponse{
 		RequestID: requestID, Operation: "run", RequestState: store.MailboxExchangeAccepted,
 		JobID: snapshot.JobID, SessionID: snapshot.SessionID, CommandID: snapshot.CommandID,
@@ -1770,7 +1770,7 @@ func acceptedRemoteRunReceiptResponse(requestID string, snapshot RunSnapshot) ru
 	}
 }
 
-func acceptedRemoteRunReceiptFromPrevious(requestID string, previous runMailboxResponse) runMailboxResponse {
+func acceptedRunReceiptFromPrevious(requestID string, previous runMailboxResponse) runMailboxResponse {
 	return runMailboxResponse{
 		RequestID: requestID, Operation: "run", RequestState: store.MailboxExchangeAccepted,
 		JobID: previous.JobID, SessionID: previous.SessionID, CommandID: previous.CommandID,
@@ -1778,9 +1778,9 @@ func acceptedRemoteRunReceiptFromPrevious(requestID string, previous runMailboxR
 	}
 }
 
-func acceptedRemoteRunProgressResponse(requestID string, snapshot RunSnapshot) runMailboxResponse {
-	active := snapshot.ActiveRemoteProjection
-	response := acceptedRemoteRunReceiptResponse(requestID, snapshot)
+func acceptedRunProgressResponse(requestID string, snapshot RunSnapshot) runMailboxResponse {
+	active := snapshot.ActiveRunProjection
+	response := acceptedRunReceiptResponse(requestID, snapshot)
 	response.JobPhase = string(active.JobPhase)
 	if active.CommandState != nil {
 		response.CommandState = string(*active.CommandState)

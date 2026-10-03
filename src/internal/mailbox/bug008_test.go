@@ -8,19 +8,19 @@ import (
 	"remote-session-runner/src/internal/store"
 )
 
-func TestBUG008MailboxActiveRemoteProjectionIsNarrowAndStable(t *testing.T) {
+func TestBUG008MailboxActiveRunProjectionIsNarrowAndStable(t *testing.T) {
 	queued := domain.CommandStateQueued
 	snapshot := RunSnapshot{
 		JobID: "job-bug008-mailbox", SessionID: "sess-bug008-mailbox", CommandID: "cmd-bug008-mailbox",
 		DeliveryState: string(store.LocalIntentAccepted),
-		ActiveRemoteProjection: &ActiveRemoteRunProjection{
+		ActiveRunProjection: &ActiveRunProjection{
 			JobPhase: store.JobPhaseAwaitingCommand, CommandState: &queued,
 		},
 	}
-	if err := validateActiveRemoteRunProjection(snapshot); err != nil {
+	if err := validateActiveRunProjection(snapshot); err != nil {
 		t.Fatalf("valid active remote projection rejected: %v", err)
 	}
-	response := acceptedRemoteRunProgressResponse("req-bug008-mailbox", snapshot)
+	response := acceptedRunProgressResponse("req-bug008-mailbox", snapshot)
 	// publishRunResponse assigns the positive revision in production. Set it
 	// here before direct schema validation so this unit test exercises the
 	// active-receipt shape rather than the publisher's revision responsibility.
@@ -51,26 +51,26 @@ func TestBUG008MailboxActiveRemoteProjectionIsNarrowAndStable(t *testing.T) {
 			t.Fatalf("active remote response exposed %q: %s", field, raw)
 		}
 	}
-	if !sameAcceptedRemoteRunProgress(response, snapshot) {
+	if !sameAcceptedRunProgress(response, snapshot) {
 		t.Fatalf("same active projection was not recognized as stable: %+v", response)
 	}
 
 	changed := snapshot
 	running := domain.CommandStateRunning
-	changed.ActiveRemoteProjection = &ActiveRemoteRunProjection{JobPhase: store.JobPhaseAwaitingCommand, CommandState: &running}
-	if sameAcceptedRemoteRunProgress(response, changed) {
+	changed.ActiveRunProjection = &ActiveRunProjection{JobPhase: store.JobPhaseAwaitingCommand, CommandState: &running}
+	if sameAcceptedRunProgress(response, changed) {
 		t.Fatal("changed active command state did not require a new revision")
 	}
 
 	terminal := domain.CommandStateSucceeded
 	invalid := snapshot
-	invalid.ActiveRemoteProjection = &ActiveRemoteRunProjection{JobPhase: store.JobPhaseComplete, CommandState: &terminal}
-	if err := validateActiveRemoteRunProjection(invalid); err == nil {
+	invalid.ActiveRunProjection = &ActiveRunProjection{JobPhase: store.JobPhaseComplete, CommandState: &terminal}
+	if err := validateActiveRunProjection(invalid); err == nil {
 		t.Fatal("terminal remote projection was accepted as active")
 	}
 }
 
-func TestBUG008MailboxActiveRemoteProjectionAllowsSafeNonterminalPhases(t *testing.T) {
+func TestBUG008MailboxActiveRunProjectionAllowsSafeNonterminalPhases(t *testing.T) {
 	queued := domain.CommandStateQueued
 	for _, fixture := range []struct {
 		name  string
@@ -87,14 +87,14 @@ func TestBUG008MailboxActiveRemoteProjectionAllowsSafeNonterminalPhases(t *testi
 			snapshot := RunSnapshot{
 				JobID: "job-bug008-phase", SessionID: "sess-bug008-phase", CommandID: "cmd-bug008-phase",
 				DeliveryState: string(store.LocalIntentAccepted),
-				ActiveRemoteProjection: &ActiveRemoteRunProjection{
+				ActiveRunProjection: &ActiveRunProjection{
 					JobPhase: fixture.phase, CommandState: fixture.state,
 				},
 			}
-			if err := validateActiveRemoteRunProjection(snapshot); err != nil {
+			if err := validateActiveRunProjection(snapshot); err != nil {
 				t.Fatalf("valid %s projection rejected: %v", fixture.name, err)
 			}
-			response := acceptedRemoteRunProgressResponse("req-bug008-phase", snapshot)
+			response := acceptedRunProgressResponse("req-bug008-phase", snapshot)
 			response.ResponseRevision = 1
 			raw, err := json.Marshal(response)
 			if err != nil {

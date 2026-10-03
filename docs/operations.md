@@ -9,7 +9,7 @@ host-gate test scripts as everyday service controls.
 
 | Capability | Current state | What to verify before use |
 | --- | --- | --- |
-| Mac local execution | Available when both Mac LaunchAgents are healthy | Both private readiness endpoints and a safe local command. |
+| Mac local execution | Route is available when both Mac LaunchAgents are healthy | Both private readiness endpoints, the running revision, and a safe local command. Health alone does not prove that retained capacity is free. |
 | Direct `linux-host` execution | Accepted on the current host | Public mTLS readiness, then a direct `linux-poc` command. |
 | Queued `linux-host` execution | Permanent restricted bridge was accepted in P155 | Fresh bridge `status` at the deployed source revision, then a queued command. |
 | Direct `sandbox-host` execution | Accepted in P157 | Public `sandbox-poc` mTLS Runner readiness. |
@@ -35,6 +35,13 @@ BUG-008's queue-preserving recovery work and its fresh installed-service
 regression (B008-P6) passed. The recovery and attestation procedures below are
 operating instructions; following one does not prove a later Runner revision
 is installed or that a separate incident is resolved.
+
+The shared-worker source tests and installer-preflight tests are likewise not
+live-host evidence. They do not prove that a particular LaunchAgent or
+`runnerd.service` has the reviewed revision, owns the runtime records, or has
+completed retained-capacity recovery. Check the running revision and the
+selected authority's live status before drawing a conclusion about the Mac or
+either Ubuntu host.
 
 ## Fast health checks
 
@@ -306,29 +313,36 @@ These are four durable state gauges, not four separate physical queues. Read
 them from the Runner process that returned the health response; do not add a
 Mac value to a Linux value.
 
-For a **queued remote** one-off request, the usual path is:
+The three execution gauges belong to one authority at a time: `local.db` for a
+Mac-local one-off, or the selected host's `remote.db` for a remote one-off. Do
+not add a Mac value to an Ubuntu value. A Mac Router request can also have a
+separate delivery-tracking `queued_intents` count before its selected authority
+accepts it; this applies to both Mac-local and queued remote requests.
 
 ```mermaid
 flowchart TD
-    A[Mac queued mailbox or local Router] --> B[Mac: queued_intents<br/>delivery to the target is not yet proved]
-    B --> C[Selected Linux Runner accepts a session and command]
-    X[Direct mTLS one-off request] --> C
-    C --> D[Linux: active_session_slots +1<br/>held until session cleanup is confirmed]
-    C --> E[Linux: queued_commands +1<br/>accepted command waits to start]
-    E --> F[Linux: active_command_slots +1<br/>command has started]
-    F --> G[Command reaches a terminal state<br/>and process stop is confirmed]
-    G --> H[Command slot is released]
-    G --> I[Session becomes ready for another command<br/>or closes]
-    I --> J[Session cleanup is confirmed]
-    J --> K[Session slot is released]
+    A[Accepted one-off] --> B{Selected target}
+    B -->|Mac-local| C[Mac local intent<br/>queued_intents until locald accepts]
+    C --> D[runner-locald and local.db]
+    B -->|Queued remote| E[Mac local intent<br/>queued_intents until delivery/reconciliation proves state]
+    E --> F[Selected runnerd and remote.db]
+    B -->|Direct remote| F
+    D --> G[active_session_slots +1]
+    F --> G
+    G --> H[queued_commands +1 while waiting]
+    H --> I[active_command_slots +1 after start]
+    I --> J[Terminal result and proven process stop]
+    J --> K[Command slot release]
+    J --> L[Session cleanup confirmation]
+    L --> M[Session slot release]
 ```
 
 | Gauge | Simple meaning | When it normally drops |
 | --- | --- | --- |
-| `queued_intents` | A Mac-side request whose delivery outcome is not yet proved. It can represent `run`, session creation, command submission, cancellation, or session close. It is **not** a remote-command queue. | The target result is reconciled or the request is conclusively not delivered. |
-| `queued_commands` | A command accepted by the selected Runner authority but waiting for execution. It can wait for a free command slot, a ready session, or an earlier command in the same session. This count does not give a queue position or a general reason for the delay. | The scheduler starts it or it reaches a terminal pre-start outcome. |
-| `active_command_slots` | A durable execution reservation for a command that has started. The current PoC permits four running commands per authority host. | Runner has both a terminal command result and proof that the process stopped. |
-| `active_session_slots` | A durable session-capacity reservation, normally held from session creation until workspace/runtime cleanup is confirmed. The current PoC permits 20 active sessions per authority host. | The session is closed and cleanup is durably confirmed. |
+| `queued_intents` | A Mac-side record whose delivery outcome is not yet proved. It can represent Mac-local or queued-remote `run`, session creation, command submission, cancellation, or session close. It is not an authority command queue. | A Mac-local authority accepts it, or a remote result is reconciled or conclusively not delivered. |
+| `queued_commands` | A command accepted by its execution authority (`runner-locald` or the selected `runnerd`) but waiting for execution. It can wait for a free command slot, a ready session, or an earlier command in the same session. This count does not give a queue position or a general reason for the delay. | The scheduler starts it or it reaches a terminal pre-start outcome. |
+| `active_command_slots` | A durable execution reservation for a command that has started on its authority. The current PoC permits four running commands per authority. | Runner has both a terminal command result and proof that the process stopped. |
+| `active_session_slots` | A durable session-capacity reservation, normally held from session creation until workspace/runtime cleanup is confirmed on its authority. The current PoC permits 20 active sessions per authority. | The session is closed and cleanup is durably confirmed. |
 
 A ready session with no running command still uses an `active_session_slots`
 reservation. Likewise, a terminal `lost` command can continue to occupy an
@@ -336,11 +350,14 @@ reservation. Likewise, a terminal `lost` command can continue to occupy an
 stopped. That deliberately blocks further starts rather than risk running more
 processes than the configured safety limit.
 
-Direct mTLS requests go straight to the selected Linux Runner, so they do not
-first create a Mac `queued_intents` record. The selected Linux authority owns
-`queued_commands` and the two slot gauges for its work. The preceding numbers
-in the metrics table are operational warning thresholds; the active policy's
-service limits control admission and concurrent execution.
+Mac-local and queued-remote requests first have a Mac local-intent delivery
+record. Once a Mac-local request is accepted, `runner-locald` and `local.db`
+own its `queued_commands` and slot gauges. Once a queued-remote request is
+accepted, its selected Linux authority owns those gauges. Direct mTLS remote
+requests go straight to the selected Linux authority and create no Mac
+`queued_intents` record. The preceding numbers in the metrics table are
+operational warning thresholds; the active policy's service limits control
+admission and concurrent execution.
 
 A zero backlog does not prove an importer, bridge, or request succeeded. It
 only shows no current counted work. Process-local error counters reset after a
@@ -375,6 +392,25 @@ live `runner-local` `build_revision` through `local-api.sock`. Preserve that
 success output or repeat [the live Mac check](#verify-the-running-mac-build-revision)
 before calling the running LaunchAgent current. Do not substitute `--version`
 or `doctor` for the socket attestation.
+
+After mailbox ingress is quiesced and before executor bootout, the installer
+runs the staged `runner-locald preflight-restart` against the **active**
+`mac.yaml` and its active `local.db`, never the candidate configuration. The
+installer runs this guard even when launchd does not report a loaded locald,
+because a stopped executor can still leave durable work behind. The
+read-only gate requires all four durable counts to be zero: active session
+slots, active command slots, queued commands, and resumable one-off jobs in
+`creating_session`, `accepting_command`, `awaiting_command`, or
+`closing_session`. It accepts only the supported pre-upgrade schema-24 or
+current authority schema and does not migrate either one.
+
+Any nonzero count, unreadable database, unsupported schema, or uncertain
+database path aborts the refresh before `runner-locald` is stopped. The sole
+missing-database exception is a true first local-executor install: no loaded
+old locald, old locald binary, LaunchAgent plist, locald socket, database, or
+SQLite sidecar may exist. The check does not use `doctor`, write health data,
+recover capacity, clean up work, or release a slot. It is a restart safety gate,
+not an online recovery path.
 
 For mailbox, context, or route policy changes, use an owner-only V2 candidate
 and `install-launchagents.sh --config <mac.next.yaml>` as described in
@@ -431,31 +467,57 @@ below.
 | Lifecycle status is `unsafe_inert` or action is `retain_unproven_inert` | The selected root and exact publisher rules | Do not edit, retry, ACK, replay, or enable cleanup from this inference. Correct work through a new complete marker-last pair under a new request ID when appropriate. |
 | Direct HTTPS/mTLS failure | Public health, service journal, CA/certificate/principal map/bind | Repair host configuration without printing keys. |
 | Queued remote remains recorded, uncertain, or stale | Selected bridge `status`, host-key pin, wrapper, controller map, `runnerd.service` | Preserve the idempotency key and observe the same route; do not resend with a new key. |
-| Remote outbox is `accepted` with `delivery_state=accepted` and a safe nonterminal phase/state, without `queue_blocked_reason` | The same response's stable job/session/command IDs, selected target/profile, and response revision | Runner has a fresh identity-checked read-only target status for accepted nonterminal work. Do not infer a queue blocker, command start, output, or terminal outcome; do not ACK or replay it. Continue observing the same request. |
-| Remote outbox has `queue_blocked_reason=lost_capacity_recovery_pending` | The same response's stable request/job/session/command IDs and response revision | The guarded automatic retained-capacity recovery path is relevant to this queued one-off. It has not completed. Preserve the IDs and observe the same request; do not replay, cancel, restart, or manually alter capacity. |
-| Earlier active phase/state disappeared and the outbox is now identity-only `accepted` | Router restart, `is_stale`, target status/read error, or a strict identity mismatch | Runner withdrew an unsafe-to-repeat active status claim. It did not cancel, release, or replay the target job. Preserve the request ID and idempotency key; wait for a fresh qualified read or terminal proof. |
+| Outbox is `accepted` with `delivery_state=accepted` and a safe nonterminal phase/state, without `queue_blocked_reason` | The same response's stable job/session/command IDs, selected target/profile, and response revision | Runner has a fresh identity-checked read-only authoritative status for accepted nonterminal work. Do not infer a queue blocker, command start, output, or terminal outcome; do not ACK or replay it. Continue observing the same request. |
+| Outbox has `queue_blocked_reason=lost_capacity_recovery_pending` | The same response's stable request/job/session/command IDs and response revision | The guarded automatic retained-capacity recovery path is relevant to this queued one-off. It has not completed. Preserve the IDs and observe the same request; do not replay, cancel, restart, or manually alter capacity. |
+| Earlier active phase/state disappeared and the outbox is now identity-only `accepted` | Router restart, `is_stale`, authority status/read error, or a strict identity mismatch | Runner withdrew an unsafe-to-repeat active status claim. It did not cancel, release, or replay the authority job. Preserve the request ID and idempotency key; wait for a fresh qualified read or terminal proof. |
 | Remote one-off ends `indeterminate` with `delivery_state=accepted` and `remote_status_unavailable` | Stable job/session/command IDs, bridge/service journal, target SQLite status and retention | The target accepted the request but Runner could not prove its terminal result in 24 hours. Do not resubmit or release retained capacity manually. ACK the terminal response if it has been recorded, preserve the IDs and idempotency key, then investigate the target boundary. |
-| Terminal `lost` capacity blocks ready sessions with queued commands that must survive | The same request/job/session/command IDs, current retained-lost inventory, owner-only markers, and live `runnerd.service` | On a `runnerd` revision containing B009-P2, preserve the original IDs and let its bounded dispatcher tick attempt proof-based automatic recovery. It runs only after a normal claim finds all slots full and only for the exact complete retained-lost set; it never replays a lost script. If proof remains unavailable, follow the guarded **online** recovery below as the owner-only fallback. Keep the service running; do not restart it, run offline recovery, cancel queued commands, or replay work. |
-| P128 reports only one unreleased slot for a terminal lost command and no work must survive | Exact session and command IDs, owner-only runtime record, process-group state, and service cgroup | Preserve the lost result and use the explicit stopped-service recovery procedure below. It refuses any other active work and never replays the script. |
-| P128 reports several retained `lost` slots and only already-cancelled one-off jobs, with no queued work to preserve | Exact list of every retained `lost` session/command pair and every nonterminal job, owner-only markers, and the stopped service cgroup | Use `recover-stalled` below only after the complete inventory is known. It rejects extra work and never dispatches or replays a script. |
+| Mac-local outbox has `queue_blocked_reason=lost_capacity_recovery_pending` | The same request/job/session/command IDs, response revision, and live Mac authority status | Preserve and keep observing the same request. `runner-locald` uses the shared worker, but the Linux recovery commands below do not apply to `local.db`. Do not restart or unload either Mac LaunchAgent, edit SQLite, cancel, replay, or manually release capacity. |
+| Linux terminal `lost` capacity blocks ready sessions with queued commands that must survive | The same request/job/session/command IDs, current retained-lost inventory, owner-only markers, and live selected `runnerd.service` | On a `runnerd` revision containing B009-P2, preserve the original IDs and let its bounded dispatcher tick attempt proof-based automatic recovery. It runs only after a normal claim finds all slots full and only for the exact complete retained-lost set; it never replays a lost script. If proof remains unavailable, follow the guarded **Linux-only online** recovery below as the owner-only fallback. Keep the service running; do not restart it, run offline recovery, cancel queued commands, or replay work. |
+| Linux P128 reports only one unreleased slot for a terminal lost command and no work must survive | Exact session and command IDs, owner-only runtime record, process-group state, and service cgroup | Preserve the lost result and use the explicit stopped-service recovery procedure below. It refuses any other active work and never replays the script. |
+| Linux P128 reports several retained `lost` slots and only already-cancelled one-off jobs, with no queued work to preserve | Exact list of every retained `lost` session/command pair and every nonterminal job, owner-only markers, and the stopped service cgroup | Use `recover-stalled` below only after the complete inventory is known. It rejects extra work and never dispatches or replays a script. |
 | New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host` and `sandbox-host` evidence does not transfer. |
 | Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
 
 ## Recovery boundaries
 
-### Queue-preserving online retained-capacity recovery
+### Mac-local retained capacity: observe, do not remediate live
 
-On a `runnerd` revision containing B009-P2, the normal first action is to
-preserve the original request, job, session, and command IDs and let the
-bounded dispatcher tick try proof-based recovery. It does this only after its
-normal scheduler claim sees full command capacity and only for the complete,
-exact retained-lost inventory. A successful proof releases paired capacity and
-wakes the existing dispatcher to claim the original queued command. It never
-replays a terminal-lost script or creates replacement work.
+For a Mac-local one-off, `runner-locald` and `local.db` use the same shared
+queue worker as `runnerd`, but runtime proof remains Mac-specific. The public
+Linux `recover-retained-capacity`, `recover-lost`, and `recover-stalled`
+procedures in this runbook apply only to `runnerd` and `remote.db`; they must
+never be pointed at the Mac authority.
 
-P3 can expose `queue_blocked_reason=lost_capacity_recovery_pending` on the
-same accepted mailbox response while that exact condition is freshly proven.
-It is an observation only: B009-P2 performs the guarded recovery. The field
+When a Mac-local response reports
+`queue_blocked_reason=lost_capacity_recovery_pending`, preserve its request,
+job, session, and command IDs and keep observing the same response revision
+chain. Do not restart or unload the Mac Router or `runner-locald`, edit
+`local.db`, cancel the queued work, run a Linux recovery command, manually
+release a slot, or publish a replacement request. The field is nonterminal and
+does not authorize a live repair. A separate approved Mac maintenance procedure
+with fresh host-specific evidence is required before any action that could
+change the retained work. In particular, installing or restarting a corrected
+Mac executor can release proven capacity and start the original queued identity;
+that requires explicit approval after a fresh read-only preflight records the
+affected state and expected effect.
+
+### Linux-only queue-preserving online retained-capacity recovery
+
+This procedure is only for the selected Ubuntu `runnerd` authority and its
+`remote.db`; it is not a Mac `runner-locald` procedure. On a `runnerd` revision
+containing B009-P2, the normal first action is to preserve the original request,
+job, session, and command IDs and let the bounded dispatcher tick try
+proof-based recovery. It does this only after its normal scheduler claim sees
+full command capacity and only for the complete, exact retained-lost inventory.
+A successful proof releases paired capacity and wakes the existing dispatcher
+to claim the original queued command. It never replays a terminal-lost script
+or creates replacement work.
+
+The same accepted mailbox response can expose
+`queue_blocked_reason=lost_capacity_recovery_pending` while that exact
+condition is freshly proven for either supported execution target. It is an
+observation only. On Linux, B009-P2 performs the guarded recovery; on the Mac,
+the observation does not make this Linux-only procedure applicable. The field
 does not authorize a manual action and can disappear before a terminal result.
 
 Use this owner-only local Ubuntu maintenance procedure only as a guarded
@@ -514,7 +576,9 @@ that this request reached a terminal outcome.
 The legacy stopped-service procedures below are intentionally stricter. They
 are valid only when the complete inventory proves there is no queued work to
 preserve, or when the work has already reached a separately authorized terminal
-disposition. Never use them as a substitute for the online procedure above.
+disposition. They are Linux `runnerd` procedures; the Mac has no equivalent
+public retained-capacity command in this PoC. Never use them as a substitute for
+the online procedure above.
 
 - Do not manually edit `local.db` or `remote.db`, or copy a live SQLite file.
 - `backups/` is reserved for the tested backup/restore implementation; this
@@ -524,8 +588,10 @@ disposition. Never use them as a substitute for the online procedure above.
 - Graceful shutdown stops admission, drains for a bounded period, then uses
   normal cancellation/close cleanup. Clients resume retained events after
   their last validated sequence.
-- After a Mac process restart, queued one-off recovery reads remote state and
-  does not resend the mutation.
+- After a Mac Router restart, a Mac-local one-off reads the shared Mac
+  authority in `local.db` (its executor is `runner-locald`), and a queued
+  remote one-off reads the selected remote authority state. Neither path resends
+  the accepted mutation.
 - A remote run that remains unreadable after target acceptance ends as a
   terminal `remote_status_unavailable` mailbox response after 24 hours. It
   carries stable IDs but no claimed target outcome; preserve its idempotency key

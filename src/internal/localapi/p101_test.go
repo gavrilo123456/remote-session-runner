@@ -32,6 +32,7 @@ type p101Response struct {
 	CommandState            string `json:"command_state"`
 	JobID                   string `json:"job_id"`
 	JobPhase                string `json:"job_phase"`
+	QueueBlockedReason      string `json:"queue_blocked_reason"`
 	DeliveryState           string `json:"delivery_state"`
 	ExitCode                *int   `json:"exit_code"`
 	Stdout                  string `json:"stdout"`

@@ -380,8 +380,103 @@ func OpenExistingCurrent(ctx context.Context, path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// OpenExistingCurrentReadOnly opens an already-existing current private
+// authority database solely for a read-only maintenance check. Unlike
+// OpenExistingCurrent, the returned handle is never writable. It neither
+// creates a database or sidecar, changes SQLite settings, nor applies a
+// migration.
+func OpenExistingCurrentReadOnly(ctx context.Context, path string) (*sql.DB, error) {
+	return openExistingReadOnly(ctx, path, verifyCurrentSchemaConnection)
+}
+
+// OpenExistingRestartPreflightReadOnly opens the existing private authority
+// database for the installer restart guard. It accepts only the current schema
+// or the exact schema-24 legacy authority that the installer already supports
+// for its read-only pre-activation checks. Activation remains responsible for
+// migrating schema 24 after its no-rollback boundary. The returned handle is
+// read-only and never creates a database, sidecar, or migration.
+func OpenExistingRestartPreflightReadOnly(ctx context.Context, path string) (*sql.DB, error) {
+	return openExistingReadOnly(ctx, path, verifyRestartPreflightSchemaConnection)
+}
+
+type existingReadOnlySchemaVerifier func(context.Context, *sql.Conn) error
+
+func openExistingReadOnly(ctx context.Context, path string, verifySchema existingReadOnlySchemaVerifier) (*sql.DB, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if verifySchema == nil {
+		return nil, ErrSchemaVersion
+	}
+	if err := validateExistingReadOnlyDatabasePath(path); err != nil {
+		return nil, err
+	}
+
+	db, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "ro"))
+	if err != nil {
+		return nil, fmt.Errorf("open existing SQLite database read-only: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("connect to existing SQLite database read-only: %w", err)
+	}
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("acquire existing SQLite database read-only connection: %w", err)
+	}
+	closeWithError := func(message string, cause error) (*sql.DB, error) {
+		_ = connection.Close()
+		_ = db.Close()
+		return nil, fmt.Errorf("%s: %w", message, cause)
+	}
+	if _, err := connection.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
+		return closeWithError("enable SQLite read-only validation", err)
+	}
+	if err := verifySchema(ctx, connection); err != nil {
+		_ = connection.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	if err := verifyPragmasConnection(ctx, connection); err != nil {
+		_ = connection.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	// Recheck after opening, so a caller never receives a handle for a path
+	// whose private-file contract changed during validation.
+	if err := validateExistingReadOnlyDatabasePath(path); err != nil {
+		_ = connection.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	if err := connection.Close(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("release existing SQLite database read-only connection: %w", err)
+	}
+	return db, nil
+}
+
 func validateExistingCurrentDatabasePath(path string) error {
+	return validateExistingDatabasePath(path, validateDatabaseFile)
+}
+
+// validateExistingReadOnlyDatabasePath applies the same ownership, symlink,
+// and sidecar checks as the writable maintenance path, but it never obtains a
+// writable descriptor for the authority file. It is the only path validator
+// used by read-only maintenance and installer preflight code.
+func validateExistingReadOnlyDatabasePath(path string) error {
+	return validateExistingDatabasePath(path, validateReadOnlyDatabaseFile)
+}
+
+type existingDatabaseFileValidator func(string, os.FileInfo) error
+
+func validateExistingDatabasePath(path string, validateFile existingDatabaseFileValidator) error {
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return ErrDatabasePath
+	}
+	if validateFile == nil {
 		return ErrDatabasePath
 	}
 	parent := filepath.Dir(path)
@@ -408,7 +503,7 @@ func validateExistingCurrentDatabasePath(path string) error {
 	if err != nil {
 		return fmt.Errorf("inspect existing SQLite database file: %w", err)
 	}
-	if err := validateDatabaseFile(path, info); err != nil {
+	if err := validateFile(path, info); err != nil {
 		return err
 	}
 	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
@@ -420,27 +515,14 @@ func validateExistingCurrentDatabasePath(path string) error {
 }
 
 func validateExistingCurrentDatabaseReadOnly(ctx context.Context, path string) error {
-	db, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "ro"))
+	db, err := OpenExistingCurrentReadOnly(ctx, path)
 	if err != nil {
-		return fmt.Errorf("open existing SQLite database read-only: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	defer db.Close()
-	if err := db.PingContext(ctx); err != nil {
-		return fmt.Errorf("connect to existing SQLite database read-only: %w", err)
-	}
-	connection, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire existing SQLite database read-only connection: %w", err)
-	}
-	defer connection.Close()
-	if _, err := connection.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
-		return fmt.Errorf("enable SQLite read-only validation: %w", err)
-	}
-	if err := verifyCurrentSchemaConnection(ctx, connection); err != nil {
 		return err
 	}
-	return verifyPragmasConnection(ctx, connection)
+	if err := db.Close(); err != nil {
+		return fmt.Errorf("close existing SQLite database read-only validation: %w", err)
+	}
+	return nil
 }
 
 // ValidateConfiguredMailboxSetAtPath performs the retained-mailbox portion of
@@ -698,6 +780,21 @@ func verifyCurrentSchemaConnection(ctx context.Context, connection *sql.Conn) er
 	}
 	if version != CurrentSchemaVersion {
 		return fmt.Errorf("%w: got %d, require current %d", ErrSchemaVersion, version, CurrentSchemaVersion)
+	}
+	return verifyMigrationHistory(ctx, connection, version)
+}
+
+// verifyRestartPreflightSchemaConnection permits the only two schema versions
+// whose read-only execution tables are understood by the installer: the
+// current authority and the schema-24 authority that activation later
+// migrates. It deliberately does not accept an arbitrary older version.
+func verifyRestartPreflightSchemaConnection(ctx context.Context, connection *sql.Conn) error {
+	version, err := userVersion(ctx, connection)
+	if err != nil {
+		return err
+	}
+	if version != CurrentSchemaVersion && version != legacySingleMailboxSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, legacySingleMailboxSchemaVersion)
 	}
 	return verifyMigrationHistory(ctx, connection, version)
 }

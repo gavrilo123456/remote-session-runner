@@ -249,7 +249,8 @@ transport becomes uncertain.
 - Direct HTTPS accepts remote targets only. A Mac-local command uses
   `--endpoint local`.
 - `run` has no standalone CLI job-status command. Preserve its IDs and use the
-  same route's events for output. An observed one-off job snapshot can print
+  same route's events for output. A Mac-local or remote observed one-off job
+  snapshot can print
   `queue_blocked_reason: lost_capacity_recovery_pending`; see the mailbox and
   operations guides before acting on that nonterminal status.
 - Run `"$RUNNER" --help` or a command-specific `--help` for installed syntax.

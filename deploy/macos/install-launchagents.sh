@@ -225,6 +225,45 @@ stop_agent_for_config_change() {
 	wait_for_absent_path "$socket"
 }
 
+# A prior local executor may own local processes or durable work even when its
+# LaunchAgent is down. After ingress is quiesced, always check the active
+# authority before stopping or replacing runner-locald. The staged binary opens
+# it in SQLite read-only mode; it never performs health writes, recovery, or
+# cleanup. A missing authority is permitted only for a true first install with
+# no prior executor artifact; all other uncertainty fails closed.
+is_true_first_locald_install() {
+	if [ "$locald_was_loaded" -ne 0 ]; then
+		return 1
+	fi
+	for path in \
+		"$service_root/bin/runner-locald" \
+		"$launch_agents/com.remote-session-runner.locald.plist" \
+		"$service_root/run/locald.sock" \
+		"$service_root/state/local.db" \
+		"$service_root/state/local.db-wal" \
+		"$service_root/state/local.db-shm" \
+		"$service_root/state/local.db-journal"; do
+		if [ -e "$path" ] || [ -L "$path" ]; then
+			return 1
+		fi
+	done
+	return 0
+}
+
+preflight_active_locald_restart() {
+	if "$staging_directory/runner-locald" preflight-restart --config "$config_file"; then
+		return 0
+	else
+		preflight_status=$?
+	fi
+	if [ "$preflight_status" -eq 3 ] && is_true_first_locald_install; then
+		printf '%s\n' 'No existing local authority was found; continuing the true first local executor install.' >&2
+		return 0
+	fi
+	printf '%s\n' 'Refusing runner-locald refresh because local execution is not provably quiescent.' >&2
+	return 1
+}
+
 stop_candidate_agent_after_start_failure() {
 	label=$1
 	plist=$2
@@ -433,6 +472,7 @@ fi
 # job so a failure while quiescing the second job also restarts the first.
 restore_prior_agents_on_failure=1
 stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"
+preflight_active_locald_restart
 stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"
 candidate_services_quiesced=1
 

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -550,6 +551,11 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 	activateMailboxSet := `"$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --config "$selected_config"`
 	quiesceLocal := `stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"`
 	quiesceLocalD := `stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"`
+	preflightLocalD := `"$staging_directory/runner-locald" preflight-restart --config "$config_file"`
+	preflightInvocation := `if "$staging_directory/runner-locald" preflight-restart --config "$config_file"; then`
+	trueFirstInstall := "is_true_first_locald_install() {"
+	missingAuthorityAllowance := `if [ "$preflight_status" -eq 3 ] && is_true_first_locald_install; then`
+	preflightCall := "preflight_active_locald_restart\n" + quiesceLocalD
 	activationBoundary := "candidate_activation_started=1"
 	configHandoff := `mv -f "$config_stage" "$config_file"`
 	handoffComplete := "candidate_config_handed_off=1"
@@ -559,16 +565,22 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 		!strings.Contains(text, checkMailboxDirectories) ||
 		!strings.Contains(text, activateMailboxSet) ||
 		!strings.Contains(text, quiesceLocal) || !strings.Contains(text, quiesceLocalD) ||
+		!strings.Contains(text, preflightLocalD) || !strings.Contains(text, preflightInvocation) ||
+		!strings.Contains(text, trueFirstInstall) || !strings.Contains(text, missingAuthorityAllowance) ||
+		!strings.Contains(text, "$service_root/state/local.db-wal") ||
+		!strings.Contains(text, "Refusing runner-locald refresh because local execution is not provably quiescent.") ||
 		!strings.Contains(text, activationBoundary) || !strings.Contains(text, configHandoff) ||
 		!strings.Contains(text, handoffComplete) || !strings.Contains(text, recoveryGuard) ||
 		!strings.Contains(text, "restore_prior_agents_on_failure=1") ||
 		!strings.Contains(text, "--config") || !strings.Contains(text, "mac.yaml.example") ||
+		strings.Contains(text, `if [ "$locald_was_loaded" -ne 1 ]; then`) ||
 		strings.Contains(text, "--register-mailboxes") {
 		t.Fatalf("installer lacks P154 safe configuration flow")
 	}
 	staticIndex := strings.Index(text, staticValidate)
 	checkPathsIndex := strings.Index(text, checkMailboxDirectories)
 	localIndex := strings.Index(text, quiesceLocal)
+	preflightIndex := strings.LastIndex(text, preflightCall)
 	localDIndex := strings.Index(text, quiesceLocalD)
 	finalIndex := strings.Index(text, finalValidate)
 	activationIndex := strings.Index(text, activationBoundary)
@@ -581,11 +593,102 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 		t.Fatal("installer lacks LaunchAgent replacement loop")
 	}
 	bootstrapIndex := replacementLoop + strings.Index(text[replacementLoop:], "launchctl bootstrap")
-	if staticIndex < 0 || checkPathsIndex < 0 || localIndex < 0 || localDIndex < 0 || finalIndex < 0 || activationIndex < 0 || activateMailboxSetIndex < 0 || configHandoffIndex < 0 || handoffCompleteIndex < 0 || recoveryGuardIndex < 0 || bootstrapIndex < replacementLoop {
-		t.Fatalf("installer sequence indexes static=%d check_paths=%d local=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
+	if staticIndex < 0 || checkPathsIndex < 0 || localIndex < 0 || preflightIndex < 0 || localDIndex < 0 || finalIndex < 0 || activationIndex < 0 || activateMailboxSetIndex < 0 || configHandoffIndex < 0 || handoffCompleteIndex < 0 || recoveryGuardIndex < 0 || bootstrapIndex < replacementLoop {
+		t.Fatalf("installer sequence indexes static=%d check_paths=%d local=%d preflight=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, preflightIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
 	}
-	if !(staticIndex < checkPathsIndex && checkPathsIndex < localIndex && localIndex < localDIndex && localDIndex < finalIndex && finalIndex < activationIndex && activationIndex < activateMailboxSetIndex && activateMailboxSetIndex < configHandoffIndex && configHandoffIndex < handoffCompleteIndex && handoffCompleteIndex < bootstrapIndex && recoveryGuardIndex < configHandoffIndex) {
-		t.Fatalf("installer must statically validate, check mailbox paths without creating them, quiesce local then locald, validate retained ingress, cross activation boundary, register candidate inboxes and create any missing tree, preserve pre-handoff recovery config, hand off config, then bootstrap: static=%d check_paths=%d local=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
+	if !(staticIndex < checkPathsIndex && checkPathsIndex < localIndex && localIndex < preflightIndex && preflightIndex < localDIndex && localDIndex < finalIndex && finalIndex < activationIndex && activationIndex < activateMailboxSetIndex && activateMailboxSetIndex < configHandoffIndex && configHandoffIndex < handoffCompleteIndex && handoffCompleteIndex < bootstrapIndex && recoveryGuardIndex < configHandoffIndex) {
+		t.Fatalf("installer must statically validate, check mailbox paths without creating them, quiesce ingress, prove local executor quiescence without writing, quiesce locald, validate retained ingress, cross activation boundary, register candidate inboxes and create any missing tree, preserve pre-handoff recovery config, hand off config, then bootstrap: static=%d check_paths=%d local=%d preflight=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, preflightIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
+	}
+}
+
+func TestBUG011InstallerRestartPreflightPropagatesSafeOutcomes(t *testing.T) {
+	repositoryRoot := p154RepositoryRoot(t)
+	script := filepath.Join(repositoryRoot, "deploy", "macos", "install-launchagents.sh")
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, "is_true_first_locald_install() {")
+	if start < 0 {
+		t.Fatal("could not find installer restart preflight functions")
+	}
+	end := strings.Index(text[start:], "\nstop_candidate_agent_after_start_failure() {")
+	if end < 0 {
+		t.Fatal("could not isolate installer restart preflight functions")
+	}
+	functions := text[start : start+end]
+
+	for _, fixture := range []struct {
+		name               string
+		preflightExit      int
+		localdWasLoaded    int
+		artifact           string
+		wantSuccess        bool
+		wantOutputFragment string
+	}{
+		{name: "quiescent authority passes", preflightExit: 0, wantSuccess: true},
+		{name: "nonquiescent authority refuses", preflightExit: 1, wantOutputFragment: "Refusing runner-locald refresh"},
+		{name: "unknown preflight failure refuses", preflightExit: 2, wantOutputFragment: "Refusing runner-locald refresh"},
+		{name: "missing authority permits true first install", preflightExit: 3, wantSuccess: true, wantOutputFragment: "No existing local authority was found"},
+		{name: "missing authority with old binary refuses", preflightExit: 3, artifact: "bin/runner-locald", wantOutputFragment: "Refusing runner-locald refresh"},
+		{name: "missing authority with sidecar refuses", preflightExit: 3, artifact: "state/local.db-wal", wantOutputFragment: "Refusing runner-locald refresh"},
+		{name: "missing authority while locald was loaded refuses", preflightExit: 3, localdWasLoaded: 1, wantOutputFragment: "Refusing runner-locald refresh"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			root := t.TempDir()
+			serviceRoot := filepath.Join(root, "service-root")
+			launchAgents := filepath.Join(root, "launch-agents")
+			staging := filepath.Join(root, "staging")
+			if err := os.MkdirAll(staging, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(launchAgents, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fakeLocald := filepath.Join(staging, "runner-locald")
+			if err := os.WriteFile(fakeLocald, []byte("#!/bin/sh\nexit \"${RSR_B011_PREFLIGHT_EXIT:?}\"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if fixture.artifact != "" {
+				path := filepath.Join(serviceRoot, fixture.artifact)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			harness := "set -eu\nlocald_was_loaded=$1\nservice_root=$2\nlaunch_agents=$3\nstaging_directory=$4\nconfig_file=$5\n" + functions + "\npreflight_active_locald_restart\nprintf '%s\\n' 'after-preflight-sentinel'\n"
+			command := exec.Command("sh", "-c", harness, "bug011-preflight", strconv.Itoa(fixture.localdWasLoaded), serviceRoot, launchAgents, staging, filepath.Join(root, "active.yaml"))
+			command.Env = append(os.Environ(), "RSR_B011_PREFLIGHT_EXIT="+strconv.Itoa(fixture.preflightExit))
+			output, runErr := command.CombinedOutput()
+			if fixture.wantSuccess {
+				if runErr != nil {
+					t.Fatalf("preflight harness error=%v output=%s", runErr, output)
+				}
+				if !strings.Contains(string(output), "after-preflight-sentinel") {
+					t.Fatalf("preflight harness did not reach the next installer step: output=%s", output)
+				}
+			} else {
+				if runErr == nil {
+					t.Fatalf("preflight harness unexpectedly succeeded: output=%s", output)
+				}
+				var exitErr *exec.ExitError
+				if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 1 {
+					t.Fatalf("preflight harness error=%v, want exit status 1; output=%s", runErr, output)
+				}
+				if strings.Contains(string(output), "after-preflight-sentinel") {
+					t.Fatalf("preflight refusal reached the next installer step: output=%s", output)
+				}
+			}
+			if fixture.wantOutputFragment != "" && !strings.Contains(string(output), fixture.wantOutputFragment) {
+				t.Fatalf("preflight harness output=%q, want %q", output, fixture.wantOutputFragment)
+			}
+			if strings.Contains(string(output), "launchctl") {
+				t.Fatalf("isolated preflight harness attempted service control: %s", output)
+			}
+		})
 	}
 }
 

@@ -77,12 +77,13 @@ it does not by itself mean a command succeeded. Also inspect `command_state`,
 command result as successful. The `idempotency_key` links a retry to the same
 mutation, while the `request_id` names that retry's own files.
 
-A queued remote `run` can have an earlier, nonterminal outbox revision with
+An accepted `run` can have an earlier, nonterminal outbox revision with
 `request_state: accepted` and `delivery_state: accepted`. When that revision
 also has a safe nonterminal `job_phase` and optional `command_state`, it is a
-fresh **active remote projection**: Runner made a successful read-only target
-status query and matched its job, session, command, controller, environment,
-source, target, and profile to the local intent. It may show only
+fresh **active run projection**: Runner matched a read-only authoritative
+status to its job, session, command, controller, environment, source, target,
+and profile in the local intent. For remote work that status is a target
+projection; for Mac-local work it is the Mac authority record. It may show only
 `creating_session`, `accepting_command`, `awaiting_command`, or
 `closing_session`, and only `queued`, `running`, or `cancelling` command state.
 It is useful progress information, but it does not prove queue position,
@@ -90,9 +91,9 @@ capacity, reachability, command start, output, events, or a terminal result.
 
 The sole queue explanation Runner can expose is
 `queue_blocked_reason: "lost_capacity_recovery_pending"`. It appears only on
-an `accepted` remote `run` with `delivery_state: accepted`,
+an accepted `run` with `delivery_state: accepted`,
 `job_phase: awaiting_command`, and `command_state: queued`, when a fresh
-remote read proves that this one-off is behind the complete retained
+authoritative status read proves that this one-off is behind the complete retained
 terminal-`lost` command-capacity set. It is nonterminal, does not promise that
 recovery will succeed, and contains no process, path, credential, or raw error
 detail. Preserve the same request, job, session, and command IDs and keep
@@ -483,8 +484,8 @@ terminal-result fields. Important states are:
 | Field/value | Meaning |
 | --- | --- |
 | `request_state: accepted` without a safe active phase/state | The Mac durably recorded the mailbox exchange. It is not target execution acceptance. |
-| `request_state: accepted`, `delivery_state: accepted`, and a safe nonterminal `job_phase` (with optional safe `command_state`) | A fresh read-only target status query strictly matched the local remote intent and found accepted nonterminal work. It is a status observation, not proof of command start, queue cause, output, or a final result. |
-| `queue_blocked_reason: lost_capacity_recovery_pending` with the accepted queued remote-run shape | The current target status strictly proved the full retained terminal-`lost` capacity boundary for this queued one-off. Continue observing the same response chain. The field is nonterminal and is not a recovery promise. |
+| `request_state: accepted`, `delivery_state: accepted`, and a safe nonterminal `job_phase` (with optional safe `command_state`) | A fresh read-only authoritative status matched the local intent and found accepted nonterminal work. It is a status observation, not proof of command start, queue cause, output, or a final result. |
+| `queue_blocked_reason: lost_capacity_recovery_pending` with the accepted queued-run shape | The current authoritative status strictly proved the full retained terminal-`lost` capacity boundary for this queued one-off. Continue observing the same response chain. The field is nonterminal and is not a recovery promise. |
 | `request_state: complete` | The operation reached an outcome boundary; a command can still have failed. |
 | `request_state: rejected` | A well-formed request failed semantic validation or policy. |
 | `request_state: indeterminate`, `delivery_state: uncertain` | Delivery of a queued remote mutation could not be proved by the deadline. Preserve the idempotency key. |
@@ -520,16 +521,19 @@ an artifact in another root.
 
 ## Recovery and retention
 
-After a Mac restart, a queued remote one-off request is reconciled by reads of
-the existing remote job, command, and events. Runner does not resend the
-accepted mutation. Before the first mailbox pass after that restart, it marks a
-persisted active remote projection stale and withdraws it to the identity-only
-`accepted` receipt. It projects a fresh active state only after another
-successful read-only status query strictly matches the complete local intent.
+After a Mac Router restart, Runner reconciles an accepted one-off by reading
+the existing authority job, command, and events. For Mac-local work that is
+the shared Mac authority in `local.db` (with `runner-locald` as executor); for
+queued remote work it is the selected `runnerd` and `remote.db`. Runner does
+not resend the accepted mutation. Before the first mailbox pass after that
+restart, it marks a persisted active run projection stale and withdraws it to
+the identity-only `accepted` receipt. It projects a fresh active state only
+after another successful read-only status query strictly matches the complete
+local intent.
 
 The same withdrawal happens when an active status is stale, mismatched,
 unavailable, or retryably unreadable. Withdrawal means only that Runner cannot
-currently make the narrow active-status claim; it does not change the target
+currently make the narrow active-status claim; it does not change the authority
 job, cancel work, release capacity, or replay the mutation. A later qualified
 read may restore an active projection. Runner publishes a terminal response
 only when identity, target, teardown, and the retained event boundary agree.
