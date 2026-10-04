@@ -317,6 +317,48 @@ and it did not trigger a Logger deployment. It strengthens the evidence that
 the failure is in the remote sandbox execution/result path, but it still does
 not prove whether the remote Gitea API endpoint was reached.
 
+### Diagnostic-ladder execution on 2026-10-04
+
+The first three stages of the documented ladder completed normally, proving
+that the same mailbox route could execute shell built-ins, external children,
+and the curl binary with complete output and closed teardown:
+
+| Stage | Request ID | Command ID | Terminal result |
+| --- | --- | --- | --- |
+| A — shell streams | req-codex-rsr-bug015-stage-a-20261004-01 | cmd-5e148156476c9081101cdef17a8272a5 | complete / succeeded / exit 0 / output_complete=true / closed teardown |
+| B — explicit child streams | req-codex-rsr-bug015-stage-b-20261004-01 | cmd-911fdcd8c4fa1dad33ddb1c22f239625 | complete / succeeded / exit 0 / output_complete=true / closed teardown |
+| C — curl executable | req-codex-rsr-bug015-stage-c-20261004-01 | cmd-19eb7c27a69f4ae43978beab9fae703a | complete / succeeded / exit 0 / output_complete=true / closed teardown |
+
+Stage D then reproduced the failure after successful network activity:
+
+| Field | Value |
+| --- | --- |
+| Request ID | req-codex-rsr-bug015-stage-d-20261004-01 |
+| Job ID | job-27b0d8841d56cc30ee65d616946cef3a |
+| Session ID | sess-15863baa9efc5c45900c179a1064277c |
+| Command ID | cmd-8b11ca5cac9a871ec65e0608da8739c0 |
+| Terminal state | request_state=complete; job_phase=lost; command_state=lost; exit_code=null; output_complete=false; output_truncated=false; delivery_state=reconciled; teardown_outcome=lost |
+| Capture classification | output_unavailable_reason=capture_boundary_unconfirmed |
+| Acknowledgement | response_revision=2; available_event_sequence=4; terminal response ACKed |
+
+Its full advertised event prefix was:
+
+~~~text
+1  2026-10-04T05:11:22.085745181Z  command_queued
+2  2026-10-04T05:11:22.092277324Z  command_started
+3  2026-10-04T05:11:22.316913280Z  stdout  text="RSR_GITEA_VERSION_HTTP=200\n"
+4  2026-10-04T05:11:22.321560604Z  command_lost
+~~~
+
+The command lost state occurred about 229.283 ms after command_started and
+about 4.647 ms after the HTTP-200 stdout frame. The shell's required
+RSR_GITEA_VERSION_AFTER_RC marker and command_succeeded event are absent.
+This proves a Gitea HTTP response and a stdout frame reached the mailbox
+event stream; it does not prove that the curl child cleanly exited, that the
+shell executed its after-marker, or which Runner/bridge boundary recorded the
+loss. Stages E and F were intentionally not submitted, because the ladder
+requires stopping at the first lost result.
+
 ## Required investigation and diagnostics
 
 Correlate the request, job, session, and command IDs across:
@@ -505,5 +547,6 @@ command result while an actual persistent-shell exit remains conservatively
 | 2026-10-03 | BUG-015 recorded with correlated terminal outbox/event evidence. |
 | 2026-10-04 | Fresh controlled remote monitor reproduced the exact one-byte stderr then command_lost signature; correlated terminal record was ACKed with no deployment action. |
 | 2026-10-04 | Added two-attempt timing/capture comparison and a staged, safe reproduction matrix that isolates shell, credential-file, curl/TLS, and authenticated Gitea monitor boundaries. |
+| 2026-10-04 | Stages A-C passed cleanly; Stage D received and emitted Gitea HTTP 200, then became command_lost before its after-marker or terminal success. The terminal record was ACKed and later stages were not run. |
 | 2026-10-04 | Confirmed `persistent_shell_exited` in the current sandbox service journal; implemented and locally verified a shared persistent-shell `errexit` boundary correction. |
 | 2026-10-04 | Pushed and installed `cc3f6f0` on the Mac, primary Ubuntu, and sandbox Ubuntu. Guarded recovery released the sole terminal-lost sandbox pair; a new native SlideStudio inbox default control completed `failed` with exit 7, complete output/events, closed teardown, ACK, and final P128 zero work. |
