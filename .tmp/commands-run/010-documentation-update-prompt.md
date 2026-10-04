@@ -1306,3 +1306,9 @@ Harness: collaboration.spawn_agent result
 Description: Record parallel-review delegation outcome.
 Result: trace_inventory and operating_model_review started; workflow_efficiency_review could not start because the agent-thread limit was reached. No project files changed.
 Result: exit=0
+
+[2026-10-04T12:38:10+0200]
+Harness: functions.exec -> exec_command
+Description: Extract the recorded operating-system commands and internal harness actions for category analysis.
+OS command: rg -n "^(OS command|Internal LLM harness action|Harness):" .tmp/commands-run/010-documentation-update-prompt.md
+Result: exit=0
