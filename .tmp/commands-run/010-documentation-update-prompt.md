@@ -1312,3 +1312,71 @@ Harness: functions.exec -> exec_command
 Description: Extract the recorded operating-system commands and internal harness actions for category analysis.
 OS command: rg -n "^(OS command|Internal LLM harness action|Harness):" .tmp/commands-run/010-documentation-update-prompt.md
 Result: exit=0
+
+[2026-10-04T12:38:20+0200]
+Harness: functions.exec -> exec_command
+Description: Read the current direct-versus-mailbox LLM operating-model section for comparison with the trace inventory.
+OS command: sed -n "1,125p" docs/llm-client-guide.md
+Result: exit=0
+
+[2026-10-04T12:38:44+0200]
+Harness: functions.exec -> exec_command
+Description: Extract command failures and friction points from the trace so recommendations address actual workflow overhead.
+OS command: rg -n -i "Result: exit=[1-9]|fatal:|SyntaxError|operation not permitted|failed trace-only|could not" .tmp/commands-run/010-documentation-update-prompt.md
+Result: exit=0
+
+[2026-10-04T12:39:34+0200]
+Harness: collaboration.wait_agent (planned)
+Description: Wait briefly for the two read-only delegated reviews of command inventory and operating-model boundaries.
+Internal LLM harness action: wait_agent timeout=30000ms.
+Result: exit=0
+[2026-10-04T12:40:14+0200]
+Harness: collaboration.wait_agent result
+Description: Record the delegated-review wait outcome.
+Result: no message before the 30-second timeout; analysis continues locally without changing files.
+Result: exit=0
+
+[2026-10-04T12:40:24+0200]
+Harness: collaboration.wait_agent (planned)
+Description: Continue waiting for the read-only delegated command-policy reviews.
+Internal LLM harness action: wait_agent timeout=30000ms.
+Result: exit=0
+[2026-10-04T12:41:04+0200]
+Harness: collaboration.wait_agent result
+Description: Record the second delegated-review wait outcome.
+Result: no message before the 30-second timeout; no project file or runtime state changed.
+Result: exit=0
+
+[2026-10-04T12:41:11+0200]
+Harness: collaboration.list_agents (planned)
+Description: Check status of the two delegated read-only policy reviews.
+Internal LLM harness action: list_agents.
+Result: exit=0
+
+[2026-10-04T12:41:20+0200]
+Harness: collaboration.send_message (planned)
+Description: Ask delegated reviewers to return concise findings promptly; this is a read-only analysis and no edits are requested.
+Internal LLM harness actions: send_message trace_inventory; send_message operating_model_review.
+Result: exit=0
+[2026-10-04T12:41:40+0200]
+Harness: collaboration result and message
+Description: Record received trace-inventory findings and request a concise response from the operating-model reviewer.
+Internal LLM harness result: trace_inventory recommends only narrow read-only additions; generic interpreters, shell/redirection, build/test, Git mutation, SSH, and remote operations remain outside direct access. Sent wrap-up request to operating_model_review.
+Result: exit=0
+
+[2026-10-04T12:41:47+0200]
+Harness: collaboration.wait_agent (planned)
+Description: Wait briefly for the operating-model review response.
+Internal LLM harness action: wait_agent timeout=30000ms.
+Result: exit=0
+[2026-10-04T12:42:09+0200]
+Harness: collaboration.wait_agent and agent message result
+Description: Record the operating-model review findings.
+Internal LLM harness result: direct access should add only constrained read-only inspection/static checks; retain mailbox boundaries for interpreters, build/test, Git mutations, network/SSH, and host operations. The trace direct Git/SSH sequence is a repository workflow exception, not a general-client precedent.
+Result: exit=0
+
+[2026-10-04T12:42:42+0200]
+Harness: functions.exec -> exec_command
+Description: Read the focused prior Runner operating-boundary notes to cross-check the direct-command recommendation against established mailbox and Git-handoff conventions.
+OS command: sed -n "72,84p;232,236p" /Users/tomasz.walczuk/.codex/memories/MEMORY.md
+Result: exit=0
