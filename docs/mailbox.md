@@ -511,6 +511,15 @@ is authoritative retained content. An incomplete response can name an
 command crossed an unconfirmed output-capture boundary. Do not invent missing
 bytes.
 
+An ordinary child failure in a mailbox script that enables `set -e` or
+`set -euo pipefail` is a normal terminal `command_failed` result: its actual
+nonzero exit code and complete pre-failure output can be projected and ACKed.
+State made before the failure remains in a persistent session, while later
+script statements do not run. This is different from an explicit `exit`,
+`exec`, reserved control-file-descriptor damage, or an unconfirmed output
+boundary. Those invalidate the persistent execution boundary and remain
+conservatively `lost` or incomplete; do not ACK them as complete output.
+
 After the advertised event prefix is read, `WriteAcknowledgment` writes the
 exact `request_id`, `response_revision`, and available event cursor in the
 same mailbox root. A direct workspace publisher writes those same fields into
@@ -564,5 +573,6 @@ acknowledged normally.
   is not yet verified.
 
 For route and service checks, use [operations](operations.md). For the P155,
-P157, P158, P159, and P166 evidence and the per-host P157 boundary, use
+P157, P158, P159, P166, and deployed BUG-015 evidence and the per-host P157
+boundary, use
 [current-host evidence](current-host-evidence.md).

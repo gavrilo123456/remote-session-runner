@@ -10,6 +10,21 @@ It submits discrete scripts. It does not open an interactive Bash prompt or
 allocate a PTY. A session keeps one Bash process, so shell state can persist
 between `exec` requests in that same session.
 
+## Strict-shell result semantics
+
+An ordinary command failure under `set -e` or `set -euo pipefail` returns a
+normal terminal `failed` result with the actual nonzero exit code and complete
+captured output. Statements after the failed command do not run, while state
+created before it remains available to the next `exec` in that session. This
+applies to `run` as well, although its ephemeral session is then closed.
+
+Do not confuse that normal failure with a runtime boundary. An explicit `exit`,
+`exec`, reserved control-file-descriptor damage, or an unconfirmed output
+boundary can kill or invalidate the persistent Bash and is reported
+conservatively as `lost`; its output cannot be claimed complete. See
+[BUG-015](../050-bugs/015-sandbox-remote-terminal-lost-before-gitea-monitor.md)
+for the deployed strict-shell correction and its scoped evidence.
+
 The CLI selects an ingress endpoint and target profile. It does **not** select
 a file inbox; mailbox roots and their default/override policy belong to the
 [mailbox integration](mailbox.md).

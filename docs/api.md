@@ -188,6 +188,13 @@ gapped range returns `410 event_history_unavailable` with
   events, cancellation, and close.
 - Direct mTLS and the Mac local/queued route are separate trust boundaries.
 
+The persistent-shell completion contract applies through every ingress. A
+normal `set -e` or `set -euo pipefail` child failure returns a terminal
+`failed` command with its actual nonzero exit status and complete pre-failure
+output. An explicit `exit`, `exec`, reserved control-file-descriptor damage,
+or an unconfirmed output boundary remains `lost`/incomplete and must not be
+represented as a normal complete result.
+
 For user-facing flows, use the [CLI guide](user-guide.md). For owner-only
 filesystem automation, use the native [mailbox guide](mailbox.md). Current
 host evidence and P157 status live in [current-host evidence](current-host-evidence.md).

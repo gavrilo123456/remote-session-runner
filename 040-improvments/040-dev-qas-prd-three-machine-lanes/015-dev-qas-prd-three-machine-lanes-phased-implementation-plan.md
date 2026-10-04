@@ -4,16 +4,18 @@
 
 ## Settled prerequisite for every future phase
 
-The current unsuffixed installation is PRD and retains its production names:
-`runner-local`, `runner-locald`, and `runnerd.service`, its existing runtime
-roots, and direct HTTPS port `8443`. New concurrent instances are named
-`*-dev` for Dev and `*-qas` for QAS; their proposed Linux ports are `8444` and
-`8445` respectively. PRD is identified in lane metadata and status, never by a
-`-prd` service or path suffix.
+The current unsuffixed installation is one PoC runtime. It is the compatibility
+baseline for the future PRD mapping, which retains the names `runner-local`,
+`runner-locald`, and `runnerd.service`, its existing runtime roots, and direct
+HTTPS port `8443`. New concurrent instances would be named `*-dev` for Dev
+and `*-qas` for QAS; their proposed Linux ports are `8444` and `8445`
+respectively. The future PRD mapping is identified in lane metadata and status,
+never by a `-prd` service or path suffix. No lane metadata or suffixed service
+is implemented today.
 
 No phase may begin by renaming, stopping, or retargeting the current
-unsuffixed PRD installation. It must first create and validate isolated Dev or
-QAS resources under their suffixed names.
+unsuffixed installation. It must first create and validate isolated Dev or QAS
+resources under their suffixed names.
 
 This plan will be written only after the detailed design is approved. It will
 use the repository's normal fresh-context, serial-phase, automated-test,

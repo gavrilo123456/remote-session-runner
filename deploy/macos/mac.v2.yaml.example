@@ -5,9 +5,10 @@
 # checks retained work, records the complete candidate set, then prepares any
 # missing mailbox root/children.
 # This checked-in template intentionally starts with linux-host only. The
-# owner-only active P155/P157/P158 policy separately contains the accepted
-# sandbox-host profile and the external SlideStudio mailbox; keep host-specific
-# secrets and local project paths outside this generic file.
+# owner-only active V2 policy was established by P155/P157/P158 and extended
+# by P159 direct workspace ingress and P165/P166 diagnostics. It separately
+# contains the accepted sandbox-host profile and external SlideStudio mailbox;
+# keep host-specific secrets and local project paths outside this generic file.
 # To prepare a later P157 candidate, merge its profile into this complete policy
 # (preserving every active mailbox) after its independent host-key, account, Go,
 # state, and TLS prerequisites are reviewed. Do not use that profile for
@@ -75,7 +76,8 @@ mailboxes:
 # A non-default root may instead be a clean absolute path outside service_root.
 # Its ancestors must already be real, non-group/other-writable directories; its
 # immediate parent must be owned by tomasz.walczuk. Runner never changes those
-# ancestors and creates only the root plus inbox/outbox/events/acks at 0700.
+# ancestors and creates only the root plus inbox/outbox/events/acks/diagnostics
+# at 0700.
   default:
     root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox"
     repository_aliases: [remote-session-runner]

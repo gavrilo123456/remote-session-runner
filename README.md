@@ -27,13 +27,21 @@ contacting a remote host. This includes malformed JSON, request-schema,
 identity, script-representation, and bounded-size failures. Other new hosts
 remain unavailable until they pass their own P157 gate.
 
+BUG-015 corrected one shared persistent-shell boundary. An ordinary nonzero
+command under `set -e` or `set -euo pipefail` now produces a complete terminal
+`failed` result with its actual exit code; it no longer turns into an invented
+`lost` result. An actual shell exit, `exec`, reserved control-file-descriptor
+damage, or an unconfirmed output boundary remains conservatively `lost`.
+See the [current-host evidence](docs/current-host-evidence.md) for the scoped
+installed sandbox control and its limits.
+
 Start with [the post-implementation documentation index](docs/README.md):
 
 - [Architecture](docs/architecture.md)
 - [Configuration reference](docs/configuration.md)
 - [Setup and upgrade runbook](docs/setup.md)
 - [CLI user guide](docs/user-guide.md)
-- [LLM client guide (placeholder)](docs/llm-client-guide.md)
+- [LLM client guide](docs/llm-client-guide.md)
 - [Mailbox guide](docs/mailbox.md)
 - [API reference](docs/api.md)
 - [Operations runbook](docs/operations.md)

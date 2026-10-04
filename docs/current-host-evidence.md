@@ -36,6 +36,11 @@ The associated source and evidence closeout are:
 - P166 source and primary-Ubuntu handoff:
   `50e5fe3f11bb2a4317df3ab830b4fbce828647b3`
 - Detailed record: [P166 malformed-ingress acceptance](../040-implementation-evidence/P166.md)
+- BUG-015 shared strict-shell source correction:
+  `cc3f6f0fc00733781c5c99fb37fcb56f403a28ed`
+- Installed BUG-015 evidence revision and deployed-service attestation:
+  `d817a74000facba2360e608cda74d5ecfcad253d`
+- Detailed record: [BUG-015 strict-shell correction](../050-bugs/015-sandbox-remote-terminal-lost-before-gitea-monitor.md)
 
 ## What P155 proved
 
@@ -158,6 +163,24 @@ Logger request identities were not replayed.
 
 P166 is Mac mailbox-ingress acceptance only. It does not pass a new Ubuntu
 host, queued bridge, direct mTLS endpoint, or physical power-loss gate.
+
+## Deployed BUG-015 strict-shell correction
+
+BUG-015 corrected the shared persistent-shell wrapper at
+`cc3f6f0fc00733781c5c99fb37fcb56f403a28ed`. The later installed evidence
+revision `d817a74000facba2360e608cda74d5ecfcad253d` attested the Mac Router and
+executor plus both Ubuntu `runnerd` services after their normal zero-work
+guards.
+
+A fresh harmless native `slidestud-io` mailbox control used the inbox default
+(`sandbox-dev` / `remote/sandbox-host`), emitted fixed stdout and stderr
+markers, enabled `set -euo pipefail`, and exited with status 7. Its terminal
+response was `complete` / `command_failed`, with exit code 7, complete
+non-truncated output, a `command_failed` final event, closed teardown, a valid
+ACK, and a final sandbox P128 zero-work report. This proves the corrected
+ordinary strict-shell failure path only. It did not replay either historical
+Logger request, prove their external Gitea outcome, pass a new P157 gate, or
+prove physical power-loss durability.
 
 ## What is not accepted
 

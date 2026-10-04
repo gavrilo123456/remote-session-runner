@@ -33,9 +33,11 @@ process does not attest an already-running LaunchAgent. See the exact
 
 `mac.v2.yaml.example` is the policy template for named inboxes and profiles. It
 intentionally starts with only `linux-host`, so the checked-in template carries
-no sandbox credentials. The active owner-only P155/P157/P158 policy also
-contains the separately accepted `sandbox-host` and the accepted external
-`slidestud-io` mailbox. Create a reviewed owner-only candidate at
+no sandbox credentials. The active owner-only V2 policy was established by
+P155/P157/P158, extended by P159 direct workspace ingress, and extended again
+by P165/P166 private malformed-ingress diagnostics. It contains the separately
+accepted `sandbox-host` and the accepted external `slidestud-io` mailbox.
+Create a reviewed owner-only candidate at
 `config/mac.next.yaml`, retain all existing registered roots, and run:
 
 ```sh
@@ -43,7 +45,7 @@ deploy/macos/install-launchagents.sh --config \
   "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml"
 ```
 
-The installed P155/P157/P158 policy has:
+The installed current V2 policy has:
 
 | Inbox | Root | Default | Allowed contexts |
 | --- | --- | --- | --- |
@@ -59,6 +61,10 @@ the owner-only active configuration. The P157 host result and P158 external
 mailbox result are recorded in
 [`040-implementation-evidence/P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md)
 and [`040-implementation-evidence/P158-slidestud-external-mailbox.md`](../../040-implementation-evidence/P158-slidestud-external-mailbox.md).
+P159 direct-workspace ingress and P165/P166 diagnostics are recorded in
+[`040-implementation-evidence/P159.md`](../../040-implementation-evidence/P159.md),
+[`040-implementation-evidence/P165.md`](../../040-implementation-evidence/P165.md),
+and [`040-implementation-evidence/P166.md`](../../040-implementation-evidence/P166.md).
 
 The installer validates the candidate while the active configuration runs. It
 first performs a descriptor-based, non-mutating check of every mailbox path,

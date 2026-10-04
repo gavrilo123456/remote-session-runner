@@ -249,6 +249,16 @@ event. Event readers resume from their last validated sequence. Complete output
 requires a read through the final sequence, `output_complete: true`, and
 `output_truncated: false`.
 
+Scripts are sourced into the session's persistent Bash so state can survive
+between commands. An ordinary failing child under `set -e` or
+`set -euo pipefail` is contained at the sourced-script boundary: Runner emits
+the normal completion frame and records `command_failed` with the actual
+nonzero exit status. Output and session state created before the failure remain
+available, while later script statements do not run. An explicit shell `exit`,
+`exec`, reserved control-file-descriptor damage, or an unconfirmed output
+boundary still makes the persistent runtime unsafe and retains the conservative
+`lost` boundary. This distinction prevents both false success and false loss.
+
 ## Shared queue worker and host-specific proof
 
 `runner-locald` and `runnerd` use the same `queueworker.Worker` implementation

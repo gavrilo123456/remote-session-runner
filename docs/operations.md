@@ -7,6 +7,12 @@ host-gate test scripts as everyday service controls.
 
 ## Current availability and evidence boundary
 
+The deployed BUG-015 correction changes how an ordinary strict-shell failure
+is classified: a `set -e` or `set -euo pipefail` child failure now returns a
+normal terminal `failed` outcome with the real exit code and complete output
+boundary. It does not prove a result for an earlier Logger workflow, and it
+does not pass a new host gate. See [current-host evidence](current-host-evidence.md#deployed-bug-015-strict-shell-correction).
+
 | Capability | Current state | What to verify before use |
 | --- | --- | --- |
 | Mac local execution | Route is health-addressable when both Mac LaunchAgents are healthy | Both private readiness endpoints, installed revision, and a current authority-capacity check; only then a safe local command. Health alone does not prove retained capacity is free. |
@@ -477,6 +483,8 @@ below.
 | Linux P128 reports several retained `lost` slots and only already-cancelled one-off jobs, with no queued work to preserve | Exact list of every retained `lost` session/command pair and every nonterminal job, owner-only markers, and the stopped service cgroup | Use `recover-stalled` below only after the complete inventory is known. It rejects extra work and never dispatches or replays a script. |
 | New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host` and `sandbox-host` evidence does not transfer. |
 | Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
+| Ordinary script failure under `set -e` or `set -euo pipefail` | Terminal response/event, actual nonzero exit code, complete output flags | Treat this as a normal `failed` command. Preserve the output, correct the script or input, and use a new request only when a new operation is appropriate. |
+| `lost` after a strict-shell script | Whether the script used explicit `exit`, `exec`, reserved control-file-descriptor changes, or crossed an unconfirmed output boundary | Do not infer a normal command result or complete output. Preserve IDs and use the host-specific recovery/investigation boundary. |
 
 ## Recovery boundaries
 

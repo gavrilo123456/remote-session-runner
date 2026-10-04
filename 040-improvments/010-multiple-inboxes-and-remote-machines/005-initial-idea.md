@@ -1,8 +1,11 @@
 # Initial idea: multiple inboxes and remote machines
 
-**Status:** approved direction for implementation. The current single-inbox,
-single-Ubuntu-host PoC remains the compatibility baseline while the extension
-is built and tested.
+**Status:** implemented historical design. P150--P159 delivered the
+configurable-inbox extension, and P157 separately accepted `sandbox-host`.
+This document preserves the original decision record; current configuration,
+paths, and operating rules are authoritative in
+[the configuration reference](../../docs/configuration.md) and
+[the mailbox guide](../../docs/mailbox.md).
 
 ## Goal
 
@@ -22,13 +25,24 @@ runs on a remote build machine, a `website` inbox that normally runs locally,
 and a `shared-tools` inbox that can explicitly select one of several approved
 remote machines.
 
-## Current baseline
+## Historical planning baseline and delivered topology
 
-The current PoC deliberately has one mailbox root, one local target, and one
-remote target. The `linux-poc` direct endpoint and the Mac mailbox route are
-two ways to reach the same Ubuntu machine; they do not select different
-machines. The current configuration and mailbox schema require an explicit
-environment and target for `run` and `create_session`.
+At planning time the PoC had one mailbox root and one accepted Ubuntu host.
+The delivered policy now has three active roots, one local context, and two
+accepted remote contexts:
+
+| Inbox | Default context | Allowed contexts |
+| --- | --- | --- |
+| `default` | `mac-local` | `mac-local`, `ubuntu-current` |
+| `analytics` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
+| `slidestud-io` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
+
+`ubuntu-current` is `linux-dev` / `remote/linux-host`; `ubuntu-sandbox` is
+`sandbox-dev` / `remote/sandbox-host`. `linux-poc` and `sandbox-poc` are
+direct CLI endpoints only; mailbox remote work uses its configured restricted
+queued bridge. For new `run` and `create_session` work, the current schema
+accepts either no selection pair (use the inbox default) or one complete,
+allowed environment/target pair (override).
 
 The extension must retain the current safety properties:
 
@@ -45,16 +59,17 @@ The extension must retain the current safety properties:
 ### Named inboxes
 
 An automation publishes to a named inbox instead of a single global one. Each
-named inbox owns its own `inbox`, `outbox`, `events`, and `acks` directories.
-The output and acknowledgements stay in the same named inbox as the request.
+named inbox owns its own `inbox`, `outbox`, `events`, `acks`, and `diagnostics`
+directories. The output, acknowledgements, and safe ingress-validation
+diagnostics stay in the same named inbox as the request.
 
 Examples of useful inboxes:
 
 | Inbox | Repository scope | Default execution | Allowed explicit selections |
 | --- | --- | --- | --- |
-| `website` | `website-ui`, `website-api` | Mac local | Mac local, `ubuntu-build-1` |
-| `analytics` | `analytics-dbt` | `ubuntu-build-1` | `ubuntu-build-1`, `ubuntu-build-2` |
-| `operations` | `infra-tools` | Mac local | Mac local, `ubuntu-ops` |
+| `default` | `remote-session-runner` | `mac-local` | `mac-local`, `ubuntu-current` |
+| `analytics` | `analytics-dbt` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
+| `slidestud-io` | `slidestud-io` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
 
 The repository scope gives an automation an unambiguous home and audit label.
 Initially it should be policy and routing metadata only. Materializing a
@@ -68,10 +83,10 @@ For a new one-off job or session, an omitted execution selection means “use th
 inbox default.” A request can override the default only by naming a complete
 configured environment and target pair that is in that inbox's allow-list.
 
-For example, the `analytics` inbox could default to `ubuntu-build-1`, while a
-specific request selects `ubuntu-build-2` for a compatibility check. The
-response records both the resolved target and whether it came from the inbox
-default or the request override.
+For example, `slidestud-io` defaults to `ubuntu-sandbox`, while an allowed
+request can explicitly select `mac-local` or `ubuntu-current`. The response
+records both the resolved target and whether it came from the inbox default or
+the request override.
 
 `submit_command`, `get_session`, `get_command`, `cancel_command`, and
 `close_session` never select a new target. They act on an existing resource,
@@ -79,21 +94,28 @@ whose target is already immutable.
 
 ```mermaid
 flowchart LR
-  A[Website automation] --> W[website inbox]
+  A[Runner automation] --> D[default inbox]
   B[Analytics automation] --> N[analytics inbox]
-  W -->|default: local/mac-workstation| L[Mac runner-locald]
-  W -->|allowed override| R1[Ubuntu build 1]
-  N -->|default: remote/ubuntu-build-1| R1
-  N -->|allowed override| R2[Ubuntu build 2]
-  R1 --> D1[(host 1 state)]
-  R2 --> D2[(host 2 state)]
+  C[SlideStudio automation] --> S[slidestud-io inbox]
+  D -->|default| L[Mac runner-locald]
+  D -->|allowed override| R1[linux-host]
+  N -->|default| L
+  N -->|allowed override| R1
+  N -->|allowed override| R2[sandbox-host]
+  S -->|default| R2
+  S -->|allowed override| L
+  S -->|allowed override| R1
+  R1 --> D1[(linux-host state)]
+  R2 --> D2[(sandbox-host state)]
 ```
 
-## Conceptual configuration
+## Historical conceptual configuration
 
-The following is an illustration of the intended configuration model, not a
-final schema. All files remain outside the Git checkout and all secret values
-remain owner-only file references.
+The following `ubuntu-build-*` illustration was the pre-delivery design
+example. It is retained for design history only; it is not the active
+configuration. The active names and paths are in the configuration reference.
+All files remain outside the Git checkout and all secret values remain
+owner-only file references.
 
 ```yaml
 version: 2
@@ -234,11 +256,12 @@ selection. This makes later investigation independent of changing defaults.
 
 ## Compatibility and migration
 
-The present mailbox at
+The delivered V2 activation retained the mailbox at
 `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox`
-should become the configured `default` inbox without moving existing request
-or event files. New named inboxes can live under
-`.../RemoteSessionRunner/mailboxes/<inbox-id>/`.
+as the configured `default` inbox without moving retained request or event
+files. Additional service-root inboxes use
+`.../RemoteSessionRunner/mailboxes/<inbox-id>/`; `slidestud-io` proves the
+separate owner-safe external-root path.
 
 Configuration needs an explicit versioned migration. An upgrade should reject
 ambiguous or unsafe definitions before starting the router, including duplicate
@@ -250,7 +273,7 @@ Existing clients that publish the current request shape to the present root
 continue to use the `default` inbox. The default's configured execution should
 match today's explicit behavior until users deliberately change it.
 
-## Acceptance criteria for a later implementation plan
+## Delivered acceptance summary
 
 - Two inboxes can process independent work concurrently without sharing
   request, response, event, or acknowledgement files.
@@ -268,24 +291,21 @@ match today's explicit behavior until users deliberately change it.
   changed or a service restarts.
 - Each configured remote route proves its own mTLS or restricted-SSH bridge
   readiness. A successful test against one host does not prove the others.
-- The current single-inbox installation migrates without losing retained
-  responses, events, or acknowledgement state.
+- The former single-inbox installation migrated to `default` without losing
+  retained response, event, or acknowledgement state.
 
-## Decisions needed before detailed design
+## Decisions resolved by implementation
 
-1. Should a repository alias remain routing/audit metadata, or should it later
-   authorize checked-out source materialization? The latter requires a separate
-   source and credential model.
-2. Can a repository alias appear in more than one inbox? If yes, the audit
-   records must retain the inbox identity; if no, configuration validation must
-   reject duplicates.
-3. Should a request override use the existing
-   `environment`/`execution_target` fields as proposed, or a new named
-   `execution_context` field? Reusing the existing fields is clearer for
-   current clients; a named context is shorter and avoids mismatched pairs.
-4. Which remote hosts need both direct mTLS and mailbox/queued-SSH access?
-   The answer determines credential and bridge provisioning per host.
-5. What configuration reload policy is safe: an explicit service restart,
-   atomic reload after full validation, or both?
-6. What migration and retention rules preserve in-flight work if an inbox is
-   renamed, disabled, or removed?
+1. A repository alias remains routing/audit metadata; it does not select or
+   materialize a checkout.
+2. Client request and idempotency identity is scoped by inbox, so independent
+   roots retain their own durable audit identity.
+3. The existing `environment` plus object `execution_target` fields are the
+   override wire contract; both are omitted for an inbox default.
+4. Each named remote host needs its own accepted bridge and, when direct CLI is
+   enabled, its own mTLS definition and P157 evidence.
+5. Configuration is validated as a complete owner-only candidate and activated
+   by the documented service refresh; it is not hot-reloaded.
+6. The registry is append-only in this PoC. Renaming, removing, or relocating
+   a root requires a later explicit migration after durable work and files are
+   retired.

@@ -123,8 +123,10 @@ deploy/macos/mac.v2.yaml.example
 ```
 
 The checked-in template intentionally contains only `linux-host`, so it remains
-a safe first V2 policy without sandbox credentials. The active P155/P157/P158
-policy is owner-only and outside Git. It adds `analytics`, the accepted
+a safe first V2 policy without sandbox credentials. The active current V2
+policy is owner-only and outside Git. P155/P157/P158 established its
+multi-inbox/two-host topology; P159 added direct workspace ingress and P165/P166
+added malformed-ingress diagnostics. It adds `analytics`, the accepted
 `sandbox-host`, its explicitly allowed `ubuntu-sandbox` override, and the
 external `slidestud-io` inbox that defaults to that context:
 
@@ -333,6 +335,43 @@ secrets.
 | Unmarked mailbox draft cleanup | 24 hours |
 | Private ingress diagnostic cleanup | 7 days after observation |
 | Marker-only residue | No ordinary age cleanup; review lifecycle status |
+
+### What is configurable
+
+The selected values above are validated owner-only YAML policy values, not
+hardcoded operational choices. Put common defaults in the top-level `limits`
+and `retention` sections; an environment can provide a narrower or different
+validated `service_limits` object when that policy needs it. Configuration is
+loaded at process start, so review a complete candidate and use the documented
+Mac or Ubuntu installer rather than editing an active file in place.
+
+```yaml
+limits:
+  active_sessions_per_host: 20
+  running_commands_per_host: 4
+  command_timeout: "30m"
+  idle_timeout: "30m"
+  session_max_lifetime: "4h"
+  output_bytes_per_command: 104857600
+  subscriber_buffer_bytes: 1048576
+  persistence_queue_bytes: 16777216
+
+retention:
+  metadata_and_idempotency: "90d"
+  output_events: "30d"
+  mailbox_ack_grace: "24h"
+  mailbox_unacked: "7d"
+```
+
+| Item | Configuration rule |
+| --- | --- |
+| `limits` fields shown above | Configurable subject to service-limit validation; the same fields may be supplied as an environment's `service_limits`. |
+| `serialized_request_bytes` | Fixed at exactly `1048576` bytes if stated; it is not a tunable ceiling. |
+| `script_bytes_per_request` | Fixed at exactly `131072` UTF-8 bytes if stated; it is not a tunable ceiling. |
+| `retention.metadata_and_idempotency` | Configurable, but never below 90 days. |
+| Other `retention` fields | Configurable positive durations. |
+| Unmarked draft cleanup and private diagnostic cleanup | Fixed mailbox lifecycle behavior: 24 hours and seven days respectively, not fields in `retention`. |
+| `durable_orphan_cleanup` | Per-inbox boolean policy for durable-proven marker-only residue; it is not a retention duration and defaults to `false`. |
 
 The active-session and running-command limits apply independently to each
 Runner authority/host. They are durable safety reservations, so a count can

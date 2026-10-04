@@ -7,21 +7,40 @@
 
 ## Purpose and boundary
 
-An LLM uses the mailbox as a **file-only remote-execution integration**:
+An LLM uses the mailbox as a **file-only execution integration**:
 
 1. it creates request and acknowledgement files with its native file-editing
    capability;
 2. Runner executes accepted work in the mailbox's selected remote context; and
 3. the LLM reads the correlated result files before reporting an outcome.
 
-The LLM does not substitute a local shell, SSH, a tunnel, a direct Runner API,
-SQLite, shell redirection, or a temporary publisher script. A mailbox request
-is not an authority expansion: protected CI/CD, deployment, target-host,
-secret, and approval controls still apply.
+For work that executes code or changes an external system, the LLM does not
+substitute a local shell, SSH, a tunnel, a direct Runner API, SQLite, shell
+redirection, or a temporary publisher script. A mailbox request is not an
+authority expansion: protected CI/CD, deployment, target-host, secret, and
+approval controls still apply.
 
 Never put tokens, headers, certificates, private keys, or secret values in a
 request or in expected output. A reviewed remote command may read an approved
 remote secret path, but must not print the value.
+
+## Operating model for coding agents
+
+This is the current operating convention for an LLM working in this repository.
+It does not remove the installed CLI or API routes available to a human
+operator; it determines which interface an LLM uses for each kind of work.
+
+| Need | LLM interface | Allowed scope |
+| --- | --- | --- |
+| Discover and understand code | Regular workspace mode | `pwd`, `ls`, `rg --files`, `rg`, `sed`, `cat`, and read-only Git (`git status`, `git diff`, `git log`, `git show`). |
+| Change tracked code or documentation | Regular workspace mode | `apply_patch` or an editor; `jq` for local structured-JSON inspection or transformation. |
+| Mutate Git on the Mac | A `mac-local` mailbox request | Commit, branch, fetch, push, or another Git mutation runs as `tomasz.walczuk` through the selected local mailbox route. |
+| Validate a change | A selected mailbox request | Formatting, builds, linters, and tests run through either the Mac-local or an allowed remote mailbox target. |
+| Call an external API or operate a host | A selected remote mailbox request | The configured remote target runs as `ubuntu`; choose the inbox default or a complete allowed override. |
+
+The first two rows are workspace read/edit activity, not Runner execution.
+Every mailbox action still follows the publication, result-correlation, and ACK
+rules below.
 
 ## 1. Preflight
 
@@ -42,6 +61,14 @@ The root selects the inbox. Do not add an `inbox_id` field to a request. If the
 root has a safe default context, omit both `environment` and
 `execution_target`. Otherwise supply both fields as one allowed, exact pair;
 never supply only one.
+
+An ordinary child failure under `set -e` or `set -euo pipefail` now becomes a
+complete terminal `failed` command with its real nonzero exit code. Output and
+state produced before that failure are retained; statements after the failing
+boundary do not run. An explicit `exit`, `exec`, reserved control-file-
+descriptor damage, or an unconfirmed output boundary still yields the
+conservative `lost`/incomplete outcome. Do not use those shell-termination
+forms when a normal failed result is required.
 
 An LLM that has been separately granted owner-scoped **read-only** access to
 the Mac local API may use

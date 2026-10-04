@@ -1,8 +1,12 @@
 # Detailed design: configurable inboxes and named remote machines
 
-**Status:** approved implementation direction for the Remote Session Runner
-PoC. This extends the current tested single-inbox and single-Ubuntu-host
-installation without replacing its authority, mailbox, or transport model.
+**Status:** implemented historical design. P150--P159 delivered this
+extension, and P157 separately accepted `sandbox-host`. This document records
+the design contract used for that delivery; the current active topology is
+three inboxes (`default`, `analytics`, `slidestud-io`), one local context, and
+two accepted Ubuntu profiles. See [configuration](../../docs/configuration.md)
+and [current-host evidence](../../docs/current-host-evidence.md) for current
+paths and accepted-host scope.
 
 ## 1. Scope decisions
 
@@ -36,7 +40,7 @@ The PoC stays deliberately small:
 | Term | Meaning |
 | --- | --- |
 | **Inbox ID** | A stable lowercase configuration name, such as `website` or `analytics`. |
-| **Mailbox root** | The owner-only directory containing an inbox's `inbox`, `outbox`, `events`, and `acks` children. |
+| **Mailbox root** | The owner-only directory containing an inbox's `inbox`, `outbox`, `events`, `acks`, and `diagnostics` children. |
 | **Execution context** | A named pairing of one environment and one immutable target `{kind, profile}`. |
 | **Remote profile** | A named Ubuntu host identity, for example `ubuntu-build-1-host`. It selects one configured bridge and, optionally, one mTLS endpoint profile. |
 | **Repository scope** | Zero or more configured repository aliases associated with an inbox. It labels and limits intended use; it is not an untrusted source path. |
@@ -64,8 +68,10 @@ the next section.
 
 ### 3.2 Conceptual Mac configuration
 
-This is the target shape. Exact field names are frozen with the implementation
-tests and schema, rather than inferred from this example.
+This is the pre-delivery target-shape example. Its `ubuntu-build-2` names and
+documentation IP address are historical, not active configuration. Exact
+current names and paths are frozen by the implementation and documented in the
+configuration reference.
 
 ```yaml
 version: 2
@@ -142,9 +148,10 @@ installed and tested.
   that are equal or nested after conservative case and Unicode normalization,
   so a case-insensitive filesystem cannot bind two inboxes to one tree.
 - Runner never creates or changes an external root's ancestors. It creates or
-  verifies only the configured root and its `inbox`, `outbox`, `events`, and
-  `acks` children. Each must be a current-user-owned real directory at mode
-  `0700`. Before the existing LaunchAgents are quiesced, the installer performs
+  verifies only the configured root and its `inbox`, `outbox`, `events`,
+  `acks`, and `diagnostics` children. Each must be a current-user-owned real
+  directory at mode `0700`. Before the existing LaunchAgents are quiesced, the
+  installer performs
   a non-mutating descriptor-based preflight of the parent chain and any tree
   that already exists. It never creates a candidate root during that stage.
   After ingress is quiesced and the retained-work check passes, the irreversible
@@ -267,22 +274,24 @@ mailbox backlog and per-inbox counts. Readiness reports each configured remote
 route separately; one ready remote host does not hide a degraded route to
 another host.
 
-## 8. Migration and operational behavior
+## 8. Delivered migration and operational behavior
 
-1. Install the new binaries while the existing `version: 1` configuration
-   remains valid. It runs as the `default` mailbox with current behavior.
-2. Add a reviewed `version: 2` configuration with the desired named inboxes
-   and remote profiles.
-3. Restart the Mac LaunchAgents so the complete configuration is validated
-   before any new inbox is opened.
-4. Install and validate each newly configured remote host separately before
-   routing a production request to it.
+P150--P156 delivered the V2 registry, routing, mailbox namespace, runtime,
+installation, and documentation path. P157 separately accepted `sandbox-host`;
+P158 added the external SlideStudio root; and P159 added direct-workspace
+`0644` publication. The active configuration therefore reflects the migration
+steps that were originally proposed here.
+
+Future inbox additions still follow the same constraints: validate a reviewed
+owner-only V2 candidate, protect retained work during the documented Mac
+refresh, and independently install and accept every additional remote host
+before routing work to it.
 
 An inbox rename or removal does not retarget existing accepted work. The
 configuration loader rejects removal of an inbox with pending unacknowledged
 state unless an explicit later migration procedure handles it.
 
-## 9. Required proof
+## 9. Delivered proof and continuing boundary
 
 Hermetic tests must prove:
 
@@ -297,6 +306,7 @@ Hermetic tests must prove:
 - a profile-specific fake bridge never receives work for another profile; and
 - a direct endpoint profile cannot address a different remote target profile.
 
-The live PoC gate first uses a non-default inbox against the currently proven
-Ubuntu host. A second physical remote host is not marked ready until its own
-deployment and end-to-end route test pass.
+The delivered gates first used a non-default inbox against `linux-host`, then
+accepted the second physical host through P157 and used it in P158/P159. A
+future physical host remains **NOT RUN** until its own P157 deployment and
+end-to-end route test pass.

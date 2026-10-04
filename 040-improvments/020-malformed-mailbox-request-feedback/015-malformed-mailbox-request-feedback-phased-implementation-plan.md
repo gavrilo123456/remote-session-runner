@@ -1,8 +1,12 @@
 # Phased implementation plan: malformed mailbox request feedback
 
-**Status:** approved implementation plan on 2026-10-01. It extends the
-completed configurable-inbox PoC and follows the original plan's serial gate,
-evidence, and host-handoff rules.
+**Status:** completed historical implementation plan. P164, P165, and P166
+passed their serial source, handoff, and live acceptance gates; see
+[P164](../../040-implementation-evidence/P164.md),
+[P165](../../040-implementation-evidence/P165.md), and
+[P166](../../040-implementation-evidence/P166.md). The phase detail below is
+retained as the implementation record and does not authorize replay of its
+historical Logger inputs.
 
 ## 1. Per-phase protocol
 

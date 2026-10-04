@@ -14,7 +14,7 @@ selection, or automatic fallback.
 | [Configuration reference](configuration.md) | Exact paths, V1 compatibility, V2 registries, active policy, secret handling, and limits. |
 | [Setup and upgrade runbook](setup.md) | First install, V1→V2 upgrade, safe external mailbox roots, service deployment, bridge setup, and P157 onboarding. |
 | [CLI user guide](user-guide.md) | Local, direct remote, queued remote, sessions, events, cancellation, and close. |
-| [LLM client guide](llm-client-guide.md) | Practical guide for LLMs and coding agents: route selection, mailbox work, results, ACKs, retries, lifecycle status, and safe failure handling. |
+| [LLM client guide](llm-client-guide.md) | Practical guide for LLMs and coding agents: local read/edit work, mailbox-only execution and validation, route selection, results, ACKs, retries, lifecycle status, and safe failure handling. |
 | [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, deterministic request-result lookup, lifecycle status, events, ACKs, retries, and safe invalid-input diagnostics. |
 | [API reference](api.md) | Direct mTLS and Unix-socket transports, shared v1 HTTP/JSON behavior, and the Mac-only lifecycle-status extension. |
 | [Operations runbook](operations.md) | Health, queue and slot gauges, metrics, logs, read-only lifecycle triage, service refresh, diagnostic triage, and recovery limits. |
@@ -51,6 +51,12 @@ ingress diagnostic path; it does not create an accepted exchange or remote
 work. `default` does not permit `ubuntu-sandbox`. Other physical machines
 remain **NOT RUN** until their separate P157 onboarding and end-to-end evidence
 pass.
+
+BUG-015 later corrected the shared persistent-shell `errexit` boundary. A
+fresh harmless `slidestud-io` sandbox request now proves that an ordinary
+strict-shell nonzero result is terminal `failed` with complete output and
+closed teardown. That is a corrective runtime result, not a new host gate or a
+result for either historical Logger workflow.
 
 Runner application readiness over direct mTLS was exercised for both accepted
 endpoints. A prior temporary TLS probe validated transport only. Software-

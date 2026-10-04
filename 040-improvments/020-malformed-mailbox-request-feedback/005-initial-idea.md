@@ -1,6 +1,10 @@
 # Initial idea: malformed mailbox request feedback
 
-**Status:** approved for implementation on 2026-10-01.
+**Status:** implemented historical idea. P164--P166 delivered the durable
+diagnostic ledger, trusted invalid-input classification, private projection,
+and harmless live acceptance. See [P164](../../040-implementation-evidence/P164.md),
+[P165](../../040-implementation-evidence/P165.md), and
+[P166](../../040-implementation-evidence/P166.md).
 
 ## Problem
 
@@ -56,5 +60,5 @@ name. A corrected retry must use a new request ID and idempotency key.
 - The design must decide how diagnostics are acknowledged, retained, and
   cleaned up before implementation starts.
 
-The approved detailed design resolves the lifecycle, retention, and recovery
-questions in [010-malformed-mailbox-request-feedback-detailed-design.md](010-malformed-mailbox-request-feedback-detailed-design.md).
+The detailed design records the delivered lifecycle, retention, and recovery
+contract in [010-malformed-mailbox-request-feedback-detailed-design.md](010-malformed-mailbox-request-feedback-detailed-design.md).

@@ -1,9 +1,9 @@
 # Detailed design: malformed mailbox request feedback
 
-**Status:** approved for implementation on 2026-10-01. This extends the
-completed configurable-inbox PoC. The original designs and phased plan remain
-authoritative except where this document explicitly adds the ingress-diagnostic
-contract.
+**Status:** implemented historical design. P164--P166 delivered this
+ingress-diagnostic contract and recorded the source and live evidence. The
+original designs and phased plan remain authoritative except where this
+document explicitly adds the delivered ingress-diagnostic contract.
 
 ## 1. Decision and boundary
 
@@ -64,7 +64,11 @@ The classifier exposes only stable codes and fixed messages:
 | `request_identity_mismatch` | The request's ID differs from its safe marker filename. |
 | `invalid_script` | The request has an invalid or oversized script representation. |
 | `request_too_large` | The bounded request limit was exceeded. |
-| `request_id_reused_after_rejection` | A new safe pair reused an ID retained for a previous rejected ingress. |
+
+`request_id_reused_after_rejection` is a durable-ledger and structured-log
+lifecycle class when a later safe pair reuses a retained rejected ID. It is not
+a projected `diagnostic.code`; the projection retains the original frozen
+diagnostic instead.
 
 No parser excerpt, raw request byte, script, URL, header, token-like value,
 untrusted operation, or decoded idempotency-key value is retained, projected,

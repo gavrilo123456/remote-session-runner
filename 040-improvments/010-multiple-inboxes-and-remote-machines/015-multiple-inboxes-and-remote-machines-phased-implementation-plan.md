@@ -1,10 +1,10 @@
 # Detailed phased implementation plan: multiple inboxes and named remote machines
 
-**Status:** approved implementation plan. This plan extends the completed
-Remote Session Runner PoC after P149. The [initial idea](005-initial-idea.md)
-defines the user goal and the [detailed design](010-multiple-inboxes-and-remote-machines-detailed-design.md)
-defines the extension contract. The original initial design, detailed design,
-and detailed phased implementation plan remain authoritative wherever this
+**Status:** completed historical implementation plan. The [initial
+idea](005-initial-idea.md) and [detailed
+design](010-multiple-inboxes-and-remote-machines-detailed-design.md) preserve
+the delivered contract. The original initial design, detailed design, and
+detailed phased implementation plan remain authoritative wherever this
 extension does not change them.
 
 **Target:** retain the tested Mac user `tomasz.walczuk`, current Ubuntu user
@@ -12,6 +12,25 @@ extension does not change them.
 adds explicitly selected named remote profiles and several Mac mailboxes; it
 does not add containers, tunnels, arbitrary accounts, a scheduler that chooses
 hosts, source materialization, or fallback between targets.
+
+## Completed delivery
+
+| Phase | Delivered result | Evidence |
+| --- | --- | --- |
+| P150 | V2 configuration registries | [P150](../../040-implementation-evidence/P150.md) |
+| P151 | Profile-aware remote routing and direct endpoint binding | [P151](../../040-implementation-evidence/P151.md) |
+| P152 | Inbox-scoped durable exchange identity | [P152](../../040-implementation-evidence/P152.md) |
+| P153 | Inbox default and complete-override resolution | [P153](../../040-implementation-evidence/P153.md) |
+| P154 | One runtime per configured inbox | [P154](../../040-implementation-evidence/P154.md) |
+| P155/P156 | Current-host deployment and post-implementation documentation | [P155](../../040-implementation-evidence/P155.md), [P156](../../040-implementation-evidence/P156.md) |
+| P157 | Separate `sandbox-host` acceptance | [P157](../../040-implementation-evidence/P157-sandbox-host.md) |
+| P158 | Owner-safe external `slidestud-io` mailbox | [P158](../../040-implementation-evidence/P158-slidestud-external-mailbox.md) |
+| P159 | Direct workspace-file `0644` ingress/ACK compatibility | [P159](../../040-implementation-evidence/P159.md) |
+
+The phase descriptions below are retained as the record of their required
+serial gates. They are not authorization to rerun a completed phase. Future
+inbox or host changes begin from the current design, configuration, and
+per-host P157 boundary.
 
 ## 1. Mandatory per-phase protocol
 
@@ -63,15 +82,14 @@ Shared Mac Go caches are reused. A failed or unavailable required gate stops
 the phase. A fixture, TLS transport probe, or a successful current host does
 not pass an untested future physical host.
 
-### 1.3 Scope and evidence limits
+### 1.3 Continuing scope and evidence limits
 
-The current Ubuntu host is the first and only host with live acceptance
-evidence. A second configured profile is a configuration/fake-route fixture
-until its own P157 host gate passes. Direct public mTLS health proves the
-Runner API route only; it does not prove queued mailbox delivery. The
-user-approved software-process-crash limitation remains in force: physical
+`linux-host` and `sandbox-host` have separate live acceptance evidence; this
+does not transfer to a future configured profile. Direct public mTLS health
+proves the Runner API route only; it does not prove queued mailbox delivery.
+The user-approved software-process-crash limitation remains in force: physical
 power-loss durability is unverified until coordinated physical tests pass, and
-no extension phase may relabel it as proven.
+no later work may relabel it as proven.
 
 ## 2. Serial implementation phases
 

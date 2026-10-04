@@ -223,9 +223,10 @@ else
 fi
 ```
 
-Edit the candidate as the owner to include the complete V2 policy. The active
-P155/P157/P158 policy contains the legacy `default` root, the extra `analytics`
-root, the external `slidestud-io` root at
+Edit the candidate as the owner to include the complete V2 policy. The current
+V2 policy, accepted through P155/P157/P158 and extended by P159/P165/P166,
+contains the legacy `default` root, the extra `analytics` root, the external
+`slidestud-io` root at
 `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`, and the accepted
 `ubuntu-sandbox` context; see
 [configuration](configuration.md#version-2-installed-multi-inbox-policy). Keep

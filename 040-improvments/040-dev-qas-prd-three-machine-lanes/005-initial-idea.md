@@ -38,12 +38,14 @@ service or runtime-path name.
 
 ## Settled naming and compatibility rule
 
-`prd` is the release-lane identity, not a suffix on production resources. The
-current unsuffixed installation is the initial PRD lane and keeps its existing
-names, paths, listener, and mailbox roots. Only the new Dev and QAS instances
-carry lane suffixes:
+`prd` is the future release-lane identity, not a suffix on production
+resources. When lanes are implemented, the unsuffixed installation becomes the
+PRD compatibility mapping and keeps its existing names, paths, listener, and
+mailbox roots. Today those unsuffixed resources are one PoC runtime; they do
+not yet carry lane metadata or form an installed PRD lane. Only the future Dev
+and QAS instances carry lane suffixes:
 
-| Resource | Dev | QAS | PRD (current and unsuffixed) |
+| Resource | Dev | QAS | PRD (future and unsuffixed) |
 | --- | --- | --- | --- |
 | Mac processes | `runner-local-dev`, `runner-locald-dev` | `runner-local-qas`, `runner-locald-qas` | `runner-local`, `runner-locald` |
 | Linux systemd unit | `runnerd-dev.service` | `runnerd-qas.service` | `runnerd.service` |
@@ -51,10 +53,10 @@ carry lane suffixes:
 | Linux runtime root | `~/.local/share/remote-session-runner-dev` | `~/.local/share/remote-session-runner-qas` | `~/.local/share/remote-session-runner` |
 | Direct HTTPS port on each Linux host | `8444` | `8445` | `8443` |
 
-PRD still reports its lane explicitly in health, status, configuration, and
-build metadata. The absence of a `-prd` suffix must never make a resource
-ambiguous. This is a naming decision only; it does not authorize installation
-or migration work.
+The future PRD service must report its lane explicitly in health, status,
+configuration, and build metadata. The absence of a `-prd` suffix must never
+make a resource ambiguous. This is a naming decision only; it does not
+authorize installation or migration work.
 
 ## Intended topology
 
@@ -143,14 +145,15 @@ lane's SQLite database, socket, workspace, bridge socket, or response tree.
 
 ## Compatibility and migration direction
 
-The current live installation remains operational as the initial PRD instance.
-It keeps the unsuffixed service labels, runtime roots, port `8443`, and existing
-mailbox locations. Dev and QAS are introduced as fresh isolated instances with
-their `-dev` and `-qas` names. Existing mailboxes must not be silently moved or
-retargeted. A specific production mailbox may move to Dev or QAS only after the
-new lane has passed end-to-end acceptance and the migration is explicitly
-performed. That mailbox cutover never renames or moves the unsuffixed PRD
-service or runtime root.
+The current live installation remains operational as one unsuffixed PoC
+instance. It is the compatibility baseline for the future PRD mapping and
+keeps the unsuffixed service labels, runtime roots, port `8443`, and existing
+mailbox locations. Dev and QAS would be introduced as fresh isolated instances
+with their `-dev` and `-qas` names. Existing mailboxes must not be silently
+moved or retargeted. A specific production mailbox may move to Dev or QAS only
+after the new lane has passed end-to-end acceptance and the migration is
+explicitly performed. That mailbox cutover never renames or moves the future
+unsuffixed PRD service or runtime root.
 
 The detailed design must provide a reversible, evidence-backed migration for
 runtime roots, existing retained mailbox artifacts, active work, and installed
