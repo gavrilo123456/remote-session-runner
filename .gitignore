@@ -1,1 +1,4 @@
 .DS_Store
+
+# Local command-execution trace required for Codex work; never a source artifact.
+/.tmp/commands-run/
