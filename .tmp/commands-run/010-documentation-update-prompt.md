@@ -1380,3 +1380,33 @@ Harness: functions.exec -> exec_command
 Description: Read the focused prior Runner operating-boundary notes to cross-check the direct-command recommendation against established mailbox and Git-handoff conventions.
 OS command: sed -n "72,84p;232,236p" /Users/tomasz.walczuk/.codex/memories/MEMORY.md
 Result: exit=0
+
+[2026-10-05T08:32:57+0200]
+Harness: functions.exec -> exec_command
+Description: Begin a read-only review of the Dev/QAS/PRD lane proposal to explain its prefix and suffix model.
+OS command: append this read-only review trace entry
+Result: exit=0
+
+[2026-10-05T08:33:22+0200]
+Harness: functions.exec -> exec_command
+Description: Read the current Dev/QAS/PRD lane idea, detailed design, and phased-plan prerequisite sections.
+OS command: sed -n "1,190p" 040-improvments/040-dev-qas-prd-three-machine-lanes/005-initial-idea.md; sed -n "1,160p" 040-improvments/040-dev-qas-prd-three-machine-lanes/010-dev-qas-prd-three-machine-lanes-detailed-design.md; sed -n "1,110p" 040-improvments/040-dev-qas-prd-three-machine-lanes/015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md
+Result: exit=0
+
+[2026-10-05T12:44:35+0200]
+Harness: functions.exec -> exec_command
+Description: Begin setup of a dedicated Runner mailbox for agents-work-dispatcher; record the planned read-only discovery work.
+OS command: append this setup trace entry
+Result: exit=0
+
+[2026-10-05T12:44:43+0200]
+Harness: functions.exec -> exec_command
+Description: Search prior-run memory for agents-work-dispatcher setup context and approved Runner mailbox conventions.
+OS command: rg -n -i "agents-work-dispatcher|mailbox|linux-host|AMD64" /Users/tomasz.walczuk/.codex/memories/MEMORY.md
+Result: exit=0
+
+[2026-10-05T12:45:33+0200]
+Harness: collaboration.list_agents (planned)
+Description: Check whether a parallel read-only review of the new project instructions can run while host configuration is inspected.
+Internal LLM harness action: list_agents.
+Result: exit=0
