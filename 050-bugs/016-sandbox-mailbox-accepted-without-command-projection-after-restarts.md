@@ -359,11 +359,13 @@ lost-runtime recovery shape. The recovery path never creates a command,
 replays a request, invents command output, signals a process, or deletes an
 unowned workspace.
 
-## Implementation evidence — source only
+## Implementation and deployment evidence
 
-The prior recovery implementation is installed on the Mac and AMD64 Ubuntu
-host. The current follow-up source correction remains deliberately uninstalled
-until its full tests, Git handoff, and sandbox recovery gate complete.
+The recovery implementation and the follow-up pre-start correction were
+committed as `d8ecafffd2edecd08fb31e5a5569f79e7707f18c`, pushed to `origin/dev`,
+and fast-forwarded into both Ubuntu checkouts before their service work. The
+Mac `runner-local` and `runner-locald`, AMD64 `runnerd`, and sandbox `runnerd`
+all attest that revision through their private readiness endpoints.
 
 - Migration `0035_commandless_lost_runtime_recovery_finalizations.sql` adds a
   session-keyed finalization ledger with foreign keys to the exact session and
@@ -389,12 +391,16 @@ until its full tests, Git handoff, and sandbox recovery gate complete.
   normal/blank-generation recovery, workspace-cleanup-error, and local
   retained-capacity projection regressions.
 
-The guarded recovery route already settled the verified ordinary lost pairs on
-the Mac and AMD64 Ubuntu host. Sandbox recovery failed closed before releasing
-either blank-generation commandless session, and `runnerd` remains deliberately
-stopped there. The follow-up correction still requires full tests, commit/push,
-fast-forward handoff, guarded sandbox recovery, P128 verification, service
-readiness, and one fresh harmless native mailbox terminal chain.
+The guarded recovery route settled the verified ordinary lost pairs on the Mac
+and AMD64 Ubuntu host. After `d8ecaff` was installed, its sandbox recovery
+settled the two exact blank-generation commandless sessions through the
+absent-owner-marker proof. It released neither a command nor invented output.
+The sandbox postflight shows active `runnerd`, readiness at `d8ecaff`, bridge
+status at `d8ecaff`, and P128 counts of zero active sessions, running
+commands, unreleased slots, and unfinished jobs. The AMD64 postflight also
+shows active `runnerd`, readiness/bridge status at `d8ecaff`, its public
+listener, and the same zero P128 counts. The Mac restart preflight was
+quiescent, and both Mac private services attest `d8ecaff`.
 
 Neither historical sandbox request has been replayed, ACKed, cancelled, or
 manually released.
@@ -412,6 +418,30 @@ an older binary.
 This recovery does not claim that either command completed. The commandless
 jobs remain `lost`; when the Router reads them, it follows the bounded
 `indeterminate` mailbox path from the source fix above.
+
+### Strict P158 observation and route-only follow-up
+
+The original strict P158 test was run after deployment. It published **no new
+request** because its preflight correctly requires a zero Mac
+`mailbox_backlog`. The Mac ingress and both qualified remote routers were
+ready, but `mailbox_backlog=2`, entirely under `slidestud-io`.
+
+Those two entries are the preserved historical BUG-016 receipts. Their target
+jobs are readable through the queued controller identity and are exactly the
+known `lost` / no-command / pending-teardown shape. Strict reconciliation
+therefore records only the sanitized `remote_status_unavailable` condition;
+it must not invent a command result. Their first status failures were recorded
+at `2026-10-08T19:03:38Z` and `2026-10-08T19:03:39Z`. The configured 24-hour
+uncertainty window ends around `2026-10-09T19:03Z`; at that point the Router
+will publish one truthful `indeterminate` result for each without replaying
+either request.
+
+The strict P158 gate remains unchanged. A separate opt-in
+`test-p158-slidestud-mailbox-with-backlog` source gate now requires retained
+`slidestud-io` backlog, checks only Mac/selected-route readiness, and proves a
+fresh native default-target request's complete response, event stream, ACK,
+and request-pair consumption. It neither changes those historical receipts nor
+claims P158 mailbox quiescence or P128 zero host work.
 
 ## Impact
 

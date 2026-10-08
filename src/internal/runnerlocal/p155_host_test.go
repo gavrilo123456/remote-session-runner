@@ -34,7 +34,8 @@ type p155HealthReport struct {
 	Readiness string            `json:"readiness"`
 	Checks    []p155HealthCheck `json:"checks"`
 	Metrics   struct {
-		MailboxBacklog int64 `json:"mailbox_backlog"`
+		MailboxBacklog        int64            `json:"mailbox_backlog"`
+		MailboxBacklogByInbox map[string]int64 `json:"mailbox_backlog_by_inbox"`
 	} `json:"metrics"`
 }
 

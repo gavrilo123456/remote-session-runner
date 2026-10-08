@@ -31,12 +31,28 @@ func TestP158SlideStudioExternalMailboxDefaultSandboxGate(t *testing.T) {
 	if os.Getenv("RSR_P158_SLIDESTUD_MAILBOX_GATE") != "1" {
 		t.Skip("set RSR_P158_SLIDESTUD_MAILBOX_GATE=1 to run the SlideStudio external-mailbox gate")
 	}
+	p158RunDefaultSandboxMailbox(t, true, "req-p158-", "P158")
+}
+
+// TestP158SlideStudioExternalMailboxDefaultSandboxWithExistingBacklog proves
+// the native external inbox can complete one new default-sandbox request while
+// unrelated work is retained. It is intentionally separate from P158: it
+// proves the request's own terminal lifecycle, not mailbox quiescence or P128.
+func TestP158SlideStudioExternalMailboxDefaultSandboxWithExistingBacklog(t *testing.T) {
+	if os.Getenv("RSR_P158_SLIDESTUD_MAILBOX_BACKLOG_GATE") != "1" {
+		t.Skip("set RSR_P158_SLIDESTUD_MAILBOX_BACKLOG_GATE=1 to run the nonquiescent SlideStudio route-only gate")
+	}
+	p158RunDefaultSandboxMailbox(t, false, "req-p158-backlog-", "P158 route-only")
+}
+
+func p158RunDefaultSandboxMailbox(t *testing.T, requireQuiescence bool, requestPrefix, label string) {
+	t.Helper()
 	if runtime.GOOS != "darwin" {
-		t.Fatalf("P158 gate must run on the selected Mac, got %s", runtime.GOOS)
+		t.Fatalf("%s gate must run on the selected Mac, got %s", label, runtime.GOOS)
 	}
 	current, err := user.Current()
 	if err != nil || current.Username != config.MacAccount {
-		t.Fatalf("P158 account=%v err=%v, want %s", current, err, config.MacAccount)
+		t.Fatalf("%s account=%v err=%v, want %s", label, current, err, config.MacAccount)
 	}
 
 	loaded, err := config.LoadFile(p155MacConfigPath)
@@ -64,14 +80,22 @@ func TestP158SlideStudioExternalMailboxDefaultSandboxGate(t *testing.T) {
 	p155WaitForOwnedSocket(t, localSocket)
 	p158RequireSafeExternalAncestorChain(t, p158MailboxRoot)
 	p155RequireMailboxTree(t, mailbox.Root)
-	p157WaitForSandboxRouter(t, localSocket)
+	if requireQuiescence {
+		p157WaitForSandboxRouter(t, localSocket)
+	} else {
+		before := p157WaitForSandboxRouterReady(t, localSocket)
+		if !p158HasRetainedSlideStudioBacklog(before) {
+			t.Fatalf("%s requires pre-existing retained SlideStudio backlog: health=%+v", label, before)
+		}
+		t.Logf("%s preflight: mailbox_backlog=%d mailbox_backlog_by_inbox=%v; route-only, not a drain or P128 claim", label, before.Metrics.MailboxBacklog, before.Metrics.MailboxBacklogByInbox)
+	}
 
 	client, err := mailboxclient.New(mailbox.Root)
 	if err != nil {
 		t.Fatalf("open SlideStudio mailbox client: %v", err)
 	}
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
-	requestID := "req-p158-" + suffix
+	requestID := requestPrefix + suffix
 	request := p155Request(t, map[string]any{
 		"request_id": requestID, "idempotency_key": "key-p158-" + suffix,
 		"operation": "run", "repository_alias": p158MailboxID,
@@ -93,8 +117,41 @@ func TestP158SlideStudioExternalMailboxDefaultSandboxGate(t *testing.T) {
 	}
 	p155WaitAckConsumed(t, mailbox.Root, requestID)
 	p155WaitRequestConsumed(t, mailbox.Root, requestID)
-	p157WaitForSandboxRouter(t, localSocket)
-	t.Logf("P158 complete: request_id=%s command=%s marker=%s", requestID, response.CommandID, p158ExpectedMarker)
+	if requireQuiescence {
+		p157WaitForSandboxRouter(t, localSocket)
+	} else {
+		after := p157WaitForSandboxRouterReady(t, localSocket)
+		t.Logf("%s postflight: mailbox_backlog=%d mailbox_backlog_by_inbox=%v; own request is terminal and consumed, and the test did not act on unrelated receipts", label, after.Metrics.MailboxBacklog, after.Metrics.MailboxBacklogByInbox)
+	}
+	t.Logf("%s complete: request_id=%s command=%s marker=%s", label, requestID, response.CommandID, p158ExpectedMarker)
+}
+
+func p158HasRetainedSlideStudioBacklog(report p155HealthReport) bool {
+	return report.Metrics.MailboxBacklog > 0 && report.Metrics.MailboxBacklogByInbox[p158MailboxID] > 0
+}
+
+func TestP158HasRetainedSlideStudioBacklog(t *testing.T) {
+	tests := []struct {
+		name    string
+		backlog int64
+		byInbox map[string]int64
+		want    bool
+	}{
+		{name: "same inbox retained work", backlog: 2, byInbox: map[string]int64{p158MailboxID: 2}, want: true},
+		{name: "only another inbox has work", backlog: 2, byInbox: map[string]int64{"analytics": 2}, want: false},
+		{name: "zero aggregate", backlog: 0, byInbox: map[string]int64{p158MailboxID: 1}, want: false},
+		{name: "no per-inbox map", backlog: 2, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report := p155HealthReport{}
+			report.Metrics.MailboxBacklog = test.backlog
+			report.Metrics.MailboxBacklogByInbox = test.byInbox
+			if got := p158HasRetainedSlideStudioBacklog(report); got != test.want {
+				t.Fatalf("p158HasRetainedSlideStudioBacklog()=%t, want %t", got, test.want)
+			}
+		})
+	}
 }
 
 func p158RequireSafeExternalAncestorChain(t *testing.T, root string) {

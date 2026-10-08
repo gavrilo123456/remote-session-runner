@@ -131,8 +131,7 @@ func p157WaitForSandboxRouter(t *testing.T, socketPath string) {
 	var last any
 	for {
 		report, err := p155ReadHealth(socketPath)
-		if err == nil && report.Readiness == "ready" && report.Metrics.MailboxBacklog == 0 &&
-			p155HealthCheckIs(report, "remote_router/"+p157RemoteProfile, "ready") {
+		if err == nil && p157SandboxRouterReady(report) && report.Metrics.MailboxBacklog == 0 {
 			return
 		}
 		if err != nil {
@@ -144,6 +143,87 @@ func p157WaitForSandboxRouter(t *testing.T, socketPath string) {
 			t.Fatalf("sandbox router did not become ready: %v", last)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// p157SandboxRouterReady is deliberately narrower than the P157/P158
+// quiescence gate. It confirms that the selected route is healthy while a
+// separate live regression proves one new mailbox exchange can finish beside
+// unrelated retained work. It does not make any claim about mailbox drain.
+func p157SandboxRouterReady(report p155HealthReport) bool {
+	return report.Readiness == "ready" &&
+		p155HealthCheckIs(report, "remote_router/"+p157RemoteProfile, "ready")
+}
+
+func p157WaitForSandboxRouterReady(t *testing.T, socketPath string) p155HealthReport {
+	t.Helper()
+	deadline := time.Now().Add(45 * time.Second)
+	var last any
+	for {
+		report, err := p155ReadHealth(socketPath)
+		if err == nil && p157SandboxRouterReady(report) {
+			return report
+		}
+		if err != nil {
+			last = err
+		} else {
+			last = report
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sandbox router did not become route-ready: %v", last)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestP157SandboxRouterReady(t *testing.T) {
+	tests := []struct {
+		name           string
+		readiness      string
+		checks         []p155HealthCheck
+		mailboxBacklog int64
+		want           bool
+	}{
+		{
+			name:      "ready with no backlog",
+			readiness: "ready",
+			checks:    []p155HealthCheck{{Component: "remote_router/sandbox-host", State: "ready"}},
+			want:      true,
+		},
+		{
+			name:           "ready with retained backlog",
+			readiness:      "ready",
+			checks:         []p155HealthCheck{{Component: "remote_router/sandbox-host", State: "ready"}},
+			mailboxBacklog: 2,
+			want:           true,
+		},
+		{
+			name:      "wrong route",
+			readiness: "ready",
+			checks:    []p155HealthCheck{{Component: "remote_router/linux-host", State: "ready"}},
+			want:      false,
+		},
+		{
+			name:      "degraded sandbox route",
+			readiness: "ready",
+			checks:    []p155HealthCheck{{Component: "remote_router/sandbox-host", State: "degraded"}},
+			want:      false,
+		},
+		{
+			name:      "ingress not ready",
+			readiness: "degraded",
+			checks:    []p155HealthCheck{{Component: "remote_router/sandbox-host", State: "ready"}},
+			want:      false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report := p155HealthReport{Readiness: test.readiness, Checks: test.checks}
+			report.Metrics.MailboxBacklog = test.mailboxBacklog
+			if got := p157SandboxRouterReady(report); got != test.want {
+				t.Fatalf("p157SandboxRouterReady()=%t, want %t", got, test.want)
+			}
+		})
 	}
 }
 

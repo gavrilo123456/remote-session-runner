@@ -42,6 +42,29 @@ regression (B008-P6) passed. The recovery and attestation procedures below are
 operating instructions; following one does not prove a later Runner revision
 is installed or that a separate incident is resolved.
 
+### Route-only mailbox check while unrelated receipts remain
+
+The normal P158 gate deliberately requires a fully drained Mac mailbox. Pair
+it with a separate sandbox P128 check when zero host work also needs proof. Do
+not weaken or reinterpret either gate when historical accepted receipts are
+correctly retained inside their bounded uncertainty window. To prove that one
+fresh `slidestud-io` request can still use its configured `sandbox-host`
+default beside retained `slidestud-io` backlog, run this separate opt-in check
+on the Mac:
+
+```sh
+# Mac — tomasz.walczuk
+cd /Users/tomasz.walczuk/projects/remote-session-runner
+make test-p158-slidestud-mailbox-with-backlog
+```
+
+It uses the native marker-last client, omits target fields, proves its own
+terminal response, complete event stream, ACK, and request-pair consumption.
+It records the aggregate and per-inbox backlog before and after the request.
+It neither ACKs, cancels, recovers, nor changes unrelated receipts. A pass is
+route-only evidence: it does **not** pass P158's zero-backlog gate or P128's
+zero-work host gate.
+
 The shared-worker source tests and installer-preflight tests are likewise not
 live-host evidence. They do not prove that a particular LaunchAgent or
 `runnerd.service` has the reviewed revision, owns the runtime records, or has
