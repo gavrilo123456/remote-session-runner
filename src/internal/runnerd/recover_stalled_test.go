@@ -2,12 +2,28 @@ package runnerd
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/store"
 )
+
+func TestRunnerdRecoverStalledAuthorityOpenRejectsMissingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "remote.db")
+	database, err := openRunnerdRecoveryAuthority(context.Background(), path)
+	if database != nil {
+		_ = database.Close()
+		t.Fatal("runnerd recovery opened a missing authority")
+	}
+	if !errors.Is(err, store.ErrDatabaseMissing) {
+		t.Fatalf("runnerd recovery missing authority error=%v, want %v", err, store.ErrDatabaseMissing)
+	}
+}
 
 func TestRunRecoverStalledRequiresExplicitApply(t *testing.T) {
 	var stdout, stderr bytes.Buffer

@@ -20,9 +20,10 @@ build_ldflags=''
 controlled_restart_mode=0
 mac_recover_stalled_mode=0
 mac_recovery_pairs=''
+mac_recovery_sessions=''
 
 usage() {
-	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml] [--b011-controlled-restart] [--recover-stalled --lost-pair SESSION_ID:COMMAND_ID [...]]" >&2
+	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml] [--b011-controlled-restart] [--recover-stalled [--lost-pair SESSION_ID:COMMAND_ID ...] [--lost-session SESSION_ID ...]]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -62,6 +63,25 @@ $2"
 			fi
 			shift 2
 			;;
+		--lost-session)
+			if [ "$#" -lt 2 ]; then
+				usage
+				exit 2
+			fi
+			case "$2" in
+				*[!a-z0-9-]*|'')
+					printf '%s\n' 'invalid --lost-session' >&2
+					exit 2
+					;;
+			esac
+			if [ -n "$mac_recovery_sessions" ]; then
+				mac_recovery_sessions="$mac_recovery_sessions
+$2"
+			else
+				mac_recovery_sessions=$2
+			fi
+			shift 2
+			;;
 		--help)
 			usage
 			exit 0
@@ -77,12 +97,12 @@ if [ "$controlled_restart_mode" -ne 0 ] && [ "$mac_recover_stalled_mode" -ne 0 ]
 	printf '%s\n' 'Controlled restart and stalled recovery cannot be combined.' >&2
 	exit 2
 fi
-if [ "$mac_recover_stalled_mode" -eq 0 ] && [ -n "$mac_recovery_pairs" ]; then
-	printf '%s\n' '--lost-pair requires --recover-stalled.' >&2
+if [ "$mac_recover_stalled_mode" -eq 0 ] && { [ -n "$mac_recovery_pairs" ] || [ -n "$mac_recovery_sessions" ]; }; then
+	printf '%s\n' '--lost-pair and --lost-session require --recover-stalled.' >&2
 	exit 2
 fi
-if [ "$mac_recover_stalled_mode" -ne 0 ] && [ -z "$mac_recovery_pairs" ]; then
-	printf '%s\n' '--recover-stalled requires at least one --lost-pair.' >&2
+if [ "$mac_recover_stalled_mode" -ne 0 ] && [ -z "$mac_recovery_pairs" ] && [ -z "$mac_recovery_sessions" ]; then
+	printf '%s\n' '--recover-stalled requires at least one --lost-pair or --lost-session.' >&2
 	exit 2
 fi
 
@@ -388,13 +408,13 @@ stop_agent_for_config_change() {
 	wait_for_absent_path "$socket"
 }
 
-# run_mac_recover_stalled passes the explicit complete lost-pair set to the
-# staged candidate only after both Mac LaunchAgents have been quiesced. The
-# candidate command proves every selected process boundary, releases only the
-# matching durable capacity, and never reads or replays a stored script. Keep
-# the values as distinct argv entries; the runner-locald command rejects a
-# malformed, duplicate, omitted, or extra pair before it changes authority
-# state.
+# run_mac_recover_stalled passes the explicit complete lost-pair and/or
+# commandless lost-session set to the staged candidate only after both Mac
+# LaunchAgents have been quiesced. The candidate command proves every selected
+# process boundary, releases only matching durable capacity, and never reads or
+# replays a stored script. Keep values as distinct argv entries; runner-locald
+# rejects malformed, duplicate, omitted, or extra recovery inputs before it
+# changes authority state.
 run_mac_recover_stalled() {
 	set -- recover-stalled --config "$config_file" --apply
 	previous_ifs=$IFS
@@ -403,8 +423,37 @@ run_mac_recover_stalled() {
 	for pair in $mac_recovery_pairs; do
 		set -- "$@" --lost-pair "$pair"
 	done
+	for session in $mac_recovery_sessions; do
+		set -- "$@" --lost-session "$session"
+	done
 	IFS=$previous_ifs
 	"$staging_directory/runner-locald" "$@"
+}
+
+# install_staged_recovery_candidate_binaries changes only the stopped LaunchAgent
+# executable paths. The recovery route calls it after it has proved both old
+# processes inert and before it can open or migrate local.db. A recovery
+# refusal therefore cannot revive an older binary against a newer schema.
+install_staged_recovery_candidate_binaries() {
+	for name in runner runner-local runner-locald; do
+		staged="$staging_directory/$name"
+		installed="$service_root/bin/$name"
+		if [ -L "$staged" ] || [ ! -f "$staged" ] || [ ! -x "$staged" ]; then
+			printf 'staged candidate binary is unavailable: %s\n' "$staged" >&2
+			return 1
+		fi
+		candidate_copy="$service_root/bin/.${name}.candidate.$$"
+		if [ -e "$candidate_copy" ] || [ -L "$candidate_copy" ]; then
+			printf 'candidate binary staging path already exists: %s\n' "$candidate_copy" >&2
+			return 1
+		fi
+		if ! cp "$staged" "$candidate_copy" || ! chmod 700 "$candidate_copy" || ! mv -f "$candidate_copy" "$installed"; then
+			rm -f "$candidate_copy" || true
+			printf 'could not install stopped candidate binary: %s\n' "$installed" >&2
+			return 1
+		fi
+	done
+	candidate_binaries_installed=1
 }
 
 # The controlled-restart route is deliberately separate from normal service
@@ -665,6 +714,9 @@ local_was_loaded=0
 locald_was_loaded=0
 mac_recovery_local_pid=''
 mac_recovery_locald_pid=''
+mac_recovery_resume_mode=0
+mac_recovery_candidate_boundary=0
+candidate_binaries_installed=0
 # Set to zero before the recovery route boots out either old LaunchAgent. The
 # EXIT trap may revive the old pair only after both captured old processes are
 # proven inert or absent; otherwise it could create a second writer.
@@ -700,15 +752,21 @@ cleanup_staging() {
 }
 on_exit() {
 	status=$?
-	if [ "$status" -ne 0 ] && [ "$controlled_restart_mode" -eq 1 ] && [ "$controlled_restart_prepare_invoked" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then
+	if [ "$status" -ne 0 ] && [ "$mac_recover_stalled_mode" -eq 1 ] && [ "$mac_recovery_candidate_boundary" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then
+		if [ "$candidate_binaries_installed" -eq 1 ]; then
+			printf '%s\n' 'Stalled Mac recovery left candidate binaries installed and both LaunchAgents stopped; correct the complete evidence set and rerun the same installer command.' >&2
+		else
+			printf '%s\n' 'Stalled Mac candidate-install/recovery boundary was entered; both LaunchAgents remain stopped. Rerun the same installer command after correcting the reported failure.' >&2
+		fi
+	elif [ "$status" -ne 0 ] && [ "$controlled_restart_mode" -eq 1 ] && [ "$controlled_restart_prepare_invoked" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then
 		controlled_restart_refresh_failure_boundary
 	fi
-	if [ "$status" -ne 0 ] && [ "$restore_prior_agents_on_failure" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ] && [ "$mac_recovery_old_process_boundary_confirmed" -eq 1 ]; then
+	if [ "$status" -ne 0 ] && [ "$restore_prior_agents_on_failure" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ] && [ "$mac_recovery_candidate_boundary" -eq 0 ] && [ "$mac_recovery_old_process_boundary_confirmed" -eq 1 ]; then
 		printf '%s\n' 'Install stopped before candidate activation; restoring prior LaunchAgents and active mac.yaml.' >&2
 		if ! restore_prior_agents; then
 			printf '%s\n' 'Restore failed before candidate activation.' >&2
 		fi
-	elif [ "$status" -ne 0 ] && [ "$restore_prior_agents_on_failure" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ] && [ "$mac_recovery_old_process_boundary_confirmed" -eq 0 ]; then
+	elif [ "$status" -ne 0 ] && [ "$restore_prior_agents_on_failure" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ] && [ "$mac_recovery_candidate_boundary" -eq 0 ] && [ "$mac_recovery_old_process_boundary_confirmed" -eq 0 ]; then
 		printf '%s\n' 'Stalled recovery stopped before the old service-process boundary was proven; prior LaunchAgents were not restarted automatically.' >&2
 	elif [ "$status" -ne 0 ] && [ "$candidate_activation_started" -eq 1 ]; then
 		if [ "$candidate_config_handed_off" -eq 1 ]; then
@@ -878,30 +936,46 @@ if [ "$mac_recover_stalled_mode" -eq 1 ]; then
 	# This explicit offline route is intentionally narrower than a normal
 	# refresh: it needs the old process identities before bootout, so it can
 	# prove no old Router/locald writer survives into authority repair.
-	mac_recovery_local_pid=$(capture_loaded_agent_pid com.remote-session-runner.local) || exit 1
-	mac_recovery_locald_pid=$(capture_loaded_agent_pid com.remote-session-runner.locald) || exit 1
+	if [ "$local_was_loaded" -eq 1 ] && [ "$locald_was_loaded" -eq 1 ]; then
+		mac_recovery_local_pid=$(capture_loaded_agent_pid com.remote-session-runner.local) || exit 1
+		mac_recovery_locald_pid=$(capture_loaded_agent_pid com.remote-session-runner.locald) || exit 1
+	elif [ "$local_was_loaded" -eq 0 ] && [ "$locald_was_loaded" -eq 0 ] \
+		&& [ ! -e "$service_root/run/local-api.sock" ] && [ ! -L "$service_root/run/local-api.sock" ] \
+		&& [ ! -e "$service_root/run/locald.sock" ] && [ ! -L "$service_root/run/locald.sock" ]; then
+		# A prior candidate-first recovery refusal deliberately leaves this
+		# stopped boundary. It is safe to rebuild and retry the same exact set.
+		mac_recovery_resume_mode=1
+	else
+		printf '%s\n' 'Stalled recovery requires both old LaunchAgents loaded, or both unloaded with both private sockets absent for a safe retry.' >&2
+		exit 1
+	fi
 fi
 # Until the candidate begins replacing active artifacts, any failure restores
 # exactly the pre-install LaunchAgent state. Set this before stopping either
 # job so a failure while quiescing the second job also restarts the first.
 restore_prior_agents_on_failure=1
-if [ "$mac_recover_stalled_mode" -eq 1 ]; then
-	# Record this before the first bootout. A signal or shell failure immediately
-	# afterward must not cause the EXIT trap to bootstrap a second old process.
-	mac_recovery_old_process_boundary_confirmed=0
-fi
-stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"
-if [ "$mac_recover_stalled_mode" -eq 1 ]; then
-	if ! wait_for_inert_or_absent_agent_pid "$mac_recovery_local_pid" com.remote-session-runner.local; then
-		exit 1
+if [ "$mac_recover_stalled_mode" -eq 1 ] && [ "$mac_recovery_resume_mode" -eq 1 ]; then
+	# The retry path accepts only the stopped boundary left by a prior candidate
+	# recovery attempt. It never tries to infer an old process boundary.
+	wait_for_absent_path "$service_root/run/local-api.sock"
+	wait_for_absent_path "$service_root/run/locald.sock"
+else
+	if [ "$mac_recover_stalled_mode" -eq 1 ]; then
+		# Record this before the first bootout. A signal or shell failure immediately
+		# afterward must not cause the EXIT trap to bootstrap a second old process.
+		mac_recovery_old_process_boundary_confirmed=0
 	fi
-	stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"
-	if ! wait_for_inert_or_absent_agent_pid "$mac_recovery_locald_pid" com.remote-session-runner.locald; then
-		exit 1
+	stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"
+	if [ "$mac_recover_stalled_mode" -eq 1 ]; then
+		if ! wait_for_inert_or_absent_agent_pid "$mac_recovery_local_pid" com.remote-session-runner.local; then
+			exit 1
+		fi
+		stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"
+		if ! wait_for_inert_or_absent_agent_pid "$mac_recovery_locald_pid" com.remote-session-runner.locald; then
+			exit 1
+		fi
+		mac_recovery_old_process_boundary_confirmed=1
 	fi
-	# The old pair is now inert/absent. A later recovery refusal can safely
-	# restore the original services rather than leave ingress unavailable.
-	mac_recovery_old_process_boundary_confirmed=1
 fi
 if [ "$controlled_restart_mode" -eq 1 ]; then
 	case "$controlled_restart_state" in
@@ -950,12 +1024,19 @@ if [ "$controlled_restart_mode" -eq 1 ]; then
 	fi
 else
 	if [ "$mac_recover_stalled_mode" -eq 1 ]; then
-		# The staged recovery command has its own exact offline inventory gate.
-		# It may run only after ingress and the old local executor have both
-		# stopped and their prior process boundaries are inert, so no worker can
-		# race the explicit lost-pair proof/release.
+		# This is an irreversible candidate boundary: recovery may migrate local.db.
+		# Install the stopped candidate before it can open the authority and never
+		# revive the older executable after this point.
+		mac_recovery_candidate_boundary=1
+		if ! install_staged_recovery_candidate_binaries; then
+			printf '%s\n' 'Could not install the stopped Mac recovery candidate; leaving both LaunchAgents stopped.' >&2
+			exit 1
+		fi
+		# The recovery command has its own exact offline inventory gate. It may run
+		# only after ingress and the old local executor are inert, so no worker can
+		# race the explicit lost-runtime proof/release.
 		if ! run_mac_recover_stalled; then
-			printf '%s\n' 'Stalled Mac recovery did not complete; restoring the prior LaunchAgents.' >&2
+			printf '%s\n' 'Stalled Mac recovery did not complete; leaving candidate binaries installed and both LaunchAgents stopped.' >&2
 			exit 1
 		fi
 	fi
@@ -989,9 +1070,11 @@ if [ -n "$config_stage" ]; then
 	config_stage=''
 fi
 candidate_config_handed_off=1
-for name in runner runner-local runner-locald; do
-	mv -f "$staging_directory/$name" "$service_root/bin/$name"
-done
+if [ "$candidate_binaries_installed" -eq 0 ]; then
+	for name in runner runner-local runner-locald; do
+		mv -f "$staging_directory/$name" "$service_root/bin/$name"
+	done
+fi
 
 for name in com.remote-session-runner.locald com.remote-session-runner.local; do
 	plist="$repo_root/deploy/macos/launchagents/$name.plist"

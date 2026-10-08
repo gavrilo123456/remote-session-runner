@@ -15,6 +15,12 @@ import (
 	"remote-session-runner/src/internal/store"
 )
 
+// openRunnerdRecoveryAuthority is deliberately the existing-authority-only
+// migration path. recover-stalled already holds the runnerd lifecycle lock and
+// has proven the service stopped; it must never create a missing authority
+// while attempting offline repair.
+var openRunnerdRecoveryAuthority = store.OpenExistingOfflineMaintenanceMigrating
+
 // runRecoverStalled is an offline repair for an explicit complete set of
 // already-terminal records. It has no ingress listener or dispatcher and it
 // never reads or replays stored scripts. The caller must stop runnerd first;
@@ -88,7 +94,7 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runnerd recover-stalled: host process profile is not ready")
 		return 1
 	}
-	database, err := store.Open(ctx, settings.Database)
+	database, err := openRunnerdRecoveryAuthority(ctx, settings.Database)
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd recover-stalled: open authority database: %v\n", err)
 		return 1

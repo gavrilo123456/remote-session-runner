@@ -512,17 +512,21 @@ affected state and expected effect.
 ### Explicit Mac offline recovery for a fully idle retained-lost set
 
 Use this procedure only when a fresh inventory proves that **no work must
-survive** and every retained Mac session/command capacity record belongs to a
-known terminal `lost` pair. It is a narrow offline maintenance route for a
-fully idle Mac authority. It is not a mailbox operation, public API, normal
-Runner CLI command, or a way to clear a queued request.
+survive** and every retained Mac capacity record belongs to a known terminal
+`lost` runtime. Use a pair only for a real terminal lost command; use a session
+only for a terminal lost one-off job with no persisted command row. It is a
+narrow offline maintenance route for a fully idle Mac authority. It is not a
+mailbox operation, public API, normal Runner CLI command, or a way to clear a
+queued request.
 
-Before starting, preserve the complete inventory. Every retained terminal-lost
-session/command pair must be supplied as an exact `--lost-pair` argument. The
-recovery refuses an extra, omitted, duplicate, nonterminal, or mismatched pair;
-any running command, active unknown reservation, queued command, resumable
-one-off job, unreadable database, or uncertain runtime ownership also refuses
-the operation. Do not use it while any request or command needs to survive.
+Before starting, preserve the complete inventory. Supply every retained
+terminal-lost session/command pair as an exact `--lost-pair` argument. Supply
+`--lost-session` only for a terminal lost one-off session that never received a
+persisted command row. The recovery refuses an extra, omitted, duplicate,
+nonterminal, or mismatched input; any running command, active unknown
+reservation, queued command, resumable one-off job, unreadable database, or
+uncertain runtime ownership also refuses the operation. Do not use it while any
+request or command needs to survive.
 
 Run only the installer-mediated command from the authoritative Mac checkout:
 
@@ -531,7 +535,8 @@ Run only the installer-mediated command from the authoritative Mac checkout:
 cd /Users/tomasz.walczuk/projects/remote-session-runner
 deploy/macos/install-launchagents.sh --recover-stalled \
   --lost-pair 'sess-EXACT-LOST-1:cmd-EXACT-LOST-1' \
-  --lost-pair 'sess-EXACT-LOST-2:cmd-EXACT-LOST-2'
+  --lost-pair 'sess-EXACT-LOST-2:cmd-EXACT-LOST-2' \
+  --lost-session 'sess-EXACT-COMMANDLESS-LOST-3'
 ```
 
 Do **not** run `launchctl` manually, call `runner-locald recover-stalled` with
@@ -541,26 +546,31 @@ and ownership checks.
 
 The installer stages the candidate binaries, captures the old Router and locald
 process identities, stops ingress and then locald, and proves that both old
-processes have exited or are inert before it invokes the staged shared recovery
-operation. The recovery holds an exclusive lifecycle lock, checks the complete
-durable inventory, proves the selected runtime cleanup boundary, and releases
-only the supplied pairs. It never reads, starts, or replays a stored script.
+processes have exited or are inert. It installs the stopped candidate binaries
+before it invokes shared recovery, so a schema migration cannot be followed by
+a restart of an older executable. The recovery holds an exclusive lifecycle
+lock, checks the complete durable inventory, proves the selected runtime cleanup
+boundary, and releases only the supplied pairs/sessions. It never reads, starts,
+or replays a stored script.
 
 If paired capacity was already released but the durable marker/workspace
 finalization remains pending, retry the **same** installer command only when
-every pending pair is again supplied explicitly and the fresh idle inventory
+every pending pair/session is again supplied explicitly and the fresh idle inventory
 still passes. The retry finalizes only that retained cleanup; it does not signal
-the runtime again or replay work. A missing, extra, or unrelated pending pair
+the runtime again or replay work. A missing, extra, or unrelated pending input
 is a refusal. The current BUG-014 inventory has no pending finalization.
 
 On success, its postflight requires zero active session slots, zero active
 command slots, zero running commands, zero live reservations, and zero
 nonterminal jobs before the installer performs the ordinary candidate restart.
-If any check fails, stop at the reported sanitized reason and investigate; do
-not try another recovery mode or manually change the state. After restart,
-prove the installed revision and all-zero Mac authority status, then use one
-fresh harmless mailbox request for live acceptance. Preserve the old lost
-records and do not reuse their request or idempotency identities.
+Before it enters the stopped-candidate handoff, a refusal may restore the
+active services. After that boundary, a refusal deliberately leaves both
+LaunchAgents stopped. Correct the complete evidence set, confirm both labels
+and both private sockets are absent, then rerun the **same** installer command;
+do not start an older binary, invent a command, or manually change SQLite.
+After restart, prove the installed revision and all-zero Mac authority status,
+then use one fresh harmless mailbox request for live acceptance. Preserve the
+old lost records and do not reuse their request or idempotency identities.
 
 ### Linux-only queue-preserving online retained-capacity recovery
 
@@ -665,45 +675,28 @@ procedure above.
 - A terminal `lost` command can retain capacity until the runtime process group
   is proven gone. Do not release that capacity with SQLite edits or a generic
   service restart. When P128 reports exactly one retained slot and no other
-  active sessions, running commands, or unfinished jobs, use the narrow
-  recovery command with the exact session and command IDs obtained during the
+  active sessions, running commands, or unfinished jobs, use the guarded
+  installer recovery with the exact session and command IDs obtained during the
   investigation:
 
   ```sh
   # Selected Ubuntu host — ubuntu
-  (
-    set -eu
-    cd /home/ubuntu/projects/remote-session-runner
-    sudo systemctl stop runnerd.service
-    state="$(sudo systemctl show --property=ActiveState --value runnerd.service)"
-    test "$state" = inactive || test "$state" = failed
-
-    root='/home/ubuntu/.local/share/remote-session-runner'
-    GOTOOLCHAIN=local "$root/toolchains/go1.27.1/bin/go" run ./src/cmd/runnerd \
-      recover-lost \
-      --config "$root/config/linux.yaml" \
-      --session-id 'sess-EXACT-ID' \
-      --command-id 'cmd-EXACT-ID'
-
-    make test-p128-host-status
-    deploy/linux/install-systemd-service.sh
-  )
+  cd /home/ubuntu/projects/remote-session-runner
+  deploy/linux/install-systemd-service.sh --recover-stalled \
+    --lost-pair 'sess-EXACT-ID:cmd-EXACT-ID'
   ```
 
-  `recover-lost` requires an inactive or failed `runnerd.service` with no
-  remaining cgroup processes. Its nonblocking lifecycle lock also makes a
-  concurrent service start exit with status 78, so the explicit P128 check
-  remains the gate before installation restarts the service. It validates one
-  matching `lost` session/command with no other nonterminal command or retained
-  capacity; it never executes or replays the stored script. It first records a
-  synced owner-only process-cleanup proof while retaining the workspace and
-  ownership marker, then atomically releases both capacity records, then removes
-  that workspace and marker. It leaves the command/session state as `lost` and
-  preserves the retained event and output prefix. If finalization fails after
-  the paired release, leave the service stopped and rerun the exact command: it
-  will finalize only the retained marker/workspace and will not signal a PID
-  again. An unconfirmed pre-release cleanup is a failure; leave capacity
-  retained and investigate the ownership boundary.
+  The installer stages a schema-compatible candidate before it stops the
+  service. It then proves the stopped cgroup and private-socket boundary,
+  validates the complete durable inventory, and runs the existing lost-runtime
+  recovery. It requires the P128 zero-work result before starting the candidate.
+  It validates the matching `lost` session/command and never executes or replays
+  the stored script. If finalization fails after the paired release, it leaves
+  the service stopped; rerun the identical installer command only after fresh
+  evidence confirms the same complete inventory. It finalizes only the retained
+  marker/workspace and does not signal a PID again. An unconfirmed pre-release
+  cleanup is a failure; leave capacity retained and investigate the ownership
+  boundary.
 - When P128 reports a complete set of several terminal `lost` records plus
   stranded one-off jobs whose commands are already `cancelled`, use the batch
   repair only with **every** affected ID. It is for recovery records, not for
@@ -717,38 +710,27 @@ procedure above.
 
   ```sh
   # Selected Ubuntu host — ubuntu
-  (
-    set -eu
-    cd /home/ubuntu/projects/remote-session-runner
-    sudo systemctl stop runnerd.service
-    state="$(sudo systemctl show --property=ActiveState --value runnerd.service)"
-    test "$state" = inactive || test "$state" = failed
-
-    root='/home/ubuntu/.local/share/remote-session-runner'
-    GOTOOLCHAIN=local "$root/toolchains/go1.27.1/bin/go" run ./src/cmd/runnerd \
-      recover-stalled \
-      --config "$root/config/linux.yaml" \
-      --apply \
-      --job-id 'job-EXACT-CANCELLED-JOB-1' \
-      --job-id 'job-EXACT-CANCELLED-JOB-2' \
-      --lost-pair 'sess-EXACT-LOST-1:cmd-EXACT-LOST-1' \
-      --lost-pair 'sess-EXACT-LOST-2:cmd-EXACT-LOST-2'
-
-    # Required before an installer can restart runnerd.
-    make test-p128-host-status
-    deploy/linux/install-systemd-service.sh
-  )
+  cd /home/ubuntu/projects/remote-session-runner
+  deploy/linux/install-systemd-service.sh --recover-stalled \
+    --job-id 'job-EXACT-CANCELLED-JOB-1' \
+    --job-id 'job-EXACT-CANCELLED-JOB-2' \
+    --lost-pair 'sess-EXACT-LOST-1:cmd-EXACT-LOST-1' \
+    --lost-pair 'sess-EXACT-LOST-2:cmd-EXACT-LOST-2' \
+    --lost-session 'sess-EXACT-COMMANDLESS-3'
   ```
 
-  `recover-stalled` settles the proven cancelled jobs in one SQLite
-  transaction. It then proves every listed lost process boundary while all
+  The installer stages the candidate before stopping the current service, so a
+  schema migration followed by a refusal never leaves an older incompatible
+  binary selected. Its `recover-stalled` step settles the proven cancelled jobs
+  in one SQLite transaction, proves every listed lost process boundary while
   capacity remains held, releases all listed slot/reservation pairs in one
   transaction, and only then removes proven owner markers and workspaces. If
-  any proof or database write fails, it leaves lost capacity retained. If a
-  final marker cleanup fails after release, leave the service stopped and run
-  the identical command again; the retry finalizes only the retained marker
-  and does not signal a PID or replay work. A successful command still needs
-  the explicit P128 zero-work result before installation or service start.
+  any proof or database write fails, it leaves the service stopped with the
+  candidate in place and lost capacity retained. If a final marker cleanup fails
+  after release, rerun the identical installer command only after fresh evidence
+  confirms the complete inventory; the retry finalizes only the retained marker
+  and does not signal a PID or replay work. The installer itself requires the
+  P128 zero-work result before it starts the candidate.
 - Software-crash recovery is evidenced. Physical power-loss survival remains
   unverified until a coordinated physical power-cut test passes.
 

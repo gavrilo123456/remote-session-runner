@@ -287,8 +287,11 @@ The narrow offline recovery extension is now implemented in source. It:
    recover-stalled`. It accepts only every selected terminal lost session whose
    matching one-off job has no command projection, no command/event/slot rows,
    and an unreleased authority reservation. It does not read the stored script.
-   `runner-locald recover-stalled` accepts the same explicit input for
-   Mac-local recovery.
+   The supported Mac and Linux installers forward the same explicit input to
+   `runner-locald` and `runnerd` recovery respectively. The Linux route also
+   forwards exact `--job-id` inputs for the pre-existing narrow cancelled-job
+   settlement case; all offline Linux recovery therefore stages its candidate
+   before it stops the service.
 2. Requires the Linux service to be stopped, the complete selected inventory to match
    all live reservations and slots, and the existing Linux runtime ownership
    audit to attribute only the supplied lost sessions and pairs.
@@ -306,7 +309,7 @@ The narrow offline recovery extension is now implemented in source. It:
    for the exact eligible shape, missing-marker refusal, atomic rollback,
    restart finalization, and mixed ordinary-pair/session-only inventory.
 6. Provides `OpenExistingOfflineMaintenanceMigrating` for the stopped,
-   lifecycle-locked Mac repair path. It first proves that the owner-only
+   lifecycle-locked Mac and Linux repair paths. It first proves that the owner-only
    authority already exists and has an untampered schema-34 or schema-35
    migration ledger. It then upgrades schema 34 to schema 35 without allowing
    creation of a missing authority database.
@@ -327,13 +330,27 @@ while the host recovery gate is prepared.
 - Startup retries both finalization ledgers before ownership audit. Metadata GC
   excludes either kind of pending finalization record, so a crash cannot turn
   a delayed marker cleanup into an unrelated retention-GC failure.
-- The complete Go suite passed on the Mac on 2026-10-08: `make test`.
-  Focused `store`, `execution`, `runnerd`, and `runnerlocald` packages also
-  passed after the final GC regression.
+- Installer regressions check the Linux candidate-stage → stop → recovery →
+  P128 → start order, the Linux `--job-id`/pair/session forwarding, and the
+  Mac commandless-session forwarding, candidate handoff, no-rollback boundary,
+  and stopped-boundary retry route.
+- On the Mac on 2026-10-08, both installer scripts passed `sh -n`; focused
+  `store`, `execution`, `runnerd`, `runnerlocald`, and `runnerlocal` tests and
+  the complete `make test` suite passed after the final installer changes.
 
 Host installation, retained-capacity recovery, service restart, and a fresh
 harmless mailbox acceptance test are still pending. Neither historical sandbox
 request has been replayed, ACKed, cancelled, or manually released.
+
+The recovery installer routes are intentionally the only documented offline
+entry points. Linux installs its compatible candidate before it stops
+`runnerd.service`. Mac stages its candidate, proves the old LaunchAgents inert,
+then installs the stopped candidate before recovery can migrate `local.db`.
+Neither route can therefore revive a prior binary after an authority migration.
+A recovery refusal leaves the Linux service or both Mac LaunchAgents stopped
+at the candidate-install/recovery boundary. Operators must correct the complete
+evidence set and rerun the same installer command rather than manually starting
+an older binary.
 
 This recovery does not claim that either command completed. The commandless
 jobs remain `lost`; when the Router reads them, it follows the bounded

@@ -21,6 +21,97 @@ source_origin_revision=''
 build_ldflags=''
 candidate_startup_attempted=0
 candidate_service_quiesced=0
+linux_recover_stalled_mode=0
+linux_recovery_jobs=''
+linux_recovery_pairs=''
+linux_recovery_sessions=''
+
+usage() {
+	printf '%s\n' "usage: $0 [--recover-stalled [--job-id JOB_ID ...] [--lost-pair SESSION_ID:COMMAND_ID ...] [--lost-session SESSION_ID ...]]" >&2
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--recover-stalled)
+			linux_recover_stalled_mode=1
+			shift
+			;;
+		--job-id)
+			if [ "$#" -lt 2 ]; then
+				usage
+				exit 2
+			fi
+			case "$2" in
+				*[!a-z0-9-]*|'')
+					printf '%s\n' 'invalid --job-id' >&2
+					exit 2
+					;;
+			esac
+			if [ -n "$linux_recovery_jobs" ]; then
+				linux_recovery_jobs="$linux_recovery_jobs
+$2"
+			else
+				linux_recovery_jobs=$2
+			fi
+			shift 2
+			;;
+		--lost-pair)
+			if [ "$#" -lt 2 ]; then
+				usage
+				exit 2
+			fi
+			case "$2" in
+				*[!a-z0-9:-]*|'')
+					printf '%s\n' 'invalid --lost-pair' >&2
+					exit 2
+					;;
+			esac
+			if [ -n "$linux_recovery_pairs" ]; then
+				linux_recovery_pairs="$linux_recovery_pairs
+$2"
+			else
+				linux_recovery_pairs=$2
+			fi
+			shift 2
+			;;
+		--lost-session)
+			if [ "$#" -lt 2 ]; then
+				usage
+				exit 2
+			fi
+			case "$2" in
+				*[!a-z0-9-]*|'')
+					printf '%s\n' 'invalid --lost-session' >&2
+					exit 2
+					;;
+			esac
+			if [ -n "$linux_recovery_sessions" ]; then
+				linux_recovery_sessions="$linux_recovery_sessions
+$2"
+			else
+				linux_recovery_sessions=$2
+			fi
+			shift 2
+			;;
+		--help)
+			usage
+			exit 0
+			;;
+		*)
+			usage
+			exit 2
+			;;
+	esac
+done
+
+if [ "$linux_recover_stalled_mode" -eq 0 ] && { [ -n "$linux_recovery_jobs" ] || [ -n "$linux_recovery_pairs" ] || [ -n "$linux_recovery_sessions" ]; }; then
+	printf '%s\n' '--job-id, --lost-pair, and --lost-session require --recover-stalled.' >&2
+	exit 2
+fi
+if [ "$linux_recover_stalled_mode" -ne 0 ] && [ -z "$linux_recovery_jobs" ] && [ -z "$linux_recovery_pairs" ] && [ -z "$linux_recovery_sessions" ]; then
+	printf '%s\n' '--recover-stalled requires at least one --job-id, --lost-pair, or --lost-session.' >&2
+	exit 2
+fi
 
 if [ "$(uname -s)" != Linux ] || [ "$(id -un)" != ubuntu ] || [ "$uid" != 1001 ]; then
 	printf '%s\n' 'install-systemd-service.sh must run on the selected Linux host as ubuntu (uid 1001)' >&2
@@ -111,6 +202,28 @@ quiesce_candidate_service_after_start_failure() {
 	return 1
 }
 
+# stop_runnerd_for_offline_recovery stops only the existing service and waits
+# for the listener boundary to disappear. The staged candidate's
+# recover-stalled command separately proves systemd's empty-cgroup state while
+# holding its lifecycle lock, so a concurrent service start cannot race the
+# ownership proof or capacity release.
+stop_runnerd_for_offline_recovery() {
+	if ! sudo -n systemctl stop runnerd.service; then
+		printf '%s\n' 'could not stop runnerd.service for offline recovery' >&2
+		return 1
+	fi
+	for attempt in $(seq 1 40); do
+		if ! sudo -n systemctl is-active --quiet runnerd.service \
+			&& [ ! -e "$service_root/run/runnerd.sock" ] \
+			&& [ ! -L "$service_root/run/runnerd.sock" ]; then
+			return 0
+		fi
+		sleep 0.25
+	done
+	printf '%s\n' 'runnerd.service or its private socket remained active before offline recovery' >&2
+	return 1
+}
+
 require_source_checkout
 
 ensure_private_directory() {
@@ -164,6 +277,39 @@ require_no_active_work() {
 		make -C "$repo_root" test-p128-host-status
 }
 
+run_linux_recover_stalled() {
+	set -- recover-stalled --config "$service_root/config/linux.yaml" --apply
+	previous_ifs=$IFS
+	IFS='
+'
+	for job in $linux_recovery_jobs; do
+		set -- "$@" --job-id "$job"
+	done
+	for pair in $linux_recovery_pairs; do
+		set -- "$@" --lost-pair "$pair"
+	done
+	for session in $linux_recovery_sessions; do
+		set -- "$@" --lost-session "$session"
+	done
+	IFS=$previous_ifs
+	"$service_root/bin/runnerd" "$@"
+}
+
+# install_candidate replaces only the on-disk candidate. It does not signal or
+# restart the running service. In offline recovery mode this happens before
+# stopping the old service, so a schema migration followed by a refused
+# recovery never leaves the unit pointing at an old binary that cannot reopen
+# the migrated authority.
+install_candidate() {
+	mv -f "$temporary" "$service_root/bin/runnerd"
+	temporary=''
+	install -m 700 "$entrypoint_source" "$service_root/bin/runnerd-entrypoint.sh"
+	sudo -n install -o root -g root -m 644 "$unit_source" /etc/systemd/system/runnerd.service
+	sudo -n systemctl daemon-reload
+	sudo -n systemd-analyze verify /etc/systemd/system/runnerd.service
+	sudo -n systemctl enable runnerd.service
+}
+
 # Replacing a binary does not replace an already-running service process.
 # Use the checked-in read-only status gate before beginning an active-service
 # update, then repeat it immediately before the controlled restart.
@@ -199,20 +345,35 @@ trap 'exit 143' TERM
 was_active=0
 if sudo -n systemctl is-active --quiet runnerd.service; then
 	was_active=1
-	require_no_active_work
+	if [ "$linux_recover_stalled_mode" -eq 0 ]; then
+		require_no_active_work
+	fi
 fi
 
 (cd "$repo_root" && GOTOOLCHAIN=local GOOS=linux GOARCH="$go_arch" GOCACHE="$go_build_cache" GOMODCACHE="$go_mod_cache" \
 	"$go_bin" build -ldflags "$build_ldflags" -o "$temporary" ./src/cmd/runnerd)
 chmod 700 "$temporary"
-mv -f "$temporary" "$service_root/bin/runnerd"
-temporary=''
-install -m 700 "$entrypoint_source" "$service_root/bin/runnerd-entrypoint.sh"
-
-sudo -n install -o root -g root -m 644 "$unit_source" /etc/systemd/system/runnerd.service
-sudo -n systemctl daemon-reload
-sudo -n systemd-analyze verify /etc/systemd/system/runnerd.service
-sudo -n systemctl enable runnerd.service
+if [ "$linux_recover_stalled_mode" -eq 1 ]; then
+	# Put the schema-compatible candidate in the service path before recovery.
+	# The old running process keeps its open executable until the explicit stop.
+	install_candidate
+	if ! stop_runnerd_for_offline_recovery; then
+		exit 1
+	fi
+	# The common start path must use start, not restart, after this explicit stop.
+	was_active=0
+	if ! run_linux_recover_stalled; then
+		printf '%s\n' 'Stalled Linux recovery did not complete; leaving runnerd.service stopped.' >&2
+		exit 1
+	fi
+	# The candidate has now migrated any supported existing authority and proved
+	# all retained capacity is released. This is the same zero-work gate used by
+	# an ordinary active-service update, but it runs before a candidate service
+	# start.
+	require_no_active_work
+else
+	install_candidate
+fi
 if [ "$was_active" -eq 1 ]; then
 	require_no_active_work
 	candidate_startup_attempted=1

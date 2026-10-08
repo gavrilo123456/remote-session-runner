@@ -87,6 +87,16 @@ installer then runs its final read-only retained-mailbox check. A schema-24
 database is read as implicit `default` during that check; no migration or
 registry write occurs before the activation boundary.
 
+For the exceptional fully idle retained-lost repair, use only
+`install-launchagents.sh --recover-stalled` as documented in
+[`docs/setup.md`](../../docs/setup.md#approved-mac-offline-recovery-when-no-work-must-survive).
+After the old Router and locald are proven inert, the installer installs the
+stopped candidate binaries before recovery can migrate `local.db`. A refusal at
+that handoff leaves both LaunchAgents stopped. Confirm that both labels and
+their private sockets are absent, correct the complete recovery evidence, and
+rerun the identical installer command; do not start an older binary or edit
+SQLite.
+
 At activation, the complete candidate root set is registered durably before a
 missing external mailbox tree is created. Runner creates or verifies only the
 configured root and its `inbox`, `outbox`, `events`, `acks`, and `diagnostics`

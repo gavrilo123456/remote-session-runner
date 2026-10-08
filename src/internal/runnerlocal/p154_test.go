@@ -814,14 +814,22 @@ func TestBUG013InstallerRunsExplicitMacStalledRecoveryBeforeNormalRestartPreflig
 	for _, required := range []string{
 		"--recover-stalled",
 		"--lost-pair",
+		"--lost-session",
+		"mac_recovery_sessions=''",
+		"mac_recovery_resume_mode=0",
+		"mac_recovery_candidate_boundary=0",
 		"run_mac_recover_stalled() {",
+		"install_staged_recovery_candidate_binaries() {",
 		"capture_loaded_agent_pid() {",
 		"wait_for_inert_or_absent_agent_pid() {",
 		"mac_recovery_old_process_boundary_confirmed=0",
 		`set -- recover-stalled --config "$config_file" --apply`,
 		`set -- "$@" --lost-pair "$pair"`,
+		`for session in $mac_recovery_sessions; do`,
+		`set -- "$@" --lost-session "$session"`,
 		"Stalled recovery must use the active mac.yaml",
-		"Stalled Mac recovery did not complete; restoring the prior LaunchAgents.",
+		"Stalled Mac recovery did not complete; leaving candidate binaries installed and both LaunchAgents stopped.",
+		"both unloaded with both private sockets absent for a safe retry.",
 		"prior LaunchAgents were not restarted automatically.",
 	} {
 		if !strings.Contains(text, required) {
@@ -836,7 +844,9 @@ func TestBUG013InstallerRunsExplicitMacStalledRecoveryBeforeNormalRestartPreflig
 		t.Fatalf("could not isolate stalled-recovery installer branch: start=%d end=%d preflight=%d", branchStart, branchEnd, preflight)
 	}
 	branch := text[branchStart:branchEnd]
-	recover := strings.Index(branch, "run_mac_recover_stalled")
+	recover := branchStart + strings.Index(branch, "run_mac_recover_stalled")
+	candidateBoundary := branchStart + strings.Index(branch, "mac_recovery_candidate_boundary=1")
+	installCandidate := branchStart + strings.Index(branch, "if ! install_staged_recovery_candidate_binaries; then")
 	captureLocal := strings.LastIndex(text[:branchStart], `mac_recovery_local_pid=$(capture_loaded_agent_pid com.remote-session-runner.local)`)
 	captureLocalD := strings.LastIndex(text[:branchStart], `mac_recovery_locald_pid=$(capture_loaded_agent_pid com.remote-session-runner.locald)`)
 	boundaryIntent := strings.LastIndex(text[:branchStart], "mac_recovery_old_process_boundary_confirmed=0")
@@ -845,13 +855,60 @@ func TestBUG013InstallerRunsExplicitMacStalledRecoveryBeforeNormalRestartPreflig
 	localdStop := strings.LastIndex(text[:branchStart], `stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"`)
 	waitLocalD := strings.LastIndex(text[:branchStart], `wait_for_inert_or_absent_agent_pid "$mac_recovery_locald_pid" com.remote-session-runner.locald`)
 	boundaryConfirmed := strings.LastIndex(text[:branchStart], "mac_recovery_old_process_boundary_confirmed=1")
-	if captureLocal < 0 || captureLocalD < 0 || boundaryIntent < 0 || ingressStop < 0 || waitLocal < 0 || localdStop < 0 || waitLocalD < 0 || boundaryConfirmed < 0 || recover < 0 || !(captureLocal < captureLocalD && captureLocalD < boundaryIntent && boundaryIntent < ingressStop && ingressStop < waitLocal && waitLocal < localdStop && localdStop < waitLocalD && waitLocalD < boundaryConfirmed && boundaryConfirmed < branchStart && branchStart < preflight) {
-		t.Fatalf("stalled recovery must capture then prove both old process boundaries before repair: capture_local=%d capture_locald=%d boundary_intent=%d ingress_stop=%d wait_local=%d locald_stop=%d wait_locald=%d boundary_confirmed=%d branch=%d preflight=%d recover=%d", captureLocal, captureLocalD, boundaryIntent, ingressStop, waitLocal, localdStop, waitLocalD, boundaryConfirmed, branchStart, preflight, recover)
+	if captureLocal < 0 || captureLocalD < 0 || boundaryIntent < 0 || ingressStop < 0 || waitLocal < 0 || localdStop < 0 || waitLocalD < 0 || boundaryConfirmed < 0 || candidateBoundary < 0 || installCandidate < 0 || recover < 0 || !(captureLocal < captureLocalD && captureLocalD < boundaryIntent && boundaryIntent < ingressStop && ingressStop < waitLocal && waitLocal < localdStop && localdStop < waitLocalD && waitLocalD < boundaryConfirmed && boundaryConfirmed < branchStart && branchStart < candidateBoundary && candidateBoundary < installCandidate && installCandidate < recover && recover < preflight) {
+		t.Fatalf("stalled recovery must capture/prove old boundaries, install candidate, then repair: capture_local=%d capture_locald=%d boundary_intent=%d ingress_stop=%d wait_local=%d locald_stop=%d wait_locald=%d boundary_confirmed=%d branch=%d candidate_boundary=%d install_candidate=%d recover=%d preflight=%d", captureLocal, captureLocalD, boundaryIntent, ingressStop, waitLocal, localdStop, waitLocalD, boundaryConfirmed, branchStart, candidateBoundary, installCandidate, recover, preflight)
 	}
 	if strings.Contains(branch, "controlled_restart_suspend_locald") || strings.Contains(branch, "prepare-controlled-restart") {
 		t.Fatalf("stalled recovery must not enter the B011 queued-work handoff: %s", branch)
 	}
-	unsafeRestoreBranch := `elif [ "$status" -ne 0 ] && [ "$restore_prior_agents_on_failure" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ] && [ "$mac_recovery_old_process_boundary_confirmed" -eq 0 ]; then`
+	recoveryFunctionStart := strings.Index(text, "run_mac_recover_stalled() {")
+	if recoveryFunctionStart < 0 {
+		t.Fatal("could not locate Mac stalled-recovery forwarding function")
+	}
+	recoveryFunctionEnd := strings.Index(text[recoveryFunctionStart:], "\n}\n\n#")
+	if recoveryFunctionEnd < 0 {
+		t.Fatalf("could not isolate Mac stalled-recovery forwarding function end: start=%d end=%d", recoveryFunctionStart, recoveryFunctionEnd)
+	}
+	recoveryFunction := text[recoveryFunctionStart : recoveryFunctionStart+recoveryFunctionEnd]
+	pairForward := strings.Index(recoveryFunction, `set -- "$@" --lost-pair "$pair"`)
+	sessionLoop := strings.Index(recoveryFunction, `for session in $mac_recovery_sessions; do`)
+	sessionForward := strings.Index(recoveryFunction, `set -- "$@" --lost-session "$session"`)
+	candidateRun := strings.Index(recoveryFunction, `"$staging_directory/runner-locald" "$@"`)
+	if pairForward < 0 || sessionLoop < 0 || sessionForward < 0 || candidateRun < 0 || !(pairForward < sessionLoop && sessionLoop < sessionForward && sessionForward < candidateRun) {
+		t.Fatalf("Mac stalled recovery drops or misorders commandless sessions: pair=%d session_loop=%d session_forward=%d candidate=%d", pairForward, sessionLoop, sessionForward, candidateRun)
+	}
+	resumeGuard := `elif [ "$local_was_loaded" -eq 0 ] && [ "$locald_was_loaded" -eq 0 ] \
+		&& [ ! -e "$service_root/run/local-api.sock" ] && [ ! -L "$service_root/run/local-api.sock" ] \
+		&& [ ! -e "$service_root/run/locald.sock" ] && [ ! -L "$service_root/run/locald.sock" ]; then`
+	if !strings.Contains(text, resumeGuard) || !strings.Contains(text, "mac_recovery_resume_mode=1") {
+		t.Fatal("stalled recovery lacks its all-unloaded, socket-absent retry boundary")
+	}
+	installFunctionStart := strings.Index(text, "install_staged_recovery_candidate_binaries() {")
+	if installFunctionStart < 0 {
+		t.Fatal("could not locate Mac candidate install function")
+	}
+	installFunctionEnd := strings.Index(text[installFunctionStart:], "\n}\n\n# The controlled-restart")
+	if installFunctionEnd < 0 {
+		t.Fatalf("could not isolate Mac candidate install function end: start=%d end=%d", installFunctionStart, installFunctionEnd)
+	}
+	installFunction := text[installFunctionStart : installFunctionStart+installFunctionEnd]
+	for _, required := range []string{
+		`candidate_copy="$service_root/bin/.${name}.candidate.$$"`,
+		`cp "$staged" "$candidate_copy"`,
+		`mv -f "$candidate_copy" "$installed"`,
+	} {
+		if !strings.Contains(installFunction, required) {
+			t.Fatalf("Mac candidate install omits stopped-path copy fragment %q", required)
+		}
+	}
+	if strings.Contains(installFunction, "launchctl") {
+		t.Fatalf("Mac candidate install must replace only stopped binary paths: %s", installFunction)
+	}
+	noRollbackGuard := `if [ "$status" -ne 0 ] && [ "$mac_recover_stalled_mode" -eq 1 ] && [ "$mac_recovery_candidate_boundary" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then`
+	if !strings.Contains(text, noRollbackGuard) {
+		t.Fatal("Mac stalled recovery lacks the candidate-boundary no-rollback exit guard")
+	}
+	unsafeRestoreBranch := `elif [ "$status" -ne 0 ] && [ "$restore_prior_agents_on_failure" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ] && [ "$mac_recovery_candidate_boundary" -eq 0 ] && [ "$mac_recovery_old_process_boundary_confirmed" -eq 0 ]; then`
 	unsafeRestoreIndex := strings.Index(text, unsafeRestoreBranch)
 	if unsafeRestoreIndex < 0 {
 		t.Fatal("installer lacks the no-duplicate-process rollback boundary")

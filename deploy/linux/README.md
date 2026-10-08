@@ -53,6 +53,26 @@ refuses the restart when sessions, commands, unreleased slots, or unfinished
 jobs are present. Plan a maintenance window because the gate is a snapshot and
 normal graceful shutdown handles work admitted afterward truthfully.
 
+For a fully idle authority whose complete retained capacity is already proven
+terminal, use the same installer in its explicit offline-recovery mode. Supply
+every retained cancelled one-off job as `--job-id`, every lost command runtime
+as `--lost-pair SESSION_ID:COMMAND_ID`, and every commandless lost runtime as
+`--lost-session SESSION_ID`. The installer stages the schema-compatible
+candidate before stopping `runnerd.service`; it then invokes recovery only
+after the private socket is gone, requires the complete inventory to match,
+checks the P128 zero-work gate, and starts the candidate. It leaves the service
+stopped on any refusal. Do not call `runnerd recover-stalled` directly or edit
+SQLite.
+
+```sh
+# Target Ubuntu host — ubuntu
+cd /home/ubuntu/projects/remote-session-runner
+deploy/linux/install-systemd-service.sh --recover-stalled \
+  --job-id 'job-EXACT-CANCELLED-1' \
+  --lost-pair 'sess-EXACT-LOST-1:cmd-EXACT-LOST-1' \
+  --lost-session 'sess-EXACT-COMMANDLESS-1'
+```
+
 Do not use this restart-based installer to clear retained capacity while ready
 sessions with queued commands must survive. On a `runnerd` revision containing
 B009-P2, keep `runnerd.service` active and let the bounded dispatcher tick
