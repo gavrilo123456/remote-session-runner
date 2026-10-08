@@ -363,9 +363,8 @@ unowned workspace.
 
 The recovery implementation and the follow-up pre-start correction were
 committed as `d8ecafffd2edecd08fb31e5a5569f79e7707f18c`, pushed to `origin/dev`,
-and fast-forwarded into both Ubuntu checkouts before their service work. The
-Mac `runner-local` and `runner-locald`, AMD64 `runnerd`, and sandbox `runnerd`
-all attest that revision through their private readiness endpoints.
+and fast-forwarded into both Ubuntu checkouts before their initial service
+work. The later all-service refresh is recorded below.
 
 - Migration `0035_commandless_lost_runtime_recovery_finalizations.sql` adds a
   session-keyed finalization ledger with foreign keys to the exact session and
@@ -401,6 +400,15 @@ commands, unreleased slots, and unfinished jobs. The AMD64 postflight also
 shows active `runnerd`, readiness/bridge status at `d8ecaff`, its public
 listener, and the same zero P128 counts. The Mac restart preflight was
 quiescent, and both Mac private services attest `d8ecaff`.
+
+After the later documentation/evidence handoff, the user-authorized all-service
+refresh installed source revision `8531a3eac5c34046a278ca56000aa4b98dbb53f4`
+on the Mac and both Ubuntu hosts. The Mac ingress and local executor are ready
+at that revision with zero active session and command slots. Both `runnerd`
+services are active and ready at that revision; their bridges report the same
+source commit, their expected `10.0.0.200:8443` and `10.0.0.14:8443` listeners
+are present, and each post-restart P128 check again reported zero active
+sessions, running commands, unreleased slots, and unfinished jobs.
 
 Neither historical sandbox request has been replayed, ACKed, cancelled, or
 manually released.

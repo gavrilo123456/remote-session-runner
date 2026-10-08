@@ -184,11 +184,16 @@ prove physical power-loss durability.
 
 ## Deployed BUG-016 pre-start recovery correction
 
-The pre-start correction was installed as
+The pre-start correction was first installed as
 `d8ecafffd2edecd08fb31e5a5569f79e7707f18c` on the Mac and both Ubuntu Runner
 services. It recovers only the exact historical commandless-lost shape through
 the absent-owner-marker proof and prevents a fresh failed preparation from
-holding capacity without a command.
+holding capacity without a command. A later user-authorized all-service
+refresh installed `8531a3eac5c34046a278ca56000aa4b98dbb53f4`: Mac ingress and
+executor, AMD64 `runnerd`, and sandbox `runnerd` all reported readiness at that
+revision. Both expected Linux listeners and queued bridges were ready, and
+both post-restart P128 checks reported zero active sessions, running commands,
+unreleased slots, and unfinished jobs.
 
 The two historic `slidestud-io` receipts remain safely accepted while their
 24-hour remote-status uncertainty window runs. They are `lost` jobs with no
