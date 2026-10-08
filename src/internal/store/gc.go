@@ -388,6 +388,10 @@ WHERE j.phase IN (?, ?, ?)
       SELECT 1 FROM exec_command_slots cs
       WHERE cs.command_id = j.command_id AND cs.stop_confirmed_at IS NULL
   )
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_commandless_lost_runtime_recovery_finalizations f
+      WHERE f.job_id = j.job_id
+  )
 `, string(JobPhaseComplete), string(JobPhaseFailed), string(JobPhaseLost), formatStoredTime(cutoff))
 	if err != nil {
 		return nil, fmt.Errorf("select job metadata for GC: %w", err)
@@ -460,6 +464,10 @@ WHERE s.state IN (?, ?, ?, ?)
   AND NOT EXISTS (SELECT 1 FROM exec_jobs j WHERE j.session_id = s.session_id)
   AND NOT EXISTS (
       SELECT 1 FROM exec_lost_runtime_recovery_finalizations f
+      WHERE f.session_id = s.session_id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_commandless_lost_runtime_recovery_finalizations f
       WHERE f.session_id = s.session_id
   )
 `, string(domain.SessionStateClosed), string(domain.SessionStateExpired), string(domain.SessionStateFailed), string(domain.SessionStateLost), formatStoredTime(cutoff))

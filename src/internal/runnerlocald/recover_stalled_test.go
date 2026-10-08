@@ -40,6 +40,31 @@ func TestParseMacLostRecoveryPairsRejectsAmbiguousInput(t *testing.T) {
 	}
 }
 
+func TestParseMacLostRecoverySessionsAndCrossSelection(t *testing.T) {
+	sessions, err := parseMacLostRecoverySessions([]string{
+		"sess-00000000000000000000000000000004",
+		"sess-00000000000000000000000000000005",
+	})
+	if err != nil || len(sessions) != 2 || sessions[0].SessionID != domain.SessionID("sess-00000000000000000000000000000004") {
+		t.Fatalf("parsed commandless sessions=%+v err=%v", sessions, err)
+	}
+	for _, values := range [][]string{{"sess-00000000000000000000000000000004", "sess-00000000000000000000000000000004"}, {""}} {
+		if _, err := parseMacLostRecoverySessions(values); err == nil {
+			t.Fatalf("invalid commandless sessions %q unexpectedly accepted", values)
+		}
+	}
+	pairs, err := parseMacLostRecoveryPairs([]string{"sess-00000000000000000000000000000004:cmd-00000000000000000000000000000004"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDistinctMacLostRecoverySessions(pairs, sessions); err == nil {
+		t.Fatal("pair and commandless selection for the same Mac session unexpectedly accepted")
+	}
+	if err := validateDistinctMacLostRecoverySessions(pairs, []execution.CommandlessLostRuntimeRecoveryRequest{{SessionID: "sess-00000000000000000000000000000006"}}); err != nil {
+		t.Fatalf("distinct pair and commandless Mac selections rejected: %v", err)
+	}
+}
+
 func TestRunnerLocaldRecoverStalledRequiresExplicitApplyAndSafePair(t *testing.T) {
 	for _, args := range [][]string{
 		nil,

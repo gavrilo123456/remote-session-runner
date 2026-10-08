@@ -23,13 +23,20 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 34
+	CurrentSchemaVersion = 35
 
 	// legacySingleMailboxSchemaVersion is the last schema that represented all
 	// mailbox work in the implicit default inbox. It is accepted only by the
 	// read-only installer preflight; activation performs its later migration
 	// after the installer has crossed its no-rollback boundary.
 	legacySingleMailboxSchemaVersion = 24
+
+	// restartPreflightPreviousSchemaVersion is the immediately preceding
+	// authority shape. It is explicitly admitted for read-only installer
+	// preflight while migration 0035 has not crossed its activation boundary.
+	// Later migrations must update this constant deliberately rather than
+	// making every older schema implicitly acceptable.
+	restartPreflightPreviousSchemaVersion = 34
 )
 
 var (
@@ -142,6 +149,9 @@ var bug009QueueBlockedReasonSQL string
 
 //go:embed migrations/0034_controlled_restart_plan.sql
 var controlledRestartPlanSQL string
+
+//go:embed migrations/0035_commandless_lost_runtime_recovery_finalizations.sql
+var commandlessLostRuntimeRecoveryFinalizationsSQL string
 
 type migration struct {
 	version int
@@ -285,6 +295,10 @@ var migrations = []migration{{
 	version: 34,
 	name:    "controlled_restart_plan",
 	sql:     controlledRestartPlanSQL,
+}, {
+	version: 35,
+	name:    "commandless_lost_runtime_recovery_finalizations",
+	sql:     commandlessLostRuntimeRecoveryFinalizationsSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
@@ -387,6 +401,71 @@ func OpenExistingCurrent(ctx context.Context, path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// OpenExistingOfflineMaintenanceMigrating opens an already-existing private
+// authority database for a caller that has independently established exclusive
+// offline ownership. It never creates a directory or database file. It admits
+// only the current schema or the immediately preceding schema, verifies the
+// migration ledger before opening a writable handle, and then applies the
+// pending migration. Callers must hold their lifecycle lock and prove every
+// service using the authority is stopped before invoking it.
+//
+// This narrow helper exists for recovery paths that must migrate an existing
+// authority before they can repair retained capacity. Online maintenance must
+// continue to use OpenExistingCurrent, which never migrates.
+func OpenExistingOfflineMaintenanceMigrating(ctx context.Context, path string) (*sql.DB, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := validateExistingCurrentDatabasePath(path); err != nil {
+		return nil, err
+	}
+	if err := validateExistingOfflineMaintenanceMigratableDatabaseReadOnly(ctx, path); err != nil {
+		return nil, err
+	}
+
+	db, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "rw"))
+	if err != nil {
+		return nil, fmt.Errorf("open existing SQLite database for offline maintenance: %w", err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("connect to existing SQLite database for offline maintenance: %w", err)
+	}
+	// Recheck the strict eligible schema after acquiring the writable handle so
+	// an authority changed after the read-only preflight cannot be migrated.
+	if err := verifyOfflineMaintenanceMigrationSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureWAL(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := verifyPragmas(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := applyMigrations(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := verifyCurrentSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if err := secureCreatedSidecar(path + suffix); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
+	if err := validateExistingCurrentDatabasePath(path); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 // OpenExistingCurrentReadOnly opens an already-existing current private
 // authority database solely for a read-only maintenance check. Unlike
 // OpenExistingCurrent, the returned handle is never writable. It neither
@@ -397,21 +476,22 @@ func OpenExistingCurrentReadOnly(ctx context.Context, path string) (*sql.DB, err
 }
 
 // OpenExistingRestartPreflightReadOnly opens the existing private authority
-// database for the installer restart guard. It accepts only the current schema
-// or the exact schema-24 legacy authority that the installer already supports
-// for its read-only pre-activation checks. Activation remains responsible for
-// migrating schema 24 after its no-rollback boundary. The returned handle is
-// read-only and never creates a database, sidecar, or migration.
+// database for the installer restart guard. It accepts only the current schema,
+// schema 34 while migration 0035 is pending activation, or the exact schema-24
+// legacy authority that the installer already supports for its read-only
+// pre-activation checks. Activation remains responsible for migration after its
+// no-rollback boundary. The returned handle is read-only and never creates a
+// database, sidecar, or migration.
 func OpenExistingRestartPreflightReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	return openExistingReadOnly(ctx, path, verifyRestartPreflightSchemaConnection)
 }
 
 // OpenExistingControlledRestartStatusReadOnly opens an existing private
 // authority database solely to inspect the durable controlled-restart state.
-// It accepts the current schema and the immediately preceding schema, which
-// predates the controlled-restart plan. The returned handle is read-only and
-// never creates a database or sidecar, changes SQLite settings, or applies a
-// migration.
+// It accepts the current schema, schema 34 with the same controlled-restart
+// plan tables, and schema 33 that predates those tables. The returned handle
+// is read-only and never creates a database or sidecar, changes SQLite
+// settings, or applies a migration.
 func OpenExistingControlledRestartStatusReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	return openExistingReadOnly(ctx, path, verifyControlledRestartStatusSchemaConnection)
 }
@@ -538,6 +618,17 @@ func validateExistingCurrentDatabaseReadOnly(ctx context.Context, path string) e
 	}
 	if err := db.Close(); err != nil {
 		return fmt.Errorf("close existing SQLite database read-only validation: %w", err)
+	}
+	return nil
+}
+
+func validateExistingOfflineMaintenanceMigratableDatabaseReadOnly(ctx context.Context, path string) error {
+	db, err := openExistingReadOnly(ctx, path, verifyOfflineMaintenanceMigrationSchemaConnection)
+	if err != nil {
+		return err
+	}
+	if err := db.Close(); err != nil {
+		return fmt.Errorf("close existing SQLite database offline-maintenance validation: %w", err)
 	}
 	return nil
 }
@@ -790,6 +881,15 @@ func verifyCurrentSchema(ctx context.Context, db *sql.DB) error {
 	return verifyCurrentSchemaConnection(ctx, connection)
 }
 
+func verifyOfflineMaintenanceMigrationSchema(ctx context.Context, db *sql.DB) error {
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire SQLite offline-maintenance schema connection: %w", err)
+	}
+	defer connection.Close()
+	return verifyOfflineMaintenanceMigrationSchemaConnection(ctx, connection)
+}
+
 func verifyCurrentSchemaConnection(ctx context.Context, connection *sql.Conn) error {
 	version, err := userVersion(ctx, connection)
 	if err != nil {
@@ -801,32 +901,43 @@ func verifyCurrentSchemaConnection(ctx context.Context, connection *sql.Conn) er
 	return verifyMigrationHistory(ctx, connection, version)
 }
 
-// verifyRestartPreflightSchemaConnection permits the only two schema versions
-// whose read-only execution tables are understood by the installer: the
-// current authority and the schema-24 authority that activation later
+func verifyOfflineMaintenanceMigrationSchemaConnection(ctx context.Context, connection *sql.Conn) error {
+	version, err := userVersion(ctx, connection)
+	if err != nil {
+		return err
+	}
+	if version != CurrentSchemaVersion && version != restartPreflightPreviousSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d or prior %d", ErrSchemaVersion, version, CurrentSchemaVersion, restartPreflightPreviousSchemaVersion)
+	}
+	return verifyMigrationHistory(ctx, connection, version)
+}
+
+// verifyRestartPreflightSchemaConnection permits only the known read-only
+// execution shapes: the current authority, schema 34 while migration 0035 is
+// pending activation, and the schema-24 authority that activation later
 // migrates. It deliberately does not accept an arbitrary older version.
 func verifyRestartPreflightSchemaConnection(ctx context.Context, connection *sql.Conn) error {
 	version, err := userVersion(ctx, connection)
 	if err != nil {
 		return err
 	}
-	if version != CurrentSchemaVersion && version != legacySingleMailboxSchemaVersion {
-		return fmt.Errorf("%w: got %d, require current %d or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, legacySingleMailboxSchemaVersion)
+	if version != CurrentSchemaVersion && version != restartPreflightPreviousSchemaVersion && version != legacySingleMailboxSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d, prior %d, or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, restartPreflightPreviousSchemaVersion, legacySingleMailboxSchemaVersion)
 	}
 	return verifyMigrationHistory(ctx, connection, version)
 }
 
-// verifyControlledRestartStatusSchemaConnection recognizes only the two
+// verifyControlledRestartStatusSchemaConnection recognizes only the known
 // schema shapes whose controlled-restart state this source can interpret. A
-// schema-33 authority has no durable plan table; the current schema has both
-// plan tables. Any other version or table shape fails closed.
+// schema-33 authority has no durable plan table; schemas 34 and 35 both have
+// the same plan tables. Any other version or table shape fails closed.
 func verifyControlledRestartStatusSchemaConnection(ctx context.Context, connection *sql.Conn) error {
 	version, err := userVersion(ctx, connection)
 	if err != nil {
 		return err
 	}
-	if version != controlledRestartStatusLegacySchemaVersion && version != CurrentSchemaVersion {
-		return fmt.Errorf("%w: got %d, require current %d or prior %d", ErrSchemaVersion, version, CurrentSchemaVersion, controlledRestartStatusLegacySchemaVersion)
+	if version != controlledRestartStatusLegacySchemaVersion && version != restartPreflightPreviousSchemaVersion && version != CurrentSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d, prior plan schema %d, or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, restartPreflightPreviousSchemaVersion, controlledRestartStatusLegacySchemaVersion)
 	}
 	if err := verifyMigrationHistory(ctx, connection, version); err != nil {
 		return err
@@ -840,7 +951,7 @@ func verifyControlledRestartStatusSchemaConnection(ctx context.Context, connecti
 		if plansPresent || pairsPresent {
 			return fmt.Errorf("%w: schema %d unexpectedly contains controlled restart plan tables", ErrSchemaVersion, version)
 		}
-	case CurrentSchemaVersion:
+	case restartPreflightPreviousSchemaVersion, CurrentSchemaVersion:
 		if !plansPresent || !pairsPresent {
 			return fmt.Errorf("%w: schema %d is missing controlled restart plan tables", ErrSchemaVersion, version)
 		}

@@ -272,6 +272,73 @@ P149 test explicitly encoded that unsafe indefinite state.
    lost reservations remain untouched by this fix; they require a separate
    evidence-backed host recovery procedure.
 
+## Retained-capacity recovery extension
+
+The two affected sandbox jobs have a terminal `lost` session and an unreleased
+session reservation, but no `exec_commands` row and no command slot. The
+existing `recover-stalled --lost-pair` path correctly refuses that shape: a
+pair requires a real lost command, its final `command_lost` event, and its
+slot. Creating a synthetic command or releasing the reservation manually
+would fabricate execution evidence.
+
+The narrow offline recovery extension is now implemented in source. It:
+
+1. Adds an explicit `--lost-session` input to offline `runnerd
+   recover-stalled`. It accepts only every selected terminal lost session whose
+   matching one-off job has no command projection, no command/event/slot rows,
+   and an unreleased authority reservation. It does not read the stored script.
+   `runner-locald recover-stalled` accepts the same explicit input for
+   Mac-local recovery.
+2. Requires the Linux service to be stopped, the complete selected inventory to match
+   all live reservations and slots, and the existing Linux runtime ownership
+   audit to attribute only the supplied lost sessions and pairs.
+   The Mac path holds its lifecycle lock and requires both LaunchAgents and
+   their private sockets to be absent before it opens the authority.
+3. Reuses `ReconcileLostRuntime` to prove the selected session's exact recorded
+   process group is gone. A missing, corrupt, or mismatched owner marker leaves
+   capacity retained and refuses recovery.
+4. Records the subsequent session-reservation release and a new session-keyed
+   finalization row in one transaction. Startup finalizes that row before its
+   ownership audit, so a crash between durable release and marker removal is
+   retryable without PID reuse or a second release.
+5. Includes hermetic store, execution, `runnerd recover-stalled`, and
+   `runner-locald recover-stalled` regressions
+   for the exact eligible shape, missing-marker refusal, atomic rollback,
+   restart finalization, and mixed ordinary-pair/session-only inventory.
+6. Provides `OpenExistingOfflineMaintenanceMigrating` for the stopped,
+   lifecycle-locked Mac repair path. It first proves that the owner-only
+   authority already exists and has an untampered schema-34 or schema-35
+   migration ledger. It then upgrades schema 34 to schema 35 without allowing
+   creation of a missing authority database.
+
+## Implementation evidence — source only
+
+The source implementation is complete and remains deliberately uninstalled
+while the host recovery gate is prepared.
+
+- Migration `0035_commandless_lost_runtime_recovery_finalizations.sql` adds a
+  session-keyed finalization ledger with foreign keys to the exact session and
+  job. It prevents a post-release crash from being mistaken for completed
+  marker/workspace cleanup.
+- Mixed recovery performs every runtime ownership proof while capacity is still
+  retained, then releases selected ordinary pairs and commandless sessions in
+  one transaction. It never creates a synthetic command, reads a stored
+  script, replays a request, or changes a lost job into success.
+- Startup retries both finalization ledgers before ownership audit. Metadata GC
+  excludes either kind of pending finalization record, so a crash cannot turn
+  a delayed marker cleanup into an unrelated retention-GC failure.
+- The complete Go suite passed on the Mac on 2026-10-08: `make test`.
+  Focused `store`, `execution`, `runnerd`, and `runnerlocald` packages also
+  passed after the final GC regression.
+
+Host installation, retained-capacity recovery, service restart, and a fresh
+harmless mailbox acceptance test are still pending. Neither historical sandbox
+request has been replayed, ACKed, cancelled, or manually released.
+
+This recovery does not claim that either command completed. The commandless
+jobs remain `lost`; when the Router reads them, it follows the bounded
+`indeterminate` mailbox path from the source fix above.
+
 ## Impact
 
 The protected Logger control flow cannot be safely monitored or advanced. No

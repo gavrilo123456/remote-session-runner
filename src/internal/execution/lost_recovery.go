@@ -246,15 +246,37 @@ func (s *Service) finalizePendingLostRuntimeRecoveries(ctx context.Context) erro
 	if err != nil {
 		return err
 	}
-	if len(pairs) == 0 {
+	sessions, err := s.store.ListPendingCommandlessLostRuntimeRecoveryFinalizations(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pairs) == 0 && len(sessions) == 0 {
 		return nil
 	}
-	requests := make([]LostRuntimeRecoveryRequest, 0, len(pairs))
-	for _, pair := range pairs {
-		requests = append(requests, LostRuntimeRecoveryRequest{SessionID: pair.SessionID, CommandID: pair.CommandID})
+	var finalizationErrors []error
+	if len(pairs) != 0 {
+		requests := make([]LostRuntimeRecoveryRequest, 0, len(pairs))
+		for _, pair := range pairs {
+			requests = append(requests, LostRuntimeRecoveryRequest{SessionID: pair.SessionID, CommandID: pair.CommandID})
+		}
+		if _, err := s.finalizeReleasedLostRuntimeRecoveryBatch(ctx, requests); err != nil {
+			finalizationErrors = append(finalizationErrors, err)
+		}
 	}
-	_, err = s.finalizeReleasedLostRuntimeRecoveryBatch(ctx, requests)
-	return err
+	if len(sessions) != 0 {
+		recoverer, ok := s.runtime.(LostRuntimeRecoverer)
+		if !ok {
+			finalizationErrors = append(finalizationErrors, fmt.Errorf("%w: runtime does not support lost-runtime finalization", ErrLostRuntimeRecoveryIneligible))
+		} else {
+			for _, recovery := range sessions {
+				_, err := s.finalizeCommandlessLostRuntimeRecovery(ctx, CommandlessLostRuntimeRecoveryResult{Recovery: recovery}, recoverer)
+				if err != nil {
+					finalizationErrors = append(finalizationErrors, err)
+				}
+			}
+		}
+	}
+	return errors.Join(finalizationErrors...)
 }
 
 // CheckLostRuntimeRecovery verifies either one fully retained lost runtime or

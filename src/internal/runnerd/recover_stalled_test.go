@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/execution"
 )
 
 func TestRunRecoverStalledRequiresExplicitApply(t *testing.T) {
@@ -26,6 +27,36 @@ func TestParseLostRecoveryPairsRejectsAmbiguousOrDuplicateInput(t *testing.T) {
 	parsed, err := parseLostRecoveryPairs([]string{"sess-one:cmd-one", "sess-two:cmd-two"})
 	if err != nil || len(parsed) != 2 || parsed[0].SessionID != domain.SessionID("sess-one") || parsed[1].CommandID != domain.CommandID("cmd-two") {
 		t.Fatalf("parsed pairs=%+v err=%v", parsed, err)
+	}
+}
+
+func TestParseLostRecoverySessionsAndCrossInputValidation(t *testing.T) {
+	sessions, err := parseLostRecoverySessions([]string{"sess-one", "sess-two"})
+	if err != nil || len(sessions) != 2 || sessions[0].SessionID != domain.SessionID("sess-one") || sessions[1].SessionID != domain.SessionID("sess-two") {
+		t.Fatalf("parsed sessions=%+v err=%v", sessions, err)
+	}
+	for _, values := range [][]string{{"sess-one", "sess-one"}, {""}} {
+		if _, err := parseLostRecoverySessions(values); err == nil {
+			t.Fatalf("invalid sessions %q unexpectedly accepted", values)
+		}
+	}
+	pairs, err := parseLostRecoveryPairs([]string{"sess-one:cmd-one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDistinctLostRecoverySessions(pairs, sessions); err == nil {
+		t.Fatal("pair and commandless selection for the same session unexpectedly accepted")
+	}
+	if err := validateDistinctLostRecoverySessions(pairs, []execution.CommandlessLostRuntimeRecoveryRequest{{SessionID: "sess-three"}}); err != nil {
+		t.Fatalf("distinct pair and commandless selections rejected: %v", err)
+	}
+}
+
+func TestRunRecoverStalledUsageAcceptsLostSessionAsExplicitRecoveryInput(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exit := Run([]string{"recover-stalled", "--config", "/fixture/linux.yaml", "--lost-session", "sess-commandless"}, &stdout, &stderr)
+	if exit != 2 || !strings.Contains(stderr.String(), "--config, --apply") {
+		t.Fatalf("recover-stalled lost-session without apply exit=%d stderr=%q, want explicit-apply usage error", exit, stderr.String())
 	}
 }
 

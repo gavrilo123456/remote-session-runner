@@ -115,6 +115,72 @@ func TestBUG008OpenExistingCurrentAcceptsCurrentWritableAuthorityWithoutMigratio
 	}
 }
 
+func TestBUG016OpenExistingOfflineMaintenanceMigratingRequiresExistingVerifiedAuthority(t *testing.T) {
+	ctx := context.Background()
+	t.Run("missing authority is not created", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing", "authority.db")
+		database, err := OpenExistingOfflineMaintenanceMigrating(ctx, path)
+		if database != nil {
+			_ = database.Close()
+			t.Fatal("offline maintenance returned a database for a missing authority")
+		}
+		if !errors.Is(err, ErrDatabaseMissing) {
+			t.Fatalf("offline maintenance missing authority error=%v, want %v", err, ErrDatabaseMissing)
+		}
+		if _, statErr := os.Lstat(filepath.Dir(path)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("offline maintenance created missing parent: stat error=%v, want not exist", statErr)
+		}
+	})
+
+	t.Run("schema 34 upgrades only after verified existing preflight", func(t *testing.T) {
+		path := controlledRestartStatusSchema34AuthorityPath(t)
+		before := b008ReadSchemaState(t, path)
+		if before.Version != restartPreflightPreviousSchemaVersion {
+			t.Fatalf("fixture version=%d, want %d", before.Version, restartPreflightPreviousSchemaVersion)
+		}
+
+		database, err := OpenExistingOfflineMaintenanceMigrating(ctx, path)
+		if err != nil {
+			t.Fatalf("offline maintenance schema-34 authority: %v", err)
+		}
+		defer database.Close()
+		if after := b008ReadSchemaStateFromDatabase(t, database); after.Version != CurrentSchemaVersion || len(after.Ledger) != CurrentSchemaVersion {
+			t.Fatalf("offline maintenance schema=%+v, want version/ledger %d", after, CurrentSchemaVersion)
+		}
+		var tableCount int
+		if err := database.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'exec_commandless_lost_runtime_recovery_finalizations'`).Scan(&tableCount); err != nil || tableCount != 1 {
+			t.Fatalf("commandless finalization ledger count=%d err=%v, want 1", tableCount, err)
+		}
+	})
+
+	t.Run("tampered schema 34 is not migrated", func(t *testing.T) {
+		path := controlledRestartStatusSchema34AuthorityPath(t)
+		database, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "rw"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.ExecContext(ctx, `UPDATE runner_schema_migrations SET checksum = '0000000000000000000000000000000000000000000000000000000000000000' WHERE version = 34`); err != nil {
+			_ = database.Close()
+			t.Fatal(err)
+		}
+		if err := database.Close(); err != nil {
+			t.Fatal(err)
+		}
+		before := b008ReadSchemaState(t, path)
+		database, err = OpenExistingOfflineMaintenanceMigrating(ctx, path)
+		if database != nil {
+			_ = database.Close()
+			t.Fatal("offline maintenance returned a tampered authority")
+		}
+		if !errors.Is(err, ErrSchemaHistory) {
+			t.Fatalf("offline maintenance tampered authority error=%v, want %v", err, ErrSchemaHistory)
+		}
+		if after := b008ReadSchemaState(t, path); !reflect.DeepEqual(after, before) {
+			t.Fatalf("tampered authority changed: after=%+v before=%+v", after, before)
+		}
+	})
+}
+
 func TestBUG008OpenExistingCurrentCoexistsWithLiveWALAuthority(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

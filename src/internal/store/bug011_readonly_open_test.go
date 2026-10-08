@@ -70,6 +70,10 @@ func TestBUG011OpenExistingRestartPreflightReadOnlyAcceptsSupportedAuthoritiesWi
 			path: b008CurrentAuthorityPath,
 		},
 		{
+			name: "schema 34",
+			path: controlledRestartStatusSchema34AuthorityPath,
+		},
+		{
 			name: "schema 24",
 			path: bug011V24AuthorityPath,
 		},
@@ -138,7 +142,7 @@ func TestBUG011OpenExistingRestartPreflightReadOnlyRejectsUnsupportedOrTamperedS
 	ctx := context.Background()
 	t.Run("unsupported schema", func(t *testing.T) {
 		path := b008CurrentAuthorityPath(t)
-		b008SetAuthoritySchemaVersion(t, path, CurrentSchemaVersion-1)
+		b008SetAuthoritySchemaVersion(t, path, CurrentSchemaVersion-2)
 		bug011AssertRestartPreflightOpenRejectedWithoutWriting(t, ctx, path, ErrSchemaVersion)
 	})
 	t.Run("tampered migration history", func(t *testing.T) {

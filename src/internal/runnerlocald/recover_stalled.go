@@ -31,18 +31,28 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Mac runner configuration")
 	apply := flags.Bool("apply", false, "perform the explicit offline repair")
-	var pairValues repeatedMacRecoveryValue
+	var pairValues, sessionValues repeatedMacRecoveryValue
 	flags.Var(&pairValues, "lost-pair", "terminal lost SESSION_ID:COMMAND_ID pair; repeat for every retained lost runtime")
+	flags.Var(&sessionValues, "lost-session", "terminal lost SESSION_ID without a persisted command; repeat for every retained commandless runtime")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if *configPath == "" || !*apply || flags.NArg() != 0 || len(pairValues) == 0 {
-		fmt.Fprintln(stderr, "runner-locald recover-stalled: --config, --apply, and at least one --lost-pair are required")
+	if *configPath == "" || !*apply || flags.NArg() != 0 || (len(pairValues) == 0 && len(sessionValues) == 0) {
+		fmt.Fprintln(stderr, "runner-locald recover-stalled: --config, --apply, and at least one --lost-pair or --lost-session are required")
 		return 2
 	}
 	lostRequests, err := parseMacLostRecoveryPairs(pairValues)
 	if err != nil {
 		fmt.Fprintln(stderr, "runner-locald recover-stalled: invalid --lost-pair")
+		return 2
+	}
+	lostSessionRequests, err := parseMacLostRecoverySessions(sessionValues)
+	if err != nil {
+		fmt.Fprintln(stderr, "runner-locald recover-stalled: invalid --lost-session")
+		return 2
+	}
+	if err := validateDistinctMacLostRecoverySessions(lostRequests, lostSessionRequests); err != nil {
+		fmt.Fprintln(stderr, "runner-locald recover-stalled: duplicate --lost-session")
 		return 2
 	}
 
@@ -69,9 +79,10 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	// This open rejects a missing, stale, or tampered authority instead of
-	// creating or migrating one during an offline repair.
-	database, err := store.OpenExistingCurrent(ctx, settings.Database)
+	// The lifecycle lock and stopped-service proof above establish exclusive
+	// offline ownership. This open still refuses a missing or tampered authority
+	// but may apply the one pending schema migration needed by this repair.
+	database, err := store.OpenExistingOfflineMaintenanceMigrating(ctx, settings.Database)
 	if err != nil {
 		fmt.Fprintln(stderr, "runner-locald recover-stalled: authority database is unavailable")
 		return 1
@@ -94,11 +105,11 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runner-locald recover-stalled: runtime recovery adapter is unavailable")
 		return 1
 	}
-	if err := requireMacStalledRecoveryInventory(ctx, authority, service, runtimeAdapter, lostRequests); err != nil {
+	if err := requireMacStalledRecoveryInventorySet(ctx, authority, service, runtimeAdapter, lostRequests, lostSessionRequests); err != nil {
 		fmt.Fprintln(stderr, "runner-locald recover-stalled: preflight refused")
 		return 1
 	}
-	recovered, err := service.RecoverLostRuntimeBatch(ctx, lostRequests)
+	recovered, recoveredSessions, err := service.RecoverLostRuntimeRecoverySet(ctx, lostRequests, lostSessionRequests)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald recover-stalled: recovery failed: reason=%s\n", queueworker.RetainedCapacityRecoveryFailureReason(err))
 		return 1
@@ -108,7 +119,8 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	recoveredCount, alreadyRecoveredCount := macRecoveryResultCounts(recovered)
-	fmt.Fprintf(stdout, "runner-locald recover-stalled: recovered_lost_pairs=%d already_recovered_lost_pairs=%d\n", recoveredCount, alreadyRecoveredCount)
+	recoveredSessionCount, alreadyRecoveredSessionCount := macCommandlessRecoveryResultCounts(recoveredSessions)
+	fmt.Fprintf(stdout, "runner-locald recover-stalled: recovered_lost_pairs=%d already_recovered_lost_pairs=%d recovered_lost_sessions=%d already_recovered_lost_sessions=%d\n", recoveredCount, alreadyRecoveredCount, recoveredSessionCount, alreadyRecoveredSessionCount)
 	return 0
 }
 
@@ -167,6 +179,37 @@ func parseMacLostRecoveryPairs(values []string) ([]execution.LostRuntimeRecovery
 	return requests, nil
 }
 
+func parseMacLostRecoverySessions(values []string) ([]execution.CommandlessLostRuntimeRecoveryRequest, error) {
+	requests := make([]execution.CommandlessLostRuntimeRecoveryRequest, 0, len(values))
+	seen := make(map[domain.SessionID]struct{}, len(values))
+	for _, raw := range values {
+		sessionID, err := domain.NewSessionID(raw)
+		if err != nil {
+			return nil, errors.New("invalid lost session")
+		}
+		if _, duplicate := seen[sessionID]; duplicate {
+			return nil, errors.New("duplicate lost session")
+		}
+		seen[sessionID] = struct{}{}
+		requests = append(requests, execution.CommandlessLostRuntimeRecoveryRequest{SessionID: sessionID})
+	}
+	return requests, nil
+}
+
+func validateDistinctMacLostRecoverySessions(pairs []execution.LostRuntimeRecoveryRequest, sessions []execution.CommandlessLostRuntimeRecoveryRequest) error {
+	seen := make(map[domain.SessionID]struct{}, len(pairs)+len(sessions))
+	for _, pair := range pairs {
+		seen[pair.SessionID] = struct{}{}
+	}
+	for _, session := range sessions {
+		if _, duplicate := seen[session.SessionID]; duplicate {
+			return errors.New("duplicate lost session")
+		}
+		seen[session.SessionID] = struct{}{}
+	}
+	return nil
+}
+
 func requireRunnerLocaldServicesStopped(settings config.MacSettings) error {
 	return requireRunnerLocaldServicesStoppedWith(
 		os.Getuid(),
@@ -219,7 +262,11 @@ func macLaunchdServiceLoaded(target string) (bool, error) {
 }
 
 func requireMacStalledRecoveryInventory(ctx context.Context, authority *store.AuthorityStore, service *execution.Service, runtimeAdapter execution.RuntimeOwnershipAuditor, lostRequests []execution.LostRuntimeRecoveryRequest) error {
-	if authority == nil || service == nil || runtimeAdapter == nil || len(lostRequests) == 0 {
+	return requireMacStalledRecoveryInventorySet(ctx, authority, service, runtimeAdapter, lostRequests, nil)
+}
+
+func requireMacStalledRecoveryInventorySet(ctx context.Context, authority *store.AuthorityStore, service *execution.Service, runtimeAdapter execution.RuntimeOwnershipAuditor, lostRequests []execution.LostRuntimeRecoveryRequest, lostSessionRequests []execution.CommandlessLostRuntimeRecoveryRequest) error {
+	if authority == nil || service == nil || runtimeAdapter == nil || (len(lostRequests) == 0 && len(lostSessionRequests) == 0) {
 		return errors.New("recovery dependencies are incomplete")
 	}
 	activeSessions, err := authority.CountActiveSessions(ctx)
@@ -244,6 +291,10 @@ func requireMacStalledRecoveryInventory(ctx context.Context, authority *store.Au
 	if err != nil {
 		return err
 	}
+	pendingCommandlessFinalizations, err := authority.ListPendingCommandlessLostRuntimeRecoveryFinalizations(ctx)
+	if err != nil {
+		return err
+	}
 	selectedPairs := make(map[store.LostRuntimeRecoveryPair]struct{}, len(lostRequests))
 	for _, request := range lostRequests {
 		selectedPairs[store.LostRuntimeRecoveryPair{SessionID: request.SessionID, CommandID: request.CommandID}] = struct{}{}
@@ -255,37 +306,65 @@ func requireMacStalledRecoveryInventory(ctx context.Context, authority *store.Au
 		}
 		pendingPairs[pair] = struct{}{}
 	}
-	checked, err := service.CheckLostRuntimeRecoveryBatch(ctx, lostRequests)
-	if err != nil {
-		return err
+	selectedSessions := make(map[domain.SessionID]struct{}, len(lostSessionRequests))
+	for _, request := range lostSessionRequests {
+		selectedSessions[request.SessionID] = struct{}{}
 	}
-	expectedRetained := 0
-	for index, result := range checked {
-		if !result.AlreadyRecovered {
-			expectedRetained++
-			continue
+	pendingSessions := make(map[domain.SessionID]struct{}, len(pendingCommandlessFinalizations))
+	for _, recovery := range pendingCommandlessFinalizations {
+		if _, selected := selectedSessions[recovery.SessionID]; !selected {
+			return errors.New("pending commandless lost recovery finalization is not selected")
 		}
-		pair := store.LostRuntimeRecoveryPair{SessionID: lostRequests[index].SessionID, CommandID: lostRequests[index].CommandID}
-		if _, pending := pendingPairs[pair]; !pending {
-			return errors.New("selected released lost runtime has no pending finalization")
+		pendingSessions[recovery.SessionID] = struct{}{}
+	}
+	if len(lostRequests) != 0 {
+		checked, err := service.CheckLostRuntimeRecoveryBatch(ctx, lostRequests)
+		if err != nil {
+			return err
+		}
+		for index, result := range checked {
+			if !result.AlreadyRecovered {
+				continue
+			}
+			pair := store.LostRuntimeRecoveryPair{SessionID: lostRequests[index].SessionID, CommandID: lostRequests[index].CommandID}
+			if _, pending := pendingPairs[pair]; !pending {
+				return errors.New("selected released lost runtime has no pending finalization")
+			}
 		}
 	}
-	liveSlots, err := authority.CountLiveCommandSlots(ctx)
-	if err != nil {
+	if len(lostSessionRequests) != 0 {
+		checked, err := authority.CheckCommandlessLostRuntimeRecoveryBatch(ctx, macCommandlessSessionIDs(lostSessionRequests))
+		if err != nil {
+			return err
+		}
+		for _, result := range checked {
+			if !result.AlreadyRecovered {
+				continue
+			}
+			if _, pending := pendingSessions[result.SessionID]; !pending {
+				return errors.New("selected released commandless lost runtime has no pending finalization")
+			}
+		}
+	}
+	if err := service.CheckLostRuntimeRecoverySet(ctx, lostRequests, lostSessionRequests); err != nil {
 		return err
 	}
-	liveReservations, err := authority.CountLiveSessionReservations(ctx)
-	if err != nil {
-		return err
-	}
-	if liveSlots != expectedRetained || liveReservations != expectedRetained {
-		return errors.New("selected pairs do not match all retained capacity")
-	}
-	attributable := make(map[string]struct{}, len(lostRequests))
+	attributable := make(map[string]struct{}, len(lostRequests)+len(lostSessionRequests))
 	for _, request := range lostRequests {
 		attributable[string(request.SessionID)] = struct{}{}
 	}
+	for _, request := range lostSessionRequests {
+		attributable[string(request.SessionID)] = struct{}{}
+	}
 	return runtimeAdapter.AuditOwnership(ctx, attributable)
+}
+
+func macCommandlessSessionIDs(requests []execution.CommandlessLostRuntimeRecoveryRequest) []domain.SessionID {
+	ids := make([]domain.SessionID, 0, len(requests))
+	for _, request := range requests {
+		ids = append(ids, request.SessionID)
+	}
+	return ids
 }
 
 func requireMacStalledRecoveryPostflight(ctx context.Context, authority *store.AuthorityStore) error {
@@ -316,7 +395,11 @@ func requireMacStalledRecoveryPostflight(ctx context.Context, authority *store.A
 	if err != nil {
 		return err
 	}
-	if activeSessions != 0 || runningCommands != 0 || liveSlots != 0 || liveReservations != 0 || len(nonterminalJobs) != 0 || len(pendingFinalizations) != 0 {
+	pendingCommandlessFinalizations, err := authority.ListPendingCommandlessLostRuntimeRecoveryFinalizations(ctx)
+	if err != nil {
+		return err
+	}
+	if activeSessions != 0 || runningCommands != 0 || liveSlots != 0 || liveReservations != 0 || len(nonterminalJobs) != 0 || len(pendingFinalizations) != 0 || len(pendingCommandlessFinalizations) != 0 {
 		return errors.New("postflight is not quiescent")
 	}
 	return nil
@@ -325,6 +408,17 @@ func requireMacStalledRecoveryPostflight(ctx context.Context, authority *store.A
 func macRecoveryResultCounts(results []execution.LostRuntimeRecoveryResult) (recovered, alreadyRecovered int) {
 	for _, result := range results {
 		if result.AlreadyRecovered {
+			alreadyRecovered++
+		} else {
+			recovered++
+		}
+	}
+	return recovered, alreadyRecovered
+}
+
+func macCommandlessRecoveryResultCounts(results []execution.CommandlessLostRuntimeRecoveryResult) (recovered, alreadyRecovered int) {
+	for _, result := range results {
+		if result.Recovery.AlreadyRecovered {
 			alreadyRecovered++
 		} else {
 			recovered++

@@ -24,14 +24,15 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Linux runner configuration")
 	apply := flags.Bool("apply", false, "perform the explicit offline repair")
-	var jobValues, pairValues repeatedRecoveryValue
+	var jobValues, pairValues, sessionValues repeatedRecoveryValue
 	flags.Var(&jobValues, "job-id", "terminal cancelled one-off job ID; repeat for every pending job")
 	flags.Var(&pairValues, "lost-pair", "lost SESSION_ID:COMMAND_ID pair; repeat for every retained lost runtime")
+	flags.Var(&sessionValues, "lost-session", "lost SESSION_ID without a persisted command; repeat for every retained commandless lost runtime")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if *configPath == "" || !*apply || flags.NArg() != 0 || (len(jobValues) == 0 && len(pairValues) == 0) {
-		fmt.Fprintln(stderr, "runnerd recover-stalled: --config, --apply, and at least one --job-id or --lost-pair are required")
+	if *configPath == "" || !*apply || flags.NArg() != 0 || (len(jobValues) == 0 && len(pairValues) == 0 && len(sessionValues) == 0) {
+		fmt.Fprintln(stderr, "runnerd recover-stalled: --config, --apply, and at least one --job-id, --lost-pair, or --lost-session are required")
 		return 2
 	}
 	jobIDs, err := parseRecoveryJobIDs(jobValues)
@@ -41,6 +42,15 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	}
 	lostRequests, err := parseLostRecoveryPairs(pairValues)
 	if err != nil {
+		fmt.Fprintf(stderr, "runnerd recover-stalled: %v\n", err)
+		return 2
+	}
+	lostSessionRequests, err := parseLostRecoverySessions(sessionValues)
+	if err != nil {
+		fmt.Fprintf(stderr, "runnerd recover-stalled: %v\n", err)
+		return 2
+	}
+	if err := validateDistinctLostRecoverySessions(lostRequests, lostSessionRequests); err != nil {
 		fmt.Fprintf(stderr, "runnerd recover-stalled: %v\n", err)
 		return 2
 	}
@@ -105,7 +115,7 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runnerd recover-stalled: construct execution service: %v\n", err)
 		return 1
 	}
-	if err := requireStalledRecoveryInventory(ctx, authority, service, runtimeAdapter, jobIDs, lostRequests); err != nil {
+	if err := requireStalledRecoveryInventory(ctx, authority, service, runtimeAdapter, jobIDs, lostRequests, lostSessionRequests); err != nil {
 		fmt.Fprintf(stderr, "runnerd recover-stalled: preflight: %v\n", err)
 		return 1
 	}
@@ -118,10 +128,11 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	var recovered []execution.LostRuntimeRecoveryResult
-	if len(lostRequests) != 0 {
-		recovered, err = service.RecoverLostRuntimeBatch(ctx, lostRequests)
+	var recoveredSessions []execution.CommandlessLostRuntimeRecoveryResult
+	if len(lostRequests) != 0 || len(lostSessionRequests) != 0 {
+		recovered, recoveredSessions, err = service.RecoverLostRuntimeRecoverySet(ctx, lostRequests, lostSessionRequests)
 		if err != nil {
-			fmt.Fprintf(stderr, "runnerd recover-stalled: recover retained lost capacity: %v\n", err)
+			fmt.Fprintf(stderr, "runnerd recover-stalled: recover retained mixed lost capacity: %v\n", err)
 			return 1
 		}
 	}
@@ -131,7 +142,8 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	}
 	settledCount, alreadySettledCount := recoverySettlementCounts(settled)
 	recoveredCount, alreadyRecoveredCount := recoveryResultCounts(recovered)
-	fmt.Fprintf(stdout, "runnerd recover-stalled: settled_jobs=%d already_settled_jobs=%d recovered_lost_pairs=%d already_recovered_lost_pairs=%d\n", settledCount, alreadySettledCount, recoveredCount, alreadyRecoveredCount)
+	recoveredSessionCount, alreadyRecoveredSessionCount := commandlessRecoveryResultCounts(recoveredSessions)
+	fmt.Fprintf(stdout, "runnerd recover-stalled: settled_jobs=%d already_settled_jobs=%d recovered_lost_pairs=%d already_recovered_lost_pairs=%d recovered_lost_sessions=%d already_recovered_lost_sessions=%d\n", settledCount, alreadySettledCount, recoveredCount, alreadyRecoveredCount, recoveredSessionCount, alreadyRecoveredSessionCount)
 	return 0
 }
 
@@ -195,7 +207,38 @@ func parseLostRecoveryPairs(values []string) ([]execution.LostRuntimeRecoveryReq
 	return requests, nil
 }
 
-func requireStalledRecoveryInventory(ctx context.Context, authority *store.AuthorityStore, service *execution.Service, runtimeAdapter *LinuxSessionRuntime, jobIDs []domain.JobID, lostRequests []execution.LostRuntimeRecoveryRequest) error {
+func parseLostRecoverySessions(values []string) ([]execution.CommandlessLostRuntimeRecoveryRequest, error) {
+	requests := make([]execution.CommandlessLostRuntimeRecoveryRequest, 0, len(values))
+	seen := make(map[domain.SessionID]struct{}, len(values))
+	for _, raw := range values {
+		sessionID, err := domain.NewSessionID(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid lost session ID: %v", err)
+		}
+		if _, duplicate := seen[sessionID]; duplicate {
+			return nil, fmt.Errorf("duplicate lost session ID %s", sessionID)
+		}
+		seen[sessionID] = struct{}{}
+		requests = append(requests, execution.CommandlessLostRuntimeRecoveryRequest{SessionID: sessionID})
+	}
+	return requests, nil
+}
+
+func validateDistinctLostRecoverySessions(pairs []execution.LostRuntimeRecoveryRequest, sessions []execution.CommandlessLostRuntimeRecoveryRequest) error {
+	seen := make(map[domain.SessionID]struct{}, len(pairs)+len(sessions))
+	for _, pair := range pairs {
+		seen[pair.SessionID] = struct{}{}
+	}
+	for _, session := range sessions {
+		if _, duplicate := seen[session.SessionID]; duplicate {
+			return fmt.Errorf("lost session %s was selected as both pair and commandless session", session.SessionID)
+		}
+		seen[session.SessionID] = struct{}{}
+	}
+	return nil
+}
+
+func requireStalledRecoveryInventory(ctx context.Context, authority *store.AuthorityStore, service *execution.Service, runtimeAdapter *LinuxSessionRuntime, jobIDs []domain.JobID, lostRequests []execution.LostRuntimeRecoveryRequest, lostSessionRequests []execution.CommandlessLostRuntimeRecoveryRequest) error {
 	if authority == nil || service == nil || runtimeAdapter == nil {
 		return fmt.Errorf("recovery dependencies are incomplete")
 	}
@@ -222,31 +265,16 @@ func requireStalledRecoveryInventory(ctx context.Context, authority *store.Autho
 	if !sameRecoveryJobIDs(actualJobs, jobIDs) {
 		return fmt.Errorf("nonterminal jobs do not match the explicit recovery input")
 	}
-	expectedRetained := 0
-	if len(lostRequests) != 0 {
-		results, err := service.CheckLostRuntimeRecoveryBatch(ctx, lostRequests)
-		if err != nil {
+	if len(lostRequests) != 0 || len(lostSessionRequests) != 0 {
+		if err := service.CheckLostRuntimeRecoverySet(ctx, lostRequests, lostSessionRequests); err != nil {
 			return err
 		}
-		for _, result := range results {
-			if !result.AlreadyRecovered {
-				expectedRetained++
-			}
-		}
 	}
-	liveSlots, err := authority.CountLiveCommandSlots(ctx)
-	if err != nil {
-		return err
-	}
-	liveReservations, err := authority.CountLiveSessionReservations(ctx)
-	if err != nil {
-		return err
-	}
-	if liveSlots != expectedRetained || liveReservations != expectedRetained {
-		return fmt.Errorf("live command slots=%d live session reservations=%d, want %d selected retained runtimes", liveSlots, liveReservations, expectedRetained)
-	}
-	attributable := make(map[string]struct{}, len(lostRequests))
+	attributable := make(map[string]struct{}, len(lostRequests)+len(lostSessionRequests))
 	for _, request := range lostRequests {
+		attributable[string(request.SessionID)] = struct{}{}
+	}
+	for _, request := range lostSessionRequests {
 		attributable[string(request.SessionID)] = struct{}{}
 	}
 	if err := runtimeAdapter.AuditOwnership(ctx, attributable); err != nil {
@@ -278,6 +306,17 @@ func requireStalledRecoveryPostflight(ctx context.Context, authority *store.Auth
 	}
 	if activeSessions != 0 || runningCommands != 0 || liveSlots != 0 || liveReservations != 0 || len(jobs) != 0 {
 		return fmt.Errorf("active_sessions=%d running_commands=%d live_slots=%d live_session_reservations=%d unfinished_jobs=%d, want 0/0/0/0/0", activeSessions, runningCommands, liveSlots, liveReservations, len(jobs))
+	}
+	pendingPairs, err := authority.ListPendingLostRuntimeRecoveryFinalizations(ctx)
+	if err != nil {
+		return err
+	}
+	pendingSessions, err := authority.ListPendingCommandlessLostRuntimeRecoveryFinalizations(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pendingPairs) != 0 || len(pendingSessions) != 0 {
+		return fmt.Errorf("pending lost-runtime finalizations remain: pairs=%d sessions=%d", len(pendingPairs), len(pendingSessions))
 	}
 	return nil
 }
@@ -312,6 +351,17 @@ func recoverySettlementCounts(results []store.ClosedCancelledJobSettlement) (set
 func recoveryResultCounts(results []execution.LostRuntimeRecoveryResult) (recovered, alreadyRecovered int) {
 	for _, result := range results {
 		if result.AlreadyRecovered {
+			alreadyRecovered++
+		} else {
+			recovered++
+		}
+	}
+	return recovered, alreadyRecovered
+}
+
+func commandlessRecoveryResultCounts(results []execution.CommandlessLostRuntimeRecoveryResult) (recovered, alreadyRecovered int) {
+	for _, result := range results {
+		if result.Recovery.AlreadyRecovered {
 			alreadyRecovered++
 		} else {
 			recovered++
