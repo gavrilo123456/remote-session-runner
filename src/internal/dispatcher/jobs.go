@@ -309,13 +309,19 @@ func remoteRunStatusFailure(err error) bool {
 		errors.Is(err, store.ErrRemoteProjectionConflict)
 }
 
-// remoteRunTerminalTeardownUnconfirmed detects a target job that has reached
-// a command-bearing terminal phase but has not recorded the corresponding
-// teardown boundary. A pre-command creation failure remains an active
-// diagnostic state and is intentionally not treated as this BUG-002 case.
+// remoteRunTerminalTeardownUnconfirmed detects a terminal target job whose
+// result cannot yet be proven safely. A commandless failed/lost job is only
+// proven when the earlier pre-session predicate accepted failed/not_created;
+// otherwise a crash may have happened after a command acceptance but before
+// the coordinator checkpoint copied its state into the job row.
 func remoteRunTerminalTeardownUnconfirmed(job store.RemoteJobProjection) bool {
 	if job.CommandState == nil {
-		return false
+		switch job.Phase {
+		case store.JobPhaseFailed, store.JobPhaseLost:
+			return true
+		default:
+			return false
+		}
 	}
 	switch job.Phase {
 	case store.JobPhaseComplete:

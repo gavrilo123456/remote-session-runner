@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `NEW` |
+| Status | `IN PROGRESS` |
 | Severity | High |
 | Priority | P1 — blocks protected DEV deployment verification and safe continuation |
 | Reported | 2026-10-08 |
@@ -227,6 +227,50 @@ protected Logger workflow `4332`.
 - Add a restart/reconciliation regression test and verify it with a fresh
   native `slidestud-io` → `sandbox-dev` / `sandbox-host` terminal chain.
 - Leave both historical stuck requests unreplayed and unacknowledged.
+
+## Investigation result
+
+Both affected requests reached sandbox `runnerd` through `ssh_bridge` and
+were durably accepted. Each session then changed from `creating` to `lost`
+with `runtime_cleanup_unconfirmed` before an `exec_commands` row existed.
+The corresponding one-off jobs are `lost`, have no command state, and retain
+`teardown_state=pending`; their capacity reservations also remain retained.
+
+The sandbox root filesystem was full at the time of investigation. That made
+the bridge status path fail while writing a temporary validation file and is
+strong evidence for the runtime cleanup failure, although the truncated
+journal cannot prove the exact failed syscall.
+
+The Router obtained and stored a fresh strict `GET job` projection for both
+jobs. This is therefore not a mailbox import failure, a bridge identity
+mismatch, or an unavailable-status case. Current dispatcher code deliberately
+leaves a terminal job with no command and pending teardown as accepted, while
+the target queue worker considers the job terminal and will not resume it.
+The mailbox consequently has no path to a terminal response. The previous
+P149 test explicitly encoded that unsafe indefinite state.
+
+## Fix plan
+
+1. Treat a strict remote `GET job` result with a terminal job phase, no
+   command projection, and unconfirmed teardown as an unverified terminal
+   status. Preserve the existing sole proven pre-session result
+   (`failed` plus `not_created`) unchanged.
+2. Reuse the existing durable remote-status-failure marker and bounded
+   `indeterminate` mailbox outcome. It preserves request, job, session, and
+   command identity, emits no invented event, output, teardown, or command
+   result, and never replays the accepted mutation.
+3. Replace the P149 test that accepted the permanent stranded state with a
+   regression that proves the status marker, no repeat RUN, no command/event
+   read, and no fabricated command projection.
+4. Add a marker-last mailbox integration regression using the P162 harness:
+   first cycle records the marker; a restarted Router after the configured
+   deadline publishes one immutable `indeterminate` response with stable IDs;
+   an independent normal remote request still completes normally.
+5. Run focused and full Go tests, commit and push the Mac revision, then
+   fast-forward both Linux checkouts. Do not restart any service until the
+   explicit active-work recovery gate is satisfied. Historical commandless
+   lost reservations remain untouched by this fix; they require a separate
+   evidence-backed host recovery procedure.
 
 ## Impact
 

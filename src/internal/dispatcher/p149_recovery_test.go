@@ -598,12 +598,12 @@ func p149SeedTruncatedPrefix(t *testing.T, authority *store.AuthorityStore, comm
 	}
 }
 
-// TestP149AcceptedRemoteRunKeepsAcceptedForPreCommandTerminalWithoutTeardownProof
+// TestP149AcceptedRemoteRunBoundsPreCommandTerminalWithoutTeardownProof
 // covers target jobs that failed or were lost while creating their one-off
-// session. The target owns no command result and reports teardown=pending, so
-// recovery may persist the strict job view but must not invent a mailbox
-// terminal outcome or retry the run mutation.
-func TestP149AcceptedRemoteRunKeepsAcceptedForPreCommandTerminalWithoutTeardownProof(t *testing.T) {
+// session. The target owns no usable command result and reports
+// teardown=pending, so recovery records bounded status uncertainty rather than
+// inventing a mailbox terminal outcome or retrying the run mutation.
+func TestP149AcceptedRemoteRunBoundsPreCommandTerminalWithoutTeardownProof(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		phase store.JobPhase
@@ -620,12 +620,14 @@ func TestP149AcceptedRemoteRunKeepsAcceptedForPreCommandTerminalWithoutTeardownP
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := driver.ReconcileAcceptedRun(ctx, intent.IntentID); err != nil {
-				t.Fatalf("pre-command terminal recovery = %v", err)
+			err = driver.ReconcileAcceptedRun(ctx, intent.IntentID)
+			if !errors.Is(err, ErrRemoteResponse) {
+				t.Fatalf("pre-command terminal recovery error=%v, want remote status failure", err)
 			}
 			current, err := authority.GetLocalIntent(ctx, intent.IntentID)
-			if err != nil || current.DeliveryState != store.LocalIntentAccepted {
-				t.Fatalf("pre-command terminal settled intent=%+v err=%v", current, err)
+			if err != nil || current.DeliveryState != store.LocalIntentAccepted || current.RemoteStatusFailureAt == nil ||
+				current.RemoteStatusFailureCode != store.RemoteStatusFailureCodeUnavailable || current.RemoteStatusFailureAttempts != 1 {
+				t.Fatalf("pre-command terminal intent=%+v err=%v, want accepted durable status uncertainty", current, err)
 			}
 			job, err := authority.GetRemoteJobProjection(ctx, intent.JobID)
 			if err != nil || job.Phase != test.phase || job.CommandState != nil || job.TeardownState != store.JobTeardownPending || job.OutputComplete || job.OutputTruncated || job.OutputUnavailableReason != "" {

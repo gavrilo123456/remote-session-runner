@@ -183,6 +183,84 @@ func TestBUG003ServiceCycleIsolatesRemoteMailboxFailureAcrossRestart(t *testing.
 	}
 }
 
+// TestBUG016CommandlessLostPendingPublishesBoundedIndeterminateWithoutReplay
+// models the target shape found in BUG-016: a one-off job became lost before
+// the job checkpoint recorded any command, and teardown remains unconfirmed.
+// The Router must retain the accepted identity while it seeks a proof, then
+// publish one truthful indeterminate receipt at the existing deadline without
+// replaying the immutable run or inventing output/events.
+func TestBUG016CommandlessLostPendingPublishesBoundedIndeterminateWithoutReplay(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "state", "authority.db")
+	now := time.Now().UTC().Truncate(time.Second)
+	caller := newP162RemoteCaller(func() time.Time { return now })
+
+	h := newP162Harness(t, root, databasePath, &now, caller)
+	client := p162Client(t, h.mailboxRoot)
+	const lostID = "req-bug016-pre-command-lost"
+	const completeID = "req-bug016-independent-complete"
+	p162WriteRunRequest(t, client, lostID, "key-bug016-pre-command-lost", "printf 'P162_PRECOMMAND_LOST\\n'")
+	p162WriteRunRequest(t, client, completeID, "key-bug016-independent-complete", "printf 'P162_COMPLETE_OK\\n'")
+
+	var firstCycleStderr bytes.Buffer
+	h.service.runCycle(ctx, lifecycle.NewGate(), &firstCycleStderr)
+	lostAccepted := p162ReadResponse(t, client, lostID)
+	if lostAccepted.RequestState != string(store.MailboxExchangeAccepted) || lostAccepted.JobID == "" || lostAccepted.SessionID == "" || lostAccepted.CommandID == "" ||
+		lostAccepted.JobPhase != "" || lostAccepted.CommandState != "" || lostAccepted.TeardownOutcome != "" || lostAccepted.Error != nil {
+		t.Fatalf("initial BUG-016 response=%+v, want identity-only accepted receipt", lostAccepted)
+	}
+	completed := p162ReadResponse(t, client, completeID)
+	if completed.RequestState != string(store.MailboxExchangeComplete) || completed.CommandState != string(domain.CommandStateSucceeded) ||
+		completed.OutputComplete == nil || !*completed.OutputComplete {
+		t.Fatalf("independent completed response=%+v, want normal terminal result", completed)
+	}
+
+	lostIntent := p162IntentForRequest(t, h.authority, h.owner, lostID)
+	if lostIntent.DeliveryState != store.LocalIntentAccepted || lostIntent.RemoteStatusFailureAt == nil ||
+		lostIntent.RemoteStatusFailureCode != store.RemoteStatusFailureCodeUnavailable || lostIntent.RemoteStatusFailureAttempts != 1 {
+		t.Fatalf("BUG-016 intent=%+v, want durable accepted status uncertainty", lostIntent)
+	}
+	if caller.mutationCount(string(lostIntent.JobID)) != 1 || caller.statusReadCount(string(lostIntent.JobID)) != 1 ||
+		caller.commandReads[string(lostIntent.CommandID)] != 0 || caller.streamReads[string(lostIntent.CommandID)] != 0 {
+		t.Fatalf("initial BUG-016 calls mutation=%d status=%d command=%d stream=%d, want one RUN/status and no command/event reads",
+			caller.mutationCount(string(lostIntent.JobID)), caller.statusReadCount(string(lostIntent.JobID)), caller.commandReads[string(lostIntent.CommandID)], caller.streamReads[string(lostIntent.CommandID)])
+	}
+	if !strings.Contains(firstCycleStderr.String(), "failure_class=remote_status_unavailable") || !strings.Contains(firstCycleStderr.String(), "request_id="+lostID) {
+		t.Fatalf("BUG-016 initial cycle lacked sanitized reconciliation diagnostic: %s", firstCycleStderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(h.mailboxRoot, "events", string(lostIntent.CommandID)+".ndjson")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("BUG-016 initial accepted response created event artifact err=%v", err)
+	}
+	h.close()
+
+	now = lostIntent.RemoteStatusFailureAt.Add(dispatcher.RemoteUncertaintyWindow + time.Second)
+	h = newP162Harness(t, root, databasePath, &now, caller)
+	defer h.close()
+	client = p162Client(t, h.mailboxRoot)
+	h.service.lastRemoteReconcile = time.Time{}
+	h.service.runCycle(ctx, lifecycle.NewGate(), io.Discard)
+	terminal := p162ReadResponse(t, client, lostID)
+	if terminal.RequestState != string(store.MailboxExchangeIndeterminate) || terminal.ResponseRevision <= lostAccepted.ResponseRevision ||
+		terminal.JobID != lostAccepted.JobID || terminal.SessionID != lostAccepted.SessionID || terminal.CommandID != lostAccepted.CommandID ||
+		terminal.DeliveryState != string(store.LocalIntentAccepted) || terminal.Error == nil || terminal.Error.Code != store.RemoteStatusFailureCodeUnavailable || terminal.Error.Retryable ||
+		terminal.JobPhase != "" || terminal.CommandState != "" || terminal.TeardownOutcome != "" || terminal.ExitCode != nil ||
+		terminal.FinalEventSequence != nil || terminal.AvailableEventSequence != nil || terminal.OutputComplete != nil || terminal.OutputTruncated != nil ||
+		terminal.OutputUnavailableReason != "" || terminal.EventsFile != "" || terminal.Stdout != "" || terminal.Stderr != "" {
+		t.Fatalf("BUG-016 terminal response=%+v, want truthful bounded indeterminate result", terminal)
+	}
+	terminalBytes := p162ReadFile(t, filepath.Join(h.mailboxRoot, "outbox", lostID+mailbox.RequestSuffix))
+	h.service.runCycle(ctx, lifecycle.NewGate(), io.Discard)
+	if got := p162ReadFile(t, filepath.Join(h.mailboxRoot, "outbox", lostID+mailbox.RequestSuffix)); !bytes.Equal(got, terminalBytes) {
+		t.Fatalf("BUG-016 terminal response changed after repeat reconciliation")
+	}
+	if caller.mutationCount(string(lostIntent.JobID)) != 1 || caller.statusReadCount(string(lostIntent.JobID)) != 1 ||
+		caller.commandReads[string(lostIntent.CommandID)] != 0 || caller.streamReads[string(lostIntent.CommandID)] != 0 {
+		t.Fatalf("BUG-016 deadline replayed work mutation=%d status=%d command=%d stream=%d",
+			caller.mutationCount(string(lostIntent.JobID)), caller.statusReadCount(string(lostIntent.JobID)), caller.commandReads[string(lostIntent.CommandID)], caller.streamReads[string(lostIntent.CommandID)])
+	}
+}
+
 type p162Harness struct {
 	authority   *store.AuthorityStore
 	owner       domain.ControllerIdentity
@@ -363,6 +441,7 @@ type p162RemoteCaller struct {
 type p162RemoteJob struct {
 	jobID, sessionID, commandID, environment, profile, script string
 	statusFailure                                             bool
+	preCommandLost                                            bool
 	activeStatus                                              bool
 	queueBlockedStatus                                        bool
 	runningStatus                                             bool
@@ -399,7 +478,8 @@ func (c *p162RemoteCaller) Call(_ context.Context, frame sshbridge.RequestFrame)
 		job := &p162RemoteJob{
 			jobID: frame.ResourceID, sessionID: payload.SessionID, commandID: payload.CommandID,
 			environment: payload.Environment, profile: payload.ExecutionTarget.Profile, script: payload.Script,
-			statusFailure: strings.Contains(payload.Script, "P162_STATUS_FAILURE"),
+			statusFailure:  strings.Contains(payload.Script, "P162_STATUS_FAILURE"),
+			preCommandLost: strings.Contains(payload.Script, "P162_PRECOMMAND_LOST"),
 			activeStatus: strings.Contains(payload.Script, "P162_ACTIVE_STATUS") ||
 				strings.Contains(payload.Script, "P3_QUEUE_BLOCKED_STATUS"),
 			queueBlockedStatus: strings.Contains(payload.Script, "P3_QUEUE_BLOCKED_STATUS"),
@@ -431,7 +511,7 @@ func (c *p162RemoteCaller) Call(_ context.Context, frame sshbridge.RequestFrame)
 			return sshbridge.ReplyFrame{}, err
 		}
 		job := c.jobForCommand(payload.CommandID)
-		if job == nil || job.statusFailure {
+		if job == nil || job.statusFailure || job.preCommandLost {
 			return sshbridge.ReplyFrame{}, errors.New("P162 unknown remote command status")
 		}
 		c.commandReads[job.commandID]++
@@ -450,7 +530,7 @@ func (c *p162RemoteCaller) Stream(_ context.Context, frame sshbridge.RequestFram
 		return err
 	}
 	job := c.jobForCommand(payload.CommandID)
-	if job == nil || job.statusFailure {
+	if job == nil || job.statusFailure || job.preCommandLost {
 		return errors.New("P162 unexpected remote event stream")
 	}
 	c.streamReads[job.commandID]++
@@ -486,6 +566,18 @@ func (c *p162RemoteCaller) jobForCommand(commandID string) *p162RemoteJob {
 }
 
 func (c *p162RemoteCaller) jobPayload(job *p162RemoteJob) map[string]any {
+	if job.preCommandLost {
+		return map[string]any{
+			"job_id": job.jobID, "session_id": job.sessionID, "command_id": job.commandID,
+			"job_phase": string(store.JobPhaseLost), "output_complete": false, "output_truncated": false,
+			"teardown_state": string(store.JobTeardownPending), "teardown_reason": "runtime_cleanup_unconfirmed",
+			"execution_target": map[string]string{"kind": "remote", "profile": job.profile}, "authority": "remote",
+			"controller":  map[string]string{"controller_type": "queued_mac", "controller_id": config.MacAccount},
+			"environment": job.environment, "source": map[string]string{"mode": "empty"},
+			"capabilities": map[string]any{"host_class": "Ubuntu Linux host", "isolation": "os-user", "effective_account": "ubuntu", "service_limits": map[string]any{"running_commands": 4}},
+			"observed_at":  c.observedAt(),
+		}
+	}
 	if job.activeStatus {
 		state := domain.CommandStateQueued
 		if job.runningStatus {
