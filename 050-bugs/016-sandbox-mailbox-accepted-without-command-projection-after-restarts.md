@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` |
+| Status | `FIX IMPLEMENTED — bounded historical terminalization pending` |
 | Severity | High |
 | Priority | P1 — blocks protected DEV deployment verification and safe continuation |
 | Reported | 2026-10-08 |
@@ -442,6 +442,19 @@ The strict P158 gate remains unchanged. A separate opt-in
 fresh native default-target request's complete response, event stream, ACK,
 and request-pair consumption. It neither changes those historical receipts nor
 claims P158 mailbox quiescence or P128 zero host work.
+
+That route-only gate passed after its test/documentation commit
+`e461adcb4af82396df27e15cafc5befad7cefd6d` was pushed and both Ubuntu
+checkouts fast-forwarded to the same revision. It published
+`req-p158-backlog-18dca7bf03b528b8`, which resolved from the `slidestud-io`
+inbox default to `sandbox-dev` / `remote/sandbox-host`, completed as
+`cmd-c20f5a7ebc6e87e0b721d62cbe9f5b2a`, verified its complete event stream,
+and consumed its own ACK and request pair. Its preflight and postflight both
+reported exactly the pre-existing two-item `slidestud-io` backlog. A subsequent
+read-only sandbox P128 check reported zero active sessions, running commands,
+unreleased slots, and unfinished jobs. This is fresh route evidence only; it
+does not turn the historical receipts into complete results or pass the strict
+zero-backlog P158 gate.
 
 ## Impact
 

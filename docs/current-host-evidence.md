@@ -182,6 +182,34 @@ ordinary strict-shell failure path only. It did not replay either historical
 Logger request, prove their external Gitea outcome, pass a new P157 gate, or
 prove physical power-loss durability.
 
+## Deployed BUG-016 pre-start recovery correction
+
+The pre-start correction was installed as
+`d8ecafffd2edecd08fb31e5a5569f79e7707f18c` on the Mac and both Ubuntu Runner
+services. It recovers only the exact historical commandless-lost shape through
+the absent-owner-marker proof and prevents a fresh failed preparation from
+holding capacity without a command.
+
+The two historic `slidestud-io` receipts remain safely accepted while their
+24-hour remote-status uncertainty window runs. They are `lost` jobs with no
+command and pending teardown, so Runner must publish a truthful
+`indeterminate` result rather than invent a successful or failed command.
+
+To verify fresh work beside that retained backlog, source revision
+`e461adcb4af82396df27e15cafc5befad7cefd6d` added the separate route-only
+`make test-p158-slidestud-mailbox-with-backlog` gate. It passed with
+`request_id=req-p158-backlog-18dca7bf03b528b8` and
+`command_id=cmd-c20f5a7ebc6e87e0b721d62cbe9f5b2a`: the native request used no
+target fields, selected `sandbox-dev` / `remote/sandbox-host`, completed,
+verified events, and consumed its own ACK/request pair. The pre- and post-test
+SlideStudio backlog remained two items. A later read-only sandbox P128 check
+reported zero active sessions, running commands, unreleased slots, and
+unfinished jobs.
+
+This is fresh route and zero-active-work evidence. It does not pass the
+strict P158 zero-mailbox-backlog gate, replay either historical request, or
+prove the historical receipts' terminal projection before their deadline.
+
 ## What is not accepted
 
 | Item | Status | Reason |
