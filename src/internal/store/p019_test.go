@@ -269,6 +269,20 @@ func p019ReadySession(t *testing.T, store *AuthorityStore, sessionID domain.Sess
 	return created.SessionID
 }
 
+// p019RuntimeReadySession models the normal successful runtime handshake. Use
+// it for fixtures representing a command that could have reached an executor.
+func p019RuntimeReadySession(t *testing.T, store *AuthorityStore, sessionID domain.SessionID, key string) domain.SessionID {
+	t.Helper()
+	created, _, err := store.AcceptSessionCreate(context.Background(), p013Acceptance(t, string(sessionID), key, "linux-dev"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteSessionCreation(context.Background(), created.SessionID, domain.SessionStateReady, "generation-"+string(created.SessionID), "", "runtime_ready"); err != nil {
+		t.Fatal(err)
+	}
+	return created.SessionID
+}
+
 func p019Command(t *testing.T, store *AuthorityStore, sessionID domain.SessionID, commandID domain.CommandID, key string) CommandRecord {
 	t.Helper()
 	script := "echo " + string(commandID)

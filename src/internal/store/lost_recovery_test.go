@@ -130,7 +130,7 @@ func pLostRecoveryFixture(t *testing.T) (*AuthorityStore, domain.SessionID, doma
 	t.Helper()
 	clock := &p019Clock{value: time.Date(2026, 9, 30, 18, 0, 0, 0, time.UTC)}
 	authority := newP019Store(t, clock)
-	sessionID := p019ReadySession(t, authority, "session-store-lost-recovery", "key-store-lost-recovery")
+	sessionID := p019RuntimeReadySession(t, authority, "session-store-lost-recovery", "key-store-lost-recovery")
 	command := p019Command(t, authority, sessionID, "command-store-lost-recovery", "key-command-store-lost-recovery")
 	if _, err := authority.StartNextEligibleCommand(context.Background(), DefaultRunningCommandLimit); err != nil {
 		t.Fatal(err)

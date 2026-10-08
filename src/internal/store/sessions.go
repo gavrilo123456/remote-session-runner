@@ -485,6 +485,76 @@ VALUES (?, ?, ?, ?, ?, ?)
 	})
 }
 
+// FailPreStartSessionCreation atomically records a failed creation and releases
+// its reservation when the runtime never reached an addressable generation.
+// Callers use it only for the pre-start boundary: a creating session with an
+// empty runtime generation. The single transaction avoids a crash leaving a
+// terminal failed session with capacity that can never be reclaimed.
+func (s *AuthorityStore) FailPreStartSessionCreation(ctx context.Context, id domain.SessionID) (SessionRecord, error) {
+	validatedID, err := domain.NewSessionID(string(id))
+	if err != nil {
+		return SessionRecord{}, err
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+		var currentState, runtimeGeneration string
+		if err := connection.QueryRowContext(ctx, `
+SELECT state, runtime_generation FROM exec_sessions WHERE session_id = ?
+`, string(validatedID)).Scan(&currentState, &runtimeGeneration); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return SessionRecord{}, ErrSessionNotFound
+			}
+			return SessionRecord{}, fmt.Errorf("read pre-start session: %w", err)
+		}
+		if domain.SessionState(currentState) != domain.SessionStateCreating || runtimeGeneration != "" {
+			return SessionRecord{}, fmt.Errorf("%w: pre-start failure requires creating session without runtime generation", ErrSessionLifecycle)
+		}
+		var sequence int64
+		if err := connection.QueryRowContext(ctx,
+			"SELECT COALESCE(MAX(lifecycle_sequence), 0) + 1 FROM exec_session_lifecycle WHERE session_id = ?",
+			string(validatedID)).Scan(&sequence); err != nil {
+			return SessionRecord{}, fmt.Errorf("read pre-start failure lifecycle sequence: %w", err)
+		}
+		result, err := connection.ExecContext(ctx, `
+UPDATE exec_sessions
+SET state = ?, updated_at = ?
+WHERE session_id = ? AND state = ? AND runtime_generation = ''
+`, string(domain.SessionStateFailed), formatStoredTime(now), string(validatedID), string(domain.SessionStateCreating))
+		if err != nil {
+			return SessionRecord{}, fmt.Errorf("record pre-start failed session: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return SessionRecord{}, fmt.Errorf("read pre-start failed session result: %w", err)
+		}
+		if changed != 1 {
+			return SessionRecord{}, fmt.Errorf("%w: pre-start session changed %d rows", ErrSessionLifecycle, changed)
+		}
+		if _, err := connection.ExecContext(ctx, `
+INSERT INTO exec_session_lifecycle (session_id, lifecycle_sequence, previous_state, new_state, reason, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, string(validatedID), sequence, string(domain.SessionStateCreating), string(domain.SessionStateFailed), "runtime_prepare_failed", formatStoredTime(now)); err != nil {
+			return SessionRecord{}, fmt.Errorf("insert pre-start failure lifecycle: %w", err)
+		}
+		reservation, err := connection.ExecContext(ctx, `
+UPDATE exec_capacity_reservations
+SET cleanup_confirmed_at = ?, released_at = ?
+WHERE session_id = ? AND cleanup_confirmed_at IS NULL AND released_at IS NULL
+`, formatStoredTime(now), formatStoredTime(now), string(validatedID))
+		if err != nil {
+			return SessionRecord{}, fmt.Errorf("release pre-start session reservation: %w", err)
+		}
+		changed, err = reservation.RowsAffected()
+		if err != nil {
+			return SessionRecord{}, fmt.Errorf("read pre-start reservation result: %w", err)
+		}
+		if changed != 1 {
+			return SessionRecord{}, fmt.Errorf("%w: pre-start session reservation is not unreleased", ErrSessionLifecycle)
+		}
+		return readSessionOnConnection(ctx, connection, validatedID)
+	})
+}
+
 // ListSessionLifecycle returns lifecycle records in durable sequence order.
 func (s *AuthorityStore) ListSessionLifecycle(ctx context.Context, id domain.SessionID) ([]SessionLifecycleRecord, error) {
 	validatedID, err := domain.NewSessionID(string(id))

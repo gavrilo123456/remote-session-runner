@@ -157,7 +157,7 @@ func pStalledRecoveryLostPair(t *testing.T, authority *AuthorityStore, suffix st
 	t.Helper()
 	sessionID := domain.SessionID("session-stalled-recovery-" + suffix)
 	commandID := domain.CommandID("command-stalled-recovery-" + suffix)
-	p019ReadySession(t, authority, sessionID, "key-stalled-recovery-session-"+suffix)
+	p019RuntimeReadySession(t, authority, sessionID, "key-stalled-recovery-session-"+suffix)
 	command := p019Command(t, authority, sessionID, commandID, "key-stalled-recovery-command-"+suffix)
 	if _, err := authority.StartNextEligibleCommand(context.Background(), DefaultRunningCommandLimit); err != nil {
 		t.Fatal(err)

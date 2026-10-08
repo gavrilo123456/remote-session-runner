@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -53,6 +54,33 @@ func TestP025I04OneOffRunCreatesAndExecutesExactlyOneCommand(t *testing.T) {
 	}
 	if got, err := authority.GetCommand(context.Background(), request.Acceptance.CommandID); err != nil || got.State != domain.CommandStateSucceeded {
 		t.Fatalf("authoritative command after retry = %+v err=%v", got, err)
+	}
+}
+
+func TestBUG016FreshOneOffPreStartFailureTerminalizesWithoutCommand(t *testing.T) {
+	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
+		prepareErr: errors.New("fixture source preparation failed"),
+	}}
+	service, authority, _ := newP025Service(t, runtime)
+	request := p025Request(t, "job-bug016-pre-start", "session-bug016-pre-start", "command-bug016-pre-start", "run-bug016-pre-start", "printf must-not-run")
+	result, err := service.RunJob(context.Background(), request)
+	if !errors.Is(err, ErrRuntimeUnavailable) || result.Job.Phase != store.JobPhaseFailed || result.Session.State != domain.SessionStateFailed || result.Command.CommandID != "" {
+		t.Fatalf("pre-start one-off result=%+v err=%v", result, err)
+	}
+	if runtime.prepareCall != 1 || runtime.startCall != 0 || runtime.cleanupCall != 0 || runtime.commandCall != 0 {
+		t.Fatalf("pre-start runtime calls prepare=%d start=%d cleanup=%d command=%d", runtime.prepareCall, runtime.startCall, runtime.cleanupCall, runtime.commandCall)
+	}
+	if _, commandErr := authority.GetCommand(context.Background(), request.Acceptance.CommandID); !errors.Is(commandErr, store.ErrCommandNotFound) {
+		t.Fatalf("pre-start command lookup=%v, want %v", commandErr, store.ErrCommandNotFound)
+	}
+	if slots, slotErr := authority.CountLiveCommandSlots(context.Background()); slotErr != nil || slots != 0 {
+		t.Fatalf("pre-start live command slots=%d err=%v, want zero", slots, slotErr)
+	}
+	if reservations, reservationErr := authority.CountLiveSessionReservations(context.Background()); reservationErr != nil || reservations != 0 {
+		t.Fatalf("pre-start live reservations=%d err=%v, want zero", reservations, reservationErr)
+	}
+	if _, recoveryErr := authority.CheckCommandlessLostRuntimeRecoveryBatch(context.Background(), []domain.SessionID{request.Acceptance.SessionID}); !errors.Is(recoveryErr, store.ErrCommandlessLostRuntimeRecoveryNotReleasable) {
+		t.Fatalf("fresh failed session entered commandless lost recovery=%v", recoveryErr)
 	}
 }
 

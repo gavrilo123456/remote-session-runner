@@ -56,6 +56,38 @@ func TestBUG011MacLostRecoveryReapsOwnedZombieThenFinalizes(t *testing.T) {
 	}
 }
 
+func TestBUG016MacPreStartLostRecoveryRequiresAbsentOwnership(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
+	if err := os.Mkdir(workspaceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := NewMacProcessAdapter(MacRuntimeOptions{Account: current.Username, WorkspaceRoot: workspaceRoot, ShellPath: "/bin/bash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proved, err := adapter.ConfirmLostRecoveryCleanup(context.Background(), "session-bug016-mac-absent", "", 100*time.Millisecond)
+	if err != nil || !proved.CleanupConfirmed || !proved.CapacityRetained {
+		t.Fatalf("absent pre-start proof=%+v err=%v", proved, err)
+	}
+	finalized, err := adapter.FinalizeLostRecoveryCleanup(context.Background(), "session-bug016-mac-absent", "")
+	if err != nil || !finalized.CleanupConfirmed || finalized.CapacityRetained {
+		t.Fatalf("absent pre-start finalization=%+v err=%v", finalized, err)
+	}
+
+	fixture := newBUG011MacFixture(t, "bug016-pre-start-present")
+	blocked, blockErr := fixture.adapter.ConfirmLostRecoveryCleanup(context.Background(), fixture.prepared.SessionID, "", 100*time.Millisecond)
+	if blockErr == nil || blocked.CleanupConfirmed || !blocked.CapacityRetained {
+		t.Fatalf("present pre-start proof=%+v err=%v, want retained refusal", blocked, blockErr)
+	}
+	if _, ownerErr := readRuntimeOwnership(fixture.workspaceRoot, fixture.prepared.SessionID); ownerErr != nil {
+		t.Fatalf("present marker after refusal: %v", ownerErr)
+	}
+}
+
 func TestBUG011MacLostRecoveryStopsKnownLiveRootAndRetainsMetadata(t *testing.T) {
 	fixture := newBUG011MacFixture(t, "live-root")
 	bug011AssertMacRunnable(t, fixture.record.PID, fixture.record.ProcessGroupID)

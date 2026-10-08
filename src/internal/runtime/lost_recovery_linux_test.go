@@ -75,3 +75,58 @@ func TestLostRecoveryProofRetainsThenFinalizesLinuxOwnership(t *testing.T) {
 		t.Fatalf("idempotent stage-C finalization=%+v err=%v", repeated, err)
 	}
 }
+
+func TestPreStartLostRecoveryRequiresAbsentLinuxOwnership(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("pre-start lost-recovery proof requires the Linux host adapter")
+	}
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("absent ownership marker", func(t *testing.T) {
+		workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
+		if err := os.Mkdir(workspaceRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		adapter, err := NewLinuxProcessAdapter(LinuxRuntimeOptions{Account: current.Username, WorkspaceRoot: workspaceRoot, ShellPath: "/usr/bin/bash"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		proved, err := adapter.ConfirmLostRecoveryCleanup(context.Background(), "session-pre-start-linux-absent", "", 100*time.Millisecond)
+		if err != nil || !proved.CleanupConfirmed || !proved.CapacityRetained {
+			t.Fatalf("absent pre-start proof=%+v err=%v", proved, err)
+		}
+		finalized, err := adapter.FinalizeLostRecoveryCleanup(context.Background(), "session-pre-start-linux-absent", "")
+		if err != nil || !finalized.CleanupConfirmed || finalized.CapacityRetained {
+			t.Fatalf("absent pre-start finalization=%+v err=%v", finalized, err)
+		}
+	})
+
+	t.Run("present ownership marker", func(t *testing.T) {
+		workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
+		if err := os.Mkdir(workspaceRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		adapter, err := NewLinuxProcessAdapter(LinuxRuntimeOptions{Account: current.Username, WorkspaceRoot: workspaceRoot, ShellPath: "/usr/bin/bash"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := adapter.Prepare(context.Background(), "session-pre-start-linux-present", "generation-pre-start-linux-present")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := adapter.StartAgent(context.Background(), prepared); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = adapter.Cleanup(prepared.SessionID) })
+		proved, err := adapter.ConfirmLostRecoveryCleanup(context.Background(), prepared.SessionID, "", 100*time.Millisecond)
+		if err == nil || proved.CleanupConfirmed || !proved.CapacityRetained {
+			t.Fatalf("present pre-start proof=%+v err=%v, want retained refusal", proved, err)
+		}
+		if _, ownerErr := readRuntimeOwnership(workspaceRoot, prepared.SessionID); ownerErr != nil {
+			t.Fatalf("present marker after refusal: %v", ownerErr)
+		}
+	})
+}

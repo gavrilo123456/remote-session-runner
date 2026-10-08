@@ -290,8 +290,12 @@ WHERE session.session_id = ?`, string(sessionID)).Scan(
 	if err != nil {
 		return recovery, err
 	}
+	// A blank runtime generation is the narrow pre-start failure shape: Prepare
+	// returned an error before StartAgent could receive a handle. The runtime
+	// adapter must still prove that no ownership record exists before capacity is
+	// released. Every other terminal record shape remains ineligible here.
 	if phase != string(JobPhaseLost) || commandState.Valid || exitCode.Valid || finalSequence.Valid || outputTruncated != 0 || outputComplete != 0 || outputUnavailable != "" ||
-		teardownState != string(JobTeardownPending) || teardownReason != "" || session.State != domain.SessionStateLost || session.RuntimeGeneration == "" ||
+		teardownState != string(JobTeardownPending) || teardownReason != "" || session.State != domain.SessionStateLost ||
 		reservationHost != reservationHostKey || jobsForSession != 1 || commandsForSession != 0 || slotsForJob != 0 || finalizations > 1 {
 		return recovery, ErrCommandlessLostRuntimeRecoveryNotReleasable
 	}

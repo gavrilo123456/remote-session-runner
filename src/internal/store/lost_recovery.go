@@ -708,13 +708,13 @@ func validateLostRuntimeRecoveryPairs(pairs []LostRuntimeRecoveryPair) ([]LostRu
 // It intentionally accepts an already-released pair even if event retention
 // has removed its old command_lost record.
 func checkLostRuntimeRecoveryPair(ctx context.Context, connection *sql.Conn, pair LostRuntimeRecoveryPair) (bool, error) {
-	var commandSessionID, commandState, sessionState string
+	var commandSessionID, commandState, sessionState, runtimeGeneration string
 	var outputComplete int
 	var finalSequence sql.NullInt64
 	var commandSlotHostKey, sessionReservationHostKey string
 	var commandStop, commandReleased, sessionCleanup, sessionReleased sql.NullString
 	err := connection.QueryRowContext(ctx, `
-SELECT c.session_id, c.state, s.state, c.output_complete, c.final_event_sequence,
+SELECT c.session_id, c.state, s.state, s.runtime_generation, c.output_complete, c.final_event_sequence,
        slot.host_key, slot.stop_confirmed_at, slot.released_at,
        reservation.host_key, reservation.cleanup_confirmed_at, reservation.released_at
 FROM exec_commands AS c
@@ -722,7 +722,7 @@ JOIN exec_sessions AS s ON s.session_id = c.session_id
 JOIN exec_command_slots AS slot ON slot.command_id = c.command_id
 JOIN exec_capacity_reservations AS reservation ON reservation.session_id = s.session_id
 WHERE c.command_id = ?`, string(pair.CommandID)).Scan(
-		&commandSessionID, &commandState, &sessionState, &outputComplete, &finalSequence,
+		&commandSessionID, &commandState, &sessionState, &runtimeGeneration, &outputComplete, &finalSequence,
 		&commandSlotHostKey, &commandStop, &commandReleased,
 		&sessionReservationHostKey, &sessionCleanup, &sessionReleased,
 	)
@@ -732,7 +732,7 @@ WHERE c.command_id = ?`, string(pair.CommandID)).Scan(
 		}
 		return false, fmt.Errorf("read lost runtime recovery state: %w", err)
 	}
-	if commandSessionID != string(pair.SessionID) || commandState != string(domain.CommandStateLost) || sessionState != string(domain.SessionStateLost) || commandSlotHostKey != schedulerHostKey || sessionReservationHostKey != reservationHostKey {
+	if commandSessionID != string(pair.SessionID) || commandState != string(domain.CommandStateLost) || sessionState != string(domain.SessionStateLost) || runtimeGeneration == "" || commandSlotHostKey != schedulerHostKey || sessionReservationHostKey != reservationHostKey {
 		return false, ErrLostRuntimeRecoveryNotReleasable
 	}
 	commandAlreadyReleased := commandStop.Valid && commandReleased.Valid

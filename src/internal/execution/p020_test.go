@@ -17,6 +17,7 @@ func (c *p020Clock) Now() time.Time { return c.now }
 
 type p020FakeRuntime struct {
 	prepareErr    error
+	prepareResult RuntimePrepared
 	startErr      error
 	cleanupErr    error
 	commandErr    error
@@ -29,6 +30,7 @@ type p020FakeRuntime struct {
 	prepareCall   int
 	startCall     int
 	cleanupCall   int
+	cleanupSaw    RuntimeCleanupRequest
 	commandCall   int
 	cancelCall    int
 	stopCall      int
@@ -41,7 +43,7 @@ func (r *p020FakeRuntime) Prepare(ctx context.Context, request RuntimePrepareReq
 		r.prepareSaw = record.State
 	}
 	if r.prepareErr != nil {
-		return RuntimePrepared{}, r.prepareErr
+		return r.prepareResult, r.prepareErr
 	}
 	return RuntimePrepared{RuntimeGeneration: r.generation}, nil
 }
@@ -54,8 +56,9 @@ func (r *p020FakeRuntime) StartAgent(context.Context, RuntimeStartRequest) (Runt
 	return RuntimeStarted{RuntimeGeneration: r.generation}, nil
 }
 
-func (r *p020FakeRuntime) Cleanup(context.Context, RuntimeCleanupRequest) error {
+func (r *p020FakeRuntime) Cleanup(_ context.Context, request RuntimeCleanupRequest) error {
 	r.cleanupCall++
+	r.cleanupSaw = request
 	return r.cleanupErr
 }
 
@@ -143,19 +146,62 @@ func TestP020I01CreateReadyAndReadUseSharedService(t *testing.T) {
 	}
 }
 
-func TestP020D11PrepareFailureCommitsFailedAfterCleanup(t *testing.T) {
-	runtime := &p020FakeRuntime{generation: "generation-prepare", prepareErr: errors.New("fixture prepare failed")}
+func TestP020D11PrepareFailureCommitsFailedBeforeStart(t *testing.T) {
+	runtime := &p020FakeRuntime{generation: "generation-prepare", prepareErr: errors.New("fixture prepare failed"), cleanupErr: errors.New("cleanup must not run before start")}
 	service, authority, _ := newP020Service(t, runtime)
 	request := p020Request(t, "session-prepare-fail", "key-prepare-fail", p020Target(t, domain.TargetKindLocal, "mac-workstation"))
 	result, err := service.CreateSession(context.Background(), request)
 	if !errors.Is(err, ErrRuntimeUnavailable) || result.Session.State != domain.SessionStateFailed {
 		t.Fatalf("result=%+v err=%v, want failed runtime error", result.Session, err)
 	}
-	if runtime.prepareCall != 1 || runtime.startCall != 0 || runtime.cleanupCall != 1 {
+	if runtime.prepareCall != 1 || runtime.startCall != 0 || runtime.cleanupCall != 0 {
 		t.Fatalf("runtime calls = prepare %d start %d cleanup %d", runtime.prepareCall, runtime.startCall, runtime.cleanupCall)
 	}
-	if got, err := authority.CountLiveSessionReservations(context.Background()); err != nil || got != 1 {
-		t.Fatalf("failed session reservation = %d, err = %v, want retained 1", got, err)
+	if result.Session.RuntimeGeneration != "" {
+		t.Fatalf("pre-start failed session generation=%q, want empty", result.Session.RuntimeGeneration)
+	}
+	if got, countErr := authority.CountLiveSessionReservations(context.Background()); countErr != nil || got != 0 {
+		t.Fatalf("pre-start failed session live reservations=%d err=%v, want 0", got, countErr)
+	}
+	lifecycle, lifecycleErr := authority.ListSessionLifecycle(context.Background(), request.SessionID)
+	if lifecycleErr != nil || len(lifecycle) != 2 || lifecycle[1].Reason != "runtime_prepare_failed" {
+		t.Fatalf("pre-start failure lifecycle=%+v err=%v", lifecycle, lifecycleErr)
+	}
+}
+
+func TestP020D11PrepareFailureWithAddressableHandleUsesCleanupAndRetainsProof(t *testing.T) {
+	runtime := &p020FakeRuntime{
+		prepareErr:    errors.New("fixture prepare failed after allocation"),
+		prepareResult: RuntimePrepared{RuntimeGeneration: "generation-partial-prepare"},
+		cleanupErr:    errors.New("fixture cleanup uncertain"),
+	}
+	service, authority, _ := newP020Service(t, runtime)
+	request := p020Request(t, "session-prepare-partial", "key-prepare-partial", p020Target(t, domain.TargetKindLocal, "mac-workstation"))
+	result, err := service.CreateSession(context.Background(), request)
+	if !errors.Is(err, ErrRuntimeUnavailable) || result.Session.State != domain.SessionStateLost || result.Session.RuntimeGeneration != "generation-partial-prepare" {
+		t.Fatalf("partial prepare result=%+v err=%v, want addressable lost runtime", result.Session, err)
+	}
+	if runtime.prepareCall != 1 || runtime.startCall != 0 || runtime.cleanupCall != 1 || runtime.cleanupSaw.RuntimeGeneration != "generation-partial-prepare" {
+		t.Fatalf("partial prepare calls prepare=%d start=%d cleanup=%d cleanup=%+v", runtime.prepareCall, runtime.startCall, runtime.cleanupCall, runtime.cleanupSaw)
+	}
+	if got, countErr := authority.CountLiveSessionReservations(context.Background()); countErr != nil || got != 1 {
+		t.Fatalf("partial prepare live reservations=%d err=%v, want retained one", got, countErr)
+	}
+}
+
+func TestP020D11PrepareSuccessWithoutGenerationFailsClosedAfterCleanup(t *testing.T) {
+	runtime := &p020FakeRuntime{}
+	service, authority, _ := newP020Service(t, runtime)
+	request := p020Request(t, "session-prepare-empty", "key-prepare-empty", p020Target(t, domain.TargetKindLocal, "mac-workstation"))
+	result, err := service.CreateSession(context.Background(), request)
+	if !errors.Is(err, ErrRuntimeUnavailable) || result.Session.State != domain.SessionStateFailed || result.Session.RuntimeGeneration != "" {
+		t.Fatalf("empty prepared result=%+v err=%v, want failed conservative runtime", result.Session, err)
+	}
+	if runtime.prepareCall != 1 || runtime.startCall != 0 || runtime.cleanupCall != 1 {
+		t.Fatalf("empty prepared calls prepare=%d start=%d cleanup=%d", runtime.prepareCall, runtime.startCall, runtime.cleanupCall)
+	}
+	if got, countErr := authority.CountLiveSessionReservations(context.Background()); countErr != nil || got != 1 {
+		t.Fatalf("empty prepared live reservations=%d err=%v, want retained one", got, countErr)
 	}
 }
 

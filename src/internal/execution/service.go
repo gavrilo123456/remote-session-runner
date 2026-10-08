@@ -148,9 +148,12 @@ type RuntimePrepareRequest struct {
 	Session store.SessionRecord
 }
 
-// RuntimePrepared is the output of source preparation. A generation is
-// optional until StartAgent returns its handshake; a resolved revision is
-// recorded when a git source is prepared.
+// RuntimePrepared is the output of source preparation. A successful Prepare
+// must return a non-empty generation before StartAgent can run. A blank
+// generation returned with an error declares that no persistent process or
+// ownership marker exists; a non-empty generation makes a partial runtime
+// addressable for Cleanup. A resolved revision is recorded when a git source
+// is prepared.
 type RuntimePrepared struct {
 	RuntimeGeneration string
 	ResolvedRevision  string
@@ -506,7 +509,17 @@ func (s *Service) CreateSession(ctx context.Context, request CreateSessionReques
 
 	prepared, prepareErr := s.runtime.Prepare(ctx, RuntimePrepareRequest{Session: accepted})
 	if prepareErr != nil {
-		return s.finishRuntimeFailure(ctx, result, RuntimePrepared{}, prepareErr)
+		if prepared.RuntimeGeneration == "" {
+			return s.finishPreStartRuntimeFailure(ctx, result, prepareErr)
+		}
+		return s.finishRuntimeFailure(ctx, result, prepared, prepareErr)
+	}
+	if prepared.RuntimeGeneration == "" {
+		// A nil-error Prepare with no generation violates the runtime contract.
+		// Unlike the documented error-without-generation case above, it cannot
+		// establish that nothing was created, so require Cleanup and retain
+		// capacity conservatively.
+		return s.finishRuntimeFailure(ctx, result, prepared, ErrRuntimeHandshake)
 	}
 	started, startErr := s.runtime.StartAgent(ctx, RuntimeStartRequest{
 		Session:           accepted,
@@ -530,6 +543,20 @@ func (s *Service) CreateSession(ctx context.Context, request CreateSessionReques
 	result.Session = ready
 	s.publishLatestLifecycle(ctx, ready.SessionID)
 	return result, nil
+}
+
+// finishPreStartRuntimeFailure records a failed creation when Prepare did not
+// return an addressable generation. The SessionRuntime contract guarantees no
+// persistent process or ownership marker for this branch, so the store can
+// atomically release the reservation without calling Cleanup.
+func (s *Service) finishPreStartRuntimeFailure(ctx context.Context, result CreateSessionResult, cause error) (CreateSessionResult, error) {
+	completed, transitionErr := s.store.FailPreStartSessionCreation(ctx, result.Session.SessionID)
+	if transitionErr != nil {
+		return result, fmt.Errorf("%w: record failed pre-start state: %w", ErrRuntimeUnavailable, transitionErr)
+	}
+	result.Session = completed
+	s.publishLatestLifecycle(ctx, completed.SessionID)
+	return result, fmt.Errorf("%w: %w", ErrRuntimeUnavailable, cause)
 }
 
 func (s *Service) finishRuntimeFailure(ctx context.Context, result CreateSessionResult, prepared RuntimePrepared, cause error) (CreateSessionResult, error) {

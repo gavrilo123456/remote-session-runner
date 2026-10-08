@@ -141,7 +141,9 @@ func (a *MacProcessAdapter) PrepareSource(_ context.Context, sessionID, generati
 		if err != nil {
 			return MacPrepared{}, err
 		}
-		_ = os.Chmod(workspace, 0o700)
+		if err := os.Chmod(workspace, 0o700); err != nil {
+			return MacPrepared{}, discardPartialWorkspace(workspace, fmt.Errorf("%w: workspace mode: %v", ErrMacRuntimeSource, err))
+		}
 		prepared.Workspace = workspace
 		prepared.OwnedWorkspace = true
 		prepared.Source = MacResolvedSource{Mode: MacSourceEmpty, CanonicalPath: workspace, Portable: true}
@@ -181,14 +183,14 @@ func (a *MacProcessAdapter) PrepareSource(_ context.Context, sessionID, generati
 			return MacPrepared{}, err
 		}
 		if output, err := exec.Command("git", "clone", "--shared", "--no-checkout", canonicalRepo, workspace).CombinedOutput(); err != nil {
-			_ = os.RemoveAll(workspace)
-			return MacPrepared{}, fmt.Errorf("%w: clone repository: %v: %s", ErrMacRuntimeSource, err, strings.TrimSpace(string(output)))
+			return MacPrepared{}, discardPartialWorkspace(workspace, fmt.Errorf("%w: clone repository: %v: %s", ErrMacRuntimeSource, err, strings.TrimSpace(string(output))))
 		}
 		if output, err := exec.Command("git", "-C", workspace, "checkout", "--detach", resolved).CombinedOutput(); err != nil {
-			_ = os.RemoveAll(workspace)
-			return MacPrepared{}, fmt.Errorf("%w: checkout resolved revision: %v: %s", ErrMacRuntimeSource, err, strings.TrimSpace(string(output)))
+			return MacPrepared{}, discardPartialWorkspace(workspace, fmt.Errorf("%w: checkout resolved revision: %v: %s", ErrMacRuntimeSource, err, strings.TrimSpace(string(output))))
 		}
-		_ = os.Chmod(workspace, 0o700)
+		if err := os.Chmod(workspace, 0o700); err != nil {
+			return MacPrepared{}, discardPartialWorkspace(workspace, fmt.Errorf("%w: workspace mode: %v", ErrMacRuntimeSource, err))
+		}
 		prepared.Workspace = workspace
 		prepared.OwnedWorkspace = true
 		prepared.RepositoryPath = canonicalRepo
@@ -650,6 +652,15 @@ func (a *MacProcessAdapter) ConfirmLostRecoveryCleanup(ctx context.Context, sess
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	if expectedGeneration == "" {
+		if err := requireAbsentRuntimeOwnership(a.options.WorkspaceRoot, sessionID); err != nil {
+			result.Reason = "pre-start runtime ownership is present or cannot be validated"
+			return result, err
+		}
+		result.CleanupConfirmed = true
+		result.Reason = "pre-start failure has no runtime ownership record"
+		return result, nil
+	}
 	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
 	if errors.Is(err, os.ErrNotExist) {
 		result.Reason = "runtime ownership record is missing; lost recovery cannot prove cleanup"
@@ -785,6 +796,16 @@ func (a *MacProcessAdapter) FinalizeLostRecoveryCleanup(ctx context.Context, ses
 	}
 	if err := ctx.Err(); err != nil {
 		return result, err
+	}
+	if expectedGeneration == "" {
+		if err := requireAbsentRuntimeOwnership(a.options.WorkspaceRoot, sessionID); err != nil {
+			result.CapacityRetained = true
+			result.Reason = "pre-start runtime ownership is present or cannot be validated"
+			return result, err
+		}
+		result.CleanupConfirmed = true
+		result.Reason = "pre-start failure has no runtime ownership record after durable capacity release"
+		return result, nil
 	}
 	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
 	if errors.Is(err, os.ErrNotExist) {

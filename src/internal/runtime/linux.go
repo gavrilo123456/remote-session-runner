@@ -239,8 +239,7 @@ func (a *LinuxProcessAdapter) PrepareSource(ctx context.Context, sessionID, gene
 		return LinuxPrepared{}, fmt.Errorf("%w: create workspace: %v", ErrLinuxRuntimePath, err)
 	}
 	if err := os.Chmod(workspace, 0o700); err != nil {
-		_ = os.RemoveAll(workspace)
-		return LinuxPrepared{}, fmt.Errorf("%w: workspace mode: %v", ErrLinuxRuntimePath, err)
+		return LinuxPrepared{}, discardPartialWorkspace(workspace, fmt.Errorf("%w: workspace mode: %v", ErrLinuxRuntimePath, err))
 	}
 	prepared := LinuxPrepared{
 		SessionID:      sessionID,
@@ -256,13 +255,11 @@ func (a *LinuxProcessAdapter) PrepareSource(ctx context.Context, sessionID, gene
 	case domain.SourceModeGitRevision:
 		resolved, err := a.prepareLinuxGitSource(ctx, workspace, source)
 		if err != nil {
-			_ = os.RemoveAll(workspace)
-			return LinuxPrepared{}, err
+			return LinuxPrepared{}, discardPartialWorkspace(workspace, err)
 		}
 		prepared.Source = resolved
 	default:
-		_ = os.RemoveAll(workspace)
-		return LinuxPrepared{}, fmt.Errorf("%w: source mode %q is not supported on Linux", ErrLinuxRuntimeSource, source.Mode)
+		return LinuxPrepared{}, discardPartialWorkspace(workspace, fmt.Errorf("%w: source mode %q is not supported on Linux", ErrLinuxRuntimeSource, source.Mode))
 	}
 	a.prepared[sessionID] = prepared
 	return prepared, nil
@@ -763,6 +760,15 @@ func (a *LinuxProcessAdapter) ConfirmLostRecoveryCleanup(ctx context.Context, se
 	if a == nil {
 		return result, ErrLinuxRuntimeAccount
 	}
+	if expectedGeneration == "" {
+		if err := requireAbsentRuntimeOwnership(a.options.WorkspaceRoot, sessionID); err != nil {
+			result.Reason = "pre-start runtime ownership is present or cannot be validated"
+			return result, err
+		}
+		result.CleanupConfirmed = true
+		result.Reason = "pre-start failure has no runtime ownership record"
+		return result, nil
+	}
 	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
 	if errors.Is(err, os.ErrNotExist) {
 		result.Reason = "runtime ownership record is missing; lost recovery cannot prove cleanup"
@@ -817,6 +823,16 @@ func (a *LinuxProcessAdapter) FinalizeLostRecoveryCleanup(ctx context.Context, s
 	}
 	if err := ctx.Err(); err != nil {
 		return result, err
+	}
+	if expectedGeneration == "" {
+		if err := requireAbsentRuntimeOwnership(a.options.WorkspaceRoot, sessionID); err != nil {
+			result.CapacityRetained = true
+			result.Reason = "pre-start runtime ownership is present or cannot be validated"
+			return result, err
+		}
+		result.CleanupConfirmed = true
+		result.Reason = "pre-start failure has no runtime ownership record after durable capacity release"
+		return result, nil
 	}
 	record, err := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
 	if errors.Is(err, os.ErrNotExist) {

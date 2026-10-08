@@ -184,6 +184,78 @@ END`); err != nil {
 	assertStateAndLifecycleCount(t, store, created.SessionID, domain.SessionStateReady, 2)
 }
 
+func TestFailPreStartSessionCreationAtomicallyReleasesOnlyBlankCreatingReservation(t *testing.T) {
+	root := testfixture.New(t)
+	db, err := Open(context.Background(), root.Path()+"/state/pre-start-failure.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	authority, err := NewAuthorityStoreWithClock(db, func() time.Time { return time.Date(2026, 10, 8, 20, 0, 0, 0, time.UTC) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := domain.NewExecutionTarget(domain.TargetKindLocal, "mac-workstation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := newController(domain.ControllerTypeLocalUser, "tomasz.walczuk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func(id domain.SessionID) SessionCreate {
+		return SessionCreate{
+			SessionID: id, Target: target, Environment: "mac-dev", Controller: controller,
+			Source: domain.NewEmptySource(), Limits: testSessionLimits(), Reason: "session_created",
+		}
+	}
+	first, err := authority.CreateSession(context.Background(), create("session-pre-start-success"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := authority.FailPreStartSessionCreation(context.Background(), first.SessionID)
+	if err != nil || failed.State != domain.SessionStateFailed || failed.RuntimeGeneration != "" {
+		t.Fatalf("pre-start completion=%+v err=%v", failed, err)
+	}
+	reservation, err := authority.GetSessionReservation(context.Background(), first.SessionID)
+	if err != nil || reservation.CleanupConfirmedAt == nil || reservation.ReleasedAt == nil {
+		t.Fatalf("released pre-start reservation=%+v err=%v", reservation, err)
+	}
+	lifecycle, err := authority.ListSessionLifecycle(context.Background(), first.SessionID)
+	if err != nil || len(lifecycle) != 2 || lifecycle[1].Reason != "runtime_prepare_failed" {
+		t.Fatalf("pre-start lifecycle=%+v err=%v", lifecycle, err)
+	}
+
+	second, err := authority.CreateSession(context.Background(), create("session-pre-start-rollback"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+CREATE TRIGGER abort_pre_start_reservation_release
+BEFORE UPDATE OF cleanup_confirmed_at ON exec_capacity_reservations
+WHEN NEW.session_id = 'session-pre-start-rollback'
+BEGIN
+    SELECT RAISE(ABORT, 'fixture pre-start reservation failure');
+END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.FailPreStartSessionCreation(context.Background(), second.SessionID); err == nil {
+		t.Fatal("pre-start failure unexpectedly committed after reservation trigger")
+	}
+	stored, err := authority.GetSession(context.Background(), second.SessionID)
+	if err != nil || stored.State != domain.SessionStateCreating || stored.RuntimeGeneration != "" {
+		t.Fatalf("rolled-back pre-start session=%+v err=%v", stored, err)
+	}
+	reservation, err = authority.GetSessionReservation(context.Background(), second.SessionID)
+	if err != nil || reservation.CleanupConfirmedAt != nil || reservation.ReleasedAt != nil {
+		t.Fatalf("rolled-back pre-start reservation=%+v err=%v", reservation, err)
+	}
+	lifecycle, err = authority.ListSessionLifecycle(context.Background(), second.SessionID)
+	if err != nil || len(lifecycle) != 1 {
+		t.Fatalf("rolled-back pre-start lifecycle=%+v err=%v", lifecycle, err)
+	}
+}
+
 func TestP012_RejectsInvalidSessionStoreInputs(t *testing.T) {
 	if _, err := NewAuthorityStore(nil); !errors.Is(err, ErrNilDatabase) {
 		t.Fatalf("NewAuthorityStore(nil) error = %v, want ErrNilDatabase", err)

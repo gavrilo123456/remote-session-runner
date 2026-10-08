@@ -297,27 +297,73 @@ The narrow offline recovery extension is now implemented in source. It:
    audit to attribute only the supplied lost sessions and pairs.
    The Mac path holds its lifecycle lock and requires both LaunchAgents and
    their private sockets to be absent before it opens the authority.
-3. Reuses `ReconcileLostRuntime` to prove the selected session's exact recorded
-   process group is gone. A missing, corrupt, or mismatched owner marker leaves
-   capacity retained and refuses recovery.
+3. Reuses `ReconcileLostRuntime` to prove the selected session's runtime
+   ownership state. For an ordinary lost pair, or a commandless session with a
+   non-empty recorded generation, the exact owner marker must be readable and
+   match; a missing, corrupt, or mismatched marker retains capacity and refuses
+   recovery. The narrower pre-start shape has an empty recorded generation and
+   is releasable only when its exact durable no-command/no-slot shape matches
+   and the owner marker is absent. A present, malformed, or unreadable marker
+   refuses recovery; this pre-start branch never signals a process or removes a
+   workspace.
 4. Records the subsequent session-reservation release and a new session-keyed
    finalization row in one transaction. Startup finalizes that row before its
    ownership audit, so a crash between durable release and marker removal is
    retryable without PID reuse or a second release.
 5. Includes hermetic store, execution, `runnerd recover-stalled`, and
-   `runner-locald recover-stalled` regressions
-   for the exact eligible shape, missing-marker refusal, atomic rollback,
-   restart finalization, and mixed ordinary-pair/session-only inventory.
+   `runner-locald recover-stalled` regressions for normal non-empty-generation
+   recovery and marker refusal, the exact blank-generation pre-start shape and
+   absent-marker proof, present-marker refusal, atomic rollback, restart
+   finalization, and mixed ordinary-pair/session-only inventory.
 6. Provides `OpenExistingOfflineMaintenanceMigrating` for the stopped,
    lifecycle-locked Mac and Linux repair paths. It first proves that the owner-only
    authority already exists and has an untampered schema-34 or schema-35
    migration ledger. It then upgrades schema 34 to schema 35 without allowing
    creation of a missing authority database.
 
+### Follow-up root cause and prevention change — source only
+
+The two sandbox records have an empty `runtime_generation`. This identifies a
+narrow pre-start failure shape, distinct from normal lost-runtime recovery.
+
+`LinuxSessionRuntime.Prepare` generated a candidate generation, then
+`PrepareSource` failed before the preparation was stored for later cleanup.
+It returned an empty `RuntimePrepared`. The former `CreateSession` error path
+then called normal cleanup with an empty preparation. Normal cleanup has no
+prepared runtime to clean up, so it reported uncertainty; the service recorded
+`lost` with `runtime_cleanup_unconfirmed` and retained capacity before any
+command row existed.
+
+The full sandbox filesystem is strong evidence for a preparation failure, but
+the truncated journal does not identify the exact failed syscall.
+
+The follow-up source change:
+
+- atomically records an error-returning blank-generation pre-start failure as
+  `failed` with lifecycle reason `runtime_prepare_failed`, and releases its
+  reservation;
+- preserves a non-empty preparation returned with an error for normal cleanup,
+  so an addressable partial runtime cannot be treated as safely pre-start;
+- treats a successful `Prepare` result with a blank generation as an adapter
+  contract violation: it invokes cleanup and retains capacity conservatively;
+- permits blank-generation offline recovery only for the exact commandless
+  terminal shape and only after proving that the ownership marker is absent;
+- rejects a blank-generation ordinary lost command pair before runtime proof;
+- surfaces a failed attempt to remove a partial workspace as a joined storage
+  cleanup error. That debt occurs before a process or ownership marker exists,
+  so it does not invalidate the narrow pre-start execution-capacity proof.
+
+A fresh one-off pre-start failure now reaches `job_phase=failed` with no
+command row or slot and no live reservation. It cannot enter the commandless
+lost-runtime recovery shape. The recovery path never creates a command,
+replays a request, invents command output, signals a process, or deletes an
+unowned workspace.
+
 ## Implementation evidence — source only
 
-The source implementation is complete and remains deliberately uninstalled
-while the host recovery gate is prepared.
+The prior recovery implementation is installed on the Mac and AMD64 Ubuntu
+host. The current follow-up source correction remains deliberately uninstalled
+until its full tests, Git handoff, and sandbox recovery gate complete.
 
 - Migration `0035_commandless_lost_runtime_recovery_finalizations.sql` adds a
   session-keyed finalization ledger with foreign keys to the exact session and
@@ -336,11 +382,22 @@ while the host recovery gate is prepared.
   and stopped-boundary retry route.
 - On the Mac on 2026-10-08, both installer scripts passed `sh -n`; focused
   `store`, `execution`, `runnerd`, `runnerlocald`, and `runnerlocal` tests and
-  the complete `make test` suite passed after the final installer changes.
+  the complete `make test` suite passed after the prior installer changes.
+  That earlier full-suite result does not cover this follow-up correction.
+- After the follow-up correction, the complete Mac `make test` suite passed on
+  2026-10-08, including the new pre-start session, one-off terminalization,
+  normal/blank-generation recovery, workspace-cleanup-error, and local
+  retained-capacity projection regressions.
 
-Host installation, retained-capacity recovery, service restart, and a fresh
-harmless mailbox acceptance test are still pending. Neither historical sandbox
-request has been replayed, ACKed, cancelled, or manually released.
+The guarded recovery route already settled the verified ordinary lost pairs on
+the Mac and AMD64 Ubuntu host. Sandbox recovery failed closed before releasing
+either blank-generation commandless session, and `runnerd` remains deliberately
+stopped there. The follow-up correction still requires full tests, commit/push,
+fast-forward handoff, guarded sandbox recovery, P128 verification, service
+readiness, and one fresh harmless native mailbox terminal chain.
+
+Neither historical sandbox request has been replayed, ACKed, cancelled, or
+manually released.
 
 The recovery installer routes are intentionally the only documented offline
 entry points. Linux installs its compatible candidate before it stops

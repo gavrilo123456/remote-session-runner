@@ -115,6 +115,40 @@ func TestCommandlessLostRuntimeRecoveryRejectsChangedTerminalShape(t *testing.T)
 	}
 }
 
+func TestCommandlessLostRuntimeRecoveryAllowsPreStartEmptyGenerationForRuntimeProof(t *testing.T) {
+	ctx := context.Background()
+	authority := pCommandlessLostRecoveryStore(t)
+	recovery := pCommandlessLostRecoveryFixtureWithGeneration(t, authority, "pre-start", "")
+	if recovery.Session.RuntimeGeneration != "" {
+		t.Fatalf("pre-start recovery generation=%q, want empty", recovery.Session.RuntimeGeneration)
+	}
+	checked, err := authority.CheckCommandlessLostRuntimeRecoveryBatch(ctx, []domain.SessionID{recovery.SessionID})
+	if err != nil || len(checked) != 1 || checked[0].SessionID != recovery.SessionID || checked[0].CommandID != recovery.CommandID {
+		t.Fatalf("pre-start recovery check=%+v err=%v", checked, err)
+	}
+	reservation, err := authority.GetSessionReservation(ctx, recovery.SessionID)
+	if err != nil || reservation.CleanupConfirmedAt != nil || reservation.ReleasedAt != nil {
+		t.Fatalf("pre-start recovery check changed reservation=%+v err=%v", reservation, err)
+	}
+}
+
+func TestLostRuntimeRecoveryPairRejectsEmptyRuntimeGeneration(t *testing.T) {
+	ctx := context.Background()
+	authority := pCommandlessLostRecoveryStore(t)
+	sessionID, commandID := pCommandlessLostPair(t, authority, "empty-generation")
+	if _, err := authority.db.ExecContext(ctx, `UPDATE exec_sessions SET runtime_generation = '' WHERE session_id = ?`, string(sessionID)); err != nil {
+		t.Fatal(err)
+	}
+	err := authority.ConfirmLostRuntimeRecoverySet(ctx, []LostRuntimeRecoveryPair{{SessionID: sessionID, CommandID: commandID}}, nil)
+	if !errors.Is(err, ErrLostRuntimeRecoveryNotReleasable) {
+		t.Fatalf("empty-generation pair recovery err=%v, want %v", err, ErrLostRuntimeRecoveryNotReleasable)
+	}
+	reservation, reservationErr := authority.GetSessionReservation(ctx, sessionID)
+	if reservationErr != nil || reservation.CleanupConfirmedAt != nil || reservation.ReleasedAt != nil {
+		t.Fatalf("empty-generation pair reservation=%+v err=%v, want retained", reservation, reservationErr)
+	}
+}
+
 func TestPendingCommandlessLostRuntimeFinalizationPinsMetadataUntilComplete(t *testing.T) {
 	ctx := context.Background()
 	clock := &p019Clock{value: time.Date(2026, 10, 8, 18, 0, 0, 0, time.UTC)}
@@ -158,6 +192,10 @@ func TestPendingCommandlessLostRuntimeFinalizationPinsMetadataUntilComplete(t *t
 }
 
 func pCommandlessLostRecoveryFixture(t *testing.T, authority *AuthorityStore, suffix string) CommandlessLostRuntimeRecovery {
+	return pCommandlessLostRecoveryFixtureWithGeneration(t, authority, suffix, "generation-commandless-lost-recovery-"+suffix)
+}
+
+func pCommandlessLostRecoveryFixtureWithGeneration(t *testing.T, authority *AuthorityStore, suffix, generation string) CommandlessLostRuntimeRecovery {
 	t.Helper()
 	ctx := context.Background()
 	jobID := domain.JobID("job-commandless-lost-recovery-" + suffix)
@@ -171,7 +209,7 @@ func pCommandlessLostRecoveryFixture(t *testing.T, authority *AuthorityStore, su
 	if err != nil || duplicate {
 		t.Fatalf("accept commandless session=%+v duplicate=%v err=%v", created, duplicate, err)
 	}
-	if _, err := authority.CompleteSessionCreation(ctx, sessionID, domain.SessionStateLost, "generation-commandless-lost-recovery-"+suffix, "", "runtime_cleanup_unconfirmed"); err != nil {
+	if _, err := authority.CompleteSessionCreation(ctx, sessionID, domain.SessionStateLost, generation, "", "runtime_cleanup_unconfirmed"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := authority.CheckpointJob(ctx, jobID, JobCheckpoint{ExpectedPhase: JobPhaseCreatingSession, NextPhase: JobPhaseLost}); err != nil {
@@ -192,7 +230,7 @@ func pCommandlessLostRecoveryStore(t *testing.T) *AuthorityStore {
 func pCommandlessLostPair(t *testing.T, authority *AuthorityStore, suffix string) (domain.SessionID, domain.CommandID) {
 	t.Helper()
 	ctx := context.Background()
-	sessionID := p019ReadySession(t, authority, domain.SessionID("sess-commandless-pair-"+suffix), "key-commandless-pair-"+suffix)
+	sessionID := p019RuntimeReadySession(t, authority, domain.SessionID("sess-commandless-pair-"+suffix), "key-commandless-pair-"+suffix)
 	command := p019Command(t, authority, sessionID, domain.CommandID("cmd-commandless-pair-"+suffix), "key-commandless-pair-command-"+suffix)
 	if _, err := authority.StartNextEligibleCommand(ctx, DefaultRunningCommandLimit); err != nil {
 		t.Fatal(err)

@@ -212,6 +212,22 @@ func readRuntimeOwnership(workspaceRoot, sessionID string) (RuntimeOwnershipReco
 	return record, nil
 }
 
+// requireAbsentRuntimeOwnership proves the only safe pre-start recovery
+// condition. Callers may use it only after durable state proves that session
+// creation failed before it acquired a runtime generation. A present or
+// malformed marker blocks recovery; this helper never removes an unowned
+// workspace or touches a process.
+func requireAbsentRuntimeOwnership(workspaceRoot, sessionID string) error {
+	_, err := readRuntimeOwnership(workspaceRoot, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: pre-start ownership record could not be validated: %v", ErrRuntimeOwnershipRecord, err)
+	}
+	return fmt.Errorf("%w: pre-start session unexpectedly has a runtime ownership record", ErrRuntimeOwnershipRecord)
+}
+
 // auditRuntimeOwnership blocks startup when a host owner marker is not backed
 // by a live durable session reservation. It does not stop or delete an
 // unattributed process: the profile remains unavailable until an operator or

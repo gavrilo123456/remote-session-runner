@@ -206,7 +206,7 @@ func bug011RetainedLostPairs(t *testing.T, authority *store.AuthorityStore, suff
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := authority.TransitionSession(ctx, sessionID, domain.SessionStateReady, "bug011-retained-ready"); err != nil {
+		if _, err := authority.CompleteSessionCreation(ctx, sessionID, domain.SessionStateReady, "generation-"+string(sessionID), "", "bug011-retained-ready"); err != nil {
 			t.Fatal(err)
 		}
 		hash, err := domain.HashMutationRequestJSON("submit_command", []byte(fmt.Sprintf(`{"operation":"submit_command","session_id":%q,"script":"printf retained"}`, sessionID)), domain.CanonicalizationOptions{})

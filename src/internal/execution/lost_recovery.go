@@ -499,6 +499,9 @@ func (s *Service) checkLostRuntimeRecoveryTarget(ctx context.Context, request Lo
 	if result.Session.State != domain.SessionStateLost || result.Command.State != domain.CommandStateLost {
 		return result, fmt.Errorf("%w: session=%s command=%s, want lost/lost", ErrLostRuntimeRecoveryIneligible, result.Session.State, result.Command.State)
 	}
+	if result.Session.RuntimeGeneration == "" {
+		return result, fmt.Errorf("%w: ordinary lost command pair requires runtime generation", ErrLostRuntimeRecoveryIneligible)
+	}
 	commands, err := s.store.ListSessionCommandStates(ctx, request.SessionID)
 	if err != nil {
 		return result, err
