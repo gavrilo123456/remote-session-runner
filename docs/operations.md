@@ -676,8 +676,11 @@ Never use either stopped-service procedure as a substitute for the online
 procedure above.
 
 - Do not manually edit `local.db` or `remote.db`, or copy a live SQLite file.
-- `backups/` is reserved for the tested backup/restore implementation; this
-  PoC has no public backup scheduler, backup CLI, or live-restore runbook.
+- For a planned Mac disk wipe, use the supported offline continuity kit at
+  [`deploy/backup`](../deploy/backup/README.md). It verifies a quiescent Mac
+  boundary, stops Router before `runner-locald`, copies state and all configured
+  mailbox roots, and leaves services stopped. It is not a live backup scheduler
+  or a substitute for remote-host recovery.
 - A restore does not reattach previous runtime processes. Lost work and
   reconciliation must finish before new dispatch.
 - Graceful shutdown stops admission, drains for a bounded period, then uses

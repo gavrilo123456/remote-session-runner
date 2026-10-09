@@ -18,6 +18,7 @@ selection, or automatic fallback.
 | [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, deterministic request-result lookup, lifecycle status, events, ACKs, retries, and safe invalid-input diagnostics. |
 | [API reference](api.md) | Direct mTLS and Unix-socket transports, shared v1 HTTP/JSON behavior, and the Mac-only lifecycle-status extension. |
 | [Operations runbook](operations.md) | Health, queue and slot gauges, metrics, logs, read-only lifecycle triage, service refresh, diagnostic triage, and recovery limits. |
+| [Mac continuity backup and restore](../deploy/backup/README.md) | Pre-wipe offline continuity archive, integrity verification, and post-install restore sequence. |
 | [Current-host evidence](current-host-evidence.md) | What P155, P157, P158, P159, and P166 accepted, what remains unaccepted, and the per-host boundary. |
 
 ## Current controlled configuration
@@ -28,7 +29,7 @@ selection, or automatic fallback.
 | Ubuntu execution account | `ubuntu` |
 | Mac service root | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
 | Ubuntu service root | `/home/ubuntu/.local/share/remote-session-runner` |
-| Active mailbox roots | `default` at `mailbox/`; `analytics` at `mailboxes/analytics/`; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` |
+| Active mailbox roots | `default` at `mailbox/`; `analytics` at `mailboxes/analytics/`; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` |
 | Accepted remote profiles | `linux-host`; `sandbox-host` |
 | Current direct endpoint | `linux-poc` at `https://129.151.232.40:8443` |
 | Current Ubuntu listener | `10.0.0.200:8443` |

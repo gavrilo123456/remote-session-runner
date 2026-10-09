@@ -14,7 +14,7 @@ profile runs as `ubuntu`.
 | Mac account and root | `tomasz.walczuk`; `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
 | Ubuntu account and root | `ubuntu`; `/home/ubuntu/.local/share/remote-session-runner` |
 | Mac active config | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.yaml` |
-| Active mailbox roots | `default` service-root mailbox; `analytics` service-root mailbox; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` |
+| Active mailbox roots | `default` service-root mailbox; `analytics` service-root mailbox; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` |
 | Accepted remote profiles | `linux-host`; `sandbox-host` |
 | `linux-host` direct endpoint and bind | `linux-poc`; `https://129.151.232.40:8443`; `10.0.0.200:8443` |
 | `sandbox-host` direct endpoint and bind | `sandbox-poc`; `https://132.226.205.205:8443`; `10.0.0.14:8443` |
@@ -45,6 +45,7 @@ values as proof that it is ready.
 ├── workspaces/          session working directories
 ├── tmp/scripts/         temporary submitted-script files
 ├── backups/             reserved state-backup location
+├── toolchains/          selected Go toolchain used to rebuild installed binaries
 └── logs/                local*.log and locald*.log
 ```
 
@@ -197,6 +198,12 @@ mailboxes:
     repository_aliases: [slidestud-io]
     default_execution: ubuntu-sandbox
     allowed_execution: [ubuntu-sandbox, mac-local, ubuntu-current]
+  agents-work-dispatcher:
+    root: "/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-"
+    repository_aliases: [agents-work-dispatcher]
+    default_execution: ubuntu-current
+    allowed_execution: [ubuntu-current, mac-local]
+    durable_orphan_cleanup: false
 ```
 
 Use complete `mac` and `environment_registry` definitions in the owner-only
@@ -205,7 +212,9 @@ The environment registry permits the local account for `mac-dev` and `ubuntu`
 for both `linux-dev` and `sandbox-dev`. The current remote source mode is
 `empty`. `default` retains only `mac-local` and `ubuntu-current`; `analytics`
 may explicitly select `ubuntu-sandbox`; `slidestud-io` uses
-`ubuntu-sandbox` as its default and also allows the other two contexts.
+`ubuntu-sandbox` as its default and also allows the other two contexts; and
+`agents-work-dispatcher` defaults to `ubuntu-current` while allowing a
+Mac-local override.
 
 `durable_orphan_cleanup` is optional and defaults to `false` for every inbox.
 It is a per-inbox owner decision after lifecycle-status review, not a retention

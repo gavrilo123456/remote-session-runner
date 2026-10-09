@@ -52,10 +52,12 @@ The installed current V2 policy has:
 | `default` | `.../RemoteSessionRunner/mailbox` | `mac-local` | `mac-local`, `ubuntu-current` |
 | `analytics` | `.../RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
 | `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
+| `agents-work-dispatcher` | `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` | `ubuntu-current` | `ubuntu-current`, `mac-local` |
 
 `ubuntu-sandbox` selects `sandbox-dev` / `remote/sandbox-host`. For mailbox
 work, `analytics` permits that explicit override, while `slidestud-io` uses it
-as the default and `default` retains `mac-local` and `ubuntu-current`. The
+as the default. `agents-work-dispatcher` defaults to `ubuntu-current`, and
+`default` retains `mac-local` and `ubuntu-current`. The
 accepted `sandbox-poc` direct endpoint and its separate secret paths remain in
 the owner-only active configuration. The P157 host result and P158 external
 mailbox result are recorded in
