@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIX IMPLEMENTED — deployment and installed acceptance pending` |
+| Status | `FIX VERIFIED` |
 | Severity | High |
 | Priority | P1 |
 | Reported | 2026-10-10 |
@@ -12,8 +12,8 @@
 | Owner | Unassigned |
 | Affected component/path | Mac `runner-local` / `runner-locald` mailbox ingress and the `slidestud-io` workspace mailbox contract |
 | Affected revision | Installed revision unknown after the most recent Remote Session Runner deployment/restart |
-| Fixed revision | N/A |
-| Verification | Pending a fresh remote `run` request that reaches a terminal outbox result |
+| Fixed revision | `f03242f1f1db3b4dfee9dce752d44820f4851e5a` |
+| Verification | Passed: fresh installed native remote `run`, terminal outbox/events, and ACK consumption |
 
 ## Reported behavior
 
@@ -201,8 +201,16 @@ publisher could not determine the correction without inspecting source code.
   it is request-content-free and only appears for a rejected V1 `run` shape.
 - Canonical execution remains `script: "..."`; `command`, `argv`, and `cwd`
   remain deliberately unsupported.
-- Hermetic mailbox, native-client, store, and full-suite tests passed. The
-  installed sandbox mailbox acceptance remains the closing gate.
+- Hermetic mailbox, native-client, store, and full-suite tests passed.
+- Installed acceptance passed on 2026-10-10 against Mac ingress build
+  `f03242f1f1db3b4dfee9dce752d44820f4851e5a`: native marker-last request
+  `req-bug017-slidestud-sandbox-18dd340715670958` explicitly selected
+  `sandbox-dev` / `remote:sandbox-host`, ran only `uname -a`, reached
+  `command_succeeded` with complete non-truncated output and events, then had
+  its exact ACK consumed. Remote command ID:
+  `cmd-157616214e31ace2a84e423a28f1bdea`.
+- The opt-in `bug017host` test preserves this installed acceptance gate for a
+  future fresh request. It never replays the reported Logger requests.
 
 ## Required fix
 
@@ -238,3 +246,4 @@ a new request ID and idempotency key that:
 | Date | Change |
 | --- | --- |
 | 2026-10-10 | Reported after three independently shaped, fresh, read-only `run` requests were rejected at ingress following successful Mac Runner restarts. |
+| 2026-10-10 | Fixed the generic schema diagnostic, documented the V1 `script` contract, passed hermetic tests, and passed the fresh explicit sandbox installed acceptance gate. |
