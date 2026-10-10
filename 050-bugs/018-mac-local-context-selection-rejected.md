@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` |
+| Status | `RESOLVED` |
 | Severity | High |
 | Priority | P1 |
 | Reported | 2026-10-10 |
@@ -12,8 +12,8 @@
 | Owner | Unassigned |
 | Affected component/path | Mac `runner-local` / `runner-locald` context selection, `slidestud-io` mailbox context mapping, and rejection diagnostics |
 | Affected revision | Installed revision unknown after the recent Runner deployment/restart |
-| Fixed revision | Not yet identified |
-| Verification | Not run |
+| Fixed revision | `3d01cf7f1f3b8845e8f3af98668a298b9f26a7e7` |
+| Verification | Installed Mac acceptance passed at `2b75f5bfc0c0039fc29e0793637d99fda02bd4af` |
 
 ## Reported behavior
 
@@ -136,19 +136,19 @@ command started.
      "idempotency_key": "<new-key>",
      "repository_alias": "slidestud-io",
      "operation": "run",
-     "environment": "mac-local",
-     "execution_target": {"kind": "local", "profile": "mac-local"},
+    "environment": "mac-dev",
+    "execution_target": {"kind": "local", "profile": "mac-workstation"},
      "script": "printf 'mac-local-context-test\\n'"
    }
    ```
 
 4. Publish the complete `0644` JSON first, then a new empty `0644` ready
    marker last.
-5. Correlate the outbox by request ID. Current behavior is immediate terminal
-   rejection with `environment_target_mismatch`, no command ID, and no event
-   stream.
-6. Repeat at most once with a new identity and the Runner's documented
-   Mac-local tuple. Do not guess through arbitrary profiles.
+5. Correlate the outbox by request ID. The expected result after this fix is a
+   terminal `complete` response with a command ID, `request_override`, and the
+   resolved `mac-dev` / `local/mac-workstation` pair.
+6. Read events through the advertised cursor, then ACK that exact terminal
+   response. Do not reuse a rejected request ID or key.
 
 ## Investigation guidance
 
@@ -186,6 +186,7 @@ command started.
 | --- | --- |
 | 2026-10-10 | Reported after two new canonical-V1 Mac-local requests were rejected before command allocation with no actionable configured-context information. |
 | 2026-10-10 | Investigation found the installed `slidestud-io` allow-list already includes context `mac-local`, whose wire tuple is `mac-dev` plus `local/mac-workstation`. The rejected requests incorrectly used the context name as both wire values. The resolver correctly rejected those unknown pairs, but its terminal result gave no safe correction. |
+| 2026-10-10 | Resolved in `3d01cf7`; installed Mac acceptance passed at `2b75f5b` with a fresh explicit Mac-local request, complete event stream, and consumed ACK. |
 
 ## Root cause
 
@@ -217,3 +218,43 @@ the safe symbolic configuration needed to correct it.
 5. Document the exact SlideStudio Mac-local tuple, run targeted and full Go
    tests, deliver through the Mac → Gitea → GitHub mirror → both Ubuntu
    fast-forward sequence, then install and prove a fresh harmless request.
+
+## Resolution and verification
+
+The resolver still rejects an unknown tuple before command allocation. For a
+complete but unknown pair, it now returns `environment_target_mismatch` with
+only these safe `error.details` fields:
+
+- the requested symbolic environment and target;
+- each allowed context's name, environment, and symbolic target.
+
+It never includes request script content, repository or certificate paths,
+host addresses, credentials, tokens, or environment-variable values.
+
+Regression evidence:
+
+- `TestBUG018MacLocalContextUsesConfiguredTupleAndSafelyExplainsMismatch`
+  proves `mac-dev` / `local/mac-workstation` reaches allocation and a bad
+  `mac-local` pair stays rejected without leaking the script.
+- `TestBUG018AllowedMailboxExecutionContextsExposeOnlySymbolicConfiguredPairs`
+  proves the production configuration exposes only the bounded symbolic data.
+- Full `go test ./...` and the `bug018host` tagged compile gate passed.
+
+Installed acceptance evidence, after rebuilding `runner-local` and
+`runner-locald` at `2b75f5bfc0c0039fc29e0793637d99fda02bd4af`:
+
+```text
+request_id: req-bug018-slidestud-mac-local-18dd45eef912b820
+command_id: cmd-00ad10ed071a9ccd6c6433411b79a83c
+request_state: complete
+command_state: succeeded
+resolved: mac-dev / local/mac-workstation
+output: BUG018_SLIDESTUD_MAC_LOCAL_OK; tomasz.walczuk
+events: complete and non-truncated
+ack: consumed
+```
+
+Mac, AMD64 Ubuntu, and ARM64 Ubuntu source checkouts were fast-forwarded to
+the same `2b75f5bfc0c0039fc29e0793637d99fda02bd4af` revision before this
+acceptance gate. The Linux daemons did not require restart because the runtime
+change is confined to Mac mailbox context selection and response diagnostics.
