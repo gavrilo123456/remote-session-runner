@@ -572,7 +572,13 @@ func (s *Service) finishRuntimeFailure(ctx context.Context, result CreateSession
 		next = domain.SessionStateLost
 		reason = "runtime_cleanup_unconfirmed"
 	}
-	completed, transitionErr := s.store.CompleteSessionCreation(ctx, result.Session.SessionID, next, prepared.RuntimeGeneration, prepared.ResolvedRevision, reason)
+	var completed store.SessionRecord
+	var transitionErr error
+	if cleanupErr == nil && prepared.RuntimeGeneration != "" {
+		completed, transitionErr = s.store.CompleteFailedSessionCreationAfterConfirmedCleanup(ctx, result.Session.SessionID, prepared.RuntimeGeneration, prepared.ResolvedRevision, reason)
+	} else {
+		completed, transitionErr = s.store.CompleteSessionCreation(ctx, result.Session.SessionID, next, prepared.RuntimeGeneration, prepared.ResolvedRevision, reason)
+	}
 	var auditErr error
 	if cleanupErr != nil {
 		auditErr = s.recordRuntimeCleanupFailure(ctx, result.Session, "")

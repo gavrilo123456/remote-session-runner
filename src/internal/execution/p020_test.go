@@ -218,6 +218,27 @@ func TestP020D11StartFailureCleanupFailureCommitsLost(t *testing.T) {
 	}
 }
 
+func TestP020D11StartFailureConfirmedCleanupReleasesReservationAtomically(t *testing.T) {
+	runtime := &p020FakeRuntime{generation: "generation-start-confirmed", startErr: errors.New("fixture start failed")}
+	service, authority, _ := newP020Service(t, runtime)
+	request := p020Request(t, "session-start-confirmed", "key-start-confirmed", p020Target(t, domain.TargetKindLocal, "mac-workstation"))
+
+	result, err := service.CreateSession(context.Background(), request)
+	if !errors.Is(err, ErrRuntimeUnavailable) || result.Session.State != domain.SessionStateFailed || result.Session.RuntimeGeneration != "generation-start-confirmed" {
+		t.Fatalf("result=%+v err=%v, want failed addressable runtime", result.Session, err)
+	}
+	if runtime.prepareCall != 1 || runtime.startCall != 1 || runtime.cleanupCall != 1 || runtime.cleanupSaw.RuntimeGeneration != "generation-start-confirmed" {
+		t.Fatalf("runtime calls prepare=%d start=%d cleanup=%d cleanup=%+v", runtime.prepareCall, runtime.startCall, runtime.cleanupCall, runtime.cleanupSaw)
+	}
+	if got, countErr := authority.CountLiveSessionReservations(context.Background()); countErr != nil || got != 0 {
+		t.Fatalf("confirmed startup cleanup live reservations=%d err=%v, want 0", got, countErr)
+	}
+	reservation, reservationErr := authority.GetSessionReservation(context.Background(), request.SessionID)
+	if reservationErr != nil || reservation.CleanupConfirmedAt == nil || reservation.ReleasedAt == nil {
+		t.Fatalf("confirmed startup cleanup reservation=%+v err=%v, want released", reservation, reservationErr)
+	}
+}
+
 func TestP020CreateRetryDoesNotStartRuntimeTwice(t *testing.T) {
 	runtime := &p020FakeRuntime{generation: "generation-idempotent"}
 	service, _, _ := newP020Service(t, runtime)

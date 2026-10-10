@@ -485,6 +485,84 @@ VALUES (?, ?, ?, ?, ?, ?)
 	})
 }
 
+// CompleteFailedSessionCreationAfterConfirmedCleanup records a failed creation
+// and releases its reservation in the same transaction. It is only for a
+// runtime that returned an addressable generation and then confirmed its own
+// cleanup after startup failed. Keeping the transition and release together
+// prevents a crash between those operations from retaining capacity forever.
+func (s *AuthorityStore) CompleteFailedSessionCreationAfterConfirmedCleanup(ctx context.Context, id domain.SessionID, runtimeGeneration, resolvedRevision, reason string) (SessionRecord, error) {
+	validatedID, err := domain.NewSessionID(string(id))
+	if err != nil {
+		return SessionRecord{}, err
+	}
+	if runtimeGeneration == "" || len(runtimeGeneration) > 256 || strings.IndexByte(runtimeGeneration, 0) >= 0 {
+		return SessionRecord{}, fmt.Errorf("%w: failed cleanup requires runtime generation", ErrInvalidSession)
+	}
+	if strings.IndexByte(resolvedRevision, 0) >= 0 || len(resolvedRevision) > 256 {
+		return SessionRecord{}, fmt.Errorf("%w: resolved revision is invalid", ErrInvalidSession)
+	}
+	if reason == "" {
+		return SessionRecord{}, ErrInvalidSession
+	}
+	if _, err := validateLifecycleReason(reason); err != nil {
+		return SessionRecord{}, err
+	}
+	now := s.now().UTC()
+	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+		var currentState, currentRevision string
+		if err := connection.QueryRowContext(ctx, `
+SELECT state, source_resolved_revision
+FROM exec_sessions WHERE session_id = ?
+`, string(validatedID)).Scan(&currentState, &currentRevision); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return SessionRecord{}, ErrSessionNotFound
+			}
+			return SessionRecord{}, fmt.Errorf("read failed creation session: %w", err)
+		}
+		if domain.SessionState(currentState) != domain.SessionStateCreating {
+			return SessionRecord{}, fmt.Errorf("%w: confirmed cleanup requires creating session", ErrSessionLifecycle)
+		}
+		if resolvedRevision == "" {
+			resolvedRevision = currentRevision
+		}
+		var sequence int64
+		if err := connection.QueryRowContext(ctx,
+			"SELECT COALESCE(MAX(lifecycle_sequence), 0) + 1 FROM exec_session_lifecycle WHERE session_id = ?",
+			string(validatedID)).Scan(&sequence); err != nil {
+			return SessionRecord{}, fmt.Errorf("read failed creation lifecycle sequence: %w", err)
+		}
+		if _, err := connection.ExecContext(ctx, `
+UPDATE exec_sessions
+SET state = ?, runtime_generation = ?, source_resolved_revision = ?, updated_at = ?
+WHERE session_id = ? AND state = ?
+`, string(domain.SessionStateFailed), runtimeGeneration, resolvedRevision, formatStoredTime(now), string(validatedID), string(domain.SessionStateCreating)); err != nil {
+			return SessionRecord{}, fmt.Errorf("complete failed session creation: %w", err)
+		}
+		if _, err := connection.ExecContext(ctx, `
+INSERT INTO exec_session_lifecycle (session_id, lifecycle_sequence, previous_state, new_state, reason, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, string(validatedID), sequence, currentState, string(domain.SessionStateFailed), reason, formatStoredTime(now)); err != nil {
+			return SessionRecord{}, fmt.Errorf("insert failed creation lifecycle: %w", err)
+		}
+		reservation, err := connection.ExecContext(ctx, `
+UPDATE exec_capacity_reservations
+SET cleanup_confirmed_at = ?, released_at = ?
+WHERE session_id = ? AND cleanup_confirmed_at IS NULL AND released_at IS NULL
+`, formatStoredTime(now), formatStoredTime(now), string(validatedID))
+		if err != nil {
+			return SessionRecord{}, fmt.Errorf("release confirmed failed-session reservation: %w", err)
+		}
+		changed, err := reservation.RowsAffected()
+		if err != nil {
+			return SessionRecord{}, fmt.Errorf("read confirmed failed-session reservation result: %w", err)
+		}
+		if changed != 1 {
+			return SessionRecord{}, fmt.Errorf("%w: confirmed failed-session reservation is not unreleased", ErrSessionLifecycle)
+		}
+		return readSessionOnConnection(ctx, connection, validatedID)
+	})
+}
+
 // FailPreStartSessionCreation atomically records a failed creation and releases
 // its reservation when the runtime never reached an addressable generation.
 // Callers use it only for the pre-start boundary: a creating session with an
