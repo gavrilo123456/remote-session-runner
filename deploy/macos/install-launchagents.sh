@@ -166,19 +166,19 @@ wait_for_build_revision() {
 }
 
 ensure_private_directory() {
-	directory=$1
-	if [ -L "$directory" ]; then
-		printf 'refusing symlinked service directory: %s\n' "$directory" >&2
+	private_directory=$1
+	if [ -L "$private_directory" ]; then
+		printf 'refusing symlinked service directory: %s\n' "$private_directory" >&2
 		exit 1
 	fi
-	if [ ! -e "$directory" ]; then
-		mkdir "$directory"
+	if [ ! -e "$private_directory" ]; then
+		mkdir "$private_directory"
 	fi
-	if [ -L "$directory" ] || [ ! -d "$directory" ] || [ "$(stat -f '%u' "$directory")" != "$uid" ]; then
-		printf 'service directory must be a real directory owned by uid %s: %s\n' "$uid" "$directory" >&2
+	if [ -L "$private_directory" ] || [ ! -d "$private_directory" ] || [ "$(stat -f '%u' "$private_directory")" != "$uid" ]; then
+		printf 'service directory must be a real directory owned by uid %s: %s\n' "$uid" "$private_directory" >&2
 		exit 1
 	fi
-	chmod 700 "$directory"
+	chmod 700 "$private_directory"
 }
 
 ensure_private_service_directory() {
