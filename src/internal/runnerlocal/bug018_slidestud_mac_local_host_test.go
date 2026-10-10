@@ -45,7 +45,7 @@ func TestBUG018SlideStudioExplicitMacLocalRun(t *testing.T) {
 	request := p155Request(t, map[string]any{
 		"request_id": requestID, "idempotency_key": "key-bug018-" + suffix,
 		"operation": "run", "repository_alias": p158MailboxID,
-		"environment": "mac-dev",
+		"environment":      "mac-dev",
 		"execution_target": map[string]string{"kind": "local", "profile": "mac-workstation"},
 		"script":           "printf 'BUG018_SLIDESTUD_MAC_LOCAL_OK\\n'; id -un",
 	})
@@ -53,12 +53,12 @@ func TestBUG018SlideStudioExplicitMacLocalRun(t *testing.T) {
 		t.Fatalf("publish BUG-018 request: %v", err)
 	}
 	response := p155WaitTerminalResponse(t, client, requestID)
-	p155AssertRunResponse(t, response, p158MailboxID, config.MailboxExecutionSelectionSourceRequestOverride,
-		"mac-dev", "local", "mac-workstation", "BUG018_SLIDESTUD_MAC_LOCAL_OK\\ntomasz.walczuk\\n")
 	if err := client.WriteAcknowledgment(requestID, response); err != nil {
 		t.Fatalf("publish BUG-018 ACK: %v", err)
 	}
 	p155WaitAckConsumed(t, mailbox.Root, requestID)
 	p155WaitRequestConsumed(t, mailbox.Root, requestID)
+	p155AssertRunResponse(t, response, p158MailboxID, config.MailboxExecutionSelectionSourceRequestOverride,
+		"mac-dev", "local", "mac-workstation", "BUG018_SLIDESTUD_MAC_LOCAL_OK\ntomasz.walczuk\n")
 	t.Logf("BUG-018 complete: request_id=%s command_id=%s", requestID, response.CommandID)
 }
