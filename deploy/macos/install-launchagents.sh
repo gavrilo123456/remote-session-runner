@@ -881,7 +881,7 @@ fi
 
 for name in runner runner-local runner-locald; do
 	temporary="$staging_directory/$name"
-	(cd "$repo_root" && GOTOOLCHAIN=local "$go_bin" build -ldflags "$build_ldflags" -o "$temporary" "./src/cmd/$name")
+	(cd "$repo_root" && CGO_ENABLED=0 GOTOOLCHAIN=local "$go_bin" build -ldflags "$build_ldflags" -o "$temporary" "./src/cmd/$name")
 	chmod 700 "$temporary"
 done
 
