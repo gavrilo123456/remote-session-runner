@@ -31,6 +31,25 @@ func TestP153ResolveMailboxExecutionUsesMailboxDefaultAndCopiesScope(t *testing.
 	}
 }
 
+func TestBUG018AllowedMailboxExecutionContextsExposeOnlySymbolicConfiguredPairs(t *testing.T) {
+	loaded := loadFixture(t, macV2ConfigFixture)
+	contexts := loaded.AllowedMailboxExecutionContexts("default")
+	if len(contexts) != 2 || contexts[0].Name != "mac-local" || contexts[0].Environment != "mac-dev" ||
+		contexts[0].Target.Kind() != domain.TargetKindLocal || contexts[0].Target.Profile() != "mac-workstation" ||
+		contexts[1].Name != "ubuntu-current" || contexts[1].Environment != "linux-dev" ||
+		contexts[1].Target.Kind() != domain.TargetKindRemote || contexts[1].Target.Profile() != "linux-host" {
+		t.Fatalf("allowed contexts = %+v", contexts)
+	}
+	contexts[0].Name = "mutated"
+	again := loaded.AllowedMailboxExecutionContexts("default")
+	if len(again) != 2 || again[0].Name != "mac-local" {
+		t.Fatalf("allowed contexts exposed mutable state: %+v", again)
+	}
+	if got := loaded.AllowedMailboxExecutionContexts("missing"); got != nil {
+		t.Fatalf("missing mailbox contexts = %+v, want nil", got)
+	}
+}
+
 func TestP153ResolveMailboxExecutionAllowsCompleteMailboxOverride(t *testing.T) {
 	loaded := loadFixture(t, macV2ConfigFixture)
 	buildTarget, err := domain.NewExecutionTarget(domain.TargetKindRemote, "linux-build-host")

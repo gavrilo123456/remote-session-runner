@@ -363,6 +363,22 @@ the target object, for example:
 "execution_target": {"kind": "remote", "profile": "linux-host"}
 ```
 
+For the current Mac configuration, `mac-local` is likewise the context's
+**configuration name**, not an `environment` or a target profile. An explicit
+Mac-local override supplies this exact symbolic pair:
+
+```json
+"environment": "mac-dev",
+"execution_target": {"kind": "local", "profile": "mac-workstation"}
+```
+
+If an otherwise valid pair does not name a configured context, the terminal
+`environment_target_mismatch` response includes a safe `error.details` object:
+the requested symbolic pair and every allowed context name/pair for that
+mailbox. It never contains the script, a repository path, host address,
+certificate path, token, or environment-variable value. Copy one listed pair
+exactly into a new request; do not reuse the rejected request ID or key.
+
 `repository_alias` is optional only for new `run` or `create_session` work. If
 present, it must be in the selected mailbox's configured alias list. It is
 policy/audit metadata; it never selects a checkout, materializes a repository,
@@ -445,6 +461,24 @@ deliberately omits both selection fields, so it resolves as
 accepted the same default through selected-user-owned direct `0644` workspace
 files, with complete untruncated output, retained events, and the exact ACK.
 It is queued bridge evidence, not a direct mTLS request.
+
+**Use the SlideStudio external root with the explicit Mac-local route:**
+
+```json
+{
+  "request_id": "req-slidestud-mac-local-001",
+  "idempotency_key": "key-slidestud-mac-local-001",
+  "operation": "run",
+  "repository_alias": "slidestud-io",
+  "environment": "mac-dev",
+  "execution_target": {"kind": "local", "profile": "mac-workstation"},
+  "script": "printf 'SLIDESTUD_MAILBOX_MAC_LOCAL_OK\\n'; id -un"
+}
+```
+
+This is the explicit route for scoped local work such as an approved Git
+write. It remains subject to the request script and mailbox policy; the
+repository alias is audit metadata and never selects a checkout.
 
 **Create a default-target session:**
 

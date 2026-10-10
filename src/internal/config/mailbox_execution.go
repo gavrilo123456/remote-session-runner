@@ -46,6 +46,38 @@ type MailboxExecutionSelection struct {
 	RepositoryAliases []string
 }
 
+// MailboxExecutionContext is the non-secret, symbolic part of an execution
+// context that a mailbox allows. It is suitable for explaining how to correct
+// an otherwise well-formed new-work request; it deliberately excludes all
+// host addresses, paths, credentials, and controller data.
+type MailboxExecutionContext struct {
+	Name        string
+	Environment string
+	Target      domain.ExecutionTarget
+}
+
+// AllowedMailboxExecutionContexts returns a copy of the contexts an inbox may
+// select, in configured allow-list order. A missing or internally inconsistent
+// mailbox yields no entries, so callers can keep their primary resolution
+// failure fail-closed.
+func (c Config) AllowedMailboxExecutionContexts(mailboxID string) []MailboxExecutionContext {
+	mailbox, exists := c.mailboxes[mailboxID]
+	if !exists {
+		return nil
+	}
+	contexts := make([]MailboxExecutionContext, 0, len(mailbox.AllowedExecution))
+	for _, name := range mailbox.AllowedExecution {
+		context, exists := c.executionContexts[name]
+		if !exists {
+			return nil
+		}
+		contexts = append(contexts, MailboxExecutionContext{
+			Name: name, Environment: context.Environment, Target: context.Target,
+		})
+	}
+	return contexts
+}
+
 // ResolveMailboxExecution resolves the target context for a new-work mailbox
 // request. Omitting both environment and execution target uses that mailbox's
 // default. Supplying either field alone is rejected. A complete explicit pair

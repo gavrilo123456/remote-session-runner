@@ -70,6 +70,13 @@ descriptor damage, or an unconfirmed output boundary still yields the
 conservative `lost`/incomplete outcome. Do not use those shell-termination
 forms when a normal failed result is required.
 
+Context names are not wire values. On the current Mac configuration,
+`mac-local` maps to the explicit pair `mac-dev` and
+`{"kind":"local","profile":"mac-workstation"}`. If a complete pair is
+rejected as `environment_target_mismatch`, read `error.details`: it contains
+only the requested symbolic pair and that mailbox's allowed context pairs.
+Use one listed pair exactly in a fresh request and key.
+
 An LLM that has been separately granted owner-scoped **read-only** access to
 the Mac local API may use
 [`GET /v1/mailboxes/{inbox_id}/lifecycle`](mailbox.md#read-only-lifecycle-status)

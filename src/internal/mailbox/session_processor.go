@@ -144,6 +144,13 @@ type MailboxExecutionResolver interface {
 	ResolveMailboxExecution(mailboxID string, environmentPresent bool, environment string, targetPresent bool, target domain.ExecutionTarget, repositoryAlias string) (config.MailboxExecutionSelection, error)
 }
 
+// mailboxExecutionContextProvider is intentionally optional so custom policy
+// resolvers retain their fail-closed behaviour. The production config resolver
+// implements it to provide a bounded correction for a rejected explicit pair.
+type mailboxExecutionContextProvider interface {
+	AllowedMailboxExecutionContexts(mailboxID string) []config.MailboxExecutionContext
+}
+
 type SessionProcessorOptions struct {
 	MailboxID  string
 	Importer   *Importer
@@ -857,7 +864,7 @@ func (p *SessionProcessor) resolveNewWorkSelection(ctx context.Context, request 
 		request.RepositoryAlias,
 	)
 	if err != nil {
-		return nil, mailboxSelectionError(err), nil
+		return nil, p.mailboxSelectionError(request, err), nil
 	}
 	selection, err := mailboxExecutionSelectionFromConfig(p.mailboxID, resolved)
 	if err != nil {
@@ -933,10 +940,32 @@ func mailboxExecutionSelectionFromConfig(mailboxID string, resolved config.Mailb
 	}, nil
 }
 
-func mailboxSelectionError(err error) *mailboxResponseError {
+func (p *SessionProcessor) mailboxSelectionError(request Request, err error) *mailboxResponseError {
 	switch {
 	case errors.Is(err, config.ErrMailboxExecutionContextNotFound):
-		return &mailboxResponseError{Code: "environment_target_mismatch", Message: "environment and execution target do not identify a configured context"}
+		response := &mailboxResponseError{Code: "environment_target_mismatch", Message: "environment and execution target do not identify a configured context"}
+		if request.EnvironmentPresent && request.ExecutionTargetPresent {
+			if provider, ok := p.executionResolver.(mailboxExecutionContextProvider); ok {
+				allowed := provider.AllowedMailboxExecutionContexts(p.mailboxID)
+				if len(allowed) > 0 {
+					details := &mailboxSelectionErrorDetails{
+						RequestedEnvironment: request.Environment,
+						RequestedExecutionTarget: mailboxResponseTarget{
+							Kind: string(request.ExecutionTarget.Kind()), Profile: request.ExecutionTarget.Profile(),
+						},
+						AllowedContexts: make([]mailboxAllowedExecutionContext, 0, len(allowed)),
+					}
+					for _, context := range allowed {
+						details.AllowedContexts = append(details.AllowedContexts, mailboxAllowedExecutionContext{
+							Name: context.Name, Environment: context.Environment,
+							ExecutionTarget: mailboxResponseTarget{Kind: string(context.Target.Kind()), Profile: context.Target.Profile()},
+						})
+					}
+					response.Details = details
+				}
+			}
+		}
+		return response
 	case errors.Is(err, config.ErrMailboxExecutionPairRequired):
 		return &mailboxResponseError{Code: "invalid_request", Message: "environment and execution target must be supplied together"}
 	case errors.Is(err, config.ErrMailboxExecutionContextNotAllowed):
@@ -2066,9 +2095,24 @@ type sessionMailboxResponse struct {
 }
 
 type mailboxResponseError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable"`
+	Code      string                        `json:"code"`
+	Message   string                        `json:"message"`
+	Retryable bool                          `json:"retryable"`
+	Details   *mailboxSelectionErrorDetails `json:"details,omitempty"`
+}
+
+// mailboxSelectionErrorDetails contains only symbolic context names and the
+// requested pair. It is attached solely to a context-not-found rejection.
+type mailboxSelectionErrorDetails struct {
+	RequestedEnvironment     string                           `json:"requested_environment"`
+	RequestedExecutionTarget mailboxResponseTarget            `json:"requested_execution_target"`
+	AllowedContexts          []mailboxAllowedExecutionContext `json:"allowed_contexts"`
+}
+
+type mailboxAllowedExecutionContext struct {
+	Name            string                `json:"name"`
+	Environment     string                `json:"environment"`
+	ExecutionTarget mailboxResponseTarget `json:"execution_target"`
 }
 
 type commandMailboxResponse struct {

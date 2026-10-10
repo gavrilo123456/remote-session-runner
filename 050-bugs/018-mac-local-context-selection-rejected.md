@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `NEW` |
+| Status | `IN PROGRESS` |
 | Severity | High |
 | Priority | P1 |
 | Reported | 2026-10-10 |
@@ -185,3 +185,35 @@ command started.
 | Date | Change |
 | --- | --- |
 | 2026-10-10 | Reported after two new canonical-V1 Mac-local requests were rejected before command allocation with no actionable configured-context information. |
+| 2026-10-10 | Investigation found the installed `slidestud-io` allow-list already includes context `mac-local`, whose wire tuple is `mac-dev` plus `local/mac-workstation`. The rejected requests incorrectly used the context name as both wire values. The resolver correctly rejected those unknown pairs, but its terminal result gave no safe correction. |
+
+## Root cause
+
+`execution_contexts` names are configuration identifiers. The mailbox request
+format accepts only an exact `{environment, execution_target}` pair. The
+installed Mac configuration defines `mac-local` as:
+
+```yaml
+environment: mac-dev
+execution_target: {kind: local, profile: mac-workstation}
+```
+
+Both reported requests supplied `environment: mac-local` and an invented
+local profile. They therefore did not identify any configured context. This
+was a correct fail-closed routing decision, but the generic rejection omitted
+the safe symbolic configuration needed to correct it.
+
+## Fix plan
+
+1. Keep strict exact-pair selection; do not introduce aliases or route an
+   unknown pair to a default target.
+2. Expose a bounded list of a mailbox's allowed context names and symbolic
+   environment/target pairs from the trusted configuration resolver.
+3. Attach that list, together with the requested pair, only to terminal
+   `environment_target_mismatch` responses. Exclude scripts, paths, host
+   addresses, credentials, tokens, and environment values.
+4. Add a regression test for the configured Mac-local pair and a mismatched
+   pair, including a no-script-leak assertion.
+5. Document the exact SlideStudio Mac-local tuple, run targeted and full Go
+   tests, deliver through the Mac → Gitea → GitHub mirror → both Ubuntu
+   fast-forward sequence, then install and prove a fresh harmless request.

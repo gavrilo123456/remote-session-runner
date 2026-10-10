@@ -1,6 +1,7 @@
 package mailbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -104,6 +105,63 @@ func TestP153ProcessorResolvesMailboxSelectionAndRejectsBeforeOperations(t *test
 				t.Fatalf("rejected exchange=%+v err=%v", record, err)
 			}
 		})
+	}
+}
+
+func TestBUG018MacLocalContextUsesConfiguredTupleAndSafelyExplainsMismatch(t *testing.T) {
+	ctx := context.Background()
+	resolver := newP153Resolver(t)
+	resolver.allowMacLocalOverride = true
+	processor, operations, _, outbox := newP153ProcessorHarness(t, resolver)
+
+	accepted := p153ProcessorRequest(t, "req-bug018-mac-local", "key-bug018-mac-local", "run", map[string]any{
+		"environment": "mac-dev", "execution_target": map[string]string{"kind": "local", "profile": "mac-workstation"},
+		"repository_alias": "analytics-dbt", "script": "printf 'BUG018_MAC_LOCAL_OK\\n'",
+	})
+	p153Process(t, ctx, processor, accepted)
+	if len(operations.runRequests) != 1 {
+		t.Fatalf("configured Mac-local request calls=%d, want one", len(operations.runRequests))
+	}
+	selection := operations.runRequests[0].ExecutionSelection
+	if selection == nil || selection.ContextName != "analytics-mac" || selection.Environment != "mac-dev" || selection.Target.Kind() != domain.TargetKindLocal || selection.Target.Profile() != "mac-workstation" {
+		t.Fatalf("configured Mac-local selection=%+v", selection)
+	}
+
+	rejected := p153ProcessorRequest(t, "req-bug018-wrong-names", "key-bug018-wrong-names", "run", map[string]any{
+		"environment": "mac-local", "execution_target": map[string]string{"kind": "local", "profile": "mac-local"},
+		"repository_alias": "analytics-dbt", "script": "PRIVATE_SCRIPT_MUST_NOT_APPEAR",
+	})
+	p153Process(t, ctx, processor, rejected)
+	if len(operations.runRequests) != 1 {
+		t.Fatalf("mismatched context reached RunJobIntent: calls=%d", len(operations.runRequests))
+	}
+	response := p153Response(t, outbox, rejected.RequestID)
+	errorValue, ok := response["error"].(map[string]any)
+	if !ok || errorValue["code"] != "environment_target_mismatch" {
+		t.Fatalf("mismatched response error=%+v", response)
+	}
+	details, ok := errorValue["details"].(map[string]any)
+	if !ok || details["requested_environment"] != "mac-local" {
+		t.Fatalf("mismatched response details=%+v", response)
+	}
+	requestedTarget, ok := details["requested_execution_target"].(map[string]any)
+	if !ok || requestedTarget["kind"] != "local" || requestedTarget["profile"] != "mac-local" {
+		t.Fatalf("mismatched requested target=%+v", details)
+	}
+	allowed, ok := details["allowed_contexts"].([]any)
+	if !ok || len(allowed) != 3 {
+		t.Fatalf("mismatched allowed contexts=%+v", details)
+	}
+	mac, ok := allowed[2].(map[string]any)
+	if !ok || mac["name"] != "analytics-mac" || mac["environment"] != "mac-dev" {
+		t.Fatalf("mismatched Mac correction=%+v", allowed)
+	}
+	macTarget, ok := mac["execution_target"].(map[string]any)
+	if !ok || macTarget["kind"] != "local" || macTarget["profile"] != "mac-workstation" {
+		t.Fatalf("mismatched Mac correction target=%+v", mac)
+	}
+	if encoded, err := json.Marshal(response); err != nil || bytes.Contains(encoded, []byte("PRIVATE_SCRIPT_MUST_NOT_APPEAR")) {
+		t.Fatalf("mismatched response leaked request content: %s err=%v", encoded, err)
 	}
 }
 
@@ -575,6 +633,24 @@ func (r *p153Resolver) ResolveMailboxExecution(mailboxID string, environmentPres
 		return config.MailboxExecutionSelection{}, config.ErrMailboxExecutionContextNotAllowed
 	}
 	return config.MailboxExecutionSelection{}, config.ErrMailboxExecutionContextNotFound
+}
+
+func (r *p153Resolver) AllowedMailboxExecutionContexts(mailboxID string) []config.MailboxExecutionContext {
+	if mailboxID != "analytics" {
+		return nil
+	}
+	contexts := []config.MailboxExecutionContext{
+		{Name: r.defaultSelection.ContextName, Environment: r.defaultSelection.Environment, Target: r.defaultSelection.Target},
+		{Name: r.overrideSelection.ContextName, Environment: r.overrideSelection.Environment, Target: r.overrideSelection.Target},
+	}
+	if r.allowMacLocalOverride {
+		target, err := domain.NewExecutionTarget(domain.TargetKindLocal, "mac-workstation")
+		if err != nil {
+			panic(err)
+		}
+		contexts = append(contexts, config.MailboxExecutionContext{Name: "analytics-mac", Environment: "mac-dev", Target: target})
+	}
+	return contexts
 }
 
 func p153SetRepositoryAlias(selection *config.MailboxExecutionSelection, alias string) {
