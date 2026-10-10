@@ -78,6 +78,38 @@ func (s *Service) reconcileStartupLocked(ctx context.Context, preserved domain.S
 	}
 	var runtimeFailures []error
 	for _, session := range sessions {
+		// Older executors could record a failed startup after confirmed cleanup
+		// but crash before releasing its reservation. A known generation gives
+		// the runtime an exact ownership boundary to prove that legacy cleanup
+		// again. Never infer that proof from the terminal state alone.
+		if session.State == domain.SessionStateFailed && session.RuntimeGeneration != "" {
+			reservation, reservationErr := s.store.GetSessionReservation(ctx, session.SessionID)
+			if reservationErr != nil {
+				return report, fmt.Errorf("read failed session %s runtime reservation: %w", session.SessionID, reservationErr)
+			}
+			if reservation.CleanupConfirmedAt == nil {
+				report.SessionsInspected++
+				confirmed, observedGeneration, reconcileErr := s.reconcileRuntime(ctx, session)
+				if reconcileErr != nil {
+					report.RuntimeFailures++
+					runtimeFailures = append(runtimeFailures, fmt.Errorf("failed session %s: %w", session.SessionID, reconcileErr))
+				}
+				if observedGeneration != "" && observedGeneration != session.RuntimeGeneration {
+					report.GenerationMismatches++
+				}
+				if !confirmed {
+					report.CleanupUnconfirmed++
+					s.store.RecordCleanupFailure()
+					continue
+				}
+				report.CleanupConfirmed++
+				if err := s.store.ConfirmSessionCleanup(ctx, session.SessionID); err != nil {
+					return report, joinReconciliationErrors(runtimeFailures, err)
+				}
+				report.SessionReservationsReleased++
+			}
+			continue
+		}
 		if session.State.IsTerminal() {
 			continue
 		}

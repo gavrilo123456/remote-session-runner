@@ -141,6 +141,30 @@ func TestP027CreatingSessionBecomesFailedAfterConfirmedStartupCleanup(t *testing
 	}
 }
 
+func TestP027LegacyFailedSessionWithKnownGenerationReleasesOnlyAfterReconciliationProof(t *testing.T) {
+	runtime := &p027Runtime{p020FakeRuntime: p020FakeRuntime{generation: "generation-p027-legacy"}, reconcileResult: RuntimeReconcileResult{
+		RuntimeGeneration: "generation-p027-legacy",
+		CleanupConfirmed:  true,
+	}}
+	service, authority := newP027Service(t, runtime)
+	request := p020Request(t, "session-p027-legacy", "key-p027-legacy", p020Target(t, domain.TargetKindLocal, "mac-workstation"))
+	accepted := p027AcceptCreating(t, authority, request)
+	if _, err := authority.CompleteSessionCreation(context.Background(), accepted.SessionID, domain.SessionStateFailed, "generation-p027-legacy", "", "runtime_failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := service.ReconcileStartup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SessionsInspected != 1 || report.CleanupConfirmed != 1 || report.SessionReservationsReleased != 1 || runtime.reconcileCall != 1 {
+		t.Fatalf("legacy failed reconciliation report=%+v runtime calls=%d", report, runtime.reconcileCall)
+	}
+	if got, err := authority.CountLiveSessionReservations(context.Background()); err != nil || got != 0 {
+		t.Fatalf("legacy failed live reservations=%d err=%v, want 0", got, err)
+	}
+}
+
 func TestP027CreatingSessionBecomesLostWhenCleanupIsUnconfirmed(t *testing.T) {
 	runtime := &p027Runtime{p020FakeRuntime: p020FakeRuntime{generation: "generation-partial"}, reconcileResult: RuntimeReconcileResult{
 		RuntimeGeneration: "generation-partial",
