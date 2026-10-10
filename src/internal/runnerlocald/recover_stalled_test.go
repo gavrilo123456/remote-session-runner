@@ -78,6 +78,24 @@ func TestRunnerLocaldRecoverStalledRequiresExplicitApplyAndSafePair(t *testing.T
 	}
 }
 
+func TestRunnerLocaldRecoverFailedStartupRequiresExplicitApplyAndExactSession(t *testing.T) {
+	valid := "sess-00000000000000000000000000000007"
+	for _, args := range [][]string{
+		nil,
+		{"--config", "/fixture/mac.yaml", "--failed-session", valid},
+		{"--config", "/fixture/mac.yaml", "--apply", "--failed-session", valid, "--failed-session", valid},
+	} {
+		var stdout, stderr strings.Builder
+		if code := runRecoverFailedStartup(args, &stdout, &stderr); code != 2 {
+			t.Fatalf("args=%q exit=%d stdout=%q stderr=%q, want usage exit 2", args, code, stdout.String(), stderr.String())
+		}
+	}
+	sessions, err := parseMacFailedStartupRecoverySessions([]string{valid})
+	if err != nil || len(sessions) != 1 || sessions[0] != domain.SessionID(valid) {
+		t.Fatalf("failed startup sessions=%+v err=%v", sessions, err)
+	}
+}
+
 func TestRequireRunnerLocaldServicesStoppedRejectsLoadedAgentsAndSockets(t *testing.T) {
 	absent := func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	loaded := func(string) (bool, error) { return true, nil }

@@ -99,6 +99,13 @@ their private sockets are absent, correct the complete recovery evidence, and
 rerun the identical installer command; do not start an older binary or edit
 SQLite.
 
+For the separate legacy startup-failure case, use only
+`install-launchagents.sh --recover-failed-startup --failed-session SESSION_ID`
+as documented in
+[`docs/setup.md`](../../docs/setup.md#approved-mac-recovery-for-a-legacy-failed-startup-slot).
+It requires the exact complete failed-session set, idle authority, and runtime
+cleanup proof; it never clears an ordinary failed command or queued work.
+
 At activation, the complete candidate root set is registered durably before a
 missing external mailbox tree is created. Runner creates or verifies only the
 configured root and its `inbox`, `outbox`, `events`, `acks`, and `diagnostics`

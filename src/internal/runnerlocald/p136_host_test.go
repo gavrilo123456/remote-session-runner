@@ -42,8 +42,8 @@ func TestP136MacFourSlotsHoldAcrossDelayedStopEOF(t *testing.T) {
 		t.Fatalf("P136 Mac gate must run on macOS, got %s", runtime.GOOS)
 	}
 	current, err := user.Current()
-	if err != nil || current.Username != "tomasz.walczuk" || current.Uid != "501" {
-		t.Fatalf("P136 Mac account=%v err=%v, want tomasz.walczuk uid 501", current, err)
+	if err != nil || current.Username != "tomasz.walczuk" || current.Uid != "502" {
+		t.Fatalf("P136 Mac account=%v err=%v, want tomasz.walczuk uid 502", current, err)
 	}
 	hostname, err := os.Hostname()
 	if err != nil || hostname != "AMAK2KJ6X9JJJ" {

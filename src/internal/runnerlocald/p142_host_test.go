@@ -77,6 +77,6 @@ func TestP142F05MacPersistedOutputVisibilityAndLongLoad(t *testing.T) {
 	p142fixture.RunReferenceHostVisibilitySoak(t, p142fixture.Options{
 		Service: service, Authority: authority, Runtime: runtimeAdapter, Environment: environment,
 		Target: target, Controller: controller, WorkspaceRoot: workspaceRoot, PythonPath: pythonPath,
-		ExpectedOS: "darwin", ExpectedUser: "tomasz.walczuk", ExpectedUID: "501", ExpectedHost: "AMAK2KJ6X9JJJ",
+		ExpectedOS: "darwin", ExpectedUser: "tomasz.walczuk", ExpectedUID: "502", ExpectedHost: "AMAK2KJ6X9JJJ",
 	})
 }

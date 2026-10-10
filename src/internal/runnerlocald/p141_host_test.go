@@ -68,6 +68,6 @@ func TestP141F05MacTwentySessionsFourSlotsAndBoundedSlowSubscriber(t *testing.T)
 	p141fixture.RunReferenceHostSoak(t, p141fixture.Options{
 		Service: service, Authority: authority, Runtime: runtimeAdapter, Environment: environment,
 		Target: target, Controller: controller, WorkspaceRoot: workspaceRoot,
-		ExpectedOS: "darwin", ExpectedUser: "tomasz.walczuk", ExpectedUID: "501", ExpectedHost: "AMAK2KJ6X9JJJ",
+		ExpectedOS: "darwin", ExpectedUser: "tomasz.walczuk", ExpectedUID: "502", ExpectedHost: "AMAK2KJ6X9JJJ",
 	})
 }

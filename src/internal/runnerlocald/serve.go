@@ -69,6 +69,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "recover-stalled" {
 		return runRecoverStalled(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "recover-failed-startup" {
+		return runRecoverFailedStartup(args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("runner-locald", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Mac runner configuration")

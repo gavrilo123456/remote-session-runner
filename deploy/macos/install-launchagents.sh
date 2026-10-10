@@ -19,11 +19,14 @@ source_origin_revision=''
 build_ldflags=''
 controlled_restart_mode=0
 mac_recover_stalled_mode=0
+mac_recover_failed_startup_mode=0
+mac_offline_recovery_mode=0
 mac_recovery_pairs=''
 mac_recovery_sessions=''
+mac_failed_startup_sessions=''
 
 usage() {
-	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml] [--b011-controlled-restart] [--recover-stalled [--lost-pair SESSION_ID:COMMAND_ID ...] [--lost-session SESSION_ID ...]]" >&2
+	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml] [--b011-controlled-restart] [--recover-stalled [--lost-pair SESSION_ID:COMMAND_ID ...] [--lost-session SESSION_ID ...]] [--recover-failed-startup --failed-session SESSION_ID ...]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -42,6 +45,10 @@ while [ "$#" -gt 0 ]; do
 			;;
 		--recover-stalled)
 			mac_recover_stalled_mode=1
+			shift
+			;;
+		--recover-failed-startup)
+			mac_recover_failed_startup_mode=1
 			shift
 			;;
 		--lost-pair)
@@ -82,6 +89,25 @@ $2"
 			fi
 			shift 2
 			;;
+		--failed-session)
+			if [ "$#" -lt 2 ]; then
+				usage
+				exit 2
+			fi
+			case "$2" in
+				*[!a-z0-9-]*|'')
+					printf '%s\n' 'invalid --failed-session' >&2
+					exit 2
+					;;
+			esac
+			if [ -n "$mac_failed_startup_sessions" ]; then
+				mac_failed_startup_sessions="$mac_failed_startup_sessions
+$2"
+			else
+				mac_failed_startup_sessions=$2
+			fi
+			shift 2
+			;;
 		--help)
 			usage
 			exit 0
@@ -93,7 +119,14 @@ $2"
 	esac
 done
 
-if [ "$controlled_restart_mode" -ne 0 ] && [ "$mac_recover_stalled_mode" -ne 0 ]; then
+if [ "$mac_recover_stalled_mode" -ne 0 ] && [ "$mac_recover_failed_startup_mode" -ne 0 ]; then
+	printf '%s\n' 'Lost-runtime and failed-startup recovery cannot be combined.' >&2
+	exit 2
+fi
+if [ "$mac_recover_stalled_mode" -ne 0 ] || [ "$mac_recover_failed_startup_mode" -ne 0 ]; then
+	mac_offline_recovery_mode=1
+fi
+if [ "$controlled_restart_mode" -ne 0 ] && [ "$mac_offline_recovery_mode" -ne 0 ]; then
 	printf '%s\n' 'Controlled restart and stalled recovery cannot be combined.' >&2
 	exit 2
 fi
@@ -103,6 +136,14 @@ if [ "$mac_recover_stalled_mode" -eq 0 ] && { [ -n "$mac_recovery_pairs" ] || [ 
 fi
 if [ "$mac_recover_stalled_mode" -ne 0 ] && [ -z "$mac_recovery_pairs" ] && [ -z "$mac_recovery_sessions" ]; then
 	printf '%s\n' '--recover-stalled requires at least one --lost-pair or --lost-session.' >&2
+	exit 2
+fi
+if [ "$mac_recover_failed_startup_mode" -eq 0 ] && [ -n "$mac_failed_startup_sessions" ]; then
+	printf '%s\n' '--failed-session requires --recover-failed-startup.' >&2
+	exit 2
+fi
+if [ "$mac_recover_failed_startup_mode" -ne 0 ] && [ -z "$mac_failed_startup_sessions" ]; then
+	printf '%s\n' '--recover-failed-startup requires at least one --failed-session.' >&2
 	exit 2
 fi
 
@@ -430,6 +471,18 @@ run_mac_recover_stalled() {
 	"$staging_directory/runner-locald" "$@"
 }
 
+run_mac_recover_failed_startup() {
+	set -- recover-failed-startup --config "$config_file" --apply
+	previous_ifs=$IFS
+	IFS='
+'
+	for session in $mac_failed_startup_sessions; do
+		set -- "$@" --failed-session "$session"
+	done
+	IFS=$previous_ifs
+	"$staging_directory/runner-locald" "$@"
+}
+
 # install_staged_recovery_candidate_binaries changes only the stopped LaunchAgent
 # executable paths. The recovery route calls it after it has proved both old
 # processes inert and before it can open or migrate local.db. A recovery
@@ -752,7 +805,7 @@ cleanup_staging() {
 }
 on_exit() {
 	status=$?
-	if [ "$status" -ne 0 ] && [ "$mac_recover_stalled_mode" -eq 1 ] && [ "$mac_recovery_candidate_boundary" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then
+	if [ "$status" -ne 0 ] && [ "$mac_offline_recovery_mode" -eq 1 ] && [ "$mac_recovery_candidate_boundary" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then
 		if [ "$candidate_binaries_installed" -eq 1 ]; then
 			printf '%s\n' 'Stalled Mac recovery left candidate binaries installed and both LaunchAgents stopped; correct the complete evidence set and rerun the same installer command.' >&2
 		else
@@ -836,7 +889,7 @@ if [ -n "$config_source" ]; then
 		printf '%s\n' 'Controlled restart must use the active mac.yaml; it cannot combine a staged configuration change with live queued-work preservation.' >&2
 		exit 1
 	fi
-	if [ "$mac_recover_stalled_mode" -ne 0 ]; then
+	if [ "$mac_offline_recovery_mode" -ne 0 ]; then
 		printf '%s\n' 'Stalled recovery must use the active mac.yaml; it cannot combine a staged configuration change with retained-work repair.' >&2
 		exit 1
 	fi
@@ -932,7 +985,7 @@ if [ "$controlled_restart_mode" -eq 1 ]; then
 	esac
 fi
 
-if [ "$mac_recover_stalled_mode" -eq 1 ]; then
+if [ "$mac_offline_recovery_mode" -eq 1 ]; then
 	# This explicit offline route is intentionally narrower than a normal
 	# refresh: it needs the old process identities before bootout, so it can
 	# prove no old Router/locald writer survives into authority repair.
@@ -954,19 +1007,19 @@ fi
 # exactly the pre-install LaunchAgent state. Set this before stopping either
 # job so a failure while quiescing the second job also restarts the first.
 restore_prior_agents_on_failure=1
-if [ "$mac_recover_stalled_mode" -eq 1 ] && [ "$mac_recovery_resume_mode" -eq 1 ]; then
+if [ "$mac_offline_recovery_mode" -eq 1 ] && [ "$mac_recovery_resume_mode" -eq 1 ]; then
 	# The retry path accepts only the stopped boundary left by a prior candidate
 	# recovery attempt. It never tries to infer an old process boundary.
 	wait_for_absent_path "$service_root/run/local-api.sock"
 	wait_for_absent_path "$service_root/run/locald.sock"
 else
-	if [ "$mac_recover_stalled_mode" -eq 1 ]; then
+	if [ "$mac_offline_recovery_mode" -eq 1 ]; then
 		# Record this before the first bootout. A signal or shell failure immediately
 		# afterward must not cause the EXIT trap to bootstrap a second old process.
 		mac_recovery_old_process_boundary_confirmed=0
 	fi
 	stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"
-	if [ "$mac_recover_stalled_mode" -eq 1 ]; then
+	if [ "$mac_offline_recovery_mode" -eq 1 ]; then
 		if ! wait_for_inert_or_absent_agent_pid "$mac_recovery_local_pid" com.remote-session-runner.local; then
 			exit 1
 		fi
@@ -1023,7 +1076,7 @@ if [ "$controlled_restart_mode" -eq 1 ]; then
 		exit 1
 	fi
 else
-	if [ "$mac_recover_stalled_mode" -eq 1 ]; then
+	if [ "$mac_offline_recovery_mode" -eq 1 ]; then
 		# This is an irreversible candidate boundary: recovery may migrate local.db.
 		# Install the stopped candidate before it can open the authority and never
 		# revive the older executable after this point.
@@ -1035,13 +1088,20 @@ else
 		# The recovery command has its own exact offline inventory gate. It may run
 		# only after ingress and the old local executor are inert, so no worker can
 		# race the explicit lost-runtime proof/release.
-		if ! run_mac_recover_stalled; then
-			printf '%s\n' 'Stalled Mac recovery did not complete; leaving candidate binaries installed and both LaunchAgents stopped.' >&2
-			exit 1
+		if [ "$mac_recover_stalled_mode" -eq 1 ]; then
+			if ! run_mac_recover_stalled; then
+				printf '%s\n' 'Stalled Mac recovery did not complete; leaving candidate binaries installed and both LaunchAgents stopped.' >&2
+				exit 1
+			fi
+		else
+			if ! run_mac_recover_failed_startup; then
+				printf '%s\n' 'Failed-startup Mac recovery did not complete; leaving candidate binaries installed and both LaunchAgents stopped.' >&2
+				exit 1
+			fi
 		fi
 	fi
 	preflight_active_locald_restart
-	if [ "$mac_recover_stalled_mode" -eq 0 ]; then
+	if [ "$mac_offline_recovery_mode" -eq 0 ]; then
 		stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"
 	fi
 fi

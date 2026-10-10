@@ -173,6 +173,31 @@ boundary](operations.md#explicit-mac-offline-recovery-for-a-fully-idle-retained-
 and [BUG-014](../050-bugs/014-idle-mac-retained-lost-capacity-recovery.md) for
 the full constraints and verification record.
 
+### Approved Mac recovery for a legacy failed startup slot
+
+Use this separate installer-only route only when a terminal `failed` session
+has a nonempty runtime generation, an unreleased reservation, and no command
+rows. It repairs the historical window where startup cleanup succeeded but an
+older executable did not durably release capacity. It is not for a failed
+command, a session with unknown cleanup, or ordinary queued work.
+
+Provide every retained failed startup exactly once. The installer stops both
+Mac LaunchAgents through the same inert-process boundary as lost-runtime
+recovery, requires zero active sessions, running commands, and nonterminal
+jobs, then asks the CGo Mac runtime to prove cleanup for the selected exact
+generation. It releases no capacity if that proof is absent.
+
+```sh
+# Mac — tomasz.walczuk
+cd /Users/tomasz.walczuk/projects/remote-session-runner
+deploy/macos/install-launchagents.sh --recover-failed-startup \
+  --failed-session 'sess-EXACT-FAILED-STARTUP-1'
+```
+
+Do not call `runner-locald recover-failed-startup` directly, use `launchctl`,
+or edit `local.db`. If the installer refuses, preserve the result and correct
+the complete evidence set before rerunning the identical installer command.
+
 Verify both services:
 
 ```sh

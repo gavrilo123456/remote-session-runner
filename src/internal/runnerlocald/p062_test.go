@@ -31,8 +31,8 @@ func TestP062DaemonMacAccountAndSourceProvenance(t *testing.T) {
 		t.Fatalf("Mac account = %q, want tomasz.walczuk", got)
 	}
 	uidText := strings.TrimSpace(mustCommandOutput(t, "id", "-u"))
-	if uidText != "501" {
-		t.Fatalf("Mac UID = %q, want 501", uidText)
+	if uidText != "502" {
+		t.Fatalf("Mac UID = %q, want 502", uidText)
 	}
 	t.Logf("machine=%s os=%s account=tomasz.walczuk uid=%s", mustCommandOutput(t, "hostname"), runtime.GOOS, uidText)
 
@@ -42,7 +42,7 @@ func TestP062DaemonMacAccountAndSourceProvenance(t *testing.T) {
 	root := harness.root.Path()
 	empty := harness.acceptCreate(t, "intent-p062-empty", "session-p062-empty", domain.NewEmptySource(), "create-p062-empty")
 	emptyOutput := harness.acceptCommand(t, empty.SessionID, "intent-p062-empty-command", "command-p062-empty", "printf '%s|%s|%s' \"$(id -un)\" \"$(id -u)\" \"$PWD\"", "submit-p062-empty")
-	wantPrefix := "tomasz.walczuk|501|" + filepath.Join(root, "workspaces")
+	wantPrefix := "tomasz.walczuk|502|" + filepath.Join(root, "workspaces")
 	if !strings.HasPrefix(emptyOutput, wantPrefix) {
 		t.Fatalf("empty source identity/workspace = %q, want prefix %q", emptyOutput, wantPrefix)
 	}

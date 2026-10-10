@@ -813,12 +813,17 @@ func TestBUG013InstallerRunsExplicitMacStalledRecoveryBeforeNormalRestartPreflig
 	text := string(data)
 	for _, required := range []string{
 		"--recover-stalled",
+		"--recover-failed-startup",
 		"--lost-pair",
 		"--lost-session",
+		"--failed-session",
 		"mac_recovery_sessions=''",
+		"mac_failed_startup_sessions=''",
+		"mac_offline_recovery_mode=0",
 		"mac_recovery_resume_mode=0",
 		"mac_recovery_candidate_boundary=0",
 		"run_mac_recover_stalled() {",
+		"run_mac_recover_failed_startup() {",
 		"install_staged_recovery_candidate_binaries() {",
 		"capture_loaded_agent_pid() {",
 		"wait_for_inert_or_absent_agent_pid() {",
@@ -837,7 +842,7 @@ func TestBUG013InstallerRunsExplicitMacStalledRecoveryBeforeNormalRestartPreflig
 		}
 	}
 
-	branchStart := strings.LastIndex(text, `if [ "$mac_recover_stalled_mode" -eq 1 ]; then`)
+	branchStart := strings.LastIndex(text, `if [ "$mac_offline_recovery_mode" -eq 1 ]; then`)
 	preflight := strings.LastIndex(text, "\tpreflight_active_locald_restart\n")
 	branchEnd := strings.LastIndex(text[:preflight], "\tfi\n")
 	if branchStart < 0 || preflight < 0 || branchEnd <= branchStart {
@@ -904,7 +909,7 @@ func TestBUG013InstallerRunsExplicitMacStalledRecoveryBeforeNormalRestartPreflig
 	if strings.Contains(installFunction, "launchctl") {
 		t.Fatalf("Mac candidate install must replace only stopped binary paths: %s", installFunction)
 	}
-	noRollbackGuard := `if [ "$status" -ne 0 ] && [ "$mac_recover_stalled_mode" -eq 1 ] && [ "$mac_recovery_candidate_boundary" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then`
+	noRollbackGuard := `if [ "$status" -ne 0 ] && [ "$mac_offline_recovery_mode" -eq 1 ] && [ "$mac_recovery_candidate_boundary" -eq 1 ] && [ "$candidate_activation_started" -eq 0 ]; then`
 	if !strings.Contains(text, noRollbackGuard) {
 		t.Fatal("Mac stalled recovery lacks the candidate-boundary no-rollback exit guard")
 	}
