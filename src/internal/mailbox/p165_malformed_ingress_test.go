@@ -687,6 +687,68 @@ func TestP165InvalidInputDoesNotDelayAdjacentValidWork(t *testing.T) {
 	p165AssertNoExchange(t, h, invalidID)
 }
 
+func TestBUG017RunCommandShapeGetsActionableSchemaDiagnosticAndScriptShapeDispatches(t *testing.T) {
+	h := newP165Harness(t)
+	const rejectedID = "req-bug017-command-object"
+	rejected, err := json.Marshal(map[string]any{
+		"request_id": rejectedID, "idempotency_key": "BUG017_SECRET_NEVER_PROJECT", "operation": "run",
+		"repository_alias": "slidestud-io", "environment": "sandbox-dev",
+		"execution_target": map[string]string{"kind": "remote", "profile": "sandbox-host"},
+		"command":          map[string]any{"argv": []string{"/bin/bash", "-lc", "printf BUG017_SECRET_NEVER_PROJECT"}, "cwd": "/home/ubuntu"},
+		"timeout_seconds":  90,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p165WritePair(t, h.importer, rejectedID, rejected, MailboxWorkspaceIngressFileMode, nil, MailboxWorkspaceIngressFileMode)
+	results, err := h.processor.Import(context.Background())
+	if err != nil || len(results) != 1 || results[0].Status != ResultRejected || !results[0].Durable || !results[0].PairRemoved {
+		t.Fatalf("rejected run results=%+v err=%v", results, err)
+	}
+	_, projected := p165ReadDiagnostic(t, h, rejectedID)
+	var diagnostic struct {
+		Code         string `json:"code"`
+		SchemaDetail struct {
+			SchemaVersion     string `json:"schema_version"`
+			JSONPointer       string `json:"json_pointer"`
+			Expected          string `json:"expected"`
+			ReceivedType      string `json:"received_type"`
+			CanonicalRunField string `json:"canonical_run_field"`
+			CanonicalRunType  string `json:"canonical_run_type"`
+			MinimalValidRun   struct {
+				RequestID      string `json:"request_id"`
+				IdempotencyKey string `json:"idempotency_key"`
+				Operation      string `json:"operation"`
+				Script         string `json:"script"`
+			} `json:"minimal_valid_run"`
+		} `json:"schema_detail"`
+	}
+	if err := json.Unmarshal(projected, &diagnostic); err != nil {
+		t.Fatal(err)
+	}
+	if diagnostic.Code != string(store.MailboxIngressDiagnosticInvalidRequestSchema) || diagnostic.SchemaDetail.SchemaVersion != "v1" ||
+		diagnostic.SchemaDetail.JSONPointer != "/script" || diagnostic.SchemaDetail.Expected != "required string" ||
+		diagnostic.SchemaDetail.ReceivedType != "missing" || diagnostic.SchemaDetail.CanonicalRunField != "script" ||
+		diagnostic.SchemaDetail.CanonicalRunType != "string" || diagnostic.SchemaDetail.MinimalValidRun.RequestID != "<new-request-id>" ||
+		diagnostic.SchemaDetail.MinimalValidRun.IdempotencyKey != "<new-idempotency-key>" || diagnostic.SchemaDetail.MinimalValidRun.Operation != "run" || diagnostic.SchemaDetail.MinimalValidRun.Script != "<shell script>" {
+		t.Fatalf("schema detail=%+v", diagnostic.SchemaDetail)
+	}
+	if strings.Contains(string(projected), "BUG017_SECRET_NEVER_PROJECT") || strings.Contains(string(projected), "/home/ubuntu") {
+		t.Fatalf("schema diagnostic leaked rejected request content: %s", projected)
+	}
+	p165AssertNoExchange(t, h, rejectedID)
+
+	const acceptedID = "req-bug017-script-string"
+	p165WritePair(t, h.importer, acceptedID, p165ValidRunRequest(acceptedID), MailboxWorkspaceIngressFileMode, nil, MailboxWorkspaceIngressFileMode)
+	results, err = h.processor.Import(context.Background())
+	if err != nil || len(results) != 1 || results[0].Status != ResultAccepted || !results[0].Durable || !results[0].PairRemoved {
+		t.Fatalf("canonical v1 run results=%+v err=%v", results, err)
+	}
+	if len(h.operations.runRequests) != 1 || h.operations.runRequests[0].RequestID != acceptedID || h.operations.runRequests[0].Script != "printf valid" {
+		t.Fatalf("canonical v1 run was not dispatched: %+v", h.operations.runRequests)
+	}
+}
+
 func p165WritePair(t *testing.T, importer *Importer, requestID string, raw []byte, requestMode os.FileMode, marker []byte, markerMode os.FileMode) {
 	t.Helper()
 	writeMailboxFile(t, filepath.Join(importer.InboxPath(), requestID+RequestSuffix), raw, requestMode)

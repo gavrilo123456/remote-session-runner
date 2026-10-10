@@ -146,6 +146,7 @@ type ingressDiagnosticCandidate struct {
 	RequestID     string
 	RequestSHA256 [sha256.Size]byte
 	Code          store.MailboxIngressDiagnosticCode
+	SchemaDetail  *store.MailboxIngressSchemaDetail
 }
 
 // ingressHandlingResult tells the importer whether the mailbox processor made
@@ -161,8 +162,9 @@ type ingressDiagnosticHandler func(context.Context, ingressDiagnosticCandidate) 
 type retainedIngressHandler func(context.Context, Request, ingressDiagnosticCandidate) (handled bool, outcome ingressHandlingResult, err error)
 
 type mailboxRequestValidationError struct {
-	code store.MailboxIngressDiagnosticCode
-	err  error
+	code         store.MailboxIngressDiagnosticCode
+	err          error
+	schemaDetail *store.MailboxIngressSchemaDetail
 }
 
 func (e *mailboxRequestValidationError) Error() string {
@@ -379,9 +381,9 @@ func (i *Importer) importMarkerWithIngressHandlers(ctx context.Context, markerNa
 	}
 	request, err := i.validateRequest(requestID, requestBytes)
 	if err != nil {
-		if code, ok := mailboxIngressDiagnosticCodeForError(err); ok {
+		if candidate, ok := mailboxIngressDiagnosticCandidateForError(err); ok {
 			return i.handleIngressDiagnosticCandidate(ctx, result, ingressDiagnosticCandidate{
-				RequestID: requestID, RequestSHA256: sha256.Sum256(requestBytes), Code: code,
+				RequestID: requestID, RequestSHA256: sha256.Sum256(requestBytes), Code: candidate.Code, SchemaDetail: candidate.SchemaDetail,
 			}, diagnosticHandler)
 		}
 		result.Reason = err.Error()
@@ -474,7 +476,7 @@ func (i *Importer) validateRequest(filenameID string, raw []byte) (Request, erro
 		return Request{}, &mailboxRequestValidationError{code: store.MailboxIngressDiagnosticMalformedJSON, err: fmt.Errorf("%w: malformed JSON", ErrMailboxSchema)}
 	}
 	if err := i.schema.Validate(value); err != nil {
-		return Request{}, &mailboxRequestValidationError{code: store.MailboxIngressDiagnosticInvalidRequestSchema, err: ErrMailboxSchema}
+		return Request{}, &mailboxRequestValidationError{code: store.MailboxIngressDiagnosticInvalidRequestSchema, err: ErrMailboxSchema, schemaDetail: mailboxRunSchemaDetail(value)}
 	}
 	var wire struct {
 		RequestID       string  `json:"request_id"`
@@ -541,12 +543,62 @@ func (i *Importer) validateRequest(filenameID string, raw []byte) (Request, erro
 	}, nil
 }
 
-func mailboxIngressDiagnosticCodeForError(err error) (store.MailboxIngressDiagnosticCode, bool) {
+func mailboxRunSchemaDetail(value any) *store.MailboxIngressSchemaDetail {
+	fields, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	operation, ok := fields["operation"].(string)
+	if !ok || operation != "run" {
+		return nil
+	}
+	if script, present := fields["script"]; !present {
+		return newMailboxRunSchemaDetail("/script", "required string", "missing")
+	} else if _, ok := script.(string); !ok {
+		return newMailboxRunSchemaDetail("/script", "string", mailboxJSONType(script))
+	}
+	for _, field := range []string{"command", "argv", "cwd"} {
+		if value, present := fields[field]; present {
+			return newMailboxRunSchemaDetail("/"+field, "unsupported field; use script", mailboxJSONType(value))
+		}
+	}
+	return newMailboxRunSchemaDetail("", "documented v1 run fields", "object")
+}
+
+func newMailboxRunSchemaDetail(pointer, expected, receivedType string) *store.MailboxIngressSchemaDetail {
+	return &store.MailboxIngressSchemaDetail{
+		SchemaVersion: "v1", JSONPointer: pointer, Expected: expected, ReceivedType: receivedType,
+		CanonicalRunField: "script", CanonicalRunType: "string",
+		MinimalRunRequestID: "<new-request-id>", MinimalRunKey: "<new-idempotency-key>",
+		MinimalRunOperation: "run", MinimalRunScript: "<shell script>",
+	}
+}
+
+func mailboxJSONType(value any) string {
+	switch value.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "boolean"
+	case string:
+		return "string"
+	case json.Number, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return "number"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return "object"
+	}
+}
+
+func mailboxIngressDiagnosticCandidateForError(err error) (ingressDiagnosticCandidate, bool) {
 	var validation *mailboxRequestValidationError
 	if errors.As(err, &validation) && validation != nil {
-		return validation.code, true
+		return ingressDiagnosticCandidate{Code: validation.code, SchemaDetail: validation.schemaDetail}, true
 	}
-	return "", false
+	return ingressDiagnosticCandidate{}, false
 }
 
 func parseClosePolicy(raw json.RawMessage) (string, error) {

@@ -117,7 +117,7 @@ func (p *SessionProcessor) processIngressDiagnostic(ctx context.Context, candida
 	if err != nil {
 		return ingressHandlingResult{}, newMailboxIngressDiagnosticFailure(err)
 	}
-	record, disposition, err := p.authority.RecordMailboxIngressDiagnosticInMailbox(ctx, ref, candidate.RequestSHA256, candidate.Code)
+	record, disposition, err := p.authority.RecordMailboxIngressDiagnosticWithSchemaDetailInMailbox(ctx, ref, candidate.RequestSHA256, candidate.Code, candidate.SchemaDetail)
 	if err != nil {
 		return ingressHandlingResult{}, newMailboxIngressDiagnosticFailure(err)
 	}

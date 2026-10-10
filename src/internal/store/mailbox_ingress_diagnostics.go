@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -95,16 +96,49 @@ type MailboxIngressDiagnosticRecord struct {
 	DiagnosticFileRemovedAt    *time.Time
 }
 
+// MailboxIngressSchemaDetail is a bounded, request-content-free correction
+// hint for a v1 schema rejection. It is intentionally restricted to static
+// protocol terms: it never records a script, field value, target, token, or
+// parser error from the rejected request.
+type MailboxIngressSchemaDetail struct {
+	SchemaVersion       string
+	JSONPointer         string
+	Expected            string
+	ReceivedType        string
+	CanonicalRunField   string
+	CanonicalRunType    string
+	MinimalRunRequestID string
+	MinimalRunKey       string
+	MinimalRunOperation string
+	MinimalRunScript    string
+}
+
 type mailboxIngressDiagnosticWire struct {
-	InboxID            string                       `json:"inbox_id"`
-	RequestID          string                       `json:"request_id"`
-	DiagnosticRevision int64                        `json:"diagnostic_revision"`
-	LifecyclePhase     string                       `json:"lifecycle_phase"`
-	Accepted           bool                         `json:"accepted"`
-	Executed           bool                         `json:"executed"`
-	Code               MailboxIngressDiagnosticCode `json:"code"`
-	Message            string                       `json:"message"`
-	ObservedAt         string                       `json:"observed_at"`
+	InboxID            string                          `json:"inbox_id"`
+	RequestID          string                          `json:"request_id"`
+	DiagnosticRevision int64                           `json:"diagnostic_revision"`
+	LifecyclePhase     string                          `json:"lifecycle_phase"`
+	Accepted           bool                            `json:"accepted"`
+	Executed           bool                            `json:"executed"`
+	Code               MailboxIngressDiagnosticCode    `json:"code"`
+	Message            string                          `json:"message"`
+	SchemaDetail       *mailboxIngressSchemaDetailWire `json:"schema_detail,omitempty"`
+	ObservedAt         string                          `json:"observed_at"`
+}
+
+type mailboxIngressSchemaDetailWire struct {
+	SchemaVersion     string `json:"schema_version"`
+	JSONPointer       string `json:"json_pointer"`
+	Expected          string `json:"expected"`
+	ReceivedType      string `json:"received_type"`
+	CanonicalRunField string `json:"canonical_run_field"`
+	CanonicalRunType  string `json:"canonical_run_type"`
+	MinimalValidRun   struct {
+		RequestID      string `json:"request_id"`
+		IdempotencyKey string `json:"idempotency_key"`
+		Operation      string `json:"operation"`
+		Script         string `json:"script"`
+	} `json:"minimal_valid_run"`
 }
 
 // RecordMailboxIngressDiagnosticInMailbox creates or reloads a frozen
@@ -113,11 +147,23 @@ type mailboxIngressDiagnosticWire struct {
 // re-published after its original pair was removed, cannot replace the
 // diagnostic and is reported as retained-ID reuse.
 func (s *AuthorityStore) RecordMailboxIngressDiagnosticInMailbox(ctx context.Context, ref MailboxIngressDiagnosticRef, requestSHA256 [sha256.Size]byte, code MailboxIngressDiagnosticCode) (MailboxIngressDiagnosticRecord, MailboxIngressDiagnosticDisposition, error) {
+	return s.recordMailboxIngressDiagnosticInMailbox(ctx, ref, requestSHA256, code, nil)
+}
+
+// RecordMailboxIngressDiagnosticWithSchemaDetailInMailbox freezes an optional
+// validated correction hint with an invalid-request-schema diagnostic. The
+// hint is static protocol metadata only, so recovery can reproduce it without
+// retaining or rereading the rejected request body.
+func (s *AuthorityStore) RecordMailboxIngressDiagnosticWithSchemaDetailInMailbox(ctx context.Context, ref MailboxIngressDiagnosticRef, requestSHA256 [sha256.Size]byte, code MailboxIngressDiagnosticCode, detail *MailboxIngressSchemaDetail) (MailboxIngressDiagnosticRecord, MailboxIngressDiagnosticDisposition, error) {
+	return s.recordMailboxIngressDiagnosticInMailbox(ctx, ref, requestSHA256, code, detail)
+}
+
+func (s *AuthorityStore) recordMailboxIngressDiagnosticInMailbox(ctx context.Context, ref MailboxIngressDiagnosticRef, requestSHA256 [sha256.Size]byte, code MailboxIngressDiagnosticCode, detail *MailboxIngressSchemaDetail) (MailboxIngressDiagnosticRecord, MailboxIngressDiagnosticDisposition, error) {
 	validated, err := validateMailboxIngressDiagnosticRef(ref)
 	if err != nil {
 		return MailboxIngressDiagnosticRecord{}, "", err
 	}
-	if !isInitialMailboxIngressDiagnosticCode(code) {
+	if !isInitialMailboxIngressDiagnosticCode(code) || !validMailboxIngressSchemaDetail(code, detail) {
 		return MailboxIngressDiagnosticRecord{}, "", fmt.Errorf("%w: diagnostic code", ErrMailboxIngressDiagnosticInvalid)
 	}
 	now := s.now().UTC()
@@ -139,7 +185,7 @@ func (s *AuthorityStore) RecordMailboxIngressDiagnosticInMailbox(ctx context.Con
 			}
 			return result{record: existing, disposition: MailboxIngressDiagnosticSameFingerprint}, nil
 		}
-		record, err := newMailboxIngressDiagnosticRecord(validated, requestSHA256, code, now)
+		record, err := newMailboxIngressDiagnosticRecord(validated, requestSHA256, code, detail, now)
 		if err != nil {
 			return result{}, err
 		}
@@ -432,9 +478,9 @@ WHERE mailbox_id = ? AND client_request_id = ? AND diagnostic_file_removed_at IS
 	})
 }
 
-func newMailboxIngressDiagnosticRecord(ref MailboxIngressDiagnosticRef, requestSHA256 [sha256.Size]byte, code MailboxIngressDiagnosticCode, observedAt time.Time) (MailboxIngressDiagnosticRecord, error) {
+func newMailboxIngressDiagnosticRecord(ref MailboxIngressDiagnosticRef, requestSHA256 [sha256.Size]byte, code MailboxIngressDiagnosticCode, detail *MailboxIngressSchemaDetail, observedAt time.Time) (MailboxIngressDiagnosticRecord, error) {
 	message, ok := mailboxIngressDiagnosticMessage(code)
-	if !ok || !isInitialMailboxIngressDiagnosticCode(code) {
+	if !ok || !isInitialMailboxIngressDiagnosticCode(code) || !validMailboxIngressSchemaDetail(code, detail) {
 		return MailboxIngressDiagnosticRecord{}, ErrMailboxIngressDiagnosticInvalid
 	}
 	record := MailboxIngressDiagnosticRecord{
@@ -448,6 +494,9 @@ func newMailboxIngressDiagnosticRecord(ref MailboxIngressDiagnosticRef, requestS
 		Accepted: false, Executed: false, Code: record.Code, Message: message,
 		ObservedAt: formatStoredTime(record.ObservedAt),
 	}
+	if detail != nil {
+		wire.SchemaDetail = mailboxIngressSchemaDetailWireFrom(detail)
+	}
 	encoded, err := json.Marshal(wire)
 	if err != nil || len(encoded) > domain.MaxSerializedRequestBytes {
 		return MailboxIngressDiagnosticRecord{}, ErrMailboxIngressDiagnosticInvalid
@@ -455,6 +504,55 @@ func newMailboxIngressDiagnosticRecord(ref MailboxIngressDiagnosticRef, requestS
 	record.DiagnosticBytes = encoded
 	record.DiagnosticSHA256 = sha256.Sum256(encoded)
 	return record, nil
+}
+
+func mailboxIngressSchemaDetailWireFrom(detail *MailboxIngressSchemaDetail) *mailboxIngressSchemaDetailWire {
+	if detail == nil {
+		return nil
+	}
+	wire := &mailboxIngressSchemaDetailWire{
+		SchemaVersion: detail.SchemaVersion, JSONPointer: detail.JSONPointer, Expected: detail.Expected,
+		ReceivedType: detail.ReceivedType, CanonicalRunField: detail.CanonicalRunField, CanonicalRunType: detail.CanonicalRunType,
+	}
+	wire.MinimalValidRun.RequestID = detail.MinimalRunRequestID
+	wire.MinimalValidRun.IdempotencyKey = detail.MinimalRunKey
+	wire.MinimalValidRun.Operation = detail.MinimalRunOperation
+	wire.MinimalValidRun.Script = detail.MinimalRunScript
+	return wire
+}
+
+func validMailboxIngressSchemaDetail(code MailboxIngressDiagnosticCode, detail *MailboxIngressSchemaDetail) bool {
+	if detail == nil {
+		return true
+	}
+	if code != MailboxIngressDiagnosticInvalidRequestSchema || detail.SchemaVersion != "v1" ||
+		detail.CanonicalRunField != "script" || detail.CanonicalRunType != "string" ||
+		detail.MinimalRunRequestID != "<new-request-id>" || detail.MinimalRunKey != "<new-idempotency-key>" ||
+		detail.MinimalRunOperation != "run" || detail.MinimalRunScript != "<shell script>" {
+		return false
+	}
+	switch detail.JSONPointer {
+	case "/script":
+		if detail.Expected != "required string" && detail.Expected != "string" {
+			return false
+		}
+	case "/command", "/argv", "/cwd":
+		if detail.Expected != "unsupported field; use script" {
+			return false
+		}
+	case "":
+		if detail.Expected != "documented v1 run fields" {
+			return false
+		}
+	default:
+		return false
+	}
+	switch detail.ReceivedType {
+	case "missing", "null", "boolean", "number", "string", "array", "object":
+		return true
+	default:
+		return false
+	}
 }
 
 func isMailboxIngressDiagnosticCode(code MailboxIngressDiagnosticCode) bool {
@@ -624,16 +722,50 @@ func validateMailboxIngressDiagnosticRecord(record MailboxIngressDiagnosticRecor
 	if !ok {
 		return ErrMailboxIngressDiagnosticInvalid
 	}
+	var frozen mailboxIngressDiagnosticWire
+	decoder := json.NewDecoder(bytes.NewReader(record.DiagnosticBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&frozen); err != nil {
+		return ErrMailboxIngressDiagnosticInvalid
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return ErrMailboxIngressDiagnosticInvalid
+	}
+	if frozen.InboxID != record.MailboxID || frozen.RequestID != record.RequestID || frozen.DiagnosticRevision != record.DiagnosticRevision ||
+		frozen.LifecyclePhase != "ingress_validation" || frozen.Accepted || frozen.Executed || frozen.Code != record.Code ||
+		frozen.Message != message || frozen.ObservedAt != formatStoredTime(record.ObservedAt) {
+		return ErrMailboxIngressDiagnosticInvalid
+	}
+	if frozen.SchemaDetail != nil {
+		detail := mailboxIngressSchemaDetailFromWire(frozen.SchemaDetail)
+		if !validMailboxIngressSchemaDetail(record.Code, detail) {
+			return ErrMailboxIngressDiagnosticInvalid
+		}
+	}
 	expected, err := json.Marshal(mailboxIngressDiagnosticWire{
 		InboxID: record.MailboxID, RequestID: record.RequestID,
 		DiagnosticRevision: record.DiagnosticRevision, LifecyclePhase: "ingress_validation",
 		Accepted: false, Executed: false, Code: record.Code, Message: message,
-		ObservedAt: formatStoredTime(record.ObservedAt),
+		SchemaDetail: frozen.SchemaDetail,
+		ObservedAt:   formatStoredTime(record.ObservedAt),
 	})
 	if err != nil || !bytes.Equal(expected, record.DiagnosticBytes) {
 		return ErrMailboxIngressDiagnosticInvalid
 	}
 	return nil
+}
+
+func mailboxIngressSchemaDetailFromWire(wire *mailboxIngressSchemaDetailWire) *MailboxIngressSchemaDetail {
+	if wire == nil {
+		return nil
+	}
+	return &MailboxIngressSchemaDetail{
+		SchemaVersion: wire.SchemaVersion, JSONPointer: wire.JSONPointer, Expected: wire.Expected, ReceivedType: wire.ReceivedType,
+		CanonicalRunField: wire.CanonicalRunField, CanonicalRunType: wire.CanonicalRunType,
+		MinimalRunRequestID: wire.MinimalValidRun.RequestID, MinimalRunKey: wire.MinimalValidRun.IdempotencyKey,
+		MinimalRunOperation: wire.MinimalValidRun.Operation, MinimalRunScript: wire.MinimalValidRun.Script,
+	}
 }
 
 // validateMailboxIngressDiagnosticLifecycle keeps every persisted phase in

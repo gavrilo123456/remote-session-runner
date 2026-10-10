@@ -31,6 +31,33 @@
       ]
     },
     "message": { "type": "string" },
+    "schema_detail": {
+      "type": "object",
+      "properties": {
+        "schema_version": { "const": "v1" },
+        "json_pointer": { "type": "string", "enum": ["", "/script", "/command", "/argv", "/cwd"] },
+        "expected": {
+          "type": "string",
+          "enum": ["required string", "string", "unsupported field; use script", "documented v1 run fields"]
+        },
+        "received_type": { "type": "string", "enum": ["missing", "null", "boolean", "number", "string", "array", "object"] },
+        "canonical_run_field": { "const": "script" },
+        "canonical_run_type": { "const": "string" },
+        "minimal_valid_run": {
+          "type": "object",
+          "properties": {
+            "request_id": { "const": "<new-request-id>" },
+            "idempotency_key": { "const": "<new-idempotency-key>" },
+            "operation": { "const": "run" },
+            "script": { "const": "<shell script>" }
+          },
+          "required": ["request_id", "idempotency_key", "operation", "script"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["schema_version", "json_pointer", "expected", "received_type", "canonical_run_field", "canonical_run_type", "minimal_valid_run"],
+      "additionalProperties": false
+    },
     "observed_at": { "type": "string", "format": "date-time" }
   },
   "required": [

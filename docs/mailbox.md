@@ -278,6 +278,15 @@ pair. Direct-file publication supports ordinary workspace tools; it does not
 provide native exclusive-create, no-follow, file-sync, directory-sync, or
 crash-durability guarantees.
 
+### `run` command representation
+
+Mailbox v1 accepts one command representation for `run`: a `script` JSON
+string. It does not accept `command`, `argv`, or `cwd` fields. Put an intended
+working-directory change inside that script, for example
+`cd /home/ubuntu && <command>`. `timeout_seconds` is optional and must be a
+positive integer. This contract applies equally to native and direct-workspace
+publishers.
+
 ## Safe invalid-input diagnostics
 
 A pair that passes every filesystem safety check but fails safe ingress
@@ -291,6 +300,14 @@ ACK. Its schema contains `inbox_id`, `request_id`,
 `accepted: false`, `executed: false`, a stable `code` and `message`, and
 `observed_at`. It never includes the request script, raw JSON, idempotency key,
 target selection, credentials, headers, or private-key material.
+
+For a rejected v1 `run` request, `invalid_request_schema` can also carry a
+static `schema_detail`: the JSON pointer of the safe structural problem, its
+expected and received **types**, `schema_version: "v1"`, the canonical
+`script` string representation, and a redacted minimal valid request. It
+never repeats a submitted field value. For example, a request using `command`
+without `script` reports `/script`, `required string`, and `missing`; publish
+a new request using the displayed `script` form.
 
 For a native integration that intentionally tests or handles this case,
 `mailboxclient.Client.WaitDiagnostic(ctx, requestID)` and `ReadDiagnostic` are

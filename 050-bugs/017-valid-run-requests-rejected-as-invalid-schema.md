@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `NEW` |
+| Status | `FIX IMPLEMENTED — deployment and installed acceptance pending` |
 | Severity | High |
 | Priority | P1 |
 | Reported | 2026-10-10 |
@@ -157,6 +157,52 @@ idempotency keys listed above.
    behavior, and the Logger workflow cannot be causal for this specific fault.
 4. `runner-local` and `runner-locald` were restarted successfully immediately
    before the final attempt; the rejection persisted afterwards.
+
+## Root cause
+
+The canonical mailbox V1 `run` shape uses `script`, a JSON string. It does not
+define `command`, `argv`, or `cwd`. The three reported documents therefore
+failed V1 schema validation before any remote work was allocated:
+
+- the object and string `command` forms had no required `script` field and an
+  unsupported `command` field;
+- the array form was not a string `script`; and
+- `cwd` is not a V1 field. A working-directory change belongs in the script,
+  for example `cd /home/ubuntu && <command>`.
+
+The importer correctly kept those inputs out of execution, but it discarded
+the schema failure structure before creating its durable rejection record. The
+private diagnostic consequently preserved only the generic fixed message, so a
+publisher could not determine the correction without inspecting source code.
+
+## Fix plan
+
+1. Preserve the V1 `script`-only execution contract and do not reinterpret an
+   `argv` object or arbitrary `cwd` as executable input.
+2. When a safe V1 `run` JSON object fails schema validation, derive only a
+   bounded structural correction: a fixed JSON pointer, expected and received
+   **types**, schema version, canonical `script` representation, and a fixed
+   redacted minimal valid request. Never retain a request value or parser text.
+3. Freeze that correction inside the existing durable private diagnostic so
+   restart recovery projects the identical artifact. Validate it in the store,
+   diagnostic JSON schema, and native mailbox client.
+4. Document the V1 `script` field and direct correction flow. Add regressions
+   for the reported command-object form, redaction, canonical script dispatch,
+   and native diagnostic reading.
+5. Deploy the Mac ingress change, then publish one fresh harmless
+   `slidestud-io` request with a new request ID/key, explicit
+   `sandbox-dev`/`sandbox-host` selection, and `script: "uname -a"`. Verify a
+   terminal outbox, events, and exact ACK without replaying any reported Logger
+   request.
+
+## Implementation record
+
+- Source fix: static `schema_detail` in `invalid_request_schema` diagnostics;
+  it is request-content-free and only appears for a rejected V1 `run` shape.
+- Canonical execution remains `script: "..."`; `command`, `argv`, and `cwd`
+  remain deliberately unsupported.
+- Hermetic mailbox, native-client, store, and full-suite tests passed. The
+  installed sandbox mailbox acceptance remains the closing gate.
 
 ## Required fix
 

@@ -90,15 +90,36 @@ type Response struct {
 // failed before normal exchange acceptance. It deliberately has no operation,
 // target, idempotency, response, event, or acknowledgement fields.
 type Diagnostic struct {
-	InboxID            string `json:"inbox_id"`
-	RequestID          string `json:"request_id"`
-	DiagnosticRevision int64  `json:"diagnostic_revision"`
-	LifecyclePhase     string `json:"lifecycle_phase"`
-	Accepted           bool   `json:"accepted"`
-	Executed           bool   `json:"executed"`
-	Code               string `json:"code"`
-	Message            string `json:"message"`
-	ObservedAt         string `json:"observed_at"`
+	InboxID            string                  `json:"inbox_id"`
+	RequestID          string                  `json:"request_id"`
+	DiagnosticRevision int64                   `json:"diagnostic_revision"`
+	LifecyclePhase     string                  `json:"lifecycle_phase"`
+	Accepted           bool                    `json:"accepted"`
+	Executed           bool                    `json:"executed"`
+	Code               string                  `json:"code"`
+	Message            string                  `json:"message"`
+	SchemaDetail       *DiagnosticSchemaDetail `json:"schema_detail,omitempty"`
+	ObservedAt         string                  `json:"observed_at"`
+}
+
+// DiagnosticSchemaDetail is static v1 protocol guidance attached only to an
+// invalid-request-schema diagnostic. It is never copied from a submitted
+// script, target, idempotency key, or another request value.
+type DiagnosticSchemaDetail struct {
+	SchemaVersion     string
+	JSONPointer       string
+	Expected          string
+	ReceivedType      string
+	CanonicalRunField string
+	CanonicalRunType  string
+	MinimalValidRun   DiagnosticMinimalValidRun
+}
+
+type DiagnosticMinimalValidRun struct {
+	RequestID      string
+	IdempotencyKey string
+	Operation      string
+	Script         string
 }
 
 type Event struct {
@@ -247,7 +268,21 @@ func decodeDiagnostic(raw []byte) (Diagnostic, error) {
 		Executed           *bool   `json:"executed"`
 		Code               *string `json:"code"`
 		Message            *string `json:"message"`
-		ObservedAt         *string `json:"observed_at"`
+		SchemaDetail       *struct {
+			SchemaVersion     *string `json:"schema_version"`
+			JSONPointer       *string `json:"json_pointer"`
+			Expected          *string `json:"expected"`
+			ReceivedType      *string `json:"received_type"`
+			CanonicalRunField *string `json:"canonical_run_field"`
+			CanonicalRunType  *string `json:"canonical_run_type"`
+			MinimalValidRun   *struct {
+				RequestID      *string `json:"request_id"`
+				IdempotencyKey *string `json:"idempotency_key"`
+				Operation      *string `json:"operation"`
+				Script         *string `json:"script"`
+			} `json:"minimal_valid_run"`
+		} `json:"schema_detail"`
+		ObservedAt *string `json:"observed_at"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -267,11 +302,62 @@ func decodeDiagnostic(raw []byte) (Diagnostic, error) {
 	if observedAt, err := time.Parse(time.RFC3339Nano, *wire.ObservedAt); err != nil || observedAt.IsZero() {
 		return Diagnostic{}, ErrDiagnostic
 	}
+	var schemaDetail *DiagnosticSchemaDetail
+	if wire.SchemaDetail != nil {
+		if *wire.Code != "invalid_request_schema" || wire.SchemaDetail.SchemaVersion == nil || wire.SchemaDetail.JSONPointer == nil ||
+			wire.SchemaDetail.Expected == nil || wire.SchemaDetail.ReceivedType == nil || wire.SchemaDetail.CanonicalRunField == nil ||
+			wire.SchemaDetail.CanonicalRunType == nil || wire.SchemaDetail.MinimalValidRun == nil || wire.SchemaDetail.MinimalValidRun.RequestID == nil ||
+			wire.SchemaDetail.MinimalValidRun.IdempotencyKey == nil || wire.SchemaDetail.MinimalValidRun.Operation == nil || wire.SchemaDetail.MinimalValidRun.Script == nil {
+			return Diagnostic{}, ErrDiagnostic
+		}
+		schemaDetail = &DiagnosticSchemaDetail{
+			SchemaVersion: *wire.SchemaDetail.SchemaVersion, JSONPointer: *wire.SchemaDetail.JSONPointer,
+			Expected: *wire.SchemaDetail.Expected, ReceivedType: *wire.SchemaDetail.ReceivedType,
+			CanonicalRunField: *wire.SchemaDetail.CanonicalRunField, CanonicalRunType: *wire.SchemaDetail.CanonicalRunType,
+			MinimalValidRun: DiagnosticMinimalValidRun{
+				RequestID: *wire.SchemaDetail.MinimalValidRun.RequestID, IdempotencyKey: *wire.SchemaDetail.MinimalValidRun.IdempotencyKey,
+				Operation: *wire.SchemaDetail.MinimalValidRun.Operation, Script: *wire.SchemaDetail.MinimalValidRun.Script,
+			},
+		}
+		if !validDiagnosticSchemaDetail(schemaDetail) {
+			return Diagnostic{}, ErrDiagnostic
+		}
+	}
 	return Diagnostic{
 		InboxID: *wire.InboxID, RequestID: *wire.RequestID, DiagnosticRevision: *wire.DiagnosticRevision,
 		LifecyclePhase: *wire.LifecyclePhase, Accepted: *wire.Accepted, Executed: *wire.Executed,
-		Code: *wire.Code, Message: *wire.Message, ObservedAt: *wire.ObservedAt,
+		Code: *wire.Code, Message: *wire.Message, SchemaDetail: schemaDetail, ObservedAt: *wire.ObservedAt,
 	}, nil
+}
+
+func validDiagnosticSchemaDetail(detail *DiagnosticSchemaDetail) bool {
+	if detail == nil || detail.SchemaVersion != "v1" || detail.CanonicalRunField != "script" || detail.CanonicalRunType != "string" ||
+		detail.MinimalValidRun.RequestID != "<new-request-id>" || detail.MinimalValidRun.IdempotencyKey != "<new-idempotency-key>" ||
+		detail.MinimalValidRun.Operation != "run" || detail.MinimalValidRun.Script != "<shell script>" {
+		return false
+	}
+	switch detail.JSONPointer {
+	case "/script":
+		if detail.Expected != "required string" && detail.Expected != "string" {
+			return false
+		}
+	case "/command", "/argv", "/cwd":
+		if detail.Expected != "unsupported field; use script" {
+			return false
+		}
+	case "":
+		if detail.Expected != "documented v1 run fields" {
+			return false
+		}
+	default:
+		return false
+	}
+	switch detail.ReceivedType {
+	case "missing", "null", "boolean", "number", "string", "array", "object":
+		return true
+	default:
+		return false
+	}
 }
 
 func validDiagnosticCodeMessage(code, message string) bool {
