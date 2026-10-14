@@ -60,12 +60,35 @@ static int runner_short_proc_info(int pid, runner_short_proc *out, int *errno_ou
 import "C"
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
 	"syscall"
 	"unsafe"
 )
+
+// inspectMacPersistentProcessRunnable observes an unreaped direct child
+// without a subprocess or Wait. Darwin can return ESRCH for a listed zombie;
+// both that state and SZOMB mean this Bash can no longer emit control frames.
+func inspectMacPersistentProcessRunnable(_ context.Context, pid int) (bool, error) {
+	if pid <= 0 {
+		return false, fmt.Errorf("invalid Mac process ID %d", pid)
+	}
+	var info C.runner_short_proc
+	var errno C.int
+	result := C.runner_short_proc_info(C.int(pid), &info, &errno)
+	if result == 0 && errors.Is(syscall.Errno(errno), syscall.ESRCH) {
+		return false, nil
+	}
+	if result <= 0 {
+		return false, macProcessInspectionError("inspect owned Bash status", errno)
+	}
+	if int(info.pid) != pid {
+		return false, fmt.Errorf("owned Mac Bash process identity changed")
+	}
+	return uint32(info.status) != macProcessStatusZombie, nil
+}
 
 func inspectMacProcessStartIdentity(pid int) (string, error) {
 	if pid <= 0 {

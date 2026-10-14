@@ -4,8 +4,8 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `OPEN` |
-| Severity | High — blocks protected delivery safely but indefinitely |
+| Status | `IN PROGRESS` — source fixed; installed acceptance pending |
+| Severity | High — can strand command observation and retain execution capacity |
 | Priority | High |
 | Reported | 2026-10-14 |
 | Discovered by | Codex during a fresh post-fix Logger transition-validation run |
@@ -18,9 +18,10 @@
 The original BUG-019 request was reconciled to a complete successful result
 after the Runner repair. A new request with a new request ID and new
 idempotency key was then published specifically to validate the source-side
-performance correction. It has reproduced the same unsafe lifecycle shape:
-the durable command remains `running`, while the expected Python child is no
-longer present on the Mac.
+performance correction. At reporting time it had the same apparent lifecycle
+shape: the durable command was `running`, while a process search found no
+matching Python child. The later terminal evidence and corrected limits of
+that process search are recorded below.
 
 This is not a retry of the original request and does not reuse its command,
 session, request, or idempotency identity.
@@ -80,12 +81,13 @@ ps auxww | grep -E '[p]ython3 -m unittest.*test_writer_and_validator_accept_a_co
 It returned no rows. A fresh outbox read immediately afterward still reported
 the same request and command as `accepted` / `running` with revision 3.
 
-This proves the expected Python test process was absent at that instant. It
-does not prove whether it exited zero, failed, was killed, or was never
-started. The Runner must reconcile that uncertainty to a truthful terminal
-result; it must not retain `running` indefinitely.
+This proves no process matched that expression at that instant. An executable
+path or different argument spelling can evade it; it does not establish the
+executor-owned Bash/process-group boundary or prove the Python process exited.
+The Runner must reconcile uncertainty to a truthful terminal result within its
+persisted deadline.
 
-## Protocol-safe client behavior
+## Protocol-safe client behavior at reporting time
 
 - The request JSON was published before its zero-byte `0644` `.ready` marker,
   with a new identity and explicit Mac-local context.
@@ -148,16 +150,90 @@ revised repair must:
    boundary, then passes a fresh harmless Mac-local mailbox request through
    complete result, event stream, ACK, and zero-retained-capacity postflight.
 
+## Investigation — 2026-10-14
+
+A fresh native-file read found that the original request had already settled:
+
+| Field | Observed value |
+| --- | --- |
+| Request / response | Same request identity; `complete`, revision `4` |
+| Command / job / teardown | Same command identity; `lost` / `lost` / `lost` |
+| Final / available event sequence | `5` / `5` |
+| Output | `output_complete=false`, `output_truncated=false` |
+| Safe reason | `capture_boundary_unconfirmed` |
+| Started event | `2026-10-14T15:32:36.172699Z` |
+| Final `command_lost` event | `2026-10-14T16:02:38.903616Z` |
+
+The advertised event prefix is contiguous (`1` through `5`) and contains one
+terminal event. The result arrived about 30 minutes and 2.7 seconds after start,
+consistent with the BUG-019 deadline sweep rather than indefinite activity.
+This is a conservative loss, not proof of successful source validation.
+BUG-019 request 1441 independently remains `complete` / `succeeded`, revision
+`4`, exit `0`, complete output and final cursor `5`.
+
+The retained non-secret ownership marker for the BUG-020 session records Bash
+PID/PGID `5104`, UID `502`, generation
+`43a9d8d4527c3a046a468d0d46d14819`, and process-start identity
+`1791991956053063`. A retained marker is ownership history, not proof that the
+process is currently live. No script, output, credential, or workspace path
+was printed during this inspection.
+
+Both serving Mac processes subsequently attested installed build
+`01384e7109c3c97b2975ffb7a913cc9d9c279a57` (the BUG-019 policy-loop fix).
+The read-only restart guard found three retained session/command slots, zero
+queued commands, and zero resumable jobs. Ordinary installation therefore
+cannot proceed. The exact known terminal-lost pairs and the proposed guarded
+maintenance command are preserved in the implementation evidence for review.
+
+Static tracing identified a separate reproducible control-channel gap:
+
+1. `PersistentShell.RunScriptWithOutput` holds its execution mutex while it
+   blocks reading start/completion frames. The output-finalization timer starts
+   only after the completion frame arrives.
+2. A descendant can inherit control fd `4`; if Bash exits while that descriptor
+   remains open, the reader cannot observe EOF. The command context does not
+   interrupt the blocking read.
+3. The cancellation timeout calls `markLost`, which previously acquired that
+   same execution mutex. Cancellation can therefore wait forever for the
+   reader it is meant to stop, blocking the policy sweep as well.
+
+This establishes an implementation defect and a regression target. It does
+**not** establish that request 1442 took that path: its durable final event
+shows that its timeout/loss boundary did complete. Historical child-exit and
+descriptor observations were not recorded, so its exact physical cause must
+remain unconfirmed.
+
+## Correction and validation tracking
+
+The source correction must interrupt control reads on command cancellation,
+owned Bash death, or forced loss, and make forced loss independent of the
+execution mutex. The existing shared execution service must retain its normal
+exactly-once conservative `lost` transition, incomplete-output flag, final
+event, and proof-based capacity recovery. It must not reap the shell early or
+weaken the ownership checks used by BUG-011/013/014 recovery.
+
+Source regressions and delivery evidence are tracked in
+[BUG-020 implementation evidence](../040-implementation-evidence/BUG-020.md).
+The real Mac runtime/service regression, complete source suite, vet and focused
+race gates pass. Control waits now detect owned Bash death without reaping its
+ownership handle; forced cancellation interrupts them without acquiring their
+execution mutex. Missing completion from a live Bash remains bounded by the
+persisted command timeout.
+Installed revision attestation, an installed child-loss regression, a fresh
+harmless mailbox response/events/ACK, and zero-retained-capacity postflight
+remain required before this bug can be closed.
+
 ## Current disposition
 
-The Logger source-validation flow is blocked behind this nonterminal Runner
-state. No Logger deployment action has been attempted by the affected request.
-Do not ACK, replay, delete, or manually alter this request or its durable
-records before the Runner has emitted a supported terminal disposition.
+The Logger validation result is terminal but unsuccessful/unproven. This
+investigation has not ACKed, replayed, deleted, or manually changed the original
+request or its durable records. Its retained capacity is not assumed released.
+No Logger deployment action was attempted by the affected request.
 
 ## History
 
 | Date | Change |
 | --- | --- |
 | 2026-10-14 | Registered a new post-fix recurrence: request 1442 remained `running` at outbox revision 3 while the exact expected Mac Python unit-test process was absent. No Runner or Logger state was modified by this report. |
+| 2026-10-14 | Fresh read found a supported terminal `lost` result at revision 4 and cursor 5 shortly after the 30-minute boundary. Corrected the process-search inference and identified the independent inherited-control-descriptor/cancellation deadlock for source regression and repair. Original request remains untouched. |
 

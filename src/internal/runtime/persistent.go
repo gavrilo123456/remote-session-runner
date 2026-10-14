@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	goruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +52,8 @@ const (
 	// This does not extend the no-callback physical EOF policy.
 	maxOutputCallbackBoundaryGrace = 5 * time.Second
 	outputCallbackBoundaryPoll     = 10 * time.Millisecond
+	persistentControlLivenessPoll  = 100 * time.Millisecond
+	persistentProcessProbeTimeout  = 250 * time.Millisecond
 )
 
 // PersistentShellOptions controls the real Bash process used for one session.
@@ -163,7 +166,9 @@ type PersistentShell struct {
 	boundaryTimeout    time.Duration
 	maxOutputBytes     int64
 	closed             bool
-	lost               bool
+	lost               atomic.Bool
+	lostDone           chan struct{}
+	lostOnce           sync.Once
 	activeCommand      string
 	activeDone         chan struct{}
 	cancelRequested    bool
@@ -330,7 +335,7 @@ func startPersistentShell(ctx context.Context, options PersistentShellOptions, a
 	if killer == nil {
 		killer = signalDescendants
 	}
-	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, startupCommit: startupCommitWrite, startupCommitWait: awaitStartupCommit, parser: parser, workspace: workspace, removeOnClose: removeOnClose, boundaryTimeout: boundaryTimeout, maxOutputBytes: maxOutputBytes, inspectDescendants: inspector, killDescendants: killer}, nil
+	return &PersistentShell{cmd: cmd, stdin: stdinWriter, control: controlRead, startupCommit: startupCommitWrite, startupCommitWait: awaitStartupCommit, parser: parser, workspace: workspace, removeOnClose: removeOnClose, boundaryTimeout: boundaryTimeout, maxOutputBytes: maxOutputBytes, lostDone: make(chan struct{}), inspectDescendants: inspector, killDescendants: killer}, nil
 }
 
 // commitStartup releases a private controlled-restart replacement Bash only
@@ -355,7 +360,7 @@ func (s *PersistentShell) commitStartup() error {
 	n, writeErr := io.WriteString(commit, persistentShellStartupCommitByte)
 	closeErr := commit.Close()
 	if writeErr != nil || n != len(persistentShellStartupCommitByte) || closeErr != nil {
-		s.lost = true
+		s.markLost()
 		if writeErr != nil {
 			return fmt.Errorf("%w: write startup commit: %v", ErrPersistentShellCommand, writeErr)
 		}
@@ -385,7 +390,7 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	if s.closed {
 		return PersistentShellResult{}, ErrPersistentShellClosed
 	}
-	if s.lost {
+	if s.lost.Load() {
 		return PersistentShellResult{}, ErrPersistentShellLost
 	}
 	if s.startupCommitWait {
@@ -409,7 +414,7 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	s.stateMu.Unlock()
 	defer func() {
 		s.stateMu.Lock()
-		if s.cancelRequested && runErr == nil && !s.lost && s.processAlive() {
+		if s.cancelRequested && runErr == nil && !s.lost.Load() && s.processAlive() {
 			s.stopConfirmed = true
 		}
 		close(activeDone)
@@ -524,25 +529,25 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	defer os.Remove(wrapperPath)
 
 	if _, err := io.WriteString(s.stdin, "source "+shellQuote(wrapperPath)+"\n"); err != nil {
-		s.lost = true
+		s.markLost()
 		return PersistentShellResult{}, fmt.Errorf("%w: write command: %v", ErrPersistentShellCommand, err)
 	}
-	gotStarted, err := s.parser.Read(s.control)
+	gotStarted, err := s.readControlFrame(ctx)
 	if err != nil {
-		s.lost = true
-		return PersistentShellResult{}, fmt.Errorf("%w: read start: %v: %w", ErrPersistentShellExited, err, ErrPersistentShellCommand)
+		s.markLost()
+		return PersistentShellResult{}, fmt.Errorf("%w: read start: %w: %w", ErrPersistentShellExited, err, ErrPersistentShellCommand)
 	}
 	if gotStarted.Type != FrameTypeCommandStarted || gotStarted.CommandID != commandID {
-		s.lost = true
+		s.markLost()
 		return PersistentShellResult{}, fmt.Errorf("%w: unexpected start frame %+v", ErrPersistentShellCommand, gotStarted)
 	}
-	gotComplete, err := s.parser.Read(s.control)
+	gotComplete, err := s.readControlFrame(ctx)
 	if err != nil {
-		s.lost = true
-		return PersistentShellResult{}, fmt.Errorf("%w: read completion: %v: %w", ErrPersistentShellExited, err, ErrPersistentShellCommand)
+		s.markLost()
+		return PersistentShellResult{}, fmt.Errorf("%w: read completion: %w: %w", ErrPersistentShellExited, err, ErrPersistentShellCommand)
 	}
 	if gotComplete.Type != FrameTypeCommandComplete || gotComplete.CommandID != commandID || gotComplete.ExitCode == nil {
-		s.lost = true
+		s.markLost()
 		return PersistentShellResult{}, fmt.Errorf("%w: unexpected completion frame %+v", ErrPersistentShellCommand, gotComplete)
 	}
 	// The shell closes its command-scoped FIFO writers when source returns. The
@@ -552,16 +557,19 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	_ = stderrKeepalive.Close()
 	stdoutResult, stderrResult, drainErr := waitForOutputBoundary(stdoutDone, stderrDone, s.boundaryTimeout, stdoutRead, stderrRead, &callbacksInFlight)
 	if drainErr != nil {
-		s.lost = true
+		s.markLost()
 		return PersistentShellResult{}, drainErr
 	}
 	if stdoutResult.err != nil {
-		s.lost = true
+		s.markLost()
 		return PersistentShellResult{}, stdoutResult.err
 	}
 	if stderrResult.err != nil {
-		s.lost = true
+		s.markLost()
 		return PersistentShellResult{}, stderrResult.err
+	}
+	if s.lost.Load() {
+		return PersistentShellResult{}, ErrPersistentShellLost
 	}
 	chunks := append(stdoutResult.chunks, stderrResult.chunks...)
 	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].Sequence < chunks[j].Sequence })
@@ -641,9 +649,95 @@ func (s *PersistentShell) CancelCurrentCommand(ctx context.Context, grace time.D
 }
 
 func (s *PersistentShell) markLost() {
-	s.mu.Lock()
-	s.lost = true
-	s.mu.Unlock()
+	// RunScript owns mu while waiting for a control frame. Cancellation must
+	// interrupt that wait without trying to acquire the same execution lock.
+	s.lost.Store(true)
+	s.lostOnce.Do(func() {
+		close(s.lostDone)
+		_ = s.control.Close()
+	})
+}
+
+// readControlFrame keeps inherited control writers from hiding the death of
+// the owned Bash. It does not reap Bash: exact lost-runtime recovery retains
+// the original Wait handle and its process-ownership proof.
+func (s *PersistentShell) readControlFrame(ctx context.Context) (ControlFrame, error) {
+	type frameResult struct {
+		frame ControlFrame
+		err   error
+	}
+	done := make(chan frameResult, 1)
+	go func() {
+		frame, err := s.parser.Read(s.control)
+		done <- frameResult{frame: frame, err: err}
+	}()
+	ticker := time.NewTicker(persistentControlLivenessPoll)
+	defer ticker.Stop()
+	abort := func(cause error) (ControlFrame, error) {
+		s.markLost()
+		// Closing our pipe reader releases ReadFull even if an escaped child
+		// still owns fd 4. Join it before leaving this command's parser.
+		<-done
+		return ControlFrame{}, fmt.Errorf("%w: %w", ErrPersistentShellExited, cause)
+	}
+	for {
+		select {
+		case result := <-done:
+			return result.frame, result.err
+		case <-ctx.Done():
+			return abort(ctx.Err())
+		case <-s.lostDone:
+			return abort(ErrPersistentShellLost)
+		case <-ticker.C:
+			// Prefer a completion already parsed before the liveness probe.
+			select {
+			case result := <-done:
+				return result.frame, result.err
+			default:
+			}
+			alive, err := s.ownedProcessRunnable(ctx)
+			if err != nil {
+				return abort(err)
+			}
+			if !alive {
+				return abort(ErrPersistentShellExited)
+			}
+		}
+	}
+}
+
+func (s *PersistentShell) ownedProcessRunnable(ctx context.Context) (bool, error) {
+	if s.cmd == nil || s.cmd.Process == nil || s.cmd.ProcessState != nil {
+		return false, nil
+	}
+	pid := s.cmd.Process.Pid
+	// The direct child remains unreaped until Close, so its PID cannot be
+	// reused. Signal(0) alone would incorrectly consider a zombie runnable.
+	if goruntime.GOOS == "linux" {
+		state, _, _, err := linuxProcessStat(pid)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return state != 'Z' && state != 'X', err
+	}
+	if goruntime.GOOS == "darwin" {
+		return inspectMacPersistentProcessRunnable(ctx, pid)
+	}
+	return probePersistentProcessRunnable(ctx, pid)
+}
+
+func probePersistentProcessRunnable(ctx context.Context, pid int) (bool, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, persistentProcessProbeTimeout)
+	defer cancel()
+	status, err := exec.CommandContext(probeCtx, "/bin/ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		if signalErr := syscall.Kill(pid, 0); errors.Is(signalErr, syscall.ESRCH) {
+			return false, nil
+		}
+		return false, fmt.Errorf("%w: owned process status is unavailable", ErrPersistentShellLost)
+	}
+	state := strings.TrimSpace(string(status))
+	return state != "" && state[0] != 'Z' && state[0] != 'X', nil
 }
 
 func (s *PersistentShell) processAlive() bool {
@@ -778,7 +872,7 @@ func (s *PersistentShell) CapacityRetained() bool {
 	}
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	return s.lost && !s.cleanupConfirmed
+	return s.lost.Load() && !s.cleanupConfirmed
 }
 
 func waitForOutputBoundary(stdoutDone, stderrDone <-chan outputDrainResult, timeout time.Duration, stdoutRead, stderrRead *os.File, callbacksInFlight *atomic.Int32) (outputDrainResult, outputDrainResult, error) {
