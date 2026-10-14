@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `OPEN` |
+| Status | `IN PROGRESS` |
 | Severity | High — safely blocks protected work indefinitely and prevents a retry or acknowledgement |
 | Priority | High |
 | Reported | 2026-10-14 |
@@ -250,9 +250,64 @@ unacknowledged and must not be retried under the same identity. The Logger
 deployment is blocked at source validation; no target host, Vault, registry,
 or Logger runtime action was attempted by this request.
 
+## Investigation — 2026-10-14
+
+The original process search was not sufficient to establish that the command
+process was gone. A later read-only check correlated the durable session owner
+record with the Mac process table and found the recorded Bash process group
+still present. It contained the session Bash and child Python/Ruby processes.
+The earlier expression searched for `python3` and `remote-session-runner`; it
+did not match the actual Python executable path or the installed LaunchAgent
+command names. Therefore this incident must not be resolved by manually
+marking the protected command lost.
+
+The investigation did identify a real deadline-enforcement defect:
+
+1. `execution.Service.EnforcePolicies` already has truthful transitions for a
+   command that exceeds its persisted timeout: confirmed stop becomes
+   `timed_out`; an unconfirmed stop becomes conservative `lost` with incomplete
+   output.
+2. Neither installed executor process (`runner-locald` or Linux `runnerd`)
+   started that policy sweep. `EnforcePolicies` therefore had no production
+   caller.
+3. A durable `running` command whose worker never returns could consequently
+   remain active beyond its configured command timeout. This is the bounded
+   liveness gap relevant to the report, even though the current evidence does
+   not prove the protected command's process disappeared.
+
+No mailbox request, event, ACK, job, session, command, SQLite row, or service
+was changed during this diagnosis.
+
+## Fix plan
+
+1. Add one shared execution policy-enforcer loop that invokes only the existing
+   durable policy sweep at a bounded interval.
+2. Start that same loop from both `runner-locald` and `runnerd`, and join it on
+   service shutdown. Log only a fixed sanitized failure reason if a sweep fails.
+3. Add a hermetic Mac-local regression: create a durable running claim without
+   an in-memory runtime worker, let its one-second deadline pass, and prove one
+   terminal timeout result with no command-body replay.
+4. Run focused timeout and queue tests, then the complete suite before host
+   delivery. The protected Logger request remains untouched; only a separate
+   harmless request may be used after the new Mac service is installed.
+
+## Implementation progress
+
+Implemented locally, pending full regression and delivery:
+
+- `execution.RunPolicyEnforcer` performs an immediate sweep and then bounded
+  periodic sweeps. It never accepts, claims, or executes a command body.
+- Mac `runner-locald` and Linux `runnerd` use that exact shared mechanism.
+- `TestBUG019MacPolicyLoopSettlesAClaimWithNoRuntimeWorker` proves a stale
+  durable running claim becomes terminal without running its script.
+- Focused evidence passed:
+  - `go test ./src/internal/runnerlocald -run '^TestBUG019MacPolicyLoopSettlesAClaimWithNoRuntimeWorker$' -count=1`
+  - `go test ./src/internal/execution -run '^TestP023D13(ActiveCommandIgnoresIdleThenTimesOut|FailedCommandTimeoutIsLostAndRetainsSlot)$' -count=1`
+
 ## History
 
 | Date | Change |
 | --- | --- |
 | 2026-10-14 | Registered from a Mac-local protected Logger validation request whose outbox remained `accepted`/`running` while the operator's process inventory found no matching Runner or command process. No mailbox state, Runner state, or Logger deployment state was changed by this report. |
+| 2026-10-14 | Read-only ownership correlation found the protected command's recorded Bash process group still live, so the original process-less conclusion was not proven. Found the independent production defect that neither executor started the existing policy timeout sweep; added shared-loop implementation and hermetic regression pending delivery. |
 

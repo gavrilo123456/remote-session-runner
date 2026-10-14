@@ -24,6 +24,7 @@ import (
 const (
 	linuxShutdownDrainTimeout   = 8 * time.Second
 	linuxShutdownCleanupTimeout = 4 * time.Second
+	linuxPolicySweepInterval    = time.Second
 )
 
 // NewLinuxExecutionService wires the selected Linux host-process adapter to
@@ -220,6 +221,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	dispatcher.Start(signalContext)
+	policyEnforcerDone := make(chan struct{})
+	go func() {
+		defer close(policyEnforcerDone)
+		execution.RunPolicyEnforcer(signalContext, service, linuxPolicySweepInterval, func(error) {
+			slog.Warn("runnerd policy sweep failed", "lifecycle_phase", "policy_enforcement", "reason", "policy_enforcement_failed")
+		})
+	}()
 	metricsObserverDone := make(chan struct{})
 	go func() {
 		defer close(metricsObserverDone)
@@ -229,6 +237,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "runnerd direct HTTPS listening on %s (TLS 1.3, client certificate required)\n", httpsServer.Addr())
 	serveErr := serveUntilCoordinator(signalContext, server, httpsServer, coordinator)
 	stopSignals()
+	<-policyEnforcerDone
 	<-metricsObserverDone
 	dispatcher.Stop()
 	dispatcherWaitContext, cancelDispatcherWait := context.WithTimeout(context.Background(), time.Second)

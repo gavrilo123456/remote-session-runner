@@ -25,6 +25,10 @@ import (
 const (
 	macShutdownDrainTimeout   = 8 * time.Second
 	macShutdownCleanupTimeout = 5 * time.Second
+	// macPolicySweepInterval bounds how long an active Mac-local command can
+	// remain beyond its persisted command deadline while runner-locald is
+	// healthy. The command's own configured timeout remains authoritative.
+	macPolicySweepInterval = time.Second
 )
 
 // NewMacExecutionService wires the shared execution service to the Mac
@@ -188,6 +192,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	worker.Start(signalContext)
+	policyEnforcerDone := make(chan struct{})
+	go func() {
+		defer close(policyEnforcerDone)
+		enforceMacLocalPolicies(signalContext, service, macPolicySweepInterval)
+	}()
 	metricsObserverDone := make(chan struct{})
 	go func() {
 		defer close(metricsObserverDone)
@@ -200,6 +209,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case serveErr := <-serveErrors:
 		shutdownErr := coordinator.Shutdown(context.Background())
 		stop()
+		<-policyEnforcerDone
 		<-metricsObserverDone
 		if serveErr != nil || shutdownErr != nil {
 			fmt.Fprintf(stderr, "runner-locald: serve: %v\n", errors.Join(serveErr, shutdownErr))
@@ -208,6 +218,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case <-signalContext.Done():
 		shutdownErr := coordinator.Shutdown(context.Background())
 		serveErr := <-serveErrors
+		<-policyEnforcerDone
 		<-metricsObserverDone
 		if shutdownErr != nil || serveErr != nil {
 			fmt.Fprintf(stderr, "runner-locald: shutdown: %v\n", errors.Join(shutdownErr, serveErr))
@@ -215,6 +226,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+// enforceMacLocalPolicies makes the stored timeout, idle, and lifetime limits
+// live on the installed Mac executor. It performs no work-body dispatch: a
+// sweep can only settle existing durable state through the shared execution
+// service. A failed sweep is logged with a fixed reason and retried on the
+// next bounded interval, without exposing scripts or runtime details.
+func enforceMacLocalPolicies(ctx context.Context, service *execution.Service, interval time.Duration) {
+	execution.RunPolicyEnforcer(ctx, service, interval, func(error) {
+		slog.Warn("runner-locald policy sweep failed", "lifecycle_phase", "policy_enforcement", "reason", "policy_enforcement_failed")
+	})
 }
 
 type privateServerShutdown struct {
