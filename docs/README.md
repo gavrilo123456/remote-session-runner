@@ -19,7 +19,7 @@ selection, or automatic fallback.
 | [API reference](api.md) | Direct mTLS and Unix-socket transports, shared v1 HTTP/JSON behavior, and the Mac-only lifecycle-status extension. |
 | [Operations runbook](operations.md) | Health, queue and slot gauges, metrics, logs, read-only lifecycle triage, service refresh, diagnostic triage, and recovery limits. |
 | [Mac continuity backup and restore](../deploy/backup/README.md) | Pre-wipe offline continuity archive, integrity verification, and post-install restore sequence. |
-| [Current-host evidence](current-host-evidence.md) | What P155, P157, P158, P159, and P166 accepted, what remains unaccepted, and the per-host boundary. |
+| [Current-host evidence](current-host-evidence.md) | What P155, the P157 host gates, P158, P159, and P166 accepted, what remains unaccepted, and the per-host boundary. |
 
 ## Current controlled configuration
 
@@ -29,12 +29,16 @@ selection, or automatic fallback.
 | Ubuntu execution account | `ubuntu` |
 | Mac service root | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
 | Ubuntu service root | `/home/ubuntu/.local/share/remote-session-runner` |
-| Active mailbox roots | `default` at `mailbox/`; `analytics` at `mailboxes/analytics/`; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` |
-| Accepted remote profiles | `linux-host`; `sandbox-host` |
+| Active mailbox roots | `default` at `mailbox/`; `analytics` at `mailboxes/analytics/`; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-`; `agentic-software-factory-runner` at `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-` |
+| Accepted remote profiles | `linux-host`; `sandbox-host`; `factory-sandbox` |
 | Current direct endpoint | `linux-poc` at `https://129.151.232.40:8443` |
 | Current Ubuntu listener | `10.0.0.200:8443` |
 | Sandbox direct endpoint | `sandbox-poc` at `https://132.226.205.205:8443` |
 | Sandbox Ubuntu listener | `10.0.0.14:8443` |
+| Factory sandbox host | `ubuntu@oracle-waclaw-dziwulski-ubuntu-micro-01` (Ubuntu 26.04, `x86_64`) |
+| Factory sandbox direct endpoint | `factory-sandbox-poc` at `https://145.241.255.66:8443` |
+| Factory sandbox Ubuntu listener | `10.0.0.30:8443` |
+| Factory sandbox queued context | `ubuntu-factory-sandbox` = `factory-sandbox-dev` / `remote/factory-sandbox` |
 | Direct transport | TLS 1.3 with mandatory client certificates |
 
 P155 accepted the legacy `default` inbox with a local default and the
@@ -49,9 +53,19 @@ then accepted its direct workspace-file `0644` request/ACK path with private
 `0600` response/event projections, complete events, and a sandbox zero-work
 check. P165/P166 added and accepted the separate private `0600` malformed-
 ingress diagnostic path; it does not create an accepted exchange or remote
-work. `default` does not permit `ubuntu-sandbox`. Other physical machines
-remain **NOT RUN** until their separate P157 onboarding and end-to-end evidence
-pass.
+work. `default` does not permit `ubuntu-sandbox`.
+
+P157-factory-sandbox separately accepted `factory-sandbox` at
+`ubuntu@oracle-waclaw-dziwulski-ubuntu-micro-01` for
+`factory-sandbox-dev` / `remote/factory-sandbox`. Its public direct route is
+`factory-sandbox-poc`, while `ubuntu-factory-sandbox` is its distinct queued
+context. The external `agentic-software-factory-runner` inbox is rooted at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`,
+recognizes the `agentic-software-factory` repository alias, defaults to that
+queued context, and permits `mac-local` as its only override. The direct mTLS,
+queued bridge, and mailbox terminal-response/event/ACK gates are separate;
+one does not establish another. Other physical machines remain **NOT RUN**
+until their separate P157 onboarding and end-to-end evidence pass.
 
 BUG-015 later corrected the shared persistent-shell `errexit` boundary. A
 fresh harmless `slidestud-io` sandbox request now proves that an ordinary
@@ -59,8 +73,8 @@ strict-shell nonzero result is terminal `failed` with complete output and
 closed teardown. That is a corrective runtime result, not a new host gate or a
 result for either historical Logger workflow.
 
-Runner application readiness over direct mTLS was exercised for both accepted
-endpoints. A prior temporary TLS probe validated transport only. Software-
+Runner application readiness over direct mTLS was exercised for all three
+accepted endpoints. A prior temporary TLS probe validated transport only. Software-
 process-crash recovery is evidenced; physical power-loss recovery is
 unverified.
 

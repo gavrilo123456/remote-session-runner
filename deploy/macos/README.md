@@ -36,8 +36,9 @@ intentionally starts with only `linux-host`, so the checked-in template carries
 no sandbox credentials. The active owner-only V2 policy was established by
 P155/P157/P158, extended by P159 direct workspace ingress, and extended again
 by P165/P166 private malformed-ingress diagnostics. It contains the separately
-accepted `sandbox-host` and the accepted external `slidestud-io` mailbox.
-Create a reviewed owner-only candidate at
+accepted `sandbox-host` and `factory-sandbox` profiles plus the accepted
+external `slidestud-io` and `agentic-software-factory-runner` mailboxes. Create
+a reviewed owner-only candidate at
 `config/mac.next.yaml`, retain all existing registered roots, and run:
 
 ```sh
@@ -53,16 +54,24 @@ The installed current V2 policy has:
 | `analytics` | `.../RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
 | `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
 | `agents-work-dispatcher` | `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` | `ubuntu-current` | `ubuntu-current`, `mac-local` |
+| `agentic-software-factory-runner` | `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-` | `ubuntu-factory-sandbox` | `ubuntu-factory-sandbox`, `mac-local` |
 
 `ubuntu-sandbox` selects `sandbox-dev` / `remote/sandbox-host`. For mailbox
 work, `analytics` permits that explicit override, while `slidestud-io` uses it
 as the default. `agents-work-dispatcher` defaults to `ubuntu-current`, and
 `default` retains `mac-local` and `ubuntu-current`. The
 accepted `sandbox-poc` direct endpoint and its separate secret paths remain in
-the owner-only active configuration. The P157 host result and P158 external
-mailbox result are recorded in
+the owner-only active configuration. `ubuntu-factory-sandbox` selects
+`factory-sandbox-dev` / `remote/factory-sandbox`; the
+`agentic-software-factory-runner` inbox uses it as the default and permits only
+`mac-local` as an override. Its `factory-sandbox-poc` direct endpoint and
+separate secret paths also remain owner-only. Direct mTLS, queued bridge, and
+mailbox terminal-response/event/ACK acceptance are distinct gates. The P157
+host result and P158 external mailbox result are recorded in
 [`040-implementation-evidence/P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md)
 and [`040-implementation-evidence/P158-slidestud-external-mailbox.md`](../../040-implementation-evidence/P158-slidestud-external-mailbox.md).
+The Factory sandbox P157 host, direct, queued, and mailbox evidence is recorded
+in [`040-implementation-evidence/P157-factory-sandbox.md`](../../040-implementation-evidence/P157-factory-sandbox.md).
 P159 direct-workspace ingress and P165/P166 diagnostics are recorded in
 [`040-implementation-evidence/P159.md`](../../040-implementation-evidence/P159.md),
 [`040-implementation-evidence/P165.md`](../../040-implementation-evidence/P165.md),
@@ -129,8 +138,11 @@ its runtime directory locally from that repository's VCS view.
 The mailbox registry is append-only for this PoC. Adding a root is supported;
 removing, renaming, or moving an inbox needs an explicit later migration after
 its work and artifacts are retired. P158 accepted mailbox ingress only;
-`sandbox-host` passed its separate P157 host gate. A later remote host still
-needs its own P157 gate even if its profile appears in a candidate.
+`sandbox-host` and `factory-sandbox` passed their separate P157 host gates.
+The latter's accepted root is
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
+A later remote host still needs its own P157 gate even if its profile appears
+in a candidate.
 
 ## Stop and restart behavior
 

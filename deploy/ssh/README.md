@@ -2,10 +2,11 @@
 
 Use [`install-queued-bridge.sh`](install-queued-bridge.sh) to enable, inspect,
 and refresh the optional queued route on an accepted remote profile. It is
-installed independently on `linux-host` and `sandbox-host`; their controller
-authorization, dispatcher key, host-key pin, socket, and manifest are not
-shared. Do not use the P128 fixture as a deployment path: it is temporary and
-refuses to alter a host with a permanent bridge manifest.
+installed independently on `linux-host`, `sandbox-host`, and
+`factory-sandbox`; their controller authorization, dispatcher key, host-key
+pin, socket, and manifest are not shared. Do not use the P128 fixture as a
+deployment path: it is temporary and refuses to alter a host with a permanent
+bridge manifest.
 
 The permanent installer runs as `ubuntu` from a clean synchronized `dev`
 checkout. It requires an enabled `runnerd.service`, its owner-only `runnerd.sock`,
@@ -63,6 +64,16 @@ passed its separate P157 gate with a bridge on
 and uses as the `slidestud-io` mailbox default. See
 [`P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md)
 and [`P158-slidestud-external-mailbox.md`](../../040-implementation-evidence/P158-slidestud-external-mailbox.md).
+
+`factory-sandbox` separately passed P157 with its own restricted bridge on
+`ubuntu@oracle-waclaw-dziwulski-ubuntu-micro-01`. Its Mac queued context is
+`ubuntu-factory-sandbox` (`factory-sandbox-dev` /
+`remote/factory-sandbox`), which is the default for the
+`agentic-software-factory-runner` mailbox at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
+Its direct mTLS endpoint is a separate `factory-sandbox-poc` gate; bridge
+readiness does not establish direct or mailbox terminal-response acceptance.
+See [`P157-factory-sandbox.md`](../../040-implementation-evidence/P157-factory-sandbox.md).
 
 Every later remote profile needs separate key pinning, controller authorization,
 service deployment, and P157 end-to-end acceptance. A profile not yet attempted

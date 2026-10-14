@@ -27,6 +27,8 @@ field.
 | `default` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox` | `remote-session-runner` | `mac-local` | `mac-local`, `ubuntu-current` |
 | `analytics` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `analytics-dbt` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
 | `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `slidestud-io` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
+| `agents-work-dispatcher` | `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` | `agents-work-dispatcher` | `ubuntu-current` | `ubuntu-current`, `mac-local` |
+| `agentic-software-factory-runner` | `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-` | `agentic-software-factory` | `ubuntu-factory-sandbox` | `ubuntu-factory-sandbox`, `mac-local` |
 
 Every root has this independent layout:
 
@@ -441,6 +443,27 @@ profile through a native mailbox request, event read, and ACK. The `default`
 inbox does not allow this override. Any other remote profile remains
 unavailable until its own P157 host gate passes.
 
+**Use the Agentic Software Factory external root with its factory default:**
+
+```json
+{
+  "request_id": "req-factory-sandbox-001",
+  "idempotency_key": "key-factory-sandbox-001",
+  "operation": "run",
+  "repository_alias": "agentic-software-factory",
+  "script": "printf 'FACTORY_SANDBOX_MAILBOX_OK\\n'; id -un; hostname; uname -m"
+}
+```
+
+Publish this through `mailboxclient.New` in
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
+It deliberately omits both selection fields, so it resolves as
+`execution_selection_source: "inbox_default"` to `factory-sandbox-dev` /
+`remote/factory-sandbox`. The P157 factory-sandbox gate accepted this native
+marker-last route, read the terminal event prefix, and consumed the exact ACK.
+It is queued-bridge evidence; direct mTLS readiness at `factory-sandbox-poc`
+is a separate route check.
+
 **Use the SlideStudio external root with its sandbox default:**
 
 ```json
@@ -624,6 +647,6 @@ acknowledged normally.
   is not yet verified.
 
 For route and service checks, use [operations](operations.md). For the P155,
-P157, P158, P159, P166, and deployed BUG-015 evidence and the per-host P157
-boundary, use
+sandbox-host P157, factory-sandbox P157, P158, P159, P166, and deployed
+BUG-015 evidence and the per-host P157 boundary, use
 [current-host evidence](current-host-evidence.md).

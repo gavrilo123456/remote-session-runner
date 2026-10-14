@@ -12,13 +12,14 @@ an unencrypted cloud folder.
 ## What the archive contains
 
 The backup script discovers configured mailbox roots from the active
-`mac.yaml`. In the current installation that includes these four roots:
+`mac.yaml`. In the current installation that includes these five roots:
 
 ```text
 /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox
 /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics
 /Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-
 /Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-
+/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-
 ```
 
 It archives:
@@ -41,8 +42,9 @@ captured separately and restored at its recorded path. The script refuses a
 backup destination inside any configured mailbox root, so the archive staging
 directory cannot accidentally be included in a mailbox copy.
 
-The default SSH set is `config`, `known_hosts`, `gavrilo123456-github`, and
-`dev.slidestud.io`, plus `remote-session-runner` when it exists. Use
+The default SSH set is `config`, `known_hosts`, `gavrilo123456-github`,
+`dev.slidestud.io`, and `factory-sandbox`, plus `remote-session-runner` when
+it exists. Use
 `--include-ssh-directory` only when the SSH configuration uses `Include` or
 you deliberately want every durable SSH configuration and key file preserved.
 Runtime SSH sockets are always excluded. Use `--without-ssh` only when those
@@ -70,7 +72,7 @@ and reconciliation state instead.
 
 ## Before the disk wipe
 
-1. Pause every mailbox publisher and LLM that can write into the four mailbox
+1. Pause every mailbox publisher and LLM that can write into the five mailbox
    roots. The script checks external mailbox trees for changes while copying,
    but it cannot prevent a writer from publishing after its final check.
 2. Wait for normal work to finish. The script refuses if Mac Router metrics
@@ -114,9 +116,9 @@ Keep both the archive and its adjacent `.sha256` file.
 ## Restore after macOS is reinstalled
 
 The account name must again be `tomasz.walczuk`. The active configuration uses
-absolute paths under that account. Restore or clone the `slidestud.io` and
-`agents-work-dispatcher` project checkouts first, so their `tmp/` parents exist
-for the external mailbox roots.
+absolute paths under that account. Restore or clone the `slidestud.io`,
+`agents-work-dispatcher`, and `agentic-software-factory` project checkouts
+first, so their `tmp/` parents exist for the external mailbox roots.
 
 The Git bundle in the archive is the authoritative source revision for this
 restore. Verify the outer checksum before extracting anything, then extract
@@ -142,9 +144,11 @@ git -C /Users/tomasz.walczuk/projects/remote-session-runner \
 ```
 
 Cloning from the bundle retains the archived `origin/dev` reference needed by
-the first installer check. `remote set-url` restores normal GitHub transport
-without fetching. Do not fetch or pull until the first install and health
-checks have succeeded.
+the first installer check. `remote set-url` restores the archived authoritative
+primary remote (currently local Gitea) without fetching. Do not fetch or pull
+until the first install and health checks have succeeded. Thereafter, use the
+normal primary-Gitea push and GitHub-mirror verification path before an Ubuntu
+fast-forward.
 
 Then restore the runtime material. This command refuses to overlay an existing
 service root, an existing external mailbox root, or a loaded Runner service.
@@ -186,7 +190,7 @@ outbox.
 
 ## Scope boundary
 
-This is a Mac continuity backup. The two Ubuntu hosts are not copied by this
+This is a Mac continuity backup. The three Ubuntu hosts are not copied by this
 kit; a Mac disk wipe leaves their Runner state and services in place. The
 restored Mac needs the preserved mTLS, dispatcher SSH, and host-key material to
 reconnect to them.

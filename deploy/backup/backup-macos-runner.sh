@@ -510,7 +510,7 @@ copy_selected_ssh() {
 	fi
 	mkdir -p "$stage/payload/ssh"
 	: > "$stage/metadata/ssh.tsv"
-	for name in config known_hosts gavrilo123456-github dev.slidestud.io remote-session-runner; do
+	for name in config known_hosts gavrilo123456-github dev.slidestud.io factory-sandbox remote-session-runner; do
 		source="$ssh_root/$name"
 		if [ "$name" = remote-session-runner ] && [ ! -e "$source" ] && [ ! -L "$source" ]; then
 			continue
@@ -538,7 +538,7 @@ preflight_ssh_scope() {
 	if /usr/bin/grep -Eiq '^[[:space:]]*Include[[:space:]]' "$HOME/.ssh/config"; then
 		fail 'SSH config uses Include; rerun with --include-ssh-directory so included files are preserved'
 	fi
-	for name in known_hosts gavrilo123456-github dev.slidestud.io; do
+	for name in known_hosts gavrilo123456-github dev.slidestud.io factory-sandbox; do
 		require_regular_file "$HOME/.ssh/$name" "SSH material $name"
 	done
 	if [ -e "$HOME/.ssh/remote-session-runner" ] || [ -L "$HOME/.ssh/remote-session-runner" ]; then

@@ -17,7 +17,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-b011-macos-host test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-p137-macos-host test-p137-linux-host test-p138-macos-host test-p138-linux-host test-p139-macos-host test-p140-linux-host test-p140-twohost test-p141-macos-host test-p141-linux-host test-p142-macos-host test-p142-linux-host test-p155-macos-multi-inbox test-p157-sandbox-host test-p158-slidestud-mailbox test-p158-slidestud-mailbox-with-backlog test-p159-slidestud-workspace-mailbox test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
+.PHONY: check-go test test-b011-macos-host test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-p137-macos-host test-p137-linux-host test-p138-macos-host test-p138-linux-host test-p139-macos-host test-p140-linux-host test-p140-twohost test-p141-macos-host test-p141-linux-host test-p142-macos-host test-p142-linux-host test-p155-macos-multi-inbox test-p157-sandbox-host test-p157-factory-sandbox-host test-p158-slidestud-mailbox test-p158-slidestud-mailbox-with-backlog test-p159-slidestud-workspace-mailbox test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -112,6 +112,12 @@ test-p155-macos-multi-inbox: check-go
 # opt-in because it publishes one harmless marker-last mailbox request.
 test-p157-sandbox-host: check-go
 	RSR_P157_SANDBOX_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocal -run '^TestP157SandboxHostMailboxGate$$' -count=1 -v
+
+# Installed external agentic-software-factory inbox -> configured
+# factory-sandbox default. The native client publishes one harmless marker-last
+# request without target fields, verifies terminal events, then ACKs it.
+test-p157-factory-sandbox-host: check-go
+	RSR_P157_FACTORY_SANDBOX_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocal -run '^TestP157FactorySandboxExternalMailboxDefaultGate$$' -count=1 -v
 
 # Installed external SlideStudio inbox -> configured sandbox-host default. The
 # native mailbox client publishes one harmless marker-last request with no

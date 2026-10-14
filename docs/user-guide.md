@@ -44,12 +44,14 @@ runner --endpoint <local|configured-direct-endpoint> [--config PATH] [--wait-tim
 | Queued current Ubuntu | `--endpoint local`; `linux-dev`, `remote`, `linux-host` | `ubuntu` | Requires current bridge `status` to be ready. |
 | Direct sandbox Ubuntu | `--endpoint sandbox-poc --config <mac.yaml>`; `sandbox-dev`, `remote`, `sandbox-host` | `ubuntu` | P157 accepted its public mTLS Runner readiness route. |
 | Queued sandbox Ubuntu | `--endpoint local`; `sandbox-dev`, `remote`, `sandbox-host` | `ubuntu` | P157 accepted its restricted bridge and native mailbox route; verify its bridge `status` before use. |
+| Direct Factory sandbox Ubuntu | `--endpoint factory-sandbox-poc --config <mac.yaml>`; `factory-sandbox-dev`, `remote`, `factory-sandbox` | `ubuntu` | P157-factory-sandbox accepted its public mTLS Runner readiness route. |
+| Queued Factory sandbox Ubuntu | `--endpoint local`; `factory-sandbox-dev`, `remote`, `factory-sandbox` | `ubuntu` | P157-factory-sandbox accepted its restricted bridge; verify its bridge `status` before use. |
 
-`linux-poc`/`linux-host` and `sandbox-poc`/`sandbox-host` are configured pairs,
-not universal names. A future direct endpoint must be defined in the V2
-`remote_hosts` policy, bound to exactly one target profile, and accepted by
-P157 before use. The CLI rejects an endpoint/target mismatch before it sends a
-mutation.
+`linux-poc`/`linux-host`, `sandbox-poc`/`sandbox-host`, and
+`factory-sandbox-poc`/`factory-sandbox` are configured pairs, not universal
+names. A future direct endpoint must be defined in the V2 `remote_hosts`
+policy, bound to exactly one target profile, and accepted by P157 before use.
+The CLI rejects an endpoint/target mismatch before it sends a mutation.
 
 Use the same endpoint for a resource's complete lifecycle. Direct and queued
 remote routes use different controller identities, so a resource created by one
@@ -127,6 +129,22 @@ P157 separately accepted this profile's Runner readiness and native mailbox
 route. This command is an operator check for the direct controller; it does
 not test mailbox delivery or the queued bridge.
 
+### Direct Factory sandbox Ubuntu
+
+```sh
+# Mac — tomasz.walczuk
+"$RUNNER" --endpoint factory-sandbox-poc --config "$CONFIG" run \
+  --environment factory-sandbox-dev \
+  --target remote \
+  --profile factory-sandbox \
+  -- 'printf "FACTORY_SANDBOX_DIRECT_OK\\n" && id -un && hostname && uname -m'
+```
+
+The output should identify `ubuntu`,
+`oracle-waclaw-dziwulski-ubuntu-micro-01`, and `x86_64`. This verifies the
+direct Factory sandbox controller only. It does not test its queued bridge or
+the `agentic-software-factory-runner` mailbox.
+
 ### Queued current Ubuntu
 
 First verify `deploy/ssh/install-queued-bridge.sh status` on the current Ubuntu
@@ -162,6 +180,26 @@ Use this queued CLI route for a resource's complete lifecycle. For file
 mailbox work, `analytics` permits the corresponding `ubuntu-sandbox` override,
 and the external `slidestud-io` inbox uses it as its default when both selection
 fields are omitted; the `default` inbox does not permit it.
+
+### Queued Factory sandbox Ubuntu
+
+First verify `deploy/ssh/install-queued-bridge.sh status` on
+`oracle-waclaw-dziwulski-ubuntu-micro-01`. Then run:
+
+```sh
+# Mac — tomasz.walczuk
+"$RUNNER" --endpoint local run \
+  --environment factory-sandbox-dev \
+  --target remote \
+  --profile factory-sandbox \
+  -- 'printf "FACTORY_SANDBOX_QUEUED_OK\\n" && id -un && hostname && uname -m'
+```
+
+The output should identify `ubuntu`,
+`oracle-waclaw-dziwulski-ubuntu-micro-01`, and `x86_64`. This is a queued
+bridge check. It is distinct from the direct mTLS route and from mailbox
+terminal-response/event/ACK evidence. The
+`agentic-software-factory-runner` mailbox uses this queued context by default.
 
 ## Use a persistent session
 
@@ -261,6 +299,13 @@ transport becomes uncertain.
   resolves to `sandbox-dev` / `remote/sandbox-host`. The CLI does not publish
   mailbox files; use the native publisher or the documented direct workspace
   file path.
+- The `agentic-software-factory-runner` mailbox root is
+  `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
+  It recognizes the `agentic-software-factory` repository alias. Its omitted
+  pair resolves to `factory-sandbox-dev` / `remote/factory-sandbox`, and its
+  only allowed override is `mac-local`. Use its native publisher or the
+  documented direct workspace file path; the CLI does not publish mailbox
+  files.
 - Direct HTTPS accepts remote targets only. A Mac-local command uses
   `--endpoint local`.
 - `run` has no standalone CLI job-status command. Preserve its IDs and use the

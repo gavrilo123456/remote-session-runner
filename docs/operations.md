@@ -1,6 +1,6 @@
 # Operations runbook
 
-Run Mac commands as `tomasz.walczuk` and commands on either accepted Ubuntu
+Run Mac commands as `tomasz.walczuk` and commands on any accepted Ubuntu
 host as `ubuntu`. Do not print private keys, edit SQLite files, manufacture
 mailbox input outside the documented publisher/integration path, or use
 host-gate test scripts as everyday service controls.
@@ -20,9 +20,12 @@ does not pass a new host gate. See [current-host evidence](current-host-evidence
 | Queued `linux-host` execution | Permanent restricted bridge was accepted in P155 | Fresh bridge `status` at the deployed source revision, then a queued command. |
 | Direct `sandbox-host` execution | Accepted in P157 | Public `sandbox-poc` mTLS Runner readiness. |
 | Queued `sandbox-host` execution | Accepted in P157 | Fresh sandbox bridge `status`; `analytics` permits its explicit override and `slidestud-io` uses it as its default. |
+| Direct `factory-sandbox` execution | Accepted in P157-factory-sandbox | Public `factory-sandbox-poc` mTLS Runner readiness. |
+| Queued `factory-sandbox` execution | Accepted in P157-factory-sandbox | Fresh Factory sandbox bridge `status`, then a queued command through `ubuntu-factory-sandbox`. |
 | `default` mailbox | Installed and accepted in P155 | Mac readiness, configured root ownership, and native terminal response/event/ACK. |
 | `analytics` mailbox | Installed in P155; `sandbox-host` override accepted in P157 | Same checks; each remote override additionally needs its selected bridge status. |
 | `slidestud-io` mailbox | Native path accepted in P158; direct workspace-file path accepted in P159 | External owner-only tree, Mac readiness, no-selection request resolved to `sandbox-host`, complete event/ACK, and sandbox P128 zero-work status. |
+| `agentic-software-factory-runner` mailbox | Accepted in P157-factory-sandbox | External owner-only tree, no-selection request resolved to `factory-sandbox`, complete event/ACK, and Factory sandbox zero-work status. |
 | Any additional profile | **NOT RUN** | Its own P157 service, route, and end-to-end acceptance. |
 
 P155 proved `default` local-default work and an `analytics` allowed queued
@@ -35,7 +38,13 @@ with private `0600` response/event projections and a final zero-work check. A
 successful direct mTLS request does not prove queued mailbox delivery. P166
 then accepted safe malformed mailbox ingress on the Mac: it wrote a private
 diagnostic and created no remote work. It did not run a new host, bridge, or
-direct-mTLS gate.
+direct-mTLS gate. P157-factory-sandbox independently accepted the
+`factory-sandbox` direct mTLS route, restricted queued bridge, and the
+`agentic-software-factory-runner` native mailbox exchange at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
+Its omitted selection resolves to `factory-sandbox-dev` /
+`remote/factory-sandbox` through `ubuntu-factory-sandbox`; its only mailbox
+override is `mac-local`. The direct, queued, and mailbox gates remain distinct.
 
 BUG-008's queue-preserving recovery work and its fresh installed-service
 regression (B008-P6) passed. The recovery and attestation procedures below are
@@ -145,6 +154,8 @@ root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
   check_mailbox_tree "$root/mailbox"
   check_mailbox_tree "$root/mailboxes/analytics"
   check_mailbox_tree "/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-"
+  check_mailbox_tree "/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-"
+  check_mailbox_tree "/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-"
 )
 ```
 
@@ -251,9 +262,28 @@ cd /home/ubuntu/projects/remote-session-runner
 deploy/ssh/install-queued-bridge.sh status
 ```
 
+### `factory-sandbox` Ubuntu — `ubuntu`
+
+Run these commands through the selected `factory-sandbox` bootstrap alias on
+`oracle-waclaw-dziwulski-ubuntu-micro-01`:
+
+```sh
+# Factory sandbox Ubuntu — ubuntu
+root='/home/ubuntu/.local/share/remote-session-runner'
+sudo systemctl is-active runnerd.service
+curl --silent --show-error --fail --unix-socket "$root/run/runnerd.sock" http://runner/health/ready
+ss -lntH | grep '10.0.0.30:8443'
+sudo journalctl -u runnerd.service -n 200 --no-pager
+cd /home/ubuntu/projects/remote-session-runner
+deploy/ssh/install-queued-bridge.sh status
+```
+
+The service/bridge checks are independent of the public direct mTLS readiness
+and the `agentic-software-factory-runner` mailbox terminal exchange.
+
 ### Verify a running Ubuntu service build revision
 
-After `install-systemd-service.sh` completes on either accepted host, attest the
+After `install-systemd-service.sh` completes on any accepted host, attest the
 live `runnerd.service` process through its private Unix socket. This is the
 Linux counterpart of the Mac LaunchAgent check and is required source evidence
 for a later B008-P6 host regression; it is not that regression itself.
@@ -295,9 +325,12 @@ curl --silent --show-error --fail --max-time 15 \
 
 For `sandbox-host`, substitute `sandbox-direct-client.pem`,
 `sandbox-direct-client.key`, and `https://132.226.205.205:8443/health/ready`.
-Each check covers its selected Runner application, public route, mTLS identity,
-and readiness. The earlier temporary TLS probe was transport-only. Neither
-check confirms a queued bridge or a mailbox request.
+For `factory-sandbox`, use `factory-sandbox-ca.pem`,
+`factory-sandbox-direct-client.pem`, `factory-sandbox-direct-client.key`, and
+`https://145.241.255.66:8443/health/ready`. Each check covers its selected
+Runner application, public route, mTLS identity, and readiness. The earlier
+temporary TLS probe was transport-only. Neither check confirms a queued bridge
+or a mailbox request.
 
 ## Diagnostics and metrics
 
@@ -334,7 +367,7 @@ credentials, or resource IDs.
 | `event_gaps_total`, `output_truncations_total` | Durable retained-output problems | 1 |
 | `storage_errors_total`, `cleanup_failures_total` | Observed process/database cleanup errors | 1 |
 | `mailbox_backlog` | Durable accepted exchanges plus safe complete zero-byte JSON/marker pairs with no durable exchange or diagnostic | 32 |
-| `mailbox_backlog_by_inbox` | Same backlog, split by configured safe inbox IDs such as `default`, `analytics`, and `slidestud-io` | Inspect each nonzero value |
+| `mailbox_backlog_by_inbox` | Same backlog, split by configured safe inbox IDs such as `default`, `analytics`, `slidestud-io`, and `agentic-software-factory-runner` | Inspect each nonzero value |
 
 ### How the four queue and slot gauges fit together
 
@@ -504,7 +537,7 @@ below.
 | Linux terminal `lost` capacity blocks ready sessions with queued commands that must survive | The same request/job/session/command IDs, current retained-lost inventory, owner-only markers, and live selected `runnerd.service` | On a `runnerd` revision containing B009-P2, preserve the original IDs and let its bounded dispatcher tick attempt proof-based automatic recovery. It runs only after a normal claim finds all slots full and only for the exact complete retained-lost set; it never replays a lost script. If proof remains unavailable, follow the guarded **Linux-only online** recovery below as the owner-only fallback. Keep the service running; do not restart it, run offline recovery, cancel queued commands, or replay work. |
 | Linux P128 reports only one unreleased slot for a terminal lost command and no work must survive | Exact session and command IDs, owner-only runtime record, process-group state, and service cgroup | Preserve the lost result and use the explicit stopped-service recovery procedure below. It refuses any other active work and never replays the script. |
 | Linux P128 reports several retained `lost` slots and only already-cancelled one-off jobs, with no queued work to preserve | Exact list of every retained `lost` session/command pair and every nonterminal job, owner-only markers, and the stopped service cgroup | Use `recover-stalled` below only after the complete inventory is known. It rejects extra work and never dispatches or replays a script. |
-| New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host` and `sandbox-host` evidence does not transfer. |
+| New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host`, `sandbox-host`, and `factory-sandbox` evidence does not transfer. |
 | Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
 | Ordinary script failure under `set -e` or `set -euo pipefail` | Terminal response/event, actual nonzero exit code, complete output flags | Treat this as a normal `failed` command. Preserve the output, correct the script or input, and use a new request only when a new operation is appropriate. |
 | `lost` after a strict-shell script | Whether the script used explicit `exit`, `exec`, reserved control-file-descriptor changes, or crossed an unconfirmed output boundary | Do not infer a normal command result or complete output. Preserve IDs and use the host-specific recovery/investigation boundary. |
@@ -760,5 +793,6 @@ procedure above.
 - Software-crash recovery is evidenced. Physical power-loss survival remains
   unverified until a coordinated physical power-cut test passes.
 
-See [current-host evidence](current-host-evidence.md) for exact P155/P157/P158/
-P159/P166 scope and [setup](setup.md) for deployment steps.
+See [current-host evidence](current-host-evidence.md) for exact P155, P157,
+P157-factory-sandbox, P158/P159/P166 scope and [setup](setup.md) for deployment
+steps.

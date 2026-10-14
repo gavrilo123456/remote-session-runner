@@ -11,10 +11,13 @@ is a record of completed gates, not a live-health substitute. Run the checks in
 | Mac services | `tomasz.walczuk` at `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` | P155 real-process two-inbox test, P158 external-mailbox activation, P159 direct-workspace mailbox test, P166 safe malformed-ingress diagnostic acceptance, private socket/readiness checks, and zero-work evidence. |
 | Current Ubuntu host | `ubuntu@oracle-yuta-konopka-ubuntu-micro-02` / `linux-host` | P155 `runnerd.service`, listener `10.0.0.200:8443`, zero-work P128 checks, and permanent bridge status. |
 | Sandbox Ubuntu host | `ubuntu@oracle-gustaw-janecki-ubuntu-flex-02` / `sandbox-host` | P157 `runnerd.service`, listener `10.0.0.14:8443`, zero-work P128 checks, and permanent bridge status after the authorized repair. |
+| Factory Ubuntu host | `ubuntu@oracle-waclaw-dziwulski-ubuntu-micro-01` / `factory-sandbox` | Factory-sandbox P157 `runnerd.service` on Ubuntu 26.04 LTS x86_64, listener `10.0.0.30:8443`, direct mTLS readiness, restricted bridge proof, native external-mailbox request, and zero-work checks. |
 | Current direct route | `linux-poc` → `https://129.151.232.40:8443` | P155 Runner application mTLS health and direct CLI evidence, separate from mailbox evidence. |
 | Sandbox direct route | `sandbox-poc` → `https://132.226.205.205:8443` | P157 Runner application mTLS readiness (`HTTP 200`), separate from the queued mailbox request. |
+| Factory direct route | `factory-sandbox-poc` → `https://145.241.255.66:8443` | Factory-sandbox P157 Runner application mTLS readiness, separate from the queued mailbox request. |
 | Current queued route | `ubuntu-current` → `remote/linux-host` | P155 permanent restricted bridge and an end-to-end analytics mailbox override. |
 | Sandbox queued route | `ubuntu-sandbox` → `remote/sandbox-host` | P157 permanent restricted bridge and native end-to-end analytics mailbox request; P158 external SlideStudio default and P159 direct-workspace-file default. |
+| Factory queued route | `ubuntu-factory-sandbox` → `remote/factory-sandbox` | Factory-sandbox P157 restricted bridge and native `agentic-software-factory-runner` mailbox default. |
 
 The associated source and evidence closeout are:
 
@@ -25,6 +28,9 @@ The associated source and evidence closeout are:
 - P157 repair and final host-gate revision:
   `8873852ddc9ab33093c105371de93a3695d99b89`
 - Detailed record: [P157 sandbox-host evidence](../040-implementation-evidence/P157-sandbox-host.md)
+- P157 factory-sandbox live service revision before this documentation closeout:
+  `f21ea09b58d3521847fc53b9054484017a20e8e6`
+- Detailed record: [P157 factory-sandbox evidence](../040-implementation-evidence/P157-factory-sandbox.md)
 - P158 source and host-gate revision:
   `ce74e368f2aa40f9db90d1bb049f96fd533c5753`
 - Detailed record: [P158 SlideStudio external-mailbox evidence](../040-implementation-evidence/P158-slidestud-external-mailbox.md)
@@ -92,6 +98,55 @@ on source revision `8873852ddc9ab33093c105371de93a3695d99b89`. It proved:
 At the P157 gate, the policy limited `default` to `mac-local` and
 `ubuntu-current`, while `analytics` permitted the explicit `ubuntu-sandbox`
 override. P157 did not make the sandbox an automatic destination or fallback.
+
+## What P157 factory-sandbox proved
+
+The separate factory-sandbox P157 gate accepted the SSH bootstrap alias
+`factory-sandbox` for `ubuntu@145.241.255.66`, whose service host is
+`oracle-waclaw-dziwulski-ubuntu-micro-01` (Ubuntu 26.04 LTS, `x86_64`). Its
+Runner profile is `factory-sandbox`, environment `factory-sandbox-dev`, queued
+context `ubuntu-factory-sandbox`, direct endpoint `factory-sandbox-poc`, public
+URL `https://145.241.255.66:8443`, and host listener `10.0.0.30:8443`.
+
+The active mailbox is `agentic-software-factory-runner` at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
+Its repository alias is `agentic-software-factory`; it defaults to
+`ubuntu-factory-sandbox` and permits only that context or `mac-local`. The
+candidate validation and guarded activation created the configured root plus
+`inbox`, `outbox`, `events`, `acks`, and `diagnostics` as
+`tomasz.walczuk`-owned real directories at mode `0700`. The parent
+`runner/tmp` is not itself a mailbox root.
+
+The host service reported installed revision
+`f21ea09b58d3521847fc53b9054484017a20e8e6` during this live gate. It had its
+own owner-only state, direct-mTLS client material, and queued-bridge
+host-key/dispatcher material; the direct and queued paths are separate and do
+not share the accepted `linux-host` materials. Direct Runner readiness passed
+over mTLS, and the profile-specific restricted bridge status was ready. The
+host firewall admits direct mTLS only from `81.95.203.65/32` and
+`31.61.247.138/32`; those narrow operational ingress sources must be reviewed
+if the authorized Mac network changes.
+
+The native external-mailbox gate used one harmless omitted-target request:
+
+| Item | Accepted value |
+| --- | --- |
+| Request | `req-p157-factory-sandbox-18de80a1747f87e8` |
+| Job / session / command | `job-aaf87b7088f0008f87dbc3874d3edd45` / `sess-bc2a0826c0e915088683c3841a183acb` / `cmd-8f8574c906f18a8ca2a765bc1011a936` |
+| Selection | `inbox_default` → `factory-sandbox-dev` / `remote/factory-sandbox` |
+| Terminal proof | Response revision 2; `complete`, `succeeded`, exit code 0, complete nontruncated output, and final event cursor 5 |
+| Acknowledgement and postflight | Exact ACK consumed; final Mac and factory-host checks reported zero active, queued, resumable, or unfinished work |
+
+The request printed the fixed factory marker followed by the `ubuntu` account,
+the accepted hostname, and `x86_64`. This proves the configured queued mailbox
+path. It does not use direct mTLS as a substitute for the mailbox result, make
+the firewall generally open, accept another profile, or prove physical
+power-loss recovery.
+
+This section records the live acceptance at installed revision `f21…`; it does
+not assign a documentation closeout commit. The later evidence/source delivery
+must be recorded only after its normal primary-Gitea, GitHub-mirror, and
+host-fast-forward gates complete.
 
 ## What P158 proved
 

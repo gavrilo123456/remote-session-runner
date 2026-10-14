@@ -9,16 +9,16 @@ source.
 
 ## Before you start
 
-| Requirement | Mac | `linux-host` | `sandbox-host` |
-| --- | --- | --- | --- |
-| Account | `tomasz.walczuk` | `ubuntu` | `ubuntu` |
-| Checkout | `/Users/tomasz.walczuk/projects/remote-session-runner` | `/home/ubuntu/projects/remote-session-runner` | `/home/ubuntu/projects/remote-session-runner` |
-| Go toolchain | `.../RemoteSessionRunner/toolchains/go1.27.1/bin/go` | `.../remote-session-runner/toolchains/go1.27.1/bin/go` | `.../remote-session-runner/toolchains/go1.27.1/bin/go` |
-| Service manager | GUI launchd | systemd with noninteractive `sudo` for unit installation | systemd with noninteractive `sudo` for unit installation |
-| Direct bind and public endpoint | — | `10.0.0.200:8443`; `https://129.151.232.40:8443` | `10.0.0.14:8443`; `https://132.226.205.205:8443` |
-| Direct route materials | Client CA, per-profile certificate, and private key | Server certificate/key, trusted client CA, principal map | Server certificate/key, trusted client CA, principal map |
+| Requirement | Mac | `linux-host` | `sandbox-host` | `factory-sandbox` |
+| --- | --- | --- | --- | --- |
+| Account | `tomasz.walczuk` | `ubuntu` | `ubuntu` | `ubuntu` |
+| Checkout | `/Users/tomasz.walczuk/projects/remote-session-runner` | `/home/ubuntu/projects/remote-session-runner` | `/home/ubuntu/projects/remote-session-runner` | `/home/ubuntu/projects/remote-session-runner` |
+| Go toolchain | `.../RemoteSessionRunner/toolchains/go1.27.1/bin/go` | `.../remote-session-runner/toolchains/go1.27.1/bin/go` | `.../remote-session-runner/toolchains/go1.27.1/bin/go` | `.../remote-session-runner/toolchains/go1.27.1/bin/go` |
+| Service manager | GUI launchd | systemd with noninteractive `sudo` for unit installation | systemd with noninteractive `sudo` for unit installation | systemd with noninteractive `sudo` for unit installation |
+| Direct bind and public endpoint | — | `10.0.0.200:8443`; `https://129.151.232.40:8443` | `10.0.0.14:8443`; `https://132.226.205.205:8443` | `10.0.0.30:8443`; `https://145.241.255.66:8443` |
+| Direct route materials | Client CA, per-profile certificate, and private key | Server certificate/key, trusted client CA, principal map | Server certificate/key, trusted client CA, principal map | Server certificate/key, trusted client CA, principal map |
 
-The two accepted hosts have independent state, service configuration, mTLS
+The three accepted hosts have independent state, service configuration, mTLS
 leaves, queued bridge authorization, and host-key pins. Keep their materials
 separate. Every additional profile requires its own P157 gate.
 
@@ -30,11 +30,11 @@ separate. Every additional profile requires its own P157 gate.
 "/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go" version
 ```
 
-Expected platform suffixes are `darwin/arm64`, `linux/amd64` on `linux-host`,
-and `linux/arm64` on `sandbox-host`. P157 supports only native Linux `amd64`
-(`x86_64`) and `arm64` (`aarch64`) toolchains; it exact-matches the host
-architecture rather than accepting a cross-compiled toolchain. The deployment
-scripts do not download Go.
+Expected platform suffixes are `darwin/arm64`, `linux/amd64` on `linux-host`
+and `factory-sandbox`, and `linux/arm64` on `sandbox-host`. P157 supports only
+native Linux `amd64` (`x86_64`) and `arm64` (`aarch64`) toolchains; it
+exact-matches the host architecture rather than accepting a cross-compiled
+toolchain. The deployment scripts do not download Go.
 
 ## 1. Synchronize a versioned revision
 
@@ -45,9 +45,15 @@ Perform this after reviewing and committing the intended change.
 ```sh
 cd /Users/tomasz.walczuk/projects/remote-session-runner
 git status --short --branch
-git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev
-git rev-parse HEAD
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev
+expected=$(git rev-parse HEAD)
+actual=$(git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev | awk 'NR == 1 {print $1}')
+test "$actual" = "$expected"
 ```
+
+`origin` is the authoritative Mac-local Gitea remote. `github` is its
+automatic distribution mirror; do not manually push it. Wait for `github/dev`
+to equal the pushed Gitea revision before updating an Ubuntu checkout.
 
 ### Each accepted Ubuntu host — `ubuntu`
 
@@ -261,7 +267,10 @@ V2 policy, accepted through P155/P157/P158 and extended by P159/P165/P166,
 contains the legacy `default` root, the extra `analytics` root, the external
 `slidestud-io` root at
 `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`, and the accepted
-`ubuntu-sandbox` context; see
+`ubuntu-sandbox` context, plus the external `agentic-software-factory-runner`
+root at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`
+with its `ubuntu-factory-sandbox` context; see
 [configuration](configuration.md#version-2-installed-multi-inbox-policy). Keep
 every existing registered inbox ID/root unchanged. Do not write a candidate over
 `config/mac.yaml`.
@@ -317,7 +326,8 @@ mailbox tree; it does not inherit the native publisher's durability guarantees.
 
 Run this on the selected host only after its own owner-only configuration and
 the matching clean `dev` checkout are ready. `linux-host` uses
-`10.0.0.200:8443`; `sandbox-host` uses `10.0.0.14:8443`.
+`10.0.0.200:8443`; `sandbox-host` uses `10.0.0.14:8443`; and
+`factory-sandbox` uses `10.0.0.30:8443`.
 
 Before first installation, provision these regular owner-only `0600` files:
 
@@ -353,6 +363,7 @@ curl --silent --show-error --fail --unix-socket "$root/run/runnerd.sock" http://
 # Set this for the selected profile before running the check:
 expected_bind='10.0.0.200:8443' # linux-host
 # expected_bind='10.0.0.14:8443' # sandbox-host
+# expected_bind='10.0.0.30:8443' # factory-sandbox
 ss -lntH | grep "$expected_bind"
 ```
 
@@ -420,6 +431,23 @@ This is a Runner application readiness check for `sandbox-poc`, not the
 earlier temporary transport probe. It does not prove the queued bridge or
 mailbox delivery.
 
+For the separately accepted `factory-sandbox`, use its dedicated client
+materials and endpoint:
+
+```sh
+# Mac — tomasz.walczuk
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+curl --silent --show-error --fail --max-time 15 \
+  --cacert "$root/secrets/factory-sandbox-ca.pem" \
+  --cert "$root/secrets/factory-sandbox-direct-client.pem" \
+  --key "$root/secrets/factory-sandbox-direct-client.key" \
+  https://145.241.255.66:8443/health/ready
+```
+
+This checks the `factory-sandbox-poc` Runner application, mTLS identity, and
+public route. It does not prove the separately accepted queued bridge or the
+`agentic-software-factory-runner` mailbox.
+
 ## 6. Enable or refresh a queued bridge
 
 The queued route is a separate, permanent restricted SSH bridge. It is required
@@ -485,12 +513,37 @@ For mailbox work, `analytics` permits the `ubuntu-sandbox` override;
 `slidestud-io` defaults to it; and `default` retains `mac-local` and
 `ubuntu-current`.
 
+For `factory-sandbox`, use its profile-specific queued context:
+
+```sh
+# Mac — tomasz.walczuk
+runner='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bin/runner'
+"$runner" --endpoint local run \
+  --environment factory-sandbox-dev \
+  --target remote \
+  --profile factory-sandbox \
+  -- 'id -un && hostname && uname -m'
+```
+
+The output must identify `ubuntu`, `oracle-waclaw-dziwulski-ubuntu-micro-01`,
+and `x86_64`. This CLI command directly selects the queued
+`factory-sandbox` route. It is independent of the direct `factory-sandbox-poc`
+mTLS check. The `agentic-software-factory-runner` mailbox defaults to this
+context and permits `mac-local` as its only override.
+
 ## 7. Onboard each additional remote host (P157)
 
 `sandbox-host` passed P157 on 2026-09-30 as the separately accepted ARM64
 Ubuntu host for `sandbox-dev` / `remote/sandbox-host`. Its direct endpoint is
 `sandbox-poc` at `https://132.226.205.205:8443`, and its queued context is
 `ubuntu-sandbox`. See the [P157 evidence record](../040-implementation-evidence/P157-sandbox-host.md).
+
+`factory-sandbox` separately passed P157 as
+`ubuntu@oracle-waclaw-dziwulski-ubuntu-micro-01` (Ubuntu 26.04, `x86_64`) for
+`factory-sandbox-dev` / `remote/factory-sandbox`. Its direct endpoint is
+`factory-sandbox-poc` at `https://145.241.255.66:8443`, and its queued context
+is `ubuntu-factory-sandbox`. Its direct mTLS and restricted queued-bridge gates
+are independent. See the [Factory sandbox P157 evidence record](../040-implementation-evidence/P157-factory-sandbox.md).
 
 A new SSH alias, endpoint, or config profile is only a candidate. A reviewed
 candidate activation and one controlled safe request may be part of P157; they

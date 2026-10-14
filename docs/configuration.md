@@ -14,19 +14,21 @@ profile runs as `ubuntu`.
 | Mac account and root | `tomasz.walczuk`; `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
 | Ubuntu account and root | `ubuntu`; `/home/ubuntu/.local/share/remote-session-runner` |
 | Mac active config | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.yaml` |
-| Active mailbox roots | `default` service-root mailbox; `analytics` service-root mailbox; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` |
-| Accepted remote profiles | `linux-host`; `sandbox-host` |
+| Active mailbox roots | `default` service-root mailbox; `analytics` service-root mailbox; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-`; `agentic-software-factory-runner` at `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-` |
+| Accepted remote profiles | `linux-host`; `sandbox-host`; `factory-sandbox` |
 | `linux-host` direct endpoint and bind | `linux-poc`; `https://129.151.232.40:8443`; `10.0.0.200:8443` |
 | `sandbox-host` direct endpoint and bind | `sandbox-poc`; `https://132.226.205.205:8443`; `10.0.0.14:8443` |
+| `factory-sandbox` direct endpoint and bind | `factory-sandbox-poc`; `https://145.241.255.66:8443`; `10.0.0.30:8443` |
 | Local target | `mac-dev` / `local` / `mac-workstation` |
-| Remote contexts | `ubuntu-current`: `linux-dev` / `remote` / `linux-host`; `ubuntu-sandbox`: `sandbox-dev` / `remote` / `sandbox-host` |
+| Remote contexts | `ubuntu-current`: `linux-dev` / `remote` / `linux-host`; `ubuntu-sandbox`: `sandbox-dev` / `remote` / `sandbox-host`; `ubuntu-factory-sandbox`: `factory-sandbox-dev` / `remote` / `factory-sandbox` |
 | Direct transport | TLS 1.3 with mandatory mTLS |
 
 Each public URL is a client address, and each private bind belongs only to its
 named Ubuntu host. The separately accepted `sandbox-host` is an ARM64 Ubuntu
-host. A later named host needs its own listener, endpoint or bridge definition,
-credentials, and P157 acceptance. It must not reuse either accepted profile's
-values as proof that it is ready.
+host; `factory-sandbox` is an x86_64 Ubuntu 26.04 LTS host. A later named host
+needs its own listener, endpoint or bridge definition, credentials, and P157
+acceptance. It must not reuse any accepted profile's values as proof that it is
+ready.
 
 ## Service-root layout
 
@@ -127,9 +129,11 @@ The checked-in template intentionally contains only `linux-host`, so it remains
 a safe first V2 policy without sandbox credentials. The active current V2
 policy is owner-only and outside Git. P155/P157/P158 established its
 multi-inbox/two-host topology; P159 added direct workspace ingress and P165/P166
-added malformed-ingress diagnostics. It adds `analytics`, the accepted
-`sandbox-host`, its explicitly allowed `ubuntu-sandbox` override, and the
-external `slidestud-io` inbox that defaults to that context:
+added malformed-ingress diagnostics. The separate P157 `factory-sandbox`
+onboarding added a third accepted remote profile and its external
+`agentic-software-factory-runner` inbox. The policy includes `analytics`, the
+accepted `sandbox-host` with its explicitly allowed `ubuntu-sandbox` override,
+and the external `slidestud-io` inbox that defaults to that context:
 
 ```yaml
 version: 2
@@ -142,6 +146,11 @@ environment_registry:
     host_class: Ubuntu Linux host
     effective_account: ubuntu
     allowed_targets: [{kind: remote, profile: sandbox-host}]
+  factory-sandbox-dev:
+    base_system: Ubuntu 26.04 LTS
+    host_class: Ubuntu Linux host
+    effective_account: ubuntu
+    allowed_targets: [{kind: remote, profile: factory-sandbox}]
 execution_contexts:
   mac-local:
     environment: mac-dev
@@ -152,6 +161,9 @@ execution_contexts:
   ubuntu-sandbox:
     environment: sandbox-dev
     execution_target: {kind: remote, profile: sandbox-host}
+  ubuntu-factory-sandbox:
+    environment: factory-sandbox-dev
+    execution_target: {kind: remote, profile: factory-sandbox}
 
 remote_hosts:
   linux-host:
@@ -180,6 +192,19 @@ remote_hosts:
       server_ca: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem"
       client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/sandbox-direct-client.pem"
       client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/sandbox-direct-client.key"
+  factory-sandbox:
+    account: ubuntu
+    queued_bridge:
+      host: 145.241.255.66
+      port: 22
+      known_hosts: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/factory-sandbox_known_hosts"
+      private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/factory-sandbox_dispatcher_ed25519"
+    direct_endpoint:
+      name: factory-sandbox-poc
+      url: https://145.241.255.66:8443
+      server_ca: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/factory-sandbox-ca.pem"
+      client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/factory-sandbox-direct-client.pem"
+      client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/factory-sandbox-direct-client.key"
 
 mailboxes:
   default:
@@ -204,17 +229,25 @@ mailboxes:
     default_execution: ubuntu-current
     allowed_execution: [ubuntu-current, mac-local]
     durable_orphan_cleanup: false
+  agentic-software-factory-runner:
+    root: "/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-"
+    repository_aliases: [agentic-software-factory]
+    default_execution: ubuntu-factory-sandbox
+    allowed_execution: [ubuntu-factory-sandbox, mac-local]
+    durable_orphan_cleanup: false
 ```
 
 Use complete `mac` and `environment_registry` definitions in the owner-only
 candidate; the abbreviated listing above omits their remaining required fields.
 The environment registry permits the local account for `mac-dev` and `ubuntu`
-for both `linux-dev` and `sandbox-dev`. The current remote source mode is
-`empty`. `default` retains only `mac-local` and `ubuntu-current`; `analytics`
-may explicitly select `ubuntu-sandbox`; `slidestud-io` uses
-`ubuntu-sandbox` as its default and also allows the other two contexts; and
-`agents-work-dispatcher` defaults to `ubuntu-current` while allowing a
-Mac-local override.
+for `linux-dev`, `sandbox-dev`, and `factory-sandbox-dev`. The current remote
+source mode is `empty`. `default` retains only `mac-local` and
+`ubuntu-current`; `analytics` may explicitly select `ubuntu-sandbox`;
+`slidestud-io` uses `ubuntu-sandbox` as its default and also allows the other
+two contexts; `agents-work-dispatcher` defaults to `ubuntu-current` while
+allowing a Mac-local override; and `agentic-software-factory-runner` defaults
+to `ubuntu-factory-sandbox` while allowing only its factory context or an
+explicit Mac-local override.
 
 `durable_orphan_cleanup` is optional and defaults to `false` for every inbox.
 It is a per-inbox owner decision after lifecycle-status review, not a retention
@@ -298,6 +331,7 @@ path on that host:
 | --- | --- | --- | --- | --- |
 | `linux-host` | `oracle-yuta-konopka-ubuntu-micro-02` | `10.0.0.200:8443` | `https://129.151.232.40:8443` | P155 |
 | `sandbox-host` | `oracle-gustaw-janecki-ubuntu-flex-02` | `10.0.0.14:8443` | `https://132.226.205.205:8443` | [P157](../040-implementation-evidence/P157-sandbox-host.md) |
+| `factory-sandbox` | `oracle-waclaw-dziwulski-ubuntu-micro-01` (Ubuntu 26.04 LTS, x86_64) | `10.0.0.30:8443` | `https://145.241.255.66:8443` | [P157 factory-sandbox](../040-implementation-evidence/P157-factory-sandbox.md) |
 
 Each configuration pins `account: ubuntu`, its service root, `runnerd.sock`,
 its own direct bind and public endpoint, TLS 1.3, server certificate, client
@@ -321,7 +355,7 @@ own `linux.remote_target_profile`. Every registered environment on that host
 must permit that remote profile, and the Linux document rejects the Mac-only
 `execution_contexts`, `remote_hosts`, and `mailboxes` sections. It needs
 independent state, listener/certificates, key pin or direct mTLS material, and
-P157 evidence; it must not copy either accepted host's state database or
+P157 evidence; it must not copy any accepted host's state database or
 secrets.
 
 ## Limits and retention

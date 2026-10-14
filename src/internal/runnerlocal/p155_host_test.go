@@ -1,9 +1,11 @@
 package runnerlocal
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -30,13 +32,19 @@ type p155HealthCheck struct {
 	State     string `json:"state"`
 }
 
+type p155HealthMetrics struct {
+	ActiveSessionSlots    int64            `json:"active_session_slots"`
+	ActiveCommandSlots    int64            `json:"active_command_slots"`
+	QueuedCommands        int64            `json:"queued_commands"`
+	QueuedIntents         int64            `json:"queued_intents"`
+	MailboxBacklog        int64            `json:"mailbox_backlog"`
+	MailboxBacklogByInbox map[string]int64 `json:"mailbox_backlog_by_inbox"`
+}
+
 type p155HealthReport struct {
 	Readiness string            `json:"readiness"`
 	Checks    []p155HealthCheck `json:"checks"`
-	Metrics   struct {
-		MailboxBacklog        int64            `json:"mailbox_backlog"`
-		MailboxBacklogByInbox map[string]int64 `json:"mailbox_backlog_by_inbox"`
-	} `json:"metrics"`
+	Metrics   p155HealthMetrics `json:"metrics"`
 }
 
 // TestP155MacInstalledMultiInboxMailboxGate validates the real installed V2
@@ -306,11 +314,73 @@ func p155ReadHealth(socketPath string) (p155HealthReport, error) {
 	if response.StatusCode != http.StatusOK {
 		return p155HealthReport{}, fmt.Errorf("status=%s", response.Status)
 	}
-	var report p155HealthReport
-	if err := json.NewDecoder(response.Body).Decode(&report); err != nil {
+	return p155DecodeHealth(response.Body)
+}
+
+func p155DecodeHealth(reader io.Reader) (p155HealthReport, error) {
+	var payload struct {
+		Readiness string            `json:"readiness"`
+		Checks    []p155HealthCheck `json:"checks"`
+		Metrics   json.RawMessage   `json:"metrics"`
+	}
+	if err := json.NewDecoder(reader).Decode(&payload); err != nil {
 		return p155HealthReport{}, err
 	}
-	return report, nil
+	metricsJSON := bytes.TrimSpace(payload.Metrics)
+	if len(metricsJSON) == 0 || bytes.Equal(metricsJSON, []byte("null")) {
+		return p155HealthReport{}, fmt.Errorf("health response lacks metrics")
+	}
+	var metricFields map[string]json.RawMessage
+	if err := json.Unmarshal(metricsJSON, &metricFields); err != nil {
+		return p155HealthReport{}, fmt.Errorf("decode health metrics fields: %w", err)
+	}
+	for _, name := range []string{
+		"active_session_slots",
+		"active_command_slots",
+		"queued_commands",
+		"queued_intents",
+		"mailbox_backlog",
+	} {
+		value, ok := metricFields[name]
+		if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return p155HealthReport{}, fmt.Errorf("health response lacks metrics.%s", name)
+		}
+	}
+	var metrics p155HealthMetrics
+	if err := json.Unmarshal(metricsJSON, &metrics); err != nil {
+		return p155HealthReport{}, fmt.Errorf("decode health metrics: %w", err)
+	}
+	return p155HealthReport{Readiness: payload.Readiness, Checks: payload.Checks, Metrics: metrics}, nil
+}
+
+func TestP155DecodeHealthRequiresMetrics(t *testing.T) {
+	validMetrics := `{"active_session_slots":0,"active_command_slots":0,"queued_commands":0,"queued_intents":0,"mailbox_backlog":0,"mailbox_backlog_by_inbox":{}}`
+	localExecutorMetrics := `{"active_session_slots":0,"active_command_slots":0,"queued_commands":0,"queued_intents":0,"mailbox_backlog":0}`
+	for _, test := range []struct {
+		name        string
+		payload     string
+		wantErr     string
+		wantByInbox bool
+	}{
+		{name: "metrics omitted", payload: `{"readiness":"ready","checks":[]}`, wantErr: "health response lacks metrics"},
+		{name: "metrics null", payload: `{"readiness":"ready","checks":[],"metrics":null}`, wantErr: "health response lacks metrics"},
+		{name: "gauge omitted", payload: `{"readiness":"ready","checks":[],"metrics":{"active_session_slots":0,"active_command_slots":0,"queued_commands":0,"queued_intents":0}}`, wantErr: "health response lacks metrics.mailbox_backlog"},
+		{name: "local executor optional per-inbox map", payload: `{"readiness":"ready","checks":[],"metrics":` + localExecutorMetrics + `}`},
+		{name: "all required metrics", payload: `{"readiness":"ready","checks":[],"metrics":` + validMetrics + `}`, wantByInbox: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report, err := p155DecodeHealth(strings.NewReader(test.payload))
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("p155DecodeHealth() error=%v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || report.Readiness != "ready" || (report.Metrics.MailboxBacklogByInbox != nil) != test.wantByInbox {
+				t.Fatalf("p155DecodeHealth() report=%+v err=%v", report, err)
+			}
+		})
+	}
 }
 
 func p155HealthCheckIs(report p155HealthReport, component, state string) bool {

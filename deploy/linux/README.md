@@ -1,6 +1,6 @@
 # Linux systemd deployment
 
-This guide applies to the two accepted Ubuntu profiles. Each has an independent
+This guide applies to the three accepted Ubuntu profiles. Each has an independent
 owner-only configuration, state database, certificate material, and queued
 bridge authorization.
 
@@ -8,10 +8,13 @@ bridge authorization.
 | --- | --- | --- | --- | --- |
 | `linux-host` | `ubuntu@oracle-yuta-konopka-ubuntu-micro-02` | `10.0.0.200:8443` | `https://129.151.232.40:8443` | `linux/amd64` |
 | `sandbox-host` | `ubuntu@oracle-gustaw-janecki-ubuntu-flex-02` | `10.0.0.14:8443` | `https://132.226.205.205:8443` | `linux/arm64` |
+| `factory-sandbox` | `ubuntu@oracle-waclaw-dziwulski-ubuntu-micro-01` (Ubuntu 26.04) | `10.0.0.30:8443` | `https://145.241.255.66:8443` | `linux/amd64` (`x86_64`) |
 
 `runnerd.service` runs as `ubuntu` with mandatory TLS 1.3 mTLS. No tunnel or
 Podman service is involved. The sandbox acceptance is recorded in
-[`P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md).
+[`P157-sandbox-host.md`](../../040-implementation-evidence/P157-sandbox-host.md);
+the independent Factory sandbox acceptance is recorded in
+[`P157-factory-sandbox.md`](../../040-implementation-evidence/P157-factory-sandbox.md).
 
 On the synchronized project checkout, run as `ubuntu`:
 
@@ -79,7 +82,7 @@ B009-P2, keep `runnerd.service` active and let the bounded dispatcher tick
 attempt its automatic proof-based recovery first. It preserves the original
 queued identity and never replays a terminal-lost script. If proof remains
 unavailable, use the guarded owner-only
-[queue-preserving online recovery](../../docs/operations.md#queue-preserving-online-retained-capacity-recovery)
+[queue-preserving online recovery](../../docs/operations.md#linux-only-queue-preserving-online-retained-capacity-recovery)
 as the fallback. That procedure prohibits this installer, offline recovery,
 cancellation, and replay until the retained capacity is safely released.
 
@@ -108,9 +111,10 @@ children before systemd enforces the boundary.
 
 A new physical Ubuntu machine needs its own configuration, state, service,
 certificate/principal or bridge materials, host-key pin, and P157 evidence. Do
-not copy either accepted host's state or credentials and do not treat another
+not copy any accepted host's state or credentials and do not treat another
 host's listener or successful test as evidence for it.
 
 A matching `build_revision` proves only which service binary is live. It does
 not replace direct-route, queued-bridge, mailbox terminal-response, or B008-P6
-end-to-end evidence.
+end-to-end evidence. Direct mTLS and the restricted queued bridge are separate
+per-profile gates, including for `factory-sandbox`.

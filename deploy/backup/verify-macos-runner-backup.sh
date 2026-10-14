@@ -130,4 +130,53 @@ if [ -z "$source_origin" ]; then
 	exit 1
 fi
 
+# A selected SSH backup is intentionally a small, explicit set rather than an
+# arbitrary ~/.ssh tree. Keep verification aligned with the restore allowlist
+# so a verified archive cannot later fail merely because it contains the
+# accepted factory-sandbox bootstrap identity.
+ssh_mode=$(/usr/bin/sed -n 's/^mode=//p' "$work/metadata/ssh.txt" 2>/dev/null || true)
+case "$ssh_mode" in
+	none)
+		;;
+	directory)
+		if [ ! -d "$work/payload/ssh-directory" ] || [ -L "$work/payload/ssh-directory" ]; then
+			printf '%s\n' 'archive SSH-directory payload is unavailable' >&2
+			exit 1
+		fi
+		;;
+	selected)
+		ssh_payload="$work/payload/ssh"
+		if [ ! -d "$ssh_payload" ] || [ -L "$ssh_payload" ] || [ ! -f "$work/metadata/ssh.tsv" ] || [ -L "$work/metadata/ssh.tsv" ]; then
+			printf '%s\n' 'archive selected SSH payload is unavailable' >&2
+			exit 1
+		fi
+		if [ -n "$(find "$ssh_payload" -type d ! -path "$ssh_payload" -print -quit)" ]; then
+			printf '%s\n' 'archive selected SSH payload contains an unexpected directory' >&2
+			exit 1
+		fi
+		selected_count=0
+		for selected_file in "$ssh_payload"/*; do
+			[ -e "$selected_file" ] || continue
+			if [ -L "$selected_file" ] || [ ! -f "$selected_file" ]; then
+				printf 'archive selected SSH entry is not a regular file: %s\n' "$selected_file" >&2
+				exit 1
+			fi
+			selected_name=$(basename -- "$selected_file")
+			case "$selected_name" in
+				config|known_hosts|gavrilo123456-github|dev.slidestud.io|factory-sandbox|remote-session-runner) ;;
+				*) printf 'archive has an unexpected selected SSH entry: %s\n' "$selected_name" >&2; exit 1 ;;
+			esac
+			selected_count=$((selected_count + 1))
+		done
+		if [ "$selected_count" -eq 0 ]; then
+			printf '%s\n' 'archive selected SSH payload is empty' >&2
+			exit 1
+		fi
+		;;
+	*)
+		printf 'archive has an unrecognized SSH backup mode: %s\n' "$ssh_mode" >&2
+		exit 1
+		;;
+esac
+
 printf 'Backup verified: %s\nsource_revision: %s\n' "$archive" "$source_revision"

@@ -396,7 +396,7 @@ case "$ssh_mode" in
 			fi
 			selected_name=$(basename -- "$selected_file")
 			case "$selected_name" in
-				config|known_hosts|gavrilo123456-github|dev.slidestud.io|remote-session-runner) ;;
+				config|known_hosts|gavrilo123456-github|dev.slidestud.io|factory-sandbox|remote-session-runner) ;;
 				*) fail "archive has an unexpected selected SSH entry: $selected_name" ;;
 			esac
 			if [ -e "$HOME/.ssh/$selected_name" ] || [ -L "$HOME/.ssh/$selected_name" ]; then
