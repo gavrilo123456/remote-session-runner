@@ -28,8 +28,10 @@ The associated source and evidence closeout are:
 - P157 repair and final host-gate revision:
   `8873852ddc9ab33093c105371de93a3695d99b89`
 - Detailed record: [P157 sandbox-host evidence](../040-implementation-evidence/P157-sandbox-host.md)
-- P157 factory-sandbox live service revision before this documentation closeout:
-  `f21ea09b58d3521847fc53b9054484017a20e8e6`
+- P157 factory-sandbox live service revision:
+  `f21ea09b58d3521847fc53b9054484017a20e8e6`; source/evidence commit delivered
+  through primary Gitea, the automatic GitHub mirror, and all three Ubuntu
+  checkouts: `a148c257aa70daad67512b30e7cfe4ebfa792705`
 - Detailed record: [P157 factory-sandbox evidence](../040-implementation-evidence/P157-factory-sandbox.md)
 - P158 source and host-gate revision:
   `ce74e368f2aa40f9db90d1bb049f96fd533c5753`
@@ -143,10 +145,11 @@ path. It does not use direct mTLS as a substitute for the mailbox result, make
 the firewall generally open, accept another profile, or prove physical
 power-loss recovery.
 
-This section records the live acceptance at installed revision `f21…`; it does
-not assign a documentation closeout commit. The later evidence/source delivery
-must be recorded only after its normal primary-Gitea, GitHub-mirror, and
-host-fast-forward gates complete.
+This section records the live acceptance at installed revision `f21…`. The
+separate P157 source/evidence commit
+`a148c257aa70daad67512b30e7cfe4ebfa792705` was pushed to primary Gitea,
+verified in the automatic GitHub mirror, and fast-forwarded on all three Ubuntu
+checkouts; the P157 record has the exact delivery commands and revisions.
 
 ## What P158 proved
 

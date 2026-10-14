@@ -29,11 +29,9 @@ read proof reported ready. Those are different transport paths: direct mTLS
 does not establish mailbox delivery, and bridge readiness does not establish a
 direct client path.
 
-The installed service revision above describes the live acceptance point. This
-evidence document has no closeout commit assigned yet. Its source/evidence
-delivery must be recorded only after the normal Mac primary-Gitea push, GitHub
-mirror verification, and clean Ubuntu fast-forward gates; that later commit
-must not be confused with the live installed `f21…` revision.
+The installed service revision above describes the live acceptance point. The
+source/evidence delivery below is deliberately separate from that installed
+`f21…` revision.
 
 ## External mailbox policy and activation
 
@@ -106,6 +104,36 @@ The final source-gate rerun after health and continuity-test hardening passed
 with request `req-p157-factory-sandbox-18de81711c4e9a48` and command
 `cmd-2829eeb6bfe6682b118a8a5c7f83fa42`; it repeated the same omitted-target,
 terminal-event, exact-ACK, and zero-work assertions.
+
+## Source and evidence delivery
+
+The reviewed source/evidence commit was
+`a148c257aa70daad67512b30e7cfe4ebfa792705`
+(`feat(p157): enroll factory sandbox mailbox`). It contains the native host
+gate, health-response regression coverage, continuity-backup regression
+coverage, and this P157 record. `make test`, `make vet`, the focused continuity
+tests, and the final opt-in native mailbox gate all passed on the Mac before
+delivery.
+
+On the Mac, that commit was pushed to the authoritative primary Gitea
+`origin/dev` with the configured local-Gitea identity. The automatic GitHub
+`github/dev` mirror then resolved to the same full SHA. After each Ubuntu
+checkout was confirmed clean on `dev` at
+`f21ea09b58d3521847fc53b9054484017a20e8e6`, all three fast-forwarded through
+their GitHub-mirror `origin` using `/home/ubuntu/.ssh/gavrilo123456-github` and
+were rechecked clean at the same `a148…` revision:
+
+| Ubuntu checkout | Bootstrap alias | Before → after |
+| --- | --- | --- |
+| `linux-host` | `remote-session-runner` | `f21ea09…` → `a148c25…` |
+| `sandbox-host` | `sandbox.env` | `f21ea09…` → `a148c25…` |
+| `factory-sandbox` | `factory-sandbox` | `f21ea09…` → `a148c25…` |
+
+The delivery command on each clean host was the required
+`git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github …'
+`pull --ff-only origin dev`, followed by branch, cleanliness, and `HEAD`
+checks. This commit changes tests, backup validation, documentation, and
+evidence; it does not replace the accepted installed Runner service revision.
 
 ## Narrow direct-mTLS ingress condition
 
