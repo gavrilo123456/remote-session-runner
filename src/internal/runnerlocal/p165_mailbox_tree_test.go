@@ -25,6 +25,9 @@ func TestP165MailboxTreeIncludesPrivateDiagnosticsDirectory(t *testing.T) {
 
 func TestP165ExternalMailboxPreparationCreatesPrivateDiagnosticsDirectory(t *testing.T) {
 	trustRoot := t.TempDir()
+	if err := os.Chmod(trustRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	parent := filepath.Join(trustRoot, "workspace")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatal(err)

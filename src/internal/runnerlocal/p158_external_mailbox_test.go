@@ -19,6 +19,9 @@ import (
 
 func TestP158ExternalMailboxPreflightIsNonMutatingAndPreparationCreatesOnlyLeaf(t *testing.T) {
 	trustRoot := t.TempDir()
+	if err := os.Chmod(trustRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	project := filepath.Join(trustRoot, "slidestud.io")
 	parent := filepath.Join(project, "tmp")
 	for _, path := range []string{project, parent} {
@@ -214,6 +217,9 @@ func TestP158ActivationRegistersCandidateBeforeMailboxPreparation(t *testing.T) 
 
 func TestP158ActivationRegistersBeforeRealExternalTreePreparation(t *testing.T) {
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	databasePath := filepath.Join(root, "state", "authority.db")
 	if err := os.Mkdir(filepath.Dir(databasePath), 0o700); err != nil {
 		t.Fatal(err)
