@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED` — installed Mac acceptance passed; final AMD64 documentation handoff blocked by SSH availability |
+| Status | `FIXED` — installed Mac acceptance and all required source-validation gates passed |
 | Severity | High — can strand command observation and retain execution capacity |
 | Priority | High |
 | Reported | 2026-10-14 |
@@ -233,11 +233,12 @@ zero retained sessions, commands, queued commands/intents, and mailbox backlog.
 The implementation evidence records the fixture identities and commands.
 
 The full source suite passed on Mac and both Ubuntu architectures. Mac and
-ARM64 vet/race gates also passed. The extra AMD64 vet/race invocation has not
-returned a terminal result; subsequent SSH attempts timed out during banner
-exchange. Its last verified source revision is `2067dc6`, which contains the
-same runtime and test changes. Final AMD64 documentation synchronization
-remains blocked; no Linux installed service was changed.
+ARM64 vet/race gates also passed. A later clean AMD64 invocation at descendant
+revision `2802f00c93eb51a80f23b9380238c309545d6329`, which contains the
+BUG-020 validation correction `2067dc6`, completed `make vet` and the focused
+runtime/execution race gate with terminal exit `0` (runtime `9.232s`, execution
+`70.792s`). That supplemental source check did not change a Linux service,
+mailbox, Git state, or tracked source.
 
 ## Current disposition
 
@@ -256,5 +257,5 @@ No Logger deployment action was attempted by the affected request.
 | --- | --- |
 | 2026-10-14 | Registered a new post-fix recurrence: request 1442 remained `running` at outbox revision 3 while the exact expected Mac Python unit-test process was absent. No Runner or Logger state was modified by this report. |
 | 2026-10-14 | Fresh read found a supported terminal `lost` result at revision 4 and cursor 5 shortly after the 30-minute boundary. Corrected the process-search inference and identified the independent inherited-control-descriptor/cancellation deadlock for source regression and repair. Original request remains untouched. |
-| 2026-10-14 | Installed the validated fix through approved exact-pair Mac maintenance. Fresh child-loss and normal mailbox/events/ACK gates passed; supported postflight confirmed zero retained capacity. Original terminal results were preserved. Full suites passed on all three source hosts; final AMD64 documentation handoff remains blocked by SSH banner timeout. |
+| 2026-10-14 | Installed the validated fix through approved exact-pair Mac maintenance. Fresh child-loss and normal mailbox/events/ACK gates passed; supported postflight confirmed zero retained capacity. Original terminal results were preserved. Full suites passed on all three source hosts; a later clean AMD64 vet and focused race pass at descendant `2802f00` closed the remaining documentation gate. |
 

@@ -1,108 +1,110 @@
 # P167 — Factory direct-mailbox replacement and legacy retirement
 
-**Status:** PREPARED — the direct replacement has passed its own native
-mailbox acceptance; logical retirement and physical removal of the legacy tree
-remain pending this controlled transition.
+**Status:** PASS — the controlled replacement, logical retirement, and
+separate physical removal of the legacy Factory mailbox are complete. All
+three Ubuntu services and the Mac services are running the delivered
+implementation revision after their guarded installed-service transitions.
 
 ## Scope
 
-P157 factory-sandbox accepted the original Factory mailbox
+P157 originally accepted the Factory mailbox
 `agentic-software-factory-runner` at
 `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
-That historical acceptance is preserved in
-[P157 factory-sandbox](P157-factory-sandbox.md); it is not rewritten as proof
-for a new path.
+That historical acceptance remains recorded in
+[P157 factory-sandbox](P157-factory-sandbox.md); this record does not rewrite
+it as proof for a new path.
 
 The replacement is the separately registered
 `agentic-software-factory-runner-direct` mailbox at
 `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-`.
 It retains the `agentic-software-factory` alias, defaults to
-`ubuntu-factory-sandbox`, and allows `mac-local` as its only override. This
-record covers retirement of the old ID/root only; it does not change the
-accepted Factory host, queued bridge, or direct mTLS endpoint.
+`ubuntu-factory-sandbox`, and permits `mac-local` as its only override. This
+record covers only retirement and removal of the old ID/root; it does not alter
+the accepted Factory host, queued bridge, or direct mTLS endpoint.
 
-## Direct-root acceptance already recorded
+## Delivered source and host state
 
-The controlled Mac installation at source revision
-`81b4d8d4e9df830e4b77dd02fb4c7462529ea3bf` registered the direct root and
-created it and its five child directories as selected-user-owned `0700`
-directories. The installer postflight reported ready Router and local executor
-health with zero queued work and zero mailbox backlog.
+The implementation revision used for the controlled transition was
+`2802f00c93eb51a80f23b9380238c309545d6329` on `dev`. The Mac primary Gitea
+`origin/dev` and automatic GitHub `github/dev` mirror both resolved to that
+exact SHA before host work began. All three Ubuntu source checkouts were then
+fast-forwarded cleanly through their GitHub-mirror `origin` to the same
+revision.
 
-Two direct-root native mailbox controls reached a complete successful terminal
-response and had their exact ACK pairs durably consumed:
+The Factory checkout's `origin` was corrected to its explicit SSH GitHub
+remote before that fast-forward, and `make` was installed there so its normal
+installer gate could run. The installed-service result was deliberately
+per-host:
+
+| Host | Source checkout | Installed-service result |
+| --- | --- | --- |
+| Mac | `remote-session-runner` | Controlled installer completed successfully. |
+| Linux | `remote-session-runner` | Service installer completed successfully. |
+| Factory | `factory-sandbox` | Service installer completed successfully. |
+| Sandbox | `sandbox.env` | The guarded exact-pair recovery released two retained lost slots; the installer then completed its zero-work gate and restarted the service. |
+
+The Sandbox preflight initially reported `0` active sessions, `0` running
+commands, `2` unreleased slots, and `0` unfinished jobs. The runtime markers
+named the two retained sessions but did not record command IDs, so the
+commandless-session recovery correctly refused without releasing capacity and
+left the service stopped. Runner's own authorization audit log then supplied
+the exact submitted pairs:
+
+| Session | Command |
+| --- | --- |
+| `sess-1ccdb0971ec4d69673c18f7539752eb2` | `cmd-e6077e1f4dca875ca926950ba41e33c4` |
+| `sess-87d6d449e73736ee5cb295f5d7ed7745` | `cmd-28f586e122dd5bd393a5b968fb49d62f` |
+
+The supported guarded pair recovery accepted precisely those two identities,
+released both pairs, passed the installed P128 zero-work gate, and started
+`runnerd.service`. Its read-only postflight reported active/ready build
+`2802f00c93eb51a80f23b9380238c309545d6329` with zero active session/command
+slots, queued work, and mailbox backlog. The failed commandless attempt did
+not replay work or release a slot.
+
+## Mac mailbox cutover and fresh acceptance
+
+The controlled Mac installer activated the candidate that retains only the
+direct Factory mailbox. The active configuration no longer contains
+`agentic-software-factory-runner`; it contains
+`agentic-software-factory-runner-direct` at the direct root. The direct
+mailbox parent was confirmed owner-only at mode `0700`.
+
+Logical retirement of the exact legacy ID/root completed through the reviewed
+fence and registry tombstone. The retirement record was validated before any
+physical filesystem deletion.
+
+After the cutover, a newly named native direct-mailbox request completed the
+terminal-response, event, and ACK path:
 
 | Request | Result |
 | --- | --- |
-| `req-factory-direct-18de82ebddd72ce0` | Complete success and acknowledged; an assertion in the temporary test harness ran after the successful response and was corrected without replaying the request. |
-| `req-factory-direct-18de830834192808` | Fresh corrected control; complete success and acknowledged. |
+| `req-p157-factory-sandbox-18de88a4e0463660` | Terminal response and event were observed; the matching ACK was consumed. |
 
-These controls prove the direct configured root's marker-last request,
-terminal response, event projection, and ACK path. They do not retire the
-legacy root or authorize deletion of its parent directory.
+This is fresh evidence for the direct configured root. It does not reuse the
+old mailbox path or replay the P157 historical request.
 
-The opt-in installed Factory control remains named
-`make test-p157-factory-sandbox-host` because the host-route gate is P157, but
-its configured mailbox fixture now resolves
-`agentic-software-factory-runner-direct` and the direct root above. The test
-name is not evidence that the original legacy root was reused.
+## Separate legacy-tree removal
 
-## Legacy-retirement boundary
+Immediately before deletion, a fresh check of the exact retired legacy root
+found its ingress, ACK, and diagnostic directories empty and found zero open
+descriptors for the tree. The fence and tombstone had already been validated.
 
-Before retirement, a fresh read-only preflight found the legacy root still
-registered, with no inbox, ACK, or diagnostic inputs; its four retained traces
-were terminal and acknowledged. Its response/event retention windows are not a
-reason to bypass the registry. The logical retirement must use the reviewed
-candidate that retains the direct mailbox and omits only
-`agentic-software-factory-runner`, then name that exact ID with
-`--retire-mailbox`.
+Only the exact legacy root was then removed:
 
-Retirement is a cooperative ingress handoff. Before the installer runs, stop
-every process that can publish to the legacy root, including automation,
-interactive clients, and direct-workspace publishers. Quiescing Runner's
-services does not stop an independent file writer. After service quiescence
-and the zero-work database preflight, the installer takes the legacy root's
-exclusive fence lock, installs and syncs an owner-only sentinel through a
-descriptor-safe root handle, and descriptor-scans `inbox` and `acks` while the
-lock remains held. Both directories must be completely empty: any entry is a
-retirement refusal. Retained acknowledged history in `outbox` or `events` may
-remain; neither is ingress residue.
+```text
+/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-
+```
 
-A cooperating native client takes the shared fence lock and checks the
-sentinel immediately before publishing a marker-last request or ACK pair. It
-then fails locally instead of writing the retired root. The fence is not an
-adversarial isolation boundary: a same-UID malicious writer or a process with
-an already retained directory file descriptor can evade that cooperation.
-Those writers must be stopped before the fence and must remain quiescent.
+Its parent directory remains intact. The Factory checkout's local ignore entry
+for the removed legacy tree was deleted, while the ignore entry for the active
+direct mailbox was retained. No parent directory, retained historical P157
+record, or Runner database was removed or rewritten.
 
-There is one pre-boundary safe atomic-unwind refusal. If this handoff creates a
-**fresh** fence and its frozen `inbox` or `acks` scan finds residue before the
-post-fence authority open, migration, or retirement tombstone, Runner restores
-both ingress directories to `0700`, syncs them, removes and syncs the sentinel
-while it still holds the exclusive lock, and returns a distinct fresh-residue
-result. Only after that complete unwind may the installer restore the prior
-active configuration and LaunchAgents. No retirement is recorded in that case;
-the residue must be settled and the read-only preflight repeated. This record
-does not claim that this exception has occurred.
+## Boundary
 
-Every other retirement activation failure remains no-rollback candidate repair.
-A preexisting fence, any failed or incomplete fresh-fence unwind, fence setup
-failure, and every failure after the post-fence authority open, migration, or
-tombstone leave the candidate state and any durable fence in place. Do not
-restore the old configuration or its LaunchAgents after those failures,
-including a later durable-state, registration, path-preparation, or startup
-failure: the candidate is the safe repair state for publishers that have
-observed the sentinel. Repeating the same omitted-ID retirement is idempotent
-for a post-boundary repair; reusing the retired ID/root in a candidate remains
-invalid.
-
-At creation of this record, the legacy directory
-`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`
-has **not** been physically removed. The fence and tombstone never delete the
-legacy root. Complete this record only after the candidate source is delivered
-through primary Gitea and the GitHub mirror, the Mac installer reports
-successful logical retirement, the active direct root and services have a
-fresh postflight, and a separately authorized exact-tree removal has verified
-the old root identity and fresh publisher quiescence. Preserve any required
-retained evidence first. Do not remove `runner/tmp`, change SQLite, or alter
-the original P157 evidence.
+P167 proves the replacement root's fresh native response/event/ACK exchange,
+the legacy registry retirement, and removal of that exact legacy filesystem
+root. It also records the separate Sandbox retained-capacity recovery and
+installed-service restart. It does not accept a different host or extend the
+existing software-process-crash evidence to physical power-loss recovery.
