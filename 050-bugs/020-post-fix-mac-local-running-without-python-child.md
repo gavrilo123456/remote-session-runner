@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` — source fixed; installed acceptance pending |
+| Status | `FIXED` — installed Mac acceptance passed; final AMD64 documentation handoff blocked by SSH availability |
 | Severity | High — can strand command observation and retain execution capacity |
 | Priority | High |
 | Reported | 2026-10-14 |
@@ -182,8 +182,8 @@ Both serving Mac processes subsequently attested installed build
 `01384e7109c3c97b2975ffb7a913cc9d9c279a57` (the BUG-019 policy-loop fix).
 The read-only restart guard found three retained session/command slots, zero
 queued commands, and zero resumable jobs. Ordinary installation therefore
-cannot proceed. The exact known terminal-lost pairs and the proposed guarded
-maintenance command are preserved in the implementation evidence for review.
+could not proceed. The exact known terminal-lost pairs and the subsequently
+approved guarded maintenance command are preserved in the implementation evidence.
 
 Static tracing identified a separate reproducible control-channel gap:
 
@@ -219,15 +219,35 @@ race gates pass. Control waits now detect owned Bash death without reaping its
 ownership handle; forced cancellation interrupts them without acquiring their
 execution mutex. Missing completion from a live Bash remains bounded by the
 persisted command timeout.
-Installed revision attestation, an installed child-loss regression, a fresh
-harmless mailbox response/events/ACK, and zero-retained-capacity postflight
-remain required before this bug can be closed.
+Installed Mac acceptance passed at build
+`05a57eec8749b591f223de750d7e881540512c86`. The fresh child-loss fixture reached
+one terminal `lost` event 1.147402 seconds after start, with incomplete output,
+stable identities and revision, and final/available cursor `4`. Its response
+and advertised events were preserved before ACKing only that fixture. The
+approved installer then recovered only its exact retained pair.
+
+A separate harmless mailbox request subsequently completed with exit `0`,
+complete non-truncated output, contiguous events, final cursor `4`, and a
+consumed exact ACK. The final health and supported restart preflight confirmed
+zero retained sessions, commands, queued commands/intents, and mailbox backlog.
+The implementation evidence records the fixture identities and commands.
+
+The full source suite passed on Mac and both Ubuntu architectures. Mac and
+ARM64 vet/race gates also passed. The extra AMD64 vet/race invocation has not
+returned a terminal result; subsequent SSH attempts timed out during banner
+exchange. Its last verified source revision is `2067dc6`, which contains the
+same runtime and test changes. Final AMD64 documentation synchronization
+remains blocked; no Linux installed service was changed.
 
 ## Current disposition
 
 The Logger validation result is terminal but unsuccessful/unproven. This
 investigation has not ACKed, replayed, deleted, or manually changed the original
-request or its durable records. Its retained capacity is not assumed released.
+request or its terminal result. After a fresh read-only preflight and explicit
+user approval, the guarded Mac installer proved cleanup of the complete idle
+set of three known terminal-lost pairs and released their retained capacity.
+The original BUG-020 result remains `complete` / `lost`, revision `4`, cursor
+`5`; this repair does not turn it into successful Logger validation.
 No Logger deployment action was attempted by the affected request.
 
 ## History
@@ -236,4 +256,5 @@ No Logger deployment action was attempted by the affected request.
 | --- | --- |
 | 2026-10-14 | Registered a new post-fix recurrence: request 1442 remained `running` at outbox revision 3 while the exact expected Mac Python unit-test process was absent. No Runner or Logger state was modified by this report. |
 | 2026-10-14 | Fresh read found a supported terminal `lost` result at revision 4 and cursor 5 shortly after the 30-minute boundary. Corrected the process-search inference and identified the independent inherited-control-descriptor/cancellation deadlock for source regression and repair. Original request remains untouched. |
+| 2026-10-14 | Installed the validated fix through approved exact-pair Mac maintenance. Fresh child-loss and normal mailbox/events/ACK gates passed; supported postflight confirmed zero retained capacity. Original terminal results were preserved. Full suites passed on all three source hosts; final AMD64 documentation handoff remains blocked by SSH banner timeout. |
 
