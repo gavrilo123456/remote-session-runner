@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/localapi"
 	"remote-session-runner/src/internal/mailbox"
+	"remote-session-runner/src/internal/mailboxfence"
 	"remote-session-runner/src/internal/store"
 )
 
@@ -426,6 +428,320 @@ func TestP154CandidateActivationPreventsV1RemovalAfterMarkerPublication(t *testi
 	}
 }
 
+func TestP154ExplicitMailboxRetirementPreflightAndActivationBoundary(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "state", "authority.db")
+	if err := os.Mkdir(filepath.Dir(databasePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	defaultDefinition := config.MailboxDefinition{ID: store.DefaultMailboxID, Root: filepath.Join(config.MacServiceRoot, "mailbox")}
+	legacyDefinition := config.MailboxDefinition{ID: "legacy-external", Root: filepath.Join(root, "legacy-mailbox")}
+	replacementDefinition := config.MailboxDefinition{ID: "replacement-direct", Root: filepath.Join(root, "replacement-mailbox")}
+	legacyDefinitions := []config.MailboxDefinition{defaultDefinition, legacyDefinition}
+	candidateDefinitions := []config.MailboxDefinition{defaultDefinition, replacementDefinition}
+	legacyBaseline := legacyDefaultMailboxBaseline()
+	retirement := store.MailboxRetirement{ID: legacyDefinition.ID}
+	if err := os.Mkdir(legacyDefinition.Root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"inbox", "acks"} {
+		if err := os.Mkdir(filepath.Join(legacyDefinition.Root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	db, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := store.NewAuthorityStore(db)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := authority.RegisterConfiguredMailboxSet(ctx, configuredMailboxDefinitions(legacyDefinitions), legacyBaseline); err != nil {
+		_ = db.Close()
+		t.Fatalf("register legacy mailbox set: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := validateRetainedMailboxSet(ctx, databasePath, candidateDefinitions); !errors.Is(err, store.ErrMailboxConfigurationPending) {
+		t.Fatalf("ordinary retained-mailbox preflight removal error=%v, want %v", err, store.ErrMailboxConfigurationPending)
+	}
+	if err := validateConfiguredMailboxRetirement(ctx, databasePath, candidateDefinitions, retirement); err != nil {
+		t.Fatalf("retirement preflight failed: %v", err)
+	}
+	resolved, err := store.ValidateConfiguredMailboxRetirementAtPath(ctx, databasePath, configuredMailboxDefinitions(candidateDefinitions), legacyBaseline, retirement)
+	if err != nil || resolved.ID != legacyDefinition.ID || resolved.Root != legacyDefinition.Root {
+		t.Fatalf("retirement preflight resolved=%+v err=%v", resolved, err)
+	}
+
+	preparationFailure := errors.New("test retirement preparation failure")
+	prepareCalled := false
+	err = activateMailboxRetirementAtBoundary(ctx, databasePath, candidateDefinitions, retirement, func() error {
+		prepareCalled = true
+		if err := validateRetainedMailboxSet(ctx, databasePath, candidateDefinitions); err != nil {
+			return fmt.Errorf("retirement was not durable before preparation: %w", err)
+		}
+		return preparationFailure
+	})
+	if !prepareCalled || !errors.Is(err, errMailboxTreePreparationAfterActivate) || !errors.Is(err, preparationFailure) {
+		t.Fatalf("retirement activation error=%v prepare_called=%t", err, prepareCalled)
+	}
+	if err := validateRetainedMailboxSet(ctx, databasePath, candidateDefinitions); err != nil {
+		t.Fatalf("retired candidate did not remain active after preparation failure: %v", err)
+	}
+	if err := validateRetainedMailboxSet(ctx, databasePath, legacyDefinitions); !errors.Is(err, store.ErrMailboxConfigurationPending) {
+		t.Fatalf("retired mailbox was reusable after activation error=%v, want %v", err, store.ErrMailboxConfigurationPending)
+	}
+	for _, name := range []string{"inbox", "acks"} {
+		info, statErr := os.Lstat(filepath.Join(legacyDefinition.Root, name))
+		if statErr != nil || info.Mode().Perm() != 0o500 {
+			t.Fatalf("retired %s mode=%v err=%v, want 0500", name, info, statErr)
+		}
+	}
+}
+
+func TestP154RetirementResidueAfterPreflightRestoresOldBoundary(t *testing.T) {
+	ctx := context.Background()
+	for _, fixture := range []struct {
+		name      string
+		directory string
+		entry     string
+	}{
+		{name: "request marker", directory: "inbox", entry: "req-retirement-residue.ready"},
+		{name: "acknowledgment marker", directory: "acks", entry: "req-retirement-residue.ready"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			boundary := newP154RetirementBoundaryFixture(t)
+			if err := validateConfiguredMailboxRetirement(ctx, boundary.databasePath, boundary.candidateDefinitions, boundary.retirement); err != nil {
+				t.Fatalf("post-quiescence retirement preflight: %v", err)
+			}
+			residuePath := filepath.Join(boundary.legacy.Root, fixture.directory, fixture.entry)
+			if err := os.WriteFile(residuePath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			prepareCalled := false
+			err := activateMailboxRetirementAtBoundary(ctx, boundary.databasePath, boundary.candidateDefinitions, boundary.retirement, func() error {
+				prepareCalled = true
+				return nil
+			})
+			if !errors.Is(err, errMailboxRetirementResidueRestored) || !errors.Is(err, mailboxfence.ErrResidueRestored) || prepareCalled {
+				t.Fatalf("residue activation error=%v prepare_called=%t, want restored pre-boundary error", err, prepareCalled)
+			}
+			for _, name := range []string{"inbox", "acks"} {
+				info, statErr := os.Lstat(filepath.Join(boundary.legacy.Root, name))
+				if statErr != nil || info.Mode().Perm() != 0o700 {
+					t.Fatalf("residue rollback %s mode=%v err=%v, want 0700", name, info, statErr)
+				}
+			}
+			if _, statErr := os.Lstat(filepath.Join(boundary.legacy.Root, mailboxfence.SentinelFileName)); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("residue rollback retained sentinel: %v", statErr)
+			}
+			if _, statErr := os.Lstat(residuePath); statErr != nil {
+				t.Fatalf("residue rollback removed ingress artifact: %v", statErr)
+			}
+			if err := validateRetainedMailboxSet(ctx, boundary.databasePath, boundary.legacyDefinitions); err != nil {
+				t.Fatalf("residue activation changed prior registry: %v", err)
+			}
+			if err := validateRetainedMailboxSet(ctx, boundary.databasePath, boundary.candidateDefinitions); !errors.Is(err, store.ErrMailboxConfigurationPending) {
+				t.Fatalf("residue activation recorded candidate: %v", err)
+			}
+		})
+	}
+}
+
+func TestP154RetirementResidueExitStatusIsExclusive(t *testing.T) {
+	var residueOutput bytes.Buffer
+	if code := reportValidateConfigActivationError(&residueOutput, fmt.Errorf("activate: %w", errMailboxRetirementResidueRestored)); code != mailboxRetirementResidueRestoredExitCode || !strings.Contains(residueOutput.String(), "temporary fence was removed") {
+		t.Fatalf("residue activation code=%d stderr=%q, want %d and restored-fence diagnostic", code, residueOutput.String(), mailboxRetirementResidueRestoredExitCode)
+	}
+	for _, activationErr := range []error{mailboxfence.ErrResidue, errors.New("generic activation failure"), errMailboxTreePreparationAfterActivate} {
+		var stderr bytes.Buffer
+		if code := reportValidateConfigActivationError(&stderr, activationErr); code != 1 {
+			t.Fatalf("non-restored activation error=%v code=%d stderr=%q, want 1", activationErr, code, stderr.String())
+		}
+	}
+}
+
+func TestP154RetirementFailsClosedWhenAuthorityDisappearsAfterPreflight(t *testing.T) {
+	ctx := context.Background()
+	boundary := newP154RetirementBoundaryFixture(t)
+	if err := validateConfiguredMailboxRetirement(ctx, boundary.databasePath, boundary.candidateDefinitions, boundary.retirement); err != nil {
+		t.Fatalf("post-quiescence retirement preflight: %v", err)
+	}
+	prepareCalled := false
+	err := activateMailboxRetirementAtBoundaryAfterFence(ctx, boundary.databasePath, boundary.candidateDefinitions, boundary.retirement, func() error {
+		prepareCalled = true
+		return nil
+	}, func() error {
+		for _, path := range []string{boundary.databasePath, boundary.databasePath + "-wal", boundary.databasePath + "-shm", boundary.databasePath + "-journal"} {
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return removeErr
+			}
+		}
+		return nil
+	})
+	if err == nil || prepareCalled {
+		t.Fatalf("missing authority activation error=%v prepare_called=%t, want fail closed", err, prepareCalled)
+	}
+	if _, statErr := os.Lstat(boundary.databasePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("activation recreated missing authority: %v", statErr)
+	}
+	for _, name := range []string{"inbox", "acks"} {
+		info, statErr := os.Lstat(filepath.Join(boundary.legacy.Root, name))
+		if statErr != nil || info.Mode().Perm() != 0o500 {
+			t.Fatalf("missing authority did not retain ingress fence for %s: mode=%v err=%v", name, info, statErr)
+		}
+	}
+	if _, statErr := os.Lstat(filepath.Join(boundary.legacy.Root, mailboxfence.SentinelFileName)); statErr != nil {
+		t.Fatalf("missing authority removed ingress sentinel: %v", statErr)
+	}
+	if err := retireConfiguredMailboxWork(ctx, boundary.databasePath, boundary.candidateDefinitions, boundary.retirement); !errors.Is(err, store.ErrDatabaseMissing) {
+		t.Fatalf("existing-only retirement authority open error=%v, want %v", err, store.ErrDatabaseMissing)
+	}
+	if _, statErr := os.Lstat(boundary.databasePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("existing-only retirement authority open recreated database: %v", statErr)
+	}
+}
+
+func TestP154RetirementRevalidatesDurableStateAfterIngressFence(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "state", "authority.db")
+	if err := os.Mkdir(filepath.Dir(databasePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := config.MailboxDefinition{ID: "legacy-revalidation", Root: filepath.Join(root, "legacy-mailbox")}
+	defaultDefinition := config.MailboxDefinition{ID: store.DefaultMailboxID, Root: filepath.Join(config.MacServiceRoot, "mailbox")}
+	replacement := config.MailboxDefinition{ID: "replacement-revalidation", Root: filepath.Join(root, "replacement-mailbox")}
+	legacyDefinitions := []config.MailboxDefinition{defaultDefinition, legacy}
+	candidateDefinitions := []config.MailboxDefinition{defaultDefinition, replacement}
+	if err := os.Mkdir(legacy.Root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"inbox", "acks"} {
+		if err := os.Mkdir(filepath.Join(legacy.Root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	database, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := store.NewAuthorityStore(database)
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := authority.RegisterConfiguredMailboxSet(ctx, configuredMailboxDefinitions(legacyDefinitions), legacyDefaultMailboxBaseline()); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	postFence := func() error {
+		database, err := store.Open(ctx, databasePath)
+		if err != nil {
+			return err
+		}
+		defer database.Close()
+		authority, err := store.NewAuthorityStore(database)
+		if err != nil {
+			return err
+		}
+		ownerID, err := domain.NewControllerID(config.MacAccount)
+		if err != nil {
+			return err
+		}
+		owner, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, ownerID)
+		if err != nil {
+			return err
+		}
+		ref, err := store.NewMailboxExchangeRef(legacy.ID, "req-retirement-post-fence")
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256([]byte("retirement-post-fence"))
+		hash, err := domain.NewCanonicalHash(domain.CanonicalizationVersionV1, digest[:])
+		if err != nil {
+			return err
+		}
+		_, _, err = authority.AcceptMailboxExchangeInMailbox(ctx, ref, store.MailboxExchangeCreate{
+			MailboxID: legacy.ID, RequestID: ref.ClientRequestID, Operation: "get_session", Controller: owner,
+			RequestHash: hash, CanonicalPayload: []byte("{}"),
+		})
+		return err
+	}
+	prepareCalled := false
+	err = activateMailboxRetirementAtBoundaryAfterFence(ctx, databasePath, candidateDefinitions, store.MailboxRetirement{ID: legacy.ID}, func() error {
+		prepareCalled = true
+		return nil
+	}, postFence)
+	if !errors.Is(err, store.ErrMailboxConfigurationPending) || prepareCalled {
+		t.Fatalf("post-fence durable revalidation error=%v prepare_called=%t", err, prepareCalled)
+	}
+	if err := validateRetainedMailboxSet(ctx, databasePath, legacyDefinitions); err != nil {
+		t.Fatalf("failed post-fence retirement changed active registry: %v", err)
+	}
+	if err := validateRetainedMailboxSet(ctx, databasePath, candidateDefinitions); !errors.Is(err, store.ErrMailboxConfigurationPending) {
+		t.Fatalf("candidate became active despite post-fence work: %v", err)
+	}
+}
+
+type p154RetirementBoundaryFixture struct {
+	databasePath         string
+	legacy               config.MailboxDefinition
+	legacyDefinitions    []config.MailboxDefinition
+	candidateDefinitions []config.MailboxDefinition
+	retirement           store.MailboxRetirement
+}
+
+func newP154RetirementBoundaryFixture(t *testing.T) p154RetirementBoundaryFixture {
+	t.Helper()
+	ctx := context.Background()
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "state", "authority.db")
+	if err := os.Mkdir(filepath.Dir(databasePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defaultDefinition := config.MailboxDefinition{ID: store.DefaultMailboxID, Root: filepath.Join(config.MacServiceRoot, "mailbox")}
+	legacy := config.MailboxDefinition{ID: "legacy-boundary", Root: filepath.Join(root, "legacy-mailbox")}
+	replacement := config.MailboxDefinition{ID: "replacement-boundary", Root: filepath.Join(root, "replacement-mailbox")}
+	for _, path := range []string{legacy.Root, filepath.Join(legacy.Root, "inbox"), filepath.Join(legacy.Root, "acks")} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	database, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := store.NewAuthorityStore(database)
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	legacyDefinitions := []config.MailboxDefinition{defaultDefinition, legacy}
+	if err := authority.RegisterConfiguredMailboxSet(ctx, configuredMailboxDefinitions(legacyDefinitions), legacyDefaultMailboxBaseline()); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return p154RetirementBoundaryFixture{
+		databasePath: databasePath, legacy: legacy, legacyDefinitions: legacyDefinitions,
+		candidateDefinitions: []config.MailboxDefinition{defaultDefinition, replacement}, retirement: store.MailboxRetirement{ID: legacy.ID},
+	}
+}
+
 func TestP154LegacyDefaultAndV2ExamplesValidateWithoutStartingServices(t *testing.T) {
 	repositoryRoot := p154RepositoryRoot(t)
 	for _, fixture := range []struct {
@@ -467,6 +783,11 @@ func TestP154LegacyDefaultAndV2ExamplesValidateWithoutStartingServices(t *testin
 	if code := Run([]string{"validate-config", "--config", valid, "--activate-mailbox-set"}, io.Discard, &activateErr); code != 2 ||
 		!strings.Contains(activateErr.String(), "requires --check-retained-mailboxes") {
 		t.Fatalf("activation without retained check code=%d stderr=%q", code, activateErr.String())
+	}
+	var retirementErr bytes.Buffer
+	if code := Run([]string{"validate-config", "--config", valid, "--retire-mailbox", "analytics"}, io.Discard, &retirementErr); code != 2 ||
+		!strings.Contains(retirementErr.String(), "--retire-mailbox requires --check-retained-mailboxes") {
+		t.Fatalf("retirement without retained check code=%d stderr=%q", code, retirementErr.String())
 	}
 	if err := os.Chmod(valid, 0o640); err != nil {
 		t.Fatal(err)
@@ -549,6 +870,8 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 	checkMailboxDirectories := `"$staging_directory/runner-local" validate-config --check-mailbox-directories --config "$selected_config"`
 	finalValidate := `"$staging_directory/runner-local" validate-config --check-retained-mailboxes --config "$selected_config"`
 	activateMailboxSet := `"$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --config "$selected_config"`
+	retirementFinalValidate := `"$staging_directory/runner-local" validate-config --check-retained-mailboxes --retire-mailbox "$mac_retire_mailbox" --config "$selected_config"`
+	retirementActivateMailboxSet := `"$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --retire-mailbox "$mac_retire_mailbox" --config "$selected_config"`
 	quiesceLocal := `stop_agent_for_config_change com.remote-session-runner.local "$launch_agents/com.remote-session-runner.local.plist" "$service_root/run/local-api.sock"`
 	quiesceLocalD := `stop_agent_for_config_change com.remote-session-runner.locald "$launch_agents/com.remote-session-runner.locald.plist" "$service_root/run/locald.sock"`
 	preflightLocalD := `"$staging_directory/runner-locald" preflight-restart --config "$config_file"`
@@ -556,6 +879,10 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 	trueFirstInstall := "is_true_first_locald_install() {"
 	missingAuthorityAllowance := `if [ "$preflight_status" -eq 3 ] && is_true_first_locald_install; then`
 	activationBoundary := "candidate_activation_started=1"
+	residueExit := "mailbox_retirement_residue_restored_exit=3"
+	residueStatus := `if [ "$retirement_activation_status" -eq "$mailbox_retirement_residue_restored_exit" ]; then`
+	residueReset := "candidate_activation_started=0"
+	residueRestoreNotice := "Retired mailbox ingress has residue; its temporary fence was removed and prior LaunchAgents will be restored."
 	configHandoff := `mv -f "$config_stage" "$config_file"`
 	handoffComplete := "candidate_config_handed_off=1"
 	recoveryGuard := `if [ "$candidate_activation_started" -eq 1 ] && [ "$candidate_config_handed_off" -eq 0 ]; then`
@@ -563,12 +890,18 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 		!strings.Contains(text, staticValidate) || !strings.Contains(text, finalValidate) ||
 		!strings.Contains(text, checkMailboxDirectories) ||
 		!strings.Contains(text, activateMailboxSet) ||
+		!strings.Contains(text, "mac_retire_mailbox=''") || !strings.Contains(text, "--retire-mailbox requires --config with the retired mailbox removed.") ||
+		!strings.Contains(text, "--retire-mailbox cannot combine with --b011-controlled-restart.") ||
+		!strings.Contains(text, "--retire-mailbox cannot combine with offline recovery.") ||
+		!strings.Contains(text, retirementFinalValidate) || !strings.Contains(text, retirementActivateMailboxSet) ||
+		!strings.Contains(text, "Repair by rerunning: %s --config %s --retire-mailbox %s\\n") ||
 		!strings.Contains(text, quiesceLocal) || !strings.Contains(text, quiesceLocalD) ||
 		!strings.Contains(text, preflightLocalD) || !strings.Contains(text, preflightInvocation) ||
 		!strings.Contains(text, trueFirstInstall) || !strings.Contains(text, missingAuthorityAllowance) ||
 		!strings.Contains(text, "$service_root/state/local.db-wal") ||
 		!strings.Contains(text, "Refusing runner-locald refresh because local execution is not provably quiescent.") ||
 		!strings.Contains(text, activationBoundary) || !strings.Contains(text, configHandoff) ||
+		!strings.Contains(text, residueExit) || !strings.Contains(text, residueStatus) || !strings.Contains(text, residueRestoreNotice) ||
 		!strings.Contains(text, handoffComplete) || !strings.Contains(text, recoveryGuard) ||
 		!strings.Contains(text, "restore_prior_agents_on_failure=1") ||
 		!strings.Contains(text, "--config") || !strings.Contains(text, "mac.yaml.example") ||
@@ -584,8 +917,15 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 	preflightIndex := strings.LastIndex(text, "\tpreflight_active_locald_restart\n")
 	localDIndex := strings.LastIndex(text, quiesceLocalD)
 	finalIndex := strings.Index(text, finalValidate)
+	retirementFinalIndex := strings.Index(text, retirementFinalValidate)
 	activationIndex := strings.LastIndex(text, activationBoundary)
 	activateMailboxSetIndex := strings.Index(text, activateMailboxSet)
+	retirementActivateMailboxSetIndex := strings.Index(text, retirementActivateMailboxSet)
+	residueStatusIndex := strings.Index(text, residueStatus)
+	residueResetIndex := -1
+	if residueStatusIndex >= 0 {
+		residueResetIndex = residueStatusIndex + strings.Index(text[residueStatusIndex:], residueReset)
+	}
 	configHandoffIndex := strings.Index(text, configHandoff)
 	handoffCompleteIndex := strings.LastIndex(text, handoffComplete)
 	recoveryGuardIndex := strings.Index(text, recoveryGuard)
@@ -594,14 +934,85 @@ func TestP154InstallerValidatesConfigBeforeLaunchAgentReplacement(t *testing.T) 
 		t.Fatal("installer lacks LaunchAgent replacement loop")
 	}
 	bootstrapIndex := replacementLoop + strings.Index(text[replacementLoop:], "launchctl bootstrap")
-	if staticIndex < 0 || checkPathsIndex < 0 || localIndex < 0 || preflightIndex < 0 || localDIndex < 0 || finalIndex < 0 || activationIndex < 0 || activateMailboxSetIndex < 0 || configHandoffIndex < 0 || handoffCompleteIndex < 0 || recoveryGuardIndex < 0 || bootstrapIndex < replacementLoop {
-		t.Fatalf("installer sequence indexes static=%d check_paths=%d local=%d preflight=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, preflightIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
+	if staticIndex < 0 || checkPathsIndex < 0 || localIndex < 0 || preflightIndex < 0 || localDIndex < 0 || finalIndex < 0 || retirementFinalIndex < 0 || activationIndex < 0 || activateMailboxSetIndex < 0 || retirementActivateMailboxSetIndex < 0 || residueStatusIndex < 0 || residueResetIndex < residueStatusIndex || configHandoffIndex < 0 || handoffCompleteIndex < 0 || recoveryGuardIndex < 0 || bootstrapIndex < replacementLoop {
+		t.Fatalf("installer sequence indexes static=%d check_paths=%d local=%d preflight=%d locald=%d final=%d retire_final=%d activation=%d activate_mailboxes=%d retire_activate_mailboxes=%d residue_status=%d residue_reset=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, preflightIndex, localDIndex, finalIndex, retirementFinalIndex, activationIndex, activateMailboxSetIndex, retirementActivateMailboxSetIndex, residueStatusIndex, residueResetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
 	}
-	if !(staticIndex < checkPathsIndex && checkPathsIndex < localIndex && localIndex < preflightIndex && preflightIndex < localDIndex && localDIndex < finalIndex && finalIndex < activationIndex && activationIndex < activateMailboxSetIndex && activateMailboxSetIndex < configHandoffIndex && configHandoffIndex < handoffCompleteIndex && handoffCompleteIndex < bootstrapIndex && recoveryGuardIndex < configHandoffIndex) {
-		t.Fatalf("installer must statically validate, check mailbox paths without creating them, quiesce ingress, prove local executor quiescence without writing, quiesce locald, validate retained ingress, cross activation boundary, register candidate inboxes and create any missing tree, preserve pre-handoff recovery config, hand off config, then bootstrap: static=%d check_paths=%d local=%d preflight=%d locald=%d final=%d activation=%d activate_mailboxes=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, preflightIndex, localDIndex, finalIndex, activationIndex, activateMailboxSetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
+	if !(staticIndex < checkPathsIndex && checkPathsIndex < localIndex && localIndex < preflightIndex && preflightIndex < localDIndex && localDIndex < finalIndex && localDIndex < retirementFinalIndex && finalIndex < activationIndex && retirementFinalIndex < activationIndex && activationIndex < activateMailboxSetIndex && activationIndex < retirementActivateMailboxSetIndex && retirementActivateMailboxSetIndex < residueStatusIndex && residueStatusIndex < residueResetIndex && residueResetIndex < configHandoffIndex && activateMailboxSetIndex < configHandoffIndex && retirementActivateMailboxSetIndex < configHandoffIndex && configHandoffIndex < handoffCompleteIndex && handoffCompleteIndex < bootstrapIndex && recoveryGuardIndex < configHandoffIndex) {
+		t.Fatalf("installer must statically validate, check mailbox paths without creating them, quiesce ingress, prove local executor quiescence without writing, quiesce locald, validate retained ingress or an explicit retirement only after quiescence, cross activation boundary, record candidate inboxes or retirement before preparing any tree, restore prior services only for a clean residue unwind, preserve pre-handoff recovery config, hand off config, then bootstrap: static=%d check_paths=%d local=%d preflight=%d locald=%d final=%d retire_final=%d activation=%d activate_mailboxes=%d retire_activate_mailboxes=%d residue_status=%d residue_reset=%d handoff=%d handoff_complete=%d recovery_guard=%d bootstrap=%d", staticIndex, checkPathsIndex, localIndex, preflightIndex, localDIndex, finalIndex, retirementFinalIndex, activationIndex, activateMailboxSetIndex, retirementActivateMailboxSetIndex, residueStatusIndex, residueResetIndex, configHandoffIndex, handoffCompleteIndex, recoveryGuardIndex, bootstrapIndex)
+	}
+	if strings.Count(text, retirementFinalValidate) != 1 || strings.Count(text, retirementActivateMailboxSet) != 1 {
+		t.Fatalf("installer must forward --retire-mailbox only to its final post-quiescence validation and activation commands")
 	}
 	if strings.Contains(text[preflightIndex:localDIndex], `if [ "$locald_was_loaded" -ne 1 ]; then`) {
 		t.Fatal("ordinary installer branch unexpectedly requires a loaded local executor")
+	}
+}
+
+func TestP154InstallerRetirementResidueRestoresPriorAgentsOnlyAfterCleanUnwind(t *testing.T) {
+	repositoryRoot := p154RepositoryRoot(t)
+	script := filepath.Join(repositoryRoot, "deploy", "macos", "install-launchagents.sh")
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.LastIndex(text, "candidate_activation_started=1\nif [ -n \"$mac_retire_mailbox\" ]; then")
+	if start < 0 {
+		t.Fatal("could not isolate retirement activation boundary")
+	}
+	end := strings.Index(text[start:], "\nif [ -n \"$config_stage\" ]; then")
+	if end < 0 {
+		t.Fatal("could not isolate retirement activation command")
+	}
+	activation := text[start : start+end]
+	for _, fixture := range []struct {
+		name         string
+		activation   string
+		wantRestored bool
+	}{
+		{name: "clean residue unwind", activation: "3", wantRestored: true},
+		{name: "ordinary activation failure", activation: "1", wantRestored: false},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			root := t.TempDir()
+			staging := filepath.Join(root, "staging")
+			if err := os.Mkdir(staging, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fakeRunner := filepath.Join(staging, "runner-local")
+			if err := os.WriteFile(fakeRunner, []byte("#!/bin/sh\nexit \"${RSR_RETIREMENT_ACTIVATION_STATUS:?}\"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			restoreLog := filepath.Join(root, "restore.log")
+			harness := "set -eu\n" +
+				"staging_directory=$RSR_STAGING_DIRECTORY\n" +
+				"selected_config=$RSR_SELECTED_CONFIG\n" +
+				"mac_retire_mailbox=legacy-boundary\n" +
+				"mailbox_retirement_residue_restored_exit=3\n" +
+				"candidate_activation_started=0\n" +
+				"candidate_config_handed_off=0\n" +
+				"restore_prior_agents_on_failure=1\n" +
+				"mac_recovery_candidate_boundary=0\n" +
+				"mac_recovery_old_process_boundary_confirmed=1\n" +
+				"restore_prior_agents() { printf '%s\\n' restored > \"$RSR_RESTORE_LOG\"; }\n" +
+				"on_exit() { status=$?; if [ \"$status\" -ne 0 ] && [ \"$restore_prior_agents_on_failure\" -eq 1 ] && [ \"$candidate_activation_started\" -eq 0 ] && [ \"$mac_recovery_candidate_boundary\" -eq 0 ] && [ \"$mac_recovery_old_process_boundary_confirmed\" -eq 1 ]; then restore_prior_agents; fi; trap - EXIT; exit \"$status\"; }\n" +
+				"trap on_exit EXIT\n" + activation + "\nprintf '%s\\n' unexpected-success\n"
+			command := exec.Command("sh", "-c", harness)
+			command.Env = append(os.Environ(),
+				"RSR_STAGING_DIRECTORY="+staging,
+				"RSR_SELECTED_CONFIG="+filepath.Join(root, "candidate.yaml"),
+				"RSR_RESTORE_LOG="+restoreLog,
+				"RSR_RETIREMENT_ACTIVATION_STATUS="+fixture.activation,
+			)
+			output, runErr := command.CombinedOutput()
+			if runErr == nil || strings.Contains(string(output), "unexpected-success") {
+				t.Fatalf("retirement activation harness err=%v output=%s, want normalized failure", runErr, output)
+			}
+			_, statErr := os.Stat(restoreLog)
+			if fixture.wantRestored != (statErr == nil) {
+				t.Fatalf("activation=%s restored=%t stat_err=%v output=%s", fixture.activation, statErr == nil, statErr, output)
+			}
+		})
 	}
 }
 

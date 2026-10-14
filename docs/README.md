@@ -12,7 +12,7 @@ selection, or automatic fallback.
 | --- | --- |
 | [Architecture](architecture.md) | Components, trust boundaries, multi-inbox routing, diagrams, and supported scope. |
 | [Configuration reference](configuration.md) | Exact paths, V1 compatibility, V2 registries, active policy, secret handling, and limits. |
-| [Setup and upgrade runbook](setup.md) | First install, V1→V2 upgrade, safe external mailbox roots, service deployment, bridge setup, and P157 onboarding. |
+| [Setup and upgrade runbook](setup.md) | First install, V1→V2 upgrade, safe external mailbox roots, deliberate mailbox retirement, service deployment, bridge setup, and P157 onboarding. |
 | [CLI user guide](user-guide.md) | Local, direct remote, queued remote, sessions, events, cancellation, and close. |
 | [LLM client guide](llm-client-guide.md) | Practical guide for LLMs and coding agents: local read/edit work, mailbox-only execution and validation, route selection, results, ACKs, retries, lifecycle status, and safe failure handling. |
 | [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, deterministic request-result lookup, lifecycle status, events, ACKs, retries, and safe invalid-input diagnostics. |
@@ -29,7 +29,7 @@ selection, or automatic fallback.
 | Ubuntu execution account | `ubuntu` |
 | Mac service root | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
 | Ubuntu service root | `/home/ubuntu/.local/share/remote-session-runner` |
-| Active mailbox roots | `default` at `mailbox/`; `analytics` at `mailboxes/analytics/`; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-`; `agentic-software-factory-runner` at `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-` |
+| Active mailbox roots | `default` at `mailbox/`; `analytics` at `mailboxes/analytics/`; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-`; `agentic-software-factory-runner-direct` at `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-` |
 | Accepted remote profiles | `linux-host`; `sandbox-host`; `factory-sandbox` |
 | Current direct endpoint | `linux-poc` at `https://129.151.232.40:8443` |
 | Current Ubuntu listener | `10.0.0.200:8443` |
@@ -59,13 +59,20 @@ P157-factory-sandbox separately accepted `factory-sandbox` at
 `ubuntu@oracle-waclaw-dziwulski-ubuntu-micro-01` for
 `factory-sandbox-dev` / `remote/factory-sandbox`. Its public direct route is
 `factory-sandbox-poc`, while `ubuntu-factory-sandbox` is its distinct queued
-context. The external `agentic-software-factory-runner` inbox is rooted at
-`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`,
+context. The external `agentic-software-factory-runner-direct` inbox is rooted at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-`,
 recognizes the `agentic-software-factory` repository alias, defaults to that
 queued context, and permits `mac-local` as its only override. The direct mTLS,
 queued bridge, and mailbox terminal-response/event/ACK gates are separate;
 one does not establish another. Other physical machines remain **NOT RUN**
 until their separate P157 onboarding and end-to-end evidence pass.
+
+P157 records the original Factory mailbox root. The direct root is its
+replacement; the planned controlled retirement and the still-separate
+legacy-tree removal are recorded in
+[`P167`](../040-implementation-evidence/P167-factory-mailbox-retirement.md).
+Only a fully unwound fresh-residue fence may restore the prior services;
+all other retirement activation errors remain no-rollback candidate repair.
 
 BUG-015 later corrected the shared persistent-shell `errexit` boundary. A
 fresh harmless `slidestud-io` sandbox request now proves that an ordinary

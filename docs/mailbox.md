@@ -28,7 +28,7 @@ field.
 | `analytics` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `analytics-dbt` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
 | `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `slidestud-io` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
 | `agents-work-dispatcher` | `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` | `agents-work-dispatcher` | `ubuntu-current` | `ubuntu-current`, `mac-local` |
-| `agentic-software-factory-runner` | `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-` | `agentic-software-factory` | `ubuntu-factory-sandbox` | `ubuntu-factory-sandbox`, `mac-local` |
+| `agentic-software-factory-runner-direct` | `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-` | `agentic-software-factory` | `ubuntu-factory-sandbox` | `ubuntu-factory-sandbox`, `mac-local` |
 
 Every root has this independent layout:
 
@@ -211,6 +211,35 @@ then fails, repair that candidate; do not reactivate an older policy that does
 not know about the new root. If an external root is under another repository,
 exclude its runtime directory locally from that repository's VCS view.
 
+An external root is retired only through an explicit replacement candidate and
+the installer `--retire-mailbox ID` flow. The retirement record preserves the
+old ID/root history, rejects its reuse in a candidate, and never removes the
+external files.
+Use the [setup retirement procedure](setup.md#retire-a-superseded-external-mailbox)
+after the replacement has passed its own native mailbox acceptance. Before the
+installer starts, stop every legacy-root publisher, including raw or direct
+workspace-file producers; service quiescence does not stop those independent
+writers. The retirement activation takes an exclusive owner-only ingress lock,
+creates a persistent owner-only sentinel, freezes `inbox/` and `acks/` at
+`0500`, and rejects any retained ingress entry. It is a cooperative fence, not
+adversarial isolation: a same-UID raw writer or a writer holding a directory
+descriptor from before the fence can evade it. Keep such writers stopped.
+
+The one safe atomic-unwind refusal is limited to a **fresh** fence that finds
+ingress residue before the post-fence authority open, migration, or retirement
+tombstone. While its exclusive lock is still held, Runner restores the ingress
+directories and removes the sentinel; only after that complete unwind does the
+installer restore the prior configuration and services. It is a refusal, not a
+retirement: settle the residue and repeat the preflight.
+
+Every other activation error remains no-rollback candidate repair, including a
+preexisting fence, an incomplete fresh-fence unwind, fence setup failure, and every error
+after the post-fence authority open, migration, or tombstone. Do not remove a
+persisting sentinel, restore write permissions, or reactivate the old
+configuration. The procedure never removes external files. Physical
+legacy-tree removal remains a separate explicitly authorized action after the
+new active configuration and services have passed postflight.
+
 ## Use the native mailbox client
 
 `mailboxclient.New(root)` requires an absolute, owner-only configured root. It
@@ -250,7 +279,11 @@ if err := client.WriteAcknowledgment(requestID, response); err != nil {
 `WaitResponse` returns the first visible or later response revision; it does
 not promise that the revision is terminal. The native publisher is the only
 path with its exclusive-create, no-follow, file-sync, and directory-sync
-properties.
+properties. `WriteRequest` and `WriteAcknowledgment` also take the shared
+owner-only ingress lock and check the persistent retirement sentinel immediately
+before they publish their respective marker-last pair. A fenced root therefore
+fails locally through the native client; switch the integration to its active
+replacement rather than bypassing the fence with raw files.
 
 ## Use direct workspace-file ingress
 
@@ -278,7 +311,9 @@ file, a file owned by another account, unsafe names, incomplete JSON, or an
 invalid request/ACK schema. It removes a durably accepted input pair and ACK
 pair. Direct-file publication supports ordinary workspace tools; it does not
 provide native exclusive-create, no-follow, file-sync, directory-sync, or
-crash-durability guarantees.
+crash-durability guarantees. It also does not participate in the retirement
+lock/sentinel protocol. Stop it before a root is retired and use the
+replacement root only after its configured postflight is complete.
 
 ### `run` command representation
 
@@ -456,11 +491,12 @@ unavailable until its own P157 host gate passes.
 ```
 
 Publish this through `mailboxclient.New` in
-`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-`.
 It deliberately omits both selection fields, so it resolves as
 `execution_selection_source: "inbox_default"` to `factory-sandbox-dev` /
-`remote/factory-sandbox`. The P157 factory-sandbox gate accepted this native
-marker-last route, read the terminal event prefix, and consumed the exact ACK.
+`remote/factory-sandbox`. P157 factory-sandbox accepted the original legacy
+root; the direct-root acceptance and its controlled retirement record are in
+[`P167`](../040-implementation-evidence/P167-factory-mailbox-retirement.md).
 It is queued-bridge evidence; direct mTLS readiness at `factory-sandbox-poc`
 is a separate route check.
 
@@ -647,6 +683,6 @@ acknowledged normally.
   is not yet verified.
 
 For route and service checks, use [operations](operations.md). For the P155,
-sandbox-host P157, factory-sandbox P157, P158, P159, P166, and deployed
+sandbox-host P157, factory-sandbox P157, P158, P159, P166, P167, and deployed
 BUG-015 evidence and the per-host P157 boundary, use
 [current-host evidence](current-host-evidence.md).

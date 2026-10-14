@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 35
+	CurrentSchemaVersion = 36
 
 	// legacySingleMailboxSchemaVersion is the last schema that represented all
 	// mailbox work in the implicit default inbox. It is accepted only by the
@@ -33,10 +33,10 @@ const (
 
 	// restartPreflightPreviousSchemaVersion is the immediately preceding
 	// authority shape. It is explicitly admitted for read-only installer
-	// preflight while migration 0035 has not crossed its activation boundary.
+	// preflight while migration 0036 has not crossed its activation boundary.
 	// Later migrations must update this constant deliberately rather than
 	// making every older schema implicitly acceptable.
-	restartPreflightPreviousSchemaVersion = 34
+	restartPreflightPreviousSchemaVersion = 35
 )
 
 var (
@@ -152,6 +152,9 @@ var controlledRestartPlanSQL string
 
 //go:embed migrations/0035_commandless_lost_runtime_recovery_finalizations.sql
 var commandlessLostRuntimeRecoveryFinalizationsSQL string
+
+//go:embed migrations/0036_mailbox_configuration_retirements.sql
+var mailboxConfigurationRetirementsSQL string
 
 type migration struct {
 	version int
@@ -299,6 +302,10 @@ var migrations = []migration{{
 	version: 35,
 	name:    "commandless_lost_runtime_recovery_finalizations",
 	sql:     commandlessLostRuntimeRecoveryFinalizationsSQL,
+}, {
+	version: 36,
+	name:    "mailbox_configuration_retirements",
+	sql:     mailboxConfigurationRetirementsSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
@@ -477,7 +484,7 @@ func OpenExistingCurrentReadOnly(ctx context.Context, path string) (*sql.DB, err
 
 // OpenExistingRestartPreflightReadOnly opens the existing private authority
 // database for the installer restart guard. It accepts only the current schema,
-// schema 34 while migration 0035 is pending activation, or the exact schema-24
+// schema 35 while migration 0036 is pending activation, or the exact schema-24
 // legacy authority that the installer already supports for its read-only
 // pre-activation checks. Activation remains responsible for migration after its
 // no-rollback boundary. The returned handle is read-only and never creates a
@@ -488,8 +495,9 @@ func OpenExistingRestartPreflightReadOnly(ctx context.Context, path string) (*sq
 
 // OpenExistingControlledRestartStatusReadOnly opens an existing private
 // authority database solely to inspect the durable controlled-restart state.
-// It accepts the current schema, schema 34 with the same controlled-restart
-// plan tables, and schema 33 that predates those tables. The returned handle
+// It accepts the current schema, schemas 34 and 35 with the same
+// controlled-restart plan tables, and schema 33 that predates those tables.
+// The returned handle
 // is read-only and never creates a database or sidecar, changes SQLite
 // settings, or applies a migration.
 func OpenExistingControlledRestartStatusReadOnly(ctx context.Context, path string) (*sql.DB, error) {
@@ -700,6 +708,81 @@ func ValidateConfiguredMailboxSetAtPath(ctx context.Context, path string, config
 		return err
 	}
 	return authority.ValidateConfiguredMailboxSet(ctx, configurations, legacyBaseline)
+}
+
+// ValidateConfiguredMailboxRetirementAtPath performs the prospective
+// retirement check without creating a database, applying migrations, or
+// making any write. Retirement requires an existing exact registry identity;
+// unlike ordinary first-install validation, a missing or schema-24 authority
+// cannot safely authorize it.
+func ValidateConfiguredMailboxRetirementAtPath(ctx context.Context, path string, configurations, legacyBaseline []MailboxConfiguration, retirement MailboxRetirement) (MailboxConfiguration, error) {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return MailboxConfiguration{}, ErrDatabasePath
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := normalizeMailboxConfigurations(configurations); err != nil {
+		return MailboxConfiguration{}, err
+	}
+	if _, err := normalizeOptionalMailboxConfigurations(legacyBaseline); err != nil {
+		return MailboxConfiguration{}, err
+	}
+	if err := validateMailboxRetirement(retirement); err != nil {
+		return MailboxConfiguration{}, err
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+			sidecarPath := path + suffix
+			sidecarInfo, sidecarErr := os.Lstat(sidecarPath)
+			if errors.Is(sidecarErr, os.ErrNotExist) {
+				continue
+			}
+			if sidecarErr != nil {
+				return MailboxConfiguration{}, fmt.Errorf("inspect SQLite sidecar: %w", sidecarErr)
+			}
+			if sidecarErr := checkPrivateSidecar(sidecarPath); sidecarErr != nil {
+				return MailboxConfiguration{}, sidecarErr
+			}
+			if sidecarInfo.Mode().IsRegular() {
+				return MailboxConfiguration{}, fmt.Errorf("%w: orphaned SQLite sidecar %s", ErrDatabasePath, filepath.Base(sidecarPath))
+			}
+		}
+		return MailboxConfiguration{}, ErrMailboxConfigurationPending
+	}
+	if err != nil {
+		return MailboxConfiguration{}, fmt.Errorf("inspect SQLite database file: %w", err)
+	}
+	if err := validateReadOnlyDatabaseFile(path, info); err != nil {
+		return MailboxConfiguration{}, err
+	}
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if err := checkPrivateSidecar(path + suffix); err != nil {
+			return MailboxConfiguration{}, err
+		}
+	}
+	db, err := sql.Open("sqlite", sqlitePathURI(path, "ro"))
+	if err != nil {
+		return MailboxConfiguration{}, fmt.Errorf("open SQLite database read-only: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		return MailboxConfiguration{}, fmt.Errorf("connect to SQLite database read-only: %w", err)
+	}
+	legacySchema, err := isLegacySingleMailboxSchema(ctx, db)
+	if err != nil {
+		return MailboxConfiguration{}, err
+	}
+	if legacySchema {
+		return MailboxConfiguration{}, ErrMailboxConfigurationPending
+	}
+	authority, err := NewAuthorityStore(db)
+	if err != nil {
+		return MailboxConfiguration{}, err
+	}
+	return authority.ValidateConfiguredMailboxRetirement(ctx, configurations, legacyBaseline, retirement)
 }
 
 // isLegacySingleMailboxSchema verifies the read-only database history before
@@ -913,7 +996,7 @@ func verifyOfflineMaintenanceMigrationSchemaConnection(ctx context.Context, conn
 }
 
 // verifyRestartPreflightSchemaConnection permits only the known read-only
-// execution shapes: the current authority, schema 34 while migration 0035 is
+// execution shapes: the current authority, schema 35 while migration 0036 is
 // pending activation, and the schema-24 authority that activation later
 // migrates. It deliberately does not accept an arbitrary older version.
 func verifyRestartPreflightSchemaConnection(ctx context.Context, connection *sql.Conn) error {
@@ -929,15 +1012,15 @@ func verifyRestartPreflightSchemaConnection(ctx context.Context, connection *sql
 
 // verifyControlledRestartStatusSchemaConnection recognizes only the known
 // schema shapes whose controlled-restart state this source can interpret. A
-// schema-33 authority has no durable plan table; schemas 34 and 35 both have
-// the same plan tables. Any other version or table shape fails closed.
+// schema-33 authority has no durable plan table; schemas 34 through 36 all
+// have the same plan tables. Any other version or table shape fails closed.
 func verifyControlledRestartStatusSchemaConnection(ctx context.Context, connection *sql.Conn) error {
 	version, err := userVersion(ctx, connection)
 	if err != nil {
 		return err
 	}
-	if version != controlledRestartStatusLegacySchemaVersion && version != restartPreflightPreviousSchemaVersion && version != CurrentSchemaVersion {
-		return fmt.Errorf("%w: got %d, require current %d, prior plan schema %d, or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, restartPreflightPreviousSchemaVersion, controlledRestartStatusLegacySchemaVersion)
+	if version != controlledRestartStatusLegacySchemaVersion && version != controlledRestartStatusFirstPlanSchemaVersion && version != restartPreflightPreviousSchemaVersion && version != CurrentSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d, prior plan schemas %d and %d, or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, controlledRestartStatusFirstPlanSchemaVersion, restartPreflightPreviousSchemaVersion, controlledRestartStatusLegacySchemaVersion)
 	}
 	if err := verifyMigrationHistory(ctx, connection, version); err != nil {
 		return err
@@ -951,7 +1034,7 @@ func verifyControlledRestartStatusSchemaConnection(ctx context.Context, connecti
 		if plansPresent || pairsPresent {
 			return fmt.Errorf("%w: schema %d unexpectedly contains controlled restart plan tables", ErrSchemaVersion, version)
 		}
-	case restartPreflightPreviousSchemaVersion, CurrentSchemaVersion:
+	case controlledRestartStatusFirstPlanSchemaVersion, restartPreflightPreviousSchemaVersion, CurrentSchemaVersion:
 		if !plansPresent || !pairsPresent {
 			return fmt.Errorf("%w: schema %d is missing controlled restart plan tables", ErrSchemaVersion, version)
 		}

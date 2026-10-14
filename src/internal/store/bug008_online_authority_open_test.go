@@ -132,8 +132,8 @@ func TestBUG016OpenExistingOfflineMaintenanceMigratingRequiresExistingVerifiedAu
 		}
 	})
 
-	t.Run("schema 34 upgrades only after verified existing preflight", func(t *testing.T) {
-		path := controlledRestartStatusSchema34AuthorityPath(t)
+	t.Run("schema 35 upgrades only after verified existing preflight", func(t *testing.T) {
+		path := controlledRestartStatusSchema35AuthorityPath(t)
 		before := b008ReadSchemaState(t, path)
 		if before.Version != restartPreflightPreviousSchemaVersion {
 			t.Fatalf("fixture version=%d, want %d", before.Version, restartPreflightPreviousSchemaVersion)
@@ -141,7 +141,7 @@ func TestBUG016OpenExistingOfflineMaintenanceMigratingRequiresExistingVerifiedAu
 
 		database, err := OpenExistingOfflineMaintenanceMigrating(ctx, path)
 		if err != nil {
-			t.Fatalf("offline maintenance schema-34 authority: %v", err)
+			t.Fatalf("offline maintenance schema-35 authority: %v", err)
 		}
 		defer database.Close()
 		if after := b008ReadSchemaStateFromDatabase(t, database); after.Version != CurrentSchemaVersion || len(after.Ledger) != CurrentSchemaVersion {
@@ -153,13 +153,13 @@ func TestBUG016OpenExistingOfflineMaintenanceMigratingRequiresExistingVerifiedAu
 		}
 	})
 
-	t.Run("tampered schema 34 is not migrated", func(t *testing.T) {
-		path := controlledRestartStatusSchema34AuthorityPath(t)
+	t.Run("tampered schema 35 is not migrated", func(t *testing.T) {
+		path := controlledRestartStatusSchema35AuthorityPath(t)
 		database, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "rw"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := database.ExecContext(ctx, `UPDATE runner_schema_migrations SET checksum = '0000000000000000000000000000000000000000000000000000000000000000' WHERE version = 34`); err != nil {
+		if _, err := database.ExecContext(ctx, `UPDATE runner_schema_migrations SET checksum = '0000000000000000000000000000000000000000000000000000000000000000' WHERE version = 35`); err != nil {
 			_ = database.Close()
 			t.Fatal(err)
 		}

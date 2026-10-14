@@ -23,6 +23,7 @@ import (
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/localapi"
 	"remote-session-runner/src/internal/mailbox"
+	"remote-session-runner/src/internal/mailboxfence"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 )
@@ -39,7 +40,10 @@ var (
 	errMacDatabaseNotReady                 = errors.New("Mac authority database is not ready")
 	errMacMailboxPathsNotReady             = errors.New("Mac mailbox paths are not ready")
 	errMailboxTreePreparationAfterActivate = errors.New("candidate mailbox tree needs repair after activation")
+	errMailboxRetirementResidueRestored    = errors.New("retired mailbox ingress residue fence was restored")
 )
+
+const mailboxRetirementResidueRestoredExitCode = 3
 
 // Run loads the selected Mac configuration and serves local ingress until
 // launchd sends SIGTERM or the process receives an interrupt.
@@ -85,9 +89,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 // database read-only, so an inbox removal with live work is rejected before
 // LaunchAgents are replaced. Schema 24 is checked as its implicit default
 // inbox without migration. At the no-rollback boundary, activation validates
-// paths, records the complete candidate set, and only then creates a missing
-// mailbox tree. Its output deliberately contains only schema and configured
-// inbox identifiers, never paths or secret references.
+// paths, records the complete candidate set or one explicit retirement, and
+// only then creates a missing mailbox tree. Its output deliberately contains
+// only schema and configured inbox identifiers, never paths or secret
+// references.
 func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("runner-local validate-config", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -95,6 +100,7 @@ func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 	checkMailboxDirectories := flags.Bool("check-mailbox-directories", false, "check configured mailbox paths without creating directories")
 	checkRetainedMailboxes := flags.Bool("check-retained-mailboxes", false, "read existing mailbox state before replacing services")
 	activateMailboxSet := flags.Bool("activate-mailbox-set", false, "record the candidate inbox set at the installer activation boundary")
+	retireMailbox := flags.String("retire-mailbox", "", "retire one fully drained mailbox at the installer activation boundary")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -107,6 +113,10 @@ func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 	}
 	if *activateMailboxSet && !*checkRetainedMailboxes {
 		fmt.Fprintln(stderr, "runner-local validate-config: --activate-mailbox-set requires --check-retained-mailboxes")
+		return 2
+	}
+	if *retireMailbox != "" && !*checkRetainedMailboxes {
+		fmt.Fprintln(stderr, "runner-local validate-config: --retire-mailbox requires --check-retained-mailboxes")
 		return 2
 	}
 	loaded, settings, mailboxes, err := loadSelectedMacConfig(*configPath)
@@ -127,7 +137,13 @@ func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 	if *checkRetainedMailboxes {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := validateRetainedMailboxSet(ctx, settings.Database, mailboxes); err != nil {
+		var retainedErr error
+		if *retireMailbox == "" {
+			retainedErr = validateRetainedMailboxSet(ctx, settings.Database, mailboxes)
+		} else {
+			retainedErr = validateConfiguredMailboxRetirement(ctx, settings.Database, mailboxes, store.MailboxRetirement{ID: *retireMailbox})
+		}
+		if retainedErr != nil {
 			fmt.Fprintln(stderr, "runner-local validate-config: configured inbox set is not safe to install")
 			return 1
 		}
@@ -139,15 +155,18 @@ func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := activateMailboxSetAtBoundary(ctx, settings.Database, mailboxes, func() error {
-			return prepareConfiguredMailboxDirectories(settings, mailboxRoots...)
-		}); err != nil {
-			if errors.Is(err, errMailboxTreePreparationAfterActivate) {
-				fmt.Fprintln(stderr, "runner-local validate-config: candidate inbox set is recorded; configured mailbox directories need repair")
-			} else {
-				fmt.Fprintln(stderr, "runner-local validate-config: candidate inbox set could not be activated")
-			}
-			return 1
+		var activationErr error
+		if *retireMailbox == "" {
+			activationErr = activateMailboxSetAtBoundary(ctx, settings.Database, mailboxes, func() error {
+				return prepareConfiguredMailboxDirectories(settings, mailboxRoots...)
+			})
+		} else {
+			activationErr = activateMailboxRetirementAtBoundary(ctx, settings.Database, mailboxes, store.MailboxRetirement{ID: *retireMailbox}, func() error {
+				return prepareConfiguredMailboxDirectories(settings, mailboxRoots...)
+			})
+		}
+		if activationErr != nil {
+			return reportValidateConfigActivationError(stderr, activationErr)
 		}
 	}
 	ids := make([]string, 0, len(mailboxes))
@@ -156,6 +175,19 @@ func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "runner-local configuration valid: schema_version=%d inboxes=%s\n", loaded.SchemaVersion(), strings.Join(ids, ","))
 	return 0
+}
+
+func reportValidateConfigActivationError(stderr io.Writer, activationErr error) int {
+	if errors.Is(activationErr, errMailboxRetirementResidueRestored) {
+		fmt.Fprintln(stderr, "runner-local validate-config: retired mailbox ingress has residue; the temporary fence was removed")
+		return mailboxRetirementResidueRestoredExitCode
+	}
+	if errors.Is(activationErr, errMailboxTreePreparationAfterActivate) {
+		fmt.Fprintln(stderr, "runner-local validate-config: candidate inbox set is recorded; configured mailbox directories need repair")
+		return 1
+	}
+	fmt.Fprintln(stderr, "runner-local validate-config: candidate inbox set could not be activated")
+	return 1
 }
 
 func runDoctor(args []string, stdout, stderr io.Writer) int {
@@ -394,6 +426,19 @@ func validateRetainedMailboxSet(ctx context.Context, databasePath string, defini
 	return store.ValidateConfiguredMailboxSetAtPath(ctx, databasePath, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline())
 }
 
+// validateConfiguredMailboxRetirement is the explicit read-only retirement
+// preflight. The caller supplies only the stable mailbox ID; the store resolves
+// the historic root from its immutable registry and verifies that the candidate
+// omits it without abandoning retained work.
+func validateConfiguredMailboxRetirement(ctx context.Context, databasePath string, definitions []config.MailboxDefinition, retirement store.MailboxRetirement) error {
+	_, err := resolveConfiguredMailboxRetirement(ctx, databasePath, definitions, retirement)
+	return err
+}
+
+func resolveConfiguredMailboxRetirement(ctx context.Context, databasePath string, definitions []config.MailboxDefinition, retirement store.MailboxRetirement) (store.MailboxConfiguration, error) {
+	return store.ValidateConfiguredMailboxRetirementAtPath(ctx, databasePath, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline(), retirement)
+}
+
 // registerConfiguredMailboxWork is used only at the installer's irreversible
 // activation boundary. It records the complete candidate before its paths can
 // be opened, so a failed candidate cannot later be replaced by a configuration
@@ -411,6 +456,27 @@ func registerConfiguredMailboxWork(ctx context.Context, databasePath string, def
 	return authority.RegisterConfiguredMailboxSet(ctx, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline())
 }
 
+// retireConfiguredMailboxWork changes durable registry state only at the
+// installer activation boundary. The retirement API resolves its exact historic
+// root from the immutable registry, so callers cannot redirect the operation
+// with a path argument.
+func retireConfiguredMailboxWork(ctx context.Context, databasePath string, definitions []config.MailboxDefinition, retirement store.MailboxRetirement) error {
+	// The post-quiescence retirement boundary may migrate a known existing
+	// authority, but must never recreate a database that vanished after the
+	// read-only preflight.
+	db, err := store.OpenExistingOfflineMaintenanceMigrating(ctx, databasePath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	authority, err := store.NewAuthorityStore(db)
+	if err != nil {
+		return err
+	}
+	_, err = authority.RetireConfiguredMailboxSet(ctx, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline(), retirement)
+	return err
+}
+
 // activateMailboxSetAtBoundary records the candidate before invoking the
 // filesystem operation that can make a new mailbox root visible. A failure
 // from prepare is deliberately returned after registration so the installer
@@ -421,6 +487,54 @@ func activateMailboxSetAtBoundary(ctx context.Context, databasePath string, defi
 		return errors.New("mailbox directory preparation is unavailable")
 	}
 	if err := registerConfiguredMailboxWork(ctx, databasePath, definitions); err != nil {
+		return err
+	}
+	if err := prepare(); err != nil {
+		return fmt.Errorf("%w: %w", errMailboxTreePreparationAfterActivate, err)
+	}
+	return nil
+}
+
+// activateMailboxRetirementAtBoundary fences the resolved retired inbox and
+// ACK ingress, revalidates durable state after that fence, then records one
+// explicit retirement and the complete candidate set before preparing newly
+// configured paths. Any later failure leaves the fence and candidate boundary
+// in place; callers must not revive the prior configuration.
+func activateMailboxRetirementAtBoundary(ctx context.Context, databasePath string, definitions []config.MailboxDefinition, retirement store.MailboxRetirement, prepare func() error) error {
+	return activateMailboxRetirementAtBoundaryAfterFence(ctx, databasePath, definitions, retirement, prepare, nil)
+}
+
+// activateMailboxRetirementAtBoundaryAfterFence keeps the post-fence callback
+// internal to this package so the ordering is regression-testable without
+// changing the production activation contract.
+func activateMailboxRetirementAtBoundaryAfterFence(ctx context.Context, databasePath string, definitions []config.MailboxDefinition, retirement store.MailboxRetirement, prepare func() error, afterFence func() error) error {
+	if prepare == nil {
+		return errors.New("mailbox directory preparation is unavailable")
+	}
+	resolved, err := resolveConfiguredMailboxRetirement(ctx, databasePath, definitions, retirement)
+	if err != nil {
+		return err
+	}
+	fence, err := mailboxfence.AcquireRetirement(ctx, resolved.Root)
+	if err != nil {
+		if errors.Is(err, mailboxfence.ErrResidueRestored) {
+			return fmt.Errorf("%w: %w", errMailboxRetirementResidueRestored, err)
+		}
+		return fmt.Errorf("fence retired mailbox ingress: %w", err)
+	}
+	defer fence.Close()
+	// The exclusive lock and persistent sentinel now prevent native
+	// marker-last publishers from entering the old inbox or ACK directory.
+	// Re-open the durable authority only after that filesystem boundary.
+	if afterFence != nil {
+		if err := afterFence(); err != nil {
+			return err
+		}
+	}
+	if _, err := resolveConfiguredMailboxRetirement(ctx, databasePath, definitions, retirement); err != nil {
+		return err
+	}
+	if err := retireConfiguredMailboxWork(ctx, databasePath, definitions, retirement); err != nil {
 		return err
 	}
 	if err := prepare(); err != nil {

@@ -263,17 +263,19 @@ fi
 ```
 
 Edit the candidate as the owner to include the complete V2 policy. The current
-V2 policy, accepted through P155/P157/P158 and extended by P159/P165/P166,
+V2 policy builds on P155/P157/P158 and the P159/P165/P166 extensions. It
 contains the legacy `default` root, the extra `analytics` root, the external
 `slidestud-io` root at
 `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`, and the accepted
-`ubuntu-sandbox` context, plus the external `agentic-software-factory-runner`
+`ubuntu-sandbox` context, plus the external `agentic-software-factory-runner-direct`
 root at
-`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-`
 with its `ubuntu-factory-sandbox` context; see
 [configuration](configuration.md#version-2-installed-multi-inbox-policy). Keep
-every existing registered inbox ID/root unchanged. Do not write a candidate over
-`config/mac.yaml`.
+every existing registered inbox ID/root unchanged for an ordinary addition or
+policy edit. P157 remains the Factory host and original-root record; P167
+records the direct-root replacement. Retiring a superseded root has the
+separate procedure below. Do not write a candidate over `config/mac.yaml`.
 
 For an external non-default mailbox root, choose a clean absolute path outside
 the Runner service root. Its ancestors must already be real directories without
@@ -319,6 +321,117 @@ publishing new work. Use the native mailbox-client integration in [the mailbox
 guide](mailbox.md) when possible. A workspace integration may instead publish
 the documented exact-`0644` JSON-plus-marker pairs inside a configured `0700`
 mailbox tree; it does not inherit the native publisher's durability guarantees.
+
+### Retire a superseded external mailbox
+
+Use this only after a distinct replacement root has completed its own
+configured-root and harmless native mailbox acceptance. Retirement does not
+move work from the legacy root and it does not treat a path rename as safe. In
+the reviewed candidate, retain the replacement and all other active inboxes,
+but omit the exact old ID/root pair. Do not reuse either value in the
+candidate.
+
+Run the candidate-revision read-only preflight before stopping services. It
+needs both retained-state checking and the exact old ID:
+
+```sh
+# Mac — tomasz.walczuk
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+repo='/Users/tomasz.walczuk/projects/remote-session-runner'
+go_bin="$root/toolchains/go1.27.1/bin/go"
+candidate="$root/config/mac.next.yaml"
+old_inbox='agentic-software-factory-runner'
+cd "$repo"
+GOCACHE=/private/tmp/remote-session-runner-gocache \
+GOMODCACHE=/private/tmp/remote-session-runner-gomodcache \
+GOTOOLCHAIN=local "$go_bin" run ./src/cmd/runner-local validate-config \
+  --config "$candidate" \
+  --check-mailbox-directories \
+  --check-retained-mailboxes \
+  --retire-mailbox "$old_inbox"
+```
+
+This preflight is non-mutating. It refuses a still-configured, unknown,
+or mismatched inbox, and it refuses retained accepted work or unacknowledged
+terminal work. A retry for the same omitted old ID/root is idempotent; reuse
+of that ID or root in a candidate is not. The directory check verifies the
+replacement candidate, so inspect the legacy tree separately before its
+eventual physical removal. Keep the legacy root intact if it refuses. Do not
+invoke the internal `--activate-mailbox-set` flag by hand or edit `local.db`.
+
+After that read-only preflight and before invoking the installer, stop every
+legacy-root publisher and keep it stopped: native integrations, direct
+workspace-file publishers, interactive clients, scheduled automation, and any
+other process that can write the old root. Stopping Runner quiesces only
+Runner's own services; it does not stop another same-account file writer.
+
+When the preflight is clean, use the installer with the same one old ID. It
+quiesces Runner, then takes the legacy root's exclusive owner-only
+`.runner-mailbox-ingress.lock`, creates and syncs the owner-only `0600`
+`.runner-mailbox-retired` sentinel, uses `fchmod` to make `inbox/` and
+`acks/` `0500`, and rejects the handoff if either frozen directory has any
+entry. It keeps that lock while it repeats retained-state validation and
+records the immutable retirement. The installer enters its no-rollback
+candidate state immediately before it invokes this activation, before it has
+attempted to create the fence:
+
+```sh
+# Mac — tomasz.walczuk
+cd /Users/tomasz.walczuk/projects/remote-session-runner
+deploy/macos/install-launchagents.sh --config \
+  "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml" \
+  --retire-mailbox 'agentic-software-factory-runner'
+```
+
+The fence is cooperative. A native `mailboxclient` holds the corresponding
+shared lock and checks the sentinel immediately before publishing a request or
+ACK pair, so it fails locally after retirement. Direct workspace-file and raw
+writers do not use that protocol. A same-UID writer, including one retaining a
+directory file descriptor from before the fence, can evade it; stopping all
+such writers is a required part of this procedure.
+
+There is one safe atomic-unwind refusal. If this invocation created a **fresh**
+fence and its frozen `inbox/` or `acks/` scan finds residue before the
+post-fence authority open, migration, or retirement tombstone, Runner
+restores both directories to `0700`, syncs them, removes and syncs the sentinel while it
+still holds the exclusive lock, and returns a distinct fresh-residue result.
+Only after the whole unwind succeeds does the installer restore the prior
+active `mac.yaml` and LaunchAgents. That outcome means retirement did not
+happen: inspect and settle the ingress residue, repeat the read-only preflight,
+then start a new handoff.
+
+Every other retirement activation failure remains no-rollback candidate
+repair. A preexisting fence, a failed or incomplete fresh-fence unwind, a fence setup
+failure, and every failure after the post-fence authority open, migration, or
+tombstone leave the candidate state in place. Outside the fully completed
+fresh-residue unwind, do not remove the sentinel, restore write permissions,
+restart old publishers, or revive the old configuration. Rerun the same
+retirement procedure from the candidate repair state.
+
+After a successful handoff, prove the active candidate and Router readiness:
+
+```sh
+# Mac — tomasz.walczuk
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+"$root/bin/runner-local" validate-config \
+  --config "$root/config/mac.yaml" \
+  --check-mailbox-directories \
+  --check-retained-mailboxes
+curl --silent --show-error --fail --unix-socket "$root/run/local-api.sock" \
+  http://runner/health/ready
+```
+
+The installer never deletes the old external tree. The sentinel and `0500`
+ingress directories remain as the logical retirement boundary. Only after this
+postflight and a fresh inspection prove that the retired root is no longer
+active and every publisher remains stopped may an operator remove that exact
+tree under separately authorized maintenance. Never remove its parent
+directory or use physical deletion to force an incomplete retirement. Record
+the direct-root acceptance and the later legacy-retirement outcome separately;
+the Factory transition uses
+[`P167`](../040-implementation-evidence/P167-factory-mailbox-retirement.md),
+while [`P157`](../040-implementation-evidence/P157-factory-sandbox.md) remains
+the historical acceptance of its original root.
 
 ## 4. Install or refresh an accepted Ubuntu service
 
@@ -446,7 +559,7 @@ curl --silent --show-error --fail --max-time 15 \
 
 This checks the `factory-sandbox-poc` Runner application, mTLS identity, and
 public route. It does not prove the separately accepted queued bridge or the
-`agentic-software-factory-runner` mailbox.
+`agentic-software-factory-runner-direct` mailbox.
 
 ## 6. Enable or refresh a queued bridge
 
@@ -528,8 +641,8 @@ runner='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bi
 The output must identify `ubuntu`, `oracle-waclaw-dziwulski-ubuntu-micro-01`,
 and `x86_64`. This CLI command directly selects the queued
 `factory-sandbox` route. It is independent of the direct `factory-sandbox-poc`
-mTLS check. The `agentic-software-factory-runner` mailbox defaults to this
-context and permits `mac-local` as its only override.
+mTLS check. The `agentic-software-factory-runner-direct` mailbox defaults to
+this context and permits `mac-local` as its only override.
 
 ## 7. Onboard each additional remote host (P157)
 

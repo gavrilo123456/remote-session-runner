@@ -3,10 +3,13 @@ package mailboxclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"remote-session-runner/src/internal/mailboxfence"
 )
 
 func TestP104FileOnlyClientPublishesRequestReadsFrozenEventsAndWritesExactAck(t *testing.T) {
@@ -110,6 +113,38 @@ func TestP104FileOnlyClientRejectsMismatchedIDsAndUnsafeEventReferences(t *testi
 	defer cancel()
 	if _, err := client.WaitResponse(ctx, "req-p104-missing"); err == nil {
 		t.Fatal("missing response wait unexpectedly succeeded")
+	}
+}
+
+func TestClientRefusesToPublishIntoRetiredMailboxFence(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "mailbox")
+	for _, directory := range []string{"", "inbox", "acks"} {
+		path := root
+		if directory != "" {
+			path = filepath.Join(root, directory)
+		}
+		if err := os.Mkdir(path, directoryMode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fence, err := mailboxfence.AcquireRetirement(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fence.Close(); err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.WriteRequest("req-retired-client", []byte(`{"request_id":"req-retired-client","operation":"get_command","command_id":"cmd-retired-client"}`))
+	if !errors.Is(err, mailboxfence.ErrRetired) {
+		t.Fatalf("retired mailbox write error=%v, want %v", err, mailboxfence.ErrRetired)
+	}
+	err = client.WriteAcknowledgment("req-retired-client", Response{RequestID: "req-retired-client", ResponseRevision: 1})
+	if !errors.Is(err, mailboxfence.ErrRetired) {
+		t.Fatalf("retired mailbox ACK error=%v, want %v", err, mailboxfence.ErrRetired)
 	}
 }
 

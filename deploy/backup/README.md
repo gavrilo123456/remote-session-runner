@@ -19,7 +19,7 @@ The backup script discovers configured mailbox roots from the active
 /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics
 /Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-
 /Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-
-/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-
+/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-
 ```
 
 It archives:
@@ -118,7 +118,7 @@ Keep both the archive and its adjacent `.sha256` file.
 The account name must again be `tomasz.walczuk`. The active configuration uses
 absolute paths under that account. Restore or clone the `slidestud.io`,
 `agents-work-dispatcher`, and `agentic-software-factory` project checkouts
-first, so their `tmp/` parents exist for the external mailbox roots.
+first, so their external-mailbox parents exist for the configured roots.
 
 The Git bundle in the archive is the authoritative source revision for this
 restore. Verify the outer checksum before extracting anything, then extract

@@ -24,9 +24,10 @@ mac_offline_recovery_mode=0
 mac_recovery_pairs=''
 mac_recovery_sessions=''
 mac_failed_startup_sessions=''
+mac_retire_mailbox=''
 
 usage() {
-	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml] [--b011-controlled-restart] [--recover-stalled [--lost-pair SESSION_ID:COMMAND_ID ...] [--lost-session SESSION_ID ...]] [--recover-failed-startup --failed-session SESSION_ID ...]" >&2
+	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml] [--retire-mailbox MAILBOX_ID] [--b011-controlled-restart] [--recover-stalled [--lost-pair SESSION_ID:COMMAND_ID ...] [--lost-session SESSION_ID ...]] [--recover-failed-startup --failed-session SESSION_ID ...]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -37,6 +38,28 @@ while [ "$#" -gt 0 ]; do
 				exit 2
 			fi
 			config_source=$2
+			shift 2
+			;;
+		--retire-mailbox)
+			if [ "$#" -lt 2 ]; then
+				usage
+				exit 2
+			fi
+			if [ -n "$mac_retire_mailbox" ]; then
+				printf '%s\n' '--retire-mailbox may be specified once.' >&2
+				exit 2
+			fi
+			case "$2" in
+				[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*|'')
+					printf '%s\n' 'invalid --retire-mailbox' >&2
+					exit 2
+					;;
+			esac
+			if [ "${#2}" -gt 128 ]; then
+				printf '%s\n' 'invalid --retire-mailbox' >&2
+				exit 2
+			fi
+			mac_retire_mailbox=$2
 			shift 2
 			;;
 		--b011-controlled-restart)
@@ -144,6 +167,18 @@ if [ "$mac_recover_failed_startup_mode" -eq 0 ] && [ -n "$mac_failed_startup_ses
 fi
 if [ "$mac_recover_failed_startup_mode" -ne 0 ] && [ -z "$mac_failed_startup_sessions" ]; then
 	printf '%s\n' '--recover-failed-startup requires at least one --failed-session.' >&2
+	exit 2
+fi
+if [ -n "$mac_retire_mailbox" ] && [ "$controlled_restart_mode" -ne 0 ]; then
+	printf '%s\n' '--retire-mailbox cannot combine with --b011-controlled-restart.' >&2
+	exit 2
+fi
+if [ -n "$mac_retire_mailbox" ] && [ "$mac_offline_recovery_mode" -ne 0 ]; then
+	printf '%s\n' '--retire-mailbox cannot combine with offline recovery.' >&2
+	exit 2
+fi
+if [ -n "$mac_retire_mailbox" ] && [ -z "$config_source" ]; then
+	printf '%s\n' '--retire-mailbox requires --config with the retired mailbox removed.' >&2
 	exit 2
 fi
 
@@ -785,6 +820,7 @@ candidate_activation_started=0
 candidate_config_handed_off=0
 candidate_startup_attempted=0
 candidate_services_quiesced=0
+mailbox_retirement_residue_restored_exit=3
 cleanup_staging() {
 	if [ -n "$config_stage" ] && [ -e "$config_stage" ]; then
 		# Once the no-rollback boundary is crossed this staged, owner-only copy
@@ -838,10 +874,18 @@ on_exit() {
 			fi
 		elif [ -n "$config_stage" ] && [ -f "$config_stage" ]; then
 			printf 'Candidate activation stopped before config handoff; staged candidate retained at: %s\n' "$config_stage" >&2
-			printf 'Repair by rerunning: %s --config %s\n' "$0" "$config_stage" >&2
+			if [ -n "$mac_retire_mailbox" ]; then
+				printf 'Repair by rerunning: %s --config %s --retire-mailbox %s\n' "$0" "$config_stage" "$mac_retire_mailbox" >&2
+			else
+				printf 'Repair by rerunning: %s --config %s\n' "$0" "$config_stage" >&2
+			fi
 		elif [ -n "$config_source" ]; then
 			printf 'Candidate activation stopped before config handoff; original candidate remains at: %s\n' "$config_source" >&2
-			printf 'Repair by rerunning: %s --config %s\n' "$0" "$config_source" >&2
+			if [ -n "$mac_retire_mailbox" ]; then
+				printf 'Repair by rerunning: %s --config %s --retire-mailbox %s\n' "$0" "$config_source" "$mac_retire_mailbox" >&2
+			else
+				printf 'Repair by rerunning: %s --config %s\n' "$0" "$config_source" >&2
+			fi
 		else
 			printf '%s\n' 'Candidate activation stopped; active mac.yaml is the candidate. Rerun the installer after repair.' >&2
 		fi
@@ -1107,7 +1151,12 @@ else
 fi
 candidate_services_quiesced=1
 
-if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --config "$selected_config"; then
+if [ -n "$mac_retire_mailbox" ]; then
+	if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --retire-mailbox "$mac_retire_mailbox" --config "$selected_config"; then
+		printf '%s\n' 'Retained mailbox retirement validation failed after ingress quiescence.' >&2
+		exit 1
+	fi
+elif ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --config "$selected_config"; then
 	printf '%s\n' 'Retained mailbox validation failed after ingress quiescence.' >&2
 	exit 1
 fi
@@ -1121,7 +1170,22 @@ fi
 # leaves the candidate available for safe repair rather than stranding a newly
 # published marker or restarting V1 on a newer schema.
 candidate_activation_started=1
-if ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --config "$selected_config"; then
+if [ -n "$mac_retire_mailbox" ]; then
+	if "$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --retire-mailbox "$mac_retire_mailbox" --config "$selected_config"; then
+		:
+	else
+		retirement_activation_status=$?
+		if [ "$retirement_activation_status" -eq "$mailbox_retirement_residue_restored_exit" ]; then
+			# The staged binary proved the residue fence was fully unwound before
+			# any authority write, so this remains a safe pre-boundary restore.
+			candidate_activation_started=0
+			printf '%s\n' 'Retired mailbox ingress has residue; its temporary fence was removed and prior LaunchAgents will be restored.' >&2
+			exit 1
+		fi
+		printf '%s\n' 'Candidate mailbox retirement could not be recorded; leaving the candidate state in place for safe repair.' >&2
+		exit 1
+	fi
+elif ! "$staging_directory/runner-local" validate-config --check-retained-mailboxes --activate-mailbox-set --config "$selected_config"; then
 	printf '%s\n' 'Candidate mailbox activation could not be recorded; leaving the candidate state in place for safe repair.' >&2
 	exit 1
 fi

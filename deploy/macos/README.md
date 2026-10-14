@@ -33,13 +33,13 @@ process does not attest an already-running LaunchAgent. See the exact
 
 `mac.v2.yaml.example` is the policy template for named inboxes and profiles. It
 intentionally starts with only `linux-host`, so the checked-in template carries
-no sandbox credentials. The active owner-only V2 policy was established by
-P155/P157/P158, extended by P159 direct workspace ingress, and extended again
-by P165/P166 private malformed-ingress diagnostics. It contains the separately
+no sandbox credentials. The active owner-only V2 policy builds on P155/P157/P158,
+P159 direct workspace ingress, and P165/P166 private malformed-ingress
+diagnostics. It contains the separately
 accepted `sandbox-host` and `factory-sandbox` profiles plus the accepted
-external `slidestud-io` and `agentic-software-factory-runner` mailboxes. Create
-a reviewed owner-only candidate at
-`config/mac.next.yaml`, retain all existing registered roots, and run:
+external `slidestud-io` and `agentic-software-factory-runner-direct` mailboxes.
+Create a reviewed owner-only candidate at `config/mac.next.yaml`, retain all
+existing registered roots for ordinary changes, and run:
 
 ```sh
 deploy/macos/install-launchagents.sh --config \
@@ -54,7 +54,7 @@ The installed current V2 policy has:
 | `analytics` | `.../RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
 | `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
 | `agents-work-dispatcher` | `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` | `ubuntu-current` | `ubuntu-current`, `mac-local` |
-| `agentic-software-factory-runner` | `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-` | `ubuntu-factory-sandbox` | `ubuntu-factory-sandbox`, `mac-local` |
+| `agentic-software-factory-runner-direct` | `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-` | `ubuntu-factory-sandbox` | `ubuntu-factory-sandbox`, `mac-local` |
 
 `ubuntu-sandbox` selects `sandbox-dev` / `remote/sandbox-host`. For mailbox
 work, `analytics` permits that explicit override, while `slidestud-io` uses it
@@ -63,7 +63,7 @@ as the default. `agents-work-dispatcher` defaults to `ubuntu-current`, and
 accepted `sandbox-poc` direct endpoint and its separate secret paths remain in
 the owner-only active configuration. `ubuntu-factory-sandbox` selects
 `factory-sandbox-dev` / `remote/factory-sandbox`; the
-`agentic-software-factory-runner` inbox uses it as the default and permits only
+`agentic-software-factory-runner-direct` inbox uses it as the default and permits only
 `mac-local` as an override. Its `factory-sandbox-poc` direct endpoint and
 separate secret paths also remain owner-only. Direct mTLS, queued bridge, and
 mailbox terminal-response/event/ACK acceptance are distinct gates. The P157
@@ -72,6 +72,8 @@ host result and P158 external mailbox result are recorded in
 and [`040-implementation-evidence/P158-slidestud-external-mailbox.md`](../../040-implementation-evidence/P158-slidestud-external-mailbox.md).
 The Factory sandbox P157 host, direct, queued, and mailbox evidence is recorded
 in [`040-implementation-evidence/P157-factory-sandbox.md`](../../040-implementation-evidence/P157-factory-sandbox.md).
+The replacement direct-root and legacy-retirement record is
+[`040-implementation-evidence/P167-factory-mailbox-retirement.md`](../../040-implementation-evidence/P167-factory-mailbox-retirement.md).
 P159 direct-workspace ingress and P165/P166 diagnostics are recorded in
 [`040-implementation-evidence/P159.md`](../../040-implementation-evidence/P159.md),
 [`040-implementation-evidence/P165.md`](../../040-implementation-evidence/P165.md),
@@ -135,14 +137,61 @@ its five children are owner-owned `0700`; symlinks, unsafe existing paths, and
 missing parents fail closed. If the root is below another repository, exclude
 its runtime directory locally from that repository's VCS view.
 
-The mailbox registry is append-only for this PoC. Adding a root is supported;
-removing, renaming, or moving an inbox needs an explicit later migration after
-its work and artifacts are retired. P158 accepted mailbox ingress only;
+The enrollment registry preserves original ID/root records. Adding a root is
+supported; moving an existing ID is not. Retiring a superseded external root
+requires the explicit procedure below, which writes an immutable retirement
+record only after the retained-mailbox checks pass. P158 accepted mailbox ingress only;
 `sandbox-host` and `factory-sandbox` passed their separate P157 host gates.
-The latter's accepted root is
+The latter's **historical P157** accepted root is
 `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
 A later remote host still needs its own P157 gate even if its profile appears
 in a candidate.
+
+## Explicit external mailbox retirement
+
+First install and live-test a distinct replacement root. Omit the superseded
+ID/root from the reviewed complete candidate, then run the candidate-revision
+read-only check with the exact legacy ID:
+
+```sh
+root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+repo='/Users/tomasz.walczuk/projects/remote-session-runner'
+go_bin="$root/toolchains/go1.27.1/bin/go"
+cd "$repo"
+GOCACHE=/private/tmp/remote-session-runner-gocache \
+GOMODCACHE=/private/tmp/remote-session-runner-gomodcache \
+GOTOOLCHAIN=local "$go_bin" run ./src/cmd/runner-local validate-config \
+  --config "$root/config/mac.next.yaml" \
+  --check-mailbox-directories \
+  --check-retained-mailboxes \
+  --retire-mailbox 'agentic-software-factory-runner'
+```
+
+When that check passes, use the installer with the same one ID:
+
+```sh
+deploy/macos/install-launchagents.sh --config \
+  "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml" \
+  --retire-mailbox 'agentic-software-factory-runner'
+```
+
+The first command is read-only. The installer repeats it after ingress is
+quiescent, then records retirement with the candidate activation. It refuses
+unknown, mismatched, still-configured, active, accepted, or unacknowledged
+mailbox state. A retry for the same omitted ID/root is idempotent, while a
+candidate reuse of either value is rejected. A **fresh** fence that finds
+ingress residue before the post-fence authority open, migration, or retirement
+tombstone is the only safe atomic unwind: it restores the original ingress
+modes and removes its sentinel under the exclusive lock, then the installer
+restores the prior LaunchAgents. A preexisting fence, an incomplete unwind, or any later
+failure remains no-rollback candidate repair. The directory preflight covers
+configured candidate paths; inspect the former root before a physical removal.
+It does not remove the former root or its retained files. Verify the new
+active policy and service health before a separate explicitly authorized
+removal of the exact legacy tree; never delete its parent or alter SQLite to
+work around a refusal.
+The fuller procedure is in
+[`docs/setup.md`](../../docs/setup.md#retire-a-superseded-external-mailbox).
 
 ## Stop and restart behavior
 

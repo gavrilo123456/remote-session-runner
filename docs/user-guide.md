@@ -143,7 +143,7 @@ not test mailbox delivery or the queued bridge.
 The output should identify `ubuntu`,
 `oracle-waclaw-dziwulski-ubuntu-micro-01`, and `x86_64`. This verifies the
 direct Factory sandbox controller only. It does not test its queued bridge or
-the `agentic-software-factory-runner` mailbox.
+the `agentic-software-factory-runner-direct` mailbox.
 
 ### Queued current Ubuntu
 
@@ -199,7 +199,7 @@ The output should identify `ubuntu`,
 `oracle-waclaw-dziwulski-ubuntu-micro-01`, and `x86_64`. This is a queued
 bridge check. It is distinct from the direct mTLS route and from mailbox
 terminal-response/event/ACK evidence. The
-`agentic-software-factory-runner` mailbox uses this queued context by default.
+`agentic-software-factory-runner-direct` mailbox uses this queued context by default.
 
 ## Use a persistent session
 
@@ -299,8 +299,8 @@ transport becomes uncertain.
   resolves to `sandbox-dev` / `remote/sandbox-host`. The CLI does not publish
   mailbox files; use the native publisher or the documented direct workspace
   file path.
-- The `agentic-software-factory-runner` mailbox root is
-  `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
+- The `agentic-software-factory-runner-direct` mailbox root is
+  `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-`.
   It recognizes the `agentic-software-factory` repository alias. Its omitted
   pair resolves to `factory-sandbox-dev` / `remote/factory-sandbox`, and its
   only allowed override is `mac-local`. Use its native publisher or the

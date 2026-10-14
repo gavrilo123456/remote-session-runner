@@ -69,11 +69,13 @@ and [`P158-slidestud-external-mailbox.md`](../../040-implementation-evidence/P15
 `ubuntu@oracle-waclaw-dziwulski-ubuntu-micro-01`. Its Mac queued context is
 `ubuntu-factory-sandbox` (`factory-sandbox-dev` /
 `remote/factory-sandbox`), which is the default for the
-`agentic-software-factory-runner` mailbox at
-`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
+`agentic-software-factory-runner-direct` mailbox at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-`.
 Its direct mTLS endpoint is a separate `factory-sandbox-poc` gate; bridge
 readiness does not establish direct or mailbox terminal-response acceptance.
-See [`P157-factory-sandbox.md`](../../040-implementation-evidence/P157-factory-sandbox.md).
+P157 preserves the original mailbox-root evidence; the direct-root acceptance
+and planned controlled legacy retirement are recorded in
+[`P167-factory-mailbox-retirement.md`](../../040-implementation-evidence/P167-factory-mailbox-retirement.md).
 
 Every later remote profile needs separate key pinning, controller authorization,
 service deployment, and P157 end-to-end acceptance. A profile not yet attempted

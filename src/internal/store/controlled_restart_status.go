@@ -13,6 +13,12 @@ const (
 	// must not accidentally make an older schema look safe to inspect.
 	controlledRestartStatusLegacySchemaVersion = 33
 
+	// controlledRestartStatusFirstPlanSchemaVersion is the first authority
+	// schema with durable controlled-restart plan tables. Later migrations
+	// retain those table shapes, so their read-only status inspection remains
+	// compatible with schema 34 as well as the current schema.
+	controlledRestartStatusFirstPlanSchemaVersion = 34
+
 	// ControlledRestartStatusLegacy means the authority is at schema 33, before
 	// durable controlled-restart plans existed.
 	ControlledRestartStatusLegacy ControlledRestartStatus = "legacy"

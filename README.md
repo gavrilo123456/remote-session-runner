@@ -12,7 +12,7 @@ account selection, arbitrary host selection, or automatic fallback.
 
 The installed Mac configuration is version 2. It preserves the legacy
 `default` mailbox and adds `analytics` plus the external `slidestud-io`,
-`agents-work-dispatcher`, and `agentic-software-factory-runner` mailboxes, each
+`agents-work-dispatcher`, and `agentic-software-factory-runner-direct` mailboxes, each
 with independent inbox,
 outbox, events, ACK, and diagnostic paths. Each inbox has a default execution
 context and can allow an explicit complete context override. `default` permits
@@ -23,8 +23,8 @@ context and can allow an explicit complete context override. `default` permits
 `agents-work-dispatcher` at
 `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` defaults
 to `ubuntu-current` and also permits `mac-local`;
-`agentic-software-factory-runner` at
-`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`
+`agentic-software-factory-runner-direct` at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-`
 defaults to `ubuntu-factory-sandbox` and also permits `mac-local`. P155
 accepted `linux-host`; P157 separately accepted `sandbox-host`;
 P157-factory-sandbox separately accepted `factory-sandbox` through distinct
@@ -39,6 +39,16 @@ identity, script-representation, and bounded-size failures. A direct mTLS
 result does not prove the queued bridge or a mailbox terminal exchange; those
 are separate gates for every profile. Other new hosts remain unavailable until
 they pass their own P157 gate.
+
+The direct Factory root supersedes the P157 legacy root. Its retirement is a
+separate, explicit candidate activation; it never deletes the legacy tree as a
+side effect. Only a fresh fence that finds ingress residue before the
+post-fence authority open, migration, or retirement tombstone can complete an
+atomic unwind while the exclusive lock is held and restore the prior
+LaunchAgents. Every other retirement activation failure remains in candidate
+repair state.
+See the mailbox-retirement
+record in [`P167`](040-implementation-evidence/P167-factory-mailbox-retirement.md).
 
 BUG-015 corrected one shared persistent-shell boundary. An ordinary nonzero
 command under `set -e` or `set -euo pipefail` now produces a complete terminal

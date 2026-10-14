@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	p157FactoryMailboxID       = "agentic-software-factory-runner"
-	p157FactoryMailboxRoot     = "/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-"
+	p157FactoryMailboxID       = "agentic-software-factory-runner-direct"
+	p157FactoryMailboxRoot     = "/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-"
 	p157FactoryRepositoryAlias = "agentic-software-factory"
 	p157FactoryContextName     = "ubuntu-factory-sandbox"
 	p157FactoryEnvironment     = "factory-sandbox-dev"

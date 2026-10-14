@@ -30,6 +30,11 @@ func TestControlledRestartStatusReadOnlyRecognizesOnlyAcceptedStates(t *testing.
 			want: ControlledRestartStatusMigratedWithoutPlan,
 		},
 		{
+			name: "schema 35 with plan tables",
+			seed: controlledRestartStatusSchema35AuthorityPath,
+			want: ControlledRestartStatusMigratedWithoutPlan,
+		},
+		{
 			name: "current schema without plan",
 			seed: b008CurrentAuthorityPath,
 			want: ControlledRestartStatusMigratedWithoutPlan,
@@ -243,11 +248,19 @@ func controlledRestartStatusLegacyAuthorityPath(t *testing.T) string {
 		_ = database.Close()
 		t.Fatal(err)
 	}
+	if _, err := database.Exec(`DROP TABLE mailbox_configuration_retirements`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DROP INDEX ux_mailbox_configuration_registry_id_root`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
 	if _, err := database.Exec(`DROP TABLE exec_commandless_lost_runtime_recovery_finalizations`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)
 	}
-	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version IN (34, 35)`); err != nil {
+	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version IN (34, 35, 36)`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)
 	}
@@ -261,9 +274,38 @@ func controlledRestartStatusLegacyAuthorityPath(t *testing.T) string {
 	return path
 }
 
-func controlledRestartStatusSchema34AuthorityPath(t *testing.T) string {
+func controlledRestartStatusSchema35AuthorityPath(t *testing.T) string {
 	t.Helper()
 	path := b008CurrentAuthorityPath(t)
+	database, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "rw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DROP TABLE mailbox_configuration_retirements`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DROP INDEX ux_mailbox_configuration_registry_id_root`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version = 36`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`PRAGMA user_version = 35`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func controlledRestartStatusSchema34AuthorityPath(t *testing.T) string {
+	t.Helper()
+	path := controlledRestartStatusSchema35AuthorityPath(t)
 	database, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "rw"))
 	if err != nil {
 		t.Fatal(err)

@@ -113,7 +113,7 @@ test-p155-macos-multi-inbox: check-go
 test-p157-sandbox-host: check-go
 	RSR_P157_SANDBOX_HOST_GATE=1 GOTOOLCHAIN=local "$(GO)" test ./src/internal/runnerlocal -run '^TestP157SandboxHostMailboxGate$$' -count=1 -v
 
-# Installed external agentic-software-factory inbox -> configured
+# Installed direct-root agentic-software-factory inbox -> configured
 # factory-sandbox default. The native client publishes one harmless marker-last
 # request without target fields, verifies terminal events, then ACKs it.
 test-p157-factory-sandbox-host: check-go

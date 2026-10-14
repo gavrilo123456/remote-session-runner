@@ -17,7 +17,7 @@ is a record of completed gates, not a live-health substitute. Run the checks in
 | Factory direct route | `factory-sandbox-poc` → `https://145.241.255.66:8443` | Factory-sandbox P157 Runner application mTLS readiness, separate from the queued mailbox request. |
 | Current queued route | `ubuntu-current` → `remote/linux-host` | P155 permanent restricted bridge and an end-to-end analytics mailbox override. |
 | Sandbox queued route | `ubuntu-sandbox` → `remote/sandbox-host` | P157 permanent restricted bridge and native end-to-end analytics mailbox request; P158 external SlideStudio default and P159 direct-workspace-file default. |
-| Factory queued route | `ubuntu-factory-sandbox` → `remote/factory-sandbox` | Factory-sandbox P157 restricted bridge and native `agentic-software-factory-runner` mailbox default. |
+| Factory queued route | `ubuntu-factory-sandbox` → `remote/factory-sandbox` | Factory-sandbox P157 restricted bridge; P167 direct-root native mailbox control uses `agentic-software-factory-runner-direct`. |
 
 The associated source and evidence closeout are:
 
@@ -33,6 +33,8 @@ The associated source and evidence closeout are:
   through primary Gitea, the automatic GitHub mirror, and all three Ubuntu
   checkouts: `a148c257aa70daad67512b30e7cfe4ebfa792705`
 - Detailed record: [P157 factory-sandbox evidence](../040-implementation-evidence/P157-factory-sandbox.md)
+- Direct Factory mailbox replacement and planned-retirement record:
+  [P167](../040-implementation-evidence/P167-factory-mailbox-retirement.md)
 - P158 source and host-gate revision:
   `ce74e368f2aa40f9db90d1bb049f96fd533c5753`
 - Detailed record: [P158 SlideStudio external-mailbox evidence](../040-implementation-evidence/P158-slidestud-external-mailbox.md)
@@ -110,7 +112,8 @@ Runner profile is `factory-sandbox`, environment `factory-sandbox-dev`, queued
 context `ubuntu-factory-sandbox`, direct endpoint `factory-sandbox-poc`, public
 URL `https://145.241.255.66:8443`, and host listener `10.0.0.30:8443`.
 
-The active mailbox is `agentic-software-factory-runner` at
+At the time of this P157 gate, the active mailbox was
+`agentic-software-factory-runner` at
 `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
 Its repository alias is `agentic-software-factory`; it defaults to
 `ubuntu-factory-sandbox` and permits only that context or `mac-local`. The
@@ -150,6 +153,28 @@ separate P157 source/evidence commit
 `a148c257aa70daad67512b30e7cfe4ebfa792705` was pushed to primary Gitea,
 verified in the automatic GitHub mirror, and fast-forwarded on all three Ubuntu
 checkouts; the P157 record has the exact delivery commands and revisions.
+
+## Current Factory mailbox replacement
+
+The direct Factory mailbox is
+`agentic-software-factory-runner-direct` at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-`.
+It retains the same `agentic-software-factory` alias and default
+`ubuntu-factory-sandbox` context, with only `mac-local` permitted as an
+override. Its installed native mailbox control is evidence for the configured
+direct root; it does not rewrite the original P157 root or turn direct mTLS
+readiness into mailbox evidence.
+
+The installed control remains named `make test-p157-factory-sandbox-host` for
+the P157 host-route gate, but it resolves the direct mailbox ID/root. Its name
+does not preserve the old mailbox as an active target.
+
+[`P167`](../040-implementation-evidence/P167-factory-mailbox-retirement.md)
+records the direct-root acceptance and the planned controlled retirement of the
+legacy ID/root. It does not mark logical retirement or physical deletion of the
+old tree as done until the installer reports the controlled handoff, the
+post-retirement read-only check passes, and the exact authorized removal has
+been recorded.
 
 ## What P158 proved
 

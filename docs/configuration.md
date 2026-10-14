@@ -14,7 +14,7 @@ profile runs as `ubuntu`.
 | Mac account and root | `tomasz.walczuk`; `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner` |
 | Ubuntu account and root | `ubuntu`; `/home/ubuntu/.local/share/remote-session-runner` |
 | Mac active config | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.yaml` |
-| Active mailbox roots | `default` service-root mailbox; `analytics` service-root mailbox; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-`; `agentic-software-factory-runner` at `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-` |
+| Active mailbox roots | `default` service-root mailbox; `analytics` service-root mailbox; `slidestud-io` at `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-`; `agents-work-dispatcher` at `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-`; `agentic-software-factory-runner-direct` at `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-` |
 | Accepted remote profiles | `linux-host`; `sandbox-host`; `factory-sandbox` |
 | `linux-host` direct endpoint and bind | `linux-poc`; `https://129.151.232.40:8443`; `10.0.0.200:8443` |
 | `sandbox-host` direct endpoint and bind | `sandbox-poc`; `https://132.226.205.205:8443`; `10.0.0.14:8443` |
@@ -130,8 +130,10 @@ a safe first V2 policy without sandbox credentials. The active current V2
 policy is owner-only and outside Git. P155/P157/P158 established its
 multi-inbox/two-host topology; P159 added direct workspace ingress and P165/P166
 added malformed-ingress diagnostics. The separate P157 `factory-sandbox`
-onboarding added a third accepted remote profile and its external
-`agentic-software-factory-runner` inbox. The policy includes `analytics`, the
+onboarding added a third accepted remote profile and its original external
+mailbox. The direct-root replacement is recorded separately in
+[`P167`](../040-implementation-evidence/P167-factory-mailbox-retirement.md).
+The policy includes `analytics`, the
 accepted `sandbox-host` with its explicitly allowed `ubuntu-sandbox` override,
 and the external `slidestud-io` inbox that defaults to that context:
 
@@ -229,8 +231,8 @@ mailboxes:
     default_execution: ubuntu-current
     allowed_execution: [ubuntu-current, mac-local]
     durable_orphan_cleanup: false
-  agentic-software-factory-runner:
-    root: "/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-"
+  agentic-software-factory-runner-direct:
+    root: "/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-"
     repository_aliases: [agentic-software-factory]
     default_execution: ubuntu-factory-sandbox
     allowed_execution: [ubuntu-factory-sandbox, mac-local]
@@ -245,7 +247,7 @@ source mode is `empty`. `default` retains only `mac-local` and
 `ubuntu-current`; `analytics` may explicitly select `ubuntu-sandbox`;
 `slidestud-io` uses `ubuntu-sandbox` as its default and also allows the other
 two contexts; `agents-work-dispatcher` defaults to `ubuntu-current` while
-allowing a Mac-local override; and `agentic-software-factory-runner` defaults
+allowing a Mac-local override; and `agentic-software-factory-runner-direct` defaults
 to `ubuntu-factory-sandbox` while allowing only its factory context or an
 explicit Mac-local override.
 
@@ -277,9 +279,77 @@ edit the active file in place.
   rejects an endpoint/target mismatch before a mutation.
 - Inbox IDs, aliases, contexts, profile names, and endpoint names are bounded
   safe identifiers. `repository_aliases` are audit/policy labels only.
-- The mailbox registry is append-only in this PoC. Adding a root is supported;
-  removing, renaming, or relocating one requires a later explicit migration
-  after its durable work and files are retired.
+- The enrollment registry preserves every original ID/root pair append-only.
+  Adding a root is supported. Renaming or relocating an existing pair is not:
+  add a distinct replacement, then use the explicit retirement procedure below
+  to omit the old pair. A retirement is an immutable audit record, and its ID
+  and root cannot be reused in a later candidate.
+
+### Deliberate external-mailbox retirement
+
+Retirement is a controlled policy transition, not a YAML omission or a file
+cleanup shortcut. First add and accept a distinct replacement ID/root in the
+reviewed candidate. Then omit the superseded ID from that same complete
+candidate and supply that one exact ID with `--retire-mailbox`. The candidate must not
+rename the old ID, move it to a different root, reuse either value, or still
+contain the ID being retired.
+
+`runner-local validate-config --check-retained-mailboxes --retire-mailbox ID`
+models this transition without writing the database. It rejects an unknown or
+mismatched registered root, retained accepted work, or terminal work that
+still requires an ACK. An exact repeat for the same omitted ID/root is
+idempotent, which permits post-boundary repair; a candidate that reuses a
+retired ID or root is rejected. Run
+`--check-mailbox-directories` as well to verify the replacement candidate's
+paths. Before the final installer invocation, stop every publisher that can
+write to the legacy root: native integrations, direct-workspace publishers,
+interactive clients, and automation. Keep them stopped through the handoff.
+Quiescing Runner's services does not stop an independent file writer.
+
+The installer repeats the retained-state check after it has quiesced its own
+services. At the retirement activation boundary, it takes the legacy root's
+exclusive owner-only `.runner-mailbox-ingress.lock`, creates and syncs the
+owner-only `0600` `.runner-mailbox-retired` sentinel, then uses `fchmod` to
+freeze both `inbox/` and `acks/` at `0500`. It scans both frozen directories
+and refuses retirement if either has an entry. The exclusive lock remains held
+while it revalidates durable state and records the immutable retirement and the
+complete candidate set; a plain `validate-config` invocation does not retire
+anything.
+
+This is a cooperative ingress fence. The native `mailboxclient` takes its
+shared lock and checks the persistent sentinel immediately before it publishes
+a marker-last request or ACK pair. A raw or direct-workspace writer does not
+participate. A same-UID process can deliberately evade this coordination, and
+a process that retained a directory descriptor before the fence may also evade
+the ordinary pathname check. Stop those writers rather than treating the lock
+or modes as adversarial isolation.
+
+There is one narrow pre-boundary refusal. If a **fresh** fence finds an entry
+in the frozen ingress directories before the post-fence authority open,
+migration, or retirement tombstone, Runner restores both directories to `0700`,
+syncs them, removes and syncs the sentinel, and releases the exclusive lock.
+Only after that complete, lock-held atomic unwind does it return the distinct
+fresh-residue outcome, allowing the installer to restore the prior active
+configuration and LaunchAgents. No retirement was recorded; inspect and
+settle the residue, then repeat the read-only preflight.
+
+Every other activation failure is no-rollback candidate repair. That includes a
+preexisting fence, any incomplete fresh-fence unwind, fence setup failure, and
+every failure after the post-fence authority open, migration, or tombstone,
+including later durable-state, registration, path-preparation, or startup
+failure. Outside the fully completed fresh-residue unwind, do not restore the
+old configuration or restart its publishers, remove the sentinel, or restore
+the ingress write modes; rerun the same retirement procedure from the candidate
+state.
+
+After a successful retirement, the prior configuration is deliberately
+rejected and the retired ID/root cannot become active again. The durable
+history remains in `local.db`. Runner does not delete an external mailbox tree
+as part of retirement: inspect the new active configuration and its postflight
+first, preserve anything required by retention policy, then make any exact
+physical-tree removal a separate explicitly authorized operator action. Do not
+remove a parent directory, edit SQLite, or remove registry/tombstone records.
+Use the command sequence in the [setup runbook](setup.md#retire-a-superseded-external-mailbox).
 
 ## Safe Mac V1 → V2 upgrade
 

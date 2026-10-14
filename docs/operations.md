@@ -25,7 +25,7 @@ does not pass a new host gate. See [current-host evidence](current-host-evidence
 | `default` mailbox | Installed and accepted in P155 | Mac readiness, configured root ownership, and native terminal response/event/ACK. |
 | `analytics` mailbox | Installed in P155; `sandbox-host` override accepted in P157 | Same checks; each remote override additionally needs its selected bridge status. |
 | `slidestud-io` mailbox | Native path accepted in P158; direct workspace-file path accepted in P159 | External owner-only tree, Mac readiness, no-selection request resolved to `sandbox-host`, complete event/ACK, and sandbox P128 zero-work status. |
-| `agentic-software-factory-runner` mailbox | Accepted in P157-factory-sandbox | External owner-only tree, no-selection request resolved to `factory-sandbox`, complete event/ACK, and Factory sandbox zero-work status. |
+| `agentic-software-factory-runner-direct` mailbox | Direct-root acceptance recorded in P167; P157 remains the historical legacy-root gate | External owner-only tree, no-selection request resolved to `factory-sandbox`, complete event/ACK, and Factory sandbox zero-work status. |
 | Any additional profile | **NOT RUN** | Its own P157 service, route, and end-to-end acceptance. |
 
 P155 proved `default` local-default work and an `analytics` allowed queued
@@ -40,9 +40,14 @@ then accepted safe malformed mailbox ingress on the Mac: it wrote a private
 diagnostic and created no remote work. It did not run a new host, bridge, or
 direct-mTLS gate. P157-factory-sandbox independently accepted the
 `factory-sandbox` direct mTLS route, restricted queued bridge, and the
-`agentic-software-factory-runner` native mailbox exchange at
+original `agentic-software-factory-runner` native mailbox exchange at
 `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-`.
-Its omitted selection resolves to `factory-sandbox-dev` /
+That accepted root is historical evidence. The current direct replacement is
+`agentic-software-factory-runner-direct` at
+`/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-`;
+its acceptance and controlled legacy-root retirement are tracked in
+[`P167`](../040-implementation-evidence/P167-factory-mailbox-retirement.md).
+The direct root's omitted selection resolves to `factory-sandbox-dev` /
 `remote/factory-sandbox` through `ubuntu-factory-sandbox`; its only mailbox
 override is `mac-local`. The direct, queued, and mailbox gates remain distinct.
 
@@ -155,7 +160,7 @@ root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
   check_mailbox_tree "$root/mailboxes/analytics"
   check_mailbox_tree "/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-"
   check_mailbox_tree "/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-"
-  check_mailbox_tree "/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-"
+  check_mailbox_tree "/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-"
 )
 ```
 
@@ -279,7 +284,7 @@ deploy/ssh/install-queued-bridge.sh status
 ```
 
 The service/bridge checks are independent of the public direct mTLS readiness
-and the `agentic-software-factory-runner` mailbox terminal exchange.
+and the `agentic-software-factory-runner-direct` mailbox terminal exchange.
 
 ### Verify a running Ubuntu service build revision
 
@@ -367,7 +372,7 @@ credentials, or resource IDs.
 | `event_gaps_total`, `output_truncations_total` | Durable retained-output problems | 1 |
 | `storage_errors_total`, `cleanup_failures_total` | Observed process/database cleanup errors | 1 |
 | `mailbox_backlog` | Durable accepted exchanges plus safe complete zero-byte JSON/marker pairs with no durable exchange or diagnostic | 32 |
-| `mailbox_backlog_by_inbox` | Same backlog, split by configured safe inbox IDs such as `default`, `analytics`, `slidestud-io`, and `agentic-software-factory-runner` | Inspect each nonzero value |
+| `mailbox_backlog_by_inbox` | Same backlog, split by configured safe inbox IDs such as `default`, `analytics`, `slidestud-io`, and `agentic-software-factory-runner-direct` | Inspect each nonzero value |
 
 ### How the four queue and slot gauges fit together
 
@@ -477,14 +482,56 @@ not an online recovery path.
 For mailbox, context, or route policy changes, use an owner-only V2 candidate
 and `install-launchagents.sh --config <mac.next.yaml>` as described in
 [setup](setup.md#3-upgrade-to-version-2-or-add-an-inbox). Do not modify active
-`mac.yaml`, remove a registered inbox, or attempt a V1 rollback after a V2
-activation boundary.
+`mac.yaml`, omit a registered inbox through an ordinary candidate activation,
+or attempt a V1 rollback after a V2 activation boundary.
 
 `durable_orphan_cleanup` is a separate per-inbox owner decision. Review its
 lifecycle status output first. A candidate that enables it is activated through
 the same V2 procedure and then requires this Mac service refresh; do not enable
 it merely because `mailbox_backlog` is nonzero. The bounded pass removes only
 durable-proven marker-only residue and never replays work.
+
+### Retire a superseded external mailbox
+
+First make the replacement root active and prove one fresh native terminal
+response, events, and ACK through it. Then use the candidate-revision
+read-only `validate-config --check-retained-mailboxes --retire-mailbox ID`
+preflight and, only when it is clean, the matching installer
+`--retire-mailbox ID` activation described in
+[setup](setup.md#retire-a-superseded-external-mailbox). The check is specific
+to one registered ID/root pair and refuses active, accepted, or
+unacknowledged retained state. Before that installer activation, stop all
+processes that can publish to the former root, including native integrations,
+direct workspace-file writers, interactive clients, and automation. Runner
+service quiescence alone does not stop those writers.
+
+The activation takes the root's exclusive owner-only ingress lock, creates and
+syncs a persistent owner-only retirement sentinel, changes `inbox/` and
+`acks/` to `0500` with `fchmod`, and rejects any entry in either frozen
+directory. It holds the fence while it repeats durable-state validation and
+records the retirement. The native client takes the matching shared lock and
+checks that sentinel immediately before a request or ACK publication. The
+fence is cooperative: raw/direct writers, a same-UID process, or a process
+with a retained directory descriptor can evade it, so they must remain
+stopped.
+
+One early refusal may safely and atomically unwind to restore the old
+services: a **fresh** fence that finds ingress residue before the post-fence
+authority open, migration, or retirement tombstone restores the two ingress
+directories and removes its sentinel while holding the exclusive lock. Only
+after that complete unwind does
+the installer restore the prior active configuration and LaunchAgents. Treat it
+as a failed retirement: settle the residue and repeat the read-only preflight.
+
+Every other activation failure is no-rollback candidate repair. A preexisting
+fence, an incomplete fresh-fence unwind, fence setup failure, or any failure after the
+post-fence authority open, migration, or tombstone must not restore the old
+configuration, remove the sentinel, restore `inbox/` or `acks/` write
+permissions, or restart old publishers. The successful installer records
+retirement; it does not remove files from the former root. Verify the new active
+`mac.yaml`, both services, and the new root before separately authorized
+physical cleanup. Never remove a parent directory, manually alter `local.db`,
+or use a service restart to bypass a retirement refusal.
 
 To unload the services explicitly:
 
@@ -522,6 +569,7 @@ below.
 | `endpoint/target mismatch` | Direct endpoint's bound target profile | Choose the endpoint that is configured for that exact remote profile; do not retry a mutation with a changed target. |
 | Partial mailbox selection | Request has only `environment` or `execution_target` | Submit neither to use the inbox default, or submit the complete allowed pair. |
 | Mailbox selection or alias rejected | Root, context allow-list, repository alias, response `inbox_id` | Use the intended root and its configured policy; do not invent aliases or host names. |
+| Mailbox retirement refused | Complete candidate, exact retired ID/root, lifecycle/retention preflight, publisher quiescence, new-root acceptance, and whether the installer reported a fully restored fresh-residue fence | If it reports the temporary fresh fence was removed and prior services restored, settle the ingress residue and repeat the read-only preflight. Otherwise stay in candidate repair: do not delete files, manually remove a persistent sentinel, restore frozen ingress permissions, or edit SQLite to make the check pass. |
 | External mailbox preflight fails | Candidate root's real ancestor chain, owner, modes, and symlink state | Repair the external parent/path without changing its ancestors for Runner; rerun the candidate installer. If activation already began, repair the retained candidate instead of restoring an older policy. |
 | No mailbox response | Read-only lifecycle status, then publisher type, root tree, JSON/marker order, owner/mode/path | Follow the deterministic [`request ID → outbox → command ID → events` lookup](mailbox.md#find-a-request-result). For a pair that passed safety but failed ingress validation, inspect `diagnostics/<request_id>.json`: it is private `0600`, has no ACK, and requires a new request ID/key for correction. `request_marker_only`, `ack_marker_only`, or `unsafe_inert` means a marker is not execution evidence; preserve `retain_unproven_inert` entries for review. |
 | Lifecycle status is `terminal_unacknowledged` | The matching retained outbox, command ID, event prefix, and response revision | Preserve the terminal evidence, then publish a valid ACK pair. A terminal flag does not mean the command succeeded. |

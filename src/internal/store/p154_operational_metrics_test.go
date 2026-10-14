@@ -174,6 +174,14 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.ExecContext(ctx, `DROP TABLE mailbox_configuration_retirements`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP INDEX ux_mailbox_configuration_registry_id_root`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
 	if _, err := db.ExecContext(ctx, `DROP TABLE mailbox_configuration_registry`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
@@ -203,7 +211,7 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32, 33, 34, 35)`); err != nil {
+	if _, err := db.ExecContext(ctx, `DELETE FROM runner_schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32, 33, 34, 35, 36)`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}

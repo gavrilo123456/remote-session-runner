@@ -17,7 +17,7 @@ namespaces:
 | `analytics` | `~/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` | `analytics-dbt` |
 | `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` | `slidestud-io` |
 | `agents-work-dispatcher` | `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` | `ubuntu-current` | `ubuntu-current`, `mac-local` | `agents-work-dispatcher` |
-| `agentic-software-factory-runner` | `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/tmp/mailbox-` | `ubuntu-factory-sandbox` | `ubuntu-factory-sandbox`, `mac-local` | `agentic-software-factory` |
+| `agentic-software-factory-runner-direct` | `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-` | `ubuntu-factory-sandbox` | `ubuntu-factory-sandbox`, `mac-local` | `agentic-software-factory` |
 
 `mac-local` means `mac-dev` and `local/mac-workstation`.
 `ubuntu-current` means `linux-dev` and `remote/linux-host`.
@@ -35,7 +35,7 @@ flowchart LR
     Analytics[analytics mailbox\ninbox, outbox, events, acks, diagnostics]
     SlideStudio[slidestud-io mailbox\ninbox, outbox, events, acks, diagnostics]
     Dispatcher[agents-work-dispatcher mailbox\ninbox, outbox, events, acks, diagnostics]
-    Factory[agentic-software-factory-runner mailbox\ninbox, outbox, events, acks, diagnostics]
+    Factory[agentic-software-factory-runner-direct mailbox\ninbox, outbox, events, acks, diagnostics]
     Router[runner-local\nUnix API, Router, mailbox runtimes]
     LocalDB[(local.db)]
     LocalD[runner-locald\nlocal execution authority]
@@ -185,7 +185,7 @@ mode.
 | Mac local | `runner --endpoint local` or a mailbox resolved to `mac-local` | `local_user/tomasz.walczuk`; Bash as `tomasz.walczuk` | Local authority. |
 | Queued current remote | `runner --endpoint local` with `linux-dev` / `remote` / `linux-host`, or a mailbox resolved to `ubuntu-current` | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches the current Ubuntu host only through its pinned restricted SSH bridge. |
 | Queued sandbox remote | `runner --endpoint local` with `sandbox-dev` / `remote` / `sandbox-host`, an `analytics` override, or a `slidestud-io` default | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches the sandbox Ubuntu host only through its separate pinned restricted SSH bridge. `default` does not permit this context. |
-| Queued factory remote | `runner --endpoint local` with `factory-sandbox-dev` / `remote` / `factory-sandbox`, or an `agentic-software-factory-runner` default | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches the factory Ubuntu host only through its separate pinned restricted SSH bridge. |
+| Queued factory remote | `runner --endpoint local` with `factory-sandbox-dev` / `remote` / `factory-sandbox`, or an `agentic-software-factory-runner-direct` default | `queued_mac/tomasz.walczuk`; Bash as `ubuntu` | Mac records local intent, then reaches the factory Ubuntu host only through its separate pinned restricted SSH bridge. |
 | Direct current remote | `runner --endpoint linux-poc --config <mac.yaml>` with `linux-dev` / `remote` / `linux-host` | `direct_mtls/tomasz.walczuk`; Bash as `ubuntu` | Public direct HTTPS at `https://129.151.232.40:8443` with TLS 1.3 mTLS. |
 | Direct sandbox remote | `runner --endpoint sandbox-poc --config <mac.yaml>` with `sandbox-dev` / `remote` / `sandbox-host` | `direct_mtls/tomasz.walczuk`; Bash as `ubuntu` | Public direct HTTPS at `https://132.226.205.205:8443` with TLS 1.3 mTLS. |
 | Direct factory remote | `runner --endpoint factory-sandbox-poc --config <mac.yaml>` with `factory-sandbox-dev` / `remote` / `factory-sandbox` | `direct_mtls/tomasz.walczuk`; Bash as `ubuntu` | Public direct HTTPS at `https://145.241.255.66:8443` with TLS 1.3 mTLS. |
@@ -209,7 +209,7 @@ sequenceDiagram
     R->>L: Resolve mac-local; execute as tomasz.walczuk
     L-->>R: Events and terminal result
     R-->>M: Same-root outbox and events
-  else Inbox remote default: slidestud-io or agentic-software-factory-runner
+  else Inbox remote default: slidestud-io or agentic-software-factory-runner-direct
     M->>R: Marker-last request with no selection pair
     R-->>M: Durable local acceptance
     R->>S: Fixed selected-profile bridge protocol over pinned SSH
@@ -362,7 +362,7 @@ record: its bootstrap alias is `factory-sandbox`
 (`ubuntu@145.241.255.66`), its queued context is
 `ubuntu-factory-sandbox`, and its public direct endpoint is
 `factory-sandbox-poc` at `https://145.241.255.66:8443`.
-`agentic-software-factory-runner` uses that context as its default. The
+`agentic-software-factory-runner-direct` uses that context as its default. The
 direct-mTLS client material and the queued-bridge host-key pin and dispatcher
 identity are independent per profile. Every other new profile remains **NOT
 RUN** until it completes its own P157 gate. See

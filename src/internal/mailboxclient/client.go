@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"remote-session-runner/src/internal/mailboxfence"
 )
 
 const (
@@ -164,6 +166,11 @@ func (c *Client) WriteRequest(requestID string, raw []byte) error {
 	if err := validateOwnerDirectory(inbox); err != nil {
 		return fmt.Errorf("%w: inbox: %v", ErrRequest, err)
 	}
+	lock, err := mailboxfence.AcquireShared(context.Background(), c.root)
+	if err != nil {
+		return fmt.Errorf("%w: acquire ingress publication lock: %w", ErrRequest, err)
+	}
+	defer lock.Close()
 	if err := writeExclusiveSynced(filepath.Join(inbox, requestID+".json"), raw); err != nil {
 		return fmt.Errorf("%w: write request: %v", ErrRequest, err)
 	}
@@ -448,6 +455,11 @@ func (c *Client) WriteAcknowledgment(requestID string, response Response) error 
 	if err := validateOwnerDirectory(acks); err != nil {
 		return fmt.Errorf("%w: ACK directory: %v", ErrAcknowledgment, err)
 	}
+	lock, err := mailboxfence.AcquireShared(context.Background(), c.root)
+	if err != nil {
+		return fmt.Errorf("%w: acquire ingress publication lock: %w", ErrAcknowledgment, err)
+	}
+	defer lock.Close()
 	ack := Acknowledgment{
 		RequestID: requestID, ResponseRevision: response.ResponseRevision,
 		AvailableEventSequence: cloneInt64(response.AvailableEventSequence),

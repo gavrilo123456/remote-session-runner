@@ -70,8 +70,8 @@ func TestBUG011OpenExistingRestartPreflightReadOnlyAcceptsSupportedAuthoritiesWi
 			path: b008CurrentAuthorityPath,
 		},
 		{
-			name: "schema 34",
-			path: controlledRestartStatusSchema34AuthorityPath,
+			name: "schema 35",
+			path: controlledRestartStatusSchema35AuthorityPath,
 		},
 		{
 			name: "schema 24",
