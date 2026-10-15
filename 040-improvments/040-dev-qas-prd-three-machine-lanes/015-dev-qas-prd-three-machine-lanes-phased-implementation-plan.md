@@ -24,13 +24,14 @@ Canonical release-record host IDs are `mac-control-plane`, `linux-host`,
 
 ## L0 — read-only capacity, route, and ownership baseline
 
-**Deliverable:** a signed-off read-only inventory for the Mac and all three
-Ubuntu hosts.
+**Deliverable:** an approved unsigned read-only inventory for the Mac and all
+three Ubuntu hosts.
 
 1. Record bytes/inodes, memory, CPU, existing listeners, cgroup-v2 hierarchy
    and per-device I/O capability, host-management build/release scope, service
    roots, workspaces, output/log retention, global-journal consumption, build
-   staging, release-cache budget, normal Ubuntu `go env GOCACHE GOMODCACHE`
+   staging, release-cache and distinct same-host release-cache-backup volume
+   identity/quota/budget/retention, normal Ubuntu `go env GOCACHE GOMODCACHE`
    paths/use, backups, existing PRD public-direct reachability, planned
    release-transport and Dev/QAS endpoint firewall/NAT/listener prerequisites,
    queued-bridge/listener identities, and current health/build revision. Record
@@ -45,15 +46,15 @@ Ubuntu hosts.
 4. Derive, but do not sign or publish, the two policy-scope types per host: one
    proposed `host_management` policy and one proposed `lane_runtime` policy for
    each contemplated lane. The `host_management` policy names only measured
-   management scope, PRD safety floor, cache/staging/log budget, and headroom; it
-   can support the L3 bootstrap before lane storage exists. Each `lane_runtime`
+   management scope, PRD safety floor, cache/staging/backup/log budget, and
+   headroom; it can support the L3 bootstrap before lane storage exists. Each `lane_runtime`
    policy names one lane plus the complete PRD/Dev/QAS/management envelope. On
    Linux, Dev/QAS policies name their lane-slice caps, while a PRD policy records
    its measured unsuffixed host-baseline scope/floor and any separately
    configured PRD controls; all name measured capacity, bounded
-   build/release/anchor/authority scope, per-device I/O limits, disk/inode
-   reservations,
-   normal-Go-cache budget, and a 30-percent free byte/inode floor. Prove the
+   build/release/anchor/authority/PKI scope, per-device I/O limits, disk/inode
+   reservations, release-cache-backup budget, normal-Go-cache budget, and a
+   30-percent free byte/inode floor. Prove the
    full envelope preserves PRD when a Dev or QAS slice reaches its hard cap. On
    the Mac each lane-runtime policy additionally
    names verified Dev/QAS APFS volume UUIDs/mountpoints/quotas, byte/log/cache
@@ -79,9 +80,12 @@ Ubuntu hosts.
    `:9443` mTLS after bootstrap; L4/L5 validate the new lane routes after their
    listeners exist.
 
-**Exit gate:** all four machines have a green inventory, with planned routes
-either feasible or recorded deliberately absent. This phase creates no lane
-service, key, certificate, mailbox, network rule, or deployment.
+**Exit gate:** all four machines have a green **unsigned** preflight inventory,
+with planned routes either feasible or recorded deliberately absent. This phase
+creates no lane service, key, certificate, mailbox, network rule, deployment, or
+release record. After L3 installs each helper and host attestation key, it must
+repeat that host's L0 locally and publish the first signed
+`capacity_measurement_attestation` before any policy is signed.
 
 ### Required external precondition — Dev/QAS storage preparation
 
@@ -120,25 +124,38 @@ admission contracts. No installer or live service changes occur in this phase.
    must implement the complete graph: fresh `prepare → candidate_closed →
    reopen_prepared → reopen_authorized → target_opening → reopened →
    acceptance_pending → accepted → archived`; replacement `prepare →
-   incumbent_closure_pending →` that same sequence; fresh pre-target-opening or
-   post-closure replacement failure `failed_closed → aborted → archived`; and a
-   failure from `target_opening`, including partial target-open fanout, only
-   through `target_closure_pending → failed_closed`, then either exact-incumbent
-   higher-epoch recovery or closed abort. A failed `incumbent_closure_pending`
-   operation may only retry/renew/safe-stop until complete closure; it cannot
-   abort, archive, release, or allocate recovery. Implement
-   `legacy_prd_reserved`, `prepared`, `active`, `superseded`, and `retired`
-   states; restart/retry/reconciliation; lock-held same-lane configuration
-   successor/rollback; and legacy-PRD reservation refresh after reviewed V2
-   maintenance. Persist/revalidate descriptor-derived filesystem identity and
-   Mac volume UUID/mountpoint. Fixture renamed, bind-aliased, same-path
-   replacement, symlink, unsafe ancestor, ownership, non-`0700` mailbox trees,
-   allowed retained ancillary entries, and undeclared or replaced ancillary
-   entries. Fixture Dev/QAS operation-record CAS, concurrent-refresh refusal,
-   incumbent/target-closure crash/retry, target-start failure, partial-target-
-   open failure, post-open acceptance failure, higher-epoch exact-incumbent
-   recovery and recovery-abort, closed abort, and archival/release only after
-   sealed evidence before another transition can allocate.
+   incumbent_closure_pending → incumbent_quiescing → incumbent_quiesced →`
+   that same target sequence; and post-open failure only through
+   `target_closure_pending → target_quiescing → failed_closed`. A closure
+   attestation is not a quiesce result: each quiescing state must obtain a
+   supported terminal disposition for running, queued, resumable, and uncertain
+   work, retain deferred request/ACK evidence, and prove zero work before target
+   staging, recovery, or archive. A failed `incumbent_closure_pending` may only
+   retry/renew/safe-stop until complete closure; it cannot abort, archive,
+   release, or allocate recovery. Implement `legacy_prd_reserved`, `prepared`,
+   `active`, `superseded`, and `retired` states; restart/retry/reconciliation;
+   lock-held same-lane configuration successor/rollback; and legacy-PRD
+   reservation refresh after reviewed V2 maintenance.
+
+   Treat missing, corrupt, or rollback-suspected registry bytes as a
+   registry-recovery stop: block allocation, activation, pointer changes, and
+   lock release; preserve evidence; and allow a separately approved
+   root-maintenance reconstruction only from verified authority/anchor facts and
+   a fresh descriptor L0 inventory. It is not a V1 signer operation. In-flight
+   Dev/QAS work receives an explicit closed disposition. For PRD, classify
+   durable fence markers/snapshots, service/anchor state, and commit evidence,
+   then use only the existing fence-aware V2 abort or V3 repair path; never
+   infer a V2 restart or release the group. Persist/revalidate descriptor-derived
+   filesystem identity and Mac volume UUID/mountpoint. Fixture renamed,
+   bind-aliased, same-path replacement, symlink, unsafe ancestor, ownership,
+   non-`0700` mailbox trees, allowed retained ancillary entries, and undeclared
+   or replaced ancillary entries. Fixture Dev/QAS operation CAS, concurrent
+   refresh refusal, closure/quiesce crash/retry, uncertain-work retained
+   evidence, target-start and partial-open failure, post-open target quiescence,
+   higher-epoch exact-incumbent recovery/recovery-abort, closed abort, and
+   archival/release only after sealed evidence. Fixture idle and mid-transition
+   registry loss/corruption/rollback, including L6 fencing/fenced and
+   post-commit repair recovery.
 4. Add safe V3 health/status attestation for lane, source revision, artifact
    digest, configuration digest, schema version, and safe admission status.
    Keep the V1 mailbox response schema unchanged.
@@ -199,10 +216,12 @@ live lane installation.
    release-transport, security-anchor, root, socket, lock, staging, and log
    templates. Include the Mac-only root `runner-release-authority-signer`,
    `runner-release-authority-agent`, and
-   `runner-release-authority-approval` packages, their distinct audit-token/code
-   identity requirements, signer/anchor authority-state socket modes, and the
-   persistent root authority-state preservation rule for management update or
-   rollback. A lane invocation refuses a mismatched or existing different-lane
+   `runner-release-authority-approval`, `runner-release-transport-pki-issuer`,
+   and `runner-release-transport-pki-installer` packages. Define their distinct
+   audit-token/code identities, signer/anchor authority-state socket modes,
+   issuer-only CA-key access, installer-only local private-key generation, and
+   the persistent root authority-state preservation rule for management update
+   or rollback. A lane invocation refuses a mismatched or existing different-lane
    resource. It does not create or repair any external mailbox root or APFS
    volume.
 2. Make Dev/QAS queued bridges lane-specific with root-owned
@@ -219,14 +238,24 @@ live lane installation.
 3. Add the fixed direct `{lane, remote-profile}` endpoint/bind table and the
    separate host-specific release-record `:9443` table, firewall/security-rule
    preflight, direct per-lane server/client mTLS material, and release-transport
-   CA/trust-bundle/leaf material. The root-owned CA private key stays outside
-   Git and every lane root; the Mac client leaf is readable only by the authority
-   agent and each Ubuntu server private-key file is mode `0600`, installed by
-   root, and owned only by its own dedicated non-login release-transport service
-   UID. Define URI/IP
-   SANs, principal maps, safe fingerprint attestation, rotation, and revocation.
-   Fixture ordinary TLS verification against every literal public-IP URL; no
-   name-verification bypass is acceptable.
+   CA/trust-bundle/leaf material. The Mac PKI issuer alone has normal-process
+   CA-key access; every measured PKI installer generates and retains only its
+   own local private key and DER CSR. Implement the one-use issuance mandate,
+   fixed authenticated mandate handoff, host-signed `pki_certificate_request`
+   outbox record, issuer receipt, and final exact host-management authorization
+   carrying only the non-secret certificate/trust package. During initial
+   bootstrap, fixture the distinct one-time root-console public-CSR/package
+   handoff, which transfers no private key, source, artifact, command, or
+   reusable credential and is disabled after first mTLS health. The Mac client
+   leaf is readable only by the authority agent and each Ubuntu server
+   private-key file is mode `0600`, root-installed, and owned only by its own
+   dedicated non-login release-transport service UID. Define URI/IP SANs,
+   principal maps, active-peer fingerprint/SPKI allowlists, dual-trust overlap,
+   post-overlap old-leaf rejection, safe fingerprint attestation, rotation, and
+   ledger recording. Fixture wrong peer/CSR/SAN/host/mandate, key-export attempt,
+   package mismatch, retired but chain-valid leaf rejection, and ordinary TLS
+   verification against every literal public-IP URL; no name-verification bypass
+   is acceptable.
 4. Add `runner-log-capture` as a candidate-attested component on every host.
    Dev/QAS Linux units use the wrapper and set systemd stdout/stderr to `null`;
    Dev/QAS LaunchAgents use it and direct launchd stdout/stderr to `null`. The
@@ -238,9 +267,9 @@ live lane installation.
    `committed`.
 5. Implement the scoped capacity-policy validator and staged controls.
    A `host_management` policy can authorize only its bounded build/release/anchor/
-   authority-signer/agent/approval scope and host cache/staging/headroom; a
-   `lane_runtime` policy is required for every lane installer and carries the
-   full PRD/Dev/QAS/management envelope.
+   authority-signer/agent/approval/PKI scope and host cache/staging/backup/
+   headroom; a `lane_runtime` policy is required for every lane installer and
+   carries the full PRD/Dev/QAS/management envelope.
    Linux uses cgroup-v2 hard caps for the full Dev/QAS lane slice plus a
    separately bounded host-management scope, lane disk and inode reservations,
    and the selected account's normal bounded Go-cache paths; no installer cleans
@@ -250,9 +279,9 @@ live lane installation.
    release/Go-cache budgets, 10 GiB snapshot budget, the documented
    `max(20 GiB, 15%)` floor, bounded logging, and background priority policy
    while recording `compute_reservation: none`. Deliberately
-   fill each isolated lane volume/cache/log allocation and each Linux
-   listener/bridge and host-management build/transport/authority scope; prove new
-   admission refuses safely while PRD remains usable. Missing or wrong scope,
+   fill each isolated lane volume/cache/log allocation, cache-backup budget, and
+   each Linux listener/bridge and host-management build/transport/authority/PKI
+   scope; prove new admission refuses safely while PRD remains usable. Missing or wrong scope,
    policy, volume, quota, cgroup/slice membership, I/O device cap, Go-cache
    bound, external mailbox handoff, cache/snapshot accounting, or log-capture
    boundary fails closed.
@@ -275,136 +304,158 @@ compatible root-owned host-management baseline on every physical host. This
 phase installs no Dev/QAS/PRD lane service or mailbox.
 
 1. Implement and hermetically test `runner-security-anchor-helper`,
-   `runner-release-builder`, `runner-release-transport`, and the Mac-only
-   `runner-release-authority-signer`, `runner-release-authority-agent`, and
-   `runner-release-authority-approval`, their root bootstrap packages,
-   root-owned sockets/state, sealed unprivileged build staging, constrained
-   build/install/ingress-attestation operations, and no-bypass peer-credential
-   checks. The signer must be the only authority-key operation for every
-   release-authority-signed closed-table record type; its private keys,
-   mandates, consumed-approval journal, accepted-record IDs, and verified
-   transition/high-water state remain root-owned outside artifacts, lane roots,
-   caches, and continuity bundles. The authority agent is the only audit-token/
-   label/code-identity-validated signer peer; the approval tool has no signer
-   socket and creates an exact, replay-safe root mandate only after interactive
-   authorization. Implement finite root-state renewal grants with exact context,
-   generation maxima, issuance cap, expiry, fsync high-water update, and no
-   added revocation/key/lane/host/phase authority. Implement the approval-free,
-   one-shot authority-time-probe operation only for a fresh authenticated
-   host-bound challenge. Fixture shared-UID and arbitrary-root socket attempts,
-   registry mutation, unapproved/wrong-body/wrong-type/expired/replayed
-   approvals, grant gap/fork/past-cap/expiry, two successive allowed renewals,
-   wrong-host/nonce/stale/replayed time probes, authority-state rollback,
-   private-key read/replacement, and authority-key rotation. At this point they
-   are source/test artifacts only; no host installation is attempted.
+   `runner-release-builder`, `runner-release-transport`, the Mac-only
+   `runner-release-authority-signer`, `runner-release-authority-agent`,
+   `runner-release-authority-approval`, and release-transport PKI issuer and
+   installer components on their documented hosts. Implement their root bootstrap
+   packages, root-owned sockets/state, sealed unprivileged build staging,
+   constrained build/install/ingress/capacity-attestation operations, and
+   no-bypass peer-credential checks. The signer remains the only authority-key
+   operation for every authority-signed closed-table record. Its private keys,
+   mandates, consumed-approval journal, accepted-record IDs, verified
+   transition/high-water state, and one-use PKI issuance mandates remain
+   root-owned outside artifacts, lane roots, caches, and continuity bundles.
+   The authority agent is the only audit-token/label/code-identity-validated
+   signer peer; the approval tool has no signer socket and creates an exact,
+   replay-safe root mandate only after interactive authorization.
+
+   Implement finite root-state renewal grants with exact context, generation
+   maxima, issuance cap, expiry, `renewal_warning_at`, fsync high-water update,
+   durable alerts, and no added revocation/key/lane/host/phase authority. Implement
+   the approval-free one-shot authority-time probe only for a fresh authenticated
+   host-bound challenge. Implement the one-use PKI issuance-mandate →
+   host-signed request → issuer receipt → reviewed normal final authorization
+   sequence, including the fixed non-secret mandate handoff. Fixture shared-UID
+   and arbitrary-root socket attempts, registry mutation, unapproved/wrong-body/
+   wrong-type/expired/replayed approvals, grant gap/fork/past-cap/expiry and
+   warning, two successive allowed renewals, wrong-host/nonce/stale/replayed time
+   probes, authority-state rollback, private-key read/replacement, authority-key
+   rotation, PKI wrong peer/CSR/SAN/host/mandate, key export, and receipt/package
+   mismatch. At this point they are source/test artifacts only; no host
+   installation is attempted.
 2. Implement the closed V1 envelope, JCS UTF-8 body, domain-separated SHA-256
    ID/Ed25519 signature, closed signer-role map, canonical-form rejection, and
    golden macOS/Linux AMD64/Linux ARM64 vectors for
    `host_build_attestation`, `candidate_manifest`, `promotion_authorization`,
    `promotion_attestation`, `lane_acceptance`,
    `ingress_admission_directive`, `ingress_admission_attestation`,
-   `capacity_policy`, `host_management_manifest`,
+   `capacity_measurement_attestation`, `capacity_policy`,
+   `pki_certificate_request`, `host_management_manifest`,
    `host_management_authorization`, `host_management_attestation`,
    `host_attestation_key_set`, `release_revocation_ledger`, and
    `authority_key_set`. Fixture an unknown/wrong host signer, wrong record-type
-   signer, canonical-form mismatch, and every host-key bootstrap/rotation/
-   revocation rejection.
+   signer, canonical-form mismatch, stale/missing/tampered/wrong-host capacity
+   measurement, and every host-key bootstrap/rotation/revocation rejection.
 3. Implement the root anchor's full-sync high-water state, constrained
    root-protected attestation key, authority/host-key chains, cumulative ledger
-   validation order and expired-ledger recovery, and helper-owned single-use
-   nonce/time-probe correlation. On the Mac add the read-only authority-state
-   endpoint for the authority agent only; on every host add the separate
-   release-transport endpoint limited to record verification/cache/outbox and
-   time-probe create/consume operations. Validate audit-token/label/code identity
-   on macOS and dedicated transport UID/systemd unit/cgroup/executable identity
-   on Linux. Fixture an unprivileged `ubuntu`/Mac service user, arbitrary root
-   peer, or transport peer cannot read an attestation or authority private key,
-   choose an evidence path, forge a build/install/ingress attestation or
-   authority record, mutate anchor state, or downgrade the helper/signer.
-   Fixture expiry, skew, replay/delay, helper unavailable, stale/replaced cache,
-   ledger/key fork, transport endpoint misuse, initial/stale-ledger time-probe
-   bootstrap with no prior time proof, clock rollback, and fail-closed recovery.
-4. Implement the fixed authenticated release-record transport: authority-agent-
-   only Mac local Unix socket plus Ubuntu public/private `:9443` mTLS routes,
-   closed outbox/record and time-probe API, idempotent fsync/rename cache,
-   host-signed build, promotion, ingress, and host-management attestation
-   retrieval, and no source/artifact/shell/SQLite path. The Mac builder uses a
-   protected helper outbox, never a transport peer; the signer uses only its
-   dedicated socket. Fixture the Mac client leaf readable only by the authority
-   agent and every Ubuntu server private-key file mode `0600`, root-installed,
-   and owned only by its own dedicated non-login release-transport service UID.
-   No component is installed yet.
+   validation order and expired-ledger recovery, helper-owned single-use
+   nonce/time-probe correlation, and the fixed `attest-capacity-measurement`
+   operation. It reads only its compiled host inventory through descriptors and
+   service-manager/kernel inspection, accepts no caller path/value/profile, and
+   signs the resulting capacity measurement to the protected outbox. On the Mac
+   add the read-only authority-state endpoint for the authority agent only; on
+   every host add the separate release-transport endpoint limited to record
+   verification/cache/outbox, time-probe create/consume, capacity measurement,
+   and constrained PKI certificate-request attestation. Validate Mac
+   audit-token/label/code identity and Linux dedicated transport
+   UID/systemd unit/cgroup/executable identity. Fixture an unprivileged
+   `ubuntu`/Mac service user, arbitrary root peer, or transport peer cannot read
+   an attestation or authority private key, choose evidence paths or measured
+   values, forge a build/install/ingress/capacity/PKI request attestation,
+   or give the PKI operation caller-chosen CSR/SAN/path/key bytes, mutate anchor
+   state, or downgrade helper/signer. Fixture expiry, skew,
+   replay/delay, helper unavailable, stale/replaced cache, ledger/key fork,
+   transport endpoint misuse, initial/stale-ledger time-probe bootstrap with no
+   prior time proof, clock rollback, capacity measurement remeasurement mismatch,
+   and fail-closed recovery.
+4. Implement the fixed authenticated release-record transport: authenticated
+   authority-agent-only Mac local Unix socket plus Ubuntu public/private `:9443`
+   mTLS routes, closed outbox/record/time-probe/capacity-measurement/PKI-request
+   API, idempotent fsync/rename cache, host-signed build, promotion, ingress,
+   capacity, PKI-request, and host-management attestation retrieval, and no
+   source/artifact/shell/SQLite path. The Mac builder uses a protected helper
+   outbox, never a transport peer; the signer uses only its dedicated socket.
+   Fixture the Mac local audit identity and Ubuntu mTLS identity equivalently,
+   fixed PKI mandate handoff with no body/key material, the Mac client leaf
+   readable only by the authority agent, and every Ubuntu server private-key
+   file mode `0600`, root-installed and owned only by its dedicated non-login
+   release-transport service UID. No component is installed yet.
 5. Implement and fixture both capacity-policy scopes and signed ingress control.
-   `host_management` can authorize only bounded management and Mac authority
-   component scope; a
-   `lane_runtime` policy must match the promoted lane and full resource
-   envelope. Implement authority signing/distribution, host validation, and the
-   root helper's aggregate `attest-ingress-applied` operation over the complete
-   ingress-surface inventory. Implement directives on L1's fail-closed
-   interface: each binds candidate, UUIDv7 transition, host, lane,
-   configuration, `directive_role`, epoch, admission generation (`0` closed,
-   `1` transport-ready, `2` open), and independently monotonic lease
-   generation. Permit `active_runtime_closure` only as a current-runtime closed
-   epoch; permit `candidate_admission` as an exact authorized target context,
-   with its pending-to-active switch only while both contexts are closed.
-   Require exact host-signed `ingress_admission_attestation` records for every
-   closed, transport-ready, and open gate. Fixture wrong scope/host, expired
-   measurement, wrong cgroup/device, missing Go-cache bound, false Mac
-   compute-reservation claim, finite directive-grant renewal, two successive
-   allowed renewals, skipped/stale lease, grant cap/expiry, a single global
-   no-new-revocations ledger-grant CAS under concurrent lane activity,
-   expiry before a remote cohort completes, incumbent closure followed by a
-   higher candidate epoch, same-epoch identity/configuration rejection,
-   closure-pending no-quiesce/no-child behavior, fence-versus-submit,
-   local/queued/importer races, cache loss/restore, abort/retry,
-   repair-closure-pending then sealed post-commit repair handoff, and every
-   directive-fanout crash.
+   `host_management` can authorize only bounded management, PKI, and Mac
+   authority component scope; a `lane_runtime` policy must match the promoted
+   lane and full resource envelope. A policy must name one unexpired host-signed
+   `capacity_measurement_attestation` and its deterministic evaluation digest;
+   host acceptance repeats the measurement and refuses changed identity or an
+   insufficient live value. Include cache-backup volume identity/quota/budget in
+   the envelope. Implement authority signing/distribution, host validation, and
+   the root helper's aggregate `attest-ingress-applied` operation over the complete
+   ingress-surface inventory. Implement directives on L1's fail-closed interface:
+   each binds candidate, UUIDv7 transition, host, lane, configuration,
+   `directive_role`, epoch, admission generation (`0` closed, `1`
+   transport-ready, `2` open), and independently monotonic lease generation.
+   Require exact host-signed ingress attestations for every gate. Fixture wrong
+   scope/host, expired/missing/tampered capacity measurement, remeasurement
+   mismatch, wrong cgroup/device, missing Go-cache or backup-volume bound, false
+   Mac compute-reservation claim, cache backup saturation, verified cache
+   rehydration, missing-cache-and-backup closed stop, finite directive-grant
+   renewal, warning/cap/expiry, single global ledger-grant CAS under concurrent
+   lane activity, expiry before a remote cohort completes, incumbent closure then
+   quiesce/zero-work then higher candidate epoch, same-epoch identity/configuration
+   rejection, target closure/quiesce before archive, fence-versus-submit,
+   local/queued/importer races, abort/retry, repair-closure-pending sealed handoff,
+   and every directive-fanout crash.
 6. After steps 1–5 pass, commit/push/mirror/pull through the normal source
    delivery chain. Then, only after a separately approved privileged bootstrap
-   preflight, take a fresh L0 measurement and bootstrap in the fixed order
+   preflight, take the unsigned L0 inventory and bootstrap in the fixed order
    `mac-control-plane`, `linux-host`, `sandbox-host`, `factory-sandbox`. First
    install and verify on the Mac the complete root-owned management row:
-   `runner-security-anchor-helper`, `runner-release-authority-signer`,
-   `runner-release-authority-agent`, `runner-release-authority-approval`, fixed
-   bootstrap `runner-release-builder`, and local `runner-release-transport`.
-   Create/import the authority key only into the root signer, create its root
-   authority state and audit-token/code-identity socket rules, derive the public
-   key/key ID/fingerprint, and prove it exactly matches the pinned public anchor
-   before any remote policy, certificate, time probe, or host-management record
-   is signed; never distribute that private key. Create the root-owned
-   release-transport CA/private key and trust bundles outside Git/lane roots,
-   then install the Mac client leaf/private key only through the authority agent.
+   security anchor, authority signer/agent/approval, PKI issuer and local PKI
+   installer, fixed bootstrap builder, and local release transport. Create/import
+   the authority key only into the root signer, create root authority state and
+   audit-token/code-identity socket rules, derive its public key/key ID/fingerprint,
+   and prove it matches the pinned anchor before any normal policy or record is
+   signed. Create the root-owned CA/trust material outside Git/lane roots. Use
+   the preflight's one-time root-console public-CSR/package handoff to install the
+   first Mac leaf; no private key, source, lane artifact, shell command, or
+   reusable credential crosses it.
+
    On each Ubuntu host in order install its helper, fixed bootstrap builder,
-   dedicated non-login release transport, root-installed mode-`0600` server
-   leaf/private-key file owned only by that service UID, CA trust bundle,
-   literal-IP/URI SANs, and firewall/NAT route.
-   Before advancing to the next host, verify every recorded source/toolchain/
-   input/binary digest, bootstrap builder tuple allow-list/path/UID, CA/leaf
-   fingerprints and trust/SAN chain, pinned bootstrap key/ledger anchors,
-   immutable canonical `host_id` → initial `signer_key_id`/public-key mapping
-   for all four hosts, root-owned cache/socket/state ownership, constrained
-   signer/agent/approval/transport peer checks, host-attestation key protection,
-   and the exact local socket or Ubuntu mTLS/time-probe health gate. This is the
-   one signed-host-management-authorization exception. A failed initial bootstrap
-   signs no host-management manifest: preserve evidence, disable/remove only the
-   newly installed management artifacts/listener/trust material, and take a
-   fresh L0 before retrying. The fixed bootstrap builder may produce only the
-   first management matrix through sealed staging; after the first verified
-   management installation, the preceding healthy management manifest admits
-   every later builder. Only after all hosts pass may the authority sign the
-   per-host `host_management` policies. It creates no lane root, mailbox, direct
-   endpoint, queued listener, or lane configuration.
+   dedicated non-login release transport, and PKI installer. Use the same
+   host-specific root-console public-CSR/package tuple to install its first
+   server leaf/trust bundle, fixed URI/IP SANs, and firewall/NAT route; then prove
+   normal mTLS/time-probe health. After each helper/attestation key is installed,
+   make its fresh local signed capacity measurement before any policy for that
+   host. Before advancing, verify the approved immutable all-four-host
+   `host_id → initial signer key` mapping package and the installed mapping on
+   the just-completed host, all source/toolchain/input/binary and PKI tuple
+   digests, root cache/backup/socket/state ownership, constrained signer/agent/
+   approval/transport/PKI peer checks, and the local-socket or mTLS/time-probe
+   health gate. After the fourth host, verify the installed anchors/mappings on
+   all four hosts together. A failed initial bootstrap signs no management
+   manifest: preserve evidence, disable/remove only newly installed management
+   artifacts/listener/trust material, and take fresh unsigned L0 before retrying.
+   The fixed bootstrap builder may produce only the first management matrix
+   through sealed staging; after the first verified management installation, the
+   preceding healthy management manifest admits every later builder. Only after
+   all hosts pass and the four fresh signed capacity-measurement attestations
+   verify may the authority sign the per-host `host_management` policies. It
+   creates no lane root, mailbox, direct endpoint, queued listener, or lane
+   configuration.
 7. Through that baseline, produce the complete **host-management** matrix on all
-   four hosts, including the Mac signer, agent, and approval components; collect
-   root-protected build attestations, publish a signed host-management manifest/
-   authorization set bound to the `host_management` policies, stage one host at
-   a time, collect host-management attestations, and establish the compatible
-   installed manifest. Test rollback before a management commit and prove no
-   active lane root, process, configuration, mailbox, or ingress state changes.
-   A signer/agent/approval update must preserve/validate the root authority state
-   and public-anchor identity, not replace or restore it. Where a later
-   management update affects active V3 lanes, fixture the 900-second
-   directive-lease margin and 600-second update-or-verified-rollback guard.
+   four hosts, including the Mac signer, agent, approval, PKI issuer and local
+   installer, plus an installer on every Ubuntu host. Collect root-protected
+   build attestations, publish a signed host-management manifest/authorization
+   set bound to the `host_management` policies, stage one host at a time, collect
+   host-management attestations, and establish the compatible installed manifest.
+   Test rollback before a management commit and prove no active lane root,
+   process, configuration, mailbox, or ingress state changes. A signer/agent/
+   approval/PKI update must preserve and validate root authority state and public
+   anchor identity, not replace or restore it. Fixture a later PKI rotation's
+   issuance-mandate/request/receipt/final-authorization sequence, dual trust and
+   active-peer overlap, one-host reload, new-chain mTLS/time proof, and old-leaf
+   rejection before retirement. Where a later management update affects active
+   V3 lanes, fixture the 900-second directive-lease margin and 600-second
+   update-or-verified-rollback guard.
 8. Build the separate complete **lane-runtime** matrix through the
    root-controlled builder: Mac `runner`, `runner-local`, `runner-locald`,
    `runner-log-capture`; each Ubuntu `runnerd`, `runner-ssh-bridge`,
@@ -428,10 +479,11 @@ installation occurs in this phase.
 **Deliverable:** an isolated Dev control plane and one Dev service on each
 accepted Ubuntu profile.
 
-1. Repeat L0 immediately before live change. Verify the approved storage
-   handoff manifest by descriptor and the exact healthy host-management manifest
-   required by the candidate, then sign and fan out fresh per-host `lane_runtime`
-   capacity-policy records. Under the registry lock, seed
+1. Repeat L0 immediately before live change. Each helper publishes a fresh
+   signed `capacity_measurement_attestation`; verify it, its live remeasurement,
+   the approved storage handoff manifest by descriptor, and the exact healthy
+   host-management manifest required by the candidate before signing and fanning
+   out fresh per-host `lane_runtime` capacity-policy records. Under the registry lock, seed
    `legacy_prd_reserved` mailbox records, including each retained-ancillary
    inventory, and protected legacy port-22 bridge records from the fresh V2
    inventory. Do not create or repair an external root/volume.
@@ -454,7 +506,9 @@ accepted Ubuntu profile.
    the Mac's named target open directive and require its complete aggregate
    ingress attestation before permitting Mac ingress. Any target-open fanout
    failure enters `target_closure_pending` and reaches `failed_closed` only after
-   fresh aggregate closure attestations. Run source/static/installed tests and a
+   fresh aggregate closure attestations, `target_quiescing`, supported terminal
+   disposition/retained deferred evidence, and a zero-work postflight. Run
+   source/static/installed tests and a
    fresh native mailbox acceptance for every Dev route: terminal response,
    complete event prefix, exact ACK, and zero-work postflight.
 5. Prove one positive dedicated queued route and one separate positive direct
@@ -470,9 +524,10 @@ accepted Ubuntu profile.
    complete installation attestations verify does the authority sign the immutable
    Dev `lane_acceptance` record. Atomically record that acceptance, seal the live
    evidence, and compare-and-swap `accepted → archived` to release the one-active
-   record. A live-suite or acceptance failure first closes any target that has
-   entered `target_opening`, then follows the recorded failed-closed recovery or
-   abort path.
+   record. A live-suite or acceptance failure first closes and quiesces any target
+   that has entered `target_opening`, retaining uncertain-work evidence and
+   proving zero work, then follows the recorded failed-closed recovery or abort
+   path.
 
 **Exit gate:** Dev is live and lane-attested across the whole cohort, has one
 signed Dev `lane_acceptance`, and PRD is unchanged.
@@ -483,10 +538,11 @@ signed Dev `lane_acceptance`, and PRD is unchanged.
 Dev-accepted candidate manifest, Dev `lane_acceptance`, QAS authorization, and
 host artifacts.
 
-1. Repeat L0 after Dev has been active. Verify the signed Dev `lane_acceptance`,
-   the candidate's required healthy host-management manifest, and the approved
-   QAS storage handoff, then sign and fan out fresh per-host `lane_runtime` capacity-policy
-   records. Stop if Dev consumption would make the Linux measured PRD
+1. Repeat L0 after Dev has been active. Each helper publishes a fresh signed
+   `capacity_measurement_attestation`; verify it and its live remeasurement, the
+   signed Dev `lane_acceptance`, the candidate's required healthy host-management
+   manifest, and the approved QAS storage handoff before signing and fanning out
+   fresh per-host `lane_runtime` capacity-policy records. Stop if Dev consumption would make the Linux measured PRD
    headroom/floor
    or Mac quota/headroom/log/snapshot budget unsafe; Mac compute contention
    remains the explicit first-rollout non-guarantee.
@@ -501,7 +557,9 @@ host artifacts.
    durably enter `target_opening` before the first QAS `open` directive, then
    apply the remote and Mac named open directives with their complete aggregate
    ingress attestations. A partial open failure first completes
-   `target_closure_pending`. Repeat L4 positive route tests for QAS. Prove all
+   `target_closure_pending → target_quiescing` with supported terminal
+   disposition, retained deferred evidence, and zero work. Repeat L4 positive
+   route tests for QAS. Prove all
    six pre-L6 foreign mTLS directions
    per profile (Dev↔QAS, each of Dev/QAS to legacy PRD, and legacy PRD to each
    new lane) and the equivalent queued key/wrapper-to-foreign-socket attempts
@@ -513,8 +571,9 @@ host artifacts.
    QAS live-acceptance contract and complete installation attestations verify,
    the authority signs the immutable QAS `lane_acceptance` record. Atomically
    record it, seal the live evidence, and compare-and-swap `accepted → archived`.
-   An open/live-acceptance failure closes the target before failed-closed recovery
-   or abort.
+   An open/live-acceptance failure closes and quiesces the target with supported
+   terminal disposition and zero-work evidence before failed-closed recovery or
+   abort.
 
 **Exit gate:** QAS and Dev run concurrently, both have complete signed lane
 acceptance records and are isolated, and PRD remains on its prior accepted
@@ -526,8 +585,10 @@ revision.
 PRD and receives only a QAS-accepted candidate manifest, QAS `lane_acceptance`,
 fresh PRD authorization, and complete promotion/live-acceptance chain.
 
-1. Before entering `prepare`, repeat L0, validate the fresh capacity/storage
-   measurements, and sign/fan out the per-host `lane_runtime` capacity-policy records. Stop on
+1. Before entering `prepare`, repeat L0, collect and verify each fresh signed
+   `capacity_measurement_attestation` plus its live remeasurement and the fresh
+   capacity/storage measurements, then sign/fan out the per-host `lane_runtime`
+   capacity-policy records. Stop on
    a legacy reservation, configuration, bridge, policy, storage, or
    host-management mismatch. In `prepare`, acquire the atomic PRD
    operation-group lock and allocate the durable PRD `lane_transition_id` with

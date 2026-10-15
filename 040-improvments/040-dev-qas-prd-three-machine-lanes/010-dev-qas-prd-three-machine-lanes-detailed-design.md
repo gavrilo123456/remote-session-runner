@@ -893,11 +893,11 @@ The V1 payload contracts are:
 | `ingress_admission_attestation` | Exact directive record ID, candidate, transition, lane, canonical host ID, resolved configuration digest, directive role, epoch, admission generation, lease generation, and the exact sorted required ingress-surface inventory. For each surface it records applied/rejected/expired outcome and safe evidence digest, plus observed time. It is signed by that host's root-protected attestation key; only an exact aggregate `applied` result covering every required surface can satisfy closed, transport-ready, or open transition gates. |
 | `capacity_measurement_attestation` | Canonical host ID; observation/expiry timestamps; canonical inventory and safe values for CPU/memory/task/device capacity, cgroup/slice membership, filesystem/volume/device identity, free bytes/inodes, quota, cache/staging/backup use, listeners, and active work; evidence references; and the deterministic `capacity_evaluation_digest`. It is signed by the root-protected attestation key for that host after the helper performs the L0 measurement. |
 | `capacity_policy` | `capacity_policy_version: 1`; canonical host ID; `policy_scope` of exactly `host_management` or `lane_runtime`; exact unexpired `capacity_measurement_attestation_id` and expected `capacity_evaluation_digest`; and validity interval. A `host_management` policy has only the bounded management scope, cache/staging/backup/log budget, PRD safety floor, and measured headroom. A `lane_runtime` policy has exactly one `release_lane`. On Linux, Dev/QAS require their cgroup-v2 lane slice/scope and hard CPU, memory, task, and per-device I/O caps plus measured PRD headroom/floor; PRD records the measured unsuffixed host-baseline scope/floor and optional separately configured PRD controls without claiming a dedicated slice. On the Mac, Dev/QAS require APFS volume/quota/byte/cache/log/snapshot/headroom fields; PRD names either its measured `host_free_space_budget` or separately provisioned `apfs_quota` mode. Every lane-runtime policy also names disk/inode and normal-Go-cache budgets and the host-management reserve. It is signed by the release authority after verifying the named measurement. |
-| `pki_certificate_request` | One canonical host ID; a one-use `pki_issuance_mandate_id`; exact currently installed management-manifest/installation generation; leaf role; URI/IP SAN tuple; DER CSR bytes and public-key fingerprint; CA profile and requested bounded validity. It is signed by that host's root-protected attestation key, may be published only by its attested PKI installer through the fixed outbox, and contains no private key. |
+| `pki_certificate_request` | One canonical host ID; a one-use `pki_issuance_mandate_id`; exact currently installed management-manifest/installation generation, or during privileged bootstrap the exact bootstrap-contract digest/bootstrap installation generation; leaf role; URI/IP SAN tuple; DER CSR bytes and public-key fingerprint; CA profile and requested bounded validity. It is signed by that host's root-protected attestation key, may be published only by its attested PKI installer through the fixed outbox, and contains no private key. |
 | `host_management_manifest` | `host_management_matrix_version`, host-management protocol compatibility version, exact root-owned bootstrap/update contract digest, the three equal source commit IDs, and the complete host-management matrix of artifact tuples/host-build attestation IDs. Its release-transport contract contains the exact CA/trust/leaf inventory, host/URI/IP binding, and signed active-peer certificate fingerprint/SPKI allowlist (including any bounded overlap) whenever those values change. |
 | `host_management_authorization` | Host-management manifest ID; one canonical host ID; exact signed `host_management` `capacity_policy_id`; exact host-management artifact subset; root-owned installation generation; `not_before`, `not_after`, required ledger generation, and prior installed management-manifest ID for rollback. When release-transport PKI changes, it additionally binds the exact `pki_certificate_request_id`, issuer receipt, non-secret certificate/trust install package bytes and digest, active-peer-set digest, and issuer/installer tuple; it never transports a private key. |
 | `host_management_attestation` | Host-management authorization/manifest and capacity-policy IDs; canonical host ID; exact component/artifact subset; observed root-owned installation generation, compatibility/probe health, accepted/rejected outcome, and evidence references. |
-| `host_attestation_key_set` | Canonical host ID; monotonic per-host attestation-key-set generation; exact predecessor record ID; previous and successor key IDs/public keys; activation/retirement interval; and successor proof of possession. It is signed by a currently trusted release-authority key and binds the only key eligible to sign host-build, promotion, ingress-admission, and host-management attestations for that host. |
+| `host_attestation_key_set` | Canonical host ID; monotonic per-host attestation-key-set generation; exact predecessor record ID; previous and successor key IDs/public keys; activation/retirement interval; and successor proof of possession. It is signed by a currently trusted release-authority key and binds the only key eligible to sign host-build, promotion, ingress-admission, capacity-measurement, PKI-certificate-request, and host-management attestations for that host. |
 | `release_revocation_ledger` | Monotonic ledger generation, exact predecessor-ledger record ID, issue/expiry timestamps, and cumulative sorted revoked record IDs and key IDs. |
 | `authority_key_set` | Monotonic key-set generation, exact predecessor-key-set record ID, previous and successor key IDs, successor public key, activation/retirement interval, and a successor proof of possession. It is signed by the previous trusted authority key. |
 
@@ -1098,15 +1098,22 @@ validates that LaunchDaemon's audit token, label, and code identity. On Linux it
 validates the dedicated non-login `runner-release-transport` service UID, the
 expected systemd unit/cgroup, and the measured installed executable identity;
 an arbitrary `ubuntu` process or root peer is rejected. This transport-only
-endpoint accepts only five fixed operations: create and consume the correlated
+endpoint accepts only six fixed operations: create and consume the correlated
 time-probe challenge/response; verify/cache an addressed release record;
-retrieve a verified host outbox record; and `attest-capacity-measurement`. The
-last operation accepts no path, value, policy, or caller-selected profile: the
-helper reads only its fixed host inventory and installed measurement contract,
-performs descriptor/no-follow and kernel/service-manager inspection itself,
-signs the resulting capacity-measurement attestation with the host key, and
-writes it to the protected outbox. It accepts no arbitrary `observe`, path,
-counter, key, or trust-state mutation. Thus the transport can obtain the helper
+retrieve a verified host outbox record; `attest-capacity-measurement`; and
+`attest-pki-certificate-request`. The capacity operation accepts no path, value,
+policy, or caller-selected profile: the helper reads only its fixed host inventory
+and installed measurement contract, performs descriptor/no-follow and
+kernel/service-manager inspection itself, signs the resulting capacity-measurement
+attestation with the host key, and writes it to the protected outbox. The PKI
+operation accepts only the opaque mandate ID from the authenticated authority
+peer (or the bootstrap-contract tuple during first bootstrap). The helper invokes
+the measured local PKI installer for the fixed host role, reads its locally held
+CSR only through a fixed root-owned descriptor, derives the URI/IP SAN tuple,
+checks the expected installer identity and one-use scope, and signs/writes the
+fixed outbox request. No caller supplies CSR, SAN, path, or attestation-key
+bytes. It accepts no arbitrary `observe`, path, counter, key, or trust-state
+mutation. Thus the transport can obtain the helper
 checks required by the `:9443` protocol without expanding either the Runner
 `observe` socket or the authority-agent endpoint.
 
@@ -1310,10 +1317,9 @@ release-authority state retains every host's accepted chain and verifies a
 host-build or promotion attestation only against the key set valid for its
 canonical host and observed timestamp; the authority agent obtains those records
 through verified transport and the anchor snapshot. It may mirror only the
-verified record IDs and safe outcomes to the owner-only lane registry. That host
-key signs only host-build, promotion, ingress-admission, and host-management
-attestations for its canonical host; it is never a service mTLS or queued-SSH
-credential.
+verified record IDs and safe outcomes to the owner-only lane registry. That host key signs only host-build, promotion, ingress-admission,
+capacity-measurement, PKI-certificate-request, and host-management attestations
+for its canonical host; it is never a service mTLS or queued-SSH credential.
 
 Hosts verify the canonical manifest, authorization/directive, capacity policy,
 attestation-key mapping, revocation ledger, time policy, and authority
@@ -1369,6 +1375,16 @@ the same term means the validated mTLS client certificate/URI. Every ordinary
 record and time-probe rule below uses this single term: it does not imply mTLS on
 the Mac socket or allow a local peer to bypass its equivalent identity check.
 
+For a later PKI rotation, after creating a one-use issuance mandate the authority
+agent may invoke fixed `POST /v1/pki-certificate-request/<mandate_id>` on that
+canonical host. It supplies no CSR, SAN, path, certificate, or key bytes. The
+transport validates the authenticated authority-agent peer and current
+ledger/time state, then hands only that opaque ID to its measured PKI installer;
+the installer derives its fixed local role/endpoint, generates its local key and
+CSR, and publishes the signed request to the outbox. The issuer matches the ID
+and every derived tuple to root authority state before it issues anything. This
+is the sole non-secret mandate handoff; no generic file or shell channel exists.
+
 The first `:9443` contact never bootstraps its own trust. The separately
 approved privileged bootstrap preflight creates or installs a dedicated
 release-transport CA, root-owned CA trust bundles, and a root-owned CA private
@@ -1382,18 +1398,30 @@ key, CA profile, validity/overlap, and mandate expiry before consuming the
 request and journaling a non-secret package receipt. It cannot accept a
 caller-selected CSR, subject, path, or host. A separate normal exact signer
 mandate is required before that receipt can become a final signed
-host-management manifest/authorization. During initial bootstrap the audited
-preflight carries the same host-specific request and receipt sequence before
-any final management records exist.
+host-management manifest/authorization. During initial bootstrap, before a
+`:9443` listener has a certificate, the approved preflight uses a one-time
+root-console handoff instead of normal transport: the installed helper signs the
+public-only CSR request, a root verifier carries only that envelope and its
+host-key/fingerprint readback to the Mac issuer, and it returns only the
+non-secret certificate/trust package plus receipt to the same verifier. The
+preflight pins canonical host, role, URI/IP SANs, CSR digest, issuer fingerprint,
+and package digest at both ends; it never carries a private key, source, lane
+artifact, shell command, or reusable credential. Once the listener passes its
+first mTLS/time-probe gate, this console exception is permanently disabled and
+later issuance uses the fixed route above.
 
 Each Mac or Ubuntu `runner-release-transport-pki-installer` is likewise a
 distinct measured root service. It generates the local leaf key and DER CSR
 without exporting the private key, publishes exactly one host-signed
-`pki_certificate_request` through the fixed outbox, and accepts only the
-issuer's non-secret certificate/trust package embedded in the matching final
-signed host-management authorization. It revalidates its
-manifest/authorization/request/receipt tuple through the anchor and atomically
-installs the named trust/leaf files before requesting the transport reload. The Mac client leaf/private key is readable
+a host-signed `pki_certificate_request` through the fixed outbox only when the
+security-anchor helper invokes its constrained attestation operation, and after
+bootstrap accepts only the issuer's non-secret certificate/trust package embedded
+in the matching final signed host-management authorization. During initial bootstrap it accepts
+only the exact root-console preflight receipt/package whose bootstrap-contract
+and generation tuple match its signed request; it records that evidence before
+first start. It revalidates the manifest/authorization/request/receipt tuple (or
+that bootstrap tuple) through the anchor and atomically installs the named
+trust/leaf files before requesting the transport reload. The Mac client leaf/private key is readable
 only by `runner-release-authority-agent`. The installer sets each Ubuntu server
 leaf/private-key file to mode `0600` owned only by that host's dedicated
 non-login `runner-release-transport` service UID; no Runner or `ubuntu` process
@@ -1446,8 +1474,9 @@ canonical `host_build_attestation`, `promotion_attestation`,
 `host_attestation_key_set`, `release_revocation_ledger`, or
 `authority_key_set` addressed to that host. It alone may also invoke the single-use
 `POST /v1/time-probe/challenge` and matching
-`PUT /v1/time-probe/<challenge_id>` exchange, plus fixed
-`POST /v1/capacity-measurement` with no request body. The security-anchor helper,
+`PUT /v1/time-probe/<challenge_id>` exchange, fixed
+`POST /v1/capacity-measurement` with no request body, and fixed
+`POST /v1/pki-certificate-request/<mandate_id>` with no body or key material. The security-anchor helper,
 not the transport caller, owns the nonce and both timing observations; it also
 owns every measured capacity value and the signed outbox result. Ordinary
 record fetch/cache/PUT validates the authenticated authority-agent peer, URL
