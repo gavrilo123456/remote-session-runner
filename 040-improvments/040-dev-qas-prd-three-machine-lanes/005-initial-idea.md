@@ -1,7 +1,8 @@
 # Initial idea: Dev, QAS, and PRD three-machine deployment lanes
 
-**Status:** proposed improvement; documentation only. No implementation has
-started and no live service, mailbox, deployment, or credential has changed.
+**Status:** implementation direction selected. The detailed design and phased
+plan now define the required isolation and promotion gates. No lane service,
+mailbox, credential, or deployment has changed yet.
 
 ## Problem
 
