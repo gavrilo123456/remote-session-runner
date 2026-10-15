@@ -105,8 +105,10 @@ The lanes provide operational separation against configuration, installation,
 transport, and ordinary resource-management mistakes. They are not a
 hostile-code boundary while arbitrary scripts in all lanes run as the same Mac
 or Ubuntu user. Strong containment against Dev code requires separate OS
-accounts or a VM/sandbox. Linux has hard resource reservations. On the shared
-Mac, Dev/QAS are remote-execution control planes: quota-limited APFS storage,
+accounts or a VM/sandbox. Linux has hard Dev/QAS caps plus a measured and
+validated PRD headroom/floor; only separately provisioned disk, inode, or quota
+controls reserve capacity. On the shared Mac, Dev/QAS are remote-execution
+control planes: quota-limited APFS storage,
 byte-based admission, bounded caches/logs, host headroom, and background
 priority limit ordinary storage failures, but do not promise a per-lane CPU/RAM
 reservation. The first rollout permits Dev/QAS submitted scripts only on remote
@@ -120,8 +122,8 @@ proof includes lane/revision/artifact/configuration attestation, positive
 queued and direct mTLS routes, a native mailbox request with events and ACK,
 zero-work postflight, denial against every foreign lane available in that
 deployment phase, queued-wrapper pinning, and proof that Dev/QAS refreshes
-leave PRD configuration, state, Linux reservation, and Mac storage safety
-unchanged. Mac control-plane compute isolation is explicitly not guaranteed in
+leave PRD configuration, state, measured Linux PRD headroom/floor, and Mac
+storage safety unchanged. Mac control-plane compute isolation is explicitly not guaranteed in
 the shared-user first rollout.
 
 The complete implementation and migration rules are in the
