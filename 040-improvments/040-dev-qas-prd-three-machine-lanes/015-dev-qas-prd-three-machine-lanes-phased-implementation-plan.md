@@ -251,7 +251,8 @@ live lane installation.
    carrying only the non-secret certificate/trust package. During initial
    bootstrap, fixture the distinct one-time root-console public-CSR/package
    handoff, which transfers no private key, source, artifact, command, or
-   reusable credential and is disabled after first mTLS health. The Mac client
+   reusable credential and is disabled for that host after its first applicable
+   local-socket or mTLS/time-probe health gate. The Mac client
    leaf is readable only by the authority agent and each Ubuntu server
    private-key file is mode `0600`, root-installed, and owned only by its own
    dedicated non-login release-transport service UID. Define URI/IP SANs,
@@ -330,14 +331,25 @@ phase installs no Dev/QAS/PRD lane service or mailbox.
    the approval-free one-shot authority-time probe only for a fresh authenticated
    host-bound challenge. Implement the one-use PKI issuance-mandate →
    host-signed request → issuer receipt → reviewed normal final authorization
-   sequence, including the fixed non-secret mandate handoff. Fixture shared-UID
-   and arbitrary-root socket attempts, registry mutation, unapproved/wrong-body/
-   wrong-type/expired/replayed approvals, grant gap/fork/past-cap/expiry and
-   warning, two successive allowed renewals, wrong-host/nonce/stale/replayed time
-   probes, authority-state rollback, private-key read/replacement, authority-key
-   rotation, PKI wrong peer/CSR/SAN/host/mandate, key export, and receipt/package
-   mismatch. At this point they are source/test artifacts only; no host
-   installation is attempted.
+   sequence, including the fixed non-secret mandate handoff. Also implement the
+   mutually exclusive one-use bootstrap branch: one mandate per named host,
+   exact bootstrap-contract/install-generation/installer-artifact tuple and
+   pinned bootstrap host key, root-console public-CSR/package handoff only, and
+   permanent per-host disablement after its first local-socket or
+   mTLS/time-probe health gate. Implement the tagged host-management
+   authorization predecessor: the unique bootstrap predecessor accepts only its
+   exact approved bootstrap-contract digest, bootstrap installation generation,
+   and completed-cohort evidence before a baseline exists; a normal predecessor
+   accepts only the installed manifest/generation and rollback artifact after it.
+   Fixture shared-UID and arbitrary-root socket attempts, registry mutation,
+   unapproved/wrong-body/wrong-type/expired/replayed approvals,
+   grant gap/fork/past-cap/expiry and warning, two successive allowed renewals,
+   wrong-host/nonce/stale/replayed time probes, authority-state rollback,
+   private-key read/replacement, authority-key rotation, normal and bootstrap
+   PKI wrong peer/CSR/SAN/host/mandate/tuple/key/replay/post-health rejection,
+   key export, receipt/package mismatch, bootstrap-after-baseline rejection,
+   and normal-predecessor-before-baseline rejection. At this point they are
+   source/test artifacts only; no host installation is attempted.
 2. Implement the closed V1 envelope, JCS UTF-8 body, domain-separated SHA-256
    ID/Ed25519 signature, closed signer-role map, canonical-form rejection, and
    golden macOS/Linux AMD64/Linux ARM64 vectors for
@@ -407,8 +419,10 @@ phase installs no Dev/QAS/PRD lane service or mailbox.
    lane activity, expiry before a remote cohort completes, incumbent closure then
    quiesce/zero-work then higher candidate epoch, same-epoch identity/configuration
    rejection, target closure/quiesce before archive, fence-versus-submit,
-   local/queued/importer races, abort/retry, repair-closure-pending sealed handoff,
-   and every directive-fanout crash.
+   local/queued/importer races, abort/retry,
+   repair-closure-pending → repair-quiescing → repair-closed terminal
+   disposition/retained-evidence/zero-work handoff, and every directive-fanout
+   crash.
 6. After steps 1–5 pass, commit/push/mirror/pull through the normal source
    delivery chain. Then, only after a separately approved privileged bootstrap
    preflight, take the unsigned L0 inventory and bootstrap in the fixed order
@@ -419,16 +433,25 @@ phase installs no Dev/QAS/PRD lane service or mailbox.
    the authority key only into the root signer, create root authority state and
    audit-token/code-identity socket rules, derive its public key/key ID/fingerprint,
    and prove it matches the pinned anchor before any normal policy or record is
-   signed. Create the root-owned CA/trust material outside Git/lane roots. Use
-   the preflight's one-time root-console public-CSR/package handoff to install the
-   first Mac leaf; no private key, source, lane artifact, shell command, or
-   reusable credential crosses it.
+   signed. Create the root-owned CA/trust material outside Git/lane roots. Before
+   the preflight's one-time root-console public-CSR/package handoff, verify the
+   Mac installer against its exact bootstrap contract and
+   source/toolchain/input/binary tuple with a local root-protected bootstrap build
+   attestation. Create one Mac-specific issuance mandate that binds that tuple,
+   bootstrap installation generation, and pinned bootstrap host key; no private
+   key, source, lane artifact, shell command, or reusable credential crosses the
+   handoff. Disable that exception after the Mac local-socket health gate.
 
    On each Ubuntu host in order install its helper, fixed bootstrap builder,
-   dedicated non-login release transport, and PKI installer. Use the same
-   host-specific root-console public-CSR/package tuple to install its first
-   server leaf/trust bundle, fixed URI/IP SANs, and firewall/NAT route; then prove
-   normal mTLS/time-probe health. After each helper/attestation key is installed,
+   dedicated non-login release transport, and PKI installer. Verify each installer
+   against its exact bootstrap contract and source/toolchain/input/binary tuple
+   with a local root-protected bootstrap build attestation. Create one separately
+   approved host-specific issuance mandate binding that tuple, bootstrap
+   installation generation, and pinned bootstrap host key. Use the matching
+   root-console public-CSR/package tuple to install its first server leaf/trust
+   bundle, fixed URI/IP SANs, and firewall/NAT route; prove normal mTLS/time-probe
+   health and disable that host's exception before advancing. After each
+   helper/attestation key is installed,
    make its fresh local signed capacity measurement before any policy for that
    host. Before advancing, verify the approved immutable all-four-host
    `host_id → initial signer key` mapping package and the installed mapping on
@@ -436,10 +459,16 @@ phase installs no Dev/QAS/PRD lane service or mailbox.
    digests, root cache/backup/socket/state ownership, constrained signer/agent/
    approval/transport/PKI peer checks, and the local-socket or mTLS/time-probe
    health gate. After the fourth host, verify the installed anchors/mappings on
-   all four hosts together. A failed initial bootstrap signs no management
-   manifest: preserve evidence, disable/remove only newly installed management
-   artifacts/listener/trust material, and take fresh unsigned L0 before retrying.
-   The fixed bootstrap builder may produce only the first management matrix
+   all four hosts together. A partial initial bootstrap cohort failure signs no
+   management manifest and abandons the entire cohort: preserve evidence, block
+   ingress, and disable every bootstrap artifact/listener/trust installation on
+   every host, including a prior healthy serial host. A retry requires a fresh
+   separately approved bootstrap contract and cohort generation, new
+   authority/CA/bootstrap-attestation-key material, new one-use mandates and
+   receipts, and fresh unsigned L0 on every host; fixture failure after a
+   request/receipt and after a prior host health gate, rejecting all old
+   mandate/receipt/certificate/key/health-result reuse across generations. The
+   fixed bootstrap builder may produce only the first management matrix
    through sealed staging; after the first verified management installation, the
    preceding healthy management manifest admits every later builder. Only after
    all hosts pass and the four fresh signed capacity-measurement attestations
@@ -450,7 +479,10 @@ phase installs no Dev/QAS/PRD lane service or mailbox.
    four hosts, including the Mac signer, agent, approval, PKI issuer and local
    installer, plus an installer on every Ubuntu host. Collect root-protected
    build attestations, publish a signed host-management manifest/authorization
-   set bound to the `host_management` policies, stage one host at a time, collect
+   set bound to the `host_management` policies, using the unique tagged bootstrap
+   predecessor with its exact bootstrap-contract digest, installation generation,
+   and completed-cohort evidence for this first baseline, stage one
+   host at a time, collect
    host-management attestations, and establish the compatible installed manifest.
    Test rollback before a management commit and prove no active lane root,
    process, configuration, mailbox, or ingress state changes. A signer/agent/
@@ -652,14 +684,17 @@ fresh PRD authorization, and complete promotion/live-acceptance chain.
    the operation group only after V2 restoration, fence-release evidence, and
    archival. After `committed`, an irrecoverable partial fanout or
    live-acceptance failure enters `post_commit_repair_required`, remains
-   repair-closure-pending until a fresh all-host closure reaches repair-closed,
-   seals its repair handoff, then archives before a new scheduled
-   `v3_maintenance` primary may acquire the group. It never uses a parentless
-   recovery child or V2 revival.
+   repair-closure-pending until a fresh all-host closure reaches
+   repair-quiescing, then completes supported terminal reconciliation, retains
+   deferred evidence, and proves zero work before repair-closed seals its repair
+   handoff and archives. Only then may a new scheduled `v3_maintenance` primary
+   acquire the group. It never uses a parentless recovery child or V2 revival.
 
-**Exit gate:** PRD has exact Dev → QAS → PRD candidate, installation, and signed
-lane-acceptance provenance; all routes are accepted at the new PRD revision, and
-the tested cohort-abort/forward-repair evidence is recorded.
+**Exit gate:** PRD has exact Dev → QAS → PRD candidate and installation
+provenance; the fresh transition-bound PRD `lane_acceptance` has reached
+`accepted → archived` (QAS acceptance is predecessor provenance only), all
+routes are accepted at the new PRD revision, and the tested
+cohort-abort/forward-repair evidence is recorded.
 
 ## L7 — operate and improve
 
@@ -693,12 +728,14 @@ one-host staging, and a verified update-or-rollback within 600 seconds. If any
 V3 lane is active, every affected directive must have at least 900 seconds of
 lease remaining before the update starts; otherwise perform a planned signed
 lane closure first. The unique first management baseline uses the signed
-bootstrap predecessor and completed-cohort evidence; later updates require the
-prior installed manifest/generation and rollback artifact. Fixture rejection of
-a bootstrap predecessor after baseline and a normal predecessor before baseline.
+bootstrap predecessor with its exact bootstrap-contract digest, installation
+generation, and completed-cohort evidence; later updates require the prior
+installed manifest/generation and rollback artifact. Fixture rejection of a
+bootstrap predecessor after baseline and a normal predecessor before baseline.
 
-Treat release-transport PKI work as root-only host management: use one issuance
-mandate, one host-signed request, issuer receipt, and final signed authorization;
+Treat release-transport PKI work as root-only host management: for each affected
+host, use one issuance mandate, one host-signed request, issuer receipt, and
+final signed authorization;
 rotate through bounded dual trust and an active peer set, reload serially, prove
 new-chain mTLS and time probes, reject the old leaf while it is still
 chain-valid, then remove/revoke it. Roll back a failed overlap without expanding
@@ -720,8 +757,11 @@ work, retain deferred request/ACK evidence, and prove zero work before
 strictly higher `candidate_admission` closed epoch. A target that opened before
 failure completes `target_closure_pending → target_quiescing` with the same
 terminal-disposition and zero-work evidence before failed-closed recovery or
-archive. Drill partial closure retry, quiesce crash recovery, concurrent-refresh
-rejection, exact-incumbent recovery, and no-pointer-restore behavior.
+archive. An exact-incumbent recovery uses fresh authorization, a still-higher
+`candidate_admission` epoch, the full remote/Mac reopen sequence, and a fresh
+lane acceptance; it never restores an old pointer or directive. Drill partial
+closure retry, quiesce crash recovery, concurrent-refresh rejection,
+exact-incumbent recovery, and no-pointer-restore behavior.
 
 Run each later PRD promotion as the scheduled V3-to-V3 maintenance transition:
 new UUIDv7, QAS `lane_acceptance`, fresh `lane_runtime` policies and
@@ -730,7 +770,9 @@ incumbent-closure then higher target-candidate epochs. After full closure,
 `quiescing` resolves all running, queued, resumable, and uncertain work only by
 supported terminal disposition, retains deferred evidence, and reaches
 `quiesced` only on a zero-work postflight. A pre-commit recovery child is legal
-only after that state; it uses fresh authorizations, higher epochs, and either a
+only after that state; while quiescing, it cannot stage a target, allocate target
+context/directives, enter `restore_required`, or allocate a recovery child. A
+pre-commit recovery child uses fresh authorizations, higher epochs, and either a
 valid prior V3 lineage or an explicitly authorized QAS-accepted forward repair.
 Every restore or forward-repair transition enters `acceptance_pending` after
 reopening and cannot archive until its own fresh PRD `lane_acceptance` reaches
@@ -744,9 +786,11 @@ Treat a missing, corrupt, or rollback-suspected lane registry as a
 registry-recovery stop. Preserve the bytes and process/root evidence; block
 allocation, activation, pointer changes, and group release. A separately
 approved root-maintenance reconstruction may use only verified root
-authority/anchor facts plus a fresh descriptor L0 inventory. It records explicit
-closed dispositions for in-flight work and never infers a V2 restart, a pointer,
-or PRD group release. Drill idle, mid-transition, fencing/fenced, and
+authority/anchor facts plus a fresh descriptor L0 inventory. An already active
+runtime may continue only under its existing valid anchor/directive/configuration
+context; it cannot restart, refresh, or be reassigned while recovery is pending.
+It records explicit closed dispositions for in-flight work and never infers a V2
+restart, a pointer, or PRD group release. Drill idle, mid-transition, fencing/fenced, and
 post-commit-repair registry loss/corruption/rollback.
 
 Treat loss or corruption of root authority or security-anchor state as the
@@ -754,7 +798,8 @@ isolated security-rebootstrap incident procedure: preserve forensic state, block
 public ingress, stop all lane units, record unscheduled closure, build new
 authority/anchor roots through the serial bootstrap, re-enrol transport trust,
 and obtain a new Dev → QAS → PRD acceptance chain. Never import old root state,
-trust old records, revive V2, or run this procedure beside promotion or repair.
+trust old records, revive V2, or run this procedure beside promotion or repair;
+rehearse it only in an isolated recovery fixture.
 
 Revisit event-driven mailbox wake-up only after measuring per-lane latency and
 backlog. It remains a best-effort hint with periodic reconciliation, never the

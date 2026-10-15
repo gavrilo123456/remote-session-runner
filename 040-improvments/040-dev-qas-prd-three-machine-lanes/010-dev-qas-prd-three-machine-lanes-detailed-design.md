@@ -568,7 +568,7 @@ measured PRD floor + Dev hard maximum + QAS hard maximum + host-management budge
 ```
 
 A Linux `host_management` policy contains only the corresponding bounded
-management scope, PRD safety floor, cache/staging budget, and measured
+management scope, PRD safety floor, cache/staging/backup/log budget, and measured
 headroom. It can be issued during the bootstrap before a Dev/QAS root or volume
 exists, but it can never be substituted for a lane-runtime policy. Lane-runtime
 pressure fixtures saturate each Dev/QAS listener, bridge, service, and lane
@@ -591,7 +591,7 @@ the Linux 30-percent low-water, a build/promotion refuses before it starts.
 
 For the Mac, both scopes require `compute_reservation: none` and forbid
 CPU, RAM, PID, and aggregate-I/O reservation claims. A `host_management`
-policy names only its cache/staging/log budget and the required host headroom.
+policy names only its cache/staging/backup/log budget and the required host headroom.
 A Dev or QAS `lane_runtime` policy requires its verified APFS volume UUIDs,
 mountpoints, quotas, byte-admission budgets, cache budgets, log caps, snapshot
 cap, and the `max(20 GiB, 15% of Data-volume capacity)` unallocated floor. A
@@ -701,7 +701,7 @@ after it creates that listener, and L4/L5 validate actual lane endpoints. L0
 derives a proposed `host_management` policy and, once the storage handoff exists,
 a proposed `lane_runtime` policy for each contemplated lane; it does not install
 either. A pre-L3 `host_management` L0 passes when the
-management scope, PRD safety floor, cache/staging/log budget, and host headroom
+management scope, PRD safety floor, cache/staging/backup/log budget, and host headroom
 are enforceable; it may record future Dev/QAS storage as absent. A lane-runtime
 L0 passes only when Linux can enforce every named Dev/QAS/host-management cap
 and every required Mac lane storage bound plus projected host headroom is
@@ -799,9 +799,21 @@ local installer, builder, local transport, and release-transport CA/client trust
 material, before each Ubuntu host is bootstrapped one at a time with its
 constrained PKI installer. A local-socket or exact mTLS/time-probe gate is
 required before advancing. It signs no management manifest until every host
-succeeds. A bootstrap failure preserves evidence, removes or disables only newly
-installed management artifacts/listener/trust material, and requires a fresh L0
-before retry. Later management updates use a scheduled host-management maintenance
+succeeds. A partial bootstrap cohort failure abandons that entire cohort:
+preserve all evidence, block ingress, and disable every bootstrap
+artifact/listener/trust installation on every host, including a previously
+healthy serial host. The next attempt requires a fresh separately approved
+bootstrap contract and cohort generation, new authority/CA/bootstrap
+attestation-key material, new one-use mandates and receipts, and fresh L0 on
+every host. No old bootstrap mandate, receipt, certificate, key, or health
+result may cross cohort generations. This is an availability stop, not an
+incremental normal-update retry.
+The first signed host-management authorization is permitted only after that
+complete successful bootstrap cohort and uses the exact
+`predecessor_kind: bootstrap` contract defined in the V1 table; every later
+authorization names the installed predecessor manifest/generation and rollback
+artifact. A bootstrap predecessor is rejected once any baseline is installed.
+Later management updates use a scheduled host-management maintenance
 window, fresh L0/capacity proof, one-host-at-a-time staged start, health/time
 probe, and rollback to the prior management artifact before their management
 commit. Before each later host update they require a fresh ledger and every
@@ -2228,8 +2240,9 @@ The live proof requires all of the following:
    `lane_acceptance`; neither reopens an old bundle with stale directives. It
    also proves a post-commit partial fanout remains
    `repair_closure_pending` until a fresh all-host closure reaches
-   `repair_closed`, then `post_commit_repair_required` archives and a new
-   scheduled primary begins.
+   `repair_quiescing`, and only supported terminal reconciliation, retained
+   deferred evidence, and a zero-work postflight reach `repair_closed`; then
+   `post_commit_repair_required` archives and a new scheduled primary begins.
 9. A staged resource fixture fills each Dev/QAS cgroup/quota/cache/log budget
    and the separate host-management build/transport scope, exercises log
    rotation and failure, and proves that Linux PRD measured headroom/floor and Mac
