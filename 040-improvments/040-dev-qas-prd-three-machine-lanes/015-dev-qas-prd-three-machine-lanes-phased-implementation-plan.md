@@ -61,9 +61,11 @@ three Ubuntu hosts.
    budgets, snapshots, host headroom, and shared-cache budget. A PRD policy
    records either the existing-root `host_free_space_budget` or a separately
    approved `apfs_quota` mode. Prove that
-   non-purgeable usage plus snapshot use plus configured maximum Dev/QAS quotas
-   and shared cache budget leaves `max(20 GiB, 15% of Data-volume capacity)`
-   unallocated, and that Runner-managed snapshots are within their 10 GiB
+   non-purgeable usage plus snapshot use plus configured maximum Dev/QAS quotas,
+   shared-cache budget, and release-cache-backup allocation when it shares the
+   Data volume leaves `max(20 GiB, 15% of Data-volume capacity)` unallocated
+   (or record a distinct backup device and its independently measured low-water
+   floor), and that Runner-managed snapshots are within their 10 GiB
    aggregate budget. Record `compute_reservation: none` rather than claiming a
    LaunchAgent CPU/RAM/PID reservation.
 5. Record the separately approved storage-preparation handoff manifest for every
@@ -188,19 +190,22 @@ admission contracts. No installer or live service changes occur in this phase.
    behavior. L3 supplies the release-record schema, keys, anchor, transport,
    signed directive validation, renewal, and fanout tests.
 8. Implement the durable PRD operation-group and V3 transition contracts before
-   any live phase: `v3_maintenance` closure-pending/closed-verified/quiesce/
-   stage/commit/reopen states with incumbent-closure then higher
-   candidate-admission epochs;
-   `restore_required`; typed `v3_restore` and `v3_forward_repair` children;
-   `post_commit_repair_required` with repair-closure-pending/repair-closed;
-   fresh UUID/epoch allocation above host anchor
-   high-water; child failure evidence/archive and sequential replacement; V2
-   abort release only after fence-release evidence; and release of the group
-   only after the final child and parent, or sealed post-commit repair handoff,
-   archives. Fixture every CAS transition, restart, crash, partial directive
-   fanout, closure-pending retry/no-child gate, child replacement, V2 abort
-   retry, post-commit repair handoff, and
-   rejection of a concurrent or parentless PRD recovery operation.
+   any live phase: `v3_maintenance` closure-pending/closed-verified/quiescing/
+   quiesced/stage/commit/reopen/acceptance states with incumbent-closure then
+   higher candidate-admission epochs; `restore_required` only after durable
+   quiescence; typed `v3_restore` and `v3_forward_repair` children with
+   their own `acceptance_pending → accepted → archived` gate; and
+   `post_commit_repair_required` with repair-closure-pending/repair-quiescing/
+   repair-closed, including supported terminal reconciliation, retained deferred
+   evidence, and zero work before any repair handoff or group release. Require
+   fresh UUID/epoch allocation above host anchor high-water; child failure
+   evidence/archive and sequential replacement; V2 abort release only after
+   fence-release evidence; and release of the group only after the final child
+   and parent, or sealed post-commit repair handoff, archives. Fixture every CAS
+   transition, restart, crash, partial directive fanout, closure-pending
+   retry/no-child gate, quiesce and repair-quiesce recovery, child replacement,
+   V2 abort retry, post-commit repair handoff, and rejection of a concurrent or
+   parentless PRD recovery operation.
 
 **Exit gate:** schema, root-registry, migration, deferred-pair, provisional
 admission-state, status, and isolation fixtures pass. No installer or live
@@ -658,62 +663,98 @@ the tested cohort-abort/forward-repair evidence is recorded.
 
 ## L7 — operate and improve
 
-Operate per-lane `lane_runtime` capacity-policy thresholds and
-`host_management` policy thresholds, Linux lane and host-management slice use,
-normal Go-cache budget without automatic cleanup, Mac quota use, APFS snapshots
-and host headroom, bounded cache maintenance, log-capture rotation and
-`dropped_log_bytes`, backup/restore drills, credential/key rotation and
-revocation, release-record/cache retention, five-minute ledger refresh,
-directive lease renewal, host-management maintenance, and Dev/QAS-only refresh
-procedures. Never automatically delete retained mailbox or rollback evidence to
-reclaim space.
+Operate every host from fresh signed `capacity_measurement_attestation` records
+and matching policy measurements. Before a policy or host-management update,
+repeat the relevant L0 observation and reject changed identity or insufficient
+live capacity. Monitor lane and host-management scope, Linux Dev/QAS slice caps,
+measured PRD floor/headroom, normal Go-cache budget, Mac quotas, APFS snapshots,
+log-capture rotation and `dropped_log_bytes`, and cache/staging/backup budgets.
+The Mac low-water calculation includes the release-cache-backup allocation when
+it shares the Data volume; a distinct backup device has its own measured floor.
+Never automatically delete retained mailbox, rollback, cache, or repair evidence
+to reclaim space.
+
+Monitor every active directive renewal grant and the single global ledger grant
+by context, predecessor/current generation, issued/max count, expiry, and
+`renewal_warning_at`. Emit a durable operator alert at the warning threshold or
+when one issuance remains. The operator either creates a same-context successor
+through a new exact interactive mandate or starts a planned signed closure while
+the current directive is valid; no grant self-extends. Drill warning, issuance
+cap, expiry, and global-ledger blocking behavior, and verify all fail closed.
+
+Retain the root-owned same-host cache-backup store within its declared
+retention/quota. Drill descriptor/no-follow verified rehydration into an empty
+cache, including full candidate/host-build-chain revalidation. Drill the
+missing-or-mismatched cache-and-backup outcome: the old candidate remains closed
+and may be replaced only by a fresh complete candidate and acceptance chain.
 
 A host-management update uses a fresh `host_management` policy, fresh ledger,
 one-host staging, and a verified update-or-rollback within 600 seconds. If any
 V3 lane is active, every affected directive must have at least 900 seconds of
 lease remaining before the update starts; otherwise perform a planned signed
-lane closure first.
+lane closure first. The unique first management baseline uses the signed
+bootstrap predecessor and completed-cohort evidence; later updates require the
+prior installed manifest/generation and rollback artifact. Fixture rejection of
+a bootstrap predecessor after baseline and a normal predecessor before baseline.
+
+Treat release-transport PKI work as root-only host management: use one issuance
+mandate, one host-signed request, issuer receipt, and final signed authorization;
+rotate through bounded dual trust and an active peer set, reload serially, prove
+new-chain mTLS and time probes, reject the old leaf while it is still
+chain-valid, then remove/revoke it. Roll back a failed overlap without expanding
+the active peer set. For a first leaf, use a separate one-use bootstrap mandate
+per host with the exact bootstrap contract, installation generation, installer
+tuple, and pinned bootstrap host key; use only the root-console public
+CSR/package handoff, validate its local-socket or mTLS/time-probe gate, and
+disable that host's exception afterward. Drill every wrong tuple, replay,
+cross-host request, and post-health bootstrap-request rejection.
 
 For a Dev/QAS V3 refresh, first acquire the lane's durable one-active operation
 record, recording both incumbent and target identity and every per-host
 directive/attestation result. Close the incumbent under a fresh
 `active_runtime_closure` epoch, and remain closure-pending until complete
-aggregate closure attestation exists. Only then start the target under a
-strictly higher `candidate_admission` closed epoch. A failed target leaves the
-lane closed or recovers the verified incumbent only through fresh authorization,
-a still-higher target-candidate epoch, the full remote/Mac reopen sequence, and
-a fresh lane acceptance. Fixture partial closure retry/no-pointer-restore,
-crash resumption, concurrent-refresh rejection, and both recovery paths; never
-reopen by restoring an old pointer or directive.
+aggregate closure attestations exist. Then enter `incumbent_quiescing`, obtain
+supported terminal dispositions for running, queued, resumable, and uncertain
+work, retain deferred request/ACK evidence, and prove zero work before
+`incumbent_quiesced` permits target staging. Start the target only under a
+strictly higher `candidate_admission` closed epoch. A target that opened before
+failure completes `target_closure_pending → target_quiescing` with the same
+terminal-disposition and zero-work evidence before failed-closed recovery or
+archive. Drill partial closure retry, quiesce crash recovery, concurrent-refresh
+rejection, exact-incumbent recovery, and no-pointer-restore behavior.
 
 Run each later PRD promotion as the scheduled V3-to-V3 maintenance transition:
 new UUIDv7, QAS `lane_acceptance`, fresh `lane_runtime` policies and
-authorizations, exact required healthy host-management manifest, and two
-ordered epochs per affected host. The `active_runtime_closure` epoch is fresh
-above anchor high-water, bound to the recorded incumbent candidate/configuration,
-and remains closure-pending until it has complete aggregate closed attestations
-before quiescence. The target
-`candidate_admission` closed epoch is strictly higher, is bound to the
-QAS-accepted candidate, and alone proceeds through transport-ready/open. Then
-run tested current-V3 restore, candidate-closed validation, commit, full
-remote/Mac reopen and live suite, signed PRD `lane_acceptance`, and archival.
-A pre-commit failure keeps the atomic PRD operation-group lock and uses at most
-one active linked recovery child. Each receives a new UUIDv7 and a target
-candidate-admission epoch strictly higher than the failed transition and every
-host anchor high-water: a distinct V3 restore when its predecessor/required
-manifest remains valid and fresh matching policies can be issued, or an
-explicitly authorized forward repair with a newly QAS-accepted candidate when
-it cannot. Both use fresh authorizations, closed/transport-ready/open
-directives, aggregate attestations, and a fresh transition-bound PRD
-`lane_acceptance`, never stale directives or an old acceptance. If that child
-fails before commit, archive it admission-closed with its evidence before
-explicitly allocating one higher-epoch replacement child; never run siblings.
-After any V3 commit, an irrecoverable reopen or acceptance failure enters
-`post_commit_repair_required`, remains repair-closure-pending until a new
-all-host closure reaches repair-closed, then seals its repair handoff and
-archives (and archives its parent when it is a recovery child) before a new
-scheduled primary acquires the group. Reject every other PRD transition while
-the group is held. It never revives V2.
+authorizations, exact required healthy host-management manifest, and ordered
+incumbent-closure then higher target-candidate epochs. After full closure,
+`quiescing` resolves all running, queued, resumable, and uncertain work only by
+supported terminal disposition, retains deferred evidence, and reaches
+`quiesced` only on a zero-work postflight. A pre-commit recovery child is legal
+only after that state; it uses fresh authorizations, higher epochs, and either a
+valid prior V3 lineage or an explicitly authorized QAS-accepted forward repair.
+Every restore or forward-repair transition enters `acceptance_pending` after
+reopening and cannot archive until its own fresh PRD `lane_acceptance` reaches
+`accepted`. After any V3 commit, `post_commit_repair_required` must reach
+`repair_closure_pending`, then `repair_quiescing` with the same evidence and
+zero-work gate, before `repair_closed` can seal a handoff, archive, and release
+the PRD group. Drill every closure/quiesce/repair crash boundary and reject
+parentless or concurrent recovery. V2 is never revived.
+
+Treat a missing, corrupt, or rollback-suspected lane registry as a
+registry-recovery stop. Preserve the bytes and process/root evidence; block
+allocation, activation, pointer changes, and group release. A separately
+approved root-maintenance reconstruction may use only verified root
+authority/anchor facts plus a fresh descriptor L0 inventory. It records explicit
+closed dispositions for in-flight work and never infers a V2 restart, a pointer,
+or PRD group release. Drill idle, mid-transition, fencing/fenced, and
+post-commit-repair registry loss/corruption/rollback.
+
+Treat loss or corruption of root authority or security-anchor state as the
+isolated security-rebootstrap incident procedure: preserve forensic state, block
+public ingress, stop all lane units, record unscheduled closure, build new
+authority/anchor roots through the serial bootstrap, re-enrol transport trust,
+and obtain a new Dev → QAS → PRD acceptance chain. Never import old root state,
+trust old records, revive V2, or run this procedure beside promotion or repair.
 
 Revisit event-driven mailbox wake-up only after measuring per-lane latency and
 backlog. It remains a best-effort hint with periodic reconciliation, never the
