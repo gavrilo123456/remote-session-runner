@@ -1,227 +1,129 @@
-# Initial idea: Dev, QAS, and PRD three-machine deployment lanes
+# Initial idea: Dev, QAS, and PRD release lanes
 
-**Status:** implementation direction selected. The detailed design and phased
-plan now define the required isolation and promotion gates. No lane service,
-mailbox, credential, or deployment has changed yet.
+**Status:** reviewed implementation direction. The detailed design and phased
+plan define the isolation, promotion, capacity, and migration gates. No lane
+service, mailbox, credential, firewall, or deployment has changed yet.
 
 ## Problem
 
-Runner currently supports several named mailboxes and remote hosts from one Mac
+Runner currently supports several mailboxes and remote hosts from one Mac
 installation, but it is still one installed code revision and one runtime
 instance. Naming an execution environment `dev`, `qas`, or `prd` would label a
 request, but would not isolate its binary, SQLite state, sockets, workspaces,
-logs, service labels, credentials, or endpoint.
+logs, service labels, credentials, endpoint, or resource budget.
 
-The desired workflow needs three versions to run at the same time:
+The required workflow needs three versions to run at the same time:
 
-- **Dev** must be a complete distributed environment, including both Linux
-  machines, so a feature that coordinates two remote hosts can be developed
-  and exercised before promotion.
-- **QAS** must run the candidate version independently across the same Mac and
-  both Linux machines.
-- **PRD** must keep a stable accepted version running while Dev and QAS change.
+- **Dev** changes and tests Runner behavior.
+- **QAS** independently tests the selected candidate release.
+- **PRD** continues to serve stable mailbox producers while Dev and QAS change.
 
 A branch-only split or a shared Runner database would allow one lane to affect
-another and would not meet that requirement.
+another and does not meet that requirement.
 
-## Goal
+## Goal and host scope
 
 Introduce three fixed, concurrently runnable **release lanes**: `dev`, `qas`,
-and `prd`. Each lane spans the Mac control plane and both registered Ubuntu
-hosts. A source change starts on `dev`, is tested there, then the exact commit
-is promoted to `qas`, and finally the same accepted commit is promoted to
-`prd`.
+and `prd`. Each lane spans the Mac control plane and all currently accepted
+Ubuntu profiles: `linux-host`, `sandbox-host`, and `factory-sandbox`.
 
-`lane` is a deployment/release identity. It is deliberately separate from an
-existing execution-policy label such as `linux-dev` or `sandbox-dev`, which
-remains a target policy and execution-account description rather than a lane
-service or runtime-path name.
+The directory name "three-machine lanes" predates `factory-sandbox`. The actual
+cohort is four physical machines: one Mac and three Ubuntu hosts. A remote
+profile is not silently excluded from a lane; its capacity, direct mTLS,
+queued-bridge, mailbox, and live-acceptance evidence are all required.
+
+`lane` is a deployment/release identity. It is deliberately separate from the
+existing execution-policy labels `linux-dev`, `sandbox-dev`, and
+`factory-sandbox-dev`, which describe targets in the current V2 configuration
+rather than a Dev release lane.
 
 ## Settled naming and compatibility rule
 
-`prd` is the future release-lane identity, not a suffix on production
-resources. When lanes are implemented, the unsuffixed installation becomes the
-PRD compatibility mapping and keeps its existing names, paths, listener, and
-mailbox roots. Today those unsuffixed resources are one PoC runtime; they do
-not yet carry lane metadata or form an installed PRD lane. Only the future Dev
-and QAS instances carry lane suffixes:
+`prd` is a release identity, not a suffix on production resources. The future
+PRD lane keeps existing unsuffixed names, paths, listener, and mailbox roots.
+Dev and QAS receive a suffix whenever a resource lives in a shared namespace.
+A file contained only under a suffixed service root can retain its normal leaf
+name because its full path remains unique.
 
-| Resource | Dev | QAS | PRD (future and unsuffixed) |
+| Resource | Dev | QAS | PRD compatibility mapping |
 | --- | --- | --- | --- |
-| Mac processes | `runner-local-dev`, `runner-locald-dev` | `runner-local-qas`, `runner-locald-qas` | `runner-local`, `runner-locald` |
-| Linux systemd unit | `runnerd-dev.service` | `runnerd-qas.service` | `runnerd.service` |
-| Mac runtime root | `~/Library/Application Support/RemoteSessionRunner-dev` | `~/Library/Application Support/RemoteSessionRunner-qas` | `~/Library/Application Support/RemoteSessionRunner` |
-| Linux runtime root | `~/.local/share/remote-session-runner-dev` | `~/.local/share/remote-session-runner-qas` | `~/.local/share/remote-session-runner` |
-| Direct HTTPS port on each Linux host | `8444` | `8445` | `8443` |
+| Mac service root | `RemoteSessionRunner-dev` | `RemoteSessionRunner-qas` | `RemoteSessionRunner` |
+| Mac LaunchAgent labels | `com.remote-session-runner.local-dev`; `com.remote-session-runner.locald-dev` | `com.remote-session-runner.local-qas`; `com.remote-session-runner.locald-qas` | existing unsuffixed labels |
+| Linux unit | `runnerd-dev.service` | `runnerd-qas.service` | `runnerd.service` |
+| Linux service root | `remote-session-runner-dev` | `remote-session-runner-qas` | `remote-session-runner` |
+| Direct HTTPS port on every Ubuntu host | `8444` | `8445` | `8443` |
 
-The future PRD service must report its lane explicitly in health, status,
-configuration, and build metadata. The absence of a `-prd` suffix must never
-make a resource ambiguous. This is a naming decision only; it does not
-authorize installation or migration work.
+The current unsuffixed runtime is a PRD compatibility baseline, not an already
+migrated PRD lane. It becomes explicit `release_lane: prd` only in the
+scheduled PRD migration. Dev and QAS are fresh installations and must not
+rename, move, stop, repoint, or share runtime state with the baseline.
 
-## Intended topology
+## Configuration, mailboxes, and routes
+
+Every installed lane has an independent owner-only V3 configuration with a
+required `release_lane`, service root, SQLite authority, sockets, mailboxes,
+logs, workspaces, temporary files, backups, binaries, endpoints, mTLS
+materials, and queued-SSH materials. V2 stays intact while Dev and QAS are
+introduced; V3 does not silently reinterpret V2 as PRD.
+
+An external mailbox belongs to one lane globally. Existing unsuffixed roots
+become PRD-only during PRD migration. Dev and QAS use fresh lane-named roots,
+for example reviewed `mailbox-dev` and `mailbox-qas` siblings. A Mac-wide
+owner-only lane registry prevents any two independent lane databases from
+claiming the same normalized root.
+
+A publisher selects the lane by selecting its configured mailbox root or local
+endpoint before publication. A mailbox request may select only the complete
+configured environment/target pair that its inbox permits. It cannot provide a
+lane or arbitrary host, account, port, certificate, bridge, or filesystem path.
+Direct mTLS and queued SSH use separate lane-specific identities and fixed
+targets.
+
+## Promotion model
+
+Tracked source changes are made only in the authoritative Mac `dev` checkout.
+The existing Gitea-primary → GitHub-mirror → clean Ubuntu `dev` checkout flow
+remains the source-delivery path.
+
+QAS and PRD are not source-edit branches or deployment worktrees. A candidate
+is an immutable build cohort from a recorded Dev source SHA plus per-host
+artifacts. The same recorded artifact bytes are installed from Dev to QAS to
+PRD on each physical host; platform and host-specific binary digests remain
+distinct.
 
 ```text
-                         Mac                     linux-host              sandbox-host
-                     tomasz.walczuk                ubuntu                   ubuntu
-
-Dev       runner-local-dev / runner-locald-dev runnerd-dev :8444       runnerd-dev :8444
-QAS       runner-local-qas / runner-locald-qas runnerd-qas :8445       runnerd-qas :8445
-PRD       runner-local / runner-locald        runnerd :8443           runnerd :8443
+clean dev SHA → candidate manifest → Dev authorization/acceptance
+→ QAS authorization/acceptance → PRD authorization/acceptance
 ```
 
-The same lane port is used on both Linux hosts because the hosts have separate
-IP addresses. The port table is a proposed fixed mapping, not a free-form
-per-request value:
+A QAS failure leaves PRD unchanged. Correction returns to `dev` as a new commit
+and candidate manifest.
 
-| Lane | Direct HTTPS port on each Linux host |
-| --- | ---: |
-| `dev` | `8444` |
-| `qas` | `8445` |
-| `prd` | `8443` |
+## Practical boundary
 
-All direct endpoints remain public HTTPS with mandatory mTLS. The queued
-mailbox route remains the restricted SSH bridge. This proposal does not add
-Podman, tunnels, a reverse proxy, or free-form remote endpoints.
+The lanes provide operational separation against configuration, installation,
+transport, and ordinary resource-management mistakes. They are not a
+hostile-code boundary while arbitrary scripts in all lanes run as the same Mac
+or Ubuntu user. Strong containment against Dev code requires separate OS
+accounts or a VM/sandbox. Linux has hard resource reservations. On the shared
+Mac, Dev/QAS are remote-execution control planes: quota-limited APFS storage,
+byte-based admission, bounded caches/logs, host headroom, and background
+priority limit ordinary storage failures, but do not promise a per-lane CPU/RAM
+reservation. The first rollout permits Dev/QAS submitted scripts only on remote
+targets; a local Dev/QAS execution target waits for a separately sized VM or
+host.
 
-## Source and promotion model
+## Acceptance direction
 
-```text
-dev branch  -- exact tested SHA -->  qas branch  -- same accepted SHA -->  prd branch
-```
+Each lane must prove its Mac service and every remote profile separately. The
+proof includes lane/revision/artifact/configuration attestation, positive
+queued and direct mTLS routes, a native mailbox request with events and ACK,
+zero-work postflight, denial against every foreign lane available in that
+deployment phase, queued-wrapper pinning, and proof that Dev/QAS refreshes
+leave PRD configuration, state, Linux reservation, and Mac storage safety
+unchanged. Mac control-plane compute isolation is explicitly not guaranteed in
+the shared-user first rollout.
 
-- Tracked source changes are made only in the authoritative Mac `dev`
-  checkout.
-- `qas` and `prd` use clean deployment-only Git worktrees; no independent
-  source edits or merge commits are made there.
-- A promotion is fast-forward-only and records the selected commit SHA.
-- Each Mac and Linux service reports its lane and immutable build revision in
-  readiness/status output. A branch name alone is not proof of the installed
-  code.
-- QAS failure leaves PRD unchanged. The correction returns to `dev` and starts
-  the promotion path again.
-
-Git worktrees share Git objects, and all lanes reuse the existing shared Go
-caches. The design avoids three full source or module-cache copies while
-keeping runtime state separate.
-
-## Lane-local routing and mailboxes
-
-Every lane has two configured remote contexts: one for `linux-host` and one
-for `sandbox-host`. A lane may contain several repository-specific mailboxes.
-
-A mailbox has a default target and may permit a request-level override only to
-the other remote context **within the same lane**. For example:
-
-| Mailbox lane | Default | Permitted override |
-| --- | --- | --- |
-| Dev | `dev/linux-host` | `dev/sandbox-host` |
-| QAS | `qas/linux-host` | `qas/sandbox-host` |
-| PRD | `prd/linux-host` | `prd/sandbox-host` |
-
-A request from a Dev inbox cannot choose a QAS or PRD target. The same rule
-applies in every direction. Request/response/event/ACK paths, idempotency
-identity, and cleanup are lane-local.
-
-The Mac control service exists in every lane. Whether QAS or PRD mailboxes may
-also execute commands locally on the Mac is a policy decision for the detailed
-design; remote targets remain available in all three lanes.
-
-## Required isolation
-
-Each lane must have its own configured, owner-controlled resources:
-
-- Mac service root, config, SQLite database, Unix sockets, logs, workspaces,
-  installed binary, LaunchAgent labels, and mailbox roots.
-- Linux service root, config, SQLite database, Unix socket, logs, workspaces,
-  installed binary, systemd unit name, and HTTPS listener.
-- mTLS endpoint/client identities and controller authorization that prevent a
-  Dev or QAS client from controlling a PRD service.
-- Queued-SSH bridge identity, private socket, forced-command route, and
-  controller map.
-- Direct endpoint/profile names and health/status identity.
-
-One mailbox root is watched by exactly one lane. No lane may read another
-lane's SQLite database, socket, workspace, bridge socket, or response tree.
-
-## Compatibility and migration direction
-
-The current live installation remains operational as one unsuffixed PoC
-instance. It is the compatibility baseline for the future PRD mapping and
-keeps the unsuffixed service labels, runtime roots, port `8443`, and existing
-mailbox locations. Dev and QAS would be introduced as fresh isolated instances
-with their `-dev` and `-qas` names. Existing mailboxes must not be silently
-moved or retargeted. A specific production mailbox may move to Dev or QAS only
-after the new lane has passed end-to-end acceptance and the migration is
-explicitly performed. That mailbox cutover never renames or moves the future
-unsuffixed PRD service or runtime root.
-
-The detailed design must provide a reversible, evidence-backed migration for
-runtime roots, existing retained mailbox artifacts, active work, and installed
-service labels.
-
-## Constraints and practical limits
-
-- This creates process and data isolation, not a hard operating-system security
-  boundary: Mac processes still run as `tomasz.walczuk`, and the three Linux
-  lane processes on each host run as `ubuntu`.
-- Each Linux host will run three Runner instances. Disk capacity, memory,
-  listener/firewall rules, retention, workspace growth, and log limits require
-  a measured pre-install gate. The sandbox host was recently reported near
-  full and must be checked before this extension is installed there.
-- QAS and PRD must test both Linux architectures presently in use: the
-  sandbox is ARM64 and the primary Linux host is AMD64.
-- Direct mTLS, queued bridge, mailbox marker-last publication, durable
-  idempotency, event replay, ACKs, and recovery semantics remain unchanged
-  within each lane.
-- No request may provide a free-form lane, host, account, port, certificate,
-  or filesystem path.
-
-## Non-goals
-
-- Maintaining three independent codebases or copying source changes directly
-  to Linux hosts.
-- Treating a YAML environment label as sufficient deployment isolation.
-- Sharing state, sockets, mailboxes, credentials, or service labels between
-  lanes.
-- Adding containers, tunnels, reverse proxies, or a general-purpose remote
-  command channel.
-- Claiming hostile-code isolation while all lanes retain the same operating
-  system accounts.
-
-## Acceptance criteria for a later implementation plan
-
-- Dev can submit independent remote work to both Dev Linux instances and
-  retain correct target, output, events, and ACKs.
-- QAS and PRD can run at the same time as Dev without port, socket, database,
-  mailbox, workspace, log, or service-label collisions.
-- A QAS deployment or restart cannot alter a PRD process, data store, mailbox,
-  credential, listener, or build revision.
-- Each remote service accepts only its lane's authorized controller identity;
-  cross-lane direct and queued requests fail before command creation.
-- A lane reports the expected lane and build SHA on the Mac and on both Linux
-  hosts before its acceptance tests start.
-- Fast-forward-only promotion proves the exact Dev-to-QAS-to-PRD SHA chain.
-- Existing PRD service and mailbox state remain available without lost or duplicate
-  work, and rollback of an incomplete migration is documented and tested.
-- Per-lane capacity and retention controls prevent one lane's generated output
-  from exhausting the shared host disk.
-
-## Open design questions
-
-1. What exact worktree paths best preserve the existing PRD state while making
-   Dev and QAS paths unmistakable?
-2. Should QAS and PRD permit any Mac-local execution, or should their mailboxes
-   be remote-only from the first release?
-3. What issuer/identity arrangement gives straightforward per-lane mTLS
-   authorization while keeping credential rotation manageable?
-4. What per-lane disk, output-retention, workspace-retention, and log limits
-   fit both Linux hosts after measured capacity checks?
-5. How should service installation validate the intended lane, Git branch, and
-   exact SHA without relying on the current universal `dev`-branch check?
-6. What small operator command set best promotes, deploys, verifies, rolls
-   back, and reports the three lanes without allowing unsafe cross-lane action?
-
-The detailed design and phased implementation plan below remain placeholders
-until these questions are resolved against the current service, mailbox,
-recovery, and deployment contracts.
+The complete implementation and migration rules are in the
+[detailed design](010-dev-qas-prd-three-machine-lanes-detailed-design.md) and
+[phased implementation plan](015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md).
