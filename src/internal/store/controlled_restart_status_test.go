@@ -40,6 +40,15 @@ func TestControlledRestartStatusReadOnlyRecognizesOnlyAcceptedStates(t *testing.
 			want: ControlledRestartStatusMigratedWithoutPlan,
 		},
 		{
+			name: "schema 37 with plan tables",
+			seed: func(t *testing.T) string {
+				path := b008CurrentAuthorityPath(t)
+				b008SetAuthoritySchemaVersion(t, path, laneAdmissionPreviousSchemaVersion)
+				return path
+			},
+			want: ControlledRestartStatusMigratedWithoutPlan,
+		},
+		{
 			name: "current schema without plan",
 			seed: b008CurrentAuthorityPath,
 			want: ControlledRestartStatusMigratedWithoutPlan,
@@ -269,6 +278,10 @@ func controlledRestartStatusLegacyAuthorityPath(t *testing.T) string {
 		_ = database.Close()
 		t.Fatal(err)
 	}
+	if _, err := database.Exec(`DROP TABLE lane_ingress_admission`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
 	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version >= 34`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)
@@ -299,6 +312,10 @@ func controlledRestartStatusSchema35AuthorityPath(t *testing.T) string {
 		t.Fatal(err)
 	}
 	if _, err := database.Exec(`DROP TABLE exec_completed_teardown_recovery_finalizations`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DROP TABLE lane_ingress_admission`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)
 	}

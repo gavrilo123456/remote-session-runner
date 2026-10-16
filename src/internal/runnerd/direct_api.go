@@ -1113,9 +1113,14 @@ func (s *directHTTPSAPI) handleCancelCommand(response http.ResponseWriter, reque
 		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "cancellation request cannot be hashed")
 		return
 	}
-	result, serviceErr := s.service.CancelCommand(request.Context(), execution.CancelCommandRequest{
-		CommandID: commandID, Controller: principal.Controller, IdempotencyKey: idempotencyKey,
-		RequestHash: requestHash, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	var result execution.CancelCommandResult
+	serviceErr := s.service.WithLaneIngressMutation(request.Context(), func() error {
+		var err error
+		result, err = s.service.CancelCommand(request.Context(), execution.CancelCommandRequest{
+			CommandID: commandID, Controller: principal.Controller, IdempotencyKey: idempotencyKey,
+			RequestHash: requestHash, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+		})
+		return err
 	})
 	if serviceErr != nil && result.Command.CommandID == "" {
 		status, code, message := directCommandError(serviceErr)
@@ -1165,9 +1170,14 @@ func (s *directHTTPSAPI) handleCloseSession(response http.ResponseWriter, reques
 		writeDirectError(response, http.StatusUnprocessableEntity, "invalid_request", "close request cannot be hashed")
 		return
 	}
-	result, serviceErr := s.service.CloseSession(request.Context(), execution.CloseSessionRequest{
-		SessionID: sessionID, Controller: principal.Controller, IdempotencyKey: idempotencyKey,
-		RequestHash: requestHash, Policy: policy, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	var result execution.CloseSessionResult
+	serviceErr := s.service.WithLaneIngressMutation(request.Context(), func() error {
+		var err error
+		result, err = s.service.CloseSession(request.Context(), execution.CloseSessionRequest{
+			SessionID: sessionID, Controller: principal.Controller, IdempotencyKey: idempotencyKey,
+			RequestHash: requestHash, Policy: policy, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+		})
+		return err
 	})
 	if serviceErr != nil && result.Session.SessionID == "" {
 		status, code, message := directSessionError(serviceErr)
@@ -1484,6 +1494,8 @@ func directIdempotencyWarning(warning bool) string {
 
 func directSessionError(err error) (int, string, string) {
 	switch {
+	case errors.Is(err, store.ErrLaneAdmissionClosed):
+		return http.StatusLocked, "lane_admission_closed", "lane admission is closed"
 	case errors.Is(err, store.ErrSessionNotFound):
 		return http.StatusNotFound, "resource_not_found", "session not found"
 	case errors.Is(err, execution.ErrSessionController):
@@ -1509,6 +1521,8 @@ func directSessionError(err error) (int, string, string) {
 
 func directCommandError(err error) (int, string, string) {
 	switch {
+	case errors.Is(err, store.ErrLaneAdmissionClosed):
+		return http.StatusLocked, "lane_admission_closed", "lane admission is closed"
 	case errors.Is(err, store.ErrSessionNotFound), errors.Is(err, store.ErrCommandNotFound):
 		return http.StatusNotFound, "resource_not_found", "session or command not found"
 	case errors.Is(err, execution.ErrSessionController):

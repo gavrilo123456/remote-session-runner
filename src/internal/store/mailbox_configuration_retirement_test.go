@@ -297,6 +297,10 @@ func downgradeMailboxRetirementSchemaTo35(t *testing.T, path string) {
 		_ = database.Close()
 		t.Fatal(err)
 	}
+	if _, err := database.Exec(`DROP TABLE lane_ingress_admission`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
 	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version > 35`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)

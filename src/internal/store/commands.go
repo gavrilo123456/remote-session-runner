@@ -121,6 +121,9 @@ func (s *AuthorityStore) AcceptCommand(ctx context.Context, input CommandAccepta
 	defer s.commandEventsMu.Unlock()
 	now := s.now().UTC()
 	returnRecord, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+		if err := checkIngressAdmissionOnConnection(ctx, s, connection); err != nil {
+			return CommandRecord{}, err
+		}
 		var sessionState, controllerType, controllerID string
 		if err := connection.QueryRowContext(ctx,
 			"SELECT state, controller_type, controller_id FROM exec_sessions WHERE session_id = ?", string(validated.SessionID)).Scan(&sessionState, &controllerType, &controllerID); err != nil {

@@ -95,13 +95,15 @@ type SessionLifecycleRecord struct {
 // AuthorityStore owns authoritative SQLite session records. Its clock is
 // injectable so expiry and transaction fixtures do not depend on wall time.
 type AuthorityStore struct {
-	db              *sql.DB
-	now             func() time.Time
-	commandEventsMu sync.Mutex
-	subscribersMu   sync.Mutex
-	subscribersByID map[domain.CommandID]map[*CommandEventSubscription]struct{}
-	storageErrors   atomic.Int64
-	cleanupFailures atomic.Int64
+	db                   *sql.DB
+	now                  func() time.Time
+	laneAdmissionMu      sync.RWMutex
+	commandEventsMu      sync.Mutex
+	subscribersMu        sync.Mutex
+	subscribersByID      map[domain.CommandID]map[*CommandEventSubscription]struct{}
+	storageErrors        atomic.Int64
+	cleanupFailures      atomic.Int64
+	laneAdmissionRuntime atomic.Bool
 }
 
 // NewAuthorityStore wraps an opened P011 SQLite database with the P012 session
@@ -156,6 +158,9 @@ func (s *AuthorityStore) AcceptSessionCreate(ctx context.Context, input SessionC
 	now := s.now().UTC()
 	expiresAt := now.Add(validated.IdempotencyRetention)
 	record, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+		if err := checkIngressAdmissionOnConnection(ctx, s, connection); err != nil {
+			return SessionRecord{}, err
+		}
 		existing, found, err := lookupIdempotencyOnConnection(ctx, connection, validated.SessionCreate.Controller, createSessionOperation, validated.IdempotencyKey, now)
 		if err != nil {
 			return SessionRecord{}, err
@@ -221,6 +226,9 @@ func (s *AuthorityStore) CreateSession(ctx context.Context, input SessionCreate)
 	}
 	now := s.now().UTC()
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (SessionRecord, error) {
+		if err := checkIngressAdmissionOnConnection(ctx, s, connection); err != nil {
+			return SessionRecord{}, err
+		}
 		if err := ensureSessionCapacity(ctx, connection, DefaultActiveSessionLimit); err != nil {
 			return SessionRecord{}, err
 		}

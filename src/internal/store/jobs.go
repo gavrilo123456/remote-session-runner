@@ -152,6 +152,9 @@ func (s *AuthorityStore) AcceptJob(ctx context.Context, input JobAcceptance) (re
 	}
 	now := s.now().UTC()
 	record, err = withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (JobRecord, error) {
+		if err := checkIngressAdmissionOnConnection(ctx, s, connection); err != nil {
+			return JobRecord{}, err
+		}
 		existing, found, err := lookupIdempotencyOnConnection(ctx, connection, validated.Controller, runJobOperation, validated.IdempotencyKey, now)
 		if err != nil {
 			return JobRecord{}, err

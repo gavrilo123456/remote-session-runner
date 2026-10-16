@@ -196,6 +196,7 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 	// remove ledger entries later than P153 so migration history remains
 	// internally consistent for this legacy-only check.
 	for _, statement := range []string{
+		`DROP TABLE lane_ingress_admission`,
 		`DROP TABLE exec_completed_teardown_recovery_finalizations`,
 		`DROP TABLE exec_commandless_lost_runtime_recovery_finalizations`,
 		`DROP TABLE exec_controlled_restart_plan_lost_pairs`,

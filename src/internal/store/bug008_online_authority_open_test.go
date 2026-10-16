@@ -277,6 +277,12 @@ func b008SetAuthoritySchemaVersion(t *testing.T, path string, version int) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if version < CurrentSchemaVersion {
+		if _, err := database.Exec(`DROP TABLE IF EXISTS lane_ingress_admission`); err != nil {
+			_ = database.Close()
+			t.Fatal(err)
+		}
+	}
 	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version > ?`, version); err != nil {
 		_ = database.Close()
 		t.Fatal(err)

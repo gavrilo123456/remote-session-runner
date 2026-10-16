@@ -78,6 +78,14 @@ func TestBUG011OpenExistingRestartPreflightReadOnlyAcceptsSupportedAuthoritiesWi
 			path: completedTeardownSchema36AuthorityPath,
 		},
 		{
+			name: "schema 37",
+			path: func(t *testing.T) string {
+				path := b008CurrentAuthorityPath(t)
+				b008SetAuthoritySchemaVersion(t, path, laneAdmissionPreviousSchemaVersion)
+				return path
+			},
+		},
+		{
 			name: "schema 24",
 			path: bug011V24AuthorityPath,
 		},

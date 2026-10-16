@@ -434,6 +434,16 @@ func NewExecutionService(authority *store.AuthorityStore, runtime SessionRuntime
 	return NewService(authority, runtime, resolver, clock, publisher)
 }
 
+// WithLaneIngressMutation guards external lifecycle mutations against a lane
+// admission close/fence. Internal cleanup and drain paths call the service
+// methods directly so they remain available after ingress closes.
+func (s *Service) WithLaneIngressMutation(ctx context.Context, mutate func() error) error {
+	if s == nil || s.store == nil {
+		return ErrExecutionServiceConfiguration
+	}
+	return s.store.WithLaneIngressMutation(ctx, mutate)
+}
+
 // CreateSession validates policy, accepts a creating session, and drives the
 // fake/target runtime through prepare and ready. Runtime failures become a
 // durable failed or lost session and return the resulting snapshot with an

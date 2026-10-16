@@ -681,9 +681,14 @@ func (s *PrivateServer) handleCancelCommand(response http.ResponseWriter, reques
 		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
 		return
 	}
-	result, serviceErr := s.service.CancelCommand(request.Context(), execution.CancelCommandRequest{
-		CommandID: commandID, Controller: controller, IdempotencyKey: input.IdempotencyKey,
-		RequestHash: hash, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	var result execution.CancelCommandResult
+	serviceErr := s.service.WithLaneIngressMutation(request.Context(), func() error {
+		var err error
+		result, err = s.service.CancelCommand(request.Context(), execution.CancelCommandRequest{
+			CommandID: commandID, Controller: controller, IdempotencyKey: input.IdempotencyKey,
+			RequestHash: hash, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+		})
+		return err
 	})
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
@@ -743,9 +748,14 @@ func (s *PrivateServer) handleCloseSession(response http.ResponseWriter, request
 		writePrivateError(response, http.StatusBadRequest, fmt.Sprintf("canonical request: %v", err))
 		return
 	}
-	result, serviceErr := s.service.CloseSession(request.Context(), execution.CloseSessionRequest{
-		SessionID: sessionID, Controller: controller, IdempotencyKey: input.IdempotencyKey,
-		RequestHash: hash, Policy: policy, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+	var result execution.CloseSessionResult
+	serviceErr := s.service.WithLaneIngressMutation(request.Context(), func() error {
+		var err error
+		result, err = s.service.CloseSession(request.Context(), execution.CloseSessionRequest{
+			SessionID: sessionID, Controller: controller, IdempotencyKey: input.IdempotencyKey,
+			RequestHash: hash, Policy: policy, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+		})
+		return err
 	})
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
@@ -1542,6 +1552,8 @@ func writePrivateError(response http.ResponseWriter, status int, message string)
 
 func privateStatusForError(err error) int {
 	switch {
+	case errors.Is(err, store.ErrLaneAdmissionClosed):
+		return http.StatusLocked
 	case errors.Is(err, store.ErrSessionNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, store.ErrCommandNotFound), errors.Is(err, store.ErrJobNotFound):

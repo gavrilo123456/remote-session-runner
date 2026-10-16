@@ -433,7 +433,43 @@
       "id": "LANES-L1-10",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneadmission",
+            "name": "TestLanesL110StateMachineOrdersIdentityAndEpoch"
+          },
+          {
+            "package": "./src/internal/laneadmission",
+            "name": "TestLanesL110MigrationFencePersistsFailClosed"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLanesL110AdmissionPersistsAndGatesMutationEntryPoints"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLanesL110SubmitAndClosureSerialize"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLanesL110AdmissionCorruptionFailsClosed"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLanesL110MigrationFromSchema37"
+          },
+      {
+        "package": "./src/internal/store",
+        "name": "TestLanesL110SameEpochIdentitySwitchIsRejectedAtStoreBoundary"
+      },
+      {
+        "package": "./src/internal/runnerd",
+        "name": "TestLanesL110DirectAndPrivateLifecycleMutationsFailClosed"
+      }
+        ]
+      }
     },
     {
       "id": "LANES-L1-11",
