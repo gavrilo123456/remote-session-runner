@@ -4,11 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
-
-	"golang.org/x/sys/unix"
 
 	"remote-session-runner/src/internal/config"
 )
@@ -135,18 +132,6 @@ func TestLanesL103InspectsEmptyDescriptorBackedMailboxTree(t *testing.T) {
 	fixture := newRootFixture(t, nil)
 	inventory, err := InspectRoot(fixture.handoff)
 	if err != nil {
-		rootFD, parentFD, rootName, openErr := openRootNoFollow(fixture.handoff.Path, fixture.handoff.OwnerUID)
-		t.Logf("debug path=%s tmp=%s owner=%d openErr=%v", fixture.handoff.Path, os.TempDir(), fixture.handoff.OwnerUID, openErr)
-		if openErr != nil {
-			debugPathWalk(t, fixture.handoff.Path, fixture.handoff.OwnerUID)
-		}
-		if openErr == nil {
-			defer unix.Close(rootFD)
-			defer unix.Close(parentFD)
-			rootStat, statErr := fstat(rootFD)
-			names, namesErr := readDirectoryNames(rootFD)
-			t.Logf("debug name=%q root=%+v statErr=%v expected=%+v names=%v namesErr=%v", rootName, rootStat, statErr, fixture.handoff.RootIdentity, names, namesErr)
-		}
 		t.Fatalf("InspectRoot rejected a valid empty root: %v", err)
 	}
 	if inventory.Claim.RootIdentity != fixture.handoff.RootIdentity || len(inventory.ChildIdentities) != len(mailboxChildren) {
@@ -332,6 +317,12 @@ func newRootFixture(t *testing.T, ancillary map[string]string) rootFixture {
 	}
 	t.Setenv("TMPDIR", privateParent)
 	base := t.TempDir()
+	// testing.T.TempDir inherits the process umask. Some Linux hosts create
+	// the 001 fixture directory group-writable, so make the fixture ancestor
+	// owner-only before validating its descendants.
+	if err := os.Chmod(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	root := filepath.Join(base, "mailbox")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -408,32 +399,6 @@ func assertInspectionRejected(t *testing.T, handoff RootHandoff) {
 	t.Helper()
 	if _, err := InspectRoot(handoff); !errors.Is(err, ErrInvalidHandoff) {
 		t.Fatalf("InspectRoot accepted unsafe fixture: %v", err)
-	}
-}
-
-func debugPathWalk(t *testing.T, path string, ownerUID uint32) {
-	t.Helper()
-	parts := strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator))
-	fd, err := unix.Open(string(filepath.Separator), directoryOpenFlags, 0)
-	if err != nil {
-		t.Logf("debug root open: %v", err)
-		return
-	}
-	defer func() { _ = unix.Close(fd) }()
-	for index, part := range parts {
-		next, err := unix.Openat(fd, part, directoryOpenFlags, 0)
-		if err != nil {
-			t.Logf("debug component=%q open error=%v", part, err)
-			return
-		}
-		stat, statErr := fstat(next)
-		validationErr := error(nil)
-		if index != len(parts)-1 && statErr == nil {
-			validationErr = validateAncestorFD(next, ownerUID)
-		}
-		t.Logf("debug component=%q uid=%d mode=%#o type=%#o statErr=%v validationErr=%v", part, stat.Uid, stat.Mode&0o7777, stat.Mode&unix.S_IFMT, statErr, validationErr)
-		_ = unix.Close(fd)
-		fd = next
 	}
 }
 
