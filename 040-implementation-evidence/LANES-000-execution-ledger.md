@@ -6,26 +6,28 @@ authorizes independent source-only implementation and testing to proceed when
 its exact inputs are available. `LANES-B024-01` is PASS as an independent
 source/evidence unit with the exact blocked-L0 record cited below. Baseline and
 live acceptance gates remain ordered and blocked by their own unmet
-prerequisites. The latest owner scope decision limits remaining baseline work
-to the already-open B021/B024 case, defers unstarted B022/B023 baseline units,
-and makes `LANES-L1-01` the next lane source unit. This ledger does not pass
-readiness, L0, any deferred bug gate or any live lane.
+prerequisites. The owner has since clarified that incremental readiness applies
+to successive independent source units: a blocked B021/B024 maintenance
+closeout is not a global prerequisite for ordered L1 source work. The current
+source sequence has delivered through `LANES-L1-07`; continue at L1-08 after
+the L1-07 evidence closeout. The unstarted B022/B023 baseline units remain
+deferred. This ledger does not pass readiness, L0, any deferred bug gate or any
+live lane.
 
-## Owner priority and current assignment — 2026-10-16
+## Earlier owner priority — 2026-10-16 (historical)
 
-Finish only `LANES-B021-02` and the `LANES-B024-02` teardown work directly
-needed by that already-open maintenance. The current retained pair is
+The owner initially assigned only `LANES-B021-02` and the `LANES-B024-02`
+teardown work directly needed by that already-open maintenance. The current
+retained pair is
 `sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30`.
 Keep its failed result, original held ACKs and all historical PASS evidence.
 Do not expand this closeout into another standalone baseline bug campaign.
 
-The four unstarted B022/B023 rows below are **DEFERRED by owner scope**, not
+The four unstarted B022/B023 rows below remain **DEFERRED by owner scope**, not
 PASS and not prerequisites of `LANES-READY` or L1–L3. BUG-022/023 remain open.
-After the current closeout, proceed to `LANES-L1-01`, then the planned lane
-units. If live closeout is blocked on producer pause/access/approval,
-independent lane source work may proceed under incremental readiness with the
-exact blocker record cited. Keep readiness records current alongside that
-work; do not introduce another backlog repair as an intermediate unit.
+The subsequent owner instruction permits ordered independent lane source work
+to proceed while that closeout remains blocked; retain the blocker evidence and
+do not introduce another backlog repair as an intermediate unit.
 
 Lane candidate timeout, explicit-limit, managed-session and PRD teardown
 acceptance remain mandatory. Correct failures required by the active lane
@@ -107,7 +109,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L1-04` | PASS | [Unit evidence](LANES-L1-04.md); seven H assertions and full source gates passed on Mac and all three clean Ubuntu `dev` checkouts at Source S `1c6d72e7b8f05a8879d1a716e79d00d3bfa946a7`. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race was unavailable (`CGO_ENABLED=0`, no `cc`). No runtime acceptance is claimed |
 | `LANES-L1-05` | PASS | [Unit evidence](LANES-L1-05.md); seven H assertions and full source gates passed at Source S `e56520701bb6346261b1c07640ad2b6c9c40c4cc` on Mac and all three clean Ubuntu `dev` checkouts. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race was unavailable (`CGO_ENABLED=0`, no `cc`). No runtime acceptance is claimed |
 | `LANES-L1-06` | PASS | [Unit evidence](LANES-L1-06.md); six H assertions and full source gates passed on Mac and all three clean Ubuntu `dev` checkouts at Source S `ec2db7dbe8b9a45d5af486f2587a2954cc343f4b`. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race was unavailable (`CGO_ENABLED=0`, no `cc`). Evidence closeout E is delivered separately. B021/B024 remain blocked; no runtime acceptance is claimed |
-| `LANES-L1-07` | NOT RUN | Not produced |
+| `LANES-L1-07` | PASS | [Unit evidence](LANES-L1-07.md); eight H assertions and full source gates passed on Mac and all three clean Ubuntu `dev` checkouts at Source S `c254d49e07a4972b9ddb5b96e3380bbf191e7e2b`. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). No registry write or live acceptance is claimed |
 | `LANES-L1-08` | NOT RUN | Not produced |
 | `LANES-L1-09` | NOT RUN | Not produced |
 | `LANES-L1-10` | NOT RUN | Not produced |

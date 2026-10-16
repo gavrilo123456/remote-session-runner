@@ -1,7 +1,8 @@
 # LANES-L1-07 — registry-loss, corruption, rollback stop and reconstruction validation
 
-**State:** IN PROGRESS — Mac H and source gates passed. Source S delivery and
-the three Ubuntu validations remain NOT RUN.
+**State:** PASS — hermetic reconstruction validation and synchronized source
+gates passed. No registry reconstruction, installation, or live lane
+acceptance is claimed.
 
 ## Predecessor and pre-unit read inventory
 
@@ -108,21 +109,49 @@ manifest-test expectation still treating L1-07 as unregistered. The test was
 updated to use L1-08, and the full suite then passed. Neither failure was a
 product-contract failure.
 
-## Source delivery and remaining gates
+## Source delivery and synchronized Ubuntu validation
 
-- Source S, primary Gitea push, exact GitHub mirror SHA, and all three clean
-  Ubuntu `dev` fast-forwards: **NOT RUN** at this in-progress evidence stage.
-- After the exact S is synchronized, each Ubuntu host must run the H gate,
-  full test suite, vet, build, smoke, and the focused race test where cgo is
-  available. Host results and final checkout SHAs will be recorded before E.
-- Runner was not used: these are checkout-local Go tests. The authorized SSH
-  fallback is suitable for the Ubuntu build/test commands after the GitHub
-  mirror and clean-`dev` guards pass.
+Source S is `c254d49e07a4972b9ddb5b96e3380bbf191e7e2b`, committed on Mac
+`dev` as `phase(LANES-L1-07): validate registry reconstruction`. The explicit
+identity push to primary Gitea `origin/dev` succeeded. Direct `git ls-remote`
+checks of primary Gitea and the automatic GitHub mirror `github/dev` both
+returned exact S. Mac `dev` was clean at S before this evidence closeout.
+
+Each Ubuntu checkout was clean on `dev` at the predecessor E before pull,
+fast-forwarded from its GitHub `origin/dev` with the configured explicit
+identity, and ran the H gate, full test suite, vet, build, and smoke at exact
+S. Every required gate passed. Focused race passed on `linux-host` and
+`sandbox-host`; `factory-sandbox` race was unavailable because its configured
+Go toolchain reports `CGO_ENABLED=0` and no `cc` executable is installed.
+Each checkout remained clean at exact S after validation.
+
+| Machine | Platform | H / full / vet / build / smoke | Focused race | Final checkout |
+| --- | --- | --- | --- | --- |
+| `linux-host` | Linux amd64 | PASS | PASS | clean `dev`, exact S |
+| `sandbox-host` | Linux arm64 | PASS | PASS | clean `dev`, exact S |
+| `factory-sandbox` | Linux amd64 | PASS | NOT RUN — `CGO_ENABLED=0`, no `cc` | clean `dev`, exact S |
+
+The Mac ran the source gates listed above before S. Runner was not used
+because these are checkout-local Go gates rather than mailbox work. The SSH
+fallback used Mac identities for `remote-session-runner`
+(`/Users/tomasz.walczuk/.ssh/remote-session-runner`), `sandbox.env`
+(`/Users/tomasz.walczuk/.ssh/dev.slidestud.io`), and `factory-sandbox`
+(`/Users/tomasz.walczuk/.ssh/factory-sandbox`), with batch mode, strict
+verified host keys, and `UpdateHostKeys=no`. Each Ubuntu Git pull used
+`/home/ubuntu/.ssh/gavrilo123456-github`, `IdentitiesOnly=yes`, batch mode,
+and strict host-key checking. No tracked source was edited or copied on
+Ubuntu. No Runner request or ACK was published.
+
+Evidence closeout E records the synchronized host gates and is delivered as a
+separate documentation-only commit after S. The next ordered independent
+source unit is L1-08; this closeout does not wait on B021/B024 maintenance.
 
 ## Independent blockers preserved
 
-- `LANES-B021-02` remains **BLOCKED**, and its retained evidence is preserved.
-- `LANES-B024-02` remains **BLOCKED**, and its retained evidence is preserved.
+- `LANES-B021-02` remains **BLOCKED**; its evidence and retained work are
+  preserved.
+- `LANES-B024-02` remains **BLOCKED**; its evidence and retained work are
+  preserved.
 - `LANES-PREP-00` remains **BLOCKED**; `LANES-L0` remains **BLOCKED / NOT
   STARTED**. BUG-022/023 baseline repair units remain deferred.
 - No production credentials, Runner requests or ACKs, services, publisher
