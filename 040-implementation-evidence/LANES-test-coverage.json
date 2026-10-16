@@ -273,7 +273,35 @@
       "id": "LANES-L1-06",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL106FreshFailureNeedsClosedProofBeforeAbortAndArchive"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL106ReplacementMayAbortOnlyBeforeIncumbentClosureWithClosedProof"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL106PostOpenFailureQuiescesBeforeExactIncumbentRecovery"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL106PreOpenRecoveryFailureSealsRecoveryAbort"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL106RecoveryOpenFailureClosesAndQuiescesBeforeArchive"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL106RejectsUnsafeFailureAndClosureEvidence"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-07",

@@ -45,6 +45,12 @@ const (
 	OperationIncumbentClosurePending LaneOperationState = "incumbent_closure_pending"
 	OperationIncumbentQuiescing      LaneOperationState = "incumbent_quiescing"
 	OperationIncumbentQuiesced       LaneOperationState = "incumbent_quiesced"
+	OperationTargetClosurePending    LaneOperationState = "target_closure_pending"
+	OperationTargetQuiescing         LaneOperationState = "target_quiescing"
+	OperationFailedClosed            LaneOperationState = "failed_closed"
+	OperationRecoveryCandidateClosed LaneOperationState = "recovery_candidate_closed"
+	OperationRecoveryAborted         LaneOperationState = "recovery_aborted"
+	OperationAborted                 LaneOperationState = "aborted"
 )
 
 const (
@@ -155,6 +161,8 @@ type ReopenAuthorization struct {
 type OpenAttestation struct {
 	Surface            string `json:"surface"`
 	DirectiveID        string `json:"directive_id"`
+	DirectiveEpoch     uint64 `json:"directive_epoch"`
+	HighWaterSequence  uint64 `json:"high_water_sequence"`
 	AttestationID      string `json:"attestation_id"`
 	CandidateSetDigest string `json:"candidate_set_digest"`
 	AdmissionOpen      bool   `json:"admission_open"`
@@ -172,6 +180,77 @@ type LaneAcceptanceEvidence struct {
 	LiveSuitePassed    bool               `json:"live_suite_passed"`
 	ZeroWorkPostflight bool               `json:"zero_work_postflight"`
 	AuthorityVerified  bool               `json:"authority_verified"`
+}
+
+type DirectiveHighWater struct {
+	Surface         string `json:"surface"`
+	DirectiveID     string `json:"directive_id"`
+	DirectiveEpoch  uint64 `json:"directive_epoch"`
+	HighestSequence uint64 `json:"highest_sequence"`
+}
+
+type TerminalSurfaceProof struct {
+	Surface            string                         `json:"surface"`
+	CandidateSetDigest string                         `json:"candidate_set_digest"`
+	Closed             bool                           `json:"closed"`
+	Quiescence         IncumbentQuiescenceAttestation `json:"quiescence"`
+	EvidenceDigest     string                         `json:"evidence_digest"`
+}
+
+type OperationFailureEvidence struct {
+	FailureID          string                 `json:"failure_id"`
+	FailedFrom         LaneOperationState     `json:"failed_from"`
+	CandidateSetDigest string                 `json:"candidate_set_digest"`
+	FailureDigest      string                 `json:"failure_digest"`
+	EvidenceDigest     string                 `json:"evidence_digest"`
+	KnownDirectives    []DirectiveHighWater   `json:"known_directives"`
+	TerminalProofs     []TerminalSurfaceProof `json:"terminal_proofs,omitempty"`
+}
+
+type TargetClosureAttestation struct {
+	Surface            string `json:"surface"`
+	Attempt            uint64 `json:"attempt"`
+	DirectiveID        string `json:"directive_id"`
+	DirectiveEpoch     uint64 `json:"directive_epoch"`
+	HighestSequence    uint64 `json:"highest_sequence"`
+	AttestationID      string `json:"attestation_id"`
+	CandidateSetDigest string `json:"candidate_set_digest"`
+	Closed             bool   `json:"closed"`
+	EvidenceDigest     string `json:"evidence_digest"`
+}
+
+type TargetQuiescenceAttestation struct {
+	CandidateSetDigest string                         `json:"candidate_set_digest"`
+	Quiescence         IncumbentQuiescenceAttestation `json:"quiescence"`
+}
+
+type FailureDispositionKind string
+
+const (
+	DispositionAbort            FailureDispositionKind = "abort"
+	DispositionRecoverIncumbent FailureDispositionKind = "recover_incumbent"
+)
+
+type FailureDisposition struct {
+	Kind           FailureDispositionKind `json:"kind"`
+	EvidenceDigest string                 `json:"evidence_digest"`
+}
+
+type RecoveryAttempt struct {
+	ID                 string                       `json:"id"`
+	Candidates         []OperationIdentity          `json:"candidates"`
+	CandidateSetDigest string                       `json:"candidate_set_digest"`
+	SourceRevision     string                       `json:"source_revision"`
+	ArtifactDigest     string                       `json:"artifact_digest"`
+	ManifestDigest     string                       `json:"manifest_digest"`
+	ProvenanceDigest   string                       `json:"provenance_digest"`
+	CandidateStages    []CandidateStageAttestation  `json:"candidate_stages,omitempty"`
+	CandidateClosed    []CandidateClosedAttestation `json:"candidate_closed,omitempty"`
+	TransportReady     []TransportReadyAttestation  `json:"transport_ready,omitempty"`
+	Authorizations     []ReopenAuthorization        `json:"authorizations,omitempty"`
+	OpenAttestations   []OpenAttestation            `json:"open_attestations,omitempty"`
+	Acceptance         *LaneAcceptanceEvidence      `json:"acceptance,omitempty"`
+	Failure            *OperationFailureEvidence    `json:"failure,omitempty"`
 }
 
 type LaneOperation struct {
@@ -194,6 +273,12 @@ type LaneOperation struct {
 	Authorizations      []ReopenAuthorization            `json:"authorizations,omitempty"`
 	OpenAttestations    []OpenAttestation                `json:"open_attestations,omitempty"`
 	Acceptance          *LaneAcceptanceEvidence          `json:"acceptance,omitempty"`
+	Failure             *OperationFailureEvidence        `json:"failure,omitempty"`
+	FailureDisposition  *FailureDisposition              `json:"failure_disposition,omitempty"`
+	TargetClosures      []TargetClosureAttestation       `json:"target_closures,omitempty"`
+	TargetQuiescence    []TargetQuiescenceAttestation    `json:"target_quiescence,omitempty"`
+	Recovery            *RecoveryAttempt                 `json:"recovery,omitempty"`
+	AbortProofs         []TerminalSurfaceProof           `json:"abort_proofs,omitempty"`
 	History             []OperationTransition            `json:"history"`
 }
 
@@ -480,12 +565,21 @@ func (r *Registry) PrepareReopen(expectedGeneration uint64, operationID string, 
 		if !ok {
 			return false, ErrRecordNotFound
 		}
-		if operation.State != OperationCandidateClosed || !validTransportReadySet(*operation, attestations) {
+		recovery := recoveryPath(*operation)
+		target := operationTargetContext(*operation)
+		validState := operation.State == OperationCandidateClosed && !recovery ||
+			operation.State == OperationRecoveryCandidateClosed && recovery
+		if !validState || !validTransportReadySet(target, attestations) {
 			return false, ErrInvalidTransition
 		}
-		operation.TransportReady = append([]TransportReadyAttestation(nil), attestations...)
-		sort.Slice(operation.TransportReady, func(i, j int) bool { return operation.TransportReady[i].Surface < operation.TransportReady[j].Surface })
-		if err := appendOperationTransition(operation, OperationReopenPrepared, evidenceSetDigest(operation.TransportReady)); err != nil {
+		stored := append([]TransportReadyAttestation(nil), attestations...)
+		sort.Slice(stored, func(i, j int) bool { return stored[i].Surface < stored[j].Surface })
+		if recovery {
+			operation.Recovery.TransportReady = stored
+		} else {
+			operation.TransportReady = stored
+		}
+		if err := appendOperationTransition(operation, OperationReopenPrepared, evidenceSetDigest(stored)); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -498,12 +592,26 @@ func (r *Registry) AuthorizeReopen(expectedGeneration uint64, operationID string
 		if !ok {
 			return false, ErrRecordNotFound
 		}
-		if operation.State != OperationReopenPrepared || !validAuthorizationSet(*operation, authorizations) {
+		if operation.State != OperationReopenPrepared {
 			return false, ErrInvalidTransition
 		}
-		operation.Authorizations = append([]ReopenAuthorization(nil), authorizations...)
-		sort.Slice(operation.Authorizations, func(i, j int) bool { return operation.Authorizations[i].Surface < operation.Authorizations[j].Surface })
-		if err := appendOperationTransition(operation, OperationReopenAuthorized, evidenceSetDigest(operation.Authorizations)); err != nil {
+		recovery := recoveryPath(*operation)
+		target := operationTargetContext(*operation)
+		transport := operation.TransportReady
+		if recovery {
+			transport = operation.Recovery.TransportReady
+		}
+		if !validTransportReadySet(target, transport) || !validAuthorizationSet(target, authorizations) {
+			return false, ErrInvalidTransition
+		}
+		stored := append([]ReopenAuthorization(nil), authorizations...)
+		sort.Slice(stored, func(i, j int) bool { return stored[i].Surface < stored[j].Surface })
+		if recovery {
+			operation.Recovery.Authorizations = stored
+		} else {
+			operation.Authorizations = stored
+		}
+		if err := appendOperationTransition(operation, OperationReopenAuthorized, evidenceSetDigest(stored)); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -527,15 +635,21 @@ func (r *Registry) RecordRemoteOpen(expectedGeneration uint64, operationID strin
 		if !ok {
 			return false, ErrRecordNotFound
 		}
-		if operation.State != OperationTargetOpening || !isRemoteSurface(attestation.Surface) || !validOpenAttestation(*operation, attestation, false) {
+		target := operationTargetContext(*operation)
+		if operation.State != OperationTargetOpening || !isRemoteSurface(attestation.Surface) ||
+			!validAuthorizationSet(target, target.Authorizations) || !validOpenAttestation(target, attestation, false) {
 			return false, ErrInvalidTransition
 		}
-		for _, prior := range operation.OpenAttestations {
+		for _, prior := range target.OpenAttestations {
 			if prior.Surface == attestation.Surface || prior.DirectiveID == attestation.DirectiveID || prior.AttestationID == attestation.AttestationID {
 				return false, ErrCollision
 			}
 		}
-		operation.OpenAttestations = append(operation.OpenAttestations, attestation)
+		if recoveryPath(*operation) {
+			operation.Recovery.OpenAttestations = append(operation.Recovery.OpenAttestations, attestation)
+		} else {
+			operation.OpenAttestations = append(operation.OpenAttestations, attestation)
+		}
 		return true, nil
 	})
 }
@@ -546,16 +660,22 @@ func (r *Registry) RecordMacOpen(expectedGeneration uint64, operationID string, 
 		if !ok {
 			return false, ErrRecordNotFound
 		}
-		if operation.State != OperationTargetOpening || !validOpenAttestation(*operation, attestation, true) || !completeRemoteOpens(*operation) {
+		target := operationTargetContext(*operation)
+		if operation.State != OperationTargetOpening || !validAuthorizationSet(target, target.Authorizations) ||
+			!validOpenAttestation(target, attestation, true) || !completeRemoteOpens(target) {
 			return false, ErrInvalidTransition
 		}
-		for _, prior := range operation.OpenAttestations {
+		for _, prior := range target.OpenAttestations {
 			if prior.Surface == attestation.Surface || prior.DirectiveID == attestation.DirectiveID || prior.AttestationID == attestation.AttestationID {
 				return false, ErrCollision
 			}
 		}
-		operation.OpenAttestations = append(operation.OpenAttestations, attestation)
-		if err := appendOperationTransition(operation, OperationReopened, evidenceSetDigest(operation.OpenAttestations)); err != nil {
+		if recoveryPath(*operation) {
+			operation.Recovery.OpenAttestations = append(operation.Recovery.OpenAttestations, attestation)
+		} else {
+			operation.OpenAttestations = append(operation.OpenAttestations, attestation)
+		}
+		if err := appendOperationTransition(operation, OperationReopened, evidenceSetDigest(targetOpenAttestations(*operation))); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -564,7 +684,8 @@ func (r *Registry) RecordMacOpen(expectedGeneration uint64, operationID string, 
 
 func (r *Registry) BeginAcceptance(expectedGeneration uint64, operationID string) (Snapshot, error) {
 	return r.transitionOperation(expectedGeneration, operationID, OperationAcceptancePending, "", func(operation *LaneOperation) error {
-		if operation.State != OperationReopened || !completeRemoteOpens(*operation) || !hasMacOpen(*operation) {
+		target := operationTargetContext(*operation)
+		if operation.State != OperationReopened || !completeRemoteOpens(target) || !hasMacOpen(target) {
 			return ErrInvalidTransition
 		}
 		return nil
@@ -579,24 +700,434 @@ func (r *Registry) RecordLaneAcceptance(expectedGeneration uint64, operationID s
 		if !ok {
 			return false, ErrRecordNotFound
 		}
-		if operation.State != OperationAcceptancePending || !validLaneAcceptance(*operation, acceptance) {
+		target := operationTargetContext(*operation)
+		if operation.State != OperationAcceptancePending || !validLaneAcceptance(target, acceptance) {
 			return false, ErrInvalidTransition
 		}
 		copy := acceptance
-		operation.Acceptance = &copy
+		if recoveryPath(*operation) {
+			operation.Recovery.Acceptance = &copy
+		} else {
+			operation.Acceptance = &copy
+		}
 		if err := appendOperationTransition(operation, OperationAccepted, acceptance.EvidenceDigest); err != nil {
 			return false, err
+		}
+		if recoveryPath(*operation) {
+			if err := activateRecoveryCandidates(snapshot, operation); err != nil {
+				return false, err
+			}
 		}
 		return true, nil
 	})
 }
 
+func activateRecoveryCandidates(snapshot *Snapshot, operation *LaneOperation) error {
+	if snapshot == nil || operation == nil || operation.Recovery == nil {
+		return ErrInvalidTransition
+	}
+	for _, candidate := range operation.Candidates {
+		index := recordIndex(snapshot.Records, candidate.RecordID)
+		if index < 0 || snapshot.Records[index].State != StateActive {
+			return ErrInvalidTransition
+		}
+	}
+	for _, candidate := range operation.Recovery.Candidates {
+		index := recordIndex(snapshot.Records, candidate.RecordID)
+		if index < 0 || snapshot.Records[index].State != StatePrepared {
+			return ErrInvalidTransition
+		}
+	}
+	for _, candidate := range operation.Candidates {
+		index := recordIndex(snapshot.Records, candidate.RecordID)
+		snapshot.Records[index].State = StateSuperseded
+	}
+	for _, candidate := range operation.Recovery.Candidates {
+		index := recordIndex(snapshot.Records, candidate.RecordID)
+		snapshot.Records[index].State = StateActive
+	}
+	return nil
+}
+
 func (r *Registry) ArchiveLaneOperation(expectedGeneration uint64, operationID string) (Snapshot, error) {
 	return r.transitionOperation(expectedGeneration, operationID, OperationArchived, "", func(operation *LaneOperation) error {
-		if operation.State != OperationAccepted || operation.Acceptance == nil || !operation.Acceptance.AuthorityVerified {
+		if operation.State == OperationAccepted {
+			target := operationTargetContext(*operation)
+			if target.Acceptance != nil && target.Acceptance.AuthorityVerified && validOperationArchiveProof(*operation) {
+				return nil
+			}
+		}
+		if operation.State == OperationAborted && validOperationAbortProof(*operation) {
+			return nil
+		}
+		if operation.State == OperationRecoveryAborted && validRecoveryAbortProof(*operation) {
+			return nil
+		}
+		return ErrInvalidTransition
+	})
+}
+
+// RecordOperationFailure records an exact failure and its directive high-water
+// inventory. Failures before target_opening need a complete closed/zero-work
+// proof immediately; failures after target_opening enter target closure and
+// quiescence without changing any mailbox item.
+func (r *Registry) RecordOperationFailure(expectedGeneration uint64, operationID string, failure OperationFailureEvidence) (Snapshot, error) {
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		if !validFailureEvidence(*operation, failure) {
+			return false, ErrInvalidTransition
+		}
+		target := operationTargetContext(*operation)
+		preOpen := isPreOpenFailureState(operation.State, recoveryPath(*operation), operation.Mode)
+		if preOpen {
+			if !validTerminalSurfaceProofs(target.CandidateSetDigest, failure.TerminalProofs, operation.RequiredSurfaces) {
+				return false, ErrInvalidTransition
+			}
+		} else if len(failure.TerminalProofs) != 0 {
+			return false, ErrInvalidTransition
+		}
+		if recoveryPath(*operation) {
+			if operation.Recovery.Failure != nil {
+				return false, ErrInvalidTransition
+			}
+			copy := cloneFailureEvidence(failure)
+			operation.Recovery.Failure = &copy
+		} else {
+			if operation.Failure != nil {
+				return false, ErrInvalidTransition
+			}
+			copy := cloneFailureEvidence(failure)
+			operation.Failure = &copy
+		}
+		if preOpen {
+			next := OperationFailedClosed
+			if recoveryPath(*operation) {
+				next = OperationRecoveryAborted
+			}
+			if err := appendOperationTransition(operation, next, failure.FailureDigest); err != nil {
+				return false, err
+			}
+			if next == OperationRecoveryAborted {
+				if err := retireRecoveryCandidates(snapshot, operation); err != nil {
+					return false, err
+				}
+			}
+			return true, nil
+		}
+		return true, appendOperationTransition(operation, OperationTargetClosurePending, failure.FailureDigest)
+	})
+}
+
+// RecordTargetClosure appends each per-surface closure attempt for the current
+// candidate context. A failed or partial set remains pending and can only retry.
+func (r *Registry) RecordTargetClosure(expectedGeneration uint64, operationID string, attestation TargetClosureAttestation) (Snapshot, error) {
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		target := operationTargetContext(*operation)
+		if operation.State != OperationTargetClosurePending || !validTargetClosure(target, attestation) {
+			return false, ErrInvalidTransition
+		}
+		for _, prior := range operation.TargetClosures {
+			if prior.CandidateSetDigest == attestation.CandidateSetDigest && prior.Surface == attestation.Surface {
+				if prior.Attempt >= attestation.Attempt || prior.DirectiveEpoch >= attestation.DirectiveEpoch {
+					return false, ErrInvalidTransition
+				}
+			}
+			if prior.DirectiveID == attestation.DirectiveID || prior.AttestationID == attestation.AttestationID {
+				return false, ErrCollision
+			}
+		}
+		operation.TargetClosures = append(operation.TargetClosures, attestation)
+		sortTargetClosures(operation.TargetClosures)
+		return true, nil
+	})
+}
+
+func (r *Registry) CompleteTargetClosure(expectedGeneration uint64, operationID string) (Snapshot, error) {
+	return r.transitionOperation(expectedGeneration, operationID, OperationTargetQuiescing, "", func(operation *LaneOperation) error {
+		target := operationTargetContext(*operation)
+		if operation.State != OperationTargetClosurePending || !completeTargetClosures(*operation, target.CandidateSetDigest) {
 			return ErrInvalidTransition
 		}
 		return nil
+	})
+}
+
+func (r *Registry) RecordTargetQuiescence(expectedGeneration uint64, operationID string, attestation TargetQuiescenceAttestation) (Snapshot, error) {
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		target := operationTargetContext(*operation)
+		if operation.State != OperationTargetQuiescing || attestation.CandidateSetDigest != target.CandidateSetDigest ||
+			!validQuiescenceAttestation(attestation.Quiescence) || !contains(operation.RequiredSurfaces, attestation.Quiescence.Surface) {
+			return false, ErrInvalidTransition
+		}
+		for _, prior := range operation.TargetQuiescence {
+			if prior.CandidateSetDigest == attestation.CandidateSetDigest && prior.Quiescence.Surface == attestation.Quiescence.Surface &&
+				prior.Quiescence.Attempt >= attestation.Quiescence.Attempt {
+				return false, ErrInvalidTransition
+			}
+		}
+		operation.TargetQuiescence = append(operation.TargetQuiescence, attestation)
+		sortTargetQuiescence(operation.TargetQuiescence)
+		return true, nil
+	})
+}
+
+func (r *Registry) CompleteTargetQuiescence(expectedGeneration uint64, operationID string) (Snapshot, error) {
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		target := operationTargetContext(*operation)
+		if operation.State != OperationTargetQuiescing || !completeTargetQuiescence(*operation, target.CandidateSetDigest, operation.RequiredSurfaces) {
+			return false, ErrInvalidTransition
+		}
+		next := OperationFailedClosed
+		if recoveryPath(*operation) {
+			next = OperationRecoveryAborted
+		}
+		if err := appendOperationTransition(operation, next, targetQuiescenceDigest(*operation, target.CandidateSetDigest)); err != nil {
+			return false, err
+		}
+		if next == OperationRecoveryAborted {
+			if err := retireRecoveryCandidates(snapshot, operation); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	})
+}
+
+func retireRecoveryCandidates(snapshot *Snapshot, operation *LaneOperation) error {
+	if snapshot == nil || operation == nil || operation.Recovery == nil {
+		return ErrInvalidTransition
+	}
+	for _, candidate := range operation.Recovery.Candidates {
+		index := recordIndex(snapshot.Records, candidate.RecordID)
+		if index < 0 || (snapshot.Records[index].State != StatePrepared && snapshot.Records[index].State != StateActive) {
+			return ErrInvalidTransition
+		}
+	}
+	for _, candidate := range operation.Recovery.Candidates {
+		index := recordIndex(snapshot.Records, candidate.RecordID)
+		snapshot.Records[index].State = StateRetired
+	}
+	return nil
+}
+
+// AbortPreparedReplacement is the only direct abort: before incumbent closure
+// starts no runtime context was changed. Its complete closed/zero-work proofs
+// still remain in the registry before this operation can be archived.
+func (r *Registry) AbortPreparedReplacement(expectedGeneration uint64, operationID string, proofs []TerminalSurfaceProof) (Snapshot, error) {
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		if operation.Mode != OperationReplacement || operation.State != OperationPrepare ||
+			!validTerminalSurfaceProofs(operation.CandidateSetDigest, proofs, operation.RequiredSurfaces) {
+			return false, ErrInvalidTransition
+		}
+		operation.AbortProofs = cloneTerminalProofs(proofs)
+		if err := appendOperationTransition(operation, OperationAborted, evidenceSetDigest(proofs)); err != nil {
+			return false, err
+		}
+		for _, candidate := range operation.Candidates {
+			index := recordIndex(snapshot.Records, candidate.RecordID)
+			if index < 0 || snapshot.Records[index].State != StatePrepared {
+				return false, ErrInvalidTransition
+			}
+			snapshot.Records[index].State = StateRetired
+		}
+		return true, nil
+	})
+}
+
+func (r *Registry) AbortFailedClosed(expectedGeneration uint64, operationID, evidenceDigest string) (Snapshot, error) {
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		if operation.State != OperationFailedClosed || operation.FailureDisposition != nil || !validInitialFailedClosedProof(*operation) ||
+			!digestPattern.MatchString(evidenceDigest) {
+			return false, ErrInvalidTransition
+		}
+		operation.FailureDisposition = &FailureDisposition{Kind: DispositionAbort, EvidenceDigest: evidenceDigest}
+		if err := appendOperationTransition(operation, OperationAborted, evidenceDigest); err != nil {
+			return false, err
+		}
+		for _, candidate := range operation.Candidates {
+			index := recordIndex(snapshot.Records, candidate.RecordID)
+			if index < 0 || (snapshot.Records[index].State != StatePrepared && snapshot.Records[index].State != StateActive) {
+				return false, ErrInvalidTransition
+			}
+			snapshot.Records[index].State = StateRetired
+		}
+		return true, nil
+	})
+}
+
+// BeginIncumbentRecovery creates a new, higher-epoch prepared record for the
+// exact incumbent configuration and explicitly supersedes the closed target.
+// It never reactivates the historical incumbent record.
+func (r *Registry) BeginIncumbentRecovery(expectedGeneration uint64, operationID string, records []RootRecord, sourceRevision, artifactDigest, manifestDigest, provenanceDigest string) (Snapshot, LaneOperation, error) {
+	recoveryID, err := NewLaneTransitionID()
+	if err != nil {
+		return Snapshot{}, LaneOperation{}, err
+	}
+	var created RecoveryAttempt
+	snapshot, err := r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		if operation.State != OperationFailedClosed || operation.Mode != OperationReplacement ||
+			operation.FailureDisposition != nil || !validInitialFailedClosedProof(*operation) || operation.Recovery != nil ||
+			len(records) != len(operation.Incumbents) || len(records) == 0 || len(records) > 32 ||
+			!commitIDPattern.MatchString(sourceRevision) || !digestPattern.MatchString(artifactDigest) ||
+			!digestPattern.MatchString(manifestDigest) || !digestPattern.MatchString(provenanceDigest) {
+			return false, ErrInvalidTransition
+		}
+		incumbentsByInbox := make(map[string]OperationIdentity, len(operation.Incumbents))
+		targetsByInbox := make(map[string]OperationIdentity, len(operation.Candidates))
+		for _, incumbent := range operation.Incumbents {
+			incumbentsByInbox[incumbent.InboxID] = incumbent
+		}
+		for _, target := range operation.Candidates {
+			targetsByInbox[target.InboxID] = target
+		}
+		seenInbox := map[string]struct{}{}
+		var candidates []OperationIdentity
+		for _, record := range records {
+			incumbent, exists := incumbentsByInbox[record.InboxID]
+			target, hasTarget := targetsByInbox[record.InboxID]
+			if !exists || !hasTarget || record.State != StatePrepared || record.ID == target.RecordID ||
+				record.Host != config.HostKindMac || record.Lane != operation.Lane || record.Supersedes != target.RecordID ||
+				record.ConfigurationDigest != incumbent.ConfigurationDigest || record.NormalizedRoot != incumbent.NormalizedRoot ||
+				record.RootIdentity != incumbent.RootIdentity || record.Epoch <= target.Epoch {
+				return false, ErrInvalidOperation
+			}
+			if _, duplicate := seenInbox[record.InboxID]; duplicate {
+				return false, ErrInvalidOperation
+			}
+			seenInbox[record.InboxID] = struct{}{}
+			if err := validateRecord(record); err != nil {
+				return false, err
+			}
+			if err := validateSuccessor(snapshot.Records, record, StateActive); err != nil {
+				return false, err
+			}
+			if err := validateEpoch(snapshot.Records, record); err != nil {
+				return false, err
+			}
+			if err := validateNoCollision(snapshot.Records, record); err != nil {
+				return false, err
+			}
+			candidates = append(candidates, operationIdentity(record))
+		}
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].InboxID < candidates[j].InboxID })
+		candidateDigest, err := digestCandidateSet(candidates)
+		if err != nil {
+			return false, ErrInvalidOperation
+		}
+		created = RecoveryAttempt{
+			ID: recoveryID, Candidates: candidates, CandidateSetDigest: candidateDigest,
+			SourceRevision: sourceRevision, ArtifactDigest: artifactDigest,
+			ManifestDigest: manifestDigest, ProvenanceDigest: provenanceDigest,
+		}
+		for _, record := range records {
+			sortAncillary(record.AncillaryEntries)
+			snapshot.Records = append(snapshot.Records, record)
+		}
+		operation.Recovery = &created
+		operation.FailureDisposition = &FailureDisposition{Kind: DispositionRecoverIncumbent, EvidenceDigest: provenanceDigest}
+		return true, nil
+	})
+	if err != nil {
+		return Snapshot{}, LaneOperation{}, err
+	}
+	stored, ok := laneOperationByID(snapshot.Operations, operationID)
+	if !ok {
+		return Snapshot{}, LaneOperation{}, ErrInvalidOperation
+	}
+	return snapshot, cloneLaneOperation(stored), nil
+}
+
+func (r *Registry) RecordRecoveryCandidateStage(expectedGeneration uint64, operationID string, attestation CandidateStageAttestation) (Snapshot, error) {
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		if operation.State != OperationFailedClosed || operation.Recovery == nil ||
+			operation.FailureDisposition == nil || operation.FailureDisposition.Kind != DispositionRecoverIncumbent ||
+			!validRecoveryCandidateStage(*operation, attestation) {
+			return false, ErrInvalidTransition
+		}
+		for _, prior := range operation.Recovery.CandidateStages {
+			if prior.Surface == attestation.Surface {
+				return false, ErrCollision
+			}
+		}
+		operation.Recovery.CandidateStages = append(operation.Recovery.CandidateStages, attestation)
+		sort.Slice(operation.Recovery.CandidateStages, func(i, j int) bool {
+			return operation.Recovery.CandidateStages[i].Surface < operation.Recovery.CandidateStages[j].Surface
+		})
+		return true, nil
+	})
+}
+
+func (r *Registry) RecordRecoveryCandidateClosed(expectedGeneration uint64, operationID string, attestation CandidateClosedAttestation) (Snapshot, error) {
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		if operation.State != OperationFailedClosed || operation.Recovery == nil ||
+			!completeRecoveryCandidateStages(*operation) || !validRecoveryCandidateClosed(*operation, attestation) {
+			return false, ErrInvalidTransition
+		}
+		for _, prior := range operation.Recovery.CandidateClosed {
+			if prior.Surface == attestation.Surface {
+				return false, ErrCollision
+			}
+		}
+		operation.Recovery.CandidateClosed = append(operation.Recovery.CandidateClosed, attestation)
+		sort.Slice(operation.Recovery.CandidateClosed, func(i, j int) bool {
+			return operation.Recovery.CandidateClosed[i].Surface < operation.Recovery.CandidateClosed[j].Surface
+		})
+		return true, nil
+	})
+}
+
+func (r *Registry) CompleteRecoveryCandidateClosed(expectedGeneration uint64, operationID string) (Snapshot, error) {
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		operation, ok := mutableOperation(snapshot, operationID)
+		if !ok {
+			return false, ErrRecordNotFound
+		}
+		if operation.State != OperationFailedClosed || operation.Recovery == nil || !completeRecoveryCandidateStages(*operation) ||
+			!completeRecoveryCandidateClosed(*operation) {
+			return false, ErrInvalidTransition
+		}
+		for _, candidate := range operation.Recovery.Candidates {
+			index := recordIndex(snapshot.Records, candidate.RecordID)
+			if index < 0 || snapshot.Records[index].State != StatePrepared {
+				return false, ErrInvalidTransition
+			}
+		}
+		return true, appendOperationTransition(operation, OperationRecoveryCandidateClosed, evidenceSetDigest(operation.Recovery.CandidateClosed))
 	})
 }
 
@@ -629,9 +1160,9 @@ func appendOperationTransition(operation *LaneOperation, next LaneOperationState
 
 func allowedOperationTransition(mode LaneOperationMode, from, to LaneOperationState) bool {
 	switch {
-	case from == OperationPrepare && mode == OperationFresh && to == OperationCandidateClosed:
+	case from == OperationPrepare && mode == OperationFresh && (to == OperationCandidateClosed || to == OperationFailedClosed):
 		return true
-	case from == OperationPrepare && mode == OperationReplacement && to == OperationIncumbentClosurePending:
+	case from == OperationPrepare && mode == OperationReplacement && (to == OperationIncumbentClosurePending || to == OperationAborted):
 		return true
 	case from == OperationIncumbentClosurePending && to == OperationIncumbentQuiescing:
 		return true
@@ -639,19 +1170,31 @@ func allowedOperationTransition(mode LaneOperationMode, from, to LaneOperationSt
 		return true
 	case from == OperationIncumbentQuiesced && to == OperationCandidateClosed:
 		return true
-	case from == OperationCandidateClosed && to == OperationReopenPrepared:
+	case from == OperationCandidateClosed && (to == OperationReopenPrepared || to == OperationFailedClosed):
 		return true
-	case from == OperationReopenPrepared && to == OperationReopenAuthorized:
+	case from == OperationReopenPrepared && (to == OperationReopenAuthorized || to == OperationFailedClosed || to == OperationRecoveryAborted):
 		return true
-	case from == OperationReopenAuthorized && to == OperationTargetOpening:
+	case from == OperationReopenAuthorized && (to == OperationTargetOpening || to == OperationFailedClosed || to == OperationRecoveryAborted):
 		return true
-	case from == OperationTargetOpening && to == OperationReopened:
+	case from == OperationTargetOpening && (to == OperationReopened || to == OperationTargetClosurePending):
 		return true
-	case from == OperationReopened && to == OperationAcceptancePending:
+	case from == OperationReopened && (to == OperationAcceptancePending || to == OperationTargetClosurePending):
 		return true
-	case from == OperationAcceptancePending && to == OperationAccepted:
+	case from == OperationAcceptancePending && (to == OperationAccepted || to == OperationTargetClosurePending):
 		return true
 	case from == OperationAccepted && to == OperationArchived:
+		return true
+	case from == OperationTargetClosurePending && to == OperationTargetQuiescing:
+		return true
+	case from == OperationTargetQuiescing && (to == OperationFailedClosed || to == OperationRecoveryAborted):
+		return true
+	case from == OperationFailedClosed && (to == OperationRecoveryCandidateClosed || to == OperationAborted):
+		return true
+	case from == OperationRecoveryCandidateClosed && (to == OperationReopenPrepared || to == OperationRecoveryAborted):
+		return true
+	case from == OperationAborted && to == OperationArchived:
+		return true
+	case from == OperationRecoveryAborted && to == OperationArchived:
 		return true
 	default:
 		return false
@@ -844,7 +1387,75 @@ func validOperationShape(operation LaneOperation) bool {
 		}
 	}
 	digest, err := digestCandidateSet(operation.Candidates)
-	return err == nil && digest == operation.CandidateSetDigest
+	if err != nil || digest != operation.CandidateSetDigest {
+		return false
+	}
+	if operation.FailureDisposition != nil {
+		if !digestPattern.MatchString(operation.FailureDisposition.EvidenceDigest) ||
+			(operation.FailureDisposition.Kind != DispositionAbort && operation.FailureDisposition.Kind != DispositionRecoverIncumbent) {
+			return false
+		}
+		if operation.FailureDisposition.Kind == DispositionRecoverIncumbent && operation.Recovery == nil {
+			return false
+		}
+		if operation.FailureDisposition.Kind == DispositionRecoverIncumbent &&
+			operation.FailureDisposition.EvidenceDigest != operation.Recovery.ProvenanceDigest {
+			return false
+		}
+		if operation.FailureDisposition.Kind == DispositionAbort && operation.Recovery != nil {
+			return false
+		}
+	}
+	if operation.Recovery == nil {
+		return operation.FailureDisposition == nil || operation.FailureDisposition.Kind == DispositionAbort
+	}
+	return operation.FailureDisposition != nil && operation.FailureDisposition.Kind == DispositionRecoverIncumbent &&
+		validRecoveryAttemptShape(operation)
+}
+
+func validRecoveryAttemptShape(operation LaneOperation) bool {
+	recovery := operation.Recovery
+	if recovery == nil || !operationIDPattern.MatchString(recovery.ID) ||
+		len(recovery.Candidates) == 0 || len(recovery.Candidates) != len(operation.Incumbents) || len(recovery.Candidates) > 32 ||
+		!commitIDPattern.MatchString(recovery.SourceRevision) || !digestPattern.MatchString(recovery.ArtifactDigest) ||
+		!digestPattern.MatchString(recovery.ManifestDigest) || !digestPattern.MatchString(recovery.ProvenanceDigest) ||
+		!digestPattern.MatchString(recovery.CandidateSetDigest) {
+		return false
+	}
+	for index, candidate := range recovery.Candidates {
+		if !validOperationIdentity(candidate, operation.Lane) || (index > 0 && recovery.Candidates[index-1].InboxID >= candidate.InboxID) {
+			return false
+		}
+	}
+	if !matchingRecoverySuccessors(operation.Candidates, operation.Incumbents, recovery.Candidates) {
+		return false
+	}
+	digest, err := digestCandidateSet(recovery.Candidates)
+	if err != nil || digest != recovery.CandidateSetDigest || !validRecoveryCandidateEvidence(operation) {
+		return false
+	}
+	if recovery.Acceptance != nil && !validLaneAcceptance(recoveryOperationContext(operation), *recovery.Acceptance) {
+		return false
+	}
+	return true
+}
+
+func matchingRecoverySuccessors(targets, incumbents, recovery []OperationIdentity) bool {
+	if len(targets) != len(incumbents) || len(recovery) != len(incumbents) {
+		return false
+	}
+	for index, incumbent := range incumbents {
+		target := targets[index]
+		candidate := recovery[index]
+		if target.InboxID != incumbent.InboxID || candidate.InboxID != incumbent.InboxID ||
+			candidate.Lane != incumbent.Lane || candidate.ConfigurationDigest != incumbent.ConfigurationDigest ||
+			candidate.NormalizedRoot != incumbent.NormalizedRoot || candidate.RootIdentity != incumbent.RootIdentity ||
+			candidate.RecordID == target.RecordID || candidate.Supersedes != target.RecordID || candidate.Epoch <= target.Epoch ||
+			!reflect.DeepEqual(candidate.Volume, incumbent.Volume) {
+			return false
+		}
+	}
+	return true
 }
 
 func validOperationIdentity(identity OperationIdentity, lane config.ReleaseLane) bool {
@@ -868,7 +1479,9 @@ func validOperationState(state LaneOperationState) bool {
 	case OperationPrepare, OperationIncumbentClosurePending, OperationIncumbentQuiescing,
 		OperationIncumbentQuiesced, OperationCandidateClosed, OperationReopenPrepared,
 		OperationReopenAuthorized, OperationTargetOpening, OperationReopened,
-		OperationAcceptancePending, OperationAccepted, OperationArchived:
+		OperationAcceptancePending, OperationAccepted, OperationArchived,
+		OperationTargetClosurePending, OperationTargetQuiescing, OperationFailedClosed,
+		OperationRecoveryCandidateClosed, OperationRecoveryAborted, OperationAborted:
 		return true
 	default:
 		return false
@@ -876,34 +1489,400 @@ func validOperationState(state LaneOperationState) bool {
 }
 
 func validOperationHistory(operation LaneOperation) bool {
-	want := []LaneOperationState{OperationPrepare}
-	if operation.Mode == OperationReplacement {
-		want = append(want, OperationIncumbentClosurePending, OperationIncumbentQuiescing, OperationIncumbentQuiesced)
-	}
-	want = append(want, OperationCandidateClosed, OperationReopenPrepared, OperationReopenAuthorized,
-		OperationTargetOpening, OperationReopened, OperationAcceptancePending, OperationAccepted, OperationArchived)
-	if len(operation.History) == 0 || len(operation.History) > len(want) || len(operation.History) > 16 {
+	if len(operation.History) == 0 || len(operation.History) > 32 {
 		return false
 	}
 	for index, entry := range operation.History {
-		if entry.Sequence != uint64(index+1) || entry.To != want[index] ||
+		if entry.Sequence != uint64(index+1) || !validOperationState(entry.To) ||
 			(index == 0 && entry.From != "") ||
-			(index > 0 && entry.From != want[index-1]) ||
+			(index > 0 && entry.From != operation.History[index-1].To) ||
+			(index > 0 && !allowedOperationTransition(operation.Mode, entry.From, entry.To)) ||
 			(entry.EvidenceDigest != "" && !digestPattern.MatchString(entry.EvidenceDigest)) {
+			return false
+		}
+	}
+	if operation.History[0].To != OperationPrepare || operation.History[0].Sequence != 1 ||
+		operation.History[0].EvidenceDigest != "" {
+		return false
+	}
+	for index, entry := range operation.History {
+		if entry.To == OperationArchived && index != len(operation.History)-1 {
+			return false
+		}
+		if entry.To == OperationRecoveryCandidateClosed && operation.Mode != OperationReplacement {
 			return false
 		}
 	}
 	return operation.State == operation.History[len(operation.History)-1].To
 }
 
+func recoveryPath(operation LaneOperation) bool {
+	return operation.Recovery != nil && stateAtOrAfter(operation, OperationRecoveryCandidateClosed)
+}
+
+func operationTargetContext(operation LaneOperation) LaneOperation {
+	if !recoveryPath(operation) {
+		return operation
+	}
+	return recoveryOperationContext(operation)
+}
+
+func recoveryOperationContext(operation LaneOperation) LaneOperation {
+	if operation.Recovery == nil {
+		return operation
+	}
+	target := operation
+	target.Candidates = operation.Recovery.Candidates
+	target.CandidateSetDigest = operation.Recovery.CandidateSetDigest
+	target.SourceRevision = operation.Recovery.SourceRevision
+	target.ArtifactDigest = operation.Recovery.ArtifactDigest
+	target.ManifestDigest = operation.Recovery.ManifestDigest
+	target.TransportReady = operation.Recovery.TransportReady
+	target.Authorizations = operation.Recovery.Authorizations
+	target.OpenAttestations = operation.Recovery.OpenAttestations
+	target.Acceptance = operation.Recovery.Acceptance
+	return target
+}
+
+func targetOpenAttestations(operation LaneOperation) []OpenAttestation {
+	if recoveryPath(operation) {
+		return operation.Recovery.OpenAttestations
+	}
+	return operation.OpenAttestations
+}
+
+func isPreOpenFailureState(state LaneOperationState, recovery bool, mode LaneOperationMode) bool {
+	if recovery {
+		return state == OperationRecoveryCandidateClosed || state == OperationReopenPrepared || state == OperationReopenAuthorized
+	}
+	if state == OperationPrepare {
+		return mode == OperationFresh
+	}
+	return state == OperationCandidateClosed || state == OperationReopenPrepared || state == OperationReopenAuthorized
+}
+
+func validFailureEvidence(operation LaneOperation, failure OperationFailureEvidence) bool {
+	target := operationTargetContext(operation)
+	if failure.FailedFrom != operation.State || !validFailurePayload(target, failure) {
+		return false
+	}
+	if isPreOpenFailureState(operation.State, recoveryPath(operation), operation.Mode) {
+		return len(failure.KnownDirectives) == 0
+	}
+	return operation.State == OperationTargetOpening || operation.State == OperationReopened || operation.State == OperationAcceptancePending
+}
+
+func validFailurePayload(target LaneOperation, failure OperationFailureEvidence) bool {
+	return validEvidenceID(failure.FailureID) && failure.CandidateSetDigest == target.CandidateSetDigest &&
+		digestPattern.MatchString(failure.FailureDigest) && digestPattern.MatchString(failure.EvidenceDigest) &&
+		validKnownDirectives(failure.KnownDirectives, target.OpenAttestations)
+}
+
+func validStoredFailureEvidence(operation LaneOperation, failure OperationFailureEvidence, recovery bool) bool {
+	target := operation
+	if recovery {
+		if operation.Recovery == nil || !stateAtOrAfter(operation, OperationRecoveryCandidateClosed) {
+			return false
+		}
+		target = operationTargetContext(operation)
+	}
+	if !validFailurePayload(target, failure) {
+		return false
+	}
+	preOpen := isPreOpenFailureState(failure.FailedFrom, recovery, operation.Mode)
+	wantTo := OperationTargetClosurePending
+	if preOpen {
+		if recovery {
+			wantTo = OperationRecoveryAborted
+		} else {
+			wantTo = OperationFailedClosed
+		}
+		return len(failure.KnownDirectives) == 0 &&
+			validTerminalSurfaceProofs(target.CandidateSetDigest, failure.TerminalProofs, operation.RequiredSurfaces) &&
+			hasFailureTransition(operation, failure.FailedFrom, wantTo, failure.FailureDigest)
+	}
+	if len(failure.TerminalProofs) != 0 ||
+		(failure.FailedFrom != OperationTargetOpening && failure.FailedFrom != OperationReopened && failure.FailedFrom != OperationAcceptancePending) {
+		return false
+	}
+	return hasFailureTransition(operation, failure.FailedFrom, wantTo, failure.FailureDigest)
+}
+
+func hasFailureTransition(operation LaneOperation, from, to LaneOperationState, digest string) bool {
+	for _, entry := range operation.History {
+		if entry.From == from && entry.To == to && entry.EvidenceDigest == digest {
+			return true
+		}
+	}
+	return false
+}
+
+func validKnownDirectives(directives []DirectiveHighWater, opens []OpenAttestation) bool {
+	seenSurface, seenID := map[string]struct{}{}, map[string]struct{}{}
+	for _, directive := range directives {
+		if !isOperationSurface(directive.Surface) || !validEvidenceID(directive.DirectiveID) ||
+			directive.DirectiveEpoch == 0 || directive.HighestSequence == 0 {
+			return false
+		}
+		if _, duplicate := seenSurface[directive.Surface]; duplicate {
+			return false
+		}
+		if _, duplicate := seenID[directive.DirectiveID]; duplicate {
+			return false
+		}
+		seenSurface[directive.Surface], seenID[directive.DirectiveID] = struct{}{}, struct{}{}
+	}
+	for _, open := range opens {
+		found := false
+		for _, directive := range directives {
+			if directive.Surface == open.Surface && directive.DirectiveID == open.DirectiveID &&
+				directive.DirectiveEpoch == open.DirectiveEpoch && directive.HighestSequence >= open.HighWaterSequence {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func validTerminalSurfaceProofs(candidateDigest string, proofs []TerminalSurfaceProof, surfaces []string) bool {
+	if !completeSurfaceSet(surfaces, terminalProofSurfaces(proofs)) {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for _, proof := range proofs {
+		if !contains(surfaces, proof.Surface) || proof.CandidateSetDigest != candidateDigest || !proof.Closed ||
+			proof.Quiescence.Surface != proof.Surface || !proof.Quiescence.ZeroWorkPostflight ||
+			proof.Quiescence.RemainingWork != 0 || !validQuiescenceAttestation(proof.Quiescence) ||
+			!digestPattern.MatchString(proof.EvidenceDigest) {
+			return false
+		}
+		if _, duplicate := seen[proof.Surface]; duplicate {
+			return false
+		}
+		seen[proof.Surface] = struct{}{}
+	}
+	return true
+}
+
+func terminalProofSurfaces(proofs []TerminalSurfaceProof) []string {
+	surfaces := make([]string, 0, len(proofs))
+	for _, proof := range proofs {
+		surfaces = append(surfaces, proof.Surface)
+	}
+	return surfaces
+}
+
+func validTargetClosure(target LaneOperation, attestation TargetClosureAttestation) bool {
+	failure, hasFailure := failureForTarget(target)
+	minimumEpoch := candidateOperationEpoch(target)
+	if hasFailure {
+		for _, known := range failure.KnownDirectives {
+			if known.Surface == attestation.Surface && known.DirectiveEpoch > minimumEpoch {
+				minimumEpoch = known.DirectiveEpoch
+			}
+		}
+	}
+	return hasFailure && (failure.FailedFrom == OperationTargetOpening || failure.FailedFrom == OperationReopened ||
+		failure.FailedFrom == OperationAcceptancePending) &&
+		hasFailureTransition(target, failure.FailedFrom, OperationTargetClosurePending, failure.FailureDigest) &&
+		contains(target.RequiredSurfaces, attestation.Surface) && attestation.Attempt > 0 &&
+		validEvidenceID(attestation.DirectiveID) && validEvidenceID(attestation.AttestationID) &&
+		attestation.DirectiveEpoch > minimumEpoch && attestation.HighestSequence > 0 &&
+		attestation.CandidateSetDigest == target.CandidateSetDigest && digestPattern.MatchString(attestation.EvidenceDigest)
+}
+
+func failureForTarget(target LaneOperation) (OperationFailureEvidence, bool) {
+	if target.Recovery != nil && target.CandidateSetDigest == target.Recovery.CandidateSetDigest {
+		if target.Recovery.Failure == nil {
+			return OperationFailureEvidence{}, false
+		}
+		return *target.Recovery.Failure, true
+	}
+	if target.Failure == nil {
+		return OperationFailureEvidence{}, false
+	}
+	return *target.Failure, true
+}
+
+func completeTargetClosures(operation LaneOperation, candidateDigest string) bool {
+	latest := map[string]TargetClosureAttestation{}
+	for _, attestation := range operation.TargetClosures {
+		if attestation.CandidateSetDigest != candidateDigest {
+			continue
+		}
+		if current, ok := latest[attestation.Surface]; !ok || attestation.Attempt > current.Attempt {
+			latest[attestation.Surface] = attestation
+		}
+	}
+	if len(latest) != len(operation.RequiredSurfaces) {
+		return false
+	}
+	for _, surface := range operation.RequiredSurfaces {
+		attestation, ok := latest[surface]
+		if !ok || !attestation.Closed {
+			return false
+		}
+	}
+	return true
+}
+
+func completeTargetQuiescence(operation LaneOperation, candidateDigest string, surfaces []string) bool {
+	latest := map[string]IncumbentQuiescenceAttestation{}
+	for _, attestation := range operation.TargetQuiescence {
+		if attestation.CandidateSetDigest != candidateDigest {
+			continue
+		}
+		quiescence := attestation.Quiescence
+		if current, ok := latest[quiescence.Surface]; !ok || quiescence.Attempt > current.Attempt {
+			latest[quiescence.Surface] = quiescence
+		}
+	}
+	if len(latest) != len(surfaces) {
+		return false
+	}
+	for _, surface := range surfaces {
+		attestation, ok := latest[surface]
+		if !ok || !attestation.ZeroWorkPostflight || attestation.RemainingWork != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func targetQuiescenceDigest(operation LaneOperation, candidateDigest string) string {
+	var evidence []TargetQuiescenceAttestation
+	for _, attestation := range operation.TargetQuiescence {
+		if attestation.CandidateSetDigest == candidateDigest {
+			evidence = append(evidence, attestation)
+		}
+	}
+	return evidenceSetDigest(evidence)
+}
+
+func sortTargetClosures(values []TargetClosureAttestation) {
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].CandidateSetDigest != values[j].CandidateSetDigest {
+			return values[i].CandidateSetDigest < values[j].CandidateSetDigest
+		}
+		if values[i].Surface != values[j].Surface {
+			return values[i].Surface < values[j].Surface
+		}
+		return values[i].Attempt < values[j].Attempt
+	})
+}
+
+func sortTargetQuiescence(values []TargetQuiescenceAttestation) {
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].CandidateSetDigest != values[j].CandidateSetDigest {
+			return values[i].CandidateSetDigest < values[j].CandidateSetDigest
+		}
+		if values[i].Quiescence.Surface != values[j].Quiescence.Surface {
+			return values[i].Quiescence.Surface < values[j].Quiescence.Surface
+		}
+		return values[i].Quiescence.Attempt < values[j].Quiescence.Attempt
+	})
+}
+
+func cloneFailureEvidence(failure OperationFailureEvidence) OperationFailureEvidence {
+	data, _ := json.Marshal(failure)
+	var clone OperationFailureEvidence
+	_ = json.Unmarshal(data, &clone)
+	return clone
+}
+
+func cloneTerminalProofs(proofs []TerminalSurfaceProof) []TerminalSurfaceProof {
+	data, _ := json.Marshal(proofs)
+	var clone []TerminalSurfaceProof
+	_ = json.Unmarshal(data, &clone)
+	return clone
+}
+
+func validInitialFailedClosedProof(operation LaneOperation) bool {
+	if operation.Failure == nil || !validStoredFailureEvidence(operation, *operation.Failure, false) {
+		return false
+	}
+	if isPreOpenFailureState(operation.Failure.FailedFrom, false, operation.Mode) {
+		return validTerminalSurfaceProofs(operation.CandidateSetDigest, operation.Failure.TerminalProofs, operation.RequiredSurfaces)
+	}
+	return completeTargetClosures(operation, operation.CandidateSetDigest) &&
+		completeTargetQuiescence(operation, operation.CandidateSetDigest, operation.RequiredSurfaces)
+}
+
+func validRecoveryFailedClosedProof(operation LaneOperation) bool {
+	if operation.Recovery == nil || operation.Recovery.Failure == nil || !validStoredFailureEvidence(operation, *operation.Recovery.Failure, true) {
+		return false
+	}
+	if isPreOpenFailureState(operation.Recovery.Failure.FailedFrom, true, operation.Mode) {
+		return validTerminalSurfaceProofs(operation.Recovery.CandidateSetDigest, operation.Recovery.Failure.TerminalProofs, operation.RequiredSurfaces)
+	}
+	return completeTargetClosures(operation, operation.Recovery.CandidateSetDigest) &&
+		completeTargetQuiescence(operation, operation.Recovery.CandidateSetDigest, operation.RequiredSurfaces)
+}
+
+func validOperationArchiveProof(operation LaneOperation) bool {
+	target := operationTargetContext(operation)
+	accepted := operation.State == OperationAccepted || operation.State == OperationArchived && historyEndsWith(operation, OperationAccepted, OperationArchived)
+	return accepted && target.Acceptance != nil &&
+		validLaneAcceptance(target, *target.Acceptance) && completeRemoteOpens(target) && hasMacOpen(target)
+}
+
+func validOperationAbortProof(operation LaneOperation) bool {
+	aborted := operation.State == OperationAborted || operation.State == OperationArchived && historyEndsWith(operation, OperationAborted, OperationArchived)
+	if !aborted {
+		return false
+	}
+	if operation.FailureDisposition != nil {
+		return operation.FailureDisposition.Kind == DispositionAbort && digestPattern.MatchString(operation.FailureDisposition.EvidenceDigest) &&
+			operation.HistoryDigestFor(OperationFailedClosed, OperationAborted) == operation.FailureDisposition.EvidenceDigest &&
+			validInitialFailedClosedProof(operation)
+	}
+	return operation.Mode == OperationReplacement && hasDirectPreparedAbort(operation) &&
+		evidenceSetDigest(operation.AbortProofs) == operation.HistoryDigestFor(OperationPrepare, OperationAborted) &&
+		validTerminalSurfaceProofs(operation.CandidateSetDigest, operation.AbortProofs, operation.RequiredSurfaces)
+}
+
+func hasDirectPreparedAbort(operation LaneOperation) bool {
+	for _, transition := range operation.History {
+		if transition.From == OperationPrepare && transition.To == OperationAborted {
+			return true
+		}
+	}
+	return false
+}
+
+func (operation LaneOperation) HistoryDigestFor(from, to LaneOperationState) string {
+	for _, transition := range operation.History {
+		if transition.From == from && transition.To == to {
+			return transition.EvidenceDigest
+		}
+	}
+	return ""
+}
+
+func validRecoveryAbortProof(operation LaneOperation) bool {
+	recoveryAborted := operation.State == OperationRecoveryAborted || operation.State == OperationArchived && historyEndsWith(operation, OperationRecoveryAborted, OperationArchived)
+	return recoveryAborted && operation.Recovery != nil &&
+		operation.FailureDisposition != nil && operation.FailureDisposition.Kind == DispositionRecoverIncumbent &&
+		digestPattern.MatchString(operation.FailureDisposition.EvidenceDigest) && validRecoveryFailedClosedProof(operation)
+}
+
+func historyEndsWith(operation LaneOperation, prior, last LaneOperationState) bool {
+	return len(operation.History) >= 2 && operation.History[len(operation.History)-2].To == prior &&
+		operation.History[len(operation.History)-1].To == last
+}
+
 func validOperationEvidence(operation LaneOperation) bool {
 	if !validClosureHistory(operation) || !validQuiescenceHistory(operation) ||
 		!validCandidateStages(operation) || !validCandidateClosures(operation) ||
 		!validTransportReady(operation) || !validAuthorizations(operation) || !validOpenHistory(operation) ||
-		!operationEvidenceIDsUnique(operation) {
+		!operationEvidenceIDsUnique(operation) || !validTargetEvidenceHistory(operation) {
 		return false
 	}
-	if operation.State == OperationPrepare && (len(operation.IncumbentClosures) != 0 || len(operation.IncumbentQuiescence) != 0) {
+	if operation.State == OperationPrepare && (len(operation.IncumbentClosures) != 0 || len(operation.IncumbentQuiescence) != 0 || operation.Failure != nil) {
 		return false
 	}
 	if operation.Mode == OperationReplacement && !stateAtOrAfter(operation, OperationIncumbentClosurePending) && len(operation.IncumbentClosures) != 0 {
@@ -918,34 +1897,7 @@ func validOperationEvidence(operation LaneOperation) bool {
 	if operation.Mode == OperationReplacement && !stateAtOrAfter(operation, OperationIncumbentQuiesced) && len(operation.CandidateStages) != 0 {
 		return false
 	}
-	if !stateAtOrAfter(operation, OperationCandidateClosed) && len(operation.TransportReady) != 0 {
-		return false
-	}
 	if len(operation.CandidateClosed) != 0 && !completeCandidateStages(operation) {
-		return false
-	}
-	if len(operation.TransportReady) != 0 && !completeCandidateClosed(operation) {
-		return false
-	}
-	if !stateAtOrAfter(operation, OperationReopenPrepared) && len(operation.Authorizations) != 0 {
-		return false
-	}
-	if len(operation.Authorizations) != 0 && !validTransportReadySet(operation, operation.TransportReady) {
-		return false
-	}
-	if !stateAtOrAfter(operation, OperationTargetOpening) && len(operation.OpenAttestations) != 0 {
-		return false
-	}
-	if len(operation.OpenAttestations) != 0 && !validAuthorizationSet(operation, operation.Authorizations) {
-		return false
-	}
-	if operation.Acceptance != nil {
-		if !validLaneAcceptance(operation, *operation.Acceptance) ||
-			!stateAtOrAfter(operation, OperationAccepted) {
-			return false
-		}
-	}
-	if stateAtOrAfter(operation, OperationAccepted) != (operation.Acceptance != nil) {
 		return false
 	}
 	if operation.Mode == OperationFresh && (len(operation.IncumbentClosures) != 0 || len(operation.IncumbentQuiescence) != 0) {
@@ -965,16 +1917,187 @@ func validOperationEvidence(operation LaneOperation) bool {
 	if stateAtOrAfter(operation, OperationCandidateClosed) && !completeCandidateClosed(operation) {
 		return false
 	}
-	if stateAtOrAfter(operation, OperationReopenAuthorized) && !validTransportReadySet(operation, operation.TransportReady) {
+	if !validMainAttemptEvidence(operation) {
 		return false
 	}
-	if stateAtOrAfter(operation, OperationTargetOpening) && !validAuthorizationSet(operation, operation.Authorizations) {
+	if operation.Failure != nil && !validStoredFailureEvidence(operation, *operation.Failure, false) {
 		return false
 	}
-	if stateAtOrAfter(operation, OperationReopened) && (!completeRemoteOpens(operation) || !hasMacOpen(operation)) {
+	if operation.FailureDisposition != nil {
+		switch operation.FailureDisposition.Kind {
+		case DispositionAbort:
+			if !validOperationAbortProof(operation) {
+				return false
+			}
+		case DispositionRecoverIncumbent:
+			if operation.Mode != OperationReplacement || !stateAtOrAfter(operation, OperationFailedClosed) ||
+				!validInitialFailedClosedProof(operation) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	if operation.Recovery != nil && !validRecoveryAttemptShape(operation) {
+		return false
+	}
+	if stateAtOrAfter(operation, OperationFailedClosed) && !validInitialFailedClosedProof(operation) {
+		return false
+	}
+	if operation.State == OperationFailedClosed && operation.FailureDisposition != nil && operation.FailureDisposition.Kind != DispositionRecoverIncumbent {
+		return false
+	}
+	if operation.State == OperationTargetClosurePending || operation.State == OperationTargetQuiescing {
+		failure := operation.Failure
+		target := operation
+		if recoveryPath(operation) {
+			failure = operation.Recovery.Failure
+			target = recoveryOperationContext(operation)
+		}
+		if failure == nil || failure.CandidateSetDigest != target.CandidateSetDigest {
+			return false
+		}
+		if operation.State == OperationTargetQuiescing && !completeTargetClosures(operation, target.CandidateSetDigest) {
+			return false
+		}
+	}
+	if operation.State == OperationAborted && !validOperationAbortProof(operation) {
+		return false
+	}
+	if operation.State == OperationRecoveryAborted && !validRecoveryAbortProof(operation) {
+		return false
+	}
+	if operation.State == OperationArchived && !validOperationArchiveProof(operation) &&
+		!validOperationAbortProof(operation) && !validRecoveryAbortProof(operation) {
 		return false
 	}
 	return true
+}
+
+func validMainAttemptEvidence(operation LaneOperation) bool {
+	if operation.State == OperationArchived && (historyEndsWith(operation, OperationAborted, OperationArchived) ||
+		historyEndsWith(operation, OperationRecoveryAborted, OperationArchived)) {
+		return operation.Acceptance == nil
+	}
+	state := operation.State
+	if operation.Failure != nil {
+		state = operation.Failure.FailedFrom
+	}
+	needsTransport := state == OperationReopenPrepared || state == OperationReopenAuthorized || state == OperationTargetOpening ||
+		state == OperationReopened || state == OperationAcceptancePending || state == OperationAccepted || state == OperationArchived
+	needsAuthorization := state == OperationReopenAuthorized || state == OperationTargetOpening || state == OperationReopened ||
+		state == OperationAcceptancePending || state == OperationAccepted || state == OperationArchived
+	needsOpen := state == OperationReopened || state == OperationAcceptancePending || state == OperationAccepted || state == OperationArchived
+	if needsTransport && !validTransportReadySet(operation, operation.TransportReady) {
+		return false
+	}
+	if !needsTransport && len(operation.TransportReady) != 0 && !validTransportReadySet(operation, operation.TransportReady) {
+		return false
+	}
+	if needsAuthorization && !validAuthorizationSet(operation, operation.Authorizations) {
+		return false
+	}
+	if len(operation.Authorizations) != 0 && !validAuthorizationSet(operation, operation.Authorizations) {
+		return false
+	}
+	if needsAuthorization && !validTransportReadySet(operation, operation.TransportReady) {
+		return false
+	}
+	if len(operation.OpenAttestations) != 0 && (!validAuthorizationSet(operation, operation.Authorizations) || !validOpenHistory(operation)) {
+		return false
+	}
+	if needsOpen && (!completeRemoteOpens(operation) || !hasMacOpen(operation)) {
+		return false
+	}
+	if state == OperationAccepted || state == OperationArchived && operation.Recovery == nil {
+		if operation.Acceptance == nil || !validLaneAcceptance(operation, *operation.Acceptance) {
+			return false
+		}
+	} else if operation.Acceptance != nil {
+		return false
+	}
+	return true
+}
+
+func validTargetEvidenceHistory(operation LaneOperation) bool {
+	if len(operation.TargetClosures) > len(operation.RequiredSurfaces)*64 ||
+		len(operation.TargetQuiescence) > len(operation.RequiredSurfaces)*64 {
+		return false
+	}
+	latestClosure := map[string]uint64{}
+	latestClosureEpoch := map[string]uint64{}
+	latestQuiescence := map[string]uint64{}
+	seenIDs := map[string]struct{}{}
+	for _, attestation := range operation.TargetClosures {
+		target, ok := targetContextForDigest(operation, attestation.CandidateSetDigest)
+		if !ok || !validTargetClosure(target, attestation) {
+			return false
+		}
+		key := attestation.CandidateSetDigest + "\x00" + attestation.Surface
+		if attestation.Attempt <= latestClosure[key] || attestation.DirectiveEpoch <= latestClosureEpoch[key] {
+			return false
+		}
+		latestClosure[key] = attestation.Attempt
+		latestClosureEpoch[key] = attestation.DirectiveEpoch
+		for _, id := range []string{attestation.DirectiveID, attestation.AttestationID} {
+			if _, duplicate := seenIDs[id]; duplicate {
+				return false
+			}
+			seenIDs[id] = struct{}{}
+		}
+	}
+	for _, attestation := range operation.TargetQuiescence {
+		target, ok := targetContextForDigest(operation, attestation.CandidateSetDigest)
+		q := attestation.Quiescence
+		if !ok || q.Surface == "" || !contains(operation.RequiredSurfaces, q.Surface) || !validQuiescenceAttestation(q) {
+			return false
+		}
+		failure, exists := failureForTarget(target)
+		if !exists || !hasCleanupTransitionsForFailure(operation, failure) ||
+			!completeTargetClosures(operation, attestation.CandidateSetDigest) {
+			return false
+		}
+		key := attestation.CandidateSetDigest + "\x00" + q.Surface
+		if q.Attempt <= latestQuiescence[key] {
+			return false
+		}
+		latestQuiescence[key] = q.Attempt
+	}
+	return true
+}
+
+func targetContextForDigest(operation LaneOperation, candidateDigest string) (LaneOperation, bool) {
+	if candidateDigest == operation.CandidateSetDigest {
+		return operation, true
+	}
+	if operation.Recovery != nil && candidateDigest == operation.Recovery.CandidateSetDigest {
+		return recoveryOperationContext(operation), true
+	}
+	return LaneOperation{}, false
+}
+
+func hasCleanupTransitionsForFailure(operation LaneOperation, failure OperationFailureEvidence) bool {
+	closureIndex := -1
+	for index, transition := range operation.History {
+		if transition.From == failure.FailedFrom && transition.To == OperationTargetClosurePending &&
+			transition.EvidenceDigest == failure.FailureDigest {
+			closureIndex = index
+			break
+		}
+	}
+	if closureIndex < 0 {
+		return false
+	}
+	for index := closureIndex + 1; index < len(operation.History); index++ {
+		transition := operation.History[index]
+		if transition.From == OperationTargetClosurePending && transition.To == OperationTargetQuiescing {
+			return true
+		}
+		if transition.To == OperationFailedClosed || transition.To == OperationRecoveryAborted {
+			return false
+		}
+	}
+	return false
 }
 
 func stateAtOrAfter(operation LaneOperation, state LaneOperationState) bool {
@@ -988,6 +2111,10 @@ func stateAtOrAfter(operation LaneOperation, state LaneOperationState) bool {
 
 func validOperationRecordLinks(snapshot Snapshot, operation LaneOperation) bool {
 	candidateClosed := stateAtOrAfter(operation, OperationCandidateClosed)
+	recoveryClosed := stateAtOrAfter(operation, OperationRecoveryCandidateClosed)
+	mainAborted := operation.State == OperationAborted || operation.State == OperationArchived && historyEndsWith(operation, OperationAborted, OperationArchived)
+	recoveryAborted := operation.State == OperationRecoveryAborted || operation.State == OperationArchived && historyEndsWith(operation, OperationRecoveryAborted, OperationArchived)
+	recoveryPromoted := historyHasAfter(operation, OperationRecoveryCandidateClosed, OperationAccepted)
 	for _, identity := range operation.Candidates {
 		record, ok := recordByID(snapshot.Records, identity.RecordID)
 		if !ok || !operationIdentityMatchesRecord(identity, record) {
@@ -996,13 +2123,30 @@ func validOperationRecordLinks(snapshot Snapshot, operation LaneOperation) bool 
 		if operation.Mode == OperationFresh && record.Supersedes != "" {
 			return false
 		}
-		if candidateClosed {
-			if operation.State != OperationArchived && record.State != StateActive {
+		if recoveryClosed {
+			if recoveryPromoted {
+				if record.State != StateSuperseded && record.State != StateRetired {
+					return false
+				}
+			} else if operation.State == OperationArchived && recoveryAborted {
+				if record.State != StateActive && record.State != StateSuperseded && record.State != StateRetired {
+					return false
+				}
+			} else if record.State != StateActive {
 				return false
 			}
-			if operation.State == OperationArchived && record.State != StateActive && record.State != StateSuperseded && record.State != StateRetired {
+		} else if candidateClosed {
+			if mainAborted {
+				if record.State != StateRetired {
+					return false
+				}
+			} else if operation.State != OperationArchived && record.State != StateActive {
+				return false
+			} else if operation.State == OperationArchived && record.State != StateActive && record.State != StateSuperseded && record.State != StateRetired {
 				return false
 			}
+		} else if mainAborted && record.State == StateRetired {
+			continue
 		} else if record.State != StatePrepared {
 			return false
 		}
@@ -1021,6 +2165,29 @@ func validOperationRecordLinks(snapshot Snapshot, operation LaneOperation) bool 
 			}
 		} else if record.State != StateActive {
 			return false
+		}
+	}
+	if operation.Recovery != nil {
+		for _, identity := range operation.Recovery.Candidates {
+			record, ok := recordByID(snapshot.Records, identity.RecordID)
+			if !ok || !operationIdentityMatchesRecord(identity, record) {
+				return false
+			}
+			if recoveryClosed {
+				if recoveryAborted {
+					if record.State != StateRetired {
+						return false
+					}
+				} else if recoveryPromoted && operation.State != OperationArchived && record.State != StateActive {
+					return false
+				} else if recoveryPromoted && operation.State == OperationArchived && record.State != StateActive && record.State != StateSuperseded && record.State != StateRetired {
+					return false
+				} else if !recoveryPromoted && record.State != StatePrepared {
+					return false
+				}
+			} else if record.State != StatePrepared {
+				return false
+			}
 		}
 	}
 	return true
@@ -1146,6 +2313,120 @@ func validCandidateStage(operation LaneOperation, attestation CandidateStageAtte
 		attestation.InstalledClosed && digestPattern.MatchString(attestation.EvidenceDigest)
 }
 
+func validRecoveryCandidateEvidence(operation LaneOperation) bool {
+	recovery := operation.Recovery
+	if recovery == nil {
+		return false
+	}
+	target := recoveryOperationContext(operation)
+	if len(recovery.CandidateStages) > len(operation.RequiredSurfaces) || len(recovery.CandidateClosed) > len(operation.RequiredSurfaces) {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for _, attestation := range recovery.CandidateStages {
+		if !validCandidateStage(target, attestation) {
+			return false
+		}
+		if _, duplicate := seen[attestation.Surface]; duplicate {
+			return false
+		}
+		seen[attestation.Surface] = struct{}{}
+	}
+	seen = map[string]struct{}{}
+	for _, attestation := range recovery.CandidateClosed {
+		if !validCandidateClosed(target, attestation) || !completeRecoveryCandidateStages(operation) {
+			return false
+		}
+		if _, duplicate := seen[attestation.Surface]; duplicate {
+			return false
+		}
+		seen[attestation.Surface] = struct{}{}
+	}
+	if stateAtOrAfter(operation, OperationRecoveryCandidateClosed) &&
+		(!completeRecoveryCandidateStages(operation) || !completeRecoveryCandidateClosed(operation)) {
+		return false
+	}
+	if !stateAtOrAfter(operation, OperationRecoveryCandidateClosed) &&
+		(len(recovery.TransportReady) != 0 || len(recovery.Authorizations) != 0 || len(recovery.OpenAttestations) != 0 || recovery.Acceptance != nil) {
+		return false
+	}
+	if len(recovery.TransportReady) != 0 && !validTransportReadySet(target, recovery.TransportReady) {
+		return false
+	}
+	if len(recovery.Authorizations) != 0 && (!validTransportReadySet(target, recovery.TransportReady) || !validAuthorizationSet(target, recovery.Authorizations)) {
+		return false
+	}
+	if len(recovery.OpenAttestations) != 0 && (!validAuthorizationSet(target, recovery.Authorizations) || !validOpenHistory(target)) {
+		return false
+	}
+	if recovery.Acceptance != nil && (!completeRemoteOpens(target) || !hasMacOpen(target)) {
+		return false
+	}
+	if recovery.Failure != nil && !validStoredFailureEvidence(operation, *recovery.Failure, true) {
+		return false
+	}
+	if historyHasAfter(operation, OperationRecoveryCandidateClosed, OperationReopenPrepared) && !validTransportReadySet(target, recovery.TransportReady) {
+		return false
+	}
+	if historyHasAfter(operation, OperationRecoveryCandidateClosed, OperationReopenAuthorized) && !validAuthorizationSet(target, recovery.Authorizations) {
+		return false
+	}
+	if historyHasAfter(operation, OperationRecoveryCandidateClosed, OperationReopened) && (!completeRemoteOpens(target) || !hasMacOpen(target)) {
+		return false
+	}
+	if historyHasAfter(operation, OperationRecoveryCandidateClosed, OperationAccepted) != (recovery.Acceptance != nil) {
+		return false
+	}
+	return true
+}
+
+func completeRecoveryCandidateStages(operation LaneOperation) bool {
+	if operation.Recovery == nil {
+		return false
+	}
+	return completeSurfaceSet(operation.RequiredSurfaces, candidateStageSurfaces(operation.Recovery.CandidateStages))
+}
+
+func validRecoveryCandidateStage(operation LaneOperation, attestation CandidateStageAttestation) bool {
+	if operation.Recovery == nil {
+		return false
+	}
+	return validCandidateStage(recoveryOperationContext(operation), attestation)
+}
+
+func validRecoveryCandidateClosed(operation LaneOperation, attestation CandidateClosedAttestation) bool {
+	if operation.Recovery == nil {
+		return false
+	}
+	return validCandidateClosed(recoveryOperationContext(operation), attestation)
+}
+
+func completeRecoveryCandidateClosed(operation LaneOperation) bool {
+	if operation.Recovery == nil {
+		return false
+	}
+	return completeSurfaceSet(operation.RequiredSurfaces, candidateClosedSurfaces(operation.Recovery.CandidateClosed))
+}
+
+func historyHasAfter(operation LaneOperation, anchor, target LaneOperationState) bool {
+	anchorIndex := -1
+	for index, transition := range operation.History {
+		if transition.To == anchor {
+			anchorIndex = index
+			break
+		}
+	}
+	if anchorIndex < 0 {
+		return false
+	}
+	for index := anchorIndex + 1; index < len(operation.History); index++ {
+		if operation.History[index].To == target {
+			return true
+		}
+	}
+	return false
+}
+
 func completeCandidateStages(operation LaneOperation) bool {
 	return completeSurfaceSet(operation.RequiredSurfaces, candidateStageSurfaces(operation.CandidateStages))
 }
@@ -1226,6 +2507,7 @@ func authorizationSurfaces(authorizations []ReopenAuthorization) []string {
 func validOpenAttestation(operation LaneOperation, attestation OpenAttestation, mac bool) bool {
 	if attestation.Surface == SurfaceMac != mac || !contains(operation.RequiredSurfaces, attestation.Surface) ||
 		!validEvidenceID(attestation.DirectiveID) || !validEvidenceID(attestation.AttestationID) ||
+		attestation.DirectiveEpoch != candidateOperationEpoch(operation) || attestation.HighWaterSequence == 0 ||
 		attestation.CandidateSetDigest != operation.CandidateSetDigest || !attestation.AdmissionOpen ||
 		!digestPattern.MatchString(attestation.EvidenceDigest) {
 		return false
@@ -1524,6 +2806,12 @@ func operationEvidenceIDsUnique(operation LaneOperation) bool {
 		seen[id] = struct{}{}
 		return true
 	}
+	if operation.Failure != nil && !add(operation.Failure.FailureID) {
+		return false
+	}
+	if operation.Recovery != nil && (!add(operation.Recovery.ID) || operation.Recovery.ID == operation.ID) {
+		return false
+	}
 	for _, attestation := range operation.IncumbentClosures {
 		if !add(attestation.DirectiveID) || !add(attestation.AttestationID) {
 			return false
@@ -1556,6 +2844,44 @@ func operationEvidenceIDsUnique(operation LaneOperation) bool {
 	}
 	if operation.Acceptance != nil && !add(operation.Acceptance.AcceptanceID) {
 		return false
+	}
+	for _, attestation := range operation.TargetClosures {
+		if !add(attestation.DirectiveID) || !add(attestation.AttestationID) {
+			return false
+		}
+	}
+	if operation.Recovery != nil {
+		for _, attestation := range operation.Recovery.CandidateStages {
+			if !add(attestation.AttestationID) {
+				return false
+			}
+		}
+		for _, attestation := range operation.Recovery.CandidateClosed {
+			if !add(attestation.AttestationID) {
+				return false
+			}
+		}
+		for _, attestation := range operation.Recovery.TransportReady {
+			if !add(attestation.AttestationID) {
+				return false
+			}
+		}
+		for _, authorization := range operation.Recovery.Authorizations {
+			if !add(authorization.AuthorizationID) {
+				return false
+			}
+		}
+		for _, attestation := range operation.Recovery.OpenAttestations {
+			if !add(attestation.DirectiveID) || !add(attestation.AttestationID) {
+				return false
+			}
+		}
+		if operation.Recovery.Acceptance != nil && !add(operation.Recovery.Acceptance.AcceptanceID) {
+			return false
+		}
+		if operation.Recovery.Failure != nil && !add(operation.Recovery.Failure.FailureID) {
+			return false
+		}
 	}
 	return true
 }
