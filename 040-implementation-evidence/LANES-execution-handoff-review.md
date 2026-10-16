@@ -2,8 +2,10 @@
 
 **Status:** planning review and its source delivery PASS. The later
 `LANES-PREP-00` execution result is BLOCKED and `LANES-L0` remains NOT STARTED.
-`LANES-B024-01` is being revalidated as independent source/evidence work;
-`LANES-B024-02`, readiness and lane deployment are not yet complete.
+`LANES-B024-01` has passed its source gates and Source S delivery. Its
+evidence-only E closeout and delivery checks are recorded in the unit evidence
+before the next unit starts. `LANES-B024-02`, readiness and lane deployment are
+not yet complete.
 
 ## Request and baseline
 
@@ -198,8 +200,10 @@ fix, original-response trace, and hermetic regression checks do not depend on
 OCI access, future lane volumes, cgroup provisioning, or producer fencing.
 The current focused Mac tests pass, and the existing full test/vet/race results
 at unchanged source SHA `d90155bd8a9391a14759b420c7a49b48f5a0d0a8` are linked in
-[`LANES-B024-01.md`](LANES-B024-01.md). The lane unit remains IN PROGRESS until
-its Source S and evidence E delivery checks finish. L0 remains
-**BLOCKED / NOT STARTED**; this work does not imply any readiness or live-lane
-PASS. The original BUG-024 response and held ACK remain preserved, and the
-four fresh verification ACKs remain consumed.
+[`LANES-B024-01.md`](LANES-B024-01.md). Source S
+`5e5a07f1bc87a4cd52062d6f8eb729dce199e824` reached primary Gitea, its exact
+automatic GitHub mirror, and all three clean Ubuntu `dev` checkouts. B024-01 is
+PASS after evidence closeout E delivery. L0 remains **BLOCKED / NOT STARTED**;
+this work does not imply any readiness or live-lane PASS. The original BUG-024
+response and held ACK remain preserved, and the four fresh verification ACKs
+remain consumed.

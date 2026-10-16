@@ -1,7 +1,8 @@
 # LANES-B024-01 — verify the Mac one-off teardown correction
 
-**State:** IN PROGRESS — the source regression gate is verified; this Source S
-and the evidence-only closeout still need delivery checks.
+**State:** PASS — the source regression gate and Source S delivery are
+verified. This evidence-only closeout E records the completed unit; its own
+delivery is the final gate before the next unit starts.
 
 ## Preflight and bounded scope
 
@@ -144,14 +145,41 @@ requests `req-bug024-20261016-{mac,linux,sandbox,factory}-01` each have their
 ACK recorded as consumed. Retained response/event files are archives, not
 pending ACKs. No new request or ACK was created for this unit.
 
-## Source S and remaining closeout
+## Source S delivery and evidence closeout E
 
-This evidence and the ledger row are the unit's documentation-only Source S;
-the existing source fix and regression cohort above are the tested code S.
-`git diff --check`, review of the intended diff, primary Gitea push, exact
-GitHub mirror verification, and clean `dev` fast-forward checks for all three
-Ubuntu source checkouts remain. This unit is not PASS until those S checks and
-its evidence-only E delivery complete.
+This evidence, ledger update and handoff update are the unit's
+documentation-only Source S; the existing source fix and regression cohort
+above are the tested code S.
+
+| Source S delivery check | Result |
+| --- | --- |
+| Mac `dev` | `5e5a07f1bc87a4cd52062d6f8eb729dce199e824`, clean; `git diff --cached --check` and `git show --check` passed |
+| Primary Gitea `origin/dev` | Explicit-key push `437554c..5e5a07f`; `ls-remote` returned exact S |
+| GitHub mirror `github/dev` | Explicit-key `ls-remote` returned exact S before host pulls |
+| `linux-host` | Clean `dev`, expected GitHub origin, pre-pull `437554ccc3d372240b751c323f17bca9611cc0e8`; explicit-identity `pull --ff-only origin dev`; post-pull `HEAD` and `origin/dev` both S, clean |
+| `sandbox-host` | Same pre-pull branch/worktree/origin/SHA guards; explicit-identity `pull --ff-only origin dev`; post-pull `HEAD` and `origin/dev` both S, clean |
+| `factory-sandbox` | Same pre-pull branch/worktree/origin/SHA guards; explicit-identity `pull --ff-only origin dev`; post-pull `HEAD` and `origin/dev` both S, clean |
+
+Mac-to-host SSH used the verified configured hosts and explicit identities:
+`remote-session-runner` / `~/.ssh/remote-session-runner` for `linux-host`,
+`sandbox.env` / `~/.ssh/dev.slidestud.io` for `sandbox-host`, and
+`factory-sandbox` / `~/.ssh/factory-sandbox` for `factory-sandbox`; all used
+`IdentitiesOnly=yes`, `BatchMode=yes`, `StrictHostKeyChecking=yes`, and
+`UpdateHostKeys=no`. Ubuntu pulls used
+`/home/ubuntu/.ssh/gavrilo123456-github` with the explicit Git SSH command.
+No tracked source was copied outside Git.
+
+The Ubuntu code tests were not rerun after this documentation-only S: `src`,
+`deploy`, `Makefile`, schemas, and test files are unchanged from tested code S
+`d90155bd8a9391a14759b420c7a49b48f5a0d0a8`. The already completed all-host
+tests and vet at that exact source SHA remain applicable; no executable gate
+was omitted for changed code.
+
+Evidence closeout E is committed separately as
+`docs(LANES-B024-01): record verified source delivery`. Its primary/mirror and
+three-host delivery follows the same `AGENTS.md` order. E itself contains no
+self-referential hash; its final SHA is recorded in the next unit's preflight
+or the post-commit handoff.
 
 `LANES-B024-02` remains a separate baseline-maintenance unit. Existing BUG-024
 repair and fresh acceptance evidence are retained inputs; they do not waive
