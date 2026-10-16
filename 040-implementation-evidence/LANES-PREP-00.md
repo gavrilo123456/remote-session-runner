@@ -808,7 +808,7 @@ the original S handoff are recorded below. The failure does not authorize L0
 or any dependent live unit; it does not block independent source-only work
 authorized by the later owner decision.
 
-## Source S and evidence delivery
+## Original Source S delivery (historical)
 
 Source S is `44241e8199df7e3882b34194e10d23cbd9e1c468`
 (`phase(LANES-PREP-00): record readiness discovery`). It contains only this
@@ -840,3 +840,33 @@ fetch/pull used `/home/ubuntu/.ssh/gavrilo123456-github` with
 `IdentitiesOnly=yes`, `BatchMode=yes`, and `StrictHostKeyChecking=yes`. The
 pre-pull guards and resulting exact HEAD/clean-worktree checks were executed
 on each host in sequence. No source was copied with `scp` or `rsync`.
+
+## Incremental-readiness amendment Source S and evidence delivery
+
+The owner-decision amendment and consolidated remediation package were
+committed as Source S `36843bb5a9ae29907422f16cf5aef7994c5b347f`
+(`phase(LANES-PREP-00): record incremental readiness and remediation package`).
+It includes the preceding local documentation commit `b669213` and updates
+the plan, handbook, handoff, ledger and PREP evidence. `git diff --check`
+passed before commit. No executable source suite, installed test, defect probe,
+mailbox request/ACK, or service/configuration change was performed as part of
+this documentation amendment.
+
+| Delivery check | Command or guard | Result |
+| --- | --- | --- |
+| Mac source | `git status --short --branch`; `git rev-parse HEAD origin/dev`; `git show --stat --oneline HEAD` | `dev`, clean; HEAD and fetched `origin/dev` both equal Source S |
+| Primary Gitea | `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev`; direct `ls-remote origin refs/heads/dev` | Remote push advanced `4968027..36843bb`; the push then could not update the local tracking ref under the read-only `.git` sandbox. Direct `ls-remote` confirmed the primary ref at exact Source S; an explicit-identity `git fetch origin dev` updated the local tracking ref afterward. |
+| GitHub mirror | `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev` | Returned exact Source S before Ubuntu pulls |
+| `linux-host` | Verified clean `dev`, expected GitHub origin, pre-pull HEAD `4968027f88b70a7588fbf3824c04f92441fcb0bb`; explicit-identity `pull --ff-only origin dev` | Exit 0; post-pull HEAD Source S; clean `dev` |
+| `sandbox-host` | Same branch, worktree and origin guards; pre-pull HEAD `4968027f88b70a7588fbf3824c04f92441fcb0bb`; explicit-identity `pull --ff-only origin dev` | Exit 0; post-pull HEAD Source S; clean `dev` |
+| `factory-sandbox` | Same branch, worktree and origin guards; pre-pull HEAD `4968027f88b70a7588fbf3824c04f92441fcb0bb`; explicit-identity `pull --ff-only origin dev` | Exit 0; post-pull HEAD Source S; clean `dev` |
+
+The Mac-to-host connections used explicit configured host identities and
+verified host keys: alias `remote-session-runner` with
+`/Users/tomasz.walczuk/.ssh/remote-session-runner`, `sandbox.env` with
+`/Users/tomasz.walczuk/.ssh/dev.slidestud.io`, and `factory-sandbox` with
+`/Users/tomasz.walczuk/.ssh/factory-sandbox`; each used
+`IdentitiesOnly=yes`, `BatchMode=yes`, `StrictHostKeyChecking=yes`, and
+`UpdateHostKeys=no`. Ubuntu Git pulls used
+`/home/ubuntu/.ssh/gavrilo123456-github` with identity-only, batch and strict
+host-key checking. No tracked file was copied by `scp` or `rsync`.

@@ -58,7 +58,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 
 | Unit | State | Evidence / delivered source SHA |
 | --- | --- | --- |
-| `LANES-PREP-00` | BLOCKED | [Readiness discovery](LANES-PREP-00.md); delivered source S `44241e8199df7e3882b34194e10d23cbd9e1c468` |
+| `LANES-PREP-00` | BLOCKED | [Readiness discovery and incremental-readiness delivery evidence](LANES-PREP-00.md); latest source S `36843bb5a9ae29907422f16cf5aef7994c5b347f`; PREP still failed its sandbox-capacity and infrastructure/access gates |
 | `LANES-L0` | BLOCKED — not started | [Gate record](LANES-L0.md); PREP-00 did not pass |
 | `LANES-B024-01` | NOT RUN | Not produced |
 | `LANES-B024-02` | NOT RUN | Not produced |

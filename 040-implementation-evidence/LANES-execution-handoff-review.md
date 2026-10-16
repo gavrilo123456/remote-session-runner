@@ -167,3 +167,13 @@ setup throughout rollout. Record why Runner was unsuitable, execution host,
 explicit SSH identity/verified host key, source revision, exact command and
 result in unit evidence. Preserve the existing unsuffixed production Runner,
 normal host use, retained work and held ACKs.
+
+The owner-decision documentation package was delivered as Source S
+`36843bb5a9ae29907422f16cf5aef7994c5b347f`. Primary Gitea and the automatic
+GitHub mirror both resolved to that exact SHA. `linux-host`, `sandbox-host`,
+and `factory-sandbox` were each verified clean on `dev` at
+`4968027f88b70a7588fbf3824c04f92441fcb0bb`, fast-forwarded from the verified
+mirror with the configured explicit identity, and verified clean at Source S.
+The PREP evidence records each command, identity, and result, including a
+local tracking-ref update error after the Gitea push whose remote success was
+confirmed directly and repaired with `git fetch`.
