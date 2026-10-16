@@ -95,13 +95,13 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-B024-01` | PASS | [Independent source/evidence revalidation](LANES-B024-01.md); Source S `5e5a07f1bc87a4cd52062d6f8eb729dce199e824`; tested code cohort `d90155bd8a9391a14759b420c7a49b48f5a0d0a8`; independent of blocked L0 |
 | `LANES-B024-02` | BLOCKED | [A08 producer/control revalidation](LANES-B024-02.md); configured roots and direct writers are mapped, but SlideStud has active submissions and its owner-controlled pause has not been tested or approved |
 | `LANES-B021-01` | PASS | [Timeout normalization and dispatch source regression](LANES-B021-01.md); Source S2 `c3ebe96367437ce17dc5e6edd166912aa0d0ac2f`; source-only H PASS, no installed acceptance inferred |
-| `LANES-B021-02` | BLOCKED | [Consolidated maintenance package](LANES-B021-02.md); bounded exit-2 teardown recovery is implemented, tested and delivered at source `a2c2352750e7ba65cfdfb6d6e75063e29ea5940d`; A08 live producer pause, exact owner window/approval, final candidate refresh, zero-work checks, and installed acceptance remain open. Per-user Mac refresh needs no separate administrator credential |
+| `LANES-B021-02` | BLOCKED | [Consolidated maintenance package](LANES-B021-02.md); bounded exit-2 teardown recovery is implemented, tested and delivered at source `a2c2352750e7ba65cfdfb6d6e75063e29ea5940d`; the prior 30-minute window expired at 18:39:40 CEST, no new window or publisher-pause proof is established, and the e1912ac candidate package is historical. Exact-pair recovery, refreshed candidates, zero-work checks, bridge refresh, and installed acceptance remain open |
 | `LANES-B022-01` | DEFERRED — not started | Owner scope decision above; no baseline repair assigned, no PASS claimed. Positive explicit-limit candidate gates remain mandatory |
 | `LANES-B022-02` | DEFERRED — not started | Owner scope decision above; no baseline probe assigned or required before lane source work. No installed acceptance claimed |
 | `LANES-B023-01` | DEFERRED — not started | Owner scope decision above; no baseline repair assigned, no PASS claimed. Managed-session candidate contracts remain mandatory |
 | `LANES-B023-02` | DEFERRED — not started | Owner scope decision above; no baseline probe assigned or required before lane source work. No installed acceptance claimed |
 | `LANES-READY` | NOT RUN | Not produced |
-| `LANES-L1-01` | NOT RUN | Not produced |
+| `LANES-L1-01` | IN PROGRESS | [Unit evidence](LANES-L1-01.md); independent H source work is proceeding from clean pre-unit `222bb2345e6f73a7f09ea50ce9b69880d3b5103c` while B021-02 remains BLOCKED; Mac source gates pass, delivery and three Ubuntu validations remain pending |
 | `LANES-L1-02` | NOT RUN | Not produced |
 | `LANES-L1-03` | NOT RUN | Not produced |
 | `LANES-L1-04` | NOT RUN | Not produced |

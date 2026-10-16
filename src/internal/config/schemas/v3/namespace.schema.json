@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Remote Session Runner V3 lane namespace",
+  "description": "The closed V3 identity and fixed namespace assertion. Runtime profiles, contexts, mailboxes, and credentials are added by later lane units.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "release_lane"],
+  "properties": {
+    "version": {"const": 3},
+    "release_lane": {"enum": ["dev", "qas", "prd"]},
+    "mac": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account", "namespace"],
+      "properties": {
+        "account": {"const": "tomasz.walczuk"},
+        "namespace": {"$ref": "#/$defs/macNamespace"}
+      }
+    },
+    "linux": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account", "remote_profile", "namespace"],
+      "properties": {
+        "account": {"const": "ubuntu"},
+        "remote_profile": {"enum": ["linux-host", "sandbox-host", "factory-sandbox"]},
+        "namespace": {"$ref": "#/$defs/linuxNamespace"}
+      }
+    }
+  },
+  "oneOf": [
+    {"required": ["mac"], "not": {"required": ["linux"]}},
+    {"required": ["linux"], "not": {"required": ["mac"]}}
+  ],
+  "$defs": {
+    "macNamespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service_root", "config_file", "database", "database_wal", "database_shm", "api_socket", "locald_socket", "mailbox_root", "workspaces", "script_temp_root", "backups", "logs", "binaries", "staging", "lifecycle_lock", "registry_root", "runner_binary", "local_binary", "locald_binary", "log_capture_binary", "local_agent_label", "locald_agent_label", "local_agent_plist", "locald_agent_plist"],
+      "properties": {
+        "service_root": {"type": "string"},
+        "config_file": {"type": "string"},
+        "database": {"type": "string"},
+        "database_wal": {"type": "string"},
+        "database_shm": {"type": "string"},
+        "api_socket": {"type": "string"},
+        "locald_socket": {"type": "string"},
+        "mailbox_root": {"type": "string"},
+        "workspaces": {"type": "string"},
+        "script_temp_root": {"type": "string"},
+        "backups": {"type": "string"},
+        "logs": {"type": "string"},
+        "binaries": {"type": "string"},
+        "staging": {"type": "string"},
+        "lifecycle_lock": {"type": "string"},
+        "registry_root": {"type": "string"},
+        "runner_binary": {"type": "string"},
+        "local_binary": {"type": "string"},
+        "locald_binary": {"type": "string"},
+        "log_capture_binary": {"type": "string"},
+        "local_agent_label": {"type": "string"},
+        "locald_agent_label": {"type": "string"},
+        "local_agent_plist": {"type": "string"},
+        "locald_agent_plist": {"type": "string"}
+      }
+    },
+    "linuxNamespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service_root", "config_file", "database", "database_wal", "database_shm", "private_socket", "workspaces", "script_temp_root", "backups", "logs", "binaries", "staging", "lifecycle_lock", "runner_binary", "queued_ssh_binary", "session_agent_binary", "log_capture_binary", "runner_unit", "runner_entrypoint", "journal_identifier", "queued_ssh_journal_identifier", "queue_port", "direct_port", "direct_endpoint_name", "direct_endpoint_url", "direct_https_bind", "ssh_authority_path"],
+      "properties": {
+        "service_root": {"type": "string"},
+        "config_file": {"type": "string"},
+        "database": {"type": "string"},
+        "database_wal": {"type": "string"},
+        "database_shm": {"type": "string"},
+        "private_socket": {"type": "string"},
+        "workspaces": {"type": "string"},
+        "script_temp_root": {"type": "string"},
+        "backups": {"type": "string"},
+        "logs": {"type": "string"},
+        "binaries": {"type": "string"},
+        "staging": {"type": "string"},
+        "lifecycle_lock": {"type": "string"},
+        "runner_binary": {"type": "string"},
+        "queued_ssh_binary": {"type": "string"},
+        "session_agent_binary": {"type": "string"},
+        "log_capture_binary": {"type": "string"},
+        "runner_unit": {"type": "string"},
+        "runner_entrypoint": {"type": "string"},
+        "journal_identifier": {"type": "string"},
+        "queued_ssh_journal_identifier": {"type": "string"},
+        "runner_slice": {"type": "string"},
+        "queued_ssh_unit": {"type": "string"},
+        "ssh_authority_path": {"type": "string"},
+        "queue_port": {"type": "integer"},
+        "direct_port": {"type": "integer"},
+        "direct_endpoint_name": {"type": "string"},
+        "direct_endpoint_url": {"type": "string", "format": "uri"},
+        "direct_https_bind": {"type": "string"}
+      }
+    }
+  }
+}

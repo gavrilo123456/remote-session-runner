@@ -1,0 +1,583 @@
+{
+  "version": 1,
+  "units": [
+    {
+      "id": "LANES-PREP-00",
+      "required_tiers": [
+        "R"
+      ]
+    },
+    {
+      "id": "LANES-L0",
+      "required_tiers": [
+        "R"
+      ]
+    },
+    {
+      "id": "LANES-B024-01",
+      "required_tiers": [
+        "R",
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-B024-02",
+      "required_tiers": [
+        "B"
+      ]
+    },
+    {
+      "id": "LANES-B021-01",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-B021-02",
+      "required_tiers": [
+        "B"
+      ]
+    },
+    {
+      "id": "LANES-B022-01",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-B022-02",
+      "required_tiers": [
+        "B"
+      ]
+    },
+    {
+      "id": "LANES-B023-01",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-B023-02",
+      "required_tiers": [
+        "B"
+      ]
+    },
+    {
+      "id": "LANES-READY",
+      "required_tiers": [
+        "R"
+      ]
+    },
+    {
+      "id": "LANES-L1-01",
+      "required_tiers": [
+        "H"
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/config",
+            "name": "TestLanesL101NamespaceDerivationAndV3Identity"
+          },
+          {
+            "package": "./src/internal/config",
+            "name": "TestLanesL101RejectsNamespaceOverridesAndLocalDevQASTargets"
+          },
+          {
+            "package": "./src/internal/lanetests",
+            "name": "TestLanesL101ManifestMatchesPlan"
+          },
+          {
+            "package": "./src/internal/lanetests",
+            "name": "TestLanesL101RejectsUnknownMissingAndWrongProofTier"
+          },
+          {
+            "package": "./src/internal/lanetests",
+            "name": "TestLanesL101RejectsSkippedAndUnobservedAssertions"
+          }
+        ]
+      }
+    },
+    {
+      "id": "LANES-L1-02",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-03",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-04",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-05",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-06",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-07",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-08",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-09",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-10",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-11",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-12",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L1-13",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L2-01",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L2-02",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L2-03",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L2-04",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L2-05",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L2-06",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L2-07",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L2-08",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L2-09",
+      "required_tiers": [
+        "H",
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-01",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L3-02",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L3-03",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L3-04",
+      "required_tiers": [
+        "H"
+      ]
+    },
+    {
+      "id": "LANES-L3-05",
+      "required_tiers": [
+        "H",
+        "N"
+      ]
+    },
+    {
+      "id": "LANES-L3-06",
+      "required_tiers": [
+        "H",
+        "N"
+      ]
+    },
+    {
+      "id": "LANES-L3-07",
+      "required_tiers": [
+        "H",
+        "N"
+      ]
+    },
+    {
+      "id": "LANES-L3-08",
+      "required_tiers": [
+        "H",
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-09",
+      "required_tiers": [
+        "H",
+        "N"
+      ]
+    },
+    {
+      "id": "LANES-L3-10",
+      "required_tiers": [
+        "H",
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-11",
+      "required_tiers": [
+        "H",
+        "N"
+      ]
+    },
+    {
+      "id": "LANES-L3-12",
+      "required_tiers": [
+        "H",
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-13",
+      "required_tiers": [
+        "H",
+        "N"
+      ]
+    },
+    {
+      "id": "LANES-L3-14",
+      "required_tiers": [
+        "H",
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-15",
+      "required_tiers": [
+        "H",
+        "N"
+      ]
+    },
+    {
+      "id": "LANES-L3-16",
+      "required_tiers": [
+        "H",
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-17",
+      "required_tiers": [
+        "H",
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-18",
+      "required_tiers": [
+        "H",
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-19",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-20",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L3-21",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L4-01",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L4-02",
+      "required_tiers": [
+        "D"
+      ]
+    },
+    {
+      "id": "LANES-L5-01",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L5-02",
+      "required_tiers": [
+        "D"
+      ]
+    },
+    {
+      "id": "LANES-L6-01",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L6-02",
+      "required_tiers": [
+        "D"
+      ]
+    },
+    {
+      "id": "LANES-L7-01",
+      "required_tiers": [
+        "N",
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L7-02",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L7-03",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L7-04",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L7-05",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L7-06",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L7-07",
+      "required_tiers": [
+        "F"
+      ]
+    },
+    {
+      "id": "LANES-L7-08",
+      "required_tiers": [
+        "F"
+      ]
+    }
+  ],
+  "design_acceptance": [
+    {
+      "id": "D9-01",
+      "units": [
+        "LANES-L3-21",
+        "LANES-L4-02",
+        "LANES-L5-02",
+        "LANES-L6-02"
+      ]
+    },
+    {
+      "id": "D9-02",
+      "units": [
+        "LANES-L4-02",
+        "LANES-L5-02",
+        "LANES-L6-02"
+      ]
+    },
+    {
+      "id": "D9-03",
+      "units": [
+        "LANES-L4-02",
+        "LANES-L5-02",
+        "LANES-L6-02"
+      ]
+    },
+    {
+      "id": "D9-04",
+      "units": [
+        "LANES-L4-02",
+        "LANES-L5-02",
+        "LANES-L6-02"
+      ]
+    },
+    {
+      "id": "D9-05",
+      "units": [
+        "LANES-L1-01",
+        "LANES-L1-02",
+        "LANES-L2-01",
+        "LANES-L2-09",
+        "LANES-L4-02",
+        "LANES-L5-02",
+        "LANES-L6-02"
+      ]
+    },
+    {
+      "id": "D9-06",
+      "units": [
+        "LANES-L0",
+        "LANES-L4-02",
+        "LANES-L5-02",
+        "LANES-L6-02"
+      ]
+    },
+    {
+      "id": "D9-07",
+      "units": [
+        "LANES-L3-01",
+        "LANES-L3-02",
+        "LANES-L3-03",
+        "LANES-L3-04",
+        "LANES-L3-05",
+        "LANES-L3-06",
+        "LANES-L3-07",
+        "LANES-L3-08",
+        "LANES-L3-09",
+        "LANES-L3-10",
+        "LANES-L3-11",
+        "LANES-L3-12",
+        "LANES-L3-13",
+        "LANES-L3-14",
+        "LANES-L3-15",
+        "LANES-L3-16",
+        "LANES-L3-17",
+        "LANES-L3-18",
+        "LANES-L3-19",
+        "LANES-L3-20",
+        "LANES-L3-21",
+        "LANES-L7-01",
+        "LANES-L7-02",
+        "LANES-L7-03",
+        "LANES-L7-04"
+      ]
+    },
+    {
+      "id": "D9-08",
+      "units": [
+        "LANES-L1-04",
+        "LANES-L1-05",
+        "LANES-L1-06",
+        "LANES-L1-07",
+        "LANES-L1-08",
+        "LANES-L1-09",
+        "LANES-L1-10",
+        "LANES-L1-11",
+        "LANES-L1-12",
+        "LANES-L1-13",
+        "LANES-L6-01",
+        "LANES-L6-02",
+        "LANES-L7-05",
+        "LANES-L7-06",
+        "LANES-L7-07",
+        "LANES-L7-08"
+      ]
+    },
+    {
+      "id": "D9-09",
+      "units": [
+        "LANES-L2-05",
+        "LANES-L2-06",
+        "LANES-L2-07",
+        "LANES-L2-08",
+        "LANES-L2-09",
+        "LANES-L4-02",
+        "LANES-L5-02"
+      ]
+    },
+    {
+      "id": "D9-10",
+      "units": [
+        "LANES-L0",
+        "LANES-READY",
+        "LANES-L4-02",
+        "LANES-L5-02",
+        "LANES-L6-02"
+      ]
+    }
+  ]
+}

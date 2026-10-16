@@ -25,10 +25,13 @@ import (
 
 const (
 	// Version remains the version-one compatibility constant for existing
-	// callers. VersionV2 is selected explicitly by the configuration document.
+	// callers. The generic loader currently accepts V1 and V2; V3 is introduced
+	// by its lane-aware parser and is not accepted as a complete runtime config
+	// until the later L1 units assemble that contract.
 	Version                       = VersionV1
 	VersionV1                     = 1
 	VersionV2                     = 2
+	VersionV3                     = 3
 	MaxConfigBytes                = 1 << 20
 	MacAccount                    = "tomasz.walczuk"
 	LinuxAccount                  = "ubuntu"

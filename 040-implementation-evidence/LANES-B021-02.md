@@ -416,3 +416,23 @@ HEAD supersedes the `e1912ac` installer package because the installer rebuilds
 and embeds current clean `dev`. Deliver through primary/mirror/all three hosts,
 then rebuild/freeze hashes and rollback handles outside Git, refresh inventory
 and obtain the unchanged exact approvals before maintenance.
+
+## 2026-10-16 continuation — maintenance remains blocked
+
+The 30-minute operational window authorized earlier on 2026-10-16 ended at
+18:39:40 CEST and is expired. The current owner instruction confirms the
+existing SSH and necessary Runner-restart authorizations, but does not grant a
+new maintenance window or confirm that publishers are paused. The last recorded
+A08 inventory still says the SlideStud publisher is active and its owner-
+controlled pause is untested/unconfirmed. No evidence in this continuation
+establishes a new pause, no-publication interval, or zero-accepted-work result.
+
+Therefore the exact-pair recovery, Mac service refresh, factory bridge refresh,
+and timeout probe remain unrun. The retained exit-2 response/event prefix and
+unACKed state are preserved; no request or ACK was published. The e1912ac
+candidate package is historical. After source/evidence delivery, rebuild the
+final candidates from the then-current clean synchronized revision, verify the
+hashes outside Git, refresh the inventory, and obtain a new exact window and
+approval after actual publisher-pause confirmation. Continue with independent
+LANES-L1-01 source work under incremental readiness; this does not close
+B021-02 or mark its live gate PASS.
