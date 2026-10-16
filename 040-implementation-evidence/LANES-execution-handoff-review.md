@@ -1,8 +1,9 @@
 # Complete lane execution handoff — planning review
 
 **Status:** planning review and its source delivery PASS. The later
-`LANES-PREP-00` execution result is recorded below as BLOCKED; L0, bug units,
-readiness and lane deployment have not run.
+`LANES-PREP-00` execution result is BLOCKED and `LANES-L0` remains NOT STARTED.
+`LANES-B024-01` is being revalidated as independent source/evidence work;
+`LANES-B024-02`, readiness and lane deployment are not yet complete.
 
 ## Request and baseline
 
@@ -187,3 +188,18 @@ clean Ubuntu checkouts. It reconciles the repository instructions and L0
 record with the incremental owner decision; it does not start L0 or change its
 read-only observation limits. Exact host guards and results are in
 [`LANES-L0.md`](LANES-L0.md).
+
+## LANES-B024-01 independent source work
+
+The owner-authorized incremental-readiness rule permits this source/evidence
+revalidation while L0 remains blocked. Its preflight records the exact
+`LANES-L0.md` blocker blob and explains why the existing Mac teardown source
+fix, original-response trace, and hermetic regression checks do not depend on
+OCI access, future lane volumes, cgroup provisioning, or producer fencing.
+The current focused Mac tests pass, and the existing full test/vet/race results
+at unchanged source SHA `d90155bd8a9391a14759b420c7a49b48f5a0d0a8` are linked in
+[`LANES-B024-01.md`](LANES-B024-01.md). The lane unit remains IN PROGRESS until
+its Source S and evidence E delivery checks finish. L0 remains
+**BLOCKED / NOT STARTED**; this work does not imply any readiness or live-lane
+PASS. The original BUG-024 response and held ACK remain preserved, and the
+four fresh verification ACKs remain consumed.

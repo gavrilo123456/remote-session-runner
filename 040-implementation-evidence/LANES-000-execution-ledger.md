@@ -3,9 +3,11 @@
 **Planning status:** complete ordered assignment. **Execution status:**
 `LANES-PREP-00` is BLOCKED; `LANES-L0` is BLOCKED and NOT STARTED. The owner
 authorizes independent source-only implementation and testing to proceed when
-its exact inputs are available. Baseline and live acceptance gates remain
-ordered and blocked by their own unmet prerequisites. This ledger does not
-pass readiness, L0, any bug gate or any live lane.
+its exact inputs are available. `LANES-B024-01` is IN PROGRESS as an independent
+source/evidence unit with the exact blocked-L0 record cited below. Baseline and
+live acceptance gates remain ordered and blocked by their own unmet
+prerequisites. This ledger does not pass readiness, L0, any completed bug gate
+or any live lane.
 
 ## Authoritative inputs and launch rule
 
@@ -62,9 +64,9 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 
 | Unit | State | Evidence / delivered source SHA |
 | --- | --- | --- |
-| `LANES-PREP-00` | BLOCKED | [Readiness discovery and incremental-readiness delivery evidence](LANES-PREP-00.md); latest source S `36843bb5a9ae29907422f16cf5aef7994c5b347f`; PREP still failed its sandbox-capacity and infrastructure/access gates |
+| `LANES-PREP-00` | BLOCKED | [Readiness discovery and incremental-readiness delivery evidence](LANES-PREP-00.md); latest owner-instruction source S `d797d8519fcee0fbf40f0588f2e7393f6b96f74b`, evidence closeout `437554ccc3d372240b751c323f17bca9611cc0e8`; PREP still failed its sandbox-capacity and infrastructure/access gates |
 | `LANES-L0` | BLOCKED — not started | [Gate record](LANES-L0.md); PREP-00 did not pass |
-| `LANES-B024-01` | NOT RUN | Not produced |
+| `LANES-B024-01` | IN PROGRESS | [Independent source/evidence revalidation](LANES-B024-01.md); source fix and existing full test cohort `d90155bd8a9391a14759b420c7a49b48f5a0d0a8`; this row does not pass L0 |
 | `LANES-B024-02` | NOT RUN | Not produced |
 | `LANES-B021-01` | NOT RUN | Not produced |
 | `LANES-B021-02` | NOT RUN | Not produced |
