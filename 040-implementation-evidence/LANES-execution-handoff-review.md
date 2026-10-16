@@ -3,10 +3,12 @@
 **Status:** planning review and its source delivery PASS. `LANES-PREP-00`
 remains BLOCKED and `LANES-L0` remains NOT STARTED. `LANES-B024-01` is PASS;
 `LANES-B024-02` remains BLOCKED on A08. `LANES-B021-01` passed its
-source-only gates at Source S2; `LANES-B021-02` is BLOCKED on A08, an authorized
-Mac administrator/operator route, retained-work disposition, and exact live
-approval. `LANES-B022-*` and `LANES-B023-*` remain unstarted in the prescribed
-order. Readiness and lane deployment are not complete.
+source-only gates at Source S2; `LANES-B021-02` is BLOCKED on A08,
+disposition of uncertain retained work, a fresh zero-work preflight, and exact
+operational approval. The per-user Mac operator account is available; no
+separate administrator credential is needed. `LANES-B022-*` and `LANES-B023-*`
+remain unstarted in the prescribed order. Readiness and lane deployment are
+not complete.
 
 ## Request and baseline
 
@@ -225,6 +227,12 @@ exposed a separate test-fixture permission assumption. Corrective Source S2
 fixture. S2 reached primary Gitea, the exact automatic GitHub mirror, and all
 three clean Ubuntu `dev` checkouts before validation.
 
+Evidence closeout E1 `744fafd5e4a4cc0728107ed647f241f0b074a448` was committed
+on Mac `dev` and pushed to primary Gitea. `git ls-remote github refs/heads/dev`
+returned that exact SHA. Each Ubuntu checkout was clean on `dev` at S2 before
+`pull --ff-only`, then clean at E1 after pull. This evidence-only commit did
+not change executable code, so no code tests were rerun for E1.
+
 Mac focused race, full `make test`, `make vet`, `make build`, and `make smoke`
 passed under `umask 077`. `linux-host` and `sandbox-host` passed focused tests,
 full tests, vet, and focused race checks by the owner's authorized SSH
@@ -241,8 +249,11 @@ hashes are in [BUG-024.md](BUG-024.md#additional-unacked-test-run) and
 ACK and four consumed fresh route ACKs remain unchanged. No further source test
 requests were sent through the unsuffixed Runner.
 
-The next prescribed unit, `LANES-B021-02`, remains BLOCKED. Its concrete A08,
-administrator, retained-work, deployment, and one-operation approval package
-is recorded in [`LANES-B021-02.md`](LANES-B021-02.md). BUG-021 stays NEW until
-the installed five-second acceptance passes. BUG-022 and BUG-023 remain
-unstarted behind it; no defect probe has been run for either report.
+The next prescribed unit, `LANES-B021-02`, remains BLOCKED. Fresh read-only
+inventory found one active Mac session slot, so the safe restart gate is
+currently closed. Its A08, retained-work, candidate/rollback, and exact
+operational approval package is recorded in
+[`LANES-B021-02.md`](LANES-B021-02.md). The per-user Mac operator is available;
+no separate administrator credential is required. BUG-021 stays NEW until the
+installed five-second acceptance passes. BUG-022 and BUG-023 remain unstarted
+behind it; no defect probe has been run for either report.

@@ -91,7 +91,7 @@ This separate lost-teardown item does not change the source-suite results or clo
 
 - S1 9e23da3397e88f9db7d4af80ee9e031d0088d72e was committed on Mac dev, pushed to primary Gitea, and verified at the exact automatic GitHub mirror SHA. The three clean Ubuntu dev checkouts were fast-forwarded to S1.
 - Corrective S2 c3ebe96367437ce17dc5e6edd166912aa0d0ac2f was committed on Mac dev, pushed to primary Gitea, and independently verified at the exact github/dev SHA before host validation. linux-host, sandbox-host, and factory-sandbox were each clean on dev at S1 before pull --ff-only, then clean at S2 before and after validation.
-- After the evidence-only closeout E, its exact mirror and host synchronization results are recorded in the final handoff. No service or host installation occurred in this source unit.
+- Evidence-only closeout E1 `744fafd5e4a4cc0728107ed647f241f0b074a448` was pushed to primary Gitea, verified at the same `github/dev` SHA, and fast-forwarded to all three clean Ubuntu `dev` checkouts. Exact delivery is recorded in the final handoff. No service or host installation occurred in this source unit.
 
 ## Outcome and next gate
 
