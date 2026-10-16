@@ -29,10 +29,14 @@ the source-only scope; do not mark an unmet predecessor, dependent unit, or
 later live gate PASS. The handbook already supplies deliverable, proof tier,
 host coverage, exit criteria and failure branch; another group-breakdown
 document is not a prerequisite.
-Per-unit evidence is `040-implementation-evidence/<unit-id>.md`. Record its
-predecessor's verified evidence-closeout SHA before starting. Aggregate L1–L7
-summary files are created when their last unit closes. A unit becomes PASS only
-after its actual tests and S/E delivery, never from this assignment table.
+Per-unit evidence is `040-implementation-evidence/<unit-id>.md`. For ordinary
+ordered units, record the predecessor's verified evidence-closeout SHA before
+starting. For an explicitly authorized independent source-only unit whose
+predecessor is blocked, record the predecessor's exact blocker-evidence path,
+blob/commit revision and state, and why the source work is independent; do not
+invent a predecessor PASS or closeout SHA. Aggregate L1–L7 summary files are
+created when their last unit closes. A unit becomes PASS only after its actual
+tests and S/E delivery, never from this assignment table.
 
 ## Readiness packet ownership
 

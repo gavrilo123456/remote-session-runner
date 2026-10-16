@@ -59,6 +59,11 @@ unit PASS or advance a dependent live gate. Discoverable facts and correction
 packages must be prepared before the operation they support; future UUIDs,
 generated identities, receipts and short-lived approvals are created only at
 their declared checkpoints.
+For an explicitly authorized source-only unit whose predecessor is still
+blocked, record the predecessor's exact blocker-evidence path, blob/commit
+revision and state, and explain why the source work is independent. Do not
+invent a predecessor PASS or evidence-closeout SHA. Ordinary ordered units
+record the predecessor's verified evidence-closeout SHA and cannot bypass it.
 
 **Authorized observation route for the first two units (2026-10-16).** The
 owner authorized direct read-only Mac shell and SSH observations for

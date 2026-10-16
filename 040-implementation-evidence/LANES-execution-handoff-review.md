@@ -159,7 +159,10 @@ it; do not fabricate a PASS or bypass a failed gate. Independent source-only
 implementation and testing may proceed while future provisioning/deployment
 inputs are pending. This does not start L0: PREP remains BLOCKED and L0 remains
 NOT STARTED until its actual prerequisites pass. All live phases preserve the
-planned order and exact approval checkpoints.
+planned order and exact approval checkpoints. For an independent source-only
+unit whose predecessor remains blocked, record the exact blocker-evidence
+revision/state and why the work is independent; do not invent a predecessor
+PASS or closeout SHA.
 
 Where Runner cannot execute a required command, the owner authorized normal
 SSH commands on all three Ubuntu hosts for implementation builds, tests and

@@ -86,7 +86,11 @@ acceptance, bug baseline gates and every live phase. A hermetic/source-only
 unit may be implemented and tested while an unrelated infrastructure gate is
 blocked, provided its exact inputs are available; record it in the ledger and
 do not claim the blocked predecessor, unit acceptance, or any later live gate
-passed. A coordinated bootstrap or live lane
+passed. For such a source-only exception, record the blocked predecessor's
+exact blocker-evidence path, blob/commit revision and state, plus why the
+source work is independent; do not invent or imply a predecessor PASS
+closeout SHA. Ordinary ordered units continue to record their predecessor's
+verified evidence-closeout SHA. A coordinated bootstrap or live lane
 transaction has no intervening Git/evidence pause inside its host/commit/reopen
 steps; use the handbook's continuous-operation boundaries.
 
