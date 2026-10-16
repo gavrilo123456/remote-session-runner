@@ -18,7 +18,7 @@ The B021-01 test-route attempt created one separate Mac one-off request. It ran 
 - Request/key: req-lanes-b021-01-mac-20261016-01 / lanes-b021-01-mac-20261016-01
 - Job/session/command: job-5897c7285e7a530cbc79d374b374a7fd / sess-d76592166342428ba1b7b703fc87bb35 / cmd-6817a947ceec8c3e54fbcdc2b8f2fb30
 - Terminal result: response revision 5, event cursor 25, command failed with exit 2, job phase lost, teardown_outcome lost, output complete and not truncated.
-- Response SHA-256: af381ad1fafa6bc41c15405de024a9d4830218d01c040592d9c9895eeaa3b0
+- Response SHA-256: af381ad1fafa6bc41c15405de0242fa9d4830218d01c040592d9c9895eeaa3b0
 - Event-prefix SHA-256: 1c63b0644bc5ad95d7c29f46d18663f4e1850babeb187a9f10b8a995b8e02d04
 
 The exact response and event prefix remain in the mailbox. No ACK was written, and no recovery, capacity release, restart, replay, or cleanup was performed. The response and event hashes are also recorded in [BUG-024 evidence](BUG-024.md#additional-unacked-test-run). This fresh pair is separate from the original BUG-024 held response/ACK and from the four fresh BUG-024 route requests whose ACKs are already recorded as consumed. Do not alter those historical states.
