@@ -29,25 +29,27 @@ type FileIdentity struct {
 // Paths are root-relative names derived from the opened ingress directory;
 // the identities and digests bind the observed bytes to the descriptors.
 type ReadyPairSnapshot struct {
-	Kind        string       `json:"kind"`
-	InboxID     string       `json:"inbox_id"`
-	LogicalID   string       `json:"logical_id"`
-	JSONPath    string       `json:"json_path"`
-	ReadyPath   string       `json:"ready_path"`
-	Root        FileIdentity `json:"root"`
-	Directory   FileIdentity `json:"directory"`
-	JSON        FileIdentity `json:"json"`
-	Ready       FileIdentity `json:"ready"`
-	JSONSHA256  string       `json:"json_sha256"`
-	ReadySHA256 string       `json:"ready_sha256"`
+	Kind                  string       `json:"kind"`
+	InboxID               string       `json:"inbox_id"`
+	LogicalID             string       `json:"logical_id"`
+	ObservationGeneration uint64       `json:"observation_generation"`
+	JSONPath              string       `json:"json_path"`
+	ReadyPath             string       `json:"ready_path"`
+	Root                  FileIdentity `json:"root"`
+	Directory             FileIdentity `json:"directory"`
+	JSON                  FileIdentity `json:"json"`
+	Ready                 FileIdentity `json:"ready"`
+	JSONSHA256            string       `json:"json_sha256"`
+	ReadySHA256           string       `json:"ready_sha256"`
 }
 
 // IngressSnapshot is the stable, exclusive-lock view of both request and ACK
 // ready-pair directories for one inbox.
 type IngressSnapshot struct {
-	InboxID string              `json:"inbox_id"`
-	Root    FileIdentity        `json:"root"`
-	Pairs   []ReadyPairSnapshot `json:"pairs"`
+	InboxID               string              `json:"inbox_id"`
+	ObservationGeneration uint64              `json:"observation_generation"`
+	Root                  FileIdentity        `json:"root"`
+	Pairs                 []ReadyPairSnapshot `json:"pairs"`
 }
 
 // SnapshotIngressPairs captures every complete request and ACK pair while the
@@ -55,10 +57,16 @@ type IngressSnapshot struct {
 // entries, aliases, replaced names, and files outside the owner-only contract
 // fail closed. It does not delete, repair, execute, or ACK retained work.
 func (l *Lock) SnapshotIngressPairs(inboxID string) (IngressSnapshot, error) {
+	return l.SnapshotIngressPairsAt(inboxID, 1)
+}
+
+// SnapshotIngressPairsAt captures the same exclusive paired view and binds
+// every member to the caller's durable observation generation.
+func (l *Lock) SnapshotIngressPairsAt(inboxID string, observationGeneration uint64) (IngressSnapshot, error) {
 	if l == nil || l.closed || l.rootFD < 0 {
 		return IngressSnapshot{}, ErrConfiguration
 	}
-	if !l.exclusive {
+	if !l.exclusive || observationGeneration == 0 {
 		return IngressSnapshot{}, ErrSnapshotRequiresExclusive
 	}
 	if !validMailboxID(inboxID) {
@@ -68,8 +76,8 @@ func (l *Lock) SnapshotIngressPairs(inboxID string) (IngressSnapshot, error) {
 	if err := unix.Fstat(l.rootFD, &rootStat); err != nil || !isOwnerDirectory(rootStat, 0o700) {
 		return IngressSnapshot{}, ErrUnsafe
 	}
-	rootIdentity := identityFromStat(rootStat)
-	snapshot := IngressSnapshot{InboxID: inboxID, Root: rootIdentity, Pairs: make([]ReadyPairSnapshot, 0)}
+	rootIdentity := directoryIdentityFromStat(rootStat)
+	snapshot := IngressSnapshot{InboxID: inboxID, ObservationGeneration: observationGeneration, Root: rootIdentity, Pairs: make([]ReadyPairSnapshot, 0)}
 	for _, item := range []struct {
 		kind string
 		name string
@@ -86,7 +94,7 @@ func (l *Lock) SnapshotIngressPairs(inboxID string) (IngressSnapshot, error) {
 			_ = unix.Close(directoryFD)
 			return IngressSnapshot{}, ErrUnsafe
 		}
-		pairs, snapshotErr := snapshotDirectory(directoryFD, item.kind, item.name, inboxID, rootIdentity, identityFromStat(directoryStat))
+		pairs, snapshotErr := snapshotDirectory(directoryFD, item.kind, item.name, inboxID, rootIdentity, directoryIdentityFromStat(directoryStat))
 		closeErr := unix.Close(directoryFD)
 		if snapshotErr != nil {
 			return IngressSnapshot{}, snapshotErr
@@ -102,7 +110,57 @@ func (l *Lock) SnapshotIngressPairs(inboxID string) (IngressSnapshot, error) {
 		}
 		return snapshot.Pairs[i].LogicalID < snapshot.Pairs[j].LogicalID
 	})
+	for index := range snapshot.Pairs {
+		snapshot.Pairs[index].ObservationGeneration = observationGeneration
+	}
 	return snapshot, nil
+}
+
+// VerifyReadyPairSnapshot reopens a previously observed pair under the same
+// exclusive root descriptor and rejects any path, inode, mode, size, or digest
+// change. The pair is never reconstructed from its logical ID alone.
+func (l *Lock) VerifyReadyPairSnapshot(pair ReadyPairSnapshot) error {
+	if l == nil || l.closed || l.rootFD < 0 || !l.exclusive || pair.ObservationGeneration == 0 || !validMailboxID(pair.InboxID) || !validMailboxID(pair.LogicalID) {
+		return ErrSnapshotRequiresExclusive
+	}
+	directory, jsonPath, readyPath, ok := expectedPairPaths(pair.Kind, pair.LogicalID)
+	if !ok || pair.JSONPath != jsonPath || pair.ReadyPath != readyPath {
+		return ErrUnsafe
+	}
+	var rootStat unix.Stat_t
+	if err := unix.Fstat(l.rootFD, &rootStat); err != nil || directoryIdentityFromStat(rootStat) != pair.Root {
+		return ErrUnsafe
+	}
+	directoryFD, err := unix.Openat(l.rootFD, directory, directoryOpenFlags, 0)
+	if err != nil {
+		return ErrUnsafe
+	}
+	defer unix.Close(directoryFD)
+	var directoryStat unix.Stat_t
+	if err := unix.Fstat(directoryFD, &directoryStat); err != nil || directoryIdentityFromStat(directoryStat) != pair.Directory || !isOwnerDirectory(directoryStat, 0o700) {
+		return ErrUnsafe
+	}
+	jsonIdentity, jsonDigest, err := readSnapshotFileAt(directoryFD, pair.LogicalID+".json", maxIngressJSONBytes, false)
+	if err != nil || jsonIdentity != pair.JSON || jsonDigest != pair.JSONSHA256 {
+		return ErrUnsafe
+	}
+	readyIdentity, readyDigest, err := readSnapshotFileAt(directoryFD, pair.LogicalID+".ready", 0, true)
+	if err != nil || readyIdentity != pair.Ready || readyDigest != pair.ReadySHA256 {
+		return ErrUnsafe
+	}
+	return nil
+}
+
+func expectedPairPaths(kind, logicalID string) (directory, jsonPath, readyPath string, ok bool) {
+	switch kind {
+	case "request":
+		directory = "inbox"
+	case "ack":
+		directory = "acks"
+	default:
+		return "", "", "", false
+	}
+	return directory, directory + "/" + logicalID + ".json", directory + "/" + logicalID + ".ready", true
 }
 
 // RequireEmpty fails when an exclusive snapshot contains any retained pair.
@@ -229,6 +287,12 @@ func identityFromStat(stat unix.Stat_t) FileIdentity {
 		Device: uint64(stat.Dev), Inode: uint64(stat.Ino), UID: uint32(stat.Uid),
 		Mode: uint32(stat.Mode), Size: stat.Size,
 	}
+}
+
+func directoryIdentityFromStat(stat unix.Stat_t) FileIdentity {
+	identity := identityFromStat(stat)
+	identity.Size = 0
+	return identity
 }
 
 func sameFileIdentity(a, b unix.Stat_t) bool {

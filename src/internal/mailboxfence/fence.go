@@ -3,18 +3,48 @@
 package mailboxfence
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+type MigrationFenceState string
+
+const (
+	MigrationFenceFenced   MigrationFenceState = "fenced"
+	MigrationFenceAborting MigrationFenceState = "aborting"
+	MigrationFenceAborted  MigrationFenceState = "aborted"
+)
+
+// MigrationFenceMarker is the regular owner-only root marker paired with the
+// Mac registry record. The marker binds one root, transition, configuration,
+// and marker-last request/ACK snapshot. Presence blocks shared publishers in
+// every state until an explicit, verified abort removes it.
+type MigrationFenceMarker struct {
+	LaneTransitionID      string              `json:"lane_transition_id"`
+	InboxID               string              `json:"inbox_id"`
+	Root                  FileIdentity        `json:"root"`
+	ConfigurationDigest   string              `json:"configuration_digest"`
+	State                 MigrationFenceState `json:"state"`
+	SnapshotDigest        string              `json:"snapshot_digest"`
+	ObservationGeneration uint64              `json:"observation_generation"`
+}
+
+var markerTransitionID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var markerDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 const (
 	// LockFileName serializes native marker-last publishers with a retirement
@@ -27,16 +57,20 @@ const (
 	// controller while it holds the exclusive ingress lock. Native publishers
 	// refuse new pairs while this marker is present.
 	MigrationFenceFileName = ".runner-mailbox-migration-fence"
+	// MigrationFencePendingFileName is the stable atomic-replacement staging
+	// name. Its presence also blocks publishers after a crash before rename.
+	MigrationFencePendingFileName = ".runner-mailbox-migration-fence.pending"
 )
 
 var (
-	ErrConfiguration             = errors.New("mailbox fence configuration is invalid")
-	ErrUnsafe                    = errors.New("mailbox fence path is unsafe")
-	ErrRetired                   = errors.New("mailbox ingress is retired")
-	ErrMigrationFenced           = errors.New("mailbox ingress is migration-fenced")
-	ErrBusy                      = errors.New("mailbox ingress fence is busy")
-	ErrResidue                   = errors.New("mailbox ingress has retained artifacts")
-	ErrSnapshotRequiresExclusive = errors.New("mailbox ingress snapshot requires the exclusive lock")
+	ErrConfiguration               = errors.New("mailbox fence configuration is invalid")
+	ErrUnsafe                      = errors.New("mailbox fence path is unsafe")
+	ErrRetired                     = errors.New("mailbox ingress is retired")
+	ErrMigrationFenced             = errors.New("mailbox ingress is migration-fenced")
+	ErrMigrationFenceMarkerMissing = errors.New("mailbox migration fence marker is missing")
+	ErrBusy                        = errors.New("mailbox ingress fence is busy")
+	ErrResidue                     = errors.New("mailbox ingress has retained artifacts")
+	ErrSnapshotRequiresExclusive   = errors.New("mailbox ingress snapshot requires the exclusive lock")
 	// ErrResidueRestored reports that a fresh retirement fence found ingress
 	// residue and was durably removed before releasing its exclusive lock.
 	// Callers may safely restore the prior service only for this error.
@@ -56,6 +90,19 @@ type Lock struct {
 	lockFD    int
 	exclusive bool
 	closed    bool
+}
+
+// RootIdentity returns the opened mailbox root's stable descriptor identity.
+// Directory size is excluded because marker/lock entries change it.
+func (l *Lock) RootIdentity() (FileIdentity, error) {
+	if l == nil || l.closed || l.rootFD < 0 {
+		return FileIdentity{}, ErrConfiguration
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(l.rootFD, &stat); err != nil || !isOwnerDirectory(stat, 0o700) {
+		return FileIdentity{}, ErrUnsafe
+	}
+	return directoryIdentityFromStat(stat), nil
 }
 
 // AcquireShared rejects a mailbox that has already been retired or
@@ -434,6 +481,16 @@ func (l *Lock) migrationFencePresent() (bool, error) {
 	}
 	var stat unix.Stat_t
 	err := unix.Fstatat(l.rootFD, MigrationFenceFileName, &stat, unix.AT_SYMLINK_NOFOLLOW)
+	if err == nil && isOwnerFile(stat, 0o600) {
+		return true, nil
+	}
+	if err != nil && !errors.Is(err, unix.ENOENT) {
+		return false, ErrUnsafe
+	}
+	if err == nil {
+		return false, ErrUnsafe
+	}
+	err = unix.Fstatat(l.rootFD, MigrationFencePendingFileName, &stat, unix.AT_SYMLINK_NOFOLLOW)
 	if errors.Is(err, unix.ENOENT) {
 		return false, nil
 	}
@@ -441,6 +498,228 @@ func (l *Lock) migrationFencePresent() (bool, error) {
 		return false, ErrUnsafe
 	}
 	return true, nil
+}
+
+// ReadMigrationFenceMarker validates and returns the owner-only marker through
+// the already-open root descriptor. The caller must hold the exclusive lock
+// when using the marker to advance or abort a transition.
+func (l *Lock) ReadMigrationFenceMarker() (MigrationFenceMarker, string, error) {
+	return l.readMigrationFenceMarkerAt(MigrationFenceFileName)
+}
+
+func (l *Lock) readMigrationFenceMarkerAt(name string) (MigrationFenceMarker, string, error) {
+	if l == nil || l.closed || l.rootFD < 0 {
+		return MigrationFenceMarker{}, "", ErrConfiguration
+	}
+	fd, err := unix.Openat(l.rootFD, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return MigrationFenceMarker{}, "", ErrMigrationFenceMarkerMissing
+		}
+		return MigrationFenceMarker{}, "", ErrUnsafe
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return MigrationFenceMarker{}, "", ErrUnsafe
+	}
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil || !isOwnerFile(before, 0o600) || before.Size <= 0 || before.Size > 16<<10 {
+		_ = file.Close()
+		return MigrationFenceMarker{}, "", ErrUnsafe
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, (16<<10)+1))
+	var after unix.Stat_t
+	statErr := unix.Fstat(fd, &after)
+	closeErr := file.Close()
+	var current unix.Stat_t
+	nameErr := unix.Fstatat(l.rootFD, name, &current, unix.AT_SYMLINK_NOFOLLOW)
+	if readErr != nil || statErr != nil || closeErr != nil || nameErr != nil || len(data) > 16<<10 || int64(len(data)) != before.Size || !sameFileIdentity(before, after) || !sameFileIdentity(after, current) {
+		return MigrationFenceMarker{}, "", ErrUnsafe
+	}
+	var marker MigrationFenceMarker
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&marker); err != nil {
+		return MigrationFenceMarker{}, "", ErrUnsafe
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return MigrationFenceMarker{}, "", ErrUnsafe
+	}
+	canonical, err := marshalMigrationFenceMarker(marker)
+	if err != nil || !bytes.Equal(data, canonical) || !validMigrationFenceMarker(marker) {
+		return MigrationFenceMarker{}, "", ErrUnsafe
+	}
+	digest := sha256.Sum256(data)
+	return marker, "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
+// WriteMigrationFenceMarker atomically writes the owner-only marker while the
+// caller holds the exclusive migration lock. An existing marker may only be
+// replaced for the same transition and root identity.
+func (l *Lock) WriteMigrationFenceMarker(marker MigrationFenceMarker) (string, error) {
+	if l == nil || l.closed || l.rootFD < 0 || !l.exclusive || !validMigrationFenceMarker(marker) {
+		return "", ErrConfiguration
+	}
+	var rootStat unix.Stat_t
+	if err := unix.Fstat(l.rootFD, &rootStat); err != nil || directoryIdentityFromStat(rootStat) != marker.Root {
+		return "", ErrUnsafe
+	}
+	data, err := marshalMigrationFenceMarker(marker)
+	if err != nil {
+		return "", err
+	}
+	old, _, oldErr := l.ReadMigrationFenceMarker()
+	if oldErr == nil {
+		if old.LaneTransitionID != marker.LaneTransitionID || old.InboxID != marker.InboxID || old.Root != marker.Root || old.ConfigurationDigest != marker.ConfigurationDigest || old.SnapshotDigest != marker.SnapshotDigest || old.ObservationGeneration != marker.ObservationGeneration {
+			return "", ErrUnsafe
+		}
+		if !validMigrationMarkerStep(old.State, marker.State) {
+			return "", ErrUnsafe
+		}
+	} else if !errors.Is(oldErr, ErrMigrationFenceMarkerMissing) {
+		return "", ErrUnsafe
+	} else {
+		var stat unix.Stat_t
+		if statErr := unix.Fstatat(l.rootFD, MigrationFenceFileName, &stat, unix.AT_SYMLINK_NOFOLLOW); statErr == nil || !errors.Is(statErr, unix.ENOENT) {
+			return "", ErrUnsafe
+		}
+	}
+	staged, _, stageErr := l.readMigrationFenceMarkerAt(MigrationFencePendingFileName)
+	createdStage := false
+	if stageErr == nil {
+		if staged != marker {
+			return "", ErrUnsafe
+		}
+		stageFD, err := unix.Openat(l.rootFD, MigrationFencePendingFileName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return "", ErrUnsafe
+		}
+		syncErr := unix.Fsync(stageFD)
+		closeErr := unix.Close(stageFD)
+		if syncErr != nil || closeErr != nil {
+			return "", ErrUnsafe
+		}
+	} else if !errors.Is(stageErr, ErrMigrationFenceMarkerMissing) {
+		return "", ErrUnsafe
+	} else {
+		fd, err := unix.Openat(l.rootFD, MigrationFencePendingFileName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if err != nil {
+			return "", ErrUnsafe
+		}
+		createdStage = true
+		defer func() {
+			if createdStage {
+				_ = unix.Unlinkat(l.rootFD, MigrationFencePendingFileName, 0)
+			}
+		}()
+		if err := unix.Fchmod(fd, 0o600); err != nil {
+			_ = unix.Close(fd)
+			return "", ErrUnsafe
+		}
+		for remaining := data; len(remaining) > 0; {
+			written, writeErr := unix.Write(fd, remaining)
+			if writeErr != nil || written == 0 {
+				_ = unix.Close(fd)
+				return "", ErrUnsafe
+			}
+			remaining = remaining[written:]
+		}
+		if err := unix.Fsync(fd); err != nil {
+			_ = unix.Close(fd)
+			return "", ErrUnsafe
+		}
+		if err := unix.Close(fd); err != nil {
+			return "", ErrUnsafe
+		}
+	}
+	if err := unix.Renameat(l.rootFD, MigrationFencePendingFileName, l.rootFD, MigrationFenceFileName); err != nil {
+		return "", ErrUnsafe
+	}
+	createdStage = false
+	if err := unix.Fsync(l.rootFD); err != nil {
+		return "", ErrUnsafe
+	}
+	digest := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
+// RemoveMigrationFenceMarker removes only the exact marker supplied by the
+// caller and syncs the root directory. It never changes V2 service state.
+func (l *Lock) RemoveMigrationFenceMarker(expected MigrationFenceMarker) error {
+	if l == nil || l.closed || l.rootFD < 0 || !l.exclusive || !validMigrationFenceMarker(expected) || expected.State != MigrationFenceAborted {
+		return ErrConfiguration
+	}
+	observed, _, err := l.ReadMigrationFenceMarker()
+	if err != nil || observed != expected {
+		return ErrUnsafe
+	}
+	if _, _, err := l.readMigrationFenceMarkerAt(MigrationFencePendingFileName); err == nil || !errors.Is(err, ErrMigrationFenceMarkerMissing) {
+		return ErrUnsafe
+	}
+	if err := unix.Unlinkat(l.rootFD, MigrationFenceFileName, 0); err != nil {
+		return ErrUnsafe
+	}
+	if err := unix.Fsync(l.rootFD); err != nil {
+		return ErrUnsafe
+	}
+	return nil
+}
+
+func validMigrationFenceMarker(marker MigrationFenceMarker) bool {
+	return markerTransitionID.MatchString(marker.LaneTransitionID) && validMailboxID(marker.InboxID) &&
+		marker.Root.Device != 0 && marker.Root.Inode != 0 && marker.Root.UID == uint32(os.Getuid()) &&
+		marker.Root.Mode&unix.S_IFMT == unix.S_IFDIR && marker.Root.Mode&0o7777 == 0o700 &&
+		markerDigestPattern.MatchString(marker.ConfigurationDigest) && markerDigestPattern.MatchString(marker.SnapshotDigest) &&
+		marker.ObservationGeneration > 0 && (marker.State == MigrationFenceFenced || marker.State == MigrationFenceAborting || marker.State == MigrationFenceAborted)
+}
+
+func validMigrationMarkerStep(from, to MigrationFenceState) bool {
+	return from == to || (from == MigrationFenceFenced && to == MigrationFenceAborting) || (from == MigrationFenceAborting && to == MigrationFenceAborted)
+}
+
+// DigestMigrationFenceMarker returns the digest of the exact canonical bytes
+// written by WriteMigrationFenceMarker, or an empty string for invalid input.
+func DigestMigrationFenceMarker(marker MigrationFenceMarker) string {
+	if !validMigrationFenceMarker(marker) {
+		return ""
+	}
+	data, err := marshalMigrationFenceMarker(marker)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func marshalMigrationFenceMarker(marker MigrationFenceMarker) ([]byte, error) {
+	data, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return nil, ErrUnsafe
+	}
+	return append(data, '\n'), nil
+}
+
+// DigestIngressSnapshot returns the canonical digest stored by both the
+// registry record and the marker. Pair order is normalized before encoding.
+func DigestIngressSnapshot(snapshot IngressSnapshot) (string, error) {
+	if !validMailboxID(snapshot.InboxID) || snapshot.ObservationGeneration == 0 || snapshot.Root.Device == 0 || snapshot.Root.Inode == 0 {
+		return "", ErrConfiguration
+	}
+	pairs := append([]ReadyPairSnapshot(nil), snapshot.Pairs...)
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].Kind != pairs[j].Kind {
+			return pairs[i].Kind < pairs[j].Kind
+		}
+		return pairs[i].LogicalID < pairs[j].LogicalID
+	})
+	canonical := IngressSnapshot{InboxID: snapshot.InboxID, ObservationGeneration: snapshot.ObservationGeneration, Root: snapshot.Root, Pairs: pairs}
+	data, err := json.Marshal(canonical)
+	if err != nil {
+		return "", ErrConfiguration
+	}
+	digest := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
 func (l *Lock) freezeAndScanIngress() ([]string, error) {

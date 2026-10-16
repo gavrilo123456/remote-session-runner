@@ -76,10 +76,11 @@ type RootRecord struct {
 }
 
 type Snapshot struct {
-	Version    int             `json:"version"`
-	Generation uint64          `json:"generation"`
-	Records    []RootRecord    `json:"records"`
-	Operations []LaneOperation `json:"operations,omitempty"`
+	Version            int                       `json:"version"`
+	Generation         uint64                    `json:"generation"`
+	Records            []RootRecord              `json:"records"`
+	Operations         []LaneOperation           `json:"operations,omitempty"`
+	PRDMigrationFences []PRDMigrationFenceRecord `json:"prd_migration_fences,omitempty"`
 }
 
 // RuntimeReconciliation is the exact active-candidate identity observed after
@@ -418,6 +419,11 @@ func (r *Registry) update(expectedGeneration uint64, mutate func(*Snapshot) (boo
 	if snapshot.Operations != nil {
 		sort.Slice(snapshot.Operations, func(i, j int) bool { return snapshot.Operations[i].ID < snapshot.Operations[j].ID })
 	}
+	if snapshot.PRDMigrationFences != nil {
+		sort.Slice(snapshot.PRDMigrationFences, func(i, j int) bool {
+			return snapshot.PRDMigrationFences[i].LaneTransitionID < snapshot.PRDMigrationFences[j].LaneTransitionID
+		})
+	}
 	if err := ValidateSnapshot(snapshot); err != nil {
 		return Snapshot{}, err
 	}
@@ -651,6 +657,9 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		}
 	}
 	if err := validateOperations(snapshot); err != nil {
+		return err
+	}
+	if err := validatePRDMigrationFences(snapshot); err != nil {
 		return err
 	}
 	return nil

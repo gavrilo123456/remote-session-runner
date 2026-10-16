@@ -391,7 +391,43 @@
       "id": "LANES-L1-09",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/lanemigration",
+            "name": "TestLanesL109PersistsFencingBeforeAnyV2ActionAndAcrossRestart"
+          },
+          {
+            "package": "./src/internal/lanemigration",
+            "name": "TestLanesL109PublisherPreflightRejectsUntestedCapabilitiesAndRawWriterControl"
+          },
+          {
+            "package": "./src/internal/lanemigration",
+            "name": "TestLanesL109RequiresOrderedV2StopDisableAbsenceAndZeroWorkProof"
+          },
+          {
+            "package": "./src/internal/lanemigration",
+            "name": "TestLanesL109EmptyFenceMarkerAndRegistryMatchAndSurviveRestart"
+          },
+          {
+            "package": "./src/internal/lanemigration",
+            "name": "TestLanesL109RejectsMarkerMismatchAndReplacedPairIdentity"
+          },
+          {
+            "package": "./src/internal/lanemigration",
+            "name": "TestLanesL109DeferredLedgerCapturesRequestAndAckDescriptorsWithoutMutation"
+          },
+          {
+            "package": "./src/internal/lanemigration",
+            "name": "TestLanesL109FenceAwareAbortPreservesPairsAndRemovesOnlyAbortedMarker"
+          },
+          {
+            "package": "./src/internal/lanemigration",
+            "name": "TestLanesL109CrashGapsReconcileWithoutInferredV2Restart"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-10",
