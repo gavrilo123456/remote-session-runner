@@ -180,3 +180,10 @@ mirror with the configured explicit identity, and verified clean at Source S.
 The PREP evidence records each command, identity, and result, including a
 local tracking-ref update error after the Gitea push whose remote success was
 confirmed directly and repaired with `git fetch`.
+
+The follow-up documentation Source S `d797d8519fcee0fbf40f0588f2e7393f6b96f74b`
+also reached primary Gitea, its exact automatic GitHub mirror, and the three
+clean Ubuntu checkouts. It reconciles the repository instructions and L0
+record with the incremental owner decision; it does not start L0 or change its
+read-only observation limits. Exact host guards and results are in
+[`LANES-L0.md`](LANES-L0.md).

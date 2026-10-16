@@ -51,3 +51,23 @@ blockers are corrected and its fresh full inventory passes. The later owner
 decision permits only independent hermetic/source-only units to proceed while
 an unrelated blocker remains; those units must record the exact blocked-gate
 evidence and may not claim L0 or another dependent gate passed.
+
+## Owner-decision documentation Source S delivery
+
+Source S `d797d8519fcee0fbf40f0588f2e7393f6b96f74b`
+(`docs(LANES): align incremental readiness and L0 authorization`) aligned
+`AGENTS.md`, the initial idea and this blocked L0 record. `git diff --check`
+passed. No L0 observation, defect probe, mailbox request/ACK, executable test,
+or installed-state change was made by this documentation update.
+
+| Delivery check | Guard and result |
+| --- | --- |
+| Mac / primary / mirror | Mac `dev` clean at Source S; primary Gitea `origin/dev` and automatic `github/dev` both returned exact Source S using their configured explicit identities |
+| `linux-host` | Clean `dev` and expected GitHub origin at `95d214052bc746c756744f0150f44917178487e5`; explicit-identity `pull --ff-only origin dev`; clean at Source S |
+| `sandbox-host` | Same pre-pull branch, clean-worktree, origin and SHA guards; explicit-identity `pull --ff-only origin dev`; clean at Source S |
+| `factory-sandbox` | Same pre-pull branch, clean-worktree, origin and SHA guards; explicit-identity `pull --ff-only origin dev`; clean at Source S |
+
+Ubuntu host Git access used `/home/ubuntu/.ssh/gavrilo123456-github` with
+`IdentitiesOnly=yes`, `BatchMode=yes`, and `StrictHostKeyChecking=yes`. Mac SSH
+used the configured explicit host keys and strict host-key checks. No tracked
+file was copied outside Git. The complete L0 inventory remains NOT STARTED.
