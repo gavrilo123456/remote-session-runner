@@ -1,7 +1,8 @@
 # Lane priority amendment — finish the current case, then implement lanes
 
-**State:** IN PROGRESS — documentation amendment; source/evidence delivery
-pending. No lane unit or runtime acceptance is passed by this record.
+**State:** PASS — documentation review and source S delivery verified below.
+The evidence-only closeout must itself be delivered before the final handoff.
+No lane unit or runtime acceptance is passed by this record.
 
 ## Owner instruction and reason
 
@@ -71,3 +72,46 @@ Gitea push, exact automatic GitHub mirror verification, then clean `dev`
 fast-forward and exact-HEAD verification on `linux-host`, `sandbox-host`, and
 `factory-sandbox`. E records S's completed checks; the final handoff records
 E's delivery without a self-referencing commit.
+
+### Verified source S delivery
+
+Source S: `84870ee89d8cfd9ce2ac5d1cb408d6b6ff1367eb`
+(`docs(lanes): finish open bug work then prioritize release lanes`). The
+intended diff contains exactly the nine Markdown files described above.
+
+| Surface | Verification and result |
+| --- | --- |
+| Mac `dev` | Intended files staged explicitly; `git diff --cached --check` PASS; source commit S; clean worktree afterward |
+| Gitea primary `origin/dev` | Explicit-identity `push origin dev` succeeded; `ls-remote origin refs/heads/dev` returned exact S |
+| GitHub automatic mirror `github/dev` | Explicit-identity `ls-remote github refs/heads/dev` returned exact S before any Ubuntu pull |
+| `linux-host` | Guarded clean `dev`, expected GitHub origin and previous `e1912ac` HEAD; `pull --ff-only origin dev` exit 0; exact S and clean worktree; native `git diff --check e1912ac642ce5d819b5cfcce980898d0eba222aa 84870ee89d8cfd9ce2ac5d1cb408d6b6ff1367eb` PASS |
+| `sandbox-host` | Same clean-branch/origin/previous-HEAD guards; fast-forward exit 0; exact S and clean worktree; same native diff validation PASS |
+| `factory-sandbox` | Same clean-branch/origin/previous-HEAD guards; fast-forward exit 0; exact S and clean worktree; same native diff validation PASS |
+
+Mac primary SSH used `/Users/tomasz.walczuk/.ssh/local-gitea-key`; mirror
+verification used `/Users/tomasz.walczuk/.ssh/gavrilo123456-github`.
+Mac-to-host SSH used aliases `remote-session-runner`, `sandbox.env`, and
+`factory-sandbox`, with their explicit identities
+`/Users/tomasz.walczuk/.ssh/remote-session-runner`,
+`/Users/tomasz.walczuk/.ssh/dev.slidestud.io`, and
+`/Users/tomasz.walczuk/.ssh/factory-sandbox`. All used `IdentitiesOnly=yes`,
+`BatchMode=yes`, `StrictHostKeyChecking=yes`, and `UpdateHostKeys=no`.
+On each Ubuntu host the guarded pull command was:
+
+```sh
+# Ubuntu — ubuntu, /home/ubuntu/projects/remote-session-runner
+git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no' pull --ff-only origin dev
+```
+
+The first sandboxed Mac commit could not create `.git/index.lock`; the
+authorized escalated retry succeeded. The first push updated the primary but
+could not update the local remote-tracking ref; direct primary/mirror reads
+verified S, and an authorized repeated push completed the local bookkeeping.
+Initial sandboxed SSH validation connections timed out after the successful
+pulls; authorized escalated read-only retries verified all three host diffs.
+No failed attempt changed installed services or mailbox state.
+
+This evidence-only closeout E records completed S checks. Deliver E by the same
+primary → exact automatic mirror → clean three-host fast-forward sequence;
+record E's final SHA in the handoff. No executable-suite rerun is required for
+this delivery prose, and no further self-referencing evidence commit is needed.
