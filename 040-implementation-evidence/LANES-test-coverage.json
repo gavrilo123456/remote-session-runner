@@ -102,7 +102,35 @@
       "id": "LANES-L1-02",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/config",
+            "name": "TestLanesL102MacProfilesContextsAndCredentialBindingsResolveWithinLane"
+          },
+          {
+            "package": "./src/internal/config",
+            "name": "TestLanesL102LinuxProfileAndMacLinuxCredentialsArePaired"
+          },
+          {
+            "package": "./src/internal/config",
+            "name": "TestLanesL102RejectsCrossLaneCredentialReuse"
+          },
+          {
+            "package": "./src/internal/config",
+            "name": "TestLanesL102RejectsCrossLaneRoutesAndUnsafeCredentialBindings"
+          },
+          {
+            "package": "./src/internal/config",
+            "name": "TestLanesL102StrictYAMLShapeAndCredentialPathsAreNeverOpened"
+          },
+          {
+            "package": "./src/internal/config",
+            "name": "TestLanesL102ProfileSchemaIsClosedAndRequiresLaneBinding"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-03",

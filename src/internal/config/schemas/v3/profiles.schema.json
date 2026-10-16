@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/schemas/v3/profiles.schema.json",
+  "title": "Remote Session Runner V3 profile and context bindings",
+  "type": "object",
+  "required": ["version", "release_lane", "host", "environments", "execution_contexts"],
+  "properties": {
+    "version": {"const": 3},
+    "release_lane": {"enum": ["dev", "qas", "prd"]},
+    "host": {"enum": ["mac", "linux"]},
+    "remote_profile": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+    "mac_profiles": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/macProfile"}
+    },
+    "linux_profile": {"$ref": "#/$defs/linuxProfile"},
+    "environments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/environment"}
+    },
+    "execution_contexts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/executionContext"}
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {"host": {"const": "mac"}},
+      "required": ["mac_profiles"],
+      "not": {
+        "anyOf": [
+          {"required": ["remote_profile"]},
+          {"required": ["linux_profile"]}
+        ]
+      }
+    },
+    {
+      "properties": {"host": {"const": "linux"}},
+      "required": ["remote_profile", "linux_profile"],
+      "not": {"required": ["mac_profiles"]}
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "macProfile": {
+      "type": "object",
+      "required": ["profile", "queued_bridge", "direct_endpoint"],
+      "properties": {
+        "profile": {"enum": ["linux-host", "sandbox-host", "factory-sandbox"]},
+        "queued_bridge": {
+          "type": "object",
+          "required": ["host", "port", "known_hosts_file", "host_key_fingerprint", "dispatcher_private_key_file", "dispatcher_public_key_fingerprint"],
+          "properties": {
+            "host": {"type": "string", "format": "ipv4"},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "known_hosts_file": {"type": "string", "minLength": 1},
+            "host_key_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "dispatcher_private_key_file": {"type": "string", "minLength": 1},
+            "dispatcher_public_key_fingerprint": {"$ref": "#/$defs/fingerprint"}
+          },
+          "additionalProperties": false
+        },
+        "direct_endpoint": {
+          "type": "object",
+          "required": ["name", "url", "server_ca_file", "server_ca_fingerprint", "client_certificate_file", "client_certificate_fingerprint", "client_private_key_file", "client_spki_fingerprint", "expected_server_certificate_fingerprint", "expected_client_ca_fingerprint", "client_uri_san", "server_uri_san", "controller_type", "controller_id"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "url": {"type": "string", "format": "uri"},
+            "server_ca_file": {"type": "string", "minLength": 1},
+            "server_ca_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "client_certificate_file": {"type": "string", "minLength": 1},
+            "client_certificate_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "client_private_key_file": {"type": "string", "minLength": 1},
+            "client_spki_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "expected_server_certificate_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "expected_client_ca_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "client_uri_san": {"type": "string", "minLength": 1},
+            "server_uri_san": {"type": "string", "minLength": 1},
+            "controller_type": {"const": "direct_mtls"},
+            "controller_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "linuxProfile": {
+      "type": "object",
+      "required": ["remote_profile", "queued_bridge", "direct_endpoint"],
+      "properties": {
+        "remote_profile": {"enum": ["linux-host", "sandbox-host", "factory-sandbox"]},
+        "queued_bridge": {
+          "type": "object",
+          "required": ["host", "port", "bind", "host_key_file", "host_key_fingerprint", "authorized_key_fingerprint", "socket"],
+          "properties": {
+            "host": {"type": "string", "format": "ipv4"},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "bind": {"type": "string", "minLength": 1},
+            "host_key_file": {"type": "string", "minLength": 1},
+            "host_key_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "authorized_key_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "socket": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        "direct_endpoint": {
+          "type": "object",
+          "required": ["name", "url", "bind", "server_certificate_file", "server_certificate_fingerprint", "server_private_key_file", "server_spki_fingerprint", "client_ca_file", "client_ca_fingerprint", "client_principal_map_file", "authorized_client_fingerprint", "authorized_client_spki_fingerprint", "client_uri_san", "server_uri_san", "controller_type", "controller_id"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "url": {"type": "string", "format": "uri"},
+            "bind": {"type": "string", "minLength": 1},
+            "server_certificate_file": {"type": "string", "minLength": 1},
+            "server_certificate_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "server_private_key_file": {"type": "string", "minLength": 1},
+            "server_spki_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "client_ca_file": {"type": "string", "minLength": 1},
+            "client_ca_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "client_principal_map_file": {"type": "string", "minLength": 1},
+            "authorized_client_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "authorized_client_spki_fingerprint": {"$ref": "#/$defs/fingerprint"},
+            "client_uri_san": {"type": "string", "minLength": 1},
+            "server_uri_san": {"type": "string", "minLength": 1},
+            "controller_type": {"const": "direct_mtls"},
+            "controller_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "environment": {
+      "type": "object",
+      "required": ["name", "effective_account", "allowed_targets", "allowed_controllers"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "effective_account": {"type": "string", "minLength": 1},
+        "allowed_targets": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/target"}},
+        "allowed_controllers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/controller"}}
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": ["kind", "profile"],
+      "properties": {
+        "kind": {"enum": ["local", "remote"]},
+        "profile": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}
+      },
+      "additionalProperties": false
+    },
+    "controller": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": {"enum": ["local_user", "queued_mac", "direct_mtls"]},
+        "id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "executionContext": {
+      "type": "object",
+      "required": ["name", "environment", "execution_target"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "environment": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "execution_target": {"$ref": "#/$defs/target"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
