@@ -197,7 +197,35 @@
       "id": "LANES-L1-04",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL104OwnerOnlyDurableJSONRestartWithoutSecondAuthority"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL104CompareAndSwapSerializesConcurrentClaimsAndOwnRetry"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL104EveryRetainedStateRemainsInCollisionSet"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL104SuccessorsRetainHistoryAndRequireHigherEpochReconciliation"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL104LegacyPRDReservationRefreshPreservesV2AndAllowsSuccessor"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL104MissingCorruptNoncanonicalAndUnsafeRegistryFailClosed"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-05",
