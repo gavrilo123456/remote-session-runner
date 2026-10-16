@@ -1,7 +1,7 @@
 # LANES-L1-08 — native/workspace request and ACK publisher fencing
 
-**State:** IN PROGRESS — Mac source gates pass; source delivery and
-synchronized-host validation are pending.
+**State:** PASS — hermetic source gates and synchronized Ubuntu validation pass.
+No production publisher pause, installation, or lane acceptance is claimed.
 
 ## Predecessor and pre-unit read inventory
 
@@ -130,8 +130,51 @@ so the test was corrected to assert that public outcome and rerun successfully.
 
 ## Source and host gates
 
-Source S, Gitea/GitHub verification, all three clean Ubuntu fast-forwards, and
-host gates are pending. Record them here before the evidence-closeout E.
+Source S is `2a991507ad04668cf4180cd54f879ed694a0a236`, committed on Mac
+`dev` as `phase(LANES-L1-08): implement publisher fencing`. The explicit
+identity push to primary Gitea `origin/dev` succeeded. Direct `git ls-remote`
+checks of primary Gitea and automatic mirror `github/dev` both returned exact
+S. Mac `dev` was clean at S before this evidence closeout.
+
+Before pull, each Ubuntu checkout was verified clean on `dev` at predecessor E
+`d9c981cecb8ec146e718646e5754cbafc356157b`, with `origin` pointing to the
+GitHub mirror. Each host fast-forwarded `origin/dev` using its configured
+explicit GitHub identity. At exact S each host ran:
+
+```text
+make test-lanes UNIT=LANES-L1-08 LANES_TIER=H
+make test
+make vet
+make build
+make smoke
+GOTOOLCHAIN=local /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/mailboxfence ./src/internal/mailboxclient ./src/internal/lanetests -run "TestLanesL108|TestLanesL101ManifestMatchesPlan" -count=1
+```
+
+All H assertions, full tests, vet, build, and smoke gates passed on all three
+hosts. Focused race passed on `linux-host` and `sandbox-host`. On
+`factory-sandbox`, race was **NOT RUN**: Go reports `CGO_ENABLED=0` and no
+`cc` executable is installed. This limitation is not recorded as a PASS.
+Every checkout ended clean on `dev` at exact S.
+
+| Profile | Ubuntu host | Platform | H / full / vet / build / smoke | Focused race | Final checkout |
+| --- | --- | --- | --- | --- | --- |
+| `linux-host` | `oracle-yuta-konopka-ubuntu-micro-02` | Linux amd64 | PASS | PASS | clean `dev`, exact S |
+| `sandbox-host` | `oracle-gustaw-janecki-ubuntu-flex-02` | Linux arm64 | PASS | PASS | clean `dev`, exact S |
+| `factory-sandbox` | `oracle-waclaw-dziwulski-ubuntu-micro-01` | Linux amd64 | PASS | NOT RUN — `CGO_ENABLED=0`, no `cc` | clean `dev`, exact S |
+
+SSH fallback was used because these are checkout-local Go gates, not mailbox
+work. Mac connected to `remote-session-runner` with
+`/Users/tomasz.walczuk/.ssh/remote-session-runner`, `sandbox.env` with
+`/Users/tomasz.walczuk/.ssh/dev.slidestud.io`, and `factory-sandbox` with
+`/Users/tomasz.walczuk/.ssh/factory-sandbox`; each connection used batch mode,
+strict verified host keys, and `UpdateHostKeys=no`. Ubuntu pulls used
+`/home/ubuntu/.ssh/gavrilo123456-github` with `IdentitiesOnly=yes`, batch
+mode, and strict host-key checking. No tracked source was edited or copied on
+Ubuntu. No Runner request or ACK was published.
+
+Execution history: the first grouped SSH command had a local quoting error and
+exited before any remote gate began. The corrected command ran all host gates
+at exact S and passed as recorded above.
 
 ## Independent blockers preserved
 
