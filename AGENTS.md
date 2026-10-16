@@ -42,6 +42,16 @@ proceed while an unrelated future provisioning or deployment input is pending;
 record the blocked predecessor evidence and do not imply a PASS. Preserve the
 plan's continuous live-transaction boundaries and exact approval checkpoints.
 
+The owner's latest lane-priority decision bounds existing baseline work to
+`LANES-B021-02` and its exact selected retained-teardown prerequisite. Defer
+the unstarted BUG-022/023 baseline units as OPEN, not PASS; the next independent
+source unit is `LANES-L1-01`, including while current maintenance is blocked
+under the incremental-readiness rule. Follow the amended plan/handbook/ledger.
+Required lane-candidate acceptance and corrections directly needed by an active
+lane unit remain mandatory. Record new standalone bugs without automatically
+adding their baseline repair to this assignment. This priority does not waive
+any test, Git-delivery, quiescence, ownership or operational-approval gate.
+
 ## Go cache and temporary files
 
 On the Mac, use the shared `GOCACHE=/private/tmp/remote-session-runner-gocache` and `GOMODCACHE=/private/tmp/remote-session-runner-gomodcache` configured by the Makefile. Reuse these across phases; do not create a new cache or module-cache copy per phase. On Ubuntu, reuse the selected account's normal Go caches. Use `t.TempDir()` for test fixtures and shell `trap` cleanup for temporary host scripts. Keep generated build/test output outside the Git checkout, and remove only task-owned temporary artifacts after their processes have exited. Do not clean shared or other-project caches.

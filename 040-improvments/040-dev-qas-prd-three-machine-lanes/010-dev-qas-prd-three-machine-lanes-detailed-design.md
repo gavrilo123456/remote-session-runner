@@ -19,7 +19,7 @@ The mandatory [execution handbook](020-dev-qas-prd-three-machine-lanes-execution
 selects the first-rollout profile from this design's alternatives: existing PRD
 storage/cgroups, project-quota Linux enforcement, internal-only Dev/QAS
 acceptance inboxes and fixed SSH ceilings. It supplies the complete serial
-breakdown, prerequisite bug workflow, readiness packet, test interfaces and
+breakdown, bounded active-work closeout, readiness packet, test interfaces and
 approval packages. Optional alternatives in this design do not become late
 choices during that rollout; changing its selected profile requires a reviewed
 amendment. Live measurements and exact generated approvals remain execution
@@ -2289,6 +2289,26 @@ and an evidence-backed disposition (`unresolved`, `verified-pass`, or
 unknown and blocks an affected live gate. A route-specific result does not
 close the global bug record or transfer to another host or lane.
 
+**Owner scope decision — 2026-10-16.** Complete the already-open
+`LANES-B021-02` timeout acceptance and only its exact retained teardown
+dependency recorded in
+[B021-02 evidence](../../040-implementation-evidence/LANES-B021-02.md):
+`sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30`.
+Preserve that request's failed-command result, event prefix and held ACK,
+together with the separate historical BUG-024 evidence and ACK state. The
+existing producer-pause, ownership, capacity, and exact maintenance-approval
+gates still apply; this scope decision is not a substitute for their proof.
+
+The unstarted standalone `LANES-B022-*` and `LANES-B023-*` baseline units are
+**DEFERRED**. They are not prerequisites to L1 source implementation or
+`LANES-READY`, and their deferred status is not a bug fix or PASS. References
+to BUG-022/023 below retain required candidate behavior, not permission to
+start another baseline bug campaign. After the bounded active closeout, work
+continues on Dev/QAS/PRD. Independent hermetic/source-only L1 work may proceed
+while PREP/L0 or an unrelated future provisioning input is blocked; every
+dependent host, capacity, installation, and live-acceptance gate remains in
+force.
+
 | Report | Required acceptance behavior | Phase applicability |
 | --- | --- | --- |
 | BUG-021 — remote timeout | A permitted alias-only `timeout_seconds` reaches the runtime and stops a finite hold within the effective bound plus documented finalization grace. Record requested/effective limits; reaching the natural success marker fails. Source tests cover normalization, dispatch, conflict validation and policy clamps. | All three remote profiles in L4 Dev, L5 QAS and L6 PRD; repeat for affected L7 operations |
@@ -2305,9 +2325,14 @@ shared teardown regressions still apply, and unresolved baseline work may block
 any operation whose required quiescence or PRD-preservation proof it prevents.
 L0 collects applicability evidence read-only; it performs none of these probes,
 ACKs, or recovery actions. Source-only work can proceed independently while
-live prerequisites are pending. Actual bug repairs use separate scoped fix and
-verification evidence; after any candidate behavior changes, build a fresh
-candidate and repeat the required Dev → QAS → PRD chain.
+live prerequisites are pending. L4/L5/L6 still require the positive timeout,
+explicit-limit, managed-lifecycle, and applicable PRD teardown behavior in the
+table. Correct a required candidate-test failure within the active lane unit,
+with its regression and acceptance evidence; after candidate behavior changes,
+build a fresh candidate and repeat the required Dev → QAS → PRD chain. A
+separate baseline repair outside the bounded active closeout requires a new
+owner request; do not expand a candidate gate into another standalone baseline
+bug campaign.
 
 Use harmless fixtures with fresh request/key identities, private task-owned
 workspaces, bounded output/resource use, and an independent finite natural

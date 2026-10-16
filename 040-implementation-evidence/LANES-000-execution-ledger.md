@@ -6,8 +6,32 @@ authorizes independent source-only implementation and testing to proceed when
 its exact inputs are available. `LANES-B024-01` is PASS as an independent
 source/evidence unit with the exact blocked-L0 record cited below. Baseline and
 live acceptance gates remain ordered and blocked by their own unmet
-prerequisites. This ledger does not pass readiness, L0, any unstarted bug gate
-or any live lane.
+prerequisites. The latest owner scope decision limits remaining baseline work
+to the already-open B021/B024 case, defers unstarted B022/B023 baseline units,
+and makes `LANES-L1-01` the next lane source unit. This ledger does not pass
+readiness, L0, any deferred bug gate or any live lane.
+
+## Owner priority and current assignment — 2026-10-16
+
+Finish only `LANES-B021-02` and the `LANES-B024-02` teardown work directly
+needed by that already-open maintenance. The current retained pair is
+`sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30`.
+Keep its failed result, original held ACKs and all historical PASS evidence.
+Do not expand this closeout into another standalone baseline bug campaign.
+
+The four unstarted B022/B023 rows below are **DEFERRED by owner scope**, not
+PASS and not prerequisites of `LANES-READY` or L1–L3. BUG-022/023 remain open.
+After the current closeout, proceed to `LANES-L1-01`, then the planned lane
+units. If live closeout is blocked on producer pause/access/approval,
+independent lane source work may proceed under incremental readiness with the
+exact blocker record cited. Keep readiness records current alongside that
+work; do not introduce another backlog repair as an intermediate unit.
+
+Lane candidate timeout, explicit-limit, managed-session and PRD teardown
+acceptance remain mandatory. Correct failures required by the active lane
+unit within that unit and its immutable candidate chain. Additional standalone
+baseline bug work requires a new owner instruction. Actual host protection,
+provisioning, operational approval and dependent live gates are unchanged.
 
 ## Authoritative inputs and launch rule
 
@@ -21,7 +45,8 @@ Planning baseline: clean Mac `dev` at
 preflight records the then-current delivered HEAD and document blob revisions;
 this historical planning baseline is not an installed-build assertion.
 
-Continue the ordered units and declared dependencies below. PREP has recorded
+Continue the assigned in-scope units and declared dependencies below, excluding
+the deferred baseline rows from predecessor requirements. PREP has recorded
 discoverable facts and concrete correction packages, but remains BLOCKED; the
 full L0 baseline cannot start until PREP prerequisites pass. Under the owner's
 incremental-readiness decision, an independent hermetic/source-only unit may
@@ -49,8 +74,9 @@ left for a future milestone to choose. PREP has collected current host, storage,
 cgroup, runtime and mailbox observations and prepared A01/A02/A03 proposals;
 OCI owner access, Mac administrator route, sandbox capacity correction, Linux
 cgroup maintenance and producer pause evidence remain open. L0 must gather its
-full current baseline when its gates pass; named bug units verify the serving
-baseline. `LANES-READY` records open dependencies and the verdict for each next
+full current baseline when its gates pass; only the already-open B021/B024 case
+remains assigned for baseline verification. `LANES-READY` records the deferred
+B022/B023 baseline rows, open dependencies and the verdict for each next
 operation rather than requiring future provisioning results before source
 work.
 
@@ -70,10 +96,10 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-B024-02` | BLOCKED | [A08 producer/control revalidation](LANES-B024-02.md); configured roots and direct writers are mapped, but SlideStud has active submissions and its owner-controlled pause has not been tested or approved |
 | `LANES-B021-01` | PASS | [Timeout normalization and dispatch source regression](LANES-B021-01.md); Source S2 `c3ebe96367437ce17dc5e6edd166912aa0d0ac2f`; source-only H PASS, no installed acceptance inferred |
 | `LANES-B021-02` | BLOCKED | [Consolidated maintenance package](LANES-B021-02.md); bounded exit-2 teardown recovery is implemented, tested and delivered at source `a2c2352750e7ba65cfdfb6d6e75063e29ea5940d`; A08 live producer pause, exact owner window/approval, final candidate refresh, zero-work checks, and installed acceptance remain open. Per-user Mac refresh needs no separate administrator credential |
-| `LANES-B022-01` | NOT RUN | Not produced |
-| `LANES-B022-02` | NOT RUN | Not produced |
-| `LANES-B023-01` | NOT RUN | Not produced |
-| `LANES-B023-02` | NOT RUN | Not produced |
+| `LANES-B022-01` | DEFERRED — not started | Owner scope decision above; no baseline repair assigned, no PASS claimed. Positive explicit-limit candidate gates remain mandatory |
+| `LANES-B022-02` | DEFERRED — not started | Owner scope decision above; no baseline probe assigned or required before lane source work. No installed acceptance claimed |
+| `LANES-B023-01` | DEFERRED — not started | Owner scope decision above; no baseline repair assigned, no PASS claimed. Managed-session candidate contracts remain mandatory |
+| `LANES-B023-02` | DEFERRED — not started | Owner scope decision above; no baseline probe assigned or required before lane source work. No installed acceptance claimed |
 | `LANES-READY` | NOT RUN | Not produced |
 | `LANES-L1-01` | NOT RUN | Not produced |
 | `LANES-L1-02` | NOT RUN | Not produced |
@@ -137,3 +163,5 @@ Continuous bootstrap and live lane operations retain their internal per-host
 checkpoints and grant renewals; do not add S/E pauses inside them. Read the
 handbook's exact unit table rather than inferring a task from its ID alone.
 No phase is accepted until its aggregate design/plan gate also passes.
+Deferred baseline rows are retained for traceability and excluded from rollout
+completion requirements; they never count as a successful capability test.

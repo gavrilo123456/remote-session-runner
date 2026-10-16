@@ -24,6 +24,36 @@ proceed when their own inputs are ready; a failed prerequisite remains failed
 and blocks the operation that depends on it. Provisioning and live rollout
 still follow the serial phase gates below.
 
+### Owner priority: finish the open case, then implement the lanes
+
+**Owner scope decision (2026-10-16, superseding the baseline-bug sequence):**
+the assignment is Dev/QAS/PRD implementation, not a general repair of the
+existing Runner. Finish only the already-open `LANES-B021-02` timeout
+maintenance/acceptance and the `LANES-B024-02` teardown work directly needed
+by that maintenance. The current retained pair is
+`sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30`;
+preserve its failed result and the separate historical held ACKs. Existing
+source PASS results remain evidence, not permission for additional bug work.
+
+Do not start the unstarted baseline `LANES-B022-01`, `LANES-B022-02`,
+`LANES-B023-01`, or `LANES-B023-02` units. They are **DEFERRED by owner scope**,
+not PASS, and are removed from the prerequisites of `LANES-READY` and L1–L3.
+BUG-022/023 remain open; no report is closed by this sequencing amendment.
+After the bounded current closeout, the next source implementation unit is
+`LANES-L1-01`, followed by the handbook's L1–L7 lane units. Readiness records
+continue alongside this sequence. If current maintenance is waiting on a real
+publisher pause, access or approval, the existing incremental-readiness rule
+permits independent lane source work to proceed rather than starting another
+baseline bug.
+
+Corrections and regressions directly required by an active lane unit or its
+candidate acceptance remain part of that unit. Do not open another standalone
+baseline repair/probe/refresh campaign without a new owner instruction. The
+positive timeout, explicit-limit, managed-session and PRD teardown tests at
+L4–L7 remain mandatory; a deferred baseline bug neither passes nor waives
+those tests. Host protection, supported retained-work disposition, operational
+approvals, immutable candidates and Git delivery remain binding.
+
 ## Operating rule for every phase
 
 All tracked changes originate in the authoritative Mac `dev` checkout. For a
@@ -65,8 +95,9 @@ documentation amendment before affected implementation continues.
 The checked-in `040-implementation-evidence/LANES-000-execution-ledger.md`
 already lists the complete ordered units. `LANES-PREP-00` records readiness
 discovery and concrete correction packages; `LANES-L0` performs the full
-read-only inventory; and the named `LANES-B021-*` through `LANES-B024-*` units
-establish the baseline bug prerequisites. `LANES-READY` records the current
+read-only inventory. The bounded already-open B021/B024 closeout above is the
+only remaining baseline bug assignment; the unstarted B022/B023 baseline units
+are deferred. `LANES-READY` records the current
 readiness verdict, known blockers, owners and exact packages. It does not
 require future generated hashes, volume UUIDs, or L2 pressure results, and it
 does not block independent source-only implementation and tests. Collect
@@ -82,7 +113,8 @@ Only an unforeseen oversized active unit may be split into ordered `.a`/`.b`
 children before coding, preserving scope, safe checkpoints and downstream IDs.
 The initial L7 runbook/drills can close; future maintenance gets a new operation
 record using the same procedures. Keep the planned order for dependent unit
-acceptance, bug baseline gates and every live phase. A hermetic/source-only
+acceptance, the remaining in-scope baseline gates and every live phase. A
+hermetic/source-only
 unit may be implemented and tested while an unrelated infrastructure gate is
 blocked, provided its exact inputs are available; record it in the ledger and
 do not claim the blocked predecessor, unit acceptance, or any later live gate
@@ -119,7 +151,9 @@ change. Historical PASS or an unavailable test never proves a current gate.
    Installing a service still requires that phase's separate live approval.
    Record installed source/artifact/configuration identities independently of
    checkout HEAD. A failed, unavailable, or uncertain required gate stops the
-   unit and all successors; a correction is a new tested S, not a waived PASS.
+   unit and dependent successors; a correction is a new tested S, not a waived
+   PASS. Deferred baseline rows are not successors required for lane source
+   implementation or rollout completion.
 3. Once every required gate passes, make an **evidence-only closeout E** using
    `docs(LANES-L1-01): record verified delivery`. Record S, primary/mirror/host
    SHAs, exact commands and results, approval/evidence references, limitations,
@@ -173,11 +207,14 @@ renewal grants cannot authorize a new candidate, phase, or external change.
 The [design's runtime defect gate](010-dev-qas-prd-three-machine-lanes-detailed-design.md#runtime-defect-applicability-and-release-blockers)
 is mandatory. Maintain its per-route applicability table in the execution
 ledger and link each phase's fresh results. Triage the four reports; do not
-infer serving revisions or close bugs from this plan amendment. Repairs are
-separate prerequisite bug work, explicitly included as the handbook's named
-`LANES-B021-*` through `LANES-B024-*` units before `LANES-READY`, with their own
-bug evidence and Git handoff. The implementer has a complete diagnostic/fix/
-verification workflow rather than an instruction to ask another team later. A
+infer serving revisions or close bugs from this plan amendment. The owner
+scope decision above replaces the former requirement to repair all four
+reports before lane work. Only the already-open B021/B024 maintenance closeout
+remains assigned as baseline work, with its own evidence and Git handoff.
+The unstarted B022/B023 baseline units remain deferred, not prerequisites of
+readiness or L1–L3. Carry their unresolved capabilities into the applicable
+lane candidate tests below; a candidate failure is corrected in that lane
+unit, not used to start a separate existing-production repair campaign. A
 repair after candidate creation requires a new immutable candidate and a new
 Dev → QAS → PRD acceptance chain; never patch an accepted artifact in place.
 

@@ -30,6 +30,19 @@ rollout.
 | Accountable/approval owner | Tomasz Walczuk for all project decisions and change approvals; he is also the default storage, host, network/provider and producer coordinator. The implementer executes scoped approved work using verified access. A delegation is optional and must name its actual authorized operator; no unnamed administrator is a required planning input |
 | Scope boundaries | Event-driven wake-up, hostile-code isolation and a Mac compute guarantee remain excluded. Required timeout, explicit-limit, managed-session and retained PRD local teardown behavior cannot be removed to pass |
 
+**Owner priority amendment (2026-10-16).** Finish only the already-open
+`LANES-B021-02` maintenance/timeout acceptance and the `LANES-B024-02` teardown
+work directly needed for it, then implement Dev/QAS/PRD starting at
+`LANES-L1-01`. The [plan's owner scope decision](015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md#owner-priority-finish-the-open-case-then-implement-the-lanes)
+defines the exact retained pair and boundary. The unstarted B022/B023 baseline
+units below are **DEFERRED**, not additional implementer assignments or
+prerequisites of `LANES-READY` or L1–L3. Their reports remain open. Do not start
+another standalone baseline repair campaign without a new owner instruction.
+Corrections needed by a lane unit or its mandatory candidate acceptance stay
+within that unit and its tested immutable candidate chain. Independent lane
+source work can proceed under the existing incremental rule while the current
+maintenance waits for its real operational prerequisites.
+
 Concrete capacities are execution data, not new product choices. The
 implementer derives a complete proposed per-host envelope from L0 inventory,
 existing PRD ceilings/observed use and design §6; then proves the selected
@@ -48,7 +61,8 @@ The checked-in
 [execution ledger](../../040-implementation-evidence/LANES-000-execution-ledger.md)
 is already the ordered plan. `LANES-PREP-00` records discoverable facts and
 prepares concrete external correction packages. L0 adds the full read-only
-inventory, and the named bug units establish the runtime baseline. The owner
+inventory. Only the bounded already-open B021/B024 work remains assigned for
+the existing baseline; B022/B023 baseline work is deferred. The owner
 has replaced the former all-readiness-before-L1 rule with incremental gates:
 keep the planned unit and live-acceptance order, while independent
 hermetic/source-only implementation and testing may proceed when their exact
@@ -94,7 +108,7 @@ remains protected.
 | Network | Fix design endpoint/bind/port maps and preserve existing PRD access/source policy. Collect actual host/provider rule inventory; prepare exact rule additions needed by that fixed map and their rollback. Source-address restrictions use the verified intended control-plane/client addresses. An unverified NAT/source path blocks readiness, not a prompt to choose a different route |
 | Producer and maintenance plan | Inventory all active PRD roots and actual request/ACK publishers/direct clients. Obtain each owner's verified pause/fence procedure and record a maintenance scheduling rule: Tomasz opens the declared window only after all pause controls and zero-work preflight pass. No guessed calendar time or paused producer is required before coding |
 | Signing/PKI custody | Use only the design's protected owner/role/path mappings. Record who can authorize/generate/import local root keys and verify peer identities. Private keys remain outside Git and are never packet content; public pins/CSRs/digests are generated at their exact approved bootstrap step |
-| Bugs | Resolve the BUG-021–024 prerequisite workflow below for actual serving routes; retain report-specific evidence and the original BUG-024 disposition. A `NEW` label is not a universal failure, and a later successful request does not dispose of original work |
+| Bugs | Finish only the bounded already-open B021/B024 case; preserve its exact retained-work disposition and report evidence. Defer unstarted B022/B023 baseline units and carry unresolved capabilities to mandatory lane candidate acceptance. A `NEW` label is not a universal source-work failure, and a later successful request does not dispose of original work |
 | Approvals | Obtain scope/access/storage/network/producer decisions needed for the fixed rollout. Record the exact future checkpoint types in §3. Future bodies/hashes and short-lived approval receipts are generated just in time from verified preceding evidence; a broad readiness signature is not a signer mandate |
 | Tool execution and evidence | Use native workspace edits/reads and the file-mailbox convention in `docs/llm-client-guide.md`, except for a separately recorded, task-scoped observation authorization such as the bounded first-two-unit route above. Verify all required routes before relying on them. Use the plan's S/E commit/delivery contract and Mac shared caches |
 
@@ -149,13 +163,15 @@ that checkpoint.
 ## 4. Common execution and test contract
 
 Every row below inherits the main plan's full fresh-read, test, S/E evidence,
-primary/mirror/three-host delivery and stop gates. The previous listed unit is
-its prerequisite, plus any dependencies named in its row. Rows are the full
+primary/mirror/three-host delivery and stop gates. The previous assigned,
+in-scope unit is its prerequisite, plus any dependencies named in its row;
+deferred baseline rows are excluded. The explicit incremental source-only
+exception remains available. Rows are the full
 breakdown now; do not create another milestone plan before starting them.
 If an unforeseen source fix exceeds the bounded slice, split only that active
 unit into ordered `.a`/`.b` children with the same deliverable and a safe
 checkpoint, record the amendment and keep all downstream IDs/order. Never split
-to weaken an exit gate or code a future unit early.
+to weaken an exit gate or bypass a real dependency.
 
 Proof tiers used in the tables:
 
@@ -209,15 +225,22 @@ gate fails, use the design's exact closed/abort/repair path. Source S/E commits
 cannot silently change a candidate already being promoted. Stage all source
 and fixtures before the live unit starts.
 
-## 5. Preparation and runtime-bug prerequisites
+## 5. Preparation, current bug closeout, and deferred baseline work
 
-These units are planned work, not claims that the bugs are fixed. They are
-included in the implementer's assignment when execution of this whole plan is
-authorized; this documentation change does not execute them. Source fixes and
-report-specific verification use their own bug evidence and delivery. A
-verified non-reproduction can close a prerequisite with exact serving/capability
-proof while leaving an unexplained historical report open. No needed positive
-capability is waived; original retained work still requires its own disposition.
+The owner has narrowed the former all-bugs-first assignment. Preserve completed
+B021/B024 source evidence and finish only their bounded already-open maintenance
+case. Keep B022/B023 IDs below for traceability, but do not execute those
+unstarted baseline units as part of this rollout. They are deferred, not PASS;
+they do not precede `LANES-READY` or lane source implementation. After the
+current closeout, proceed to `LANES-L1-01`. An unavailable maintenance window
+does not block independent lane source work under §2.
+
+This amendment does not claim any unresolved report is fixed. Source fixes and
+report-specific verification retain their own evidence and delivery. Required
+positive candidate capabilities at L4–L7 remain unchanged; fix a candidate
+failure within its lane unit and repeat the required acceptance chain.
+Original retained work still requires its supported disposition before a
+refresh that could affect it.
 
 | Unit | Deliverable | Required proof / safe completion |
 | --- | --- | --- |
@@ -227,21 +250,22 @@ capability is waived; original retained work still requires its own disposition.
 | `LANES-B024-02` | Supported original owner disposition and fresh installed Mac one-off teardown/capacity acceptance | B with A08; original exact retained pair has explicit proof-based disposition before an affected refresh; fresh success has closed teardown, ACK and zero-capacity proof; later jobs cannot dispose of old work |
 | `LANES-B021-01` | Timeout normalization/dispatch source regression; repair proven cause under existing contract | H; alias/explicit conflict, canonical idempotency and policy clamp preserve deadline; no inferred installed fix |
 | `LANES-B021-02` | Verify actual baseline deadline after any separately approved required install | B; fresh five-second controlled finite hold stops before natural success within documented grace; truthful terminal/ownership, exact ACK and zero-work |
-| `LANES-B022-01` | Diagnose and correct proven explicit-limit protocol/configuration/diagnostic incompatibility, preserving positive capability | H; permitted matching nested/alias limits admitted; conflict/forbidden requests precisely rejected before delivery |
-| `LANES-B022-02` | Actual baseline permitted explicit-limit and policy-negative acceptance | B; independently bounded probe, enforced deadline and supported release; safe rejection alone is not positive PASS |
-| `LANES-B023-01` | Managed-session capability/dispatch/lifecycle regressions and proven correction | H; create/submit/read/cancel/close contract and policy rejection; do not infer behavior from a one-off lookup |
-| `LANES-B023-02` | Actual managed create → submit → observed hold → exact cancel → terminal → close/release | B; fresh identities on every affected serving remote route; complete output/ACK and zero-work; unknown capability stops |
-| `LANES-READY` | Seal current readiness packet, prerequisite evidence, and unit-specific dependency map | R/document review; complete ordered ledger, known blockers and correction packages, and readiness passed for the next operation that depends on it. Does not require future receipts or block independent source-only implementation/tests; every dependent live gate still requires its own current evidence |
+| `LANES-B022-01` | DEFERRED baseline explicit-limit diagnosis/correction; not assigned | No baseline H PASS claimed or required before lanes; matching limits/conflicts remain mandatory candidate regressions and L4–L7 acceptance |
+| `LANES-B022-02` | DEFERRED baseline explicit-limit live probe; not assigned | No baseline B PASS claimed or required before lanes; positive limits, enforced deadline and supported release remain candidate acceptance requirements |
+| `LANES-B023-01` | DEFERRED baseline managed-session diagnosis/correction; not assigned | No baseline H PASS claimed or required before lanes; create/submit/read/cancel/close and policy rejection remain mandatory candidate contracts |
+| `LANES-B023-02` | DEFERRED baseline managed-session live probe; not assigned | No baseline B PASS claimed or required before lanes; full managed lifecycle, output/ACK and zero-work remain mandatory candidate acceptance |
+| `LANES-READY` | Record current readiness packet, remaining in-scope evidence, and unit-specific dependency map | R/document review; record deferred baseline rows without PASS, known blockers and correction packages, and readiness for the next dependent operation. Does not require B022/B023 baseline closeout, future receipts, or block independent lane source work; every dependent live gate still requires its own current evidence |
 
-BUG-024 comes first because later dispatcher/limit fixes may need an affected
-Mac service refresh. Do not wait for those installs to investigate or dispose
-of the original retained work. Its own approved guarded recovery/install must
-prove the required ownership boundary; missing proof stops all affected refreshes.
+The existing B024 ownership/cleanup proof is a dependency of the already-open
+B021 maintenance case. Finish that exact supported disposition without opening
+another baseline bug campaign. Missing proof stops the affected refresh, not
+independent lane source implementation.
 
 No defect probe runs in L0. Safe probes have an independent finite natural
 bound, private workspace and bounded output. If a baseline repair invalidates
-an earlier relevant bug result, rerun that earlier gate before `LANES-READY`;
-record the dependency loop without pretending old evidence applies. No lane
+an earlier relevant result in the current case, rerun only that affected gate
+before claiming the case complete; do not revive deferred baseline assignments.
+Record the dependency without pretending old evidence applies. No lane
 candidate exists yet. Later candidate regressions follow the normal correction
 and fresh Dev → QAS → PRD chain.
 

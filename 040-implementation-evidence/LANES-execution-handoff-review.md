@@ -257,3 +257,36 @@ recovery, candidate/rollback, and operational approval package is recorded in
 no separate administrator credential is required. BUG-021 stays NEW until the
 installed five-second acceptance passes. BUG-022 and BUG-023 remain unstarted
 behind it; no defect probe has been run for either report.
+
+## 2026-10-16 owner decision: finish the current case, then prioritize lanes
+
+The owner narrowed the assignment to the open `LANES-B021-02` case and only
+its prerequisite supported disposition of the exact retained Mac test pair
+`sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30`.
+Preserve its failed exit-2 result, output/events and unACKed state. Historical
+BUG-024 held ACK and four consumed verification ACKs remain unchanged; no
+additional recovery selection or repeat verification is assigned.
+
+This supersedes the earlier prospective bug order; historical results retain
+their meaning. Follow the amended plan, handbook and ledger. The next
+independent source unit is `LANES-L1-01`, including while current maintenance
+is blocked under incremental readiness. Record the exact blocked predecessor
+without claiming PASS. Unstarted BUG-022/023 baseline units are deferred OPEN,
+never PASS or waived; new standalone bugs do not automatically add baseline
+repair assignments ahead of the lanes.
+
+Every candidate still owes complete design §9 acceptance, including permitted
+explicit limits, managed lifecycle and applicable PRD local teardown. A gate
+failure blocks the affected unit; its directly required correction remains in
+scope with regression tests, Git delivery and fresh promotion evidence.
+Current maintenance keeps its exact producer-pause, inventory, ownership and
+approval gates. The selected reservation is allowed before guarded recovery;
+all-zero work/capacity/finalization proof is required afterward before restart.
+
+These edits change documentation only and prove no reported publisher pause,
+window, UI/platform approval, live recovery, deployment, probe or ACK. After
+delivery advances HEAD, the `e1912ac` package is historical: the installer
+rebuilds/embeds current clean `dev`. Deliver the amendment through Gitea, its
+verified mirror and all three clean Ubuntu checkouts; then rebuild/freeze the
+outside-Git candidate hashes/rollback package, refresh host/producer facts and
+obtain the unchanged exact operational approvals before maintenance.

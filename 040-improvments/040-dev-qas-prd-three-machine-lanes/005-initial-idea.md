@@ -6,13 +6,24 @@ service, mailbox, credential, firewall, or deployment has changed yet.
 
 The [execution handbook](020-dev-qas-prd-three-machine-lanes-execution-handbook.md)
 settles the initial rollout profile and complete unit sequence for the whole
-plan, including baseline bug prerequisites and incremental readiness. The
+plan, including the bounded active-work closeout and incremental readiness. The
 implementer collects discoverable facts and prepares correction packages
 independently, then resolves each access, capacity, and approval dependency
 before the operation that needs it. Independent hermetic/source-only work may
 proceed while an unrelated future provision is pending; failed gates remain
 failed and block dependent operations. No additional milestone-planning
 exercise is required.
+
+**Owner scope decision — 2026-10-16:** finish the already-open
+`LANES-B021-02` timeout acceptance and its exact retained BUG-024 teardown
+dependency, then continue Dev/QAS/PRD implementation. The unstarted standalone
+BUG-022 and BUG-023 baseline units are **DEFERRED**, not prerequisites to L1 or
+`LANES-READY`. Required timeout, explicit-limit, managed-session, and PRD
+teardown behavior still has to pass on each lane candidate. Correct candidate
+failures within the active lane unit; a new standalone baseline bug campaign
+requires a separate owner request. Blocked PREP/L0 or unrelated provisioning
+does not prevent independent L1 source work; host-protection and live-operation
+gates remain mandatory where applicable.
 
 ## Problem
 

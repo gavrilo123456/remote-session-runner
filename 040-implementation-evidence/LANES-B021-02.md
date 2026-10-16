@@ -384,4 +384,35 @@ No live producer pause, exact-pair recovery, candidate refresh, factory bridge
 refresh, timeout probe, or new ACK has occurred for this unit. Until the owner
 pauses the active publishers, chooses the exact window, and approves the frozen
 outside-Git package, B021-02 remains BLOCKED. BUG-021 remains NEW. BUG-022-01
-and BUG-023-01 remain behind this unit in the prescribed serial sequence.
+and BUG-023-01 were next in that historical sequence; this prospective order
+is **superseded** by the [owner scope addendum below](#2026-10-16-owner-scope-addendum-current-case-before-lane-implementation).
+
+## 2026-10-16 owner scope addendum: current case before lane implementation
+
+The owner narrowed the assignment to this `LANES-B021-02` timeout acceptance
+and only its prerequisite supported disposition of the retained test pair
+`sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30`.
+Preserve its failed exit 2, revision 5/cursor 25 and unACKed evidence; no other
+pair, historical BUG-024 held ACK or consumed verification exchange is added.
+Source tests do not prove actual runtime cleanup or capacity release.
+
+This decision supersedes the earlier prospective order. The next independent
+source unit is `LANES-L1-01`, including while this maintenance remains blocked
+under incremental readiness; cite this blocked evidence without inventing a
+predecessor PASS. Unstarted BUG-022/023 baseline units are deferred OPEN, never
+PASS. BUG-021 remains NEW until its installed acceptance/closure proof exists.
+New standalone bugs do not automatically become baseline assignments.
+
+All required candidate timeout, explicit-limit, managed-session and applicable
+PRD local-teardown gates remain mandatory. Corrections directly needed by an
+active lane unit remain in scope, with regression tests, Git delivery and the
+required fresh candidate/promotion chain. Keep the exact maintenance guards:
+the selected retained reservation is allowed before guarded recovery; full
+zero-work/capacity/finalization proof is required afterward before restart.
+
+This addendum changes documentation only and verifies no reported pause,
+window, UI/platform approval, recovery, probe or ACK. Once delivered, its new
+HEAD supersedes the `e1912ac` installer package because the installer rebuilds
+and embeds current clean `dev`. Deliver through primary/mirror/all three hosts,
+then rebuild/freeze hashes and rollback handles outside Git, refresh inventory
+and obtain the unchanged exact approvals before maintenance.
