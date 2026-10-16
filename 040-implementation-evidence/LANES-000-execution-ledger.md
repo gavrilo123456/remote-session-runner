@@ -104,7 +104,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L1-01` | PASS | [Unit evidence](LANES-L1-01.md); H source gates and S delivery verified on Mac/Gitea/GitHub plus all three clean Ubuntu `dev` checkouts at `79221a9714561ebb97cc219de66150fc51191e32`. This source-only unit does not close blocked B021-02 or imply installation/live acceptance |
 | `LANES-L1-02` | PASS | [Unit evidence](LANES-L1-02.md); six H assertions and full source gates passed at Source S `fbb866789a01f7dcc442164c51ccf255b95405db`; exact Gitea/GitHub SHA and all three clean Ubuntu `dev` checkouts verified. No installed/runtime acceptance implied |
 | `LANES-L1-03` | PASS | [Unit evidence](LANES-L1-03.md); six H and six N assertions plus full source gates passed at Source S `1ae1253e2737d11beda1246a96c8c8f5263d3c53`; exact Gitea/GitHub SHA and all three clean Ubuntu `dev` checkouts verified. Native fixtures are temporary only; no live root or runtime acceptance is claimed |
-| `LANES-L1-04` | NOT RUN | Not produced |
+| `LANES-L1-04` | PASS | [Unit evidence](LANES-L1-04.md); seven H assertions and full source gates passed on Mac and all three clean Ubuntu `dev` checkouts at Source S `1c6d72e7b8f05a8879d1a716e79d00d3bfa946a7`. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race was unavailable (`CGO_ENABLED=0`, no `cc`). No runtime acceptance is claimed |
 | `LANES-L1-05` | NOT RUN | Not produced |
 | `LANES-L1-06` | NOT RUN | Not produced |
 | `LANES-L1-07` | NOT RUN | Not produced |
