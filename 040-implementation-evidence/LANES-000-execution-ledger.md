@@ -9,8 +9,8 @@ live acceptance gates remain ordered and blocked by their own unmet
 prerequisites. The owner has since clarified that incremental readiness applies
 to successive independent source units: a blocked B021/B024 maintenance
 closeout is not a global prerequisite for ordered L1 source work. The current
-source sequence has delivered through `LANES-L1-08`; `LANES-L1-09` is IN
-PROGRESS. The unstarted B022/B023 baseline units remain deferred. This ledger does
+source sequence has delivered through `LANES-L1-09`; `LANES-L1-10` is next in
+order. The unstarted B022/B023 baseline units remain deferred. This ledger does
 not pass readiness, L0, any deferred bug gate or any live lane.
 
 ## Earlier owner priority — 2026-10-16 (historical)
@@ -110,7 +110,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L1-06` | PASS | [Unit evidence](LANES-L1-06.md); six H assertions and full source gates passed on Mac and all three clean Ubuntu `dev` checkouts at Source S `ec2db7dbe8b9a45d5af486f2587a2954cc343f4b`. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race was unavailable (`CGO_ENABLED=0`, no `cc`). Evidence closeout E is delivered separately. B021/B024 remain blocked; no runtime acceptance is claimed |
 | `LANES-L1-07` | PASS | [Unit evidence](LANES-L1-07.md); eight H assertions and full source gates passed on Mac and all three clean Ubuntu `dev` checkouts at Source S `c254d49e07a4972b9ddb5b96e3380bbf191e7e2b`. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). No registry write or live acceptance is claimed |
 | `LANES-L1-08` | PASS | [Unit evidence](LANES-L1-08.md); eight H assertions and full source gates passed on Mac and all three clean Ubuntu `dev` checkouts at Source S `2a991507ad04668cf4180cd54f879ed694a0a236`. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). No publisher pause or live lane acceptance is claimed |
-| `LANES-L1-09` | PASS | [Reversible PRD fence and deferred-pair ledger](LANES-L1-09.md); ordered predecessor L1-08 evidence closeout E `36477d3cd598c2f98543a02fc1d7fd4c1b6cbf44`; corrected Source S2 `342ce30e2d23249404cb1c5c874d0436dc5ceb06` passed Mac and all three Ubuntu H/full/vet/build/smoke gates. Focused race passed on linux-host and sandbox-host; unavailable on factory-sandbox (`CGO_ENABLED=0`, no `cc`). This evidence-only closeout is delivered separately; its final sync gates L1-10 |
+| `LANES-L1-09` | PASS | [Reversible PRD fence and deferred-pair ledger](LANES-L1-09.md); ordered predecessor L1-08 evidence closeout E `36477d3cd598c2f98543a02fc1d7fd4c1b6cbf44`; corrected Source S2 `342ce30e2d23249404cb1c5c874d0436dc5ceb06` passed Mac and all three Ubuntu H/full/vet/build/smoke gates. Focused race passed on linux-host and sandbox-host; unavailable on factory-sandbox (`CGO_ENABLED=0`, no `cc`). Evidence closeout delivered and synchronized; no live lane acceptance is claimed |
 | `LANES-L1-10` | NOT RUN | Not produced |
 | `LANES-L1-11` | NOT RUN | Not produced |
 | `LANES-L1-12` | NOT RUN | Not produced |

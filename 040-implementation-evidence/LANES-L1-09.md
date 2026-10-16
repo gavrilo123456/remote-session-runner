@@ -154,4 +154,5 @@ outside Git; no mailbox publication or service action ran.
 The maintenance package remains a historical snapshot. No candidate was
 refreshed as part of L1-09, and B021/B024 evidence and BLOCKED states remain
 unchanged. Evidence closeout E is this documentation-only delivery; its Git
-SHA is not embedded here.
+SHA is not embedded here. The final ledger sequence state is synchronized in
+this follow-up documentation delivery before L1-10 begins.
