@@ -55,6 +55,6 @@ Required before closure:
 
 ## Resolution and history
 
-Unresolved. Registered 2026-10-15 from live feasibility evidence. Source S2 is delivered and the source regression unit passes; the live five-second acceptance remains blocked by [LANES-B021-02](../040-implementation-evidence/LANES-B021-02.md), including A08, a named Mac administrator/operator route, disposition of retained work, and exact operational approval.
+Unresolved. Registered 2026-10-15 from live feasibility evidence. Source S2 is delivered and the source regression unit passes; the live five-second acceptance remains blocked by [LANES-B021-02](../040-implementation-evidence/LANES-B021-02.md), including the A08 producer pause, exact retained-work recovery, fresh zero-work checks, and explicit operational approval. The documented per-user Mac refresh runs as `tomasz.walczuk`; it does not require a separate administrator credential. This does not change the separate A01 storage-operations access gate.
 
 The terminal response and advertised event prefix, where present, were preserved before exact ACK publication. ACK-pair disappearance was observed; no independent durable-status API was queried. No replay, SSH/direct API bypass, database edit, service restart, deployment or capacity release was performed. Any later authorized reproduction needs fresh request IDs and idempotency keys, the documented JSON-read-back/empty-marker-last publication, and its own terminal evidence. Do not republish historical request files.

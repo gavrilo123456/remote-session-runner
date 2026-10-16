@@ -37,42 +37,54 @@ themselves prove that the lane plan's A08 package was complete, so this unit
 will not repeat a service install, recovery, request, or ACK merely to create a
 new lane label for the same outcome.
 
-## A08 dependency and exact blocker
+## A08 producer maintenance preparation and blocker
 
-The handbook requires A08 before BUG baseline maintenance. Its review package
-includes actual producers/writers and owners, tested pause controls,
-retained-work disposition, fresh inventory, the exact candidate and
-continuity/abort-or-repair procedure, and an approved window.
+The implementation owner remains Tomasz Walczuk. The refreshed producer/root
+and pause-control inventory is in
+[`LANES-PREP-00.md`](LANES-PREP-00.md).
+It identifies the eight configured Mac roots, the direct workspace-file
+publishers in `slidestud.io` and `agents-work-dispatcher`, the Agentic Factory
+manual publishers, the current retained inbox residue, and the active
+SlideStud logger-gate request stream through 16:02 CEST. Root snapshots show
+the `agents-work-dispatcher` five-entry inbox and the retained outputs/events
+across all other roots; no retained response, output, ACK, or request file was
+changed.
 
-The current PREP producer inventory in
-[`LANES-PREP-00.md`](LANES-PREP-00.md), blob
-`2308c519bd802f0565186b4af651d2306bf736ba`, explicitly says that no complete
-direct-writer inventory, verified human owner, tested pause receipt, or
-maintenance window was found. Several roots have candidate procedures only;
-their owners and working pause/fence controls remain unverified. The prior
-BUG-024 evidence records explicit owner approval for its exact recovery and
-activation commands, but it does not supply the missing complete producer
-pause evidence. This unit therefore preserves the prior operation as evidence
-without asserting A08 PASS or treating its approval as a blanket grant for
-future PRD maintenance.
+The tested Runner-side control is the installer boundary: it quiesces the Mac
+Router ingress and then `runner-locald`, waits for old processes and sockets to
+disappear, and validates retained mailbox state before activating candidates.
+The previous BUG-024 refresh exercised that service control. It does not stop
+external workspace writers. `mailboxfence` tests only prove the cooperative
+native MailboxClient path; the direct workspace editors specified by the
+external repositories can bypass it. No safe, non-destructive global producer
+fence exists for those direct writers, and no live producer pause was tested.
 
-### Action required before any affected PRD maintenance
+### Concrete owner actions before maintenance
 
-1. Identify the actual writer/operator and human owner for each mailbox root
-   that can submit to the Mac service; include scheduled jobs, direct clients,
-   UI publishers, and agents.
-2. For each writer, provide its exact tested pause/fence action and paired
-   ingress/root snapshots that establish no new work while preserving retained
-   responses and ACKs.
-3. Prepare a fresh Mac inventory of serving revisions, active and retained
-   work, mailbox roots, configs, and candidate digests.
-4. Present the exact operation, continuity and abort/repair path, rollback
-   handles, named operator, affected producers, and maintenance window for the
-   owner review. If the existing BUG-024 execution is accepted as the complete
-   B024-02 operation, document how its prior exact approval and evidence meet
-   A08 without another service mutation.
+1. Suspend the currently active SlideStud logger-gate and producer-spool
+   publishing workflow for the maintenance interval. Confirm other publishing
+   agents/integrations are paused across the remaining configured roots. Do not
+   alter existing inbox entries, responses, events, diagnostics, or ACKs.
+2. Select one 30-minute maintenance window after source/evidence delivery and
+   the final candidate build. The exact start time is a remaining owner input.
+3. At the start of that window, capture fresh root/request/ACK snapshots and
+   Mac/factory zero-work inventories. Refuse the Mac operation if the exact
+   failed request changes, any unrelated active/queued/reserved work exists,
+   any unselected retained capacity/finalization exists, or any producer adds
+   inbox work after the freeze.
 
-Until that package is available and reviewed, B024-02 remains **BLOCKED**.
-This does not block independent hermetic/source-only work. No service,
-mailbox, storage, firewall, boot, or credential state changed for this unit;
-no Runner request or ACK was created.
+The recovery source correction is implemented and tested at
+`a2c2352750e7ba65cfdfb6d6e75063e29ea5940d`; its validation is recorded in
+[`LANES-B021-02.md`](LANES-B021-02.md). The final candidate refresh, factory
+bridge refresh, continuity, and rollback sequence is materialized in
+[`LANES-B021-02.md`](LANES-B021-02.md). The current exact failed pair is not
+recoverable by the previous successful-command-only source. It is now
+recoverable by the delivered correction only when all exact proof guards pass;
+the final candidate must include that delivered source. Operational approval
+remains separate and outstanding.
+
+Until the owner has paused the live producers and approved the frozen package,
+B024-02 remains **BLOCKED**. The previous approved BUG-024 recovery and fresh
+acceptance remain valid historical results; they do not authorize a new
+operation. No service, mailbox, storage, firewall, boot, or credential state
+changed for this unit, and no new Runner request or ACK was created.

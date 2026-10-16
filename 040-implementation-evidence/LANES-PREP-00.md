@@ -623,12 +623,59 @@ pause a producer.
 | `agentic-factory-test-project-01-runner`, `agentic-factory-test-project-02-runner` | Configured mailbox roots and retained entry counts are visible. A targeted search found no repo-specific `AGENTS.md` or source-defined pause API in the searched project files. | This does not prove no control exists. Ask each project/automation owner to identify the writer, actual owner and exact pause/fence plus retained-work verification. |
 | `remote-session-runner-workspace` | Workspace mailbox root is configured with retained entries; listing alone does not identify a human or automatic publisher. | Identify any local automation/direct writer and the supported pause/fence and zero-work procedure. |
 
-The producer list is not yet complete: no human owner, complete direct-client
-inventory, tested pause receipt, or maintenance window was verified. Tomasz
-Walczuk remains accountable/default coordinator; this does not substitute for
-the repository owner's authority or technical control of a producer. The first
-Dev/QAS rollout has no external producer; it uses its internal acceptance inbox
-and preserves every existing PRD root.
+### A08 producer and control revalidation — 2026-10-16, 16:02 CEST
+
+The owner assigned Tomasz Walczuk as accountable coordinator. The following
+read-only pass maps the currently configured Mac roots, documented direct
+writers and available service controls. It did not publish requests or ACKs,
+pause a producer, alter a root, stop/restart a service, or inspect request
+bodies. Counts are direct child entries, not counts of active work.
+
+| Root | Current root path | Inbox/outbox/events/acks/diagnostics | Direct-writer evidence and pause control |
+| --- | --- | --- | --- |
+| `default` | `~/Library/Application Support/RemoteSessionRunner/mailbox` | `0/0/0/0/0` | Runner's owner-local route; no external direct publisher identified. Owner confirmation is needed for any local automation. |
+| `analytics` | `~/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `0/0/0/0/0` | Configured route; no direct publisher identified. Owner confirmation is needed for any analytics integration. |
+| `slidestud-io` | `~/projects/slidestud.io/tmp/mailbox-` | `0/1317/1288/103/34` | `slidestud.io/AGENTS.md` specifies direct native workspace publication of JSON plus a marker-last `.ready`. Outbox files show `req-codex-logger-gate-watch-20261016-b134` through `b142` at one-minute intervals through 16:02 CEST, plus producer-spool review/validation requests. This is active production use. The AGENTS workflow has no mailbox-client lock or service pause control; pause means the owner suspends the publishing agent/workflow. |
+| `agents-work-dispatcher` | `~/projects/agents-work-dispatcher/tmp/mailbox-` | `5/21/21/23/0` | `agents-work-dispatcher/AGENTS.md` specifies manual native file publication and no direct API/SSH publisher. Four stale marker/request identities remain in `inbox/`: three marker-only `.ready` files and `req-awd-kafka-pki-prep-20261005-03.json` (12,528 bytes) with a one-byte `.ready`. Preserve every file; do not consume, repair or remove them during maintenance. The Kafka plan's task-producer/dispatcher/cleanup pause is a candidate procedure for that separate service workflow, not a tested fence of this Mac mailbox. |
+| `agentic-software-factory-runner-direct` | `~/projects/agentic-software-factory/runner/mailbox-` | `0/12/11/0/1` | `runner/how-to-use-runner.md` requires native workspace file publication, defaults to `ubuntu-factory-sandbox`, and says stop creating new work on an unhealthy route. The manual publishing workflow has no tested pause receipt; the owner suspends any active publisher. Durable orphan cleanup is disabled. |
+| `agentic-factory-test-project-01-runner` | `~/projects/agentic-factory-test-project-01/runner/mailbox-` | `0/21/18/0/0` | Prior feasibility-run artifacts identify this as a manual workspace mailbox. No root-level AGENTS/README publisher procedure, scheduled producer, or service pause API was found in the checkout. Owner must confirm no agent is publishing during the window. |
+| `agentic-factory-test-project-02-runner` | `~/tmp/agentic-factory-test-project-02/runner/mailbox-` | `0/12/12/0/0` | Prior feasibility-run artifacts identify this as a manual workspace mailbox. No root-level AGENTS/README publisher procedure, scheduled producer, or service pause API was found in the checkout. Owner must confirm no agent is publishing during the window. |
+| `remote-session-runner-workspace` | `~/projects/remote-session-runner/runner/mailbox-` | `0/5/5/0/0` | This owner-facing workspace root has no inbox work. It retains the four BUG-024 route responses/events and the new B021-01 response/events. The failed B021-01 response remains unACKed and must not be altered. |
+
+All eight roots are on device `16777229`, UID:GID `502:20`, mode `0700`; no
+`.runner-mailbox-retired` sentinel was present. The cooperative ingress lock file
+exists on the agents-work-dispatcher and two Agentic Factory project roots, but
+its presence does not establish a held lock or fence. Source tests prove that
+`mailboxclient` respects `AcquireShared` and a retirement sentinel. That
+retirement sentinel is persistent and the lock is cooperative; it does not
+fence the raw workspace writers above. No safe, non-destructive global pause
+for direct file publishers is implemented.
+
+The Mac installer's existing service control is concrete: it boots out
+`com.remote-session-runner.local` first and
+`com.remote-session-runner.locald` second, waits for the captured old processes
+to be inert and both private sockets to disappear, then validates retained
+mailbox state before candidate activation. The previous BUG-024 installed
+refresh exercised that service boundary. Stopping these services prevents new
+Runner intake but does not prevent a same-user workspace writer from creating
+new inbox markers while they are stopped. The factory bridge refresh has an
+installer lock, staged binary/wrapper/manifest replacements and rollback on a
+failed refresh; it does not restart `runnerd`.
+
+**A08 preparation is complete; the operational pause gate remains blocked.**
+The only live producer activity observed was SlideStud's one-minute logger-gate
+stream, so its owner must suspend that producing workflow and any other
+SlideStud mailbox publishers for the maintenance interval. The accountable
+owner must also confirm no workspace agent, integration or scheduled producer
+is active for the remaining seven roots. These are real stop controls for the
+documented manual writers, but they are not yet paused or live-tested. The
+agents-work-dispatcher residue and all retained output/ACK state are preserved.
+The A08 package proposes one 30-minute owner-selected maintenance window; the
+exact start time and approval must be supplied by the owner after the final
+candidate revision and current snapshots are frozen.
+
+The first Dev/QAS rollout has no external producer; it uses its internal
+acceptance inbox and preserves every existing PRD root.
 
 BUG-024 ACK classification follows the owner's correction and the evidence in
 [`BUG-024.md`](BUG-024.md#approved-live-execution-ledger) and

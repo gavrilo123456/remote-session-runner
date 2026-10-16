@@ -1,12 +1,12 @@
 # LANES-B021-02 — installed timeout acceptance blocker
 
-**State:** BLOCKED — the source unit is complete, but the installed five-second deadline acceptance has not been authorized or run.
+**State:** BLOCKED — the bounded recovery source prerequisite is implemented and tested; producer pause, final candidate approval, Mac recovery/refresh, factory bridge refresh, and the installed five-second acceptance remain unapproved and unrun.
 
 ## Preflight and dependencies
 
 - Source predecessor LANES-B021-01 is complete at Source S2 c3ebe96367437ce17dc5e6edd166912aa0d0ac2f; see [LANES-B021-01.md](LANES-B021-01.md).
 - LANES-PREP-00 remains BLOCKED and LANES-L0 remains BLOCKED / NOT STARTED.
-- The required producer-maintenance package A08 is incomplete. LANES-B024-02 remains BLOCKED at blocker blob 532d557496b427250093ba8642868c1607207be5, commit f816fc9e09bf8f84fe0cd7116f0677b4a381ffe7.
+- `LANES-B024-02` remains BLOCKED. A08 preparation now has a refreshed producer/root inventory and concrete stop controls below, but the live producer pause has not been exercised or attested and the maintenance window is not approved.
 - The Mac user account `tomasz.walczuk` is available and owns the per-user LaunchAgents and service root. The documented refresh does not require sudo or a separate administrator credential. The owner’s source, build, test, and Git-delivery authorization does not approve this production service change or a live defect probe; the concrete operational approval is still outstanding.
 - No service installation, restart, configuration change, defect probe, or ACK was performed for B021-02.
 
@@ -22,6 +22,50 @@ The B021-01 test-route attempt created one separate Mac one-off request. It ran 
 - Event-prefix SHA-256: 1c63b0644bc5ad95d7c29f46d18663f4e1850babeb187a9f10b8a995b8e02d04
 
 The exact response and event prefix remain in the mailbox. No ACK was written, and no recovery, capacity release, restart, replay, or cleanup was performed. The response and event hashes are also recorded in [BUG-024 evidence](BUG-024.md#additional-unacked-test-run). This fresh pair is separate from the original BUG-024 held response/ACK and from the four fresh BUG-024 route requests whose ACKs are already recorded as consumed. Do not alter those historical states.
+
+### Recovery applicability correction
+
+The original proposed command was not valid for this retained result: the
+response says command `failed`, exit 2, with a matching `command_failed`
+terminal event, while the then-current `--teardown-pair` store predicate
+accepted only `succeeded`/exit 0 and `command_succeeded`. **Do not run the
+installer command as originally proposed against the old candidate.** No
+installer, recovery, replay, manual slot release, or ACK has been attempted.
+
+The source correction adds only the ordinary failed-command case: nonzero
+exit, matching command/job failure state and exit code, complete available
+non-truncated output, an intact contiguous event prefix ending in
+`command_failed`, a stopped/released command slot, the exact lost one-off
+session/job identity, the complete idle authority, and exact runtime ownership
+cleanup proof. Timeout/cancel/lost/unknown or contradictory evidence remains
+ineligible. Capacity release still applies only to the retained session
+reservation after runtime cleanup proof; command result, event prefix, output,
+and request history remain unchanged. The corrected source is delivered at
+`a2c2352750e7ba65cfdfb6d6e75063e29ea5940d`; installation still requires the
+final candidate frozen below and the exact operational approval.
+
+### Corrected recovery source gates
+
+The source fix was committed on Mac `dev` as
+`a2c2352750e7ba65cfdfb6d6e75063e29ea5940d`, pushed to primary Gitea, verified
+at the same SHA on the automatic GitHub mirror, and fast-forwarded to the clean
+`dev` checkouts on all three Ubuntu hosts before validation. The Ubuntu Go
+toolchain was Go 1.27.1. The added regressions cover an ordinary failed
+nonzero command with its matching `command_failed` event, unsafe or
+contradictory evidence, preservation of the original failure/events without
+replay or manual release, and retry after finalization failure.
+
+| Machine | Validation | Result |
+| --- | --- | --- |
+| Mac (`mac-control-plane`) | Focused store/execution/runnerlocald tests; `make test`, `make vet`, `make build`, `make smoke`; focused race tests for the same packages | PASS. The first restricted-shell full-suite attempt was denied its existing `/bin/ps` test operation; the authorized Mac-shell rerun passed. Race command: `go test -race ./src/internal/store ./src/internal/execution ./src/internal/runnerlocald -run 'CompletedTeardown|BUG024FailedCommand' -count=1`. |
+| `linux-host` | `make test`, `make vet`, `make build`, `make smoke`; focused race command `GOTOOLCHAIN=local /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/store ./src/internal/execution ./src/internal/runnerlocald -run 'CompletedTeardown|BUG024FailedCommand' -count=1` | PASS at the exact source SHA. Race package results: store 330.535s, execution 113.797s, runnerlocald 70.609s. |
+| `sandbox-host` | Same full make gates and focused race command as `linux-host` | PASS at the exact source SHA. Race package results: store 267.948s, execution 66.446s, runnerlocald 35.656s. |
+| `factory-sandbox` | `make test`, `make vet`, `make build`, `make smoke`, with `GOMAXPROCS=1 GOGC=20 GOMEMLIMIT=256MiB GOFLAGS=-p=1` | Those gates passed at the exact source SHA. Race was unavailable: this checkout reports `CGO_ENABLED=0`, and no `cc` executable is installed. This is recorded as unavailable, not as a race PASS. |
+
+The host gates used the configured explicit SSH identities and ran only in the
+clean synchronized checkout. They did not edit source on Ubuntu, touch the
+installed services, publish mailbox work, or alter any retained response or
+ACK. Candidate builds and installed acceptance are separate, later gates.
 
 ## Fresh read-only serving inventory and preparation candidates
 
@@ -226,12 +270,111 @@ refresh is approved. The E1 bridge artifact above is also preparatory; the
 installer must rebuild from the then-current clean `dev` HEAD and generate a
 manifest for that exact revision before the final digest/approval checkpoint.
 
-## Exact action required before B021-02
+## Consolidated maintenance package and owner checkpoint
 
-1. Complete A08 with Tomasz Walczuk retained as the handbook's accountable owner. Identify the actual producer/writer and operator for every affected Mac mailbox ingress; provide each tested pause/fence action and paired pre/post ingress/root snapshots; inventory active, queued, retained, and uncertain work; and provide the exact candidate, continuity/abort-or-repair procedure, rollback handles, named operator, and maintenance window.
-2. Explicitly approve guarded recovery of the exact Mac pair `sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30` through `deploy/macos/install-launchagents.sh --recover-stalled --teardown-pair 'sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30'`. This supported operation stops both per-user LaunchAgents, installs the current clean-`dev` candidate cohort, and asks candidate `runner-locald` to prove cleanup for only this pair before restarting. It must preserve the unACKed mailbox evidence and the original BUG-024 held ACK. If its ownership/process proof fails, leave the candidate boundary for repair and do not ACK or retry.
-3. After A08 and exact-pair recovery pass, require a fresh zero-work preflight. Then approve `deploy/ssh/install-queued-bridge.sh refresh` on factory-sandbox and its exact rollback/abort procedure. No separate Mac administrator credential or factory root credential is needed; the Mac owner account and `ubuntu` operator route are available. Rebuild candidates from the then-current clean synchronized `dev` HEAD and present final digests immediately before this approval; the E1 preparation hashes above are not install inputs.
-4. Explicitly approve one bounded B021-02 acceptance on the affected route recorded in BUG-021: a fresh remote-session-runner-workspace request selected for factory-sandbox-dev / remote factory-sandbox, requesting a five-second limit for the documented 40-second controlled finite hold. It must stop before the natural-success marker within the design’s finalization grace, report truthful termination and complete terminal events, close teardown, and leave zero active/queued/reserved work. Archive the exact response/event prefix before ACKing that fresh terminal request.
-5. If A08, exact-pair recovery, zero-work preflight, bridge refresh, or acceptance fails, stop and retain evidence. Do not replay, cancel, recover, restart, install, or ACK another uncertain item without its exact supported disposition and approval.
+The producer/root and control inventory is in [LANES-PREP-00.md](LANES-PREP-00.md).
+It records an active SlideStud logger-gate stream (`b134` through `b142`,
+one-minute publications through 16:02 CEST), five preserved
+`agents-work-dispatcher` inbox entries, and the preserved unACKed B021-01
+result. Direct workspace publishers have no tested non-destructive global
+fence; their stop is an owner-controlled pause. The Mac installer does provide
+a tested Runner-ingress/service boundary, but does not stop those direct
+writers. The production workflow must remain running until Tomasz approves a
+window and suspends the affected publishers.
 
-Until A08 and explicit exact-pair recovery approval are present, B021-02 remains BLOCKED with one confirmed unreleased lost-work reservation. BUG-021 remains NEW. BUG-022-01 and BUG-023-01 remain behind this unit in the prescribed serial sequence.
+### Approval scope to present after final source/evidence delivery
+
+The next implementation work is to freeze a clean synchronized `dev` SHA,
+build the three Mac binaries and factory queued bridge from that exact SHA,
+verify hashes, and place the candidate manifest, rollback handles, and this
+approval package outside Git. No final candidate hash is recorded in this
+tracked evidence; the earlier E1 digests are historical preparation artifacts
+and are not installation inputs.
+
+The proposed window is 30 minutes. Tomasz supplies the exact start time when
+approving, after the SlideStud publisher is paused and the fresh inventory is
+captured. The single approval should cover these ordered actions:
+
+1. **Guarded recovery plus Mac candidate refresh.** Use the corrected source
+   candidate and the exact command below, only after fresh identities,
+   complete idle/ownership proof, and the owner producer freeze:
+
+   ```sh
+   # Mac — account tomasz.walczuk
+   cd /Users/tomasz.walczuk/projects/remote-session-runner
+   deploy/macos/install-launchagents.sh --recover-stalled \
+     --teardown-pair 'sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30'
+   ```
+
+   The candidate must preserve the original failed exit-2 response, complete
+   output and event prefix, request identity, and all held/previous ACK state.
+   It must prove the exact runtime cleanup before releasing only this session
+   reservation. It must never replay the script or edit/release a slot manually.
+2. **Fresh zero-work verification.** Read the active Mac authority after the
+   installer succeeds. Require zero active sessions/commands, queued commands,
+   resumable jobs, live reservations, and pending recovery finalizations;
+   verify installed Mac revision/hashes and both LaunchAgents. Re-read the
+   exact B021-01 response/event hashes and confirm no ACK appeared. Preserve
+   the original BUG-024 held ACK and all four already consumed fresh BUG-024
+   ACK records.
+3. **Factory queued-bridge refresh.** On factory-sandbox, after a fresh
+   zero-work check and exact current bridge/config/key inventory, run
+   `deploy/ssh/install-queued-bridge.sh refresh` from the synchronized clean
+   checkout. It atomically replaces only the bridge binary, forced wrapper,
+   and manifest; it does not restart `runnerd` or edit controller/key policy.
+   Verify the installed manifest and hashes. The script rolls back a failed
+   refresh internally. The approval package carries a separately staged,
+   hash-guarded restore of the previously verified bridge/wrapper/manifest for
+   a later acceptance failure; do not overwrite an unexpected current hash.
+4. **One timeout acceptance probe.** Publish one fresh
+   `remote-session-runner-workspace` request selected for
+   `factory-sandbox-dev` / remote `factory-sandbox`, with
+   `timeout_seconds: 5` and the documented controlled 40-second finite hold.
+   The command must terminate before its natural-success marker within the
+   bounded finalization grace, report truthful terminal command/event state,
+   close teardown, and leave zero active/queued/reserved work. Preserve the
+   exact terminal response and advertised event prefix outside the mailbox
+   before ACK. The approval package preselects a unique request ID; after the
+   terminal revision/cursor are observed, the only authorized ACK is the exact
+   three-field object copied from that response:
+
+   ```json
+   {
+     "request_id": "<approved request_id>",
+     "response_revision": <terminal response_revision>,
+     "available_event_sequence": <terminal available_event_sequence>
+   }
+   ```
+
+   If the request is nonterminal, loses teardown, reports inconsistent events,
+   or leaves capacity, stop. Do not ACK or repeat it until its exact disposition
+   is approved.
+
+### Continuity and rollback
+
+- Before maintenance: preserve all existing inbox/outbox/event/ACK/diagnostic
+  files; freeze only the explicitly named producers; record paired root
+  snapshots and all host zero-work/inventory results. The existing
+  `agents-work-dispatcher` residue is retained exactly as observed.
+- During the Mac refresh, the Mac-local API and executor are briefly
+  unavailable. The installer stops ingress first, waits for both old
+  processes/sockets to be absent, then performs exact recovery and candidate
+  activation. It restores the prior LaunchAgents only before the candidate
+  recovery boundary when its guards prove that safe. After the candidate
+  boundary it deliberately leaves both LaunchAgents stopped and the candidate
+  installed; do not roll back the authority or start the old binary. Repair or
+  retry only with the same exact pair and a fresh inventory.
+- The factory `runnerd.service` remains active during the queued-bridge refresh.
+  The refresh installer has a lock and transactional rollback for a failed
+  three-file handoff. If later acceptance fails, use only the separately
+  staged hash-guarded restore, and only if all three files still equal the
+  approved candidate hashes and the host has no active bridge execution.
+- Resume paused producers only after candidate revisions, fresh zero-work
+  inventories, preserved evidence/ACK state, and the timeout acceptance or its
+  explicitly approved failure disposition have been recorded.
+
+No live producer pause, exact-pair recovery, candidate refresh, factory bridge
+refresh, timeout probe, or new ACK has occurred for this unit. Until the owner
+pauses the active publishers, chooses the exact window, and approves the frozen
+outside-Git package, B021-02 remains BLOCKED. BUG-021 remains NEW. BUG-022-01
+and BUG-023-01 remain behind this unit in the prescribed serial sequence.

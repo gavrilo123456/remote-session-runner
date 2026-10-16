@@ -67,9 +67,9 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-PREP-00` | BLOCKED | [Readiness discovery and incremental-readiness delivery evidence](LANES-PREP-00.md); latest owner-instruction source S `d797d8519fcee0fbf40f0588f2e7393f6b96f74b`, evidence closeout `437554ccc3d372240b751c323f17bca9611cc0e8`; PREP still failed its sandbox-capacity and infrastructure/access gates |
 | `LANES-L0` | BLOCKED — not started | [Gate record](LANES-L0.md); PREP-00 did not pass |
 | `LANES-B024-01` | PASS | [Independent source/evidence revalidation](LANES-B024-01.md); Source S `5e5a07f1bc87a4cd52062d6f8eb729dce199e824`; tested code cohort `d90155bd8a9391a14759b420c7a49b48f5a0d0a8`; independent of blocked L0 |
-| `LANES-B024-02` | BLOCKED | [A08 dependency record](LANES-B024-02.md); existing BUG-024 repair evidence is preserved, but complete producer/writer ownership and tested pause/fence package is not available |
+| `LANES-B024-02` | BLOCKED | [A08 producer/control revalidation](LANES-B024-02.md); configured roots and direct writers are mapped, but SlideStud has active submissions and its owner-controlled pause has not been tested or approved |
 | `LANES-B021-01` | PASS | [Timeout normalization and dispatch source regression](LANES-B021-01.md); Source S2 `c3ebe96367437ce17dc5e6edd166912aa0d0ac2f`; source-only H PASS, no installed acceptance inferred |
-| `LANES-B021-02` | BLOCKED | [Installed timeout acceptance blocker](LANES-B021-02.md); A08, named Mac administrator/operator, retained-work disposition, and exact live approval are unavailable |
+| `LANES-B021-02` | BLOCKED | [Consolidated maintenance package](LANES-B021-02.md); bounded exit-2 teardown recovery is implemented, tested and delivered at source `a2c2352750e7ba65cfdfb6d6e75063e29ea5940d`; A08 live producer pause, exact owner window/approval, final candidate refresh, zero-work checks, and installed acceptance remain open. Per-user Mac refresh needs no separate administrator credential |
 | `LANES-B022-01` | NOT RUN | Not produced |
 | `LANES-B022-02` | NOT RUN | Not produced |
 | `LANES-B023-01` | NOT RUN | Not produced |
