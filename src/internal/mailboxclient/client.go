@@ -166,18 +166,10 @@ func (c *Client) WriteRequest(requestID string, raw []byte) error {
 	if err := validateOwnerDirectory(inbox); err != nil {
 		return fmt.Errorf("%w: inbox: %v", ErrRequest, err)
 	}
-	lock, err := mailboxfence.AcquireShared(context.Background(), c.root)
-	if err != nil {
-		return fmt.Errorf("%w: acquire ingress publication lock: %w", ErrRequest, err)
+	if err := publishIngressPair(c.root, "inbox", requestID, raw); err != nil {
+		return fmt.Errorf("%w: publish request pair: %w", ErrRequest, err)
 	}
-	defer lock.Close()
-	if err := writeExclusiveSynced(filepath.Join(inbox, requestID+".json"), raw); err != nil {
-		return fmt.Errorf("%w: write request: %v", ErrRequest, err)
-	}
-	if err := writeExclusiveSynced(filepath.Join(inbox, requestID+".ready"), nil); err != nil {
-		return fmt.Errorf("%w: publish marker: %v", ErrRequest, err)
-	}
-	return syncDirectory(inbox)
+	return nil
 }
 
 // WaitResponse polls only the outbox file and returns once the matching
@@ -455,11 +447,6 @@ func (c *Client) WriteAcknowledgment(requestID string, response Response) error 
 	if err := validateOwnerDirectory(acks); err != nil {
 		return fmt.Errorf("%w: ACK directory: %v", ErrAcknowledgment, err)
 	}
-	lock, err := mailboxfence.AcquireShared(context.Background(), c.root)
-	if err != nil {
-		return fmt.Errorf("%w: acquire ingress publication lock: %w", ErrAcknowledgment, err)
-	}
-	defer lock.Close()
 	ack := Acknowledgment{
 		RequestID: requestID, ResponseRevision: response.ResponseRevision,
 		AvailableEventSequence: cloneInt64(response.AvailableEventSequence),
@@ -468,13 +455,17 @@ func (c *Client) WriteAcknowledgment(requestID string, response Response) error 
 	if err != nil {
 		return fmt.Errorf("%w: encode: %v", ErrAcknowledgment, err)
 	}
-	if err := writeExclusiveSynced(filepath.Join(acks, requestID+".json"), raw); err != nil {
-		return fmt.Errorf("%w: write: %v", ErrAcknowledgment, err)
+	if err := publishIngressPair(c.root, "acks", requestID, raw); err != nil {
+		return fmt.Errorf("%w: publish ACK pair: %w", ErrAcknowledgment, err)
 	}
-	if err := writeExclusiveSynced(filepath.Join(acks, requestID+".ready"), nil); err != nil {
-		return fmt.Errorf("%w: publish marker: %v", ErrAcknowledgment, err)
-	}
-	return syncDirectory(acks)
+	return nil
+}
+
+// publishIngressPair is the single file-only request/ACK publication route.
+// mailboxfence pins all writes to the root descriptor guarded by its shared
+// migration lock.
+func publishIngressPair(root, directory, logicalID string, raw []byte) error {
+	return mailboxfence.PublishReadyPair(context.Background(), root, directory, logicalID, raw)
 }
 
 func validRequestID(value string) bool {

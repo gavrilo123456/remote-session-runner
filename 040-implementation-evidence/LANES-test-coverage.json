@@ -349,7 +349,43 @@
       "id": "LANES-L1-08",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/mailboxclient",
+            "name": "TestLanesL108RequestAndAckClientRefuseMigrationFence"
+          },
+          {
+            "package": "./src/internal/mailboxfence",
+            "name": "TestLanesL108PublisherLockSpansJSONReadyAndDirectorySync"
+          },
+          {
+            "package": "./src/internal/mailboxfence",
+            "name": "TestLanesL108InterruptedPublicationRetainsEvidenceAndCannotReplay"
+          },
+          {
+            "package": "./src/internal/mailboxfence",
+            "name": "TestLanesL108ExclusiveSnapshotBindsCompleteRequestAndAckPairs"
+          },
+          {
+            "package": "./src/internal/mailboxfence",
+            "name": "TestLanesL108ExclusiveSnapshotRejectsIncompleteOrUnsafePairs"
+          },
+          {
+            "package": "./src/internal/mailboxfence",
+            "name": "TestLanesL108RawWriterBypassesAdvisoryLockAndEmptySnapshotStops"
+          },
+          {
+            "package": "./src/internal/mailboxfence",
+            "name": "TestLanesL108MigrationFenceMarkerBlocksSharedPublishers"
+          },
+          {
+            "package": "./src/internal/mailboxfence",
+            "name": "TestLanesL108UnsafeMigrationFenceMarkerFailsClosed"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-09",

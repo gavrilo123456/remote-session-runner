@@ -4,8 +4,10 @@ package mailboxfence
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,19 +18,25 @@ import (
 
 const (
 	// LockFileName serializes native marker-last publishers with a retirement
-	// fence. It is an owner-only, top-level coordination artifact.
+	// or migration fence. It is an owner-only, top-level coordination artifact.
 	LockFileName = ".runner-mailbox-ingress.lock"
 	// SentinelFileName remains after retirement so a native publisher refuses
 	// to create a new pair in a retired mailbox tree.
 	SentinelFileName = ".runner-mailbox-retired"
+	// MigrationFenceFileName is a durable marker written by the lane migration
+	// controller while it holds the exclusive ingress lock. Native publishers
+	// refuse new pairs while this marker is present.
+	MigrationFenceFileName = ".runner-mailbox-migration-fence"
 )
 
 var (
-	ErrConfiguration = errors.New("mailbox fence configuration is invalid")
-	ErrUnsafe        = errors.New("mailbox fence path is unsafe")
-	ErrRetired       = errors.New("mailbox ingress is retired")
-	ErrBusy          = errors.New("mailbox ingress fence is busy")
-	ErrResidue       = errors.New("mailbox ingress has retained artifacts")
+	ErrConfiguration             = errors.New("mailbox fence configuration is invalid")
+	ErrUnsafe                    = errors.New("mailbox fence path is unsafe")
+	ErrRetired                   = errors.New("mailbox ingress is retired")
+	ErrMigrationFenced           = errors.New("mailbox ingress is migration-fenced")
+	ErrBusy                      = errors.New("mailbox ingress fence is busy")
+	ErrResidue                   = errors.New("mailbox ingress has retained artifacts")
+	ErrSnapshotRequiresExclusive = errors.New("mailbox ingress snapshot requires the exclusive lock")
 	// ErrResidueRestored reports that a fresh retirement fence found ingress
 	// residue and was durably removed before releasing its exclusive lock.
 	// Callers may safely restore the prior service only for this error.
@@ -44,15 +52,17 @@ const (
 // Close always releases the advisory lock. Only a fresh fence that finds
 // ingress residue before durable retirement can be unwound during acquisition.
 type Lock struct {
-	rootFD int
-	lockFD int
-	closed bool
+	rootFD    int
+	lockFD    int
+	exclusive bool
+	closed    bool
 }
 
-// AcquireShared rejects a mailbox that has already been fenced, then holds a
-// shared lock until Close. A caller must publish both members of its
-// marker-last pair while it holds this lock. It bounds an otherwise unbounded
-// background context so a stuck exclusive fence cannot strand a publisher.
+// AcquireShared rejects a mailbox that has already been retired or
+// migration-fenced, then holds a shared lock until Close. A caller must publish
+// both members of its marker-last pair while it holds this lock. It bounds an
+// otherwise unbounded background context so a stuck exclusive fence cannot
+// strand a publisher.
 func AcquireShared(ctx context.Context, root string) (*Lock, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -90,10 +100,187 @@ func AcquireRetirementUnder(ctx context.Context, trustRoot, root string) (*Lock,
 	return acquireRetirementAtRoot(ctx, rootFD)
 }
 
+// AcquireMigrationExclusive serializes a migration snapshot or fence update
+// against native publishers. It does not write a marker or change ingress
+// permissions; the caller owns those higher-level state transitions.
+func AcquireMigrationExclusive(ctx context.Context, root string) (*Lock, error) {
+	rootFD, err := openDirectMailboxRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := acquireExclusiveAtRoot(ctx, rootFD)
+	if err != nil {
+		return nil, err
+	}
+	retired, err := lock.retirementSentinelPresent()
+	if err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	if retired {
+		_ = lock.Close()
+		return nil, ErrRetired
+	}
+	return lock, nil
+}
+
+// AcquireMigrationExclusiveUnder is the descriptor-safe fixture variant of
+// AcquireMigrationExclusive. Production callers use AcquireMigrationExclusive.
+func AcquireMigrationExclusiveUnder(ctx context.Context, trustRoot, root string) (*Lock, error) {
+	rootFD, err := openMailboxRootUnder(trustRoot, root)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := acquireExclusiveAtRoot(ctx, rootFD)
+	if err != nil {
+		return nil, err
+	}
+	retired, err := lock.retirementSentinelPresent()
+	if err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	if retired {
+		_ = lock.Close()
+		return nil, ErrRetired
+	}
+	return lock, nil
+}
+
+// PublishReadyPair acquires the cooperative shared lock, checks both durable
+// fences, and publishes one immutable JSON/empty-ready pair through descriptors
+// rooted at the same mailbox directory as the lock.
+func PublishReadyPair(ctx context.Context, root, directory, logicalID string, raw []byte) error {
+	lock, err := AcquireShared(ctx, root)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	return lock.PublishReadyPair(directory, logicalID, raw)
+}
+
+// PublishReadyPair writes JSON, then its empty ready marker, then fsyncs the
+// ingress directory while the shared lock remains held. The lock's root
+// descriptor is also used to open the ingress directory, so path replacement
+// cannot redirect publication to another tree.
+func (l *Lock) PublishReadyPair(directory, logicalID string, raw []byte) error {
+	return l.publishReadyPairWithOps(directory, logicalID, raw, nil)
+}
+
+type pairWriteOps struct {
+	writeJSON   func(int, string, []byte) error
+	beforeReady func() error
+	writeReady  func(int, string, []byte) error
+	syncDir     func(int) error
+}
+
+func (l *Lock) publishReadyPairWithOps(directory, logicalID string, raw []byte, injected *pairWriteOps) error {
+	if l == nil || l.closed || l.rootFD < 0 || l.exclusive {
+		return ErrConfiguration
+	}
+	if (directory != "inbox" && directory != "acks") || !validMailboxID(logicalID) || len(raw) == 0 || len(raw) > maxIngressJSONBytes || !json.Valid(raw) {
+		return ErrConfiguration
+	}
+	directoryFD, err := unix.Openat(l.rootFD, directory, directoryOpenFlags, 0)
+	if err != nil {
+		return fmt.Errorf("%w: open ingress directory for publication", ErrUnsafe)
+	}
+	var directoryStat unix.Stat_t
+	if err := unix.Fstat(directoryFD, &directoryStat); err != nil || !isOwnerDirectory(directoryStat, 0o700) {
+		_ = unix.Close(directoryFD)
+		return ErrUnsafe
+	}
+	ops := pairWriteOps{writeJSON: writeSyncedAt, writeReady: writeSyncedAt, syncDir: unix.Fsync}
+	if injected != nil {
+		if injected.writeJSON != nil {
+			ops.writeJSON = injected.writeJSON
+		}
+		ops.beforeReady = injected.beforeReady
+		if injected.writeReady != nil {
+			ops.writeReady = injected.writeReady
+		}
+		if injected.syncDir != nil {
+			ops.syncDir = injected.syncDir
+		}
+	}
+	jsonName := logicalID + ".json"
+	readyName := logicalID + ".ready"
+	if writeErr := ops.writeJSON(directoryFD, jsonName, raw); writeErr != nil {
+		err = fmt.Errorf("write immutable JSON: %w", writeErr)
+	} else if ops.beforeReady != nil {
+		err = ops.beforeReady()
+		if err != nil {
+			err = fmt.Errorf("before ready marker: %w", err)
+		}
+	}
+	if err == nil {
+		if writeErr := ops.writeReady(directoryFD, readyName, nil); writeErr != nil {
+			err = fmt.Errorf("publish ready marker: %w", writeErr)
+		}
+	}
+	if err == nil {
+		if syncErr := ops.syncDir(directoryFD); syncErr != nil {
+			err = fmt.Errorf("sync ingress directory: %w", syncErr)
+		}
+	}
+	closeErr := unix.Close(directoryFD)
+	if err == nil && closeErr != nil {
+		err = fmt.Errorf("close ingress directory: %w", closeErr)
+	}
+	return err
+}
+
+func writeSyncedAt(directoryFD int, name string, data []byte) error {
+	fd, err := unix.Openat(directoryFD, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return err
+	}
+	remove := true
+	defer func() {
+		if remove {
+			_ = unix.Unlinkat(directoryFD, name, 0)
+		}
+	}()
+	if err := unix.Fchmod(fd, 0o600); err != nil {
+		_ = unix.Close(fd)
+		return err
+	}
+	for len(data) > 0 {
+		written, writeErr := unix.Write(fd, data)
+		if writeErr != nil {
+			_ = unix.Close(fd)
+			return writeErr
+		}
+		if written == 0 {
+			_ = unix.Close(fd)
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	if err := unix.Fsync(fd); err != nil {
+		_ = unix.Close(fd)
+		return err
+	}
+	if err := unix.Close(fd); err != nil {
+		return err
+	}
+	remove = false
+	return nil
+}
+
 func acquireRetirementAtRoot(ctx context.Context, rootFD int) (*Lock, error) {
 	lock, err := acquireExclusiveAtRoot(ctx, rootFD)
 	if err != nil {
 		return nil, err
+	}
+	migrationFenced, err := lock.migrationFencePresent()
+	if err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	if migrationFenced {
+		_ = lock.Close()
+		return nil, ErrMigrationFenced
 	}
 	sentinelCreated, err := lock.createRetirementSentinel()
 	if err != nil {
@@ -141,6 +328,15 @@ func acquireSharedAtRoot(ctx context.Context, rootFD int) (*Lock, error) {
 		_ = lock.Close()
 		return nil, ErrRetired
 	}
+	fenced, err = lock.migrationFencePresent()
+	if err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	if fenced {
+		_ = lock.Close()
+		return nil, ErrMigrationFenced
+	}
 	return lock, nil
 }
 
@@ -150,7 +346,7 @@ func acquireExclusiveAtRoot(ctx context.Context, rootFD int) (*Lock, error) {
 		_ = unix.Close(rootFD)
 		return nil, err
 	}
-	lock := &Lock{rootFD: rootFD, lockFD: lockFD}
+	lock := &Lock{rootFD: rootFD, lockFD: lockFD, exclusive: true}
 	if err := lock.flock(ctx, unix.LOCK_EX); err != nil {
 		_ = lock.Close()
 		return nil, err
@@ -227,6 +423,21 @@ func (l *Lock) retirementSentinelPresent() (bool, error) {
 		return false, nil
 	}
 	if err != nil || !isOwnerFile(stat, 0o600) || stat.Size != 0 {
+		return false, ErrUnsafe
+	}
+	return true, nil
+}
+
+func (l *Lock) migrationFencePresent() (bool, error) {
+	if l == nil || l.rootFD < 0 {
+		return false, ErrConfiguration
+	}
+	var stat unix.Stat_t
+	err := unix.Fstatat(l.rootFD, MigrationFenceFileName, &stat, unix.AT_SYMLINK_NOFOLLOW)
+	if errors.Is(err, unix.ENOENT) {
+		return false, nil
+	}
+	if err != nil || !isOwnerFile(stat, 0o600) {
 		return false, ErrUnsafe
 	}
 	return true, nil
