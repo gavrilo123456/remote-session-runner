@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -136,6 +137,9 @@ func TestLanesL103InspectsEmptyDescriptorBackedMailboxTree(t *testing.T) {
 	if err != nil {
 		rootFD, parentFD, rootName, openErr := openRootNoFollow(fixture.handoff.Path, fixture.handoff.OwnerUID)
 		t.Logf("debug path=%s tmp=%s owner=%d openErr=%v", fixture.handoff.Path, os.TempDir(), fixture.handoff.OwnerUID, openErr)
+		if openErr != nil {
+			debugPathWalk(t, fixture.handoff.Path, fixture.handoff.OwnerUID)
+		}
 		if openErr == nil {
 			defer unix.Close(rootFD)
 			defer unix.Close(parentFD)
@@ -404,6 +408,32 @@ func assertInspectionRejected(t *testing.T, handoff RootHandoff) {
 	t.Helper()
 	if _, err := InspectRoot(handoff); !errors.Is(err, ErrInvalidHandoff) {
 		t.Fatalf("InspectRoot accepted unsafe fixture: %v", err)
+	}
+}
+
+func debugPathWalk(t *testing.T, path string, ownerUID uint32) {
+	t.Helper()
+	parts := strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator))
+	fd, err := unix.Open(string(filepath.Separator), directoryOpenFlags, 0)
+	if err != nil {
+		t.Logf("debug root open: %v", err)
+		return
+	}
+	defer func() { _ = unix.Close(fd) }()
+	for index, part := range parts {
+		next, err := unix.Openat(fd, part, directoryOpenFlags, 0)
+		if err != nil {
+			t.Logf("debug component=%q open error=%v", part, err)
+			return
+		}
+		stat, statErr := fstat(next)
+		validationErr := error(nil)
+		if index != len(parts)-1 && statErr == nil {
+			validationErr = validateAncestorFD(next, ownerUID)
+		}
+		t.Logf("debug component=%q uid=%d mode=%#o type=%#o statErr=%v validationErr=%v", part, stat.Uid, stat.Mode&0o7777, stat.Mode&unix.S_IFMT, statErr, validationErr)
+		_ = unix.Close(fd)
+		fd = next
 	}
 }
 
