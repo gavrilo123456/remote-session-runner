@@ -67,7 +67,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-PREP-00` | BLOCKED | [Readiness discovery and incremental-readiness delivery evidence](LANES-PREP-00.md); latest owner-instruction source S `d797d8519fcee0fbf40f0588f2e7393f6b96f74b`, evidence closeout `437554ccc3d372240b751c323f17bca9611cc0e8`; PREP still failed its sandbox-capacity and infrastructure/access gates |
 | `LANES-L0` | BLOCKED — not started | [Gate record](LANES-L0.md); PREP-00 did not pass |
 | `LANES-B024-01` | PASS | [Independent source/evidence revalidation](LANES-B024-01.md); Source S `5e5a07f1bc87a4cd52062d6f8eb729dce199e824`; tested code cohort `d90155bd8a9391a14759b420c7a49b48f5a0d0a8`; independent of blocked L0 |
-| `LANES-B024-02` | NOT RUN | Not produced |
+| `LANES-B024-02` | BLOCKED | [A08 dependency record](LANES-B024-02.md); existing BUG-024 repair evidence is preserved, but complete producer/writer ownership and tested pause/fence package is not available |
 | `LANES-B021-01` | NOT RUN | Not produced |
 | `LANES-B021-02` | NOT RUN | Not produced |
 | `LANES-B022-01` | NOT RUN | Not produced |
