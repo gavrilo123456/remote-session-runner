@@ -12,17 +12,25 @@ import (
 )
 
 func bug024CompletedTeardownFixture(t *testing.T, suffix string) (*Service, *store.AuthorityStore, *p027Runtime, RunJobRequest, RunJobResult) {
+	return bug024CompletedTeardownFixtureWithExit(t, suffix, 0)
+}
+
+func bug024CompletedTeardownFixtureWithExit(t *testing.T, suffix string, exitCode int) (*Service, *store.AuthorityStore, *p027Runtime, RunJobRequest, RunJobResult) {
 	t.Helper()
 	runtime := &p027Runtime{
 		p020FakeRuntime: p020FakeRuntime{generation: "generation-bug024-" + suffix,
-			commandResult: RuntimeCommandResult{Stdout: []byte("executed once\n"), ExitCode: 0}},
+			commandResult: RuntimeCommandResult{Stdout: []byte("executed once\n"), ExitCode: exitCode}},
 		lostRecoveryResult: RuntimeReconcileResult{CleanupConfirmed: true},
 		lostFinalizeResult: RuntimeReconcileResult{CleanupConfirmed: true},
 	}
 	service, authority := newP027Service(t, runtime)
 	request := pCommandlessLostRunJobRequest(t, "bug024-"+suffix)
 	result, err := service.RunJob(context.Background(), request)
-	if !errors.Is(err, ErrStopUnconfirmed) || result.Job.Phase != store.JobPhaseLost || result.Command.State != domain.CommandStateSucceeded {
+	wantState := domain.CommandStateSucceeded
+	if exitCode != 0 {
+		wantState = domain.CommandStateFailed
+	}
+	if !errors.Is(err, ErrStopUnconfirmed) || result.Job.Phase != store.JobPhaseLost || result.Command.State != wantState || result.Command.ExitCode == nil || *result.Command.ExitCode != exitCode {
 		t.Fatalf("seed completed teardown result=%+v err=%v", result, err)
 	}
 	return service, authority, runtime, request, result
@@ -69,21 +77,84 @@ func TestBUG024CompletedTeardownRecoveryPreservesOutcomeAndNeverReplays(t *testi
 	}
 }
 
+func TestBUG024FailedCommandTeardownRecoveryPreservesExit2AndNeverReplays(t *testing.T) {
+	service, authority, runtime, request, before := bug024CompletedTeardownFixtureWithExit(t, "failed-exit-2", 2)
+	ctx := context.Background()
+	beforeEvents, err := authority.ListCommandEvents(ctx, before.Command.CommandID)
+	if err != nil || len(beforeEvents) == 0 || beforeEvents[len(beforeEvents)-1].Type != "command_failed" {
+		t.Fatalf("failed terminal events=%+v err=%v", beforeEvents, err)
+	}
+	beforeSlot, err := authority.GetCommandSlot(ctx, before.Command.CommandID)
+	if err != nil || beforeSlot.ReleasedAt == nil || beforeSlot.StopConfirmedAt == nil {
+		t.Fatalf("failed command slot=%+v err=%v", beforeSlot, err)
+	}
+	results, err := service.RecoverCompletedTeardownRecoveryBatch(ctx, bug024RecoveryRequest(before))
+	if err != nil || len(results) != 1 || results[0].Recovery.SessionReservation.ReleasedAt == nil {
+		t.Fatalf("failed-command recovery=%+v err=%v", results, err)
+	}
+	after, err := service.ResumeJob(ctx, before.Job.JobID, before.Job.Controller, request)
+	if err != nil || !reflect.DeepEqual(before, after) || after.Command.State != domain.CommandStateFailed || after.Command.ExitCode == nil || *after.Command.ExitCode != 2 {
+		t.Fatalf("historical failed result changed: before=%+v after=%+v err=%v", before, after, err)
+	}
+	afterEvents, err := authority.ListCommandEvents(ctx, before.Command.CommandID)
+	if err != nil || !reflect.DeepEqual(beforeEvents, afterEvents) {
+		t.Fatalf("failed event history changed: before=%+v after=%+v err=%v", beforeEvents, afterEvents, err)
+	}
+	afterSlot, err := authority.GetCommandSlot(ctx, before.Command.CommandID)
+	if err != nil || !reflect.DeepEqual(beforeSlot, afterSlot) {
+		t.Fatalf("released command slot changed: before=%+v after=%+v err=%v", beforeSlot, afterSlot, err)
+	}
+	repeat, err := service.RecoverCompletedTeardownRecoveryBatch(ctx, bug024RecoveryRequest(before))
+	if err != nil || len(repeat) != 1 || !repeat[0].Recovery.AlreadyRecovered || runtime.commandCall != 1 || runtime.startCall != 1 || runtime.lostRecoveryCall != 1 {
+		t.Fatalf("failed recovery repeat=%+v err=%v calls=%+v", repeat, err, runtime)
+	}
+}
+
+func TestBUG024FailedCommandTeardownFinalizationRetryDoesNotReplay(t *testing.T) {
+	service, authority, runtime, request, before := bug024CompletedTeardownFixtureWithExit(t, "failed-finalize-retry", 2)
+	runtime.lostFinalizeErr = errors.New("fixture marker finalization failure")
+	if _, err := service.RecoverCompletedTeardownRecoveryBatch(context.Background(), bug024RecoveryRequest(before)); !errors.Is(err, ErrLostRuntimeRecoveryFinalization) {
+		t.Fatalf("initial failed-command finalization=%v", err)
+	}
+	reservation, err := authority.GetSessionReservation(context.Background(), before.Session.SessionID)
+	if err != nil || reservation.ReleasedAt == nil || reservation.CleanupConfirmedAt == nil {
+		t.Fatalf("released reservation with pending finalization=%+v err=%v", reservation, err)
+	}
+	pending, err := authority.ListPendingCompletedTeardownRecoveryFinalizations(context.Background())
+	if err != nil || len(pending) != 1 || pending[0].Pair.SessionID != before.Session.SessionID {
+		t.Fatalf("pending finalization=%+v err=%v", pending, err)
+	}
+	runtime.lostFinalizeErr = nil
+	results, err := service.RecoverCompletedTeardownRecoveryBatch(context.Background(), bug024RecoveryRequest(before))
+	if err != nil || len(results) != 1 || !results[0].Recovery.AlreadyRecovered || results[0].Recovery.FinalizationPending || runtime.lostRecoveryCall != 1 || runtime.lostFinalizeCall != 2 || runtime.commandCall != 1 || runtime.startCall != 1 {
+		t.Fatalf("failed finalization retry=%+v err=%v calls=%+v", results, err, runtime)
+	}
+	after, err := service.ResumeJob(context.Background(), before.Job.JobID, before.Job.Controller, request)
+	if err != nil || !reflect.DeepEqual(before, after) || after.Command.State != domain.CommandStateFailed || after.Command.ExitCode == nil || *after.Command.ExitCode != 2 {
+		t.Fatalf("finalization retry changed failed result: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if events, err := authority.ListCommandEvents(context.Background(), before.Command.CommandID); err != nil || len(events) == 0 || events[len(events)-1].Type != "command_failed" {
+		t.Fatalf("finalization retry changed terminal event: events=%+v err=%v", events, err)
+	}
+}
+
 func TestBUG024CompletedTeardownRecoveryHoldsReservationWithoutProof(t *testing.T) {
-	for _, proofErr := range []error{nil, errors.New("fixture ownership inspection failure")} {
-		t.Run(fmt.Sprint(proofErr), func(t *testing.T) {
-			service, authority, runtime, _, before := bug024CompletedTeardownFixture(t, "unconfirmed")
-			runtime.lostRecoveryResult.CleanupConfirmed = false
-			runtime.lostRecoveryErr = proofErr
-			_, err := service.RecoverCompletedTeardownRecoveryBatch(context.Background(), bug024RecoveryRequest(before))
-			if !errors.Is(err, ErrLostRuntimeRecoveryUnconfirmed) || runtime.lostFinalizeCall != 0 {
-				t.Fatalf("recovery err=%v finalize=%d", err, runtime.lostFinalizeCall)
-			}
-			reservation, err := authority.GetSessionReservation(context.Background(), before.Session.SessionID)
-			if err != nil || reservation.ReleasedAt != nil || reservation.CleanupConfirmedAt != nil {
-				t.Fatalf("unconfirmed reservation=%+v err=%v", reservation, err)
-			}
-		})
+	for _, exitCode := range []int{0, 2} {
+		for _, proofErr := range []error{nil, errors.New("fixture ownership inspection failure")} {
+			t.Run(fmt.Sprintf("exit-%d/%v", exitCode, proofErr), func(t *testing.T) {
+				service, authority, runtime, _, before := bug024CompletedTeardownFixtureWithExit(t, fmt.Sprintf("unconfirmed-%d", exitCode), exitCode)
+				runtime.lostRecoveryResult.CleanupConfirmed = false
+				runtime.lostRecoveryErr = proofErr
+				_, err := service.RecoverCompletedTeardownRecoveryBatch(context.Background(), bug024RecoveryRequest(before))
+				if !errors.Is(err, ErrLostRuntimeRecoveryUnconfirmed) || runtime.lostFinalizeCall != 0 {
+					t.Fatalf("recovery err=%v finalize=%d", err, runtime.lostFinalizeCall)
+				}
+				reservation, err := authority.GetSessionReservation(context.Background(), before.Session.SessionID)
+				if err != nil || reservation.ReleasedAt != nil || reservation.CleanupConfirmedAt != nil {
+					t.Fatalf("unconfirmed reservation=%+v err=%v", reservation, err)
+				}
+			})
+		}
 	}
 }
 

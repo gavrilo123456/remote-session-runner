@@ -34,7 +34,7 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	var pairValues, sessionValues, teardownValues repeatedMacRecoveryValue
 	flags.Var(&pairValues, "lost-pair", "terminal lost SESSION_ID:COMMAND_ID pair; repeat for every retained lost runtime")
 	flags.Var(&sessionValues, "lost-session", "terminal lost SESSION_ID without a persisted command; repeat for every retained commandless runtime")
-	flags.Var(&teardownValues, "teardown-pair", "completed COMMAND_ID with lost teardown, as SESSION_ID:COMMAND_ID; repeat for the complete retained set")
+	flags.Var(&teardownValues, "teardown-pair", "complete succeeded or ordinary failed COMMAND_ID with lost teardown, as SESSION_ID:COMMAND_ID; repeat for the complete retained set")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}

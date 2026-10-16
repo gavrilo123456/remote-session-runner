@@ -10,11 +10,12 @@ import (
 )
 
 // ErrCompletedTeardownRecoveryNotReleasable means the exact selected Mac
-// one-off does not prove successful command completion and lost session cleanup.
+// one-off does not prove a complete ordinary command result and lost session cleanup.
 var ErrCompletedTeardownRecoveryNotReleasable = errors.New("completed teardown recovery is not releasable")
 
-// CompletedTeardownRecoveryPair identifies a successful command and its lost
-// ephemeral session. It is deliberately distinct from a lost-command pair.
+// CompletedTeardownRecoveryPair identifies a complete succeeded or ordinary
+// nonzero-exit failed command and its lost ephemeral session. It is deliberately
+// distinct from a lost-command pair.
 type CompletedTeardownRecoveryPair struct {
 	SessionID domain.SessionID
 	CommandID domain.CommandID
@@ -280,14 +281,16 @@ WHERE s.session_id = ? AND c.command_id = ?
  AND j.source_mode = s.source_mode AND j.source_repository_alias = s.source_repository_alias
  AND j.source_requested_revision = s.source_requested_revision AND j.source_path = s.source_path
  AND j.phase = 'lost' AND j.teardown_state = 'lost' AND j.teardown_reason = 'runtime_cleanup_unconfirmed'
- AND c.state = 'succeeded' AND c.exit_code = 0 AND c.output_complete = 1 AND c.output_truncated = 0 AND c.output_unavailable_reason = ''
+ AND ((c.state = 'succeeded' AND c.exit_code = 0) OR (c.state = 'failed' AND c.exit_code IS NOT NULL AND c.exit_code <> 0))
+ AND c.output_complete = 1 AND c.output_truncated = 0 AND c.output_unavailable_reason = ''
  AND j.command_state = c.state AND j.exit_code = c.exit_code AND j.final_event_sequence = c.final_event_sequence
  AND j.output_complete = c.output_complete AND j.output_truncated = c.output_truncated AND j.output_unavailable_reason = c.output_unavailable_reason
  AND c.final_event_sequence > 0
  AND (SELECT COUNT(*) FROM exec_commands other WHERE other.session_id = s.session_id) = 1
  AND (SELECT COUNT(*) FROM exec_jobs other WHERE other.session_id = s.session_id) = 1
  AND (SELECT MAX(sequence) FROM exec_command_events e WHERE e.command_id = c.command_id) = c.final_event_sequence
- AND (SELECT event_type FROM exec_command_events e WHERE e.command_id = c.command_id AND e.sequence = c.final_event_sequence) = 'command_succeeded'`,
+ AND (SELECT COUNT(*) FROM exec_command_events e WHERE e.command_id = c.command_id) = c.final_event_sequence
+ AND (SELECT event_type FROM exec_command_events e WHERE e.command_id = c.command_id AND e.sequence = c.final_event_sequence) = CASE c.state WHEN 'succeeded' THEN 'command_succeeded' WHEN 'failed' THEN 'command_failed' END`,
 		string(pair.SessionID), string(pair.CommandID)).Scan(&jobID, &finalizations, &matchingFinalizations); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return result, ErrCompletedTeardownRecoveryNotReleasable

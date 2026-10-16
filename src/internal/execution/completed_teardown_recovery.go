@@ -9,9 +9,10 @@ import (
 	"remote-session-runner/src/internal/store"
 )
 
-// CompletedTeardownRecoveryRequest selects an already successful one-off
-// command whose terminal lost session still holds its reservation. This is
-// an offline operator boundary, not a retry of the original request body.
+// CompletedTeardownRecoveryRequest selects an already terminal one-off
+// command with a complete result (success or ordinary nonzero-exit failure)
+// whose lost session still holds its reservation. This is an offline operator
+// boundary, not a retry of the original request body.
 type CompletedTeardownRecoveryRequest struct {
 	SessionID domain.SessionID
 	CommandID domain.CommandID

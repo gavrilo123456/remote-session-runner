@@ -678,9 +678,14 @@ old lost records and do not reuse their request or idempotency identities.
 
 ### Explicit Mac recovery for a completed command with lost teardown
 
-A successful command can already have its truthful terminal result while its
-one-off session teardown is `lost` and still
-holds session capacity. This is not a lost command. After an approved fresh
+A one-off command can already have its truthful terminal result while its
+session teardown is `lost` and still holds session capacity. The supported
+selection covers either a successful exit 0 with `command_succeeded`, or an
+ordinary failed command with a nonzero exit and matching `command_failed`
+terminal event. Both require complete, non-truncated, available output and the
+already released command slot. Cancelled, timed-out, rejected, lost, shell-exit,
+transport-uncertain, missing-exit, and inconsistent command/job/event records
+remain ineligible. This is not lost-command recovery. After an approved fresh
 idle inventory and exact ownership proof, use the separate completed-command
 selection through the same stopped-candidate installer boundary:
 
@@ -697,12 +702,15 @@ failed-startup recovery, or `--config`. The latter is a separate candidate
 activation after recovery and its zero-work postflight succeed. The guard
 refuses active/running/queued/nonterminal work, any live command capacity,
 unselected retained session capacity, unrelated pending cleanup, or uncertain
-runtime ownership. A fully released historical pair is refused unless its
+runtime ownership. For a failed command, it additionally requires
+`command.state=failed`, a nonzero exit code, matching job state and exit code,
+complete output metadata, and the exact `command_failed` event at the final
+sequence. A fully released historical pair is refused unless its
 completed-teardown finalization remains durably pending and explicitly selected.
 
-Recovery preserves the command's terminal state, output classification and
-terminal event boundary; it never replays a script or relabels a completed
-command as lost. It proves runtime cleanup before releasing the selected
+Recovery preserves the original succeeded or failed result, exit code, output,
+and event prefix; it never replays a script, changes a failure to success, or
+relabels a failed command as lost. It proves runtime cleanup before releasing the selected
 session reservation. If finalization remains pending after release, retry only
 the same complete explicit set; do not repeat runtime signalling or manually
 remove ownership evidence. Postflight requires every recovery finalization

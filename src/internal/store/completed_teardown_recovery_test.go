@@ -57,6 +57,35 @@ func TestCompletedTeardownRecoveryPreservesHistoryAndRetriesFinalization(t *test
 	}
 }
 
+func TestCompletedTeardownRecoveryAcceptsOrdinaryFailedCommandAndPreservesHistory(t *testing.T) {
+	ctx := context.Background()
+	authority := pCommandlessLostRecoveryStore(t)
+	pair, jobID := completedTeardownFixtureWithOutcome(t, authority, "failed-exit-2", domain.CommandStateFailed, 2)
+	before := completedTeardownHistory(t, authority, pair, jobID)
+	events, err := authority.ListCommandEvents(ctx, pair.CommandID)
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != "command_failed" {
+		t.Fatalf("failed command events=%+v err=%v", events, err)
+	}
+	checked, err := authority.CheckCompletedTeardownRecoveryBatch(ctx, []CompletedTeardownRecoveryPair{pair})
+	command, commandErr := authority.GetCommand(ctx, pair.CommandID)
+	if err != nil || commandErr != nil || len(checked) != 1 || checked[0].AlreadyRecovered || checked[0].Command.State != domain.CommandStateFailed || command.ExitCode == nil || *command.ExitCode != 2 {
+		t.Fatalf("failed command check=%+v command=%+v err=%v command_err=%v", checked, command, err, commandErr)
+	}
+	if err := authority.ConfirmCompletedTeardownRecoveryBatch(ctx, []CompletedTeardownRecoveryPair{pair}); err != nil {
+		t.Fatalf("confirm failed command cleanup: %v", err)
+	}
+	reservation, err := authority.GetSessionReservation(ctx, pair.SessionID)
+	if err != nil || reservation.CleanupConfirmedAt == nil || reservation.ReleasedAt == nil {
+		t.Fatalf("failed command session-only release=%+v err=%v", reservation, err)
+	}
+	if after := completedTeardownHistory(t, authority, pair, jobID); !reflect.DeepEqual(before, after) {
+		t.Fatalf("recovery rewrote failed command/job/session/event/lifecycle/slot history\nbefore=%#v\nafter=%#v", before, after)
+	}
+	if afterEvents, err := authority.ListCommandEvents(ctx, pair.CommandID); err != nil || !reflect.DeepEqual(events, afterEvents) {
+		t.Fatalf("recovery rewrote failed terminal event history: before=%+v after=%+v err=%v", events, afterEvents, err)
+	}
+}
+
 func TestCompletedTeardownMigrationFromSchema36PreservesVerifiedReadOnlyPreflight(t *testing.T) {
 	ctx := context.Background()
 	path := completedTeardownSchema36AuthorityPath(t)
@@ -87,7 +116,7 @@ func TestCompletedTeardownMigrationFromSchema36PreservesVerifiedReadOnlyPrefligh
 
 func TestCompletedTeardownRecoveryRejectsChangedBoundariesWithoutRelease(t *testing.T) {
 	for _, test := range []struct{ name, sql string }{
-		{"command failed", `UPDATE exec_commands SET state = 'failed'`},
+		{"failed state without matching event", `UPDATE exec_commands SET state = 'failed', exit_code = 2`},
 		{"nonzero exit", `UPDATE exec_commands SET exit_code = 1`},
 		{"command incomplete", `UPDATE exec_commands SET output_complete = 0`},
 		{"command truncated", `UPDATE exec_commands SET output_truncated = 1`},
@@ -106,6 +135,8 @@ func TestCompletedTeardownRecoveryRejectsChangedBoundariesWithoutRelease(t *test
 		{"retained command", `UPDATE exec_command_slots SET stop_confirmed_at = NULL, released_at = NULL`},
 		{"half released session", `UPDATE exec_capacity_reservations SET cleanup_confirmed_at = '2026-10-08T18:00:00Z'`},
 		{"wrong event tail", `UPDATE exec_command_events SET event_type = 'command_failed' WHERE event_type = 'command_succeeded'`},
+		{"failed command zero exit", `UPDATE exec_commands SET state = 'failed', exit_code = 0`},
+		{"failed command missing exit", `UPDATE exec_commands SET state = 'failed', exit_code = NULL`},
 		{"job cursor mismatch", `UPDATE exec_jobs SET final_event_sequence = final_event_sequence + 1`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -148,6 +179,41 @@ func TestCompletedTeardownRecoveryRejectsChangedBoundariesWithoutRelease(t *test
 			after, _ := authority.GetSessionReservation(context.Background(), pair.SessionID)
 			if !reflect.DeepEqual(before, after) {
 				t.Fatal("refusal changed reservation")
+			}
+		})
+	}
+}
+
+func TestCompletedTeardownFailedRecoveryRejectsInconsistentEvidence(t *testing.T) {
+	for _, test := range []struct{ name, sql string }{
+		{"wrong terminal event", `UPDATE exec_command_events SET event_type = 'command_succeeded' WHERE event_type = 'command_failed'`},
+		{"timeout terminal event", `UPDATE exec_command_events SET event_type = 'command_timed_out' WHERE event_type = 'command_failed'`},
+		{"zero exit", `UPDATE exec_commands SET exit_code = 0`},
+		{"job exit mismatch", `UPDATE exec_jobs SET exit_code = 0`},
+		{"job state mismatch", `UPDATE exec_jobs SET command_state = 'succeeded'`},
+		{"incomplete output", `UPDATE exec_commands SET output_complete = 0`},
+		{"event prefix gap", `DELETE FROM exec_command_events WHERE sequence = 2`},
+		{"retained command slot", `UPDATE exec_command_slots SET stop_confirmed_at = NULL, released_at = NULL`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			authority := pCommandlessLostRecoveryStore(t)
+			pair, _ := completedTeardownFixtureWithOutcome(t, authority, "failed-reject", domain.CommandStateFailed, 2)
+			if _, err := authority.db.Exec(test.sql); err != nil {
+				t.Fatal(err)
+			}
+			before, err := authority.GetSessionReservation(context.Background(), pair.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := authority.CheckCompletedTeardownRecoveryBatch(context.Background(), []CompletedTeardownRecoveryPair{pair}); !errors.Is(err, ErrCompletedTeardownRecoveryNotReleasable) {
+				t.Fatalf("inconsistent evidence check=%v", err)
+			}
+			if err := authority.ConfirmCompletedTeardownRecoveryBatch(context.Background(), []CompletedTeardownRecoveryPair{pair}); !errors.Is(err, ErrCompletedTeardownRecoveryNotReleasable) {
+				t.Fatalf("inconsistent evidence confirmation=%v", err)
+			}
+			after, err := authority.GetSessionReservation(context.Background(), pair.SessionID)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("refusal changed retained reservation before=%+v after=%+v err=%v", before, after, err)
 			}
 		})
 	}
@@ -294,6 +360,10 @@ func TestCompletedTeardownFinalizationSurvivesGCAndUnrelatedLiveWork(t *testing.
 }
 
 func completedTeardownFixture(t *testing.T, authority *AuthorityStore, suffix string) (CompletedTeardownRecoveryPair, domain.JobID) {
+	return completedTeardownFixtureWithOutcome(t, authority, suffix, domain.CommandStateSucceeded, 0)
+}
+
+func completedTeardownFixtureWithOutcome(t *testing.T, authority *AuthorityStore, suffix string, commandState domain.CommandState, exitCode int) (CompletedTeardownRecoveryPair, domain.JobID) {
 	t.Helper()
 	ctx := context.Background()
 	pair := CompletedTeardownRecoveryPair{SessionID: domain.SessionID("sess-completed-" + suffix), CommandID: domain.CommandID("cmd-completed-" + suffix)}
@@ -323,7 +393,7 @@ func completedTeardownFixture(t *testing.T, authority *AuthorityStore, suffix st
 	if _, err := authority.StartNextEligibleCommand(ctx, DefaultRunningCommandLimit); err != nil {
 		t.Fatal(err)
 	}
-	command, err := authority.CompleteRunningCommand(ctx, CommandTransition{CommandID: pair.CommandID, NextState: domain.CommandStateSucceeded, ExitCode: intPointer(0), OutputComplete: true}, domain.SessionStateReady, "command_completed", true)
+	command, err := authority.CompleteRunningCommand(ctx, CommandTransition{CommandID: pair.CommandID, NextState: commandState, ExitCode: intPointer(exitCode), OutputComplete: true}, domain.SessionStateReady, "command_completed", true)
 	if err != nil {
 		t.Fatal(err)
 	}
