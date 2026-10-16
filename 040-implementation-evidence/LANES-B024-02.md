@@ -45,7 +45,7 @@ and pause-control inventory is in
 It identifies the eight configured Mac roots, the direct workspace-file
 publishers in `slidestud.io` and `agents-work-dispatcher`, the Agentic Factory
 manual publishers, the current retained inbox residue, and the active
-SlideStud logger-gate request stream through 16:02 CEST. Root snapshots show
+SlideStud logger-gate request stream through 16:43 CEST. Root snapshots show
 the `agents-work-dispatcher` five-entry inbox and the retained outputs/events
 across all other roots; no retained response, output, ACK, or request file was
 changed.

@@ -273,8 +273,8 @@ manifest for that exact revision before the final digest/approval checkpoint.
 ## Consolidated maintenance package and owner checkpoint
 
 The producer/root and control inventory is in [LANES-PREP-00.md](LANES-PREP-00.md).
-It records an active SlideStud logger-gate stream (`b134` through `b142`,
-one-minute publications through 16:02 CEST), five preserved
+Its latest read-only snapshot at 16:43 CEST records the active SlideStud
+logger-gate stream through `b168`, five preserved
 `agents-work-dispatcher` inbox entries, and the preserved unACKed B021-01
 result. Direct workspace publishers have no tested non-destructive global
 fence; their stop is an owner-controlled pause. The Mac installer does provide

@@ -677,6 +677,36 @@ candidate revision and current snapshots are frozen.
 The first Dev/QAS rollout has no external producer; it uses its internal
 acceptance inbox and preserves every existing PRD root.
 
+### A08 pre-window root refresh — 2026-10-16, 16:43 CEST
+
+Before final candidate preparation, the Mac owner shell repeated the directory
+inventory read-only using `Path.iterdir()`, `stat()`, and a filename-only glob
+for the logger-gate request series. It did not open request/response bodies,
+acquire mailbox locks, publish work, write ACKs, or modify retained files.
+Counts below are direct child entries (`inbox/outbox/events/acks/diagnostics`):
+
+| Root | Counts | Latest observation |
+| --- | --- | --- |
+| `default` | `0/0/0/0/0` | Device `16777229`, UID:GID `502:20`, mode `0700`; no retirement sentinel or lock file. |
+| `analytics` | `0/0/0/0/0` | Device `16777229`, UID:GID `502:20`, mode `0700`; no retirement sentinel or lock file. |
+| `slidestud-io` | `0/1330/1301/103/34` | Same native direct publisher. Logger-gate request names advance through `req-codex-logger-gate-watch-20261016-b168`; the stream remains active. No safe publisher pause/fence was exercised. |
+| `agents-work-dispatcher` | `5/21/21/23/0` | The five retained inbox entries remain; the lock file seen at 16:02 is now absent. No request or marker was repaired or consumed. |
+| `agentic-software-factory-runner-direct` | `0/12/11/0/1` | Lock file exists; its presence does not prove a held lock. No publisher pause was exercised. |
+| `agentic-factory-test-project-01-runner` | `0/21/18/0/0` | Lock file exists; no publisher pause was exercised. |
+| `agentic-factory-test-project-02-runner` | `0/12/12/0/0` | Lock file exists; no publisher pause was exercised. |
+| `remote-session-runner-workspace` | `0/5/5/0/0` | The B021-01 failed response/event remain retained and unACKed; the selected B021-02 request ID is not present. |
+
+All roots remained on device `16777229`, UID:GID `502:20`, mode `0700`, with
+no `.runner-mailbox-retired` sentinel. The changed presence of the
+`agents-work-dispatcher` lock file is further evidence that a persistent lock
+file listing is not a global fence. The active SlideStud stream continues to
+append one-minute logger-gate requests. Its actual pause action remains an
+owner-controlled suspension of that publishing workflow; this pass did not
+pause it. Before maintenance, Tomasz must pause that stream and its related
+producer-spool publishers, confirm that no other direct publisher is active on
+the remaining roots, and capture paired root snapshots while preserving all
+existing work and ACK state.
+
 BUG-024 ACK classification follows the owner's correction and the evidence in
 [`BUG-024.md`](BUG-024.md#approved-live-execution-ledger) and
 [`BUG-024/acceptance.json`](BUG-024/acceptance.json): all four fresh
