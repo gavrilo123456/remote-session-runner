@@ -49,6 +49,8 @@ for label in com.remote-session-runner.local com.remote-session-runner.locald; d
   launchctl print "gui/$(id -u)/$label" 2>/dev/null | rg '(^[[:space:]]*(state|program|pid|last exit code|path|label) =|arguments =)' || true
 done
 "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/bin/runner-locald" preflight-restart --config "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.yaml"
+sqlite3 -readonly -separator '|' "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/state/local.db" "SELECT r.session_id,r.reserved_at,r.cleanup_confirmed_at,r.released_at,s.state,s.target_profile,s.environment FROM exec_capacity_reservations r LEFT JOIN exec_sessions s USING(session_id) WHERE r.released_at IS NULL; SELECT job_id,session_id,command_id,phase,command_state,teardown_state,teardown_reason,ingress FROM exec_jobs WHERE job_id='job-5897c7285e7a530cbc79d374b374a7fd'; SELECT session_id,state,target_profile,environment FROM exec_sessions WHERE session_id='sess-d76592166342428ba1b7b703fc87bb35';"
+sqlite3 -readonly -separator '|' "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/state/local.db" "SELECT mailbox_id,client_request_id,operation,request_state,resource_id,response_revision,available_event_sequence,acknowledged_at,execution_selection_state,resolved_environment,resolved_target_profile FROM mailbox_exchanges WHERE client_request_id='req-lanes-b021-01-mac-20261016-01';"
 
 # Mac — build exact candidates from clean dev at E1, shared caches
 cd /Users/tomasz.walczuk/projects/remote-session-runner
@@ -94,8 +96,10 @@ and a directory inventory established the correct paths. The first process
 inspection attempt was blocked by sandbox `Operation not permitted` for `ps`;
 filtered per-user `launchctl print` provided the service state and PIDs. The
 first remote config-path inspection used unavailable `rg`; it was rerun with
-system `grep` and completed successfully. No source file was copied outside
-Git.
+system `grep` and completed successfully. The first read-only SQLite path
+guess omitted `state/` and failed to open; `find` located the correct database
+and the targeted `-readonly` queries completed. No source file was copied
+outside Git.
 
 ### Mac control plane
 
@@ -130,12 +134,23 @@ returned exit 1:
 runner-locald preflight-restart: local execution is not quiescent (active_session_slots=1 active_command_slots=0 queued_commands=0 resumable_jobs=0)
 ~~~
 
-The preflight reports a live session slot but does not identify its owner or
-session ID. Treat it as uncertain work. The new unACKed lost item above must
-not be assumed to be the slot without a supported correlation. The Mac
-installer stops ingress and then runs this guard before replacing locald; with
-the current result it would refuse the refresh. Do not attempt it until A08
-and supported retained-work disposition establish zero work.
+The read-only database queries correlate that slot to the exact new unACKed
+test request above:
+
+| Record | Read-only result |
+| --- | --- |
+| Capacity reservation | Session `sess-d76592166342428ba1b7b703fc87bb35`, reserved `2026-10-16T12:34:28.388843Z`; `cleanup_confirmed_at` and `released_at` are NULL |
+| Session | `lost`, target `mac-workstation`, environment `mac-dev` |
+| Job/command | `job-5897c7285e7a530cbc79d374b374a7fd` / `cmd-6817a947ceec8c3e54fbcdc2b8f2fb30`; job phase `lost`, command state `failed`, teardown `lost`, reason `runtime_cleanup_unconfirmed`, ingress `local_executor` |
+| Mailbox exchange | `req-lanes-b021-01-mac-20261016-01`, state `complete`, response revision 5, event cursor 25, `acknowledged_at` NULL, resolved `mac-dev` / `mac-workstation` |
+
+This confirms the active slot is the separately retained, unACKed failed test
+request; it is not an unrelated active job. No recovery, capacity release,
+ACK, replay, restart, or cleanup has been performed. The Mac installer stops
+ingress and uses candidate `runner-locald` for its exact-pair recovery path.
+It must not run until A08 pause/fence controls and explicit owner approval are
+in place. A normal refresh without that recovery would fail the observed
+quiescence guard.
 
 The exact candidate was built from clean Mac `dev` source commit
 `744fafd5e4a4cc0728107ed647f241f0b074a448`, using Go 1.27.1, the Makefile's
@@ -213,10 +228,10 @@ manifest for that exact revision before the final digest/approval checkpoint.
 
 ## Exact action required before B021-02
 
-1. Complete A08: identify the human owner and actual writer/operator for every affected Mac mailbox ingress; provide each tested pause/fence action and paired pre/post ingress/root snapshots; inventory active, queued, retained, and uncertain work; and provide the exact candidate, continuity/abort-or-repair procedure, rollback handles, named operator, and maintenance window.
-2. Include explicit supported disposition for the new unACKed lost item above and the retained BUG-024 work before any affected Mac service refresh. Preserve all response/event evidence and the original held ACK.
-3. After A08 and retained-work disposition, explicitly approve the exact per-user Mac LaunchAgent refresh and factory-sandbox queued-bridge refresh described above, with the named operator and maintenance window. No separate Mac administrator credential is needed. Candidate and rollback digests are recorded above; the refresh must stop on any changed binary/config identity or a failed fresh quiescence check.
+1. Complete A08 with Tomasz Walczuk retained as the handbook's accountable owner. Identify the actual producer/writer and operator for every affected Mac mailbox ingress; provide each tested pause/fence action and paired pre/post ingress/root snapshots; inventory active, queued, retained, and uncertain work; and provide the exact candidate, continuity/abort-or-repair procedure, rollback handles, named operator, and maintenance window.
+2. Explicitly approve guarded recovery of the exact Mac pair `sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30` through `deploy/macos/install-launchagents.sh --recover-stalled --teardown-pair 'sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30'`. This supported operation stops both per-user LaunchAgents, installs the current clean-`dev` candidate cohort, and asks candidate `runner-locald` to prove cleanup for only this pair before restarting. It must preserve the unACKed mailbox evidence and the original BUG-024 held ACK. If its ownership/process proof fails, leave the candidate boundary for repair and do not ACK or retry.
+3. After A08 and exact-pair recovery pass, require a fresh zero-work preflight. Then approve `deploy/ssh/install-queued-bridge.sh refresh` on factory-sandbox and its exact rollback/abort procedure. No separate Mac administrator credential or factory root credential is needed; the Mac owner account and `ubuntu` operator route are available. Rebuild candidates from the then-current clean synchronized `dev` HEAD and present final digests immediately before this approval; the E1 preparation hashes above are not install inputs.
 4. Explicitly approve one bounded B021-02 acceptance on the affected route recorded in BUG-021: a fresh remote-session-runner-workspace request selected for factory-sandbox-dev / remote factory-sandbox, requesting a five-second limit for the documented 40-second controlled finite hold. It must stop before the natural-success marker within the design’s finalization grace, report truthful termination and complete terminal events, close teardown, and leave zero active/queued/reserved work. Archive the exact response/event prefix before ACKing that fresh terminal request.
-5. If preflight finds active/uncertain work, the route differs, a gate fails, the timeout is not enforced, output is incomplete, or teardown is lost, stop and retain evidence. Do not repeat, replay, cancel, recover, restart, install, or ACK uncertain work without the relevant supported disposition and approval.
+5. If A08, exact-pair recovery, zero-work preflight, bridge refresh, or acceptance fails, stop and retain evidence. Do not replay, cancel, recover, restart, install, or ACK another uncertain item without its exact supported disposition and approval.
 
-Until A08, supported disposition of the uncertain Mac work, a fresh zero-work preflight, and the exact operational approvals are present, B021-02 remains BLOCKED. BUG-021 remains NEW. BUG-022-01 and BUG-023-01 remain behind this unit in the prescribed serial sequence.
+Until A08 and explicit exact-pair recovery approval are present, B021-02 remains BLOCKED with one confirmed unreleased lost-work reservation. BUG-021 remains NEW. BUG-022-01 and BUG-023-01 remain behind this unit in the prescribed serial sequence.

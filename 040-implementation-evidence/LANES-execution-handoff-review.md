@@ -4,11 +4,11 @@
 remains BLOCKED and `LANES-L0` remains NOT STARTED. `LANES-B024-01` is PASS;
 `LANES-B024-02` remains BLOCKED on A08. `LANES-B021-01` passed its
 source-only gates at Source S2; `LANES-B021-02` is BLOCKED on A08,
-disposition of uncertain retained work, a fresh zero-work preflight, and exact
-operational approval. The per-user Mac operator account is available; no
-separate administrator credential is needed. `LANES-B022-*` and `LANES-B023-*`
-remain unstarted in the prescribed order. Readiness and lane deployment are
-not complete.
+approval of exact-pair recovery for the new unACKed lost request, a fresh
+zero-work preflight, and exact operational approval. The per-user Mac operator
+account is available; no separate administrator credential is needed.
+`LANES-B022-*` and `LANES-B023-*` remain unstarted in the prescribed order.
+Readiness and lane deployment are not complete.
 
 ## Request and baseline
 
@@ -250,9 +250,9 @@ ACK and four consumed fresh route ACKs remain unchanged. No further source test
 requests were sent through the unsuffixed Runner.
 
 The next prescribed unit, `LANES-B021-02`, remains BLOCKED. Fresh read-only
-inventory found one active Mac session slot, so the safe restart gate is
-currently closed. Its A08, retained-work, candidate/rollback, and exact
-operational approval package is recorded in
+inventory correlated the one active Mac session slot to the new unACKed lost
+test job; its teardown reservation is still unreleased. Its A08, exact-pair
+recovery, candidate/rollback, and operational approval package is recorded in
 [`LANES-B021-02.md`](LANES-B021-02.md). The per-user Mac operator is available;
 no separate administrator credential is required. BUG-021 stays NEW until the
 installed five-second acceptance passes. BUG-022 and BUG-023 remain unstarted
