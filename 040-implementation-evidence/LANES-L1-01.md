@@ -1,8 +1,9 @@
 # LANES-L1-01 — unit-test dispatcher and V3 namespace derivation
 
-**State:** IN PROGRESS — Mac source H gates pass. Source S delivery and the
-required exact-revision Ubuntu validations remain outstanding; no phase PASS
-or runtime installation is claimed.
+**State:** PASS — L1-01's H source contract and exact-S delivery are verified
+on Mac and all three Ubuntu `dev` checkouts. This is source-unit acceptance
+only; it does not close B021-02, claim a lane installation, or pass live
+acceptance.
 
 ## Preflight and predecessor disposition
 
@@ -102,15 +103,47 @@ blocked `/bin/ps` in unrelated existing test
 was not suppressed; the identical full suite passed on the authorized Mac
 shell. Darwin linker warnings about duplicate `-lproc` were non-fatal.
 
-## Source S delivery and remaining gates
+## Source S delivery and H validation
 
-Source S is the source/docs commit for this unit and will be recorded here by
-the evidence-only closeout after its delivery. The required delivery order is
-the `AGENTS.md` Mac `dev` commit → primary Gitea push → exact GitHub mirror
-verification → clean fast-forward of `linux-host`, `sandbox-host`, and
-`factory-sandbox` → exact-S validation. Those delivery and Ubuntu gates remain
-**NOT RUN** at this source evidence revision. L1-01 remains IN PROGRESS until
-all required checks and evidence-only closeout E are delivered and verified.
+Source S is `79221a9714561ebb97cc219de66150fc51191e32`, committed on Mac
+`dev` as `phase(LANES-L1-01): add test dispatcher and V3 namespace derivation`.
+It was pushed to primary Gitea using the explicit
+`/Users/tomasz.walczuk/.ssh/local-gitea-key`; `origin/dev` resolved to S. The
+push updated Gitea successfully but the restricted shell could not update the
+Mac's local `refs/remotes/origin/dev`. An explicit-key fetch refreshed that
+tracking ref, leaving Mac `dev` clean and equal to `origin/dev` at S.
+
+The automatic GitHub mirror was checked with
+`/Users/tomasz.walczuk/.ssh/gavrilo123456-github`; `github/dev` resolved to the
+exact same S SHA before any Ubuntu pull.
+
+All three Ubuntu hosts were checked on `dev`, clean, with the expected GitHub
+mirror `origin` and pre-pull HEAD `222bb2345e6f73a7f09ea50ce9b69880d3b5103c`.
+Each used its configured explicit Mac SSH identity with
+`IdentitiesOnly=yes`, `BatchMode=yes`, `StrictHostKeyChecking=yes`, and
+`UpdateHostKeys=no`; each then used the explicit Ubuntu GitHub identity
+`/home/ubuntu/.ssh/gavrilo123456-github` for `git pull --ff-only origin dev`.
+Every post-pull and final validation check found branch `dev`, clean worktree,
+expected origin, and HEAD exactly S.
+
+Runner was not used for the H tests because the prior Runner-routed exact-pair
+test remains blocked on retained lost teardown and its guarded recovery has
+not occurred. The owner-authorized SSH fallback ran tests only in the clean
+synchronized source checkout; it did not edit tracked source on Ubuntu or
+touch installed services, mailbox files, requests, or ACKs.
+
+| Machine | Validation at exact S | Result |
+| --- | --- | --- |
+| Mac `mac-control-plane` (Darwin arm64, Go 1.27.1) | `make test-lanes UNIT=LANES-L1-01`; full `make test`; `make vet`; `make build`; `make smoke`; `go test -race ./src/internal/config ./src/internal/lanetests -run '^TestLanesL101' -count=1`; `gofmt`, JSON parse, `git diff --check` | PASS. The initial restricted-shell full suite hit `/bin/ps: operation not permitted` in unrelated `TestBUG020MacShellExitWithInheritedControlWriterSettlesOnce`; the same full suite passed from the authorized Mac shell |
+| `linux-host` (Linux amd64, Go 1.27.1) | `make test-lanes UNIT=LANES-L1-01`; `make test`; `make vet`; `make build`; `make smoke`; `GOTOOLCHAIN=local /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/config ./src/internal/lanetests -run '^TestLanesL101' -count=1` | PASS; final HEAD S and worktree clean |
+| `sandbox-host` (Linux arm64, Go 1.27.1) | Same H, full-suite, vet, build, smoke, and focused race commands as `linux-host` | PASS; final HEAD S and worktree clean. One combined SSH command session did not return after package output stopped; a read-only process check showed no active Go test/build process. The local SSH client was closed, then each required command was rerun separately and returned PASS |
+| `factory-sandbox` (Linux amd64, Go 1.27.1) | `make test-lanes UNIT=LANES-L1-01`; `make test`; `make vet`; `make build`; `make smoke`; `go env CGO_ENABLED`; `command -v cc` | H/full/vet/build/smoke PASS; final HEAD S and worktree clean. `CGO_ENABLED=0` and `cc` is absent, so the focused race test is NOT RUN (unavailable), not PASS |
+
+No L1-01-specific native, privileged, installation, or live acceptance gate is
+specified beyond H. Those later proof tiers and all lane acceptance checks
+remain pending in their ordered units. This evidence-only closeout E records
+the completed H source unit; its own Git delivery remains the final required
+delivery check before advancing to another unit.
 
 No installation, restart, configuration write, candidate build/freeze, live
 acceptance, Runner request, ACK, teardown recovery, or publisher action was

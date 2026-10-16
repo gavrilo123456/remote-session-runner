@@ -101,7 +101,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-B023-01` | DEFERRED — not started | Owner scope decision above; no baseline repair assigned, no PASS claimed. Managed-session candidate contracts remain mandatory |
 | `LANES-B023-02` | DEFERRED — not started | Owner scope decision above; no baseline probe assigned or required before lane source work. No installed acceptance claimed |
 | `LANES-READY` | NOT RUN | Not produced |
-| `LANES-L1-01` | IN PROGRESS | [Unit evidence](LANES-L1-01.md); independent H source work is proceeding from clean pre-unit `222bb2345e6f73a7f09ea50ce9b69880d3b5103c` while B021-02 remains BLOCKED; Mac source gates pass, delivery and three Ubuntu validations remain pending |
+| `LANES-L1-01` | PASS | [Unit evidence](LANES-L1-01.md); H source gates and S delivery verified on Mac/Gitea/GitHub plus all three clean Ubuntu `dev` checkouts at `79221a9714561ebb97cc219de66150fc51191e32`. This source-only unit does not close blocked B021-02 or imply installation/live acceptance |
 | `LANES-L1-02` | NOT RUN | Not produced |
 | `LANES-L1-03` | NOT RUN | Not produced |
 | `LANES-L1-04` | NOT RUN | Not produced |
