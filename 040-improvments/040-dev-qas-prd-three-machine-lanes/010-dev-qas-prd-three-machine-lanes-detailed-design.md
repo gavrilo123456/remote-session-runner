@@ -6,6 +6,15 @@ credential, firewall, or runtime-configuration change. Every live change still
 needs the fresh capacity, quiescence, route, and approval gates in the phased
 plan.
 
+This design extends the existing PoC contracts. Its
+[lane plan](015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md#plan-precedence-and-bounded-execution-units)
+defines the separate `LANES-*` execution/evidence sequence, inherited baseline
+test rules, and source/evidence closeout; it does not restart historical
+`P001–P148` or later `Pnnn` phases. That plan also assigns external approval
+responsibilities and required storage, bootstrap, network, and producer handoffs.
+Those records must be supplied before the affected live gate; this document
+neither supplies approval nor proves an operator's access.
+
 ## 1. Scope, promise, and current cohort
 
 Runner needs three concurrently usable release lanes:
@@ -2249,6 +2258,57 @@ The live proof requires all of the following:
    documented volume/headroom/snapshot bounds remain usable. It records the
    shared-Mac compute limitation rather than treating a priority hint as a
    reservation.
+10. The runtime-defect applicability and release-blocker gate below passes for
+    the exact candidate, configuration, lane, and routes being accepted.
+
+### Runtime defect applicability and release blockers
+
+[BUG-021](../../050-bugs/021-remote-run-ignores-requested-timeout.md),
+[BUG-022](../../050-bugs/022-remote-run-with-explicit-limit-rejected.md),
+[BUG-023](../../050-bugs/023-remote-managed-session-creation-rejected.md), and
+[BUG-024](../../050-bugs/024-mac-run-command-succeeds-but-teardown-is-lost.md)
+are reported runtime defects, not assumed failures of every lane or proof of
+an installed revision. Their inspected source SHA and historical `*-dev`
+execution-policy labels do not attest a serving binary or a V3 Dev lane.
+The plan's execution ledger records, per affected route: bug ID and original
+evidence; canonical host, lane or V2 baseline, inbox/root/controller and target;
+actual serving component revisions/artifact/configuration identities; advertised
+capabilities and effective policy; source regression and fresh installed result;
+and an evidence-backed disposition (`unresolved`, `verified-pass`, or
+`not-applicable` with the exact reason). Missing serving evidence remains
+unknown and blocks an affected live gate. A route-specific result does not
+close the global bug record or transfer to another host or lane.
+
+| Report | Required acceptance behavior | Phase applicability |
+| --- | --- | --- |
+| BUG-021 — remote timeout | A permitted alias-only `timeout_seconds` reaches the runtime and stops a finite hold within the effective bound plus documented finalization grace. Record requested/effective limits; reaching the natural success marker fails. Source tests cover normalization, dispatch, conflict validation and policy clamps. | All three remote profiles in L4 Dev, L5 QAS and L6 PRD; repeat for affected L7 operations |
+| BUG-022 — explicit limit | A policy-permitted matching alias/nested command limit is admitted and enforced. Conflicting representations and intentionally disallowed policy requests produce precise sanitized non-delivery reasons. A negative-policy test alone cannot replace the required positive limit test. | Same remote candidate/route gates as BUG-021 |
+| BUG-023 — managed lifecycle | A permitted managed session is created; submit a finite hold, prove its start through the advertised snapshot/event cursor, cancel that exact command, observe its terminal result, close the session, and prove release. One-off lookup or run success does not prove this lifecycle. | Every remote profile in L4/L5/L6 and affected L7 operations |
+| BUG-024 — Mac one-off teardown | A fresh retained PRD local one-off has a truthful command result, complete classified output/terminal cursor, closed teardown, and supported proof of capacity release. Any original retained session/command has its own supported owner-scoped disposition before an affected refresh; later passing jobs do not establish its recovery. | L0 read-only retained-work inventory; any affected baseline maintenance; L6 retained PRD local acceptance and affected L7 operations. Local-job behavior is not applicable to Dev/QAS only after their local-target rejection/no-local-execution proof passes. |
+
+These are required positive capabilities under this design. An intentional
+policy denial can explain BUG-022/023's historical request and pass a negative
+test, but cannot waive a mandatory capability or silently remove a profile.
+Changing that scope requires a separately reviewed design/plan amendment and
+explicitly limited acceptance. BUG-024 is outside Dev/QAS **local-job** tests;
+shared teardown regressions still apply, and unresolved baseline work may block
+any operation whose required quiescence or PRD-preservation proof it prevents.
+L0 collects applicability evidence read-only; it performs none of these probes,
+ACKs, or recovery actions. Source-only work can proceed independently while
+live prerequisites are pending. Actual bug repairs use separate scoped fix and
+verification evidence; after any candidate behavior changes, build a fresh
+candidate and repeat the required Dev → QAS → PRD chain.
+
+Use harmless fixtures with fresh request/key identities, private task-owned
+workspaces, bounded output/resource use, and an independent finite natural
+deadline. Runner's timeout/cancel is under test and is not the fixture's only
+safety bound. Preserve the correlated terminal revision, contiguous advertised
+event prefix, truthful output flags, and ownership/teardown proof before exact
+ACK; prove ACK consumption and independent zero-work/capacity postflight.
+On uncertainty preserve the evidence and stop: no replay, speculative ACK,
+deletion, restart, or manual capacity release. In particular, BUG-024's held
+original ACK requires its approved investigation/recovery disposition. This
+amendment performs no triage probe, repair, or bug-status change.
 
 Event-driven mailbox wake-up remains separate work. It may be considered only
 after the lanes are live and measured ingress latency requires it; it remains a

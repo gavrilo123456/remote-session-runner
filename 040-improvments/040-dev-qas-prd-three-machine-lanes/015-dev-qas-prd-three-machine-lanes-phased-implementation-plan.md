@@ -1,8 +1,9 @@
 # Phased implementation plan: Dev, QAS, and PRD release lanes
 
 **Status:** reviewed implementation plan. It is deliberately serial. A failed
-or incomplete gate stops the next phase and leaves the existing unsuffixed
-Runner unchanged.
+or incomplete gate stops the next phase. L0–L5 preserve the existing unsuffixed
+Runner; once L6 begins changing PRD, failure follows its explicit abort or
+V3-only repair path.
 
 ## Operating rule for every phase
 
@@ -21,6 +22,129 @@ The phrase “three-machine” is historical. The current lane cohort is the Mac
 plus all three accepted Ubuntu profiles. Every live phase covers all of them.
 Canonical release-record host IDs are `mac-control-plane`, `linux-host`,
 `sandbox-host`, and `factory-sandbox`.
+
+### Plan precedence and bounded execution units
+
+`AGENTS.md` governs source ownership and Git delivery. The lane
+[detailed design](010-dev-qas-prd-three-machine-lanes-detailed-design.md)
+governs lane behavior; this plan governs its implementation order and gates.
+The [original PoC plan](../../030-detailed-phased-implementaion-plan/010-remote-session-runner-detailed-phased-implementaion-plan.md)
+remains the historical `P001–P148` baseline. Existing later `Pnnn` and bug
+evidence also retain their identities and results. This improvement does not
+restart, renumber, or claim to complete those phases.
+
+For lane work, inherit the original plan §§1.1–1.3 fresh-context, focused/full
+testing, truthful evidence, stop-on-failure, and durability-claim rules, with
+these explicit substitutions: the lane documents add the four-host scope;
+`LANES-*` identifiers replace `Pnnn`; the sequence below replaces the original
+`P001 → P148` order for this improvement only; and source delivery followed by
+evidence closeout replaces the single-commit phase gate. Existing execution,
+mailbox, and recovery contracts remain binding wherever this design does not
+explicitly amend them. Resolve a newly discovered conflict in a reviewed
+documentation amendment before affected implementation continues.
+
+Before L0, commit `040-implementation-evidence/LANES-000-execution-ledger.md`
+with the selected baseline source/evidence, document revisions, owner/dependency
+records, and the ordered execution-unit list. L0 is the read-only unit
+`LANES-L0`, with evidence at `040-implementation-evidence/LANES-L0.md`.
+L1–L7 are milestone groups, not promises of a single coding session or commit.
+Before starting a group, commit its reviewed breakdown into bounded serial
+units such as `LANES-L1-01`, `LANES-L1-02`, with one deliverable, prerequisites,
+required tests/machines, and exit criteria per unit. Split work exceeding the
+original 60–120-minute hands-on slice before coding; preserve completed unit
+IDs and amend the remaining ordered ledger instead of renumbering history.
+Unit evidence uses `040-implementation-evidence/LANES-L1-01.md`, and each
+group's `LANES-L1.md` summary links all its completed units and exit-gate proof.
+Apply the same naming to L2–L7. L7's initial operating runbook/drills can close;
+later maintenance or recovery gets a new ordered unit and operation evidence.
+No future-unit coding or live phase starts before its predecessor is closed.
+
+Before every unit, freshly read the full current lane idea, design and plan,
+the original initial/detailed designs and plan, applicable repo instructions,
+ledger, predecessor evidence/diff, and all relevant implementation files.
+Record pre-unit HEAD, document blob revisions, complete read inventory, exact
+execution machines, planned gates, external dependencies/approvals, and open
+bug applicability. Repeat after compaction, restart, or a relevant design
+change. Historical PASS or an unavailable test never proves a current gate.
+
+### Source revision and evidence closeout
+
+1. Run focused tests, the full available hermetic suite, vet, concurrency race
+   tests where applicable, named process/host gates available before delivery,
+   and diff inspection. Commit only the unit's intended files and evidence as
+   source revision **S**, using `phase(LANES-L1-01): <deliverable>` (substitute
+   the actual unit). Evidence remains `IN PROGRESS` with post-delivery gates
+   explicitly `NOT RUN`; it is not a phase PASS. A read-only or documentation
+   unit records appropriate structural/review checks and explains inapplicable
+   executable tests without claiming runtime acceptance.
+2. Push S to Gitea, verify the exact GitHub mirror, and fast-forward all three
+   clean Ubuntu `dev` checkouts to S before remote validation. Run every
+   remaining required source/installed/live gate against S on its named machine.
+   Installing a service still requires that phase's separate live approval.
+   Record installed source/artifact/configuration identities independently of
+   checkout HEAD. A failed, unavailable, or uncertain required gate stops the
+   unit and all successors; a correction is a new tested S, not a waived PASS.
+3. Once every required gate passes, make an **evidence-only closeout E** using
+   `docs(LANES-L1-01): record verified delivery`. Record S, primary/mirror/host
+   SHAs, exact commands and results, approval/evidence references, limitations,
+   rollback state, and the unit's PASS. Deliver E through the same primary,
+   mirror, three-host fast-forward and clean/equal-HEAD checks. Only then close
+   the ledger entry and permit the next unit; a group closes only after all
+   units and its aggregate exit gate pass. Evidence prose alone does not
+   require rerunning S's executable suites; a changed contract, source, test,
+   schema, or deployment/configuration template requires a new tested S.
+
+Neither commit embeds its own hash: E records S; the next unit's preflight (or
+the final post-commit handoff) records E and its verified delivery. The ledger
+and evidence committed in E describe completed gates; the final delivery check
+is a prerequisite to advancing, not a third self-referencing commit. Source
+checkout updates are not installed-service or lane acceptance.
+
+### External approval owners and handoff evidence
+
+**Tomasz Walczuk**, the project/system owner, is accountable for arranging the
+external approvals below. For each dependency, the execution ledger names the
+actual approver and executing operator, any explicit delegation and its scope,
+verified access, affected canonical hosts/lanes/paths/routes, the approved
+change/window, and evidence location. Tomasz may perform multiple roles where
+he has the required access. Provider or repository ownership/access is not
+assumed: record the actual authorized owner/operator. An unassigned operator,
+missing access, approval, or handoff remains `PENDING` and blocks the named
+live gate; it does not prevent independent source-only work.
+
+| External dependency | Required executing owner/operator and evidence | Required before |
+| --- | --- | --- |
+| Host-management storage and cache backup | Named host/storage administrator; approved device/volume identity, quota/budget/retention, ownership and fresh capacity/descriptor evidence for staging/cache and the distinct same-host backup store | L3 bootstrap and first management/cache-backup write |
+| Mac Dev/QAS service and external mailbox volumes | Named Mac storage administrator; exact approved paths/volume UUIDs/quotas plus the storage handoff manifest and creation receipt below | Preparation between L3 and L4; fresh verification for the affected lane immediately before L4/L5 |
+| Privileged bootstrap and PKI | Named host-root operator and authorized owner; exact bootstrap contract/cohort generation, artifact/key pins, per-host mandates, public CSR/package receipts and local-socket or mTLS/time-probe results | Approval before L3 privileged bootstrap; each host's proof before advancing |
+| Host/cloud firewall, NAT and listener routes | Named host and actual cloud/network administrator with confirmed access; exact proposed rules/binds/source policy, approval, before/after rule IDs/configuration receipts and independent route/TLS proof | Feasibility/ownership in L0; approved rules before the relevant L3 `:9443`, L4 Dev or L5 QAS listener health gate; revalidate before L6 |
+| External mailbox producers and PRD maintenance | Actual mailbox/repository and producer owners; inventory, pause capability, retained-work disposition, scoped window approval, paired ingress snapshots and zero-work/absence evidence | Owners identified in L0; fresh pause/maintenance approval before L6 `fencing` or later affected refresh |
+
+These are gate-relative deadlines, not evidence that any approval already
+exists. A changed host, operator, path, volume, route, bootstrap generation, or
+maintenance window requires refreshed applicable approval and preflight.
+External approval does not replace a signer mandate, PKI issuance mandate,
+promotion authorization, or separately approved incident recovery. Existing
+renewal grants cannot authorize a new candidate, phase, or external change.
+
+### BUG-021–024 applicability and acceptance mapping
+
+The [design's runtime defect gate](010-dev-qas-prd-three-machine-lanes-detailed-design.md#runtime-defect-applicability-and-release-blockers)
+is mandatory. Maintain its per-route applicability table in the execution
+ledger and link each phase's fresh results. Triage the four reports; do not
+infer serving revisions or close bugs from this plan amendment. Repairs are
+separate prerequisite bug work with their own evidence and Git handoff. A
+repair after candidate creation requires a new immutable candidate and a new
+Dev → QAS → PRD acceptance chain; never patch an accepted artifact in place.
+
+| Phase | Required treatment |
+| --- | --- |
+| L0 | Read-only serving-identity/capability/policy and retained-work inventory for BUG-021–024; record unknown applicability explicitly. No reproduction, ACK, recovery, or restart. |
+| L1–L3 | Add the mapped source regressions/acceptance fixtures for candidate contracts. An unresolved runtime defect does not waive source gates; repairing an existing runtime is separate work. L3 bootstrap requires its own safe host-management preflight and cannot touch unresolved lane work. |
+| L4 | Every Dev remote profile passes BUG-021 timeout, BUG-022 permitted explicit-limit, and BUG-023 managed lifecycle checks; prove local-target rejection. Applicable failures/unknown results block Dev acceptance and L5. |
+| L5 | Repeat the same remote gates on every QAS profile with the exact Dev-accepted candidate. Failure blocks QAS acceptance and L6. |
+| L6 | Repeat remote gates and prove retained PRD Mac-local one-off teardown/capacity release for BUG-024. Obtain supported owner disposition for any original affected retained work before fencing/refresh. Failure or uncertainty blocks PRD acceptance; after commit use V3-only repair. |
+| L7 | Repeat affected gates for subsequent promotions, configuration/credential/runtime changes, restores and repairs; require fresh acceptance where the transition contract calls for it. |
 
 ## L0 — read-only capacity, route, and ownership baseline
 
@@ -43,6 +167,9 @@ three Ubuntu hosts.
    together with its current owner, normalized path, descriptor identity,
    mount/volume identity, retained-state condition, and every declared
    retained-ancillary top-level entry's path/type/descriptor/owner/mode.
+   Record the external-dependency owners/access and BUG-021–024 applicability
+   inventory above; unresolved runtime applicability may remain pending for
+   source work, but cannot satisfy a later affected deployment/acceptance gate.
 4. Derive, but do not sign or publish, the two policy-scope types per host: one
    proposed `host_management` policy and one proposed `lane_runtime` policy for
    each contemplated lane. The `host_management` policy names only measured
@@ -88,6 +215,9 @@ creates no lane service, key, certificate, mailbox, network rule, deployment, or
 release record. After L3 installs each helper and host attestation key, it must
 repeat that host's L0 locally and publish the first signed
 `capacity_measurement_attestation` before any policy is signed.
+The ledger distinguishes a complete read-only inventory from any pending
+external provision, approval, or runtime-defect acceptance; L0 PASS supplies
+none of those later proofs.
 
 ### Required external precondition — Dev/QAS storage preparation
 
