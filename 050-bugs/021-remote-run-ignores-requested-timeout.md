@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `NEW` — live deadline failure; cause not yet confirmed on installed build |
+| Status | `NEW` — live deadline failure; source correction is delivered, installed behavior remains unverified |
 | Severity | High |
 | Priority | High |
 | Reported | 2026-10-15 |
@@ -12,7 +12,7 @@
 | Owner | Remote Session Runner |
 | Affected component/path | Remote one-off run normalization/dispatch and command deadline enforcement |
 | Affected revision | Installed revision unknown; inspected source `51ec4134df6dce2021936458026caaacb2226fad` |
-| Fixed revision / verification | None / pending |
+| Fixed revision / verification | `c3ebe96367437ce17dc5e6edd166912aa0d0ac2f` / `LANES-B021-01` source regression PASS; installed acceptance pending |
 
 ## Reported and expected behavior
 
@@ -44,15 +44,17 @@ The selected remote deadline gate fails. Mac-local deadlines and every other tar
 
 ## Fix and verification
 
-No correction or deployment is part of this report. Required before closure:
+Source correction is recorded in [LANES-B021-01](../040-implementation-evidence/LANES-B021-01.md): the mailbox alias is normalized into the supported nested command limit before receipt hashing and local intent persistence; the SSH bridge converts canonical integral JSON limits to the runnerd integer contract. Tests cover alias/explicit identity, conflicting values, remote frame stability, bridge forwarding, requested execution deadline, and policy ceiling. This is source-level evidence only; no installed service was refreshed for this unit.
 
-1. Regression coverage proves the run timeout survives normalization/dispatch and conflicting limit representations fail safely.
+Required before closure:
+
+1. Source regression coverage proves the run timeout survives normalization/dispatch and conflicting limit representations fail safely. **PASS** at Source S2.
 2. A fresh installed-service five-second probe actually stops its controlled 40-second hold within the effective bound plus documented finalization grace; it does not reach the natural success marker.
 3. Correlated events classify termination truthfully, preserve complete output or explicitly mark loss/incompleteness, and prove ownership/teardown disposition without replay.
 4. Preserve alias-only, explicit-limit and policy-clamp evidence, exact installed identities and fresh terminal/ACK results.
 
 ## Resolution and history
 
-Unresolved. Registered 2026-10-15 from live feasibility evidence.
+Unresolved. Registered 2026-10-15 from live feasibility evidence. Source S2 is delivered and the source regression unit passes; the live five-second acceptance remains blocked by [LANES-B021-02](../040-implementation-evidence/LANES-B021-02.md), including A08, a named Mac administrator/operator route, disposition of retained work, and exact operational approval.
 
 The terminal response and advertised event prefix, where present, were preserved before exact ACK publication. ACK-pair disappearance was observed; no independent durable-status API was queried. No replay, SSH/direct API bypass, database edit, service restart, deployment or capacity release was performed. Any later authorized reproduction needs fresh request IDs and idempotency keys, the documented JSON-read-back/empty-marker-last publication, and its own terminal evidence. Do not republish historical request files.

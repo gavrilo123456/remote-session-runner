@@ -68,8 +68,8 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L0` | BLOCKED — not started | [Gate record](LANES-L0.md); PREP-00 did not pass |
 | `LANES-B024-01` | PASS | [Independent source/evidence revalidation](LANES-B024-01.md); Source S `5e5a07f1bc87a4cd52062d6f8eb729dce199e824`; tested code cohort `d90155bd8a9391a14759b420c7a49b48f5a0d0a8`; independent of blocked L0 |
 | `LANES-B024-02` | BLOCKED | [A08 dependency record](LANES-B024-02.md); existing BUG-024 repair evidence is preserved, but complete producer/writer ownership and tested pause/fence package is not available |
-| `LANES-B021-01` | NOT RUN | Not produced |
-| `LANES-B021-02` | NOT RUN | Not produced |
+| `LANES-B021-01` | PASS | [Timeout normalization and dispatch source regression](LANES-B021-01.md); Source S2 `c3ebe96367437ce17dc5e6edd166912aa0d0ac2f`; source-only H PASS, no installed acceptance inferred |
+| `LANES-B021-02` | BLOCKED | [Installed timeout acceptance blocker](LANES-B021-02.md); A08, named Mac administrator/operator, retained-work disposition, and exact live approval are unavailable |
 | `LANES-B022-01` | NOT RUN | Not produced |
 | `LANES-B022-02` | NOT RUN | Not produced |
 | `LANES-B023-01` | NOT RUN | Not produced |

@@ -1,11 +1,12 @@
 # Complete lane execution handoff — planning review
 
-**Status:** planning review and its source delivery PASS. The later
-`LANES-PREP-00` execution result is BLOCKED and `LANES-L0` remains NOT STARTED.
-`LANES-B024-01` has passed its source gates and Source S delivery. Its
-evidence-only E closeout and delivery checks are recorded in the unit evidence
-before the next unit starts. `LANES-B024-02` is blocked on its documented A08
-producer-maintenance package; readiness and lane deployment are not complete.
+**Status:** planning review and its source delivery PASS. `LANES-PREP-00`
+remains BLOCKED and `LANES-L0` remains NOT STARTED. `LANES-B024-01` is PASS;
+`LANES-B024-02` remains BLOCKED on A08. `LANES-B021-01` passed its
+source-only gates at Source S2; `LANES-B021-02` is BLOCKED on A08, an authorized
+Mac administrator/operator route, retained-work disposition, and exact live
+approval. `LANES-B022-*` and `LANES-B023-*` remain unstarted in the prescribed
+order. Readiness and lane deployment are not complete.
 
 ## Request and baseline
 
@@ -210,3 +211,38 @@ evidence and will not be repeated. L0 remains **BLOCKED / NOT STARTED**; this
 work does not imply any readiness or live-lane PASS. The original BUG-024
 response and held ACK remain preserved, and the four fresh verification ACKs
 remain consumed.
+
+## LANES-B021-01 source implementation and next blocker
+
+Source-only work proceeded independently of blocked `LANES-B024-02`. The
+previous unit remains BLOCKED at blocker blob
+`532d557496b427250093ba8642868c1607207be5`; no predecessor PASS is inferred.
+Source S1 `9e23da3397e88f9db7d4af80ee9e031d0088d72e` implemented mailbox timeout
+alias normalization, canonical idempotency, and bridge integer-limit
+forwarding. A full test run under the Mac Runner's restrictive `umask 077`
+exposed a separate test-fixture permission assumption. Corrective Source S2
+`c3ebe96367437ce17dc5e6edd166912aa0d0ac2f` explicitly chmods that unsafe
+fixture. S2 reached primary Gitea, the exact automatic GitHub mirror, and all
+three clean Ubuntu `dev` checkouts before validation.
+
+Mac focused race, full `make test`, `make vet`, `make build`, and `make smoke`
+passed under `umask 077`. `linux-host` and `sandbox-host` passed focused tests,
+full tests, vet, and focused race checks by the owner's authorized SSH
+fallback. `factory-sandbox` passed focused tests, full tests, and vet; its race
+check was NOT RUN because `CGO_ENABLED=0`. Exact commands, identities, source
+SHAs, and per-host results are in [`LANES-B021-01.md`](LANES-B021-01.md).
+
+One separate Mac-local mailbox test request at S1 completed with a failed test
+command and `teardown_outcome=lost`; its response and event prefix are retained
+and unACKed. The test failure was diagnosed and corrected in S2, but the
+retained item was not recovered, released, or replayed. The exact IDs and
+hashes are in [BUG-024.md](BUG-024.md#additional-unacked-test-run) and
+[`LANES-B021-01.md`](LANES-B021-01.md). The historical BUG-024 response/held
+ACK and four consumed fresh route ACKs remain unchanged. No further source test
+requests were sent through the unsuffixed Runner.
+
+The next prescribed unit, `LANES-B021-02`, remains BLOCKED. Its concrete A08,
+administrator, retained-work, deployment, and one-operation approval package
+is recorded in [`LANES-B021-02.md`](LANES-B021-02.md). BUG-021 stays NEW until
+the installed five-second acceptance passes. BUG-022 and BUG-023 remain
+unstarted behind it; no defect probe has been run for either report.
