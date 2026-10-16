@@ -15,6 +15,16 @@ responsibilities and required storage, bootstrap, network, and producer handoffs
 Those records must be supplied before the affected live gate; this document
 neither supplies approval nor proves an operator's access.
 
+The mandatory [execution handbook](020-dev-qas-prd-three-machine-lanes-execution-handbook.md)
+selects the first-rollout profile from this design's alternatives: existing PRD
+storage/cgroups, project-quota Linux enforcement, internal-only Dev/QAS
+acceptance inboxes and fixed SSH ceilings. It supplies the complete serial
+breakdown, prerequisite bug workflow, readiness packet, test interfaces and
+approval packages. Optional alternatives in this design do not become late
+choices during that rollout; changing its selected profile requires a reviewed
+amendment. Live measurements and exact generated approvals remain execution
+evidence, not new architectural decisions.
+
 ## 1. Scope, promise, and current cohort
 
 Runner needs three concurrently usable release lanes:

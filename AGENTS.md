@@ -31,6 +31,13 @@ git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o Identit
 
 If any required checkout is dirty, the primary/mirror commits differ, authentication fails, or a pull is not fast-forwardable, stop and report the exact state. Do not force-push, reset, overwrite local files, bypass the primary Gitea handoff, or skip mirror verification. The serial phase/test requirements in the applicable detailed phased implementation plan still apply. For Dev/QAS/PRD lane work, use the `LANES-*` sequence, evidence names, and source/evidence-closeout gates in `040-improvments/040-dev-qas-prd-three-machine-lanes/015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md`; preserve historical `Pnnn` evidence.
 
+The lane plan's mandatory `020-dev-qas-prd-three-machine-lanes-execution-handbook.md`
+and `040-implementation-evidence/LANES-000-execution-ledger.md` already define
+the complete preparation, bug-prerequisite and L0–L7 unit order. Use that
+breakdown; do not defer milestone planning or predictable owner inputs until
+later implementation. Preserve its continuous live-transaction boundaries and
+exact approval checkpoints.
+
 ## Go cache and temporary files
 
 On the Mac, use the shared `GOCACHE=/private/tmp/remote-session-runner-gocache` and `GOMODCACHE=/private/tmp/remote-session-runner-gomodcache` configured by the Makefile. Reuse these across phases; do not create a new cache or module-cache copy per phase. On Ubuntu, reuse the selected account's normal Go caches. Use `t.TempDir()` for test fixtures and shell `trap` cleanup for temporary host scripts. Keep generated build/test output outside the Git checkout, and remove only task-owned temporary artifacts after their processes have exited. Do not clean shared or other-project caches.

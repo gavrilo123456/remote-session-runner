@@ -4,6 +4,12 @@
 plan define the isolation, promotion, capacity, and migration gates. No lane
 service, mailbox, credential, firewall, or deployment has changed yet.
 
+The [execution handbook](020-dev-qas-prd-three-machine-lanes-execution-handbook.md)
+settles the initial rollout profile and complete unit sequence for the whole
+plan, including baseline bug prerequisites and upfront readiness. The
+implementer collects measured facts and exact approvals at declared checkpoints;
+no additional milestone-planning exercise is required.
+
 ## Problem
 
 Runner currently supports several mailboxes and remote hosts from one Mac

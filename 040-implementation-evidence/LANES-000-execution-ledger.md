@@ -1,0 +1,120 @@
+# Lane execution ledger
+
+**Planning status:** complete ordered assignment. **Execution status:** NOT RUN.
+Creating this ledger does not pass readiness, L0, any bug gate or any live lane.
+
+## Authoritative inputs and launch rule
+
+- [Detailed design](../040-improvments/040-dev-qas-prd-three-machine-lanes/010-dev-qas-prd-three-machine-lanes-detailed-design.md)
+- [Milestone plan and S/E delivery rules](../040-improvments/040-dev-qas-prd-three-machine-lanes/015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md)
+- [Execution handbook: fixed choices, packet, checkpoints, units and failure paths](../040-improvments/040-dev-qas-prd-three-machine-lanes/020-dev-qas-prd-three-machine-lanes-execution-handbook.md)
+- [Implementer-comment resolution evidence](LANES-plan-review.md)
+
+Planning baseline: clean Mac `dev` at
+`741ec963d8d8070608de4b96f21c2c6806ba0889`, 2026-10-16. The implementation
+preflight records the then-current delivered HEAD and document blob revisions;
+this historical planning baseline is not an installed-build assertion.
+
+Start `LANES-PREP-00`, then execute every row below in order. The handbook
+already supplies deliverable, proof tier, host coverage, exit criteria and
+failure branch; another group-breakdown document is not a prerequisite.
+Per-unit evidence is `040-implementation-evidence/<unit-id>.md`. Record its
+predecessor's verified evidence-closeout SHA before starting. Aggregate L1–L7
+summary files are created when their last unit closes. A unit becomes PASS only
+after its actual tests and S/E delivery, never from this assignment table.
+
+## Readiness packet ownership
+
+Tomasz Walczuk is accountable approver and default host/storage/network/provider/
+producer coordinator; the implementer performs scoped authorized collection and
+execution. Any delegation names the actual authorized operator. No owner is
+left for a future milestone to choose. Use handbook §2 collection rules for
+source/installed identities, verified access, capacity/storage budgets and
+plans, disposable fixture scopes, networking, producers/windows, signing/PKI,
+bugs, and tool execution. These actual facts are NOT COLLECTED in this planning
+change. `LANES-PREP-00` and L0 gather them; the named bug units verify the
+baseline; `LANES-READY` records the resulting readiness verdict before L1.
+
+The packet must link exact approval checkpoints A01–A10 and real receipts when
+issued. Future digests, key pins, UUIDs and short-lived mandates are generated
+from verified preceding steps; they are not blank requirements to ask the
+planner about or preapproved placeholder values. Missing access/capacity or a
+failed gate stops the relevant unit with evidence and its prepared correction.
+
+## Ordered units
+
+| Unit | State | Evidence / verified closeout SHA |
+| --- | --- | --- |
+| `LANES-PREP-00` | NOT RUN | Not produced |
+| `LANES-L0` | NOT RUN | Not produced |
+| `LANES-B024-01` | NOT RUN | Not produced |
+| `LANES-B024-02` | NOT RUN | Not produced |
+| `LANES-B021-01` | NOT RUN | Not produced |
+| `LANES-B021-02` | NOT RUN | Not produced |
+| `LANES-B022-01` | NOT RUN | Not produced |
+| `LANES-B022-02` | NOT RUN | Not produced |
+| `LANES-B023-01` | NOT RUN | Not produced |
+| `LANES-B023-02` | NOT RUN | Not produced |
+| `LANES-READY` | NOT RUN | Not produced |
+| `LANES-L1-01` | NOT RUN | Not produced |
+| `LANES-L1-02` | NOT RUN | Not produced |
+| `LANES-L1-03` | NOT RUN | Not produced |
+| `LANES-L1-04` | NOT RUN | Not produced |
+| `LANES-L1-05` | NOT RUN | Not produced |
+| `LANES-L1-06` | NOT RUN | Not produced |
+| `LANES-L1-07` | NOT RUN | Not produced |
+| `LANES-L1-08` | NOT RUN | Not produced |
+| `LANES-L1-09` | NOT RUN | Not produced |
+| `LANES-L1-10` | NOT RUN | Not produced |
+| `LANES-L1-11` | NOT RUN | Not produced |
+| `LANES-L1-12` | NOT RUN | Not produced |
+| `LANES-L1-13` | NOT RUN | Not produced |
+| `LANES-L2-01` | NOT RUN | Not produced |
+| `LANES-L2-02` | NOT RUN | Not produced |
+| `LANES-L2-03` | NOT RUN | Not produced |
+| `LANES-L2-04` | NOT RUN | Not produced |
+| `LANES-L2-05` | NOT RUN | Not produced |
+| `LANES-L2-06` | NOT RUN | Not produced |
+| `LANES-L2-07` | NOT RUN | Not produced |
+| `LANES-L2-08` | NOT RUN | Not produced |
+| `LANES-L2-09` | NOT RUN | Not produced |
+| `LANES-L3-01` | NOT RUN | Not produced |
+| `LANES-L3-02` | NOT RUN | Not produced |
+| `LANES-L3-03` | NOT RUN | Not produced |
+| `LANES-L3-04` | NOT RUN | Not produced |
+| `LANES-L3-05` | NOT RUN | Not produced |
+| `LANES-L3-06` | NOT RUN | Not produced |
+| `LANES-L3-07` | NOT RUN | Not produced |
+| `LANES-L3-08` | NOT RUN | Not produced |
+| `LANES-L3-09` | NOT RUN | Not produced |
+| `LANES-L3-10` | NOT RUN | Not produced |
+| `LANES-L3-11` | NOT RUN | Not produced |
+| `LANES-L3-12` | NOT RUN | Not produced |
+| `LANES-L3-13` | NOT RUN | Not produced |
+| `LANES-L3-14` | NOT RUN | Not produced |
+| `LANES-L3-15` | NOT RUN | Not produced |
+| `LANES-L3-16` | NOT RUN | Not produced |
+| `LANES-L3-17` | NOT RUN | Not produced |
+| `LANES-L3-18` | NOT RUN | Not produced |
+| `LANES-L3-19` | NOT RUN | Not produced |
+| `LANES-L3-20` | NOT RUN | Not produced |
+| `LANES-L3-21` | NOT RUN | Not produced |
+| `LANES-L4-01` | NOT RUN | Not produced |
+| `LANES-L4-02` | NOT RUN | Not produced |
+| `LANES-L5-01` | NOT RUN | Not produced |
+| `LANES-L5-02` | NOT RUN | Not produced |
+| `LANES-L6-01` | NOT RUN | Not produced |
+| `LANES-L6-02` | NOT RUN | Not produced |
+| `LANES-L7-01` | NOT RUN | Not produced |
+| `LANES-L7-02` | NOT RUN | Not produced |
+| `LANES-L7-03` | NOT RUN | Not produced |
+| `LANES-L7-04` | NOT RUN | Not produced |
+| `LANES-L7-05` | NOT RUN | Not produced |
+| `LANES-L7-06` | NOT RUN | Not produced |
+| `LANES-L7-07` | NOT RUN | Not produced |
+| `LANES-L7-08` | NOT RUN | Not produced |
+
+Continuous bootstrap and live lane operations retain their internal per-host
+checkpoints and grant renewals; do not add S/E pauses inside them. Read the
+handbook's exact unit table rather than inferring a task from its ID alone.
+No phase is accepted until its aggregate design/plan gate also passes.

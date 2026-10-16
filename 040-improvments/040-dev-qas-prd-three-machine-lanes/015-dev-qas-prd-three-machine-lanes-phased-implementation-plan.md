@@ -5,6 +5,15 @@ or incomplete gate stops the next phase. L0–L5 preserve the existing unsuffixe
 Runner; once L6 begins changing PRD, failure follows its explicit abort or
 V3-only repair path.
 
+The mandatory [execution handbook](020-dev-qas-prd-three-machine-lanes-execution-handbook.md)
+settles first-rollout choices, the complete ordered unit breakdown, upfront
+readiness inputs, exact approval checkpoints, test interfaces and failure
+actions for **all** L0–L7 milestones. Start from the checked-in
+[execution ledger](../../040-implementation-evidence/LANES-000-execution-ledger.md).
+No later milestone-breakdown or planner clarification is a normal prerequisite.
+Readiness still requires actual access, measured capacity, supported runtime
+behavior and exact operational approvals; documentation cannot fabricate them.
+
 ## Operating rule for every phase
 
 All tracked changes originate in the authoritative Mac `dev` checkout. For a
@@ -43,23 +52,28 @@ mailbox, and recovery contracts remain binding wherever this design does not
 explicitly amend them. Resolve a newly discovered conflict in a reviewed
 documentation amendment before affected implementation continues.
 
-Before L0, commit `040-implementation-evidence/LANES-000-execution-ledger.md`
-with the selected baseline source/evidence, document revisions, owner/dependency
-records, and the ordered execution-unit list. L0 is the read-only unit
-`LANES-L0`, with evidence at `040-implementation-evidence/LANES-L0.md`.
-L1–L7 are milestone groups, not promises of a single coding session or commit.
-Before starting a group, commit its reviewed breakdown into bounded serial
-units such as `LANES-L1-01`, `LANES-L1-02`, with one deliverable, prerequisites,
-required tests/machines, and exit criteria per unit. Split work exceeding the
-original 60–120-minute hands-on slice before coding; preserve completed unit
-IDs and amend the remaining ordered ledger instead of renumbering history.
-Unit evidence uses `040-implementation-evidence/LANES-L1-01.md`, and each
-group's `LANES-L1.md` summary links all its completed units and exit-gate proof.
-Apply the same naming to L2–L7. L7's initial operating runbook/drills can close;
-later maintenance or recovery gets a new ordered unit and operation evidence.
-No future-unit coding or live phase starts before its predecessor is closed.
+The checked-in `040-implementation-evidence/LANES-000-execution-ledger.md`
+already lists the complete ordered units. `LANES-PREP-00` collects the upfront
+packet, `LANES-L0` performs read-only inventory, the named `LANES-B021-*`
+through `LANES-B024-*` units establish the baseline bug prerequisites, and
+`LANES-READY` seals all predictable external inputs before L1. Do not delegate
+those gaps to a future phase. Future generated hashes, public identities and
+short-lived exact approvals are collected at the handbook's declared checkpoints.
 
-Before every unit, freshly read the full current lane idea, design and plan,
+L1–L7 are milestone groups; execute the handbook's already-defined bounded
+units in order, not one large coding session per milestone. Evidence uses
+`040-implementation-evidence/<exact-unit-id>.md`; each group's `LANES-L1.md`
+summary (and equivalently L2–L7) links all completed units and aggregate proof.
+Only an unforeseen oversized active unit may be split into ordered `.a`/`.b`
+children before coding, preserving scope, safe checkpoints and downstream IDs.
+The initial L7 runbook/drills can close; future maintenance gets a new operation
+record using the same procedures. No future-unit coding or live phase starts
+before its predecessor is closed. A coordinated bootstrap or live lane
+transaction has no intervening Git/evidence pause inside its host/commit/reopen
+steps; use the handbook's continuous-operation boundaries.
+
+Before every unit, freshly read the full current lane idea, design, plan and
+execution handbook,
 the original initial/detailed designs and plan, applicable repo instructions,
 ledger, predecessor evidence/diff, and all relevant implementation files.
 Record pre-unit HEAD, document blob revisions, complete read inventory, exact
@@ -110,7 +124,11 @@ change/window, and evidence location. Tomasz may perform multiple roles where
 he has the required access. Provider or repository ownership/access is not
 assumed: record the actual authorized owner/operator. An unassigned operator,
 missing access, approval, or handoff remains `PENDING` and blocks the named
-live gate; it does not prevent independent source-only work.
+live gate. The handbook fixes Tomasz as the default coordinator/operator and
+defines automatic discovery of actual access and any explicit delegation.
+Resolve all foreseeable ownership/access/change-plan inputs in `LANES-READY`
+before L1; actual provisioning and exact-body approvals remain at the declared
+safe live checkpoints.
 
 | External dependency | Required executing owner/operator and evidence | Required before |
 | --- | --- | --- |
@@ -133,7 +151,10 @@ The [design's runtime defect gate](010-dev-qas-prd-three-machine-lanes-detailed-
 is mandatory. Maintain its per-route applicability table in the execution
 ledger and link each phase's fresh results. Triage the four reports; do not
 infer serving revisions or close bugs from this plan amendment. Repairs are
-separate prerequisite bug work with their own evidence and Git handoff. A
+separate prerequisite bug work, explicitly included as the handbook's named
+`LANES-B021-*` through `LANES-B024-*` units before `LANES-READY`, with their own
+bug evidence and Git handoff. The implementer has a complete diagnostic/fix/
+verification workflow rather than an instruction to ask another team later. A
 repair after candidate creation requires a new immutable candidate and a new
 Dev → QAS → PRD acceptance chain; never patch an accepted artifact in place.
 
