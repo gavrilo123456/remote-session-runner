@@ -1,6 +1,6 @@
 # Lane plan — implementer-comment resolution
 
-**Status:** documentation validation PASS; source delivery pending. This is a
+**Status:** documentation validation and source delivery PASS. This is a
 plan amendment, not execution or acceptance of L0 or any later lane milestone.
 
 ## Scope and baseline
@@ -56,8 +56,46 @@ performed. The BUG-024 original retained identities and held ACK are untouched.
 
 ## Source and evidence delivery
 
-Pending source commit, authoritative Gitea push, automatic GitHub mirror
-verification and clean `dev` fast-forward/equal-HEAD checks on `linux-host`,
-`sandbox-host`, and `factory-sandbox`. Record the source SHA and actual results
-in an evidence-only closeout; report that closeout SHA after its own verified
-delivery. No lane execution ledger or L0 PASS is created by this review.
+Source revision S is `822c7c3e9661368d966ef081de948b896713093f`
+(`docs(lanes): clarify implementation process and acceptance gates`). The
+following source handoff checks all passed with exit code 0:
+
+| Location | Verified source revision and condition |
+| --- | --- |
+| Mac `dev` | S; clean after source commit |
+| Gitea `origin/dev` | S; primary push advanced from `e73c22e` |
+| Automatic GitHub `github/dev` | S; exact mirror equality before host pulls |
+| Ubuntu `linux-host` | Clean `dev`/expected GitHub origin; fast-forwarded `e73c22e → S`; resulting HEAD S, clean |
+| Ubuntu `sandbox-host` | Clean `dev`/expected GitHub origin; fast-forwarded `e73c22e → S`; resulting HEAD S, clean |
+| Ubuntu `factory-sandbox` | Clean `dev`/expected GitHub origin; fast-forwarded `e73c22e → S`; resulting HEAD S, clean |
+
+On the **Mac**, in the authoritative checkout:
+
+```sh
+git diff --check
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote origin refs/heads/dev
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev
+```
+
+On **each named Ubuntu host**, in
+`/home/ubuntu/projects/remote-session-runner`, after checking branch, clean
+worktree, pre-pull HEAD and expected GitHub origin:
+
+```sh
+git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' pull --ff-only origin dev
+git rev-parse HEAD
+git status --porcelain=v1
+```
+
+The Mac initiated only these source-checkout operations with pinned SSH host
+verification, `IdentitiesOnly=yes`, `BatchMode=yes`, `UpdateHostKeys=no`, and
+explicit identities: `remote-session-runner` alias/key for `linux-host`,
+`sandbox.env` with `~/.ssh/dev.slidestud.io` for `sandbox-host`, and
+`factory-sandbox` alias/key for that host. No installed build identity is
+inferred from the resulting checkout HEADs.
+
+This evidence-only closeout E must follow the same primary/mirror/three-host
+delivery. Its own SHA and final equal clean HEAD checks belong in the final
+post-commit handoff; source checks need no rerun merely for this evidence prose.
+No lane execution ledger or L0 PASS is created by this review.
