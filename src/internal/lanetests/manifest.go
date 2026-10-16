@@ -22,6 +22,7 @@ import (
 const (
 	ManifestVersion = 1
 	HermeticTier    = "H"
+	NativeTier      = "N"
 )
 
 var (
@@ -208,6 +209,17 @@ func readHandbookUnitIDs(path string) (map[string]struct{}, error) {
 // closed on unknown units, an unimplemented H tier, or tests that skip, fail,
 // or never run.
 func RunHermetic(ctx context.Context, root, manifestPath, handbookPath, goBinary, unitID string, output io.Writer, runner CommandRunner) error {
+	return runTier(ctx, root, manifestPath, handbookPath, goBinary, unitID, HermeticTier, output, runner)
+}
+
+// RunNative dispatches the registered native, unprivileged assertions for one
+// exact unit. N tests may use local OS descriptors and temporary fixtures, but
+// they never touch installed services or external lane roots.
+func RunNative(ctx context.Context, root, manifestPath, handbookPath, goBinary, unitID string, output io.Writer, runner CommandRunner) error {
+	return runTier(ctx, root, manifestPath, handbookPath, goBinary, unitID, NativeTier, output, runner)
+}
+
+func runTier(ctx context.Context, root, manifestPath, handbookPath, goBinary, unitID, selectedTier string, output io.Writer, runner CommandRunner) error {
 	if runner == nil {
 		runner = runGo
 	}
@@ -225,19 +237,19 @@ func RunHermetic(ctx context.Context, root, manifestPath, handbookPath, goBinary
 	if selected == nil {
 		return fmt.Errorf("%w: %s", ErrUnknownUnit, unitID)
 	}
-	declaresHermetic := false
-	for _, tier := range selected.RequiredTiers {
-		if tier == HermeticTier {
-			declaresHermetic = true
+	declaresTier := false
+	for _, requiredTier := range selected.RequiredTiers {
+		if requiredTier == selectedTier {
+			declaresTier = true
 			break
 		}
 	}
-	if !declaresHermetic {
+	if !declaresTier {
 		return fmt.Errorf("%w: %s requires %v", ErrWrongProofTier, unitID, selected.RequiredTiers)
 	}
-	assertions := selected.Assertions[HermeticTier]
+	assertions := selected.Assertions[selectedTier]
 	if len(assertions) == 0 {
-		return fmt.Errorf("%w: %s H", ErrMissingAssertions, unitID)
+		return fmt.Errorf("%w: %s %s", ErrMissingAssertions, unitID, selectedTier)
 	}
 	if goBinary == "" {
 		return fmt.Errorf("%w: Go binary is not configured", ErrInvalidManifest)
@@ -254,7 +266,7 @@ func RunHermetic(ctx context.Context, root, manifestPath, handbookPath, goBinary
 	sort.Strings(packages)
 	if output != nil {
 		host, _ := os.Hostname()
-		_, _ = fmt.Fprintf(output, "LANES unit=%s tier=H host=%s os=%s go=%s assertions=%d\n", unitID, host, runtime.GOOS, runtime.Version(), len(assertions))
+		_, _ = fmt.Fprintf(output, "LANES unit=%s tier=%s host=%s os=%s go=%s assertions=%d\n", unitID, selectedTier, host, runtime.GOOS, runtime.Version(), len(assertions))
 	}
 	for _, packagePath := range packages {
 		tests := groups[packagePath]
@@ -271,14 +283,14 @@ func RunHermetic(ctx context.Context, root, manifestPath, handbookPath, goBinary
 		}
 		checkErr := CheckTestEvents(result, tests)
 		if runErr != nil {
-			return fmt.Errorf("lane unit %s package %s: go test failed: %w", unitID, packagePath, runErr)
+			return fmt.Errorf("lane unit %s tier %s package %s: go test failed: %w", unitID, selectedTier, packagePath, runErr)
 		}
 		if checkErr != nil {
-			return fmt.Errorf("lane unit %s package %s: %w", unitID, packagePath, checkErr)
+			return fmt.Errorf("lane unit %s tier %s package %s: %w", unitID, selectedTier, packagePath, checkErr)
 		}
 	}
 	if output != nil {
-		_, _ = fmt.Fprintf(output, "PASS %s H (%d registered assertions)\n", unitID, len(assertions))
+		_, _ = fmt.Fprintf(output, "PASS %s %s (%d registered assertions)\n", unitID, selectedTier, len(assertions))
 	}
 	return nil
 }

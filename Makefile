@@ -30,11 +30,11 @@ check-go:
 test: check-go
 	GOTOOLCHAIN=local "$(GO)" test ./...
 
-# Dispatches only registered hermetic assertions for one exact LANES unit.
-# Native, privileged, baseline, and live acceptance tiers use separate gates.
+# Dispatches only registered H or unprivileged N assertions for one exact LANES unit.
+# Privileged, baseline, and live acceptance tiers use separate gates.
 test-lanes: check-go
-	@test -n "$(UNIT)" || { printf 'Usage: make test-lanes UNIT=LANES-L1-01\n' >&2; exit 2; }
-	LANES_TEST_GO="$(GO)" GOTOOLCHAIN=local "$(GO)" run ./src/cmd/test-lanes --unit "$(UNIT)"
+	@test -n "$(UNIT)" || { printf 'Usage: make test-lanes UNIT=LANES-L1-01 [LANES_TIER=H|N]\n' >&2; exit 2; }
+	LANES_TEST_GO="$(GO)" GOTOOLCHAIN=local "$(GO)" run ./src/cmd/test-lanes --unit "$(UNIT)" --tier "$(if $(LANES_TIER),$(LANES_TIER),H)"
 
 # Hermetic P133 subprocess barriers, WAL-aware logical database snapshots,
 # exact child kill/reap, and restart assertions.

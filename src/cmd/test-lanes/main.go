@@ -13,9 +13,10 @@ import (
 
 func main() {
 	unit := flag.String("unit", "", "exact LANES unit ID")
+	tier := flag.String("tier", lanetests.HermeticTier, "exact proof tier (H or N)")
 	flag.Parse()
-	if *unit == "" || flag.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: test-lanes --unit LANES-<unit>")
+	if *unit == "" || flag.NArg() != 0 || (*tier != lanetests.HermeticTier && *tier != lanetests.NativeTier) {
+		fmt.Fprintln(os.Stderr, "usage: test-lanes --unit LANES-<unit> [--tier H|N]")
 		os.Exit(2)
 	}
 	root, err := lanetests.FindRepoRoot(".")
@@ -32,7 +33,11 @@ func main() {
 	handbook := filepath.Join(root, "040-improvments", "040-dev-qas-prd-three-machine-lanes", "020-dev-qas-prd-three-machine-lanes-execution-handbook.md")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	if err := lanetests.RunHermetic(ctx, root, manifest, handbook, goBinary, *unit, os.Stdout, nil); err != nil {
+	run := lanetests.RunHermetic
+	if *tier == lanetests.NativeTier {
+		run = lanetests.RunNative
+	}
+	if err := run(ctx, root, manifest, handbook, goBinary, *unit, os.Stdout, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "FAIL:", err)
 		os.Exit(1)
 	}

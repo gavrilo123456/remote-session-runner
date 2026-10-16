@@ -135,8 +135,63 @@
     {
       "id": "LANES-L1-03",
       "required_tiers": [
-        "H"
-      ]
+        "H",
+        "N"
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103DeclarativeHandoffRequiresFixedChildrenAndVolumeIdentity"
+          },
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103DeclarativeRootSetRejectsNestedAndAliasedRoots"
+          },
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103DeclarativeAncillaryInventoryIsClosed"
+          },
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103DeclarativePathsAndLayoutsFailClosed"
+          },
+          {
+            "package": "./src/internal/lanetests",
+            "name": "TestLanesL103CoverageMatchesPlan"
+          },
+          {
+            "package": "./src/internal/lanetests",
+            "name": "TestLanesL103NativeDispatcherIsClosed"
+          }
+        ],
+        "N": [
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103InspectsEmptyDescriptorBackedMailboxTree"
+          },
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103InspectsOpaqueRetainedEntriesWithoutTraversal"
+          },
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103RejectsSymlinkedRootAncestorsAndChildren"
+          },
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103RejectsWrongModesMissingAndUndeclaredEntries"
+          },
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103RejectsIdentityReplacementAndUnsafeAncestor"
+          },
+          {
+            "package": "./src/internal/laneroot",
+            "name": "TestLanesL103RejectsAncillaryReplacementAndTypeChanges"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-04",
