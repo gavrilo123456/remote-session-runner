@@ -4,14 +4,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `NEW` — retained terminal teardown loss needs owner disposition |
+| Status | `IN_PROGRESS` — source repair under validation; retained incident still needs guarded disposition |
 | Severity | High — safe session/capacity release is unproven |
 | Priority | High |
 | Reported | 2026-10-15 |
 | Discovered by | Codex during Agentic Software Factory extended feasibility |
 | Owner | Remote Session Runner |
 | Affected component/path | Mac one-off ephemeral session close/job reconciliation |
-| Affected revision | Installed revision unknown; contemporaneous inspected source `51ec4134df6dce2021936458026caaacb2226fad` |
+| Affected revision | Incident-time installed revision unknown; contemporaneous inspected source `51ec4134df6dce2021936458026caaacb2226fad`; retained state verified on installed Mac `b71aaef0859bd0266c343e638e62e268999a388b` on 2026-10-16 |
 | Fixed revision / verification | None / pending |
 
 ## Reported and expected behavior
@@ -50,7 +50,9 @@ Trace the exact close intent, session/job transitions, owned process identity, c
 
 ## Fix and verification
 
-No fix or recovery was attempted by this report. Required gate:
+Registration did not attempt recovery. Repair and acceptance are tracked in
+[`040-implementation-evidence/BUG-024.md`](../040-implementation-evidence/BUG-024.md).
+Required gate:
 
 1. Explain the original close failure or preserve its uncertainty explicitly, with a supported owner-scoped disposition for the exact session/command pair.
 2. Prove terminal teardown success/failure transitions, exactly-once reconciliation and no body replay in source regressions.
@@ -59,4 +61,14 @@ No fix or recovery was attempted by this report. Required gate:
 
 ## Resolution and history
 
-Unresolved. Registered 2026-10-15. Original ACK remains **held**; no replay, deletion, direct API/SQLite access, restart, manual capacity release or state mutation was performed. Registration itself only reread existing evidence.
+Registered 2026-10-15. On 2026-10-16 the user authorized fixing this blocker
+before activating the repository mailbox. The exact original physical cleanup
+failure remains unknown. The source repair adds a bounded Mac process-group
+disappearance check and a separate installer-mediated successful-command /
+lost-teardown recovery route. This route preserves the historical successful
+command and lost job, and releases only the session reservation after exact
+ownership proof. It does not make the old lost response successful.
+
+Live acceptance and original disposition remain pending. The original ACK is
+**held**. No historical script was replayed and no direct database or private API
+mutation was used.

@@ -31,14 +31,24 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Mac runner configuration")
 	apply := flags.Bool("apply", false, "perform the explicit offline repair")
-	var pairValues, sessionValues repeatedMacRecoveryValue
+	var pairValues, sessionValues, teardownValues repeatedMacRecoveryValue
 	flags.Var(&pairValues, "lost-pair", "terminal lost SESSION_ID:COMMAND_ID pair; repeat for every retained lost runtime")
 	flags.Var(&sessionValues, "lost-session", "terminal lost SESSION_ID without a persisted command; repeat for every retained commandless runtime")
+	flags.Var(&teardownValues, "teardown-pair", "completed COMMAND_ID with lost teardown, as SESSION_ID:COMMAND_ID; repeat for the complete retained set")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if *configPath == "" || !*apply || flags.NArg() != 0 || (len(pairValues) == 0 && len(sessionValues) == 0) {
-		fmt.Fprintln(stderr, "runner-locald recover-stalled: --config, --apply, and at least one --lost-pair or --lost-session are required")
+	if *configPath == "" || !*apply || flags.NArg() != 0 || (len(pairValues) == 0 && len(sessionValues) == 0 && len(teardownValues) == 0) {
+		fmt.Fprintln(stderr, "runner-locald recover-stalled: --config, --apply, and at least one --lost-pair, --lost-session, or --teardown-pair are required")
+		return 2
+	}
+	if len(teardownValues) != 0 && (len(pairValues) != 0 || len(sessionValues) != 0) {
+		fmt.Fprintln(stderr, "runner-locald recover-stalled: --teardown-pair cannot be combined with --lost-pair or --lost-session")
+		return 2
+	}
+	teardownRequests, err := parseMacCompletedTeardownRecoveryPairs(teardownValues)
+	if err != nil {
+		fmt.Fprintln(stderr, "runner-locald recover-stalled: invalid --teardown-pair")
 		return 2
 	}
 	lostRequests, err := parseMacLostRecoveryPairs(pairValues)
@@ -81,7 +91,7 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	// The lifecycle lock and stopped-service proof above establish exclusive
 	// offline ownership. This open still refuses a missing or tampered authority
-	// but may apply the one pending schema migration needed by this repair.
+	// but may apply the known pending schema migrations needed by this repair.
 	database, err := store.OpenExistingOfflineMaintenanceMigrating(ctx, settings.Database)
 	if err != nil {
 		fmt.Fprintln(stderr, "runner-locald recover-stalled: authority database is unavailable")
@@ -104,6 +114,9 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "runner-locald recover-stalled: runtime recovery adapter is unavailable")
 		return 1
+	}
+	if len(teardownRequests) != 0 {
+		return recoverMacCompletedTeardownSet(ctx, authority, service, runtimeAdapter, teardownRequests, stdout, stderr)
 	}
 	if err := requireMacStalledRecoveryInventorySet(ctx, authority, service, runtimeAdapter, lostRequests, lostSessionRequests); err != nil {
 		fmt.Fprintln(stderr, "runner-locald recover-stalled: preflight refused")
@@ -295,6 +308,13 @@ func requireMacStalledRecoveryInventorySet(ctx context.Context, authority *store
 	if err != nil {
 		return err
 	}
+	pendingTeardowns, err := authority.ListPendingCompletedTeardownRecoveryFinalizations(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pendingTeardowns) != 0 {
+		return errors.New("completed teardown finalization requires its own selected recovery set")
+	}
 	selectedPairs := make(map[store.LostRuntimeRecoveryPair]struct{}, len(lostRequests))
 	for _, request := range lostRequests {
 		selectedPairs[store.LostRuntimeRecoveryPair{SessionID: request.SessionID, CommandID: request.CommandID}] = struct{}{}
@@ -399,7 +419,15 @@ func requireMacStalledRecoveryPostflight(ctx context.Context, authority *store.A
 	if err != nil {
 		return err
 	}
-	if activeSessions != 0 || runningCommands != 0 || liveSlots != 0 || liveReservations != 0 || len(nonterminalJobs) != 0 || len(pendingFinalizations) != 0 || len(pendingCommandlessFinalizations) != 0 {
+	pendingTeardowns, err := authority.ListPendingCompletedTeardownRecoveryFinalizations(ctx)
+	if err != nil {
+		return err
+	}
+	metrics, err := authority.ReadRestartPreflightMetrics(ctx)
+	if err != nil {
+		return err
+	}
+	if activeSessions != 0 || runningCommands != 0 || liveSlots != 0 || liveReservations != 0 || metrics.QueuedCommands != 0 || len(nonterminalJobs) != 0 || len(pendingFinalizations) != 0 || len(pendingCommandlessFinalizations) != 0 || len(pendingTeardowns) != 0 {
 		return errors.New("postflight is not quiescent")
 	}
 	return nil

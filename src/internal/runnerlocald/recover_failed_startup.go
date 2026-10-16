@@ -127,6 +127,9 @@ func requireMacFailedStartupRecoveryInventory(ctx context.Context, authority *st
 	if jobs, err := authority.ListNonterminalJobIDs(ctx); err != nil || len(jobs) != 0 {
 		return errors.New("nonterminal jobs are present")
 	}
+	if pending, err := authority.ListPendingCompletedTeardownRecoveryFinalizations(ctx); err != nil || len(pending) != 0 {
+		return errors.New("completed teardown finalization requires its own selected recovery set")
+	}
 	sessions, err := authority.ListSessions(ctx)
 	if err != nil {
 		return err

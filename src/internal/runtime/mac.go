@@ -411,8 +411,22 @@ func (a *MacProcessAdapter) Inspect(sessionID string) (MacProcessRecord, error) 
 
 // Cleanup closes the shell and removes its owner-only workspace.
 func (a *MacProcessAdapter) Cleanup(sessionID string) error {
+	return a.CleanupContext(context.Background(), sessionID)
+}
+
+// CleanupContext closes the owned shell, then allows a bounded interval for
+// its process group to disappear. Command output EOF does not prove that a
+// redirected descendant has already exited. The post-reap observation sends no
+// signal; an unconfirmed observation retains the ownership marker and workspace.
+func (a *MacProcessAdapter) CleanupContext(ctx context.Context, sessionID string) error {
 	if a == nil {
 		return ErrMacRuntimeSession
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	a.mu.Lock()
 	shell := a.sessions[sessionID]
@@ -427,7 +441,7 @@ func (a *MacProcessAdapter) Cleanup(sessionID string) error {
 		return ownerErr
 	}
 	if shell == nil && ownerErr == nil {
-		result, err := a.ReconcileSession(context.Background(), sessionID, owner.Generation, 500*time.Millisecond)
+		result, err := a.ReconcileSession(ctx, sessionID, owner.Generation, 500*time.Millisecond)
 		if err != nil {
 			return err
 		}
@@ -463,12 +477,8 @@ func (a *MacProcessAdapter) Cleanup(sessionID string) error {
 			return fmt.Errorf("%w: Bash process group does not match its PID", ErrRuntimeOwnershipRecord)
 		}
 		waitErr := shell.Close()
-		groupExists, err := processGroupExists(processGroupID)
-		if err != nil {
-			return fmt.Errorf("inspect Mac session process group after shell exit: %w", err)
-		}
-		if groupExists {
-			return fmt.Errorf("%w: residual process group %d remains after shell exit", ErrRuntimeOwnershipRecord, processGroupID)
+		if err := waitMacCleanupGroupGone(ctx, processGroupID, 500*time.Millisecond, processGroupExists); err != nil {
+			return err
 		}
 		if waitErr != nil {
 			var exitErr *exec.ExitError
@@ -476,6 +486,9 @@ func (a *MacProcessAdapter) Cleanup(sessionID string) error {
 				return waitErr
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if prepared.OwnedWorkspace {
 		if err := os.RemoveAll(prepared.Workspace); err != nil {
@@ -491,6 +504,39 @@ func (a *MacProcessAdapter) Cleanup(sessionID string) error {
 	delete(a.identities, sessionID)
 	a.mu.Unlock()
 	return nil
+}
+
+// waitMacCleanupGroupGone observes the exact recorded group after its owned
+// Bash has been reaped. Inspection failure is not an absence proof. Keeping the
+// inspector explicit lets lifecycle tests control the exit/observation race
+// without adding caller-selectable runtime inspection or signalling behavior.
+func waitMacCleanupGroupGone(ctx context.Context, processGroupID int, grace time.Duration, inspect func(int) (bool, error)) error {
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		exists, err := inspect(processGroupID)
+		if err != nil {
+			return fmt.Errorf("inspect Mac session process group after shell exit: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !exists {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("%w: residual process group %d remains after bounded shell cleanup", ErrRuntimeOwnershipRecord, processGroupID)
+		case <-ticker.C:
+		}
+	}
 }
 
 // ReconcileSession stops a prior executor's recorded process group. It never

@@ -33,9 +33,9 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 		_ = fresh.Close()
 		t.Fatalf("fresh schema version=%d, want current %d", version, CurrentSchemaVersion)
 	}
-	if CurrentSchemaVersion != 36 {
+	if CurrentSchemaVersion != 37 {
 		_ = fresh.Close()
-		t.Fatalf("CurrentSchemaVersion=%d, want 36", CurrentSchemaVersion)
+		t.Fatalf("CurrentSchemaVersion=%d, want 37", CurrentSchemaVersion)
 	}
 	var migrationName string
 	if err := fresh.QueryRowContext(ctx, `SELECT name FROM runner_schema_migrations WHERE version = 30`).Scan(&migrationName); err != nil || migrationName != "mailbox_ingress_diagnostics" {
@@ -79,8 +79,8 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 		t.Fatalf("migrate v29 database: %v", err)
 	}
 	t.Cleanup(func() { _ = migrated.Close() })
-	if version := readUserVersion(t, migrated); version != 36 {
-		t.Fatalf("migrated schema version=%d, want 36", version)
+	if version := readUserVersion(t, migrated); version != CurrentSchemaVersion {
+		t.Fatalf("migrated schema version=%d, want %d", version, CurrentSchemaVersion)
 	}
 	var columnCount int
 	if err := migrated.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('mailbox_ingress_diagnostics')`).Scan(&columnCount); err != nil || columnCount != 14 {

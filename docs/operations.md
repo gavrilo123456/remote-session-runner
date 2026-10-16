@@ -676,6 +676,41 @@ After restart, prove the installed revision and all-zero Mac authority status,
 then use one fresh harmless mailbox request for live acceptance. Preserve the
 old lost records and do not reuse their request or idempotency identities.
 
+### Explicit Mac recovery for a completed command with lost teardown
+
+A successful command can already have its truthful terminal result while its
+one-off session teardown is `lost` and still
+holds session capacity. This is not a lost command. After an approved fresh
+idle inventory and exact ownership proof, use the separate completed-command
+selection through the same stopped-candidate installer boundary:
+
+```sh
+# Mac — tomasz.walczuk
+cd /Users/tomasz.walczuk/projects/remote-session-runner
+deploy/macos/install-launchagents.sh --recover-stalled \
+  --teardown-pair 'sess-EXACT-TEARDOWN:cmd-EXACT-COMPLETED'
+```
+
+Supply the complete exact retained teardown set, repeating `--teardown-pair`
+when necessary. Do not combine it with `--lost-pair`, `--lost-session`, a
+failed-startup recovery, or `--config`. The latter is a separate candidate
+activation after recovery and its zero-work postflight succeed. The guard
+refuses active/running/queued/nonterminal work, any live command capacity,
+unselected retained session capacity, unrelated pending cleanup, or uncertain
+runtime ownership. A fully released historical pair is refused unless its
+completed-teardown finalization remains durably pending and explicitly selected.
+
+Recovery preserves the command's terminal state, output classification and
+terminal event boundary; it never replays a script or relabels a completed
+command as lost. It proves runtime cleanup before releasing the selected
+session reservation. If finalization remains pending after release, retry only
+the same complete explicit set; do not repeat runtime signalling or manually
+remove ownership evidence. Postflight requires every recovery finalization
+table and the complete active/queued/capacity inventory to be empty before the
+installer restarts the candidate services. Held original ACKs retain their
+separate evidence-based disposition; this command does not authorize speculative
+ACKs or deletion.
+
 ### Linux-only queue-preserving online retained-capacity recovery
 
 This procedure is only for the selected Ubuntu `runnerd` authority and its

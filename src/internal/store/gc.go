@@ -174,6 +174,10 @@ SET output_complete = 0, output_unavailable_reason = 'retention_expired'
 WHERE state IN (?, ?, ?, ?, ?, ?)
   AND updated_at <= ?
   AND output_unavailable_reason = ''
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_completed_teardown_recovery_finalizations f
+      WHERE f.command_id = exec_commands.command_id
+  )
 `, string(domain.CommandStateSucceeded), string(domain.CommandStateFailed), string(domain.CommandStateCancelled),
 			string(domain.CommandStateTimedOut), string(domain.CommandStateRejected), string(domain.CommandStateLost), formatStoredTime(outputCutoff))
 		if err != nil {
@@ -189,6 +193,10 @@ WHERE command_id IN (
     SELECT command_id FROM exec_commands WHERE output_unavailable_reason = 'retention_expired'
 )
   AND output_unavailable_reason = ''
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_completed_teardown_recovery_finalizations f
+      WHERE f.job_id = exec_jobs.job_id
+  )
 `); err != nil {
 			return report, fmt.Errorf("expire job output: %w", err)
 		}
@@ -234,6 +242,10 @@ DELETE FROM exec_command_events
 WHERE command_id IN (
     SELECT command_id FROM exec_commands WHERE output_unavailable_reason = 'retention_expired'
 )
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_completed_teardown_recovery_finalizations f
+      WHERE f.command_id = exec_command_events.command_id
+  )
   AND NOT EXISTS (
       SELECT 1 FROM mailbox_event_file_references r
       JOIN mailbox_exchanges e ON e.exchange_id = r.exchange_id
@@ -392,6 +404,10 @@ WHERE j.phase IN (?, ?, ?)
       SELECT 1 FROM exec_commandless_lost_runtime_recovery_finalizations f
       WHERE f.job_id = j.job_id
   )
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_completed_teardown_recovery_finalizations f
+      WHERE f.job_id = j.job_id
+  )
 `, string(JobPhaseComplete), string(JobPhaseFailed), string(JobPhaseLost), formatStoredTime(cutoff))
 	if err != nil {
 		return nil, fmt.Errorf("select job metadata for GC: %w", err)
@@ -431,6 +447,10 @@ WHERE c.state IN (?, ?, ?, ?, ?, ?)
       SELECT 1 FROM exec_lost_runtime_recovery_finalizations f
       WHERE f.command_id = c.command_id
   )
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_completed_teardown_recovery_finalizations f
+      WHERE f.command_id = c.command_id
+  )
 `, string(domain.CommandStateSucceeded), string(domain.CommandStateFailed), string(domain.CommandStateCancelled),
 		string(domain.CommandStateTimedOut), string(domain.CommandStateRejected), string(domain.CommandStateLost), formatStoredTime(cutoff),
 		string(domain.SessionStateClosed), string(domain.SessionStateExpired), string(domain.SessionStateFailed), string(domain.SessionStateLost), formatStoredTime(cutoff))
@@ -468,6 +488,10 @@ WHERE s.state IN (?, ?, ?, ?)
   )
   AND NOT EXISTS (
       SELECT 1 FROM exec_commandless_lost_runtime_recovery_finalizations f
+      WHERE f.session_id = s.session_id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM exec_completed_teardown_recovery_finalizations f
       WHERE f.session_id = s.session_id
   )
 `, string(domain.SessionStateClosed), string(domain.SessionStateExpired), string(domain.SessionStateFailed), string(domain.SessionStateLost), formatStoredTime(cutoff))

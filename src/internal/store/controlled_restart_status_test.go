@@ -35,6 +35,11 @@ func TestControlledRestartStatusReadOnlyRecognizesOnlyAcceptedStates(t *testing.
 			want: ControlledRestartStatusMigratedWithoutPlan,
 		},
 		{
+			name: "schema 36 with plan tables",
+			seed: completedTeardownSchema36AuthorityPath,
+			want: ControlledRestartStatusMigratedWithoutPlan,
+		},
+		{
 			name: "current schema without plan",
 			seed: b008CurrentAuthorityPath,
 			want: ControlledRestartStatusMigratedWithoutPlan,
@@ -260,7 +265,11 @@ func controlledRestartStatusLegacyAuthorityPath(t *testing.T) string {
 		_ = database.Close()
 		t.Fatal(err)
 	}
-	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version IN (34, 35, 36)`); err != nil {
+	if _, err := database.Exec(`DROP TABLE exec_completed_teardown_recovery_finalizations`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version >= 34`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)
 	}
@@ -289,7 +298,11 @@ func controlledRestartStatusSchema35AuthorityPath(t *testing.T) string {
 		_ = database.Close()
 		t.Fatal(err)
 	}
-	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version = 36`); err != nil {
+	if _, err := database.Exec(`DROP TABLE exec_completed_teardown_recovery_finalizations`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM runner_schema_migrations WHERE version > 35`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)
 	}

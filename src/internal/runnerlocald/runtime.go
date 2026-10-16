@@ -148,11 +148,11 @@ func (r *MacSessionRuntime) RebuildQueuedOneOff(ctx context.Context, session sto
 	return execution.RuntimeStarted{RuntimeGeneration: prepared.Generation}, nil
 }
 
-func (r *MacSessionRuntime) Cleanup(_ context.Context, request execution.RuntimeCleanupRequest) error {
+func (r *MacSessionRuntime) Cleanup(ctx context.Context, request execution.RuntimeCleanupRequest) error {
 	if r == nil || r.adapter == nil {
 		return execution.ErrRuntimeUnavailable
 	}
-	err := r.adapter.Cleanup(string(request.Session.SessionID))
+	err := r.adapter.CleanupContext(ctx, string(request.Session.SessionID))
 	if err == nil {
 		r.mu.Lock()
 		delete(r.prepared, string(request.Session.SessionID))
@@ -201,11 +201,11 @@ func (r *MacSessionRuntime) CancelCommand(ctx context.Context, request execution
 	return execution.RuntimeCommandStopResult{Confirmed: stopped.Confirmed}, err
 }
 
-func (r *MacSessionRuntime) StopSession(_ context.Context, session store.SessionRecord) (bool, error) {
+func (r *MacSessionRuntime) StopSession(ctx context.Context, session store.SessionRecord) (bool, error) {
 	if r == nil || r.adapter == nil {
 		return false, execution.ErrRuntimeUnavailable
 	}
-	if err := r.adapter.Cleanup(string(session.SessionID)); err != nil {
+	if err := r.adapter.CleanupContext(ctx, string(session.SessionID)); err != nil {
 		return false, err
 	}
 	r.mu.Lock()

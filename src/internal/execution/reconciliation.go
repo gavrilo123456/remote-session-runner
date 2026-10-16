@@ -56,6 +56,9 @@ func (s *Service) reconcileStartupLocked(ctx context.Context, preserved domain.S
 	if err := s.finalizePendingLostRuntimeRecoveries(ctx); err != nil {
 		return report, fmt.Errorf("finalize pending lost runtime recovery: %w", err)
 	}
+	if err := s.finalizePendingCompletedTeardownRecoveries(ctx); err != nil {
+		return report, fmt.Errorf("finalize pending completed teardown recovery: %w", err)
+	}
 
 	sessions, err := s.store.ListSessions(ctx)
 	if err != nil {
