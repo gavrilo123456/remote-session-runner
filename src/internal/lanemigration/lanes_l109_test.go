@@ -428,6 +428,9 @@ type l109Fixture struct {
 func newL109Fixture(t *testing.T) *l109Fixture {
 	t.Helper()
 	trustRoot := t.TempDir()
+	if err := os.Chmod(trustRoot, 0o700); err != nil {
+		t.Fatalf("restrict fixture trust root: %v", err)
+	}
 	root := filepath.Join(trustRoot, "prd-mailbox")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)

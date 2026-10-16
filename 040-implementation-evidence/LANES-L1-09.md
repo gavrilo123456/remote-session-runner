@@ -1,8 +1,9 @@
 # LANES-L1-09 — reversible PRD migration fence and deferred-pair ledger
 
-**State:** IN PROGRESS — Mac source gates pass. Ubuntu validation and S/E Git
-delivery have not run yet. This source-only unit does not close maintenance or
-claim installed/live acceptance.
+**State:** IN PROGRESS — corrected source tests and Mac gates pass. Initial
+Ubuntu validation of S1 found a fixture-permission portability failure; the
+correction is awaiting new S delivery and full revalidation. This source-only
+unit does not close maintenance or claim installed/live acceptance.
 
 ## Predecessor and read inventory
 
@@ -96,20 +97,39 @@ still expected L1-09 to have no assertions; it now checks L1-10, and the full
 suite passed on rerun. Earlier fixture and controller assertions were corrected
 as they surfaced and the focused H suite was rerun successfully.
 
+Initial source S1 `62323c2c49bf1120c30d5d9699530720a284468c` was pushed to
+Gitea, mirrored exactly to GitHub, and fast-forwarded to all three clean Ubuntu
+checkouts. The L1-09 H fixture then failed on all three Linux hosts at
+`open fixture mailbox root: mailbox fence path is unsafe`; because the focused
+gate failed, the subsequent full gates did not run there. Read-only `strace`
+confirmed the fixture root was opened and the error arose in the Linux
+temporary-root validation path. The hermetic fixture now explicitly restricts
+its temporary trust root to `0700`, preserving production safety checks. A new
+tested source revision and the full host rerun are required before closeout.
+
 ## Delivery and remaining validation
 
-Source S has not yet been committed or pushed. After S is delivered to primary
-Gitea, the exact GitHub mirror SHA is verified, and all three clean Ubuntu
-`dev` checkouts are fast-forwarded, run the focused L1-09 H gate, full test,
-vet, build, smoke, and focused race checks against exact S. Record each host,
-source SHA, command, and outcome below before creating evidence-only closeout
-E. No source files may be copied directly to Ubuntu.
+The corrected source revision is being prepared as S2. After it is delivered
+to primary Gitea, the exact GitHub mirror SHA is verified, and all three clean
+Ubuntu `dev` checkouts are fast-forwarded, rerun the focused L1-09 H gate, full
+test, vet, build, smoke, and focused race checks against exact S2. Record each
+host, source SHA, command, and outcome below before creating evidence-only
+closeout E. No source files may be copied directly to Ubuntu.
 
 | Host | Checkout S | H/full/vet/build/smoke/race |
 | --- | --- | --- |
-| `linux-host` | NOT RUN | NOT RUN |
-| `sandbox-host` | NOT RUN | NOT RUN |
-| `factory-sandbox` | NOT RUN | NOT RUN |
+| `linux-host` | S1 `62323c2…` | H FAIL — fixture-root safety validation; remaining gates NOT RUN |
+| `sandbox-host` | S1 `62323c2…` | H FAIL — fixture-root safety validation; remaining gates NOT RUN |
+| `factory-sandbox` | S1 `62323c2…` | H FAIL — fixture-root safety validation; remaining gates NOT RUN |
+
+Host connections used explicit configured identities and
+`StrictHostKeyChecking=yes`: `linux-host` via `remote-session-runner` and
+`~/.ssh/remote-session-runner`, `sandbox-host` via `sandbox.env` and
+`~/.ssh/dev.slidestud.io`, and `factory-sandbox` via `factory-sandbox` and
+`~/.ssh/factory-sandbox`. The Mac SSH client printed a non-fatal warning that
+the sandboxed `known_hosts` file could not be rewritten; all strict host-key
+checks and SSH commands completed successfully. No host checkout source was
+edited outside Git, and only normal test/cache activity ran.
 
 The maintenance package remains a historical snapshot. Do not refresh
 candidates as part of L1-09, and do not change B021/B024 evidence or their
