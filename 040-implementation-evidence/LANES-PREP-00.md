@@ -6,8 +6,10 @@ remain unresolved. The owner separately authorized direct observations for
 both PREP-00 and L0, but this failed PREP exit prevents the full L0 unit from
 starting under the serial plan.
 
-**Observed:** 2026-10-16 09:54–10:01 UTC. All observations are point-in-time; rerun the
-applicable inventory immediately before any future live gate.
+**Observed:** initial route and runtime observations 2026-10-16 09:54–10:01 UTC;
+read-only remediation follow-up 10:42–10:48 UTC. All observations are
+point-in-time; rerun the applicable inventory immediately before any future
+live gate.
 
 ## Authorization and limits
 
@@ -105,22 +107,186 @@ those associations are absent.
 
 ## Access, capacity, storage, and fixture readiness
 
-| Area | Observation | Readiness result / prepared correction |
+| Area | Fresh observation | Readiness result |
 | --- | --- | --- |
-| Ubuntu SSH/root access | Explicit configured SSH identities reached all three `ubuntu` accounts. `sudo -n -l` showed `NOPASSWD: ALL`, and `sudo -n id -u` returned `0` on each host. | Access verified for the observed SSH/root route. Provider ownership/API access is separate. |
-| Mac root/admin access | Mac account is UID 502 and not a member of `admin`; `sudo -n -l` returned `sudo: a password is required`. | Mac root execution is unavailable in this shell. A named, authorized Mac admin route/operator is required before privileged bootstrap A03; do not infer it from current LaunchAgent access. |
-| OCI provider/network access | OCI CLI 3.94.2 is installed on the Mac, but `~/.oci/config` and `~/.oci` are absent, `OCI_CLI_AUTH`, `OCI_CLI_PROFILE`, and `OCI_CLI_CONFIG_FILE` are unset, and a read-only `oci iam region list` stopped at the missing-config prompt; it was aborted without creating a config or sending an API request. The CLI is absent on the Ubuntu hosts. | Actual provider security-list/NSG/NAT rule IDs, owners, and rollback evidence are unavailable. Supply an authorized read-only provider route or identify the authorized network operator before A02 can be materialized. |
-| Mac capacity | 14 logical CPUs and 48 GiB RAM. APFS Data container disk3 capacity `494384795648` bytes, in-use `316459319296`, unallocated `177925476352` (36%). `tmutil listlocalsnapshots /` listed no local snapshots; Runner-managed snapshot accounting is unknown. | The §6 unallocated floor is `max(20 GiB, 15%)`, currently about `74157719347` bytes. The remaining margin before quotas/budgets is about `103767757005` bytes. Lane quotas, shared-cache budget/use, and distinct cache-backup volume identity/quota/use are not established, so the full equation cannot pass. Current Mac service state uses the shared Data volume. |
-| `linux-host` capacity/enforcement | `/dev/sda1` ext4 is 48,274,628,608 bytes with 22,706,483,200 available (47%); 5% of inodes used. The host is hybrid: cgroup2 is mounted at `/sys/fs/cgroup/unified` with an empty `cgroup.controllers`; the default tree is tmpfs with separate cgroup-v1 controllers. `runnerd.service` is in `/system.slice/runnerd.service`; systemd reports CPUAccounting and IOAccounting disabled, and there is no readable service `io.max`. `go` is not installed for `ubuntu`. | The selected cgroup-v2 lane slice and per-device-I/O contract is unsupported by the observed current systemd hierarchy. This is a hard eligibility stop until an approved host-level correction and fresh proof; do not change the production boot/cgroup setup here. Normal Go-cache paths/budget are also unknown. |
-| `sandbox-host` capacity/enforcement | `/dev/sda1` ext4 is 54,958,841,856 bytes with 1,751,961,600 available (3%); 12% of inodes used. `/sys/fs/cgroup` is cgroup2fs; `cpuset`, `cpu`, `io`, `memory`, `pids`, and other controllers are present, `io` is enabled through `system.slice` to `runnerd.service`, and its `io.max` file exists but is empty. `go` is not installed for `ubuntu`. | The plan requires at least 30% free bytes and inodes after the full projection; current free bytes are 3%, a hard stop. Do not delete or reclaim retained data. An approved capacity/storage correction and fresh L0 are required. The full envelope, project quotas, and normal Go-cache budget remain unmeasured. |
-| `factory-sandbox` capacity/enforcement | `/dev/sda1` ext4 is 50,839,412,736 bytes with 46,624,546,816 available (91%); 3% of inodes used. `/sys/fs/cgroup` is cgroup2fs and advertises `io`, but `io` is not enabled for `system.slice` or `runnerd.service`; their enabled controllers are `cpu`, `memory`, and `pids`, and root confirmed the service `io.max` file is absent. `go` is not installed for `ubuntu`. | Capacity bytes/inodes clear the simple 30% observation, but cgroup I/O delegation/enforcement, the complete PRD/Dev/QAS/management/cache/backup envelope, and normal Go-cache budget need approved L0/L2 validation. No current lane I/O cap is claimed. |
-| Native fixtures | No disposable storage or service fixture was provisioned. No fixture cleanup manifest or exact test-device quota was approved. | Prepare exact A01 fixture identity, quota, test namespace/loopback ports, root operator, and cleanup/rollback manifest from a fresh eligible inventory; provision only after A01 approval. |
+| Ubuntu SSH/root route | The three configured SSH identities still reach the `ubuntu` accounts; `sudo -n id -u` returns `0` on each. | Host-local administrative execution is available on the observed route. It does not grant OCI API or network ownership access. |
+| Ubuntu Go toolchain | `/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go` exists on all hosts and reports `go1.27.1 linux/amd64` on linux-host and factory-sandbox, `go1.27.1 linux/arm64` on sandbox-host. `go env` reports the normal `/home/ubuntu/.cache/go-build` and `/home/ubuntu/go/pkg/mod` paths. | The earlier “Go is not installed” inference from `go` not being on interactive PATH was wrong. The explicit Makefile toolchain is present; source gates must invoke the pinned path/Makefile. |
+| Mac administrator route | Account UID is `502`, groups do not include `admin`; `sudo -n -l` reports `sudo: a password is required`. | This proves only that unattended elevation is unavailable and this account is not a local admin. An authorized interactive Mac administrator/operator can satisfy privileged operations. No such named operator/session is yet evidenced. |
+| OCI provider access | OCI CLI 3.94.2 is installed on the Mac, but `~/.oci`/`~/.oci/config` and auth/profile/config environment variables are absent. The read-only region-list probe stopped at its missing-config prompt and was cancelled before writing a config or making an API request. OCI CLI is absent on Ubuntu. | There is no verified read-only OCI identity or named operator evidence. This does not prove provider resources are absent. VNIC OCIDs/IPs are known from instance metadata, but the VCN/subnets, NSG/security-list rules, route/gateway/NAT, attached volume IDs/performance, backup policy and provider rollback handles are not. |
+| Mac APFS and snapshots | At follow-up, container `disk3` capacity is `494384795648` B; in use `316379525120` B; unallocated `178005270528` B. It is backed by internal physical `disk0s2`. Data volume `disk3s1` consumes `289262825472` B; no Data-volume snapshots and no Time Machine local snapshots were listed. The sealed system snapshot consumes about 12.6 GB and is already included in the container baseline. `diskutil list` found no separate physical backup disk; `disk4` is a 152 MB disk image. | The calculated floor and proposed full envelope are below. Future Runner snapshots have a 10 GiB budget; none can be measured yet because no lane volumes exist. A distinct same-host cache-backup device remains unidentified. |
+| Linux filesystems, inodes and devices | Root is ext4 on `/dev/sda1` (`8:1`), on OCI `BlockVolume` disk `/dev/sda` (`8:0`) for all three hosts. Current `project` ext4 feature and project-quota mount option are absent on all roots. Root block-device I/O/VPU performance is not in host metadata. | Do not try to apply project quotas to the existing PRD root in this package. Use new, separately approved quota-capable volumes. OCI performance metadata is required to set numerical per-device I/O caps. |
+| `linux-host` capacity and cgroups | Root C=`48274628608` B, U=`25560256512` B, available=`22697594880` B (47%); 288,498/5,999,616 inodes used (5%). Kernel `5.15.0-1081-oracle`, systemd `245.4`; v2 is only `/sys/fs/cgroup/unified` with empty controllers while v1 trees are active. `/proc/cmdline` has no cgroup mode argument; GRUB defaults are `quiet splash`. `docker.service`, `containerd.service`, `runnerd.service`, and `snapd.service` are active. `runnerd.service` has `Delegate=no`, CPUAccounting/IOAccounting off. | Hybrid cgroups are incompatible with the planned v2 lane controls. A conversion needs a tested compatibility package and separately approved production maintenance/reboot. This is not an `io.max` verdict about current PRD. |
+| `sandbox-host` capacity and cgroups | Root C=`54958841856` B, U=`53209952256` B, available=`1732112384` B (3%); 799,699/6,872,192 inodes used (12%). Unified v2 root, `system.slice` and existing `runnerd.service` expose `cpuset cpu io memory pids`; systemd `249.11`. The PRD `runnerd.service` has `Delegate=no`, `IOAccounting=no`, and its `io.max` is empty. | The current root is below the 30% floor. The empty PRD service `io.max` is not itself a lane failure; Dev/QAS and management scopes need their own verified caps. Preserve the current PRD service. |
+| `factory-sandbox` capacity and cgroups | Root C=`50839412736` B, U=`4198699008` B, available=`46623936512` B (92%); 170,484/6,146,560 inodes used (3%). Unified v2 root advertises `io`, but `system.slice` and `runnerd.service` expose only `cpu memory pids`; systemd `259.5`. Existing PRD unit has `Delegate=no`, `IOAccounting=no`. | This is a new-scope controller-propagation task, not an existing PRD lane failure. Enable/verify `io` only through the approved new management/Dev/QAS hierarchy; do not modify `runnerd.service` or claim a numeric cap before measuring volume performance. |
+| Native fixtures | No disposable storage, fixture service or isolated test volume was provisioned. | A01 may approve separate test devices/quotas and loopback namespace; L2 proves the controls there. No fixture is a PREP prerequisite and none exists now. |
 
-The all-host lane-runtime capacity proof is therefore not green. The sandbox
-free-byte gate fails, linux-host's active systemd hierarchy does not expose the
-required cgroup-v2 controls, and factory-sandbox has not delegated `io` to its
-Runner service. The Mac and other Linux policy equations also remain incomplete;
-no substitute limits or reduced host cohort are proposed.
+### Current disk/cache accounting and proposed Linux A01 envelope
+
+Go cache sizes below are `du -sB1` observations; inode counts are `du -s
+--inodes`. Other selected totals are bounded reads of known cache/log/Docker
+directories, not a root-wide `du` decomposition. The earlier sandbox root-wide
+walk exceeded the safe observation window and was stopped without mutation;
+unclassified bytes remain in the measured root baseline. All retained work and
+current caches stay in the accounting and are preserved.
+
+| Host | Current root C / U / free | Go build / modules / toolchain (B) | Go cache inodes build / modules | Other selected root use (B) |
+| --- | --- | --- | --- | --- |
+| `linux-host` | `48274628608 / 25560256512 / 22697594880` | `682254336 / 364761088 / 295497728` | `6552 / 7966` | journal `4303667200`; apt `161435648`; Docker `2692218880`; containerd `323584` |
+| `sandbox-host` | `54958841856 / 53209952256 / 1732112384` | `639860736 / 364556288 / 290099200` | `6441 / 7863` | journal `839299072`; apt `155574272`; Docker `1448550400`; containerd `1241088` |
+| `factory-sandbox` | `50839412736 / 4198699008 / 46623936512` | `326692864 / 364343296 / 295510016` | `4154 / 7863` | journal `97533952`; apt `110231552` |
+
+The following is the concrete **engineering proposal**, not an A01 approval or
+configured policy. Each Linux host receives a new 80 GiB lane/management
+filesystem and a separate 16 GiB cache-backup block volume. Format the new
+lane/management filesystem as ext4 with the `project` feature, mount with
+`prjquota`, and verify byte and inode hard limits before any service uses it.
+Existing roots lack that feature; do not reformat or retrofit the production
+root. ext4 requires the `project` feature for `prjquota` ([ext4 manual](https://www.man7.org/linux/man-pages/man5/ext4.5.html)).
+
+| Project | Canonical mount/bind path | Hard byte budget | Hard inode budget | Contents |
+| --- | --- | ---: | ---: | --- |
+| Dev (`project_id=1001`) | Volume child bound to `/home/ubuntu/.local/share/remote-session-runner-dev` | 16 GiB | 524,288 | Dev root, workspace, DB/WAL, inbox, outputs and logs; the 576 MiB log cap is included |
+| QAS (`project_id=1002`) | Volume child bound to `/home/ubuntu/.local/share/remote-session-runner-qas` | 16 GiB | 524,288 | QAS root, workspace, DB/WAL, inbox, outputs and logs; the 576 MiB log cap is included |
+| Management staging (`project_id=1003`) | `/var/lib/remote-session-runner/management` | 8 GiB | 131,072 | Builder, staging, release transport, anchor/helper and bounded management logs |
+| Go build cache (`project_id=1004`) | Bind at existing `/home/ubuntu/.cache/go-build` | 6 GiB | 196,608 | Copy current cache with owner/mode verification; preserve the old directory under the mount for rollback |
+| Go module cache (`project_id=1005`) | Bind at existing `/home/ubuntu/go/pkg/mod` | 2 GiB | 65,536 | Copy current cache with owner/mode verification; preserve the old directory under the mount for rollback |
+| Cache backup (`project_id=1006`, separate device) | `/var/lib/remote-session-runner/cache-backup` | 8 GiB of 16 GiB | 262,144 | Latest and immediately previous verified release-cache backups; on limit, refuse the new backup and request owner disposition, never auto-delete |
+
+The first five projects total 48 GiB on an 80 GiB volume, leaving 40% of its
+bytes free at every hard cap. Set inode density to at least one inode per 16
+KiB (about 5.24 million on 80 GiB); the proposed 1,441,792 project inode caps
+leave over 70% unassigned. The 16 GiB backup filesystem is a second block
+device, not a second partition on the same device, and has at most 50% of bytes
+and 25% of inodes allocated. The stable Go cache paths remain the ones returned
+by the explicit Go binary. Bind mounting is a proposed authorized operation;
+it is not installed.
+
+For sandbox-host, expand its backing boot BlockVolume so `/dev/sda1` grows to
+at least 80 GiB. Current use is 49.55 GiB, so that root target leaves 38.06%
+free; the minimum root size from the present use alone is 70.79 GiB. Then the
+80 GiB lane/management volume and distinct 16 GiB backup device give this
+full-envelope calculation (current root use already includes PRD, Docker,
+journal, toolchain and old caches; the new 48 GiB budget includes a full 8 GiB
+cache allowance and the separate backup budget adds 8 GiB):
+
+```text
+sandbox capacity = 80 + 80 + 16 = 176 GiB
+sandbox peak use = 49.55 + 48 + 8 = 105.55 GiB
+projected free = 70.45 GiB = 40.03% (>= 30%)
+```
+
+The other proposed aggregate envelopes also clear 30%: linux-host has about
+140.96 GiB capacity / 79.80 GiB peak use / 43.38% free, and factory-sandbox
+about 143.35 GiB / 59.91 GiB / 58.21% free. Each existing root itself remains
+above 30%; each new filesystem meets its own floor. These calculations are
+capacity proposals based on the observed current roots, not fresh L0 proof.
+They must be recomputed from exact OCI-attached sizes, inode capacity and use,
+PRD growth/retention and the approved volume performance before A01 approval.
+
+**Linux production impact and rollback.** The new volumes isolate lane and
+management writes from the unsuffixed PRD service. The sandbox boot-volume
+expansion is additive and preserves its existing ext4, retained data, caches,
+Docker, journal and PRD state; it has provider cost and possible device-rescan
+or filesystem-grow interruption, which the OCI operator must establish. New
+mounts can make a lane fail closed if missing; no current PRD unit or root mount
+is to be changed. To roll back before a lane is accepted, disable only the new
+lane/management units, unmount the new devices after confirming no open handles,
+and expose the preserved old cache directories again. Keep all volumes and data
+for review; do not shrink the enlarged root, purge caches or delete retained
+work. Restore only newly added mount entries after proving the unsuffixed PRD
+health route remains available. Exact device IDs, VPU/performance settings and
+provider rollback handles require the bundled OCI read-only/operator input.
+
+### Cgroup correction package
+
+The fixed new Linux unit names are `remote-session-runner-dev.slice`,
+`remote-session-runner-qas.slice`, `runnerd-dev.service`, `runnerd-qas.service`,
+and the corresponding queued-SSH `runner-sshd-dev.service` /
+`runner-sshd-qas.service`. The proposal is to place the new units in their
+matching lane slices, configure `CPUQuota`, `MemoryMax`, `TasksMax`,
+`IOAccounting=yes`, and per-device `IOReadBandwidthMax` /
+`IOWriteBandwidthMax` / IOPS limits, and request the runtime controllers on the
+new delegated services (`Delegate=cpu cpuset io memory pids`). Set exact limits
+only after OCI volume performance and L2 workload evidence are available.
+systemd delegation applies to services/scopes, not slices; `Delegate=` exposes
+the service's child tree and does not itself enable controllers
+([systemd delegation guide](https://systemd.io/CGROUP_DELEGATION/)).
+
+| Host | Exact correction proposal | Production impact, verification and rollback |
+| --- | --- | --- |
+| `linux-host` | Current v2-only mount has no controllers; v1 controllers are mounted separately. Kernel 5.15 supports `cgroup_no_v1=all`; installed systemd's own manual confirms `systemd.unified_cgroup_hierarchy=1` selects unified v2. After containerd/Docker compatibility review and an approved window, append `systemd.unified_cgroup_hierarchy=1 cgroup_no_v1=all` to the existing `GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"`, regenerate GRUB, preserve the old boot entry, then reboot through console/out-of-band access. Do not alter `runnerd.service`. | This affects every v1 consumer; Docker/containerd are active, so their versions, cgroup driver and workloads must pass a clone/staging test first. A reboot and service interruption are required. Verify a single `/sys/fs/cgroup` hierarchy, required controllers, Docker/containerd, SSH, existing PRD `:8443` mTLS readiness, and a new isolated slice's `io.max`/descendant membership. Roll back by booting the preserved prior entry, restoring the exact original GRUB default, regenerating the menu and rechecking PRD health. No boot change or reboot is authorized yet. |
+| `sandbox-host` | Keep unified-v2. Apply accounting and hard resource/I/O controls only to new management and lane scopes. Do not interpret the existing empty PRD `runnerd.service/io.max` as a failure and do not change that unit. | Staged L2 fixture must prove controller propagation, per-device caps, hard byte/inode quotas and PRD `:8443` health under saturation. Roll back only new test units and mounts under their A01 fixture manifest; existing service stays untouched. |
+| `factory-sandbox` | Keep unified-v2. Root advertises `io`, but `system.slice` does not currently expose it. Validate controller propagation for new lane/management services with their I/O accounting/limits; if the parent needs I/O accounting enabled, change only the minimum required systemd parent configuration under a separate host approval, with no PRD `runnerd.service` change. | Confirm the new service sees `io`, an actual per-device `io.max` appears and is enforced in L2, descendants stay within the lane, and PRD health remains green. Account for any additional I/O accounting on other system.slice services in workload review. Roll back only the new scope/drop-in after units stop and verify the original PRD service remains active. |
+
+Kernel v2 controllers cannot safely be moved between hierarchies after boot;
+the kernel documentation recommends selecting hierarchy/controller placement
+before service startup and documents `cgroup_no_v1=` as the boot control
+([kernel cgroup-v2 guide](https://kernel.org/doc/html/v5.19/admin-guide/cgroup-v2.html),
+[kernel parameters](https://docs.kernel.org/6.4/admin-guide/kernel-parameters.html)).
+For all hosts, `io.max` limits are keyed to the volume's actual major/minor
+device and require an observed performance baseline; current OCI `BlockVolume`
+labels and host-visible devices do not provide VPU throughput or IOPS. No
+numeric I/O cap is guessed in this package.
+
+## Proposed Mac A01 capacity and privileged-operation package
+
+The Mac's measured `GOCACHE` and `GOMODCACHE` are respectively `1725832` and
+`354328` KiB (combined `2130083840` B, 1.984 GiB). Proposed APFS Data-container
+volumes, all on `disk3`, are:
+
+| Purpose | Mountpoint | APFS quota/budget |
+| --- | --- | ---: |
+| Dev service root | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-dev` | 16 GiB |
+| QAS service root | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-qas` | 16 GiB |
+| Go build cache | Existing `/private/tmp/remote-session-runner-gocache` path | 6 GiB |
+| Go module cache | Existing `/private/tmp/remote-session-runner-gomodcache` path | 2 GiB |
+| Host-management staging | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-host-management` | 8 GiB |
+| Runner-managed snapshots | Aggregate across approved lane volumes | 10 GiB total |
+| Release-cache backup | Separate physical device, not in `disk3` | 16 GiB device; 8 GiB budget and independent 8 GiB low-water |
+
+The four Data-container quota groups plus the future snapshot ceiling consume
+58 GiB at maximum. Using full maxima in addition to current use conservatively
+preserves both the existing cache trees under the new mountpoints and every
+other current Data/System/Preboot/Recovery/VM byte:
+
+```text
+Data container C = 494384795648 B; current unallocated F = 178005270528 B
+floor = max(20 GiB, ceil(0.15 * C)) = 74157719348 B
+future maximum = (16 + 16 + 6 + 2 + 8 + 10) GiB = 62,277,025,792 B
+projected unallocated = F - future maximum = 115,728,244,736 B
+margin over floor = 41,570,525,388 B
+```
+
+The APFS volumes should be mounted at the same cache paths the Makefile exports.
+Seed each new cache volume with a verified copy; leave the original cache data
+under the mountpoint for rollback. Do not run `go clean` or delete shared cache
+contents. `diskutil list` showed only the internal physical store for `disk3`;
+the mounted MyTE disk image is not a distinct backup device. The separate 16
+GiB backup device is therefore still an input, and the Mac equation does not
+count it against Data-container capacity.
+
+After the exact A01 storage package and interactive administrator route are
+approved, the named Mac administrator's operation list is: (1) prepare only
+the six empty owner-only mountpoint directories, with Tomasz UID 502 ownership
+and `0700` mode; (2) use Disk Utility/`diskutil apfs addVolume disk3 APFS` to
+create the six quota-bound volumes at the approved paths and record generated
+volume UUIDs and mount receipts; (3) seed the two new cache volumes without
+removing source data; (4) install the owner-only volume/mount policy; (5) verify
+`diskutil apfs list`, each UUID/mount/quota, `df`, owner/mode, cache read
+integrity, Data unallocated floor, and snapshot total; and (6) stop on any
+identity or headroom mismatch. Actual UUIDs are produced only at this approved
+step. No such operation ran in PREP.
+
+**Mac production impact and rollback.** New quota-limited service and cache
+volumes consume shared APFS container headroom; full-cache or staging volumes
+must refuse further build/staging writes rather than spill into PRD. This does
+not provide CPU/RAM/PID isolation. The copy-and-mount cache approach leaves
+existing contents underneath the mount. Before service use, rollback is to
+unmount only the new volume and restore the old mount view; leave the new volume
+and its contents intact for review. Do not delete or shrink a used volume.
+Snapshot cleanup is not an automatic rollback: preserve snapshots and require
+the exact A01 retention/disposition before any removal. A separate device is
+required for the backup floor.
 
 ## Mailbox and producer readiness
 

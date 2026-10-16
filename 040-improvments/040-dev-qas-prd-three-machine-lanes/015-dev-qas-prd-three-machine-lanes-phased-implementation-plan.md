@@ -191,9 +191,12 @@ three Ubuntu hosts.
    Record the external-dependency owners/access and BUG-021–024 applicability
    inventory above; unresolved runtime applicability may remain pending for
    source work, but cannot satisfy a later affected deployment/acceptance gate.
-4. Derive, but do not sign or publish, the two policy-scope types per host: one
-   proposed `host_management` policy and one proposed `lane_runtime` policy for
-   each contemplated lane. The `host_management` policy names only measured
+4. Derive, but do not sign or publish, one proposed `host_management` policy
+   per host and a numerical draft `lane_runtime` envelope for each contemplated
+   lane. If future lane volumes do not yet exist, name their approved proposed
+   mountpoints and budgets and record their identity/UUID as `ABSENT`; do not
+   require a generated UUID or fabricate a capacity measurement. The
+   `host_management` policy names only measured
    management scope, PRD safety floor, cache/staging/backup/log budget, and
    headroom; it can support the L3 bootstrap before lane storage exists. Each `lane_runtime`
    policy names one lane plus the complete PRD/Dev/QAS/management envelope. On
@@ -219,9 +222,11 @@ three Ubuntu hosts.
 5. Record the separately approved storage-preparation handoff manifest for every
    future Dev/QAS service-root and enabled external mailbox volume, including
    the exact five-child mailbox layout and `initialized_empty` state, or record
-   it as absent. Absence may pass a pre-L3 bootstrap inventory but prevents a
-   lane-runtime policy and therefore L4/L5. L0 does not create, repair, resize,
-   or mount a volume.
+   it as absent. PREP and the initial unsigned L0 do not require these future
+   volumes, generated UUIDs, or the later L2 pressure-test results. Their absence
+   blocks only a matching lane-runtime policy and L4/L5. The real pre-L3
+   host-management storage, capacity, PRD floor, access and route gates still
+   have to pass. L0 does not create, repair, resize, or mount a volume.
 6. Stop if an existing PRD route is degraded, a planned route prerequisite is
    infeasible or ambiguous, a host has insufficient capacity, listener ownership
    is ambiguous, a quota/cgroup/cache/log bound cannot be enforced, a snapshot
@@ -239,6 +244,13 @@ repeat that host's L0 locally and publish the first signed
 The ledger distinguishes a complete read-only inventory from any pending
 external provision, approval, or runtime-defect acceptance; L0 PASS supplies
 none of those later proofs.
+
+The initial L0 can pass its pre-L3 host-management inventory while future Dev/QAS
+volumes remain explicitly absent; it does not pass or issue a lane-runtime
+policy on their behalf. An actual capacity failure such as sandbox-host's
+current free-space result remains a stop until corrected and remeasured. L2's
+native pressure results arrive in their ordered L2 units and are not prerequisites
+for PREP or this initial L0.
 
 ### Required external precondition — Dev/QAS storage preparation
 

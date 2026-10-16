@@ -71,8 +71,8 @@ serial sequence; do not seek a different observation route.
 | Packet item | Upfront decision and collection/validation rule |
 | --- | --- |
 | Baseline and source transport | Record actual Mac/Gitea/GitHub/three-host revisions and worktrees using AGENTS identities; inspect installed component build/status and safe artifact/configuration identities independently of checkout HEAD |
-| Operator access | Tomasz is the default owner above. Verify actual account/root and necessary provider access through approved read-only routes; record any explicit delegation and capability. An SSH login is not proof of provider API/firewall authority |
-| Host capacity/storage plan | Inventory all host/device/filesystem/volume identities, PRD use, free bytes/inodes, cgroups/I/O and normal cache paths. Freeze the complete proposed budget and exact management-backup/Dev/QAS volume creation plan under design §6. Actual new UUIDs are collected after approved creation; they are not guessed beforehand |
+| Operator access | Tomasz is the accountable owner and default coordinator above. Record ownership separately from technical access. Verify actual account/root and necessary provider access through approved read-only routes; record any explicit delegation and capability. An SSH login is not proof of provider API/firewall authority, and `sudo -n` failure proves only that unattended elevation is unavailable; an authorized interactive administrator route may satisfy the requirement |
+| Host capacity/storage plan | Inventory all host/device/filesystem/volume identities, PRD use, free bytes/inodes, cgroups/I/O and normal cache paths. Freeze proposed budgets and exact management-backup/Dev/QAS volume operations under design §6 from existing measurements. PREP and the initial unsigned L0 do not require future Dev/QAS volumes, generated UUIDs, or L2 pressure-test results. Record those volumes as absent until the separately approved A01 provision. Before L3, however, the real host-management scope, cache/staging/backup storage, PRD floor and headroom must pass; lane-runtime policies and L4/L5 remain blocked until the post-L3 storage handoff supplies and verifies real UUIDs, mountpoints and quotas |
 | Isolated native fixtures | Name exact disposable storage/device scopes and maximum quotas, unique test namespace and loopback ports, root operator and cleanup manifest for L2/L3/L6/L7 drills. Provision only at the declared approved step. No real PRD root, key, authority, ownership marker or incident request is a destructive fixture |
 | Network | Fix design endpoint/bind/port maps and preserve existing PRD access/source policy. Collect actual host/provider rule inventory; prepare exact rule additions needed by that fixed map and their rollback. Source-address restrictions use the verified intended control-plane/client addresses. An unverified NAT/source path blocks readiness, not a prompt to choose a different route |
 | Producer and maintenance plan | Inventory all active PRD roots and actual request/ACK publishers/direct clients. Obtain each owner's verified pause/fence procedure and record a maintenance scheduling rule: Tomasz opens the declared window only after all pause controls and zero-work preflight pass. No guessed calendar time or paused producer is required before coding |
@@ -87,6 +87,17 @@ Missing existing credentials/access or a genuine failed gate is a blocker
 reported with exact evidence and the prepared corrective action. That differs
 from an unanswered design question. Once readiness passes, continue the fixed
 sequence without asking whether to take the next ordinary implementation step.
+
+**Gate timing.** PREP produces a measured, numerical engineering proposal and
+the exact correction/access packages; it does not wait for proposed resources
+to be created. The initial unsigned L0 may report future Dev/QAS service-root
+volumes as absent and must not invent their UUIDs. It still enforces actual
+current capacity, PRD health, management-storage and access gates. A passing
+pre-L3 host-management result is not a lane-runtime policy. L2 pressure fixtures
+run in their ordered implementation units and prove controls there; their later
+results are not PREP or initial-L0 prerequisites. After L3, A01-approved lane
+volumes are created and identified, and a fresh L0 must verify them before the
+matching L4/L5 lane-runtime policy or installation.
 
 ## 3. Declared approval checkpoints
 
