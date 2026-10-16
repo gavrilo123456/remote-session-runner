@@ -1,0 +1,6 @@
+{"command_id":"cmd-c7dc5c98c2fe41e998086eca10311add","sequence":1,"type":"command_queued","timestamp":"2026-10-16T09:00:17.944988Z","ordinal":1}
+{"command_id":"cmd-c7dc5c98c2fe41e998086eca10311add","sequence":2,"type":"command_started","timestamp":"2026-10-16T09:00:17.949164Z","ordinal":1}
+{"command_id":"cmd-c7dc5c98c2fe41e998086eca10311add","sequence":3,"type":"stdout","timestamp":"2026-10-16T09:00:18.0153Z","ordinal":1,"encoding":"utf8","text":"BUG024_WORKSPACE_MAC_OK\n","byte_count":24}
+{"command_id":"cmd-c7dc5c98c2fe41e998086eca10311add","sequence":4,"type":"stdout","timestamp":"2026-10-16T09:00:18.165893Z","ordinal":1,"encoding":"utf8","text":"tomasz.walczuk\nDarwin\narm64\n","byte_count":28}
+{"command_id":"cmd-c7dc5c98c2fe41e998086eca10311add","sequence":5,"type":"stdout","timestamp":"2026-10-16T09:00:18.180161Z","ordinal":1,"encoding":"utf8","text":"AMAK2KJ6X9JJJ\n","byte_count":14}
+{"command_id":"cmd-c7dc5c98c2fe41e998086eca10311add","sequence":6,"type":"command_succeeded","timestamp":"2026-10-16T09:00:18.187121Z","ordinal":1,"exit_code":0}

@@ -1,0 +1,217 @@
+{
+  "installed_mac_revision": "77910358a149d6e8fcdf4694498ebdf6c1f07f58",
+  "mailbox_root": "/Users/tomasz.walczuk/projects/remote-session-runner/runner/mailbox-",
+  "inbox_id": "remote-session-runner-workspace",
+  "original_incident": {
+    "inbox_id": "agentic-software-factory-runner-direct",
+    "request_id": "req-asf-ext-20261015-harness-01",
+    "job_id": "job-f0917cc13fe809c27d626401a952f5ed",
+    "session_id": "sess-5b9be3c1c9186dc2a78edee42238927b",
+    "command_id": "cmd-bd164c1d3a600569a58baddfe9336ed4",
+    "response_revision": 3,
+    "cursor": 7,
+    "response_sha256": "1000fbdd268fc0c65b70a75a11d30d7e9ec323ab89f7072b54a0fa43de6c520f",
+    "events_sha256": "9c23b99831dd3f6d0bed99513a2c3c0f6645a8e3487e26b6935c00d774531eb1",
+    "physical_cause": "unknown",
+    "supported_teardown_recovery_passed": true,
+    "ack_held": true
+  },
+  "source_fix_commit": "ca79ddea9a9010cdbf083710653a8db6dae1e600",
+  "tested_commit": "d90155bd8a9391a14759b420c7a49b48f5a0d0a8",
+  "approved_active_config_sha256": "65840e66837dedfa17f5c32568d191a0bbfd6098bcc108d7ba4066f44fb95711",
+  "routes": [
+    {
+      "route": "mac",
+      "verified_at_utc": "2026-10-16T09:01:43.043594+00:00",
+      "request_id": "req-bug024-20261016-mac-01",
+      "job_id": "job-e0b3e498c18985a329d65c4be124da36",
+      "session_id": "sess-581f66867ac4bde8fb96d273abdd2576",
+      "command_id": "cmd-c7dc5c98c2fe41e998086eca10311add",
+      "response_revision": 2,
+      "cursor": 6,
+      "hostname": "AMAK2KJ6X9JJJ",
+      "stdout": "BUG024_WORKSPACE_MAC_OK\ntomasz.walczuk\nDarwin\narm64\nAMAK2KJ6X9JJJ\n",
+      "response_sha256": "435327d67f16d96e15053b0bc5e72290e02f4d42785906b7fb94012bae35aa13",
+      "events_sha256": "bd6cfeb34e5f7ad60c4df938b7af605b692668bb1192b407d6efa3b9ea0d0f64",
+      "ack": {
+        "request_id": "req-bug024-20261016-mac-01",
+        "response_revision": 2,
+        "available_event_sequence": 6
+      },
+      "ack_consumed": true,
+      "response_archive_final_lf_added": true
+    },
+    {
+      "route": "linux",
+      "verified_at_utc": "2026-10-16T09:03:24.860692+00:00",
+      "request_id": "req-bug024-20261016-linux-01",
+      "job_id": "job-26521a288dba49c9717a75482904b7b6",
+      "session_id": "sess-ff38cce48e95fc160c5171c766ab71dd",
+      "command_id": "cmd-af33f399ee0294d78c8cfe2ed1d3a57b",
+      "response_revision": 2,
+      "cursor": 5,
+      "hostname": "oracle-yuta-konopka-ubuntu-micro-02",
+      "stdout": "BUG024_WORKSPACE_LINUX_OK\nubuntu\nLinux\nx86_64\noracle-yuta-konopka-ubuntu-micro-02\n",
+      "response_sha256": "0be1ef69c8d8005000de5e8d26fc9b23b399b834f6b3e03b4526bb54a02dd737",
+      "events_sha256": "8693c6a8e4b52f7e848e73e081d271f8574a63f4b3c45a3c6e8435a9e568316a",
+      "ack": {
+        "request_id": "req-bug024-20261016-linux-01",
+        "response_revision": 2,
+        "available_event_sequence": 5
+      },
+      "ack_consumed": true,
+      "response_archive_final_lf_added": true
+    },
+    {
+      "route": "sandbox",
+      "verified_at_utc": "2026-10-16T09:04:04.016275+00:00",
+      "request_id": "req-bug024-20261016-sandbox-01",
+      "job_id": "job-55bc5839d5358e8fb17a690cf44f1661",
+      "session_id": "sess-faa3d688dad736e0815de1d45728c870",
+      "command_id": "cmd-16aa57086ba55eaf260ff0dc5ed0845d",
+      "response_revision": 2,
+      "cursor": 5,
+      "hostname": "oracle-gustaw-janecki-ubuntu-flex-02",
+      "stdout": "BUG024_WORKSPACE_SANDBOX_OK\nubuntu\nLinux\naarch64\noracle-gustaw-janecki-ubuntu-flex-02\n",
+      "response_sha256": "dbf014fadea8b18d2b5b931a944f1ab0867b31488dc2ca76e354b71273016939",
+      "events_sha256": "2e540cc012a29adbafabefe5252b84aa92b7968a3fa5559f49fa2257b42c56e6",
+      "ack": {
+        "request_id": "req-bug024-20261016-sandbox-01",
+        "response_revision": 2,
+        "available_event_sequence": 5
+      },
+      "ack_consumed": true,
+      "response_archive_final_lf_added": true
+    },
+    {
+      "route": "factory",
+      "verified_at_utc": "2026-10-16T09:05:00.276858+00:00",
+      "request_id": "req-bug024-20261016-factory-01",
+      "job_id": "job-f9ab3683d35830edac2a24837a2cc3ce",
+      "session_id": "sess-44a67113199d0047e2e1bcddd0d8689b",
+      "command_id": "cmd-a80e9ad7f84b1d1d5bc3db8ee1fe695c",
+      "response_revision": 2,
+      "cursor": 5,
+      "hostname": "oracle-waclaw-dziwulski-ubuntu-micro-01",
+      "stdout": "BUG024_WORKSPACE_FACTORY_OK\nubuntu\nLinux\nx86_64\noracle-waclaw-dziwulski-ubuntu-micro-01\n",
+      "response_sha256": "faca49a28aa0266ec8641d9f7a9667229d4f7fa276f390551096f1e228fbca37",
+      "events_sha256": "aba6057490b619ad049a6fab7caf533960ff0a5bac958c7c014ec81dff2acf14",
+      "ack": {
+        "request_id": "req-bug024-20261016-factory-01",
+        "response_revision": 2,
+        "available_event_sequence": 5
+      },
+      "ack_consumed": true,
+      "response_archive_final_lf_added": true
+    }
+  ],
+  "postflight": {
+    "observed_at_utc": "2026-10-16T09:06:00.753873+00:00",
+    "health": {
+      "local-api.sock": {
+        "component": "mac_ingress",
+        "build_revision": "77910358a149d6e8fcdf4694498ebdf6c1f07f58",
+        "liveness": "live",
+        "readiness": "ready",
+        "observed_at": "2026-10-16T09:06:00.6163Z",
+        "checks": [
+          {
+            "component": "sqlite_writes",
+            "state": "ready",
+            "required_for_readiness": true
+          },
+          {
+            "component": "remote_router/factory-sandbox",
+            "state": "ready",
+            "required_for_readiness": false,
+            "details": {
+              "pending_intents": 0,
+              "uncertain_intents": 0
+            }
+          },
+          {
+            "component": "remote_router/linux-host",
+            "state": "ready",
+            "required_for_readiness": false,
+            "details": {
+              "pending_intents": 0,
+              "uncertain_intents": 0
+            }
+          },
+          {
+            "component": "remote_router/sandbox-host",
+            "state": "ready",
+            "required_for_readiness": false,
+            "details": {
+              "pending_intents": 0,
+              "uncertain_intents": 0
+            }
+          }
+        ],
+        "metrics": {
+          "active_session_slots": 0,
+          "active_command_slots": 0,
+          "queued_commands": 0,
+          "queued_intents": 0,
+          "dispatch_attempts_total": 2392,
+          "reconciliation_age_seconds": 0,
+          "event_lag_events": 0,
+          "event_gaps_total": 0,
+          "output_truncations_total": 0,
+          "storage_errors_total": 0,
+          "cleanup_failures_total": 0,
+          "mailbox_backlog": 1,
+          "mailbox_backlog_by_inbox": {
+            "agentic-factory-test-project-01-runner": 0,
+            "agentic-factory-test-project-02-runner": 0,
+            "agentic-software-factory-runner-direct": 0,
+            "agents-work-dispatcher": 0,
+            "analytics": 0,
+            "default": 0,
+            "remote-session-runner-workspace": 0,
+            "slidestud-io": 1
+          }
+        }
+      },
+      "locald.sock": {
+        "component": "mac_local_executor",
+        "build_revision": "77910358a149d6e8fcdf4694498ebdf6c1f07f58",
+        "liveness": "live",
+        "readiness": "ready",
+        "observed_at": "2026-10-16T09:06:00.652872Z",
+        "checks": [
+          {
+            "component": "sqlite_writes",
+            "state": "ready",
+            "required_for_readiness": true
+          },
+          {
+            "component": "mac_host_profile",
+            "state": "ready",
+            "required_for_readiness": true
+          }
+        ],
+        "metrics": {
+          "active_session_slots": 0,
+          "active_command_slots": 0,
+          "queued_commands": 0,
+          "queued_intents": 0,
+          "dispatch_attempts_total": 2392,
+          "reconciliation_age_seconds": 0,
+          "event_lag_events": 0,
+          "event_gaps_total": 0,
+          "output_truncations_total": 0,
+          "storage_errors_total": 0,
+          "cleanup_failures_total": 0,
+          "mailbox_backlog": 1
+        }
+      }
+    },
+    "restart_preflight_exit": 0,
+    "restart_preflight_output": "runner-locald preflight-restart: local execution is quiescent",
+    "new_request_and_ack_pairs_consumed": true,
+    "original_response_and_events_unchanged": true,
+    "original_ack_held": true,
+    "original_owner_marker_and_workspace_finalized": true
+  }
+}

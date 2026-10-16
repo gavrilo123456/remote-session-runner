@@ -4,15 +4,15 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN_PROGRESS` — source repair validated and delivered; retained incident still needs guarded disposition |
-| Severity | High — safe session/capacity release is unproven |
+| Status | `RESOLVED` — approved original disposition and fresh installed mailbox acceptance passed |
+| Severity | High — lost teardown can retain session capacity |
 | Priority | High |
 | Reported | 2026-10-15 |
 | Discovered by | Codex during Agentic Software Factory extended feasibility |
 | Owner | Remote Session Runner |
 | Affected component/path | Mac one-off ephemeral session close/job reconciliation |
 | Affected revision | Incident-time installed revision unknown; contemporaneous inspected source `51ec4134df6dce2021936458026caaacb2226fad`; retained state verified on installed Mac `b71aaef0859bd0266c343e638e62e268999a388b` on 2026-10-16 |
-| Fixed revision / verification | Source `ca79ddea9a9010cdbf083710653a8db6dae1e600`; installed recovery / acceptance pending |
+| Fixed revision / verification | Source `ca79ddea9a9010cdbf083710653a8db6dae1e600`; installed Mac `77910358a149d6e8fcdf4694498ebdf6c1f07f58`, verified 2026-10-16 |
 
 ## Reported and expected behavior
 
@@ -44,20 +44,20 @@ The [first-round ledger](/Users/tomasz.walczuk/projects/agentic-software-factory
 
 This differs from BUG-019/020's originally running command: here command success and output are present, while ephemeral teardown is lost. Their historical resolution is not proof this later request recovered. Subsequent fresh jobs closed normally; they establish neither recovery nor absence of retained capacity for this session.
 
-A previous owner-route get_session lookup returned `resource_not_found: local intent not found`; it did not supply a recovery disposition. The exact physical teardown cause is unknown. No child-process, capacity leak or universal runtime failure is asserted without authoritative evidence.
+A previous owner-route get_session lookup returned `resource_not_found: local intent not found`; it did not supply a recovery disposition. The exact original physical teardown cause remains unknown. The later guarded investigation confirmed the exact retained session reservation and matching owned runtime marker, with no process/group 80710 present. This establishes retained capacity without asserting an original child-process failure or universal runtime defect.
 
-Trace the exact close intent, session/job transitions, owned process identity, close/output boundaries, retained capacity and safe error projection at the installed build. Preserve the original response and correlated event prefix through cursor 7. A fresh harmless reproduction may be requested after diagnosis with new identities; do not replay this historical test body.
+Source inspection reproduced a cleanup observation race: a redirected descendant can briefly remain after Bash reap and complete command output. Cleanup now permits a bounded 500 ms observation period. A persistent group, inspection error or cancellation still retains evidence/capacity. This source regression does not prove the historical incident had that cause.
 
 ## Fix and verification
 
 Registration did not attempt recovery. Repair and acceptance are tracked in
 [`040-implementation-evidence/BUG-024.md`](../040-implementation-evidence/BUG-024.md).
-Required gate:
+Completed gates:
 
-1. Explain the original close failure or preserve its uncertainty explicitly, with a supported owner-scoped disposition for the exact session/command pair.
-2. Prove terminal teardown success/failure transitions, exactly-once reconciliation and no body replay in source regressions.
-3. Verify the installed fix through a fresh Mac one-off: command result, complete classified output, contiguous terminal cursor and closed teardown.
-4. Verify proof-based capacity release through the supported interface. ACK the original only after an approved investigation/recovery disposition; never ACK it merely because later jobs pass.
+1. **PASS:** original physical cause remains explicitly unknown; approved installer-mediated recovery proved cleanup for the exact owner/session/command and released only its retained session reservation.
+2. **PASS:** source regressions cover success, retained uncertainty, whole-set proof, atomic rollback, crash/finalization retry, GC protection, immutable outcomes/events and no body replay. Full suites and vet pass on Mac and all three Ubuntu hosts; race checks pass on Mac, primary AMD64 Linux and ARM64 sandbox. The extra factory race check is unavailable without a C compiler.
+3. **PASS:** fresh native Mac request `req-bug024-20261016-mac-01` succeeded with exit 0, complete untruncated output, cursor 6 and closed teardown; its archived response/events and consumed ACK are recorded in the evidence.
+4. **PASS:** the guarded installer reported `recovered_teardown_pairs=1`, finalized the original owned marker/workspace, and passed its zero-capacity postflight. Original response/event hashes are unchanged. The original ACK remains held as explicitly approved.
 
 ## Resolution and history
 
@@ -69,6 +69,12 @@ lost-teardown recovery route. This route preserves the historical successful
 command and lost job, and releases only the session reservation after exact
 ownership proof. It does not make the old lost response successful.
 
-Live acceptance and original disposition remain pending. The original ACK is
-**held**. No historical script was replayed and no direct database or private API
-mutation was used.
+Approved live recovery and mailbox activation passed on 2026-10-16. Both Mac
+services are ready at installed revision `77910358a149d6e8fcdf4694498ebdf6c1f07f58`.
+The repository mailbox is active directly at
+`/Users/tomasz.walczuk/projects/remote-session-runner/runner/mailbox-`, with all
+four fresh Mac/remote route checks passed and ACKed. Final local capacity,
+queues and resumable work are zero. The original successful command and lost
+historical job remain unchanged; its original ACK is intentionally **held**.
+No historical script was replayed, no direct database or private API mutation
+was used, and no forced restart was needed.

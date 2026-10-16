@@ -1,0 +1,5 @@
+{"command_id":"cmd-af33f399ee0294d78c8cfe2ed1d3a57b","sequence":1,"type":"command_queued","timestamp":"2026-10-16T09:02:42.802517429Z","ordinal":1}
+{"command_id":"cmd-af33f399ee0294d78c8cfe2ed1d3a57b","sequence":2,"type":"command_started","timestamp":"2026-10-16T09:02:42.813462925Z","ordinal":1}
+{"command_id":"cmd-af33f399ee0294d78c8cfe2ed1d3a57b","sequence":3,"type":"stdout","timestamp":"2026-10-16T09:02:42.845516594Z","ordinal":1,"encoding":"utf8","text":"BUG024_WORKSPACE_LINUX_OK\n","byte_count":26}
+{"command_id":"cmd-af33f399ee0294d78c8cfe2ed1d3a57b","sequence":4,"type":"stdout","timestamp":"2026-10-16T09:02:42.894591075Z","ordinal":1,"encoding":"utf8","text":"ubuntu\nLinux\nx86_64\noracle-yuta-konopka-ubuntu-micro-02\n","byte_count":56}
+{"command_id":"cmd-af33f399ee0294d78c8cfe2ed1d3a57b","sequence":5,"type":"command_succeeded","timestamp":"2026-10-16T09:02:42.896499851Z","ordinal":1,"exit_code":0}

@@ -1,0 +1,5 @@
+{"command_id":"cmd-16aa57086ba55eaf260ff0dc5ed0845d","sequence":1,"type":"command_queued","timestamp":"2026-10-16T09:03:56.065982696Z","ordinal":1}
+{"command_id":"cmd-16aa57086ba55eaf260ff0dc5ed0845d","sequence":2,"type":"command_started","timestamp":"2026-10-16T09:03:56.079822592Z","ordinal":1}
+{"command_id":"cmd-16aa57086ba55eaf260ff0dc5ed0845d","sequence":3,"type":"stdout","timestamp":"2026-10-16T09:03:56.098775697Z","ordinal":1,"encoding":"utf8","text":"BUG024_WORKSPACE_SANDBOX_OK\n","byte_count":28}
+{"command_id":"cmd-16aa57086ba55eaf260ff0dc5ed0845d","sequence":4,"type":"stdout","timestamp":"2026-10-16T09:03:56.106467292Z","ordinal":1,"encoding":"utf8","text":"ubuntu\nLinux\naarch64\noracle-gustaw-janecki-ubuntu-flex-02\n","byte_count":58}
+{"command_id":"cmd-16aa57086ba55eaf260ff0dc5ed0845d","sequence":5,"type":"command_succeeded","timestamp":"2026-10-16T09:03:56.111070737Z","ordinal":1,"exit_code":0}

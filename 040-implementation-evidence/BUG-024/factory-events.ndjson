@@ -1,0 +1,5 @@
+{"command_id":"cmd-a80e9ad7f84b1d1d5bc3db8ee1fe695c","sequence":1,"type":"command_queued","timestamp":"2026-10-16T09:04:56.750514377Z","ordinal":1}
+{"command_id":"cmd-a80e9ad7f84b1d1d5bc3db8ee1fe695c","sequence":2,"type":"command_started","timestamp":"2026-10-16T09:04:56.76334206Z","ordinal":1}
+{"command_id":"cmd-a80e9ad7f84b1d1d5bc3db8ee1fe695c","sequence":3,"type":"stdout","timestamp":"2026-10-16T09:04:56.821583046Z","ordinal":1,"encoding":"utf8","text":"BUG024_WORKSPACE_FACTORY_OK\n","byte_count":28}
+{"command_id":"cmd-a80e9ad7f84b1d1d5bc3db8ee1fe695c","sequence":4,"type":"stdout","timestamp":"2026-10-16T09:04:56.831511626Z","ordinal":1,"encoding":"utf8","text":"ubuntu\nLinux\nx86_64\noracle-waclaw-dziwulski-ubuntu-micro-01\n","byte_count":60}
+{"command_id":"cmd-a80e9ad7f84b1d1d5bc3db8ee1fe695c","sequence":5,"type":"command_succeeded","timestamp":"2026-10-16T09:04:56.834164002Z","ordinal":1,"exit_code":0}
