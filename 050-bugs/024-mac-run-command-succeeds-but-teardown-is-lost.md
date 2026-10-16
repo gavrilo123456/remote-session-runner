@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN_PROGRESS` — source repair under validation; retained incident still needs guarded disposition |
+| Status | `IN_PROGRESS` — source repair validated and delivered; retained incident still needs guarded disposition |
 | Severity | High — safe session/capacity release is unproven |
 | Priority | High |
 | Reported | 2026-10-15 |
