@@ -32,17 +32,19 @@ const (
 )
 
 var (
-	ErrInvalidRegistry    = errors.New("invalid lane registry")
-	ErrGenerationConflict = errors.New("lane registry generation conflict")
-	ErrCollision          = errors.New("lane mailbox root collision")
-	ErrRecordNotFound     = errors.New("lane registry record not found")
-	ErrInvalidTransition  = errors.New("invalid lane registry transition")
-	ErrAlreadyInitialized = errors.New("lane registry already initialized")
-	ErrClosed             = errors.New("lane registry is closed")
-	registryIDPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
-	digestPattern         = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	ancillaryNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
-	fixedMailboxEntries   = map[string]struct{}{"inbox": {}, "outbox": {}, "events": {}, "acks": {}, "diagnostics": {}}
+	ErrInvalidRegistry          = errors.New("invalid lane registry")
+	ErrGenerationConflict       = errors.New("lane registry generation conflict")
+	ErrCollision                = errors.New("lane mailbox root collision")
+	ErrRecordNotFound           = errors.New("lane registry record not found")
+	ErrInvalidTransition        = errors.New("invalid lane registry transition")
+	ErrInvalidReconstruction    = errors.New("invalid lane registry reconstruction proposal")
+	ErrRegistryRecoveryRequired = errors.New("lane registry recovery required")
+	ErrAlreadyInitialized       = errors.New("lane registry already initialized")
+	ErrClosed                   = errors.New("lane registry is closed")
+	registryIDPattern           = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	digestPattern               = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	ancillaryNamePattern        = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+	fixedMailboxEntries         = map[string]struct{}{"inbox": {}, "outbox": {}, "events": {}, "acks": {}, "diagnostics": {}}
 )
 
 type RecordState string

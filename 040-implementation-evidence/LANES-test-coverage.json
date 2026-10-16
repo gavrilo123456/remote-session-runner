@@ -307,7 +307,43 @@
       "id": "LANES-L1-07",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL107AcceptsExactAuthorityAndDescriptorReconstruction"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL107OpenAndInitializeRemainFailClosedOnMissingOrCorruptRegistry"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL107RejectsGenerationRollbackAndMissingAuthorityEvidence"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL107RejectsRootFactDescriptorMismatchAndCollision"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL107RequiresCompleteAnchorsForActiveRoots"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL107RequiresExactClosedDispositionForEveryInflightOperation"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL107ClassifiesPRDDispositionsWithoutV2Restart"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL107RejectsMalformedOrCollidingDescriptorInventories"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-08",
