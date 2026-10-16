@@ -7,6 +7,8 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"remote-session-runner/src/internal/config"
 )
 
@@ -132,6 +134,15 @@ func TestLanesL103InspectsEmptyDescriptorBackedMailboxTree(t *testing.T) {
 	fixture := newRootFixture(t, nil)
 	inventory, err := InspectRoot(fixture.handoff)
 	if err != nil {
+		rootFD, parentFD, rootName, openErr := openRootNoFollow(fixture.handoff.Path, fixture.handoff.OwnerUID)
+		t.Logf("debug path=%s tmp=%s owner=%d openErr=%v", fixture.handoff.Path, os.TempDir(), fixture.handoff.OwnerUID, openErr)
+		if openErr == nil {
+			defer unix.Close(rootFD)
+			defer unix.Close(parentFD)
+			rootStat, statErr := fstat(rootFD)
+			names, namesErr := readDirectoryNames(rootFD)
+			t.Logf("debug name=%q root=%+v statErr=%v expected=%+v names=%v namesErr=%v", rootName, rootStat, statErr, fixture.handoff.RootIdentity, names, namesErr)
+		}
 		t.Fatalf("InspectRoot rejected a valid empty root: %v", err)
 	}
 	if inventory.Claim.RootIdentity != fixture.handoff.RootIdentity || len(inventory.ChildIdentities) != len(mailboxChildren) {
