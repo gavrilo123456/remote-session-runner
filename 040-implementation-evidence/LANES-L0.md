@@ -11,9 +11,18 @@ and existing access. Neither unit may publish Runner requests or ACKs, run
 defect probes, or change installed configuration, services, storage, or
 firewall rules. Documentation/evidence edits and their Git delivery are
 separately authorized mutations under `AGENTS.md`; they are not read-only host
-observations. Other execution uses the normal mailbox workflow, and declared
-operational approval checkpoints remain mandatory. The unsuffixed production
-Runner stays protected.
+observations. At the time of this authorization, other execution used the
+normal mailbox workflow. Declared operational approval checkpoints remain
+mandatory, and the unsuffixed production Runner stays protected.
+
+The owner later authorized incremental implementation: use Runner where it can
+execute a required command, and use ordinary SSH on all three Ubuntu hosts for
+implementation builds, tests and setup when Runner cannot. Use the configured
+explicit identities and verified host keys; record the fallback reason, host,
+source revision, command and result in the unit evidence. This does not expand
+the read-only observation route for PREP/L0, start L0, change production, or
+waive any failed gate or operational approval. The unsuffixed production
+Runner, retained work, and held ACKs remain protected.
 
 `LANES-PREP-00` did not pass its access/readiness gate. Therefore this unit's
 full inventory, unsigned policy-equation evaluation, active/uncertain-work
@@ -37,5 +46,8 @@ the exact GitHub mirror SHA was verified before host pulls, and all three
 clean Ubuntu `dev` checkouts fast-forwarded to S. These were separately
 authorized Git source-delivery mutations under `AGENTS.md`, not read-only host
 observations. See `LANES-PREP-00.md` for the per-host checks and delivery
-commands. No L0 inventory was started and no later unit may start until the
-PREP blockers have been corrected and a fresh PREP/L0 sequence passes.
+commands. No L0 inventory was started. L0 remains blocked until the PREP
+blockers are corrected and its fresh full inventory passes. The later owner
+decision permits only independent hermetic/source-only units to proceed while
+an unrelated blocker remains; those units must record the exact blocked-gate
+evidence and may not claim L0 or another dependent gate passed.

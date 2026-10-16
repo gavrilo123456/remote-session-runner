@@ -6,9 +6,13 @@ service, mailbox, credential, firewall, or deployment has changed yet.
 
 The [execution handbook](020-dev-qas-prd-three-machine-lanes-execution-handbook.md)
 settles the initial rollout profile and complete unit sequence for the whole
-plan, including baseline bug prerequisites and upfront readiness. The
-implementer collects measured facts and exact approvals at declared checkpoints;
-no additional milestone-planning exercise is required.
+plan, including baseline bug prerequisites and incremental readiness. The
+implementer collects discoverable facts and prepares correction packages
+independently, then resolves each access, capacity, and approval dependency
+before the operation that needs it. Independent hermetic/source-only work may
+proceed while an unrelated future provision is pending; failed gates remain
+failed and block dependent operations. No additional milestone-planning
+exercise is required.
 
 ## Problem
 

@@ -34,9 +34,13 @@ If any required checkout is dirty, the primary/mirror commits differ, authentica
 The lane plan's mandatory `020-dev-qas-prd-three-machine-lanes-execution-handbook.md`
 and `040-implementation-evidence/LANES-000-execution-ledger.md` already define
 the complete preparation, bug-prerequisite and L0–L7 unit order. Use that
-breakdown; do not defer milestone planning or predictable owner inputs until
-later implementation. Preserve its continuous live-transaction boundaries and
-exact approval checkpoints.
+breakdown; do not defer milestone planning or fixed design decisions. Resolve
+each access, capacity, producer, and change dependency before the operation
+that needs it. Under the owner's incremental-readiness decision recorded in
+the lane plan, independent hermetic/source-only implementation and testing may
+proceed while an unrelated future provisioning or deployment input is pending;
+record the blocked predecessor evidence and do not imply a PASS. Preserve the
+plan's continuous live-transaction boundaries and exact approval checkpoints.
 
 ## Go cache and temporary files
 
