@@ -12,7 +12,7 @@
 | Owner | Remote Session Runner |
 | Affected component/path | Mac one-off ephemeral session close/job reconciliation |
 | Affected revision | Incident-time installed revision unknown; contemporaneous inspected source `51ec4134df6dce2021936458026caaacb2226fad`; retained state verified on installed Mac `b71aaef0859bd0266c343e638e62e268999a388b` on 2026-10-16 |
-| Fixed revision / verification | None / pending |
+| Fixed revision / verification | Source `ca79ddea9a9010cdbf083710653a8db6dae1e600`; installed recovery / acceptance pending |
 
 ## Reported and expected behavior
 

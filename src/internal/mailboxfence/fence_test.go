@@ -180,8 +180,46 @@ func TestAcquireSharedNormalizesRestrictiveOwnerLockMode(t *testing.T) {
 	}
 }
 
+func TestFenceMailboxFixturePrivatizesGroupWritableTrustRoot(t *testing.T) {
+	trustRoot := t.TempDir()
+	// Go's t.TempDir child inherits the caller's umask. Model the 0002
+	// Linux test environment without changing the process-wide test umask.
+	if err := os.Chmod(trustRoot, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	root := newFenceMailboxTree(t, trustRoot)
+	info, err := os.Lstat(trustRoot)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("fixture trust root info=%v err=%v, want mode 0700", info, err)
+	}
+	if err := os.Chmod(trustRoot, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	if fence, err := AcquireRetirementUnder(context.Background(), trustRoot, root); !errors.Is(err, ErrUnsafe) || fence != nil {
+		if fence != nil {
+			_ = fence.Close()
+		}
+		t.Fatalf("unsafe ancestor fence=%v err=%v, want ErrUnsafe", fence, err)
+	}
+	if err := os.Chmod(trustRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fence, err := AcquireRetirementUnder(context.Background(), trustRoot, root)
+	if err != nil {
+		t.Fatalf("retirement under normalized private fixture: %v", err)
+	}
+	if err := fence.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newFenceMailboxTree(t *testing.T, trustRoot string) string {
 	t.Helper()
+	// This is a test-owned trust boundary, not an external mailbox ancestor.
+	// Make its safety independent of the shell's group-writable umask.
+	if err := os.Chmod(trustRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	parent := filepath.Join(trustRoot, "project")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatal(err)
