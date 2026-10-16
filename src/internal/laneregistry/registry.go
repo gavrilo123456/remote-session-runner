@@ -74,9 +74,10 @@ type RootRecord struct {
 }
 
 type Snapshot struct {
-	Version    int          `json:"version"`
-	Generation uint64       `json:"generation"`
-	Records    []RootRecord `json:"records"`
+	Version    int             `json:"version"`
+	Generation uint64          `json:"generation"`
+	Records    []RootRecord    `json:"records"`
+	Operations []LaneOperation `json:"operations,omitempty"`
 }
 
 // RuntimeReconciliation is the exact active-candidate identity observed after
@@ -242,6 +243,9 @@ func (r *Registry) Prepare(expectedGeneration uint64, record RootRecord) (Snapsh
 			}
 			return false, ErrCollision
 		}
+		if hasUnarchivedOperation(snapshot, record.Lane) {
+			return false, ErrOperationBusy
+		}
 		if err := validateRecord(record); err != nil {
 			return false, err
 		}
@@ -298,6 +302,9 @@ func (r *Registry) Activate(expectedGeneration uint64, id string, reconciliation
 		if candidate.State != StatePrepared {
 			return false, ErrInvalidTransition
 		}
+		if hasUnarchivedOperation(snapshot, candidate.Lane) {
+			return false, ErrOperationBusy
+		}
 		if !reconciliation.ServiceReconciled || reconciliation.RecordID != candidate.ID ||
 			reconciliation.Lane != candidate.Lane || reconciliation.InboxID != candidate.InboxID ||
 			reconciliation.RootIdentity != candidate.RootIdentity ||
@@ -327,6 +334,9 @@ func (r *Registry) RetirePrepared(expectedGeneration uint64, id string) (Snapsho
 		}
 		if snapshot.Records[index].State != StatePrepared && snapshot.Records[index].State != StateSuperseded {
 			return false, ErrInvalidTransition
+		}
+		if hasUnarchivedOperation(snapshot, snapshot.Records[index].Lane) {
+			return false, ErrOperationBusy
 		}
 		snapshot.Records[index].State = StateRetired
 		return true, nil
@@ -403,6 +413,9 @@ func (r *Registry) update(expectedGeneration uint64, mutate func(*Snapshot) (boo
 	}
 	snapshot.Generation++
 	sort.Slice(snapshot.Records, func(i, j int) bool { return snapshot.Records[i].ID < snapshot.Records[j].ID })
+	if snapshot.Operations != nil {
+		sort.Slice(snapshot.Operations, func(i, j int) bool { return snapshot.Operations[i].ID < snapshot.Operations[j].ID })
+	}
 	if err := ValidateSnapshot(snapshot); err != nil {
 		return Snapshot{}, err
 	}
@@ -634,6 +647,9 @@ func ValidateSnapshot(snapshot Snapshot) error {
 				return ErrInvalidRegistry
 			}
 		}
+	}
+	if err := validateOperations(snapshot); err != nil {
+		return err
 	}
 	return nil
 }

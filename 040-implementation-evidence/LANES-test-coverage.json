@@ -235,7 +235,39 @@
       "id": "LANES-L1-05",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL105FreshGraphRequiresRemoteFirstOpenAndSealedAcceptance"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL105ReplacementClosesThenQuiescesBeforeHigherEpochStaging"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL105OnlyOneUnarchivedOperationPerLaneAndCompareAndSwap"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL105RejectsUnsafeOrInconsistentTransitionEvidence"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL105ClosureNeedsEverySurfaceAndStrictlyHigherDirectiveEpoch"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL105QuiescenceRequiresAllFourClassesAndPreservesEvidence"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL105KeepsLegacySnapshotsWithoutOperationsValid"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-06",
