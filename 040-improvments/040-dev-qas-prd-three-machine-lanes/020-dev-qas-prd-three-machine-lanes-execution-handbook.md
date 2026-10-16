@@ -114,8 +114,18 @@ to weaken an exit gate or code a future unit early.
 
 Proof tiers used in the tables:
 
-- **R:** read-only observation on the Mac and all three Ubuntu hosts; no work
-  publication, ACK, repair, install or restart.
+- **R:** read-only observation on the Mac and all three Ubuntu hosts; no Runner
+  request publication or ACK, repair, install or restart. A bounded exception
+  applies only to `LANES-PREP-00` and `LANES-L0`: the owner has authorized direct
+  read-only Mac shell and SSH observations across `mac-control-plane`,
+  `linux-host`, `sandbox-host`, and `factory-sandbox`, using configured explicit
+  SSH identities and existing access. These two units must not publish Runner
+  requests or ACKs, run defect probes, or change installed configuration,
+  services, storage, or firewall rules. Their evidence records this exact
+  scope. Documentation/evidence edits and their Git delivery are separately
+  authorized mutations under `AGENTS.md`; they are not read-only observations.
+  Other command execution uses the normal mailbox workflow, and all declared
+  operational approval checkpoints remain in force.
 - **H:** hermetic suites with temporary roots on all four host/platform tuples;
   full source suite/vet and relevant race checks accompany the focused gate.
 - **N:** actual native task-owned processes/filesystem/TLS operations, using
@@ -166,8 +176,8 @@ capability is waived; original retained work still requires its own disposition.
 
 | Unit | Deliverable | Required proof / safe completion |
 | --- | --- | --- |
-| `LANES-PREP-00` | Collect readiness owner/access/source/fixture/network/producer plans using §2; retain all exact approval checkpoints | R; complete discovery and concrete external packages, no real provision or lane code; pending required access is an explicit stop |
-| `LANES-L0` | Full unsigned read-only capacity, routes, mailbox/bridge/producer ownership, serving identities and bug applicability inventory | R; all four hosts, design §6 equations/proposed budgets, existing PRD health and retained-work evidence; no later approval or runtime PASS inferred |
+| `LANES-PREP-00` | Collect readiness owner/access/source/fixture/network/producer plans using §2; retain all exact approval checkpoints | R; complete discovery and concrete external packages, no real provision or lane code; use only the bounded direct read-only observation exception above; pending required access is an explicit stop |
+| `LANES-L0` | Full unsigned read-only capacity, routes, mailbox/bridge/producer ownership, serving identities and bug applicability inventory | R; all four hosts, design §6 equations/proposed budgets, existing PRD health and retained-work evidence; use only the bounded direct read-only observation exception above; no later approval or runtime PASS inferred |
 | `LANES-B024-01` | Trace exact original Mac close/ownership state; teardown/reconciliation source regressions and proven correction | R+H; preserve original held ACK and cursor; exactly-once terminal teardown, truthful loss and no replay |
 | `LANES-B024-02` | Supported original owner disposition and fresh installed Mac one-off teardown/capacity acceptance | B with A08; original exact retained pair has explicit proof-based disposition before an affected refresh; fresh success has closed teardown, ACK and zero-capacity proof; later jobs cannot dispose of old work |
 | `LANES-B021-01` | Timeout normalization/dispatch source regression; repair proven cause under existing contract | H; alias/explicit conflict, canonical idempotency and policy clamp preserve deadline; no inferred installed fix |

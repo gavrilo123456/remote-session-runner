@@ -85,3 +85,34 @@ The evidence-only closeout E records these completed S checks. E must itself
 be pushed to Gitea, mirrored exactly, and fast-forwarded to all clean Ubuntu
 checkouts. Its final verified SHA belongs in the post-commit handoff; no
 recursive evidence commit or executable-suite rerun is needed for this prose.
+
+## 2026-10-16 execution authorization and scope
+
+The owner authorized the following bounded execution route for the first two
+units. This addendum records that authorization; it does not waive a failed
+gate or any declared exact operational approval checkpoint.
+
+- For `LANES-PREP-00` and `LANES-L0` only, use direct read-only Mac shell and
+  SSH observations across `mac-control-plane`, `linux-host`, `sandbox-host`,
+  and `factory-sandbox`, with configured explicit SSH identities and existing
+  access. Do not publish Runner requests or ACKs, run defect probes, or change
+  installed configuration, services, storage, or firewall rules.
+- Documentation/evidence edits and their Git delivery are separately
+  authorized mutations: commit on Mac `dev`, push to primary Gitea, verify the
+  exact GitHub mirror SHA, then fast-forward only clean `dev` checkouts on all
+  three Ubuntu hosts, following `AGENTS.md`. Record these mutations as source
+  delivery, not as read-only host observations.
+- Other command execution uses the normal mailbox workflow. The existing
+  unsuffixed production Runner remains protected, and the exact operational
+  approval checkpoints remain mandatory.
+
+The route-check ACK state is corrected from the earlier review: the four fresh
+BUG-024 verification requests listed in
+[`BUG-024.md`](BUG-024.md#approved-live-execution-ledger) and
+[`BUG-024/acceptance.json`](BUG-024/acceptance.json) are recorded as ACKed and
+consumed: `req-bug024-20261016-mac-01`, `req-bug024-20261016-linux-01`,
+`req-bug024-20261016-sandbox-01`, and
+`req-bug024-20261016-factory-01`. Their retained response/event files are
+archived evidence, not pending ACKs. Preserve the original historical
+`req-asf-ext-20261015-harness-01` response and its deliberately held ACK; no
+new ACK or disposition is authorized for that original item by this addendum.
