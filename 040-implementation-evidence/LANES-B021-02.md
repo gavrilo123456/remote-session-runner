@@ -242,11 +242,18 @@ The queued bridge manifest currently binds the bridge to source commit
 `2802f00c93eb51a80f23b9380238c309545d6329`; installed bridge and wrapper
 hashes are `3a13bff38320ab0098cecea38e349e4868c9ab9702a75f2f3ff88cbaad7ce42c`
 and `85947f4d76b08c415ab7c98b4e698f9317bdb0dc24c02b041fece6a0ad5d0809`.
-The installer's read-only `preflight` passed for source
+The installer's `preflight` passed for source
 `744fafd5e4a4cc0728107ed647f241f0b074a448` and dispatcher fingerprint
-`SHA256:4gu9/DmtT9WpRxbR/hvhz5BDgCuVAqiFfiDNcnHLBVs`. Its read-only `status`
-reported that the installed bridge had not been refreshed to the checked-out
-source revision. No refresh was attempted.
+`SHA256:4gu9/DmtT9WpRxbR/hvhz5BDgCuVAqiFfiDNcnHLBVs`. **Correction:** this
+subcommand is not read-only. It calls `acquire_lock`, which creates the
+run-directory lock file when absent and opens it with truncation before taking
+the advisory lock. The earlier call therefore created the file or truncated
+its existing bytes, even though it did not refresh the bridge, service or
+configuration. The separate read-only `status` command reported that the
+installed bridge had not been refreshed to the checked-out source revision.
+In the final candidate preparation, this
+`preflight` was not rerun; the service/file inventory and zero-work counts were
+collected with direct reads instead. No bridge refresh was attempted.
 
 The exact candidate `runner-ssh-bridge` was built from the clean factory
 `dev` checkout at `744fafd5e4a4cc0728107ed647f241f0b074a448`, native
