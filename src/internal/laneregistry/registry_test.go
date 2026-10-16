@@ -124,7 +124,7 @@ func TestLanesL104EveryRetainedStateRemainsInCollisionSet(t *testing.T) {
 			}
 			prior := fixtureRecord("claim-a", lane, "inbox-a", "/Volumes/runner-root", 201, 1, state)
 			next := fixtureRecord("claim-b", lane, "inbox-b", "/Volumes/runner-root", 201, 1, StateRetired)
-			if err := ValidateSnapshot(Snapshot{Version: FormatVersion, Records: []RootRecord{prior, next}}); !errors.Is(err, ErrInvalidRegistry) {
+			if err := ValidateSnapshot(Snapshot{Version: FormatVersion, Generation: 2, Records: []RootRecord{prior, next}}); !errors.Is(err, ErrInvalidRegistry) {
 				t.Fatalf("collision with %s tombstone returned %v", state, err)
 			}
 		})
@@ -133,17 +133,38 @@ func TestLanesL104EveryRetainedStateRemainsInCollisionSet(t *testing.T) {
 	t.Run("nested paths", func(t *testing.T) {
 		dev := fixtureRecord("claim-dev", config.ReleaseLaneDev, "inbox-dev", "/Volumes/runner", 211, 1, StateActive)
 		qas := fixtureRecord("claim-qas", config.ReleaseLaneQAS, "inbox-qas", "/Volumes/runner/qas", 212, 1, StateRetired)
-		if err := ValidateSnapshot(Snapshot{Version: FormatVersion, Records: []RootRecord{dev, qas}}); !errors.Is(err, ErrInvalidRegistry) {
+		if err := ValidateSnapshot(Snapshot{Version: FormatVersion, Generation: 2, Records: []RootRecord{dev, qas}}); !errors.Is(err, ErrInvalidRegistry) {
 			t.Fatalf("nested root returned %v", err)
 		}
 	})
 	t.Run("descriptor alias", func(t *testing.T) {
 		dev := fixtureRecord("claim-dev", config.ReleaseLaneDev, "inbox-dev", "/Volumes/runner-dev", 221, 1, StateActive)
 		qas := fixtureRecord("claim-qas", config.ReleaseLaneQAS, "inbox-qas", "/Volumes/runner-qas", 221, 1, StateRetired)
-		if err := ValidateSnapshot(Snapshot{Version: FormatVersion, Records: []RootRecord{dev, qas}}); !errors.Is(err, ErrInvalidRegistry) {
+		if err := ValidateSnapshot(Snapshot{Version: FormatVersion, Generation: 2, Records: []RootRecord{dev, qas}}); !errors.Is(err, ErrInvalidRegistry) {
 			t.Fatalf("descriptor alias returned %v", err)
 		}
 	})
+}
+
+func TestLanesL104SnapshotAndAncillaryShapeFailClosed(t *testing.T) {
+	record := fixtureRecord("dev-active", config.ReleaseLaneDev, "inbox-dev", "/Volumes/runner-dev", 231, 1, StateActive)
+	if err := ValidateSnapshot(Snapshot{Version: FormatVersion, Records: []RootRecord{record}}); !errors.Is(err, ErrInvalidRegistry) {
+		t.Fatalf("record without a generation returned %v", err)
+	}
+	snapshot := Snapshot{Version: FormatVersion, Generation: 1, Records: []RootRecord{record}}
+	if err := ValidateSnapshot(snapshot); err != nil {
+		t.Fatalf("valid single-record snapshot rejected: %v", err)
+	}
+	unsafe := record
+	unsafe.AncillaryEntries = []laneroot.AncillaryEntrySnapshot{{
+		Name: "inbox", Kind: laneroot.EntryDirectory,
+		Identity: laneroot.FileIdentity{Device: record.RootIdentity.Device, Inode: 232},
+		OwnerUID: uint32(os.Getuid()), Mode: 0o700,
+	}}
+	snapshot.Records = []RootRecord{unsafe}
+	if err := ValidateSnapshot(snapshot); !errors.Is(err, ErrInvalidRegistry) {
+		t.Fatalf("fixed mailbox child declared as ancillary returned %v", err)
+	}
 }
 
 func TestLanesL104SuccessorsRetainHistoryAndRequireHigherEpochReconciliation(t *testing.T) {
@@ -327,6 +348,15 @@ func TestLanesL104MissingCorruptNoncanonicalAndUnsafeRegistryFailClosed(t *testi
 		}
 		if _, err := Open(alias); err == nil {
 			t.Fatal("Open followed a registry-directory symlink")
+		}
+	})
+	t.Run("missing directory", func(t *testing.T) {
+		path := filepath.Join(fixtureDirectory(t), "never-created", "registry")
+		if _, err := Open(path); err == nil {
+			t.Fatal("Open accepted a missing registry directory")
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("Open created missing registry state: stat err=%v", err)
 		}
 	})
 }

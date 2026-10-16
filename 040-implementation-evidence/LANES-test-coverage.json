@@ -214,6 +214,10 @@
           },
           {
             "package": "./src/internal/laneregistry",
+            "name": "TestLanesL104SnapshotAndAncillaryShapeFailClosed"
+          },
+          {
+            "package": "./src/internal/laneregistry",
             "name": "TestLanesL104SuccessorsRetainHistoryAndRequireHigherEpochReconciliation"
           },
           {

@@ -42,6 +42,7 @@ var (
 	registryIDPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	digestPattern         = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	ancillaryNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+	fixedMailboxEntries   = map[string]struct{}{"inbox": {}, "outbox": {}, "events": {}, "acks": {}, "diagnostics": {}}
 )
 
 type RecordState string
@@ -101,7 +102,9 @@ type Registry struct {
 }
 
 // Initialize creates a new owner-only registry directory and its initial
-// durable JSON state. It never replaces an existing registry. If initialization
+// durable JSON state. It is only for an approved first-time genesis after the
+// trusted inventory is available; never use it to recover a missing or damaged
+// prior registry. It never replaces an existing registry. If initialization
 // is interrupted, Open fails closed on the incomplete directory.
 func Initialize(path string) (*Registry, error) {
 	if !canonicalPath(path) {
@@ -395,6 +398,9 @@ func (r *Registry) update(expectedGeneration uint64, mutate func(*Snapshot) (boo
 	if !changed {
 		return snapshot, nil
 	}
+	if snapshot.Generation == ^uint64(0) {
+		return Snapshot{}, ErrInvalidRegistry
+	}
 	snapshot.Generation++
 	sort.Slice(snapshot.Records, func(i, j int) bool { return snapshot.Records[i].ID < snapshot.Records[j].ID })
 	if err := ValidateSnapshot(snapshot); err != nil {
@@ -519,7 +525,8 @@ func writeSnapshotAt(dirFD int, ownerUID uint32, snapshot Snapshot) error {
 		_ = unix.Unlinkat(dirFD, tempName, 0)
 		return ErrInvalidRegistry
 	}
-	if _, err := tempFile.Write(data); err != nil {
+	written, writeErr := tempFile.Write(data)
+	if writeErr != nil || written != len(data) {
 		tempFile.Close()
 		_ = unix.Unlinkat(dirFD, tempName, 0)
 		return ErrInvalidRegistry
@@ -544,7 +551,8 @@ func writeSnapshotAt(dirFD int, ownerUID uint32, snapshot Snapshot) error {
 }
 
 func ValidateSnapshot(snapshot Snapshot) error {
-	if snapshot.Version != FormatVersion || snapshot.Records == nil || len(snapshot.Records) > 100000 {
+	if snapshot.Version != FormatVersion || snapshot.Records == nil || len(snapshot.Records) > 100000 ||
+		snapshot.Generation < uint64(len(snapshot.Records)) {
 		return ErrInvalidRegistry
 	}
 	byID := make(map[string]RootRecord, len(snapshot.Records))
@@ -654,6 +662,7 @@ func validateRecord(record RootRecord) error {
 	seenIDs := make(map[laneroot.FileIdentity]struct{}, len(record.AncillaryEntries))
 	for _, entry := range record.AncillaryEntries {
 		if !ancillaryNamePattern.MatchString(entry.Name) || entry.Name == "." || entry.Name == ".." ||
+			isFixedMailboxEntry(entry.Name) ||
 			(entry.Kind != laneroot.EntryRegularFile && entry.Kind != laneroot.EntryDirectory) ||
 			!validIdentity(entry.Identity) || entry.Identity.Device != record.RootIdentity.Device ||
 			entry.OwnerUID == 0 || entry.Mode&0o022 != 0 || entry.Mode&0o7000 != 0 {
@@ -668,6 +677,11 @@ func validateRecord(record RootRecord) error {
 		seenNames[entry.Name], seenIDs[entry.Identity] = struct{}{}, struct{}{}
 	}
 	return nil
+}
+
+func isFixedMailboxEntry(name string) bool {
+	_, exists := fixedMailboxEntries[name]
+	return exists
 }
 
 func validateSuccessor(records []RootRecord, record RootRecord, allowed ...RecordState) error {

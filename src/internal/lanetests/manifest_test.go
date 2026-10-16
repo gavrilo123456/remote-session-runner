@@ -47,8 +47,8 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 		!contains(l103.RequiredTiers, HermeticTier) || !contains(l103.RequiredTiers, NativeTier) {
 		t.Fatalf("LANES-L1-03 coverage = %+v; want six H and six N assertions", l103)
 	}
-	if l104 == nil || len(l104.Assertions[HermeticTier]) != 6 || !contains(l104.RequiredTiers, HermeticTier) {
-		t.Fatalf("LANES-L1-04 coverage = %+v; want six registered H assertions", l104)
+	if l104 == nil || len(l104.Assertions[HermeticTier]) != 7 || !contains(l104.RequiredTiers, HermeticTier) {
+		t.Fatalf("LANES-L1-04 coverage = %+v; want seven registered H assertions", l104)
 	}
 }
 
