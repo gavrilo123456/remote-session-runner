@@ -1,6 +1,6 @@
 # Lane execution ledger
 
-**Planning status:** complete ordered assignment. **Execution status:** NOT RUN.
+**Planning status:** complete ordered assignment. **Execution status:** BLOCKED at `LANES-PREP-00`; no successor unit has started.
 Creating this ledger does not pass readiness, L0, any bug gate or any live lane.
 
 ## Authoritative inputs and launch rule
@@ -43,10 +43,10 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 
 ## Ordered units
 
-| Unit | State | Evidence / verified closeout SHA |
+| Unit | State | Evidence / delivered source SHA |
 | --- | --- | --- |
-| `LANES-PREP-00` | NOT RUN | Not produced |
-| `LANES-L0` | NOT RUN | Not produced |
+| `LANES-PREP-00` | BLOCKED | [Readiness discovery](LANES-PREP-00.md); delivered source S `44241e8199df7e3882b34194e10d23cbd9e1c468` |
+| `LANES-L0` | BLOCKED — not started | [Gate record](LANES-L0.md); PREP-00 did not pass |
 | `LANES-B024-01` | NOT RUN | Not produced |
 | `LANES-B024-02` | NOT RUN | Not produced |
 | `LANES-B021-01` | NOT RUN | Not produced |

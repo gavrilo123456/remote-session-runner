@@ -28,3 +28,14 @@ authorization is recorded above. The four fresh BUG-024 verification ACKs
 remain recorded as consumed; retained response files do not require another
 ACK. The historical `req-asf-ext-20261015-harness-01` response and held ACK
 remain preserved.
+
+## Delivery and sequence record
+
+This blocked unit record was included in source S
+`44241e8199df7e3882b34194e10d23cbd9e1c468`. S was pushed to primary Gitea,
+the exact GitHub mirror SHA was verified before host pulls, and all three
+clean Ubuntu `dev` checkouts fast-forwarded to S. These were separately
+authorized Git source-delivery mutations under `AGENTS.md`, not read-only host
+observations. See `LANES-PREP-00.md` for the per-host checks and delivery
+commands. No L0 inventory was started and no later unit may start until the
+PREP blockers have been corrected and a fresh PREP/L0 sequence passes.

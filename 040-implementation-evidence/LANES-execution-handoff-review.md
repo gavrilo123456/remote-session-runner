@@ -1,7 +1,8 @@
 # Complete lane execution handoff — planning review
 
-**Status:** documentation review and source delivery PASS. This review
-does not execute `LANES-PREP-00`, L0, a bug unit, readiness or a lane deployment.
+**Status:** planning review and its source delivery PASS. The later
+`LANES-PREP-00` execution result is recorded below as BLOCKED; L0, bug units,
+readiness and lane deployment have not run.
 
 ## Request and baseline
 
@@ -116,3 +117,26 @@ consumed: `req-bug024-20261016-mac-01`, `req-bug024-20261016-linux-01`,
 archived evidence, not pending ACKs. Preserve the original historical
 `req-asf-ext-20261015-harness-01` response and its deliberately held ACK; no
 new ACK or disposition is authorized for that original item by this addendum.
+
+## LANES-PREP-00 execution result
+
+The authorized direct-observation route was used for PREP discovery on
+2026-10-16. PREP is **BLOCKED**: OCI provider/network ownership access and
+required Mac privileged access were unavailable; the sandbox host had 3% free
+bytes against the plan's 30% floor; and the linux-host cgroup-v2 enforcement
+gate was not established. Producer pause/fence ownership and actionable A01/
+A02 packages are also incomplete. The full L0 inventory and every successor
+remain unstarted. Exact observations, prepared correction inputs and the
+sequence stop are recorded in [`LANES-PREP-00.md`](LANES-PREP-00.md) and
+[`LANES-L0.md`](LANES-L0.md).
+
+Source S `44241e8199df7e3882b34194e10d23cbd9e1c468` was committed on Mac `dev`,
+pushed to primary Gitea, and independently observed at the exact same
+`github/dev` SHA before host updates. `linux-host`, `sandbox-host`, and
+`factory-sandbox` were each verified clean on `dev` at the previous SHA with
+the expected GitHub origin, then fast-forwarded with `--ff-only` to S and
+verified clean at S. This was the separately authorized Git source delivery;
+it is not classified as a read-only host observation or installed-service
+change. The PREP evidence records the explicit identities, commands, and
+per-host results. No executable suite or live Runner acceptance ran, and the
+failed PREP gate does not permit L0 or a later unit to proceed.

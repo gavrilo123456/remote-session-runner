@@ -250,5 +250,40 @@ PREP discovery; they are not a complete or green L0 inventory. A fresh L0 is
 required after PREP's access and capacity prerequisites are corrected.
 
 No source tests, installed tests, defect probes, mailbox requests, ACKs, or
-service changes were run. Documentation validation is `git diff --check`; the
-required source-delivery checks are recorded after this evidence is committed.
+service changes were run. Documentation validation was
+`git diff --cached --check` before source S and passed. The source and evidence
+delivery checks for S are recorded below. This blocked outcome does not
+authorize L0 or any later unit to start.
+
+## Source S and evidence delivery
+
+Source S is `44241e8199df7e3882b34194e10d23cbd9e1c468`
+(`phase(LANES-PREP-00): record readiness discovery`). It contains only this
+PREP record and the blocked/not-started `LANES-L0.md` record. This documentation
+delivery is a Git mutation authorized separately from the read-only host
+observations; it did not change an installed checkout's service or runtime.
+
+| Check | Command or guard | Result |
+| --- | --- | --- |
+| Mac source commit | `git status --short --branch`; `git rev-parse HEAD`; `git show --stat --oneline HEAD` | `dev`, HEAD S; worktree clean; exactly the two unit-evidence files above |
+| Primary Gitea | `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev`; `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote origin refs/heads/dev` | Push was issued; the primary ref check returned S. |
+| GitHub mirror | `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev` | Returned exact S before Ubuntu pulls |
+| `linux-host` | Verified clean `dev`, origin `git@github.com:gavrilo123456/remote-session-runner.git`, pre-pull HEAD `ad77682ae9ba780d5ac672a932780fdd7c440f81`, and mirror S; ran `git -c core.sshCommand="ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes" pull --ff-only origin dev` | Exit 0; post-pull HEAD S; clean `dev` |
+| `sandbox-host` | Same branch, clean-worktree, origin, pre-pull HEAD and mirror-S guards; same explicit-identity `pull --ff-only origin dev` command | Exit 0; post-pull HEAD S; clean `dev` |
+| `factory-sandbox` | Same branch, clean-worktree, origin, pre-pull HEAD and mirror-S guards; same explicit-identity `pull --ff-only origin dev` command | Exit 0; post-pull HEAD S; clean `dev` |
+
+Mac-to-host SSH used the existing explicit host identities and verified host
+keys: `129.151.232.40` (`linux-host`) with
+`/Users/tomasz.walczuk/.ssh/remote-session-runner`, `132.226.205.205`
+(`sandbox-host`) with `/Users/tomasz.walczuk/.ssh/dev.slidestud.io`, and
+`145.241.255.66` (`factory-sandbox`) with
+`/Users/tomasz.walczuk/.ssh/factory-sandbox`; each used
+`IdentitiesOnly=yes`, `BatchMode=yes`, and `StrictHostKeyChecking=yes`. The
+linux-host SSH invocation also emitted a non-fatal warning that the sandboxed
+Mac shell could not update `~/.ssh/known_hosts`; the remote guard, pull and
+post-pull checks all succeeded. Later host invocations set
+`UpdateHostKeys=no`. Each Ubuntu Git
+fetch/pull used `/home/ubuntu/.ssh/gavrilo123456-github` with
+`IdentitiesOnly=yes`, `BatchMode=yes`, and `StrictHostKeyChecking=yes`. The
+pre-pull guards and resulting exact HEAD/clean-worktree checks were executed
+on each host in sequence. No source was copied with `scp` or `rsync`.

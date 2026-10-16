@@ -53,6 +53,21 @@ packet with all foreseeable owner inputs, access and resource/change plans
 resolved. Do not postpone an owner identity, producer list, policy choice,
 fixture provision or provider-access question until L3/L4/L6.
 
+**Authorized observation route for the first two units (2026-10-16).** The
+owner authorized direct read-only Mac shell and SSH observations for
+`LANES-PREP-00` and `LANES-L0` across `mac-control-plane`, `linux-host`,
+`sandbox-host`, and `factory-sandbox`, using configured explicit SSH
+identities and existing access. This permits observation only: neither unit
+may publish Runner requests or ACKs, run defect probes, or change installed
+configuration, services, storage, or firewall rules. Documentation/evidence
+edits and the AGENTS.md Git delivery sequence are separately authorized
+mutations; record them as source delivery, not as read-only host observations.
+After these two units, Runner command execution uses the normal file-mailbox
+workflow. The exception waives no failed gate or exact operational approval
+checkpoint, and does not grant missing provider or privileged access. If a
+required capability or readiness gate fails, record the blocker and stop the
+serial sequence; do not seek a different observation route.
+
 | Packet item | Upfront decision and collection/validation rule |
 | --- | --- |
 | Baseline and source transport | Record actual Mac/Gitea/GitHub/three-host revisions and worktrees using AGENTS identities; inspect installed component build/status and safe artifact/configuration identities independently of checkout HEAD |
@@ -64,7 +79,7 @@ fixture provision or provider-access question until L3/L4/L6.
 | Signing/PKI custody | Use only the design's protected owner/role/path mappings. Record who can authorize/generate/import local root keys and verify peer identities. Private keys remain outside Git and are never packet content; public pins/CSRs/digests are generated at their exact approved bootstrap step |
 | Bugs | Resolve the BUG-021–024 prerequisite workflow below for actual serving routes; retain report-specific evidence and the original BUG-024 disposition. A `NEW` label is not a universal failure, and a later successful request does not dispose of original work |
 | Approvals | Obtain scope/access/storage/network/producer decisions needed for the fixed rollout. Record the exact future checkpoint types in §3. Future bodies/hashes and short-lived approval receipts are generated just in time from verified preceding evidence; a broad readiness signature is not a signer mandate |
-| Tool execution and evidence | Use native workspace edits/reads and the file-mailbox convention in `docs/llm-client-guide.md`; alternate execution needs an existing explicit task-scoped authorization recorded in the handoff. Verify all required routes before relying on them. Use the plan's S/E commit/delivery contract and Mac shared caches |
+| Tool execution and evidence | Use native workspace edits/reads and the file-mailbox convention in `docs/llm-client-guide.md`, except for a separately recorded, task-scoped observation authorization such as the bounded first-two-unit route above. Verify all required routes before relying on them. Use the plan's S/E commit/delivery contract and Mac shared caches |
 
 The implementer gathers discoverable values; it does not ask the owner to
 invent hashes, epochs, quota UUIDs, observed capacity or serving revisions.
