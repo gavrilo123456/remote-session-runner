@@ -14,7 +14,7 @@ Planning began on the Mac authoritative `dev` checkout, clean at
 ## Resulting artifacts
 
 - [Execution handbook](../040-improvments/040-dev-qas-prd-three-machine-lanes/020-dev-qas-prd-three-machine-lanes-execution-handbook.md):
-  selected first-rollout profile, upfront input collection rules, ten concrete
+  selected first-rollout profile, incremental input collection rules, ten concrete
   approval categories, test-interface contracts, proof tiers, all 68 ordered
   preparation/bug/L0–L7 units, continuous live transaction boundaries and fixed
   failure actions.
@@ -28,8 +28,9 @@ Actual host capacity, credentials/access, serving builds, public key pins,
 future canonical record bodies and short-lived approval receipts remain
 execution observations/outputs. The handbook fixes how to obtain/validate them
 and where exact approval happens. It neither guesses these values nor grants
-authority from a placeholder. All foreseeable owner/access/change-plan inputs
-must be resolved by `LANES-READY` before L1.
+authority from a placeholder. The initial planning rule that all foreseeable
+owner/access/change-plan inputs must be resolved by `LANES-READY` before L1 is
+superseded by the owner's incremental-readiness decision below.
 
 BUG-024 original retained-work diagnosis/disposition now precedes other bug
 units that might refresh the Mac baseline. All four reports have an explicit
@@ -103,9 +104,16 @@ gate or any declared exact operational approval checkpoint.
   exact GitHub mirror SHA, then fast-forward only clean `dev` checkouts on all
   three Ubuntu hosts, following `AGENTS.md`. Record these mutations as source
   delivery, not as read-only host observations.
-- Other command execution uses the normal mailbox workflow. The existing
-  unsuffixed production Runner remains protected, and the exact operational
-  approval checkpoints remain mandatory.
+- At the time of this bounded PREP/L0 exception, other command execution was
+  assigned to the normal mailbox workflow. The owner subsequently expanded the
+  route for this rollout: use Runner where it can execute the required command;
+  when it cannot, normal SSH commands on `linux-host`, `sandbox-host`, and
+  `factory-sandbox` may run implementation builds, tests and setup. Use
+  configured explicit identities and verified host keys; record the fallback
+  reason, machine, source revision, exact command and result. No further SSH
+  authorization is required. This does not grant an unapproved production
+  change; the unsuffixed Runner and exact operational approval checkpoints
+  remain protected.
 
 The route-check ACK state is corrected from the earlier review: the four fresh
 BUG-024 verification requests listed in
@@ -121,12 +129,12 @@ new ACK or disposition is authorized for that original item by this addendum.
 ## LANES-PREP-00 execution result
 
 The authorized direct-observation route was used for PREP discovery on
-2026-10-16. PREP is **BLOCKED**: OCI provider/network ownership access and
-required Mac privileged access were unavailable; the sandbox host had 3% free
+2026-10-16. At PREP closeout, PREP was **BLOCKED**: OCI provider/network ownership access and
+an authorized interactive Mac administrator route were not evidenced; the sandbox host had 3% free
 bytes against the plan's 30% floor; and the linux-host cgroup-v2 enforcement
 gate was not established. Producer pause/fence ownership and actionable A01/
-A02 packages are also incomplete. The full L0 inventory and every successor
-remain unstarted. Exact observations, prepared correction inputs and the
+A02 packages were also incomplete at that time. The full L0 inventory and every
+successor were unstarted at PREP closeout. Exact observations, prepared correction inputs and the
 sequence stop are recorded in [`LANES-PREP-00.md`](LANES-PREP-00.md) and
 [`LANES-L0.md`](LANES-L0.md).
 
@@ -138,5 +146,24 @@ the expected GitHub origin, then fast-forwarded with `--ff-only` to S and
 verified clean at S. This was the separately authorized Git source delivery;
 it is not classified as a read-only host observation or installed-service
 change. The PREP evidence records the explicit identities, commands, and
-per-host results. No executable suite or live Runner acceptance ran, and the
-failed PREP gate does not permit L0 or a later unit to proceed.
+per-host results. No executable suite or live Runner acceptance ran. The failed
+PREP gate still does not permit L0 or any dependent live unit to proceed.
+
+## 2026-10-16 owner decision: incremental implementation
+
+The owner explicitly replaced the earlier requirement to resolve all
+readiness prerequisites before implementation. Keep the planned unit
+dependencies, tests, evidence and source delivery requirements. Resolve each
+access, storage or infrastructure issue before the operation that depends on
+it; do not fabricate a PASS or bypass a failed gate. Independent source-only
+implementation and testing may proceed while future provisioning/deployment
+inputs are pending. This does not start L0: PREP remains BLOCKED and L0 remains
+NOT STARTED until its actual prerequisites pass. All live phases preserve the
+planned order and exact approval checkpoints.
+
+Where Runner cannot execute a required command, the owner authorized normal
+SSH commands on all three Ubuntu hosts for implementation builds, tests and
+setup throughout rollout. Record why Runner was unsuitable, execution host,
+explicit SSH identity/verified host key, source revision, exact command and
+result in unit evidence. Preserve the existing unsuffixed production Runner,
+normal host use, retained work and held ACKs.

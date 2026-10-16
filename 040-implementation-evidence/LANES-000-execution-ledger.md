@@ -1,7 +1,11 @@
 # Lane execution ledger
 
-**Planning status:** complete ordered assignment. **Execution status:** BLOCKED at `LANES-PREP-00`; no successor unit has started.
-Creating this ledger does not pass readiness, L0, any bug gate or any live lane.
+**Planning status:** complete ordered assignment. **Execution status:**
+`LANES-PREP-00` is BLOCKED; `LANES-L0` is BLOCKED and NOT STARTED. The owner
+authorizes independent source-only implementation and testing to proceed when
+its exact inputs are available. Baseline and live acceptance gates remain
+ordered and blocked by their own unmet prerequisites. This ledger does not
+pass readiness, L0, any bug gate or any live lane.
 
 ## Authoritative inputs and launch rule
 
@@ -15,9 +19,16 @@ Planning baseline: clean Mac `dev` at
 preflight records the then-current delivered HEAD and document blob revisions;
 this historical planning baseline is not an installed-build assertion.
 
-Start `LANES-PREP-00`, then execute every row below in order. The handbook
-already supplies deliverable, proof tier, host coverage, exit criteria and
-failure branch; another group-breakdown document is not a prerequisite.
+Continue the ordered units and declared dependencies below. PREP has recorded
+discoverable facts and concrete correction packages, but remains BLOCKED; the
+full L0 baseline cannot start until PREP prerequisites pass. Under the owner's
+incremental-readiness decision, an independent hermetic/source-only unit may
+be implemented and tested while an unrelated infrastructure prerequisite is
+open, if its exact inputs are available. Mark that row IN PROGRESS and record
+the source-only scope; do not mark an unmet predecessor, dependent unit, or
+later live gate PASS. The handbook already supplies deliverable, proof tier,
+host coverage, exit criteria and failure branch; another group-breakdown
+document is not a prerequisite.
 Per-unit evidence is `040-implementation-evidence/<unit-id>.md`. Record its
 predecessor's verified evidence-closeout SHA before starting. Aggregate L1–L7
 summary files are created when their last unit closes. A unit becomes PASS only
@@ -28,12 +39,14 @@ after its actual tests and S/E delivery, never from this assignment table.
 Tomasz Walczuk is accountable approver and default host/storage/network/provider/
 producer coordinator; the implementer performs scoped authorized collection and
 execution. Any delegation names the actual authorized operator. No owner is
-left for a future milestone to choose. Use handbook §2 collection rules for
-source/installed identities, verified access, capacity/storage budgets and
-plans, disposable fixture scopes, networking, producers/windows, signing/PKI,
-bugs, and tool execution. These actual facts are NOT COLLECTED in this planning
-change. `LANES-PREP-00` and L0 gather them; the named bug units verify the
-baseline; `LANES-READY` records the resulting readiness verdict before L1.
+left for a future milestone to choose. PREP has collected current host, storage,
+cgroup, runtime and mailbox observations and prepared A01/A02/A03 proposals;
+OCI owner access, Mac administrator route, sandbox capacity correction, Linux
+cgroup maintenance and producer pause evidence remain open. L0 must gather its
+full current baseline when its gates pass; named bug units verify the serving
+baseline. `LANES-READY` records open dependencies and the verdict for each next
+operation rather than requiring future provisioning results before source
+work.
 
 The packet must link exact approval checkpoints A01–A10 and real receipts when
 issued. Future digests, key pins, UUIDs and short-lived mandates are generated

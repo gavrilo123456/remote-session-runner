@@ -1,10 +1,14 @@
 # LANES-PREP-00 — readiness packet discovery
 
 **State:** BLOCKED. Read-only discovery completed to the extent permitted by
-current access; required provider/root access and material feasibility gates
-remain unresolved. The owner separately authorized direct observations for
-both PREP-00 and L0, but this failed PREP exit prevents the full L0 unit from
-starting under the serial plan.
+current access; required provider/operator access and material feasibility
+gates remain unresolved. The owner separately authorized direct observations
+for both PREP-00 and L0, but this failed PREP exit prevents the full L0 unit
+from starting. The later incremental-readiness decision permits independent
+source-only implementation/testing while PREP and L0 remain blocked.
+PREP records measurements and proposals without waiting for future volumes,
+generated UUIDs, or L2 pressure-test results; those are checked at the later
+operations that need them.
 
 **Observed:** initial route and runtime observations 2026-10-16 09:54–10:01 UTC;
 read-only remediation follow-up 10:42–10:48 UTC. All observations are
@@ -23,15 +27,40 @@ The owner authorized this bounded route for `LANES-PREP-00` and `LANES-L0`:
 - Documentation/evidence edits and their Git delivery are separately
   authorized mutations under `AGENTS.md`; those mutations are recorded as Git
   source delivery, not as read-only host observations.
-- Other execution uses the normal mailbox workflow. The unsuffixed production
-  Runner remains protected. Exact operational approval checkpoints A01–A10
-  remain in force; this route exception waives no failed gate.
+- The later owner authorization sets Runner as the preferred execution route;
+  when it cannot run a required implementation command, use normal SSH on the
+  three Ubuntu hosts for builds, tests and setup. That authorization covers
+  execution route, not approval to change production services, boot settings,
+  storage, firewall rules or credentials. Keep the original PREP/L0 direct
+  observation route read-only, with no Runner request/ACK or defect probe. The
+  unsuffixed production Runner remains protected; exact A01–A10 approval
+  checkpoints and maintenance procedures remain in force.
 
 No Runner request or ACK was published, no defect probe was run, and no
 installed configuration, service, storage, or firewall rule was changed in
 this unit. A read-only mTLS `GET /health/ready` was issued to each existing PRD
 remote endpoint. Directory listings below are metadata/counts only; no request,
 ACK, response, event, or diagnostic payload was opened by this inventory.
+
+## 2026-10-16 owner decision: incremental readiness and SSH fallback
+
+The owner explicitly replaced the earlier requirement to resolve every
+readiness prerequisite before implementation. PREP remains BLOCKED and L0
+remains NOT STARTED until their actual prerequisites pass. Keep the prescribed
+unit, test, acceptance and delivery order. Resolve access, storage and
+infrastructure dependencies before the operation that needs them; an
+unrelated failed gate does not block independent source-only implementation
+and testing. Preserve every failed gate and do not claim an unobserved PASS.
+
+Use Runner where it can execute a required command. When it cannot, the owner
+authorized normal SSH commands on `linux-host`, `sandbox-host` and
+`factory-sandbox` for implementation builds, tests and setup throughout the
+rollout. Use the configured explicit identities and verified host keys, and
+record the fallback reason, execution machine, source revision, exact command
+and result in that unit's evidence. This execution-route authorization does
+not approve production changes or waive any operational checkpoint. Preserve
+the unsuffixed production Runner, normal host work, retained evidence and held
+ACKs.
 
 ## Pre-unit source and read inventory
 
@@ -129,6 +158,15 @@ walk exceeded the safe observation window and was stopped without mutation;
 unclassified bytes remain in the measured root baseline. All retained work and
 current caches stay in the accounting and are preserved.
 
+Snapshot accounting: Mac reported no Data-volume snapshots and no Time Machine
+local snapshots; the sealed system snapshot's approximately 12.6 GB is included
+in the measured container baseline. The proposed 10 GiB aggregate Runner
+snapshot ceiling is future budget, not existing consumption. The Linux roots
+are ext4; host observations showed no local snapshot subvolume/snapshot
+inventory. OCI-managed boot/block-volume backups and their retention/cost are
+not exposed by the host metadata and remain unknown until the OCI operator
+returns that inventory.
+
 | Host | Current root C / U / free | Go build / modules / toolchain (B) | Go cache inodes build / modules | Other selected root use (B) |
 | --- | --- | --- | --- | --- |
 | `linux-host` | `48274628608 / 25560256512 / 22697594880` | `682254336 / 364761088 / 295497728` | `6552 / 7966` | journal `4303667200`; apt `161435648`; Docker `2692218880`; containerd `323584` |
@@ -136,10 +174,11 @@ current caches stay in the accounting and are preserved.
 | `factory-sandbox` | `50839412736 / 4198699008 / 46623936512` | `326692864 / 364343296 / 295510016` | `4154 / 7863` | journal `97533952`; apt `110231552` |
 
 The following is the concrete **engineering proposal**, not an A01 approval or
-configured policy. Each Linux host receives a new 80 GiB lane/management
-filesystem and a separate 16 GiB cache-backup block volume. Format the new
-lane/management filesystem as ext4 with the `project` feature, mount with
-`prjquota`, and verify byte and inode hard limits before any service uses it.
+configured policy. Each Linux host receives a new 96 GiB lane/management
+filesystem and a separate 20 GiB cache-backup block volume. Format the new
+lane/management filesystem as ext4 with `project,quota`, initialize the
+project quota type, mount with `prjquota`, and verify byte/inode hard limits
+before any service uses it.
 Existing roots lack that feature; do not reformat or retrofit the production
 root. ext4 requires the `project` feature for `prjquota` ([ext4 manual](https://www.man7.org/linux/man-pages/man5/ext4.5.html)).
 
@@ -150,35 +189,183 @@ root. ext4 requires the `project` feature for `prjquota` ([ext4 manual](https://
 | Management staging (`project_id=1003`) | `/var/lib/remote-session-runner/management` | 8 GiB | 131,072 | Builder, staging, release transport, anchor/helper and bounded management logs |
 | Go build cache (`project_id=1004`) | Bind at existing `/home/ubuntu/.cache/go-build` | 6 GiB | 196,608 | Copy current cache with owner/mode verification; preserve the old directory under the mount for rollback |
 | Go module cache (`project_id=1005`) | Bind at existing `/home/ubuntu/go/pkg/mod` | 2 GiB | 65,536 | Copy current cache with owner/mode verification; preserve the old directory under the mount for rollback |
-| Cache backup (`project_id=1006`, separate device) | `/var/lib/remote-session-runner/cache-backup` | 8 GiB of 16 GiB | 262,144 | Latest and immediately previous verified release-cache backups; on limit, refuse the new backup and request owner disposition, never auto-delete |
+| Release cache (`project_id=1006`) | `/var/lib/remote-session-runner-release-cache` | 8 GiB | 262,144 | Root-owned immutable digest-addressed cache; stop admission at cap, never evict accepted artifacts automatically |
+| Cache backup (`project_id=1007`, separate device) | `/var/lib/remote-session-runner-release-cache-backup` | 8 GiB of at least 20 GiB | 262,144 | Latest and immediately previous verified release-cache backups; require at least 8 GiB measured free after filesystem metadata; on limit, refuse the new backup and request owner disposition, never auto-delete |
 
-The first five projects total 48 GiB on an 80 GiB volume, leaving 40% of its
-bytes free at every hard cap. Set inode density to at least one inode per 16
-KiB (about 5.24 million on 80 GiB); the proposed 1,441,792 project inode caps
-leave over 70% unassigned. The 16 GiB backup filesystem is a second block
-device, not a second partition on the same device, and has at most 50% of bytes
-and 25% of inodes allocated. The stable Go cache paths remain the ones returned
+Mount the 96 GiB filesystem at `/var/lib/remote-session-runner-capacity` and
+create `dev`, `qas`, `management`, `go-build`, `go-modules`, and `release-cache`
+project directories beneath it. Bind those directories to the exact canonical
+service, management, Go-cache and release-cache paths in the table. The
+separate 20 GiB-or-larger backup device mounts at
+`/var/lib/remote-session-runner-release-cache-backup`. The proposed
+`/etc/projid` names are `rsr-dev:1001`, `rsr-qas:1002`, `rsr-management:1003`,
+`rsr-go-build:1004`, `rsr-go-modules:1005`, `rsr-release-cache:1006`, and
+`rsr-cache-backup:1007`; each
+`/etc/projects` entry maps that ID to its project directory. Mark each root
+directory with its project ID and project-inherit flag, then set the hard byte
+and inode limits from the table. The persistent mount entry uses the generated
+UUID and `ext4,prjquota,nofail`; bind entries expose only the approved project
+directories. New Dev/QAS and management units must have `RequiresMountsFor=` on
+their exact roots/cache paths so a missing optional mount leaves the lane
+stopped while the host and unsuffixed PRD continue booting. The actual IDs and
+quota-device performance must be matched to
+OCI metadata before these templates become host instructions.
+
+For each new Linux data volume, the guarded operation package is: (1) match the
+attached unused block device to its OCI volume OCID/serial; verify with
+`lsblk`, `blkid` and `findmnt` that it is the expected new empty device and not
+the root or any mounted filesystem; (2) create ext4 with the `project` feature
+and a volume label, then verify `tune2fs -l` reports `project` and `quota`. Set
+`LANE_DEVICE` only after verifying the unused device against the OCI volume
+OCID. The guarded command shape for the new 96 GiB filesystem is:
+
+```sh
+: "${LANE_DEVICE:?set only to the OCI-verified new 96 GiB lane volume}"
+test -b "$LANE_DEVICE"
+sudo wipefs -n "$LANE_DEVICE"
+```
+
+Only after the read-only output confirms there is no signature and the OCI
+operator independently confirms the exact device OCID, the approved create
+command is:
+
+```sh
+sudo mkfs.ext4 -O project,quota -E quotatype=prjquota -i 16384 \
+  -L RSR-LANES "$LANE_DEVICE"
+```
+
+For the distinct backup device, set `BACKUP_DEVICE` only after matching its
+OCI OCID/serial, confirm it is a new empty device, and use this guarded sequence:
+
+```sh
+: "${BACKUP_DEVICE:?set only to the OCI-verified new backup volume of at least 20 GiB}"
+test -b "$BACKUP_DEVICE"
+sudo wipefs -n "$BACKUP_DEVICE"
+```
+
+After the empty-device output and OCID are independently verified under A01,
+format it with the same ext4 project-quota features:
+
+```sh
+sudo mkfs.ext4 -O project,quota -E quotatype=prjquota -i 16384 \
+  -L RSR-CACHE-BACKUP "$BACKUP_DEVICE"
+```
+
+Never set either device variable to `/dev/sda`, `/dev/sda1`, a mounted
+filesystem, or an unknown/nonempty volume. This creates internal project-quota
+metadata; confirm both ext4 features before mounting with `prjquota`. (3) create the
+project-directory tree, copy the current Go caches with metadata preserved,
+and compare file counts, byte totals and read integrity; (4) configure the
+UUID `prjquota` mount and bind mounts, project ID inheritance, and hard byte/
+inode limits; (5) run `findmnt`, `df -B1`, `df -i`, project-quota reports,
+`lsattr`, and a bounded disposable quota-refusal check; (6) verify PRD
+`:8443` health and that the unsuffixed `runnerd.service` is untouched. The
+backup device follows the same empty-device guard and separate filesystem
+setup, with an 8 GiB hard project budget and at least 8 GiB measured free after
+filesystem metadata. Use a 20 GiB-or-larger device to leave room for metadata
+and reserve; verify `df -B1` after formatting and reject any size that cannot
+hold the 8 GiB hard budget and 8 GiB low-water simultaneously.
+Formatting and mounts run only after A01 approval; no current root, PRD data,
+or retained work is reformatted, moved out of scope or deleted.
+
+The proposed persistent mount lines (with only the generated UUIDs substituted
+after the approved attach) are:
+
+```fstab
+UUID=<lane-volume-uuid> /var/lib/remote-session-runner-capacity ext4 defaults,prjquota,nofail,x-systemd.device-timeout=30s 0 2
+UUID=<backup-volume-uuid> /var/lib/remote-session-runner-release-cache-backup ext4 defaults,prjquota,nofail,x-systemd.device-timeout=30s 0 2
+/var/lib/remote-session-runner-capacity/dev /home/ubuntu/.local/share/remote-session-runner-dev none bind,nofail 0 0
+/var/lib/remote-session-runner-capacity/qas /home/ubuntu/.local/share/remote-session-runner-qas none bind,nofail 0 0
+/var/lib/remote-session-runner-capacity/management /var/lib/remote-session-runner/management none bind,nofail 0 0
+/var/lib/remote-session-runner-capacity/go-build /home/ubuntu/.cache/go-build none bind,nofail 0 0
+/var/lib/remote-session-runner-capacity/go-modules /home/ubuntu/go/pkg/mod none bind,nofail 0 0
+/var/lib/remote-session-runner-capacity/release-cache /var/lib/remote-session-runner-release-cache none bind,nofail 0 0
+```
+
+The project-map content is:
+
+```text
+# /etc/projid
+rsr-dev:1001
+rsr-qas:1002
+rsr-management:1003
+rsr-go-build:1004
+rsr-go-modules:1005
+rsr-release-cache:1006
+rsr-cache-backup:1007
+```
+
+The `/etc/projects` content is:
+
+```text
+1001:/var/lib/remote-session-runner-capacity/dev
+1002:/var/lib/remote-session-runner-capacity/qas
+1003:/var/lib/remote-session-runner-capacity/management
+1004:/var/lib/remote-session-runner-capacity/go-build
+1005:/var/lib/remote-session-runner-capacity/go-modules
+1006:/var/lib/remote-session-runner-capacity/release-cache
+1007:/var/lib/remote-session-runner-release-cache-backup
+```
+
+After the UUID mounts are verified, set project ID/inheritance and hard
+byte/inode caps using these proposed commands:
+
+```sh
+sudo chattr -p 1001 +P /var/lib/remote-session-runner-capacity/dev
+sudo setquota -P rsr-dev 0 16G 0 524288 /var/lib/remote-session-runner-capacity
+sudo chattr -p 1002 +P /var/lib/remote-session-runner-capacity/qas
+sudo setquota -P rsr-qas 0 16G 0 524288 /var/lib/remote-session-runner-capacity
+sudo chattr -p 1003 +P /var/lib/remote-session-runner-capacity/management
+sudo setquota -P rsr-management 0 8G 0 131072 /var/lib/remote-session-runner-capacity
+sudo chattr -p 1004 +P /var/lib/remote-session-runner-capacity/go-build
+sudo setquota -P rsr-go-build 0 6G 0 196608 /var/lib/remote-session-runner-capacity
+sudo chattr -p 1005 +P /var/lib/remote-session-runner-capacity/go-modules
+sudo setquota -P rsr-go-modules 0 2G 0 65536 /var/lib/remote-session-runner-capacity
+sudo chattr -p 1006 +P /var/lib/remote-session-runner-capacity/release-cache
+sudo setquota -P rsr-release-cache 0 8G 0 262144 /var/lib/remote-session-runner-capacity
+sudo chattr -p 1007 +P /var/lib/remote-session-runner-release-cache-backup
+sudo setquota -P rsr-cache-backup 0 8G 0 262144 /var/lib/remote-session-runner-release-cache-backup
+```
+
+These are proposed host operations, not commands executed in PREP. Verify
+project IDs and inheritance on each root and new child, plus a disposable L2
+hard-quota refusal. Do not test quota refusal against PRD or production lane
+data.
+
+The six main projects total 56 GiB on a 96 GiB volume, leaving 41.67% of its
+bytes unallocated by project limits before filesystem metadata. At full
+project budgets, `df -B1` must still show at least 30% available on that
+filesystem; enlarge it before use if measured metadata/reserve leaves less.
+Set inode density to at least one inode per 16
+KiB (about 6.29 million on 96 GiB); the proposed 1,703,936 project inode caps
+leave about 72.9% unassigned. The backup filesystem is a second block
+device, not a second partition on the same device. Its 8 GiB quota uses at most
+40% of a 20 GiB device; require at least 8 GiB measured free after metadata at
+its hard cap. The stable Go cache paths remain the ones returned
 by the explicit Go binary. Bind mounting is a proposed authorized operation;
 it is not installed.
 
 For sandbox-host, expand its backing boot BlockVolume so `/dev/sda1` grows to
 at least 80 GiB. Current use is 49.55 GiB, so that root target leaves 38.06%
 free; the minimum root size from the present use alone is 70.79 GiB. Then the
-80 GiB lane/management volume and distinct 16 GiB backup device give this
+96 GiB lane/management volume and distinct 20 GiB backup device give this
 full-envelope calculation (current root use already includes PRD, Docker,
-journal, toolchain and old caches; the new 48 GiB budget includes a full 8 GiB
-cache allowance and the separate backup budget adds 8 GiB):
+journal, toolchain and old caches; the new 56 GiB project budget includes the
+8 GiB release cache, and the separate backup budget adds 8 GiB):
 
 ```text
-sandbox capacity = 80 + 80 + 16 = 176 GiB
-sandbox peak use = 49.55 + 48 + 8 = 105.55 GiB
-projected free = 70.45 GiB = 40.03% (>= 30%)
+sandbox capacity = 80 + 96 + 20 = 196 GiB
+sandbox peak use = 49.55 + 56 + 8 = 113.55 GiB
+30% free-space floor = 58.80 GiB
+projected free = 82.45 GiB = 42.07% (23.65 GiB above floor)
 ```
 
 The other proposed aggregate envelopes also clear 30%: linux-host has about
-140.96 GiB capacity / 79.80 GiB peak use / 43.38% free, and factory-sandbox
-about 143.35 GiB / 59.91 GiB / 58.21% free. Each existing root itself remains
-above 30%; each new filesystem meets its own floor. These calculations are
+160.96 GiB capacity / 87.80 GiB peak use / 73.16 GiB free / 45.45% free, and
+factory-sandbox about 163.35 GiB / 67.91 GiB / 95.44 GiB free / 58.42% free.
+The proposed 80 GiB sandbox root itself leaves 30.45 GiB (38.06%) against its
+24 GiB 30% floor. Each existing root must also remain above 30%; each new
+filesystem must pass its own measured floor. These calculations are
 capacity proposals based on the observed current roots, not fresh L0 proof.
 They must be recomputed from exact OCI-attached sizes, inode capacity and use,
 PRD growth/retention and the approved volume performance before A01 approval.
@@ -216,7 +403,7 @@ the service's child tree and does not itself enable controllers
 | --- | --- | --- |
 | `linux-host` | Current v2-only mount has no controllers; v1 controllers are mounted separately. Kernel 5.15 supports `cgroup_no_v1=all`; installed systemd's own manual confirms `systemd.unified_cgroup_hierarchy=1` selects unified v2. After containerd/Docker compatibility review and an approved window, append `systemd.unified_cgroup_hierarchy=1 cgroup_no_v1=all` to the existing `GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"`, regenerate GRUB, preserve the old boot entry, then reboot through console/out-of-band access. Do not alter `runnerd.service`. | This affects every v1 consumer; Docker/containerd are active, so their versions, cgroup driver and workloads must pass a clone/staging test first. A reboot and service interruption are required. Verify a single `/sys/fs/cgroup` hierarchy, required controllers, Docker/containerd, SSH, existing PRD `:8443` mTLS readiness, and a new isolated slice's `io.max`/descendant membership. Roll back by booting the preserved prior entry, restoring the exact original GRUB default, regenerating the menu and rechecking PRD health. No boot change or reboot is authorized yet. |
 | `sandbox-host` | Keep unified-v2. Apply accounting and hard resource/I/O controls only to new management and lane scopes. Do not interpret the existing empty PRD `runnerd.service/io.max` as a failure and do not change that unit. | Staged L2 fixture must prove controller propagation, per-device caps, hard byte/inode quotas and PRD `:8443` health under saturation. Roll back only new test units and mounts under their A01 fixture manifest; existing service stays untouched. |
-| `factory-sandbox` | Keep unified-v2. Root advertises `io`, but `system.slice` does not currently expose it. Validate controller propagation for new lane/management services with their I/O accounting/limits; if the parent needs I/O accounting enabled, change only the minimum required systemd parent configuration under a separate host approval, with no PRD `runnerd.service` change. | Confirm the new service sees `io`, an actual per-device `io.max` appears and is enforced in L2, descendants stay within the lane, and PRD health remains green. Account for any additional I/O accounting on other system.slice services in workload review. Roll back only the new scope/drop-in after units stop and verify the original PRD service remains active. |
+| `factory-sandbox` | Keep unified-v2. Root advertises `io`, but `system.slice` does not currently expose it. First configure I/O accounting on only the new management/Dev/QAS slices and services. If `system.slice` still does not propagate `io`, the exact conditional proposal is `/etc/systemd/system/system.slice.d/20-runner-lanes-io.conf` containing `[Slice]` then `IOAccounting=yes`; reload systemd only in the separately approved change window. Do not change PRD `runnerd.service`. | Enabling `system.slice` I/O accounting makes the controller available across that parent and may add accounting overhead for unrelated services; inspect their unit workload and current limits first. Confirm new services expose `io`, actual per-device `io.max` appears and is enforced in L2, descendants stay within their lane, unrelated service limits remain unchanged, and PRD health stays green. Roll back only after new scopes stop: remove the exact drop-in, reload systemd, verify the prior controller view and PRD service remain active. |
 
 Kernel v2 controllers cannot safely be moved between hierarchies after boot;
 the kernel documentation recommends selecting hierarchy/controller placement
@@ -240,42 +427,153 @@ volumes, all on `disk3`, are:
 | QAS service root | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-qas` | 16 GiB |
 | Go build cache | Existing `/private/tmp/remote-session-runner-gocache` path | 6 GiB |
 | Go module cache | Existing `/private/tmp/remote-session-runner-gomodcache` path | 2 GiB |
-| Host-management staging | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-host-management` | 8 GiB |
+| Host-management staging | `/Library/Application Support/RemoteSessionRunner-host-management` (root:wheel, `0700`) | 8 GiB |
+| Immutable release cache | `/Library/Application Support/RemoteSessionRunner-release-cache` (root:wheel, `0700`) | 8 GiB |
 | Runner-managed snapshots | Aggregate across approved lane volumes | 10 GiB total |
-| Release-cache backup | Separate physical device, not in `disk3` | 16 GiB device; 8 GiB budget and independent 8 GiB low-water |
+| Release-cache backup | `/Library/Application Support/RemoteSessionRunner-release-cache-backup/` on a separate physical device, not in `disk3` | At least 20 GiB device; 8 GiB budget and at least 8 GiB measured free after APFS metadata; root:wheel `0700` |
 
-The four Data-container quota groups plus the future snapshot ceiling consume
-58 GiB at maximum. Using full maxima in addition to current use conservatively
+The six Data-container quota groups plus the future snapshot ceiling consume
+66 GiB at maximum. Using full maxima in addition to current use conservatively
 preserves both the existing cache trees under the new mountpoints and every
 other current Data/System/Preboot/Recovery/VM byte:
 
 ```text
 Data container C = 494384795648 B; current unallocated F = 178005270528 B
 floor = max(20 GiB, ceil(0.15 * C)) = 74157719348 B
-future maximum = (16 + 16 + 6 + 2 + 8 + 10) GiB = 62,277,025,792 B
-projected unallocated = F - future maximum = 115,728,244,736 B
-margin over floor = 41,570,525,388 B
+future maximum = (16 + 16 + 6 + 2 + 8 + 8 + 10) GiB = 70,866,960,384 B
+projected unallocated = F - future maximum = 107,138,310,144 B
+margin over floor = 32,980,590,796 B
 ```
 
 The APFS volumes should be mounted at the same cache paths the Makefile exports.
-Seed each new cache volume with a verified copy; leave the original cache data
-under the mountpoint for rollback. Do not run `go clean` or delete shared cache
-contents. `diskutil list` showed only the internal physical store for `disk3`;
+Initially mount each cache volume at a separate empty staging directory; copy
+and verify its contents there. At the approved switchover, preserve the old
+cache directory under a dated `.pre-volume` name, then mount the new volume at
+the canonical path. Rollback unmounts the new volume and restores the preserved
+directory. Do not run `go clean` or delete shared cache contents. `diskutil
+list` showed only the internal physical store for `disk3`;
 the mounted MyTE disk image is not a distinct backup device. The separate 16
 GiB backup device is therefore still an input, and the Mac equation does not
 count it against Data-container capacity.
 
 After the exact A01 storage package and interactive administrator route are
-approved, the named Mac administrator's operation list is: (1) prepare only
-the six empty owner-only mountpoint directories, with Tomasz UID 502 ownership
-and `0700` mode; (2) use Disk Utility/`diskutil apfs addVolume disk3 APFS` to
-create the six quota-bound volumes at the approved paths and record generated
-volume UUIDs and mount receipts; (3) seed the two new cache volumes without
-removing source data; (4) install the owner-only volume/mount policy; (5) verify
-`diskutil apfs list`, each UUID/mount/quota, `df`, owner/mode, cache read
-integrity, Data unallocated floor, and snapshot total; and (6) stop on any
-identity or headroom mismatch. Actual UUIDs are produced only at this approved
-step. No such operation ran in PREP.
+approved, use the current verified APFS container reference (observed as
+`disk3` in this PREP snapshot) and create six Data-container mountpoints. Dev,
+QAS and both Go-cache paths are UID:GID `502:20`, mode `0700`; host-management
+and the immutable release cache are root:wheel `0:0`, mode `0700`. The host
+admin can use:
+
+```sh
+sudo install -d -o 502 -g 20 -m 0700 -- \
+  "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-dev"
+sudo install -d -o 502 -g 20 -m 0700 -- \
+  "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-qas"
+sudo install -d -o 502 -g 20 -m 0700 -- \
+  "/private/tmp/remote-session-runner-gocache.apfs-staging"
+sudo install -d -o 502 -g 20 -m 0700 -- \
+  "/private/tmp/remote-session-runner-gomodcache.apfs-staging"
+sudo install -d -o 0 -g 0 -m 0700 -- \
+  "/Library/Application Support/RemoteSessionRunner-host-management"
+sudo install -d -o 0 -g 0 -m 0700 -- \
+  "/Library/Application Support/RemoteSessionRunner-release-cache"
+sudo diskutil apfs addVolume disk3 APFS RSR-Dev \
+  -quota 16g -mountpoint "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-dev"
+sudo diskutil apfs addVolume disk3 APFS RSR-QAS \
+  -quota 16g -mountpoint "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-qas"
+sudo diskutil apfs addVolume disk3 APFS RSR-HostManagement \
+  -quota 8g -mountpoint "/Library/Application Support/RemoteSessionRunner-host-management"
+sudo diskutil apfs addVolume disk3 APFS RSR-ReleaseCache \
+  -quota 8g -mountpoint "/Library/Application Support/RemoteSessionRunner-release-cache"
+sudo diskutil apfs addVolume disk3 APFS RSR-GoBuildCache \
+  -quota 6g -mountpoint "/private/tmp/remote-session-runner-gocache.apfs-staging"
+sudo diskutil apfs addVolume disk3 APFS RSR-GoModuleCache \
+  -quota 2g -mountpoint "/private/tmp/remote-session-runner-gomodcache.apfs-staging"
+```
+
+Before running those commands, the authorized admin must recheck the container
+reference, capacity equation, paths and approval; the observed `disk3` name is
+not a durable identity. Record each generated volume UUID and device. Enable
+ownership on each new volume by setting `APFS_VOLUME_DEVICE` to one recorded
+device at a time, verifying it against the generated APFS volume UUID, then
+running `sudo diskutil enableOwnership "$APFS_VOLUME_DEVICE"`;
+and apply the table's required owner and `0700` mode at the mounted root: UID:GID
+`502:20` for Dev, QAS and Go caches; root:wheel `0:0` for host-management and
+release cache. The persistent `/etc/fstab` entries use the generated UUIDs (not
+mutable APFS device names), type `apfs`, and the exact approved mountpoints;
+create one entry for each of the six volumes. For example:
+
+```fstab
+UUID=<dev-volume-uuid> /Users/tomasz.walczuk/Library\040Application\040Support/RemoteSessionRunner-dev apfs rw,nobrowse 0 0
+UUID=<qas-volume-uuid> /Users/tomasz.walczuk/Library\040Application\040Support/RemoteSessionRunner-qas apfs rw,nobrowse 0 0
+UUID=<host-mgmt-volume-uuid> /Library/Application\040Support/RemoteSessionRunner-host-management apfs rw,nobrowse 0 0
+UUID=<release-cache-volume-uuid> /Library/Application\040Support/RemoteSessionRunner-release-cache apfs rw,nobrowse 0 0
+UUID=<go-build-volume-uuid> /private/tmp/remote-session-runner-gocache apfs rw,nobrowse 0 0
+UUID=<go-module-volume-uuid> /private/tmp/remote-session-runner-gomodcache apfs rw,nobrowse 0 0
+```
+
+After the volumes are mounted, set their roots explicitly:
+
+```sh
+sudo chown 502:20 "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-dev"
+sudo chmod 0700 "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-dev"
+sudo chown 502:20 "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-qas"
+sudo chmod 0700 "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-qas"
+sudo chown 502:20 /private/tmp/remote-session-runner-gocache
+sudo chmod 0700 /private/tmp/remote-session-runner-gocache
+sudo chown 502:20 /private/tmp/remote-session-runner-gomodcache
+sudo chmod 0700 /private/tmp/remote-session-runner-gomodcache
+sudo chown 0:0 "/Library/Application Support/RemoteSessionRunner-host-management"
+sudo chmod 0700 "/Library/Application Support/RemoteSessionRunner-host-management"
+sudo chown 0:0 "/Library/Application Support/RemoteSessionRunner-release-cache"
+sudo chmod 0700 "/Library/Application Support/RemoteSessionRunner-release-cache"
+```
+
+The authorized admin seeds the Go volumes at their staging mountpoints and
+verifies them before cutover:
+
+```sh
+sudo ditto --rsrc --extattr --acl \
+  /private/tmp/remote-session-runner-gocache/ \
+  /private/tmp/remote-session-runner-gocache.apfs-staging/
+sudo ditto --rsrc --extattr --acl \
+  /private/tmp/remote-session-runner-gomodcache/ \
+  /private/tmp/remote-session-runner-gomodcache.apfs-staging/
+```
+
+Then pause only lane build activity for the approved cutover. Rename each
+original cache directory to a dated `.pre-volume` path without deleting it;
+create an empty canonical mountpoint and mount the new volume there using its
+recorded device, for example
+`sudo diskutil mount -mountPoint /private/tmp/remote-session-runner-gocache
+"$GOCACHE_VOLUME_DEVICE"` (with the analogous module-cache command). Verify
+`go env GOCACHE GOMODCACHE` and a bounded read/write check before resuming
+builds. Keep prior cache trees and new volumes intact. The backup volume is a
+separate operation after its physical device is supplied and approved. Require
+a device of at least 20 GiB and verify the resulting APFS container has at
+least 8 GiB free after its 8 GiB backup-volume quota is fully allocated. If it
+is blank, the authorized admin may use this sequence only after confirming the
+exact empty physical device and A01 approval:
+
+```sh
+: "${BACKUP_DEVICE:?set only to the approved empty physical backup device}"
+sudo diskutil apfs createContainer "$BACKUP_DEVICE"
+# Record the returned container identifier before continuing.
+: "${BACKUP_CONTAINER:?set to the recorded new APFS container identifier}"
+sudo install -d -o 0 -g 0 -m 0700 -- \
+  "/Library/Application Support/RemoteSessionRunner-release-cache-backup"
+sudo diskutil apfs addVolume "$BACKUP_CONTAINER" APFS RSR-CacheBackup \
+  -quota 8g \
+  -mountpoint "/Library/Application Support/RemoteSessionRunner-release-cache-backup"
+```
+
+Then enable ownership on its recorded APFS volume device, verify/set its root
+to `0:0`, `0700`, and confirm the independent 8 GiB free-space low-water. Never
+guess its device/container ID or erase a disk with unknown contents. Verify
+`diskutil apfs list`, every UUID, mount/quota, `df`, owner/mode, cache
+integrity, Data unallocated floor, snapshot total, and separate-device
+low-water. Stop on any identity or headroom
+mismatch. Actual UUIDs and backup-device IDs are generated/provided only at
+these approved steps; no such operation ran in PREP.
 
 **Mac production impact and rollback.** New quota-limited service and cache
 volumes consume shared APFS container headroom; full-cache or staging volumes
@@ -312,11 +610,25 @@ Observed extra top-level entries include `.DS_Store` under `slidestud-io`,
 `status` directory under `slidestud-io`. Their required type/descriptor/owner/
 mode inventory remains for the full L0 record. The roots' configured aliases
 identify integrations, not verified human owners or every process that can
-publish. No producer owner, pause/fence capability, or maintenance window was
-verified for the external roots. Tomasz remains the plan's default coordinator;
-that default does not prove a repository owner's authority or a working pause
-control. The first Dev/QAS rollout has no external producer; it uses its
-internal acceptance inbox and preserves every existing PRD root.
+publish. The following producer/control discovery is from repository guidance
+and source-level inspection; none of the controls was exercised or used to
+pause a producer.
+
+| Root | Producer/control evidence found | Remaining owner/action before affected maintenance |
+| --- | --- | --- |
+| `default`, `analytics` | Active Mac V2 config roots; all five child counts are zero at observation time. No producer was established by the root listing. | Identify any scheduled job, UI or direct client that can publish; identify its owner and tested pause/zero-work procedure. |
+| `slidestud-io` | `AGENTS.md` documents a direct workspace publisher that writes request JSON then `.ready` last; it prohibits shell redirection, temporary publisher scripts, SSH and direct Runner API for publication. | The human/automation writer and its stop control are not identified. Get the repository/operator owner, exact writer schedule/process, pause/fence action and paired root snapshots. |
+| `agents-work-dispatcher` | File-only mailbox policy. Its Kafka reinstallation plan documents pausing task producers, dispatcher services, and automatic cleanup/retry through an approved mailbox operation, then keeping affected components paused through the approved recovery workflow. | This is a documented candidate procedure, not a tested pause receipt for this Runner root. Identify operator/service labels, exact mailbox request and retained-work zero-state checks; obtain approval before use. |
+| `agentic-software-factory-runner-direct` | Runner guide identifies the exact root, defaults to `ubuntu-factory-sandbox`, and records durable orphan cleanup disabled. For an unhealthy queue/bridge it says stop creating work and do not restart services or alter Runner state without authorization. | No dedicated tested pause/fence interface was found. Identify all writers and owner, then define an approved stop-new-work and quiescence procedure without changing the mailbox or service state. |
+| `agentic-factory-test-project-01-runner`, `agentic-factory-test-project-02-runner` | Configured mailbox roots and retained entry counts are visible. A targeted search found no repo-specific `AGENTS.md` or source-defined pause API in the searched project files. | This does not prove no control exists. Ask each project/automation owner to identify the writer, actual owner and exact pause/fence plus retained-work verification. |
+| `remote-session-runner-workspace` | Workspace mailbox root is configured with retained entries; listing alone does not identify a human or automatic publisher. | Identify any local automation/direct writer and the supported pause/fence and zero-work procedure. |
+
+The producer list is not yet complete: no human owner, complete direct-client
+inventory, tested pause receipt, or maintenance window was verified. Tomasz
+Walczuk remains accountable/default coordinator; this does not substitute for
+the repository owner's authority or technical control of a producer. The first
+Dev/QAS rollout has no external producer; it uses its internal acceptance inbox
+and preserves every existing PRD root.
 
 BUG-024 ACK classification follows the owner's correction and the evidence in
 [`BUG-024.md`](BUG-024.md#approved-live-execution-ledger) and
@@ -334,44 +646,108 @@ to override those recorded ACK facts.
 The fixed approval checkpoints remain those in handbook §3; no broad
 authorization or placeholder is treated as a signer mandate.
 
-- **A01 storage/fixtures:** future packages must name each exact host/device/
-  path, maximum quota/budget, retention, owner/mode, cleanup/rollback plan,
-  current descriptor/capacity evidence, and distinct same-host cache-backup
-  volume. Mac Dev/QAS service-root APFS volumes and Linux lane/cache/staging
-  quota scopes are not created here. Present capacity data is insufficient to
-  choose quotas safely; sandbox is already below the floor.
-- **A02 networking:** preserve current PRD `:8443` and port-22 behavior. The
-  fixed future maps are release transport `:9443`, Dev direct `:8444`, QAS
-  direct `:8445`, Dev queued SSH `:2224`, and QAS queued SSH `:2225` on all
-  three private binds/public endpoints in design §5. Existing host rules were
-  read above, but cloud/provider rule IDs, authorized source policy, actual
-  network owner, and rollback handles remain unavailable without provider
-  access. No route change is authorized here.
+- **A01 storage/fixtures:** concrete numerical proposals are recorded above.
+  On each Ubuntu host, provision one new 96 GiB ext4 `project`/`prjquota`
+  lane-management volume and one independent 20 GiB backup device; on
+  `sandbox-host`, also expand its boot BlockVolume so root is at least 80 GiB.
+  Apply the listed project byte/inode budgets and preserve existing cache trees
+  during verified copy/bind. On Mac, create six quota-bound APFS volumes on
+  the verified Data container (Dev 16, QAS 16, build cache 6, module cache 2, root-owned
+  management staging 8, root-owned release cache 8 GiB),
+  reserve the aggregate 10 GiB snapshot budget, and provide a separate physical
+  backup device of at least 20 GiB with an 8 GiB cap and at least 8 GiB measured
+  free after APFS metadata. Keep retained work
+  and shared caches. Production effect: storage/cost increase only; sandbox
+  root expansion may require device rescan/filesystem growth; new mounts fail
+  closed for new lanes. Rollback disables only new scopes, restores old cache
+  mount views and retains all data; do not shrink or delete. Exact OCI volume
+  IDs, sizes/VPU, quotas, backup targets and rollback receipts need an
+  authorized provider operator before the approval is actionable. On
+  `sandbox-host`, after the provider expands the existing boot BlockVolume to
+  at least 80 GiB and the host operator verifies `/dev/sda`, the approved
+  sequence is `sudo growpart /dev/sda 1` followed by
+  `sudo resize2fs /dev/sda1`; then verify `lsblk`, `df -B1 /`, `df -i /` and
+  the 30% floor. This is additive; rollback does not shrink the filesystem or
+  volume. If a step fails, preserve the larger volume, stop and correct the
+  specific mismatch. Use an approved window if the provider rescan or
+  filesystem operation requires interruption. The current
+  sandbox root still fails the 30% floor, so PREP remains BLOCKED.
+- **A02 networking:** the exact remote-host service proposal applies on all
+  three private VNIC addresses: `linux-host` `10.0.0.200`, `sandbox-host`
+  `10.0.0.14`, and `factory-sandbox` `10.0.0.30`. Add only these inbound TCP
+  ports from the verified, stable Mac/control-plane source CIDR: `9443`
+  release-record mTLS transport; `8444` Dev direct HTTPS; `8445` QAS direct
+  HTTPS; `2224` Dev queued SSH; `2225` QAS queued SSH. Keep existing `8443`
+  PRD and SSH `22` routes, plus Linux `9093`; preserve Factory's existing
+  source-restricted `8443` rules (`81.95.203.65/32`, `31.61.247.138/32`).
+  Linux/sandbox UFW-inactive/INPUT-ACCEPT and Factory's INPUT-REJECT policy are
+  observations, not requests to weaken or replace host firewall policy. Mac
+  egress `81.95.203.65` is a point-in-time observation and is not yet an
+  approved stable source. No `0.0.0.0/0` or broad port range. Before any route
+  change, the OCI operator must return exact VCN/subnet/NSG/security-list/
+  route/NAT IDs, owner, current rule export, stable intended source CIDRs,
+  exact additive rule bodies, independent route/TLS checks, and rollback
+  handles. The intended production effect is reachability only for those
+  authenticated services from that source; no listener or rule change ran.
+  Rollback removes only the newly added exact rule IDs and verifies existing
+  PRD routes/health.
 - **A03 bootstrap cohort / root work:** record the fixed four-host sequence and
-  failure-disable-all contract. Ubuntu root access is observed. Mac admin/root
-  access is not available in this shell and must be established before its
-  privileged bootstrap step. No key, CA, helper, listener, or service was
-  installed.
+  failure-disable-all contract. Ubuntu root access is observed. On Mac,
+  `sudo -n` failure proves unattended elevation is unavailable; an authorized
+  interactive administrator can satisfy the gate. No such named route/session
+  is evidenced yet. The exact Mac operation package is below; no key, CA,
+  helper, listener, or service was installed.
 - **A04–A07:** retain the per-host one-use bootstrap PKI, exact authority-body,
   finite renewal-grant, and normal PKI-rotation review schemas. All dependent
   public pins, digests, receipts, and mandates must be generated from approved
   preceding evidence at their declared checkpoints; none exists yet.
-- **A08 PRD/producer maintenance:** list the eight configured roots above, then
-  obtain actual owners, writer/direct-client inventory, tested pause/fence
-  procedures, retained-work disposition, fresh inventory, and a scoped window
-  before any affected baseline maintenance or L6 fencing. No pause or window is
-  claimed.
+- **A08 PRD/producer maintenance:** the concrete producer inventory below
+  identifies documented candidate controls and what remains unknown. Obtain
+  each actual owner/operator, enumerate automation and direct clients, validate
+  a pause/fence procedure, capture paired root/ingress metadata and zero-work
+  state, and receive the scoped maintenance approval before any affected
+  baseline refresh or L6 fence. No producer has been paused; no work or ACK was
+  changed.
 - **A09/A10:** retain only for their named registry-loss or authority/anchor-loss
   incidents. No such incident is asserted or rehearsed against production.
 
-The exact fixed namespace and approval package schemas are prepared; packages
-requiring current provider inventory, capacity feasibility, or an authorized
-Mac root operator cannot yet be made actionable. The next applicable correction
-is to establish approved read-only OCI network access or name the authorized
-provider operator, make an authorized Mac admin/root route available for A03,
-and submit an A01 capacity/storage correction for sandbox and linux-host
-enforcement. Then rerun this readiness unit and take a fresh complete L0; do not
-infer that a historical measurement remains valid.
+The engineering proposals and commands are actionable for review, but are not
+approvals or execution receipts. The one consolidated external handoff should
+request:
+
+1. **OCI read-only access or operator evidence.** Provide a scoped read-only
+   principal or name the authorized OCI operator. For each of the three hosts,
+   return region/compartment/instance and boot-volume OCIDs, boot-volume size,
+   attached Block Volume OCIDs/sizes/VPU or performance settings, VNIC OCID and
+   public/private IPs, VCN/subnet/NSG/security-list/route-table IDs, NAT/IGW
+   paths, exact current rule IDs/ports/source CIDRs, and boot/block-volume
+   backup policy/retention. Identify the operator who can create the approved
+   new 96 GiB lane/management volume and 20 GiB backup volume per host, expand
+   the sandbox boot volume to at least 80 GiB, add only approved network rules,
+   and provide rollback handles. Do not place credentials in Git or evidence.
+2. **Mac administrator route and backup device.** Name an authorized local
+   administrator who can join a supervised interactive session for the A01
+   storage operations. Passwordless sudo is not required; no password or
+   credential needs to be shared. Identify/provide a distinct Mac backup device
+   of at least 20 GiB (or approve an equivalent independent target), its stable
+   device/container identity, and ownership/retention. The measured internal
+   `disk3` container is not that independent target.
+3. **Gate-specific approvals.** Once exact IDs and fresh measurements exist,
+   approve the materialized A01 storage/fixture package and A02 additive rule
+   bodies at their declared checkpoints. The `linux-host` unified-cgroup
+   correction requires a staged Docker/containerd compatibility result, an
+   explicit production maintenance window, and a named console/out-of-band
+   operator for reboot/rollback. No reboot window is currently approved.
+4. **Later producer/maintenance evidence.** Name the actual owner/operator and
+   writer inventory for each external root, then provide a tested pause/fence,
+   zero-work verification and scoped A08 window before a baseline refresh or
+   L6 fence. No producer is to be paused by this discovery package.
+
+Tomasz Walczuk remains the accountable owner/default coordinator; this asks for
+missing technical capability and evidence, not a new owner. When the OCI and
+Mac route inputs arrive, refresh the relevant observations and exact approval
+packages. L0 still requires its full fresh baseline and actual sandbox/cgroup
+gates to pass.
 
 ## Observation routes and commands
 
@@ -403,23 +779,34 @@ and private-key paths and printed only HTTP status, remote IP, and TLS verify
 result. The public egress observation was a GET to `https://api.ipify.org`.
 No credential content or request/response payload was emitted.
 
-## Gate verdict and sequence stop
+## Initial PREP gate verdict (historical) and corrected current status
 
-`LANES-PREP-00` does not pass: necessary provider API/network ownership access
-was not verified, Mac privileged access required by the declared bootstrap
-operator role was not available, and the current cohort already exposes a
-hard sandbox capacity failure plus an unproven linux-host cgroup-v2 gate.
-Producer/pause ownership and actionable A01/A02 packages are also incomplete.
-Per the plan's stop rule, the full `LANES-L0` unit and all later units are not
-started. Preliminary observations that overlap L0 are preserved here only as
-PREP discovery; they are not a complete or green L0 inventory. A fresh L0 is
-required after PREP's access and capacity prerequisites are corrected.
+The initial PREP closeout recorded BLOCKED because OCI provider/network access
+was not configured, the sandbox root had only 3% free against the 30% floor,
+and Linux host-management cgroup-v2 enforcement was not established. Those
+three blockers remain material. The initial text also concluded Mac privileged
+access was unavailable and A01/A02 packages were incomplete. Those conclusions
+were premature and are corrected here: `sudo -n` proves only that unattended
+elevation is unavailable; the engineering proposals and actionable A01/A02
+rule/storage packages are now prepared; an authorized interactive Mac
+administrator route, exact OCI resource/rule identities and approvals remain
+external inputs. Ownership stays assigned to Tomasz Walczuk, independent of
+who has the required technical access.
 
-No source tests, installed tests, defect probes, mailbox requests, ACKs, or
-service changes were run. Documentation validation was
-`git diff --cached --check` before source S and passed. The source and evidence
-delivery checks for S are recorded below. This blocked outcome does not
-authorize L0 or any later unit to start.
+Current status remains **PREP BLOCKED; L0 NOT STARTED**. The sandbox's actual
+capacity floor fails today; its proposed expanded root plus lane/management and
+backup envelope is not provisioned and cannot be claimed as PASS. Linux's
+hybrid hierarchy and factory controller propagation still need approved
+correction and verification. OCI network/volume/backup owner evidence, the Mac
+interactive admin route and distinct backup device, and tested producer pause
+receipts remain open. The discovery above is not a complete or green L0
+inventory; fresh L0 remains mandatory when its actual prerequisites pass.
+
+At the original PREP closeout, no source tests, installed tests, defect probes,
+mailbox requests, ACKs, or service changes were run. Documentation checks and
+the original S handoff are recorded below. The failure does not authorize L0
+or any dependent live unit; it does not block independent source-only work
+authorized by the later owner decision.
 
 ## Source S and evidence delivery
 

@@ -1,7 +1,8 @@
 # Execution handbook: Dev, QAS, and PRD lanes
 
-**Status:** complete execution breakdown and first-rollout decisions. No unit
-has run. This handbook is a mandatory companion to the
+**Status:** complete execution breakdown and first-rollout decisions.
+`LANES-PREP-00` ran and is BLOCKED; `LANES-L0` has not started. This handbook
+is a mandatory companion to the
 [design](010-dev-qas-prd-three-machine-lanes-detailed-design.md) and
 [L0–L7 plan](015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md).
 It removes the need for another milestone-breakdown or requirements discussion.
@@ -41,17 +42,23 @@ capacity failure: stop rather than invent evidence, silently change hardware,
 weaken limits or omit a host. Approval of an exact signed policy still happens
 at its declared checkpoint.
 
-## 2. One readiness packet; no late information requests
+## 2. Incremental readiness; no late information requests
 
 The checked-in
 [execution ledger](../../040-implementation-evidence/LANES-000-execution-ledger.md)
-is already the ordered plan. `LANES-PREP-00` fills its readiness packet by
-read-only discovery and prepares all known external change packages. L0 adds
-the full read-only inventory. The named bug prerequisite units then establish
-the runtime baseline. Before L1 starts, the ledger must seal the readiness
-packet with all foreseeable owner inputs, access and resource/change plans
-resolved. Do not postpone an owner identity, producer list, policy choice,
-fixture provision or provider-access question until L3/L4/L6.
+is already the ordered plan. `LANES-PREP-00` records discoverable facts and
+prepares concrete external correction packages. L0 adds the full read-only
+inventory, and the named bug units establish the runtime baseline. The owner
+has replaced the former all-readiness-before-L1 rule with incremental gates:
+keep the planned unit and live-acceptance order, while independent
+hermetic/source-only implementation and testing may proceed when their exact
+inputs are available. A failed or unavailable dependency blocks only units
+and operations that use it. Record every open dependency, owner, required
+access/approval, exact action and rollback in the ledger; never mark a blocked
+unit PASS or advance a dependent live gate. Discoverable facts and correction
+packages must be prepared before the operation they support; future UUIDs,
+generated identities, receipts and short-lived approvals are created only at
+their declared checkpoints.
 
 **Authorized observation route for the first two units (2026-10-16).** The
 owner authorized direct read-only Mac shell and SSH observations for
@@ -62,17 +69,22 @@ may publish Runner requests or ACKs, run defect probes, or change installed
 configuration, services, storage, or firewall rules. Documentation/evidence
 edits and the AGENTS.md Git delivery sequence are separately authorized
 mutations; record them as source delivery, not as read-only host observations.
-After these two units, Runner command execution uses the normal file-mailbox
-workflow. The exception waives no failed gate or exact operational approval
-checkpoint, and does not grant missing provider or privileged access. If a
-required capability or readiness gate fails, record the blocker and stop the
-serial sequence; do not seek a different observation route.
+The owner later expanded command execution authorization for this rollout:
+use Runner where it can execute a required command; when it cannot, ordinary
+SSH commands on `linux-host`, `sandbox-host` and `factory-sandbox` are
+authorized for implementation builds, tests and setup. Use the configured
+explicit identity and verified host key. Record the Runner fallback reason,
+execution host, exact command, source revision and result. Do not ask again for
+SSH authorization. This execution route does not satisfy or waive a failed
+capacity/access gate or an exact operational approval checkpoint, and does not
+authorize unsafe changes to PRD. The existing unsuffixed production Runner
+remains protected.
 
-| Packet item | Upfront decision and collection/validation rule |
+| Packet item | Decision and collection/validation rule; resolve by |
 | --- | --- |
 | Baseline and source transport | Record actual Mac/Gitea/GitHub/three-host revisions and worktrees using AGENTS identities; inspect installed component build/status and safe artifact/configuration identities independently of checkout HEAD |
-| Operator access | Tomasz is the accountable owner and default coordinator above. Record ownership separately from technical access. Verify actual account/root and necessary provider access through approved read-only routes; record any explicit delegation and capability. An SSH login is not proof of provider API/firewall authority, and `sudo -n` failure proves only that unattended elevation is unavailable; an authorized interactive administrator route may satisfy the requirement |
-| Host capacity/storage plan | Inventory all host/device/filesystem/volume identities, PRD use, free bytes/inodes, cgroups/I/O and normal cache paths. Freeze proposed budgets and exact management-backup/Dev/QAS volume operations under design §6 from existing measurements. PREP and the initial unsigned L0 do not require future Dev/QAS volumes, generated UUIDs, or L2 pressure-test results. Record those volumes as absent until the separately approved A01 provision. Before L3, however, the real host-management scope, cache/staging/backup storage, PRD floor and headroom must pass; lane-runtime policies and L4/L5 remain blocked until the post-L3 storage handoff supplies and verifies real UUIDs, mountpoints and quotas |
+| Operator access | Tomasz is the accountable owner and default coordinator above. Record ownership separately from technical access. Verify actual account/root and necessary provider access through approved routes; record any explicit delegation and capability. An SSH login is not proof of provider API/firewall authority, and `sudo -n` failure proves only that unattended elevation is unavailable; an authorized interactive administrator route may satisfy the requirement |
+| Host capacity/storage plan | Inventory all host/device/filesystem/volume identities, PRD use, free bytes/inodes, cgroups/I/O and normal cache paths. Freeze proposed budgets and exact management-backup/Dev/QAS volume operations under design §6 from existing measurements. PREP and initial unsigned L0 do not require future Dev/QAS volumes, generated UUIDs, or L2 pressure-test results. Record those volumes as absent until separately approved A01 provision. Before L3, the real host-management scope, cache/staging/backup storage, PRD floor and headroom must pass; lane-runtime policies and L4/L5 wait for post-L3 storage handoff and fresh verification |
 | Isolated native fixtures | Name exact disposable storage/device scopes and maximum quotas, unique test namespace and loopback ports, root operator and cleanup manifest for L2/L3/L6/L7 drills. Provision only at the declared approved step. No real PRD root, key, authority, ownership marker or incident request is a destructive fixture |
 | Network | Fix design endpoint/bind/port maps and preserve existing PRD access/source policy. Collect actual host/provider rule inventory; prepare exact rule additions needed by that fixed map and their rollback. Source-address restrictions use the verified intended control-plane/client addresses. An unverified NAT/source path blocks readiness, not a prompt to choose a different route |
 | Producer and maintenance plan | Inventory all active PRD roots and actual request/ACK publishers/direct clients. Obtain each owner's verified pause/fence procedure and record a maintenance scheduling rule: Tomasz opens the declared window only after all pause controls and zero-work preflight pass. No guessed calendar time or paused producer is required before coding |
@@ -83,10 +95,12 @@ serial sequence; do not seek a different observation route.
 
 The implementer gathers discoverable values; it does not ask the owner to
 invent hashes, epochs, quota UUIDs, observed capacity or serving revisions.
-Missing existing credentials/access or a genuine failed gate is a blocker
-reported with exact evidence and the prepared corrective action. That differs
-from an unanswered design question. Once readiness passes, continue the fixed
-sequence without asking whether to take the next ordinary implementation step.
+Missing access or a genuine failed gate is recorded with exact evidence and a
+prepared corrective action. It blocks only dependent work; proceed with
+independent source implementation and tests. Ask the owner only when an actual
+credential, administrator action or concrete operational approval is required
+and unavailable. Once a dependency passes, continue the fixed sequence without
+asking whether to take the next ordinary implementation step.
 
 **Gate timing.** PREP produces a measured, numerical engineering proposal and
 the exact correction/access packages; it does not wait for proposed resources
@@ -212,7 +226,7 @@ capability is waived; original retained work still requires its own disposition.
 | `LANES-B022-02` | Actual baseline permitted explicit-limit and policy-negative acceptance | B; independently bounded probe, enforced deadline and supported release; safe rejection alone is not positive PASS |
 | `LANES-B023-01` | Managed-session capability/dispatch/lifecycle regressions and proven correction | H; create/submit/read/cancel/close contract and policy rejection; do not infer behavior from a one-off lookup |
 | `LANES-B023-02` | Actual managed create → submit → observed hold → exact cancel → terminal → close/release | B; fresh identities on every affected serving remote route; complete output/ACK and zero-work; unknown capability stops |
-| `LANES-READY` | Seal complete readiness packet and prerequisite evidence for all L1–L7 work | R/document review; all predictable owner/access/change-plan inputs resolved, no unresolved applicable baseline prerequisite, complete ordered ledger and scheduled approval packages; actual later generated receipts remain checkpoint outputs |
+| `LANES-READY` | Seal current readiness packet, prerequisite evidence, and unit-specific dependency map | R/document review; complete ordered ledger, known blockers and correction packages, and readiness passed for the next operation that depends on it. Does not require future receipts or block independent source-only implementation/tests; every dependent live gate still requires its own current evidence |
 
 BUG-024 comes first because later dispatcher/limit fixes may need an affected
 Mac service refresh. Do not wait for those installs to investigate or dispose

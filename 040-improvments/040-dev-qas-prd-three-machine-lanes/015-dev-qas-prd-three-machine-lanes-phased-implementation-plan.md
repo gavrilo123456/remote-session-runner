@@ -6,13 +6,23 @@ Runner; once L6 begins changing PRD, failure follows its explicit abort or
 V3-only repair path.
 
 The mandatory [execution handbook](020-dev-qas-prd-three-machine-lanes-execution-handbook.md)
-settles first-rollout choices, the complete ordered unit breakdown, upfront
+settles first-rollout choices, the complete ordered unit breakdown, incremental
 readiness inputs, exact approval checkpoints, test interfaces and failure
 actions for **all** L0–L7 milestones. Start from the checked-in
 [execution ledger](../../040-implementation-evidence/LANES-000-execution-ledger.md).
 No later milestone-breakdown or planner clarification is a normal prerequisite.
-Readiness still requires actual access, measured capacity, supported runtime
-behavior and exact operational approvals; documentation cannot fabricate them.
+Dependent work still requires actual access, measured capacity, supported
+runtime behavior and exact operational approvals; documentation cannot
+fabricate them. An unrelated unmet gate does not block independent
+source-only implementation and tests.
+
+**Owner decision (2026-10-16):** readiness is incremental. This supersedes the
+earlier requirement to resolve every foreseeable access, capacity and change
+input before any L1 source work. Preserve the planned dependency, test,
+acceptance and delivery order. Independent hermetic/source-only units can
+proceed when their own inputs are ready; a failed prerequisite remains failed
+and blocks the operation that depends on it. Provisioning and live rollout
+still follow the serial phase gates below.
 
 ## Operating rule for every phase
 
@@ -53,12 +63,16 @@ explicitly amend them. Resolve a newly discovered conflict in a reviewed
 documentation amendment before affected implementation continues.
 
 The checked-in `040-implementation-evidence/LANES-000-execution-ledger.md`
-already lists the complete ordered units. `LANES-PREP-00` collects the upfront
-packet, `LANES-L0` performs read-only inventory, the named `LANES-B021-*`
-through `LANES-B024-*` units establish the baseline bug prerequisites, and
-`LANES-READY` seals all predictable external inputs before L1. Do not delegate
-those gaps to a future phase. Future generated hashes, public identities and
-short-lived exact approvals are collected at the handbook's declared checkpoints.
+already lists the complete ordered units. `LANES-PREP-00` records readiness
+discovery and concrete correction packages; `LANES-L0` performs the full
+read-only inventory; and the named `LANES-B021-*` through `LANES-B024-*` units
+establish the baseline bug prerequisites. `LANES-READY` records the current
+readiness verdict, known blockers, owners and exact packages. It does not
+require future generated hashes, volume UUIDs, or L2 pressure results, and it
+does not block independent source-only implementation and tests. Collect
+future-generated identities, receipts and short-lived approvals at the
+handbook's declared checkpoints. Do not bypass a failed dependency when a
+unit or operation actually depends on it.
 
 L1–L7 are milestone groups; execute the handbook's already-defined bounded
 units in order, not one large coding session per milestone. Evidence uses
@@ -67,8 +81,12 @@ summary (and equivalently L2–L7) links all completed units and aggregate proof
 Only an unforeseen oversized active unit may be split into ordered `.a`/`.b`
 children before coding, preserving scope, safe checkpoints and downstream IDs.
 The initial L7 runbook/drills can close; future maintenance gets a new operation
-record using the same procedures. No future-unit coding or live phase starts
-before its predecessor is closed. A coordinated bootstrap or live lane
+record using the same procedures. Keep the planned order for dependent unit
+acceptance, bug baseline gates and every live phase. A hermetic/source-only
+unit may be implemented and tested while an unrelated infrastructure gate is
+blocked, provided its exact inputs are available; record it in the ledger and
+do not claim the blocked predecessor, unit acceptance, or any later live gate
+passed. A coordinated bootstrap or live lane
 transaction has no intervening Git/evidence pause inside its host/commit/reopen
 steps; use the handbook's continuous-operation boundaries.
 
@@ -124,11 +142,12 @@ change/window, and evidence location. Tomasz may perform multiple roles where
 he has the required access. Provider or repository ownership/access is not
 assumed: record the actual authorized owner/operator. An unassigned operator,
 missing access, approval, or handoff remains `PENDING` and blocks the named
-live gate. The handbook fixes Tomasz as the default coordinator/operator and
-defines automatic discovery of actual access and any explicit delegation.
-Resolve all foreseeable ownership/access/change-plan inputs in `LANES-READY`
-before L1; actual provisioning and exact-body approvals remain at the declared
-safe live checkpoints.
+live gate. The handbook fixes Tomasz as the accountable owner and default
+coordinator; ownership does not imply technical access. Resolve each access,
+capacity, producer and change-plan dependency before the operation that uses
+it. The ledger records unresolved inputs and their exact required
+operator/action; actual provisioning and exact-body approvals remain at the
+declared safe live checkpoints.
 
 | External dependency | Required executing owner/operator and evidence | Required before |
 | --- | --- | --- |
