@@ -102,7 +102,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-B023-02` | DEFERRED — not started | Owner scope decision above; no baseline probe assigned or required before lane source work. No installed acceptance claimed |
 | `LANES-READY` | NOT RUN | Not produced |
 | `LANES-L1-01` | PASS | [Unit evidence](LANES-L1-01.md); H source gates and S delivery verified on Mac/Gitea/GitHub plus all three clean Ubuntu `dev` checkouts at `79221a9714561ebb97cc219de66150fc51191e32`. This source-only unit does not close blocked B021-02 or imply installation/live acceptance |
-| `LANES-L1-02` | NOT RUN | Not produced |
+| `LANES-L1-02` | PASS | [Unit evidence](LANES-L1-02.md); six H assertions and full source gates passed at Source S `fbb866789a01f7dcc442164c51ccf255b95405db`; exact Gitea/GitHub SHA and all three clean Ubuntu `dev` checkouts verified. No installed/runtime acceptance implied |
 | `LANES-L1-03` | NOT RUN | Not produced |
 | `LANES-L1-04` | NOT RUN | Not produced |
 | `LANES-L1-05` | NOT RUN | Not produced |
