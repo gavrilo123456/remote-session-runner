@@ -1,9 +1,9 @@
 # LANES-L1-09 — reversible PRD migration fence and deferred-pair ledger
 
-**State:** IN PROGRESS — corrected source tests and Mac gates pass. Initial
-Ubuntu validation of S1 found a fixture-permission portability failure; the
-correction is awaiting new S delivery and full revalidation. This source-only
-unit does not close maintenance or claim installed/live acceptance.
+**State:** PASS — S2 source gates and all required synchronized-host gates
+passed. Factory-sandbox race testing is unavailable (`CGO_ENABLED=0`, no `cc`)
+and is recorded as NOT RUN. This source-only unit does not close maintenance
+or claim installed/live acceptance.
 
 ## Predecessor and read inventory
 
@@ -99,38 +99,59 @@ as they surfaced and the focused H suite was rerun successfully.
 
 Initial source S1 `62323c2c49bf1120c30d5d9699530720a284468c` was pushed to
 Gitea, mirrored exactly to GitHub, and fast-forwarded to all three clean Ubuntu
-checkouts. The L1-09 H fixture then failed on all three Linux hosts at
+checkouts. Its L1-09 H fixture failed on all three Linux hosts at
 `open fixture mailbox root: mailbox fence path is unsafe`; because the focused
-gate failed, the subsequent full gates did not run there. Read-only `strace`
-confirmed the fixture root was opened and the error arose in the Linux
-temporary-root validation path. The hermetic fixture now explicitly restricts
-its temporary trust root to `0700`, preserving production safety checks. A new
-tested source revision and the full host rerun are required before closeout.
+gate failed, subsequent full gates did not run there. Read-only `strace`
+confirmed the fixture root opened and the failure occurred during temporary
+root validation. The test fixture now explicitly restricts its temporary trust
+root to `0700`, preserving the production safety checks. S1's failed host result
+is retained here; S2 below is the corrected source revision.
 
-## Delivery and remaining validation
+## Source S2 and synchronized-host validation
 
-The corrected source revision is being prepared as S2. After it is delivered
-to primary Gitea, the exact GitHub mirror SHA is verified, and all three clean
-Ubuntu `dev` checkouts are fast-forwarded, rerun the focused L1-09 H gate, full
-test, vet, build, smoke, and focused race checks against exact S2. Record each
-host, source SHA, command, and outcome below before creating evidence-only
-closeout E. No source files may be copied directly to Ubuntu.
+Corrected source S2 is
+`342ce30e2d23249404cb1c5c874d0436dc5ceb06`, committed on Mac `dev` as
+`fix(LANES-L1-09): restrict temporary fixture root`. Primary Gitea
+`origin/dev` and automatic GitHub mirror `github/dev` both returned exact S2.
+The source push emitted a local read-only `.git` tracking-ref warning after
+Gitea accepted the push; direct primary and mirror `ls-remote` checks verified
+the exact SHA. Each Ubuntu checkout was clean on `dev` at S1 before pull, with
+the expected GitHub `origin`; it then fast-forwarded `origin/dev` and was
+verified clean at exact S2 before testing.
 
-| Host | Checkout S | H/full/vet/build/smoke/race |
-| --- | --- | --- |
-| `linux-host` | S1 `62323c2…` | H FAIL — fixture-root safety validation; remaining gates NOT RUN |
-| `sandbox-host` | S1 `62323c2…` | H FAIL — fixture-root safety validation; remaining gates NOT RUN |
-| `factory-sandbox` | S1 `62323c2…` | H FAIL — fixture-root safety validation; remaining gates NOT RUN |
+Against S2, each host ran:
 
-Host connections used explicit configured identities and
+```text
+make test-lanes UNIT=LANES-L1-09 LANES_TIER=H
+make test
+make vet
+make build
+make smoke
+```
+
+`linux-host` and `sandbox-host` additionally ran:
+
+```text
+/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/lanemigration ./src/internal/laneregistry ./src/internal/mailboxfence -run TestLanesL109 -count=1
+```
+
+| Host | Platform / Go | Checkout and required gates at S2 | Focused race |
+| --- | --- | --- | --- |
+| `linux-host` (`oracle-yuta-konopka-ubuntu-micro-02`) | Linux amd64 / Go 1.27.1 | PASS — clean `dev`, exact S2; H (8), full suite, vet, build, smoke | PASS |
+| `sandbox-host` (`oracle-gustaw-janecki-ubuntu-flex-02`) | Linux arm64 / Go 1.27.1 | PASS — clean `dev`, exact S2; H (8), full suite, vet, build, smoke | PASS |
+| `factory-sandbox` (`oracle-waclaw-dziwulski-ubuntu-micro-01`) | Linux amd64 / Go 1.27.1 | PASS — clean `dev`, exact S2; H (8), full suite, vet, build, smoke | NOT RUN — `CGO_ENABLED=0`, no `cc` |
+
+Post-validation checks confirmed each host remained clean on `dev` at exact S2.
+Connections used explicit configured identities and
 `StrictHostKeyChecking=yes`: `linux-host` via `remote-session-runner` and
 `~/.ssh/remote-session-runner`, `sandbox-host` via `sandbox.env` and
 `~/.ssh/dev.slidestud.io`, and `factory-sandbox` via `factory-sandbox` and
 `~/.ssh/factory-sandbox`. The Mac SSH client printed a non-fatal warning that
-the sandboxed `known_hosts` file could not be rewritten; all strict host-key
-checks and SSH commands completed successfully. No host checkout source was
-edited outside Git, and only normal test/cache activity ran.
+the sandboxed `known_hosts` file could not be rewritten; strict host-key checks
+and SSH commands completed successfully. No host checkout source was edited
+outside Git; no mailbox publication or service action ran.
 
-The maintenance package remains a historical snapshot. Do not refresh
-candidates as part of L1-09, and do not change B021/B024 evidence or their
-BLOCKED states.
+The maintenance package remains a historical snapshot. No candidate was
+refreshed as part of L1-09, and B021/B024 evidence and BLOCKED states remain
+unchanged. Evidence closeout E is this documentation-only delivery; its Git
+SHA is not embedded here.
