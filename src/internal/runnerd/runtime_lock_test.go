@@ -38,6 +38,9 @@ func TestRunnerdLifecycleLockRefusesUnsafePath(t *testing.T) {
 	if err := os.WriteFile(lock, []byte("unsafe"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(lock, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := acquireRunnerdLifecycleLock(root); err == nil {
 		t.Fatal("unsafe lifecycle lock unexpectedly accepted")
 	}
