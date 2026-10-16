@@ -1,11 +1,13 @@
 package mailbox
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/store"
@@ -109,6 +111,11 @@ func receiptCanonicalWithSelection(request Request, selection *store.MailboxExec
 	switch request.Operation {
 	case "create_session", "submit_command", "cancel_command", "close_session", "run":
 		payload := request.RawJSON
+		if request.Operation == "run" {
+			if normalized, normalizeErr := NormalizeRunTimeout(payload); normalizeErr == nil {
+				payload = normalized
+			}
+		}
 		if request.Operation == "close_session" {
 			policy := strings.TrimSpace(request.ClosePolicy)
 			if policy == "" {
@@ -139,6 +146,62 @@ func receiptCanonicalWithSelection(request Request, selection *store.MailboxExec
 		hash, err := domain.NewCanonicalHash(domain.CanonicalizationVersionV1, digest[:])
 		return append([]byte(nil), request.RawJSON...), hash, err
 	}
+}
+
+// NormalizeRunTimeout maps the public timeout_seconds alias into
+// limits.command_timeout_seconds. Alias-only and equivalent explicit-limit
+// run requests then have the same durable idempotency payload and downstream
+// request shape. Callers that need to return a validation error should surface
+// the returned error; receipt hashing can retain the original request when
+// normalization fails so the operation handler can publish a terminal reject.
+func NormalizeRunTimeout(raw []byte) ([]byte, error) {
+	var request map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &request); err != nil || request == nil {
+		return nil, fmt.Errorf("run request must be a JSON object")
+	}
+	timeoutRaw, present := request["timeout_seconds"]
+	if !present {
+		return append([]byte(nil), raw...), nil
+	}
+	trimmedTimeout := bytes.TrimSpace(timeoutRaw)
+	var seconds int64
+	if len(trimmedTimeout) == 0 || bytes.Equal(trimmedTimeout, []byte("null")) || json.Unmarshal(trimmedTimeout, &seconds) != nil || seconds <= 0 {
+		return nil, fmt.Errorf("timeout_seconds must be a positive integer")
+	}
+	const maxDurationSeconds int64 = (1<<63 - 1) / int64(time.Second)
+	if seconds > maxDurationSeconds {
+		return nil, fmt.Errorf("timeout_seconds exceeds the supported duration")
+	}
+
+	limits := make(map[string]json.RawMessage)
+	if rawLimits, ok := request["limits"]; ok {
+		if err := json.Unmarshal(rawLimits, &limits); err != nil || limits == nil {
+			return nil, fmt.Errorf("limits must be a JSON object")
+		}
+	}
+	if explicit, ok := limits["command_timeout_seconds"]; ok {
+		trimmed := bytes.TrimSpace(explicit)
+		var explicitSeconds int64
+		if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || json.Unmarshal(trimmed, &explicitSeconds) != nil || explicitSeconds < 0 || explicitSeconds > maxDurationSeconds {
+			return nil, fmt.Errorf("limits.command_timeout_seconds must be a supported nonnegative integer")
+		}
+		if explicitSeconds > 0 && explicitSeconds != seconds {
+			return nil, fmt.Errorf("timeout_seconds conflicts with limits.command_timeout_seconds")
+		}
+	}
+	value, _ := json.Marshal(seconds)
+	limits["command_timeout_seconds"] = value
+	limitsJSON, err := json.Marshal(limits)
+	if err != nil {
+		return nil, fmt.Errorf("encode normalized limits: %w", err)
+	}
+	delete(request, "timeout_seconds")
+	request["limits"] = limitsJSON
+	normalized, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("encode normalized run request: %w", err)
+	}
+	return normalized, nil
 }
 
 func mailboxReceiptCanonicalizationOptions(operation string, selection *store.MailboxExecutionSelection) (domain.CanonicalizationOptions, error) {

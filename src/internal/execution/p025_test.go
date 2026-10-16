@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -13,12 +14,66 @@ import (
 
 type p025Runtime struct {
 	*p020FakeRuntime
-	scripts []string
+	scripts         []string
+	commandTimeouts []time.Duration
 }
 
 func (r *p025Runtime) ExecuteCommand(ctx context.Context, request RuntimeCommandRequest) (RuntimeCommandResult, error) {
 	r.scripts = append(r.scripts, string(request.Command.ScriptBytes))
+	r.commandTimeouts = append(r.commandTimeouts, request.Command.Timeout)
 	return r.p020FakeRuntime.ExecuteCommand(ctx, request)
+}
+
+func TestBUG021OneOffRunUsesRequestedDeadlineAndKeepsPolicyCeiling(t *testing.T) {
+	runtime := &p025Runtime{p020FakeRuntime: &p020FakeRuntime{
+		generation:    "generation-bug021-timeout",
+		stopConfirmed: true,
+		commandResult: RuntimeCommandResult{ExitCode: 0},
+	}}
+	service, _, _ := newP025Service(t, runtime)
+	request := p025Request(t, "job-bug021-timeout", "session-bug021-timeout", "command-bug021-timeout", "run-bug021-timeout", "printf bounded")
+	request = p025RequestWithCommandTimeout(t, request, 5*time.Second)
+	result, err := service.RunJob(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Session.Limits.CommandTimeout != 5*time.Second || len(runtime.commandTimeouts) != 1 || runtime.commandTimeouts[0] != 5*time.Second {
+		t.Fatalf("requested deadline was not applied: session_timeout=%s command_timeouts=%v", result.Session.Limits.CommandTimeout, runtime.commandTimeouts)
+	}
+
+	tooLong := p025Request(t, "job-bug021-timeout-ceiling", "session-bug021-timeout-ceiling", "command-bug021-timeout-ceiling", "run-bug021-timeout-ceiling", "printf must-not-run")
+	tooLong = p025RequestWithCommandTimeout(t, tooLong, domain.DefaultServiceLimits().CommandTimeout+time.Second)
+	if _, err := service.RunJob(context.Background(), tooLong); !errors.Is(err, domain.ErrLimitExceedsServiceCeiling) {
+		t.Fatalf("request beyond environment ceiling error=%v, want ErrLimitExceedsServiceCeiling", err)
+	}
+	if len(runtime.commandTimeouts) != 1 {
+		t.Fatalf("policy-rejected request reached command runtime: command timeouts=%v", runtime.commandTimeouts)
+	}
+}
+
+func p025RequestWithCommandTimeout(t *testing.T, request RunJobRequest, timeout time.Duration) RunJobRequest {
+	t.Helper()
+	request.RequestedLimits = domain.RequestedLimits{CommandTimeout: timeout}
+	raw, err := json.Marshal(map[string]any{
+		"operation": "run", "environment": request.Acceptance.Environment,
+		"execution_target": map[string]string{"kind": string(request.Acceptance.Target.Kind()), "profile": request.Acceptance.Target.Profile()},
+		"source":           map[string]string{"mode": string(request.Acceptance.Source.Mode())}, "script": request.Acceptance.Script,
+		"requested_limits": request.RequestedLimits, "isolation": request.Isolation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := domain.CanonicalizeMutationRequestJSON("run", raw, domain.CanonicalizationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := domain.HashMutationRequestJSON("run", canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Acceptance.CanonicalPayload = canonical
+	request.Acceptance.RequestHash = hash
+	return request
 }
 
 func TestP025I04OneOffRunCreatesAndExecutesExactlyOneCommand(t *testing.T) {

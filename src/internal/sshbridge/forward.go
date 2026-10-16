@@ -325,6 +325,10 @@ func (f *RunnerdForwarder) runJob(ctx context.Context, controller domain.Control
 	if err := domain.ValidateScriptUTF8(payload.Script); err != nil {
 		return ReplyFrame{}, fmt.Errorf("%w: %v", ErrInvalidFrame, err)
 	}
+	limits, err := normalizeBridgeLimits(payload.Limits)
+	if err != nil {
+		return ReplyFrame{}, err
+	}
 	// The bridge frame's resource_id is the stable job identity. Older/minimal
 	// frames did not carry the two child IDs, so derive them deterministically
 	// from that job ID; retries can never allocate replacement resources.
@@ -341,7 +345,7 @@ func (f *RunnerdForwarder) runJob(ctx context.Context, controller domain.Control
 		IdempotencyKey: request.IdempotencyKey, RequestID: request.RequestID,
 		Environment: payload.Environment, ExecutionTarget: payload.ExecutionTarget,
 		Controller: bridgeController{Type: string(controller.Type()), ID: string(controller.ID())},
-		Source:     payload.Source, Script: payload.Script, Limits: payload.Limits,
+		Source:     payload.Source, Script: payload.Script, Limits: limits,
 		Isolation: payload.Isolation, Policy: payload.Policy,
 	})
 	if err != nil {
@@ -610,6 +614,32 @@ func parseBridgeInteger(raw json.RawMessage) (int64, error) {
 		return 0, ErrInvalidFrame
 	}
 	return rational.Num().Int64(), nil
+}
+
+func normalizeBridgeLimits(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var limits map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &limits); err != nil || limits == nil {
+		return nil, fmt.Errorf("%w: run limits must be an object", ErrInvalidFrame)
+	}
+	for _, name := range []string{"command_timeout_seconds", "idle_timeout_seconds", "session_max_lifetime_seconds", "output_bytes_per_command"} {
+		value, ok := limits[name]
+		if !ok {
+			continue
+		}
+		integer, err := parseBridgeInteger(value)
+		if err != nil || integer < 0 {
+			return nil, fmt.Errorf("%w: run limit %s must be a nonnegative integer", ErrInvalidFrame, name)
+		}
+		limits[name], _ = json.Marshal(integer)
+	}
+	normalized, err := json.Marshal(limits)
+	if err != nil {
+		return nil, fmt.Errorf("%w: run limits could not be encoded", ErrInvalidFrame)
+	}
+	return normalized, nil
 }
 
 func (f *RunnerdForwarder) doJSON(ctx context.Context, requestID, method, route string, query url.Values, body []byte) (ReplyFrame, error) {

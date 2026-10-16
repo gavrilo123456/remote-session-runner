@@ -24,6 +24,7 @@ import (
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/lifecycle"
+	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 	"remote-session-runner/src/internal/unixsocket"
@@ -1877,6 +1878,11 @@ func (s *Server) acceptCreateJobIntent(ctx context.Context, key string, body []b
 	}
 	if _, _, err := parseTimeoutSeconds(input.TimeoutSeconds); err != nil {
 		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
+	}
+	if normalized, err := mailbox.NormalizeRunTimeout(body); err != nil {
+		return jobAcceptance{}, localFailure(http.StatusUnprocessableEntity, "invalid_request", err.Error())
+	} else {
+		body = normalized
 	}
 	target, err := domain.NewExecutionTarget(domain.TargetKind(input.ExecutionTarget.Kind), input.ExecutionTarget.Profile)
 	if err != nil {
