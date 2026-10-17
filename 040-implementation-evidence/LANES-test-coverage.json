@@ -861,7 +861,39 @@
       "required_tiers": [
         "H",
         "F"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL209PreflightBuildsFixedMacAndLinuxLanePlans"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL209RejectsForeignLaneHostAndResourceSelection"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL209StagedStartFailureRollsBackFixtureAndPreservesPRD"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL209SuccessfulStageRemainsAdmissionClosed"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL209RollbackFailureIsReportedAndStillVerified"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL209RejectsMutatedPlanBeforeStaging"
+          },
+          {
+            "package": "./src/cmd/lane-preflight",
+            "name": "TestLanesL209PreflightCommandRequiresCompleteInputsWithoutWriting"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L3-01",

@@ -224,6 +224,16 @@ func (p ValidatedV3Profiles) Host() HostKind { return p.bindings.Host }
 // RemoteProfile returns the Linux-local profile. Mac contracts return empty.
 func (p ValidatedV3Profiles) RemoteProfile() string { return p.bindings.RemoteProfile }
 
+// LinuxProfileBinding returns the selected Linux profile by value. The caller
+// receives only validated references and fingerprints; this method performs
+// no credential-file access.
+func (p ValidatedV3Profiles) LinuxProfileBinding() (V3LinuxProfileBinding, bool) {
+	if p.bindings.Host != HostKindLinux || p.bindings.LinuxProfile == nil {
+		return V3LinuxProfileBinding{}, false
+	}
+	return *p.bindings.LinuxProfile, true
+}
+
 // ExecutionContexts returns a copy of the validated immutable pair registry.
 func (p ValidatedV3Profiles) ExecutionContexts() []V3ExecutionContextBinding {
 	return append([]V3ExecutionContextBinding(nil), p.bindings.ExecutionContexts...)
