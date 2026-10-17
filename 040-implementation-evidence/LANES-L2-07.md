@@ -197,9 +197,12 @@ cross-compilation passed for both test packages and `test-lanes-controls`.
 The Mac command with a deliberately missing external approval manifest failed
 closed before F dispatch, as expected. No F assertion ran.
 
-Gitea `origin/dev` and GitHub mirror `github/dev` both resolve to S2. All three
-hosts fast-forwarded from clean S1 checkouts and are clean on `dev` at S2 after
-validation. This source-only follow-up does not pass F: the six OCI fixtures,
-device performance observations, linux-host cgroup-v2 maintenance, and
-factory-sandbox controller change still require their separate A01/A02
-approval and execution. L2-07 remains BLOCKED with no F acceptance or E.
+At the S2 source-delivery checkpoint, Gitea `origin/dev` and GitHub mirror
+`github/dev` both resolved to S2. The evidence-only follow-up commit
+`2869a65edf3e86724dc8d40a6f344f47940a97f3` was then pushed to Gitea, verified
+at the exact same GitHub SHA, and fast-forwarded to all three clean Ubuntu
+checkouts. `git show --check` passed on Mac and each host at that evidence
+commit; it changed no source. This source-only follow-up does not pass F: the
+six OCI fixtures, device performance observations, linux-host cgroup-v2
+maintenance, and factory-sandbox controller change still require separate
+A01/A02 approval and execution. L2-07 remains BLOCKED with no F acceptance or E.

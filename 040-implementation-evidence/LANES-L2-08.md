@@ -183,8 +183,11 @@ packages and the fixture command. A missing external approval manifest was
 rejected before F dispatch. No approved APFS fixture exists and no F assertion
 was run.
 
-Gitea `origin/dev` and the automatic GitHub mirror `github/dev` resolve to S2;
-all three Ubuntu checkouts fast-forwarded from clean S1 and are clean at S2.
-The external Mac disks, APFS volumes, and actual quota acceptance remain
-unprovisioned. L2-08 remains BLOCKED with no native F, unit PASS, or evidence
-closeout E.
+At the S2 source-delivery checkpoint, Gitea `origin/dev` and the automatic
+GitHub mirror `github/dev` both resolved to S2. The evidence-only follow-up
+commit `2869a65edf3e86724dc8d40a6f344f47940a97f3` was then pushed to Gitea,
+verified at the exact GitHub SHA, and fast-forwarded to all three clean Ubuntu
+checkouts. `git show --check` passed on Mac and each host at that evidence
+commit; it changed no source. The external Mac disks, APFS volumes, and actual
+quota acceptance remain unprovisioned. L2-08 remains BLOCKED with no native F,
+unit PASS, or evidence closeout E.

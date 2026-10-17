@@ -559,8 +559,10 @@ packages and the command. The entry point rejected a missing external approval
 manifest before running F assertions. This is source validation only; no
 physical F procedure ran.
 
-Gitea `origin/dev` and automatic GitHub `github/dev` both resolve to S2. Each
-Ubuntu host fast-forwarded from a clean S1 checkout and is clean at S2 after
-validation. The generated volume, attachment and filesystem identities remain
-blank until an approved operator creates and measures each device; none has
-been guessed or committed.
+At the S2 source-delivery checkpoint, Gitea `origin/dev` and automatic GitHub
+`github/dev` both resolved to S2. Evidence-only commit
+`2869a65edf3e86724dc8d40a6f344f47940a97f3` was then pushed to Gitea, verified
+at the exact mirror SHA, and fast-forwarded to all three clean Ubuntu
+checkouts; `git show --check` passed there and on Mac. The generated volume,
+attachment and filesystem identities remain blank until an approved operator
+creates and measures each device; none has been guessed or committed.
