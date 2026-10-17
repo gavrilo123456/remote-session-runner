@@ -32,9 +32,14 @@ delivered S while retaining the blocker; no unit acceptance or live gate is
 implied. Following the owner's successive-source-unit decision, L3-02 source
 `d82d171cc545cfdbf4e6f611b3f3b66faec074d8` and L3-03 source
 `120589cfa6277cc6937ca6910c5e55828d456bc9` also passed their registered H and
-full source gates on Mac and all three synchronized Ubuntu checkouts. Both
-remain BLOCKED by the same ordered L3-01/L2-09 native F predecessor; neither
-has an acceptance or evidence closeout E.
+full source gates on Mac and all three synchronized Ubuntu checkouts. L3-04
+source `90c17965eb647863d0744d1715e05c2c025c2289` and L3-05 source
+`e526070b424e37cc8aa8e4a31c9bfca60e564424` also passed their registered H/N
+and full source gates on Mac and all three synchronized Ubuntu checkouts. These
+ordered source continuations remain BLOCKED by the L3-01/L2-09 native F
+predecessor chain; no live acceptance or evidence closeout E is claimed. L3-05
+uses L3-04's delivered source S; L3-04's missing acceptance E does not block
+independent source-only continuation under the owner's authorization.
 B021/B024 remain blocked, and the unstarted B022/B023 baseline units remain
 deferred.
 This ledger does not pass readiness, L0, any deferred bug gate or any live lane.
@@ -154,7 +159,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L3-02` | BLOCKED — Source S `d82d171cc545cfdbf4e6f611b3f3b66faec074d8`; eight H assertions, `make check build`, and focused race PASS on Mac; eight H plus `make check build` PASS on all three clean synchronized Ubuntu checkouts | [Unit evidence](LANES-L3-02.md); exact Gitea/GitHub S verified and all Ubuntu checkouts clean at S. L3-01 remains blocked by L2-09 native F, so no ordered L3-02 PASS or evidence closeout E is claimed |
 | `LANES-L3-03` | BLOCKED — Source S `120589cfa6277cc6937ca6910c5e55828d456bc9`; nine H assertions, `make check build`, and focused race PASS on Mac; nine H plus `make check build` PASS on all three clean synchronized Ubuntu checkouts | [Unit evidence](LANES-L3-03.md); exact Gitea/GitHub S verified and all Ubuntu checkouts clean at S. L3-02 remains blocked by L3-01/L2-09 native F, so no ordered L3-03 PASS, live acceptance, or evidence closeout E is claimed |
 | `LANES-L3-04` | BLOCKED — source S `90c17965eb647863d0744d1715e05c2c025c2289`; H, full source gates, and applicable focused race gates PASS at S on Mac and all three clean synchronized Ubuntu checkouts | [Unit evidence](LANES-L3-04.md); exact Gitea/GitHub SHA and host pulls verified. L3-03/L3-02/L3-01/L2-09 ordered acceptance remains BLOCKED by L2-07/L2-08 native infrastructure fixtures, so no unit PASS, live acceptance, or E is claimed. B021/B024 remain BLOCKED; BUG-022/023 remain DEFERRED |
-| `LANES-L3-05` | NOT RUN | Not produced |
+| `LANES-L3-05` | BLOCKED — source S `e526070b424e37cc8aa8e4a31c9bfca60e564424`; eight H and one native N assertion plus `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; focused race PASS on Mac, linux-host, and sandbox-host | [Unit evidence](LANES-L3-05.md); exact Gitea/GitHub S verified and all host pulls validated. L3-04 remains BLOCKED by the ordered L3-03/L3-02/L3-01/L2-09 acceptance chain, so no PASS, live acceptance, or evidence closeout E is claimed. Factory-sandbox race NOT RUN (`CGO_ENABLED=0`, no `cc`). B021/B024 remain BLOCKED; BUG-022/023 remain DEFERRED |
 | `LANES-L3-06` | NOT RUN | Not produced |
 | `LANES-L3-07` | NOT RUN | Not produced |
 | `LANES-L3-08` | NOT RUN | Not produced |
