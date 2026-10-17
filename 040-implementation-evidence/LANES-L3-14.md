@@ -1,9 +1,10 @@
 # LANES-L3-14 — authority and host capacity-policy integration
 
 **State:** IN PROGRESS; the unit remains BLOCKED in the ordered sequence.
-The four registered H assertions and Mac source gates pass. Post-source
-validation on the three Ubuntu hosts and required physical F acceptance are
-not yet complete. No unit PASS or evidence-closeout E is claimed.
+The four registered H assertions, Mac source gates and post-source validation
+on all three Ubuntu hosts pass. Required physical F acceptance remains NOT RUN
+because its approved fixtures and controller prerequisites are unavailable.
+No unit PASS or evidence-closeout E is claimed.
 
 ## Pre-unit state, predecessor, and scope
 
@@ -30,9 +31,11 @@ not yet complete. No unit PASS or evidence-closeout E is claimed.
   firewall, boot state, or installed files were changed. Tests use generated
   signing keys and temporary SQLite anchor fixtures only.
 - This source S is the commit containing the implementation and this
-  in-progress evidence. Its exact SHA, primary/mirror delivery, and remote
-  validation will be recorded by a later evidence update; the source commit
-  does not embed its own SHA.
+  in-progress evidence: `8369163e346bb2c90c0c6fcca16b521b621afcaa`. It was
+  pushed to Gitea `origin/dev`; direct primary and GitHub mirror lookups both
+  resolved to this exact SHA. All three Ubuntu development checkouts were
+  fast-forwarded from the clean predecessor to S and validated at S. The
+  following post-S gate record does not close this blocked unit.
 
 ## Inputs read at pre-unit HEAD
 
@@ -141,13 +144,34 @@ All used Go 1.27.1 from the Makefile-pinned toolchain and the shared Mac
 `GOCACHE=/private/tmp/remote-session-runner-gocache` and
 `GOMODCACHE=/private/tmp/remote-session-runner-gomodcache`.
 
-## Remaining delivery and acceptance gates
+## Delivery and post-S validation
 
-At this evidence revision, the post-S Gitea push, exact automatic GitHub
-mirror verification, three Ubuntu fast-forward pulls and source checks are
-NOT RUN. Required order remains Mac Source S → Gitea primary → exact GitHub
-mirror SHA → clean Ubuntu `dev` fast-forwards → exact-S validation. No tracked
-source is copied or edited on Ubuntu.
+| Gate | Command or check | Result |
+| --- | --- | --- |
+| Mac primary | `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev` | PASS — Gitea `origin/dev` is `8369163e346bb2c90c0c6fcca16b521b621afcaa` |
+| Mac mirror | `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev` | PASS — exact same SHA. An initial lookup without the explicit identity failed authentication; this corrected command succeeded |
+| `linux-host` | Clean `dev` checkout fast-forwarded to S; `make test-lanes UNIT=LANES-L3-14 LANES_TIER=H`, `make check build`, `make smoke` | PASS — all gates; remote `HEAD` equals S |
+| `sandbox-host` | Clean `dev` checkout fast-forwarded to S; `make test-lanes UNIT=LANES-L3-14 LANES_TIER=H`, `make check build`, `make smoke` | PASS — all gates; remote `HEAD` equals S |
+| `factory-sandbox` | Clean `dev` checkout fast-forwarded to S; `make test-lanes UNIT=LANES-L3-14 LANES_TIER=H`, `make check build`, `make smoke` | PASS — all gates; remote `HEAD` equals S |
+| `linux-host`, `sandbox-host` | Focused `go test -race ./src/internal/release ./src/internal/lanecapacity ./src/internal/lanetests -run 'TestLanesL314|TestLanesL303CapacityPolicy|TestLanesL303MacCapacityPolicy' -count=1` | PASS — both hosts had `CGO_ENABLED=1` and `/usr/bin/cc` |
+| `factory-sandbox` | Focused race test applicability check | NOT RUN — `CGO_ENABLED=0`, no `cc` |
+
+Each Ubuntu checkout was `/home/ubuntu/projects/remote-session-runner`, branch
+`dev`, and clean at predecessor `a6412be9640fb15c130c4cd7bf49833b9f7c16fc`
+before pull and at `8369163e346bb2c90c0c6fcca16b521b621afcaa` before tests.
+The pull command was `git -c core.sshCommand='ssh -i
+/home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes
+-o StrictHostKeyChecking=yes' pull --ff-only origin dev`. All tests used the
+Makefile-pinned Go 1.27.1 toolchain. Remote SSH access used the configured
+per-host Mac identity with `StrictHostKeyChecking=yes` and `UpdateHostKeys=no`.
+No tracked file was edited or copied on Ubuntu.
+
+No source delivery or source validation remains outstanding for S. The
+required L3-14 F gate is still NOT RUN. It requires the blocked L2-07 A01 Linux
+fixtures/controller prerequisites and L2-08 disposable APFS fixtures listed
+above. No capacity values or F result are inferred from synthetic tests. Keep
+L3-14 BLOCKED until the actual dependencies pass. B021/B024 evidence stays
+BLOCKED and BUG-022/023 stays deferred.
 
 Before S delivery, all remote development checkouts were read-only checked on
 `dev`, clean, and at predecessor `a6412be9640fb15c130c4cd7bf49833b9f7c16fc`:
@@ -164,10 +188,3 @@ checks were retried against their pinned IPs with `StrictHostKeyChecking=yes`
 and the listed identities. The successful `linux-host` check emitted an
 `UpdateHostKeys` write warning after verification; the remote Git state read
 completed successfully. `factory-sandbox` resolved by its configured alias.
-
-The required L3-14 F gate is NOT RUN. It requires the blocked L2-07 A01 Linux
-fixtures/controller prerequisites and L2-08 disposable APFS fixtures listed
-above. No capacity values or F result are inferred from synthetic tests. Keep
-L3-14 BLOCKED until the actual dependencies pass; record the exact remaining
-gate after post-S source validation. B021/B024 evidence stays BLOCKED and
-BUG-022/023 stays deferred.
