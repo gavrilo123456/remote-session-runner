@@ -1204,7 +1204,19 @@
       "required_tiers": [
         "H",
         "F"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/laneinstall", "name": "TestLanesL316ManagementUpdateRequiresFreshLedgerLeaseMarginAndSixHundredSecondBound"},
+          {"package": "./src/internal/laneinstall", "name": "TestLanesL316ManagementUpdateStagesHealthChecksAndCommitsWithProtectedStateUnchanged"},
+          {"package": "./src/internal/laneinstall", "name": "TestLanesL316ManagementUpdateFailureRollsBackAndVerifiesPriorRootAndLaneState"},
+          {"package": "./src/internal/laneinstall", "name": "TestLanesL316ManagementUpdateRefusesUnverifiedRollback"},
+          {"package": "./src/internal/laneinstall", "name": "TestLanesL316PKIRotationSerializesDualTrustBeforeOldLeafRetirement"},
+          {"package": "./src/internal/laneinstall", "name": "TestLanesL316PKIRotationFailureRetainsOldChainAndNeverRetiresMaterial"},
+          {"package": "./src/internal/release", "name": "TestLanesL316TransportTransitionRequiresBoundedDualTrustAndOldLeafRetirement"},
+          {"package": "./src/internal/release", "name": "TestLanesL316ManagementAuthorizationBindsManifestCapacityAndInstalledPredecessor"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-17",

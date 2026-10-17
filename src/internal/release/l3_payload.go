@@ -38,6 +38,122 @@ type promotionAuthorizationPayload struct {
 	RequiredLedgerGeneration uint64              `json:"required_revocation_ledger_generation"`
 }
 
+// HostManagementAnchorState is the authenticated local anchor view used when
+// validating one signed host-management authorization. Bootstrap state is
+// mutually exclusive with an installed manifest and cannot be reused after
+// the first baseline commits.
+type HostManagementAnchorState struct {
+	HostID                        string
+	BootstrapOnly                 bool
+	BootstrapContractDigest       string
+	BootstrapGeneration           uint64
+	CompletedCohortEvidenceDigest string
+	InstalledManifestID           string
+	InstallationGeneration        uint64
+	RollbackArtifactDigest        string
+}
+
+// ValidateHostManagementAuthorizationAgainstRecords binds the signed
+// authorization payload to its verified manifest/build matrix, the exact
+// measured host-management capacity policy, the local anchor predecessor, and
+// the current ledger/time view. Envelope, manifest, policy, measurement, and
+// issuer-receipt signatures must be verified by their respective trust layers
+// before this cross-record validator is used to install anything.
+func ValidateHostManagementAuthorizationAgainstRecords(raw []byte, manifestID string, manifestRaw []byte,
+	verifiedBuildEnvelopes map[string][]byte, policyID string, policyRaw []byte, measurementID string,
+	measurementRaw []byte, anchor HostManagementAnchorState, currentLedgerGeneration uint64, now time.Time) error {
+	if err := ValidatePayload("host_management_authorization", raw); err != nil {
+		return err
+	}
+	var authorization hostManagementAuthorizationPayload
+	if decodeStrict(raw, &authorization) != nil || !isLowerHexDigest(manifestID) || authorization.ManifestID != manifestID ||
+		!isLowerHexDigest(policyID) || authorization.CapacityPolicyID != policyID || anchor.HostID != authorization.HostID ||
+		currentLedgerGeneration == 0 || currentLedgerGeneration < authorization.RequiredLedgerGeneration || now.IsZero() ||
+		!validMaximumReleaseInterval(authorization.NotBefore, authorization.NotAfter) {
+		return invalidL3Payload("host-management authorization identity, ledger, or validity")
+	}
+	if err := ValidateHostManagementManifest(manifestRaw, verifiedBuildEnvelopes); err != nil {
+		return invalidL3Payload("host-management manifest or build matrix")
+	}
+	var manifest hostManagementManifestPayload
+	if decodeStrict(manifestRaw, &manifest) != nil || !isLowerHexDigest(manifestID) {
+		return invalidL3Payload("host-management manifest payload")
+	}
+	wantArtifacts := make([]artifactTuple, 0, len(authorization.ArtifactSubset))
+	for _, artifact := range manifest.Artifacts {
+		if artifact.HostID == authorization.HostID {
+			wantArtifacts = append(wantArtifacts, artifact)
+		}
+	}
+	if !slices.Equal(authorization.ArtifactSubset, wantArtifacts) {
+		return invalidL3Payload("host-management authorization artifact subset")
+	}
+	if err := ValidateCapacityPolicy(policyRaw, measurementID, measurementRaw); err != nil {
+		return invalidL3Payload("host-management capacity policy")
+	}
+	var policy lanecapacity.Policy
+	if decodeStrict(policyRaw, &policy) != nil || policy.HostID != authorization.HostID || policy.Scope != lanecapacity.ScopeHostManagement ||
+		policy.NotBefore.After(now) || !policy.NotAfter.After(now) {
+		return invalidL3Payload("host-management capacity policy scope or validity")
+	}
+	start, _ := time.Parse(time.RFC3339Nano, authorization.NotBefore)
+	end, _ := time.Parse(time.RFC3339Nano, authorization.NotAfter)
+	if now.Before(start) || !now.Before(end) {
+		return invalidL3Payload("host-management authorization is not currently valid")
+	}
+	if err := validateHostManagementPredecessor(authorization, anchor); err != nil {
+		return err
+	}
+	if authorization.PKIRotation != nil {
+		if err := validateHostManagementPKIRotation(authorization.HostID, *authorization.PKIRotation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateHostManagementPredecessor(value hostManagementAuthorizationPayload, anchor HostManagementAnchorState) error {
+	switch value.PredecessorKind {
+	case "bootstrap":
+		if !anchor.BootstrapOnly || anchor.InstalledManifestID != "" || anchor.InstallationGeneration != 0 ||
+			value.InstallationGeneration != 1 || value.BootstrapContractDigest != anchor.BootstrapContractDigest ||
+			value.BootstrapGeneration != anchor.BootstrapGeneration || value.BootstrapEvidenceDigest != anchor.CompletedCohortEvidenceDigest ||
+			!isDigest(anchor.BootstrapContractDigest) || anchor.BootstrapGeneration == 0 || !isDigest(anchor.CompletedCohortEvidenceDigest) {
+			return invalidL3Payload("bootstrap predecessor is not the unique current anchor state")
+		}
+	case "host_management":
+		if anchor.BootstrapOnly || !isLowerHexDigest(anchor.InstalledManifestID) || anchor.InstallationGeneration == 0 ||
+			anchor.InstallationGeneration == ^uint64(0) || !isDigest(anchor.RollbackArtifactDigest) ||
+			value.PredecessorManifestID != anchor.InstalledManifestID || value.PredecessorGeneration != anchor.InstallationGeneration ||
+			value.RollbackArtifactDigest != anchor.RollbackArtifactDigest || value.InstallationGeneration != anchor.InstallationGeneration+1 {
+			return invalidL3Payload("management predecessor or rollback artifact differs from the installed anchor")
+		}
+	default:
+		return invalidL3Payload("host-management predecessor kind")
+	}
+	return nil
+}
+
+func validateHostManagementPKIRotation(hostID string, rotation hostManagementPKIRotation) error {
+	var receipt laneinstall.PKIIssuerReceipt
+	var certificatePackage laneinstall.PKICertificatePackage
+	var issuerTuple, installerTuple laneinstall.PKIInstallerArtifactTuple
+	if decodeStrict(rotation.Receipt, &receipt) != nil || decodeStrict(rotation.CertificatePackage, &certificatePackage) != nil ||
+		decodeStrict(rotation.IssuerTuple, &issuerTuple) != nil || decodeStrict(rotation.InstallerTuple, &installerTuple) != nil {
+		return invalidL3Payload("host-management PKI rotation receipt/package tuple")
+	}
+	packageDigest, err := laneinstall.PKICertificatePackageDigest(certificatePackage)
+	if err != nil || packageDigest != rotation.PackageDigest || !isLowerHexDigest(rotation.ActivePeerDigest) ||
+		!isLowerHexDigest(rotation.RequestID) || certificatePackage.HostID != hostID || receipt.HostID != hostID ||
+		certificatePackage.RequestID != rotation.RequestID || receipt.RequestID != rotation.RequestID || receipt.ID == "" ||
+		receipt.MandateID == "" || receipt.PackageDigest != packageDigest || string(receipt.Role) != string(certificatePackage.Role) ||
+		!isSourceCommit(issuerTuple.SourceCommit) || !isDigest(issuerTuple.ToolchainDigest) || !isDigest(issuerTuple.InputDigest) || !isDigest(issuerTuple.BinaryDigest) ||
+		!isSourceCommit(installerTuple.SourceCommit) || !isDigest(installerTuple.ToolchainDigest) || !isDigest(installerTuple.InputDigest) || !isDigest(installerTuple.BinaryDigest) {
+		return invalidL3Payload("host-management PKI rotation binding")
+	}
+	return nil
+}
+
 type promotionAttestationPayload struct {
 	AuthorizationID        string              `json:"promotion_authorization_id"`
 	CandidateID            string              `json:"candidate_manifest_id"`

@@ -121,7 +121,8 @@
         "uri_san": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]{1,250}$", "maxLength": 256},
         "ip_san": {"type": "string", "anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]},
         "certificate_fingerprint": {"$ref": "common.schema.json#/$defs/digest"},
-        "spki_fingerprint": {"$ref": "common.schema.json#/$defs/digest"}
+        "spki_fingerprint": {"$ref": "common.schema.json#/$defs/digest"},
+        "overlap_not_after": {"$ref": "common.schema.json#/$defs/utcTimestamp"}
       }
     }
   }

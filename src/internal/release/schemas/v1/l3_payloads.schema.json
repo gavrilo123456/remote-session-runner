@@ -362,6 +362,104 @@
         }
       ]
     },
+    "managementArtifactTuple": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_id", "component", "goos", "goarch", "toolchain_digest", "build_input_digest", "artifact_digest", "host_build_attestation_id"],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "component": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "goos": {"type": "string", "enum": ["darwin", "linux"]},
+        "goarch": {"type": "string", "enum": ["amd64", "arm64"]},
+        "toolchain_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "build_input_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "artifact_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "host_build_attestation_id": {"$ref": "common.schema.json#/$defs/recordId"}
+      }
+    },
+    "pkiIssuerArtifactTuple": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_commit", "toolchain_digest", "input_digest", "binary_digest"],
+      "properties": {
+        "source_commit": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+        "toolchain_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "input_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "binary_digest": {"$ref": "common.schema.json#/$defs/digest"}
+      }
+    },
+    "pkiIssuerReceipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "issuer_key_id", "mandate_id", "request_id", "host_id", "leaf_role", "package_digest", "issuer_fingerprint", "issued_at", "signature"],
+      "properties": {
+        "id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "issuer_key_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+        "mandate_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "request_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "leaf_role": {"type": "string", "enum": ["release_transport_server", "release_authority_client"]},
+        "package_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "issuer_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "issued_at": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "signature": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"}
+      }
+    },
+    "pkiCertificateTrustPackage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_id", "leaf_role", "request_id", "certificate_der", "trust_roots_der", "certificate_sha256", "spki_sha256"],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "leaf_role": {"type": "string", "enum": ["release_transport_server", "release_authority_client"]},
+        "request_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "certificate_der": {"type": "string", "minLength": 16, "maxLength": 21848, "pattern": "^[A-Za-z0-9+/]+={0,2}$"},
+        "trust_roots_der": {"type": "array", "minItems": 1, "maxItems": 2, "items": {"type": "string", "minLength": 16, "maxLength": 21848, "pattern": "^[A-Za-z0-9+/]+={0,2}$"}},
+        "certificate_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "spki_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "hostManagementPKIRotation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pki_certificate_request_id", "issuer_receipt", "certificate_trust_package", "certificate_trust_package_digest", "active_peer_set_digest", "issuer_artifact_tuple", "installer_artifact_tuple"],
+      "properties": {
+        "pki_certificate_request_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "issuer_receipt": {"$ref": "l3_payloads.schema.json#/$defs/pkiIssuerReceipt"},
+        "certificate_trust_package": {"$ref": "l3_payloads.schema.json#/$defs/pkiCertificateTrustPackage"},
+        "certificate_trust_package_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "active_peer_set_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "issuer_artifact_tuple": {"$ref": "l3_payloads.schema.json#/$defs/pkiIssuerArtifactTuple"},
+        "installer_artifact_tuple": {"$ref": "l3_payloads.schema.json#/$defs/pkiIssuerArtifactTuple"}
+      }
+    },
+    "hostManagementAuthorization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_management_manifest_id", "host_id", "capacity_policy_id", "artifact_subset", "installation_generation", "predecessor_kind", "not_before", "not_after", "required_revocation_ledger_generation"],
+      "properties": {
+        "host_management_manifest_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "capacity_policy_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "artifact_subset": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "l3_payloads.schema.json#/$defs/managementArtifactTuple"}, "uniqueItems": true},
+        "installation_generation": {"type": "integer", "minimum": 1},
+        "predecessor_kind": {"type": "string", "enum": ["bootstrap", "host_management"]},
+        "predecessor_manifest_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "predecessor_installation_generation": {"type": "integer", "minimum": 1},
+        "rollback_artifact_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "bootstrap_contract_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "bootstrap_installation_generation": {"type": "integer", "minimum": 1},
+        "completed_cohort_evidence_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "not_before": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "not_after": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "required_revocation_ledger_generation": {"type": "integer", "minimum": 1},
+        "pki_rotation": {"$ref": "l3_payloads.schema.json#/$defs/hostManagementPKIRotation"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"predecessor_kind": {"const": "host_management"}}, "required": ["predecessor_kind"]},
+          "then": {"required": ["predecessor_manifest_id", "predecessor_installation_generation", "rollback_artifact_digest"], "not": {"anyOf": [{"required": ["bootstrap_contract_digest"]}, {"required": ["bootstrap_installation_generation"]}, {"required": ["completed_cohort_evidence_digest"]}]}}
+        },
+        {
+          "if": {"properties": {"predecessor_kind": {"const": "bootstrap"}}, "required": ["predecessor_kind"]},
+          "then": {"required": ["bootstrap_contract_digest", "bootstrap_installation_generation", "completed_cohort_evidence_digest"], "not": {"anyOf": [{"required": ["predecessor_manifest_id"]}, {"required": ["predecessor_installation_generation"]}, {"required": ["rollback_artifact_digest"]}]}}
+        }
+      ]
+    },
     "pkiCertificateRequest": {
       "type": "object", "additionalProperties": false,
       "required": ["pki_issuance_mandate_id", "host_id", "leaf_role", "context", "uri_san", "csr_der", "public_key_fingerprint", "ca_profile", "certificate_not_after"],

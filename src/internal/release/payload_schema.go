@@ -120,6 +120,36 @@ type activePeer struct {
 	IPSAN                  string `json:"ip_san"`
 	CertificateFingerprint string `json:"certificate_fingerprint"`
 	SPKIFingerprint        string `json:"spki_fingerprint"`
+	OverlapNotAfter        string `json:"overlap_not_after,omitempty"`
+}
+
+type hostManagementAuthorizationPayload struct {
+	ManifestID               string                     `json:"host_management_manifest_id"`
+	HostID                   string                     `json:"host_id"`
+	CapacityPolicyID         string                     `json:"capacity_policy_id"`
+	ArtifactSubset           []artifactTuple            `json:"artifact_subset"`
+	InstallationGeneration   uint64                     `json:"installation_generation"`
+	PredecessorKind          string                     `json:"predecessor_kind"`
+	PredecessorManifestID    string                     `json:"predecessor_manifest_id,omitempty"`
+	PredecessorGeneration    uint64                     `json:"predecessor_installation_generation,omitempty"`
+	RollbackArtifactDigest   string                     `json:"rollback_artifact_digest,omitempty"`
+	BootstrapContractDigest  string                     `json:"bootstrap_contract_digest,omitempty"`
+	BootstrapGeneration      uint64                     `json:"bootstrap_installation_generation,omitempty"`
+	BootstrapEvidenceDigest  string                     `json:"completed_cohort_evidence_digest,omitempty"`
+	NotBefore                string                     `json:"not_before"`
+	NotAfter                 string                     `json:"not_after"`
+	RequiredLedgerGeneration uint64                     `json:"required_revocation_ledger_generation"`
+	PKIRotation              *hostManagementPKIRotation `json:"pki_rotation,omitempty"`
+}
+
+type hostManagementPKIRotation struct {
+	RequestID          string          `json:"pki_certificate_request_id"`
+	Receipt            json.RawMessage `json:"issuer_receipt"`
+	CertificatePackage json.RawMessage `json:"certificate_trust_package"`
+	PackageDigest      string          `json:"certificate_trust_package_digest"`
+	ActivePeerDigest   string          `json:"active_peer_set_digest"`
+	IssuerTuple        json.RawMessage `json:"issuer_artifact_tuple"`
+	InstallerTuple     json.RawMessage `json:"installer_artifact_tuple"`
 }
 
 type releaseRecordReference struct {
@@ -228,7 +258,7 @@ func payloadSchemaName(recordType string) (string, bool) {
 	switch recordType {
 	case "host_build_attestation", "candidate_manifest", "host_management_manifest":
 		return recordType, true
-	case "promotion_authorization", "promotion_attestation", "lane_acceptance", "ingress_admission_directive",
+	case "host_management_authorization", "promotion_authorization", "promotion_attestation", "lane_acceptance", "ingress_admission_directive",
 		"ingress_admission_attestation", "capacity_measurement_attestation", "capacity_policy",
 		"pki_certificate_request", "host_attestation_key_set", "release_revocation_ledger", "authority_key_set":
 		return recordType, true
@@ -266,7 +296,7 @@ func compiledPayloadSchema(name string) (*jsonschema.Schema, error) {
 			}
 		}
 		recordTypes := []string{
-			"host_build_attestation", "candidate_manifest", "host_management_manifest",
+			"host_build_attestation", "candidate_manifest", "host_management_manifest", "host_management_authorization",
 			"promotion_authorization", "promotion_attestation", "lane_acceptance",
 			"ingress_admission_directive", "ingress_admission_attestation",
 			"capacity_measurement_attestation", "capacity_policy", "pki_certificate_request",
@@ -519,6 +549,18 @@ func parseBuildAttestationReference(raw []byte) (releaseRecordReference, error) 
 }
 
 func validateTransportContract(contract transportContract) error {
+	return validateTransportContractAt(contract, time.Now().UTC())
+}
+
+func validateTransportContractAt(contract transportContract, now time.Time) error {
+	return validateTransportContractInternal(contract, now, true)
+}
+
+func validateTransportContractShape(contract transportContract) error {
+	return validateTransportContractInternal(contract, time.Time{}, false)
+}
+
+func validateTransportContractInternal(contract transportContract, now time.Time, enforceOverlapWindow bool) error {
 	if !sort.SliceIsSorted(contract.CAInventory, func(i, j int) bool { return contract.CAInventory[i].CAID < contract.CAInventory[j].CAID }) ||
 		!sort.SliceIsSorted(contract.TrustInventory, func(i, j int) bool {
 			if contract.TrustInventory[i].HostID == contract.TrustInventory[j].HostID {
@@ -572,7 +614,7 @@ func validateTransportContract(contract transportContract) error {
 			leaf.CertificateFingerprint, leaf.SPKIFingerprint)] = struct{}{}
 		leafHosts[leaf.HostID] = true
 	}
-	activePeerHosts := make(map[string]bool, len(canonicalHostIDs))
+	activePeersByHost := make(map[string][]activePeer, len(canonicalHostIDs))
 	for i, peer := range contract.ActivePeerAllowlist {
 		if i > 0 && contract.ActivePeerAllowlist[i-1] == peer {
 			return ErrInvalidTransportContract
@@ -581,10 +623,40 @@ func validateTransportContract(contract transportContract) error {
 			peer.CertificateFingerprint, peer.SPKIFingerprint)]; !ok {
 			return ErrInvalidTransportContract
 		}
-		activePeerHosts[peer.HostID] = true
+		activePeersByHost[peer.HostID] = append(activePeersByHost[peer.HostID], peer)
 	}
 	for _, hostID := range canonicalHostIDs {
-		if !trustHosts[hostID] || !leafHosts[hostID] || !activePeerHosts[hostID] {
+		peers := activePeersByHost[hostID]
+		if !trustHosts[hostID] || !leafHosts[hostID] || len(peers) == 0 || len(peers) > 2 {
+			return ErrInvalidTransportContract
+		}
+		if len(peers) == 1 {
+			if peers[0].OverlapNotAfter != "" {
+				return ErrInvalidTransportContract
+			}
+			continue
+		}
+		var current, overlap *activePeer
+		for i := range peers {
+			if peers[i].OverlapNotAfter == "" {
+				if current != nil {
+					return ErrInvalidTransportContract
+				}
+				current = &peers[i]
+			} else {
+				if overlap != nil {
+					return ErrInvalidTransportContract
+				}
+				overlap = &peers[i]
+			}
+		}
+		if current == nil || overlap == nil || current.HostID != overlap.HostID || current.URISAN != overlap.URISAN || current.IPSAN != overlap.IPSAN ||
+			current.CertificateFingerprint == overlap.CertificateFingerprint || current.SPKIFingerprint == overlap.SPKIFingerprint {
+			return ErrInvalidTransportContract
+		}
+		deadline, err := time.Parse(time.RFC3339Nano, overlap.OverlapNotAfter)
+		if err != nil || deadline.Location() != time.UTC ||
+			(enforceOverlapWindow && (!deadline.After(now) || deadline.Sub(now) > 14*24*time.Hour)) {
 			return ErrInvalidTransportContract
 		}
 	}
@@ -598,7 +670,7 @@ func leafSortKey(leaf transportLeaf) string {
 
 func peerSortKey(peer activePeer) string {
 	return strings.Join([]string{peer.HostID, peer.URISAN, peer.IPSAN,
-		peer.CertificateFingerprint, peer.SPKIFingerprint}, "\x00")
+		peer.CertificateFingerprint, peer.SPKIFingerprint, peer.OverlapNotAfter}, "\x00")
 }
 
 func leafPeerBindingKey(hostID, uriSAN, ipSAN, certificateFingerprint, spkiFingerprint string) string {

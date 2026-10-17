@@ -313,7 +313,9 @@ func authorityPlanContext(recordType string, payload []byte) (string, uint64, er
 	}
 	keys := []string{"candidate_manifest_id", "lane_transition_id", "lane", "release_lane", "host_id", "capacity_policy_id",
 		"predecessor_record_id", "predecessor_acceptance_id", "predecessor_manifest_id", "predecessor_kind",
-		"predecessor_installation_generation", "rollback_artifact_digest", "installation_generation", "ledger_generation", "required_ledger_generation", "required_revocation_ledger_generation",
+		"predecessor_installation_generation", "rollback_artifact_digest", "bootstrap_contract_digest", "bootstrap_installation_generation", "completed_cohort_evidence_digest",
+		"host_management_manifest_id", "pki_certificate_request_id", "issuer_receipt", "certificate_trust_package_digest", "active_peer_set_digest", "issuer_artifact_tuple", "installer_artifact_tuple",
+		"installation_generation", "ledger_generation", "required_ledger_generation", "required_revocation_ledger_generation",
 		"required_host_management_manifest_id", "key_set_generation", "authority_key_set_generation", "previous_key_id", "successor_key_id", "policy_scope", "directive_role",
 		"transition_epoch", "admission_generation", "lease_generation", "resolved_configuration_digest", "capacity_evaluation_digest"}
 	context := map[string]json.RawMessage{"record_type": json.RawMessage(fmt.Sprintf("%q", recordType))}
