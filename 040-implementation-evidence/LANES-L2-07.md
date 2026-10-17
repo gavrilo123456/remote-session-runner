@@ -81,10 +81,10 @@ factory-sandbox `io` propagation approval, and fresh device performance/UUID
 facts are still absent.
 
 The registered F Go test subprocess uses `data/go-build` for its build cache
-and temporary files and `data/go-modules` for its module cache. The repository build command keeps
-the normal Go toolchain cache; no shared-cache purge/copy or production cache
-quota change is part of this unit. F-generated cache entries remain on the
-disposable fixture devices for separately approved cleanup.
+and temporary files and `data/go-modules` for its module cache. The repository
+build command keeps the normal Go toolchain cache; no shared-cache purge/copy or
+production cache quota change is part of this unit. F-generated cache entries
+remain on the disposable fixture devices for separately approved cleanup.
 
 ## Mac source gates
 
@@ -175,3 +175,31 @@ source checks only. It is not an evidence closeout E, does not claim L2-07
 acceptance, and does not waive F. The next source unit may proceed only if its
 source inputs are independent of these exact blockers; it must cite this
 blocked predecessor without claiming an L2-07 E or PASS.
+
+## 2026-10-17 guarded F-runner source follow-up
+
+Source S1 `5712da31545fd02b01b59824ba7633a2aabd86cc` added the shared
+`make test-lanes-controls` entry point, host-bound owner-approved fixture
+manifest validation, Linux bounded `system.slice` F procedure, disposable
+project/cache/log pressure assertions, and the concrete A01 package. Its first
+Linux host validation exposed one source test bug: the exact-digest loader test
+always supplied a Mac fixture, so `linux-host` correctly rejected it as a
+platform mismatch. The observed S1 failure is preserved here; no test was
+counted as passing on that revision.
+
+The correction at Source S2
+`5979da100389125ce81ec6942b43c5ef3ec45f2b` selects the native fixture for the
+test host. At S2, Mac and all three Ubuntu hosts passed `make check build`.
+Focused `-race` tests for `lanefixtures` and `lanetests` passed on Mac,
+`linux-host`, and `sandbox-host`; factory-sandbox focused race was NOT RUN
+because `CGO_ENABLED=0` and `cc` is unavailable. Linux `amd64` and `arm64`
+cross-compilation passed for both test packages and `test-lanes-controls`.
+The Mac command with a deliberately missing external approval manifest failed
+closed before F dispatch, as expected. No F assertion ran.
+
+Gitea `origin/dev` and GitHub mirror `github/dev` both resolve to S2. All three
+hosts fast-forwarded from clean S1 checkouts and are clean on `dev` at S2 after
+validation. This source-only follow-up does not pass F: the six OCI fixtures,
+device performance observations, linux-host cgroup-v2 maintenance, and
+factory-sandbox controller change still require their separate A01/A02
+approval and execution. L2-07 remains BLOCKED with no F acceptance or E.

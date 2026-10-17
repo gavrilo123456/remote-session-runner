@@ -165,3 +165,26 @@ edited or copied on Ubuntu.
 This evidence is a docs-only follow-up after the Source S validations. L2-08
 remains BLOCKED until the native F gate passes. This source work does not
 close the L2-07 Linux F gate or imply an L2-07 evidence closeout.
+
+## 2026-10-17 guarded F-runner source follow-up
+
+The shared fixture command and native Mac F procedure were delivered in Source
+S1 `5712da31545fd02b01b59824ba7633a2aabd86cc`; the follow-up correction at
+Source S2 `5979da100389125ce81ec6942b43c5ef3ec45f2b` makes the exact-digest
+loader regression choose the fixture platform matching the test host. A first
+S1 `linux-host` full-suite run exposed and preserved that test-only mismatch;
+it did not change the F acceptance result.
+
+At S2, Mac and all three Ubuntu hosts passed `make check build`. Focused
+`-race` tests for `lanefixtures` and `lanetests` passed on Mac, linux-host, and
+sandbox-host; factory-sandbox race was NOT RUN because `CGO_ENABLED=0` and `cc`
+is unavailable. Linux `amd64`/`arm64` cross-compilation passed for both test
+packages and the fixture command. A missing external approval manifest was
+rejected before F dispatch. No approved APFS fixture exists and no F assertion
+was run.
+
+Gitea `origin/dev` and the automatic GitHub mirror `github/dev` resolve to S2;
+all three Ubuntu checkouts fast-forwarded from clean S1 and are clean at S2.
+The external Mac disks, APFS volumes, and actual quota acceptance remain
+unprovisioned. L2-08 remains BLOCKED with no native F, unit PASS, or evidence
+closeout E.

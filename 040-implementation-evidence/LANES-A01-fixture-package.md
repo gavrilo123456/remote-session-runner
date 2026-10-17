@@ -543,3 +543,24 @@ window. Neither is part of the volume-creation approval or fixture runner.
 `LANES-L3-19` remains **BLOCKED** until its ordered, genuine physical gates
 pass. Preparing or creating these disposable F fixtures cannot be recorded as
 L3-19 acceptance.
+
+## 7. Source implementation and delivery evidence
+
+The fixture command, closed owner-approved manifest, guarded Linux/Mac F
+procedures, and disposable cache isolation were delivered in Source S1
+`5712da31545fd02b01b59824ba7633a2aabd86cc`. Its first `linux-host` full suite
+found that one exact-digest regression used only a Mac manifest; the mismatch
+was recorded and corrected at Source S2
+`5979da100389125ce81ec6942b43c5ef3ec45f2b`. S2 passed `make check build` on
+Mac and all three Ubuntu hosts. Focused race tests passed on Mac, linux-host and
+sandbox-host; factory-sandbox race was NOT RUN because `CGO_ENABLED=0` and `cc`
+is unavailable. Linux amd64/arm64 cross-compilation passed for both test
+packages and the command. The entry point rejected a missing external approval
+manifest before running F assertions. This is source validation only; no
+physical F procedure ran.
+
+Gitea `origin/dev` and automatic GitHub `github/dev` both resolve to S2. Each
+Ubuntu host fast-forwarded from a clean S1 checkout and is clean at S2 after
+validation. The generated volume, attachment and filesystem identities remain
+blank until an approved operator creates and measures each device; none has
+been guessed or committed.
