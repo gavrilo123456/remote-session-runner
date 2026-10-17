@@ -1,8 +1,8 @@
 # LANES-L1-10 — provisional ingress admission contexts
 
-**State:** IN PROGRESS — Mac H and source gates pass. Source S has not yet been
-committed or validated on the three Ubuntu checkouts. No installed or live
-lane acceptance is claimed.
+**State:** PASS — Source S and all required synchronized-host gates passed.
+This document is the evidence-only closeout E; its commit does not embed its
+own SHA. No installed or live lane acceptance is claimed.
 
 ## Predecessor and pre-unit read inventory
 
@@ -117,14 +117,67 @@ not supply the required Go tools, so the Makefile's explicit Go 1.27.1
 toolchain was used. The linker emitted a duplicate `-lproc` warning for test
 binaries; it did not affect the passing gates.
 
-## Source delivery and remaining gates
+## Source S delivery and synchronized-host validation
 
 - Pre-unit E: `1be94391806503c8239c93143e8d12e98bdb9619`.
-- Source S: pending Mac commit and primary/mirror delivery.
-- Required post-S gates: clean fast-forward to exact S, then L1-10 H, full
-  suite, vet, build, smoke and focused race on each Ubuntu checkout. Record
-  host-specific race unavailability if a host has no C toolchain.
-- Evidence closeout E and final clean/equal-host synchronization: NOT RUN.
+- Source S: `10864883d428c7229740fe467b0b36c8301d2f4e`, committed on Mac `dev`
+  as `phase(LANES-L1-10): provisional ingress admission contexts`.
+- Primary Gitea `origin/dev` accepted S. Direct primary `ls-remote` returned
+  exact S. The automatic GitHub mirror `github/dev` was initially still at E;
+  after it caught up, direct mirror `ls-remote` returned exact S. No manual
+  mirror push occurred.
+- Before pulling, each Ubuntu checkout was clean on `dev` at E and its `origin`
+  was `git@github.com:gavrilo123456/remote-session-runner.git`. Each ran the
+  required GitHub `origin/dev` `--ff-only` pull using the host's explicit
+  `/home/ubuntu/.ssh/gavrilo123456-github` identity. Each post-pull and
+  post-validation checkout was clean on `dev` at exact S.
+
+The delivery commands were the repository's explicit-key commands:
+
+```sh
+# Mac
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote origin refs/heads/dev
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev
+
+# Each Ubuntu host, after verifying a clean dev checkout at E
+git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' pull --ff-only origin dev
+```
+
+| Machine | Platform / Go | Checkout and gates at S | Focused race |
+| --- | --- | --- | --- |
+| `mac-control-plane` | Darwin arm64 / Go 1.27.1 | PASS — H (8), full `make test`, `make vet`, `make build`, `make smoke`, `git diff --check` | PASS — `laneadmission`, `store`, `runnerd`, `-run '^TestLanesL110' -count=1` |
+| `linux-host` (`oracle-yuta-konopka-ubuntu-micro-02`) | Linux amd64 / Go 1.27.1 | PASS — clean `dev`, exact S; H (8), full `make test`, vet, build, smoke | PASS — same three packages and test filter |
+| `sandbox-host` (`oracle-gustaw-janecki-ubuntu-flex-02`) | Linux arm64 / Go 1.27.1 | PASS — clean `dev`, exact S; H (8), full `make test`, vet, build, smoke | PASS — same three packages and test filter |
+| `factory-sandbox` (`oracle-waclaw-dziwulski-ubuntu-micro-01`) | Linux amd64 / Go 1.27.1 | PASS — clean `dev`, exact S; H (8), full `make test`, vet, build, smoke | NOT RUN — `CGO_ENABLED=0`; `command -v cc` found no compiler |
+
+The required host commands were `make test-lanes UNIT=LANES-L1-10
+LANES_TIER=H`, `make test`, `make vet`, `make build`, and `make smoke`. Focused
+race used the explicit Go 1.27.1 toolchain on Mac, linux-host and sandbox-host.
+The race invocation was `GOTOOLCHAIN=local <go1.27.1>/go test -race
+./src/internal/laneadmission ./src/internal/store ./src/internal/runnerd -run
+'^TestLanesL110' -count=1`, with the Makefile shared Go caches on Mac and each
+Ubuntu account's normal Go caches. The Mac SSH client printed a non-fatal
+warning that its sandboxed `known_hosts` file could not be rewritten; all
+connections completed with strict host-key checking.
+Ubuntu SSH used verified host aliases and explicit identities: Mac alias
+`remote-session-runner` with `/Users/tomasz.walczuk/.ssh/remote-session-runner`,
+`sandbox.env` with `/Users/tomasz.walczuk/.ssh/dev.slidestud.io`, and
+`factory-sandbox` with `/Users/tomasz.walczuk/.ssh/factory-sandbox`; all used
+`IdentitiesOnly=yes`, `BatchMode=yes`, and `StrictHostKeyChecking=yes`.
+
+The evidence-only closeout E commit follows S on the same Gitea → exact mirror
+→ three-host clean fast-forward path. Its final Git SHA is deliberately not
+embedded in this document.
+
+## Rollback and production impact
+
+There is no installed lane state to roll back. If source S needs correction,
+deliver a reviewed successor commit through the same Gitea, exact-mirror and
+clean-host fast-forward process; do not reset or force-push shared history.
+No service, publisher, mailbox, credential, storage, firewall or production
+Runner action was taken, so no live rollback or external approval was required.
+
 - No credential, mailbox request/ACK, production service, publisher pause,
   installer, runtime configuration, storage or firewall was changed.
 - `LANES-PREP-00` and L0 remain BLOCKED; B021-02 and B024-02 remain BLOCKED;
