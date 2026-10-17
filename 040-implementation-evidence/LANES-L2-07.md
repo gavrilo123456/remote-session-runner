@@ -103,13 +103,42 @@ CPU, memory, task and per-device I/O bounds, byte/inode/cache/log saturation,
 and unchanged PRD behavior. It is not replaced by static rendering or the
 Mac's synthetic fixtures.
 
-## Delivery status
+## Source delivery and synchronized checks
 
-This commit is Source S; its own SHA is not embedded here. The required
-Gitea-primary push, exact GitHub mirror verification, and three-host fast-forward
-validation follow after S and are not claimed by this file version. Since the
-required F gate remains blocked, this document is not an evidence closeout E
-and the unit remains BLOCKED. A follow-up status entry can record post-push
-source checks without calling the unit accepted. Future work may continue only
-on a subsequent source unit whose source inputs are independent of the missing
-Linux fixture/host gate; the blocked L2-07 evidence must remain cited as such.
+Source S is `6f0db6d0aa831fc09162bf32ddd3cd45e6627e3e`, committed on Mac `dev`
+as `phase(LANES-L2-07): add measured Linux resource plans`. The primary Gitea
+`origin/dev` and automatic GitHub mirror `github/dev` both resolve to that
+exact SHA. Mac `dev` is clean at S; its local `origin/dev` tracking ref remained
+one commit behind after the successful push, so the remote refs were verified
+directly rather than treating that stale local tracking ref as the primary
+push result.
+
+Before pulling, `linux-host`, `sandbox-host`, and `factory-sandbox` were each
+clean on `dev` at predecessor `a59058a17aace95a3b0b23d4f0dadf9b20607f78`.
+Each fast-forwarded `origin/dev` using the configured explicit Git identity
+`/home/ubuntu/.ssh/gavrilo123456-github`, with identity-only, batch, and strict
+host-key checking. At exact S, each host ran `make check build`; all three
+commands exited 0. This ran the full Go test suite, `go vet ./...`, and
+`go build ./src/cmd/...`. Focused post-run reads confirm all three checkouts
+remain clean on `dev` at exact S.
+
+| Machine | Result at exact S |
+| --- | --- |
+| `mac-control-plane` | `make check build` PASS; `git diff --check` PASS |
+| `linux-host` | Fast-forward PASS; `make check build` PASS; clean `dev`, HEAD S |
+| `sandbox-host` | Fast-forward PASS; `make check build` PASS; clean `dev`, HEAD S |
+| `factory-sandbox` | Fast-forward PASS; `make check build` PASS; clean `dev`, HEAD S |
+
+Ubuntu validation used the authorized SSH fallback because these are
+checkout-local Go commands and do not require mailbox work. The commands ran
+on the synchronized host checkouts; no tracked files were edited or copied on
+Ubuntu. The executed commands were `make check build`, followed by
+`git rev-parse HEAD` and `git status --short --branch` on each host.
+
+The required L2-07 F gate remains NOT RUN because the disposable A01 volumes,
+measured device performance, and host-specific controller prerequisites listed
+above do not exist yet. This evidence update records Source S delivery and
+source checks only. It is not an evidence closeout E, does not claim L2-07
+acceptance, and does not waive F. The next source unit may proceed only if its
+source inputs are independent of these exact blockers; it must cite this
+blocked predecessor without claiming an L2-07 E or PASS.
