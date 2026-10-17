@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,9 @@ func TestLoadApprovedRequiresExternalOwnerOnlyExactDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture := validMacFixture()
+	if runtime.GOOS == "linux" {
+		fixture = validLinuxFixture()
+	}
 	data, err := json.Marshal(fixture)
 	if err != nil {
 		t.Fatal(err)
