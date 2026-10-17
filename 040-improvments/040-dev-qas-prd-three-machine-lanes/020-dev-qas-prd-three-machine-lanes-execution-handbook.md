@@ -198,23 +198,90 @@ Proof tiers used in the tables:
 - **D:** real lane deployment and complete installed/live acceptance over the
   four-host cohort, including all three remote profiles.
 
-L1-01 introduces fail-on-missing test dispatch and a coverage manifest keyed by
-these unit IDs. Required additions, not commands claimed to exist today:
+L1-01 introduced fail-on-missing test dispatch and a coverage manifest keyed
+by these unit IDs. The focused H/N dispatchers exist; the F dispatcher is now
+implemented for the two fixture-backed L2 controls units. The D dispatcher
+remains a later deliverable:
 
 | Command contract | Meaning |
 | --- | --- |
 | `make test-lanes UNIT=<exact-unit-id>` | Focused hermetic assertions for the named unit; reject an unknown ID, missing assertions, skip-only result or wrong proof tier |
 | `make test-lanes-process UNIT=<id> HOST_ID=<canonical-host>` | N-tier native process/filesystem proof on that actual host; isolated roots only |
-| `make test-lanes-controls UNIT=<id> HOST_ID=<host> FIXTURE_MANIFEST=<approved-path>` | F-tier controls proof; validate exact fixture identities/approval before mutation; no production path override |
+| `make test-lanes-controls UNIT=<id> HOST_ID=<host> FIXTURE_MANIFEST=<approved-path> FIXTURE_MANIFEST_SHA256=sha256:<approved-digest>` | F-tier controls proof for only L2-07/L2-08; require the exact owner-approved external fixture manifest and digest before any probe; reject production paths/devices |
 | `make accept-lanes LANE=<dev-or-qas-or-prd> CANDIDATE_ID=<verified-record-id>` | Full D-tier design §9 acceptance for the derived lane and verified candidate; exact active configuration/route identities, terminal/event/ACK/zero-work and defect gates; no foreign root supplied by caller |
 
 Required existing `make test`, `make vet`, focused package tests and race suites
 remain binding. Tests must report actual assertions/machines and reject an
 unavailable prerequisite rather than succeed by skipping. The coverage manifest
 maps every design §9 item and every plan deliverable to a row below. Native
-fixtures have separately compiled test-only identities and loopback ports;
+fixtures use test-only identities and loopback ports;
 production binaries/installers retain the fixed namespace and candidate matrix.
 Never ship test namespace overrides in release artifacts.
+
+The F command is implemented for `LANES-L2-07` on each of the three Ubuntu
+hosts and `LANES-L2-08` on `mac-control-plane`. It is a fixture-only runner,
+not a provisioning or cleanup command. Its manifest must be a regular,
+owner-only file outside the checkout; the supplied SHA-256 must match the
+owner-approved bytes. The closed manifest binds the unit, host, expiry, fixture
+test identity token, exact fixture paths, OCI volume and attachment IDs, the
+independent host device path and serial, UUIDs, mountpoints, quotas, and
+capacity. Preflight rejects a root-device alias, a shared-cache/PRD path,
+an unapproved APFS disk, an unexpected owner/mode, or a changed live device.
+The `rsr-lanes-test-<fixture-id>` token is passed to every test worker; it is
+not a new OS account. Execution stays under the existing unprivileged owner
+(`ubuntu` on Linux or the invoking Mac account), and creates no host identity.
+The registered F `go test` subprocess sends its build cache and temporary
+files to the fixture's dedicated `go-build` directory and its module cache to
+`go-modules`. The outer repository command uses the normal Go cache required by
+the Makefile/host toolchain; it never purges or copies the shared cache.
+F-generated cache entries remain on the disposable fixture devices for later
+approved cleanup.
+The Linux preflight verifies the exact fixture mount identities before a
+transient scope can apply per-device I/O limits. The Mac preflight checks the
+production Data container read-only for the 70 GiB projected envelope and
+`max(20 GiB, 15%)` floor; all fixture writes remain on two separate external
+physical disks, apart from the Data disk and each other.
+
+Linux F runs as the existing unprivileged `ubuntu` operator inside a unique
+transient `system.slice` scope with at most 25% of one CPU, 2 GiB memory, 64
+tasks, and per-fixture-device write limits of
+16 MiB/s and 1,000 IOPS. It verifies those live limits and places isolated
+fixture listener, session, wrapper, and bridge worker processes in that exact
+scope; the listener binds only `127.0.0.1`, and worker processes receive no
+operator or provider environment variables. It then exercises every fixed
+project byte and inode limit, the 576 MiB log-capture ceiling, and the 30%
+fixture-filesystem reserve. The fixture workers are isolated test processes;
+they do not stand in for installed Runner candidate service membership or
+production acceptance. Mac F fills only the approved APFS fixture
+volumes, exercises their quotas and the same bounded log-capture ceiling, and
+rechecks external-device identity, reserve, and the read-only Data-volume
+floor. Probe files and worker processes are task-owned and cleaned after the
+assertions; the transient scope ends with the command. The runner never
+formats, mounts, or unmounts filesystems and never changes persistent
+configuration or touches production service roots/shared caches. The F test
+subprocess uses only its dedicated fixture cache directories. It removes
+only unique task-owned quota/log probe files and stops its fixture child
+processes. It does not provision or delete fixture volumes.
+
+Example after fixture-specific A01 approval and provisioning:
+
+```sh
+make test-lanes-controls UNIT=LANES-L2-07 HOST_ID=linux-host \
+  FIXTURE_MANIFEST=/var/lib/remote-session-runner-lanes-fixtures/<fixture-id>/approved.json \
+  FIXTURE_MANIFEST_SHA256=sha256:<exact-owner-approved-digest>
+```
+
+Run the Linux command separately for `linux-host`, `sandbox-host`, and
+`factory-sandbox`, each with its own host-bound manifest. The Mac command uses
+`UNIT=LANES-L2-08`, `HOST_ID=mac-control-plane`, and its owner-only manifest.
+On Linux, run `sudo -v` interactively in the same operator shell before the F
+command; its transient scope launcher uses `sudo -n` to avoid a surprise
+prompt, reusing that authorized timestamp. Passwordless sudo is not required.
+The F test reports fixture controls assertions only. It is not, by itself,
+unit acceptance, evidence closeout E, installed Runner service/candidate
+acceptance, or a substitute for later L3/L4 physical gates. A failed
+preflight or assertion remains a failed gate and must be diagnosed before a
+rerun.
 
 A live transaction is one continuous operational unit. No Git/evidence
 delivery pause is inserted between its fence, install, commit, reopen and
@@ -299,7 +366,7 @@ and fresh Dev → QAS → PRD chain.
 | `LANES-L2-04` | PKI local-key/CSR/package mechanics and issuance interfaces | H+N; wrong host/SAN/CSR/package, bootstrap-after-health and retired-leaf refusal; protected signed enforcement follows in L3 |
 | `LANES-L2-05` | Candidate-attested log capture wrapper and stream wiring | H+N all hosts; flood/crash/rotation/failed-start, 64 MiB files/576 MiB total, durable drop counter and null direct output |
 | `LANES-L2-06` | Capacity scopes, envelope validator and durable byte admission | H; PRD floor, normal caches/backup/snapshots, Linux 30% and Mac max(20 GiB,15%) floors, changed identity and false compute claim refusal |
-| `LANES-L2-07` | Real Linux slice/descendant, disk/inode/cache controls | F on each Ubuntu; actual listener/session/wrapper/bridge cgroups; bounded CPU/memory/tasks/I/O and quota/log/cache saturation; PRD unchanged |
+| `LANES-L2-07` | Linux slice/descendant, disk/inode/cache controls | F on each Ubuntu; fixture listener/session/wrapper/bridge workers in the exact test scope; bounded CPU/memory/tasks/I/O and quota/log/cache saturation; PRD unchanged |
 | `LANES-L2-08` | Real Mac APFS/quota/cache/snapshot/headroom controls | F on Mac; approved disposable volumes, quota fills/byte refusal/wrong mount, bounded logs/backups, unchanged PRD and no compute guarantee |
 | `LANES-L2-09` | Preflight/dry-run and staged-start rollback integration | H+F; foreign resource/credential selection refused, fixture-only rollback, complete L2 enforcement coverage and original services unchanged |
 

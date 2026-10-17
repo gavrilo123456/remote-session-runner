@@ -17,12 +17,16 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
+
+	"remote-session-runner/src/internal/lanefixtures"
 )
 
 const (
 	ManifestVersion = 1
 	HermeticTier    = "H"
 	NativeTier      = "N"
+	ControlsTier    = "F"
 )
 
 var (
@@ -222,9 +226,52 @@ func RunNative(ctx context.Context, root, manifestPath, handbookPath, goBinary, 
 	return runTier(ctx, root, manifestPath, handbookPath, goBinary, unitID, NativeTier, output, runner)
 }
 
+// RunControls validates the separately approved, host-bound A01 fixture and
+// its live mounted identities before dispatching registered F assertions. The
+// fixture file must remain outside Git and its exact SHA must match the A01
+// owner decision supplied to the command.
+func RunControls(ctx context.Context, root, manifestPath, handbookPath, goBinary, unitID, hostID, fixturePath, approvedDigest string, output io.Writer, runner CommandRunner) error {
+	fixture, err := lanefixtures.LoadApproved(fixturePath, approvedDigest, root, unitID, hostID, time.Now())
+	if err != nil {
+		return err
+	}
+	if err := lanefixtures.VerifyLive(fixture); err != nil {
+		return fmt.Errorf("fixture live preflight: %w", err)
+	}
+	previous := make(map[string]string)
+	for key, value := range map[string]string{
+		"LANES_CONTROLS_DISPATCH":     "1",
+		"LANES_FIXTURE_MANIFEST":      fixturePath,
+		"LANES_FIXTURE_SHA256":        approvedDigest,
+		"LANES_FIXTURE_UNIT":          unitID,
+		"LANES_FIXTURE_HOST":          hostID,
+		"LANES_FIXTURE_TEST_IDENTITY": fixture.TestIdentity,
+		"LANES_FIXTURE_ROOT":          fixture.FixtureRoot,
+	} {
+		previous[key] = os.Getenv(key)
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("set F fixture context: %w", err)
+		}
+	}
+	defer func() {
+		for key, value := range previous {
+			if value == "" {
+				_ = os.Unsetenv(key)
+			} else {
+				_ = os.Setenv(key, value)
+			}
+		}
+	}()
+	return runTier(ctx, root, manifestPath, handbookPath, goBinary, unitID, ControlsTier, output, runner)
+}
+
 func runTier(ctx context.Context, root, manifestPath, handbookPath, goBinary, unitID, selectedTier string, output io.Writer, runner CommandRunner) error {
 	if runner == nil {
-		runner = runGo
+		if selectedTier == ControlsTier {
+			runner = runControlsGo
+		} else {
+			runner = runGo
+		}
 	}
 	manifest, err := Load(manifestPath, handbookPath)
 	if err != nil {
@@ -280,6 +327,9 @@ func runTier(ctx context.Context, root, manifestPath, handbookPath, goBinary, un
 		sort.Strings(names)
 		selector := "^(" + strings.Join(names, "|") + ")$"
 		args := []string{"test", "-json", "-count=1", "-run", selector, packagePath}
+		if selectedTier == ControlsTier {
+			args = append(args, "-timeout=4h")
+		}
 		result, runErr := runner(ctx, goBinary, args, root)
 		if output != nil && len(result) != 0 {
 			_, _ = output.Write(result)
@@ -293,13 +343,74 @@ func runTier(ctx context.Context, root, manifestPath, handbookPath, goBinary, un
 		}
 	}
 	if output != nil {
-		_, _ = fmt.Fprintf(output, "PASS %s %s (%d registered assertions)\n", unitID, selectedTier, len(assertions))
+		if selectedTier == ControlsTier {
+			_, _ = fmt.Fprintf(output, "PASS %s F fixture controls subtests (%d registered assertions); full unit physical acceptance and evidence closeout remain separate\n", unitID, len(assertions))
+		} else {
+			_, _ = fmt.Fprintf(output, "PASS %s %s (%d registered assertions)\n", unitID, selectedTier, len(assertions))
+		}
 	}
 	return nil
 }
 
 func runGo(ctx context.Context, goBinary string, args []string, root string) ([]byte, error) {
 	return runGoWithNativeContext(ctx, goBinary, args, root, false)
+}
+
+func runControlsGo(ctx context.Context, goBinary string, args []string, root string) ([]byte, error) {
+	command := exec.CommandContext(ctx, goBinary, args...)
+	command.Dir = root
+	environment, err := controlsTestEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	command.Env = environment
+	return command.CombinedOutput()
+}
+
+func controlsTestEnvironment() ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve isolated controls-test HOME: %w", err)
+	}
+	if home == "" || !filepath.IsAbs(home) {
+		return nil, errors.New("resolve isolated controls-test HOME: empty or relative path")
+	}
+	fixtureRoot := os.Getenv("LANES_FIXTURE_ROOT")
+	if fixtureRoot == "" || !filepath.IsAbs(fixtureRoot) || filepath.Clean(fixtureRoot) != fixtureRoot {
+		return nil, errors.New("resolve isolated controls-test fixture root: empty, relative, or unclean path")
+	}
+	environment := []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=" + home,
+		"GOTOOLCHAIN=local",
+		"GOMAXPROCS=2",
+	}
+	goBuildPath := filepath.Join(fixtureRoot, "go-build")
+	goModulesPath := filepath.Join(fixtureRoot, "go-modules")
+	if runtime.GOOS == "darwin" {
+		environment = append(environment,
+			"TMPDIR="+goBuildPath,
+			"GOCACHE="+goBuildPath,
+			"GOMODCACHE="+goModulesPath)
+	} else {
+		goBuildPath = filepath.Join(fixtureRoot, "data", "go-build")
+		goModulesPath = filepath.Join(fixtureRoot, "data", "go-modules")
+		environment = append(environment,
+			"TMPDIR="+goBuildPath,
+			"GOCACHE="+goBuildPath,
+			"GOMODCACHE="+goModulesPath)
+	}
+	for _, key := range []string{
+		"LANES_CONTROLS_DISPATCH", "LANES_FIXTURE_MANIFEST", "LANES_FIXTURE_SHA256",
+		"LANES_FIXTURE_UNIT", "LANES_FIXTURE_HOST", "LANES_FIXTURE_TEST_IDENTITY", "LANES_FIXTURE_ROOT",
+	} {
+		value := os.Getenv(key)
+		if value == "" {
+			return nil, fmt.Errorf("required controls-test context %s is missing", key)
+		}
+		environment = append(environment, key+"="+value)
+	}
+	return environment, nil
 }
 
 func runNativeGo(ctx context.Context, goBinary string, args []string, root string) ([]byte, error) {

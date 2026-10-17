@@ -5,10 +5,64 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestControlsTestEnvironmentExcludesOperatorCredentials(t *testing.T) {
+	for key, value := range map[string]string{
+		"AWS_ACCESS_KEY_ID":           "fake-access-key",
+		"OCI_CLI_AUTH":                "instance_principal",
+		"SSH_AUTH_SOCK":               "/tmp/fake-agent.sock",
+		"LANES_CONTROLS_DISPATCH":     "1",
+		"LANES_FIXTURE_MANIFEST":      "/private/tmp/fixture.json",
+		"LANES_FIXTURE_SHA256":        "sha256:" + strings.Repeat("a", 64),
+		"LANES_FIXTURE_UNIT":          "LANES-L2-08",
+		"LANES_FIXTURE_HOST":          "mac-control-plane",
+		"LANES_FIXTURE_TEST_IDENTITY": "rsr-lanes-test-lanes-l2-08-fixture1234",
+		"LANES_FIXTURE_ROOT":          "/private/tmp/remote-session-runner-lanes-fixtures/lanes-l2-08-fixture1234",
+	} {
+		t.Setenv(key, value)
+	}
+	environment, err := controlsTestEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(environment, "\n")
+	for _, forbidden := range []string{"AWS_ACCESS_KEY_ID=", "OCI_CLI_AUTH=", "SSH_AUTH_SOCK="} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("controls environment inherited %s", forbidden)
+		}
+	}
+	fixtureRoot := os.Getenv("LANES_FIXTURE_ROOT")
+	goBuildPath := filepath.Join(fixtureRoot, "go-build")
+	goModulesPath := filepath.Join(fixtureRoot, "go-modules")
+	if runtime.GOOS == "linux" {
+		goBuildPath = filepath.Join(fixtureRoot, "data", "go-build")
+		goModulesPath = filepath.Join(fixtureRoot, "data", "go-modules")
+	}
+	for _, required := range []string{
+		"LANES_CONTROLS_DISPATCH=1",
+		"LANES_FIXTURE_UNIT=LANES-L2-08",
+		"LANES_FIXTURE_TEST_IDENTITY=rsr-lanes-test-lanes-l2-08-fixture1234",
+		"GOTOOLCHAIN=local",
+		"TMPDIR=" + goBuildPath,
+		"GOCACHE=" + goBuildPath,
+		"GOMODCACHE=" + goModulesPath,
+	} {
+		if !strings.Contains(joined, required) {
+			t.Errorf("controls environment omitted %s", required)
+		}
+	}
+	for _, sharedCache := range []string{"/.cache/go-build", "/go/pkg/mod", "remote-session-runner-gocache", "remote-session-runner-gomodcache"} {
+		if strings.Contains(joined, sharedCache) {
+			t.Errorf("controls environment included shared cache path %q", sharedCache)
+		}
+	}
+}
 
 func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 	root, err := FindRepoRoot(".")
@@ -24,7 +78,7 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 	if len(manifest.Units) != 68 || len(manifest.DesignAcceptance) != 10 {
 		t.Fatalf("manifest units=%d design acceptance items=%d, want 68 and 10", len(manifest.Units), len(manifest.DesignAcceptance))
 	}
-	var l101, l102, l103, l104, l105, l106, l107, l108, l109, l110, l111, l112, l113, l201, l202, l203, l204, l205, l206, l209, l301, l302, l303, l305, l306, l307, l308, l309, l311, l312, l313, l314, l315 *UnitCoverage
+	var l101, l102, l103, l104, l105, l106, l107, l108, l109, l110, l111, l112, l113, l201, l202, l203, l204, l205, l206, l207, l208, l209, l301, l302, l303, l305, l306, l307, l308, l309, l311, l312, l313, l314, l315 *UnitCoverage
 	for i := range manifest.Units {
 		switch manifest.Units[i].ID {
 		case "LANES-L1-01":
@@ -65,6 +119,10 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 			l205 = &manifest.Units[i]
 		case "LANES-L2-06":
 			l206 = &manifest.Units[i]
+		case "LANES-L2-07":
+			l207 = &manifest.Units[i]
+		case "LANES-L2-08":
+			l208 = &manifest.Units[i]
 		case "LANES-L2-09":
 			l209 = &manifest.Units[i]
 		case "LANES-L3-01":
@@ -157,6 +215,12 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 	}
 	if l206 == nil || len(l206.Assertions[HermeticTier]) != 16 || !contains(l206.RequiredTiers, HermeticTier) {
 		t.Fatalf("LANES-L2-06 coverage = %+v; want sixteen registered H assertions", l206)
+	}
+	if l207 == nil || len(l207.Assertions[ControlsTier]) != 1 || l207.Assertions[ControlsTier][0].Name != "TestLanesL207ControlsFixture" || !contains(l207.RequiredTiers, ControlsTier) {
+		t.Fatalf("LANES-L2-07 F coverage = %+v; want one guarded fixture assertion", l207)
+	}
+	if l208 == nil || len(l208.Assertions[ControlsTier]) != 1 || l208.Assertions[ControlsTier][0].Name != "TestLanesL208ControlsFixture" || !contains(l208.RequiredTiers, ControlsTier) {
+		t.Fatalf("LANES-L2-08 F coverage = %+v; want one guarded fixture assertion", l208)
 	}
 	if l209 == nil || len(l209.Assertions[HermeticTier]) != 7 || !contains(l209.RequiredTiers, HermeticTier) || !contains(l209.RequiredTiers, "F") {
 		t.Fatalf("LANES-L2-09 coverage = %+v; want seven registered H assertions and required F", l209)

@@ -147,7 +147,7 @@ those associations are absent.
 | `linux-host` capacity and cgroups | Root C=`48274628608` B, U=`25560256512` B, available=`22697594880` B (47%); 288,498/5,999,616 inodes used (5%). Kernel `5.15.0-1081-oracle`, systemd `245.4`; v2 is only `/sys/fs/cgroup/unified` with empty controllers while v1 trees are active. `/proc/cmdline` has no cgroup mode argument; GRUB defaults are `quiet splash`. `docker.service`, `containerd.service`, `runnerd.service`, and `snapd.service` are active. `runnerd.service` has `Delegate=no`, CPUAccounting/IOAccounting off. | Hybrid cgroups are incompatible with the planned v2 lane controls. A conversion needs a tested compatibility package and separately approved production maintenance/reboot. This is not an `io.max` verdict about current PRD. |
 | `sandbox-host` capacity and cgroups | Root C=`54958841856` B, U=`53209952256` B, available=`1732112384` B (3%); 799,699/6,872,192 inodes used (12%). Unified v2 root, `system.slice` and existing `runnerd.service` expose `cpuset cpu io memory pids`; systemd `249.11`. The PRD `runnerd.service` has `Delegate=no`, `IOAccounting=no`, and its `io.max` is empty. | The current root is below the 30% floor. The empty PRD service `io.max` is not itself a lane failure; Dev/QAS and management scopes need their own verified caps. Preserve the current PRD service. |
 | `factory-sandbox` capacity and cgroups | Root C=`50839412736` B, U=`4198699008` B, available=`46623936512` B (92%); 170,484/6,146,560 inodes used (3%). Unified v2 root advertises `io`, but `system.slice` and `runnerd.service` expose only `cpu memory pids`; systemd `259.5`. Existing PRD unit has `Delegate=no`, `IOAccounting=no`. | This is a new-scope controller-propagation task, not an existing PRD lane failure. Enable/verify `io` only through the approved new management/Dev/QAS hierarchy; do not modify `runnerd.service` or claim a numeric cap before measuring volume performance. |
-| Native fixtures | No disposable storage, fixture service or isolated test volume was provisioned. | A01 may approve separate test devices/quotas and loopback namespace; L2 proves the controls there. No fixture is a PREP prerequisite and none exists now. |
+| Native fixtures | No disposable storage, fixture service or isolated test volume was provisioned. The guarded `test-lanes-controls` F entry point and fixture-only procedures are implemented in source. | A01 may approve the distinct disposable Linux/Mac test devices and quotas in [the fixture package](LANES-A01-fixture-package.md); L2 proves controls there. No fixture is a PREP prerequisite and none exists now. Real Dev/QAS rollout storage remains in its later provisioning stage. |
 
 ### Current disk/cache accounting and proposed Linux A01 envelope
 
@@ -415,7 +415,15 @@ device and require an observed performance baseline; current OCI `BlockVolume`
 labels and host-visible devices do not provide VPU throughput or IOPS. No
 numeric I/O cap is guessed in this package.
 
-## Proposed Mac A01 capacity and privileged-operation package
+## Proposed Mac real-rollout capacity and privileged-operation package
+
+This is the planned real Dev/QAS, management, cache, snapshot, and backup
+layout for its prescribed later provisioning stage. It is not the disposable
+fixture layout used by the L2 F controls: fixture volumes use separate external
+physical disks and paths under `/private/tmp/remote-session-runner-lanes-fixtures`.
+No rollout volume, mount, cache move, `/etc/fstab` entry, or service change is
+made by the fixture procedure. The separate test-only quantities and exact
+disposable setup are in [LANES-A01-fixture-package.md](LANES-A01-fixture-package.md).
 
 The Mac's measured `GOCACHE` and `GOMODCACHE` are respectively `1725832` and
 `354328` KiB (combined `2130083840` B, 1.984 GiB). Proposed APFS Data-container

@@ -17,7 +17,7 @@ GO := go
 endif
 endif
 
-.PHONY: check-go test test-lanes test-b011-macos-host test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-p137-macos-host test-p137-linux-host test-p138-macos-host test-p138-linux-host test-p139-macos-host test-p140-linux-host test-p140-twohost test-p141-macos-host test-p141-linux-host test-p142-macos-host test-p142-linux-host test-p155-macos-multi-inbox test-p157-sandbox-host test-p157-factory-sandbox-host test-p158-slidestud-mailbox test-p158-slidestud-mailbox-with-backlog test-p159-slidestud-workspace-mailbox test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
+.PHONY: check-go test test-lanes test-lanes-controls test-b011-macos-host test-p133-barrier-harness test-p134-macos-restart test-p135-macos-host test-p135-linux-host test-p136-macos-host test-p136-linux-host test-p137-macos-host test-p137-linux-host test-p138-macos-host test-p138-linux-host test-p139-macos-host test-p140-linux-host test-p140-twohost test-p141-macos-host test-p141-linux-host test-p142-macos-host test-p142-linux-host test-p155-macos-multi-inbox test-p157-sandbox-host test-p157-factory-sandbox-host test-p158-slidestud-mailbox test-p158-slidestud-mailbox-with-backlog test-p159-slidestud-workspace-mailbox test-twohost test-p123-twohost test-p124-cli-twohost test-p125-macos-services test-p126-linux-services test-p127-audit-twohost test-p127-host-audit-read test-p128-ops-mac test-p128-host-status test-p128-host-readonly-health test-p128-ops-ubuntu test-p129-ops-mac test-p129-ops-ubuntu test-p131-macos-shutdown test-p132-linux-shutdown test-p132-host-read test-p132-host-cleanup vet build smoke check
 
 check-go:
 	@test -x "$(GO)" || { printf 'Go toolchain not executable: %s\n' "$(GO)" >&2; exit 1; }
@@ -35,6 +35,12 @@ test: check-go
 test-lanes: check-go
 	@test -n "$(UNIT)" || { printf 'Usage: make test-lanes UNIT=LANES-L1-01 [LANES_TIER=H|N]\n' >&2; exit 2; }
 	LANES_TEST_GO="$(GO)" GOTOOLCHAIN=local "$(GO)" run ./src/cmd/test-lanes --unit "$(UNIT)" --tier "$(if $(LANES_TIER),$(LANES_TIER),H)"
+
+# F-tier fixture preflight for only the approved L2-07 Linux or L2-08 Mac
+# disposable manifest. The manifest digest is the exact digest approved in A01.
+test-lanes-controls: check-go
+	@test -n "$(UNIT)" -a -n "$(HOST_ID)" -a -n "$(FIXTURE_MANIFEST)" -a -n "$(FIXTURE_MANIFEST_SHA256)" || { printf 'Usage: make test-lanes-controls UNIT=LANES-L2-07|LANES-L2-08 HOST_ID=<canonical-host> FIXTURE_MANIFEST=<approved-path> FIXTURE_MANIFEST_SHA256=sha256:<approved-digest>\n' >&2; exit 2; }
+	LANES_TEST_GO="$(GO)" GOTOOLCHAIN=local "$(GO)" run ./src/cmd/test-lanes-controls --unit "$(UNIT)" --host "$(HOST_ID)" --fixture-manifest "$(FIXTURE_MANIFEST)" --approved-sha256 "$(FIXTURE_MANIFEST_SHA256)"
 
 # Hermetic P133 subprocess barriers, WAL-aware logical database snapshots,
 # exact child kill/reap, and restart assertions.

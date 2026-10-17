@@ -848,13 +848,29 @@
       "id": "LANES-L2-07",
       "required_tiers": [
         "F"
-      ]
+      ],
+      "assertions": {
+        "F": [
+          {
+            "package": "./src/internal/lanefixtures",
+            "name": "TestLanesL207ControlsFixture"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L2-08",
       "required_tiers": [
         "F"
-      ]
+      ],
+      "assertions": {
+        "F": [
+          {
+            "package": "./src/internal/lanefixtures",
+            "name": "TestLanesL208ControlsFixture"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L2-09",

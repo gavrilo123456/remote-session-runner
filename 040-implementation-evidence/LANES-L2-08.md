@@ -69,6 +69,37 @@ quotas, the complete headroom calculation, separate-backup accounting, PRD
 refusal, changed quota/mount evidence, and floor exhaustion. The policy tests
 also reject cache quotas that no longer equal the policy budget.
 
+## Guarded fixture F runner source extension
+
+The shared `make test-lanes-controls` entry point now binds L2-08 to
+`mac-control-plane`, requires an owner-only external manifest and its exact
+approved SHA-256, and refuses any unit, host, path, expiry, UUID, mountpoint,
+quota or device mismatch. The live APFS guard resolves every volume to its
+container and physical store, requires `VirtualOrPhysical=Physical`,
+`Internal=false`, and `WholeDisk=true`, and requires the test/cache volumes and
+backup volume to use separate external physical disks, both distinct from the
+production Data disk. It checks the production Data container read-only against
+the full 70 GiB projected envelope and `max(20 GiB, 15%)` reserve before any
+probe writes.
+
+The Mac F test writes only to the approved disposable APFS volumes, exercises
+their byte quotas, bounded log capture, and fixture-container reserve, then
+rechecks device identities and the read-only Data floor. It uses the
+manifest-bound fixture identity token under the invoking account, passes no
+operator/provider environment to Go tests or disk inventory helpers, and
+creates no OS user. It does not create/delete APFS snapshots: the 10 GiB
+snapshot allowance is part of the conservative Data projection, while current
+snapshot inventory/usage remains a fresh operational measurement gate. No
+production Data files, shared caches, services, or snapshots are modified.
+The registered F Go test subprocess uses the `go-build` volume for its build
+cache and temporary files and the `go-modules` volume for its module cache.
+Both are on the disposable external test disk. The outer repository build uses
+the normal Mac Go toolchain cache; it is neither purged nor copied. F-generated
+cache entries remain on the fixture disks for separately approved cleanup.
+
+The source extension does not pass L2-08 F. No disposable external APFS disks
+or volumes exist, so the native quota/log procedure remains NOT RUN.
+
 ## Mac source gates
 
 Execution machine: `mac-control-plane`, Mac `dev`, Go 1.27.1 from the

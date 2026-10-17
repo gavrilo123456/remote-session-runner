@@ -53,6 +53,39 @@ resource renderings, PRD refusal, changed/inactive devices, insufficient
 volume size/inodes, use above quotas, and the 30% reserve. These fixtures do not
 claim host measurements or F acceptance.
 
+## Guarded fixture F runner source extension
+
+The source now adds `make test-lanes-controls` and its `test-lanes-controls`
+command for L2-07/L2-08. L2-07 requires the host-bound, owner-only manifest
+outside Git and its exact owner-approved SHA-256. Validation binds the unit,
+Ubuntu host, short approval expiry, fixed disposable paths, test-identity token,
+OCI region/volume/attachment IDs, observed device path/serial, filesystem UUID,
+major/minor, capacity and closed project/inode budgets. The live preflight
+rejects symlinked paths, the root-device ancestry, wrong mounts or quota mode,
+changed device identity, missing unified-v2 controllers, and a missing or
+unbounded `system.slice` scope before any quota probe runs.
+
+The runner places its F subprocess in a unique transient `system.slice` scope
+with bounded CPU, memory, tasks and writes to only the two manifest devices.
+The listener/session/wrapper/bridge workers use a fixture identity token,
+receive no operator/provider environment, bind loopback only, and must appear
+in that exact scope. The F procedure tests each declared byte/inode project
+limit, bounded log capture, and the 30% reserve. It performs no provisioning,
+format, mount, unmount, service or persistent cgroup operation. The Go test and
+workers remain under the existing unprivileged `ubuntu` account; the token does
+not create an OS user.
+
+This source extension and its hermetic regressions do not pass the L2-07 F
+gate. All three fixture volumes, the Linux-host cgroup-v2 maintenance/reboot,
+factory-sandbox `io` propagation approval, and fresh device performance/UUID
+facts are still absent.
+
+The registered F Go test subprocess uses `data/go-build` for its build cache
+and temporary files and `data/go-modules` for its module cache. The repository build command keeps
+the normal Go toolchain cache; no shared-cache purge/copy or production cache
+quota change is part of this unit. F-generated cache entries remain on the
+disposable fixture devices for separately approved cleanup.
+
 ## Mac source gates
 
 Execution machine: `mac-control-plane` source checkout, branch `dev`.
