@@ -1250,7 +1250,19 @@
       "required_tiers": [
         "H",
         "F"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/lanetests",
+            "name": "TestLanesL318PriorL3HermeticCoverageIsComplete"
+          },
+          {
+            "package": "./src/internal/lanetests",
+            "name": "TestLanesL318ApprovalCheckpointsPreserveA01A06Order"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L3-19",
