@@ -747,6 +747,10 @@
           },
           {
             "package": "./src/internal/logcapture",
+            "name": "TestLanesL205RefusesRotationWithoutDeletingArchivesWhenTempExists"
+          },
+          {
+            "package": "./src/internal/logcapture",
             "name": "TestLanesL205FailedStartAndChildStreams"
           },
           {

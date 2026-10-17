@@ -142,6 +142,45 @@ func TestLanesL205RejectsInconsistentActiveAndTemporaryRotation(t *testing.T) {
 	}
 }
 
+func TestLanesL205RefusesRotationWithoutDeletingArchivesWhenTempExists(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "runner.log")
+	for sequence, content := range []string{"oldest", "newer"} {
+		archive := path + ".rot." + strings.Repeat("0", 19) + string(rune('1'+sequence))
+		if err := os.WriteFile(archive, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := smallLimits()
+	store, err := openWithLimits(path, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Write(bytes.Repeat([]byte("x"), int(limits.ActiveFileBytes))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".rotate.tmp", []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Write([]byte("next")); !errors.Is(err, ErrUnsafeLogState) {
+		t.Fatalf("rotation with a stale temporary file error=%v", err)
+	}
+	rotated, err := store.rotatedFiles()
+	if err != nil || len(rotated) != limits.MaxRotatedFiles {
+		t.Fatalf("unsafe rotation deleted retained archives: count=%d err=%v", len(rotated), err)
+	}
+	oldest, err := os.ReadFile(rotated[0].path)
+	if err != nil || string(oldest) != "oldest" {
+		t.Fatalf("oldest retained archive=%q err=%v", oldest, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLanesL205FailedStartAndChildStreams(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {

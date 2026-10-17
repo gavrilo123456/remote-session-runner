@@ -121,9 +121,9 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 		!contains(l204.RequiredTiers, HermeticTier) || !contains(l204.RequiredTiers, NativeTier) {
 		t.Fatalf("LANES-L2-04 coverage = %+v; want five H and one N assertion", l204)
 	}
-	if l205 == nil || len(l205.Assertions[HermeticTier]) != 6 || len(l205.Assertions[NativeTier]) != 1 ||
+	if l205 == nil || len(l205.Assertions[HermeticTier]) != 7 || len(l205.Assertions[NativeTier]) != 1 ||
 		!contains(l205.RequiredTiers, HermeticTier) || !contains(l205.RequiredTiers, NativeTier) {
-		t.Fatalf("LANES-L2-05 coverage = %+v; want six H and one N assertion", l205)
+		t.Fatalf("LANES-L2-05 coverage = %+v; want seven H and one N assertion", l205)
 	}
 }
 

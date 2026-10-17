@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -164,14 +165,14 @@ func (s *Store) Write(data []byte) (int, error) {
 		if chunkSize > capacity {
 			chunkSize = capacity
 		}
-		file, err := os.OpenFile(s.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+		file, err := os.OpenFile(s.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
 		if err != nil {
 			if dropErr := s.addDropped(uint64(len(remaining))); dropErr != nil {
 				return 0, dropErr
 			}
 			return len(data), nil
 		}
-		if info, statErr := file.Stat(); statErr != nil || !info.Mode().IsRegular() || info.Size() < 0 || uint64(info.Size()) != activeSize {
+		if info, statErr := file.Stat(); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() < 0 || uint64(info.Size()) != activeSize {
 			_ = file.Close()
 			return 0, ErrUnsafeLogState
 		}
@@ -199,7 +200,7 @@ func (s *Store) Close() error {
 		return nil
 	}
 	s.closed = true
-	if active, err := os.OpenFile(s.path, os.O_WRONLY, 0); err == nil {
+	if active, err := os.OpenFile(s.path, os.O_WRONLY|syscall.O_NOFOLLOW, 0); err == nil {
 		if syncErr := active.Sync(); syncErr != nil {
 			_ = active.Close()
 			_ = s.counter.Close()
@@ -229,7 +230,7 @@ func ReadStatus(logPath string) (Status, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() != counterFileBytes {
 		return Status{}, ErrUnsafeLogState
 	}
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return Status{}, ErrUnsafeLogState
 	}
@@ -258,6 +259,10 @@ func (s *Store) rotate() error {
 	if err != nil || activeSize == 0 {
 		return ErrUnsafeLogState
 	}
+	tempPath := s.path + ".rotate.tmp"
+	if _, err := os.Lstat(tempPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return ErrUnsafeLogState
+	}
 	rotated, err := s.rotatedFiles()
 	if err != nil {
 		return err
@@ -270,11 +275,7 @@ func (s *Store) rotate() error {
 			return err
 		}
 	}
-	tempPath := s.path + ".rotate.tmp"
-	if _, err := os.Lstat(tempPath); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return ErrUnsafeLogState
-	}
-	active, err := os.OpenFile(s.path, os.O_RDONLY, 0)
+	active, err := os.OpenFile(s.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
@@ -439,7 +440,7 @@ func (s *Store) openCounter() error {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() != counterFileBytes {
 		return ErrUnsafeLogState
 	}
-	s.counter, err = os.OpenFile(s.counterPath, os.O_RDWR, 0)
+	s.counter, err = os.OpenFile(s.counterPath, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return ErrUnsafeLogState
 	}
