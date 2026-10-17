@@ -658,8 +658,35 @@
     {
       "id": "LANES-L2-03",
       "required_tiers": [
-        "H"
-      ]
+        "H",
+        "N"
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL203EndpointMapsAndValidMaterial"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL203RejectsWrongSANKeyChainAndControllerMap"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL203RejectsCrossLaneAndManagementTrustReuse"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL203FingerprintShape"
+          }
+        ],
+        "N": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL203LocalMutualTLSIdentityNegatives"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L2-04",
