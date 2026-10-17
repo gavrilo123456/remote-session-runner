@@ -937,7 +937,19 @@
       "id": "LANES-L3-02",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL302SchemasCompileAndRejectOpenBuildFields"},
+          {"package": "./src/internal/release", "name": "TestLanesL302HostBuildAttestationBindsClosedPlatformComponentTuple"},
+          {"package": "./src/internal/release", "name": "TestLanesL302CandidateManifestHasExactSortedMatrixAndVerifiedBuildBinding"},
+          {"package": "./src/internal/release", "name": "TestLanesL302CandidateManifestRejectsIncompleteExtraDuplicateAndUnsortedMatrix"},
+          {"package": "./src/internal/release", "name": "TestLanesL302CandidateManifestRejectsMismatchedSourceToolchainInputAndArtifactBindings"},
+          {"package": "./src/internal/release", "name": "TestLanesL302HostManagementManifestHasExactMatrixAndTransportInventory"},
+          {"package": "./src/internal/release", "name": "TestLanesL302HostManagementManifestRejectsBadMatrixAndTransportBindings"},
+          {"package": "./src/internal/release", "name": "TestLanesL302MatrixDefinitionsMatchFixedDesign"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-03",

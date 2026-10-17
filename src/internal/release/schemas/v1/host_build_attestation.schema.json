@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/release/v1/host_build_attestation.schema.json",
+  "$ref": "common.schema.json#/$defs/hostBuildAttestation"
+}

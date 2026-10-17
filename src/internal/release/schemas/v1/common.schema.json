@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/release/v1/common.schema.json",
+  "$defs": {
+    "hostId": {
+      "type": "string",
+      "enum": ["mac-control-plane", "linux-host", "sandbox-host", "factory-sandbox"]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "recordId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "utcTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "maxLength": 40
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {"$ref": "common.schema.json#/$defs/digest"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "artifactTuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host_id", "component", "goos", "goarch", "toolchain_digest",
+        "build_input_digest", "artifact_digest", "host_build_attestation_id"
+      ],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "component": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "goos": {"type": "string", "enum": ["darwin", "linux"]},
+        "goarch": {"type": "string", "enum": ["amd64", "arm64"]},
+        "toolchain_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "build_input_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "artifact_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "host_build_attestation_id": {"$ref": "common.schema.json#/$defs/recordId"}
+      }
+    },
+    "hostBuildAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host_id", "release_track", "component", "goos", "goarch",
+        "source_commit_id", "gitea_commit_id", "github_commit_id",
+        "toolchain_digest", "build_input_digest", "artifact_digest",
+        "template_schema_digest", "evidence_refs", "build_timestamp"
+      ],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "release_track": {"type": "string", "enum": ["lane_runtime", "host_management"]},
+        "component": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "goos": {"type": "string", "enum": ["darwin", "linux"]},
+        "goarch": {"type": "string", "enum": ["amd64", "arm64"]},
+        "source_commit_id": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+        "gitea_commit_id": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+        "github_commit_id": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+        "toolchain_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "build_input_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "artifact_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "template_schema_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "evidence_refs": {"$ref": "common.schema.json#/$defs/evidenceRefs"},
+        "build_timestamp": {"$ref": "common.schema.json#/$defs/utcTimestamp"}
+      }
+    },
+    "transportCA": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ca_id", "certificate_fingerprint", "spki_fingerprint"],
+      "properties": {
+        "ca_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "certificate_fingerprint": {"$ref": "common.schema.json#/$defs/digest"},
+        "spki_fingerprint": {"$ref": "common.schema.json#/$defs/digest"}
+      }
+    },
+    "transportTrust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host_id", "ca_id"],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "ca_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"}
+      }
+    },
+    "transportLeaf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host_id", "ca_id", "leaf_role", "uri_san", "ip_san",
+        "certificate_fingerprint", "spki_fingerprint"
+      ],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "ca_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "leaf_role": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "uri_san": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]{1,250}$", "maxLength": 256},
+        "ip_san": {"type": "string", "anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]},
+        "certificate_fingerprint": {"$ref": "common.schema.json#/$defs/digest"},
+        "spki_fingerprint": {"$ref": "common.schema.json#/$defs/digest"}
+      }
+    },
+    "activePeer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host_id", "uri_san", "ip_san", "certificate_fingerprint", "spki_fingerprint"
+      ],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "uri_san": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]{1,250}$", "maxLength": 256},
+        "ip_san": {"type": "string", "anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]},
+        "certificate_fingerprint": {"$ref": "common.schema.json#/$defs/digest"},
+        "spki_fingerprint": {"$ref": "common.schema.json#/$defs/digest"}
+      }
+    }
+  }
+}

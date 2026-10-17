@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/release/v1/candidate_manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "release_component_matrix_version", "required_host_management_manifest_id",
+    "source_commit_id", "gitea_commit_id", "github_commit_id",
+    "build_cohort_timestamp", "template_schema_digest", "evidence_refs", "artifacts"
+  ],
+  "properties": {
+    "release_component_matrix_version": {"const": 1},
+    "required_host_management_manifest_id": {"$ref": "common.schema.json#/$defs/recordId"},
+    "source_commit_id": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+    "gitea_commit_id": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+    "github_commit_id": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+    "build_cohort_timestamp": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+    "template_schema_digest": {"$ref": "common.schema.json#/$defs/digest"},
+    "evidence_refs": {"$ref": "common.schema.json#/$defs/evidenceRefs"},
+    "artifacts": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "items": {"$ref": "common.schema.json#/$defs/artifactTuple"}
+    }
+  }
+}

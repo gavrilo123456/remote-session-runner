@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/release/v1/host_management_manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "host_management_matrix_version", "host_management_protocol_compatibility_version",
+    "bootstrap_update_contract_digest", "source_commit_id", "gitea_commit_id",
+    "github_commit_id", "artifacts", "release_transport_contract"
+  ],
+  "properties": {
+    "host_management_matrix_version": {"const": 1},
+    "host_management_protocol_compatibility_version": {"type": "integer", "minimum": 1},
+    "bootstrap_update_contract_digest": {"$ref": "common.schema.json#/$defs/digest"},
+    "source_commit_id": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+    "gitea_commit_id": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+    "github_commit_id": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+    "artifacts": {
+      "type": "array",
+      "minItems": 20,
+      "maxItems": 20,
+      "items": {"$ref": "common.schema.json#/$defs/artifactTuple"}
+    },
+    "release_transport_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ca_inventory", "trust_inventory", "leaf_inventory", "active_peer_allowlist"],
+      "properties": {
+        "ca_inventory": {
+          "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+          "items": {"$ref": "common.schema.json#/$defs/transportCA"}
+        },
+        "trust_inventory": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"$ref": "common.schema.json#/$defs/transportTrust"}
+        },
+        "leaf_inventory": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"$ref": "common.schema.json#/$defs/transportLeaf"}
+        },
+        "active_peer_allowlist": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"$ref": "common.schema.json#/$defs/activePeer"}
+        }
+      }
+    }
+  }
+}
