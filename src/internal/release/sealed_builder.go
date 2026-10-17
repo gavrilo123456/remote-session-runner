@@ -101,6 +101,13 @@ type HostBuildRecordPublisher interface {
 	PublishHostBuild(context.Context, []byte) (recordID string, err error)
 }
 
+// SealedBuildArtifactCache accepts the already-signed build record ID and the
+// private sealed descriptor. Implementations re-read the signed record from
+// their fixed outbox/anchor view before persisting the artifact and backup.
+type SealedBuildArtifactCache interface {
+	CacheBuiltArtifact(context.Context, string, *os.File, int64) error
+}
+
 type SealedBuildPolicy struct {
 	HostID          string
 	StagingRoot     string
@@ -116,13 +123,14 @@ type SealedBuildService struct {
 	exporter  FixedSourceExporter
 	executor  FixedBuildExecutor
 	publisher HostBuildRecordPublisher
+	cache     SealedBuildArtifactCache
 	now       func() time.Time
 }
 
-func NewSealedBuildService(policy SealedBuildPolicy, resolver VerifiedBuildJobResolver, exporter FixedSourceExporter, executor FixedBuildExecutor, publisher HostBuildRecordPublisher) (*SealedBuildService, error) {
+func NewSealedBuildService(policy SealedBuildPolicy, resolver VerifiedBuildJobResolver, exporter FixedSourceExporter, executor FixedBuildExecutor, publisher HostBuildRecordPublisher, cache SealedBuildArtifactCache) (*SealedBuildService, error) {
 	if os.Geteuid() != 0 || policy.ServiceUID != 0 || policy.BuilderUID == 0 || policy.BuilderUID == policy.ServiceUID ||
 		policy.HostID == "" || !filepath.IsAbs(policy.StagingRoot) || policy.MaxArtifactSize <= 0 ||
-		resolver == nil || exporter == nil || executor == nil || publisher == nil {
+		resolver == nil || exporter == nil || executor == nil || publisher == nil || cache == nil {
 		return nil, fmt.Errorf("%w: root-owned service and distinct non-root builder policy required", ErrInvalidBuildRequest)
 	}
 	uid, gid := executor.BuilderIdentity()
@@ -132,7 +140,7 @@ func NewSealedBuildService(policy SealedBuildPolicy, resolver VerifiedBuildJobRe
 	if err := verifyPrivateDirectory(policy.StagingRoot, policy.ServiceUID); err != nil {
 		return nil, fmt.Errorf("%w: staging root: %v", ErrInvalidBuildRequest, err)
 	}
-	return &SealedBuildService{policy: policy, resolver: resolver, exporter: exporter, executor: executor, publisher: publisher, now: time.Now}, nil
+	return &SealedBuildService{policy: policy, resolver: resolver, exporter: exporter, executor: executor, publisher: publisher, cache: cache, now: time.Now}, nil
 }
 
 // AttestBuild resolves every build input from trusted local state, exports the
@@ -228,6 +236,9 @@ func (s *SealedBuildService) AttestBuild(ctx context.Context, authorizationID st
 	if !isLowerHexDigest(recordID) {
 		return "", fmt.Errorf("%w: publisher returned invalid record ID", ErrInvalidBuildRequest)
 	}
+	if err = s.cache.CacheBuiltArtifact(ctx, recordID, sealed.File, sealed.size); err != nil {
+		return "", err
+	}
 	return recordID, nil
 }
 
@@ -259,7 +270,7 @@ func validSourceCommitID(value string) bool {
 	return true
 }
 
-func (s *SealedBuildService) sealOutput(outputDir string) (io.Closer, string, error) {
+func (s *SealedBuildService) sealOutput(outputDir string) (*cleanupFile, string, error) {
 	dirFD, err := unix.Open(outputDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: fixed output directory is unsafe: %v", ErrInvalidBuildRequest, err)
@@ -325,16 +336,37 @@ func (s *SealedBuildService) sealOutput(outputDir string) (io.Closer, string, er
 		os.RemoveAll(sealedDir)
 		return nil, "", err
 	}
+	if err = sealedOutput.Close(); err != nil {
+		unix.Close(sealedDirFD)
+		os.RemoveAll(sealedDir)
+		return nil, "", err
+	}
+	sealedReadFD, err := unix.Openat(sealedDirFD, buildArtifactName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		unix.Close(sealedDirFD)
+		os.RemoveAll(sealedDir)
+		return nil, "", err
+	}
+	var sealedStat unix.Stat_t
+	if err = unix.Fstat(sealedReadFD, &sealedStat); err != nil || sealedStat.Mode&unix.S_IFMT != unix.S_IFREG || sealedStat.Size != written || sealedStat.Mode&0o222 != 0 {
+		unix.Close(sealedReadFD)
+		unix.Close(sealedDirFD)
+		os.RemoveAll(sealedDir)
+		return nil, "", fmt.Errorf("%w: sealed output changed before read-only handoff", ErrInvalidBuildRequest)
+	}
 	unix.Close(sealedDirFD)
 	// Keep the private directory until the descriptor is closed. The descriptor
 	// and bytes are never exposed to the request caller or builder process.
-	return &cleanupFile{File: sealedOutput, dir: sealedDir}, hex.EncodeToString(hash.Sum(nil)), nil
+	return &cleanupFile{File: os.NewFile(uintptr(sealedReadFD), buildArtifactName), dir: sealedDir, size: written}, hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 type cleanupFile struct {
 	*os.File
-	dir string
+	dir  string
+	size int64
 }
+
+func (f *cleanupFile) Size() int64 { return f.size }
 
 func (f *cleanupFile) Close() error {
 	err := f.File.Close()

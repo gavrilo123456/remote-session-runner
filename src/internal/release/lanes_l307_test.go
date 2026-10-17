@@ -40,7 +40,7 @@ func TestLanesL307RequestContainsOnlyOpaqueAuthorization(t *testing.T) {
 
 func TestLanesL307InstalledServiceRequiresRootAndDedicatedBuilderIdentity(t *testing.T) {
 	fixture := newL307Fixture(t)
-	if _, err := NewSealedBuildService(fixture.policy, fixture.resolver, fixture.exporter, fixture.executor, fixture.publisher); !errors.Is(err, ErrInvalidBuildRequest) {
+	if _, err := NewSealedBuildService(fixture.policy, fixture.resolver, fixture.exporter, fixture.executor, fixture.publisher, fixture.cache); !errors.Is(err, ErrInvalidBuildRequest) {
 		t.Fatalf("unprivileged service with a shared build identity was accepted: %v", err)
 	}
 	requestedOwner := uint32(os.Getuid())
@@ -67,6 +67,9 @@ func TestLanesL307FixedBuildSealsSignsAndPublishesExactArtifact(t *testing.T) {
 	}
 	if fixture.exporter.calls != 1 || fixture.executor.calls != 1 {
 		t.Fatalf("replayed authorization re-executed the build: export=%d build=%d", fixture.exporter.calls, fixture.executor.calls)
+	}
+	if fixture.cache.calls != 1 || fixture.cache.recordID != recordID || string(fixture.cache.artifact) != string(fixture.executor.artifact) {
+		t.Fatalf("sealed output was not handed to cache exactly once: %+v", fixture.cache)
 	}
 	invocation := fixture.executor.last
 	if invocation.WorkspacePath == "" || invocation.OutputPath == "" || invocation.BuilderUID != uint32(os.Geteuid()) ||
@@ -273,6 +276,7 @@ type l307Fixture struct {
 	executor        *l307FakeExecutor
 	signer          SigningIdentity
 	publisher       *SignedHostBuildOutbox
+	cache           *l307FakeArtifactCache
 }
 
 func newL307Fixture(t *testing.T) *l307Fixture {
@@ -309,7 +313,7 @@ func newL307Fixture(t *testing.T) *l307Fixture {
 		root: root, stagingRoot: staging, outboxDir: outbox, authorizationID: strings.Repeat("c", 64), job: job,
 		policy:   SealedBuildPolicy{HostID: job.HostID, StagingRoot: staging, ServiceUID: uint32(os.Getuid()), BuilderUID: uint32(os.Geteuid()), BuilderGID: uint32(os.Getegid()), MaxArtifactSize: 1 << 20},
 		resolver: &l307FakeResolver{job: job}, exporter: &l307FakeExporter{}, executor: &l307FakeExecutor{artifact: []byte("sealed binary contents")},
-		signer: signer, publisher: publisher,
+		signer: signer, publisher: publisher, cache: &l307FakeArtifactCache{},
 	}
 }
 
@@ -329,7 +333,7 @@ func (f *l307Fixture) service(t *testing.T, publisher HostBuildRecordPublisher) 
 	if uid != f.policy.BuilderUID || gid != f.policy.BuilderGID {
 		t.Fatalf("fixture executor identity mismatch: %d:%d", uid, gid)
 	}
-	service := &SealedBuildService{policy: f.policy, resolver: f.resolver, exporter: f.exporter, executor: f.executor, publisher: publisher}
+	service := &SealedBuildService{policy: f.policy, resolver: f.resolver, exporter: f.exporter, executor: f.executor, publisher: publisher, cache: f.cache}
 	service.now = func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }
 	return service
 }
@@ -400,6 +404,20 @@ func (f *l307FakeExecutor) Build(_ context.Context, invocation FixedBuildInvocat
 type l307MutatingPublisher struct {
 	delegate HostBuildRecordPublisher
 	mutate   func()
+}
+
+type l307FakeArtifactCache struct {
+	calls    int
+	recordID string
+	artifact []byte
+}
+
+func (f *l307FakeArtifactCache) CacheBuiltArtifact(_ context.Context, recordID string, artifact *os.File, size int64) error {
+	f.calls++
+	f.recordID = recordID
+	f.artifact = make([]byte, size)
+	_, err := artifact.ReadAt(f.artifact, 0)
+	return err
 }
 
 func (p l307MutatingPublisher) PublishHostBuild(ctx context.Context, payload []byte) (string, error) {

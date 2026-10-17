@@ -1057,7 +1057,18 @@
       "required_tiers": [
         "H",
         "F"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL308InstalledCacheRequiresRootFixedRootsAndDistinctDevices"},
+          {"package": "./src/internal/release", "name": "TestLanesL308BuildCacheVerifiesSignedLocalRecordAndExactSealedBytes"},
+          {"package": "./src/internal/release", "name": "TestLanesL308CandidateCacheRequiresCompleteSignedChainAndLocalArtifacts"},
+          {"package": "./src/internal/release", "name": "TestLanesL308OpenCandidateRehydratesOnlyFromVerifiedSameHostBackup"},
+          {"package": "./src/internal/release", "name": "TestLanesL308CorruptCacheEvidenceIsPreservedBeforeVerifiedRestore"},
+          {"package": "./src/internal/release", "name": "TestLanesL308InvalidCachedChainFallsBackToBackupAndPreservesEvidence"},
+          {"package": "./src/internal/release", "name": "TestLanesL308CapacityAndMissingCacheBackupFailClosed"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-09",
