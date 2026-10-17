@@ -1148,7 +1148,20 @@
       "required_tiers": [
         "H",
         "N"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL313APIUsesOnlyFixedHostAndPeerModes"},
+          {"package": "./src/internal/release", "name": "TestLanesL313PeerSetRequiresExactURIIPAndActiveFingerprints"},
+          {"package": "./src/internal/release", "name": "TestLanesL313OutboxIndexAndReadAreHostBoundAndClosed"},
+          {"package": "./src/internal/release", "name": "TestLanesL313AddressedRecordCacheIsIdempotentAndHostBound"},
+          {"package": "./src/internal/release", "name": "TestLanesL313APIRejectsOpenMethodsPathsBodiesAndUntrustedMacPeer"},
+          {"package": "./src/internal/release", "name": "TestLanesL313FixedNoBodyOperationsAcceptOnlyOpaquePKIMandates"}
+        ],
+        "N": [
+          {"package": "./src/internal/release", "name": "TestLanesL313NativeMTLSListenerBindsExactHostAndActiveClient"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-14",
