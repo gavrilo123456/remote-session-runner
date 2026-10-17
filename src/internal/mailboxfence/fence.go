@@ -666,6 +666,26 @@ func (l *Lock) RemoveMigrationFenceMarker(expected MigrationFenceMarker) error {
 	return nil
 }
 
+// VerifyMigrationFenceMarkerAbsent proves that both the committed and staged
+// marker names are absent while the caller holds the exclusive root lock. It
+// syncs the root directory before returning so the absence observation can be
+// retained by the migration registry.
+func (l *Lock) VerifyMigrationFenceMarkerAbsent() error {
+	if l == nil || l.closed || l.rootFD < 0 || !l.exclusive {
+		return ErrConfiguration
+	}
+	if _, _, err := l.ReadMigrationFenceMarker(); !errors.Is(err, ErrMigrationFenceMarkerMissing) {
+		return ErrUnsafe
+	}
+	if _, _, err := l.readMigrationFenceMarkerAt(MigrationFencePendingFileName); !errors.Is(err, ErrMigrationFenceMarkerMissing) {
+		return ErrUnsafe
+	}
+	if err := unix.Fsync(l.rootFD); err != nil {
+		return ErrUnsafe
+	}
+	return nil
+}
+
 func validMigrationFenceMarker(marker MigrationFenceMarker) bool {
 	return markerTransitionID.MatchString(marker.LaneTransitionID) && validMailboxID(marker.InboxID) &&
 		marker.Root.Device != 0 && marker.Root.Inode != 0 && marker.Root.UID == uint32(os.Getuid()) &&

@@ -5,6 +5,9 @@ package lanemigration
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"reflect"
 
@@ -183,7 +186,10 @@ func (c *Controller) Abort(ctx context.Context, transitionID, evidenceDigest str
 	if err := lock.RemoveMigrationFenceMarker(marker); err != nil {
 		return laneregistry.Snapshot{}, err
 	}
-	return snapshot, nil
+	if err := lock.VerifyMigrationFenceMarkerAbsent(); err != nil {
+		return laneregistry.Snapshot{}, err
+	}
+	return c.recordFenceRelease(snapshot, record, lock, marker)
 }
 
 // Reconcile never infers that V2 may restart. It advances only the durable
@@ -223,10 +229,21 @@ func (c *Controller) Reconcile(ctx context.Context, transitionID string) (lanere
 		}
 		return c.scanUnderLock(snapshot, record, lock)
 	}
+	if record.State == laneregistry.PRDMigrationReleased {
+		if !markerMissing || record.MarkerDigest != mailboxfence.DigestMigrationFenceMarker(markerFor(record, mailboxfence.MigrationFenceAborted)) ||
+			record.FenceReleaseEvidenceDigest == "" || lock.VerifyMigrationFenceMarkerAbsent() != nil {
+			return laneregistry.Snapshot{}, ErrBlocked
+		}
+		return snapshot, nil
+	}
 	if record.State == laneregistry.PRDMigrationAborting || record.State == laneregistry.PRDMigrationAborted {
 		if markerMissing {
 			if record.State == laneregistry.PRDMigrationAborted {
-				return snapshot, nil
+				if record.MarkerDigest != mailboxfence.DigestMigrationFenceMarker(markerFor(record, mailboxfence.MigrationFenceAborted)) ||
+					lock.VerifyMigrationFenceMarkerAbsent() != nil {
+					return laneregistry.Snapshot{}, ErrBlocked
+				}
+				return c.recordFenceRelease(snapshot, record, lock, markerFor(record, mailboxfence.MigrationFenceAborted))
 			}
 			return laneregistry.Snapshot{}, ErrBlocked
 		}
@@ -279,7 +296,14 @@ func (c *Controller) Reconcile(ctx context.Context, transitionID string) (lanere
 			if err := lock.RemoveMigrationFenceMarker(marker); err != nil {
 				return laneregistry.Snapshot{}, err
 			}
-			return snapshot, nil
+			if err := lock.VerifyMigrationFenceMarkerAbsent(); err != nil {
+				return laneregistry.Snapshot{}, err
+			}
+			record, err = findRecord(snapshot, transitionID)
+			if err != nil {
+				return laneregistry.Snapshot{}, err
+			}
+			return c.recordFenceRelease(snapshot, record, lock, marker)
 		} else {
 			marker.State = mailboxfence.MigrationFenceAborted
 		}
@@ -294,6 +318,14 @@ func (c *Controller) Reconcile(ctx context.Context, transitionID string) (lanere
 			if err := lock.RemoveMigrationFenceMarker(marker); err != nil {
 				return laneregistry.Snapshot{}, err
 			}
+			if err := lock.VerifyMigrationFenceMarkerAbsent(); err != nil {
+				return laneregistry.Snapshot{}, err
+			}
+			record, err = findRecord(snapshot, transitionID)
+			if err != nil {
+				return laneregistry.Snapshot{}, err
+			}
+			return c.recordFenceRelease(snapshot, record, lock, marker)
 		}
 		return snapshot, nil
 	}
@@ -388,6 +420,43 @@ func findRecord(snapshot laneregistry.Snapshot, id string) (laneregistry.PRDMigr
 		}
 	}
 	return laneregistry.PRDMigrationFenceRecord{}, ErrBlocked
+}
+
+func (c *Controller) recordFenceRelease(snapshot laneregistry.Snapshot, record laneregistry.PRDMigrationFenceRecord, lock *mailboxfence.Lock, marker mailboxfence.MigrationFenceMarker) (laneregistry.Snapshot, error) {
+	current, err := findRecord(snapshot, record.LaneTransitionID)
+	if err != nil || current.State != laneregistry.PRDMigrationAborted || lock == nil || lock.VerifyMigrationFenceMarkerAbsent() != nil {
+		return laneregistry.Snapshot{}, ErrBlocked
+	}
+	want := markerFor(current, mailboxfence.MigrationFenceAborted)
+	markerDigest := mailboxfence.DigestMigrationFenceMarker(want)
+	if marker != want || markerDigest == "" || current.MarkerDigest != markerDigest || current.AbortEvidenceDigest == "" {
+		return laneregistry.Snapshot{}, ErrBlocked
+	}
+	receipt := struct {
+		TransitionID    string                    `json:"transition_id"`
+		AbortEvidence   string                    `json:"abort_evidence_digest"`
+		AbortedMarker   string                    `json:"aborted_marker_digest"`
+		MailboxRoot     mailboxfence.FileIdentity `json:"mailbox_root_identity"`
+		CommittedAbsent bool                      `json:"committed_marker_absent"`
+		PendingAbsent   bool                      `json:"pending_marker_absent"`
+		DirectorySynced bool                      `json:"directory_synced"`
+	}{
+		TransitionID: current.LaneTransitionID, AbortEvidence: current.AbortEvidenceDigest,
+		AbortedMarker: markerDigest, MailboxRoot: current.MailboxRoot,
+		CommittedAbsent: true, PendingAbsent: true, DirectorySynced: true,
+	}
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		return laneregistry.Snapshot{}, ErrBlocked
+	}
+	digest := sha256.Sum256(data)
+	release := laneregistry.MigrationFenceReleaseEvidence{
+		LaneTransitionID: current.LaneTransitionID, AbortedMarkerDigest: markerDigest,
+		MailboxRoot: current.MailboxRoot, CommittedMarkerAbsent: true,
+		PendingMarkerAbsent: true, DirectorySynced: true,
+		EvidenceDigest: "sha256:" + hex.EncodeToString(digest[:]),
+	}
+	return c.Registry.RecordPRDMigrationFenceRelease(snapshot.Generation, release)
 }
 
 func markerFor(record laneregistry.PRDMigrationFenceRecord, state mailboxfence.MigrationFenceState) mailboxfence.MigrationFenceMarker {

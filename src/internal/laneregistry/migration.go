@@ -18,6 +18,7 @@ const (
 	PRDMigrationFenced   PRDMigrationFenceState = "fenced"
 	PRDMigrationAborting PRDMigrationFenceState = "aborting"
 	PRDMigrationAborted  PRDMigrationFenceState = "aborted"
+	PRDMigrationReleased PRDMigrationFenceState = "released"
 )
 
 const (
@@ -79,28 +80,43 @@ type MigrationDeferredObservation struct {
 	SnapshotDigest        string `json:"snapshot_digest"`
 }
 
+// MigrationFenceReleaseEvidence is the descriptor-bound receipt required to
+// release a V2 migration fence after abort. The aborted marker digest remains
+// in the record even after both marker names are absent.
+type MigrationFenceReleaseEvidence struct {
+	LaneTransitionID      string                    `json:"lane_transition_id"`
+	AbortedMarkerDigest   string                    `json:"aborted_marker_digest"`
+	MailboxRoot           mailboxfence.FileIdentity `json:"mailbox_root_identity"`
+	CommittedMarkerAbsent bool                      `json:"committed_marker_absent"`
+	PendingMarkerAbsent   bool                      `json:"pending_marker_absent"`
+	DirectorySynced       bool                      `json:"directory_synced"`
+	EvidenceDigest        string                    `json:"evidence_digest"`
+}
+
 // PRDMigrationFenceRecord is the durable registry side of one reversible PRD
 // migration. It binds the retained PRD root, publisher inventory, V2 progress,
 // empty fence snapshot, and later descriptor/digest deferred pairs.
 type PRDMigrationFenceRecord struct {
-	LaneTransitionID     string                           `json:"lane_transition_id"`
-	RootRecordID         string                           `json:"root_record_id"`
-	InboxID              string                           `json:"inbox_id"`
-	NormalizedRoot       string                           `json:"normalized_root"`
-	RootIdentity         laneroot.FileIdentity            `json:"filesystem_identity"`
-	MailboxRoot          mailboxfence.FileIdentity        `json:"mailbox_root_identity"`
-	ConfigurationDigest  string                           `json:"configuration_digest"`
-	PreflightDigest      string                           `json:"preflight_digest"`
-	State                PRDMigrationFenceState           `json:"state"`
-	Publishers           []MigrationPublisher             `json:"publishers"`
-	V2Members            []MigrationV2Member              `json:"v2_members"`
-	Snapshot             *mailboxfence.IngressSnapshot    `json:"snapshot,omitempty"`
-	SnapshotDigest       string                           `json:"snapshot_digest,omitempty"`
-	MarkerDigest         string                           `json:"marker_digest,omitempty"`
-	DeferredPairs        []mailboxfence.ReadyPairSnapshot `json:"deferred_pairs,omitempty"`
-	DeferredObservations []MigrationDeferredObservation   `json:"deferred_observations,omitempty"`
-	AbortEvidenceDigest  string                           `json:"abort_evidence_digest,omitempty"`
-	History              []PRDMigrationTransition         `json:"history"`
+	LaneTransitionID           string                           `json:"lane_transition_id"`
+	RootRecordID               string                           `json:"root_record_id"`
+	InboxID                    string                           `json:"inbox_id"`
+	NormalizedRoot             string                           `json:"normalized_root"`
+	RootIdentity               laneroot.FileIdentity            `json:"filesystem_identity"`
+	MailboxRoot                mailboxfence.FileIdentity        `json:"mailbox_root_identity"`
+	ConfigurationDigest        string                           `json:"configuration_digest"`
+	PreflightDigest            string                           `json:"preflight_digest"`
+	State                      PRDMigrationFenceState           `json:"state"`
+	Publishers                 []MigrationPublisher             `json:"publishers"`
+	V2Members                  []MigrationV2Member              `json:"v2_members"`
+	Snapshot                   *mailboxfence.IngressSnapshot    `json:"snapshot,omitempty"`
+	SnapshotDigest             string                           `json:"snapshot_digest,omitempty"`
+	MarkerDigest               string                           `json:"marker_digest,omitempty"`
+	DeferredPairs              []mailboxfence.ReadyPairSnapshot `json:"deferred_pairs,omitempty"`
+	DeferredObservations       []MigrationDeferredObservation   `json:"deferred_observations,omitempty"`
+	AbortEvidenceDigest        string                           `json:"abort_evidence_digest,omitempty"`
+	FenceReleaseEvidenceDigest string                           `json:"fence_release_evidence_digest,omitempty"`
+	FenceReleaseEvidence       *MigrationFenceReleaseEvidence   `json:"fence_release_evidence,omitempty"`
+	History                    []PRDMigrationTransition         `json:"history"`
 }
 
 // BeginPRDMigrationFence persists the complete pre-action inventory in the
@@ -122,7 +138,7 @@ func (r *Registry) BeginPRDMigrationFence(expectedGeneration uint64, record PRDM
 				}
 				return false, ErrMigrationFenceState
 			}
-			if prior.RootRecordID == record.RootRecordID && prior.State != PRDMigrationAborted {
+			if prior.RootRecordID == record.RootRecordID && prior.State != PRDMigrationReleased {
 				return false, ErrMigrationFenceState
 			}
 		}
@@ -388,6 +404,37 @@ func (r *Registry) CompletePRDMigrationAbort(expectedGeneration uint64, transiti
 	})
 }
 
+// RecordPRDMigrationFenceRelease is the final registry step after the
+// controller removed the exact aborted marker and verified both marker names
+// absent under the exclusive mailbox-root lock. Until this CAS, every PRD
+// operation remains excluded by the durable migration record.
+func (r *Registry) RecordPRDMigrationFenceRelease(expectedGeneration uint64, evidence MigrationFenceReleaseEvidence) (Snapshot, error) {
+	if !digestPattern.MatchString(evidence.EvidenceDigest) || !digestPattern.MatchString(evidence.AbortedMarkerDigest) ||
+		!operationIDPattern.MatchString(evidence.LaneTransitionID) || !evidence.CommittedMarkerAbsent ||
+		!evidence.PendingMarkerAbsent || !evidence.DirectorySynced {
+		return Snapshot{}, ErrMigrationFenceProof
+	}
+	return r.update(expectedGeneration, func(snapshot *Snapshot) (bool, error) {
+		record, index := migrationFenceByID(&snapshot.PRDMigrationFences, evidence.LaneTransitionID)
+		if record == nil {
+			return false, ErrMigrationFenceNotFound
+		}
+		if record.State != PRDMigrationAborted || record.MarkerDigest != evidence.AbortedMarkerDigest || record.MailboxRoot != evidence.MailboxRoot ||
+			!digestPattern.MatchString(record.AbortEvidenceDigest) || record.FenceReleaseEvidenceDigest != "" {
+			return false, ErrMigrationFenceState
+		}
+		if err := appendMigrationTransition(record, PRDMigrationReleased, evidence.EvidenceDigest); err != nil {
+			return false, err
+		}
+		record.State = PRDMigrationReleased
+		record.FenceReleaseEvidenceDigest = evidence.EvidenceDigest
+		evidenceCopy := evidence
+		record.FenceReleaseEvidence = &evidenceCopy
+		snapshot.PRDMigrationFences[index] = *record
+		return true, nil
+	})
+}
+
 func validatePRDMigrationFences(snapshot Snapshot) error {
 	if len(snapshot.PRDMigrationFences) > 64 {
 		return ErrInvalidRegistry
@@ -406,7 +453,7 @@ func validatePRDMigrationFences(snapshot Snapshot) error {
 		if err := validatePRDMigrationFenceRecord(&snapshot, record); err != nil {
 			return fmt.Errorf("%w: PRD migration fence %s: %v", ErrInvalidRegistry, record.LaneTransitionID, err)
 		}
-		if record.State != PRDMigrationAborted {
+		if record.State != PRDMigrationReleased {
 			activeFences++
 			if activeFences > 1 {
 				return ErrInvalidRegistry
@@ -457,11 +504,23 @@ func validatePRDMigrationFenceRecord(snapshot *Snapshot, record PRDMigrationFenc
 	} else if !digestPattern.MatchString(record.MarkerDigest) {
 		return ErrInvalidRegistry
 	}
-	if record.State == PRDMigrationAborting || record.State == PRDMigrationAborted {
+	if record.State == PRDMigrationAborting || record.State == PRDMigrationAborted || record.State == PRDMigrationReleased {
 		if !digestPattern.MatchString(record.AbortEvidenceDigest) {
 			return ErrInvalidRegistry
 		}
 	} else if record.AbortEvidenceDigest != "" {
+		return ErrInvalidRegistry
+	}
+	if record.State == PRDMigrationReleased {
+		if !digestPattern.MatchString(record.FenceReleaseEvidenceDigest) || record.FenceReleaseEvidence == nil ||
+			record.FenceReleaseEvidence.EvidenceDigest != record.FenceReleaseEvidenceDigest ||
+			record.FenceReleaseEvidence.LaneTransitionID != record.LaneTransitionID ||
+			record.FenceReleaseEvidence.AbortedMarkerDigest != record.MarkerDigest ||
+			record.FenceReleaseEvidence.MailboxRoot != record.MailboxRoot ||
+			!record.FenceReleaseEvidence.CommittedMarkerAbsent || !record.FenceReleaseEvidence.PendingMarkerAbsent || !record.FenceReleaseEvidence.DirectorySynced {
+			return ErrInvalidRegistry
+		}
+	} else if record.FenceReleaseEvidenceDigest != "" || record.FenceReleaseEvidence != nil {
 		return ErrInvalidRegistry
 	}
 	for _, pair := range record.DeferredPairs {
@@ -551,11 +610,11 @@ func orderedMemberEvidence(member MigrationV2Member) bool {
 }
 
 func validMigrationHistory(record PRDMigrationFenceRecord) bool {
-	if len(record.History) == 0 || len(record.History) > 4 || record.History[0].Sequence != 1 || record.History[0].From != "" || record.History[0].To != PRDMigrationFencing || record.History[0].EvidenceDigest != record.PreflightDigest {
+	if len(record.History) == 0 || len(record.History) > 5 || record.History[0].Sequence != 1 || record.History[0].From != "" || record.History[0].To != PRDMigrationFencing || record.History[0].EvidenceDigest != record.PreflightDigest {
 		return false
 	}
 	want := []PRDMigrationFenceState{PRDMigrationFencing}
-	if record.State == PRDMigrationFenced || record.State == PRDMigrationAborting || record.State == PRDMigrationAborted {
+	if record.State == PRDMigrationFenced || record.State == PRDMigrationAborting || record.State == PRDMigrationAborted || record.State == PRDMigrationReleased {
 		want = append(want, PRDMigrationFenced)
 	}
 	if record.State == PRDMigrationAborting {
@@ -563,6 +622,9 @@ func validMigrationHistory(record PRDMigrationFenceRecord) bool {
 	}
 	if record.State == PRDMigrationAborted {
 		want = append(want, PRDMigrationAborting, PRDMigrationAborted)
+	}
+	if record.State == PRDMigrationReleased {
+		want = append(want, PRDMigrationAborting, PRDMigrationAborted, PRDMigrationReleased)
 	}
 	if len(record.History) != len(want) {
 		return false
@@ -671,7 +733,8 @@ func appendMigrationTransition(record *PRDMigrationFenceRecord, next PRDMigratio
 		return ErrMigrationFenceState
 	}
 	from := record.State
-	allowed := (from == PRDMigrationFencing && next == PRDMigrationFenced) || (from == PRDMigrationFenced && next == PRDMigrationAborting) || (from == PRDMigrationAborting && next == PRDMigrationAborted)
+	allowed := (from == PRDMigrationFencing && next == PRDMigrationFenced) || (from == PRDMigrationFenced && next == PRDMigrationAborting) ||
+		(from == PRDMigrationAborting && next == PRDMigrationAborted) || (from == PRDMigrationAborted && next == PRDMigrationReleased)
 	if !allowed || !digestPattern.MatchString(evidence) {
 		return ErrMigrationFenceState
 	}

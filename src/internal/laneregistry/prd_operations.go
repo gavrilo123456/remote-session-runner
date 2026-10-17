@@ -40,6 +40,10 @@ const (
 	PRDRecoveryReopened          PRDOperationState = "recovery_reopened"
 	PRDRecoveryAcceptancePending PRDOperationState = "recovery_acceptance_pending"
 	PRDRecoveryAccepted          PRDOperationState = "recovery_accepted"
+	PRDPostCommitRepairRequired  PRDOperationState = "post_commit_repair_required"
+	PRDRepairClosurePending      PRDOperationState = "repair_closure_pending"
+	PRDRepairQuiescing           PRDOperationState = "repair_quiescing"
+	PRDRepairClosed              PRDOperationState = "repair_closed"
 	PRDOperationAborted          PRDOperationState = "aborted"
 	PRDOperationArchived         PRDOperationState = "archived"
 )
@@ -116,6 +120,25 @@ type PRDRecoveryOpenProof struct {
 	EvidenceDigest     string `json:"evidence_digest"`
 }
 
+// PRDRepairEpoch binds fresh active-runtime-closure epochs to the host anchor
+// high-water observed for post-commit repair. The candidate epoch is the
+// committed runtime epoch and must be lower than the new closure epoch.
+type PRDRepairEpoch struct {
+	Surface         string `json:"surface"`
+	AnchorHighWater uint64 `json:"anchor_high_water"`
+	ClosureEpoch    uint64 `json:"closure_epoch"`
+}
+
+type PRDRepairClosureProof struct {
+	Surface            string `json:"surface"`
+	CandidateSetDigest string `json:"candidate_set_digest"`
+	Epoch              uint64 `json:"epoch"`
+	DirectiveID        string `json:"directive_id"`
+	AttestationID      string `json:"attestation_id"`
+	Closed             bool   `json:"closed"`
+	EvidenceDigest     string `json:"evidence_digest"`
+}
+
 type PRDOperationTransition struct {
 	Sequence       uint64            `json:"sequence"`
 	From           PRDOperationState `json:"from,omitempty"`
@@ -127,33 +150,49 @@ type PRDOperationTransition struct {
 // linked recovery child. It contains evidence references and does not execute
 // host commands or authorize a service mutation.
 type PRDOperation struct {
-	ID                           string                   `json:"id"`
-	ParentID                     string                   `json:"parent_id,omitempty"`
-	Kind                         PRDOperationKind         `json:"kind"`
-	State                        PRDOperationState        `json:"state"`
-	CandidateSetDigest           string                   `json:"candidate_set_digest"`
-	IncumbentCandidateSetDigest  string                   `json:"incumbent_candidate_set_digest,omitempty"`
-	SourceRevision               string                   `json:"source_revision"`
-	ArtifactDigest               string                   `json:"artifact_digest"`
-	ManifestDigest               string                   `json:"manifest_digest"`
-	Epochs                       []PRDHostEpoch           `json:"epochs"`
-	Closures                     []PRDClosureProof        `json:"closures,omitempty"`
-	Quiescence                   []PRDQuiescenceProof     `json:"quiescence,omitempty"`
-	QuiescenceSealDigest         string                   `json:"quiescence_seal_digest,omitempty"`
-	FailureDigest                string                   `json:"failure_digest,omitempty"`
-	RecoveryChildIDs             []string                 `json:"recovery_child_ids,omitempty"`
-	LineageEvidenceDigest        string                   `json:"lineage_evidence_digest,omitempty"`
-	AuthorityApprovalDigest      string                   `json:"authority_approval_digest,omitempty"`
-	QASAcceptanceDigest          string                   `json:"qas_acceptance_digest,omitempty"`
-	HostManagementManifestDigest string                   `json:"host_management_manifest_digest,omitempty"`
-	RecoveryClosed               []PRDRecoveryClosedProof `json:"recovery_closed,omitempty"`
-	TransportReady               []PRDTransportReadyProof `json:"transport_ready,omitempty"`
-	Authorizations               []PRDAuthorizationProof  `json:"authorizations,omitempty"`
-	RecoveryOpen                 []PRDRecoveryOpenProof   `json:"recovery_open,omitempty"`
-	StageEvidenceDigest          string                   `json:"stage_evidence_digest,omitempty"`
-	CommitEvidenceDigest         string                   `json:"commit_evidence_digest,omitempty"`
-	Acceptance                   *LaneAcceptanceEvidence  `json:"acceptance,omitempty"`
-	History                      []PRDOperationTransition `json:"history"`
+	ID                             string                   `json:"id"`
+	ParentID                       string                   `json:"parent_id,omitempty"`
+	Kind                           PRDOperationKind         `json:"kind"`
+	State                          PRDOperationState        `json:"state"`
+	CandidateSetDigest             string                   `json:"candidate_set_digest"`
+	IncumbentCandidateSetDigest    string                   `json:"incumbent_candidate_set_digest,omitempty"`
+	ConfigurationDigest            string                   `json:"configuration_digest"`
+	SourceRevision                 string                   `json:"source_revision"`
+	ArtifactDigest                 string                   `json:"artifact_digest"`
+	ManifestDigest                 string                   `json:"manifest_digest"`
+	ContinuityBundleDigest         string                   `json:"continuity_bundle_digest"`
+	PriorAcceptedCandidateDigest   string                   `json:"prior_accepted_candidate_digest"`
+	PriorAcceptanceID              string                   `json:"prior_acceptance_id"`
+	PriorAcceptanceDigest          string                   `json:"prior_acceptance_digest"`
+	Epochs                         []PRDHostEpoch           `json:"epochs"`
+	Closures                       []PRDClosureProof        `json:"closures,omitempty"`
+	Quiescence                     []PRDQuiescenceProof     `json:"quiescence,omitempty"`
+	QuiescenceSealDigest           string                   `json:"quiescence_seal_digest,omitempty"`
+	FailureDigest                  string                   `json:"failure_digest,omitempty"`
+	RecoveryChildIDs               []string                 `json:"recovery_child_ids,omitempty"`
+	LineageEvidenceDigest          string                   `json:"lineage_evidence_digest,omitempty"`
+	AuthorityApprovalDigest        string                   `json:"authority_approval_digest,omitempty"`
+	QASAcceptanceDigest            string                   `json:"qas_acceptance_digest,omitempty"`
+	HostManagementManifestDigest   string                   `json:"host_management_manifest_digest,omitempty"`
+	RecoveryClosed                 []PRDRecoveryClosedProof `json:"recovery_closed,omitempty"`
+	TransportReady                 []PRDTransportReadyProof `json:"transport_ready,omitempty"`
+	Authorizations                 []PRDAuthorizationProof  `json:"authorizations,omitempty"`
+	RecoveryOpen                   []PRDRecoveryOpenProof   `json:"recovery_open,omitempty"`
+	StageEvidenceDigest            string                   `json:"stage_evidence_digest,omitempty"`
+	CommitEvidenceDigest           string                   `json:"commit_evidence_digest,omitempty"`
+	Acceptance                     *LaneAcceptanceEvidence  `json:"acceptance,omitempty"`
+	PostCommitFailureState         PRDOperationState        `json:"post_commit_failure_state,omitempty"`
+	PostCommitFailureDigest        string                   `json:"post_commit_failure_digest,omitempty"`
+	RepairPriorCandidateDigest     string                   `json:"repair_prior_candidate_digest,omitempty"`
+	RepairPriorAcceptanceID        string                   `json:"repair_prior_acceptance_id,omitempty"`
+	RepairPriorAcceptanceDigest    string                   `json:"repair_prior_acceptance_digest,omitempty"`
+	RepairEpochs                   []PRDRepairEpoch         `json:"repair_epochs,omitempty"`
+	RepairClosures                 []PRDRepairClosureProof  `json:"repair_closures,omitempty"`
+	RepairQuiescence               []PRDQuiescenceProof     `json:"repair_quiescence,omitempty"`
+	RepairQuiescenceSealDigest     string                   `json:"repair_quiescence_seal_digest,omitempty"`
+	RepairHandoffDigest            string                   `json:"repair_handoff_digest,omitempty"`
+	NextQASCandidateCriteriaDigest string                   `json:"next_qas_candidate_criteria_digest,omitempty"`
+	History                        []PRDOperationTransition `json:"history"`
 }
 
 // PRDOperationGroup is the durable exclusive-operation lock. A parent and at
@@ -167,21 +206,31 @@ type PRDOperationGroup struct {
 }
 
 type PRDMaintenanceSpec struct {
-	CandidateSetDigest          string
-	IncumbentCandidateSetDigest string
-	SourceRevision              string
-	ArtifactDigest              string
-	ManifestDigest              string
-	Epochs                      []PRDHostEpoch
+	CandidateSetDigest           string
+	IncumbentCandidateSetDigest  string
+	ConfigurationDigest          string
+	SourceRevision               string
+	ArtifactDigest               string
+	ManifestDigest               string
+	ContinuityBundleDigest       string
+	PriorAcceptedCandidateDigest string
+	PriorAcceptanceID            string
+	PriorAcceptanceDigest        string
+	Epochs                       []PRDHostEpoch
 }
 
 type PRDRecoverySpec struct {
 	ParentID                     string
 	Kind                         PRDOperationKind
 	CandidateSetDigest           string
+	ConfigurationDigest          string
 	SourceRevision               string
 	ArtifactDigest               string
 	ManifestDigest               string
+	ContinuityBundleDigest       string
+	PriorAcceptedCandidateDigest string
+	PriorAcceptanceID            string
+	PriorAcceptanceDigest        string
 	Epochs                       []PRDHostEpoch
 	LineageEvidenceDigest        string
 	AuthorityApprovalDigest      string
@@ -199,8 +248,12 @@ func (r *Registry) BeginPRDMaintenance(expectedGeneration uint64, spec PRDMainte
 	operation := PRDOperation{
 		ID: operationID, Kind: PRDOperationV3Maintenance, State: PRDClosurePending,
 		CandidateSetDigest: spec.CandidateSetDigest, IncumbentCandidateSetDigest: spec.IncumbentCandidateSetDigest,
-		SourceRevision: spec.SourceRevision, ArtifactDigest: spec.ArtifactDigest,
-		ManifestDigest: spec.ManifestDigest, Epochs: clonePRDEpochs(spec.Epochs),
+		ConfigurationDigest: spec.ConfigurationDigest, SourceRevision: spec.SourceRevision,
+		ArtifactDigest: spec.ArtifactDigest, ManifestDigest: spec.ManifestDigest,
+		ContinuityBundleDigest:       spec.ContinuityBundleDigest,
+		PriorAcceptedCandidateDigest: spec.PriorAcceptedCandidateDigest,
+		PriorAcceptanceID:            spec.PriorAcceptanceID, PriorAcceptanceDigest: spec.PriorAcceptanceDigest,
+		Epochs: clonePRDEpochs(spec.Epochs),
 	}
 	if err := validatePRDMaintenanceSpec(spec); err != nil {
 		return Snapshot{}, PRDOperationGroup{}, err
@@ -354,8 +407,12 @@ func (r *Registry) BeginPRDRecoveryChild(expectedGeneration uint64, spec PRDReco
 	}
 	child := PRDOperation{
 		ID: childID, ParentID: spec.ParentID, Kind: spec.Kind, State: PRDRecoveryCandidateClosing,
-		CandidateSetDigest: spec.CandidateSetDigest, SourceRevision: spec.SourceRevision,
-		ArtifactDigest: spec.ArtifactDigest, ManifestDigest: spec.ManifestDigest, Epochs: clonePRDEpochs(spec.Epochs),
+		CandidateSetDigest: spec.CandidateSetDigest, ConfigurationDigest: spec.ConfigurationDigest,
+		SourceRevision: spec.SourceRevision, ArtifactDigest: spec.ArtifactDigest,
+		ManifestDigest: spec.ManifestDigest, ContinuityBundleDigest: spec.ContinuityBundleDigest,
+		PriorAcceptedCandidateDigest: spec.PriorAcceptedCandidateDigest,
+		PriorAcceptanceID:            spec.PriorAcceptanceID, PriorAcceptanceDigest: spec.PriorAcceptanceDigest,
+		Epochs:                clonePRDEpochs(spec.Epochs),
 		LineageEvidenceDigest: spec.LineageEvidenceDigest, AuthorityApprovalDigest: spec.AuthorityApprovalDigest,
 		QASAcceptanceDigest: spec.QASAcceptanceDigest, HostManagementManifestDigest: spec.HostManagementManifestDigest,
 	}
@@ -669,7 +726,9 @@ func (r *Registry) updatePRDOperation(expectedGeneration uint64, operationID str
 func validatePRDMaintenanceSpec(spec PRDMaintenanceSpec) error {
 	if !validEvidenceDigest(spec.CandidateSetDigest) || !validEvidenceDigest(spec.IncumbentCandidateSetDigest) ||
 		spec.CandidateSetDigest == spec.IncumbentCandidateSetDigest || !commitIDPattern.MatchString(spec.SourceRevision) ||
-		!validEvidenceDigest(spec.ArtifactDigest) || !validEvidenceDigest(spec.ManifestDigest) || !validPRDEpochs(spec.Epochs, true) {
+		!validEvidenceDigest(spec.ConfigurationDigest) || !validEvidenceDigest(spec.ArtifactDigest) || !validEvidenceDigest(spec.ManifestDigest) ||
+		!validEvidenceDigest(spec.ContinuityBundleDigest) || !validEvidenceDigest(spec.PriorAcceptedCandidateDigest) ||
+		spec.PriorAcceptanceID == "" || !validEvidenceDigest(spec.PriorAcceptanceDigest) || !validPRDEpochs(spec.Epochs, true) {
 		return ErrInvalidOperation
 	}
 	return nil
@@ -677,8 +736,10 @@ func validatePRDMaintenanceSpec(spec PRDMaintenanceSpec) error {
 
 func validatePRDRecoverySpecShape(spec PRDRecoverySpec) error {
 	if !operationIDPattern.MatchString(spec.ParentID) || (spec.Kind != PRDOperationV3Restore && spec.Kind != PRDOperationV3ForwardRepair) ||
-		!validEvidenceDigest(spec.CandidateSetDigest) || !commitIDPattern.MatchString(spec.SourceRevision) ||
-		!validEvidenceDigest(spec.ArtifactDigest) || !validEvidenceDigest(spec.ManifestDigest) || !validPRDEpochs(spec.Epochs, true) {
+		!validEvidenceDigest(spec.CandidateSetDigest) || !validEvidenceDigest(spec.ConfigurationDigest) || !commitIDPattern.MatchString(spec.SourceRevision) ||
+		!validEvidenceDigest(spec.ArtifactDigest) || !validEvidenceDigest(spec.ManifestDigest) ||
+		!validEvidenceDigest(spec.ContinuityBundleDigest) || !validEvidenceDigest(spec.PriorAcceptedCandidateDigest) ||
+		spec.PriorAcceptanceID == "" || !validEvidenceDigest(spec.PriorAcceptanceDigest) || !validPRDEpochs(spec.Epochs, true) {
 		return ErrInvalidOperation
 	}
 	if spec.Kind == PRDOperationV3Restore {
@@ -695,11 +756,13 @@ func validatePRDRecoverySpecShape(spec PRDRecoverySpec) error {
 func validPRDRecoverySpec(parent PRDOperation, group PRDOperationGroup, spec PRDRecoverySpec) bool {
 	if parent.ID != spec.ParentID || parent.State != PRDRestoreRequired || parent.QuiescenceSealDigest == "" ||
 		parent.FailureDigest == "" || !validEvidenceDigest(parent.QuiescenceSealDigest) || !validEvidenceDigest(parent.FailureDigest) ||
-		!samePRDSurfaces(parent.Epochs, spec.Epochs) {
+		!samePRDSurfaces(parent.Epochs, spec.Epochs) || spec.PriorAcceptedCandidateDigest != parent.PriorAcceptedCandidateDigest ||
+		spec.PriorAcceptanceID != parent.PriorAcceptanceID || spec.PriorAcceptanceDigest != parent.PriorAcceptanceDigest {
 		return false
 	}
 	if spec.Kind == PRDOperationV3Restore {
-		if spec.CandidateSetDigest != parent.IncumbentCandidateSetDigest || !validEvidenceDigest(spec.LineageEvidenceDigest) {
+		if spec.CandidateSetDigest != parent.IncumbentCandidateSetDigest || spec.ContinuityBundleDigest != parent.ContinuityBundleDigest ||
+			!validEvidenceDigest(spec.LineageEvidenceDigest) {
 			return false
 		}
 	} else if spec.CandidateSetDigest == parent.IncumbentCandidateSetDigest || spec.CandidateSetDigest == parent.CandidateSetDigest ||
@@ -1002,8 +1065,11 @@ func validatePRDOperationGroup(group PRDOperationGroup) error {
 	for i := range group.Operations {
 		operation := &group.Operations[i]
 		if !operationIDPattern.MatchString(operation.ID) || !validEvidenceDigest(operation.CandidateSetDigest) ||
-			!commitIDPattern.MatchString(operation.SourceRevision) || !validEvidenceDigest(operation.ArtifactDigest) ||
-			!validEvidenceDigest(operation.ManifestDigest) || !validPRDEpochs(operation.Epochs, true) || !validPRDHistory(*operation) {
+			!validEvidenceDigest(operation.ConfigurationDigest) || !commitIDPattern.MatchString(operation.SourceRevision) ||
+			!validEvidenceDigest(operation.ArtifactDigest) || !validEvidenceDigest(operation.ManifestDigest) ||
+			!validEvidenceDigest(operation.ContinuityBundleDigest) || !validEvidenceDigest(operation.PriorAcceptedCandidateDigest) ||
+			operation.PriorAcceptanceID == "" || !validEvidenceDigest(operation.PriorAcceptanceDigest) ||
+			!validPRDEpochs(operation.Epochs, true) || !validPRDHistory(*operation) {
 			return ErrInvalidRegistry
 		}
 		if _, exists := seenIDs[operation.ID]; exists {
@@ -1053,11 +1119,14 @@ func validatePRDOperationGroup(group PRDOperationGroup) error {
 
 func validPRDChildLineage(parent PRDOperation, group PRDOperationGroup, child PRDOperation, index int) bool {
 	if index-1 >= len(parent.RecoveryChildIDs) || parent.RecoveryChildIDs[index-1] != child.ID ||
-		!prdHistoryReached(parent, PRDRestoreRequired) || child.IncumbentCandidateSetDigest != "" {
+		!prdHistoryReached(parent, PRDRestoreRequired) || child.IncumbentCandidateSetDigest != "" ||
+		child.PriorAcceptedCandidateDigest != parent.PriorAcceptedCandidateDigest ||
+		child.PriorAcceptanceID != parent.PriorAcceptanceID || child.PriorAcceptanceDigest != parent.PriorAcceptanceDigest {
 		return false
 	}
 	if child.Kind == PRDOperationV3Restore {
-		if child.CandidateSetDigest != parent.IncumbentCandidateSetDigest || !validEvidenceDigest(child.LineageEvidenceDigest) ||
+		if child.CandidateSetDigest != parent.IncumbentCandidateSetDigest || child.ContinuityBundleDigest != parent.ContinuityBundleDigest ||
+			!validEvidenceDigest(child.LineageEvidenceDigest) ||
 			child.AuthorityApprovalDigest != "" || child.QASAcceptanceDigest != "" || child.HostManagementManifestDigest != "" {
 			return false
 		}
@@ -1081,6 +1150,9 @@ func validPRDChildLineage(parent PRDOperation, group PRDOperationGroup, child PR
 }
 
 func validatePRDOperationProof(operation PRDOperation) error {
+	if !validPRDRepairProof(operation) {
+		return ErrInvalidRegistry
+	}
 	switch operation.Kind {
 	case PRDOperationV3Maintenance:
 		if operation.ParentID != "" || !validEvidenceDigest(operation.IncumbentCandidateSetDigest) ||
@@ -1262,20 +1334,24 @@ func validPRDTransition(from, to PRDOperationState) bool {
 		PRDQuiesced:                  {PRDRestoreRequired, PRDStaged},
 		PRDStaged:                    {PRDCandidateClosed, PRDRestoreRequired},
 		PRDCandidateClosed:           {PRDCommitted, PRDRestoreRequired},
-		PRDCommitted:                 {PRDReopenPrepared},
-		PRDReopenPrepared:            {PRDReopenAuthorized},
-		PRDReopenAuthorized:          {PRDReopened},
-		PRDReopened:                  {PRDAcceptancePending},
-		PRDAcceptancePending:         {PRDAccepted},
-		PRDAccepted:                  {PRDOperationArchived},
+		PRDCommitted:                 {PRDReopenPrepared, PRDPostCommitRepairRequired},
+		PRDReopenPrepared:            {PRDReopenAuthorized, PRDPostCommitRepairRequired},
+		PRDReopenAuthorized:          {PRDReopened, PRDPostCommitRepairRequired},
+		PRDReopened:                  {PRDAcceptancePending, PRDPostCommitRepairRequired},
+		PRDAcceptancePending:         {PRDAccepted, PRDPostCommitRepairRequired},
+		PRDAccepted:                  {PRDOperationArchived, PRDPostCommitRepairRequired},
 		PRDRestoreRequired:           {PRDOperationAborted},
 		PRDRecoveryCandidateClosing:  {PRDRecoveryCandidateClosed, PRDOperationAborted},
 		PRDRecoveryCandidateClosed:   {PRDRecoveryReopenPrepared, PRDOperationAborted},
-		PRDRecoveryReopenPrepared:    {PRDRecoveryReopenAuthorized},
-		PRDRecoveryReopenAuthorized:  {PRDRecoveryReopened},
-		PRDRecoveryReopened:          {PRDRecoveryAcceptancePending},
-		PRDRecoveryAcceptancePending: {PRDRecoveryAccepted},
-		PRDRecoveryAccepted:          {PRDOperationArchived},
+		PRDRecoveryReopenPrepared:    {PRDRecoveryReopenAuthorized, PRDPostCommitRepairRequired},
+		PRDRecoveryReopenAuthorized:  {PRDRecoveryReopened, PRDPostCommitRepairRequired},
+		PRDRecoveryReopened:          {PRDRecoveryAcceptancePending, PRDPostCommitRepairRequired},
+		PRDRecoveryAcceptancePending: {PRDRecoveryAccepted, PRDPostCommitRepairRequired},
+		PRDRecoveryAccepted:          {PRDOperationArchived, PRDPostCommitRepairRequired},
+		PRDPostCommitRepairRequired:  {PRDRepairClosurePending},
+		PRDRepairClosurePending:      {PRDRepairQuiescing},
+		PRDRepairQuiescing:           {PRDRepairClosed},
+		PRDRepairClosed:              {PRDOperationArchived},
 		PRDOperationAborted:          {PRDOperationArchived},
 	}
 	for _, next := range allowed[from] {
@@ -1366,7 +1442,7 @@ func hasActivePRDOperationGroup(snapshot *Snapshot) bool {
 
 func hasActivePRDMigrationFence(snapshot *Snapshot) bool {
 	for _, fence := range snapshot.PRDMigrationFences {
-		if fence.State != PRDMigrationAborted {
+		if fence.State != PRDMigrationReleased {
 			return true
 		}
 	}

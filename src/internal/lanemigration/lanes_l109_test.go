@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"remote-session-runner/src/internal/config"
@@ -273,7 +274,7 @@ func TestLanesL109FenceAwareAbortPreservesPairsAndRemovesOnlyAbortedMarker(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.PRDMigrationFences[0].State != laneregistry.PRDMigrationAborted {
+	if snapshot.PRDMigrationFences[0].State != laneregistry.PRDMigrationReleased || snapshot.PRDMigrationFences[0].FenceReleaseEvidenceDigest == "" {
 		t.Fatalf("abort state=%s", snapshot.PRDMigrationFences[0].State)
 	}
 	if _, err := os.Stat(filepath.Join(fixture.root, mailboxfence.MigrationFenceFileName)); !errors.Is(err, os.ErrNotExist) {
@@ -403,7 +404,7 @@ func TestLanesL109CrashGapsReconcileWithoutInferredV2Restart(t *testing.T) {
 			t.Fatal(err)
 		}
 		snapshot, err = fixture.controller.Reconcile(context.Background(), l109TransitionID)
-		if err != nil || snapshot.PRDMigrationFences[0].State != laneregistry.PRDMigrationAborted {
+		if err != nil || snapshot.PRDMigrationFences[0].State != laneregistry.PRDMigrationReleased {
 			t.Fatalf("abort-intent restart reconcile=%+v err=%v", snapshot.PRDMigrationFences, err)
 		}
 		if data, err := os.ReadFile(requestPath); err != nil || string(data) != requestJSON {
@@ -413,6 +414,106 @@ func TestLanesL109CrashGapsReconcileWithoutInferredV2Restart(t *testing.T) {
 			t.Fatalf("reconciled abort did not remove exact marker: %v", err)
 		}
 	})
+}
+
+func TestLanesL113AbortMarkerRemovalReceiptGatesV3OperationGroup(t *testing.T) {
+	fixture := newL109Fixture(t)
+	fixture.beginAndProve(t, true)
+	snapshot, err := fixture.controller.FenceEmpty(context.Background(), l109TransitionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := fixture.lock(t)
+	marker, _, err := lock.ReadMigrationFenceMarker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Generation == ^uint64(0) {
+		t.Fatal("registry generation overflow")
+	}
+	observed, err := lock.SnapshotIngressPairsAt(fixture.record.InboxID, snapshot.Generation+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = fixture.registry.RecordPRDMigrationDeferredPairs(snapshot.Generation, l109TransitionID, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abortDigest := testL109Digest('e')
+	snapshot, err = fixture.registry.BeginPRDMigrationAbort(snapshot.Generation, l109TransitionID, abortDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker.State = mailboxfence.MigrationFenceAborting
+	if _, err := lock.WriteMigrationFenceMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = fixture.registry.RecordPRDMigrationMarkerDigest(snapshot.Generation, marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := snapshot.PRDMigrationFences[0]
+	observed, err = lock.SnapshotIngressPairsAt(record.InboxID, snapshot.Generation+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = fixture.registry.CompletePRDMigrationAbort(snapshot.Generation, l109TransitionID, abortDigest, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker.State = mailboxfence.MigrationFenceAborted
+	if _, err := lock.WriteMigrationFenceMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = fixture.registry.RecordPRDMigrationMarkerDigest(snapshot.Generation, marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := fixture.registry.BeginPRDMaintenance(snapshot.Generation, l113MaintenanceSpec()); !errors.Is(err, laneregistry.ErrOperationBusy) {
+		t.Fatalf("V3 group acquired before marker removal: %v", err)
+	}
+	record = snapshot.PRDMigrationFences[0]
+	earlyRelease := laneregistry.MigrationFenceReleaseEvidence{
+		LaneTransitionID: record.LaneTransitionID, AbortedMarkerDigest: record.MarkerDigest,
+		MailboxRoot: record.MailboxRoot, EvidenceDigest: testL109Digest('f'),
+	}
+	if _, err := fixture.registry.RecordPRDMigrationFenceRelease(snapshot.Generation, earlyRelease); !errors.Is(err, laneregistry.ErrMigrationFenceProof) {
+		t.Fatalf("registry accepted a release receipt without marker-absence proof: %v", err)
+	}
+	if err := lock.RemoveMigrationFenceMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.VerifyMigrationFenceMarkerAbsent(); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a process exit after durable removal but before the registry
+	// receipt. Reconcile must verify absence and write that receipt first.
+	snapshot, err = fixture.controller.Reconcile(context.Background(), l109TransitionID)
+	if err != nil || snapshot.PRDMigrationFences[0].State != laneregistry.PRDMigrationReleased {
+		t.Fatalf("post-removal reconciliation=%+v err=%v", snapshot.PRDMigrationFences, err)
+	}
+	if _, group, err := fixture.registry.BeginPRDMaintenance(snapshot.Generation, l113MaintenanceSpec()); err != nil || group.ActiveOperationID == "" {
+		t.Fatalf("V3 group did not acquire after release receipt: group=%+v err=%v", group, err)
+	}
+}
+
+func l113MaintenanceSpec() laneregistry.PRDMaintenanceSpec {
+	epochs := []laneregistry.PRDHostEpoch{
+		{Surface: laneregistry.SurfaceFactorySandbox, AnchorHighWater: 10, ClosureEpoch: 11, CandidateEpoch: 12},
+		{Surface: laneregistry.SurfaceLinuxHost, AnchorHighWater: 10, ClosureEpoch: 11, CandidateEpoch: 12},
+		{Surface: laneregistry.SurfaceMac, AnchorHighWater: 10, ClosureEpoch: 11, CandidateEpoch: 12},
+		{Surface: laneregistry.SurfaceSandboxHost, AnchorHighWater: 10, ClosureEpoch: 11, CandidateEpoch: 12},
+	}
+	return laneregistry.PRDMaintenanceSpec{
+		CandidateSetDigest: testL109Digest('a'), IncumbentCandidateSetDigest: testL109Digest('b'),
+		ConfigurationDigest: testL109Digest('c'), SourceRevision: strings.Repeat("1", 40),
+		ArtifactDigest: testL109Digest('d'), ManifestDigest: testL109Digest('e'), ContinuityBundleDigest: testL109Digest('f'),
+		PriorAcceptedCandidateDigest: testL109Digest('b'), PriorAcceptanceID: "prior-prd-acceptance",
+		PriorAcceptanceDigest: testL109Digest('8'), Epochs: epochs,
+	}
 }
 
 type l109Fixture struct {

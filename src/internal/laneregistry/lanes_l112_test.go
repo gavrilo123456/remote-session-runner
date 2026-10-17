@@ -407,7 +407,9 @@ func l112MaintenanceSpec() PRDMaintenanceSpec {
 	}
 	return PRDMaintenanceSpec{
 		CandidateSetDigest: testDigest('a'), IncumbentCandidateSetDigest: testDigest('b'),
-		SourceRevision: strings.Repeat("1", 40), ArtifactDigest: testDigest('c'), ManifestDigest: testDigest('d'), Epochs: epochs,
+		ConfigurationDigest: testDigest('e'), SourceRevision: strings.Repeat("1", 40), ArtifactDigest: testDigest('c'), ManifestDigest: testDigest('d'),
+		ContinuityBundleDigest: testDigest('f'), PriorAcceptedCandidateDigest: testDigest('b'),
+		PriorAcceptanceID: "prior-accepted-prd", PriorAcceptanceDigest: testDigest('7'), Epochs: epochs,
 	}
 }
 
@@ -418,7 +420,9 @@ func l112RestoreSpec(parent PRDOperation) PRDRecoverySpec {
 	}
 	return PRDRecoverySpec{
 		ParentID: parent.ID, Kind: PRDOperationV3Restore, CandidateSetDigest: parent.IncumbentCandidateSetDigest,
-		SourceRevision: strings.Repeat("2", 40), ArtifactDigest: testDigest('e'), ManifestDigest: testDigest('f'),
+		ConfigurationDigest: testDigest('a'), SourceRevision: strings.Repeat("2", 40), ArtifactDigest: testDigest('e'), ManifestDigest: testDigest('f'),
+		ContinuityBundleDigest: parent.ContinuityBundleDigest, PriorAcceptedCandidateDigest: parent.PriorAcceptedCandidateDigest,
+		PriorAcceptanceID: parent.PriorAcceptanceID, PriorAcceptanceDigest: parent.PriorAcceptanceDigest,
 		Epochs: epochs, LineageEvidenceDigest: testDigest('7'),
 	}
 }
@@ -434,7 +438,9 @@ func l112ForwardRepairSpec(parent PRDOperation, firstClosureEpoch uint64) PRDRec
 	}
 	return PRDRecoverySpec{
 		ParentID: parent.ID, Kind: PRDOperationV3ForwardRepair, CandidateSetDigest: testDigest('c'),
-		SourceRevision: strings.Repeat("3", 40), ArtifactDigest: testDigest('8'), ManifestDigest: testDigest('9'),
+		ConfigurationDigest: testDigest('d'), SourceRevision: strings.Repeat("3", 40), ArtifactDigest: testDigest('8'), ManifestDigest: testDigest('9'),
+		ContinuityBundleDigest: parent.ContinuityBundleDigest, PriorAcceptedCandidateDigest: parent.PriorAcceptedCandidateDigest,
+		PriorAcceptanceID: parent.PriorAcceptanceID, PriorAcceptanceDigest: parent.PriorAcceptanceDigest,
 		Epochs: epochs, AuthorityApprovalDigest: testDigest('a'), QASAcceptanceDigest: testDigest('b'),
 		HostManagementManifestDigest: testDigest('c'),
 	}

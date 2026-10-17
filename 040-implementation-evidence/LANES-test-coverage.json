@@ -543,7 +543,27 @@
       "id": "LANES-L1-13",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL113PRDPostCommitRepairRequiresFreshClosureQuiescenceAndHandoff"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL113RecoveryChildRepairHandoffArchivesParentAndPreventsReplacement"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL113AlteredRepairHistoryIsRejected"
+          },
+          {
+            "package": "./src/internal/lanemigration",
+            "name": "TestLanesL113AbortMarkerRemovalReceiptGatesV3OperationGroup"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L2-01",
