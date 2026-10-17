@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"remote-session-runner/src/internal/laneinstall"
 )
 
 const (
@@ -76,26 +78,29 @@ type authoritySignedResult struct {
 }
 
 type authorityRootState struct {
-	Version           int                                 `json:"schema_version"`
-	Generation        uint64                              `json:"generation"`
-	AnchorKeyID       string                              `json:"anchor_key_id"`
-	AnchorPublicKey   string                              `json:"anchor_public_key"`
-	LedgerGeneration  uint64                              `json:"ledger_generation"`
-	Plans             map[string]authorityPlan            `json:"pending_plans"`
-	Mandates          map[string]AuthorityMandate         `json:"mandates"`
-	ConsumedMandates  map[string]authoritySignedResult    `json:"consumed_mandates"`
-	AcceptedRecordIDs map[string]string                   `json:"accepted_authority_record_ids"`
-	TransitionHeads   map[string]string                   `json:"verified_transition_high_water"`
-	LedgerRecordID    string                              `json:"ledger_record_id,omitempty"`
-	LedgerIssuedAt    string                              `json:"ledger_issued_at,omitempty"`
-	LedgerExpiresAt   string                              `json:"ledger_expires_at,omitempty"`
-	RevokedRecordIDs  []string                            `json:"revoked_record_ids,omitempty"`
-	RevokedKeyIDs     []string                            `json:"revoked_key_ids,omitempty"`
-	DirectiveGrants   map[string]DirectiveRenewalGrant    `json:"directive_renewal_grants,omitempty"`
-	LedgerGrants      map[string]LedgerRenewalGrant       `json:"ledger_renewal_grants,omitempty"`
-	ActiveLedgerGrant string                              `json:"active_ledger_renewal_grant,omitempty"`
-	TimeProbeRecords  map[string]authorityTimeProbeRecord `json:"authority_time_probe_records,omitempty"`
-	RenewalAlerts     map[string]AuthorityRenewalAlert    `json:"renewal_alerts,omitempty"`
+	Version             int                                             `json:"schema_version"`
+	Generation          uint64                                          `json:"generation"`
+	AnchorKeyID         string                                          `json:"anchor_key_id"`
+	AnchorPublicKey     string                                          `json:"anchor_public_key"`
+	LedgerGeneration    uint64                                          `json:"ledger_generation"`
+	Plans               map[string]authorityPlan                        `json:"pending_plans"`
+	Mandates            map[string]AuthorityMandate                     `json:"mandates"`
+	ConsumedMandates    map[string]authoritySignedResult                `json:"consumed_mandates"`
+	AcceptedRecordIDs   map[string]string                               `json:"accepted_authority_record_ids"`
+	TransitionHeads     map[string]string                               `json:"verified_transition_high_water"`
+	LedgerRecordID      string                                          `json:"ledger_record_id,omitempty"`
+	LedgerIssuedAt      string                                          `json:"ledger_issued_at,omitempty"`
+	LedgerExpiresAt     string                                          `json:"ledger_expires_at,omitempty"`
+	RevokedRecordIDs    []string                                        `json:"revoked_record_ids,omitempty"`
+	RevokedKeyIDs       []string                                        `json:"revoked_key_ids,omitempty"`
+	DirectiveGrants     map[string]DirectiveRenewalGrant                `json:"directive_renewal_grants,omitempty"`
+	LedgerGrants        map[string]LedgerRenewalGrant                   `json:"ledger_renewal_grants,omitempty"`
+	ActiveLedgerGrant   string                                          `json:"active_ledger_renewal_grant,omitempty"`
+	TimeProbeRecords    map[string]authorityTimeProbeRecord             `json:"authority_time_probe_records,omitempty"`
+	RenewalAlerts       map[string]AuthorityRenewalAlert                `json:"renewal_alerts,omitempty"`
+	PKIIssuanceMandates map[string]laneinstall.PKIIssuanceMandate       `json:"pki_issuance_mandates"`
+	PKIIssuances        map[string]laneinstall.PKIIssuanceJournalRecord `json:"pki_issuances"`
+	PKIBootstrapHealth  map[string]bool                                 `json:"pki_bootstrap_health_gates"`
 }
 
 // AuthorityJournal is a root-owned, full-sync SQLite state and append-only
@@ -290,7 +295,8 @@ func newAuthorityRootState(bootstrap AuthorityStateBootstrap) authorityRootState
 		AnchorPublicKey: base64.StdEncoding.EncodeToString(bootstrap.PublicKey), LedgerGeneration: bootstrap.LedgerGeneration,
 		Plans: map[string]authorityPlan{}, Mandates: map[string]AuthorityMandate{},
 		ConsumedMandates: map[string]authoritySignedResult{}, AcceptedRecordIDs: map[string]string{},
-		TransitionHeads: map[string]string{}}
+		TransitionHeads: map[string]string{}, PKIIssuanceMandates: map[string]laneinstall.PKIIssuanceMandate{},
+		PKIIssuances: map[string]laneinstall.PKIIssuanceJournalRecord{}, PKIBootstrapHealth: map[string]bool{}}
 	if isLowerHexDigest(bootstrap.LedgerRecordID) && !bootstrap.LedgerIssuedAt.IsZero() && !bootstrap.LedgerExpiresAt.IsZero() {
 		state.LedgerRecordID = bootstrap.LedgerRecordID
 		state.LedgerIssuedAt = bootstrap.LedgerIssuedAt.UTC().Format(time.RFC3339Nano)
@@ -394,7 +400,8 @@ func readAuthorityCommit(ctx context.Context, conn *sql.Conn) (authorityRootStat
 
 func validateAuthorityRootState(state authorityRootState) error {
 	if state.Version != 1 || !validKeyID(state.AnchorKeyID) || state.Plans == nil || state.Mandates == nil ||
-		state.ConsumedMandates == nil || state.AcceptedRecordIDs == nil || state.TransitionHeads == nil {
+		state.ConsumedMandates == nil || state.AcceptedRecordIDs == nil || state.TransitionHeads == nil ||
+		state.PKIIssuanceMandates == nil || state.PKIIssuances == nil || state.PKIBootstrapHealth == nil {
 		return ErrAuthorityStateRollback
 	}
 	publicKey, err := base64.StdEncoding.DecodeString(state.AnchorPublicKey)
@@ -470,6 +477,29 @@ func validateAuthorityRootState(state authorityRootState) error {
 	}
 	for context, head := range state.TransitionHeads {
 		if !isLowerHexDigest(context) || !isLowerHexDigest(head) || state.AcceptedRecordIDs[head] != context {
+			return ErrAuthorityStateRollback
+		}
+	}
+	for id, mandate := range state.PKIIssuanceMandates {
+		if id != mandate.ID || laneinstall.ValidatePKIIssuanceMandateShape(mandate) != nil {
+			return ErrAuthorityStateRollback
+		}
+	}
+	bootstrapHosts := make(map[string]struct{})
+	for id, issuance := range state.PKIIssuances {
+		mandate, ok := state.PKIIssuanceMandates[id]
+		if !ok || laneinstall.ValidatePKIIssuanceJournalRecord(issuance) != nil || !samePKIIssuanceMandate(mandate, issuance.Mandate) {
+			return ErrAuthorityStateRollback
+		}
+		if mandate.Context.Mode == "bootstrap" {
+			if _, duplicate := bootstrapHosts[mandate.HostID]; duplicate {
+				return ErrAuthorityStateRollback
+			}
+			bootstrapHosts[mandate.HostID] = struct{}{}
+		}
+	}
+	for hostID, healthy := range state.PKIBootstrapHealth {
+		if _, err := laneinstall.BuildPKIHostPlan(hostID); err != nil || hostID == "mac-control-plane" || !healthy {
 			return ErrAuthorityStateRollback
 		}
 	}
@@ -590,7 +620,34 @@ func authorityStateMapsPreserved(before, after authorityRootState) bool {
 			return false
 		}
 	}
+	for id, mandate := range before.PKIIssuanceMandates {
+		if !samePKIIssuanceMandate(after.PKIIssuanceMandates[id], mandate) {
+			return false
+		}
+	}
+	for id, record := range before.PKIIssuances {
+		if !samePKIIssuanceRecord(after.PKIIssuances[id], record) {
+			return false
+		}
+	}
+	for hostID, healthy := range before.PKIBootstrapHealth {
+		if healthy && !after.PKIBootstrapHealth[hostID] {
+			return false
+		}
+	}
 	return true
+}
+
+func samePKIIssuanceMandate(left, right laneinstall.PKIIssuanceMandate) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
+}
+
+func samePKIIssuanceRecord(left, right laneinstall.PKIIssuanceJournalRecord) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func cloneAuthorityRootState(state authorityRootState) (authorityRootState, error) {
@@ -665,6 +722,109 @@ func (j *AuthorityJournal) stagePlan(plan authorityPlan) error {
 		return nil
 	})
 	return err
+}
+
+var _ laneinstall.PKIIssuanceJournal = (*AuthorityJournal)(nil)
+var _ laneinstall.PKIIssuanceMandateRegistrar = (*AuthorityJournal)(nil)
+var _ laneinstall.PKIBootstrapHealthRecorder = (*AuthorityJournal)(nil)
+
+// RegisterMandate persists an approved PKI mandate before the fixed issuer can
+// resolve it. The production caller is the separately authorized approval
+// path; the issuer cannot invent a mandate from a request.
+func (j *AuthorityJournal) RegisterMandate(mandate laneinstall.PKIIssuanceMandate) error {
+	if laneinstall.ValidatePKIIssuanceMandateShape(mandate) != nil {
+		return ErrAuthorityMandate
+	}
+	_, err := j.mutate(func(next *authorityRootState) error {
+		if _, exists := next.PKIIssuanceMandates[mandate.ID]; exists {
+			return ErrAuthorityReplay
+		}
+		if mandate.Context.Mode == "bootstrap" {
+			if next.PKIBootstrapHealth[mandate.HostID] {
+				return ErrAuthorityMandate
+			}
+			for _, prior := range next.PKIIssuances {
+				if prior.Mandate.Context.Mode == "bootstrap" && prior.Mandate.HostID == mandate.HostID {
+					return ErrAuthorityReplay
+				}
+			}
+		}
+		next.PKIIssuanceMandates[mandate.ID] = mandate
+		return nil
+	})
+	return err
+}
+
+func (j *AuthorityJournal) LookupPKIIssuanceMandate(mandateID string) (laneinstall.PKIIssuanceMandate, error) {
+	state, err := j.snapshot()
+	if err != nil {
+		return laneinstall.PKIIssuanceMandate{}, err
+	}
+	mandate, ok := state.PKIIssuanceMandates[mandateID]
+	if !ok {
+		return laneinstall.PKIIssuanceMandate{}, ErrAuthorityMandate
+	}
+	mandate.Signature = append([]byte(nil), mandate.Signature...)
+	return mandate, nil
+}
+
+// CommitIssuance stores the non-secret package and signed receipt atomically
+// with the one-use request identity. A concurrent/replayed mandate cannot
+// replace the original receipt or mint a second certificate.
+func (j *AuthorityJournal) CommitIssuance(record laneinstall.PKIIssuanceJournalRecord) error {
+	if laneinstall.ValidatePKIIssuanceJournalRecord(record) != nil {
+		return ErrAuthorityMandate
+	}
+	_, err := j.mutate(func(next *authorityRootState) error {
+		mandate, ok := next.PKIIssuanceMandates[record.Mandate.ID]
+		if !ok || !samePKIIssuanceMandate(mandate, record.Mandate) {
+			return ErrAuthorityMandate
+		}
+		if _, exists := next.PKIIssuances[record.Mandate.ID]; exists {
+			return ErrAuthorityReplay
+		}
+		if record.Mandate.Context.Mode == "bootstrap" {
+			if next.PKIBootstrapHealth[record.Mandate.HostID] {
+				return ErrAuthorityMandate
+			}
+			for _, prior := range next.PKIIssuances {
+				if prior.Mandate.Context.Mode == "bootstrap" && prior.Mandate.HostID == record.Mandate.HostID {
+					return ErrAuthorityReplay
+				}
+			}
+		}
+		next.PKIIssuances[record.Mandate.ID] = record
+		return nil
+	})
+	return err
+}
+
+func (j *AuthorityJournal) RecordFirstHealthGate(hostID string) error {
+	if _, err := laneinstall.BuildPKIHostPlan(hostID); err != nil || hostID == "mac-control-plane" {
+		return ErrAuthorityMandate
+	}
+	_, err := j.mutate(func(next *authorityRootState) error {
+		next.PKIBootstrapHealth[hostID] = true
+		return nil
+	})
+	return err
+}
+
+func (j *AuthorityJournal) BootstrapState(hostID string) (issued, healthy bool, err error) {
+	if _, buildErr := laneinstall.BuildPKIHostPlan(hostID); buildErr != nil || hostID == "mac-control-plane" {
+		return false, false, ErrAuthorityMandate
+	}
+	state, err := j.snapshot()
+	if err != nil {
+		return false, false, err
+	}
+	for _, record := range state.PKIIssuances {
+		if record.Mandate.Context.Mode == "bootstrap" && record.Mandate.HostID == hostID {
+			issued = true
+			break
+		}
+	}
+	return issued, state.PKIBootstrapHealth[hostID], nil
 }
 
 func (j *AuthorityJournal) issueMandate(mandate AuthorityMandate) error {

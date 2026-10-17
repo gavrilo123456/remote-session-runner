@@ -1132,7 +1132,16 @@
       "required_tiers": [
         "H",
         "F"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL312NormalIssuanceBindsEveryHostTupleAndRetainsLocalKeys"},
+          {"package": "./src/internal/release", "name": "TestLanesL312ExactReceiptSurvivesRestartAndMandateCannotReplay"},
+          {"package": "./src/internal/release", "name": "TestLanesL312RejectsUnregisteredMismatchedAndUnsafeIssuanceEvidence"},
+          {"package": "./src/internal/release", "name": "TestLanesL312BootstrapIsExactOneUseAndPublicOnly"},
+          {"package": "./src/internal/release", "name": "TestLanesL312FirstHealthGatePermanentlyClosesBootstrapAcrossRestart"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-13",

@@ -470,28 +470,216 @@ func validatePKICSR(csr *x509.CertificateRequest, plan PKIHostPlan) error {
 }
 
 type PKIIssuanceJournal interface {
-	Consume(mandateID, requestID string) error
+	LookupPKIIssuanceMandate(mandateID string) (PKIIssuanceMandate, error)
+	CommitIssuance(PKIIssuanceJournalRecord) error
+	BootstrapState(hostID string) (issued, healthy bool, err error)
+}
+
+// PKIIssuanceMandateRegistrar is held by the separately authorized approval
+// boundary. The PKI issuer receives only PKIIssuanceJournal and cannot create
+// mandates.
+type PKIIssuanceMandateRegistrar interface {
+	RegisterMandate(PKIIssuanceMandate) error
+}
+
+// PKIBootstrapHealthRecorder is held by the authenticated host-anchor path,
+// not by the CA issuer or the installer.
+type PKIBootstrapHealthRecorder interface {
+	RecordFirstHealthGate(hostID string) error
+}
+
+// PKIIssuanceJournalRecord stores only public request, certificate/trust, and
+// receipt material. It deliberately has no field for a host private key.
+type PKIIssuanceJournalRecord struct {
+	Mandate PKIIssuanceMandate    `json:"mandate"`
+	Request PKICertificateRequest `json:"request"`
+	Package PKICertificatePackage `json:"certificate_trust_package"`
+	Receipt PKIIssuerReceipt      `json:"issuer_receipt"`
 }
 
 type MemoryPKIIssuanceJournal struct {
-	mu       sync.Mutex
-	consumed map[string]string
+	mu              sync.Mutex
+	mandates        map[string]PKIIssuanceMandate
+	issuances       map[string]PKIIssuanceJournalRecord
+	bootstrapHealth map[string]bool
 }
 
 func NewMemoryPKIIssuanceJournal() *MemoryPKIIssuanceJournal {
-	return &MemoryPKIIssuanceJournal{consumed: make(map[string]string)}
+	return &MemoryPKIIssuanceJournal{
+		mandates: make(map[string]PKIIssuanceMandate), issuances: make(map[string]PKIIssuanceJournalRecord),
+		bootstrapHealth: make(map[string]bool),
+	}
 }
 
-func (j *MemoryPKIIssuanceJournal) Consume(mandateID, requestID string) error {
-	if j == nil || mandateID == "" || requestID == "" {
+func (j *MemoryPKIIssuanceJournal) RegisterMandate(mandate PKIIssuanceMandate) error {
+	if j == nil || ValidatePKIIssuanceMandateShape(mandate) != nil {
 		return ErrInvalidLanePKI
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if _, exists := j.consumed[mandateID]; exists {
+	if _, exists := j.mandates[mandate.ID]; exists {
 		return ErrInvalidLanePKI
 	}
-	j.consumed[mandateID] = requestID
+	if mandate.Context.Mode == "bootstrap" {
+		if j.bootstrapHealth[mandate.HostID] {
+			return ErrInvalidLanePKI
+		}
+		for _, issued := range j.issuances {
+			if issued.Mandate.Context.Mode == "bootstrap" && issued.Mandate.HostID == mandate.HostID {
+				return ErrInvalidLanePKI
+			}
+		}
+	}
+	j.mandates[mandate.ID] = clonePKIMandate(mandate)
+	return nil
+}
+
+func (j *MemoryPKIIssuanceJournal) LookupPKIIssuanceMandate(mandateID string) (PKIIssuanceMandate, error) {
+	if j == nil || mandateID == "" {
+		return PKIIssuanceMandate{}, ErrInvalidLanePKI
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	mandate, ok := j.mandates[mandateID]
+	if !ok {
+		return PKIIssuanceMandate{}, ErrInvalidLanePKI
+	}
+	return clonePKIMandate(mandate), nil
+}
+
+func (j *MemoryPKIIssuanceJournal) CommitIssuance(record PKIIssuanceJournalRecord) error {
+	if j == nil || record.Mandate.ID == "" || record.Request.ID == "" || record.Request.IssuanceMandateID != record.Mandate.ID ||
+		record.Package.RequestID != record.Request.ID || record.Receipt.MandateID != record.Mandate.ID || record.Receipt.RequestID != record.Request.ID {
+		return ErrInvalidLanePKI
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	mandate, ok := j.mandates[record.Mandate.ID]
+	if !ok || !samePKIMandate(mandate, record.Mandate) {
+		return ErrInvalidLanePKI
+	}
+	if _, exists := j.issuances[record.Mandate.ID]; exists {
+		return ErrInvalidLanePKI
+	}
+	if record.Mandate.Context.Mode == "bootstrap" {
+		if j.bootstrapHealth[record.Mandate.HostID] {
+			return ErrInvalidLanePKI
+		}
+		for _, issued := range j.issuances {
+			if issued.Mandate.Context.Mode == "bootstrap" && issued.Mandate.HostID == record.Mandate.HostID {
+				return ErrInvalidLanePKI
+			}
+		}
+	}
+	j.issuances[record.Mandate.ID] = clonePKIIssuanceRecord(record)
+	return nil
+}
+
+func (j *MemoryPKIIssuanceJournal) RecordFirstHealthGate(hostID string) error {
+	if _, err := BuildPKIHostPlan(hostID); err != nil || hostID == "mac-control-plane" || j == nil {
+		return ErrInvalidLanePKI
+	}
+	j.mu.Lock()
+	j.bootstrapHealth[hostID] = true
+	j.mu.Unlock()
+	return nil
+}
+
+func (j *MemoryPKIIssuanceJournal) BootstrapState(hostID string) (issued, healthy bool, err error) {
+	if _, buildErr := BuildPKIHostPlan(hostID); buildErr != nil || hostID == "mac-control-plane" || j == nil {
+		return false, false, ErrInvalidLanePKI
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, record := range j.issuances {
+		if record.Mandate.Context.Mode == "bootstrap" && record.Mandate.HostID == hostID {
+			issued = true
+			break
+		}
+	}
+	return issued, j.bootstrapHealth[hostID], nil
+}
+
+func clonePKIMandate(mandate PKIIssuanceMandate) PKIIssuanceMandate {
+	mandate.Signature = append([]byte(nil), mandate.Signature...)
+	return mandate
+}
+
+func samePKIMandate(left, right PKIIssuanceMandate) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
+}
+
+func clonePKIIssuanceRecord(record PKIIssuanceJournalRecord) PKIIssuanceJournalRecord {
+	copy := record
+	copy.Mandate = clonePKIMandate(record.Mandate)
+	copy.Request.CSRDER = append([]byte(nil), record.Request.CSRDER...)
+	copy.Request.Signature = append([]byte(nil), record.Request.Signature...)
+	copy.Package.CertificateDER = append([]byte(nil), record.Package.CertificateDER...)
+	copy.Package.TrustRootsDER = make([][]byte, len(record.Package.TrustRootsDER))
+	for index := range record.Package.TrustRootsDER {
+		copy.Package.TrustRootsDER[index] = append([]byte(nil), record.Package.TrustRootsDER[index]...)
+	}
+	copy.Receipt.Signature = append([]byte(nil), record.Receipt.Signature...)
+	return copy
+}
+
+// ValidatePKIIssuanceMandateShape verifies the closed mandate identity and
+// tuple binding. Signature trust is checked by the issuer against its pinned
+// approval key set.
+func ValidatePKIIssuanceMandateShape(mandate PKIIssuanceMandate) error {
+	plan, err := BuildPKIHostPlan(mandate.HostID)
+	if err != nil || mandate.ID == "" || mandate.ApprovalKeyID == "" || mandate.Role != plan.Role ||
+		mandate.URISAN != plan.URISAN || mandate.IP != plan.IP || mandate.CAProfile != plan.CAProfile || !mandate.Context.valid() ||
+		len(mandate.Signature) != ed25519.SignatureSize || !mandate.ExpiresAt.After(mandate.NotBefore) ||
+		mandate.ExpiresAt.Sub(mandate.NotBefore) > maxPKIMandateValidity {
+		return ErrInvalidLanePKI
+	}
+	data, err := json.Marshal(mandate.payload())
+	if err != nil {
+		return ErrInvalidLanePKI
+	}
+	digest := sha256.Sum256(data)
+	if mandate.ID != hex.EncodeToString(digest[:]) {
+		return ErrInvalidLanePKI
+	}
+	return nil
+}
+
+// ValidatePKIIssuanceJournalRecord checks the durable record's closed links.
+// The issuer verifies all signatures and certificate chains before commit.
+func ValidatePKIIssuanceJournalRecord(record PKIIssuanceJournalRecord) error {
+	if ValidatePKIIssuanceMandateShape(record.Mandate) != nil || record.Request.IssuanceMandateID != record.Mandate.ID ||
+		record.Request.HostID != record.Mandate.HostID || record.Request.Role != record.Mandate.Role ||
+		record.Request.Context != record.Mandate.Context || record.Request.URISAN != record.Mandate.URISAN ||
+		record.Request.IP != record.Mandate.IP || record.Request.CAProfile != record.Mandate.CAProfile ||
+		record.Request.CertificateNotAfter != record.Mandate.CertificateNotAfter || len(record.Request.Signature) != ed25519.SignatureSize ||
+		record.Package.HostID != record.Request.HostID || record.Package.Role != record.Request.Role ||
+		record.Package.RequestID != record.Request.ID || len(record.Package.CertificateDER) == 0 || len(record.Package.TrustRootsDER) == 0 ||
+		len(record.Receipt.Signature) != ed25519.SignatureSize || record.Receipt.MandateID != record.Mandate.ID ||
+		record.Receipt.RequestID != record.Request.ID || record.Receipt.HostID != record.Request.HostID ||
+		record.Receipt.Role != record.Request.Role || record.Receipt.PackageDigest != mustPackageDigest(record.Package) {
+		return ErrInvalidLanePKI
+	}
+	requestBytes, err := json.Marshal(record.Request.payload())
+	if err != nil {
+		return ErrInvalidLanePKI
+	}
+	requestDigest := sha256.Sum256(requestBytes)
+	if record.Request.ID != hex.EncodeToString(requestDigest[:]) || !isSHA256Hex(record.Request.PublicKeyFingerprint) ||
+		fingerprintBytes(record.Package.CertificateDER) != record.Package.CertificateSHA256 || !isSHA256Hex(record.Package.SPKISHA256) ||
+		record.Receipt.IssuerKeyID == "" || !isSHA256Hex(record.Receipt.IssuerFingerprint) || record.Receipt.IssuedAt.IsZero() {
+		return ErrInvalidLanePKI
+	}
+	receiptBytes, err := json.Marshal(record.Receipt.payload())
+	if err != nil {
+		return ErrInvalidLanePKI
+	}
+	receiptDigest := sha256.Sum256(receiptBytes)
+	if record.Receipt.ID != hex.EncodeToString(receiptDigest[:]) {
+		return ErrInvalidLanePKI
+	}
 	return nil
 }
 
@@ -534,17 +722,15 @@ func (r PKIIssuerReceipt) payload() receiptPayload {
 }
 
 type PKIIssuer struct {
-	mu               sync.Mutex
-	caCertificate    *x509.Certificate
-	caSigner         crypto.Signer
-	issuerKeyID      string
-	receiptKey       ed25519.PrivateKey
-	approvalKeys     map[string]ed25519.PublicKey
-	hostKeys         map[string]ed25519.PublicKey
-	journal          PKIIssuanceJournal
-	now              func() time.Time
-	bootstrapHealthy map[string]bool
-	bootstrapIssued  map[string]bool
+	mu            sync.Mutex
+	caCertificate *x509.Certificate
+	caSigner      crypto.Signer
+	issuerKeyID   string
+	receiptKey    ed25519.PrivateKey
+	approvalKeys  map[string]ed25519.PublicKey
+	hostKeys      map[string]ed25519.PublicKey
+	journal       PKIIssuanceJournal
+	now           func() time.Time
 }
 
 func NewPKIIssuer(caCertificate *x509.Certificate, caSigner crypto.Signer, issuerKeyID string, receiptKey ed25519.PrivateKey, approvalKeys, hostKeys map[string]ed25519.PublicKey, journal PKIIssuanceJournal, now func() time.Time) (*PKIIssuer, error) {
@@ -564,25 +750,17 @@ func NewPKIIssuer(caCertificate *x509.Certificate, caSigner crypto.Signer, issue
 		caCertificate: caCertificate, caSigner: caSigner, issuerKeyID: issuerKeyID,
 		receiptKey:   append(ed25519.PrivateKey(nil), receiptKey...),
 		approvalKeys: cloneEd25519Keys(approvalKeys), hostKeys: cloneEd25519Keys(hostKeys),
-		journal: journal, now: now, bootstrapHealthy: make(map[string]bool), bootstrapIssued: make(map[string]bool),
+		journal: journal, now: now,
 	}, nil
 }
 
-// RecordFirstHealthGate permanently closes the bootstrap issuance exception
-// for this host. A durable host-anchor implementation is supplied with L3.
-func (i *PKIIssuer) RecordFirstHealthGate(hostID string) error {
-	if _, err := BuildPKIHostPlan(hostID); err != nil || hostID == "mac-control-plane" || i == nil {
-		return ErrInvalidLanePKI
+func (i *PKIIssuer) Issue(request PKICertificateRequest) (PKICertificatePackage, PKIIssuerReceipt, error) {
+	if i == nil || request.ID == "" || request.IssuanceMandateID == "" {
+		return PKICertificatePackage{}, PKIIssuerReceipt{}, ErrInvalidLanePKI
 	}
-	i.mu.Lock()
-	i.bootstrapHealthy[hostID] = true
-	i.mu.Unlock()
-	return nil
-}
-
-func (i *PKIIssuer) Issue(mandate PKIIssuanceMandate, request PKICertificateRequest) (PKICertificatePackage, PKIIssuerReceipt, error) {
-	if i == nil || mandate.ID == "" || request.ID == "" || request.IssuanceMandateID != mandate.ID ||
-		request.HostID != mandate.HostID || request.Role != mandate.Role || request.Context != mandate.Context ||
+	mandate, err := i.journal.LookupPKIIssuanceMandate(request.IssuanceMandateID)
+	if err != nil || request.IssuanceMandateID != mandate.ID || request.HostID != mandate.HostID ||
+		request.Role != mandate.Role || request.Context != mandate.Context ||
 		request.URISAN != mandate.URISAN || request.IP != mandate.IP || request.CAProfile != mandate.CAProfile ||
 		request.CertificateNotAfter != mandate.CertificateNotAfter || !request.Context.valid() {
 		return PKICertificatePackage{}, PKIIssuerReceipt{}, ErrInvalidLanePKI
@@ -627,14 +805,11 @@ func (i *PKIIssuer) Issue(mandate PKIIssuanceMandate, request PKICertificateRequ
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if mandate.Context.Mode == "bootstrap" && (i.bootstrapHealthy[mandate.HostID] || i.bootstrapIssued[mandate.HostID]) {
-		return PKICertificatePackage{}, PKIIssuerReceipt{}, ErrInvalidLanePKI
-	}
-	if err := i.journal.Consume(mandate.ID, request.ID); err != nil {
-		return PKICertificatePackage{}, PKIIssuerReceipt{}, ErrInvalidLanePKI
-	}
 	if mandate.Context.Mode == "bootstrap" {
-		i.bootstrapIssued[mandate.HostID] = true
+		issued, healthy, stateErr := i.journal.BootstrapState(mandate.HostID)
+		if stateErr != nil || issued || healthy {
+			return PKICertificatePackage{}, PKIIssuerReceipt{}, ErrInvalidLanePKI
+		}
 	}
 	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serial, err := rand.Int(rand.Reader, serialLimit)
@@ -699,6 +874,9 @@ func (i *PKIIssuer) Issue(mandate PKIIssuanceMandate, request PKICertificateRequ
 	receiptHash := sha256.Sum256(receiptBytes)
 	receipt.ID = hex.EncodeToString(receiptHash[:])
 	receipt.Signature = ed25519.Sign(i.receiptKey, signatureMessage(pkiReceiptSignatureDomain, receiptBytes))
+	if err := i.journal.CommitIssuance(PKIIssuanceJournalRecord{Mandate: mandate, Request: request, Package: pkg, Receipt: receipt}); err != nil {
+		return PKICertificatePackage{}, PKIIssuerReceipt{}, ErrInvalidLanePKI
+	}
 	return pkg, receipt, nil
 }
 

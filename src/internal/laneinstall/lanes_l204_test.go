@@ -34,6 +34,7 @@ type lanesL204Harness struct {
 	hostPrivate  map[string]ed25519.PrivateKey
 	issuer       *PKIIssuer
 	journal      *MemoryPKIIssuanceJournal
+	mandateSeq   int
 }
 
 type lanesL204Issued struct {
@@ -159,20 +160,25 @@ func (h *lanesL204Harness) issue(t *testing.T, hostID string, context PKIIssuanc
 	if err != nil {
 		t.Fatalf("create local fixture key and CSR for %s: %v", hostID, err)
 	}
+	h.mandateSeq++
+	mandateOffset := time.Duration(h.mandateSeq) * time.Second
 	mandate := PKIIssuanceMandate{
 		HostID: hostID, Role: plan.Role, Context: context, URISAN: plan.URISAN, IP: plan.IP,
-		CAProfile: plan.CAProfile, NotBefore: h.now.Add(-time.Minute), ExpiresAt: h.now.Add(time.Hour),
-		CertificateNotAfter: h.now.Add(24 * time.Hour),
+		CAProfile: plan.CAProfile, NotBefore: h.now.Add(-time.Minute).Add(mandateOffset), ExpiresAt: h.now.Add(time.Hour).Add(mandateOffset),
+		CertificateNotAfter: h.now.Add(24 * time.Hour).Add(mandateOffset),
 	}
 	mandate, err = SignPKIIssuanceMandate(mandate, "approval-fixture-1", h.approvalPriv)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := h.journal.RegisterMandate(mandate); err != nil {
+		t.Fatalf("register approved fixture mandate: %v", err)
+	}
 	request, err := NewPKICertificateRequest(plan, mandate, csrDER, key, h.hostPrivate[hostID])
 	if err != nil {
 		t.Fatalf("create host-signed public CSR request for %s: %v", hostID, err)
 	}
-	pkg, receipt, err := h.issuer.Issue(mandate, request)
+	pkg, receipt, err := h.issuer.Issue(request)
 	if err != nil {
 		t.Fatalf("issue fixture certificate for %s: %v", hostID, err)
 	}
@@ -181,14 +187,25 @@ func (h *lanesL204Harness) issue(t *testing.T, hostID string, context PKIIssuanc
 
 func (h *lanesL204Harness) newMandate(t *testing.T, hostID string, context PKIIssuanceContext) PKIIssuanceMandate {
 	t.Helper()
+	mandate := h.signMandate(t, hostID, context)
+	if err := h.journal.RegisterMandate(mandate); err != nil {
+		t.Fatalf("register approved fixture mandate: %v", err)
+	}
+	return mandate
+}
+
+func (h *lanesL204Harness) signMandate(t *testing.T, hostID string, context PKIIssuanceContext) PKIIssuanceMandate {
+	t.Helper()
 	plan, err := BuildPKIHostPlan(hostID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.mandateSeq++
+	mandateOffset := time.Duration(h.mandateSeq) * time.Second
 	mandate, err := SignPKIIssuanceMandate(PKIIssuanceMandate{
 		HostID: hostID, Role: plan.Role, Context: context, URISAN: plan.URISAN, IP: plan.IP,
-		CAProfile: plan.CAProfile, NotBefore: h.now.Add(-time.Minute), ExpiresAt: h.now.Add(time.Hour),
-		CertificateNotAfter: h.now.Add(24 * time.Hour),
+		CAProfile: plan.CAProfile, NotBefore: h.now.Add(-time.Minute).Add(mandateOffset), ExpiresAt: h.now.Add(time.Hour).Add(mandateOffset),
+		CertificateNotAfter: h.now.Add(24 * time.Hour).Add(mandateOffset),
 	}, "approval-fixture-1", h.approvalPriv)
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +287,7 @@ func TestLanesL204FixedInstallerUsesOpaqueMandateAndFixedOutbox(t *testing.T) {
 		outbox.requests[0].IP != "129.151.232.40" {
 		t.Fatalf("fixed installer emitted an unexpected public request: %+v", outbox.requests)
 	}
-	if _, _, err := h.issuer.Issue(mandate, outbox.requests[0]); err != nil {
+	if _, _, err := h.issuer.Issue(outbox.requests[0]); err != nil {
 		t.Fatalf("issuer rejected fixed installer request: %v", err)
 	}
 	if err := installer.RequestCertificate(mandate.ID); err == nil || len(outbox.requests) != 1 {
@@ -307,12 +324,12 @@ func TestLanesL204RejectsWrongHostSANCSRAndMandate(t *testing.T) {
 
 	wrongHost := valid.request
 	wrongHost.HostID = "sandbox-host"
-	if _, _, err := h.issuer.Issue(valid.mandate, wrongHost); err == nil {
+	if _, _, err := h.issuer.Issue(wrongHost); err == nil {
 		t.Fatal("request for another host was accepted")
 	}
 	wrongRole := valid.request
 	wrongRole.Role = PKIReleaseAuthorityClient
-	if _, _, err := h.issuer.Issue(valid.mandate, wrongRole); err == nil {
+	if _, _, err := h.issuer.Issue(wrongRole); err == nil {
 		t.Fatal("request with the Mac client role on a Linux host was accepted")
 	}
 
@@ -345,7 +362,7 @@ func TestLanesL204RejectsWrongHostSANCSRAndMandate(t *testing.T) {
 	wrongSignature := valid.request
 	wrongSignature.Signature = append([]byte(nil), wrongSignature.Signature...)
 	wrongSignature.Signature[0] ^= 0xff
-	if _, _, err := h.issuer.Issue(valid.mandate, wrongSignature); err == nil {
+	if _, _, err := h.issuer.Issue(wrongSignature); err == nil {
 		t.Fatal("request with invalid host attestation signature was accepted")
 	}
 
@@ -355,6 +372,9 @@ func TestLanesL204RejectsWrongHostSANCSRAndMandate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := h.journal.RegisterMandate(future); err != nil {
+		t.Fatalf("register future-dated fixture mandate: %v", err)
+	}
 	futureRequest := valid.request
 	futureRequest.IssuanceMandateID = future.ID
 	futureRequest.Context = future.Context
@@ -362,11 +382,11 @@ func TestLanesL204RejectsWrongHostSANCSRAndMandate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := h.issuer.Issue(future, futureRequest); err == nil {
+	if _, _, err := h.issuer.Issue(futureRequest); err == nil {
 		t.Fatal("request under a future-dated unrelated mandate was accepted")
 	}
 
-	if _, _, err := h.issuer.Issue(valid.mandate, valid.request); err == nil {
+	if _, _, err := h.issuer.Issue(valid.request); err == nil {
 		t.Fatal("replayed one-use issuance mandate was accepted")
 	}
 }
@@ -394,12 +414,15 @@ func TestLanesL204BootstrapHandoffIsOneUseAndDisabledAfterHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondMandate := h.newMandate(t, "linux-host", lanesL204BootstrapContext())
+	secondMandate := h.signMandate(t, "linux-host", lanesL204BootstrapContext())
+	if err := h.journal.RegisterMandate(secondMandate); err == nil {
+		t.Fatal("issuer registered a second bootstrap mandate for a host with an issued certificate")
+	}
 	secondRequest, err := NewPKICertificateRequest(first.plan, secondMandate, secondCSR, secondKey, h.hostPrivate["linux-host"])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := h.issuer.Issue(secondMandate, secondRequest); err == nil {
+	if _, _, err := h.issuer.Issue(secondRequest); err == nil {
 		t.Fatal("issuer allowed a second bootstrap certificate for the same host")
 	}
 	if err := gate.MarkHealthy("sandbox-host"); err != nil {
@@ -410,32 +433,12 @@ func TestLanesL204BootstrapHandoffIsOneUseAndDisabledAfterHealth(t *testing.T) {
 		t.Fatal("root-console bootstrap handoff remained enabled after first host health gate")
 	}
 	h3 := newLanesL204Harness(t)
-	if err := h3.issuer.RecordFirstHealthGate("factory-sandbox"); err != nil {
+	if err := h3.journal.RecordFirstHealthGate("factory-sandbox"); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := BuildPKIHostPlan("factory-sandbox")
-	if err != nil {
-		t.Fatal(err)
-	}
-	storeRoot := t.TempDir()
-	if err := os.Chmod(storeRoot, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewLocalPKIKeyStore(storeRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, csrDER, err := store.CreateCSR(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mandate := h3.newMandate(t, "factory-sandbox", lanesL204BootstrapContext())
-	request, err := NewPKICertificateRequest(plan, mandate, csrDER, key, h3.hostPrivate["factory-sandbox"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := h3.issuer.Issue(mandate, request); err == nil {
-		t.Fatal("issuer allowed bootstrap issuance after the first host health gate")
+	mandate := h3.signMandate(t, "factory-sandbox", lanesL204BootstrapContext())
+	if err := h3.journal.RegisterMandate(mandate); err == nil {
+		t.Fatal("issuer registered a bootstrap mandate after the first host health gate")
 	}
 	bad := lanesL204Handoff(first)
 	bad.Installer.BinaryDigest = strings.Repeat("f", 64)

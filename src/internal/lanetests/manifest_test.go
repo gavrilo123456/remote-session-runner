@@ -24,7 +24,7 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 	if len(manifest.Units) != 68 || len(manifest.DesignAcceptance) != 10 {
 		t.Fatalf("manifest units=%d design acceptance items=%d, want 68 and 10", len(manifest.Units), len(manifest.DesignAcceptance))
 	}
-	var l101, l102, l103, l104, l105, l106, l107, l108, l109, l110, l111, l112, l113, l201, l202, l203, l204, l205, l206, l209, l301, l302, l303, l305, l306, l307, l308, l309, l311 *UnitCoverage
+	var l101, l102, l103, l104, l105, l106, l107, l108, l109, l110, l111, l112, l113, l201, l202, l203, l204, l205, l206, l209, l301, l302, l303, l305, l306, l307, l308, l309, l311, l312 *UnitCoverage
 	for i := range manifest.Units {
 		switch manifest.Units[i].ID {
 		case "LANES-L1-01":
@@ -85,6 +85,8 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 			l309 = &manifest.Units[i]
 		case "LANES-L3-11":
 			l311 = &manifest.Units[i]
+		case "LANES-L3-12":
+			l312 = &manifest.Units[i]
 		}
 	}
 	if l101 == nil || len(l101.Assertions[HermeticTier]) != 5 {
@@ -184,6 +186,10 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 	if l311 == nil || len(l311.Assertions[HermeticTier]) != 5 || len(l311.Assertions[NativeTier]) != 1 ||
 		!contains(l311.RequiredTiers, HermeticTier) || !contains(l311.RequiredTiers, NativeTier) {
 		t.Fatalf("LANES-L3-11 coverage = %+v; want five H and one N assertion", l311)
+	}
+	if l312 == nil || len(l312.Assertions[HermeticTier]) != 5 ||
+		!contains(l312.RequiredTiers, HermeticTier) || !contains(l312.RequiredTiers, "F") {
+		t.Fatalf("LANES-L3-12 coverage = %+v; want five H assertions and required F", l312)
 	}
 }
 
