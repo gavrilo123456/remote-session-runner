@@ -230,7 +230,7 @@ func payloadSchemaName(recordType string) (string, bool) {
 		return recordType, true
 	case "promotion_authorization", "promotion_attestation", "lane_acceptance", "ingress_admission_directive",
 		"ingress_admission_attestation", "capacity_measurement_attestation", "capacity_policy",
-		"pki_certificate_request":
+		"pki_certificate_request", "host_attestation_key_set", "release_revocation_ledger", "authority_key_set":
 		return recordType, true
 	default:
 		return "", false
@@ -270,6 +270,7 @@ func compiledPayloadSchema(name string) (*jsonschema.Schema, error) {
 			"promotion_authorization", "promotion_attestation", "lane_acceptance",
 			"ingress_admission_directive", "ingress_admission_attestation",
 			"capacity_measurement_attestation", "capacity_policy", "pki_certificate_request",
+			"host_attestation_key_set", "release_revocation_ledger", "authority_key_set",
 		}
 		payloadSchemas = make(map[string]*jsonschema.Schema, len(recordTypes))
 		for _, recordType := range recordTypes {

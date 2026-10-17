@@ -974,7 +974,19 @@
       "id": "LANES-L3-04",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL304CompilesClosedTrustPayloadSchemas"},
+          {"package": "./src/internal/release", "name": "TestLanesL304AuthorityKeySetRequiresContiguousExactPredecessorAndProof"},
+          {"package": "./src/internal/release", "name": "TestLanesL304HostKeySetBindsBootstrapMappingAndHost"},
+          {"package": "./src/internal/release", "name": "TestLanesL304RevocationLedgerIsContiguousCumulativeAndFresh"},
+          {"package": "./src/internal/release", "name": "TestLanesL304TimeProbeOwnsNonceTimingAndConsumesOnce"},
+          {"package": "./src/internal/release", "name": "TestLanesL304TimeProbeRejectsMismatchBadSignatureDelayAndSkew"},
+          {"package": "./src/internal/release", "name": "TestLanesL304TimeProbeRejectsLocalClockRollback"},
+          {"package": "./src/internal/release", "name": "TestLanesL304AuthorizationAndDirectiveTimePolicyCapsLifetime"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-05",

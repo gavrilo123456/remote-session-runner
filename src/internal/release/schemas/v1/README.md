@@ -1,12 +1,16 @@
 # Release record payload schemas, version 1
 
-These closed JSON Schemas define the V1 release payloads for L3-02 and L3-03:
+These closed JSON Schemas define the V1 release payloads for L3-02 through
+L3-04:
 host build attestations, candidate and host-management manifests, promotion
 authorizations and attestations, lane acceptance, ingress directives and
 attestations, capacity measurements and policies, and PKI certificate
-requests. The Go release package embeds the schemas and applies fixed-contract
-checks that JSON Schema cannot express: exact host component subsets, ordered
-validity intervals, cross-record identity binding, complete host-specific
+requests, authority and host-attestation key sets, and cumulative revocation
+ledgers. The Go release package embeds the schemas and applies fixed-contract
+checks that JSON Schema cannot express: exact host component subsets, bounded
+validity intervals, contiguous predecessor and generation checks, overlap and
+successor proof-of-possession validation, monotonic cumulative revocations,
+fresh nonce-bound time probes, cross-record identity binding, complete host-specific
 ingress surfaces, deterministic capacity digest recomputation, measured policy
 validation, and host-bound CSR/SAN validation.
 

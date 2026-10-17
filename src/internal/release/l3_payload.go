@@ -118,7 +118,7 @@ func ValidatePromotionAuthorization(raw []byte) error {
 	}
 	if !validHostComponents(value.HostID, value.ComponentArtifacts) || value.InstallationGeneration == 0 || value.RequiredLedgerGeneration == 0 ||
 		(value.ReleaseLane == "dev" && value.PredecessorAcceptanceID != "") ||
-		(value.ReleaseLane != "dev" && value.PredecessorAcceptanceID == "") || !orderedInterval(value.NotBefore, value.NotAfter) {
+		(value.ReleaseLane != "dev" && value.PredecessorAcceptanceID == "") || !validMaximumReleaseInterval(value.NotBefore, value.NotAfter) {
 		return invalidL3Payload("promotion authorization identity, predecessor, or validity")
 	}
 	return nil
@@ -251,7 +251,7 @@ func ValidateIngressAdmissionDirective(raw []byte) error {
 		return err
 	}
 	var value ingressDirectivePayload
-	if decodeStrict(raw, &value) != nil || value.TransitionEpoch == 0 || value.RequiredLedgerGeneration == 0 || !orderedInterval(value.NotBefore, value.NotAfter) ||
+	if decodeStrict(raw, &value) != nil || value.TransitionEpoch == 0 || value.RequiredLedgerGeneration == 0 || !validMaximumReleaseInterval(value.NotBefore, value.NotAfter) ||
 		(value.Role == "active_runtime_closure" && value.AdmissionGeneration != 0) {
 		return invalidL3Payload("ingress directive phase or validity")
 	}

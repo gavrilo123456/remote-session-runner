@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/release/v1/l3_key_payloads.schema.json",
+  "$defs": {
+    "keyID": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "ed25519PublicKey": {"type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$"},
+    "ed25519Signature": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"},
+    "keySet": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key_set_generation", "predecessor_record_id", "previous_key_id", "previous_public_key", "successor_key_id", "successor_public_key", "previous_not_after", "successor_not_before", "successor_not_after", "successor_proof"],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "key_set_generation": {"type": "integer", "minimum": 1},
+        "predecessor_record_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "previous_key_id": {"$ref": "l3_key_payloads.schema.json#/$defs/keyID"},
+        "previous_public_key": {"$ref": "l3_key_payloads.schema.json#/$defs/ed25519PublicKey"},
+        "successor_key_id": {"$ref": "l3_key_payloads.schema.json#/$defs/keyID"},
+        "successor_public_key": {"$ref": "l3_key_payloads.schema.json#/$defs/ed25519PublicKey"},
+        "previous_not_after": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "successor_not_before": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "successor_not_after": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "successor_proof": {"$ref": "l3_key_payloads.schema.json#/$defs/ed25519Signature"}
+      }
+    },
+    "authorityKeySet": {
+      "allOf": [
+        {"$ref": "l3_key_payloads.schema.json#/$defs/keySet"},
+        {"type": "object", "required": ["previous_key_id"], "properties": {"previous_key_id": {"$ref": "l3_key_payloads.schema.json#/$defs/keyID"}}, "not": {"required": ["host_id"]}}
+      ]
+    },
+    "hostAttestationKeySet": {
+      "allOf": [
+        {"$ref": "l3_key_payloads.schema.json#/$defs/keySet"},
+        {"type": "object", "required": ["host_id"], "properties": {"host_id": {"$ref": "common.schema.json#/$defs/hostId"}}}
+      ]
+    },
+    "revocationLedger": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ledger_generation", "predecessor_record_id", "issued_at", "expires_at", "revoked_record_ids", "revoked_key_ids"],
+      "properties": {
+        "ledger_generation": {"type": "integer", "minimum": 1},
+        "predecessor_record_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "issued_at": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "expires_at": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "revoked_record_ids": {"type": "array", "maxItems": 4096, "uniqueItems": true, "items": {"$ref": "common.schema.json#/$defs/recordId"}},
+        "revoked_key_ids": {"type": "array", "maxItems": 512, "uniqueItems": true, "items": {"$ref": "l3_key_payloads.schema.json#/$defs/keyID"}}
+      }
+    }
+  }
+}
