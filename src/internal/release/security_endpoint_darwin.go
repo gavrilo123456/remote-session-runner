@@ -143,6 +143,22 @@ func inspectUnixPeer(conn *net.UnixConn, expectation peerExpectation) (observedP
 	return peer, nil
 }
 
+func inspectAuthorityAgentPeer(conn *net.UnixConn, expected authorityAgentIdentity) (authorityAgentEvidence, error) {
+	if expected.UID != 0 || expected.LaunchdLabel != "runner-release-authority-agent" ||
+		!validMacPeerExpectation(peerExpectation{kind: SecurityEndpointAuthorityView, goos: "darwin",
+			launchdLabel: expected.LaunchdLabel, codeRequirement: expected.CodeRequirement}) {
+		return authorityAgentEvidence{}, fmt.Errorf("%w: invalid release-authority agent identity contract", ErrSecurityEndpointDenied)
+	}
+	peer, err := inspectUnixPeer(conn, peerExpectation{kind: SecurityEndpointAuthorityView, goos: "darwin",
+		launchdLabel: expected.LaunchdLabel, codeRequirement: expected.CodeRequirement})
+	if err != nil || !peerAllowed(peerExpectation{kind: SecurityEndpointAuthorityView, goos: "darwin",
+		launchdLabel: expected.LaunchdLabel, codeRequirement: expected.CodeRequirement}, peer) || peer.uid != expected.UID {
+		return authorityAgentEvidence{}, fmt.Errorf("%w: authenticated agent peer required", ErrSecurityEndpointDenied)
+	}
+	return authorityAgentEvidence{UID: peer.uid, PID: peer.pid, AuditTokenValidated: peer.codeValid,
+		LaunchdLabel: peer.launchdLabel, CodeRequirement: peer.codeRequirement}, nil
+}
+
 func inspectMacRunnerUIDPeer(fd int) (observedPeer, error) {
 	credentials, err := unix.GetsockoptXucred(fd, unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
 	if err != nil || credentials == nil {

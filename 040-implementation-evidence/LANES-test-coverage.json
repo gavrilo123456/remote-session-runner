@@ -1096,7 +1096,17 @@
       "required_tiers": [
         "H",
         "F"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL310ExactMandateSignsOnceAndReturnsDurableRetry"},
+          {"package": "./src/internal/release", "name": "TestLanesL310RejectsWrongPeerExpiredMandateAndMismatchedKey"},
+          {"package": "./src/internal/release", "name": "TestLanesL310AuthoritySignerAllowsOnlyAuthorityRecordRoles"},
+          {"package": "./src/internal/release", "name": "TestLanesL310AuthorityKeySetUsesNamedPreviousSigner"},
+          {"package": "./src/internal/release", "name": "TestLanesL310RejectsUnsafePlansAndLedgerChanges"},
+          {"package": "./src/internal/release", "name": "TestLanesL310ApprovalDenialAndJournalTamperingFailClosed"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-11",

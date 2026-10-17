@@ -62,9 +62,9 @@ L3-08 source `1844fb5abfd4dd5c6c7be731e5ac07fa9148c8ce` passed seven H
 assertions and full source gates on Mac and all three synchronized Ubuntu
 checkouts; focused race passed on Mac, linux-host, and sandbox-host. The
 required storage F remains blocked, so L3-08 has no unit PASS or evidence
-closeout E. L3-09 is now in progress as an independent H+N source unit using
-L3-08's delivered source; it does not consume the missing physical cache or
-backup devices. This does not advance L3-08 acceptance.
+closeout E. L3-09 was an independent H+N source unit using L3-08's delivered
+source; it did not consume the missing physical cache or backup devices. This
+did not advance L3-08 acceptance.
 L3-09 source `359629128250ee01585259be2c816e86449e3a4c` passed seven H and one
 native N assertion, `make check build`, and focused race on Mac, linux-host,
 and sandbox-host; all three Ubuntu checkouts are clean and synchronized at S.
@@ -72,6 +72,12 @@ Factory-sandbox passed H/N and full source gates; focused race was NOT RUN
 (`CGO_ENABLED=0`, no `cc`). L3-09 remains BLOCKED because L3-08 F and evidence
 closeout E are still unmet; no unit PASS, production helper installation, live
 capacity measurement, live ingress acceptance, or E is claimed.
+L3-10 is now in progress on delivered L3-09 source S. Its exact authority
+mandate/replay source slice and six registered H assertions pass on Mac; full
+source gates and synchronized Ubuntu validation remain pending. Required F is
+not run because its separately approved disposable privileged Mac fixture is
+not available. It has no PASS or E; no production signer, approval prompt,
+socket, key or service was installed or used.
 B021/B024 remain blocked, and the unstarted B022/B023 baseline units remain
 deferred.
 This ledger does not pass readiness, L0, any deferred bug gate or any live lane.
@@ -196,7 +202,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L3-07` | BLOCKED — source S `203447fd18cf1fbd9ec53d74c3ff7562925868cc`; six H, one native N, and `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; focused race PASS on Mac, linux-host, and sandbox-host | [Unit evidence](LANES-L3-07.md); exact Gitea/GitHub S verified and all Ubuntu pulls/HEADs verified. The first S1 H runs exposed a fixture cleanup error, fixed and rerun at final S. L3-06/L2-09/L2-07/L2-08 acceptance remains BLOCKED; no live builder installation, privilege-transition proof, PASS, or E claimed. Factory-sandbox race NOT RUN (`CGO_ENABLED=0`, no `cc`). B021/B024 remain BLOCKED; BUG-022/023 remain deferred |
 | `LANES-L3-08` | BLOCKED — Source S `1844fb5abfd4dd5c6c7be731e5ac07fa9148c8ce`; seven H assertions and full source gates PASS on Mac and all three clean synchronized Ubuntu checkouts; focused race PASS on Mac, linux-host, and sandbox-host | [Unit evidence](LANES-L3-08.md); exact Gitea/GitHub S verified and all Ubuntu pulls/HEADs verified. Required F acceptance remains blocked by missing Linux A01/cache-backup devices and Mac APFS/cache-backup fixtures; no unit PASS, live acceptance, or evidence closeout E is claimed. Factory-sandbox race NOT RUN (`CGO_ENABLED=0`, no `cc`). B021/B024 remain BLOCKED; BUG-022/023 remain deferred |
 | `LANES-L3-09` | BLOCKED — Source S `359629128250ee01585259be2c816e86449e3a4c`; seven H, one native N, and full source gates PASS on Mac and all three clean synchronized Ubuntu checkouts; focused race PASS on Mac, linux-host, and sandbox-host | [Unit evidence](LANES-L3-09.md); exact Gitea/GitHub S verified and all Ubuntu pulls/HEADs verified. Ordered L3-08 F and evidence closeout E remain BLOCKED; no unit PASS, helper installation, live capacity/ingress acceptance, or evidence closeout E. Factory-sandbox focused race NOT RUN (`CGO_ENABLED=0`, no `cc`) |
-| `LANES-L3-10` | NOT RUN | Not produced |
+| `LANES-L3-10` | IN PROGRESS — Mac H (six registered assertions), `make check build`, focused race, gofmt, coverage JSON and diff checks PASS; source S and Ubuntu validation pending; required F NOT RUN | [Unit evidence](LANES-L3-10.md); owner-authorized independent source continuation uses delivered L3-09 S. F awaits separately approved disposable privileged Mac fixture; L3-09/L3-08 ordered acceptance/E remain blocked. No PASS, installation or E claimed |
 | `LANES-L3-11` | NOT RUN | Not produced |
 | `LANES-L3-12` | NOT RUN | Not produced |
 | `LANES-L3-13` | NOT RUN | Not produced |
