@@ -1,8 +1,8 @@
 # SIMPLE-02 — lane-aware runtime configuration and authenticated routing
 
-**State: IN PROGRESS — source implementation is ready for S delivery; full
-source gates and synchronized-worker validation are pending.** No lane was
-installed or started. This evidence does not claim live Dev/QAS acceptance or
+**State: PASS — source implementation, required source gates, and synchronized
+worker validation are complete.** No lane was installed or started. Live
+Dev/QAS acceptance is **NOT RUN** and remains for SIMPLE-04; this unit did not
 change the installed unsuffixed PRD services.
 
 ## Predecessor and scope
@@ -70,8 +70,56 @@ and `git diff --check` also passed. The first sandboxed `make check` run was
 blocked by the sandbox denying the unrelated `TestBUG020MacShellExitWithInheritedControlWriterSettlesOnce`
 test's read-only `/bin/ps` inspection. The same repository gate then passed
 outside the sandbox, and a subsequent `make check` returned exit code 0 on the
-Mac. Source commit/push/mirror verification and Ubuntu validation remain
-pending before S can be called delivered.
+Mac.
+
+## S delivery and worker validation
+
+Source revision S is `2635c31f3669a9559cee6736883cf60537736961`
+(`phase(SIMPLE-02): lane-aware config and routes`) on Mac branch `dev`.
+Mac worktree was clean after commit. The primary Gitea `origin/dev` and
+automatic GitHub mirror `github/dev` both resolved to this exact SHA. Each
+Ubuntu checkout was verified clean on `dev` at predecessor
+`965c3ba569e763979d4d6c5a99de88414bd9084f`, then fast-forwarded from its
+GitHub `origin/dev`; each resulting checkout remained clean at the exact S
+SHA.
+
+The required full source gate passed on Mac and all three Ubuntu workers:
+`make check` (`go test ./...`, `go vet ./...`, and the smoke builds). On Mac it
+passed after the initial sandbox denied the read-only `/bin/ps` call in
+`TestBUG020MacShellExitWithInheritedControlWriterSettlesOnce`; the successful
+escalated run and subsequent ordinary run both returned exit 0. Focused
+SIMPLE-02 package tests also passed on Mac before S delivery. On each Ubuntu
+worker the command was run from the synchronized source checkout through the
+authorized SSH fallback because the source gate must validate the exact
+checkout revision and routing the full suite through the installed PRD Runner
+would add prolonged build/test load to the shared production service host:
+
+```sh
+GOMAXPROCS=1 nice -n 10 ionice -c 3 make check
+```
+
+The explicit SSH identities were `remote-session-runner` using
+`/Users/tomasz.walczuk/.ssh/remote-session-runner`, `sandbox.env` using
+`/Users/tomasz.walczuk/.ssh/dev.slidestud.io`, and `factory-sandbox` using
+`/Users/tomasz.walczuk/.ssh/factory-sandbox`. Each used batch mode, strict
+host-key checking, and `UpdateHostKeys=no`. The configured Go 1.27.1 toolchain
+was selected by the Makefile on all workers. Each `make check` exited 0.
+
+| Worker | Pre-check available disk | Lowest sampled during check | Post-check available disk | Memory available before → after | PRD before/after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `linux-host` | 20,973,064 KiB | 20,861,612 KiB | 20,898,468 KiB | 481 → 496 MiB | `runnerd.service` active; readiness HTTP 200 |
+| `sandbox-host` | 2,809,652 KiB | 2,645,056 KiB | 2,724,748 KiB | 4,524 → 4,533 MiB | `runnerd.service` active; readiness HTTP 200 |
+| `factory-sandbox` | 44,665,144 KiB | 44,610,180 KiB | 44,590,488 KiB | 586 → 589 MiB | `runnerd.service` active; readiness HTTP 200 |
+
+For each worker, pre/post checks also confirmed checkout `HEAD` equals S and
+the worktree is clean. The constrained sandbox filesystem reached 96% used at
+its lowest sample and ended with 2.60 GiB free; no files were removed, and the
+shared Go/module caches were reused. During all three worker suites, the
+unsuffixed PRD service remained active and its local readiness endpoint
+returned HTTP 200. No Dev/QAS configuration, credentials, service, mailbox,
+request, or ACK was created or changed. The source and worker gates do not
+establish installed-lane acceptance; direct/queued execution, isolation, and
+lane lifecycle remain **NOT RUN** for SIMPLE-04 and later.
 
 ## Gates and limitations
 
