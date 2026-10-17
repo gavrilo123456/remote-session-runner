@@ -1,6 +1,6 @@
 # SIMPLE-03 — selected-lane installation and release rollback
 
-**State: IN PROGRESS pending source delivery and worker validation.** This
+**State: PASS — source, delivery, and worker validation complete.** This
 source unit follows the delivered SIMPLE-02 closeout
 `cbeb9b1ea48cbe41563cbcea8372560c3a2a756f`. The unit adds source-side
 installation and rollback controls only. No Dev or QAS service, configuration,
@@ -54,12 +54,77 @@ The full test run emitted only macOS linker warnings about duplicate `-lproc`
 libraries for existing test binaries; all test packages, vet and smoke checks
 completed successfully.
 
-## Git delivery
+## Git delivery and worker validation
 
-Source commit S: pending. Primary Gitea push, exact GitHub mirror SHA, clean
-fast-forward pulls and validation on `linux-host`, `sandbox-host`, and
-`factory-sandbox`: pending. Evidence-only closeout E will record the final
-revisions and worker results.
+Source revision S is
+`9f5268b0216a587d7375d534f857c6d33d1e9557`
+(`phase(SIMPLE-03): selected-lane installers and rollback`) on Mac branch
+`dev`. The source worktree was clean after commit. Mac pushed `origin/dev` to
+primary Gitea; `github/dev` resolved to the exact same SHA before any worker
+pull. All three Ubuntu checkouts were clean on `dev` at predecessor
+`cbeb9b1ea48cbe41563cbcea8372560c3a2a756f`, then fast-forwarded from their
+GitHub `origin` with `--ff-only`. Each resulting `HEAD` matched S and each
+worktree was clean.
+
+This documentation-only commit is the evidence closeout E. It records the
+verified source and worker revisions; its own SHA is intentionally not embedded
+in this file.
+
+Delivery commands on the Mac:
+
+```sh
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev
+```
+
+Worker pull command, run on each Ubuntu host after the clean-checkout check:
+
+```sh
+git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' pull --ff-only origin dev
+```
+
+The push advanced primary `origin/dev` from
+`cbeb9b1ea48cbe41563cbcea8372560c3a2a756f` to S. The mirror query returned
+`9f5268b0216a587d7375d534f857c6d33d1e9557 refs/heads/dev`.
+
+The full source gate returned exit 0 on the Mac and all three workers:
+
+```sh
+make check
+```
+
+On Ubuntu the exact command was run from the synchronized source checkout
+through the authorized SSH fallback:
+
+```sh
+GOMAXPROCS=1 nice -n 10 ionice -c 3 make check
+```
+
+The fallback avoided placing the full compile/test/vet/smoke workload on the
+installed unsuffixed PRD Runner and validated the host-local synchronized
+checkout directly. SSH used batch mode, explicit identity, strict known-host
+checking and `UpdateHostKeys=no`: `remote-session-runner` with
+`/Users/tomasz.walczuk/.ssh/remote-session-runner` for `linux-host`,
+`sandbox.env` with `/Users/tomasz.walczuk/.ssh/dev.slidestud.io` for
+`sandbox-host`, and `factory-sandbox` with
+`/Users/tomasz.walczuk/.ssh/factory-sandbox` for `factory-sandbox`. On every
+worker the Makefile selected
+`/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go`.
+
+| Machine | Revision after validation | `make check` | Available disk before → after (KiB) | PRD postflight |
+| --- | --- | --- | ---: | --- |
+| Mac `mac-control-plane` | S | PASS | Not measured for this source gate | Existing installed PRD not changed |
+| `linux-host` | S, clean | PASS, exit 0 | 20,897,720 → 20,877,716 | `runnerd.service` active; readiness `ready`; no active slots or queued work |
+| `sandbox-host` | S, clean | PASS, exit 0 | 2,664,056 → 2,643,620 | `runnerd.service` active; readiness `ready`; the pre-existing one session slot remained; no active commands or queued work |
+| `factory-sandbox` | S, clean | PASS, exit 0 | 44,583,152 → 44,563,096 | `runnerd.service` active; readiness `ready`; no active slots or queued work |
+
+The host-local revision and clean-worktree checks passed; available-space and
+memory samples were captured before and after; `systemctl is-active
+runnerd.service` and GET `/health/ready` over each existing Unix socket
+reported active/ready. No source files were copied to Ubuntu outside
+Git. No Dev/QAS service, configuration, credential, mailbox, request or ACK
+was created or changed. SIMPLE-03 is complete at source and delivery level;
+installed-lane acceptance remains in SIMPLE-04.
 
 ## Runtime status
 
