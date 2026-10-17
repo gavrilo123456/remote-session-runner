@@ -11,7 +11,7 @@ delivery evidence; this amendment records no implementation or live acceptance.
 
 | Active unit | Deliverable | Status |
 | --- | --- | --- |
-| `SIMPLE-01` | Inventory/reuse and fixed lane identity contract | NOT STARTED |
+| `SIMPLE-01` | Inventory/reuse and fixed lane identity contract | PASS — read-only inventory/source audit; [evidence](SIMPLE-01.md) |
 | `SIMPLE-02` | Lane-aware configuration, authentication and routing | NOT STARTED |
 | `SIMPLE-03` | Selected-lane installers, pinned artifacts and rollback | NOT STARTED |
 | `SIMPLE-04` | Dev deployment and coexistence acceptance | NOT STARTED |
