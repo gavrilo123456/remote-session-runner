@@ -58,6 +58,13 @@ guard were delivered at S and all required gates reran successfully. L3-07
 remains BLOCKED by the ordered L3-06/L2-09/L2-07/L2-08 acceptance chain, with
 no live build, host installation, or evidence closeout E. Its delivered S is
 available to the next independent source unit under the owner's authorization.
+L3-08 source `1844fb5abfd4dd5c6c7be731e5ac07fa9148c8ce` passed seven H
+assertions and full source gates on Mac and all three synchronized Ubuntu
+checkouts; focused race passed on Mac, linux-host, and sandbox-host. The
+required storage F remains blocked, so L3-08 has no unit PASS or evidence
+closeout E. L3-09 is now in progress as an independent H+N source unit using
+L3-08's delivered source; it does not consume the missing physical cache or
+backup devices. This does not advance L3-08 acceptance.
 B021/B024 remain blocked, and the unstarted B022/B023 baseline units remain
 deferred.
 This ledger does not pass readiness, L0, any deferred bug gate or any live lane.
@@ -181,7 +188,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L3-06` | BLOCKED — source S `8d1b7c876b00274f0284f15f27ebee8939a8d5a3`; eight H, one native N, and `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; focused race PASS on Mac, linux-host, and sandbox-host | [Unit evidence](LANES-L3-06.md); exact Gitea/GitHub S verified and all Ubuntu pulls/HEADs verified. L3-05/L3-04/L3-03/L3-02/L3-01/L2-09 acceptance remains BLOCKED; no PASS, live acceptance, endpoint installation, or E claimed. Factory-sandbox race NOT RUN (`CGO_ENABLED=0`, no `cc`). B021/B024 remain BLOCKED; BUG-022/023 remain deferred |
 | `LANES-L3-07` | BLOCKED — source S `203447fd18cf1fbd9ec53d74c3ff7562925868cc`; six H, one native N, and `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; focused race PASS on Mac, linux-host, and sandbox-host | [Unit evidence](LANES-L3-07.md); exact Gitea/GitHub S verified and all Ubuntu pulls/HEADs verified. The first S1 H runs exposed a fixture cleanup error, fixed and rerun at final S. L3-06/L2-09/L2-07/L2-08 acceptance remains BLOCKED; no live builder installation, privilege-transition proof, PASS, or E claimed. Factory-sandbox race NOT RUN (`CGO_ENABLED=0`, no `cc`). B021/B024 remain BLOCKED; BUG-022/023 remain deferred |
 | `LANES-L3-08` | BLOCKED — Source S `1844fb5abfd4dd5c6c7be731e5ac07fa9148c8ce`; seven H assertions and full source gates PASS on Mac and all three clean synchronized Ubuntu checkouts; focused race PASS on Mac, linux-host, and sandbox-host | [Unit evidence](LANES-L3-08.md); exact Gitea/GitHub S verified and all Ubuntu pulls/HEADs verified. Required F acceptance remains blocked by missing Linux A01/cache-backup devices and Mac APFS/cache-backup fixtures; no unit PASS, live acceptance, or evidence closeout E is claimed. Factory-sandbox race NOT RUN (`CGO_ENABLED=0`, no `cc`). B021/B024 remain BLOCKED; BUG-022/023 remain deferred |
-| `LANES-L3-09` | NOT RUN | Not produced |
+| `LANES-L3-09` | IN PROGRESS — Mac H (7), native N (1), full `make check build`, and focused race pass; Source S delivery and Ubuntu validation pending | [Unit evidence](LANES-L3-09.md); source-only, no production helper or lane ingress changes. L3-08 remains BLOCKED on F; no unit PASS or evidence closeout E is implied |
 | `LANES-L3-10` | NOT RUN | Not produced |
 | `LANES-L3-11` | NOT RUN | Not produced |
 | `LANES-L3-12` | NOT RUN | Not produced |

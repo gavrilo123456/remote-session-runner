@@ -1075,7 +1075,21 @@
       "required_tiers": [
         "H",
         "N"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL309CapacityAttestationUsesAnchoredMeasuredInventory"},
+          {"package": "./src/internal/release", "name": "TestLanesL309CapacityAttestationRejectsWrongHostStaleAndCallerValues"},
+          {"package": "./src/internal/release", "name": "TestLanesL309PromotionAttestationUsesOpaqueAuthorizationAndLocalEvidence"},
+          {"package": "./src/internal/release", "name": "TestLanesL309PromotionAttestationRejectsForeignAuthorizationAndIncompleteEvidence"},
+          {"package": "./src/internal/release", "name": "TestLanesL309IngressAttestationCoversCompleteFixedHostSurfaceSets"},
+          {"package": "./src/internal/release", "name": "TestLanesL309IngressAttestationRejectsIncompleteAndInconsistentEvidence"},
+          {"package": "./src/internal/release", "name": "TestLanesL309ServiceConstructionRequiresRootAnchor"}
+        ],
+        "N": [
+          {"package": "./src/internal/release", "name": "TestLanesL309NativePlatformFactsComeFromCurrentKernel"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-10",
