@@ -1,7 +1,8 @@
 # LANES-L1-13 — Post-commit repair and complete contract integration
 
-**State:** IN PROGRESS. This is hermetic source implementation and testing;
-no installed or live lane acceptance is claimed.
+**State:** PASS — Source S and evidence closeout E are delivered and
+synchronized. This is source-unit acceptance only; no installed or live lane
+acceptance is claimed.
 
 ## Predecessor and scope
 
@@ -129,7 +130,21 @@ Go 1.27.1 toolchain's `gofmt` binary and passed.
 
 ## Source S and synchronized validation
 
-Source S delivery and exact-S Ubuntu gates are pending.
+Source S is `9958cb16dd8aca918d106f37dd10445b7f7a62d8` on Mac `dev`, committed
+as `phase(LANES-L1-13): add post-commit PRD repair handoff`. It follows L1-12
+evidence closeout E `9b27d084afea60ac5bc2311b820f65ed133d7efd`.
+
+The Mac checkout was clean at S. The commit was pushed to primary Gitea
+`origin/dev` with the explicit Gitea key. Direct `ls-remote` checks then
+verified both Gitea `origin/dev` and automatic mirror `github/dev` at the exact
+S SHA. The mirror was not pushed manually.
+
+```sh
+# Mac, from the authoritative Runner checkout
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote origin refs/heads/dev
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev
+```
 
 Immediately before source delivery, all three Ubuntu checkouts were checked
 over SSH with `IdentitiesOnly=yes`, `BatchMode=yes`,
@@ -147,7 +162,45 @@ the check. Each checkout was clean on `dev` at predecessor E
 Pre-pull verification command on each host was:
 `ssh -i <identity> -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no <alias> 'hostname; cd /home/ubuntu/projects/remote-session-runner && git status --short --branch && git rev-parse HEAD'`.
 
+After verifying that each checkout was clean on `dev`, all three fast-forwarded
+the exact GitHub mirror commit and were checked clean at S before validation.
+The pull command on each Ubuntu host was:
+
+```sh
+git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' pull --ff-only origin dev
+```
+
+At exact S, each host ran `make test-lanes UNIT=<unit> LANES_TIER=H` serially
+for `LANES-L1-01` through `LANES-L1-13`, then
+`make test-lanes UNIT=LANES-L1-03 LANES_TIER=N`, `make test`, `make vet`,
+`make build`, and `make smoke`. Linux and sandbox ran the focused race command
+below. Factory-sandbox did not run race because its pinned Go toolchain reports
+`CGO_ENABLED=0` and the host has no `cc`; this is NOT RUN, not PASS.
+
+```sh
+# Ubuntu, at exact S
+GOTOOLCHAIN=local /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/laneregistry ./src/internal/lanemigration ./src/internal/mailboxfence -run '^TestLanesL113' -count=1
+```
+
+| Execution machine | H L1-01–13 | L1-03 N | `make test` | `make vet` | `make build` | `make smoke` | Focused race | Final checkout |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Mac `mac-control-plane` | PASS | PASS | PASS | PASS | PASS | PASS | PASS; Makefile Go 1.27.1 with shared caches | `dev`, clean, S |
+| `linux-host` | PASS | PASS | PASS | PASS | PASS | PASS | PASS | `dev`, clean, S |
+| `sandbox-host` | PASS | PASS | PASS | PASS | PASS | PASS | PASS | `dev`, clean, S |
+| `factory-sandbox` | PASS | PASS | PASS | PASS | PASS | PASS | NOT RUN; `CGO_ENABLED=0`, no `cc` | `dev`, clean, S |
+
+Direct SSH was the authorized fallback because these required commands operate
+on each synchronized checkout and do not use the Runner request/ACK mailbox.
+The configured explicit SSH identities and verified host keys were used. No
+tracked source was edited or copied on Ubuntu; changes arrived only through
+Git. Test output used task-owned files under `/tmp`, removed by shell `trap`
+after each host run. No services, publishers, mailboxes, production work, or
+Runner application credentials were changed or accessed; only the configured
+SSH identities were used for the authorized checkout validation.
+
 ## Evidence closeout and acceptance state
 
-Pending source S and evidence-only closeout E. No production or live lane
-acceptance is claimed. B021/B024 remain blocked and BUG-022/023 remain deferred.
+This documentation and ledger commit is evidence closeout E. L1-13 closes the
+ordered L1 source sequence. `LANES-B021-02` and `LANES-B024-02` remain
+**BLOCKED** with their evidence preserved; BUG-022/023 remain deferred. No
+production or live lane acceptance is claimed.

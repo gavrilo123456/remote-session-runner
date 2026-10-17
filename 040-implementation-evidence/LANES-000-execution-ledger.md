@@ -8,11 +8,11 @@ source/evidence unit with the exact blocked-L0 record cited below. Baseline and
 live acceptance gates remain ordered and blocked by their own unmet
 prerequisites. The owner has since clarified that incremental readiness applies
 to successive independent source units: a blocked B021/B024 maintenance
-closeout is not a global prerequisite for ordered L1 source work. The source
-sequence is delivered through `LANES-L1-12`; L1-12's source S passed its Mac
-and three-host source gates, and its evidence-only closeout E is synchronized.
-`LANES-L1-13` is now IN PROGRESS from that exact E. The
-unstarted B022/B023 baseline units remain deferred.
+closeout is not a global prerequisite for ordered L1 source work. The ordered
+source sequence is delivered through `LANES-L1-13`; the final Source S passed
+the complete L1 H matrix, L1-03 N, and package gates on Mac and all three
+Ubuntu hosts. This evidence-only closeout and [L1 aggregate summary](LANES-L1.md)
+close E. The unstarted B022/B023 baseline units remain deferred.
 This ledger does not pass readiness, L0, any deferred bug gate or any live lane.
 
 ## Earlier owner priority — 2026-10-16 (historical)
@@ -116,7 +116,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L1-10` | PASS | [Provisional ingress admission contexts](LANES-L1-10.md); Source S `10864883d428c7229740fe467b0b36c8301d2f4e` passed Mac and all three clean synchronized Ubuntu H/full/vet/build/smoke gates. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). No installed or live lane acceptance is claimed |
 | `LANES-L1-11` | PASS | [Mac/local-intent/importer/ACK admission and safe status](LANES-L1-11.md); Source S `4cb60b2545622c0415d424ef2d3bd46cd1280209` passed Mac and all three clean synchronized Ubuntu H/full/vet/build/smoke gates. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). This docs-only E records verified S results; final E delivery gates the next unit. No service installation or live acceptance is claimed |
 | `LANES-L1-12` | PASS | [Unit evidence](LANES-L1-12.md); ordered predecessor L1-11 evidence closeout E `258c2a795e1a3be228c61864893eb0b4dbd6e967`; source S `6eb6b3a195045023449cc32df135ad960b162145` passed H/full/vet/build/smoke on Mac and all three clean synchronized Ubuntu `dev` checkouts. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). Evidence closeout E is this docs-only commit and is delivered by the required synchronized Git workflow. No PRD maintenance or live acceptance claimed; B021/B024 remain blocked, BUG-022/023 deferred |
-| `LANES-L1-13` | IN PROGRESS | [Unit evidence](LANES-L1-13.md); ordered predecessor L1-12 evidence closeout E `9b27d084afea60ac5bc2311b820f65ed133d7efd`; isolated source/H scope. B021/B024 remain blocked and unrelated; BUG-022/023 remain deferred |
+| `LANES-L1-13` | PASS | [Unit evidence](LANES-L1-13.md); ordered predecessor L1-12 evidence closeout E `9b27d084afea60ac5bc2311b820f65ed133d7efd`; Source S `9958cb16dd8aca918d106f37dd10445b7f7a62d8` passed full L1 H and L1-03 N coverage plus full/vet/build/smoke on Mac and all three clean synchronized Ubuntu checkouts. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race NOT RUN (`CGO_ENABLED=0`, no `cc`). B021/B024 remain BLOCKED; BUG-022/023 remain deferred |
 | `LANES-L2-01` | NOT RUN | Not produced |
 | `LANES-L2-02` | NOT RUN | Not produced |
 | `LANES-L2-03` | NOT RUN | Not produced |
