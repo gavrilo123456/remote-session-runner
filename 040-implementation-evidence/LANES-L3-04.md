@@ -1,8 +1,8 @@
 # LANES-L3-04 — authority and host trust chains, revocation, and time
 
-**State:** IN PROGRESS — independent source work only; ordered L3-03 chain is
-BLOCKED. No unit PASS, live acceptance, installation, or evidence closeout is
-claimed.
+**State:** BLOCKED — source S and required source gates are delivered and
+verified; the ordered L3-03 chain remains BLOCKED. No unit PASS, live
+acceptance, installation, or evidence closeout E is claimed.
 
 ## Pre-unit record
 
@@ -96,10 +96,50 @@ warnings. No tracked Ubuntu file or installed service was changed.
 
 ## Delivery and acceptance status
 
-Source revision S is the source commit containing this evidence and the L3-04
-implementation; its exact SHA, Gitea push, GitHub mirror, and host validation
-results will be recorded in the evidence-only follow-up. Post-delivery H/full
-tests, vet/build/smoke, and clean/equal Ubuntu `dev` checks are **NOT RUN** at
-this point. The unit remains BLOCKED by the L3-03/L3-02/L3-01/L2-09 native
-acceptance chain even if every L3-04 source gate passes. No installed or live
-acceptance is inferred.
+Source revision S is `90c17965eb647863d0744d1715e05c2c025c2289`, committed on
+Mac `dev` as `phase(LANES-L3-04): add release trust and time validators`. Its
+explicit-key push to Gitea `origin/dev` succeeded. Git printed the known local
+remote-tracking lock warning after the successful push; direct remote queries
+confirmed Gitea and GitHub `refs/heads/dev` both resolve to exact S. Ubuntu
+checkouts were clean on `dev` at predecessor `21954765f3d01778f47113921ac2c8985920cf5e`,
+fast-forwarded through GitHub with `--ff-only`, and verified clean at exact S
+before tests. No source was edited or copied directly on Ubuntu.
+
+Delivery commands on the Mac:
+
+```sh
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote origin refs/heads/dev
+git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev
+```
+
+Both remote refs returned exact S. Each Ubuntu host was checked clean on `dev`
+before this pull command, then verified at S before tests:
+
+```sh
+git -c 'core.sshCommand=ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' pull --ff-only origin dev
+```
+
+| Machine | SSH profile | Final `HEAD` | L3-04 H | `make check build` | Focused race |
+| --- | --- | --- | --- | --- | --- |
+| `mac-control-plane` | Mac checkout | `90c17965eb647863d0744d1715e05c2c025c2289` | PASS (8) | PASS | PASS |
+| `linux-host` (`oracle-yuta-konopka-ubuntu-micro-02`) | `remote-session-runner`; `/Users/tomasz.walczuk/.ssh/remote-session-runner` | `90c17965eb647863d0744d1715e05c2c025c2289` | PASS (8) | PASS | PASS |
+| `sandbox-host` (`oracle-gustaw-janecki-ubuntu-flex-02`) | `sandbox.env`; `/Users/tomasz.walczuk/.ssh/dev.slidestud.io` | `90c17965eb647863d0744d1715e05c2c025c2289` | PASS (8) | PASS | PASS |
+| `factory-sandbox` (`oracle-waclaw-dziwulski-ubuntu-micro-01`) | `factory-sandbox`; `/Users/tomasz.walczuk/.ssh/factory-sandbox` | `90c17965eb647863d0744d1715e05c2c025c2289` | PASS (8) | PASS | NOT RUN: `CGO_ENABLED=0`, no `cc` |
+
+Each Ubuntu host ran `make test-lanes UNIT=LANES-L3-04` and `make check
+build` at S. Linux-host and sandbox-host additionally ran
+`GOTOOLCHAIN=local /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/release -run '^TestLanesL304' -count=1`
+with PASS. Mac ran that focused race command using the pinned Mac toolchain and
+the shared Go caches. Mac also reran L3-03 (9 H assertions) and L3-02 (8 H
+assertions) as named regressions; both passed.
+
+The full test runs emitted existing nonfatal duplicate `-lproc` linker
+warnings. The source/evidence delivery did not restart services, publish
+Runner requests or ACKs, create production credentials, or modify production
+state. The historical maintenance package remains a snapshot; it was not
+rebuilt or frozen by this source unit.
+
+L3-04 remains BLOCKED by L3-03/L3-02/L3-01/L2-09 ordered acceptance and the
+L2-07/L2-08 native infrastructure fixtures. No installed or live acceptance
+is inferred. B021/B024 remain BLOCKED and BUG-022/023 remain DEFERRED.
