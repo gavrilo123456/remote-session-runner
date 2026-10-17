@@ -568,8 +568,43 @@
     {
       "id": "LANES-L2-01",
       "required_tiers": [
-        "H"
-      ]
+        "H",
+        "N"
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL201BuildsFixedDevQASPlansForAllHosts"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL201RejectsPRDAndUnknownHost"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL201RendersOnlyFixedLaneServiceIdentities"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL201ManagementPackagesMatchClosedHostMatrix"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL201SensitiveKeyAndPeerBoundariesAreSeparated"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL201ManagementPackageRejectsBoundaryDrift"
+          }
+        ],
+        "N": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL201NativeServiceTemplatesValidateOnSelectedHost"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L2-02",

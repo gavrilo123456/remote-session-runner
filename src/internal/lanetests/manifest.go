@@ -216,6 +216,9 @@ func RunHermetic(ctx context.Context, root, manifestPath, handbookPath, goBinary
 // exact unit. N tests may use local OS descriptors and temporary fixtures, but
 // they never touch installed services or external lane roots.
 func RunNative(ctx context.Context, root, manifestPath, handbookPath, goBinary, unitID string, output io.Writer, runner CommandRunner) error {
+	if runner == nil {
+		runner = runNativeGo
+	}
 	return runTier(ctx, root, manifestPath, handbookPath, goBinary, unitID, NativeTier, output, runner)
 }
 
@@ -296,10 +299,32 @@ func runTier(ctx context.Context, root, manifestPath, handbookPath, goBinary, un
 }
 
 func runGo(ctx context.Context, goBinary string, args []string, root string) ([]byte, error) {
+	return runGoWithNativeContext(ctx, goBinary, args, root, false)
+}
+
+func runNativeGo(ctx context.Context, goBinary string, args []string, root string) ([]byte, error) {
+	return runGoWithNativeContext(ctx, goBinary, args, root, true)
+}
+
+func runGoWithNativeContext(ctx context.Context, goBinary string, args []string, root string, native bool) ([]byte, error) {
 	command := exec.CommandContext(ctx, goBinary, args...)
 	command.Dir = root
-	command.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	command.Env = setEnvironment(os.Environ(), "GOTOOLCHAIN", "local")
+	if native {
+		command.Env = setEnvironment(command.Env, "LANES_NATIVE_VALIDATION", "1")
+	}
 	return command.CombinedOutput()
+}
+
+func setEnvironment(environment []string, name, value string) []string {
+	prefix := name + "="
+	for i, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			environment[i] = prefix + value
+			return environment
+		}
+	}
+	return append(environment, prefix+value)
 }
 
 // CheckTestEvents verifies the go test JSON stream contains a run and pass for

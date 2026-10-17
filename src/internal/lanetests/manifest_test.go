@@ -24,7 +24,7 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 	if len(manifest.Units) != 68 || len(manifest.DesignAcceptance) != 10 {
 		t.Fatalf("manifest units=%d design acceptance items=%d, want 68 and 10", len(manifest.Units), len(manifest.DesignAcceptance))
 	}
-	var l101, l102, l103, l104, l105, l106, l107, l108, l109, l110, l111, l112, l113 *UnitCoverage
+	var l101, l102, l103, l104, l105, l106, l107, l108, l109, l110, l111, l112, l113, l201 *UnitCoverage
 	for i := range manifest.Units {
 		switch manifest.Units[i].ID {
 		case "LANES-L1-01":
@@ -53,6 +53,8 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 			l112 = &manifest.Units[i]
 		case "LANES-L1-13":
 			l113 = &manifest.Units[i]
+		case "LANES-L2-01":
+			l201 = &manifest.Units[i]
 		}
 	}
 	if l101 == nil || len(l101.Assertions[HermeticTier]) != 5 {
@@ -95,6 +97,10 @@ func TestLanesL101ManifestMatchesPlan(t *testing.T) {
 	if l113 == nil || len(l113.Assertions[HermeticTier]) != 4 || !contains(l113.RequiredTiers, HermeticTier) {
 		t.Fatalf("LANES-L1-13 coverage = %+v; want four registered H assertions", l113)
 	}
+	if l201 == nil || len(l201.Assertions[HermeticTier]) != 6 || len(l201.Assertions[NativeTier]) != 1 ||
+		!contains(l201.RequiredTiers, HermeticTier) || !contains(l201.RequiredTiers, NativeTier) {
+		t.Fatalf("LANES-L2-01 coverage = %+v; want six H and one N assertion", l201)
+	}
 }
 
 func TestLanesL101RejectsUnknownMissingAndWrongProofTier(t *testing.T) {
@@ -114,7 +120,7 @@ func TestLanesL101RejectsUnknownMissingAndWrongProofTier(t *testing.T) {
 		want error
 	}{
 		{unit: "LANES-L9-99", want: ErrUnknownUnit},
-		{unit: "LANES-L2-01", want: ErrMissingAssertions},
+		{unit: "LANES-L2-02", want: ErrMissingAssertions},
 		{unit: "LANES-PREP-00", want: ErrWrongProofTier},
 	} {
 		err := RunHermetic(context.Background(), root, manifestPath, handbookPath, "go", test.unit, nil, fakeRunner)
