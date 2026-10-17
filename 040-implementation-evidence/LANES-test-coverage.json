@@ -1037,7 +1037,20 @@
       "required_tiers": [
         "H",
         "N"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL307RequestContainsOnlyOpaqueAuthorization"},
+          {"package": "./src/internal/release", "name": "TestLanesL307InstalledServiceRequiresRootAndDedicatedBuilderIdentity"},
+          {"package": "./src/internal/release", "name": "TestLanesL307FixedBuildSealsSignsAndPublishesExactArtifact"},
+          {"package": "./src/internal/release", "name": "TestLanesL307ResolvedJobRejectsUnsafeOrInconsistentEvidenceBeforeExecution"},
+          {"package": "./src/internal/release", "name": "TestLanesL307SealedCopyIsIndependentFromBuilderOutputAndOutboxRetriesIdempotently"},
+          {"package": "./src/internal/release", "name": "TestLanesL307RejectsSymlinkOutputAndBoundOverflow"}
+        ],
+        "N": [
+          {"package": "./src/internal/release", "name": "TestLanesL307NativeSealedOutboxUsesNoFollowAndDurableRecordPublication"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-08",
