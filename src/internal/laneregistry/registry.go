@@ -81,6 +81,7 @@ type Snapshot struct {
 	Records            []RootRecord              `json:"records"`
 	Operations         []LaneOperation           `json:"operations,omitempty"`
 	PRDMigrationFences []PRDMigrationFenceRecord `json:"prd_migration_fences,omitempty"`
+	PRDOperationGroups []PRDOperationGroup       `json:"prd_operation_groups,omitempty"`
 }
 
 // RuntimeReconciliation is the exact active-candidate identity observed after
@@ -424,6 +425,9 @@ func (r *Registry) update(expectedGeneration uint64, mutate func(*Snapshot) (boo
 			return snapshot.PRDMigrationFences[i].LaneTransitionID < snapshot.PRDMigrationFences[j].LaneTransitionID
 		})
 	}
+	if snapshot.PRDOperationGroups != nil {
+		sort.Slice(snapshot.PRDOperationGroups, func(i, j int) bool { return snapshot.PRDOperationGroups[i].ID < snapshot.PRDOperationGroups[j].ID })
+	}
 	if err := ValidateSnapshot(snapshot); err != nil {
 		return Snapshot{}, err
 	}
@@ -660,6 +664,9 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		return err
 	}
 	if err := validatePRDMigrationFences(snapshot); err != nil {
+		return err
+	}
+	if err := validatePRDOperationGroups(snapshot); err != nil {
 		return err
 	}
 	return nil

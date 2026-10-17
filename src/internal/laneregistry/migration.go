@@ -126,6 +126,9 @@ func (r *Registry) BeginPRDMigrationFence(expectedGeneration uint64, record PRDM
 				return false, ErrMigrationFenceState
 			}
 		}
+		if hasActivePRDOperationGroup(snapshot) || hasActivePRDMigrationFence(snapshot) {
+			return false, ErrOperationBusy
+		}
 		if err := validatePRDMigrationFenceRecord(snapshot, record); err != nil {
 			return false, err
 		}
@@ -391,6 +394,7 @@ func validatePRDMigrationFences(snapshot Snapshot) error {
 	}
 	seenIDs := make(map[string]struct{}, len(snapshot.PRDMigrationFences))
 	activeRoots := make(map[string]struct{})
+	activeFences := 0
 	for index, record := range snapshot.PRDMigrationFences {
 		if index > 0 && snapshot.PRDMigrationFences[index-1].LaneTransitionID >= record.LaneTransitionID {
 			return ErrInvalidRegistry
@@ -403,6 +407,10 @@ func validatePRDMigrationFences(snapshot Snapshot) error {
 			return fmt.Errorf("%w: PRD migration fence %s: %v", ErrInvalidRegistry, record.LaneTransitionID, err)
 		}
 		if record.State != PRDMigrationAborted {
+			activeFences++
+			if activeFences > 1 {
+				return ErrInvalidRegistry
+			}
 			if _, exists := activeRoots[record.RootRecordID]; exists {
 				return ErrInvalidRegistry
 			}

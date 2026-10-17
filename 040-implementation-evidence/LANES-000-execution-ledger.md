@@ -9,9 +9,9 @@ live acceptance gates remain ordered and blocked by their own unmet
 prerequisites. The owner has since clarified that incremental readiness applies
 to successive independent source units: a blocked B021/B024 maintenance
 closeout is not a global prerequisite for ordered L1 source work. The source
-sequence is delivered through `LANES-L1-11`; L1-11's Source S gates pass, and
-the evidence-only closeout E is the current documentation commit. The unstarted
-B022/B023 baseline units remain deferred.
+sequence is delivered through `LANES-L1-11`; L1-11's evidence-only closeout E
+is synchronized, and `LANES-L1-12` is now in progress from that exact E. The
+unstarted B022/B023 baseline units remain deferred.
 This ledger does not pass readiness, L0, any deferred bug gate or any live lane.
 
 ## Earlier owner priority — 2026-10-16 (historical)
@@ -114,7 +114,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L1-09` | PASS | [Reversible PRD fence and deferred-pair ledger](LANES-L1-09.md); ordered predecessor L1-08 evidence closeout E `36477d3cd598c2f98543a02fc1d7fd4c1b6cbf44`; corrected Source S2 `342ce30e2d23249404cb1c5c874d0436dc5ceb06` passed Mac and all three Ubuntu H/full/vet/build/smoke gates. Focused race passed on linux-host and sandbox-host; unavailable on factory-sandbox (`CGO_ENABLED=0`, no `cc`). Evidence closeout delivered and synchronized; no live lane acceptance is claimed |
 | `LANES-L1-10` | PASS | [Provisional ingress admission contexts](LANES-L1-10.md); Source S `10864883d428c7229740fe467b0b36c8301d2f4e` passed Mac and all three clean synchronized Ubuntu H/full/vet/build/smoke gates. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). No installed or live lane acceptance is claimed |
 | `LANES-L1-11` | PASS | [Mac/local-intent/importer/ACK admission and safe status](LANES-L1-11.md); Source S `4cb60b2545622c0415d424ef2d3bd46cd1280209` passed Mac and all three clean synchronized Ubuntu H/full/vet/build/smoke gates. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). This docs-only E records verified S results; final E delivery gates the next unit. No service installation or live acceptance is claimed |
-| `LANES-L1-12` | NOT RUN | Not produced |
+| `LANES-L1-12` | IN PROGRESS | [Unit evidence](LANES-L1-12.md); ordered predecessor L1-11 evidence closeout E `258c2a795e1a3be228c61864893eb0b4dbd6e967`; isolated source implementation only. B021/B024 remain blocked and unrelated; BUG-022/023 remain deferred |
 | `LANES-L1-13` | NOT RUN | Not produced |
 | `LANES-L2-01` | NOT RUN | Not produced |
 | `LANES-L2-02` | NOT RUN | Not produced |

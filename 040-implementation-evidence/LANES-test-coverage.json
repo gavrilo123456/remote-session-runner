@@ -513,7 +513,31 @@
       "id": "LANES-L1-12",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL112PRDMaintenanceRequiresFullClosureAndZeroWork"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL112PRDRecoveryIsTypedLinkedExclusiveAndMonotonic"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL112PRDRecoveryRequiresFreshChildAcceptanceAndArchivesAtomically"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL112PRDRecoveryRejectsAlteredPersistedGroup"
+          },
+          {
+            "package": "./src/internal/laneregistry",
+            "name": "TestLanesL112PRDMaintenanceAcceptsFreshLaneAcceptanceBeforeRelease"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-13",
