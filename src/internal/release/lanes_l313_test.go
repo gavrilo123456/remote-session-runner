@@ -40,6 +40,9 @@ func TestLanesL313APIUsesOnlyFixedHostAndPeerModes(t *testing.T) {
 		if err != nil || api == nil || api.local {
 			t.Fatalf("public Ubuntu constructor failed on Linux: api=%v err=%v", api, err)
 		}
+		if _, err := inspectAuthorityAgentPeer(nil, l313AgentIdentity()); !errors.Is(err, ErrSecurityEndpointUnavailable) {
+			t.Fatalf("Linux must fail closed for Mac authority-agent peer inspection: %v", err)
+		}
 		if _, err := NewReleaseRecordTransportAPI("mac-control-plane", backend, nil, ReleaseTransportLocalPeerIdentity{
 			UID: 0, LaunchdLabel: "runner-release-authority-agent",
 			CodeRequirement: l313AgentIdentity().CodeRequirement,
