@@ -107,7 +107,30 @@ policy tests and this plan do not substitute for those native checks.
 
 ## Source delivery status
 
-Source S and its exact Gitea/GitHub/Ubuntu delivery SHAs and host test results
-are recorded in the synchronized follow-up to this file. L2-08 remains
-BLOCKED until the native F gate passes. This source work does not close the
-L2-07 Linux F gate or imply an L2-07 evidence closeout.
+Source S is `ae386b1a774d9bceb3aa3d137b611a8abec16bb2` on Mac `dev`.
+The primary Gitea `origin/dev` push succeeded and direct `ls-remote` reads of
+both `origin/dev` and the automatic `github/dev` mirror returned this exact
+SHA. Mac local `origin/dev` tracking metadata remained stale because Git could
+not create `.git/refs/remotes/origin/dev.lock`; this did not affect the
+verified remote refs or the commit.
+
+Before the pulls, `linux-host`, `sandbox-host`, and `factory-sandbox` each had
+a clean `dev` checkout at predecessor
+`c7f4e6db3a68ed965fac063958e7e8bffcc33278`. Each host fast-forwarded from its
+GitHub `origin/dev` to Source S. `make check build` passed on Mac and on all
+three hosts at Source S: full Go tests, `go vet ./...`, and `go build
+./src/cmd/...` exited 0. Post-validation `HEAD` on every host remained exactly
+Source S and each worktree was clean. Remote commands used the configured
+explicit SSH identities and host-key verification. No tracked source was
+edited or copied on Ubuntu.
+
+| Machine | Before pull | Source S after validation | Result |
+| --- | --- | --- | --- |
+| `mac-control-plane` | `c7f4e6db3a68ed965fac063958e7e8bffcc33278` | `ae386b1a774d9bceb3aa3d137b611a8abec16bb2` | `make check build` PASS; clean `dev` |
+| `linux-host` | `c7f4e6db3a68ed965fac063958e7e8bffcc33278` | `ae386b1a774d9bceb3aa3d137b611a8abec16bb2` | fast-forward; `make check build` PASS; clean `dev` |
+| `sandbox-host` | `c7f4e6db3a68ed965fac063958e7e8bffcc33278` | `ae386b1a774d9bceb3aa3d137b611a8abec16bb2` | fast-forward; `make check build` PASS; clean `dev` |
+| `factory-sandbox` | `c7f4e6db3a68ed965fac063958e7e8bffcc33278` | `ae386b1a774d9bceb3aa3d137b611a8abec16bb2` | fast-forward; `make check build` PASS; clean `dev` |
+
+This evidence is a docs-only follow-up after the Source S validations. L2-08
+remains BLOCKED until the native F gate passes. This source work does not
+close the L2-07 Linux F gate or imply an L2-07 evidence closeout.
