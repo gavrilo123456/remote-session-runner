@@ -47,6 +47,13 @@ func DefaultLimits() Limits {
 	return Limits{ActiveFileBytes: 64 * MiB, RotatedFileBytes: 64 * MiB, MaxRotatedFiles: 7, TempFileBytes: 64 * MiB}
 }
 
+// SimpleLaneLimits bounds each Dev/QAS component log to the active profile's
+// 16 MiB active file, four retained rotations and one 16 MiB rotation temp.
+// Unsuffixed PRD continues to use DefaultLimits unless separately promoted.
+func SimpleLaneLimits() Limits {
+	return Limits{ActiveFileBytes: 16 * MiB, RotatedFileBytes: 16 * MiB, MaxRotatedFiles: 4, TempFileBytes: 16 * MiB}
+}
+
 func (l Limits) TotalBytes() uint64 {
 	if l.MaxRotatedFiles < 0 {
 		return math.MaxUint64
@@ -528,6 +535,10 @@ func RunCLIContext(ctx context.Context, args []string, stdout, stderr io.Writer)
 	set := flag.NewFlagSet("runner-log-capture", flag.ContinueOnError)
 	set.SetOutput(stderr)
 	logPath := set.String("log-path", "", "fixed active log file path")
+	activeBytes := set.Uint64("active-file-bytes", 0, "active file limit; zero keeps the standard default")
+	rotatedBytes := set.Uint64("rotated-file-bytes", 0, "per-rotation limit; zero keeps the standard default")
+	rotatedFiles := set.Int("max-rotated-files", 0, "retained rotation count; zero keeps the standard default")
+	tempBytes := set.Uint64("temp-file-bytes", 0, "rotation temporary limit; zero keeps the standard default")
 	statusOnly := set.Bool("status", false, "print the durable dropped byte counter")
 	if err := set.Parse(args); err != nil || *logPath == "" {
 		return 78
@@ -548,14 +559,27 @@ func RunCLIContext(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if set.NArg() < 1 {
 		return 78
 	}
-	return RunChild(ctx, *logPath, set.Args())
+	limits := DefaultLimits()
+	if *activeBytes != 0 || *rotatedBytes != 0 || *rotatedFiles != 0 || *tempBytes != 0 {
+		if *activeBytes == 0 || *rotatedBytes == 0 || *rotatedFiles == 0 || *tempBytes == 0 {
+			return 78
+		}
+		limits = Limits{ActiveFileBytes: *activeBytes, RotatedFileBytes: *rotatedBytes, MaxRotatedFiles: *rotatedFiles, TempFileBytes: *tempBytes}
+	}
+	return RunChildWithLimits(ctx, *logPath, set.Args(), limits)
 }
 
 func RunChild(ctx context.Context, logPath string, argv []string) int {
+	return RunChildWithLimits(ctx, logPath, argv, DefaultLimits())
+}
+
+// RunChildWithLimits executes a child with the explicitly selected durable
+// log retention limits.
+func RunChildWithLimits(ctx context.Context, logPath string, argv []string, limits Limits) int {
 	if len(argv) == 0 || !filepath.IsAbs(argv[0]) || filepath.Clean(argv[0]) != argv[0] {
 		return 78
 	}
-	store, err := Open(logPath)
+	store, err := openWithLimits(logPath, limits)
 	if err != nil {
 		return 78
 	}

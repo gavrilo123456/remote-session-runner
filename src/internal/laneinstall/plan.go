@@ -19,17 +19,18 @@ var (
 type ArtifactKind string
 
 const (
-	ArtifactLaunchAgent   ArtifactKind = "launch_agent_plist"
-	ArtifactSystemdUnit   ArtifactKind = "systemd_unit"
-	ArtifactEntrypoint    ArtifactKind = "lane_entrypoint"
-	ArtifactSSHConfig     ArtifactKind = "queued_ssh_config"
-	ArtifactSSHKeys       ArtifactKind = "queued_ssh_authorized_keys"
-	ArtifactSSHWrapper    ArtifactKind = "queued_ssh_forced_wrapper"
-	ArtifactSSHUnit       ArtifactKind = "queued_ssh_systemd_unit"
-	ArtifactSSHKnownHosts ArtifactKind = "mac_queued_ssh_known_hosts"
-	ArtifactSystemdDropIn ArtifactKind = "systemd_dropin"
-	ArtifactProjectMap    ArtifactKind = "project_map_fragment"
-	ArtifactProjectQuota  ArtifactKind = "project_quota_fragment"
+	ArtifactLaunchAgent      ArtifactKind = "launch_agent_plist"
+	ArtifactSystemdUnit      ArtifactKind = "systemd_unit"
+	ArtifactEntrypoint       ArtifactKind = "lane_entrypoint"
+	ArtifactSSHConfig        ArtifactKind = "queued_ssh_config"
+	ArtifactSSHKeys          ArtifactKind = "queued_ssh_authorized_keys"
+	ArtifactSSHWrapper       ArtifactKind = "queued_ssh_forced_wrapper"
+	ArtifactSSHControllerMap ArtifactKind = "queued_ssh_controller_map"
+	ArtifactSSHUnit          ArtifactKind = "queued_ssh_systemd_unit"
+	ArtifactSSHKnownHosts    ArtifactKind = "mac_queued_ssh_known_hosts"
+	ArtifactSystemdDropIn    ArtifactKind = "systemd_dropin"
+	ArtifactProjectMap       ArtifactKind = "project_map_fragment"
+	ArtifactProjectQuota     ArtifactKind = "project_quota_fragment"
 )
 
 // Artifact is a deterministic file produced by a fixed plan. InstallPath is
