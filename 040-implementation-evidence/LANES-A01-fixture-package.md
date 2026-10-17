@@ -1,13 +1,32 @@
-# A01 decision package — disposable L2 controls fixtures
+# Withdrawn A01 package — historical disposable L2 controls fixtures
 
-**Status:** Prepared for owner decision; no volumes, partitions, filesystems,
+## Current disposition — withdrawn, 2026-10-17
+
+The owner's latest
+[`025-existing-hosts-three-lane-scope.md`](../040-improvments/040-dev-qas-prd-three-machine-lanes/025-existing-hosts-three-lane-scope.md)
+replaces this request with `SIMPLE-01` through `SIMPLE-07`: PRD unsuffixed,
+Dev `-dev`, and QAS `-qas` on each existing Mac/Ubuntu host, using ordinary
+directories on existing disks and the same users. This package's paid OCI
+volumes, two physical Mac disks, formatting/erasure and later additional storage
+allocation are **withdrawn from the assignment**. No purchase, cloud spend,
+provisioning, device erasure, cgroup migration or reboot is authorized here.
+
+The commands, estimates and source results below are preserved as history,
+not an active approval request. Unrun advanced F tests are superseded/out of
+scope, not PASS, and do not block the SIMPLE track. Keep existing PRD, shared
+Go caches and retained work untouched. No fixture provisioning or live test
+is claimed by this scope amendment.
+
+## Historical proposal — not active instructions
+
+**Historical status:** Prepared for owner decision; no volumes, partitions, filesystems,
 mounts, quotas, services, boot settings, firewall rules, or credentials have
 been changed. This package provisions only disposable F-test fixtures. It does
 not provision the real Dev/QAS/management storage described separately in
 [`LANES-PREP-00.md`](LANES-PREP-00.md), and does not unblock `LANES-L3-19` by
 itself.
 
-## 1. Decision requested
+## 1. Historical decision request — withdrawn
 
 Approve or decline the following bounded fixture preparation:
 

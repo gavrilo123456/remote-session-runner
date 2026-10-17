@@ -1,5 +1,13 @@
 # Initial idea: Dev, QAS, and PRD release lanes
 
+> **Superseded scope — 2026-10-17.** The authoritative
+> [existing-hosts three-lane profile](025-existing-hosts-three-lane-scope.md)
+> replaces the expanded architecture and prerequisites below. The remaining
+> body is historical design context, preserved with its headings and tables;
+> it is not an active instruction to provision resources or bootstrap services.
+> Follow the revised 015 plan and 020 handbook. Prior source/test evidence stays
+> historical evidence, not proof that an unrun operation passed.
+
 **Status:** reviewed implementation direction. The detailed design and phased
 plan define the isolation, promotion, capacity, and migration gates. No lane
 service, mailbox, credential, firewall, or deployment has changed yet.

@@ -1,5 +1,15 @@
 # Detailed design: Dev, QAS, and PRD release lanes
 
+> **Superseded scope — 2026-10-17.** The authoritative
+> [existing-hosts three-lane profile](025-existing-hosts-three-lane-scope.md)
+> replaces this expanded design wherever they differ. The entire remaining
+> body is historical and superseded as an implementation assignment; its
+> headings, tables and existing code/evidence are retained for traceability.
+> New volumes, privileged fixtures, dedicated SSH daemons, reboot/cgroup
+> migration and the root release/PKI/ledger stack below are not prerequisites
+> to the active three-lane scope. Follow the revised 015 plan and 020 handbook;
+> no historical NOT RUN or blocked gate becomes PASS through this reset.
+
 **Status:** reviewed implementation design. It defines the source work needed
 before any lane is installed. It does not authorize a service, mailbox,
 credential, firewall, or runtime-configuration change. Every live change still

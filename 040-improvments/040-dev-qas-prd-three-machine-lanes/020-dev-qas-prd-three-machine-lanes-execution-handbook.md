@@ -1,5 +1,109 @@
 # Execution handbook: Dev, QAS, and PRD lanes
 
+## Active execution: the existing-hosts profile
+
+**Owner scope reset — 2026-10-17.** Follow the
+[active profile](025-existing-hosts-three-lane-scope.md) and the plan's
+**SIMPLE-01 → SIMPLE-07** sequence. This section supersedes the former
+L0–L7, proof-tier and A01–A10 requirements below. The old tables are historical
+contracts preserved with their code/tests and evidence, not the active work
+queue. Do not provision the withdrawn A01 fixtures or wait for their F gates.
+
+### Concrete implementation checklist
+
+1. Read `AGENTS.md`, the active profile, active plan, current ledger and evidence
+   for the unit being continued. Inventory the current implementation and reuse
+   applicable tested behavior. Record the exact Mac/source/primary/mirror/worker
+   revisions; installed service versions are separate facts. No fresh full read
+   of the superseded architecture is a prerequisite for every SIMPLE unit.
+2. Use existing accounts and ordinary directories on existing disks. Preserve
+   current unsuffixed PRD paths, mailboxes, configuration, keys, service labels
+   and listener routes. Dev/QAS must derive independent destinations, explicitly
+   select their release lane, and reject cross-lane aliases and collisions.
+   Keep standard shared Go caches; do not copy or purge them.
+3. On the Mac, install separate copies of the existing component group for
+   each lane, including local/locald; on every Ubuntu worker, install separate
+   `runnerd`, bridge/configuration and state for each lane. Labels/services use
+   `-dev`, `-qas`, or no suffix. Files inside a lane root need no repeated
+   suffix. Installed executables must not refer to mutable build output in the
+   source checkout. Keep every lane's configuration complete and independent.
+4. Keep HTTPS PRD `8443`, Dev `8444`, QAS `8445` and the existing SSH listener
+   on `22`. Bind each new restricted bridge key to its own fixed installed
+   bridge/config/socket. Use distinct lane/host mTLS identities and bindings
+   through the existing certificate workflow. Preserve unrelated SSH entries
+   and PRD trust. Do not install additional SSH daemons or a release authority.
+   Prepare exact firewall additions only if the existing route requires them.
+5. Start Dev/QAS with one running command and two sessions per lane per host;
+   existing policies still bound timeout/output/operations. Rotate component
+   task logs at 16 MiB with four retained files. Check real available space and
+   ordinary PRD health. Use controls already available without a host migration;
+   these limits do not reserve CPU/RAM or guarantee hostile-code isolation.
+6. Test changed code meaningfully before source delivery. Include configuration
+   and authentication refusal tests, selected-lane installer/process tests and
+   regression coverage appropriate to the edit. Existing advanced tests remain
+   useful source checks; they do not make excluded physical F tests mandatory.
+   Report unavailable platform/race checks as NOT RUN, never PASS by skipping.
+7. Build each host's candidate component bundle once. Record platform, toolchain,
+   Git SHA and component SHA-256 digests in a plain manifest outside secret
+   material. Use those same per-host bytes in Dev and QAS and, if promoted, PRD.
+   Rebuilding creates a new candidate; repeat candidate acceptance. First-time
+   Dev/QAS may use the stable current source without replacing installed PRD.
+8. Before any selected-lane update, block new admissions for that lane and
+   verify supported terminal disposition of its accepted work. Preserve uncertain
+   requests, ACKs and reservations; do not repair them through manual database
+   edits or replay. Take a consistent config/state backup on the existing
+   filesystem and record prior binary digests. Restart that lane only, then
+   verify actual installed identities, routes, health and capacity release.
+   Rollback must preserve later accepted work and database compatibility.
+9. Run the bounded acceptance matrix below on Dev, then the exact same candidate
+   on QAS. Keep installed PRD serving throughout these isolated actions. Gather
+   before/after PRD and other-lane identities and health; stop optional test load
+   if it degrades PRD. Do not reboot, change cgroups, fill disks or run pressure
+   fixtures. No PRD producer pause is required for an action proved independent
+   of PRD; otherwise stop and scope the shared impact before proceeding.
+10. Deliver each completed source unit S and evidence closeout E through Mac →
+    Gitea → verified automatic GitHub mirror → clean fast-forwarded workers,
+    under `AGENTS.md`. Update the SIMPLE ledger with actual results and exact
+    commands/hosts/digests. No runtime acceptance follows merely from a source
+    commit or an old historical PASS.
+
+### Bounded live acceptance matrix
+
+| Check | Required evidence |
+| --- | --- |
+| Three-instance coexistence | All selected lane components run on the existing Mac and each existing worker; independent roots/config/DB/socket/labels/ports; stable PRD versions remain installed. |
+| Route binding | Each lane reaches each of its three worker profiles over configured direct and queued transports, plus Mac-local where configured. Foreign-lane identity/endpoint/path combinations fail before creating work. |
+| Command behavior | Harmless command/output, requested timeout, permitted explicit limits, managed-session create/run/read/cancel/close, truthful terminal events and teardown. Each probe naturally lasts at most one minute and uses bounded output. |
+| Mailbox lifecycle | New uniquely owned probe IDs only; read complete output and terminal events before ACK; ACK only those probes; verify capacity release. Preserve historical requests, retained files and held ACKs. |
+| Selected-lane changes | Restart/update Dev and show unchanged QAS/PRD identities, routing and normal health. QAS uses the identical accepted per-host candidate digests. |
+| Stable promotion and rollback | Concrete PRD procedure, compatible backups/previous binaries and preserved request authority. Actual PRD replacement is optional until explicitly scheduled; record NOT RUN when current stable PRD is retained. |
+
+### Remaining operation-specific decisions
+
+Normal isolated implementation/setup proceeds within the owner's instruction;
+do not request a new general approval for every build, test or Dev/QAS service
+start. Existing SSH fallback and necessary restart authorization persist.
+An actual access failure, occupied port, unsafe existing-host capacity or
+unexpected shared effect must be evidenced and resolved before its operation.
+Only request a concrete missing action when it is really needed: for example,
+an unavailable certificate issuer or exact network-rule change. Do not turn
+that dependency into a new infrastructure programme.
+
+Before changing **PRD**, prepare the exact per-host candidate digests, affected
+components/paths, expected interruption, producer pause/drain, retained-work
+disposition, consistent backup, compatible rollback and postflight. Obtain
+explicit approval for that concrete maintenance, then repeat fresh applicable
+guards. The current exact B021/B024 case is handled only through its supported
+scoped recovery and its evidence; unrelated SIMPLE source work may continue.
+Do not restart unrelated services or stop other projects for convenience.
+
+## Historical advanced handbook — superseded scope
+
+The following sections preserve the earlier proposal, historical dispatch
+contracts and unit tables. Their mandatory wording does not override the active
+profile/checklist or create additional SIMPLE prerequisites. Physical F gates
+that were NOT RUN remain NOT RUN for that historical proposal.
+
 **Status:** complete execution breakdown and first-rollout decisions.
 `LANES-PREP-00` ran and is BLOCKED; `LANES-L0` has not started. This handbook
 is a mandatory companion to the

@@ -1,6 +1,35 @@
 # Complete lane execution handoff — planning review
 
-**Status:** planning review and its source delivery PASS. `LANES-PREP-00`
+## Current handoff — existing-host SIMPLE scope, 2026-10-17
+
+Follow the owner's latest
+[`025-existing-hosts-three-lane-scope.md`](../040-improvments/040-dev-qas-prd-three-machine-lanes/025-existing-hosts-three-lane-scope.md)
+and `SIMPLE-01` through `SIMPLE-07` in the phased plan/ledger. The assignment
+is three parallel lanes on the existing Mac and three Ubuntu workers: PRD
+unsuffixed, Dev `-dev`, QAS `-qas`. All seven SIMPLE units are NOT STARTED;
+this documentation amendment claims no source implementation or live result.
+
+Use existing users and ordinary directories on existing disks. Separate each
+lane's binaries, configuration, DB, sockets, mailboxes, workspaces, logs and
+keys; keep installed PRD pinned independently of source-checkout updates and
+operate only on the selected lane. Shared Go caches stay at their current paths.
+No new volume/APFS allocation, cgroup migration/reboot, dedicated sshd, root
+release authority or management bootstrap is required. The paid A01 fixture
+request is withdrawn; no procurement, provisioning or device erasure is assigned.
+
+The advanced plan, native F fixtures and bootstrap gates below are historical
+and superseded/out of scope, not PASS and not SIMPLE prerequisites. Preserve
+all historical test/delivery results. Current B021/B024 work stays bounded to
+its exact retained pair and held ACKs; no recovery or closure is implied.
+B022/B023 remain deferred and OPEN. Keep actual selected-lane tests, Git
+delivery, ownership, quiescence and the explicit scoped PRD-upgrade approval.
+The current stable PRD may stay installed at final three-lane acceptance;
+SIMPLE-06 prepares promotion/rollback, with its actual PRD upgrade NOT RUN until
+explicitly scheduled. Do not force a production migration to close the setup.
+
+## Historical planning review — superseded
+
+**Historical status:** planning review and its source delivery PASS. `LANES-PREP-00`
 remains BLOCKED and `LANES-L0` remains NOT STARTED. `LANES-B024-01` is PASS;
 `LANES-B024-02` remains BLOCKED on A08. `LANES-B021-01` passed its
 source-only gates at Source S2; `LANES-B021-02` is BLOCKED on A08,

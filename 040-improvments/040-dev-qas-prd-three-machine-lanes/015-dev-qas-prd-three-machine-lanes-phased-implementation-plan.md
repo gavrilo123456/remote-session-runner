@@ -1,5 +1,88 @@
 # Phased implementation plan: Dev, QAS, and PRD release lanes
 
+## Active plan: existing hosts, three parallel instances
+
+**Owner scope reset — 2026-10-17.** Implement only the
+[existing-hosts three-lane profile](025-existing-hosts-three-lane-scope.md):
+one existing Mac and the existing `linux-host`, `sandbox-host` and
+`factory-sandbox` workers, with PRD unsuffixed, Dev `-dev` and QAS `-qas`.
+Use their existing accounts, disks and filesystems. The current installed PRD
+continues working while Dev/QAS are prepared and used.
+
+This active section and the active handbook replace the former L0–L7 rollout
+as the assignment. Everything under **Historical advanced rollout** below is
+retained for traceability, not an additional requirement or implementation
+queue. Its compulsory new volumes, APFS fixtures, physical backup devices,
+cgroup migration/reboot, dedicated SSH daemons, release authority and PKI
+bootstrap are out of scope. The A01 allocation is withdrawn from this assignment.
+Previously blocked or unrun advanced gates remain truthful historical results;
+they are neither PASS nor prerequisites for this simpler rollout.
+
+### Active implementation order
+
+Start with SIMPLE-01; audit and reuse delivered code instead of rebuilding
+working parts. Existing advanced code may remain dormant. Reuse must not bring
+its excluded infrastructure or authority requirements into this profile.
+
+| Unit | Deliverable | Required completion evidence |
+| --- | --- | --- |
+| SIMPLE-01 | Inventory existing installations and audit reusable lane code. Freeze per-host component, path, port, key/profile and configuration maps for PRD/Dev/QAS under the active profile. | Record actual installed PRD identities separately from checkout HEAD; available disk/RAM, existing policies and current activity; identify exactly which source changes remain. No runtime mutation or provisioning. |
+| SIMPLE-02 | Complete lane selection, independent full configurations, path/service/port derivation, and authenticated route binding. Keep existing unsuffixed configuration compatible. | Focused configuration/routing tests reject cross-lane paths, collisions, credentials and endpoints before creating work. Prove all three remote profiles and configured Mac-local support resolve within their selected lane. |
+| SIMPLE-03 | Complete selected-lane installation, status/start/stop, immutable per-host component bundles and compatible rollback. | Temporary-root/process tests show Dev actions leave PRD/QAS installation and state untouched; backups are consistent, destinations are constrained, and uncertain retained work stops the affected change. Record SHA/toolchain/component digests without a new release-management service. |
+| SIMPLE-04 | Install and validate Dev on the Mac and all three existing workers, in ordinary separate directories. | Bounded acceptance across all configured direct/queued routes and Mac-local policy; no disk-pressure tests. Record installed digests, lane isolation, terminal/ACK/capacity results, and unchanged PRD identities and ordinary health. |
+| SIMPLE-05 | Promote the exact accepted per-host component bytes to QAS using its separate configuration and state. | Repeat bounded candidate acceptance on QAS while Dev and PRD continue. No rebuild or PRD replacement. |
+| SIMPLE-06 | Prepare the stable PRD promotion/rollback procedure and, when explicitly scheduled, upgrade only unsuffixed PRD to the QAS-tested per-host bytes. | Before any PRD change: concrete candidate/backup/rollback package, actual producer pause/drain and supported retained-work disposition, fresh affected-service guards and explicit maintenance approval. Verify PRD acceptance and preservation of Dev/QAS. If the owner keeps current PRD, record the procedure as ready and the upgrade as NOT RUN; three-lane operation does not require replacing stable PRD. |
+| SIMPLE-07 | Close operational documentation and prove the three lanes coexist on every existing host. | Exact commands for selecting/updating each lane, component/configuration locations, release identities, rollback and normal use. Verify restarting Dev leaves the other lanes unchanged; report actual resource limits and all remaining limitations. |
+
+SIMPLE-01–05 establish the requested parallel installations. SIMPLE-06 gives
+the controlled path for later stable releases; it must not force an otherwise
+unnecessary PRD migration. SIMPLE-07 may close the three-lane setup with the
+original stable PRD still installed and the optional PRD upgrade explicitly
+NOT RUN. Dependent source and deployment steps follow their own predecessors;
+unrelated future access or maintenance inputs do not freeze independent work.
+
+### Active workflow, evidence and operational boundaries
+
+Use `AGENTS.md` for authoritative Mac edits, primary Gitea push, exact automatic
+GitHub mirror verification, and clean fast-forward delivery to all three
+workers. Evidence is `040-implementation-evidence/SIMPLE-01.md` through
+`SIMPLE-07.md`, with statuses in the existing execution ledger. Record source
+revision S and evidence-only closeout E through that same delivery chain;
+neither embeds its own SHA. Use appropriate focused and regression checks for
+the actual change, native process checks where isolation depends on them, and
+the active profile's bounded live acceptance. Documentation-only changes need
+structural/review checks, not a full runtime suite or an installation.
+
+Runner remains the normal execution route. Existing owner authorization allows
+ordinary SSH builds, tests and setup when Runner cannot perform the required
+command. Use explicit identities and verified host keys; record the fallback
+reason. Do not request this authorization again. Necessary service restarts
+are already authorized, subject to the affected lane's actual work and safety
+guards. Restart only that lane. No setup step may silently change PRD or other
+projects, discard retained work, or require all PRD producers to pause for a
+purely isolated Dev/QAS action.
+
+The current B021/B024 retained case remains bounded and preserved under its
+existing evidence and supported recovery guards; it blocks an operation only
+when that operation touches its service/state. Unstarted BUG-022/023 baseline
+repairs remain deferred and open. Correct failures directly necessary for an
+active SIMPLE unit and its candidate acceptance; do not start another baseline
+bug campaign. A historical source PASS does not certify a new installed lane.
+
+Check real existing-host capacity and protect current PRD. Begin Dev/QAS with
+the modest concurrency/log limits in the active profile and supported existing
+controls. A genuine shortage blocks the affected setup with measured evidence;
+it does not authorize hardware purchases, new cloud resources, disk erasure,
+host-wide control changes or cleanup of other work. The active handbook defines
+the remaining operation-specific decisions; the old A01–A10 workflow is not a
+prerequisite for this assignment.
+
+## Historical advanced rollout — superseded scope
+
+The remainder preserves the earlier advanced proposal and its evidence links.
+Its normative wording applies only to that superseded proposal, not to the
+active SIMPLE sequence above.
+
 **Status:** reviewed implementation plan. It is deliberately serial. A failed
 or incomplete gate stops the next phase. L0–L5 preserve the existing unsuffixed
 Runner; once L6 begins changing PRD, failure follows its explicit abort or

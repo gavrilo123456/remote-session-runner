@@ -1,5 +1,24 @@
 # Repository workflow for Remote Session Runner
 
+## Current lane assignment — existing hosts only
+
+The owner's latest scope is authoritative: use the existing Mac and three
+Ubuntu workers, with PRD unsuffixed, Dev `-dev`, and QAS `-qas` running in
+parallel on each host. Follow
+[`025-existing-hosts-three-lane-scope.md`](040-improvments/040-dev-qas-prd-three-machine-lanes/025-existing-hosts-three-lane-scope.md)
+and the active `SIMPLE-01` through `SIMPLE-07` sequence in the phased plan.
+The earlier advanced `LANES-*` rollout and its unmet native F gates are
+superseded/out of scope, not PASS and not prerequisites of the SIMPLE track.
+
+Use ordinary directories on existing disks and the same existing users.
+Separate each lane's installed binaries, configuration, DB, sockets, mailboxes,
+workspaces, logs, and keys. Keep installed PRD pinned independently of checkout
+changes; installers, restarts, upgrades and rollback act only on the selected
+lane. No new volumes, APFS provisioning, cgroup migration, reboot, dedicated
+sshd, root release authority or management bootstrap is assigned. The former
+A01 paid OCI/physical-Mac-disk package is withdrawn; no procurement or erasure
+is authorized. Preserve existing PRD, shared caches and retained work.
+
 ## Authoritative source checkout
 
 Make all Runner source-code, test, schema, deployment-file, and project-documentation changes in the Mac checkout at `/Users/tomasz.walczuk/projects/remote-session-runner`. This checkout is the development source for the current PoC. Do **not** edit tracked project files directly in the Ubuntu checkout at `/home/ubuntu/projects/remote-session-runner`, and do not copy changed source files there with `scp` or `rsync`.
@@ -29,28 +48,18 @@ git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -
 git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' pull --ff-only origin dev
 ```
 
-If any required checkout is dirty, the primary/mirror commits differ, authentication fails, or a pull is not fast-forwardable, stop and report the exact state. Do not force-push, reset, overwrite local files, bypass the primary Gitea handoff, or skip mirror verification. The serial phase/test requirements in the applicable detailed phased implementation plan still apply. For Dev/QAS/PRD lane work, use the `LANES-*` sequence, evidence names, and source/evidence-closeout gates in `040-improvments/040-dev-qas-prd-three-machine-lanes/015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md`; preserve historical `Pnnn` evidence.
+If any required checkout is dirty, the primary/mirror commits differ, authentication fails, or a pull is not fast-forwardable, stop and report the exact state. Do not force-push, reset, overwrite local files, bypass the primary Gitea handoff, or skip mirror verification. The serial phase/test requirements in the applicable detailed phased implementation plan still apply. For Dev/QAS/PRD lane work, use the active `SIMPLE-*` sequence and evidence/closeout rules in `040-improvments/040-dev-qas-prd-three-machine-lanes/015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md`, its scope addendum, handbook and execution ledger; preserve historical `LANES-*` and `Pnnn` evidence without relabeling unrun work PASS.
 
-The lane plan's mandatory `020-dev-qas-prd-three-machine-lanes-execution-handbook.md`
-and `040-implementation-evidence/LANES-000-execution-ledger.md` already define
-the complete preparation, bug-prerequisite and L0–L7 unit order. Use that
-breakdown; do not defer milestone planning or fixed design decisions. Resolve
-each access, capacity, producer, and change dependency before the operation
-that needs it. Under the owner's incremental-readiness decision recorded in
-the lane plan, independent hermetic/source-only implementation and testing may
-proceed while an unrelated future provisioning or deployment input is pending;
-record the blocked predecessor evidence and do not imply a PASS. Preserve the
-plan's continuous live-transaction boundaries and exact approval checkpoints.
-
-The owner's latest lane-priority decision bounds existing baseline work to
-`LANES-B021-02` and its exact selected retained-teardown prerequisite. Defer
-the unstarted BUG-022/023 baseline units as OPEN, not PASS; the next independent
-source unit is `LANES-L1-01`, including while current maintenance is blocked
-under the incremental-readiness rule. Follow the amended plan/handbook/ledger.
-Required lane-candidate acceptance and corrections directly needed by an active
-lane unit remain mandatory. Record new standalone bugs without automatically
-adding their baseline repair to this assignment. This priority does not waive
-any test, Git-delivery, quiescence, ownership or operational-approval gate.
+Resolve actual access, capacity, producer and change dependencies before the
+operation that needs them. Independent source work may proceed while an
+unrelated live operation is blocked; record the blocker without implying PASS.
+Keep current B021/B024 retained work and held ACKs preserved within their
+existing exact scope; they are not a blanket prerequisite for independent
+SIMPLE source work. BUG-022/023 remain deferred and OPEN. Record new standalone
+bugs without automatically assigning a broader baseline repair campaign.
+Corrections directly needed by an active SIMPLE unit and its tests remain
+required. Preserve selected-lane acceptance, Git delivery, quiescence,
+ownership and explicit operational approvals, including the scoped PRD upgrade.
 
 ## Go cache and temporary files
 

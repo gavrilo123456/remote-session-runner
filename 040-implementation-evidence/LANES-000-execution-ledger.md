@@ -1,6 +1,47 @@
 # Lane execution ledger
 
-**Planning status:** complete ordered assignment. **Execution status:**
+## Current assignment — SIMPLE track, 2026-10-17
+
+The owner's latest scope in
+[`025-existing-hosts-three-lane-scope.md`](../040-improvments/040-dev-qas-prd-three-machine-lanes/025-existing-hosts-three-lane-scope.md)
+supersedes the advanced rollout below. Use the existing Mac and three Ubuntu
+workers, each running PRD unsuffixed, Dev `-dev`, and QAS `-qas` in parallel.
+The phased plan defines the active sequence and each unit's required tests and
+delivery evidence; this amendment records no implementation or live acceptance.
+
+| Active unit | Deliverable | Status |
+| --- | --- | --- |
+| `SIMPLE-01` | Inventory/reuse and fixed lane identity contract | NOT STARTED |
+| `SIMPLE-02` | Lane-aware configuration, authentication and routing | NOT STARTED |
+| `SIMPLE-03` | Selected-lane installers, pinned artifacts and rollback | NOT STARTED |
+| `SIMPLE-04` | Dev deployment and coexistence acceptance | NOT STARTED |
+| `SIMPLE-05` | QAS promotion of the exact tested artifact | NOT STARTED |
+| `SIMPLE-06` | PRD promotion/rollback procedure; actual upgrade only when scheduled | NOT STARTED |
+| `SIMPLE-07` | Operational documentation and three-lane acceptance | NOT STARTED |
+
+Use ordinary directories on existing disks and existing users; preserve shared
+Go caches. Keep lane binaries/configuration/DB/sockets/mailboxes/workspaces/logs/
+keys separate and installed PRD pinned independently of checkout changes. No
+new storage, APFS, cgroup migration/reboot, sshd, release authority or management
+bootstrap is required. The paid A01 fixture package is withdrawn; no procurement
+or device erasure is authorized. Historical unrun advanced F gates remain
+**superseded/out of scope, not PASS**, and do not block the SIMPLE track.
+
+The original stable PRD may remain installed while SIMPLE-07 closes the
+three-lane setup. In that case SIMPLE-06 records its promotion procedure as
+ready and the optional production upgrade as NOT RUN, not as a missing
+prerequisite for coexistence.
+
+Preserve current B021/B024 evidence, the retained pair
+`sess-d76592166342428ba1b7b703fc87bb35:cmd-6817a947ceec8c3e54fbcdc2b8f2fb30`,
+and held ACKs; no recovery, ACK or closure is claimed here. B022/B023 remain
+deferred and OPEN. Do not start a separate baseline bug campaign. Actual
+selected-lane safety, tests, Git delivery and scoped operational approvals
+remain required.
+
+## Historical advanced-track record — superseded
+
+**Historical planning status:** complete ordered assignment. **Execution status:**
 `LANES-PREP-00` is BLOCKED; `LANES-L0` is BLOCKED and NOT STARTED. The owner
 authorizes independent source-only implementation and testing to proceed when
 its exact inputs are available. `LANES-B024-01` is PASS as an independent
@@ -103,7 +144,7 @@ unit within that unit and its immutable candidate chain. Additional standalone
 baseline bug work requires a new owner instruction. Actual host protection,
 provisioning, operational approval and dependent live gates are unchanged.
 
-## Authoritative inputs and launch rule
+## Historical advanced-track inputs and launch rule
 
 - [Detailed design](../040-improvments/040-dev-qas-prd-three-machine-lanes/010-dev-qas-prd-three-machine-lanes-detailed-design.md)
 - [Milestone plan and S/E delivery rules](../040-improvments/040-dev-qas-prd-three-machine-lanes/015-dev-qas-prd-three-machine-lanes-phased-implementation-plan.md)
