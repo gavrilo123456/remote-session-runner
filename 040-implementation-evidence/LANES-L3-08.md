@@ -1,14 +1,16 @@
 # LANES-L3-08 — verified release cache and same-host backup recovery
 
-**State:** IN PROGRESS — Mac H and full source gates pass. The ordered field
-acceptance requires provisioned Linux storage/controller fixtures and approved
-Mac APFS fixtures that are not available. No unit PASS or evidence closeout E is
-claimed.
+**State:** BLOCKED — Source S `1844fb5abfd4dd5c6c7be731e5ac07fa9148c8ce`
+and registered H/source gates pass on Mac and all three synchronized Ubuntu
+checkouts. The required field acceptance needs Linux storage/controller
+fixtures and approved Mac APFS fixtures that are not available. No unit PASS or
+evidence closeout E is claimed.
 
 ## Pre-unit record and scope
 
-- Pre-unit Mac `dev` HEAD: `9a1b3e10276437a5006e124c925e583cf757bff0`, clean
-  before this unit's edits.
+- Pre-unit Mac `dev` HEAD: `9a1b3e10276437a5006e124c925e583cf757bff0`. The
+  worktree contained only the in-progress L3-08 builder/cache integration edits
+  completed in this unit; no unrelated changes were present.
 - The latest delivered L3-07 revision at that predecessor is
   `203447fd18cf1fbd9ec53d74c3ff7562925868cc`, with its evidence and synchronized
   validation recorded at the current predecessor HEAD. L3-07 remains BLOCKED
@@ -111,10 +113,45 @@ H/N, L3-08 H, full source gates, and focused race tests then passed. A Mac test
 fixture initially traversed `/tmp`'s symlink; it now uses `/private/tmp`. No
 failure was waived.
 
-The source revision and post-push host checks will be recorded after the
-required primary Gitea push, exact GitHub mirror verification, and clean
-fast-forward validation on all three Ubuntu checkouts. F is pending and will
-remain blocked until its real storage prerequisites exist.
+## Source S delivery and synchronized validation
+
+Source S is `1844fb5abfd4dd5c6c7be731e5ac07fa9148c8ce`, committed on Mac `dev`
+as `phase(LANES-L3-08): add verified cache and backup recovery`. The explicit
+identity push updated primary Gitea `origin/dev` to S. Git could not update the
+Mac's local `origin/dev` tracking ref in the initial sandboxed push; a direct
+Gitea `ls-remote` verified exact S, then an authorized `git fetch origin dev`
+updated the local tracking ref. Direct `ls-remote` verified automatic GitHub
+`github/dev` at exact S before any Ubuntu test.
+
+Before pulling, all three Ubuntu checkouts were clean on `dev` at
+`9a1b3e10276437a5006e124c925e583cf757bff0`, with `origin` pointing to the
+GitHub mirror. Each fast-forwarded from that exact predecessor to S with the
+configured `/home/ubuntu/.ssh/gavrilo123456-github` identity. Tests ran only
+after each checkout's clean `dev` status and exact S HEAD were confirmed.
+Normal SSH fallback ran checkout-local Go commands because they are not Runner
+mailbox work; no tracked source was edited or copied on Ubuntu.
+
+| Machine | Platform | L3-08 H | L3-07 H/N | `make check build` | Focused race | Final checkout |
+| --- | --- | --- | --- | --- | --- | --- |
+| `mac-control-plane` | Darwin arm64, Go 1.27.1 | PASS (7) | PASS (6/1) | PASS | PASS | Mac `dev`, S |
+| `linux-host` | Linux amd64, Go 1.27.1 | PASS (7) | PASS (6/1) | PASS | PASS | clean `dev`, S |
+| `sandbox-host` | Linux arm64, Go 1.27.1 | PASS (7) | PASS (6/1) | PASS | PASS | clean `dev`, S |
+| `factory-sandbox` | Linux amd64, Go 1.27.1 | PASS (7) | PASS (6/1) | PASS | NOT RUN — `CGO_ENABLED=0`, `cc` absent | clean `dev`, S |
+
+The Ubuntu gates ran these commands at S:
+
+```sh
+make test-lanes UNIT=LANES-L3-08 LANES_TIER=H
+make test-lanes UNIT=LANES-L3-07 LANES_TIER=H
+LANES_NATIVE_HOST_ID=<canonical-host-id> make test-lanes UNIT=LANES-L3-07 LANES_TIER=N
+make check build
+GOTOOLCHAIN=local /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/release -run '^TestLanesL30[78]' -count=1
+```
+
+The focused race command passed on `linux-host` and `sandbox-host`. Factory's
+Go toolchain reports `CGO_ENABLED=0` and no `cc` is installed, so its focused
+race test was not run. All three checkouts were rechecked clean on `dev` at S
+after validation. No required source gate failed or was waived.
 
 ## Field acceptance blockers
 
@@ -136,8 +173,15 @@ not prove distinct physical volumes, quotas, real saturation, reboot/device
 recovery, or production acceptance. Until those fixtures and approvals exist,
 L3-08 remains BLOCKED and cannot receive a PASS or evidence closeout E.
 
-## Synchronized delivery
+This blocked validation record and the ledger update are documentation-only
+closeout C, committed after S. C does not constitute evidence closeout E: the
+mandatory F acceptance remains blocked, so the unit and every dependent
+acceptance gate stay open.
 
-Source S and post-push machine results are pending in this initial in-progress
-record. This document is updated after the exact S revision is verified on Mac,
-Gitea, GitHub, `linux-host`, `sandbox-host`, and `factory-sandbox`.
+## Documentation delivery C
+
+The L3-08 source and synchronized validation record is committed separately
+from source S, after the required source gates and Ubuntu validation were
+complete. This documentation-only update changes this unit evidence and the
+execution ledger. It does not change the frozen source candidate at S or imply
+F acceptance, unit PASS, or E.
