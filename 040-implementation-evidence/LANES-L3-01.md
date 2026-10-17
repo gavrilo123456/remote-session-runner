@@ -1,9 +1,8 @@
 # LANES-L3-01 — canonical V1 release-record envelope
 
-**State:** IN PROGRESS — the Mac focused H gate and full source gates pass.
-Source S delivery and the three Ubuntu validations are not yet run. L2 remains
-BLOCKED at native F; this independent hermetic source unit does not pass L2 or
-claim L3-01 acceptance.
+**State:** BLOCKED — Source S, all four-platform H gates, and full source gates
+pass. L2-09 remains BLOCKED at native F, so this source-only exception does
+not pass the ordered predecessor or claim L3-01 acceptance/evidence closeout E.
 
 ## Predecessor and independence
 
@@ -80,7 +79,7 @@ The synthetic signing seeds exist only in tests. No new module dependency was
 added. No concurrency primitive or mutable runtime state was introduced, so a
 race-specific test is not applicable.
 
-## Mac source gates before S
+## Source gates on all four platforms
 
 Execution machine: `mac-control-plane`, Makefile-pinned Go 1.27.1 with the
 shared Mac `GOCACHE` and `GOMODCACHE`.
@@ -96,24 +95,48 @@ The first focused run exposed a test-key role setup mismatch for the authority
 successor vector. The trusted-key check was corrected to permit the current
 trusted authority key only when it is the payload's exact `previous_key_id`;
 the focused H gate and full source gates then passed. No test failure was
-suppressed. The full build emitted only non-fatal duplicate `-lproc` linker
+suppressed. The full Mac build emitted only non-fatal duplicate `-lproc` linker
 warnings for existing Runner test binaries.
 
-## Source S delivery and remaining gates
+## Source S delivery and synchronized validation
 
-Source S is the pending Mac `dev` commit containing this evidence and the L3-01
-source changes. Its exact SHA is recorded after delivery. Before delivery, no
-Ubuntu test has run against this revision.
+Source S is `f87dfa1a5f8f10fe9664f1c6e87c7a7517496bed`, committed on Mac `dev`
+as `phase(LANES-L3-01): add canonical release record envelopes`. The Gitea
+primary push succeeded. Direct reads of Gitea `origin/dev` and automatic
+GitHub mirror `github/dev` both resolved to exact S. Git could not update the
+Mac's local `origin/dev` tracking ref because it could not create
+`.git/refs/remotes/origin/dev.lock`; this did not affect the push, and both
+remote refs were verified directly.
 
-The following remain NOT RUN until S has been pushed to Gitea, its exact GitHub
-mirror SHA verified, and all three clean Ubuntu `dev` checkouts fast-forwarded:
+Before pull, all three Ubuntu checkouts were clean on `dev` at
+`d700a96064027594772d9deeaeaa9ded8f6f706a`. Each fast-forwarded from the
+verified GitHub mirror using the configured explicit pull identity and strict
+host-key checking. Each ran the focused H gate and `make check build` at exact
+S, exited zero, and remained clean on `dev` at S. No source was edited or
+copied directly on Ubuntu.
 
-- `make test-lanes UNIT=LANES-L3-01` on `linux-host`, `sandbox-host`, and
-  `factory-sandbox`.
-- `make check build` on those three hosts.
+| Machine | Before pull | Source S after validation | Result |
+| --- | --- | --- | --- |
+| `mac-control-plane` | `d700a96064027594772d9deeaeaa9ded8f6f706a` | `f87dfa1a5f8f10fe9664f1c6e87c7a7517496bed` | H PASS; `make check build` PASS; clean `dev` |
+| `linux-host` | `d700a96064027594772d9deeaeaa9ded8f6f706a` | `f87dfa1a5f8f10fe9664f1c6e87c7a7517496bed` | fast-forward; H PASS; `make check build` PASS; clean `dev` |
+| `sandbox-host` | `d700a96064027594772d9deeaeaa9ded8f6f706a` | `f87dfa1a5f8f10fe9664f1c6e87c7a7517496bed` | fast-forward; H PASS; `make check build` PASS; clean `dev` |
+| `factory-sandbox` | `d700a96064027594772d9deeaeaa9ded8f6f706a` | `f87dfa1a5f8f10fe9664f1c6e87c7a7517496bed` | fast-forward; H PASS; `make check build` PASS; clean `dev` |
 
-All validation must use the exact synchronized S revision. No source is to be
-edited or copied directly on Ubuntu. No installed, live, acceptance, or
-production behavior is inferred from H/source gates. L3-02 is dependent on
-L3-01's delivered and accepted protocol predecessor; it cannot start until the
-ordered phase/unit gates permit its predecessor closeout.
+Mac SSH printed a warning when it could not rewrite `known_hosts` under the
+workspace write restriction. `StrictHostKeyChecking=yes` succeeded for each
+host command; no host-key file was changed.
+
+## Acceptance blocker and next source work
+
+L3-01 remains BLOCKED from acceptance because its ordered L2 predecessor
+L2-09 has no native F or evidence closeout E. The exact missing prerequisites
+remain the L2-07 Linux devices/controller requirements and L2-08 disposable
+Mac APFS fixtures documented above. L3-01 source/H results do not satisfy
+those gates and do not infer any install, live behavior, or lane acceptance.
+
+Under the owner's incremental-readiness authorization, an independent L3-02
+hermetic schema source unit may use this delivered, four-platform-tested S as
+its source predecessor while recording L3-01's blocked acceptance and the
+unchanged L2-09 blocker. That source work cannot claim an L3-01 PASS or permit
+any dependent live gate; L2 acceptance still requires its missing native F and
+evidence closeout E.
