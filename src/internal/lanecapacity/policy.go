@@ -128,7 +128,7 @@ type StorageVolume struct {
 }
 
 type Measurement struct {
-	ID               string          `json:"id"`
+	ID               string          `json:"id"` // Local observation identifier; distinct from its signed envelope record ID.
 	Identity         Identity        `json:"identity"`
 	ObservedAt       time.Time       `json:"observed_at"`
 	ExpiresAt        time.Time       `json:"expires_at"`
@@ -232,7 +232,7 @@ type Policy struct {
 	HostID           string                `json:"host_id"`
 	Scope            Scope                 `json:"policy_scope"`
 	Lane             string                `json:"release_lane,omitempty"`
-	MeasurementID    string                `json:"capacity_measurement_attestation_id"`
+	MeasurementID    string                `json:"capacity_measurement_attestation_id"` // Bound to the signed envelope ID by release validation.
 	EvaluationDigest string                `json:"capacity_evaluation_digest"`
 	NotBefore        time.Time             `json:"not_before"`
 	NotAfter         time.Time             `json:"not_after"`
@@ -266,7 +266,7 @@ func ValidatePolicy(policy Policy, measurement Measurement, live LiveObservation
 		return fmt.Errorf("%w: live identity: %v", ErrIdentityChanged, err)
 	}
 	if policy.Version != 1 || !hostIDPattern.MatchString(policy.HostID) || policy.HostID != measurement.Identity.HostID ||
-		policy.MeasurementID != measurement.ID || !sha256DigestPattern.MatchString(policy.EvaluationDigest) {
+		!policyIDPattern.MatchString(policy.MeasurementID) || !sha256DigestPattern.MatchString(policy.EvaluationDigest) {
 		return ErrInvalidPolicy
 	}
 	digest, err := measurement.EvaluationDigest()

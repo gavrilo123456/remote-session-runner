@@ -332,9 +332,29 @@ func ValidateCapacityMeasurementAttestation(raw []byte) error {
 }
 
 // ValidateCapacityPolicy binds the policy to a verified measurement record,
-// its host and evaluation digest, then applies the existing capacity equations
-// at the measurement-bound policy start time. The caller verifies signatures.
+// its host and evaluation digest, then evaluates the policy against the
+// signed measurement itself. This is suitable for authority-side review of
+// the exact measured envelope; it does not prove a later host remeasurement.
+// The caller verifies record signatures and trust-chain state.
 func ValidateCapacityPolicy(raw []byte, measurementRecordID string, measurementAttestationRaw []byte) error {
+	if err := ValidatePayload("capacity_policy", raw); err != nil {
+		return err
+	}
+	var attestation capacityMeasurementPayload
+	if err := decodeStrict(measurementAttestationRaw, &attestation); err != nil {
+		return invalidL3Payload("capacity measurement attestation")
+	}
+	live := liveObservationFromMeasurement(attestation.Measurement)
+	return ValidateCapacityPolicyAgainstLiveObservation(raw, measurementRecordID, measurementAttestationRaw, live, attestation.Measurement.ObservedAt)
+}
+
+// ValidateCapacityPolicyAgainstLiveObservation binds a signed policy to the
+// exact measurement record and applies the same deterministic scope/envelope
+// equations to a fresh host observation. The caller must obtain live from the
+// protected host observer immediately before use and verify both record
+// signatures, host-key/authority-key chains, ledger, and revocation state.
+func ValidateCapacityPolicyAgainstLiveObservation(raw []byte, measurementRecordID string, measurementAttestationRaw []byte,
+	live lanecapacity.LiveObservation, now time.Time) error {
 	if err := ValidatePayload("capacity_policy", raw); err != nil {
 		return err
 	}
@@ -352,13 +372,16 @@ func ValidateCapacityPolicy(raw []byte, measurementRecordID string, measurementA
 		policy.NotAfter.After(measurementAttestation.Measurement.ExpiresAt) {
 		return invalidL3Payload("capacity policy measurement binding")
 	}
-	m := measurementAttestation.Measurement
-	live := lanecapacity.LiveObservation{Identity: m.Identity, ObservedAt: m.ObservedAt, ResourceCapacity: m.ResourceCapacity,
-		GoCachePaths: m.GoCachePaths, LinuxDevices: m.LinuxDevices, StorageVolumes: m.StorageVolumes, Usage: m.Usage}
-	if err := lanecapacity.ValidatePolicy(policy, m, live, policy.NotBefore); err != nil {
-		return fmt.Errorf("%w: capacity policy: %v", ErrInvalidPayload, err)
+	if err := lanecapacity.ValidatePolicy(policy, measurementAttestation.Measurement, live, now); err != nil {
+		return fmt.Errorf("%w: capacity policy: %w", ErrInvalidPayload, err)
 	}
 	return nil
+}
+
+func liveObservationFromMeasurement(m lanecapacity.Measurement) lanecapacity.LiveObservation {
+	return lanecapacity.LiveObservation{Identity: m.Identity, ObservedAt: m.ObservedAt, ResourceCapacity: m.ResourceCapacity,
+		GoCachePaths: append([]string(nil), m.GoCachePaths...), LinuxDevices: append([]lanecapacity.LinuxDevice(nil), m.LinuxDevices...),
+		StorageVolumes: append([]lanecapacity.StorageVolume(nil), m.StorageVolumes...), Usage: m.Usage}
 }
 
 // ValidatePKICertificateRequest checks the fixed per-host URI/IP/role tuple,

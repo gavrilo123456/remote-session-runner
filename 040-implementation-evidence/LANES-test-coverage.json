@@ -1168,7 +1168,15 @@
       "required_tiers": [
         "H",
         "F"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL314AuthorityAndHostVerificationAcceptBothPolicyScopes"},
+          {"package": "./src/internal/release", "name": "TestLanesL314RejectsPolicyBoundToDifferentMeasurementEnvelope"},
+          {"package": "./src/internal/release", "name": "TestLanesL314LiveRemeasurementRejectsChangedIdentityAndLowWater"},
+          {"package": "./src/internal/release", "name": "TestLanesL314MacScopesBindAPFSQuotaCacheBackupAndFreeFloor"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-15",
