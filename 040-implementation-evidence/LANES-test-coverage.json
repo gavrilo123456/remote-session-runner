@@ -1015,7 +1015,22 @@
       "required_tiers": [
         "H",
         "N"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL306PeerPoliciesRequireExactLinuxAndMacIdentities"},
+          {"package": "./src/internal/release", "name": "TestLanesL306ObserveEndpointAllowsOnlyConfiguredRunnerUID"},
+          {"package": "./src/internal/release", "name": "TestLanesL306ReleaseEndpointRejectsCallerChosenPathsAndBytes"},
+          {"package": "./src/internal/release", "name": "TestLanesL306AuthoritySnapshotIsPublicImmutableAndDetached"},
+          {"package": "./src/internal/release", "name": "TestLanesL306ProtocolEnvelopeIsBoundedAndClosed"},
+          {"package": "./src/internal/release", "name": "TestLanesL306EndpointOperationMatricesAreDisjoint"},
+          {"package": "./src/internal/release", "name": "TestLanesL306PeerExpectationRejectsIncompletePlatformRules"},
+          {"package": "./src/internal/release", "name": "TestLanesL306FixedEndpointPathInventory"}
+        ],
+        "N": [
+          {"package": "./src/internal/release", "name": "TestLanesL306NativePeerEvidence"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-07",
