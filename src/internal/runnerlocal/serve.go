@@ -285,11 +285,11 @@ type mailboxRuntime struct {
 // secret-file contents. Mailbox paths stay untouched until Serve has made the
 // configured set durable.
 func New(configPath string) (*Service, error) {
-	if err := ensureMacServiceRoot(config.MacServiceRoot); err != nil {
-		return nil, err
-	}
 	loaded, settings, mailboxDefinitions, err := loadSelectedMacConfig(configPath)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureMacServiceRoot(settings.ServiceRoot); err != nil {
 		return nil, err
 	}
 	// Open only the existing state directory before validating that this
@@ -370,7 +370,7 @@ func New(configPath string) (*Service, error) {
 		remoteDriver: remoteDriver, routerHealth: routerHealth,
 		remoteEndpoints:    queuedBridgeEndpoints(loaded),
 		mailboxDefinitions: configuredMailboxDefinitions(mailboxDefinitions),
-		legacyMailboxSet:   legacyDefaultMailboxBaseline(),
+		legacyMailboxSet:   configuredMailboxBaseline(mailboxDefinitions),
 		mailboxSettings:    settings, mailboxConfig: mailboxDefinitions,
 		mailboxOwner: owner, mailboxResolver: &loaded, mailboxMetrics: mailboxMetrics,
 		pollInterval: defaultPollInterval, remoteProbe: remoteDriver.ProbeProfiles,
@@ -419,11 +419,11 @@ func validateConfiguredMailboxWork(ctx context.Context, authority *store.Authori
 	if authority == nil || len(definitions) == 0 {
 		return errors.New("configured mailbox work cannot be validated")
 	}
-	return authority.ValidateConfiguredMailboxSet(ctx, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline())
+	return authority.ValidateConfiguredMailboxSet(ctx, configuredMailboxDefinitions(definitions), configuredMailboxBaseline(definitions))
 }
 
 func validateRetainedMailboxSet(ctx context.Context, databasePath string, definitions []config.MailboxDefinition) error {
-	return store.ValidateConfiguredMailboxSetAtPath(ctx, databasePath, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline())
+	return store.ValidateConfiguredMailboxSetAtPath(ctx, databasePath, configuredMailboxDefinitions(definitions), configuredMailboxBaseline(definitions))
 }
 
 // validateConfiguredMailboxRetirement is the explicit read-only retirement
@@ -436,7 +436,7 @@ func validateConfiguredMailboxRetirement(ctx context.Context, databasePath strin
 }
 
 func resolveConfiguredMailboxRetirement(ctx context.Context, databasePath string, definitions []config.MailboxDefinition, retirement store.MailboxRetirement) (store.MailboxConfiguration, error) {
-	return store.ValidateConfiguredMailboxRetirementAtPath(ctx, databasePath, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline(), retirement)
+	return store.ValidateConfiguredMailboxRetirementAtPath(ctx, databasePath, configuredMailboxDefinitions(definitions), configuredMailboxBaseline(definitions), retirement)
 }
 
 // registerConfiguredMailboxWork is used only at the installer's irreversible
@@ -453,7 +453,7 @@ func registerConfiguredMailboxWork(ctx context.Context, databasePath string, def
 	if err != nil {
 		return err
 	}
-	return authority.RegisterConfiguredMailboxSet(ctx, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline())
+	return authority.RegisterConfiguredMailboxSet(ctx, configuredMailboxDefinitions(definitions), configuredMailboxBaseline(definitions))
 }
 
 // retireConfiguredMailboxWork changes durable registry state only at the
@@ -473,7 +473,7 @@ func retireConfiguredMailboxWork(ctx context.Context, databasePath string, defin
 	if err != nil {
 		return err
 	}
-	_, err = authority.RetireConfiguredMailboxSet(ctx, configuredMailboxDefinitions(definitions), legacyDefaultMailboxBaseline(), retirement)
+	_, err = authority.RetireConfiguredMailboxSet(ctx, configuredMailboxDefinitions(definitions), configuredMailboxBaseline(definitions), retirement)
 	return err
 }
 
@@ -563,6 +563,19 @@ func legacyDefaultMailboxBaseline() []store.MailboxConfiguration {
 	return []store.MailboxConfiguration{{
 		ID: store.DefaultMailboxID, Root: filepath.Join(config.MacServiceRoot, "mailbox"),
 	}}
+}
+
+// configuredMailboxBaseline uses the selected V3 lane's default inbox when a
+// database has not yet registered its mailbox set. Legacy V1/V2 configurations
+// still resolve to the unsuffixed PRD root through their validated default
+// mailbox definition.
+func configuredMailboxBaseline(definitions []config.MailboxDefinition) []store.MailboxConfiguration {
+	for _, definition := range definitions {
+		if definition.ID == store.DefaultMailboxID && definition.Root != "" {
+			return []store.MailboxConfiguration{{ID: definition.ID, Root: definition.Root}}
+		}
+	}
+	return legacyDefaultMailboxBaseline()
 }
 
 func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *store.AuthorityStore, owner domain.ControllerIdentity, operations mailbox.SessionOperations, resolver mailbox.MailboxExecutionResolver, reconciliationDeadline time.Duration) ([]mailboxRuntime, error) {
@@ -1279,7 +1292,7 @@ func (h *macIngressShutdown) CloseStreams(context.Context) error {
 }
 
 func ensureMacServiceRoot(root string) error {
-	if root != config.MacServiceRoot || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+	if !isCanonicalMacServiceRoot(root) {
 		return errors.New("selected Mac service root is invalid")
 	}
 	info, err := os.Lstat(root)
@@ -1301,7 +1314,7 @@ func ensureMacServiceRoot(root string) error {
 }
 
 func validateMacServiceRoot(root string) error {
-	if root != config.MacServiceRoot || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+	if !isCanonicalMacServiceRoot(root) {
 		return errors.New("selected Mac service root is invalid")
 	}
 	info, err := os.Lstat(root)
@@ -1318,6 +1331,19 @@ func validateMacServiceRoot(root string) error {
 		return errors.New("Mac service root must be mode 0700")
 	}
 	return nil
+}
+
+func isCanonicalMacServiceRoot(root string) bool {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return false
+	}
+	for _, lane := range []config.ReleaseLane{config.ReleaseLanePRD, config.ReleaseLaneDev, config.ReleaseLaneQAS} {
+		namespace, err := config.DeriveSimpleLaneNamespace(config.HostKindMac, lane, "")
+		if err == nil && root == namespace.ServiceRoot {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureMacServicePaths(settings config.MacSettings, mailboxRoots ...string) error {

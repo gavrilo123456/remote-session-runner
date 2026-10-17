@@ -14,7 +14,7 @@ delivery evidence; this amendment records no implementation or live acceptance.
 | `SIMPLE-01` | Inventory/reuse and fixed lane identity contract | PASS — read-only inventory/source audit; [evidence](SIMPLE-01.md) |
 | `SIMPLE-02` | Lane-aware configuration, authentication and routing | PASS — source gates and synchronized worker validation complete; live acceptance NOT RUN until SIMPLE-04; [evidence](SIMPLE-02.md) |
 | `SIMPLE-03` | Selected-lane installers, pinned artifacts and rollback | PASS — source, primary/mirror delivery, and synchronized worker validation; live lane acceptance is SIMPLE-04; [evidence](SIMPLE-03.md) |
-| `SIMPLE-04` | Dev deployment and coexistence acceptance | NOT STARTED |
+| `SIMPLE-04` | Dev deployment and coexistence acceptance | IN PROGRESS — first Mac start exposed and stopped on selected-lane mailbox/root validation; zero-work evidence preserved; source correction and focused regressions pass on Mac, Mac `make check` PASS; rebuild/delivery, retry, Ubuntu installs, public factory 8444 ingress and full live acceptance remain; [evidence](SIMPLE-04.md) |
 | `SIMPLE-05` | QAS promotion of the exact tested artifact | NOT STARTED |
 | `SIMPLE-06` | PRD promotion/rollback procedure; actual upgrade only when scheduled | NOT STARTED |
 | `SIMPLE-07` | Operational documentation and three-lane acceptance | NOT STARTED |
