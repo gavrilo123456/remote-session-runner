@@ -109,17 +109,58 @@ from `Makefile`.
 - `GOCACHE=/private/tmp/remote-session-runner-gocache GOMODCACHE=/private/tmp/remote-session-runner-gomodcache GOTOOLCHAIN=local go test -race ./src/internal/store ./src/internal/mailbox ./src/internal/localapi ./src/internal/opshealth -run '^TestLanesL111' -count=1` — PASS on Mac (`CGO_ENABLED=1`, `/usr/bin/cc` available).
 - `gofmt -l` over changed Go files, `jq empty 040-implementation-evidence/LANES-test-coverage.json`, and `git diff --check` — PASS.
 
-## Source S and post-delivery gates
+## Source S and synchronized validation
 
-Source S commit, Gitea push, exact GitHub mirror verification, and all three
-clean Ubuntu fast-forward pulls: NOT RUN. Required H/full/vet/build/smoke/race
-validation on synchronized Ubuntu `dev` checkouts: NOT RUN. Evidence closeout E
-and runtime installation/live acceptance: NOT RUN. L1-11 remains IN PROGRESS;
-no unit PASS is claimed until S delivery, remaining source gates, and E delivery
-are complete.
+Source S is `4cb60b2545622c0415d424ef2d3bd46cd1280209` on Mac `dev`.
+
+- Mac commit: `phase(LANES-L1-11): gate Mac and mailbox admission`.
+- Mac primary `origin/dev` (Gitea): exact S verified with
+  `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote origin refs/heads/dev`.
+  The push updated Gitea from `7b48a04` to S. The managed filesystem then
+  denied updating the local `refs/remotes/origin/dev` tracking ref; direct
+  `ls-remote` verified the authoritative branch at S.
+- Mac `github/dev`: exact S verified with the configured GitHub identity and
+  `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev`.
+- All three Ubuntu checkouts were clean on `dev` at predecessor E
+  `7b48a042f31ef42e934eb330b13fdf806499ea97` before pull, with the expected
+  GitHub mirror as `origin`. Each used `git pull --ff-only origin dev` with
+  `/home/ubuntu/.ssh/gavrilo123456-github`, `IdentitiesOnly=yes`,
+  `BatchMode=yes`, and `StrictHostKeyChecking=yes`. Every post-pull checkout
+  was clean on `dev` at exact S before and after validation.
+
+| Host | SSH alias and explicit login identity | H | Full `make test` | `make vet` | `make build` | `make smoke` | Focused race |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Mac `mac-control-plane` | Local Mac checkout | PASS | PASS | PASS | PASS | PASS | PASS; cgo and `/usr/bin/cc` available |
+| `linux-host` | `remote-session-runner`; `/Users/tomasz.walczuk/.ssh/remote-session-runner` | PASS | PASS | PASS | PASS | PASS | PASS; cgo and `/usr/bin/cc` available |
+| `sandbox-host` | `sandbox.env`; `/Users/tomasz.walczuk/.ssh/dev.slidestud.io` | PASS | PASS | PASS | PASS | PASS | PASS; cgo and `/usr/bin/cc` available |
+| `factory-sandbox` | `factory-sandbox`; `/Users/tomasz.walczuk/.ssh/factory-sandbox` | PASS | PASS | PASS | PASS | PASS | NOT RUN; `CGO_ENABLED=0`, no `cc` |
+
+Ubuntu gate commands on each applicable host were `make test-lanes
+UNIT=LANES-L1-11 LANES_TIER=H`, `make test`, `make vet`, `make build`, and
+`make smoke`; race-capable hosts additionally ran
+`/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/store ./src/internal/mailbox ./src/internal/localapi ./src/internal/opshealth -run '^TestLanesL111' -count=1`.
+All commands ran from `/home/ubuntu/projects/remote-session-runner` at exact S.
+After committing S, the Mac reran `make test-lanes UNIT=LANES-L1-11
+LANES_TIER=H`, `make test`, `make vet`, `make build`, `make smoke`, and the
+cache-configured focused race command listed above. All passed with Mac `HEAD`
+at exact S. The Mac full-suite sandbox denial and successful normal-permission
+rerun are recorded in the pre-S results; the exact-S `make test` rerun also
+used normal Mac process permissions.
+
+## Evidence closeout and acceptance state
+
+The implementation and synchronized source gates for L1-11 pass. This unit
+evidence and the ledger update are its evidence-only closeout E. E must be
+pushed to primary Gitea, verified at the exact GitHub mirror SHA, and
+fast-forwarded to all three clean Ubuntu checkouts before the next unit can
+advance. The next unit preflight records E's final delivery SHA. No service
+installation, V3 runtime attestation, production change, or live lane
+acceptance is claimed.
+`LANES-B021-02` and `LANES-B024-02` remain BLOCKED; their evidence and retained
+work were untouched. BUG-022/023 remain deferred/open.
 
 ## Rollback and production impact
 
-There is no installed V3 lane state to roll back. A source correction will use
-a successor commit through the required Git workflow; no shared history will
-be reset or force-pushed. This unit performs no production or service change.
+There is no installed V3 lane state to roll back. A source correction would use
+a successor commit through the required Git workflow; no shared history was
+reset or force-pushed. This unit performed no production or service change.
