@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -18,10 +19,22 @@ import (
 
 type State string
 
+type AdmissionStatus string
+
 const (
 	StateReady    State = "ready"
 	StateDegraded State = "degraded"
 	StateNotReady State = "not_ready"
+
+	AdmissionClosed AdmissionStatus = "closed"
+	AdmissionOpen   AdmissionStatus = "open"
+	AdmissionFenced AdmissionStatus = "fenced"
+)
+
+var (
+	releaseRevisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	releaseDigestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	componentPattern       = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
 // Check reports one dependency or operational component. Reason is a stable,
@@ -45,6 +58,61 @@ type Report struct {
 	ObservedAt    time.Time `json:"observed_at"`
 	Checks        []Check   `json:"checks"`
 	Metrics       *Metrics  `json:"metrics,omitempty"`
+	// ReleaseAttestation is emitted only by the explicit V3 health/status
+	// routes. The legacy health JSON remains byte-shape compatible with V2.
+	ReleaseAttestation *ReleaseAttestation `json:"-"`
+}
+
+// ReleaseAttestation contains only bounded release identity fields safe for
+// the versioned V3 status surfaces. Runtime composition must supply values
+// read from its validated installed candidate/configuration; callbacks and
+// requests cannot promote an unattested V2 service to V3.
+type ReleaseAttestation struct {
+	ReleaseLane         string          `json:"release_lane"`
+	SourceRevision      string          `json:"source_revision"`
+	ArtifactDigest      string          `json:"artifact_digest"`
+	ConfigurationDigest string          `json:"configuration_digest"`
+	SchemaVersion       int             `json:"schema_version"`
+	AdmissionStatus     AdmissionStatus `json:"admission_status"`
+}
+
+func (a ReleaseAttestation) validForServingRevision(servingRevision string) bool {
+	if a.ReleaseLane != "dev" && a.ReleaseLane != "qas" && a.ReleaseLane != "prd" {
+		return false
+	}
+	if !releaseRevisionPattern.MatchString(a.SourceRevision) || servingRevision == "unattested" || a.SourceRevision != servingRevision {
+		return false
+	}
+	if !releaseDigestPattern.MatchString(a.ArtifactDigest) || !releaseDigestPattern.MatchString(a.ConfigurationDigest) || a.SchemaVersion != 3 {
+		return false
+	}
+	switch a.AdmissionStatus {
+	case AdmissionClosed, AdmissionOpen, AdmissionFenced:
+		return true
+	default:
+		return false
+	}
+}
+
+func validReadiness(state State) bool {
+	switch state {
+	case StateReady, StateDegraded, StateNotReady:
+		return true
+	default:
+		return false
+	}
+}
+
+// V3HealthResponse is a deliberately small allowlisted view. It excludes
+// filesystem locations, credentials, resource identifiers, and the detailed
+// V2 component/metrics report.
+type V3HealthResponse struct {
+	APIVersion         string             `json:"api_version"`
+	Component          string             `json:"component"`
+	Liveness           string             `json:"liveness"`
+	Readiness          State              `json:"readiness"`
+	ObservedAt         time.Time          `json:"observed_at"`
+	ReleaseAttestation ReleaseAttestation `json:"release_attestation"`
 }
 
 // Metrics contains bounded, low-cardinality operational measurements. It has
@@ -224,7 +292,8 @@ func AddMetrics(report Report, metrics Metrics, recorder *Recorder, monitor *Thr
 // only for those paths, allowing the caller to keep health routes separate
 // from its application API and to share the same report with doctor.
 func ServeHealth(component string, w http.ResponseWriter, r *http.Request, report func(context.Context) Report) bool {
-	if r == nil || (r.URL.Path != "/health/live" && r.URL.Path != "/health/ready" && r.URL.Path != "/metrics") {
+	if r == nil || (r.URL.Path != "/health/live" && r.URL.Path != "/health/ready" && r.URL.Path != "/metrics" &&
+		r.URL.Path != "/v3/health/ready" && r.URL.Path != "/v3/status") {
 		return false
 	}
 	if r.Method != http.MethodGet {
@@ -245,6 +314,9 @@ func ServeHealth(component string, w http.ResponseWriter, r *http.Request, repor
 	if report != nil {
 		current = report(r.Context())
 	}
+	if r.URL.Path == "/v3/health/ready" || r.URL.Path == "/v3/status" {
+		return serveV3Status(component, w, r, current)
+	}
 	if r.URL.Path == "/metrics" {
 		if current.Metrics == nil {
 			http.Error(w, "metrics unavailable", http.StatusServiceUnavailable)
@@ -261,6 +333,33 @@ func ServeHealth(component string, w http.ResponseWriter, r *http.Request, repor
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	_ = json.NewEncoder(w).Encode(current)
+	return true
+}
+
+func serveV3Status(component string, w http.ResponseWriter, r *http.Request, report Report) bool {
+	if report.ReleaseAttestation == nil || !componentPattern.MatchString(component) ||
+		!report.ReleaseAttestation.validForServingRevision(buildinfo.Revision()) || !validReadiness(report.Readiness) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(struct {
+			Error string `json:"error"`
+		}{Error: "v3_attestation_unavailable"})
+		return true
+	}
+	observedAt := report.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	} else {
+		observedAt = observedAt.UTC()
+	}
+	response := V3HealthResponse{
+		APIVersion: "v3", Component: component, Liveness: "live",
+		Readiness: report.Readiness, ObservedAt: observedAt,
+		ReleaseAttestation: *report.ReleaseAttestation,
+	}
+	if r.URL.Path == "/v3/health/ready" && report.Readiness != StateReady {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_ = json.NewEncoder(w).Encode(response)
 	return true
 }
 

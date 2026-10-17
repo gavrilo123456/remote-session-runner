@@ -660,7 +660,13 @@ func (s *Server) GetCommandSnapshot(ctx context.Context, commandIDText string) (
 
 func mailboxOperationError(failure *localOperationFailure) *mailbox.SessionOperationError {
 	code := failure.code
+	retryable := failure.status >= 500
 	switch code {
+	case "lane_admission_closed":
+		// A closed lane is temporary. Keep the marker-last request pair so the
+		// processor can retry it after the exact V3 candidate is reopened.
+		code = "runtime_unavailable"
+		retryable = true
 	case "session_not_found":
 		code = "resource_not_found"
 	case "command_not_found":
@@ -670,5 +676,5 @@ func mailboxOperationError(failure *localOperationFailure) *mailbox.SessionOpera
 	case "database_unavailable":
 		code = "runtime_unavailable"
 	}
-	return &mailbox.SessionOperationError{Code: code, Message: failure.message, Retryable: failure.status >= 500}
+	return &mailbox.SessionOperationError{Code: code, Message: failure.message, Retryable: retryable}
 }

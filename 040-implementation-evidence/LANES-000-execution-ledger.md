@@ -8,8 +8,9 @@ source/evidence unit with the exact blocked-L0 record cited below. Baseline and
 live acceptance gates remain ordered and blocked by their own unmet
 prerequisites. The owner has since clarified that incremental readiness applies
 to successive independent source units: a blocked B021/B024 maintenance
-closeout is not a global prerequisite for ordered L1 source work. The current
-source sequence has delivered through `LANES-L1-10`. The unstarted B022/B023
+closeout is not a global prerequisite for ordered L1 source work. The source
+sequence is delivered through `LANES-L1-10`; `LANES-L1-11` is now IN PROGRESS.
+The unstarted B022/B023
 baseline units remain deferred.
 This ledger does not pass readiness, L0, any deferred bug gate or any live lane.
 
@@ -112,7 +113,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L1-08` | PASS | [Unit evidence](LANES-L1-08.md); eight H assertions and full source gates passed on Mac and all three clean Ubuntu `dev` checkouts at Source S `2a991507ad04668cf4180cd54f879ed694a0a236`. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). No publisher pause or live lane acceptance is claimed |
 | `LANES-L1-09` | PASS | [Reversible PRD fence and deferred-pair ledger](LANES-L1-09.md); ordered predecessor L1-08 evidence closeout E `36477d3cd598c2f98543a02fc1d7fd4c1b6cbf44`; corrected Source S2 `342ce30e2d23249404cb1c5c874d0436dc5ceb06` passed Mac and all three Ubuntu H/full/vet/build/smoke gates. Focused race passed on linux-host and sandbox-host; unavailable on factory-sandbox (`CGO_ENABLED=0`, no `cc`). Evidence closeout delivered and synchronized; no live lane acceptance is claimed |
 | `LANES-L1-10` | PASS | [Provisional ingress admission contexts](LANES-L1-10.md); Source S `10864883d428c7229740fe467b0b36c8301d2f4e` passed Mac and all three clean synchronized Ubuntu H/full/vet/build/smoke gates. Focused race passed on Mac, linux-host and sandbox-host; factory-sandbox race unavailable (`CGO_ENABLED=0`, no `cc`). No installed or live lane acceptance is claimed |
-| `LANES-L1-11` | NOT RUN | Not produced |
+| `LANES-L1-11` | IN PROGRESS | [Mac/local-intent/importer/ACK admission and safe status](LANES-L1-11.md); ordered predecessor L1-10 evidence closeout E `7b48a042f31ef42e934eb330b13fdf806499ea97`; hermetic source work only; B021/B024 maintenance remains explicitly blocked and unrelated |
 | `LANES-L1-12` | NOT RUN | Not produced |
 | `LANES-L1-13` | NOT RUN | Not produced |
 | `LANES-L2-01` | NOT RUN | Not produced |

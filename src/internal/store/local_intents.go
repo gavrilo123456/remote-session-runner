@@ -156,6 +156,12 @@ func (s *AuthorityStore) AcceptLocalIntent(ctx context.Context, input LocalInten
 	}
 	now := s.now().UTC()
 	result, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LocalIntentRecord, error) {
+		// Local API and mailbox adapters converge on this authority boundary.
+		// Check before even returning an idempotent receipt so a restarted or
+		// closed V3 process cannot admit a new local intent through replay.
+		if err := checkIngressAdmissionOnConnection(ctx, s, connection); err != nil {
+			return LocalIntentRecord{}, err
+		}
 		existing, found, lookupErr := lookupLocalIdempotencyOnConnection(ctx, connection, validated.Controller, validated.Operation, validated.IdempotencyKey, now)
 		if lookupErr != nil {
 			return LocalIntentRecord{}, lookupErr

@@ -226,6 +226,15 @@ func (s *AuthorityStore) acceptMailboxExchange(ctx context.Context, input Mailbo
 			duplicate = true
 			return byID, nil
 		}
+		// Exact retained request IDs above may replay their durable receipt.
+		// New mutating mailbox requests are ingress and must be rejected in
+		// this transaction while admission is closed. Read-only status requests
+		// remain available and no receipt is created for a blocked mutation.
+		if mailboxOperationRequiresLaneAdmission(validated.Operation) {
+			if err := checkIngressAdmissionOnConnection(ctx, s, connection); err != nil {
+				return MailboxExchangeRecord{}, err
+			}
+		}
 		if validated.IdempotencyKey != "" {
 			existing, found, err := readLatestMailboxExchangeByKeyOnConnection(ctx, connection, validated.MailboxID, validated.Controller, validated.Operation, validated.IdempotencyKey)
 			if err != nil {
@@ -878,6 +887,15 @@ func responseEventFileCommand(response []byte) (domain.CommandID, bool, error) {
 		return "", false, fmt.Errorf("%w: event-file command/path reference", ErrMailboxResponseInvalid)
 	}
 	return commandID, true, nil
+}
+
+func mailboxOperationRequiresLaneAdmission(operation string) bool {
+	switch operation {
+	case "create_session", "submit_command", "cancel_command", "close_session", "run":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateMailboxExchangeCreate(input MailboxExchangeCreate) (validatedMailboxExchangeCreate, error) {

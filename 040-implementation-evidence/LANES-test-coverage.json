@@ -475,7 +475,39 @@
       "id": "LANES-L1-11",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/store",
+            "name": "TestLanesL111LocalIntentAdmissionFailsClosedAcrossRestart"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLanesL111MailboxReceiptAdmissionPreservesKnownReadsAndRetries"
+          },
+          {
+            "package": "./src/internal/mailbox",
+            "name": "TestLanesL111MailboxRequestImportRetainsPairUntilOpen"
+          },
+          {
+            "package": "./src/internal/mailbox",
+            "name": "TestLanesL111AckImporterRetainsPairUntilAdmissionOpen"
+          },
+          {
+            "package": "./src/internal/mailbox",
+            "name": "TestLanesL111V1ResponseSchemaStaysUnchanged"
+          },
+          {
+            "package": "./src/internal/localapi",
+            "name": "TestLanesL111LocalAPIAndMailboxErrorsAreSafe"
+          },
+          {
+            "package": "./src/internal/opshealth",
+            "name": "TestLanesL111V3AttestationIsSafeAndV2HealthShapeStaysUnchanged"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L1-12",

@@ -57,6 +57,12 @@ func (s *AuthorityStore) AcknowledgeMailboxExchangeInMailbox(ctx context.Context
 	}
 	now := s.now().UTC()
 	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+		// ACK import consumes retained publisher evidence. Serialize it with
+		// admission closure so the ACK pair remains available for postflight or
+		// a later reopened lane.
+		if err := checkIngressAdmissionOnConnection(ctx, s, connection); err != nil {
+			return MailboxExchangeRecord{}, err
+		}
 		record, err := readMailboxExchangeOnConnection(ctx, connection, validated)
 		if err != nil {
 			return MailboxExchangeRecord{}, err

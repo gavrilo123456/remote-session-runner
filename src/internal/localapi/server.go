@@ -2256,6 +2256,8 @@ func validateObjectField(raw json.RawMessage, name string) error {
 
 func statusForStoreError(err error) (int, string) {
 	switch {
+	case errors.Is(err, store.ErrLaneAdmissionClosed):
+		return http.StatusLocked, "lane_admission_closed"
 	case errors.Is(err, store.ErrIdempotencyConflict):
 		return http.StatusConflict, "idempotency_conflict"
 	case errors.Is(err, store.ErrLocalIntentNotFound):
