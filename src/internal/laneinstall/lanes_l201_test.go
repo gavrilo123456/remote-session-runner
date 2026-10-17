@@ -335,18 +335,9 @@ func TestLanesL201NativeServiceTemplatesValidateOnSelectedHost(t *testing.T) {
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			verifyFiles = append(verifyFiles, filepath.Join("etc", "systemd", "system", name))
+			verifyFiles = append(verifyFiles, path)
 		}
-		for _, target := range []string{"network-online.target", "multi-user.target"} {
-			stub := filepath.Join(unitRoot, target)
-			if err := os.WriteFile(stub, []byte("[Unit]\nDescription=isolated lane template validation fixture\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			verifyFiles = append(verifyFiles, filepath.Join("etc", "systemd", "system", target))
-		}
-		args := append([]string{"--root=" + fixtureRoot, "verify"}, verifyFiles...)
-		command := exec.Command("/usr/bin/systemd-analyze", args...)
-		command.Dir = fixtureRoot
+		command := exec.Command("/usr/bin/systemd-analyze", append([]string{"verify"}, verifyFiles...)...)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("systemd-analyze native validation %s: %v: %s", lane, err, output)
 		}
