@@ -62,6 +62,12 @@ func TestLanesL307FixedBuildSealsSignsAndPublishesExactArtifact(t *testing.T) {
 	if !isLowerHexDigest(recordID) || fixture.exporter.calls != 1 || fixture.executor.calls != 1 {
 		t.Fatalf("build did not complete exactly once: id=%q export=%d build=%d", recordID, fixture.exporter.calls, fixture.executor.calls)
 	}
+	if _, err := service.AttestBuild(context.Background(), fixture.authorizationID); !errors.Is(err, ErrInvalidBuildRequest) {
+		t.Fatalf("one-use build authorization replay was accepted: %v", err)
+	}
+	if fixture.exporter.calls != 1 || fixture.executor.calls != 1 {
+		t.Fatalf("replayed authorization re-executed the build: export=%d build=%d", fixture.exporter.calls, fixture.executor.calls)
+	}
 	invocation := fixture.executor.last
 	if invocation.WorkspacePath == "" || invocation.OutputPath == "" || invocation.BuilderUID != uint32(os.Geteuid()) ||
 		invocation.ToolchainDigest != fixture.job.ToolchainDigest || invocation.BuildInputDigest != fixture.job.BuildInputDigest {
@@ -343,13 +349,21 @@ func l307TestPublisher(t *testing.T, directory string, signer SigningIdentity) *
 }
 
 type l307FakeResolver struct {
-	job VerifiedBuildJob
+	job     VerifiedBuildJob
+	claimed map[string]bool
 }
 
-func (f *l307FakeResolver) ResolveVerifiedBuildJob(_ context.Context, authorizationID string) (VerifiedBuildJob, error) {
+func (f *l307FakeResolver) ClaimVerifiedBuildJob(_ context.Context, authorizationID string) (VerifiedBuildJob, error) {
 	if authorizationID != strings.Repeat("c", 64) {
 		return VerifiedBuildJob{}, ErrInvalidBuildRequest
 	}
+	if f.claimed == nil {
+		f.claimed = make(map[string]bool)
+	}
+	if f.claimed[authorizationID] {
+		return VerifiedBuildJob{}, ErrInvalidBuildRequest
+	}
+	f.claimed[authorizationID] = true
 	return f.job, nil
 }
 

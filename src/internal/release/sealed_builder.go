@@ -59,7 +59,10 @@ type VerifiedBuildJob struct {
 }
 
 type VerifiedBuildJobResolver interface {
-	ResolveVerifiedBuildJob(context.Context, string) (VerifiedBuildJob, error)
+	// ClaimVerifiedBuildJob atomically consumes the one-use authorization ID and
+	// returns its verified tuple. Implementations persist the claim with the
+	// root-owned authorization journal before returning the job.
+	ClaimVerifiedBuildJob(context.Context, string) (VerifiedBuildJob, error)
 }
 
 // FixedSourceExporter exports the exact resolved commit without caller-supplied
@@ -140,7 +143,7 @@ func (s *SealedBuildService) AttestBuild(ctx context.Context, authorizationID st
 	if !isLowerHexDigest(authorizationID) {
 		return "", ErrInvalidBuildRequest
 	}
-	job, err := s.resolver.ResolveVerifiedBuildJob(ctx, authorizationID)
+	job, err := s.resolver.ClaimVerifiedBuildJob(ctx, authorizationID)
 	if err != nil {
 		return "", err
 	}
