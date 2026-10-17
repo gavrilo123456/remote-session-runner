@@ -1,6 +1,6 @@
 # Existing-hosts three-lane scope reset — 2026-10-17
 
-**State:** documentation/source checks PASS; delivery closeout IN PROGRESS.
+**State:** scope amendment and source-S delivery PASS.
 No SIMPLE implementation, installed lane or live acceptance is claimed.
 
 ## Owner decision
@@ -56,7 +56,44 @@ source contracts; they do not certify the active profile's implementation.
 
 ## Delivery and runtime boundary
 
-Source S and its primary/mirror/three-worker delivery will be recorded in the
-evidence-only closeout. No services, installed configuration, cloud/storage,
+Source S is `e7d49a33553399d566ee4d8a65190d2413451cce`.
+The Mac committed only the ten intended documentation files. Its primary push
+succeeded; the sandbox denied the local tracking-ref update, so actual remote
+refs were checked directly rather than treating the stale tracking ref as
+delivery failure. Primary Gitea and automatic GitHub mirror both returned S.
+Each Ubuntu checkout was freshly verified clean on `dev` before its ff-only
+pull; all then matched S and stayed clean. The three focused historical
+handbook-contract tests and `git diff --check` passed on every worker at S.
+
+| Surface | Verified revision | Result |
+| --- | --- | --- |
+| Mac `dev` | `e7d49a33553399d566ee4d8a65190d2413451cce` | Intended documentation source commit; checks PASS |
+| Gitea `origin/dev` | `e7d49a33553399d566ee4d8a65190d2413451cce` | Primary push and direct ref verification PASS |
+| GitHub `dev` | `e7d49a33553399d566ee4d8a65190d2413451cce` | Automatic mirror exact-S verification PASS |
+| `linux-host` `dev` | `e7d49a33553399d566ee4d8a65190d2413451cce` | Clean ff-only delivery and 3 focused checks PASS |
+| `sandbox-host` `dev` | `e7d49a33553399d566ee4d8a65190d2413451cce` | Clean ff-only delivery and 3 focused checks PASS |
+| `factory-sandbox` `dev` | `e7d49a33553399d566ee4d8a65190d2413451cce` | Clean ff-only delivery and 3 focused checks PASS |
+
+Mac push and ref verification used the exact identity commands in AGENTS,
+with `UpdateHostKeys=no`. Each Ubuntu pull used its explicit
+`/home/ubuntu/.ssh/gavrilo123456-github` identity and `--ff-only origin dev`.
+Worker test command, on each named Ubuntu host in the checkout:
+
+```sh
+# Ubuntu: linux-host, sandbox-host, factory-sandbox
+git diff --check
+GOTOOLCHAIN=local \
+/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go \
+test ./src/internal/lanetests \
+-run '^(TestLanesL101ManifestMatchesPlan|TestLanesL318PriorL3HermeticCoverageIsComplete|TestLanesL318ApprovalCheckpointsPreserveA01A06Order)$' \
+-count=1
+```
+
+This evidence-only closeout E follows the same primary/mirror/clean-worker
+delivery chain; its exact final hash and delivery are reported in the handoff,
+not embedded in its own content. All SIMPLE implementation units remain
+NOT STARTED; this PASS is the documentation correction only.
+
+No services, installed configuration, cloud/storage,
 firewall, credentials, mailbox requests, ACKs or retained work were changed.
 Only tracked documentation and source-checkout Git delivery are in scope here.
