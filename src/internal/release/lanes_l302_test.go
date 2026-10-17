@@ -32,8 +32,8 @@ func TestLanesL302SchemasCompileAndRejectOpenBuildFields(t *testing.T) {
 			t.Errorf("invalid payload error = %v, want ErrInvalidPayload", err)
 		}
 	}
-	if err := ValidatePayload("promotion_authorization", valid); !errors.Is(err, ErrUnsupportedPayloadType) {
-		t.Fatalf("unsupported L3-02 schema error = %v", err)
+	if err := ValidatePayload("promotion_authorization", valid); !errors.Is(err, ErrInvalidPayload) {
+		t.Fatalf("closed L3-03 schema rejected malformed promotion payload with = %v", err)
 	}
 }
 

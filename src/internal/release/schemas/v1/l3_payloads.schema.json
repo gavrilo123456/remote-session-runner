@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/release/v1/l3_payloads.schema.json",
+  "$defs": {
+    "lane": {"type": "string", "enum": ["dev", "qas", "prd"]},
+    "uuidV7": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "componentArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component", "artifact_digest"],
+      "properties": {
+        "component": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "artifact_digest": {"$ref": "common.schema.json#/$defs/digest"}
+      }
+    },
+    "componentArtifacts": {
+      "type": "array", "minItems": 1, "maxItems": 8,
+      "items": {"$ref": "l3_payloads.schema.json#/$defs/componentArtifact"}
+    },
+    "resourceVector": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cpu_milli", "memory_bytes", "tasks", "io_read_bytes_per_second", "io_write_bytes_per_second", "io_read_iops_max", "io_write_iops_max"],
+      "properties": {
+        "cpu_milli": {"type": "integer", "minimum": 0},
+        "memory_bytes": {"type": "integer", "minimum": 0},
+        "tasks": {"type": "integer", "minimum": 0},
+        "io_read_bytes_per_second": {"type": "integer", "minimum": 0},
+        "io_write_bytes_per_second": {"type": "integer", "minimum": 0},
+        "io_read_iops_max": {"type": "integer", "minimum": 0},
+        "io_write_iops_max": {"type": "integer", "minimum": 0}
+      }
+    },
+    "resourceEnvelope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["prd_floor", "dev_hard_max", "qas_hard_max", "management_hard_max"],
+      "properties": {
+        "prd_floor": {"$ref": "l3_payloads.schema.json#/$defs/resourceVector"},
+        "dev_hard_max": {"$ref": "l3_payloads.schema.json#/$defs/resourceVector"},
+        "qas_hard_max": {"$ref": "l3_payloads.schema.json#/$defs/resourceVector"},
+        "management_hard_max": {"$ref": "l3_payloads.schema.json#/$defs/resourceVector"}
+      }
+    },
+    "macDataBudget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["shared_cache_budget_bytes", "release_cache_budget_bytes", "snapshot_budget_bytes", "backup_on_data_volume", "backup_budget_bytes", "backup_low_water_bytes"],
+      "properties": {
+        "storage_reservation_mode": {"type": "string", "enum": ["host_free_space_budget", "apfs_quota"]},
+        "prd_volume_uuid": {"type": "string", "pattern": "^[0-9A-Fa-f-]{36}$"},
+        "prd_mountpoint": {"type": "string", "minLength": 1, "maxLength": 256},
+        "prd_quota_bytes": {"type": "integer", "minimum": 0},
+        "prd_host_budget_bytes": {"type": "integer", "minimum": 0},
+        "dev_volume_uuid": {"type": "string", "pattern": "^[0-9A-Fa-f-]{36}$"},
+        "dev_mountpoint": {"type": "string", "minLength": 1, "maxLength": 256},
+        "dev_quota_bytes": {"type": "integer", "minimum": 0},
+        "qas_volume_uuid": {"type": "string", "pattern": "^[0-9A-Fa-f-]{36}$"},
+        "qas_mountpoint": {"type": "string", "minLength": 1, "maxLength": 256},
+        "qas_quota_bytes": {"type": "integer", "minimum": 0},
+        "shared_cache_budget_bytes": {"type": "integer", "minimum": 0},
+        "release_cache_budget_bytes": {"type": "integer", "minimum": 0},
+        "snapshot_budget_bytes": {"type": "integer", "minimum": 0},
+        "backup_on_data_volume": {"type": "boolean"},
+        "backup_budget_bytes": {"type": "integer", "minimum": 0},
+        "backup_low_water_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "hostManagementBudget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["components", "peak_bytes", "peak_inodes", "go_cache_budget_bytes", "release_cache_budget_bytes", "backup_budget_bytes", "staging_budget_bytes", "log_budget_bytes", "go_cache_paths", "resources", "backup_on_data_device", "backup_low_water_bytes"],
+      "properties": {
+        "components": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"}, "uniqueItems": true},
+        "peak_bytes": {"type": "integer", "minimum": 0},
+        "peak_inodes": {"type": "integer", "minimum": 0},
+        "go_cache_budget_bytes": {"type": "integer", "minimum": 0},
+        "release_cache_budget_bytes": {"type": "integer", "minimum": 0},
+        "backup_budget_bytes": {"type": "integer", "minimum": 0},
+        "staging_budget_bytes": {"type": "integer", "minimum": 0},
+        "log_budget_bytes": {"type": "integer", "minimum": 0},
+        "go_cache_paths": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "string", "minLength": 1, "maxLength": 256}, "uniqueItems": true},
+        "io_device_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "resources": {"$ref": "l3_payloads.schema.json#/$defs/resourceEnvelope"},
+        "backup_on_data_device": {"type": "boolean"},
+        "backup_low_water_bytes": {"type": "integer", "minimum": 0},
+        "mac_data": {"$ref": "l3_payloads.schema.json#/$defs/macDataBudget"}
+      }
+    },
+    "laneRuntimeBudget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["prd_growth_bytes", "dev_hard_bytes", "qas_hard_bytes", "management_growth_bytes", "prd_growth_inodes", "dev_hard_inodes", "qas_hard_inodes", "management_growth_inodes", "go_cache_paths", "go_cache_budget_bytes", "release_cache_budget_bytes", "backup_budget_bytes", "backup_on_data_device", "backup_low_water_bytes", "resources"],
+      "properties": {
+        "prd_growth_bytes": {"type": "integer", "minimum": 0},
+        "dev_hard_bytes": {"type": "integer", "minimum": 0},
+        "qas_hard_bytes": {"type": "integer", "minimum": 0},
+        "management_growth_bytes": {"type": "integer", "minimum": 0},
+        "prd_growth_inodes": {"type": "integer", "minimum": 0},
+        "dev_hard_inodes": {"type": "integer", "minimum": 0},
+        "qas_hard_inodes": {"type": "integer", "minimum": 0},
+        "management_growth_inodes": {"type": "integer", "minimum": 0},
+        "go_cache_paths": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "string", "minLength": 1, "maxLength": 256}, "uniqueItems": true},
+        "go_cache_budget_bytes": {"type": "integer", "minimum": 0},
+        "release_cache_budget_bytes": {"type": "integer", "minimum": 0},
+        "backup_budget_bytes": {"type": "integer", "minimum": 0},
+        "backup_on_data_device": {"type": "boolean"},
+        "backup_low_water_bytes": {"type": "integer", "minimum": 0},
+        "io_device_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "resources": {"$ref": "l3_payloads.schema.json#/$defs/resourceEnvelope"},
+        "mac_data": {"$ref": "l3_payloads.schema.json#/$defs/macDataBudget"}
+      }
+    },
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_id", "platform", "device_id", "filesystem", "mountpoint", "capacity_bytes", "capacity_inodes"],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "platform": {"type": "string", "enum": ["linux", "macos"]},
+        "device_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "filesystem": {"type": "string", "minLength": 1, "maxLength": 64},
+        "mountpoint": {"type": "string", "pattern": "^/[^\\x00]{0,255}$"},
+        "volume_uuid": {"type": "string", "pattern": "^[0-9A-Fa-f-]{36}$"},
+        "capacity_bytes": {"type": "integer", "minimum": 1},
+        "capacity_inodes": {"type": "integer", "minimum": 0},
+        "backup_device_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "backup_filesystem": {"type": "string", "minLength": 1, "maxLength": 64},
+        "backup_mountpoint": {"type": "string", "pattern": "^/[^\\x00]{0,255}$"},
+        "backup_capacity_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "usage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["used_bytes", "used_inodes", "non_purgeable_bytes", "snapshot_bytes", "go_cache_bytes", "release_cache_bytes", "backup_bytes"],
+      "properties": {
+        "used_bytes": {"type": "integer", "minimum": 0},
+        "used_inodes": {"type": "integer", "minimum": 0},
+        "non_purgeable_bytes": {"type": "integer", "minimum": 0},
+        "snapshot_bytes": {"type": "integer", "minimum": 0},
+        "go_cache_bytes": {"type": "integer", "minimum": 0},
+        "release_cache_bytes": {"type": "integer", "minimum": 0},
+        "backup_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "linuxDevice": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "uuid", "major_minor", "filesystem", "mountpoint", "capacity_bytes", "capacity_inodes", "used_bytes", "used_inodes", "io_read_bytes_per_second_capacity", "io_write_bytes_per_second_capacity", "io_read_iops_capacity", "io_write_iops_capacity", "project_quota_feature", "project_quota_active"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "uuid": {"type": "string", "pattern": "^[0-9A-Fa-f-]{36}$"},
+        "major_minor": {"type": "string", "pattern": "^[0-9]{1,10}:[0-9]{1,10}$"},
+        "filesystem": {"const": "ext4"},
+        "mountpoint": {"type": "string", "pattern": "^/[^\\x00]{0,255}$"},
+        "capacity_bytes": {"type": "integer", "minimum": 1},
+        "capacity_inodes": {"type": "integer", "minimum": 1},
+        "used_bytes": {"type": "integer", "minimum": 0},
+        "used_inodes": {"type": "integer", "minimum": 0},
+        "io_read_bytes_per_second_capacity": {"type": "integer", "minimum": 0},
+        "io_write_bytes_per_second_capacity": {"type": "integer", "minimum": 0},
+        "io_read_iops_capacity": {"type": "integer", "minimum": 0},
+        "io_write_iops_capacity": {"type": "integer", "minimum": 0},
+        "project_quota_feature": {"type": "boolean"},
+        "project_quota_active": {"type": "boolean"}
+      }
+    },
+    "storageVolume": {
+      "type": "object", "additionalProperties": false,
+      "required": ["uuid", "device_id", "filesystem", "mountpoint", "capacity_bytes", "quota_bytes"],
+      "properties": {
+        "uuid": {"type": "string", "pattern": "^[0-9A-Fa-f-]{36}$"},
+        "device_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "filesystem": {"type": "string", "minLength": 1, "maxLength": 64},
+        "mountpoint": {"type": "string", "pattern": "^/[^\\x00]{0,255}$"},
+        "capacity_bytes": {"type": "integer", "minimum": 1},
+        "quota_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "measurement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "identity", "observed_at", "expires_at", "resource_capacity", "go_cache_paths", "usage"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+        "identity": {"$ref": "l3_payloads.schema.json#/$defs/identity"},
+        "observed_at": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "expires_at": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "resource_capacity": {"$ref": "l3_payloads.schema.json#/$defs/resourceVector"},
+        "go_cache_paths": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "string", "minLength": 1, "maxLength": 256}, "uniqueItems": true},
+        "linux_devices": {"type": "array", "maxItems": 64, "items": {"$ref": "l3_payloads.schema.json#/$defs/linuxDevice"}},
+        "storage_volumes": {"type": "array", "maxItems": 64, "items": {"$ref": "l3_payloads.schema.json#/$defs/storageVolume"}},
+        "usage": {"$ref": "l3_payloads.schema.json#/$defs/usage"}
+      }
+    },
+    "promotionAuthorization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate_manifest_id", "lane_transition_id", "release_lane", "host_id", "capacity_policy_id", "component_artifacts", "resolved_configuration_digest", "installation_generation", "not_before", "not_after", "required_revocation_ledger_generation"],
+      "properties": {
+        "candidate_manifest_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "lane_transition_id": {"$ref": "l3_payloads.schema.json#/$defs/uuidV7"},
+        "release_lane": {"$ref": "l3_payloads.schema.json#/$defs/lane"},
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "capacity_policy_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "component_artifacts": {"$ref": "l3_payloads.schema.json#/$defs/componentArtifacts"},
+        "resolved_configuration_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "installation_generation": {"type": "integer", "minimum": 1},
+        "predecessor_lane_acceptance_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "not_before": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "not_after": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "required_revocation_ledger_generation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "promotionAttestation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["promotion_authorization_id", "candidate_manifest_id", "lane_transition_id", "capacity_policy_id", "release_lane", "host_id", "component_artifacts", "resolved_configuration_digest", "installation_generation", "outcome", "evidence_refs", "observed_at"],
+      "properties": {
+        "promotion_authorization_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "candidate_manifest_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "lane_transition_id": {"$ref": "l3_payloads.schema.json#/$defs/uuidV7"},
+        "capacity_policy_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "release_lane": {"$ref": "l3_payloads.schema.json#/$defs/lane"},
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "component_artifacts": {"$ref": "l3_payloads.schema.json#/$defs/componentArtifacts"},
+        "resolved_configuration_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "installation_generation": {"type": "integer", "minimum": 1},
+        "outcome": {"type": "string", "enum": ["accepted", "rejected"]},
+        "evidence_refs": {"$ref": "common.schema.json#/$defs/evidenceRefs"},
+        "observed_at": {"$ref": "common.schema.json#/$defs/utcTimestamp"}
+      }
+    },
+    "laneAcceptance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate_manifest_id", "release_lane", "lane_transition_id", "accepted_promotion_attestation_ids", "acceptance_evidence_digest", "accepted_at"],
+      "properties": {
+        "candidate_manifest_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "release_lane": {"$ref": "l3_payloads.schema.json#/$defs/lane"},
+        "lane_transition_id": {"$ref": "l3_payloads.schema.json#/$defs/uuidV7"},
+        "accepted_promotion_attestation_ids": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "common.schema.json#/$defs/recordId"}, "uniqueItems": true},
+        "acceptance_evidence_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "accepted_at": {"$ref": "common.schema.json#/$defs/utcTimestamp"}
+      }
+    },
+    "ingressDirective": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate_manifest_id", "lane_transition_id", "release_lane", "host_id", "resolved_configuration_digest", "directive_role", "transition_epoch", "admission_generation", "lease_generation", "not_before", "not_after", "required_revocation_ledger_generation"],
+      "properties": {
+        "candidate_manifest_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "lane_transition_id": {"$ref": "l3_payloads.schema.json#/$defs/uuidV7"},
+        "release_lane": {"$ref": "l3_payloads.schema.json#/$defs/lane"},
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "resolved_configuration_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "directive_role": {"type": "string", "enum": ["active_runtime_closure", "candidate_admission"]},
+        "transition_epoch": {"type": "integer", "minimum": 1},
+        "admission_generation": {"type": "integer", "minimum": 0, "maximum": 2},
+        "lease_generation": {"type": "integer", "minimum": 0},
+        "not_before": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "not_after": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "required_revocation_ledger_generation": {"type": "integer", "minimum": 1}
+      },
+      "allOf": [{
+        "if": {"properties": {"directive_role": {"const": "active_runtime_closure"}}, "required": ["directive_role"]},
+        "then": {"properties": {"admission_generation": {"const": 0}}}
+      }]
+    },
+    "ingressSurface": {
+      "type": "object", "additionalProperties": false,
+      "required": ["surface_id", "outcome", "evidence_digest"],
+      "properties": {
+        "surface_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+        "outcome": {"type": "string", "enum": ["applied", "rejected", "expired"]},
+        "evidence_digest": {"$ref": "common.schema.json#/$defs/digest"}
+      }
+    },
+    "ingressAttestation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ingress_admission_directive_id", "candidate_manifest_id", "lane_transition_id", "release_lane", "host_id", "resolved_configuration_digest", "directive_role", "transition_epoch", "admission_generation", "lease_generation", "surfaces", "observed_at"],
+      "properties": {
+        "ingress_admission_directive_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "candidate_manifest_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "lane_transition_id": {"$ref": "l3_payloads.schema.json#/$defs/uuidV7"},
+        "release_lane": {"$ref": "l3_payloads.schema.json#/$defs/lane"},
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "resolved_configuration_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "directive_role": {"type": "string", "enum": ["active_runtime_closure", "candidate_admission"]},
+        "transition_epoch": {"type": "integer", "minimum": 1},
+        "admission_generation": {"type": "integer", "minimum": 0, "maximum": 2},
+        "lease_generation": {"type": "integer", "minimum": 0},
+        "surfaces": {"type": "array", "minItems": 2, "maxItems": 4, "items": {"$ref": "l3_payloads.schema.json#/$defs/ingressSurface"}},
+        "observed_at": {"$ref": "common.schema.json#/$defs/utcTimestamp"}
+      }
+    },
+    "capacityMeasurementAttestation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_id", "measurement", "evidence_refs", "capacity_evaluation_digest"],
+      "properties": {
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "measurement": {"$ref": "l3_payloads.schema.json#/$defs/measurement"},
+        "evidence_refs": {"$ref": "common.schema.json#/$defs/evidenceRefs"},
+        "capacity_evaluation_digest": {"$ref": "common.schema.json#/$defs/digest"}
+      }
+    },
+    "capacityPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["capacity_policy_version", "host_id", "policy_scope", "capacity_measurement_attestation_id", "capacity_evaluation_digest", "not_before", "not_after", "compute_reservation"],
+      "properties": {
+        "capacity_policy_version": {"const": 1},
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "policy_scope": {"type": "string", "enum": ["host_management", "lane_runtime"]},
+        "release_lane": {"$ref": "l3_payloads.schema.json#/$defs/lane"},
+        "capacity_measurement_attestation_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "capacity_evaluation_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "not_before": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "not_after": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
+        "compute_reservation": {"type": "string", "enum": ["none", "linux_cgroup_v2"]},
+        "host_management": {"$ref": "l3_payloads.schema.json#/$defs/hostManagementBudget"},
+        "lane_runtime": {"$ref": "l3_payloads.schema.json#/$defs/laneRuntimeBudget"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"policy_scope": {"const": "host_management"}}, "required": ["policy_scope"]},
+          "then": {"required": ["host_management"], "not": {"anyOf": [{"required": ["release_lane"]}, {"required": ["lane_runtime"]}]}}
+        },
+        {
+          "if": {"properties": {"policy_scope": {"const": "lane_runtime"}}, "required": ["policy_scope"]},
+          "then": {"required": ["release_lane", "lane_runtime"], "not": {"required": ["host_management"]}}
+        }
+      ]
+    },
+    "pkiInstallerTuple": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_commit", "toolchain_digest", "input_digest", "binary_digest"],
+      "properties": {
+        "source_commit": {"$ref": "common.schema.json#/$defs/sourceCommit"},
+        "toolchain_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "input_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "binary_digest": {"$ref": "common.schema.json#/$defs/digest"}
+      }
+    },
+    "emptyPKIInstallerTuple": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_commit", "toolchain_digest", "input_digest", "binary_digest"],
+      "properties": {
+        "source_commit": {"const": ""},
+        "toolchain_digest": {"const": ""},
+        "input_digest": {"const": ""},
+        "binary_digest": {"const": ""}
+      }
+    },
+    "pkiContext": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["management", "bootstrap"]},
+        "management_manifest_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "management_generation": {"type": "integer", "minimum": 1},
+        "bootstrap_contract_digest": {"$ref": "common.schema.json#/$defs/digest"},
+        "bootstrap_generation": {"type": "integer", "minimum": 1},
+        "installer": {"oneOf": [{"$ref": "l3_payloads.schema.json#/$defs/pkiInstallerTuple"}, {"$ref": "l3_payloads.schema.json#/$defs/emptyPKIInstallerTuple"}]},
+        "bootstrap_attestation_key_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"mode": {"const": "management"}}, "required": ["mode"]},
+          "then": {"required": ["management_manifest_id", "management_generation"], "not": {"anyOf": [{"required": ["bootstrap_contract_digest"]}, {"required": ["bootstrap_generation"]}, {"required": ["bootstrap_attestation_key_id"]}]}, "properties": {"installer": {"$ref": "l3_payloads.schema.json#/$defs/emptyPKIInstallerTuple"}}}
+        },
+        {
+          "if": {"properties": {"mode": {"const": "bootstrap"}}, "required": ["mode"]},
+          "then": {"required": ["bootstrap_contract_digest", "bootstrap_generation", "installer", "bootstrap_attestation_key_id"], "properties": {"installer": {"$ref": "l3_payloads.schema.json#/$defs/pkiInstallerTuple"}}, "not": {"anyOf": [{"required": ["management_manifest_id"]}, {"required": ["management_generation"]}]}}
+        }
+      ]
+    },
+    "pkiCertificateRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pki_issuance_mandate_id", "host_id", "leaf_role", "context", "uri_san", "csr_der", "public_key_fingerprint", "ca_profile", "certificate_not_after"],
+      "properties": {
+        "pki_issuance_mandate_id": {"$ref": "common.schema.json#/$defs/recordId"},
+        "host_id": {"$ref": "common.schema.json#/$defs/hostId"},
+        "leaf_role": {"type": "string", "enum": ["release_transport_server", "release_authority_client"]},
+        "context": {"$ref": "l3_payloads.schema.json#/$defs/pkiContext"},
+        "uri_san": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]{1,250}$", "maxLength": 256},
+        "ip_san": {"type": "string", "anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]},
+        "csr_der": {"type": "string", "minLength": 16, "maxLength": 21848},
+        "public_key_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ca_profile": {"const": "release-transport-v1"},
+        "certificate_not_after": {"$ref": "common.schema.json#/$defs/utcTimestamp"}
+      }
+    }
+  }
+}

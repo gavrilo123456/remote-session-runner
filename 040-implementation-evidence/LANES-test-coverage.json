@@ -955,7 +955,20 @@
       "id": "LANES-L3-03",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL303CompilesEveryClosedPayloadSchema"},
+          {"package": "./src/internal/release", "name": "TestLanesL303PromotionAuthorizationBindsCandidateAndCapacityPolicy"},
+          {"package": "./src/internal/release", "name": "TestLanesL303PromotionAttestationIsExactAndLaneAcceptanceRequiresFourHosts"},
+          {"package": "./src/internal/release", "name": "TestLanesL303IngressDirectiveAndAttestationRequireExactAppliedSurfaceSet"},
+          {"package": "./src/internal/release", "name": "TestLanesL303CapacityMeasurementRecomputesFullEvaluationDigest"},
+          {"package": "./src/internal/release", "name": "TestLanesL303CapacityPolicyUsesExactMeasurementScopeAndEnvelope"},
+          {"package": "./src/internal/release", "name": "TestLanesL303MacCapacityPolicyBindsMeasuredAPFSVolumesAndHeadroom"},
+          {"package": "./src/internal/release", "name": "TestLanesL303PKIRequestBindsCSRContextAndHostSAN"},
+          {"package": "./src/internal/release", "name": "TestLanesL303RejectsCrossHostAndUnsortedCanonicalSets"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-04",

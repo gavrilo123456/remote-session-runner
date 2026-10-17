@@ -128,7 +128,7 @@ type releaseRecordReference struct {
 	Payload  json.RawMessage `json:"payload"`
 }
 
-// ValidatePayload applies the closed V1 schema for the L3-02 record types.
+// ValidatePayload applies the closed V1 schema for supported release record payloads.
 // Envelope canonicality, signature trust, and signer identity are checked by
 // the envelope/key layer; payload objects are still parsed with duplicate-key
 // and trailing-value rejection here.
@@ -228,6 +228,10 @@ func payloadSchemaName(recordType string) (string, bool) {
 	switch recordType {
 	case "host_build_attestation", "candidate_manifest", "host_management_manifest":
 		return recordType, true
+	case "promotion_authorization", "promotion_attestation", "lane_acceptance", "ingress_admission_directive",
+		"ingress_admission_attestation", "capacity_measurement_attestation", "capacity_policy",
+		"pki_certificate_request":
+		return recordType, true
 	default:
 		return "", false
 	}
@@ -261,8 +265,14 @@ func compiledPayloadSchema(name string) (*jsonschema.Schema, error) {
 				return
 			}
 		}
-		payloadSchemas = make(map[string]*jsonschema.Schema, 3)
-		for _, recordType := range []string{"host_build_attestation", "candidate_manifest", "host_management_manifest"} {
+		recordTypes := []string{
+			"host_build_attestation", "candidate_manifest", "host_management_manifest",
+			"promotion_authorization", "promotion_attestation", "lane_acceptance",
+			"ingress_admission_directive", "ingress_admission_attestation",
+			"capacity_measurement_attestation", "capacity_policy", "pki_certificate_request",
+		}
+		payloadSchemas = make(map[string]*jsonschema.Schema, len(recordTypes))
+		for _, recordType := range recordTypes {
 			compiled, err := compiler.Compile(releaseSchemaBase + recordType + ".schema.json")
 			if err != nil {
 				payloadSchemaInitializationErr = fmt.Errorf("compile %s: %w", recordType, err)
