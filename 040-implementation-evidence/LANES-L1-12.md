@@ -1,6 +1,6 @@
 # LANES-L1-12 — Exclusive PRD group, maintenance and typed linked recovery
 
-**State:** IN PROGRESS. This unit implements and tests the durable PRD operation
+**State:** PASS. This unit implements and tests the durable PRD operation
 group with isolated registry fixtures. It does not perform PRD maintenance or
 claim installed/live acceptance.
 
@@ -103,11 +103,54 @@ and the shared `/private/tmp/remote-session-runner-gocache` and
 - `gofmt -l`, `jq empty 040-implementation-evidence/LANES-test-coverage.json`,
   and `git diff --check` — PASS.
 
-## Source S and delivery
+## Source S and synchronized validation
 
-Source S commit and synchronized host validation are pending.
+Source S is `6eb6b3a195045023449cc32df135ad960b162145` on Mac `dev`.
+
+- Mac commit: `phase(LANES-L1-12): model exclusive PRD recovery graph`.
+- The Mac pushed with
+  `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev`.
+  The push to primary Gitea `origin/dev` succeeded. Updating the local
+  `refs/remotes/origin/dev` tracking ref was denied by the managed filesystem;
+  `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote origin refs/heads/dev`
+  verified Gitea at exact S.
+- Direct `ls-remote github refs/heads/dev` with the configured GitHub identity
+  via
+  `git -c core.sshCommand='ssh -i /Users/tomasz.walczuk/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' ls-remote github refs/heads/dev`
+  verified the automatic mirror at exact S. The mirror was not pushed manually.
+- Each Ubuntu checkout was clean on `dev` at predecessor E
+  `258c2a795e1a3be228c61864893eb0b4dbd6e967` before pull. Each fast-forwarded
+  `origin/dev` with `/home/ubuntu/.ssh/gavrilo123456-github`,
+  `IdentitiesOnly=yes`, `BatchMode=yes`, and `StrictHostKeyChecking=yes`, using
+  `git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' pull --ff-only origin dev`.
+  Each is clean on `dev` at exact S after validation.
+
+| Host | SSH alias and explicit login identity | H | Full `make test` | `make vet` | `make build` | `make smoke` | Focused race |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Mac `mac-control-plane` | Authoritative Mac checkout | PASS | PASS | PASS | PASS | PASS | PASS; cgo and `/usr/bin/cc` available |
+| `linux-host` | `remote-session-runner`; `/Users/tomasz.walczuk/.ssh/remote-session-runner` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `sandbox-host` | `sandbox.env`; `/Users/tomasz.walczuk/.ssh/dev.slidestud.io` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `factory-sandbox` | `factory-sandbox`; `/Users/tomasz.walczuk/.ssh/factory-sandbox` | PASS | PASS | PASS | PASS | PASS | NOT RUN; `CGO_ENABLED=0`, no `cc` |
+
+On all three Ubuntu hosts the exact commands were `make test-lanes
+UNIT=LANES-L1-12 LANES_TIER=H`, `make test`, `make vet`, `make build`, and
+`make smoke`. Linux and sandbox also ran
+`/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/laneregistry -run '^TestLanesL112' -count=1`.
+The Mac ran the same unit/full/vet/build/smoke gates and focused race at exact
+S using the Makefile's Go 1.27.1 toolchain and shared Go caches. The formatting,
+coverage JSON, and committed-diff checks passed on Mac. Validation ran from
+`/home/ubuntu/projects/remote-session-runner` at exact S on Ubuntu. Factory
+race was unavailable because that host has `CGO_ENABLED=0` and no C compiler.
+
+The first full Mac suite run exposed a stale H-dispatch test expectation; it
+was corrected to expect unstarted `LANES-L1-13` and the full suite then passed.
+The earlier temporary-fixture setup errors were also corrected before S.
 
 ## Evidence closeout and acceptance state
 
-Pending source S delivery and evidence-only closeout E. No production or live
-lane acceptance is claimed.
+This evidence and the ledger update are the evidence-only closeout E. The
+source S revision and all four checkout validations are synchronized. L1-12
+passes its source unit. No production maintenance, service installation, or
+live lane acceptance is claimed. `LANES-B021-02` and `LANES-B024-02` remain
+BLOCKED and their preserved evidence is unchanged; BUG-022/023 remain
+DEFERRED.
