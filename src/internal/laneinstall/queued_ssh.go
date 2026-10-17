@@ -135,6 +135,8 @@ func BuildQueuedSSHPlan(hostID string, lane config.ReleaseLane, dispatcherPublic
 }
 
 func parseEd25519PublicKey(raw string) (parsedSSHKey, error) {
+	raw = strings.TrimSuffix(raw, "\n")
+	raw = strings.TrimSuffix(raw, "\r")
 	if strings.ContainsAny(raw, "\r\n") {
 		return parsedSSHKey{}, ErrInvalidQueuedSSHKey
 	}

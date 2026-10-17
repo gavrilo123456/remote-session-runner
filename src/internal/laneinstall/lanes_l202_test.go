@@ -92,6 +92,14 @@ func TestLanesL202RejectsUnsupportedHostsLanesAndKeys(t *testing.T) {
 			t.Errorf("malformed host key %q was accepted", key)
 		}
 	}
+	for _, newline := range []string{"\n", "\r\n"} {
+		if _, err := BuildQueuedSSHPlan("linux-host", config.ReleaseLaneDev, validDispatcher+newline, validHost+newline); err != nil {
+			t.Errorf("one terminal public-key line ending %q was rejected: %v", newline, err)
+		}
+	}
+	if _, err := BuildQueuedSSHPlan("linux-host", config.ReleaseLaneDev, validDispatcher+"\n\n", validHost); err == nil {
+		t.Fatal("multiple dispatcher public-key lines were accepted")
+	}
 	badBlob := base64.StdEncoding.EncodeToString([]byte("not-an-ssh-key"))
 	if _, err := BuildQueuedSSHPlan("linux-host", config.ReleaseLaneDev, "ssh-ed25519 "+badBlob, validHost); err == nil {
 		t.Fatal("Ed25519 label with a malformed SSH key blob was accepted")
