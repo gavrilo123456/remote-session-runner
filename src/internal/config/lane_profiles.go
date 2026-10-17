@@ -290,7 +290,7 @@ func validLinuxProfileBinding(lane ReleaseLane, got V3LinuxProfileBinding) bool 
 	profile := laneRemoteProfiles[got.RemoteProfile]
 	queue := got.Queued
 	if queue.Host != profile.publicIP || queue.Port != namespace.QueuePort || queue.Bind != namespace.DirectHTTPSBind[:strings.LastIndex(namespace.DirectHTTPSBind, ":")]+":"+itoa(namespace.QueuePort) ||
-		queue.HostKeyFile != laneSecretPath(namespace.ServiceRoot, got.RemoteProfile, "ssh", "host_ed25519") ||
+		queue.HostKeyFile != filepath.Join(namespace.SSHAuthorityPath, "ssh_host_ed25519_key") ||
 		!validFingerprint(queue.HostKeyFingerprint) || !validFingerprint(queue.AuthorizedKeyFingerprint) || queue.Socket != namespace.PrivateSocket {
 		return false
 	}

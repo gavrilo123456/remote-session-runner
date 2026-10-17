@@ -332,7 +332,7 @@ func l102LinuxBindings(t *testing.T, lane ReleaseLane, profileName string, mac V
 			Queued: V3LinuxQueuedCredentials{
 				Host: profile.publicIP, Port: namespace.QueuePort,
 				Bind:                     strings.TrimSuffix(namespace.DirectHTTPSBind, fmt.Sprintf(":%d", namespace.DirectPort)) + fmt.Sprintf(":%d", namespace.QueuePort),
-				HostKeyFile:              laneSecretPath(namespace.ServiceRoot, profileName, "ssh", "host_ed25519"),
+				HostKeyFile:              filepath.Join(namespace.SSHAuthorityPath, "ssh_host_ed25519_key"),
 				HostKeyFingerprint:       macProfile.Queued.HostKeyFingerprint,
 				AuthorizedKeyFingerprint: macProfile.Queued.DispatcherPublicKeyFingerprint,
 				Socket:                   namespace.PrivateSocket,
@@ -366,6 +366,33 @@ func l102LinuxBindings(t *testing.T, lane ReleaseLane, profileName string, mac V
 		}},
 	}
 	return bindings
+}
+
+func TestLanesL202LinuxHostKeyUsesRootOwnedSSHAuthority(t *testing.T) {
+	for _, lane := range []ReleaseLane{ReleaseLaneDev, ReleaseLaneQAS} {
+		mac, err := ValidateV3ProfileBindings(l102MacBindings(t, lane))
+		if err != nil {
+			t.Fatalf("validate Mac %s fixture: %v", lane, err)
+		}
+		for _, profile := range []string{"linux-host", "sandbox-host", "factory-sandbox"} {
+			bindings := l102LinuxBindings(t, lane, profile, mac)
+			namespace, err := DeriveLaneNamespace(HostKindLinux, lane, profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(namespace.SSHAuthorityPath, "ssh_host_ed25519_key")
+			if bindings.LinuxProfile.Queued.HostKeyFile != want {
+				t.Fatalf("%s/%s host key path=%q, want root-owned lane authority path %q", profile, lane, bindings.LinuxProfile.Queued.HostKeyFile, want)
+			}
+			if _, err := ValidateV3ProfileBindings(bindings); err != nil {
+				t.Fatalf("validate %s/%s fixed host-key binding: %v", profile, lane, err)
+			}
+			bindings.LinuxProfile.Queued.HostKeyFile = laneSecretPath(namespace.ServiceRoot, profile, "ssh", "host_ed25519")
+			if _, err := ValidateV3ProfileBindings(bindings); !errors.Is(err, ErrInvalidLaneProfiles) {
+				t.Errorf("%s/%s user-owned service-root host-key binding error=%v, want %v", profile, lane, err, ErrInvalidLaneProfiles)
+			}
+		}
+	}
 }
 
 func l102Fingerprint(number int) string { return fmt.Sprintf("sha256:%064x", number) }

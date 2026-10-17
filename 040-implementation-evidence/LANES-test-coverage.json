@@ -609,8 +609,51 @@
     {
       "id": "LANES-L2-02",
       "required_tiers": [
-        "H"
-      ]
+        "H",
+        "N"
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL202BuildsExactPerLaneQueuedSSHPlan"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL202RejectsUnsupportedHostsLanesAndKeys"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL202SSHDConfigClosesInteractiveAndForwardingAccess"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL202ForcedWrapperAcceptsOnlyFixedCommandAndIdentity"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL202PreservesPort22AndSeparatesClientTrustPerHost"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL202ListenerUsesLaneSliceAndPreventsPAMSessionMigration"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL202AuthorizedKeyIsExactRestrictedDispatcherIdentity"
+          },
+          {
+            "package": "./src/internal/config",
+            "name": "TestLanesL202LinuxHostKeyUsesRootOwnedSSHAuthority"
+          }
+        ],
+        "N": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL202NativeQueuedSSHConfigValidatesOnSelectedHost"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L2-03",

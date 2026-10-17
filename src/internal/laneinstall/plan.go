@@ -19,9 +19,14 @@ var (
 type ArtifactKind string
 
 const (
-	ArtifactLaunchAgent ArtifactKind = "launch_agent_plist"
-	ArtifactSystemdUnit ArtifactKind = "systemd_unit"
-	ArtifactEntrypoint  ArtifactKind = "lane_entrypoint"
+	ArtifactLaunchAgent   ArtifactKind = "launch_agent_plist"
+	ArtifactSystemdUnit   ArtifactKind = "systemd_unit"
+	ArtifactEntrypoint    ArtifactKind = "lane_entrypoint"
+	ArtifactSSHConfig     ArtifactKind = "queued_ssh_config"
+	ArtifactSSHKeys       ArtifactKind = "queued_ssh_authorized_keys"
+	ArtifactSSHWrapper    ArtifactKind = "queued_ssh_forced_wrapper"
+	ArtifactSSHUnit       ArtifactKind = "queued_ssh_systemd_unit"
+	ArtifactSSHKnownHosts ArtifactKind = "mac_queued_ssh_known_hosts"
 )
 
 // Artifact is a deterministic file produced by a fixed plan. InstallPath is
@@ -31,6 +36,8 @@ type Artifact struct {
 	Kind        ArtifactKind
 	InstallPath string
 	Mode        uint32
+	Owner       string
+	Group       string
 	Contents    string
 }
 
