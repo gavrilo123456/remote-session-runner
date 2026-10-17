@@ -136,7 +136,7 @@ func NewSealedBuildService(policy SealedBuildPolicy, resolver VerifiedBuildJobRe
 // exact source commit, invokes the fixed executor, seals a private copy of its
 // output, then asks the independent signer/outbox to publish the canonical
 // attestation. It returns only the immutable record ID.
-func (s *SealedBuildService) AttestBuild(ctx context.Context, authorizationID string) (string, error) {
+func (s *SealedBuildService) AttestBuild(ctx context.Context, authorizationID string) (recordID string, resultErr error) {
 	if !isLowerHexDigest(authorizationID) {
 		return "", ErrInvalidBuildRequest
 	}
@@ -156,7 +156,11 @@ func (s *SealedBuildService) AttestBuild(ctx context.Context, authorizationID st
 	if err != nil {
 		return "", err
 	}
-	defer os.RemoveAll(jobDir)
+	defer func() {
+		if cleanupErr := cleanupBuildWorkspace(jobDir); resultErr == nil && cleanupErr != nil {
+			resultErr = cleanupErr
+		}
+	}()
 	if err = os.Chmod(jobDir, 0o711); err != nil {
 		return "", err
 	}
@@ -214,7 +218,7 @@ func (s *SealedBuildService) AttestBuild(ctx context.Context, authorizationID st
 	if err = ValidateHostBuildAttestation(raw); err != nil {
 		return "", err
 	}
-	recordID, err := s.publisher.PublishHostBuild(ctx, raw)
+	recordID, err = s.publisher.PublishHostBuild(ctx, raw)
 	if err != nil {
 		return "", err
 	}
@@ -355,6 +359,21 @@ func makeExportReadOnly(root string) error {
 		}
 		return os.Chmod(path, 0o444)
 	})
+}
+
+func cleanupBuildWorkspace(root string) error {
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return os.Chmod(path, 0o700)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return os.RemoveAll(root)
 }
 
 func verifyPrivateDirectory(path string, ownerUID uint32) error {
