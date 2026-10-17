@@ -899,7 +899,39 @@
       "id": "LANES-L3-01",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/release",
+            "name": "TestLanesL301CanonicalizationGoldenVectors"
+          },
+          {
+            "package": "./src/internal/release",
+            "name": "TestLanesL301EnvelopeGoldenVectors"
+          },
+          {
+            "package": "./src/internal/release",
+            "name": "TestLanesL301RejectsUnknownRecordTypesAndRoles"
+          },
+          {
+            "package": "./src/internal/release",
+            "name": "TestLanesL301RejectsNoncanonicalAndOpenEnvelopes"
+          },
+          {
+            "package": "./src/internal/release",
+            "name": "TestLanesL301EnforcesTrustedRoleAndCanonicalHostBinding"
+          },
+          {
+            "package": "./src/internal/release",
+            "name": "TestLanesL301AuthoritySuccessorRequiresPreviousTrustedKey"
+          },
+          {
+            "package": "./src/internal/release",
+            "name": "TestLanesL301RejectsTamperedIDSignatureAndMalformedEnvelope"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L3-02",

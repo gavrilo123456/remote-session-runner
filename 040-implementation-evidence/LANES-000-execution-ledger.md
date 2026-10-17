@@ -22,6 +22,10 @@ but F remains BLOCKED by the unprovisioned L2-07 Linux and L2-08 Mac fixtures;
 it has no acceptance or evidence closeout E. Successive source-only units may
 proceed only after confirming independence from those specific blockers and
 satisfying their own predecessor and phase gates.
+`LANES-L3-01` is IN PROGRESS as an independent hermetic source-only unit; its
+predecessor L2-09 remains BLOCKED and is cited in the unit evidence. The L3-01
+Mac H and full source gates pass, while S delivery and three-host validation
+remain pending. No unit acceptance or L3 successor is implied.
 B021/B024 remain blocked, and the unstarted B022/B023 baseline units remain
 deferred.
 This ledger does not pass readiness, L0, any deferred bug gate or any live lane.
@@ -137,7 +141,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L2-07` | BLOCKED — Source S `6f0db6d0aa831fc09162bf32ddd3cd45e6627e3e` and `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; required F not run | [Unit evidence](LANES-L2-07.md); no A01 disposable volumes or measured device performance; `linux-host` hybrid-cgroup compatibility/approved reboot and `factory-sandbox` I/O-controller propagation remain unresolved. Delivery and source checks are recorded; no PASS, F acceptance, or evidence closeout E claimed |
 | `LANES-L2-08` | BLOCKED — Source S `ae386b1a774d9bceb3aa3d137b611a8abec16bb2` and `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; required native F not run | [Unit evidence](LANES-L2-08.md); Gitea primary push and exact GitHub mirror SHA verified; all three Ubuntu checkouts fast-forwarded from clean predecessor `c7f4e6db3a68ed965fac063958e7e8bffcc33278`, validated at Source S, and clean. No approved disposable APFS lane, shared-cache, and backup fixtures. No PASS, F acceptance, or evidence closeout E claimed |
 | `LANES-L2-09` | BLOCKED — Source S `3a31fed3415ab5a3d07728dddf7e621f6bddc16c` and H plus `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; required F not run | [Unit evidence](LANES-L2-09.md); Gitea primary push and exact GitHub mirror SHA verified; each Ubuntu checkout fast-forwarded from clean `ae7da3b44847df10d1dc4ff483b6d741988b0ba4`, validated at S, and clean. F depends on the missing L2-07 Linux devices/controller prerequisites and L2-08 disposable Mac APFS fixtures. No PASS, F acceptance, or evidence closeout E claimed |
-| `LANES-L3-01` | NOT RUN | Not produced |
+| `LANES-L3-01` | IN PROGRESS — seven H assertions and full source gates PASS on Mac; Source S delivery and all three Ubuntu validations pending | [Unit evidence](LANES-L3-01.md); independent of L2-09 native F blockers, which remain BLOCKED; no unit acceptance or successor authorization claimed |
 | `LANES-L3-02` | NOT RUN | Not produced |
 | `LANES-L3-03` | NOT RUN | Not produced |
 | `LANES-L3-04` | NOT RUN | Not produced |
