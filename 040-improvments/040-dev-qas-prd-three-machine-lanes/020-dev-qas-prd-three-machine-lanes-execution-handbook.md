@@ -61,9 +61,13 @@ queue. Do not provision the withdrawn A01 fixtures or wait for their F gates.
    if it degrades PRD. Do not reboot, change cgroups, fill disks or run pressure
    fixtures. No PRD producer pause is required for an action proved independent
    of PRD; otherwise stop and scope the shared impact before proceeding.
-10. Deliver each completed source unit S and evidence closeout E through Mac →
-    Gitea → verified automatic GitHub mirror → clean fast-forwarded workers,
-    under `AGENTS.md`. Update the SIMPLE ledger with actual results and exact
+10. Deliver each active SIMPLE source unit S with commit subject
+    `phase(SIMPLE-02): <deliverable>` and its evidence-only closeout E with
+    `docs(SIMPLE-02): record verified delivery` (substitute the current unit),
+    through Mac → Gitea → verified automatic GitHub mirror → clean
+    fast-forwarded workers under `AGENTS.md`. S records the unit as
+    `IN PROGRESS`; E records PASS only after every required dependent gate
+    passes. Update the SIMPLE ledger with actual results and exact
     commands/hosts/digests. No runtime acceptance follows merely from a source
     commit or an old historical PASS.
 

@@ -67,23 +67,25 @@ type LaneNamespace struct {
 	LocalAgentPlist  string
 	LocalDAgentPlist string
 
-	RunnerUnit         string
-	RunnerEntrypoint   string
-	JournalIdentifier  string
-	QueuedSSHJournal   string
-	RunnerSlice        string
-	QueuedSSHUnit      string
-	SSHAuthorityPath   string
-	QueuePort          int
-	DirectPort         int
-	DirectEndpointName string
-	DirectEndpointURL  string
-	DirectHTTPSBind    string
+	RunnerUnit           string
+	RunnerEntrypoint     string
+	JournalIdentifier    string
+	QueuedSSHJournal     string
+	RunnerSlice          string
+	QueuedSSHUnit        string
+	SSHAuthorityPath     string
+	SSHHostPublicKeyFile string
+	QueuedSSHBind        string
+	QueuePort            int
+	DirectPort           int
+	DirectEndpointName   string
+	DirectEndpointURL    string
+	DirectHTTPSBind      string
 }
 
-// DeriveLaneNamespace returns the only namespace accepted for the selected
-// host, release lane, and (for Linux) remote profile. It performs no filesystem
-// access and accepts no caller-controlled path, label, unit, or port.
+// DeriveLaneNamespace returns the historical advanced-rollout namespace.
+// SIMPLE rollout code must use DeriveSimpleLaneNamespace so it cannot select
+// the superseded dedicated SSH daemon or cgroup artifacts.
 func DeriveLaneNamespace(host HostKind, lane ReleaseLane, remoteProfile string) (LaneNamespace, error) {
 	if !validReleaseLane(lane) {
 		return LaneNamespace{}, ErrInvalidLaneIdentity
@@ -190,6 +192,93 @@ func DeriveLaneNamespace(host HostKind, lane ReleaseLane, remoteProfile string) 
 	}
 }
 
+// DeriveSimpleLaneNamespace returns the fixed namespace for the active
+// existing-hosts profile. It uses the existing SSH service on port 22 and adds
+// only the lane's HTTPS listener, service label, and ordinary account-owned
+// paths. It performs no filesystem access and accepts no caller-controlled
+// path, label, unit, or port.
+func DeriveSimpleLaneNamespace(host HostKind, lane ReleaseLane, remoteProfile string) (LaneNamespace, error) {
+	if !validReleaseLane(lane) {
+		return LaneNamespace{}, ErrInvalidLaneIdentity
+	}
+	suffix := ""
+	switch lane {
+	case ReleaseLaneDev:
+		suffix = "-dev"
+	case ReleaseLaneQAS:
+		suffix = "-qas"
+	}
+
+	switch host {
+	case HostKindMac:
+		if remoteProfile != "" {
+			return LaneNamespace{}, ErrInvalidLaneIdentity
+		}
+		root := filepath.Join("/Users", MacAccount, "Library", "Application Support", "RemoteSessionRunner"+suffix)
+		launchAgents := filepath.Join("/Users", MacAccount, "Library", "LaunchAgents")
+		database := filepath.Join(root, "state", "local.db")
+		localLabel := "com.remote-session-runner.local" + suffix
+		localdLabel := "com.remote-session-runner.locald" + suffix
+		return LaneNamespace{
+			Lane: lane, Host: host, Account: MacAccount,
+			ServiceRoot: root, ConfigFile: filepath.Join(root, "config", "mac.yaml"),
+			Database: database, DatabaseWAL: database + "-wal", DatabaseSHM: database + "-shm",
+			APISocket:    filepath.Join(root, "run", "local-api.sock"),
+			LocalDSocket: filepath.Join(root, "run", "locald.sock"),
+			MailboxRoot:  filepath.Join(root, "mailbox"), Workspaces: filepath.Join(root, "workspaces"),
+			ScriptTempRoot: filepath.Join(root, "tmp", "scripts"), Backups: filepath.Join(root, "backups"),
+			Logs: filepath.Join(root, "logs"), Binaries: filepath.Join(root, "bin"),
+			Staging:         filepath.Join(root, "staging"),
+			LifecycleLock:   filepath.Join(root, "run", "runner-locald-lifecycle.lock"),
+			RunnerBinary:    filepath.Join(root, "bin", "runner"),
+			LocalBinary:     filepath.Join(root, "bin", "runner-local"),
+			LocalDBinary:    filepath.Join(root, "bin", "runner-locald"),
+			LogCapture:      filepath.Join(root, "bin", "runner-log-capture"),
+			LocalAgentLabel: localLabel, LocalDAgentLabel: localdLabel,
+			LocalAgentPlist:  filepath.Join(launchAgents, localLabel+".plist"),
+			LocalDAgentPlist: filepath.Join(launchAgents, localdLabel+".plist"),
+		}, nil
+	case HostKindLinux:
+		profile, ok := laneRemoteProfiles[remoteProfile]
+		if !ok {
+			return LaneNamespace{}, ErrInvalidLaneIdentity
+		}
+		root := filepath.Join("/home", LinuxAccount, ".local", "share", "remote-session-runner"+suffix)
+		binaryRoot := filepath.Join(root, "bin")
+		directPort := 8443
+		if lane == ReleaseLaneDev {
+			directPort = 8444
+		} else if lane == ReleaseLaneQAS {
+			directPort = 8445
+		}
+		endpointName := profile.endpointPrefix + "-poc" + suffix
+		database := filepath.Join(root, "state", "remote.db")
+		runnerUnit := "runnerd" + suffix + ".service"
+		return LaneNamespace{
+			Lane: lane, Host: host, RemoteProfile: remoteProfile, Account: LinuxAccount,
+			ServiceRoot: root, ConfigFile: filepath.Join(root, "config", "linux.yaml"),
+			Database: database, DatabaseWAL: database + "-wal", DatabaseSHM: database + "-shm",
+			PrivateSocket: filepath.Join(root, "run", "runnerd.sock"), Workspaces: filepath.Join(root, "workspaces"),
+			ScriptTempRoot: filepath.Join(root, "tmp", "scripts"), Backups: filepath.Join(root, "backups"),
+			Logs: filepath.Join(root, "logs"), Binaries: binaryRoot, Staging: filepath.Join(root, "staging"),
+			LifecycleLock:   filepath.Join(root, "run", "runnerd-lifecycle.lock"),
+			RunnerBinary:    filepath.Join(binaryRoot, "runnerd"),
+			QueuedSSHBinary: filepath.Join(binaryRoot, "runner-ssh-bridge"),
+			SessionAgent:    filepath.Join(binaryRoot, "runner-session-agent"),
+			LogCapture:      filepath.Join(binaryRoot, "runner-log-capture"),
+			RunnerUnit:      runnerUnit, RunnerEntrypoint: filepath.Join(binaryRoot, "runnerd-entrypoint.sh"),
+			JournalIdentifier: strings.TrimSuffix(runnerUnit, ".service"),
+			QueuedSSHJournal:  "sshd", SSHHostPublicKeyFile: "/etc/ssh/ssh_host_ed25519_key.pub",
+			QueuedSSHBind: "0.0.0.0:22", QueuePort: 22, DirectPort: directPort,
+			DirectEndpointName: endpointName,
+			DirectEndpointURL:  "https://" + profile.publicIP + ":" + strconv.Itoa(directPort),
+			DirectHTTPSBind:    profile.privateIP + ":" + strconv.Itoa(directPort),
+		}, nil
+	default:
+		return LaneNamespace{}, ErrInvalidLaneIdentity
+	}
+}
+
 type laneRemoteProfile struct {
 	endpointPrefix string
 	publicIP       string
@@ -226,6 +315,26 @@ func ValidateV3Target(lane ReleaseLane, kind domain.TargetKind, profile string) 
 		return ErrInvalidLaneIdentity
 	}
 	return nil
+}
+
+// ValidateSimpleV3Target accepts only the existing-hosts profile targets. A
+// Mac-local target is valid when explicitly present in that lane's policy; it
+// is never added implicitly and is not required for remote-only operation.
+func ValidateSimpleV3Target(lane ReleaseLane, kind domain.TargetKind, profile string) error {
+	if !validReleaseLane(lane) {
+		return ErrInvalidLaneIdentity
+	}
+	switch kind {
+	case domain.TargetKindLocal:
+		if profile == "mac-workstation" {
+			return nil
+		}
+	case domain.TargetKindRemote:
+		if _, ok := laneRemoteProfiles[profile]; ok {
+			return nil
+		}
+	}
+	return ErrInvalidLaneIdentity
 }
 
 type v3NamespaceDocument struct {

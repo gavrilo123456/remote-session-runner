@@ -17,7 +17,7 @@ import (
 // the multi-inbox PoC. Version-one validation remains intentionally stricter
 // and is kept in config.go for compatibility with the installed deployment.
 func validateV2Document(document fileDocument) (Config, error) {
-	if (document.Mac == nil) == (document.Linux == nil) {
+	if document.ReleaseLane != "" || document.LaneProfiles != nil || (document.Mac == nil) == (document.Linux == nil) {
 		return Config{}, ErrInvalidConfig
 	}
 	defaults, retention, err := validateLimitsAndRetention(document)

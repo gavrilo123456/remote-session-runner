@@ -23,10 +23,9 @@ var ErrInvalidLaneProfiles = errors.New("invalid V3 lane profile bindings")
 
 var sha256FingerprintPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// V3ProfileBindings is the L1 profile/context portion of a V3 configuration.
-// It is kept separate from namespace parsing until the later L1 integration
-// unit assembles the complete V3 runtime document. Credential values are
-// path-only references plus safe fingerprints; parsing never opens a path.
+// V3ProfileBindings is the validated lane route/context portion assembled by
+// the complete V3 runtime loader. Credential values are path-only references
+// plus fingerprints; validation never opens a credential path.
 type V3ProfileBindings struct {
 	Version           int                         `yaml:"version"`
 	ReleaseLane       ReleaseLane                 `yaml:"release_lane"`
@@ -172,8 +171,25 @@ func ParseV3ProfileBindings(contents []byte) (ValidatedV3Profiles, error) {
 // ValidateV3ProfileBindings validates a decoded profile/context contract.
 // Credential paths are compared with derived lane paths but are never opened.
 func ValidateV3ProfileBindings(bindings V3ProfileBindings) (ValidatedV3Profiles, error) {
+	return validateV3ProfileBindings(bindings, false)
+}
+
+// ValidateSimpleV3ProfileBindings validates the active existing-hosts route
+// contract. It binds Dev/QAS/PRD to port 22 on the existing SSH service and
+// lane-specific HTTPS endpoints without creating another sshd authority.
+func ValidateSimpleV3ProfileBindings(bindings V3ProfileBindings) (ValidatedV3Profiles, error) {
+	return validateV3ProfileBindings(bindings, true)
+}
+
+func validateV3ProfileBindings(bindings V3ProfileBindings, simple bool) (ValidatedV3Profiles, error) {
 	if bindings.Version != VersionV3 || !validReleaseLane(bindings.ReleaseLane) {
 		return ValidatedV3Profiles{}, ErrInvalidLaneProfiles
+	}
+	derive := DeriveLaneNamespace
+	validateTarget := ValidateV3Target
+	if simple {
+		derive = DeriveSimpleLaneNamespace
+		validateTarget = ValidateSimpleV3Target
 	}
 
 	profiles := make(map[string]V3MacRemoteProfile)
@@ -183,7 +199,7 @@ func ValidateV3ProfileBindings(bindings V3ProfileBindings) (ValidatedV3Profiles,
 			return ValidatedV3Profiles{}, ErrInvalidLaneProfiles
 		}
 		for _, got := range bindings.MacProfiles {
-			if _, exists := profiles[got.Profile]; exists || !validMacProfileBinding(bindings.ReleaseLane, got) {
+			if _, exists := profiles[got.Profile]; exists || !validMacProfileBindingWith(got.Profile, bindings.ReleaseLane, got, derive) {
 				return ValidatedV3Profiles{}, ErrInvalidLaneProfiles
 			}
 			profiles[got.Profile] = got
@@ -195,7 +211,7 @@ func ValidateV3ProfileBindings(bindings V3ProfileBindings) (ValidatedV3Profiles,
 		}
 	case HostKindLinux:
 		if bindings.LinuxProfile == nil || len(bindings.MacProfiles) != 0 || bindings.RemoteProfile == "" ||
-			bindings.LinuxProfile.RemoteProfile != bindings.RemoteProfile || !validLinuxProfileBinding(bindings.ReleaseLane, *bindings.LinuxProfile) {
+			bindings.LinuxProfile.RemoteProfile != bindings.RemoteProfile || !validLinuxProfileBindingWith(bindings.ReleaseLane, *bindings.LinuxProfile, derive) {
 			return ValidatedV3Profiles{}, ErrInvalidLaneProfiles
 		}
 		profiles[bindings.RemoteProfile] = V3MacRemoteProfile{Profile: bindings.RemoteProfile}
@@ -203,7 +219,7 @@ func ValidateV3ProfileBindings(bindings V3ProfileBindings) (ValidatedV3Profiles,
 		return ValidatedV3Profiles{}, ErrInvalidLaneProfiles
 	}
 
-	if err := validateV3EnvironmentsAndContexts(bindings, profiles); err != nil {
+	if err := validateV3EnvironmentsAndContextsWith(bindings, profiles, validateTarget, simple); err != nil {
 		return ValidatedV3Profiles{}, err
 	}
 	validated := ValidatedV3Profiles{bindings: cloneV3ProfileBindings(bindings), profiles: profiles}
@@ -260,11 +276,15 @@ func (p ValidatedV3Profiles) MacProfile(profile string) (V3MacRemoteProfile, boo
 }
 
 func validMacProfileBinding(lane ReleaseLane, got V3MacRemoteProfile) bool {
-	namespace, err := DeriveLaneNamespace(HostKindLinux, lane, got.Profile)
+	return validMacProfileBindingWith(got.Profile, lane, got, DeriveLaneNamespace)
+}
+
+func validMacProfileBindingWith(profileName string, lane ReleaseLane, got V3MacRemoteProfile, derive func(HostKind, ReleaseLane, string) (LaneNamespace, error)) bool {
+	namespace, err := derive(HostKindLinux, lane, profileName)
 	if err != nil {
 		return false
 	}
-	macNamespace, err := DeriveLaneNamespace(HostKindMac, lane, "")
+	macNamespace, err := derive(HostKindMac, lane, "")
 	if err != nil {
 		return false
 	}
@@ -293,14 +313,24 @@ func validMacProfileBinding(lane ReleaseLane, got V3MacRemoteProfile) bool {
 }
 
 func validLinuxProfileBinding(lane ReleaseLane, got V3LinuxProfileBinding) bool {
-	namespace, err := DeriveLaneNamespace(HostKindLinux, lane, got.RemoteProfile)
+	return validLinuxProfileBindingWith(lane, got, DeriveLaneNamespace)
+}
+
+func validLinuxProfileBindingWith(lane ReleaseLane, got V3LinuxProfileBinding, derive func(HostKind, ReleaseLane, string) (LaneNamespace, error)) bool {
+	namespace, err := derive(HostKindLinux, lane, got.RemoteProfile)
 	if err != nil {
 		return false
 	}
 	profile := laneRemoteProfiles[got.RemoteProfile]
 	queue := got.Queued
-	if queue.Host != profile.publicIP || queue.Port != namespace.QueuePort || queue.Bind != namespace.DirectHTTPSBind[:strings.LastIndex(namespace.DirectHTTPSBind, ":")]+":"+itoa(namespace.QueuePort) ||
-		queue.HostKeyFile != filepath.Join(namespace.SSHAuthorityPath, "ssh_host_ed25519_key") ||
+	queueBind := namespace.DirectHTTPSBind[:strings.LastIndex(namespace.DirectHTTPSBind, ":")] + ":" + itoa(namespace.QueuePort)
+	hostKeyFile := filepath.Join(namespace.SSHAuthorityPath, "ssh_host_ed25519_key")
+	if namespace.QueuedSSHBind != "" {
+		queueBind = namespace.QueuedSSHBind
+		hostKeyFile = namespace.SSHHostPublicKeyFile
+	}
+	if queue.Host != profile.publicIP || queue.Port != namespace.QueuePort || queue.Bind != queueBind ||
+		queue.HostKeyFile != hostKeyFile ||
 		!validFingerprint(queue.HostKeyFingerprint) || !validFingerprint(queue.AuthorizedKeyFingerprint) || queue.Socket != namespace.PrivateSocket {
 		return false
 	}
@@ -320,6 +350,11 @@ func validLinuxProfileBinding(lane ReleaseLane, got V3LinuxProfileBinding) bool 
 }
 
 func validateV3EnvironmentsAndContexts(bindings V3ProfileBindings, profiles map[string]V3MacRemoteProfile) error {
+	return validateV3EnvironmentsAndContextsWith(bindings, profiles, ValidateV3Target, false)
+}
+
+func validateV3EnvironmentsAndContextsWith(bindings V3ProfileBindings, profiles map[string]V3MacRemoteProfile,
+	validateTarget func(ReleaseLane, domain.TargetKind, string) error, simple bool) error {
 	if len(bindings.Environments) == 0 || len(bindings.ExecutionContexts) == 0 {
 		return ErrInvalidLaneProfiles
 	}
@@ -337,7 +372,7 @@ func validateV3EnvironmentsAndContexts(bindings V3ProfileBindings, profiles map[
 		wantControllers := make(map[string]V3ControllerBinding)
 		seenTargets := make(map[string]struct{})
 		for _, target := range environment.AllowedTargets {
-			if ValidateV3Target(bindings.ReleaseLane, target.Kind, target.Profile) != nil {
+			if validateTarget(bindings.ReleaseLane, target.Kind, target.Profile) != nil {
 				return ErrInvalidLaneProfiles
 			}
 			key := targetKey(target)
@@ -408,7 +443,7 @@ func validateV3EnvironmentsAndContexts(bindings V3ProfileBindings, profiles map[
 	if bindings.Host == HostKindLinux && len(usedProfiles) != 1 {
 		return ErrInvalidLaneProfiles
 	}
-	if bindings.Host == HostKindMac && bindings.ReleaseLane == ReleaseLanePRD && !hasLocalTarget {
+	if !simple && bindings.Host == HostKindMac && bindings.ReleaseLane == ReleaseLanePRD && !hasLocalTarget {
 		return ErrInvalidLaneProfiles
 	}
 	return nil

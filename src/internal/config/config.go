@@ -25,9 +25,8 @@ import (
 
 const (
 	// Version remains the version-one compatibility constant for existing
-	// callers. The generic loader currently accepts V1 and V2; V3 is introduced
-	// by its lane-aware parser and is not accepted as a complete runtime config
-	// until the later L1 units assemble that contract.
+	// callers. The runtime loader accepts V1, V2 and complete lane-aware V3
+	// configurations; V1/V2 remain unsuffixed compatibility formats.
 	Version                       = VersionV1
 	VersionV1                     = 1
 	VersionV2                     = 2
@@ -152,21 +151,35 @@ type ExecutionContext struct {
 // QueuedBridgeProfile is the pinned SSH route for one configured remote host.
 // The referenced files are paths only; this package never opens credentials.
 type QueuedBridgeProfile struct {
-	Host           string
-	Port           int
-	KnownHostsFile string
-	PrivateKeyFile string
+	Host                           string
+	Port                           int
+	KnownHostsFile                 string
+	PrivateKeyFile                 string
+	HostKeyFingerprint             string
+	DispatcherPublicKeyFingerprint string
 }
 
 // DirectEndpointProfile is a named mTLS endpoint bound to one remote target
 // profile. It contains file references, never credential contents.
 type DirectEndpointProfile struct {
-	Name                 string
-	TargetProfile        string
-	Endpoint             string
-	ServerCA             string
-	ClientCertificate    string
-	ClientPrivateKeyFile string
+	Name                            string
+	TargetProfile                   string
+	Endpoint                        string
+	ServerCA                        string
+	ClientCertificate               string
+	ClientPrivateKeyFile            string
+	ServerCAFingerprint             string
+	ClientCertFingerprint           string
+	ClientSPKIFingerprint           string
+	ExpectedServerFingerprint       string
+	ExpectedClientCAFingerprint     string
+	ServerSPKIFingerprint           string
+	AuthorizedClientFingerprint     string
+	AuthorizedClientSPKIFingerprint string
+	ClientURISAN                    string
+	ServerURISAN                    string
+	ControllerType                  string
+	ControllerID                    string
 }
 
 // RemoteHostProfile defines the only routes through which an immutable remote
@@ -196,6 +209,8 @@ type MailboxDefinition struct {
 type Config struct {
 	kind              HostKind
 	schemaVersion     int
+	releaseLane       ReleaseLane
+	laneProfiles      *ValidatedV3Profiles
 	mac               *MacSettings
 	linux             *LinuxSettings
 	defaults          domain.ServiceLimits
@@ -214,6 +229,24 @@ func (c Config) Kind() HostKind { return c.kind }
 
 // SchemaVersion returns the accepted configuration schema version.
 func (c Config) SchemaVersion() int { return c.schemaVersion }
+
+// ReleaseLane returns the configured release lane. Legacy V1/V2 configs are
+// unsuffixed and therefore resolve to PRD for compatibility.
+func (c Config) ReleaseLane() ReleaseLane {
+	if c.releaseLane == "" {
+		return ReleaseLanePRD
+	}
+	return c.releaseLane
+}
+
+// LaneProfiles returns the validated lane route and identity assertions for a
+// V3 config. Legacy configs do not expose a lane profile contract.
+func (c Config) LaneProfiles() (ValidatedV3Profiles, bool) {
+	if c.laneProfiles == nil {
+		return ValidatedV3Profiles{}, false
+	}
+	return *c.laneProfiles, true
+}
 
 // MacSettings returns the Mac settings when this is a Mac config.
 func (c Config) MacSettings() (MacSettings, bool) {
@@ -362,8 +395,10 @@ func validateConfigFileOwner(info os.FileInfo, expectedUID uint32) error {
 
 type fileDocument struct {
 	Version             int                                 `yaml:"version"`
+	ReleaseLane         ReleaseLane                         `yaml:"release_lane,omitempty"`
 	Mac                 *macDocument                        `yaml:"mac,omitempty"`
 	Linux               *linuxDocument                      `yaml:"linux,omitempty"`
+	LaneProfiles        *laneProfilesDocument               `yaml:"lane_profiles,omitempty"`
 	Limits              serviceLimitsDocument               `yaml:"limits,omitempty"`
 	Retention           retentionDocument                   `yaml:"retention,omitempty"`
 	EnvironmentRegistry map[string]environmentDocument      `yaml:"environment_registry"`
@@ -371,6 +406,16 @@ type fileDocument struct {
 	ExecutionContexts   map[string]executionContextDocument `yaml:"execution_contexts,omitempty"`
 	RemoteHosts         map[string]remoteHostDocument       `yaml:"remote_hosts,omitempty"`
 	Mailboxes           map[string]mailboxDocument          `yaml:"mailboxes,omitempty"`
+}
+
+// laneProfilesDocument is the route-only portion of a complete V3 runtime
+// config. Environment policy and immutable execution contexts stay in their
+// single runtime registries above, avoiding divergent duplicate policy data.
+type laneProfilesDocument struct {
+	Host          HostKind               `yaml:"host"`
+	RemoteProfile string                 `yaml:"remote_profile,omitempty"`
+	MacProfiles   []V3MacRemoteProfile   `yaml:"mac_profiles,omitempty"`
+	LinuxProfile  *V3LinuxProfileBinding `yaml:"linux_profile,omitempty"`
 }
 
 type macDocument struct {
@@ -583,13 +628,16 @@ func validateDocument(document fileDocument) (Config, error) {
 		return validateV1Document(document)
 	case VersionV2:
 		return validateV2Document(document)
+	case VersionV3:
+		return validateV3RuntimeDocument(document)
 	default:
 		return Config{}, ErrInvalidConfig
 	}
 }
 
 func validateV1Document(document fileDocument) (Config, error) {
-	if document.Version != VersionV1 || (document.Mac == nil) == (document.Linux == nil) || len(document.EnvironmentRegistry) != 2 ||
+	if document.Version != VersionV1 || document.ReleaseLane != "" || document.LaneProfiles != nil ||
+		(document.Mac == nil) == (document.Linux == nil) || len(document.EnvironmentRegistry) != 2 ||
 		document.ExecutionContexts != nil || document.RemoteHosts != nil || document.Mailboxes != nil {
 		return Config{}, ErrInvalidConfig
 	}
@@ -691,7 +739,10 @@ func populateEnvironments(config *Config, definitions map[string]environmentDocu
 }
 
 func validateLimitsAndRetention(document fileDocument) (domain.ServiceLimits, Retention, error) {
-	defaults := domain.DefaultServiceLimits()
+	return validateLimitsAndRetentionWithDefaults(document, domain.DefaultServiceLimits())
+}
+
+func validateLimitsAndRetentionWithDefaults(document fileDocument, defaults domain.ServiceLimits) (domain.ServiceLimits, Retention, error) {
 	if err := applyServiceLimits(&defaults, document.Limits); err != nil {
 		return domain.ServiceLimits{}, Retention{}, err
 	}

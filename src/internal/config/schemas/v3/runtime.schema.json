@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remote-session-runner.invalid/schemas/v3/runtime.schema.json",
+  "title": "Remote Session Runner V3 existing-host runtime configuration",
+  "type": "object",
+  "required": ["version", "release_lane", "environment_registry", "execution_contexts", "lane_profiles"],
+  "properties": {
+    "version": {"const": 3},
+    "release_lane": {"enum": ["dev", "qas", "prd"]},
+    "mac": {"$ref": "#/$defs/mac"},
+    "linux": {"$ref": "#/$defs/linux"},
+    "limits": {"$ref": "#/$defs/serviceLimits"},
+    "retention": {"$ref": "#/$defs/retention"},
+    "environment_registry": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/environment"}
+    },
+    "execution_contexts": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/executionContext"}
+    },
+    "mailboxes": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/mailbox"}
+    },
+    "secret_references": {"$ref": "#/$defs/secretReferences"},
+    "lane_profiles": {"$ref": "#/$defs/laneProfiles"},
+    "remote_hosts": {"type": "object", "maxProperties": 0}
+  },
+  "oneOf": [
+    {"required": ["mac", "mailboxes"], "not": {"anyOf": [{"required": ["linux"]}, {"required": ["secret_references"]}]}},
+    {"required": ["linux"], "not": {"anyOf": [{"required": ["mac"]}, {"required": ["mailboxes"]}]}}
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "mac": {
+      "type": "object",
+      "required": ["account", "service_root", "api_socket", "locald_socket", "sqlite", "mailbox_root", "workspaces", "script_temp_root", "backups"],
+      "properties": {
+        "account": {"const": "tomasz.walczuk"},
+        "service_root": {"type": "string", "minLength": 1},
+        "api_socket": {"type": "string", "minLength": 1},
+        "locald_socket": {"type": "string", "minLength": 1},
+        "sqlite": {"type": "string", "minLength": 1},
+        "mailbox_root": {"type": "string", "minLength": 1},
+        "workspaces": {"type": "string", "minLength": 1},
+        "script_temp_root": {"type": "string", "minLength": 1},
+        "backups": {"type": "string", "minLength": 1},
+        "reconciliation_deadline": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "linux": {
+      "type": "object",
+      "required": ["account", "service_root", "sqlite", "private_socket", "workspaces", "script_temp_root", "backups", "direct_https_bind", "direct_public_endpoint", "server_cert", "client_ca", "client_principal_map", "tls_min_version", "runtime_adapter", "remote_target_profile"],
+      "properties": {
+        "account": {"const": "ubuntu"},
+        "service_root": {"type": "string", "minLength": 1},
+        "sqlite": {"type": "string", "minLength": 1},
+        "private_socket": {"type": "string", "minLength": 1},
+        "workspaces": {"type": "string", "minLength": 1},
+        "script_temp_root": {"type": "string", "minLength": 1},
+        "backups": {"type": "string", "minLength": 1},
+        "direct_https_bind": {"type": "string", "minLength": 1},
+        "direct_public_endpoint": {"type": "string", "format": "uri"},
+        "server_cert": {"type": "string", "minLength": 1},
+        "client_ca": {"type": "string", "minLength": 1},
+        "client_principal_map": {"type": "string", "minLength": 1},
+        "tls_min_version": {"const": "1.3"},
+        "runtime_adapter": {"const": "linux-host-process"},
+        "remote_target_profile": {"enum": ["linux-host", "sandbox-host", "factory-sandbox"]}
+      },
+      "additionalProperties": false
+    },
+    "laneProfiles": {
+      "type": "object",
+      "required": ["host"],
+      "properties": {
+        "host": {"enum": ["mac", "linux"]},
+        "remote_profile": {"enum": ["linux-host", "sandbox-host", "factory-sandbox"]},
+        "mac_profiles": {
+          "type": "array", "minItems": 3, "maxItems": 3,
+          "items": {"$ref": "profiles.schema.json#/$defs/macProfile"}
+        },
+        "linux_profile": {"$ref": "profiles.schema.json#/$defs/linuxProfile"}
+      },
+      "oneOf": [
+        {"properties": {"host": {"const": "mac"}}, "required": ["mac_profiles"], "not": {"anyOf": [{"required": ["remote_profile"]}, {"required": ["linux_profile"]}]}},
+        {"properties": {"host": {"const": "linux"}}, "required": ["remote_profile", "linux_profile"], "not": {"required": ["mac_profiles"]}}
+      ],
+      "additionalProperties": false
+    },
+    "environment": {
+      "type": "object",
+      "required": ["base_system", "host_class", "effective_account", "allowed_targets", "allowed_source_modes", "allowed_repository_aliases", "allowed_controllers"],
+      "properties": {
+        "base_system": {"type": "string", "minLength": 1},
+        "host_class": {"type": "string", "minLength": 1},
+        "effective_account": {"enum": ["tomasz.walczuk", "ubuntu"]},
+        "allowed_targets": {"type": "array", "minItems": 1, "items": {"$ref": "profiles.schema.json#/$defs/target"}},
+        "allowed_source_modes": {"type": "array", "minItems": 1, "items": {"enum": ["empty", "local_worktree", "git_revision"]}},
+        "allowed_repository_aliases": {"type": "array", "items": {"type": "string"}},
+        "allowed_controllers": {"type": "array", "minItems": 1, "items": {"$ref": "profiles.schema.json#/$defs/controller"}},
+        "service_limits": {"$ref": "#/$defs/serviceLimits"}
+      },
+      "additionalProperties": false
+    },
+    "executionContext": {
+      "type": "object",
+      "required": ["environment", "execution_target"],
+      "properties": {
+        "environment": {"type": "string", "minLength": 1},
+        "execution_target": {"$ref": "profiles.schema.json#/$defs/target"}
+      },
+      "additionalProperties": false
+    },
+    "mailbox": {
+      "type": "object",
+      "required": ["root", "repository_aliases", "default_execution", "allowed_execution"],
+      "properties": {
+        "root": {"type": "string", "minLength": 1},
+        "repository_aliases": {"type": "array", "items": {"type": "string"}},
+        "default_execution": {"type": "string", "minLength": 1},
+        "allowed_execution": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "durable_orphan_cleanup": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "secretReferences": {
+      "type": "object",
+      "properties": {
+        "linux_server_private_key": {
+          "type": "object", "required": ["file"],
+          "properties": {"file": {"type": "string", "minLength": 1}},
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "serviceLimits": {
+      "type": "object",
+      "properties": {
+        "active_sessions_per_host": {"type": "integer", "minimum": 1},
+        "running_commands_per_host": {"type": "integer", "minimum": 1},
+        "serialized_request_bytes": {"type": "integer", "minimum": 1},
+        "script_bytes_per_request": {"type": "integer", "minimum": 1},
+        "command_timeout": {"type": "string", "minLength": 1},
+        "idle_timeout": {"type": "string", "minLength": 1},
+        "session_max_lifetime": {"type": "string", "minLength": 1},
+        "output_bytes_per_command": {"type": "integer", "minimum": 1},
+        "subscriber_buffer_bytes": {"type": "integer", "minimum": 1},
+        "persistence_queue_bytes": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "retention": {
+      "type": "object",
+      "properties": {
+        "metadata_and_idempotency": {"type": "string", "minLength": 1},
+        "output_events": {"type": "string", "minLength": 1},
+        "mailbox_ack_grace": {"type": "string", "minLength": 1},
+        "mailbox_unacked": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  }
+}

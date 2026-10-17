@@ -1,6 +1,7 @@
 package runnercli
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +22,43 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/runnerclient"
 )
+
+func TestSimpleLocalEndpointUsesConfiguredLaneSocket(t *testing.T) {
+	socketDir, err := os.MkdirTemp("/tmp", "rsr-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "dev.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.NotFoundHandler()}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		<-serveDone
+	})
+	resolver := defaultEndpointResolver{
+		readLocalSocket: func(configPath string) (string, error) {
+			if configPath != "/lane/dev/mac.yaml" {
+				t.Fatalf("local socket resolver got config path %q", configPath)
+			}
+			return socketPath, nil
+		},
+	}
+	client, err := resolver.Resolve("local", "/lane/dev/mac.yaml")
+	if err != nil {
+		t.Fatalf("resolve selected Dev local API socket: %v", err)
+	}
+	if _, err := client.GetSession(context.Background(), "missing-session"); err == nil {
+		t.Fatal("missing resource unexpectedly succeeded")
+	} else if errors.Is(err, runnerclient.ErrTransport) {
+		t.Fatalf("local endpoint did not use the configured Dev socket: %v", err)
+	}
+}
 
 func TestP119EndpointResolverKeepsTheExplicitProfile(t *testing.T) {
 	remoteClient := &fakeSessionClient{kind: runnerclient.EndpointHTTPS}

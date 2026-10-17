@@ -7,6 +7,9 @@ package sshclient
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -71,15 +75,16 @@ func (e *TransportError) Unwrap() error { return e.Err }
 // KnownHostsFile must be absolute owner-controlled paths. SSHConfig is not
 // consulted: the client uses -F /dev/null and supplies every security option.
 type Config struct {
-	SSHPath        string
-	User           string
-	Host           string
-	Port           int
-	IdentityFile   string
-	KnownHostsFile string
-	BridgeCommand  string
-	ConnectTimeout time.Duration
-	MaxFrameBytes  int
+	SSHPath            string
+	User               string
+	Host               string
+	Port               int
+	IdentityFile       string
+	KnownHostsFile     string
+	HostKeyFingerprint string
+	BridgeCommand      string
+	ConnectTimeout     time.Duration
+	MaxFrameBytes      int
 }
 
 // Client is safe for concurrent use. Each call uses a fresh SSH process so a
@@ -112,6 +117,11 @@ func New(config Config) (*Client, error) {
 	if err := validateAbsolutePath(config.KnownHostsFile, "known-hosts file"); err != nil {
 		return nil, err
 	}
+	if config.HostKeyFingerprint != "" {
+		if err := validateKnownHostFingerprint(config.KnownHostsFile, config.HostKeyFingerprint); err != nil {
+			return nil, err
+		}
+	}
 	if config.BridgeCommand == "" {
 		config.BridgeCommand = fixedBridgeCommand
 	}
@@ -128,6 +138,60 @@ func New(config Config) (*Client, error) {
 		return nil, fmt.Errorf("%w: frame limit must be between 1 and %d bytes", ErrConfiguration, domain.MaxSerializedFrameBytes)
 	}
 	return &Client{config: config}, nil
+}
+
+func validateKnownHostFingerprint(path, expected string) error {
+	if len(expected) != len("sha256:")+64 || !strings.HasPrefix(expected, "sha256:") {
+		return fmt.Errorf("%w: host key fingerprint is invalid", ErrConfiguration)
+	}
+	if _, err := hex.DecodeString(strings.TrimPrefix(expected, "sha256:")); err != nil {
+		return fmt.Errorf("%w: host key fingerprint is invalid", ErrConfiguration)
+	}
+	linkInfo, err := os.Lstat(path)
+	if err != nil || !linkInfo.Mode().IsRegular() || linkInfo.Mode().Perm()&0o077 != 0 || linkInfo.Mode().Perm()&0o400 == 0 {
+		return fmt.Errorf("%w: pinned known-hosts file is unavailable or unsafe", ErrConfiguration)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("%w: pinned known-hosts file is unavailable or unsafe", ErrConfiguration)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(linkInfo, info) || info.Size() < 0 || info.Size() > 1<<20 {
+		return fmt.Errorf("%w: pinned known-hosts file is unavailable or unsafe", ErrConfiguration)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || uint32(stat.Uid) != uint32(os.Geteuid()) {
+		return fmt.Errorf("%w: pinned known-hosts owner does not match the current account", ErrConfiguration)
+	}
+	contents, err := io.ReadAll(file)
+	if err != nil {
+		return fmt.Errorf("%w: pinned known-hosts file cannot be read", ErrConfiguration)
+	}
+	keys := make(map[string]struct{})
+	for _, line := range strings.Split(string(contents), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 || strings.HasPrefix(fields[0], "@") {
+			return fmt.Errorf("%w: pinned known-hosts entry is invalid", ErrConfiguration)
+		}
+		key, err := base64.StdEncoding.DecodeString(fields[2])
+		if err != nil || len(key) == 0 {
+			return fmt.Errorf("%w: pinned known-hosts key is invalid", ErrConfiguration)
+		}
+		digest := sha256.Sum256(key)
+		keys["sha256:"+hex.EncodeToString(digest[:])] = struct{}{}
+	}
+	if len(keys) != 1 {
+		return fmt.Errorf("%w: pinned known-hosts file must contain exactly one host key", ErrConfiguration)
+	}
+	if _, ok := keys[expected]; !ok {
+		return fmt.Errorf("%w: configured host key does not match known-hosts material", ErrConfiguration)
+	}
+	return nil
 }
 
 func validateAbsolutePath(value, label string) error {

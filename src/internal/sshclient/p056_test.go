@@ -2,6 +2,9 @@ package sshclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -72,6 +75,38 @@ func TestP056PinnedArgumentsAndFixedCommand(t *testing.T) {
 	reply, err := client.Call(context.Background(), p056PingRequest())
 	if err != nil || reply.ResponseType != "result" {
 		t.Fatalf("pinned call = %+v, %v", reply, err)
+	}
+}
+
+func TestSimpleLaneSSHClientRequiresExactKnownHostFingerprint(t *testing.T) {
+	config := p056Config(t, p056Script(t, "cat >/dev/null"))
+	keyA := []byte("ed25519-public-key-A")
+	keyB := []byte("ed25519-public-key-B")
+	fingerprint := func(key []byte) string {
+		digest := sha256.Sum256(key)
+		return "sha256:" + hex.EncodeToString(digest[:])
+	}
+	writeKnownHosts := func(contents string) {
+		t.Helper()
+		if err := os.WriteFile(config.KnownHostsFile, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config.HostKeyFingerprint = fingerprint(keyA)
+	writeKnownHosts("129.151.232.40 ssh-ed25519 " + base64.StdEncoding.EncodeToString(keyA) + "\n")
+	if _, err := New(config); err != nil {
+		t.Fatalf("matching Dev host key rejected: %v", err)
+	}
+
+	writeKnownHosts("129.151.232.40 ssh-ed25519 " + base64.StdEncoding.EncodeToString(keyB) + "\n")
+	if _, err := New(config); !errors.Is(err, ErrConfiguration) {
+		t.Fatalf("foreign known-host key error=%v, want ErrConfiguration", err)
+	}
+
+	writeKnownHosts("129.151.232.40 ssh-ed25519 " + base64.StdEncoding.EncodeToString(keyA) + "\n" +
+		"129.151.232.40 ecdsa-sha2-nistp256 " + base64.StdEncoding.EncodeToString(keyB) + "\n")
+	if _, err := New(config); !errors.Is(err, ErrConfiguration) {
+		t.Fatalf("ambiguous known-host entries error=%v, want ErrConfiguration", err)
 	}
 }
 

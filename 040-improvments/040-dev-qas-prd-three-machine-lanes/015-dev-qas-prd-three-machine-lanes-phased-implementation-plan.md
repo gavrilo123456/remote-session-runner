@@ -53,6 +53,13 @@ the actual change, native process checks where isolation depends on them, and
 the active profile's bounded live acceptance. Documentation-only changes need
 structural/review checks, not a full runtime suite or an installation.
 
+For this active sequence, source commits use `phase(SIMPLE-02): <deliverable>`
+and evidence-only closeouts use `docs(SIMPLE-02): record verified delivery`,
+with the current SIMPLE unit substituted. The historical `LANES-L1-*` commit
+subjects below apply only to that superseded assignment. A source commit keeps
+its unit evidence `IN PROGRESS`; only its later evidence-only closeout records
+PASS after all dependent source, host and acceptance gates actually pass.
+
 Runner remains the normal execution route. Existing owner authorization allows
 ordinary SSH builds, tests and setup when Runner cannot perform the required
 command. Use explicit identities and verified host keys; record the fallback

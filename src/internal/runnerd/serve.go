@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -173,14 +174,34 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	directHandler = opshealth.Middleware("linux_runnerd", healthReport, directHandler)
-	httpsServer, err := NewDirectHTTPSServer(DirectHTTPSServerOptions{
+	httpsOptions := DirectHTTPSServerOptions{
 		BindAddress:        settings.DirectHTTPSBind,
 		ServerCertificate:  settings.ServerCertificate,
 		ServerPrivateKey:   serverKey.File,
 		ClientCA:           settings.ClientCA,
 		ClientPrincipalMap: settings.ClientPrincipalMap,
 		Handler:            directHandler,
-	})
+	}
+	if laneProfiles, ok := loaded.LaneProfiles(); ok {
+		laneProfile, exists := laneProfiles.LinuxProfileBinding()
+		endpoint, parseErr := url.Parse(settings.DirectPublicEndpoint)
+		if !exists || parseErr != nil || endpoint == nil || endpoint.Hostname() == "" {
+			fmt.Fprintln(stderr, "runnerd: validated lane direct endpoint is unavailable")
+			return 1
+		}
+		direct := laneProfile.Direct
+		httpsOptions.ExpectedServerFingerprint = direct.ServerCertificateFingerprint
+		httpsOptions.ExpectedServerSPKIFingerprint = direct.ServerSPKIFingerprint
+		httpsOptions.ExpectedServerURISAN = direct.ServerURISAN
+		httpsOptions.ExpectedServerIP = endpoint.Hostname()
+		httpsOptions.ExpectedClientCAFingerprint = direct.ClientCAFingerprint
+		httpsOptions.ExpectedClientFingerprint = direct.AuthorizedClientFingerprint
+		httpsOptions.ExpectedClientSPKIFingerprint = direct.AuthorizedClientSPKIFingerprint
+		httpsOptions.ExpectedClientURISAN = direct.ClientURISAN
+		httpsOptions.ExpectedClientControllerType = direct.ControllerType
+		httpsOptions.ExpectedClientControllerID = direct.ControllerID
+	}
+	httpsServer, err := NewDirectHTTPSServer(httpsOptions)
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: configure direct HTTPS: %v\n", err)
 		return 1

@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -21,6 +22,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"remote-session-runner/src/internal/domain"
 )
 
 const p106MappedURI = "urn:remote-session-runner:controller:runner-tomasz-direct"
@@ -28,6 +31,8 @@ const p106OtherMappedURI = "urn:remote-session-runner:controller:runner-other-di
 
 type p106TestPKI struct {
 	caPEM          []byte
+	caCertificate  *x509.Certificate
+	caPrivateKey   *ecdsa.PrivateKey
 	serverCert     []byte
 	serverKey      []byte
 	clientTLS      tls.Certificate
@@ -279,6 +284,8 @@ func newP106TestPKI(t *testing.T) p106TestPKI {
 	roots.AddCert(caCert)
 	return p106TestPKI{
 		caPEM:          caPEM,
+		caCertificate:  caCert,
+		caPrivateKey:   caKey,
 		serverCert:     serverCert,
 		serverKey:      serverKey,
 		clientTLS:      clientTLS,
@@ -286,6 +293,88 @@ func newP106TestPKI(t *testing.T) p106TestPKI {
 		unknownTLS:     unknownTLS,
 		unmappedTLS:    unmappedTLS,
 		serverRoots:    roots,
+	}
+}
+
+func TestSimpleLaneDirectHTTPSRequiresPinnedServerAndClientIdentity(t *testing.T) {
+	root := t.TempDir()
+	pki := newP106TestPKI(t)
+	now := time.Now().UTC()
+	serverURI := "urn:remote-session-runner:lane:dev:server:linux-host"
+	serverPEM, serverKey, serverTLS := p106IssueCertificate(t, now, pki.caCertificate, pki.caPrivateKey,
+		"server", serverURI, x509.ExtKeyUsageServerAuth)
+	options := writeP106TestFiles(t, root, pki, validP106PrincipalMap)
+	if err := os.WriteFile(options.ServerCertificate, serverPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(options.ServerPrivateKey, serverKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serverLeaf, err := x509.ParseCertificate(serverTLS.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientLeaf, err := x509.ParseCertificate(pki.clientTLS.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.ExpectedServerFingerprint = certificateFingerprint(serverLeaf)
+	options.ExpectedServerSPKIFingerprint = spkiFingerprint(serverLeaf)
+	options.ExpectedServerURISAN = serverURI
+	options.ExpectedServerIP = "127.0.0.1"
+	options.ExpectedClientCAFingerprint = certificateFingerprint(pki.caCertificate)
+	options.ExpectedClientFingerprint = certificateFingerprint(clientLeaf)
+	options.ExpectedClientSPKIFingerprint = spkiFingerprint(clientLeaf)
+	options.ExpectedClientURISAN = p106MappedURI
+	options.ExpectedClientControllerType = string(domain.ControllerTypeDirectMTLS)
+	options.ExpectedClientControllerID = "tomasz.walczuk"
+	server, err := NewDirectHTTPSServer(options)
+	if err != nil {
+		t.Fatalf("configure pinned lane HTTPS server: %v", err)
+	}
+	if err := server.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close(context.Background()) })
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+
+	valid := p106HTTPClient(pki.serverRoots, &pki.clientTLS, tls.VersionTLS13)
+	response, err := valid.Get("https://" + server.Addr() + "/healthz")
+	if err != nil {
+		t.Fatalf("pinned lane client request: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("pinned lane request status=%d, want handler response 404", response.StatusCode)
+	}
+
+	_, _, sameSANWrongCertificate := p106IssueCertificate(t, now, pki.caCertificate, pki.caPrivateKey,
+		"same-uri-wrong-certificate", p106MappedURI, x509.ExtKeyUsageClientAuth)
+	wrongClient := p106HTTPClient(pki.serverRoots, &sameSANWrongCertificate, tls.VersionTLS13)
+	if response, err := wrongClient.Get("https://" + server.Addr() + "/healthz"); err == nil {
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		t.Fatal("same-URI client certificate with a different fingerprint reached the lane handler")
+	}
+
+	wrongServerPin := options
+	wrongServerPin.ExpectedServerFingerprint = "sha256:" + strings.Repeat("0", 64)
+	if _, err := NewDirectHTTPSServer(wrongServerPin); !errors.Is(err, ErrDirectHTTPSConfiguration) {
+		t.Fatalf("mismatched server certificate pin error=%v, want configuration rejection", err)
+	}
+	wrongCAPin := options
+	wrongCAPin.ExpectedClientCAFingerprint = "sha256:" + strings.Repeat("0", 64)
+	if _, err := NewDirectHTTPSServer(wrongCAPin); !errors.Is(err, ErrDirectHTTPSConfiguration) {
+		t.Fatalf("mismatched client CA pin error=%v, want configuration rejection", err)
+	}
+
+	if err := server.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("serve pinned lane HTTPS: %v", err)
 	}
 }
 

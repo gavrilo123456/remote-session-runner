@@ -2,8 +2,11 @@ package runnercli
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -41,12 +44,19 @@ type endpointResolution struct {
 }
 
 type remoteEndpointProfile struct {
-	name          string
-	targetProfile string
-	endpoint      string
-	serverCA      string
-	clientCert    string
-	clientKey     string
+	name                        string
+	targetProfile               string
+	endpoint                    string
+	serverCA                    string
+	clientCert                  string
+	clientKey                   string
+	serverCAFingerprint         string
+	clientCertFingerprint       string
+	clientSPKIFingerprint       string
+	expectedServerFingerprint   string
+	expectedClientCAFingerprint string
+	expectedServerURISAN        string
+	expectedClientURISAN        string
 }
 
 func defaultMacConfigPath() string {
@@ -55,12 +65,14 @@ func defaultMacConfigPath() string {
 
 type defaultEndpointResolver struct {
 	readRemoteProfile func(name, configPath string) (remoteEndpointProfile, error)
+	readLocalSocket   func(configPath string) (string, error)
 	newHTTPSClient    func(remoteEndpointProfile) (sessionClient, error)
 }
 
 func newDefaultEndpointResolver() defaultEndpointResolver {
 	return defaultEndpointResolver{
 		readRemoteProfile: loadRemoteEndpointProfile,
+		readLocalSocket:   loadLocalAPISocket,
 		newHTTPSClient:    newProfileHTTPSClient,
 	}
 }
@@ -78,6 +90,13 @@ func (r defaultEndpointResolver) Resolve(name, configPath string) (sessionClient
 func (r defaultEndpointResolver) ResolveWithBinding(name, configPath string) (endpointResolution, error) {
 	if name == "local" {
 		socketPath := filepath.Join(config.MacServiceRoot, "run", "local-api.sock")
+		if r.readLocalSocket != nil {
+			var err error
+			socketPath, err = r.readLocalSocket(configPath)
+			if err != nil {
+				return endpointResolution{}, ErrEndpointProfile
+			}
+		}
 		client, err := runnerclient.NewUnixSocketClient(socketPath)
 		if err != nil {
 			return endpointResolution{}, fmt.Errorf("configure local endpoint: %w", err)
@@ -105,6 +124,18 @@ func (r defaultEndpointResolver) ResolveWithBinding(name, configPath string) (en
 		return endpointResolution{}, ErrEndpointProfile
 	}
 	return endpointResolution{client: client, targetProfile: profile.targetProfile, bound: true}, nil
+}
+
+func loadLocalAPISocket(configPath string) (string, error) {
+	loaded, err := config.LoadFile(configPath)
+	if err != nil || loaded.Kind() != config.HostKindMac {
+		return "", ErrEndpointProfile
+	}
+	settings, ok := loaded.MacSettings()
+	if !ok || settings.APISocket == "" {
+		return "", ErrEndpointProfile
+	}
+	return settings.APISocket, nil
 }
 
 // EndpointTargetProfile returns the immutable target binding for a named
@@ -137,6 +168,11 @@ func loadRemoteEndpointProfile(name, configPath string) (remoteEndpointProfile, 
 	return remoteEndpointProfile{
 		name: name, targetProfile: endpoint.TargetProfile, endpoint: endpoint.Endpoint, serverCA: endpoint.ServerCA,
 		clientCert: endpoint.ClientCertificate, clientKey: endpoint.ClientPrivateKeyFile,
+		serverCAFingerprint: endpoint.ServerCAFingerprint, clientCertFingerprint: endpoint.ClientCertFingerprint,
+		clientSPKIFingerprint:       endpoint.ClientSPKIFingerprint,
+		expectedServerFingerprint:   endpoint.ExpectedServerFingerprint,
+		expectedClientCAFingerprint: endpoint.ExpectedClientCAFingerprint,
+		expectedServerURISAN:        endpoint.ServerURISAN, expectedClientURISAN: endpoint.ClientURISAN,
 	}, nil
 }
 
@@ -173,15 +209,67 @@ func newProfileHTTPSClient(profile remoteEndpointProfile) (sessionClient, error)
 	if err != nil {
 		return nil, fmt.Errorf("%w: client certificate and private key do not form a usable pair", ErrEndpointProfile)
 	}
+	if profile.serverCAFingerprint != "" && !containsCertificateFingerprint(caPEM, profile.serverCAFingerprint) {
+		return nil, fmt.Errorf("%w: selected lane server CA does not match its configured identity", ErrEndpointProfile)
+	}
+	if profile.clientCertFingerprint != "" {
+		leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+		if err != nil || certificateFingerprint(leaf) != profile.clientCertFingerprint ||
+			spkiFingerprint(leaf) != profile.clientSPKIFingerprint || !certificateHasURISAN(leaf, profile.expectedClientURISAN) {
+			return nil, fmt.Errorf("%w: client certificate does not match the selected lane identity", ErrEndpointProfile)
+		}
+	}
 	client, err := runnerclient.NewHTTPSClient(runnerclient.HTTPSConfig{
-		Endpoint:          profile.endpoint,
-		RootCAs:           roots,
-		ClientCertificate: certificate,
+		Endpoint:                  profile.endpoint,
+		RootCAs:                   roots,
+		ClientCertificate:         certificate,
+		ExpectedServerFingerprint: profile.expectedServerFingerprint,
+		ExpectedServerURISAN:      profile.expectedServerURISAN,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: HTTPS client configuration is invalid", ErrEndpointProfile)
 	}
 	return client, nil
+}
+
+func containsCertificateFingerprint(pemBytes []byte, expected string) bool {
+	for len(pemBytes) > 0 {
+		block, rest := pem.Decode(pemBytes)
+		if block == nil {
+			return false
+		}
+		pemBytes = rest
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err == nil && certificateFingerprint(certificate) == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func certificateFingerprint(certificate *x509.Certificate) string {
+	digest := sha256.Sum256(certificate.Raw)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func spkiFingerprint(certificate *x509.Certificate) string {
+	digest := sha256.Sum256(certificate.RawSubjectPublicKeyInfo)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func certificateHasURISAN(certificate *x509.Certificate, expected string) bool {
+	if certificate == nil || expected == "" {
+		return false
+	}
+	for _, uri := range certificate.URIs {
+		if uri.String() == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func readOwnerOnlyCredential(path string) ([]byte, error) {

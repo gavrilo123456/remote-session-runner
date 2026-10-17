@@ -51,11 +51,12 @@ func newPinnedRemoteCallerResolverWithFactory(loaded config.Config, newCaller ss
 			continue
 		}
 		caller, err := newCaller(sshclient.Config{
-			User:           host.Account,
-			Host:           host.QueuedBridge.Host,
-			Port:           host.QueuedBridge.Port,
-			IdentityFile:   host.QueuedBridge.PrivateKeyFile,
-			KnownHostsFile: host.QueuedBridge.KnownHostsFile,
+			User:               host.Account,
+			Host:               host.QueuedBridge.Host,
+			Port:               host.QueuedBridge.Port,
+			IdentityFile:       host.QueuedBridge.PrivateKeyFile,
+			KnownHostsFile:     host.QueuedBridge.KnownHostsFile,
+			HostKeyFingerprint: host.QueuedBridge.HostKeyFingerprint,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("construct pinned SSH bridge client for profile %q: %w", profile, err)

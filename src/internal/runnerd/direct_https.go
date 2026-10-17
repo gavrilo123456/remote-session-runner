@@ -2,8 +2,11 @@ package runnerd
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -48,12 +51,22 @@ func DirectPrincipalFromContext(ctx context.Context) (DirectPrincipal, bool) {
 }
 
 type DirectHTTPSServerOptions struct {
-	BindAddress        string
-	ServerCertificate  string
-	ServerPrivateKey   string
-	ClientCA           string
-	ClientPrincipalMap string
-	Handler            http.Handler
+	BindAddress                   string
+	ServerCertificate             string
+	ServerPrivateKey              string
+	ClientCA                      string
+	ClientPrincipalMap            string
+	ExpectedServerFingerprint     string
+	ExpectedServerSPKIFingerprint string
+	ExpectedServerURISAN          string
+	ExpectedServerIP              string
+	ExpectedClientCAFingerprint   string
+	ExpectedClientFingerprint     string
+	ExpectedClientSPKIFingerprint string
+	ExpectedClientURISAN          string
+	ExpectedClientControllerType  string
+	ExpectedClientControllerID    string
+	Handler                       http.Handler
 }
 
 type DirectHTTPSServer struct {
@@ -117,6 +130,12 @@ func NewDirectHTTPSServer(options DirectHTTPSServerOptions) (*DirectHTTPSServer,
 	if err != nil {
 		return nil, fmt.Errorf("%w: load server certificate and key", ErrDirectHTTPSConfiguration)
 	}
+	if serverCertificate.Leaf == nil {
+		serverCertificate.Leaf, err = x509.ParseCertificate(serverCertificate.Certificate[0])
+		if err != nil {
+			return nil, fmt.Errorf("%w: parse server certificate", ErrDirectHTTPSConfiguration)
+		}
+	}
 	caPEM, err := readOwnerOnlyFile(options.ClientCA)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read client CA", ErrDirectHTTPSConfiguration)
@@ -129,6 +148,10 @@ func NewDirectHTTPSServer(options DirectHTTPSServerOptions) (*DirectHTTPSServer,
 	if err != nil {
 		return nil, err
 	}
+	laneIdentity, err := validateDirectLaneIdentity(options, serverCertificate.Leaf, caPEM, principals)
+	if err != nil {
+		return nil, err
+	}
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{serverCertificate},
 		ClientAuth:   tls.RequireAndVerifyClientCert,
@@ -136,8 +159,17 @@ func NewDirectHTTPSServer(options DirectHTTPSServerOptions) (*DirectHTTPSServer,
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{"http/1.1"},
 		VerifyConnection: func(state tls.ConnectionState) error {
-			if _, ok := principalForPeer(state.PeerCertificates, principals); !ok {
+			principal, ok := principalForPeer(state.PeerCertificates, principals)
+			if !ok {
 				return errors.New("client certificate has no mapped principal")
+			}
+			if laneIdentity && (len(state.PeerCertificates) == 0 ||
+				certificateFingerprint(state.PeerCertificates[0]) != options.ExpectedClientFingerprint ||
+				spkiFingerprint(state.PeerCertificates[0]) != options.ExpectedClientSPKIFingerprint ||
+				!certificateHasURISAN(state.PeerCertificates[0], options.ExpectedClientURISAN) ||
+				string(principal.Controller.Type()) != options.ExpectedClientControllerType ||
+				string(principal.Controller.ID()) != options.ExpectedClientControllerID) {
+				return errors.New("client certificate does not match the selected runner lane identity")
 			}
 			return nil
 		},
@@ -149,6 +181,116 @@ func NewDirectHTTPSServer(options DirectHTTPSServerOptions) (*DirectHTTPSServer,
 		MaxHeaderBytes:    1 << 20,
 	}
 	return &DirectHTTPSServer{server: server, address: options.BindAddress}, nil
+}
+
+func validateDirectLaneIdentity(options DirectHTTPSServerOptions, server *x509.Certificate, caPEM []byte,
+	principals map[string]domain.ControllerIdentity) (bool, error) {
+	values := []string{
+		options.ExpectedServerFingerprint, options.ExpectedServerSPKIFingerprint, options.ExpectedServerURISAN,
+		options.ExpectedServerIP, options.ExpectedClientCAFingerprint, options.ExpectedClientFingerprint,
+		options.ExpectedClientSPKIFingerprint, options.ExpectedClientURISAN,
+		options.ExpectedClientControllerType, options.ExpectedClientControllerID,
+	}
+	configured := false
+	for _, value := range values {
+		configured = configured || value != ""
+	}
+	if !configured {
+		return false, nil
+	}
+	for _, value := range []string{
+		options.ExpectedServerFingerprint, options.ExpectedServerSPKIFingerprint,
+		options.ExpectedClientCAFingerprint, options.ExpectedClientFingerprint, options.ExpectedClientSPKIFingerprint,
+	} {
+		if !validSHA256Fingerprint(value) {
+			return false, fmt.Errorf("%w: lane certificate fingerprint is invalid", ErrDirectHTTPSConfiguration)
+		}
+	}
+	if options.ExpectedServerURISAN == "" || options.ExpectedServerIP == "" || options.ExpectedClientURISAN == "" ||
+		options.ExpectedClientControllerType != string(domain.ControllerTypeDirectMTLS) || options.ExpectedClientControllerID == "" {
+		return false, fmt.Errorf("%w: lane certificate identity is incomplete", ErrDirectHTTPSConfiguration)
+	}
+	if certificateFingerprint(server) != options.ExpectedServerFingerprint || spkiFingerprint(server) != options.ExpectedServerSPKIFingerprint ||
+		!certificateHasURISAN(server, options.ExpectedServerURISAN) || !certificateHasIPSAN(server, options.ExpectedServerIP) {
+		return false, fmt.Errorf("%w: server certificate does not match the selected lane identity", ErrDirectHTTPSConfiguration)
+	}
+	if !containsCertificateFingerprint(caPEM, options.ExpectedClientCAFingerprint) {
+		return false, fmt.Errorf("%w: client CA does not match the selected lane identity", ErrDirectHTTPSConfiguration)
+	}
+	if len(principals) != 1 {
+		return false, fmt.Errorf("%w: lane principal map must contain exactly one identity", ErrPrincipalMap)
+	}
+	principal, ok := principals[options.ExpectedClientURISAN]
+	if !ok || string(principal.Type()) != options.ExpectedClientControllerType || string(principal.ID()) != options.ExpectedClientControllerID {
+		return false, fmt.Errorf("%w: principal map does not match the selected lane identity", ErrPrincipalMap)
+	}
+	return true, nil
+}
+
+func validSHA256Fingerprint(value string) bool {
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
+}
+
+func certificateFingerprint(certificate *x509.Certificate) string {
+	if certificate == nil {
+		return ""
+	}
+	digest := sha256.Sum256(certificate.Raw)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func spkiFingerprint(certificate *x509.Certificate) string {
+	if certificate == nil {
+		return ""
+	}
+	digest := sha256.Sum256(certificate.RawSubjectPublicKeyInfo)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func certificateHasURISAN(certificate *x509.Certificate, expected string) bool {
+	if certificate == nil || expected == "" {
+		return false
+	}
+	for _, uri := range certificate.URIs {
+		if uri.String() == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func certificateHasIPSAN(certificate *x509.Certificate, expected string) bool {
+	if certificate == nil || net.ParseIP(expected) == nil {
+		return false
+	}
+	for _, address := range certificate.IPAddresses {
+		if address.String() == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCertificateFingerprint(pemBytes []byte, expected string) bool {
+	for len(pemBytes) > 0 {
+		block, rest := pem.Decode(pemBytes)
+		if block == nil {
+			return false
+		}
+		pemBytes = rest
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err == nil && certificateFingerprint(certificate) == expected {
+			return true
+		}
+	}
+	return false
 }
 
 // Listen binds the configured host-local address. The server cannot start

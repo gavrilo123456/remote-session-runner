@@ -5,8 +5,10 @@ package runnerclient
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,9 +46,11 @@ var (
 // Roots and a client certificate are mandatory; the client never reads
 // credentials from environment variables or falls back to another endpoint.
 type HTTPSConfig struct {
-	Endpoint          string
-	RootCAs           *x509.CertPool
-	ClientCertificate tls.Certificate
+	Endpoint                  string
+	RootCAs                   *x509.CertPool
+	ClientCertificate         tls.Certificate
+	ExpectedServerFingerprint string
+	ExpectedServerURISAN      string
 }
 
 // Client is a reusable API client bound to exactly one ingress. Construct it
@@ -90,11 +94,26 @@ func NewHTTPSClient(config HTTPSConfig) (*Client, error) {
 	if len(config.ClientCertificate.Certificate) == 0 || config.ClientCertificate.PrivateKey == nil {
 		return nil, fmt.Errorf("%w: HTTPS client certificate and private key are required", ErrConfiguration)
 	}
+	if (config.ExpectedServerFingerprint == "") != (config.ExpectedServerURISAN == "") {
+		return nil, fmt.Errorf("%w: server certificate pin and URI SAN must be supplied together", ErrConfiguration)
+	}
 	endpointURL := "https://" + endpoint.Host
 	tlsConfig := &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		RootCAs:      config.RootCAs.Clone(),
 		Certificates: []tls.Certificate{config.ClientCertificate},
+	}
+	if config.ExpectedServerFingerprint != "" {
+		tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("TLS peer did not provide a certificate")
+			}
+			leaf := state.PeerCertificates[0]
+			if certificateFingerprint(leaf) != config.ExpectedServerFingerprint || !certificateHasURISAN(leaf, config.ExpectedServerURISAN) {
+				return errors.New("TLS peer does not match the selected runner lane identity")
+			}
+			return nil
+		}
 	}
 	transport := &http.Transport{
 		Proxy:             nil,
@@ -102,6 +121,26 @@ func NewHTTPSClient(config HTTPSConfig) (*Client, error) {
 		ForceAttemptHTTP2: true,
 	}
 	return newClient(endpointURL, EndpointHTTPS, transport), nil
+}
+
+func certificateFingerprint(certificate *x509.Certificate) string {
+	if certificate == nil {
+		return ""
+	}
+	digest := sha256.Sum256(certificate.Raw)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func certificateHasURISAN(certificate *x509.Certificate, expected string) bool {
+	if certificate == nil || expected == "" {
+		return false
+	}
+	for _, uri := range certificate.URIs {
+		if uri.String() == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func newClient(endpointURL string, kind EndpointKind, transport *http.Transport) *Client {

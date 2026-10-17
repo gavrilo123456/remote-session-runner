@@ -343,6 +343,72 @@ func TestP118HTTPSRejectsTLS12OnlyServer(t *testing.T) {
 	}
 }
 
+func TestSimpleLaneHTTPSClientPinsServerCertificateAndURISAN(t *testing.T) {
+	serverCertificate, clientCertificate, roots := p118MTLSCertificates(t)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{serverCertificate}, ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientCAs: roots, MinVersion: tls.VersionTLS13,
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	serverLeaf := serverCertificate.Leaf
+	valid, err := NewHTTPSClient(HTTPSConfig{
+		Endpoint: server.URL, RootCAs: roots, ClientCertificate: clientCertificate,
+		ExpectedServerFingerprint: certificateFingerprint(serverLeaf),
+		ExpectedServerURISAN:      "urn:runnerclient:test:server",
+	})
+	if err != nil {
+		t.Fatalf("construct pinned lane client: %v", err)
+	}
+	response, err := valid.httpClient.Get(server.URL)
+	if err != nil {
+		t.Fatalf("valid pinned server request: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("valid pinned server status=%d, want 204", response.StatusCode)
+	}
+
+	for name, expected := range map[string]string{
+		"wrong certificate fingerprint": "sha256:" + strings.Repeat("0", 64),
+		"wrong server URI":              "urn:runnerclient:test:other-server",
+	} {
+		t.Run(name, func(t *testing.T) {
+			fingerprint := certificateFingerprint(serverLeaf)
+			uri := "urn:runnerclient:test:server"
+			if name == "wrong certificate fingerprint" {
+				fingerprint = expected
+			} else {
+				uri = expected
+			}
+			client, err := NewHTTPSClient(HTTPSConfig{
+				Endpoint: server.URL, RootCAs: roots, ClientCertificate: clientCertificate,
+				ExpectedServerFingerprint: fingerprint, ExpectedServerURISAN: uri,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response, err := client.httpClient.Get(server.URL); err == nil {
+				if response != nil {
+					_ = response.Body.Close()
+				}
+				t.Fatal("mismatched server lane identity was accepted")
+			}
+		})
+	}
+
+	if _, err := NewHTTPSClient(HTTPSConfig{
+		Endpoint: server.URL, RootCAs: roots, ClientCertificate: clientCertificate,
+		ExpectedServerFingerprint: certificateFingerprint(serverLeaf),
+	}); !errors.Is(err, ErrConfiguration) {
+		t.Fatalf("partial lane identity pin error=%v, want ErrConfiguration", err)
+	}
+}
+
 func TestP118ResourceAndIdempotencyValidation(t *testing.T) {
 	client, err := NewUnixSocketClient("/tmp/runnerclient-test.sock")
 	if err != nil {
@@ -596,6 +662,15 @@ func p118MTLSCertificates(t *testing.T) (tls.Certificate, tls.Certificate, *x509
 			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{usage},
 			DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 		}
+		uriName := "urn:runnerclient:test:client"
+		if usage == x509.ExtKeyUsageServerAuth {
+			uriName = "urn:runnerclient:test:server"
+		}
+		parsedURI, err := url.Parse(uriName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template.URIs = []*url.URL{parsedURI}
 		der, err := x509.CreateCertificate(rand.Reader, template, root, &key.PublicKey, rootKey)
 		if err != nil {
 			t.Fatal(err)
