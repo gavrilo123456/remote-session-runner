@@ -993,7 +993,22 @@
       "required_tiers": [
         "H",
         "N"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL305BootstrapUsesPrivateFullSyncSQLiteAndReopensExactState"},
+          {"package": "./src/internal/release", "name": "TestLanesL305TimeChallengeIsDurableSingleUseAndInvalidatedOnRestart"},
+          {"package": "./src/internal/release", "name": "TestLanesL305AnchorDirectiveHighWaterAndPendingCandidateSurviveRestart"},
+          {"package": "./src/internal/release", "name": "TestLanesL305CrashBeforeCommitLeavesOnlyLastDurableAnchorState"},
+          {"package": "./src/internal/release", "name": "TestLanesL305RejectsAnchorCorruptionSymlinkAndWrongModes"},
+          {"package": "./src/internal/release", "name": "TestLanesL305StaleLedgerAllowsOnlyFreshContiguousTrustRecovery"},
+          {"package": "./src/internal/release", "name": "TestLanesL305StaleLedgerAllowsContiguousAuthorityKeySuccessorOnly"},
+          {"package": "./src/internal/release", "name": "TestLanesL305RejectsRestoredLowerOrForkedHighWaterSnapshot"}
+        ],
+        "N": [
+          {"package": "./src/internal/release", "name": "TestLanesL305NativeFsyncAndLowerSnapshotFailClosed"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-06",

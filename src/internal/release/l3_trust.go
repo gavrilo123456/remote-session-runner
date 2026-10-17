@@ -195,6 +195,15 @@ func (m *TimeProbeManager) Accept(challengeID string, responseRaw []byte, truste
 	return accepted.UTC(), nil
 }
 
+func (m *TimeProbeManager) discard(challengeID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	delete(m.pending, challengeID)
+	m.mu.Unlock()
+}
+
 // SignTimeProbeResponse creates the authority's canonical nonce-bound answer.
 func SignTimeProbeResponse(body TimeProbeBody, privateKey ed25519.PrivateKey) ([]byte, error) {
 	if len(privateKey) != ed25519.PrivateKeySize || body.Version != ReleaseTimePolicyVersion || !validNonce(body.Nonce) ||
