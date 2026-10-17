@@ -278,6 +278,12 @@ func b008SetAuthoritySchemaVersion(t *testing.T, path string, version int) {
 		t.Fatal(err)
 	}
 	if version < CurrentSchemaVersion {
+		if _, err := database.Exec(`DROP TABLE IF EXISTS lane_capacity_reservations; DROP TABLE IF EXISTS lane_capacity_budgets`); err != nil {
+			_ = database.Close()
+			t.Fatal(err)
+		}
+	}
+	if version < capacityBudgetPreviousSchemaVersion {
 		if _, err := database.Exec(`DROP TABLE IF EXISTS lane_ingress_admission`); err != nil {
 			_ = database.Close()
 			t.Fatal(err)

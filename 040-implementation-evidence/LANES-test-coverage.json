@@ -774,7 +774,75 @@
       "id": "LANES-L2-06",
       "required_tiers": [
         "H"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206LinuxEnvelopePreservesPRDAndThirtyPercentByteAndInodeFloors"
+          },
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206MacPoliciesRequireNoComputeAndObservedAPFSIdentities"
+          },
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206MacStorageUsesMaximumSnapshotAndFifteenPercentOrTwentyGiBFloor"
+          },
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206HostManagementDoesNotRequireFutureLaneVolumes"
+          },
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206LinuxHostManagementPolicyCarriesPRDFloorAndSharedCacheBudget"
+          },
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206MacPRDSupportsMeasuredHostFreeSpaceAndAPFSQuotaModes"
+          },
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206MacEnforcesTwentyGiBMinimumWhenItExceedsFifteenPercent"
+          },
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206ChangedHostCacheOrVolumeIdentityRefusesPolicy"
+          },
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206StaleMeasurementsAndInvalidCacheSetsAreRejected"
+          },
+          {
+            "package": "./src/internal/lanecapacity",
+            "name": "TestL206EvaluationDigestBindsMeasurementUsageAndStorageIdentity"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLaneByteReservationPersistsAndRejectsLimitOrIdentityChanges"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLaneByteAdmissionRollsBackReservationAndAcceptanceTogether"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLaneByteReservationRetryRequiresTheCompleteCategorySet"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLaneByteReservationReleaseRequiresSuccessfulCleanup"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLaneByteConcurrentAdmissionsCannotOvercommit"
+          },
+          {
+            "package": "./src/internal/store",
+            "name": "TestLaneCapacityMigrationFromSchema38AddsEmptyDurableLedger"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L2-07",

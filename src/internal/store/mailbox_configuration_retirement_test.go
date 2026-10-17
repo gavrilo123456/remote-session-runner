@@ -289,6 +289,10 @@ func downgradeMailboxRetirementSchemaTo35(t *testing.T, path string) {
 		_ = database.Close()
 		t.Fatal(err)
 	}
+	if _, err := database.Exec(`DROP TABLE lane_capacity_reservations; DROP TABLE lane_capacity_budgets`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
 	if _, err := database.Exec(`DROP INDEX ux_mailbox_configuration_registry_id_root`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)

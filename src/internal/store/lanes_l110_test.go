@@ -281,7 +281,7 @@ func TestLanesL110MigrationFromSchema37(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	if _, err := database.ExecContext(ctx, `DROP TABLE lane_ingress_admission; DELETE FROM runner_schema_migrations WHERE version = 38; PRAGMA user_version = 37`); err != nil {
+	if _, err := database.ExecContext(ctx, `DROP TABLE lane_capacity_reservations; DROP TABLE lane_capacity_budgets; DROP TABLE lane_ingress_admission; DELETE FROM runner_schema_migrations WHERE version > 37; PRAGMA user_version = 37`); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Close(); err != nil {
@@ -293,7 +293,7 @@ func TestLanesL110MigrationFromSchema37(t *testing.T) {
 	}
 	defer migrated.Close()
 	var version int
-	if err := migrated.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != 38 {
+	if err := migrated.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != CurrentSchemaVersion {
 		t.Fatalf("migrated schema version=%d err=%v", version, err)
 	}
 	var count int

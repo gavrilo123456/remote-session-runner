@@ -445,6 +445,8 @@ func completedTeardownSchema36AuthorityPath(t *testing.T) string {
 	}
 	defer database.Close()
 	for _, statement := range []string{
+		`DROP TABLE lane_capacity_reservations`,
+		`DROP TABLE lane_capacity_budgets`,
 		`DROP TABLE lane_ingress_admission`,
 		`DROP TABLE exec_completed_teardown_recovery_finalizations`,
 		`DELETE FROM runner_schema_migrations WHERE version > 36`,

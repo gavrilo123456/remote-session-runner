@@ -266,6 +266,10 @@ func controlledRestartStatusLegacyAuthorityPath(t *testing.T) string {
 		_ = database.Close()
 		t.Fatal(err)
 	}
+	if _, err := database.Exec(`DROP TABLE lane_capacity_reservations; DROP TABLE lane_capacity_budgets`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
 	if _, err := database.Exec(`DROP INDEX ux_mailbox_configuration_registry_id_root`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)
@@ -304,6 +308,10 @@ func controlledRestartStatusSchema35AuthorityPath(t *testing.T) string {
 		t.Fatal(err)
 	}
 	if _, err := database.Exec(`DROP TABLE mailbox_configuration_retirements`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DROP TABLE lane_capacity_reservations; DROP TABLE lane_capacity_budgets`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)
 	}

@@ -23,7 +23,7 @@ const (
 	BusyTimeout = 5 * time.Second
 
 	// CurrentSchemaVersion is the last migration applied before Open returns.
-	CurrentSchemaVersion = 38
+	CurrentSchemaVersion = 39
 
 	// legacySingleMailboxSchemaVersion is the last schema that represented all
 	// mailbox work in the implicit default inbox. It is accepted only by the
@@ -37,6 +37,7 @@ const (
 	restartPreflightPreviousSchemaVersion  = 35
 	completedTeardownPreviousSchemaVersion = 36
 	laneAdmissionPreviousSchemaVersion     = 37
+	capacityBudgetPreviousSchemaVersion    = 38
 )
 
 var (
@@ -161,6 +162,9 @@ var completedTeardownRecoveryFinalizationsSQL string
 
 //go:embed migrations/0038_lane_ingress_admission.sql
 var laneIngressAdmissionSQL string
+
+//go:embed migrations/0039_lane_capacity_reservations.sql
+var laneCapacityReservationsSQL string
 
 type migration struct {
 	version int
@@ -320,6 +324,10 @@ var migrations = []migration{{
 	version: 38,
 	name:    "lane_ingress_admission",
 	sql:     laneIngressAdmissionSQL,
+}, {
+	version: 39,
+	name:    "lane_capacity_reservations",
+	sql:     laneCapacityReservationsSQL,
 }}
 
 // Open opens a private SQLite database, applies required per-connection
@@ -425,8 +433,8 @@ func OpenExistingCurrent(ctx context.Context, path string) (*sql.DB, error) {
 // OpenExistingOfflineMaintenanceMigrating opens an already-existing private
 // authority database for a caller that has independently established exclusive
 // offline ownership. It never creates a directory or database file. It admits
-// only the current schema or the immediately preceding schema, verifies the
-// migration ledger before opening a writable handle, and then applies the
+// the current schema, schema 38, and the three explicitly supported historical
+// predecessors, verifies the migration ledger before opening a writable handle, and then applies the
 // pending migration. Callers must hold their lifecycle lock and prove every
 // service using the authority is stopped before invoking it.
 //
@@ -498,7 +506,7 @@ func OpenExistingCurrentReadOnly(ctx context.Context, path string) (*sql.DB, err
 
 // OpenExistingRestartPreflightReadOnly opens the existing private authority
 // database for the installer restart guard. It accepts only the current schema,
-// schemas 35 through 37 while their pending migrations await activation, or the
+// schemas 35 through 38 while their pending migrations await activation, or the
 // exact schema-24
 // legacy authority that the installer already supports for its read-only
 // pre-activation checks. Activation remains responsible for migration after its
@@ -1004,14 +1012,14 @@ func verifyOfflineMaintenanceMigrationSchemaConnection(ctx context.Context, conn
 	if err != nil {
 		return err
 	}
-	if version != CurrentSchemaVersion && version != restartPreflightPreviousSchemaVersion && version != completedTeardownPreviousSchemaVersion && version != laneAdmissionPreviousSchemaVersion {
-		return fmt.Errorf("%w: got %d, require current %d or prior %d/%d/%d", ErrSchemaVersion, version, CurrentSchemaVersion, restartPreflightPreviousSchemaVersion, completedTeardownPreviousSchemaVersion, laneAdmissionPreviousSchemaVersion)
+	if version != CurrentSchemaVersion && version != capacityBudgetPreviousSchemaVersion && version != restartPreflightPreviousSchemaVersion && version != completedTeardownPreviousSchemaVersion && version != laneAdmissionPreviousSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d or prior %d/%d/%d/%d", ErrSchemaVersion, version, CurrentSchemaVersion, capacityBudgetPreviousSchemaVersion, restartPreflightPreviousSchemaVersion, completedTeardownPreviousSchemaVersion, laneAdmissionPreviousSchemaVersion)
 	}
 	return verifyMigrationHistory(ctx, connection, version)
 }
 
 // verifyRestartPreflightSchemaConnection permits only the known read-only
-// execution shapes: the current authority, schemas 35-37 with pending
+// execution shapes: the current authority, schemas 35-38 with pending
 // activation, and the schema-24 authority that activation later
 // migrates. It deliberately does not accept an arbitrary older version.
 func verifyRestartPreflightSchemaConnection(ctx context.Context, connection *sql.Conn) error {
@@ -1019,8 +1027,8 @@ func verifyRestartPreflightSchemaConnection(ctx context.Context, connection *sql
 	if err != nil {
 		return err
 	}
-	if version != CurrentSchemaVersion && version != restartPreflightPreviousSchemaVersion && version != completedTeardownPreviousSchemaVersion && version != laneAdmissionPreviousSchemaVersion && version != legacySingleMailboxSchemaVersion {
-		return fmt.Errorf("%w: got %d, require current %d, prior %d/%d/%d, or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, restartPreflightPreviousSchemaVersion, completedTeardownPreviousSchemaVersion, laneAdmissionPreviousSchemaVersion, legacySingleMailboxSchemaVersion)
+	if version != CurrentSchemaVersion && version != capacityBudgetPreviousSchemaVersion && version != restartPreflightPreviousSchemaVersion && version != completedTeardownPreviousSchemaVersion && version != laneAdmissionPreviousSchemaVersion && version != legacySingleMailboxSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d, prior %d/%d/%d/%d, or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, capacityBudgetPreviousSchemaVersion, restartPreflightPreviousSchemaVersion, completedTeardownPreviousSchemaVersion, laneAdmissionPreviousSchemaVersion, legacySingleMailboxSchemaVersion)
 	}
 	return verifyMigrationHistory(ctx, connection, version)
 }
@@ -1034,8 +1042,8 @@ func verifyControlledRestartStatusSchemaConnection(ctx context.Context, connecti
 	if err != nil {
 		return err
 	}
-	if version != controlledRestartStatusLegacySchemaVersion && version != controlledRestartStatusFirstPlanSchemaVersion && version != restartPreflightPreviousSchemaVersion && version != completedTeardownPreviousSchemaVersion && version != laneAdmissionPreviousSchemaVersion && version != CurrentSchemaVersion {
-		return fmt.Errorf("%w: got %d, require current %d, prior plan schemas %d/%d/%d/%d, or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, controlledRestartStatusFirstPlanSchemaVersion, restartPreflightPreviousSchemaVersion, completedTeardownPreviousSchemaVersion, laneAdmissionPreviousSchemaVersion, controlledRestartStatusLegacySchemaVersion)
+	if version != controlledRestartStatusLegacySchemaVersion && version != controlledRestartStatusFirstPlanSchemaVersion && version != restartPreflightPreviousSchemaVersion && version != completedTeardownPreviousSchemaVersion && version != laneAdmissionPreviousSchemaVersion && version != capacityBudgetPreviousSchemaVersion && version != CurrentSchemaVersion {
+		return fmt.Errorf("%w: got %d, require current %d, prior plan schemas %d/%d/%d/%d/%d, or legacy %d", ErrSchemaVersion, version, CurrentSchemaVersion, controlledRestartStatusFirstPlanSchemaVersion, restartPreflightPreviousSchemaVersion, completedTeardownPreviousSchemaVersion, laneAdmissionPreviousSchemaVersion, capacityBudgetPreviousSchemaVersion, controlledRestartStatusLegacySchemaVersion)
 	}
 	if err := verifyMigrationHistory(ctx, connection, version); err != nil {
 		return err
@@ -1049,7 +1057,7 @@ func verifyControlledRestartStatusSchemaConnection(ctx context.Context, connecti
 		if plansPresent || pairsPresent {
 			return fmt.Errorf("%w: schema %d unexpectedly contains controlled restart plan tables", ErrSchemaVersion, version)
 		}
-	case controlledRestartStatusFirstPlanSchemaVersion, restartPreflightPreviousSchemaVersion, completedTeardownPreviousSchemaVersion, laneAdmissionPreviousSchemaVersion, CurrentSchemaVersion:
+	case controlledRestartStatusFirstPlanSchemaVersion, restartPreflightPreviousSchemaVersion, completedTeardownPreviousSchemaVersion, laneAdmissionPreviousSchemaVersion, capacityBudgetPreviousSchemaVersion, CurrentSchemaVersion:
 		if !plansPresent || !pairsPresent {
 			return fmt.Errorf("%w: schema %d is missing controlled restart plan tables", ErrSchemaVersion, version)
 		}
