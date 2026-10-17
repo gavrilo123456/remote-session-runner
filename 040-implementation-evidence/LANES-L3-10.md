@@ -1,10 +1,10 @@
 # LANES-L3-10 — root signer, agent, approval and replay journal
 
-**State:** IN PROGRESS — the isolated H source slice and Mac source gates pass.
-Source S synchronization and cross-host validation are pending. Required F
-acceptance is NOT RUN and remains blocked on the separately approved disposable
-privileged Mac fixture. L3-09/L3-08 ordered acceptance and evidence closeout are
-also blocked; no L3-10 PASS or E is claimed.
+**State:** BLOCKED — Source S and all H source gates pass on the Mac and three
+Ubuntu checkouts. Required F acceptance is NOT RUN and remains blocked on the
+separately approved disposable privileged Mac fixture. L3-09/L3-08 ordered
+acceptance and evidence closeout are also blocked; no L3-10 PASS or E is
+claimed.
 
 ## Pre-unit record and scope
 
@@ -118,6 +118,26 @@ PASS, installed acceptance, root signer deployment, live mandate, or E claim.
 
 ## Source S delivery and host validation
 
-Pending. This section will record the exact source S commit, primary Gitea and
-GitHub mirror refs, every Ubuntu fast-forward, validation command/result, and
-final checkout state after synchronization.
+Source S is `41c582f2463b7f49651f4855e29c0a1638393037`
+(`phase(LANES-L3-10): add bounded authority signing state`). Mac `dev` was
+clean at S. Gitea `origin/dev` and the automatic GitHub mirror `github/dev`
+both resolved to exactly S. Each required Ubuntu checkout was clean on `dev`
+at exactly S before validation and remained at S after validation:
+
+| Required machine | SSH profile / Makefile host | Final branch and HEAD | H / full source gates | Focused race |
+| --- | --- | --- | --- | --- |
+| `linux-host` | `remote-session-runner` / `oracle-yuta-konopka-ubuntu-micro-02` | clean `dev`, S | `LANES_NATIVE_HOST_ID=linux-host make test-lanes UNIT=LANES-L3-10 LANES_TIER=H`: PASS (6 assertions); `make check build`: PASS | PASS with pinned Go 1.27.1 and `/usr/bin/cc` |
+| `sandbox-host` | `sandbox.env` / `oracle-gustaw-janecki-ubuntu-flex-02` | clean `dev`, S | `LANES_NATIVE_HOST_ID=sandbox-host make test-lanes UNIT=LANES-L3-10 LANES_TIER=H`: PASS (6 assertions); `make check build`: PASS | PASS with pinned Go 1.27.1 and `/usr/bin/cc` |
+| `factory-sandbox` | `factory-sandbox` / `oracle-waclaw-dziwulski-ubuntu-micro-01` | clean `dev`, S | `LANES_NATIVE_HOST_ID=factory-sandbox make test-lanes UNIT=LANES-L3-10 LANES_TIER=H`: PASS (6 assertions); `make check build`: PASS | NOT RUN: pinned Go reports `CGO_ENABLED=0`; no `cc` is installed |
+
+The focused command on the two race-capable Ubuntu hosts was
+`GOTOOLCHAIN=local /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/release -run '^TestLanesL310' -count=1`.
+The factory limitation is recorded as NOT RUN, not PASS. All Ubuntu commands
+ran over the configured explicit SSH identity with strict host-key checking;
+the Linux Mac-side SSH client emitted a known_hosts update-permission warning,
+but strict verification and the command succeeded.
+
+No production service, key, socket, mailbox, host configuration, storage,
+firewall, or credential was read or changed. The required F gate remains
+unavailable and blocks L3-10 PASS/E; the verified S/H work can support the
+owner-authorized continuation of source-only units that do not depend on F.
