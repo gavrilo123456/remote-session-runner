@@ -27,6 +27,9 @@ const (
 	ArtifactSSHWrapper    ArtifactKind = "queued_ssh_forced_wrapper"
 	ArtifactSSHUnit       ArtifactKind = "queued_ssh_systemd_unit"
 	ArtifactSSHKnownHosts ArtifactKind = "mac_queued_ssh_known_hosts"
+	ArtifactSystemdDropIn ArtifactKind = "systemd_dropin"
+	ArtifactProjectMap    ArtifactKind = "project_map_fragment"
+	ArtifactProjectQuota  ArtifactKind = "project_quota_fragment"
 )
 
 // Artifact is a deterministic file produced by a fixed plan. InstallPath is

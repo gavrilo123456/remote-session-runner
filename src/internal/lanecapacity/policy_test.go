@@ -47,6 +47,57 @@ func TestL206LinuxEnvelopePreservesPRDAndThirtyPercentByteAndInodeFloors(t *test
 	}
 }
 
+func TestL207BuildsDevAndQASControlsFromFreshMeasuredDevice(t *testing.T) {
+	measurement, live, policy, now := linuxL207Fixture(t)
+	for _, lane := range []string{"dev", "qas"} {
+		policy.Lane = lane
+		plan, err := BuildLinuxControlPlan(policy, measurement, live, now)
+		if err != nil {
+			t.Fatalf("%s control plan: %v", lane, err)
+		}
+		wantSlice := "remote-session-runner-" + lane + ".slice"
+		if plan.HostID != "linux-host" || plan.Scope != ScopeLaneRuntime || plan.Lane != lane ||
+			plan.SliceUnit != wantSlice || plan.Device.ID != "lane-capacity" ||
+			plan.Device.MajorMinor != "259:1" || plan.Resources.Tasks != 300 ||
+			plan.Resources.IOReadIOPSMax != 3_000 || plan.Resources.IOWriteIOPSMax != 3_000 {
+			t.Errorf("%s control plan = %+v", lane, plan)
+		}
+	}
+}
+
+func TestL207BuildsManagementControlsAndRejectsMissingOrWrongDevice(t *testing.T) {
+	measurement, live, policy, now := linuxL207Fixture(t)
+	policy.Scope, policy.Lane, policy.LaneRuntime = ScopeHostManagement, "", nil
+	policy.HostManagement = &HostManagementBudget{
+		Components: []string{"runner-release-builder", "runner-release-transport", "runner-security-anchor-helper", "runner-release-transport-pki-installer"},
+		PeakBytes:  2 * GiB, PeakInodes: 50_000, StagingBudgetBytes: GiB, LogBudgetBytes: GiB,
+		GoCacheBudgetBytes: 4 * GiB, ReleaseCacheBudgetBytes: 2 * GiB, BackupBudgetBytes: 3 * GiB,
+		BackupLowWaterBytes: 2 * GiB, GoCachePaths: measurement.GoCachePaths, IODeviceID: "lane-capacity",
+		Resources: ResourceEnvelope{
+			PRDFloor:          ResourceVector{CPUMilli: 5_000, MemoryBytes: 12 * GiB, Tasks: 700, IOReadBytesPerSecond: 70 * 1024 * 1024, IOWriteBytesPerSecond: 70 * 1024 * 1024, IOReadIOPSMax: 7_000, IOWriteIOPSMax: 7_000},
+			ManagementHardMax: ResourceVector{CPUMilli: 1_000, MemoryBytes: 2 * GiB, Tasks: 200, IOReadBytesPerSecond: 10 * 1024 * 1024, IOWriteBytesPerSecond: 10 * 1024 * 1024, IOReadIOPSMax: 1_000, IOWriteIOPSMax: 1_000},
+		},
+	}
+	plan, err := BuildLinuxControlPlan(policy, measurement, live, now)
+	if err != nil {
+		t.Fatalf("management control plan: %v", err)
+	}
+	if plan.Scope != ScopeHostManagement || plan.Lane != "" || plan.SliceUnit != "remote-session-runner-management.slice" ||
+		plan.Resources.Tasks != 200 || plan.Device.ID != "lane-capacity" {
+		t.Fatalf("management control plan = %+v", plan)
+	}
+
+	policy.HostManagement.IODeviceID = "unmeasured-device"
+	if _, err := BuildLinuxControlPlan(policy, measurement, live, now); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("unmeasured I/O device accepted: %v", err)
+	}
+	policy.HostManagement.IODeviceID = "lane-capacity"
+	policy.HostManagement.Resources.ManagementHardMax.IOReadIOPSMax = 0
+	if _, err := BuildLinuxControlPlan(policy, measurement, live, now); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("missing IOPS dimension accepted: %v", err)
+	}
+}
+
 func TestL206MacPoliciesRequireNoComputeAndObservedAPFSIdentities(t *testing.T) {
 	measurement, live, policy, now := macPolicyFixture(t, "dev")
 	if err := ValidatePolicy(policy, measurement, live, now); err != nil {
@@ -107,10 +158,10 @@ func TestL206LinuxHostManagementPolicyCarriesPRDFloorAndSharedCacheBudget(t *tes
 		Components: []string{"runner-release-builder", "runner-release-transport", "runner-security-anchor-helper", "runner-release-transport-pki-installer"},
 		PeakBytes:  2 * GiB, PeakInodes: 50_000, StagingBudgetBytes: GiB, LogBudgetBytes: GiB,
 		GoCacheBudgetBytes: 4 * GiB, ReleaseCacheBudgetBytes: 2 * GiB, BackupBudgetBytes: 3 * GiB,
-		BackupLowWaterBytes: 2 * GiB, GoCachePaths: measurement.GoCachePaths,
+		BackupLowWaterBytes: 2 * GiB, GoCachePaths: measurement.GoCachePaths, IODeviceID: measurement.Identity.DeviceID,
 		Resources: ResourceEnvelope{
-			PRDFloor:          ResourceVector{CPUMilli: 5_000, MemoryBytes: 12 * GiB, Tasks: 700, IOReadBytesPerSecond: 70 * 1024 * 1024, IOWriteBytesPerSecond: 70 * 1024 * 1024},
-			ManagementHardMax: ResourceVector{CPUMilli: 1_000, MemoryBytes: 2 * GiB, Tasks: 200, IOReadBytesPerSecond: 10 * 1024 * 1024, IOWriteBytesPerSecond: 10 * 1024 * 1024},
+			PRDFloor:          ResourceVector{CPUMilli: 5_000, MemoryBytes: 12 * GiB, Tasks: 700, IOReadBytesPerSecond: 70 * 1024 * 1024, IOWriteBytesPerSecond: 70 * 1024 * 1024, IOReadIOPSMax: 7_000, IOWriteIOPSMax: 7_000},
+			ManagementHardMax: ResourceVector{CPUMilli: 1_000, MemoryBytes: 2 * GiB, Tasks: 200, IOReadBytesPerSecond: 10 * 1024 * 1024, IOWriteBytesPerSecond: 10 * 1024 * 1024, IOReadIOPSMax: 1_000, IOWriteIOPSMax: 1_000},
 		},
 	}
 	policy.EvaluationDigest, _ = measurement.EvaluationDigest()
@@ -224,7 +275,7 @@ func linuxPolicyFixture(t *testing.T) (Measurement, LiveObservation, Policy, tim
 		CapacityBytes: 100 * GiB, CapacityInodes: 1_000_000,
 		BackupDeviceID: "/dev/vdb1", BackupFilesystem: "ext4", BackupMountpoint: "/mnt/runner-backup", BackupCapacityBytes: 20 * GiB,
 	}
-	resources := ResourceVector{CPUMilli: 8_000, MemoryBytes: 16 * GiB, Tasks: 1_000, IOReadBytesPerSecond: 100 * 1024 * 1024, IOWriteBytesPerSecond: 100 * 1024 * 1024}
+	resources := ResourceVector{CPUMilli: 8_000, MemoryBytes: 16 * GiB, Tasks: 1_000, IOReadBytesPerSecond: 100 * 1024 * 1024, IOWriteBytesPerSecond: 100 * 1024 * 1024, IOReadIOPSMax: 10_000, IOWriteIOPSMax: 10_000}
 	paths := []string{"/home/ubuntu/.cache/go-build", "/home/ubuntu/go/pkg/mod"}
 	measurement := Measurement{
 		ID: "measure-linux-01", Identity: identity, ObservedAt: now.Add(-10 * time.Second), ExpiresAt: now.Add(5 * time.Minute),
@@ -237,10 +288,10 @@ func linuxPolicyFixture(t *testing.T) (Measurement, LiveObservation, Policy, tim
 		GoCachePaths: paths, GoCacheBudgetBytes: 4 * GiB, ReleaseCacheBudgetBytes: 2 * GiB,
 		BackupBudgetBytes: 3 * GiB, BackupLowWaterBytes: 2 * GiB, IODeviceID: identity.DeviceID,
 		Resources: ResourceEnvelope{
-			PRDFloor:          ResourceVector{CPUMilli: 1_000, MemoryBytes: 4 * GiB, Tasks: 100, IOReadBytesPerSecond: 20 * 1024 * 1024, IOWriteBytesPerSecond: 20 * 1024 * 1024},
-			DevHardMax:        ResourceVector{CPUMilli: 2_500, MemoryBytes: 4 * GiB, Tasks: 300, IOReadBytesPerSecond: 30 * 1024 * 1024, IOWriteBytesPerSecond: 30 * 1024 * 1024},
-			QASHardMax:        ResourceVector{CPUMilli: 2_500, MemoryBytes: 4 * GiB, Tasks: 300, IOReadBytesPerSecond: 30 * 1024 * 1024, IOWriteBytesPerSecond: 30 * 1024 * 1024},
-			ManagementHardMax: ResourceVector{CPUMilli: 1_000, MemoryBytes: 2 * GiB, Tasks: 200, IOReadBytesPerSecond: 10 * 1024 * 1024, IOWriteBytesPerSecond: 10 * 1024 * 1024},
+			PRDFloor:          ResourceVector{CPUMilli: 1_000, MemoryBytes: 4 * GiB, Tasks: 100, IOReadBytesPerSecond: 20 * 1024 * 1024, IOWriteBytesPerSecond: 20 * 1024 * 1024, IOReadIOPSMax: 2_000, IOWriteIOPSMax: 2_000},
+			DevHardMax:        ResourceVector{CPUMilli: 2_500, MemoryBytes: 4 * GiB, Tasks: 300, IOReadBytesPerSecond: 30 * 1024 * 1024, IOWriteBytesPerSecond: 30 * 1024 * 1024, IOReadIOPSMax: 3_000, IOWriteIOPSMax: 3_000},
+			QASHardMax:        ResourceVector{CPUMilli: 2_500, MemoryBytes: 4 * GiB, Tasks: 300, IOReadBytesPerSecond: 30 * 1024 * 1024, IOWriteBytesPerSecond: 30 * 1024 * 1024, IOReadIOPSMax: 3_000, IOWriteIOPSMax: 3_000},
+			ManagementHardMax: ResourceVector{CPUMilli: 1_000, MemoryBytes: 2 * GiB, Tasks: 200, IOReadBytesPerSecond: 10 * 1024 * 1024, IOWriteBytesPerSecond: 10 * 1024 * 1024, IOReadIOPSMax: 1_000, IOWriteIOPSMax: 1_000},
 		},
 	}
 	policy := Policy{Version: 1, HostID: identity.HostID, Scope: ScopeLaneRuntime, Lane: "dev", MeasurementID: measurement.ID,
@@ -256,6 +307,72 @@ func linuxPolicyFixture(t *testing.T) (Measurement, LiveObservation, Policy, tim
 func linuxLiveFrom(measurement Measurement) LiveObservation {
 	return LiveObservation{Identity: measurement.Identity, ObservedAt: measurement.ObservedAt.Add(time.Second),
 		ResourceCapacity: measurement.ResourceCapacity, GoCachePaths: append([]string(nil), measurement.GoCachePaths...), Usage: measurement.Usage}
+}
+
+func linuxL207Fixture(t *testing.T) (Measurement, LiveObservation, Policy, time.Time) {
+	t.Helper()
+	measurement, live, policy, now := linuxPolicyFixture(t)
+	measurement.LinuxDevices = []LinuxDevice{
+		{ID: "cache-backup", UUID: "22222222-2222-2222-2222-222222222222", MajorMinor: "259:2", Filesystem: "ext4",
+			Mountpoint: LinuxBackupMountpoint, CapacityBytes: 20 * GiB, CapacityInodes: 1_000_000, ProjectQuotaFeature: true, ProjectQuotaActive: true},
+		{ID: "lane-capacity", UUID: "11111111-1111-1111-1111-111111111111", MajorMinor: "259:1", Filesystem: "ext4",
+			Mountpoint: LinuxCapacityMountpoint, CapacityBytes: 96 * GiB, CapacityInodes: 4_000_000,
+			IOReadBytesPerSecondCapacity: 100 * 1024 * 1024, IOWriteBytesPerSecondCapacity: 100 * 1024 * 1024,
+			IOReadIOPSCapacity: 10_000, IOWriteIOPSCapacity: 10_000, ProjectQuotaFeature: true, ProjectQuotaActive: true},
+	}
+	live.LinuxDevices = append([]LinuxDevice(nil), measurement.LinuxDevices...)
+	policy.LaneRuntime.IODeviceID = "lane-capacity"
+	policy.EvaluationDigest, _ = measurement.EvaluationDigest()
+	return measurement, live, policy, now
+}
+
+func TestL207RejectsChangedOrInactiveMeasuredLinuxDevice(t *testing.T) {
+	measurement, live, policy, now := linuxL207Fixture(t)
+	live.LinuxDevices[1].MajorMinor = "259:9"
+	if err := ValidatePolicy(policy, measurement, live, now); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("changed major/minor accepted: %v", err)
+	}
+
+	measurement, live, policy, now = linuxL207Fixture(t)
+	measurement.LinuxDevices[1].ProjectQuotaActive = false
+	live.LinuxDevices = append([]LinuxDevice(nil), measurement.LinuxDevices...)
+	policy.EvaluationDigest, _ = measurement.EvaluationDigest()
+	if _, err := BuildLinuxControlPlan(policy, measurement, live, now); !errors.Is(err, ErrLinuxControlsUnavailable) {
+		t.Fatalf("inactive project quota accepted: %v", err)
+	}
+
+	measurement, live, policy, now = linuxL207Fixture(t)
+	policy.LaneRuntime.Resources.DevHardMax.CPUMilli++
+	policy.EvaluationDigest, _ = measurement.EvaluationDigest()
+	if _, err := BuildLinuxControlPlan(policy, measurement, live, now); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("fractional CPUQuota accepted: %v", err)
+	}
+}
+
+func TestL207RejectsLinuxDeviceUseAboveMeasuredCapacity(t *testing.T) {
+	measurement, _, _, _ := linuxL207Fixture(t)
+	measurement.LinuxDevices[1].UsedInodes = measurement.LinuxDevices[1].CapacityInodes + 1
+	if _, err := measurement.EvaluationDigest(); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("device inode use above measured capacity accepted: %v", err)
+	}
+}
+
+func TestL207RejectsResourceEnvelopeAboveMeasuredDeviceIOCapacity(t *testing.T) {
+	measurement, live, policy, now := linuxL207Fixture(t)
+	measurement.LinuxDevices[1].IOReadBytesPerSecondCapacity = 80 * 1024 * 1024
+	live.LinuxDevices = append([]LinuxDevice(nil), measurement.LinuxDevices...)
+	policy.EvaluationDigest, _ = measurement.EvaluationDigest()
+	if _, err := BuildLinuxControlPlan(policy, measurement, live, now); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("aggregate policy beyond measured device bandwidth accepted: %v", err)
+	}
+
+	measurement, live, policy, now = linuxL207Fixture(t)
+	measurement.LinuxDevices[1].IOWriteIOPSCapacity = 8_999
+	live.LinuxDevices = append([]LinuxDevice(nil), measurement.LinuxDevices...)
+	policy.EvaluationDigest, _ = measurement.EvaluationDigest()
+	if _, err := BuildLinuxControlPlan(policy, measurement, live, now); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("aggregate policy beyond measured device IOPS accepted: %v", err)
+	}
 }
 
 func macPolicyFixture(t *testing.T, lane string) (Measurement, LiveObservation, Policy, time.Time) {

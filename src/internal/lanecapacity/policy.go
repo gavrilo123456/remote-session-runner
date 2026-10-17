@@ -38,16 +38,22 @@ const (
 )
 
 var (
-	ErrInvalidPolicy      = errors.New("invalid capacity policy")
-	ErrCapacityExceeded   = errors.New("capacity policy exceeds measured host envelope")
-	ErrIdentityChanged    = errors.New("capacity identity changed after measurement")
-	ErrStaleMeasurement   = errors.New("capacity measurement or policy is stale")
-	ErrUnsupportedCompute = errors.New("unsupported compute reservation claim")
-	ErrInvalidCachePaths  = errors.New("invalid shared cache path set")
-	hostIDPattern         = regexp.MustCompile(`^(mac-control-plane|linux-host|sandbox-host|factory-sandbox)$`)
-	policyIDPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
-	sha256DigestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	volumeUUIDPattern     = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+	ErrInvalidPolicy       = errors.New("invalid capacity policy")
+	ErrCapacityExceeded    = errors.New("capacity policy exceeds measured host envelope")
+	ErrIdentityChanged     = errors.New("capacity identity changed after measurement")
+	ErrStaleMeasurement    = errors.New("capacity measurement or policy is stale")
+	ErrUnsupportedCompute  = errors.New("unsupported compute reservation claim")
+	ErrInvalidCachePaths   = errors.New("invalid shared cache path set")
+	hostIDPattern          = regexp.MustCompile(`^(mac-control-plane|linux-host|sandbox-host|factory-sandbox)$`)
+	policyIDPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	sha256DigestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	volumeUUIDPattern      = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+	linuxMajorMinorPattern = regexp.MustCompile(`^[0-9]{1,10}:[0-9]{1,10}$`)
+)
+
+const (
+	LinuxCapacityMountpoint = "/var/lib/remote-session-runner-capacity"
+	LinuxBackupMountpoint   = "/var/lib/remote-session-runner-release-cache-backup"
 )
 
 type Scope string
@@ -60,6 +66,8 @@ type ResourceVector struct {
 	Tasks                 uint64 `json:"tasks"`
 	IOReadBytesPerSecond  uint64 `json:"io_read_bytes_per_second"`
 	IOWriteBytesPerSecond uint64 `json:"io_write_bytes_per_second"`
+	IOReadIOPSMax         uint64 `json:"io_read_iops_max"`
+	IOWriteIOPSMax        uint64 `json:"io_write_iops_max"`
 }
 
 func (v ResourceVector) zero() bool {
@@ -122,6 +130,7 @@ type Measurement struct {
 	ExpiresAt        time.Time       `json:"expires_at"`
 	ResourceCapacity ResourceVector  `json:"resource_capacity"`
 	GoCachePaths     []string        `json:"go_cache_paths"`
+	LinuxDevices     []LinuxDevice   `json:"linux_devices,omitempty"`
 	StorageVolumes   []StorageVolume `json:"storage_volumes,omitempty"`
 	Usage            Usage           `json:"usage"`
 }
@@ -131,8 +140,30 @@ type LiveObservation struct {
 	ObservedAt       time.Time       `json:"observed_at"`
 	ResourceCapacity ResourceVector  `json:"resource_capacity"`
 	GoCachePaths     []string        `json:"go_cache_paths"`
+	LinuxDevices     []LinuxDevice   `json:"linux_devices,omitempty"`
 	StorageVolumes   []StorageVolume `json:"storage_volumes,omitempty"`
 	Usage            Usage           `json:"usage"`
+}
+
+// LinuxDevice is a measurement-bound block device identity used for cgroup-v2
+// I/O controls and ext4 project quotas. MajorMinor is the kernel device number
+// observed for this exact filesystem UUID; it is never inferred from a path.
+type LinuxDevice struct {
+	ID                            string `json:"id"`
+	UUID                          string `json:"uuid"`
+	MajorMinor                    string `json:"major_minor"`
+	Filesystem                    string `json:"filesystem"`
+	Mountpoint                    string `json:"mountpoint"`
+	CapacityBytes                 uint64 `json:"capacity_bytes"`
+	CapacityInodes                uint64 `json:"capacity_inodes"`
+	UsedBytes                     uint64 `json:"used_bytes"`
+	UsedInodes                    uint64 `json:"used_inodes"`
+	IOReadBytesPerSecondCapacity  uint64 `json:"io_read_bytes_per_second_capacity"`
+	IOWriteBytesPerSecondCapacity uint64 `json:"io_write_bytes_per_second_capacity"`
+	IOReadIOPSCapacity            uint64 `json:"io_read_iops_capacity"`
+	IOWriteIOPSCapacity           uint64 `json:"io_write_iops_capacity"`
+	ProjectQuotaFeature           bool   `json:"project_quota_feature"`
+	ProjectQuotaActive            bool   `json:"project_quota_active"`
 }
 
 type HostManagementBudget struct {
@@ -145,6 +176,7 @@ type HostManagementBudget struct {
 	StagingBudgetBytes      uint64           `json:"staging_budget_bytes"`
 	LogBudgetBytes          uint64           `json:"log_budget_bytes"`
 	GoCachePaths            []string         `json:"go_cache_paths"`
+	IODeviceID              string           `json:"io_device_id,omitempty"`
 	Resources               ResourceEnvelope `json:"resources"`
 	BackupOnDataDevice      bool             `json:"backup_on_data_device"`
 	BackupLowWaterBytes     uint64           `json:"backup_low_water_bytes"`
@@ -237,6 +269,9 @@ func ValidatePolicy(policy Policy, measurement Measurement, live LiveObservation
 	if err != nil || digest != policy.EvaluationDigest {
 		return ErrInvalidPolicy
 	}
+	if !slices.Equal(measurement.LinuxDevices, live.LinuxDevices) {
+		return ErrIdentityChanged
+	}
 	now = now.UTC()
 	if policy.NotBefore.IsZero() || policy.NotAfter.IsZero() || !policy.NotAfter.After(policy.NotBefore) ||
 		now.Before(policy.NotBefore) || !now.Before(policy.NotAfter) ||
@@ -279,7 +314,8 @@ func validateScope(policy Policy, measurement Measurement, live LiveObservation)
 			return ErrCapacityExceeded
 		}
 		if measurement.Identity.Platform == PlatformMacOS {
-			if policy.Compute != ComputeNone || !policy.HostManagement.Resources.zero() || policy.HostManagement.PeakInodes != 0 {
+			if policy.Compute != ComputeNone || !policy.HostManagement.Resources.zero() || policy.HostManagement.PeakInodes != 0 ||
+				policy.HostManagement.IODeviceID != "" {
 				return ErrUnsupportedCompute
 			}
 			if policy.HostManagement.MacData == nil ||
@@ -296,6 +332,9 @@ func validateScope(policy Policy, measurement Measurement, live LiveObservation)
 		}
 		if policy.Compute != ComputeLinuxCgroupV2 || policy.HostManagement.MacData != nil ||
 			policy.HostManagement.Resources.DevHardMax != (ResourceVector{}) || policy.HostManagement.Resources.QASHardMax != (ResourceVector{}) || policy.HostManagement.PeakInodes == 0 {
+			return ErrInvalidPolicy
+		}
+		if !linuxIODeviceBound(measurement, policy.HostManagement.IODeviceID) {
 			return ErrInvalidPolicy
 		}
 		if !resourceVectorComplete(policy.HostManagement.Resources.PRDFloor) ||
@@ -332,7 +371,7 @@ func validateScope(policy Policy, measurement Measurement, live LiveObservation)
 			}
 			return validateMacStorage(measurement, live, budget.MacData, true, policy.Lane)
 		}
-		if policy.Compute != ComputeLinuxCgroupV2 || budget.MacData != nil || budget.IODeviceID != measurement.Identity.DeviceID {
+		if policy.Compute != ComputeLinuxCgroupV2 || budget.MacData != nil || !linuxIODeviceBound(measurement, budget.IODeviceID) {
 			return ErrInvalidPolicy
 		}
 		if !resourceEnvelopeComplete(budget.Resources) || budget.PRDGrowthBytes == 0 || budget.DevHardBytes == 0 ||
@@ -504,6 +543,8 @@ func validateResourceEnvelope(capacity ResourceVector, envelope ResourceEnvelope
 		{capacity.Tasks, envelope.PRDFloor.Tasks, envelope.DevHardMax.Tasks, envelope.QASHardMax.Tasks, envelope.ManagementHardMax.Tasks},
 		{capacity.IOReadBytesPerSecond, envelope.PRDFloor.IOReadBytesPerSecond, envelope.DevHardMax.IOReadBytesPerSecond, envelope.QASHardMax.IOReadBytesPerSecond, envelope.ManagementHardMax.IOReadBytesPerSecond},
 		{capacity.IOWriteBytesPerSecond, envelope.PRDFloor.IOWriteBytesPerSecond, envelope.DevHardMax.IOWriteBytesPerSecond, envelope.QASHardMax.IOWriteBytesPerSecond, envelope.ManagementHardMax.IOWriteBytesPerSecond},
+		{capacity.IOReadIOPSMax, envelope.PRDFloor.IOReadIOPSMax, envelope.DevHardMax.IOReadIOPSMax, envelope.QASHardMax.IOReadIOPSMax, envelope.ManagementHardMax.IOReadIOPSMax},
+		{capacity.IOWriteIOPSMax, envelope.PRDFloor.IOWriteIOPSMax, envelope.DevHardMax.IOWriteIOPSMax, envelope.QASHardMax.IOWriteIOPSMax, envelope.ManagementHardMax.IOWriteIOPSMax},
 	} {
 		if dimension[0] == 0 {
 			return ErrInvalidPolicy
@@ -518,7 +559,8 @@ func validateResourceEnvelope(capacity ResourceVector, envelope ResourceEnvelope
 
 func resourceVectorComplete(value ResourceVector) bool {
 	return value.CPUMilli > 0 && value.MemoryBytes > 0 && value.Tasks > 0 &&
-		value.IOReadBytesPerSecond > 0 && value.IOWriteBytesPerSecond > 0
+		value.IOReadBytesPerSecond > 0 && value.IOWriteBytesPerSecond > 0 &&
+		value.IOReadIOPSMax > 0 && value.IOWriteIOPSMax > 0
 }
 
 func resourceEnvelopeComplete(value ResourceEnvelope) bool {
@@ -530,7 +572,9 @@ func validateMeasurement(m Measurement) error {
 	if !policyIDPattern.MatchString(m.ID) || validateIdentity(m.Identity) != nil || m.ObservedAt.IsZero() ||
 		!m.ExpiresAt.After(m.ObservedAt) || !m.ObservedAt.Equal(m.ObservedAt.UTC()) || !m.ExpiresAt.Equal(m.ExpiresAt.UTC()) ||
 		validateCachePaths(m.GoCachePaths) != nil || (m.Identity.Platform == PlatformLinux && m.ResourceCapacity.zero()) ||
-		(m.Identity.Platform == PlatformMacOS && !m.ResourceCapacity.zero()) || validateStorageVolumes(m.Identity.Platform, m.StorageVolumes) != nil {
+		(m.Identity.Platform == PlatformMacOS && !m.ResourceCapacity.zero()) ||
+		validateLinuxDevices(m.Identity.Platform, m.LinuxDevices) != nil ||
+		validateStorageVolumes(m.Identity.Platform, m.StorageVolumes) != nil {
 		return ErrInvalidPolicy
 	}
 	if m.Identity.Platform == PlatformMacOS {
@@ -546,6 +590,74 @@ func validateMeasurement(m Measurement) error {
 		}
 	}
 	return nil
+}
+
+func validateLinuxDevices(platform Platform, devices []LinuxDevice) error {
+	if platform == PlatformMacOS {
+		if len(devices) != 0 {
+			return ErrInvalidPolicy
+		}
+		return nil
+	}
+	seenID, seenUUID, seenMajorMinor, seenMount := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+	lastID := ""
+	for _, device := range devices {
+		if !safeLinuxDeviceID(device.ID) || !volumeUUIDPattern.MatchString(device.UUID) ||
+			!linuxMajorMinorPattern.MatchString(device.MajorMinor) || device.Filesystem != "ext4" ||
+			!filepath.IsAbs(device.Mountpoint) || filepath.Clean(device.Mountpoint) != device.Mountpoint ||
+			device.CapacityBytes == 0 || device.CapacityInodes == 0 || device.UsedBytes > device.CapacityBytes ||
+			device.UsedInodes > device.CapacityInodes || device.ID <= lastID {
+			return ErrInvalidPolicy
+		}
+		for _, pair := range [][2]string{{device.ID, "id"}, {strings.ToLower(device.UUID), "uuid"},
+			{device.MajorMinor, "device number"}, {device.Mountpoint, "mountpoint"}} {
+			var seen map[string]struct{}
+			switch pair[1] {
+			case "id":
+				seen = seenID
+			case "uuid":
+				seen = seenUUID
+			case "device number":
+				seen = seenMajorMinor
+			default:
+				seen = seenMount
+			}
+			if _, exists := seen[pair[0]]; exists {
+				return ErrInvalidPolicy
+			}
+			seen[pair[0]] = struct{}{}
+		}
+		lastID = device.ID
+	}
+	return nil
+}
+
+func safeLinuxDeviceID(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '.' || r == '_' || r == ':' || r == '/' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func linuxIODeviceBound(measurement Measurement, deviceID string) bool {
+	if deviceID == "" {
+		return false
+	}
+	if len(measurement.LinuxDevices) == 0 {
+		return deviceID == measurement.Identity.DeviceID
+	}
+	for _, device := range measurement.LinuxDevices {
+		if device.ID == deviceID {
+			return true
+		}
+	}
+	return false
 }
 
 func validateStorageVolumes(platform Platform, volumes []StorageVolume) error {
