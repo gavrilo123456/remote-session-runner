@@ -691,8 +691,39 @@
     {
       "id": "LANES-L2-04",
       "required_tiers": [
-        "H"
-      ]
+        "H",
+        "N"
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL204LocalKeyCSRAndCertificatePackages"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL204FixedInstallerUsesOpaqueMandateAndFixedOutbox"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL204RejectsWrongHostSANCSRAndMandate"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL204BootstrapHandoffIsOneUseAndDisabledAfterHealth"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL204RejectsPackageAuthorizationAndRetiredPeers"
+          }
+        ],
+        "N": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL204NativeTLSVerifiesLiteralPublicIPsAndActivePeers"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L2-05",
