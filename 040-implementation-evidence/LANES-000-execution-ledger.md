@@ -17,6 +17,11 @@ implementation and Mac gates are recorded, but its native F acceptance is
 BLOCKED by the unprovisioned APFS fixture volumes. It has no evidence closeout
 E and is not accepted. Further source-only work may proceed only when
 independent of these exact blockers, with the relevant blocker evidence cited.
+L2-09 source and H gates are complete at `3a31fed3415ab5a3d07728dddf7e621f6bddc16c`,
+but F remains BLOCKED by the unprovisioned L2-07 Linux and L2-08 Mac fixtures;
+it has no acceptance or evidence closeout E. Successive source-only units may
+proceed only after confirming independence from those specific blockers and
+satisfying their own predecessor and phase gates.
 B021/B024 remain blocked, and the unstarted B022/B023 baseline units remain
 deferred.
 This ledger does not pass readiness, L0, any deferred bug gate or any live lane.
@@ -131,7 +136,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L2-06` | PASS | [Capacity scopes and durable byte admission](LANES-L2-06.md); ordered predecessor L2-05 evidence closeout E `c86573e117c41e834874dee1e6d29b5024c1e084`; Source S `5e0f4b912b46708b7e8dbeba9cb483bb2df44850` passed all 16 H assertions and `make check build` on Mac and all three clean synchronized Ubuntu `dev` checkouts. Source-only policy and durable accounting primitives; no issued policy, live producer enforcement, service, or capacity change is claimed. B021/B024 remain BLOCKED; BUG-022/023 remain deferred. Evidence closeout E gates L2-07 |
 | `LANES-L2-07` | BLOCKED — Source S `6f0db6d0aa831fc09162bf32ddd3cd45e6627e3e` and `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; required F not run | [Unit evidence](LANES-L2-07.md); no A01 disposable volumes or measured device performance; `linux-host` hybrid-cgroup compatibility/approved reboot and `factory-sandbox` I/O-controller propagation remain unresolved. Delivery and source checks are recorded; no PASS, F acceptance, or evidence closeout E claimed |
 | `LANES-L2-08` | BLOCKED — Source S `ae386b1a774d9bceb3aa3d137b611a8abec16bb2` and `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; required native F not run | [Unit evidence](LANES-L2-08.md); Gitea primary push and exact GitHub mirror SHA verified; all three Ubuntu checkouts fast-forwarded from clean predecessor `c7f4e6db3a68ed965fac063958e7e8bffcc33278`, validated at Source S, and clean. No approved disposable APFS lane, shared-cache, and backup fixtures. No PASS, F acceptance, or evidence closeout E claimed |
-| `LANES-L2-09` | NOT RUN | Not produced |
+| `LANES-L2-09` | BLOCKED — Source S `3a31fed3415ab5a3d07728dddf7e621f6bddc16c` and H plus `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; required F not run | [Unit evidence](LANES-L2-09.md); Gitea primary push and exact GitHub mirror SHA verified; each Ubuntu checkout fast-forwarded from clean `ae7da3b44847df10d1dc4ff483b6d741988b0ba4`, validated at S, and clean. F depends on the missing L2-07 Linux devices/controller prerequisites and L2-08 disposable Mac APFS fixtures. No PASS, F acceptance, or evidence closeout E claimed |
 | `LANES-L3-01` | NOT RUN | Not produced |
 | `LANES-L3-02` | NOT RUN | Not produced |
 | `LANES-L3-03` | NOT RUN | Not produced |
