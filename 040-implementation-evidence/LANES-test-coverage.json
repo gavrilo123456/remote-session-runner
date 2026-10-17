@@ -1113,7 +1113,19 @@
       "required_tiers": [
         "H",
         "N"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL311DirectiveGrantRenewsTwoContiguousSamePhaseLeases"},
+          {"package": "./src/internal/release", "name": "TestLanesL311HostAnchorRejectsDirectiveGapAndFork"},
+          {"package": "./src/internal/release", "name": "TestLanesL311RejectsGrantExpansionBadBoundsAndTamperedHighWater"},
+          {"package": "./src/internal/release", "name": "TestLanesL311LedgerGrantSerializesCasAndPreservesRevocationSets"},
+          {"package": "./src/internal/release", "name": "TestLanesL311RenewalWarningsPersistAndProbeIsBoundToFreshHostChallenge"}
+        ],
+        "N": [
+          {"package": "./src/internal/release", "name": "TestLanesL311NativeProbeUsesMonotonicKernelClock"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-12",

@@ -191,11 +191,12 @@ func (a *AuthorityAgent) StagePlan(ctx context.Context, evidence authorityAgentE
 }
 
 type AuthoritySigner struct {
-	journal  *AuthorityJournal
-	keys     authorityKeyProvider
-	expected authorityAgentIdentity
-	goos     string
-	clock    func() time.Time
+	journal      *AuthorityJournal
+	keys         authorityKeyProvider
+	expected     authorityAgentIdentity
+	goos         string
+	clock        func() time.Time
+	monotonicNow func() (uint64, error)
 }
 
 func NewAuthoritySigner(journal *AuthorityJournal, keys authorityKeyProvider, expected authorityAgentIdentity, goos string) (*AuthoritySigner, error) {
@@ -204,7 +205,8 @@ func NewAuthoritySigner(journal *AuthorityJournal, keys authorityKeyProvider, ex
 			launchdLabel: expected.LaunchdLabel, codeRequirement: expected.CodeRequirement}) {
 		return nil, ErrAuthorityStateUnavailable
 	}
-	return &AuthoritySigner{journal: journal, keys: keys, expected: expected, goos: goos, clock: time.Now}, nil
+	return &AuthoritySigner{journal: journal, keys: keys, expected: expected, goos: goos, clock: time.Now,
+		monotonicNow: anchorMonotonicNanos}, nil
 }
 
 // Sign consumes one exact approved plan. A retry after durable consumption

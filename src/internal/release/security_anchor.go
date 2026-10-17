@@ -57,6 +57,7 @@ type AnchorDirectiveHighWater struct {
 	TransitionEpoch     uint64 `json:"transition_epoch"`
 	AdmissionGeneration uint8  `json:"admission_generation"`
 	LeaseGeneration     uint64 `json:"lease_generation"`
+	PredecessorRecordID string `json:"predecessor_record_id,omitempty"`
 	Role                string `json:"directive_role"`
 	CandidateManifestID string `json:"candidate_manifest_id"`
 	ConfigurationDigest string `json:"resolved_configuration_digest"`
@@ -598,7 +599,8 @@ func validAnchorLane(lane string) bool { return lane == "dev" || lane == "qas" |
 
 func validAnchorDirective(value AnchorDirectiveHighWater) bool {
 	return validAnchorLane(value.Lane) && isCanonicalHostID(value.HostID) && isUUIDv7(value.TransitionID) && value.TransitionEpoch > 0 &&
-		value.AdmissionGeneration <= 2 && value.LeaseGeneration > 0 && (value.Role == "active_runtime_closure" || value.Role == "candidate_admission") &&
+		value.AdmissionGeneration <= 2 && value.LeaseGeneration > 0 && (value.PredecessorRecordID == "" || isLowerHexDigest(value.PredecessorRecordID)) &&
+		(value.Role == "active_runtime_closure" || value.Role == "candidate_admission") &&
 		isLowerHexDigest(value.CandidateManifestID) && isLowerHexDigest(value.ConfigurationDigest) && isLowerHexDigest(value.RecordID) &&
 		(value.Role != "active_runtime_closure" || value.AdmissionGeneration == 0)
 }
@@ -1251,9 +1253,21 @@ func (a *SecurityAnchor) RecordVerifiedDirective(value AnchorDirectiveHighWater)
 			if compareAnchorDirective(value, prior) <= 0 {
 				return invalidL3Trust("directive tuple is replayed, forked, or below its high-water")
 			}
+			samePhase := value.TransitionID == prior.TransitionID && value.TransitionEpoch == prior.TransitionEpoch &&
+				value.AdmissionGeneration == prior.AdmissionGeneration && value.Role == prior.Role &&
+				value.CandidateManifestID == prior.CandidateManifestID && value.ConfigurationDigest == prior.ConfigurationDigest
+			if samePhase && value.LeaseGeneration > prior.LeaseGeneration &&
+				(value.LeaseGeneration != prior.LeaseGeneration+1 || value.PredecessorRecordID != prior.RecordID) {
+				return invalidL3Trust("directive renewal is not the contiguous child of its anchored predecessor")
+			}
+			if value.PredecessorRecordID != "" && value.PredecessorRecordID != prior.RecordID {
+				return invalidL3Trust("directive predecessor does not match the anchored record")
+			}
 			if prior.TransitionEpoch == value.TransitionEpoch && (prior.TransitionID != value.TransitionID || prior.CandidateManifestID != value.CandidateManifestID || prior.ConfigurationDigest != value.ConfigurationDigest) {
 				return invalidL3Trust("directive identity changed within one transition epoch")
 			}
+		} else if value.PredecessorRecordID != "" {
+			return invalidL3Trust("first directive cannot name an unanchored predecessor")
 		}
 		if value.Role == "candidate_admission" {
 			if prior, ok := next.PendingCandidate[value.Lane]; ok {

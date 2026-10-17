@@ -210,14 +210,14 @@ func TestLanesL310RejectsUnsafePlansAndLedgerChanges(t *testing.T) {
 	if _, err := fixture.journal.mutate(func(state *authorityRootState) error {
 		state.LedgerGeneration++
 		return nil
-	}); err != nil {
-		t.Fatal(err)
+	}); !errors.Is(err, ErrAuthorityStateRollback) {
+		t.Fatalf("authority state accepted a ledger high-water without a signed chained grant: %v", err)
 	}
-	if _, err := fixture.signer.Sign(context.Background(), fixture.peer, mandateID); !errors.Is(err, ErrAuthorityMandate) {
-		t.Fatalf("mandate survived an authority-ledger generation change: %v", err)
+	if _, err := fixture.signer.Sign(context.Background(), fixture.peer, mandateID); err != nil {
+		t.Fatalf("rejected forged ledger update invalidated the exact still-current mandate: %v", err)
 	}
-	if state, err := fixture.journal.snapshot(); err != nil || len(state.Mandates) != 1 || len(state.ConsumedMandates) != 0 {
-		t.Fatalf("stale ledger mandate changed replay state: state=%+v err=%v", state, err)
+	if state, err := fixture.journal.snapshot(); err != nil || len(state.Mandates) != 0 || len(state.ConsumedMandates) != 1 {
+		t.Fatalf("failed internal ledger mutation did not preserve the exact approval result: state=%+v err=%v", state, err)
 	}
 }
 
@@ -298,8 +298,12 @@ func l310NewFixture(t *testing.T) *l310Fixture {
 	if err := os.Chmod(dir, authorityStateMode); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	keyID, privateKey := l304PrivateKey(31)
-	bootstrap := AuthorityStateBootstrap{KeyID: keyID, PublicKey: privateKey.Public().(ed25519.PublicKey), LedgerGeneration: 1}
+	bootstrap := AuthorityStateBootstrap{KeyID: keyID, PublicKey: privateKey.Public().(ed25519.PublicKey), LedgerGeneration: 1,
+		LedgerRecordID: hexDigest([]byte("fixture-bootstrap-ledger")), LedgerIssuedAt: now.Add(-time.Minute),
+		LedgerExpiresAt:  now.Add(MaxRevocationLedgerLifetime - time.Minute),
+		RevokedRecordIDs: []string{hexDigest([]byte("fixture-revoked-record"))}, RevokedKeyIDs: []string{"retired-authority-key"}}
 	journal, err := openAuthorityJournalAt(dir, uint32(os.Getuid()), &bootstrap)
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +314,6 @@ func l310NewFixture(t *testing.T) *l310Fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	expected := authorityAgentIdentity{UID: 0, LaunchdLabel: "runner-release-authority-agent", CodeRequirement: `identifier "com.remote-session-runner.runner-release-authority-agent" and anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"`}
 	peer := authorityAgentEvidence{UID: 0, PID: 501, AuditTokenValidated: true, LaunchdLabel: expected.LaunchdLabel, CodeRequirement: expected.CodeRequirement}
 	agent, err := NewAuthorityAgent(journal, expected, "darwin")

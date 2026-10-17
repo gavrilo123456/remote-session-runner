@@ -38,6 +38,11 @@ type AuthorityStateBootstrap struct {
 	KeyID            string
 	PublicKey        ed25519.PublicKey
 	LedgerGeneration uint64
+	LedgerRecordID   string
+	LedgerIssuedAt   time.Time
+	LedgerExpiresAt  time.Time
+	RevokedRecordIDs []string
+	RevokedKeyIDs    []string
 }
 
 type authorityPlan struct {
@@ -71,16 +76,26 @@ type authoritySignedResult struct {
 }
 
 type authorityRootState struct {
-	Version           int                              `json:"schema_version"`
-	Generation        uint64                           `json:"generation"`
-	AnchorKeyID       string                           `json:"anchor_key_id"`
-	AnchorPublicKey   string                           `json:"anchor_public_key"`
-	LedgerGeneration  uint64                           `json:"ledger_generation"`
-	Plans             map[string]authorityPlan         `json:"pending_plans"`
-	Mandates          map[string]AuthorityMandate      `json:"mandates"`
-	ConsumedMandates  map[string]authoritySignedResult `json:"consumed_mandates"`
-	AcceptedRecordIDs map[string]string                `json:"accepted_authority_record_ids"`
-	TransitionHeads   map[string]string                `json:"verified_transition_high_water"`
+	Version           int                                 `json:"schema_version"`
+	Generation        uint64                              `json:"generation"`
+	AnchorKeyID       string                              `json:"anchor_key_id"`
+	AnchorPublicKey   string                              `json:"anchor_public_key"`
+	LedgerGeneration  uint64                              `json:"ledger_generation"`
+	Plans             map[string]authorityPlan            `json:"pending_plans"`
+	Mandates          map[string]AuthorityMandate         `json:"mandates"`
+	ConsumedMandates  map[string]authoritySignedResult    `json:"consumed_mandates"`
+	AcceptedRecordIDs map[string]string                   `json:"accepted_authority_record_ids"`
+	TransitionHeads   map[string]string                   `json:"verified_transition_high_water"`
+	LedgerRecordID    string                              `json:"ledger_record_id,omitempty"`
+	LedgerIssuedAt    string                              `json:"ledger_issued_at,omitempty"`
+	LedgerExpiresAt   string                              `json:"ledger_expires_at,omitempty"`
+	RevokedRecordIDs  []string                            `json:"revoked_record_ids,omitempty"`
+	RevokedKeyIDs     []string                            `json:"revoked_key_ids,omitempty"`
+	DirectiveGrants   map[string]DirectiveRenewalGrant    `json:"directive_renewal_grants,omitempty"`
+	LedgerGrants      map[string]LedgerRenewalGrant       `json:"ledger_renewal_grants,omitempty"`
+	ActiveLedgerGrant string                              `json:"active_ledger_renewal_grant,omitempty"`
+	TimeProbeRecords  map[string]authorityTimeProbeRecord `json:"authority_time_probe_records,omitempty"`
+	RenewalAlerts     map[string]AuthorityRenewalAlert    `json:"renewal_alerts,omitempty"`
 }
 
 // AuthorityJournal is a root-owned, full-sync SQLite state and append-only
@@ -148,7 +163,10 @@ func openAuthorityJournalAt(dir string, ownerUID uint32, bootstrap *AuthoritySta
 			return nil, ErrAuthorityStateUnavailable
 		}
 		entries, err := os.ReadDir(dir)
-		if err != nil || len(entries) != 0 || len(bootstrap.PublicKey) != ed25519.PublicKeySize || !validKeyID(bootstrap.KeyID) {
+		if err != nil || len(entries) != 0 || len(bootstrap.PublicKey) != ed25519.PublicKeySize || !validKeyID(bootstrap.KeyID) || bootstrap.LedgerGeneration == 0 {
+			return nil, ErrAuthorityStateUnavailable
+		}
+		if _, err := authorityLedgerState(newAuthorityRootState(*bootstrap)); err != nil {
 			return nil, ErrAuthorityStateUnavailable
 		}
 		if err := createAuthorityDatabase(dbPath, dir, ownerUID, *bootstrap); err != nil {
@@ -238,6 +256,9 @@ CREATE TABLE authority_commits (
 		return fmt.Errorf("create authority state schema: %w", err)
 	}
 	state := newAuthorityRootState(bootstrap)
+	if err := validateAuthorityRootState(state); err != nil {
+		return fmt.Errorf("validate authority bootstrap state: %w", err)
+	}
 	encoded, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -265,11 +286,19 @@ CREATE TABLE authority_commits (
 }
 
 func newAuthorityRootState(bootstrap AuthorityStateBootstrap) authorityRootState {
-	return authorityRootState{Version: 1, AnchorKeyID: bootstrap.KeyID,
+	state := authorityRootState{Version: 1, AnchorKeyID: bootstrap.KeyID,
 		AnchorPublicKey: base64.StdEncoding.EncodeToString(bootstrap.PublicKey), LedgerGeneration: bootstrap.LedgerGeneration,
 		Plans: map[string]authorityPlan{}, Mandates: map[string]AuthorityMandate{},
 		ConsumedMandates: map[string]authoritySignedResult{}, AcceptedRecordIDs: map[string]string{},
 		TransitionHeads: map[string]string{}}
+	if isLowerHexDigest(bootstrap.LedgerRecordID) && !bootstrap.LedgerIssuedAt.IsZero() && !bootstrap.LedgerExpiresAt.IsZero() {
+		state.LedgerRecordID = bootstrap.LedgerRecordID
+		state.LedgerIssuedAt = bootstrap.LedgerIssuedAt.UTC().Format(time.RFC3339Nano)
+		state.LedgerExpiresAt = bootstrap.LedgerExpiresAt.UTC().Format(time.RFC3339Nano)
+		state.RevokedRecordIDs = append([]string(nil), bootstrap.RevokedRecordIDs...)
+		state.RevokedKeyIDs = append([]string(nil), bootstrap.RevokedKeyIDs...)
+	}
+	return state
 }
 
 func verifyAuthorityStateDirectory(path string, ownerUID uint32) error {
@@ -372,6 +401,16 @@ func validateAuthorityRootState(state authorityRootState) error {
 	if err != nil || len(publicKey) != ed25519.PublicKeySize {
 		return ErrAuthorityStateRollback
 	}
+	if state.LedgerRecordID != "" {
+		issued, issuedErr := time.Parse(time.RFC3339Nano, state.LedgerIssuedAt)
+		expires, expiresErr := time.Parse(time.RFC3339Nano, state.LedgerExpiresAt)
+		if !isLowerHexDigest(state.LedgerRecordID) || state.LedgerGeneration == 0 || issuedErr != nil || expiresErr != nil ||
+			!issued.Before(expires) || !sortedUnique(state.RevokedRecordIDs) || !sortedUnique(state.RevokedKeyIDs) {
+			return ErrAuthorityStateRollback
+		}
+	} else if state.LedgerIssuedAt != "" || state.LedgerExpiresAt != "" || len(state.RevokedRecordIDs) != 0 || len(state.RevokedKeyIDs) != 0 {
+		return ErrAuthorityStateRollback
+	}
 	for id, plan := range state.Plans {
 		if id != plan.ID || !validOpaqueID(id) || !authorityRecordType(plan.RecordType) || !isLowerHexDigest(plan.BodyDigest) ||
 			!isLowerHexDigest(plan.ContextDigest) || hexDigest(plan.Payload) != plan.BodyDigest || plan.LedgerGeneration > state.LedgerGeneration {
@@ -434,6 +473,9 @@ func validateAuthorityRootState(state authorityRootState) error {
 			return ErrAuthorityStateRollback
 		}
 	}
+	if err := validateAuthorityRenewalState(state, ed25519.PublicKey(publicKey)); err != nil {
+		return ErrAuthorityStateRollback
+	}
 	return nil
 }
 
@@ -471,16 +513,21 @@ func (j *AuthorityJournal) mutate(mutate func(*authorityRootState) error) (autho
 	if err := mutate(&next); err != nil {
 		return authorityRootState{}, err
 	}
-	if next.AnchorKeyID != current.AnchorKeyID || next.AnchorPublicKey != current.AnchorPublicKey || next.LedgerGeneration < current.LedgerGeneration ||
-		!authorityStateMapsPreserved(current, next) {
-		return authorityRootState{}, ErrAuthorityStateRollback
+	if next.AnchorKeyID != current.AnchorKeyID || next.AnchorPublicKey != current.AnchorPublicKey || next.LedgerGeneration < current.LedgerGeneration {
+		return authorityRootState{}, fmt.Errorf("%w: trusted anchor or ledger high-water changed backwards", ErrAuthorityStateRollback)
+	}
+	if !authorityStateMapsPreserved(current, next) {
+		return authorityRootState{}, fmt.Errorf("%w: accepted authority evidence was removed or altered", ErrAuthorityStateRollback)
+	}
+	if !authorityRenewalStatePreserved(current, next) {
+		return authorityRootState{}, fmt.Errorf("%w: renewal, alert, or time-probe journal was removed or altered", ErrAuthorityStateRollback)
 	}
 	if current.Generation >= uint64(^uint64(0)>>1) {
 		return authorityRootState{}, ErrAuthorityStateRollback
 	}
 	next.Generation = current.Generation + 1
 	if err := validateAuthorityRootState(next); err != nil {
-		return authorityRootState{}, err
+		return authorityRootState{}, fmt.Errorf("%w: next root state failed validation: %v", ErrAuthorityStateRollback, err)
 	}
 	encodedNext, err := json.Marshal(next)
 	if err != nil {
@@ -498,10 +545,16 @@ func (j *AuthorityJournal) mutate(mutate func(*authorityRootState) error) (autho
 		return authorityRootState{}, err
 	}
 	rows, err := result.RowsAffected()
-	if err != nil || rows != 1 {
+	if err != nil {
 		_ = tx.Rollback()
-		j.unhealthy = true
-		return authorityRootState{}, ErrAuthorityStateRollback
+		return authorityRootState{}, err
+	}
+	if rows != 1 {
+		_ = tx.Rollback()
+		// A separate journal handle may have committed after this handle read
+		// the current head. Losing that compare-and-swap is an ordinary race;
+		// the journal itself remains usable and the caller may re-read state.
+		return authorityRootState{}, ErrAuthorityReplay
 	}
 	if _, err := tx.ExecContext(context.Background(), "INSERT INTO authority_commits(generation,previous_digest,state_digest) VALUES(?,?,?)", next.Generation, previousDigest, digest); err != nil {
 		_ = tx.Rollback()

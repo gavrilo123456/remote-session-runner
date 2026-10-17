@@ -245,6 +245,7 @@
         "transition_epoch": {"type": "integer", "minimum": 1},
         "admission_generation": {"type": "integer", "minimum": 0, "maximum": 2},
         "lease_generation": {"type": "integer", "minimum": 0},
+        "predecessor_record_id": {"oneOf": [{"$ref": "common.schema.json#/$defs/recordId"}, {"type": "string", "maxLength": 0}]},
         "not_before": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
         "not_after": {"$ref": "common.schema.json#/$defs/utcTimestamp"},
         "required_revocation_ledger_generation": {"type": "integer", "minimum": 1}

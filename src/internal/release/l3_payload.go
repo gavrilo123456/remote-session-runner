@@ -72,6 +72,7 @@ type ingressDirectivePayload struct {
 	TransitionEpoch          uint64 `json:"transition_epoch"`
 	AdmissionGeneration      uint8  `json:"admission_generation"`
 	LeaseGeneration          uint64 `json:"lease_generation"`
+	PredecessorRecordID      string `json:"predecessor_record_id,omitempty"`
 	NotBefore                string `json:"not_before"`
 	NotAfter                 string `json:"not_after"`
 	RequiredLedgerGeneration uint64 `json:"required_revocation_ledger_generation"`
