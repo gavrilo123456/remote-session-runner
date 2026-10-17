@@ -115,6 +115,36 @@ func TestL206MacPoliciesRequireNoComputeAndObservedAPFSIdentities(t *testing.T) 
 	}
 }
 
+func TestL208MacPolicyRequiresMeasuredAPFSQuotasAndBoundedSharedCacheVolumes(t *testing.T) {
+	measurement, live, policy, now := macPolicyFixture(t, "dev")
+	measurement.StorageVolumes[1].QuotaBytes--
+	live.StorageVolumes = append([]StorageVolume(nil), measurement.StorageVolumes...)
+	policy.EvaluationDigest, _ = measurement.EvaluationDigest()
+	if err := ValidatePolicy(policy, measurement, live, now); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("changed Dev APFS quota accepted: %v", err)
+	}
+
+	measurement, live, policy, now = macPolicyFixture(t, "qas")
+	measurement.StorageVolumes[4].QuotaBytes--
+	live.StorageVolumes = append([]StorageVolume(nil), measurement.StorageVolumes...)
+	policy.EvaluationDigest, _ = measurement.EvaluationDigest()
+	if err := ValidatePolicy(policy, measurement, live, now); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("shared-cache volume quota below the approved aggregate accepted: %v", err)
+	}
+
+	measurement, _, _, _ = macPolicyFixture(t, "dev")
+	measurement.StorageVolumes[4].QuotaBytes = measurement.StorageVolumes[4].CapacityBytes + 1
+	if _, err := measurement.EvaluationDigest(); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("APFS quota larger than measured volume capacity accepted: %v", err)
+	}
+
+	measurement, _, _, _ = macPolicyFixture(t, "dev")
+	measurement.GoCachePaths[0] = "/private/tmp/runner-lane-local-cache"
+	if _, err := measurement.EvaluationDigest(); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("lane-specific Mac cache path accepted: %v", err)
+	}
+}
+
 func TestL206MacStorageUsesMaximumSnapshotAndFifteenPercentOrTwentyGiBFloor(t *testing.T) {
 	measurement, live, policy, now := macPolicyFixture(t, "dev")
 	if err := ValidatePolicy(policy, measurement, live, now); err != nil {
@@ -138,8 +168,8 @@ func TestL206MacStorageUsesMaximumSnapshotAndFifteenPercentOrTwentyGiBFloor(t *t
 
 func TestL206HostManagementDoesNotRequireFutureLaneVolumes(t *testing.T) {
 	measurement, live, policy, now := macManagementFixture(t)
-	if len(measurement.StorageVolumes) != 1 {
-		t.Fatalf("fixture has %d measured volumes, want only the existing Data volume", len(measurement.StorageVolumes))
+	if len(measurement.StorageVolumes) != 3 {
+		t.Fatalf("fixture has %d measured volumes, want Data plus both shared-cache volumes", len(measurement.StorageVolumes))
 	}
 	if err := ValidatePolicy(policy, measurement, live, now); err != nil {
 		t.Fatalf("host management without future Dev/QAS volumes: %v", err)
@@ -405,8 +435,8 @@ func macManagementFixture(t *testing.T) (Measurement, LiveObservation, Policy, t
 	t.Helper()
 	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	measurement, live, policy := macBaseFixture(t, now)
-	measurement.StorageVolumes = measurement.StorageVolumes[:1]
-	live.StorageVolumes = live.StorageVolumes[:1]
+	measurement.StorageVolumes = []StorageVolume{measurement.StorageVolumes[0], measurement.StorageVolumes[4], measurement.StorageVolumes[5]}
+	live.StorageVolumes = append([]StorageVolume(nil), measurement.StorageVolumes...)
 	budget := &MacDataBudget{PRDHostBudgetBytes: 24 * GiB, SharedCacheBudgetBytes: 4 * GiB, ReleaseCacheBudgetBytes: 2 * GiB,
 		SnapshotBudgetBytes: 10 * GiB, BackupBudgetBytes: 3 * GiB, BackupLowWaterBytes: 2 * GiB}
 	policy.Scope, policy.Lane, policy.Compute = ScopeHostManagement, "", ComputeNone
@@ -428,14 +458,16 @@ func macManagementFixture(t *testing.T) (Measurement, LiveObservation, Policy, t
 func macBaseFixture(t *testing.T, now time.Time) (Measurement, LiveObservation, Policy) {
 	t.Helper()
 	data := StorageVolume{UUID: "11111111-1111-1111-1111-111111111111", DeviceID: "disk3", Filesystem: "apfs", Mountpoint: "/System/Volumes/Data", CapacityBytes: 200 * GiB}
-	dev := StorageVolume{UUID: "22222222-2222-2222-2222-222222222222", DeviceID: "disk3", Filesystem: "apfs", Mountpoint: "/Volumes/Runner-Dev", CapacityBytes: 30 * GiB}
-	qas := StorageVolume{UUID: "33333333-3333-3333-3333-333333333333", DeviceID: "disk3", Filesystem: "apfs", Mountpoint: "/Volumes/Runner-QAS", CapacityBytes: 30 * GiB}
-	prd := StorageVolume{UUID: "44444444-4444-4444-4444-444444444444", DeviceID: "disk3", Filesystem: "apfs", Mountpoint: "/Volumes/Runner-PRD", CapacityBytes: 30 * GiB}
+	dev := StorageVolume{UUID: "22222222-2222-2222-2222-222222222222", DeviceID: "disk3", Filesystem: "apfs", Mountpoint: "/Volumes/Runner-Dev", CapacityBytes: 30 * GiB, QuotaBytes: 15 * GiB}
+	qas := StorageVolume{UUID: "33333333-3333-3333-3333-333333333333", DeviceID: "disk3", Filesystem: "apfs", Mountpoint: "/Volumes/Runner-QAS", CapacityBytes: 30 * GiB, QuotaBytes: 15 * GiB}
+	prd := StorageVolume{UUID: "44444444-4444-4444-4444-444444444444", DeviceID: "disk3", Filesystem: "apfs", Mountpoint: "/Volumes/Runner-PRD", CapacityBytes: 30 * GiB, QuotaBytes: 24 * GiB}
+	goBuildCache := StorageVolume{UUID: "55555555-5555-5555-5555-555555555555", DeviceID: "disk3", Filesystem: "apfs", Mountpoint: MacGoBuildCachePath, CapacityBytes: 2 * GiB, QuotaBytes: 2 * GiB}
+	goModuleCache := StorageVolume{UUID: "66666666-6666-6666-6666-666666666666", DeviceID: "disk3", Filesystem: "apfs", Mountpoint: MacGoModuleCachePath, CapacityBytes: 2 * GiB, QuotaBytes: 2 * GiB}
 	identity := Identity{HostID: "mac-control-plane", Platform: PlatformMacOS, DeviceID: "disk3", Filesystem: "apfs", Mountpoint: data.Mountpoint,
 		VolumeUUID: data.UUID, CapacityBytes: data.CapacityBytes, BackupDeviceID: "disk4", BackupFilesystem: "apfs", BackupMountpoint: "/Volumes/Runner-Backup", BackupCapacityBytes: 20 * GiB}
-	paths := []string{"/Users/runner/Library/Caches/go-build", "/Users/runner/go/pkg/mod"}
+	paths := []string{MacGoBuildCachePath, MacGoModuleCachePath}
 	measurement := Measurement{ID: "measure-mac-01", Identity: identity, ObservedAt: now.Add(-10 * time.Second), ExpiresAt: now.Add(5 * time.Minute),
-		GoCachePaths: paths, StorageVolumes: []StorageVolume{data, dev, qas, prd},
+		GoCachePaths: paths, StorageVolumes: []StorageVolume{data, dev, qas, prd, goBuildCache, goModuleCache},
 		Usage: Usage{NonPurgeableBytes: 100 * GiB, SnapshotBytes: 8 * GiB, GoCacheBytes: 4 * GiB, ReleaseCacheBytes: 2 * GiB, BackupBytes: 2 * GiB}}
 	policy := Policy{Version: 1, HostID: identity.HostID, Scope: ScopeLaneRuntime, Lane: "dev", MeasurementID: measurement.ID,
 		NotBefore: measurement.ObservedAt, NotAfter: now.Add(time.Minute), Compute: ComputeNone}

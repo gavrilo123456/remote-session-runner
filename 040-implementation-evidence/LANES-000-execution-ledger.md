@@ -12,10 +12,13 @@ closeout is not a global prerequisite for ordered lane source work. The ordered
 L1 sequence is complete through `LANES-L1-13`; L2-06 is complete. L2-07 source
 implementation and Mac gates are complete, but its required F acceptance is
 BLOCKED by the unprovisioned A01 devices and host-specific cgroup prerequisites.
-It has no evidence closeout E and is not accepted. A later source-only unit may
-proceed only when independent of those exact blockers, with this blocker record
-cited. B021/B024 remain blocked, and the unstarted B022/B023 baseline units
-remain deferred.
+It has no evidence closeout E and is not accepted. L2-08 Mac source
+implementation and Mac gates are recorded, but its native F acceptance is
+BLOCKED by the unprovisioned APFS fixture volumes. It has no evidence closeout
+E and is not accepted. Further source-only work may proceed only when
+independent of these exact blockers, with the relevant blocker evidence cited.
+B021/B024 remain blocked, and the unstarted B022/B023 baseline units remain
+deferred.
 This ledger does not pass readiness, L0, any deferred bug gate or any live lane.
 
 ## Earlier owner priority — 2026-10-16 (historical)
@@ -127,7 +130,7 @@ failed gate stops the relevant unit with evidence and its prepared correction.
 | `LANES-L2-05` | PASS | [Bounded log capture and stream wiring](LANES-L2-05.md); ordered predecessor L2-04 evidence closeout E `01f74177acc522853ece79caaf8e4cd0c700dd1e`; corrected Source S2 `d55ed372d7d6d138fcacdeaf03d085d48c6a6609` passed seven H and one native N assertion plus `make check build` on Mac and all three clean synchronized Ubuntu `dev` checkouts. B021/B024 remain BLOCKED; no log wrapper was installed and no live acceptance or candidate attestation is claimed. Evidence closeout E gates L2-06 |
 | `LANES-L2-06` | PASS | [Capacity scopes and durable byte admission](LANES-L2-06.md); ordered predecessor L2-05 evidence closeout E `c86573e117c41e834874dee1e6d29b5024c1e084`; Source S `5e0f4b912b46708b7e8dbeba9cb483bb2df44850` passed all 16 H assertions and `make check build` on Mac and all three clean synchronized Ubuntu `dev` checkouts. Source-only policy and durable accounting primitives; no issued policy, live producer enforcement, service, or capacity change is claimed. B021/B024 remain BLOCKED; BUG-022/023 remain deferred. Evidence closeout E gates L2-07 |
 | `LANES-L2-07` | BLOCKED — Source S `6f0db6d0aa831fc09162bf32ddd3cd45e6627e3e` and `make check build` PASS on Mac and all three clean synchronized Ubuntu `dev` checkouts; required F not run | [Unit evidence](LANES-L2-07.md); no A01 disposable volumes or measured device performance; `linux-host` hybrid-cgroup compatibility/approved reboot and `factory-sandbox` I/O-controller propagation remain unresolved. Delivery and source checks are recorded; no PASS, F acceptance, or evidence closeout E claimed |
-| `LANES-L2-08` | NOT RUN | Not produced |
+| `LANES-L2-08` | BLOCKED — Mac source implementation and source gates recorded; required native F not run | [Unit evidence](LANES-L2-08.md); no approved disposable APFS lane, shared-cache, and backup fixtures. No PASS, F acceptance, or evidence closeout E claimed |
 | `LANES-L2-09` | NOT RUN | Not produced |
 | `LANES-L3-01` | NOT RUN | Not produced |
 | `LANES-L3-02` | NOT RUN | Not produced |

@@ -54,6 +54,8 @@ var (
 const (
 	LinuxCapacityMountpoint = "/var/lib/remote-session-runner-capacity"
 	LinuxBackupMountpoint   = "/var/lib/remote-session-runner-release-cache-backup"
+	MacGoBuildCachePath     = "/private/tmp/remote-session-runner-gocache"
+	MacGoModuleCachePath    = "/private/tmp/remote-session-runner-gomodcache"
 )
 
 type Scope string
@@ -113,14 +115,16 @@ type Usage struct {
 }
 
 // StorageVolume is a measured filesystem identity used for APFS volume quota
-// checks. Dev and QAS identities must already be observed; this validator does
-// not fabricate a UUID for a future volume.
+// checks. QuotaBytes is the observed APFS volume quota, not the container
+// capacity; zero means no volume quota is configured. Dev/QAS and shared-cache
+// identities must already be observed; validation never fabricates a UUID.
 type StorageVolume struct {
 	UUID          string `json:"uuid"`
-	DeviceID      string `json:"device_id"`
+	DeviceID      string `json:"device_id"` // For APFS, the containing device/container identity shared by its volumes.
 	Filesystem    string `json:"filesystem"`
 	Mountpoint    string `json:"mountpoint"`
 	CapacityBytes uint64 `json:"capacity_bytes"`
+	QuotaBytes    uint64 `json:"quota_bytes"`
 }
 
 type Measurement struct {
@@ -458,6 +462,10 @@ func validateMacStorage(measurement Measurement, live LiveObservation, budget *M
 		budget.SharedCacheBudgetBytes < live.Usage.GoCacheBytes || budget.ReleaseCacheBudgetBytes < live.Usage.ReleaseCacheBytes {
 		return ErrCapacityExceeded
 	}
+	cacheQuotaBytes, cacheOK := measuredMacSharedCacheQuota(measurement)
+	if !cacheOK || cacheQuotaBytes != budget.SharedCacheBudgetBytes {
+		return ErrIdentityChanged
+	}
 	if !laneRuntime {
 		if lane != "" || budget.StorageMode != "" || budget.PRDVolumeUUID != "" || budget.PRDMountpoint != "" || budget.PRDQuotaBytes != 0 ||
 			budget.DevQuotaBytes != 0 || budget.QASQuotaBytes != 0 || budget.DevVolumeUUID != "" || budget.QASVolumeUUID != "" ||
@@ -578,9 +586,14 @@ func validateMeasurement(m Measurement) error {
 		return ErrInvalidPolicy
 	}
 	if m.Identity.Platform == PlatformMacOS {
+		if !slices.Equal(m.GoCachePaths, []string{MacGoBuildCachePath, MacGoModuleCachePath}) {
+			return ErrInvalidCachePaths
+		}
 		foundDataVolume := false
 		for _, volume := range m.StorageVolumes {
-			if volume.UUID == m.Identity.VolumeUUID && volume.Mountpoint == m.Identity.Mountpoint && volume.CapacityBytes == m.Identity.CapacityBytes {
+			if volume.UUID == m.Identity.VolumeUUID && volume.DeviceID == m.Identity.DeviceID &&
+				volume.Filesystem == m.Identity.Filesystem && volume.Mountpoint == m.Identity.Mountpoint &&
+				volume.CapacityBytes == m.Identity.CapacityBytes {
 				foundDataVolume = true
 				break
 			}
@@ -674,7 +687,8 @@ func validateStorageVolumes(platform Platform, volumes []StorageVolume) error {
 	seenMount := make(map[string]struct{}, len(volumes))
 	for i, volume := range volumes {
 		if !volumeUUIDPattern.MatchString(volume.UUID) || volume.DeviceID == "" || strings.ToLower(volume.Filesystem) != "apfs" ||
-			!cleanAbsolutePath(volume.Mountpoint) || volume.CapacityBytes == 0 || (i > 0 && volumes[i-1].UUID >= volume.UUID) {
+			!cleanAbsolutePath(volume.Mountpoint) || volume.CapacityBytes == 0 || volume.QuotaBytes > volume.CapacityBytes ||
+			(i > 0 && volumes[i-1].UUID >= volume.UUID) {
 			return ErrInvalidPolicy
 		}
 		if _, exists := seenUUID[volume.UUID]; exists {
@@ -691,11 +705,37 @@ func validateStorageVolumes(platform Platform, volumes []StorageVolume) error {
 
 func measuredVolumeMatches(volumes []StorageVolume, uuid, mountpoint string, requiredBytes uint64) bool {
 	for _, volume := range volumes {
-		if volume.UUID == uuid && volume.Mountpoint == mountpoint && volume.CapacityBytes >= requiredBytes {
+		if volume.UUID == uuid && volume.Mountpoint == mountpoint && volume.CapacityBytes >= requiredBytes && volume.QuotaBytes == requiredBytes {
 			return true
 		}
 	}
 	return false
+}
+
+// measuredMacSharedCacheQuota returns the aggregate of the two fixed shared
+// cache volume quotas. Each cache path must be its own measured APFS mount on
+// the Data-volume APFS container so those limits participate in the host low-water
+// calculation and cannot be replaced by an unbounded directory.
+func measuredMacSharedCacheQuota(measurement Measurement) (uint64, bool) {
+	var total uint64
+	for _, path := range []string{MacGoBuildCachePath, MacGoModuleCachePath} {
+		var found *StorageVolume
+		for index := range measurement.StorageVolumes {
+			volume := &measurement.StorageVolumes[index]
+			if volume.Mountpoint == path {
+				if found != nil {
+					return 0, false
+				}
+				found = volume
+			}
+		}
+		if found == nil || found.DeviceID != measurement.Identity.DeviceID || found.QuotaBytes == 0 ||
+			found.CapacityBytes < found.QuotaBytes || found.QuotaBytes > math.MaxUint64-total {
+			return 0, false
+		}
+		total += found.QuotaBytes
+	}
+	return total, true
 }
 
 func validateIdentity(value Identity) error {
