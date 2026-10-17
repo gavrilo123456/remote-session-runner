@@ -101,6 +101,7 @@ type authorityRootState struct {
 	PKIIssuanceMandates map[string]laneinstall.PKIIssuanceMandate       `json:"pki_issuance_mandates"`
 	PKIIssuances        map[string]laneinstall.PKIIssuanceJournalRecord `json:"pki_issuances"`
 	PKIBootstrapHealth  map[string]bool                                 `json:"pki_bootstrap_health_gates"`
+	BootstrapCohort     laneinstall.BootstrapCohortLedger               `json:"bootstrap_cohort_ledger,omitempty"`
 }
 
 // AuthorityJournal is a root-owned, full-sync SQLite state and append-only
@@ -296,7 +297,8 @@ func newAuthorityRootState(bootstrap AuthorityStateBootstrap) authorityRootState
 		Plans: map[string]authorityPlan{}, Mandates: map[string]AuthorityMandate{},
 		ConsumedMandates: map[string]authoritySignedResult{}, AcceptedRecordIDs: map[string]string{},
 		TransitionHeads: map[string]string{}, PKIIssuanceMandates: map[string]laneinstall.PKIIssuanceMandate{},
-		PKIIssuances: map[string]laneinstall.PKIIssuanceJournalRecord{}, PKIBootstrapHealth: map[string]bool{}}
+		PKIIssuances: map[string]laneinstall.PKIIssuanceJournalRecord{}, PKIBootstrapHealth: map[string]bool{},
+		BootstrapCohort: laneinstall.BootstrapCohortLedger{Attempts: []laneinstall.BootstrapCohortAttempt{}}}
 	if isLowerHexDigest(bootstrap.LedgerRecordID) && !bootstrap.LedgerIssuedAt.IsZero() && !bootstrap.LedgerExpiresAt.IsZero() {
 		state.LedgerRecordID = bootstrap.LedgerRecordID
 		state.LedgerIssuedAt = bootstrap.LedgerIssuedAt.UTC().Format(time.RFC3339Nano)
@@ -401,7 +403,7 @@ func readAuthorityCommit(ctx context.Context, conn *sql.Conn) (authorityRootStat
 func validateAuthorityRootState(state authorityRootState) error {
 	if state.Version != 1 || !validKeyID(state.AnchorKeyID) || state.Plans == nil || state.Mandates == nil ||
 		state.ConsumedMandates == nil || state.AcceptedRecordIDs == nil || state.TransitionHeads == nil ||
-		state.PKIIssuanceMandates == nil || state.PKIIssuances == nil || state.PKIBootstrapHealth == nil {
+		state.PKIIssuanceMandates == nil || state.PKIIssuances == nil || state.PKIBootstrapHealth == nil || state.BootstrapCohort.Validate() != nil {
 		return ErrAuthorityStateRollback
 	}
 	publicKey, err := base64.StdEncoding.DecodeString(state.AnchorPublicKey)
@@ -484,6 +486,12 @@ func validateAuthorityRootState(state authorityRootState) error {
 		if id != mandate.ID || laneinstall.ValidatePKIIssuanceMandateShape(mandate) != nil {
 			return ErrAuthorityStateRollback
 		}
+		if mandate.Context.Mode == "bootstrap" {
+			progress, ok := bootstrapCohortProgressFor(state.BootstrapCohort, mandate.HostID, mandate.Context.BootstrapGeneration, mandate.Context.BootstrapContractDigest)
+			if !ok || progress.IssuanceMandateID != id {
+				return ErrAuthorityStateRollback
+			}
+		}
 	}
 	bootstrapHosts := make(map[string]struct{})
 	for id, issuance := range state.PKIIssuances {
@@ -492,10 +500,16 @@ func validateAuthorityRootState(state authorityRootState) error {
 			return ErrAuthorityStateRollback
 		}
 		if mandate.Context.Mode == "bootstrap" {
-			if _, duplicate := bootstrapHosts[mandate.HostID]; duplicate {
+			progress, ok := bootstrapCohortProgressFor(state.BootstrapCohort, mandate.HostID, mandate.Context.BootstrapGeneration, mandate.Context.BootstrapContractDigest)
+			if !ok || progress.IssuanceMandateID != id || progress.CertificateRequestID != issuance.Request.ID ||
+				progress.IssuerReceiptID != issuance.Receipt.ID || progress.CertificatePackageDigest != issuance.Receipt.PackageDigest {
 				return ErrAuthorityStateRollback
 			}
-			bootstrapHosts[mandate.HostID] = struct{}{}
+			generationKey := fmt.Sprintf("%s:%d", mandate.HostID, mandate.Context.BootstrapGeneration)
+			if _, duplicate := bootstrapHosts[generationKey]; duplicate {
+				return ErrAuthorityStateRollback
+			}
+			bootstrapHosts[generationKey] = struct{}{}
 		}
 	}
 	for hostID, healthy := range state.PKIBootstrapHealth {
@@ -507,6 +521,20 @@ func validateAuthorityRootState(state authorityRootState) error {
 		return ErrAuthorityStateRollback
 	}
 	return nil
+}
+
+func bootstrapCohortProgressFor(ledger laneinstall.BootstrapCohortLedger, hostID string, generation uint64, contractDigest string) (laneinstall.BootstrapCohortHostProgress, bool) {
+	for _, attempt := range ledger.Attempts {
+		if attempt.Contract.Generation != generation || attempt.ContractDigest != contractDigest {
+			continue
+		}
+		for _, progress := range attempt.Hosts {
+			if progress.HostID == hostID {
+				return progress, true
+			}
+		}
+	}
+	return laneinstall.BootstrapCohortHostProgress{}, false
 }
 
 func (j *AuthorityJournal) mutate(mutate func(*authorityRootState) error) (authorityRootState, error) {
@@ -609,6 +637,9 @@ func (j *AuthorityJournal) mutate(mutate func(*authorityRootState) error) (autho
 }
 
 func authorityStateMapsPreserved(before, after authorityRootState) bool {
+	if !bootstrapCohortStatePreserved(before.BootstrapCohort, after.BootstrapCohort) {
+		return false
+	}
 	for id, digest := range before.AcceptedRecordIDs {
 		if after.AcceptedRecordIDs[id] != digest {
 			return false
@@ -740,14 +771,11 @@ func (j *AuthorityJournal) RegisterMandate(mandate laneinstall.PKIIssuanceMandat
 			return ErrAuthorityReplay
 		}
 		if mandate.Context.Mode == "bootstrap" {
-			if next.PKIBootstrapHealth[mandate.HostID] {
+			cohort, cohortErr := next.BootstrapCohort.RecordMandate(mandate)
+			if cohortErr != nil {
 				return ErrAuthorityMandate
 			}
-			for _, prior := range next.PKIIssuances {
-				if prior.Mandate.Context.Mode == "bootstrap" && prior.Mandate.HostID == mandate.HostID {
-					return ErrAuthorityReplay
-				}
-			}
+			next.BootstrapCohort = cohort
 		}
 		next.PKIIssuanceMandates[mandate.ID] = mandate
 		return nil
@@ -784,14 +812,24 @@ func (j *AuthorityJournal) CommitIssuance(record laneinstall.PKIIssuanceJournalR
 			return ErrAuthorityReplay
 		}
 		if record.Mandate.Context.Mode == "bootstrap" {
-			if next.PKIBootstrapHealth[record.Mandate.HostID] {
+			if len(next.BootstrapCohort.Attempts) == 0 {
 				return ErrAuthorityMandate
 			}
-			for _, prior := range next.PKIIssuances {
-				if prior.Mandate.Context.Mode == "bootstrap" && prior.Mandate.HostID == record.Mandate.HostID {
-					return ErrAuthorityReplay
-				}
+			cohortDigest := record.Mandate.Context.BootstrapContractDigest
+			installerDigest, digestErr := next.BootstrapCohort.Attempts[len(next.BootstrapCohort.Attempts)-1].Contract.BootstrapInstallerTupleDigest(record.Mandate.HostID)
+			if digestErr != nil {
+				return ErrAuthorityMandate
 			}
+			cohort, cohortErr := next.BootstrapCohort.RecordBootstrapIssuance(laneinstall.BootstrapPKIIssuanceEvidence{
+				HostID: record.Mandate.HostID, ContractDigest: cohortDigest, Context: record.Mandate.Context,
+				IssuanceMandateID: record.Mandate.ID, CertificateRequestID: record.Request.ID,
+				IssuerReceiptID: record.Receipt.ID, CertificatePackageDigest: record.Receipt.PackageDigest,
+				InstallerTupleDigest: installerDigest,
+			}, record.Receipt.IssuedAt)
+			if cohortErr != nil {
+				return ErrAuthorityMandate
+			}
+			next.BootstrapCohort = cohort
 		}
 		next.PKIIssuances[record.Mandate.ID] = record
 		return nil
@@ -804,6 +842,10 @@ func (j *AuthorityJournal) RecordFirstHealthGate(hostID string) error {
 		return ErrAuthorityMandate
 	}
 	_, err := j.mutate(func(next *authorityRootState) error {
+		if len(next.BootstrapCohort.Attempts) > 0 {
+			// Cohort health is recorded only with its exact host evidence digest.
+			return ErrAuthorityMandate
+		}
 		next.PKIBootstrapHealth[hostID] = true
 		return nil
 	})
@@ -818,13 +860,16 @@ func (j *AuthorityJournal) BootstrapState(hostID string) (issued, healthy bool, 
 	if err != nil {
 		return false, false, err
 	}
-	for _, record := range state.PKIIssuances {
-		if record.Mandate.Context.Mode == "bootstrap" && record.Mandate.HostID == hostID {
-			issued = true
-			break
+	if len(state.BootstrapCohort.Attempts) == 0 {
+		return false, state.PKIBootstrapHealth[hostID], nil
+	}
+	attempt := state.BootstrapCohort.Attempts[len(state.BootstrapCohort.Attempts)-1]
+	for _, progress := range attempt.Hosts {
+		if progress.HostID == hostID {
+			return progress.CertificateRequestID != "", progress.HealthEvidenceDigest != "", nil
 		}
 	}
-	return issued, state.PKIBootstrapHealth[hostID], nil
+	return false, false, ErrAuthorityMandate
 }
 
 func (j *AuthorityJournal) issueMandate(mandate AuthorityMandate) error {

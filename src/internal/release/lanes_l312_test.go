@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ type l312PKIFixture struct {
 	hostPub    map[string]ed25519.PublicKey
 	hostKey    map[string]ed25519.PrivateKey
 	issuer     *laneinstall.PKIIssuer
+	bootstrap  *laneinstall.BootstrapCohortContract
 }
 
 func l312NewPKIFixture(t *testing.T) *l312PKIFixture {
@@ -104,9 +106,72 @@ func (f *l312PKIFixture) context(host string, bootstrap bool) laneinstall.PKIIss
 	if !bootstrap {
 		return laneinstall.PKIIssuanceContext{Mode: "management", ManagementManifestID: "l312-management-" + host, ManagementGeneration: 1}
 	}
+	if f.bootstrap != nil {
+		for _, contractHost := range f.bootstrap.Hosts {
+			if contractHost.HostID != host {
+				continue
+			}
+			for _, artifact := range contractHost.Artifacts {
+				if artifact.Component == "runner-release-transport-pki-installer" {
+					digest, err := f.bootstrap.Digest()
+					if err != nil {
+						f.t.Fatal(err)
+					}
+					return laneinstall.PKIIssuanceContext{Mode: "bootstrap", BootstrapContractDigest: digest, BootstrapGeneration: f.bootstrap.Generation,
+						Installer: laneinstall.PKIInstallerArtifactTuple{SourceCommit: artifact.SourceCommit,
+							ToolchainDigest: strings.TrimPrefix(artifact.ToolchainDigest, "sha256:"),
+							InputDigest:     strings.TrimPrefix(artifact.BuildInputDigest, "sha256:"), BinaryDigest: strings.TrimPrefix(artifact.ArtifactDigest, "sha256:")},
+						BootstrapAttestationKeyID: contractHost.BootstrapAttestationKeyID}
+				}
+			}
+		}
+	}
 	return laneinstall.PKIIssuanceContext{Mode: "bootstrap", BootstrapContractDigest: strings.Repeat("a", 64), BootstrapGeneration: 1,
 		Installer: laneinstall.PKIInstallerArtifactTuple{SourceCommit: strings.Repeat("b", 40), ToolchainDigest: strings.Repeat("c", 64),
 			InputDigest: strings.Repeat("d", 64), BinaryDigest: strings.Repeat("e", 64)}, BootstrapAttestationKeyID: "l312-bootstrap-host-key"}
+}
+
+func l312BootstrapContract(t *testing.T, now time.Time, generation uint64, pinGeneration int) laneinstall.BootstrapCohortContract {
+	t.Helper()
+	contract := laneinstall.BootstrapCohortContract{ApprovalRecordID: fmt.Sprintf("%064x", 8000+pinGeneration), Generation: generation,
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour), SourceCommit: strings.Repeat("b", 40),
+		GiteaCommit: strings.Repeat("b", 40), GitHubCommit: strings.Repeat("b", 40),
+		PublicPins: laneinstall.BootstrapPublicKeyPins{AuthorityKeyID: fmt.Sprintf("authority-l312-%d", pinGeneration), AuthorityFingerprint: fmt.Sprintf("%064x", 100+pinGeneration),
+			IssuerKeyID: fmt.Sprintf("issuer-l312-%d", pinGeneration), IssuerFingerprint: fmt.Sprintf("%064x", 200+pinGeneration), CACertificateFingerprint: fmt.Sprintf("%064x", 300+pinGeneration)}}
+	for i, hostID := range []string{"mac-control-plane", "linux-host", "sandbox-host", "factory-sandbox"} {
+		management, err := laneinstall.ManagementPackage(hostID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkiPlan, err := laneinstall.BuildPKIHostPlan(hostID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := "/var/lib/remote-session-runner/management"
+		goos, goarch, group := "linux", "amd64", "root"
+		if hostID == "mac-control-plane" {
+			root, goos, goarch, group = "/Library/Application Support/RemoteSessionRunner/management", "darwin", "arm64", "wheel"
+		} else if hostID == "sandbox-host" {
+			goarch = "arm64"
+		}
+		bootstrapKeyID := fmt.Sprintf("l312-bootstrap-%d-%s", pinGeneration, hostID)
+		host := laneinstall.BootstrapHostContract{HostID: hostID, ManagementRoot: root, PKI: pkiPlan,
+			BootstrapAttestationKeyID: bootstrapKeyID, BootstrapKeyFingerprint: fmt.Sprintf("%064x", 2000+pinGeneration*10+i), ManagementPackage: management}
+		for _, component := range management.Components {
+			toolchain, inputs, artifact := fmt.Sprintf("%064x", 400+pinGeneration), fmt.Sprintf("%064x", 500+pinGeneration), fmt.Sprintf("%064x", 600+pinGeneration)
+			if component.Name != "runner-release-transport-pki-installer" {
+				toolchain, inputs, artifact = fmt.Sprintf("%064x", 700+pinGeneration*10+i), fmt.Sprintf("%064x", 800+pinGeneration*10+i), fmt.Sprintf("%064x", 900+pinGeneration*10+i)
+			}
+			host.Artifacts = append(host.Artifacts, laneinstall.BootstrapArtifactPin{Component: component.Name, GOOS: goos, GOARCH: goarch,
+				InstallPath: filepath.Join(root, "bin", component.Name), Owner: "root", Group: group, Mode: "0755", SourceCommit: contract.SourceCommit,
+				ToolchainDigest: "sha256:" + toolchain, BuildInputDigest: "sha256:" + inputs, ArtifactDigest: "sha256:" + artifact})
+		}
+		contract.Hosts = append(contract.Hosts, host)
+	}
+	if err := contract.Validate(now); err != nil {
+		t.Fatalf("invalid L3-12 bootstrap fixture contract: %v", err)
+	}
+	return contract
 }
 
 func (f *l312PKIFixture) makeMandate(host string, bootstrap bool) laneinstall.PKIIssuanceMandate {
@@ -308,10 +373,38 @@ func TestLanesL312RejectsUnregisteredMismatchedAndUnsafeIssuanceEvidence(t *test
 
 func TestLanesL312BootstrapIsExactOneUseAndPublicOnly(t *testing.T) {
 	f := l312NewPKIFixture(t)
+	contract := l312BootstrapContract(t, f.now, 1, 1)
+	f.bootstrap = &contract
+	if err := f.journal.BeginBootstrapCohort(contract, f.now); err != nil {
+		t.Fatalf("start durable bootstrap cohort: %v", err)
+	}
+	for index, host := range []string{"mac-control-plane", "linux-host", "sandbox-host"} {
+		observed, expires := f.now.Add(-2*time.Minute), f.now.Add(3*time.Minute)
+		if err := f.journal.RecordBootstrapCohortL0(host, l312EvidenceID(400+index), observed, expires, f.now); err != nil {
+			t.Fatalf("record fresh L0 for %s: %v", host, err)
+		}
+		if host != "mac-control-plane" {
+			f.issue(host, true)
+		}
+		if err := f.journal.RecordBootstrapCohortInstallation(host, l312EvidenceID(410+index), f.now); err != nil {
+			t.Fatalf("record installation for %s: %v", host, err)
+		}
+		if err := f.journal.RecordBootstrapCohortHealth(host, l312EvidenceID(420+index), f.now); err != nil {
+			t.Fatalf("record first health for %s: %v", host, err)
+		}
+		if err := f.journal.DisableBootstrapCohortException(host, l312EvidenceID(430+index)); err != nil {
+			t.Fatalf("disable one-time exception for %s: %v", host, err)
+		}
+	}
+	observed, expires := f.now.Add(-2*time.Minute), f.now.Add(3*time.Minute)
+	if err := f.journal.RecordBootstrapCohortL0("factory-sandbox", l312EvidenceID(440), observed, expires, f.now); err != nil {
+		t.Fatalf("record fresh L0 for factory-sandbox: %v", err)
+	}
 	mandate, request, pkg, receipt, _ := f.issue("factory-sandbox", true)
-	if request.Context.Mode != "bootstrap" || request.Context.BootstrapContractDigest != strings.Repeat("a", 64) ||
+	contractDigest, _ := contract.Digest()
+	if request.Context.Mode != "bootstrap" || request.Context.BootstrapContractDigest != contractDigest ||
 		request.Context.BootstrapGeneration != 1 || request.Context.Installer.SourceCommit != strings.Repeat("b", 40) ||
-		request.Context.BootstrapAttestationKeyID != "l312-bootstrap-host-key" {
+		request.Context.BootstrapAttestationKeyID != "l312-bootstrap-1-factory-sandbox" {
 		t.Fatalf("bootstrap request did not preserve the exact approved tuple: %+v", request.Context)
 	}
 	material, _ := json.Marshal(struct {
@@ -331,6 +424,8 @@ func TestLanesL312BootstrapIsExactOneUseAndPublicOnly(t *testing.T) {
 		t.Fatalf("bootstrap one-use state did not survive restart: issued=%t healthy=%t err=%v", issued, healthy, err)
 	}
 }
+
+func l312EvidenceID(n int) string { return fmt.Sprintf("%064x", n) }
 
 func TestLanesL312FirstHealthGatePermanentlyClosesBootstrapAcrossRestart(t *testing.T) {
 	f := l312NewPKIFixture(t)

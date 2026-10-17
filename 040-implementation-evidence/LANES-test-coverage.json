@@ -1223,7 +1223,27 @@
       "required_tiers": [
         "H",
         "F"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL317BootstrapContractPinsExactMatrixPathsAndPublicHostMapping"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL317BootstrapCohortRequiresSerialFreshL0HealthAndPerHostExceptionDisable"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL317PartialBootstrapFailureRequiresAllHostDisableBeforeFreshRetry"
+          },
+          {
+            "package": "./src/internal/release",
+            "name": "TestLanesL317AuthorityCohortPersistsIssuanceAndRequiresFreshAbandonRetry"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L3-18",
