@@ -86,8 +86,8 @@ func BuildPlan(hostID string, lane config.ReleaseLane) (Plan, error) {
 
 func macArtifacts(ns config.LaneNamespace) []Artifact {
 	return []Artifact{
-		{Kind: ArtifactLaunchAgent, InstallPath: ns.LocalAgentPlist, Mode: 0o644, Contents: renderLaunchAgent(ns.LocalAgentLabel, ns.ServiceRoot, ns.LogCapture, filepath.Join(ns.Logs, "local.stdout.log"), filepath.Join(ns.Logs, "local.stderr.log"), ns.LocalBinary, ns.ConfigFile)},
-		{Kind: ArtifactLaunchAgent, InstallPath: ns.LocalDAgentPlist, Mode: 0o644, Contents: renderLaunchAgent(ns.LocalDAgentLabel, ns.ServiceRoot, ns.LogCapture, filepath.Join(ns.Logs, "locald.stdout.log"), filepath.Join(ns.Logs, "locald.stderr.log"), ns.LocalDBinary, ns.ConfigFile)},
+		{Kind: ArtifactLaunchAgent, InstallPath: ns.LocalAgentPlist, Mode: 0o644, Contents: renderLaunchAgent(ns.LocalAgentLabel, ns.ServiceRoot, ns.LogCapture, filepath.Join(ns.Logs, "local.log"), ns.LocalBinary, ns.ConfigFile)},
+		{Kind: ArtifactLaunchAgent, InstallPath: ns.LocalDAgentPlist, Mode: 0o644, Contents: renderLaunchAgent(ns.LocalDAgentLabel, ns.ServiceRoot, ns.LogCapture, filepath.Join(ns.Logs, "locald.log"), ns.LocalDBinary, ns.ConfigFile)},
 	}
 }
 

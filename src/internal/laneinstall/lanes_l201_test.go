@@ -88,7 +88,7 @@ func TestLanesL201RendersOnlyFixedLaneServiceIdentities(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, artifact := range mac.Artifacts {
-			if artifact.Kind != ArtifactLaunchAgent || !strings.Contains(artifact.InstallPath, "com.remote-session-runner.") || !strings.Contains(artifact.InstallPath, "-"+string(lane)+".plist") || !strings.Contains(artifact.Contents, "<key>StandardOutPath</key>\n\t<string>/dev/null</string>") || !strings.Contains(artifact.Contents, "<key>StandardErrorPath</key>\n\t<string>/dev/null</string>") || !strings.Contains(artifact.Contents, "--stdout-path") || !strings.Contains(artifact.Contents, "--stderr-path") {
+			if artifact.Kind != ArtifactLaunchAgent || !strings.Contains(artifact.InstallPath, "com.remote-session-runner.") || !strings.Contains(artifact.InstallPath, "-"+string(lane)+".plist") || !strings.Contains(artifact.Contents, "<key>StandardOutPath</key>\n\t<string>/dev/null</string>") || !strings.Contains(artifact.Contents, "<key>StandardErrorPath</key>\n\t<string>/dev/null</string>") || !strings.Contains(artifact.Contents, "--log-path") || strings.Contains(artifact.Contents, "--stdout-path") || strings.Contains(artifact.Contents, "--stderr-path") {
 				t.Fatalf("Mac %s agent artifact = %+v", lane, artifact)
 			}
 			if strings.Contains(artifact.Contents, "<key>UserName</key>") {
@@ -111,7 +111,7 @@ func TestLanesL201RendersOnlyFixedLaneServiceIdentities(t *testing.T) {
 				entrypoint = artifact.Contents
 			}
 		}
-		for _, required := range []string{"User=ubuntu", "Group=ubuntu", "StandardOutput=null", "StandardError=null", "KillMode=mixed", "TimeoutStopSec=30s", "Slice=remote-session-runner-" + string(lane) + ".slice", "--stdout-path", "--stderr-path"} {
+		for _, required := range []string{"User=ubuntu", "Group=ubuntu", "StandardOutput=null", "StandardError=null", "KillMode=mixed", "TimeoutStopSec=30s", "Slice=remote-session-runner-" + string(lane) + ".slice", "--log-path"} {
 			if !strings.Contains(service, required) {
 				t.Errorf("Linux %s service missing %q", lane, required)
 			}

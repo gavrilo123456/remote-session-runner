@@ -1,5 +1,5 @@
 GO_VERSION := 1.27.1
-COMMANDS := runner runner-local runner-locald runnerd runner-ssh-bridge runner-session-agent
+COMMANDS := runner runner-local runner-locald runnerd runner-ssh-bridge runner-session-agent runner-log-capture
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)

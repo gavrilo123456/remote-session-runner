@@ -9,8 +9,8 @@ import (
 	"remote-session-runner/src/internal/config"
 )
 
-func renderLaunchAgent(label, root, capture, stdout, stderr, program, configPath string) string {
-	args := []string{capture, "--stdout-path", stdout, "--stderr-path", stderr, "--", program, "--config", configPath}
+func renderLaunchAgent(label, root, capture, logPath, program, configPath string) string {
+	args := []string{capture, "--log-path", logPath, "--", program, "--config", configPath}
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
 	b.WriteString("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
@@ -49,10 +49,9 @@ func writeXMLEscaped(b *strings.Builder, value string) {
 }
 
 func renderSystemdService(ns config.LaneNamespace) string {
-	stdout := filepath.Join(ns.Logs, "runnerd.stdout.log")
-	stderr := filepath.Join(ns.Logs, "runnerd.stderr.log")
+	logPath := filepath.Join(ns.Logs, "runnerd.log")
 	entrypoint := filepath.Join(ns.Binaries, "runnerd-entrypoint.sh")
-	capture := strings.Join([]string{ns.LogCapture, "--stdout-path", stdout, "--stderr-path", stderr, "--", entrypoint}, " ")
+	capture := strings.Join([]string{ns.LogCapture, "--log-path", logPath, "--", entrypoint}, " ")
 	return fmt.Sprintf(`[Unit]
 Description=Remote Session Runner %s lane execution service
 Wants=network-online.target

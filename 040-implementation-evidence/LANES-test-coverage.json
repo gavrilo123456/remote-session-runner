@@ -728,8 +728,43 @@
     {
       "id": "LANES-L2-05",
       "required_tiers": [
-        "H"
-      ]
+        "H",
+        "N"
+      ],
+      "assertions": {
+        "H": [
+          {
+            "package": "./src/internal/logcapture",
+            "name": "TestLanesL205BoundedFloodRotatesAndPersistsDropCounter"
+          },
+          {
+            "package": "./src/internal/logcapture",
+            "name": "TestLanesL205RotationCrashRecoversSingleTemporaryFile"
+          },
+          {
+            "package": "./src/internal/logcapture",
+            "name": "TestLanesL205RejectsInconsistentActiveAndTemporaryRotation"
+          },
+          {
+            "package": "./src/internal/logcapture",
+            "name": "TestLanesL205FailedStartAndChildStreams"
+          },
+          {
+            "package": "./src/internal/logcapture",
+            "name": "TestLanesL205ProductionBudgetIsExactly576MiB"
+          },
+          {
+            "package": "./src/internal/laneinstall",
+            "name": "TestLanesL205CaptureWiringIsCandidateAndNullInEveryLane"
+          }
+        ],
+        "N": [
+          {
+            "package": "./src/internal/logcapture",
+            "name": "TestLanesL205NativeProcessCaptureOnSelectedHost"
+          }
+        ]
+      }
     },
     {
       "id": "LANES-L2-06",
