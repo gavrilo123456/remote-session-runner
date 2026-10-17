@@ -1,9 +1,10 @@
 # LANES-L3-09 — constrained install, capacity, and ingress attestations
 
-**State:** IN PROGRESS — L3-09 H and native N pass on Mac. Source S delivery
-and the required synchronized Ubuntu validation are pending. This is source
-evidence only; no attestation helper was installed and no live lane directive
-or promotion was accepted.
+**State:** BLOCKED — Source S `359629128250ee01585259be2c816e86449e3a4c`
+passed registered H/N and full source gates on Mac and all three synchronized
+Ubuntu checkouts. Its ordered predecessor L3-08 remains BLOCKED on F and has no
+evidence closeout E, so L3-09 has no unit PASS or E. No attestation helper was
+installed and no live lane directive or promotion was accepted.
 
 ## Pre-unit record and scope
 
@@ -78,10 +79,30 @@ Production measurement/installation observers and the root signer/outbox are
 trusted internal boundaries used by this service; their installation and live
 operation belong to later prescribed units.
 
-## Mac source gates
+## Source S delivery and synchronized validation
 
-Execution machine: `mac-control-plane` (Darwin arm64), Makefile-pinned Go
-1.27.1, shared Mac Go caches.
+Source S is `359629128250ee01585259be2c816e86449e3a4c`, committed on Mac `dev`
+as `phase(LANES-L3-09): constrain host evidence attestations`. The explicit
+identity push updated primary Gitea `origin/dev` to S. The push printed a local
+tracking-ref lock warning; direct Gitea `ls-remote` verified exact S, then a
+verified `git fetch origin dev` updated the tracking ref. Direct `ls-remote`
+verified automatic GitHub `github/dev` at exact S.
+
+Before pulling, all three Ubuntu checkouts were clean on `dev` at
+`d7506d02cd1077de94f30cf619844e87821f3007`, with `origin` at the GitHub mirror.
+Each fast-forwarded to S using the explicit Ubuntu GitHub identity. Tests ran
+only after exact `dev` HEAD S and a clean worktree were verified. Ubuntu Go
+commands used normal SSH fallback because they are checkout-local validation,
+not Runner mailbox work. No tracked files were edited or copied on Ubuntu.
+
+| Machine | Platform | L3-09 H | L3-09 N | `make check build` | Focused race | Final checkout |
+| --- | --- | --- | --- | --- | --- | --- |
+| `mac-control-plane` | Darwin arm64, Go 1.27.1 | PASS (7) | PASS (1) | PASS | PASS | Mac `dev`, S |
+| `linux-host` | Linux amd64, Go 1.27.1 | PASS (7) | PASS (1) | PASS | PASS | clean `dev`, S |
+| `sandbox-host` | Linux arm64, Go 1.27.1 | PASS (7) | PASS (1) | PASS | PASS | clean `dev`, S |
+| `factory-sandbox` | Linux amd64, Go 1.27.1 | PASS (7) | PASS (1) | PASS | NOT RUN — `CGO_ENABLED=0`, `cc` absent | clean `dev`, S |
+
+Mac commands at S:
 
 | Command | Result |
 | --- | --- |
@@ -91,15 +112,27 @@ Execution machine: `mac-control-plane` (Darwin arm64), Makefile-pinned Go
 | `go test -race ./src/internal/release -run '^TestLanesL309' -count=1` | PASS |
 | pinned `gofmt`, coverage JSON parse, `git diff --check` | PASS |
 
-One initial full-suite run found the N assertion failed when invoked outside
-the N-tier dispatcher because it required native-tier environment variables.
-The test now skips outside that dispatcher; the registered N tier and full
-source suite both pass. No failure was waived.
+Ubuntu commands at S:
 
-## Delivery
+```sh
+LANES_NATIVE_HOST_ID=<canonical-host-id> make test-lanes UNIT=LANES-L3-09 LANES_TIER=H
+LANES_NATIVE_HOST_ID=<canonical-host-id> make test-lanes UNIT=LANES-L3-09 LANES_TIER=N
+make check build
+GOTOOLCHAIN=local /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go test -race ./src/internal/release -run '^TestLanesL309' -count=1
+```
 
-Source S and post-push validation are pending. The completed source commit will
-be pushed to primary Gitea, verified at the exact automatic GitHub mirror SHA,
-and fast-forwarded to all three clean Ubuntu `dev` checkouts before their
-registered L3-09 gates run. This unit remains subject to the ordered L3-08
-acceptance blocker; no PASS or evidence closeout E is claimed.
+The focused race command passed on `linux-host` and `sandbox-host`. The factory
+toolchain reports `CGO_ENABLED=0` and no `cc`, so its race command was not run.
+All three Ubuntu checkouts were rechecked clean on `dev` at S after validation.
+No required gate failed or was waived.
+
+## Ordered acceptance blocker
+
+L3-08's required F acceptance remains NOT RUN because the approved Linux A01
+and Mac APFS cache/backup fixtures are unavailable. Its evidence closeout E is
+not available. This ordered predecessor blocker prevents L3-09 from receiving
+a unit PASS or evidence closeout E, despite its own source and H/N gates
+passing. The native assertion proves only current OS/architecture and
+root-filesystem facts; it does not attest configured lane capacity, installed
+components, or live ingress enforcement. No platform approval, service
+installation, capacity policy, ingress directive, or acceptance was fabricated.
