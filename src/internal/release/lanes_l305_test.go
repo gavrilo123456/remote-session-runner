@@ -165,13 +165,30 @@ func TestLanesL305AnchorDirectiveHighWaterAndPendingCandidateSurviveRestart(t *t
 	}
 	fixture.acceptProbe(t)
 	first := AnchorDirectiveHighWater{Lane: "dev", HostID: "linux-host", TransitionID: l305TransitionID, TransitionEpoch: 7,
-		AdmissionGeneration: 1, LeaseGeneration: 1, Role: "candidate_admission", CandidateManifestID: strings.Repeat("e", 64),
-		ConfigurationDigest: strings.Repeat("f", 64), RecordID: strings.Repeat("1", 64)}
-	if err := fixture.anchor.RecordVerifiedDirective(first); err != nil {
+		AdmissionGeneration: 0, LeaseGeneration: 0, Role: "candidate_admission", CandidateManifestID: strings.Repeat("e", 64),
+		ConfigurationDigest: l303Digest, RecordID: strings.Repeat("1", 64), SignerKeyID: fixture.authorityID,
+		NotBefore: fixture.clock.Add(-time.Minute).Format(time.RFC3339Nano), NotAfter: fixture.clock.Add(10 * time.Minute).Format(time.RFC3339Nano), RequiredLedgerGeneration: 1}
+	if err := fixture.anchor.recordVerifiedDirective(first); err != nil {
 		t.Fatalf("record verified directive high-water: %v", err)
 	}
+	transportReady := first
+	transportReady.AdmissionGeneration = 1
+	transportReady.PredecessorRecordID = first.RecordID
+	transportReady.RecordID = strings.Repeat("2", 64)
+	fixture.acceptProbe(t)
+	if err := fixture.anchor.recordVerifiedDirective(transportReady); err != nil {
+		t.Fatalf("record transport-ready directive: %v", err)
+	}
+	open := transportReady
+	open.AdmissionGeneration = 2
+	open.PredecessorRecordID = transportReady.RecordID
+	open.RecordID = strings.Repeat("3", 64)
+	fixture.acceptProbe(t)
+	if err := fixture.anchor.recordVerifiedDirective(open); err != nil {
+		t.Fatalf("record open directive: %v", err)
+	}
 	state, err := fixture.anchor.Snapshot()
-	if err != nil || state.DirectiveHighWater["dev"] != first || state.PendingCandidate["dev"].RecordID != first.RecordID {
+	if err != nil || state.DirectiveHighWater["dev"] != open || state.PendingCandidate["dev"].RecordID != open.RecordID {
 		t.Fatalf("high-water/pending context not committed atomically: state=%+v err=%v", state, err)
 	}
 	if err := fixture.anchor.Close(); err != nil {
@@ -183,14 +200,19 @@ func TestLanesL305AnchorDirectiveHighWaterAndPendingCandidateSurviveRestart(t *t
 	}
 	defer reopened.Close()
 	state, err = reopened.Snapshot()
-	if err != nil || state.DirectiveHighWater["dev"] != first || state.PendingCandidate["dev"].RecordID != first.RecordID {
+	if err != nil || state.DirectiveHighWater["dev"] != open || state.PendingCandidate["dev"].RecordID != open.RecordID {
 		t.Fatalf("reopen lost monotonic directive state: state=%+v err=%v", state, err)
 	}
 	fixture.anchor = reopened
 	fixture.acceptProbe(t)
+	openPayload := ingressDirectivePayload{CandidateID: open.CandidateManifestID, TransitionID: open.TransitionID, Lane: open.Lane,
+		HostID: open.HostID, ConfigurationDigest: open.ConfigurationDigest, Role: open.Role, TransitionEpoch: open.TransitionEpoch,
+		AdmissionGeneration: open.AdmissionGeneration, LeaseGeneration: open.LeaseGeneration}
+	acceptanceRaw, acceptanceID := l315SignAcceptance(t, fixture, openPayload)
 	accepted := AnchorRuntimeContext{Lane: "dev", HostID: "linux-host", TransitionID: first.TransitionID, TransitionEpoch: first.TransitionEpoch,
-		CandidateManifestID: first.CandidateManifestID, ConfigurationDigest: first.ConfigurationDigest, RecordID: strings.Repeat("2", 64)}
-	if err := reopened.RecordVerifiedActiveRuntime(accepted); err != nil {
+		CandidateManifestID: first.CandidateManifestID, ConfigurationDigest: first.ConfigurationDigest, RecordID: open.RecordID,
+		AcceptanceRecordID: acceptanceID}
+	if err := reopened.RecordVerifiedActiveRuntime(acceptanceRaw); err != nil {
 		t.Fatalf("verified acceptance did not advance the active runtime atomically: %v", err)
 	}
 	state, err = reopened.Snapshot()
@@ -199,13 +221,12 @@ func TestLanesL305AnchorDirectiveHighWaterAndPendingCandidateSurviveRestart(t *t
 	}
 	fixture.acceptProbe(t)
 	lower := first
-	lower.LeaseGeneration = 0
 	lower.RecordID = strings.Repeat("2", 64)
-	if err := reopened.RecordVerifiedDirective(lower); err == nil {
-		t.Fatal("lower directive lease generation was accepted")
+	if err := reopened.recordVerifiedDirective(lower); err == nil {
+		t.Fatal("lower directive generation was accepted")
 	}
 	state, err = reopened.Snapshot()
-	if err != nil || state.DirectiveHighWater["dev"] != first {
+	if err != nil || state.DirectiveHighWater["dev"] != open {
 		t.Fatalf("lower directive changed the persisted high-water: state=%+v err=%v", state, err)
 	}
 }
@@ -224,9 +245,10 @@ func TestLanesL305CrashBeforeCommitLeavesOnlyLastDurableAnchorState(t *testing.T
 	}
 	fixture.anchor.setFaultHooks(anchorFaultHooks{beforeCommit: func() error { return errors.New("simulated crash before SQLite commit") }})
 	value := AnchorDirectiveHighWater{Lane: "dev", HostID: "linux-host", TransitionID: l305TransitionID, TransitionEpoch: 1,
-		AdmissionGeneration: 0, LeaseGeneration: 1, Role: "candidate_admission", CandidateManifestID: strings.Repeat("e", 64),
-		ConfigurationDigest: strings.Repeat("f", 64), RecordID: strings.Repeat("1", 64)}
-	if err := fixture.anchor.RecordVerifiedDirective(value); err == nil {
+		AdmissionGeneration: 0, LeaseGeneration: 0, Role: "candidate_admission", CandidateManifestID: strings.Repeat("e", 64),
+		ConfigurationDigest: l303Digest, RecordID: strings.Repeat("1", 64), SignerKeyID: fixture.authorityID,
+		NotBefore: fixture.clock.Add(-time.Minute).Format(time.RFC3339Nano), NotAfter: fixture.clock.Add(10 * time.Minute).Format(time.RFC3339Nano), RequiredLedgerGeneration: 1}
+	if err := fixture.anchor.recordVerifiedDirective(value); err == nil {
 		t.Fatal("simulated crash was reported as a durable anchor update")
 	}
 	after, err := fixture.anchor.Snapshot()
@@ -396,9 +418,10 @@ func TestLanesL305RejectsRestoredLowerOrForkedHighWaterSnapshot(t *testing.T) {
 	}
 	fixture.acceptProbe(t)
 	value := AnchorDirectiveHighWater{Lane: "dev", HostID: "linux-host", TransitionID: l305TransitionID, TransitionEpoch: 9,
-		AdmissionGeneration: 1, LeaseGeneration: 1, Role: "candidate_admission", CandidateManifestID: strings.Repeat("e", 64),
-		ConfigurationDigest: strings.Repeat("f", 64), RecordID: strings.Repeat("1", 64)}
-	if err := fixture.anchor.RecordVerifiedDirective(value); err != nil {
+		AdmissionGeneration: 0, LeaseGeneration: 0, Role: "candidate_admission", CandidateManifestID: strings.Repeat("e", 64),
+		ConfigurationDigest: l303Digest, RecordID: strings.Repeat("1", 64), SignerKeyID: fixture.authorityID,
+		NotBefore: fixture.clock.Add(-time.Minute).Format(time.RFC3339Nano), NotAfter: fixture.clock.Add(10 * time.Minute).Format(time.RFC3339Nano), RequiredLedgerGeneration: 1}
+	if err := fixture.anchor.recordVerifiedDirective(value); err != nil {
 		t.Fatal(err)
 	}
 	state, err := fixture.anchor.Snapshot()

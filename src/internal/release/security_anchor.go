@@ -51,17 +51,21 @@ type SecurityAnchorBootstrap struct {
 // AnchorDirectiveHighWater is the helper-verified identity of the highest
 // directive observed for one lane on this host.
 type AnchorDirectiveHighWater struct {
-	Lane                string `json:"lane"`
-	HostID              string `json:"host_id"`
-	TransitionID        string `json:"lane_transition_id"`
-	TransitionEpoch     uint64 `json:"transition_epoch"`
-	AdmissionGeneration uint8  `json:"admission_generation"`
-	LeaseGeneration     uint64 `json:"lease_generation"`
-	PredecessorRecordID string `json:"predecessor_record_id,omitempty"`
-	Role                string `json:"directive_role"`
-	CandidateManifestID string `json:"candidate_manifest_id"`
-	ConfigurationDigest string `json:"resolved_configuration_digest"`
-	RecordID            string `json:"record_id"`
+	Lane                     string `json:"lane"`
+	HostID                   string `json:"host_id"`
+	SignerKeyID              string `json:"signer_key_id,omitempty"`
+	TransitionID             string `json:"lane_transition_id"`
+	TransitionEpoch          uint64 `json:"transition_epoch"`
+	AdmissionGeneration      uint8  `json:"admission_generation"`
+	LeaseGeneration          uint64 `json:"lease_generation"`
+	PredecessorRecordID      string `json:"predecessor_record_id,omitempty"`
+	Role                     string `json:"directive_role"`
+	CandidateManifestID      string `json:"candidate_manifest_id"`
+	ConfigurationDigest      string `json:"resolved_configuration_digest"`
+	NotBefore                string `json:"not_before,omitempty"`
+	NotAfter                 string `json:"not_after,omitempty"`
+	RequiredLedgerGeneration uint64 `json:"required_revocation_ledger_generation,omitempty"`
+	RecordID                 string `json:"record_id"`
 }
 
 // AnchorRuntimeContext records the root-installed runtime identity. It is
@@ -75,6 +79,7 @@ type AnchorRuntimeContext struct {
 	CandidateManifestID string `json:"candidate_manifest_id"`
 	ConfigurationDigest string `json:"resolved_configuration_digest"`
 	RecordID            string `json:"record_id"`
+	AcceptanceRecordID  string `json:"lane_acceptance_record_id,omitempty"`
 }
 
 type AnchorPendingProbe struct {
@@ -556,12 +561,12 @@ func validateSecurityAnchorState(state SecurityAnchorState) error {
 		}
 	}
 	for lane, value := range state.ActiveRuntime {
-		if lane != value.Lane || value.HostID != state.HostID || !validAnchorRuntime(value) {
+		if lane != value.Lane || value.HostID != state.HostID || !validAnchorRuntime(value) || !isLowerHexDigest(value.AcceptanceRecordID) {
 			return ErrInvalidTrustState
 		}
 	}
 	for lane, value := range state.PendingCandidate {
-		if lane != value.Lane || value.HostID != state.HostID || !validAnchorRuntime(value) {
+		if lane != value.Lane || value.HostID != state.HostID || !validAnchorRuntime(value) || value.AcceptanceRecordID != "" {
 			return ErrInvalidTrustState
 		}
 	}
@@ -599,15 +604,18 @@ func validAnchorLane(lane string) bool { return lane == "dev" || lane == "qas" |
 
 func validAnchorDirective(value AnchorDirectiveHighWater) bool {
 	return validAnchorLane(value.Lane) && isCanonicalHostID(value.HostID) && isUUIDv7(value.TransitionID) && value.TransitionEpoch > 0 &&
-		value.AdmissionGeneration <= 2 && value.LeaseGeneration > 0 && (value.PredecessorRecordID == "" || isLowerHexDigest(value.PredecessorRecordID)) &&
+		value.AdmissionGeneration <= 2 && (value.PredecessorRecordID == "" || isLowerHexDigest(value.PredecessorRecordID)) &&
 		(value.Role == "active_runtime_closure" || value.Role == "candidate_admission") &&
-		isLowerHexDigest(value.CandidateManifestID) && isLowerHexDigest(value.ConfigurationDigest) && isLowerHexDigest(value.RecordID) &&
+		isLowerHexDigest(value.CandidateManifestID) && isDigest(value.ConfigurationDigest) && isLowerHexDigest(value.RecordID) &&
+		(value.SignerKeyID == "" || validKeyID(value.SignerKeyID)) &&
+		(value.NotBefore == "" && value.NotAfter == "" || validMaximumReleaseInterval(value.NotBefore, value.NotAfter)) &&
 		(value.Role != "active_runtime_closure" || value.AdmissionGeneration == 0)
 }
 
 func validAnchorRuntime(value AnchorRuntimeContext) bool {
 	return validAnchorLane(value.Lane) && isCanonicalHostID(value.HostID) && isUUIDv7(value.TransitionID) && value.TransitionEpoch > 0 &&
-		isLowerHexDigest(value.CandidateManifestID) && isLowerHexDigest(value.ConfigurationDigest) && isLowerHexDigest(value.RecordID)
+		isLowerHexDigest(value.CandidateManifestID) && isDigest(value.ConfigurationDigest) && isLowerHexDigest(value.RecordID) &&
+		(value.AcceptanceRecordID == "" || isLowerHexDigest(value.AcceptanceRecordID))
 }
 
 func isUUIDv7(value string) bool {
@@ -785,7 +793,7 @@ func validateAnchorMonotonicTransition(before, after SecurityAnchorState) error 
 	}
 	for lane, old := range before.DirectiveHighWater {
 		current, ok := after.DirectiveHighWater[lane]
-		if !ok || compareAnchorDirective(current, old) < 0 {
+		if !ok || compareAnchorDirective(current, old) < 0 || (compareAnchorDirective(current, old) == 0 && current != old) {
 			return ErrSecurityAnchorRollback
 		}
 	}
@@ -800,8 +808,14 @@ func validateAnchorMonotonicTransition(before, after SecurityAnchorState) error 
 		current, ok := after.PendingCandidate[lane]
 		if !ok {
 			active, activated := after.ActiveRuntime[lane]
-			if !activated || active.TransitionEpoch != old.TransitionEpoch || active.TransitionID != old.TransitionID ||
-				active.CandidateManifestID != old.CandidateManifestID || active.ConfigurationDigest != old.ConfigurationDigest {
+			if activated && active.TransitionEpoch == old.TransitionEpoch && active.TransitionID == old.TransitionID &&
+				active.CandidateManifestID == old.CandidateManifestID && active.ConfigurationDigest == old.ConfigurationDigest {
+				continue
+			}
+			closure, closed := after.DirectiveHighWater[lane]
+			if !closed || closure.Role != "active_runtime_closure" || closure.TransitionID != old.TransitionID ||
+				closure.TransitionEpoch <= old.TransitionEpoch || closure.CandidateManifestID != old.CandidateManifestID ||
+				closure.ConfigurationDigest != old.ConfigurationDigest {
 				return ErrSecurityAnchorRollback
 			}
 			continue
@@ -1221,17 +1235,20 @@ func runtimeContextsAtLeast(current, candidate map[string]AnchorRuntimeContext) 
 	return true
 }
 
-// RecordVerifiedDirective persists an already signature-, schema-, host-, and
-// context-validated directive. The helper's caller must validate those fields
-// before invoking this method; the anchor enforces local host binding and the
-// monotonic high-water transition atomically with the pending candidate
-// context. A fresh unused time probe and fresh ledger are mandatory.
-func (a *SecurityAnchor) RecordVerifiedDirective(value AnchorDirectiveHighWater) error {
+// recordVerifiedDirective persists a directive after the signed envelope,
+// local host, time, ledger and state-machine checks have passed. It is kept
+// package-private so callers cannot advance trusted high-water with caller-
+// constructed fields.
+func (a *SecurityAnchor) recordVerifiedDirective(value AnchorDirectiveHighWater) error {
 	if a == nil {
 		return ErrSecurityAnchorUnavailable
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.recordVerifiedDirectiveLocked(value)
+}
+
+func (a *SecurityAnchor) recordVerifiedDirectiveLocked(value AnchorDirectiveHighWater) error {
 	if a.unhealthy {
 		return ErrSecurityAnchorUnavailable
 	}
@@ -1244,31 +1261,26 @@ func (a *SecurityAnchor) RecordVerifiedDirective(value AnchorDirectiveHighWater)
 	if value.HostID != a.state.HostID || !validAnchorDirective(value) {
 		return invalidL3Trust("directive high-water does not match the anchored host or closed contract")
 	}
+	if value.RequiredLedgerGeneration != 0 && value.RequiredLedgerGeneration != a.state.RevocationLedger.Generation {
+		return invalidL3Trust("directive high-water is bound to a different revocation-ledger generation")
+	}
+	if value.NotBefore != "" {
+		notBefore, errBefore := time.Parse(time.RFC3339Nano, value.NotBefore)
+		notAfter, errAfter := time.Parse(time.RFC3339Nano, value.NotAfter)
+		now := a.now().UTC()
+		if errBefore != nil || errAfter != nil || now.Before(notBefore) || !now.Before(notAfter) ||
+			a.state.HighestAuthorityTime.Before(notBefore) || !a.state.HighestAuthorityTime.Before(notAfter) {
+			return invalidL3Trust("directive high-water is outside its signed validity interval")
+		}
+	}
+	if err := validateAnchorDirectiveSuccessor(a.state, value); err != nil {
+		return err
+	}
 	_, err := a.commitLocked(context.Background(), func(next *SecurityAnchorState) error {
 		if next.ConsumedProbeGeneration == ^uint64(0) || next.ProbeGeneration != next.ConsumedProbeGeneration+1 {
 			return ErrSecurityAnchorRollback
 		}
 		next.ConsumedProbeGeneration = next.ProbeGeneration
-		if prior, ok := next.DirectiveHighWater[value.Lane]; ok {
-			if compareAnchorDirective(value, prior) <= 0 {
-				return invalidL3Trust("directive tuple is replayed, forked, or below its high-water")
-			}
-			samePhase := value.TransitionID == prior.TransitionID && value.TransitionEpoch == prior.TransitionEpoch &&
-				value.AdmissionGeneration == prior.AdmissionGeneration && value.Role == prior.Role &&
-				value.CandidateManifestID == prior.CandidateManifestID && value.ConfigurationDigest == prior.ConfigurationDigest
-			if samePhase && value.LeaseGeneration > prior.LeaseGeneration &&
-				(value.LeaseGeneration != prior.LeaseGeneration+1 || value.PredecessorRecordID != prior.RecordID) {
-				return invalidL3Trust("directive renewal is not the contiguous child of its anchored predecessor")
-			}
-			if value.PredecessorRecordID != "" && value.PredecessorRecordID != prior.RecordID {
-				return invalidL3Trust("directive predecessor does not match the anchored record")
-			}
-			if prior.TransitionEpoch == value.TransitionEpoch && (prior.TransitionID != value.TransitionID || prior.CandidateManifestID != value.CandidateManifestID || prior.ConfigurationDigest != value.ConfigurationDigest) {
-				return invalidL3Trust("directive identity changed within one transition epoch")
-			}
-		} else if value.PredecessorRecordID != "" {
-			return invalidL3Trust("first directive cannot name an unanchored predecessor")
-		}
 		if value.Role == "candidate_admission" {
 			if prior, ok := next.PendingCandidate[value.Lane]; ok {
 				if value.TransitionEpoch < prior.TransitionEpoch || (value.TransitionEpoch == prior.TransitionEpoch &&
@@ -1280,6 +1292,10 @@ func (a *SecurityAnchor) RecordVerifiedDirective(value AnchorDirectiveHighWater)
 				Lane: value.Lane, HostID: value.HostID, TransitionID: value.TransitionID, TransitionEpoch: value.TransitionEpoch,
 				CandidateManifestID: value.CandidateManifestID, ConfigurationDigest: value.ConfigurationDigest, RecordID: value.RecordID,
 			}
+		} else if pending, ok := next.PendingCandidate[value.Lane]; ok &&
+			pending.TransitionID == value.TransitionID && pending.CandidateManifestID == value.CandidateManifestID &&
+			pending.ConfigurationDigest == value.ConfigurationDigest && value.TransitionEpoch > pending.TransitionEpoch {
+			delete(next.PendingCandidate, value.Lane)
 		}
 		next.DirectiveHighWater[value.Lane] = value
 		return nil
@@ -1287,11 +1303,11 @@ func (a *SecurityAnchor) RecordVerifiedDirective(value AnchorDirectiveHighWater)
 	return err
 }
 
-// RecordVerifiedActiveRuntime commits a candidate only after the caller has
-// verified its signed lane_acceptance and complete installation evidence. It
-// atomically advances the active identity and clears only the matching pending
-// candidate context.
-func (a *SecurityAnchor) RecordVerifiedActiveRuntime(value AnchorRuntimeContext) error {
+// RecordVerifiedActiveRuntime commits only an authority-signed lane_acceptance
+// for the exact current open directive. The authority signature certifies the
+// complete promotion-attestation set; the anchor persists both record IDs as
+// the durable post-commit handoff.
+func (a *SecurityAnchor) RecordVerifiedActiveRuntime(acceptanceEnvelopeRaw []byte) error {
 	if a == nil {
 		return ErrSecurityAnchorUnavailable
 	}
@@ -1300,24 +1316,69 @@ func (a *SecurityAnchor) RecordVerifiedActiveRuntime(value AnchorRuntimeContext)
 	if a.unhealthy {
 		return ErrSecurityAnchorUnavailable
 	}
-	if a.state.ProbeGeneration == a.state.ConsumedProbeGeneration || a.state.HighestAuthorityTime.IsZero() {
-		return invalidL3Trust("runtime commit requires a fresh unused helper time probe")
+	if a.state.HighestAuthorityTime.IsZero() {
+		return invalidL3Trust("runtime commit requires accepted helper time")
 	}
 	if err := ValidateRevocationLedgerFreshForMutation(a.state.RevocationLedger, a.state.HighestAuthorityTime); err != nil {
 		return err
 	}
-	if value.HostID != a.state.HostID || !validAnchorRuntime(value) {
-		return invalidL3Trust("accepted runtime context does not match anchored host or contract")
+	verified, err := VerifyEnvelope(acceptanceEnvelopeRaw, anchorAuthorityKeys(a.state, a.state.HighestAuthorityTime))
+	if err != nil || verified.RecordType != "lane_acceptance" ||
+		slices.Contains(a.state.RevocationLedger.RevokedRecordIDs, verified.RecordID) ||
+		slices.Contains(a.state.RevocationLedger.RevokedKeyIDs, verified.SignerKeyID) {
+		return errors.Join(invalidL3Trust("lane acceptance signature or revocation check failed"), err)
+	}
+	acceptance, err := validateLaneAcceptanceStatement(verified.Payload)
+	if err != nil {
+		return errors.Join(invalidL3Trust("lane acceptance statement is invalid"), err)
+	}
+	directive, ok := a.state.DirectiveHighWater[acceptance.Lane]
+	if !ok || directive.Role != "candidate_admission" || directive.AdmissionGeneration != 2 || directive.SignerKeyID == "" ||
+		directive.RequiredLedgerGeneration != a.state.RevocationLedger.Generation ||
+		slices.Contains(a.state.RevocationLedger.RevokedRecordIDs, directive.RecordID) ||
+		slices.Contains(a.state.RevocationLedger.RevokedKeyIDs, directive.SignerKeyID) ||
+		acceptance.Lane != directive.Lane || acceptance.TransitionID != directive.TransitionID ||
+		acceptance.CandidateID != directive.CandidateManifestID {
+		return invalidL3Trust("accepted runtime lacks a current, signed, unrevoked open directive")
+	}
+	notBefore, errBefore := time.Parse(time.RFC3339Nano, directive.NotBefore)
+	notAfter, errAfter := time.Parse(time.RFC3339Nano, directive.NotAfter)
+	acceptedAt, errAccepted := time.Parse(time.RFC3339Nano, acceptance.AcceptedAt)
+	now := a.now().UTC()
+	if errBefore != nil || errAfter != nil || errAccepted != nil || now.Before(notBefore) || !now.Before(notAfter) ||
+		acceptedAt.Before(notBefore) || !acceptedAt.Before(notAfter) ||
+		acceptedAt.After(a.state.HighestAuthorityTime) || acceptedAt.After(now) ||
+		a.state.HighestAuthorityTime.Before(notBefore) || !a.state.HighestAuthorityTime.Before(notAfter) {
+		return invalidL3Trust("lane acceptance or open directive is outside its signed validity interval")
+	}
+	value := AnchorRuntimeContext{
+		Lane: directive.Lane, HostID: directive.HostID, TransitionID: directive.TransitionID,
+		TransitionEpoch: directive.TransitionEpoch, CandidateManifestID: directive.CandidateManifestID,
+		ConfigurationDigest: directive.ConfigurationDigest, RecordID: directive.RecordID, AcceptanceRecordID: verified.RecordID,
+	}
+	if active, exists := a.state.ActiveRuntime[value.Lane]; exists {
+		if active.AcceptanceRecordID == verified.RecordID && active.Lane == value.Lane && active.HostID == value.HostID &&
+			active.TransitionID == value.TransitionID && active.TransitionEpoch == value.TransitionEpoch &&
+			active.CandidateManifestID == value.CandidateManifestID && active.ConfigurationDigest == value.ConfigurationDigest {
+			return nil
+		}
+		if active.AcceptanceRecordID == verified.RecordID && active.TransitionEpoch != value.TransitionEpoch {
+			return invalidL3Trust("lane acceptance record cannot be reused for a higher directive epoch")
+		}
+		if value.TransitionEpoch <= active.TransitionEpoch {
+			return ErrSecurityAnchorRollback
+		}
 	}
 	pending, ok := a.state.PendingCandidate[value.Lane]
 	if !ok || pending.TransitionID != value.TransitionID || pending.TransitionEpoch != value.TransitionEpoch ||
-		pending.CandidateManifestID != value.CandidateManifestID || pending.ConfigurationDigest != value.ConfigurationDigest {
+		pending.CandidateManifestID != value.CandidateManifestID || pending.ConfigurationDigest != value.ConfigurationDigest ||
+		pending.RecordID != directive.RecordID {
 		return invalidL3Trust("accepted runtime does not match the root-installed pending candidate")
 	}
-	if active, exists := a.state.ActiveRuntime[value.Lane]; exists && value.TransitionEpoch <= active.TransitionEpoch {
-		return ErrSecurityAnchorRollback
+	if a.state.ProbeGeneration == a.state.ConsumedProbeGeneration {
+		return invalidL3Trust("runtime commit requires a fresh unused helper time probe")
 	}
-	_, err := a.commitLocked(context.Background(), func(next *SecurityAnchorState) error {
+	_, err = a.commitLocked(context.Background(), func(next *SecurityAnchorState) error {
 		if next.ConsumedProbeGeneration == ^uint64(0) || next.ProbeGeneration != next.ConsumedProbeGeneration+1 {
 			return ErrSecurityAnchorRollback
 		}

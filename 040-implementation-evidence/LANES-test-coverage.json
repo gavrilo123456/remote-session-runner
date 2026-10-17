@@ -1183,7 +1183,21 @@
       "required_tiers": [
         "H",
         "N"
-      ]
+      ],
+      "assertions": {
+        "H": [
+          {"package": "./src/internal/release", "name": "TestLanesL315AppliesSignedDirectivePhasesAndRequiresExactOpenForAcceptance"},
+          {"package": "./src/internal/release", "name": "TestLanesL315RejectsTamperedWrongHostExpiredStaleLedgerIdentityForkAndSkippedPhase"},
+          {"package": "./src/internal/release", "name": "TestLanesL315ClosureOfStagedCandidateClearsPendingBeforeHigherEpochReplacement"},
+          {"package": "./src/internal/release", "name": "TestLanesL315SignedDirectiveCrashBeforeCommitRemainsRetryable"},
+          {"package": "./src/internal/laneregistry", "name": "TestLanesL105ReplacementClosesThenQuiescesBeforeHigherEpochStaging"},
+          {"package": "./src/internal/laneregistry", "name": "TestLanesL112PRDMaintenanceRequiresFullClosureAndZeroWork"},
+          {"package": "./src/internal/laneregistry", "name": "TestLanesL113PRDPostCommitRepairRequiresFreshClosureQuiescenceAndHandoff"}
+        ],
+        "N": [
+          {"package": "./src/internal/release", "name": "TestLanesL315NativeSQLiteDirectiveHighWaterSurvivesRestart"}
+        ]
+      }
     },
     {
       "id": "LANES-L3-16",

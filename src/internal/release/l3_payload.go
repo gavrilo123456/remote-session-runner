@@ -217,12 +217,8 @@ func ValidatePromotionAttestationForAuthorization(authorizationID string, author
 // each canonical host to this lane transition. Inputs are payloads from
 // signature-verified envelopes, keyed by their verified record IDs.
 func ValidateLaneAcceptance(raw []byte, verifiedAttestations map[string][]byte) error {
-	if err := ValidatePayload("lane_acceptance", raw); err != nil {
-		return err
-	}
-	var acceptance laneAcceptancePayload
-	if decodeStrict(raw, &acceptance) != nil || !sortedUnique(acceptance.AttestationIDs) || !validUTCTimestamp(acceptance.AcceptedAt) ||
-		len(acceptance.AttestationIDs) != len(canonicalHostIDs) || len(verifiedAttestations) != len(canonicalHostIDs) {
+	acceptance, err := validateLaneAcceptanceStatement(raw)
+	if err != nil || len(verifiedAttestations) != len(canonicalHostIDs) {
 		return invalidL3Payload("lane acceptance attestation set")
 	}
 	hosts := make(map[string]bool, len(canonicalHostIDs))
@@ -244,6 +240,22 @@ func ValidateLaneAcceptance(raw []byte, verifiedAttestations map[string][]byte) 
 		}
 	}
 	return nil
+}
+
+// validateLaneAcceptanceStatement validates the signed authority statement's
+// closed shape and complete immutable attestation-ID set. The root host anchor
+// uses this after verifying the authority signature; the authority signer is
+// the principal that checked the full cross-host promotion evidence.
+func validateLaneAcceptanceStatement(raw []byte) (laneAcceptancePayload, error) {
+	if err := ValidatePayload("lane_acceptance", raw); err != nil {
+		return laneAcceptancePayload{}, err
+	}
+	var acceptance laneAcceptancePayload
+	if decodeStrict(raw, &acceptance) != nil || !sortedUnique(acceptance.AttestationIDs) || !validUTCTimestamp(acceptance.AcceptedAt) ||
+		len(acceptance.AttestationIDs) != len(canonicalHostIDs) {
+		return laneAcceptancePayload{}, invalidL3Payload("lane acceptance statement")
+	}
+	return acceptance, nil
 }
 
 // ValidateIngressAdmissionDirective checks the closed phase and lifetime rules.

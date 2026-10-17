@@ -32,7 +32,7 @@ func TestLanesL311DirectiveGrantRenewsTwoContiguousSamePhaseLeases(t *testing.T)
 		t.Fatal(err)
 	}
 	var firstPayload ingressDirectivePayload
-	if decodeStrict(firstRecord.Payload, &firstPayload) != nil || firstPayload.LeaseGeneration != 2 ||
+	if decodeStrict(firstRecord.Payload, &firstPayload) != nil || firstPayload.LeaseGeneration != 1 ||
 		firstPayload.PredecessorRecordID == "" || firstPayload.RequiredLedgerGeneration != 1 || firstPayload.Role != "candidate_admission" {
 		t.Fatalf("first renewal did not bind to the initial phase and predecessor: %+v", firstPayload)
 	}
@@ -58,7 +58,7 @@ func TestLanesL311DirectiveGrantRenewsTwoContiguousSamePhaseLeases(t *testing.T)
 		t.Fatal(err)
 	}
 	var secondPayload ingressDirectivePayload
-	if decodeStrict(secondRecord.Payload, &secondPayload) != nil || secondPayload.LeaseGeneration != 3 ||
+	if decodeStrict(secondRecord.Payload, &secondPayload) != nil || secondPayload.LeaseGeneration != 2 ||
 		secondPayload.PredecessorRecordID != firstRecord.RecordID || !sameDirectiveContext(secondPayload, firstPayload) {
 		t.Fatalf("second renewal forked or expanded approved authority: %+v", secondPayload)
 	}
@@ -73,7 +73,7 @@ func TestLanesL311DirectiveGrantRenewsTwoContiguousSamePhaseLeases(t *testing.T)
 		t.Fatal(err)
 	}
 	grant := state.DirectiveGrants[grantID]
-	if grant.IssuedCount != 2 || grant.CurrentLeaseGeneration != 3 || grant.CurrentRecordID != secondRecord.RecordID ||
+	if grant.IssuedCount != 2 || grant.CurrentLeaseGeneration != 2 || grant.CurrentRecordID != secondRecord.RecordID ||
 		grant.PendingPublicationRecord != "" || len(grant.Issuances) != 2 {
 		t.Fatalf("directive renewal high-water not durable: %+v", grant)
 	}
@@ -88,10 +88,11 @@ func TestLanesL311HostAnchorRejectsDirectiveGapAndFork(t *testing.T) {
 		t.Fatalf("install fresh bootstrap successor ledger: %v", err)
 	}
 	first := AnchorDirectiveHighWater{Lane: "dev", HostID: "linux-host", TransitionID: l305TransitionID, TransitionEpoch: 7,
-		AdmissionGeneration: 1, LeaseGeneration: 1, Role: "candidate_admission", CandidateManifestID: strings.Repeat("e", 64),
-		ConfigurationDigest: strings.Repeat("f", 64), RecordID: strings.Repeat("1", 64)}
+		AdmissionGeneration: 0, LeaseGeneration: 0, Role: "candidate_admission", CandidateManifestID: strings.Repeat("e", 64),
+		ConfigurationDigest: l303Digest, RecordID: strings.Repeat("1", 64), SignerKeyID: fixture.authorityID,
+		NotBefore: fixture.clock.Add(-time.Minute).Format(time.RFC3339Nano), NotAfter: fixture.clock.Add(10 * time.Minute).Format(time.RFC3339Nano), RequiredLedgerGeneration: 1}
 	fixture.acceptProbe(t)
-	if err := fixture.anchor.RecordVerifiedDirective(first); err != nil {
+	if err := fixture.anchor.recordVerifiedDirective(first); err != nil {
 		t.Fatalf("record initial directive: %v", err)
 	}
 	gap := first
@@ -99,21 +100,21 @@ func TestLanesL311HostAnchorRejectsDirectiveGapAndFork(t *testing.T) {
 	gap.RecordID = strings.Repeat("2", 64)
 	gap.PredecessorRecordID = first.RecordID
 	fixture.acceptProbe(t)
-	if err := fixture.anchor.RecordVerifiedDirective(gap); err == nil {
+	if err := fixture.anchor.recordVerifiedDirective(gap); err == nil {
 		t.Fatal("host anchor accepted a skipped lease generation")
 	}
 	fork := first
-	fork.LeaseGeneration = 2
+	fork.LeaseGeneration = 1
 	fork.RecordID = strings.Repeat("3", 64)
 	fork.PredecessorRecordID = strings.Repeat("4", 64)
-	if err := fixture.anchor.RecordVerifiedDirective(fork); err == nil {
+	if err := fixture.anchor.recordVerifiedDirective(fork); err == nil {
 		t.Fatal("host anchor accepted a forked directive predecessor")
 	}
 	valid := first
-	valid.LeaseGeneration = 2
+	valid.LeaseGeneration = 1
 	valid.RecordID = strings.Repeat("5", 64)
 	valid.PredecessorRecordID = first.RecordID
-	if err := fixture.anchor.RecordVerifiedDirective(valid); err != nil {
+	if err := fixture.anchor.recordVerifiedDirective(valid); err != nil {
 		t.Fatalf("host anchor rejected the exact contiguous renewal: %v", err)
 	}
 	state, err := fixture.anchor.Snapshot()
@@ -131,7 +132,7 @@ func TestLanesL311RejectsGrantExpansionBadBoundsAndTamperedHighWater(t *testing.
 		edit func(*DirectiveRenewalGrantSpec)
 	}{
 		{"one renewal only", func(spec *DirectiveRenewalGrantSpec) { spec.MaximumLeaseGeneration = 2; spec.IssuanceCap = 1 }},
-		{"cap exceeds generations", func(spec *DirectiveRenewalGrantSpec) { spec.MaximumLeaseGeneration = 2 }},
+		{"cap exceeds generations", func(spec *DirectiveRenewalGrantSpec) { spec.MaximumLeaseGeneration = 1 }},
 		{"warning leaves less than two cycles", func(spec *DirectiveRenewalGrantSpec) { spec.RenewalWarningAt = fixture.now.Add(40 * time.Minute) }},
 		{"warning after expiry", func(spec *DirectiveRenewalGrantSpec) { spec.RenewalWarningAt = fixture.now.Add(50 * time.Minute) }},
 	}
@@ -370,8 +371,8 @@ func TestLanesL311NativeProbeUsesMonotonicKernelClock(t *testing.T) {
 func l311SignInitialDirective(t *testing.T, fixture *l310Fixture) []byte {
 	t.Helper()
 	directive := ingressDirectivePayload{CandidateID: l303RecordID, TransitionID: l303Transition, Lane: "dev", HostID: "linux-host",
-		ConfigurationDigest: l303Digest, Role: "candidate_admission", TransitionEpoch: 7, AdmissionGeneration: 1,
-		LeaseGeneration: 1, NotBefore: fixture.now.Add(-time.Minute).Format(time.RFC3339Nano),
+		ConfigurationDigest: l303Digest, Role: "candidate_admission", TransitionEpoch: 7, AdmissionGeneration: 0,
+		LeaseGeneration: 0, NotBefore: fixture.now.Add(-time.Minute).Format(time.RFC3339Nano),
 		NotAfter: fixture.now.Add(10 * time.Minute).Format(time.RFC3339Nano), RequiredLedgerGeneration: 1}
 	payload, err := json.Marshal(directive)
 	if err != nil {
