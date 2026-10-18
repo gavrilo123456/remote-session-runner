@@ -93,3 +93,16 @@ paths, [SIMPLE-04](SIMPLE-04.md) for Dev and PRD diagnosis, and
 tests or service actions are part of this documentation-only unit; the links,
 tables, identities, and procedure were reviewed against those accepted
 records.
+
+## Git delivery receipt
+
+The decision package and ledger status were committed on Mac `dev` as
+`e83d1710d5b1ed2cb1753bf76e4aa741e17e7df4`. The commit was pushed to primary
+Gitea `origin/dev`; direct `ls-remote` checks returned the same SHA from Gitea
+and automatic GitHub `github/dev`. Each Ubuntu checkout was verified clean on
+`dev` at predecessor `2b6bffdee9c780396fa0a3b7f95967d4080fdffc`, then
+fast-forwarded from GitHub `origin/dev` with the configured explicit GitHub
+identity. Final read-back confirmed all three clean checkouts at
+`e83d1710d5b1ed2cb1753bf76e4aa741e17e7df4` and the evidence file present.
+`git diff --check` and the SIMPLE-06 relative-link check passed. No runtime
+test was required for this documentation-only decision package.
