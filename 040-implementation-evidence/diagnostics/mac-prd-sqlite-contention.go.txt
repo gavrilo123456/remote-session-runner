@@ -1,0 +1,196 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	sqlitedriver "modernc.org/sqlite"
+	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/store"
+)
+
+var taskDir = os.Getenv("RSR_DIAGNOSTIC_DIR")
+
+func emit(v any) { _ = json.NewEncoder(os.Stdout).Encode(v) }
+func die(err error) {
+	if err != nil {
+		emit(map[string]any{"fatal_type": fmt.Sprintf("%T", err)})
+		os.Exit(1)
+	}
+}
+func errorFields(err error) map[string]any {
+	r := map[string]any{"error": err != nil}
+	if err == nil {
+		return r
+	}
+	r["error_type"] = fmt.Sprintf("%T", err)
+	var e *sqlitedriver.Error
+	if errors.As(err, &e) {
+		r["sqlite_code"] = e.Code()
+		r["sqlite_primary"] = e.Code() & 255
+	}
+	r["deadline"] = errors.Is(err, context.DeadlineExceeded)
+	return r
+}
+
+func openCopy(name string) (*sql.DB, *store.AuthorityStore) {
+	src, err := os.Open(filepath.Join(taskDir, "production-snapshot.db"))
+	die(err)
+	defer src.Close()
+	path := filepath.Join(taskDir, name+".db")
+	dst, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	die(err)
+	_, err = io.Copy(dst, src)
+	die(err)
+	die(dst.Close())
+	db, err := store.Open(context.Background(), path)
+	die(err)
+	a, err := store.NewAuthorityStore(db)
+	die(err)
+	return db, a
+}
+
+type binding struct {
+	Operation  string
+	Resource   string
+	Controller domain.ControllerIdentity
+}
+
+func getBinding(db *sql.DB) binding {
+	var b binding
+	var typ, id string
+	die(db.QueryRow(`SELECT operation, resource_id, controller_type, controller_id FROM local_intents WHERE operation='run' AND resource_id<>'' ORDER BY created_at DESC LIMIT 1`).Scan(&b.Operation, &b.Resource, &typ, &id))
+	var err error
+	b.Controller, err = domain.NewControllerIdentity(domain.ControllerType(typ), domain.ControllerID(id))
+	die(err)
+	return b
+}
+func timedStatus(a *store.AuthorityStore, b binding, label string) {
+	start := time.Now()
+	_, err := a.GetLocalIntentByResource(context.Background(), b.Operation, b.Resource, b.Controller)
+	r := errorFields(err)
+	r["case"] = label
+	r["elapsed_ms"] = float64(time.Since(start).Microseconds()) / 1000
+	emit(r)
+}
+
+func main() {
+	if taskDir == "" || !filepath.IsAbs(taskDir) {
+		die(errors.New("RSR_DIAGNOSTIC_DIR must name a private absolute directory containing production-snapshot.db"))
+	}
+	stress := len(os.Args) > 1 && os.Args[1] == "stress"
+	workName := "working"
+	if stress {
+		workName = "stress"
+	}
+	db, a := openCopy(workName)
+	defer db.Close()
+	b := getBinding(db)
+	var mode string
+	var timeout, fk int
+	die(db.QueryRow("PRAGMA journal_mode").Scan(&mode))
+	die(db.QueryRow("PRAGMA busy_timeout").Scan(&timeout))
+	die(db.QueryRow("PRAGMA foreign_keys").Scan(&fk))
+	emit(map[string]any{"case": "connection_settings", "journal_mode": mode, "busy_timeout_ms": timeout, "foreign_keys": fk})
+	timedStatus(a, b, "status_baseline")
+	var box string
+	var count int
+	die(db.QueryRow(`SELECT mailbox_id, COUNT(*) FROM mailbox_exchanges GROUP BY mailbox_id ORDER BY COUNT(*) DESC LIMIT 1`).Scan(&box, &count))
+	emit(map[string]any{"case": "largest_mailbox", "mailbox_id": box, "exchanges": count})
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		start := time.Now()
+		refs, err := a.ClaimMailboxEventFilesForCleanupInMailbox(ctx, box)
+		cancel()
+		r := errorFields(err)
+		r["case"] = "historical_event_cleanup"
+		r["iteration"] = i
+		r["elapsed_ms"] = float64(time.Since(start).Microseconds()) / 1000
+		r["claimed_files"] = len(refs)
+		emit(r)
+		if err != nil {
+			break
+		}
+		if stress && i == 0 {
+			for _, ref := range refs {
+				die(a.MarkMailboxEventFileRemovedInMailbox(context.Background(), ref))
+			}
+			emit(map[string]any{"case": "simulate_completed_cleanup_on_disposable_copy", "marked_files": len(refs)})
+		}
+	}
+	// Recreate the production pattern: repeated exact cleanup calls contend
+	// with unmodified status lookup against the same disposable authority.
+	path := filepath.Join(taskDir, workName+".db")
+	db2, err := store.Open(context.Background(), path)
+	die(err)
+	defer db2.Close()
+	a2, err := store.NewAuthorityStore(db2)
+	die(err)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	iterations := 15
+	if stress {
+		iterations = 30
+	}
+	go func() {
+		defer wg.Done()
+		start := time.Now()
+		n := 0
+		claimed := 0
+		for n < iterations && ctx.Err() == nil {
+			refs, err := a.ClaimMailboxEventFilesForCleanupInMailbox(ctx, box)
+			if err != nil {
+				r := errorFields(err)
+				r["case"] = "continuous_cleanup_error"
+				emit(r)
+				break
+			}
+			claimed += len(refs)
+			n++
+		}
+		emit(map[string]any{"case": "continuous_cleanup_total", "iterations": n, "claimed_files": claimed, "elapsed_ms": float64(time.Since(start).Microseconds()) / 1000})
+	}()
+	time.Sleep(20 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		timedStatus(a2, b, fmt.Sprintf("status_during_cleanup_%d", i))
+	}
+	cancel()
+	wg.Wait()
+	if stress {
+		return
+	}
+	// Hold a real SQLite writer reservation on the copy and compare the exact
+	// existing lookup with an equivalent SELECT-only snapshot transaction.
+	c, err := db.Conn(context.Background())
+	die(err)
+	_, err = c.ExecContext(context.Background(), "BEGIN IMMEDIATE")
+	die(err)
+	timedStatus(a2, b, "status_with_writer_held")
+	readConn, err := db2.Conn(context.Background())
+	die(err)
+	start := time.Now()
+	_, err = readConn.ExecContext(context.Background(), "BEGIN")
+	if err == nil {
+		var got string
+		err = readConn.QueryRowContext(context.Background(), `SELECT intent_id FROM local_intents WHERE operation=? AND resource_id=? AND controller_type=? AND controller_id=? ORDER BY created_at DESC,intent_id DESC LIMIT 1`, b.Operation, b.Resource, string(b.Controller.Type()), string(b.Controller.ID())).Scan(&got)
+	}
+	_, _ = readConn.ExecContext(context.Background(), "ROLLBACK")
+	_ = readConn.Close()
+	r := errorFields(err)
+	r["case"] = "select_snapshot_with_writer_held"
+	r["elapsed_ms"] = float64(time.Since(start).Microseconds()) / 1000
+	emit(r)
+	_, err = c.ExecContext(context.Background(), "ROLLBACK")
+	die(err)
+	die(c.Close())
+	timedStatus(a2, b, "status_after_writer_release")
+}

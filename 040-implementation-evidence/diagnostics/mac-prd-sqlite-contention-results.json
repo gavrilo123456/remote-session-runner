@@ -1,0 +1,175 @@
+{
+  "baseline_and_controlled_writer": [
+    {
+      "busy_timeout_ms": 5000,
+      "case": "connection_settings",
+      "foreign_keys": 1,
+      "journal_mode": "wal"
+    },
+    {
+      "case": "status_baseline",
+      "elapsed_ms": 2.271,
+      "error": false
+    },
+    {
+      "case": "largest_mailbox",
+      "exchanges": 3269,
+      "mailbox_id": "slidestud-io"
+    },
+    {
+      "case": "historical_event_cleanup",
+      "claimed_files": 1,
+      "elapsed_ms": 309.907,
+      "error": false,
+      "iteration": 0
+    },
+    {
+      "case": "historical_event_cleanup",
+      "claimed_files": 1,
+      "elapsed_ms": 311.349,
+      "error": false,
+      "iteration": 1
+    },
+    {
+      "case": "historical_event_cleanup",
+      "claimed_files": 1,
+      "elapsed_ms": 313.72,
+      "error": false,
+      "iteration": 2
+    },
+    {
+      "case": "continuous_cleanup_total",
+      "elapsed_ms": 4552.509,
+      "iterations": 15
+    },
+    {
+      "case": "status_during_cleanup_0",
+      "elapsed_ms": 4568.828,
+      "error": false
+    },
+    {
+      "case": "status_during_cleanup_1",
+      "elapsed_ms": 1.774,
+      "error": false
+    },
+    {
+      "case": "status_during_cleanup_2",
+      "elapsed_ms": 1.683,
+      "error": false
+    },
+    {
+      "case": "status_during_cleanup_3",
+      "elapsed_ms": 1.679,
+      "error": false
+    },
+    {
+      "case": "status_during_cleanup_4",
+      "elapsed_ms": 1.676,
+      "error": false
+    },
+    {
+      "case": "status_with_writer_held",
+      "deadline": false,
+      "elapsed_ms": 5033.809,
+      "error": true,
+      "error_type": "*fmt.wrapError",
+      "sqlite_code": 5,
+      "sqlite_primary": 5
+    },
+    {
+      "case": "select_snapshot_with_writer_held",
+      "elapsed_ms": 7.474,
+      "error": false
+    },
+    {
+      "case": "status_after_writer_release",
+      "elapsed_ms": 3.832,
+      "error": false
+    }
+  ],
+  "historical_cleanup_contention": [
+    {
+      "busy_timeout_ms": 5000,
+      "case": "connection_settings",
+      "foreign_keys": 1,
+      "journal_mode": "wal"
+    },
+    {
+      "case": "status_baseline",
+      "elapsed_ms": 2.473,
+      "error": false
+    },
+    {
+      "case": "largest_mailbox",
+      "exchanges": 3269,
+      "mailbox_id": "slidestud-io"
+    },
+    {
+      "case": "historical_event_cleanup",
+      "claimed_files": 1,
+      "elapsed_ms": 311.509,
+      "error": false,
+      "iteration": 0
+    },
+    {
+      "case": "simulate_completed_cleanup_on_disposable_copy",
+      "marked_files": 1
+    },
+    {
+      "case": "historical_event_cleanup",
+      "claimed_files": 0,
+      "elapsed_ms": 324.208,
+      "error": false,
+      "iteration": 1
+    },
+    {
+      "case": "historical_event_cleanup",
+      "claimed_files": 0,
+      "elapsed_ms": 300.647,
+      "error": false,
+      "iteration": 2
+    },
+    {
+      "case": "status_during_cleanup_0",
+      "deadline": false,
+      "elapsed_ms": 5800.77,
+      "error": true,
+      "error_type": "*fmt.wrapError",
+      "sqlite_code": 5,
+      "sqlite_primary": 5
+    },
+    {
+      "case": "continuous_cleanup_total",
+      "claimed_files": 0,
+      "elapsed_ms": 9268.949,
+      "iterations": 30
+    },
+    {
+      "case": "status_during_cleanup_1",
+      "elapsed_ms": 3456.488,
+      "error": false
+    },
+    {
+      "case": "status_during_cleanup_2",
+      "elapsed_ms": 2.345,
+      "error": false
+    },
+    {
+      "case": "status_during_cleanup_3",
+      "elapsed_ms": 2.365,
+      "error": false
+    },
+    {
+      "case": "status_during_cleanup_4",
+      "elapsed_ms": 2.399,
+      "error": false
+    }
+  ],
+  "provenance": {
+    "date": "2026-10-18",
+    "service_revision": "f117853a9f712e734eab787e648383f5468e719c",
+    "investigated_checkout": "4abf3f85f276f0fe1fc74e7e42e13aa136547ed4",
+    "snapshot_sha256": "b50e24f236d237acba1fe8ece3ac1f56b5b68a6a5ec2ed194bc34713d2e219e3",
+    "note": "Baseline run preceded the stress-mode and environment-input additions; its continuous_cleanup_total omits the later claimed_files output field. Both runs used unchanged repository store methods. Final helper is tracked alongside these results."
+  }
+}
