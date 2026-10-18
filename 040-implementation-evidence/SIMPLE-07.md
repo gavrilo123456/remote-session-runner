@@ -168,7 +168,7 @@ unsupported production mutation was made. A one-item PRD backlog/intent seen
 after the Mac restart was preserved without inspection, ACK, replay, or drain.
 The stable production binaries and retained session remain in place.
 
-## Documentation delivery receipt
+## Initial documentation delivery receipt
 
 The runbook, evidence, navigation links, and in-progress ledger status were
 committed on Mac `dev` as `5bb0d8dc5b83b86611aaf7124c24e25dd79b0303`. It was
@@ -183,3 +183,19 @@ present. `git diff --check` and changed-Markdown relative-link checks passed.
 No runtime test or service change was required for this documentation commit;
 the recorded Ubuntu restart-isolation acceptance remains the separate live
 evidence above.
+
+## Final verified delivery
+
+The completed SIMPLE-07 evidence, PASS ledger status, and Mac QAS manifest
+digest correction were committed on Mac `dev` as
+`c650264b847d822e8eb6150b3a88458bf7cc1887`. The commit was pushed to primary
+Gitea `origin/dev`; direct `ls-remote` checks returned the exact same SHA from
+Gitea and automatic GitHub `github/dev`. Before pulling, all three Ubuntu
+checkouts were clean on `dev` at
+`748a1944df7fe44d2fab5279cd610cc25befa574`. Each fast-forwarded GitHub
+`origin/dev` with the explicit Ubuntu GitHub identity. Final read-back
+confirmed clean `dev` checkouts at
+`c650264b847d822e8eb6150b3a88458bf7cc1887` on `linux-host`, `sandbox-host`,
+and `factory-sandbox`, with `SIMPLE-07.md` present. `git diff --check`, changed
+Markdown relative-link checks, and evidence heading-anchor checks passed. No
+runtime test or service change followed this documentation-only closeout.
