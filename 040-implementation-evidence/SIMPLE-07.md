@@ -130,3 +130,19 @@ Overall SIMPLE-07 remains **IN PROGRESS** until Mac PRD returns a fresh
 successful preflight and the Mac Dev-only restart proves PRD/QAS identities
 unchanged. Preserve SIMPLE-04/SIMPLE-05 results and all held ACKs while that
 single host gate is pending.
+
+## Documentation delivery receipt
+
+The runbook, evidence, navigation links, and in-progress ledger status were
+committed on Mac `dev` as `5bb0d8dc5b83b86611aaf7124c24e25dd79b0303`. It was
+pushed to primary Gitea `origin/dev`; direct `ls-remote` reads returned that
+same SHA from Gitea and automatic GitHub `github/dev`. Before pulling, all
+three Ubuntu checkouts were clean on `dev` at
+`702f76691174463b6b3f5da97ed57c5c273018b9`. Each fast-forwarded
+`origin/dev` using its explicit GitHub identity. Final read-back confirmed
+clean `dev` checkouts at `5bb0d8dc5b83b86611aaf7124c24e25dd79b0303` on
+`linux-host`, `sandbox-host`, and `factory-sandbox`, with `docs/lanes.md`
+present. `git diff --check` and changed-Markdown relative-link checks passed.
+No runtime test or service change was required for this documentation commit;
+the recorded Ubuntu restart-isolation acceptance remains the separate live
+evidence above.
