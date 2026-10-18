@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/store"
@@ -108,6 +109,98 @@ func TestBUG024FailedCommandTeardownRecoveryPreservesExit2AndNeverReplays(t *tes
 	if err != nil || len(repeat) != 1 || !repeat[0].Recovery.AlreadyRecovered || runtime.commandCall != 1 || runtime.startCall != 1 || runtime.lostRecoveryCall != 1 {
 		t.Fatalf("failed recovery repeat=%+v err=%v calls=%+v", repeat, err, runtime)
 	}
+}
+
+func TestBUG024RemoteQueuedTeardownRecoveryPreservesFailedResultAndNeverReplays(t *testing.T) {
+	runtime := &p027Runtime{
+		p020FakeRuntime:    p020FakeRuntime{generation: "generation-bug024-remote-queued", commandResult: RuntimeCommandResult{Stdout: []byte("failed once\n"), ExitCode: 1}},
+		lostRecoveryResult: RuntimeReconcileResult{CleanupConfirmed: true},
+		lostFinalizeResult: RuntimeReconcileResult{CleanupConfirmed: true},
+	}
+	service, authority, request := bug024RemoteQueuedFixture(t, runtime)
+	before, runErr := service.RunJob(context.Background(), request)
+	if !errors.Is(runErr, ErrStopUnconfirmed) || before.Job.Phase != store.JobPhaseLost || before.Command.State != domain.CommandStateFailed || before.Command.ExitCode == nil || *before.Command.ExitCode != 1 {
+		t.Fatalf("seed remote completed command=%+v err=%v", before, runErr)
+	}
+	beforeEvents, err := authority.ListCommandEvents(context.Background(), before.Command.CommandID)
+	if err != nil || len(beforeEvents) == 0 || beforeEvents[len(beforeEvents)-1].Type != "command_failed" {
+		t.Fatalf("remote failed event history=%+v err=%v", beforeEvents, err)
+	}
+	beforeSlot, err := authority.GetCommandSlot(context.Background(), before.Command.CommandID)
+	if err != nil || beforeSlot.StopConfirmedAt == nil || beforeSlot.ReleasedAt == nil {
+		t.Fatalf("remote command slot=%+v err=%v", beforeSlot, err)
+	}
+	results, err := service.RecoverCompletedTeardownRecoveryBatch(context.Background(), bug024RecoveryRequest(before))
+	if err != nil || len(results) != 1 || results[0].Recovery.SessionReservation.ReleasedAt == nil || !results[0].Runtime.CleanupConfirmed {
+		t.Fatalf("remote teardown recovery=%+v err=%v", results, err)
+	}
+	after, err := service.ResumeJob(context.Background(), before.Job.JobID, before.Job.Controller, request)
+	if err != nil || !reflect.DeepEqual(before, after) || after.Command.State != domain.CommandStateFailed || after.Command.ExitCode == nil || *after.Command.ExitCode != 1 {
+		t.Fatalf("remote historical result changed: before=%+v after=%+v err=%v", before, after, err)
+	}
+	afterEvents, err := authority.ListCommandEvents(context.Background(), before.Command.CommandID)
+	if err != nil || !reflect.DeepEqual(beforeEvents, afterEvents) {
+		t.Fatalf("remote event history changed: before=%+v after=%+v err=%v", beforeEvents, afterEvents, err)
+	}
+	afterSlot, err := authority.GetCommandSlot(context.Background(), before.Command.CommandID)
+	if err != nil || !reflect.DeepEqual(beforeSlot, afterSlot) {
+		t.Fatalf("remote command slot changed: before=%+v after=%+v err=%v", beforeSlot, afterSlot, err)
+	}
+	if runtime.startCall != 1 || runtime.commandCall != 1 || runtime.lostRecoveryCall != 1 || runtime.lostFinalizeCall != 1 {
+		t.Fatalf("remote recovery replayed or skipped cleanup: calls=%+v", runtime)
+	}
+}
+
+func bug024RemoteQueuedFixture(t *testing.T, runtime *p027Runtime) (*Service, *store.AuthorityStore, RunJobRequest) {
+	t.Helper()
+	db, err := store.Open(context.Background(), t.TempDir()+"/state/remote-completed-teardown.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	clock := &p020Clock{now: time.Date(2026, 9, 26, 16, 0, 0, 0, time.UTC)}
+	authority, err := store.NewAuthorityStoreWithClock(db, clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := p020Target(t, domain.TargetKindRemote, "sandbox-host")
+	controller := p020Controller(t, domain.ControllerTypeQueuedMac)
+	environment, err := domain.NewEnvironment(domain.EnvironmentSpec{
+		Name:               "linux-dev",
+		HostClass:          "Ubuntu remote worker",
+		EffectiveAccount:   "ubuntu",
+		AllowedTargets:     []domain.ExecutionTarget{target},
+		AllowedSourceModes: []domain.SourceMode{domain.SourceModeEmpty},
+		AllowedControllers: []domain.ControllerIdentity{controller},
+		ServiceLimits:      domain.DefaultServiceLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewEnvironmentRegistry(environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(authority, runtime, registry, clock, &p020Publisher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const script = "printf remote-completed-teardown"
+	raw := []byte(fmt.Sprintf(`{"operation":"run","environment":"linux-dev","execution_target":{"kind":"remote","profile":"sandbox-host"},"source":{"mode":"empty"},"script":%q}`, script))
+	canonical, err := domain.CanonicalizeMutationRequestJSON("run", raw, domain.CanonicalizationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := domain.HashMutationRequestJSON("run", canonical, domain.CanonicalizationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := RunJobRequest{Acceptance: store.JobAcceptance{
+		JobID: domain.JobID("job-bug024-remote-queued"), SessionID: domain.SessionID("sess-bug024-remote-queued"), CommandID: domain.CommandID("cmd-bug024-remote-queued"),
+		Controller: controller, IdempotencyKey: "key-bug024-remote-queued", RequestHash: hash, Environment: "linux-dev", Target: target,
+		Source: domain.NewEmptySource(), Script: script, CanonicalPayload: canonical, IdempotencyRetention: time.Hour,
+	}, MaxActiveSessions: store.DefaultActiveSessionLimit, IdempotencyRetention: time.Hour}
+	return service, authority, request
 }
 
 func TestBUG024FailedCommandTeardownFinalizationRetryDoesNotReplay(t *testing.T) {

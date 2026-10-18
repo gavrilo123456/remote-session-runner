@@ -29,15 +29,24 @@ and QAS; provide its exact recorded bundle SHA-256.
    unsuffixed `bin` directory. It does not change configuration, service
    definitions, database, routes, credentials, or mailboxes and does not start
    the service. New work identities or changed backup inputs cause refusal.
-5. **Mac / selected Ubuntu host:** use the candidate's supported
-   `runner-locald recover-stalled` or `runnerd recover-stalled` command for
-   the exact retained identities. The command preserves existing results and
-   event history, does not replay work, and requires runtime cleanup proof.
-   Do not manually release reservations or slots. Then run
-   `runner-lane prd-migrate --host HOST`; it requires a stopped service and a
-   fully empty runtime, reservation, queue, and recovery-finalization
-   inventory. Recovery commands may already have applied the forward
-   migrations while opening the existing database for offline maintenance.
+5. **Mac / selected Ubuntu host:** use `runner-locald recover-stalled` or
+   `runnerd recover-stalled` from the synchronized, source-gated revision for
+   the exact retained identities. Build this maintenance executable outside
+   the checkout after that revision has been delivered to the host. The
+   installed service bundle remains the exact per-host candidate accepted in
+   Dev and QAS. Use `--lost-pair` for a terminal lost command and
+   `--teardown-pair` for a complete succeeded or ordinary nonzero-failure
+   command whose teardown was lost. On Mac, eligible sessions are local
+   `local_user` sessions; on Linux workers, eligible sessions are remote
+   `queued_mac` or `direct_mtls` sessions owned by that worker. The full
+   identity, complete-output, terminal-event, released-command-slot, idle
+   inventory, runtime cleanup, and finalization guards still apply. Recovery
+   preserves results and event history and never replays work. Do not manually
+   release reservations or slots. Then run `runner-lane prd-migrate --host
+   HOST`; it requires a stopped service and a fully empty runtime, reservation,
+   queue, and recovery-finalization inventory. Recovery commands may already
+   have applied the forward migrations while opening the existing database
+   for offline maintenance.
 6. **Mac / selected Ubuntu host:** re-run `prd-preflight`; verify the current
    schema and empty work inventory. Start only the same unsuffixed service with
    `runner-lane prd-start --host HOST`, then perform the approved bounded

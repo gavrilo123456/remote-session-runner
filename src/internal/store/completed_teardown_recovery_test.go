@@ -86,6 +86,48 @@ func TestCompletedTeardownRecoveryAcceptsOrdinaryFailedCommandAndPreservesHistor
 	}
 }
 
+func TestCompletedTeardownRecoveryAcceptsRemoteQueuedMacFailedCommand(t *testing.T) {
+	for _, controllerType := range []domain.ControllerType{domain.ControllerTypeQueuedMac, domain.ControllerTypeDirectMTLS} {
+		t.Run(string(controllerType), func(t *testing.T) {
+			ctx := context.Background()
+			authority := pCommandlessLostRecoveryStore(t)
+			target, err := domain.NewExecutionTarget(domain.TargetKindRemote, "sandbox-host")
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller, err := domain.NewControllerIdentity(controllerType, "tomasz.walczuk")
+			if err != nil {
+				t.Fatal(err)
+			}
+			suffix := "remote-" + string(controllerType) + "-failed"
+			pair, jobID := completedTeardownFixtureWithIdentity(t, authority, suffix, domain.CommandStateFailed, 1, "linux-dev", target, controller)
+			before := completedTeardownHistory(t, authority, pair, jobID)
+			events, err := authority.ListCommandEvents(ctx, pair.CommandID)
+			if err != nil || len(events) == 0 || events[len(events)-1].Type != "command_failed" {
+				t.Fatalf("remote failed command events=%+v err=%v", events, err)
+			}
+			checked, err := authority.CheckCompletedTeardownRecoveryBatch(ctx, []CompletedTeardownRecoveryPair{pair})
+			command, commandErr := authority.GetCommand(ctx, pair.CommandID)
+			if err != nil || commandErr != nil || len(checked) != 1 || checked[0].AlreadyRecovered || checked[0].Command.State != domain.CommandStateFailed || command.ExitCode == nil || *command.ExitCode != 1 {
+				t.Fatalf("remote failed command check=%+v command=%+v err=%v command_err=%v", checked, command, err, commandErr)
+			}
+			if err := authority.ConfirmCompletedTeardownRecoveryBatch(ctx, []CompletedTeardownRecoveryPair{pair}); err != nil {
+				t.Fatalf("confirm remote teardown: %v", err)
+			}
+			reservation, err := authority.GetSessionReservation(ctx, pair.SessionID)
+			if err != nil || reservation.CleanupConfirmedAt == nil || reservation.ReleasedAt == nil {
+				t.Fatalf("remote reservation=%+v err=%v", reservation, err)
+			}
+			if after := completedTeardownHistory(t, authority, pair, jobID); !reflect.DeepEqual(before, after) {
+				t.Fatalf("remote recovery changed command/job/session/event/lifecycle/slot history\nbefore=%#v\nafter=%#v", before, after)
+			}
+			if afterEvents, err := authority.ListCommandEvents(ctx, pair.CommandID); err != nil || !reflect.DeepEqual(events, afterEvents) {
+				t.Fatalf("remote recovery changed terminal event history: before=%+v after=%+v err=%v", events, afterEvents, err)
+			}
+		})
+	}
+}
+
 func TestCompletedTeardownMigrationFromSchema36PreservesVerifiedReadOnlyPreflight(t *testing.T) {
 	ctx := context.Background()
 	path := completedTeardownSchema36AuthorityPath(t)
@@ -365,12 +407,27 @@ func completedTeardownFixture(t *testing.T, authority *AuthorityStore, suffix st
 
 func completedTeardownFixtureWithOutcome(t *testing.T, authority *AuthorityStore, suffix string, commandState domain.CommandState, exitCode int) (CompletedTeardownRecoveryPair, domain.JobID) {
 	t.Helper()
+	target, err := domain.NewExecutionTarget(domain.TargetKindLocal, "mac-workstation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, "tomasz.walczuk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return completedTeardownFixtureWithIdentity(t, authority, suffix, commandState, exitCode, "mac-dev", target, controller)
+}
+
+func completedTeardownFixtureWithIdentity(t *testing.T, authority *AuthorityStore, suffix string, commandState domain.CommandState, exitCode int, environment string, target domain.ExecutionTarget, controller domain.ControllerIdentity) (CompletedTeardownRecoveryPair, domain.JobID) {
+	t.Helper()
 	ctx := context.Background()
 	pair := CompletedTeardownRecoveryPair{SessionID: domain.SessionID("sess-completed-" + suffix), CommandID: domain.CommandID("cmd-completed-" + suffix)}
 	jobID := domain.JobID("job-completed-" + suffix)
-	sessionInput := p013Acceptance(t, string(pair.SessionID), "key-completed-session-"+suffix, "mac-dev")
+	sessionInput := p013Acceptance(t, string(pair.SessionID), "key-completed-session-"+suffix, environment)
+	sessionInput.SessionCreate.Target = target
+	sessionInput.SessionCreate.Controller = controller
 	script := "printf harmless"
-	raw := []byte(`{"operation":"run","environment":"mac-dev","execution_target":{"kind":"local","profile":"mac-workstation"},"source":{"mode":"empty"},"script":"printf harmless"}`)
+	raw := []byte(fmt.Sprintf(`{"operation":"run","environment":%q,"execution_target":{"kind":%q,"profile":%q},"source":{"mode":"empty"},"script":%q}`, environment, target.Kind(), target.Profile(), script))
 	canonical, err := domain.CanonicalizeMutationRequestJSON("run", raw, domain.CanonicalizationOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -379,7 +436,7 @@ func completedTeardownFixtureWithOutcome(t *testing.T, authority *AuthorityStore
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = authority.AcceptJob(ctx, JobAcceptance{JobID: jobID, SessionID: pair.SessionID, CommandID: pair.CommandID, Controller: sessionInput.SessionCreate.Controller, IdempotencyKey: "key-completed-job-" + suffix, RequestHash: hash, Environment: sessionInput.SessionCreate.Environment, Target: sessionInput.SessionCreate.Target, Source: sessionInput.SessionCreate.Source, Script: script, CanonicalPayload: canonical, IdempotencyRetention: DefaultSessionIdempotencyRetention})
+	_, _, err = authority.AcceptJob(ctx, JobAcceptance{JobID: jobID, SessionID: pair.SessionID, CommandID: pair.CommandID, Controller: controller, IdempotencyKey: "key-completed-job-" + suffix, RequestHash: hash, Environment: environment, Target: target, Source: sessionInput.SessionCreate.Source, Script: script, CanonicalPayload: canonical, IdempotencyRetention: DefaultSessionIdempotencyRetention})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,11 +1,16 @@
 # PRD in-place upgrade — implementation and fresh baseline
 
-**Status:** PRD maintenance is authorized, but not yet started. Guarded
-installation, migration, backup, and rollback tooling is implemented in the Mac
-source checkout and passed the full Mac source gate. Git delivery and the three
-Ubuntu source gates are pending. No PRD service, binary, database, configuration,
-route, mailbox file, request, or ACK has been changed. Dev/QAS services remain
-on their previously accepted artifacts.
+**Status (2026-10-18, in progress):** The authorized PRD maintenance is underway.
+All four unsuffixed PRD services are stopped. The exact previously accepted
+`f117853a9f712e734eab787e648383f5468e719c` bundles are installed on Mac and the
+three Ubuntu workers; their configs and routes remain unchanged. Mac, linux-host,
+and factory-sandbox are schema 39 with zero retained capacity. sandbox-host is
+schema 39 but still has its one retained session reservation because the
+current recovery guard initially rejected its remote queued-Mac identity. A
+focused source correction and regression now pass on Mac; primary/mirror
+delivery, Ubuntu source gates, and the guarded sandbox retry remain pending.
+No service has been restarted. No mailbox request or ACK was published, and
+Dev/QAS services were not changed.
 
 ## Scope and controls
 
@@ -54,8 +59,11 @@ paused through postflight.
   [`deploy/PRD_UPGRADE.md`](../deploy/PRD_UPGRADE.md).
 - The mixed guarded recovery source supports the exact retained Mac set of two
   lost pairs plus the completed exit-2 teardown pair, and the sandbox exit-1
-  teardown pair. It preserves original results/events, does not replay commands,
-  and requires complete runtime cleanup proof and finalization retry handling.
+  teardown pair. Linux recovery accepts remote `queued_mac` and `direct_mtls`
+  sessions only after the same exact identity, complete-output, released-slot,
+  idle-inventory, and runtime cleanup checks. It preserves original
+  results/events, does not replay commands, and requires finalization retry
+  handling.
 
 ## Mac source validation
 
@@ -72,7 +80,7 @@ These are source gates. Installed Dev/QAS acceptance, host-specific builds, PRD
 backups, recovery, migration, installation, and PRD postflight are not yet
 claimed as PASS.
 
-## Fresh read-only production baseline
+## Initial read-only production baseline before maintenance
 
 Collected 2026-10-18 UTC from the Mac shell and explicit SSH identities with
 verified host keys. No mailbox command was used.
@@ -85,18 +93,66 @@ verified host keys. No mailbox command was used.
 | `factory-sandbox` | `runnerd.service` active; PID 50302, same installed build revision `2802f00c93eb51a80f23b9380238c309545d6329`. | Installed `runnerd` SHA-256 `fafb7d9ba5d343d425fa1752c21a4859a3f42c344d5eca5a43ee5f3dfc0ee374`; bridge SHA-256 `3a13bff38320ab0098cecea38e349e4868c9ab9702a75f2f3ff88cbaad7ce42c`; the old PRD bin lacks `runner-session-agent` and `runner-log-capture`. Config hashes match the prior evidence. | Read-only Python SQLite schema 36; 0 unreleased session reservations, 0 unreleased command slots, 0 queued/running commands, 0 resumable jobs. |
 
 The Mac `/bin/ps` process listing was denied in the restricted shell; launchd
-reported the exact unsuffixed service labels and PIDs. Process and runtime
-ownership will be rechecked through supported service/recovery guards after the
-service stop. The host Python SQLite limitation will be resolved with
-`runner-lane prd-preflight` after Git delivery. The owner stated submissions are
-stopped; no mailbox counts are treated as proof of publisher state.
+reported the exact unsuffixed service labels and PIDs. Before stopping, fresh
+process ownership was rechecked with the authorized shell. The host Python
+SQLite limitation was resolved by the synchronized `runner-lane prd-preflight`
+tool. The owner stated submissions are stopped; no mailbox counts are treated
+as proof of publisher state.
+
+## Maintenance progress and recovery diagnosis
+
+- Private consistent backups were created before service stops. Mac backup:
+  `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/backups/prd-upgrade-20261018T183038.970835000Z`, schema 37, online snapshot SHA-256
+  `6ed1bbfc4d22c21a71e30d2c9e43e46d1a6166763acdaedac1bffdb225fc30c7`. Linux,
+  sandbox, and factory backups are under each host's canonical PRD `backups`
+  directory at `prd-upgrade-20261018T183257.051421888Z`,
+  `prd-upgrade-20261018T183311.080531180Z`, and
+  `prd-upgrade-20261018T183332.561599805Z`; their schema-36 online snapshot
+  hashes are `9c77882c5a6cdc1748054991f1b4ad83b23c84b28c25e365ee8fcfa292f5a70f`,
+  `7c012682b5f03be99f9e617fe0ab6ad0333f561d6fa2f248f370b67bb5725c62`, and
+  `40e6fdfc49e9bf23c73d379dd95ba214baa45885d9c19da1c254124d8b19a5f2`.
+- Disposable-copy migration validation passed for the fresh Mac schema-37
+  backup: schema 39, `quick_check=ok`, and all 33 common non-ledger table counts
+  preserved. The previously recorded schema-36 worker backups also migrated
+  to schema 39 with `quick_check=ok` and preserved all 33 common non-ledger
+  table counts.
+- `runner-lane prd-stop` stopped only the four unsuffixed services. Post-stop
+  inventories were Mac 3 reservations/2 slots, linux-host zero, sandbox-host 1
+  reservation/0 slots, and factory-sandbox zero. Dev/QAS service processes
+  remain separate and active.
+- The installed bundle manifests and component hashes match the accepted
+  f117 candidate recorded above. The services remain stopped after installation.
+- The first installed Mac `runner-locald` recovery invocation refused mixed
+  `--lost-pair` plus `--teardown-pair` options with exit 2 before opening the
+  database. A synchronized `6cfd9e2` recovery helper was then built outside the
+  checkout (SHA-256
+  `6fdf4a5fc3c6dc6a2db714fb739101a4e33d1fe6a76b377755d321d64d128fd6`) and
+  recovered exactly two lost pairs and one completed exit-2 teardown pair.
+  Mac is schema 39 with all work/reservation counts zero; command results and
+  events remain terminal and unchanged.
+- linux-host and factory-sandbox migrated from schema 36 to 39 through guarded
+  `prd-migrate`; both remain stopped with zero inventory. sandbox-host's
+  synchronized `6cfd9e2` helper applied schema migration before correctly
+  refusing capacity release: the stored session is a remote target controlled
+  by `queued_mac`, while the completed-teardown predicate allowed only local
+  `local_user` sessions. Its reservation remains retained; no result, event,
+  slot, or capacity record was changed by that refusal.
+- A regression reproduces that pre-fix refusal for remote queued-Mac jobs; the
+  correction allows remote worker sessions owned by `queued_mac` or
+  `direct_mtls` only. The focused `store` and `execution` tests pass, including
+  the no-replay, unchanged terminal-result/events/slot, and cleanup-proof
+  checks. `make check build` passed on Mac in the authorized shell; the first
+  restricted-shell attempt failed only because `/bin/ps` was unavailable to an
+  existing runner-locald ownership test.
+- The source correction is not yet committed or delivered. The full Ubuntu
+  source gates, exact sandbox recovery retry, final work/historical-record
+  checks, and service postflight are pending. Keep every PRD service stopped and
+  external publishers paused meanwhile.
 
 ## Delivery and operation status
 
-Source commit, primary Gitea, mirror SHA, and three Ubuntu source gate results
-will be appended after delivery. Before PRD maintenance, the exact accepted
-bundle contents on all four hosts, fresh per-host preflight, existing mailbox
-contents, publisher pause, and available backup capacity must be verified.
-Backups, recovery receipts, migration versions, installed hashes, and bounded
-postflight are recorded only after their actual execution. Until then, PRD
-upgrade and readiness are **NOT RUN**; keep publishers paused.
+The source commit, primary Gitea SHA, exact GitHub mirror SHA, and three Ubuntu
+source gate results will be appended after delivery. The source correction is
+still pending delivery; the completed backup, stop, install, Mac recovery, and
+three migrations are recorded above. PRD service start and final readiness are
+not yet complete. Keep publishers paused.

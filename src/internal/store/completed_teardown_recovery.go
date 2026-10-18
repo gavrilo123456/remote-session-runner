@@ -275,7 +275,8 @@ JOIN exec_commands c ON c.session_id = s.session_id
 JOIN exec_jobs j ON j.session_id = s.session_id AND j.command_id = c.command_id
 WHERE s.session_id = ? AND c.command_id = ?
  AND s.state = 'lost' AND length(s.runtime_generation) > 0
- AND s.target_kind = 'local' AND s.controller_type = 'local_user'
+ AND ((s.target_kind = 'local' AND s.controller_type = 'local_user')
+   OR (s.target_kind = 'remote' AND s.controller_type IN ('queued_mac', 'direct_mtls')))
  AND j.controller_type = s.controller_type AND j.controller_id = s.controller_id
  AND j.target_kind = s.target_kind AND j.target_profile = s.target_profile AND j.environment = s.environment
  AND j.source_mode = s.source_mode AND j.source_repository_alias = s.source_repository_alias
