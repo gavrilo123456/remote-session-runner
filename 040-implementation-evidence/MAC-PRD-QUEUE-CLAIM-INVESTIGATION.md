@@ -380,3 +380,17 @@ and no swap before that attempt; afterward it had about 387 MiB available and
 was collected, so resource pressure is the likely explanation, not a proven
 kernel diagnosis. No service or mailbox state was changed. Do not rerun a
 memory-heavy build there until fresh capacity supports it.
+
+### Evidence delivery
+
+The fresh-baseline and factory-result evidence was committed on Mac `dev` as
+`bca80331eb563f902bbc5d31a351966c5190b48e`. The Mac pushed it to primary
+Gitea `origin/dev`; `ls-remote` returned that exact SHA. The automatic GitHub
+`github/dev` mirror also returned the exact same SHA before host pulls.
+`linux-host`, `sandbox-host`, and `factory-sandbox` were each clean on `dev` at
+`f63d0785d7c9abc343a9e592c6980956717038ed`, then fast-forwarded from their
+GitHub `origin/dev` to `bca80331eb563f902bbc5d31a351966c5190b48e` with the
+configured `/home/ubuntu/.ssh/gavrilo123456-github` identity. All three
+post-pull checkouts were verified clean at that exact SHA. This commit changed
+evidence documentation only, so no source tests were rerun on Ubuntu; the
+factory test result above remains failed as recorded.
