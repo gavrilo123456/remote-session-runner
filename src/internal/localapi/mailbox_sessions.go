@@ -586,7 +586,7 @@ func (s *Server) GetCommandSnapshot(ctx context.Context, commandIDText string) (
 	if err != nil {
 		return mailbox.CommandSnapshot{}, &mailbox.SessionOperationError{Code: "invalid_request", Message: "command ID is invalid"}
 	}
-	intent, err := s.authority.GetLocalIntentByResource(ctx, "submit_command", string(commandID), s.owner)
+	intent, err := s.authority.GetLocalIntentByCommand(ctx, commandID, s.owner)
 	if err != nil {
 		if errors.Is(err, store.ErrLocalIntentNotFound) {
 			return mailbox.CommandSnapshot{}, &mailbox.SessionOperationError{Code: "resource_not_found", Message: "command is not available through this Mac ingress"}
@@ -644,7 +644,7 @@ func (s *Server) GetCommandSnapshot(ctx context.Context, commandIDText string) (
 	if command.CommandID != intent.CommandID || command.SessionID != intent.SessionID || session.SessionID != intent.SessionID ||
 		session.Target.Kind() != domain.TargetKindLocal || session.Target.Profile() != intent.Target.Profile() ||
 		session.Controller.Type() != s.owner.Type() || session.Controller.ID() != s.owner.ID() ||
-		domain.CompareIdempotency(command.RequestHash, intent.RequestHash) != domain.IdempotencySamePayload || !bytes.Equal(command.ScriptBytes, intent.ScriptBytes) {
+		!localCommandRequestHashMatchesIntent(intent, command) || !bytes.Equal(command.ScriptBytes, intent.ScriptBytes) {
 		return mailbox.CommandSnapshot{}, &mailbox.SessionOperationError{Code: "runtime_unavailable", Message: "local command authority does not match its accepted intent", Retryable: true}
 	}
 	if intent.IntentOrdinal != nil && (command.IntentOrdinal == nil || *command.IntentOrdinal != *intent.IntentOrdinal) {
@@ -656,6 +656,17 @@ func (s *Server) GetCommandSnapshot(ctx context.Context, commandIDText string) (
 	}
 	snapshot.DeliveryState = string(intent.DeliveryState)
 	return snapshot, nil
+}
+
+// One-off run intents hash the whole run request, while their accepted command
+// hashes the submit_command payload. Bind run command reads by the exact
+// command/session and script identities instead; ordinary submit intents still
+// require their request hashes to match.
+func localCommandRequestHashMatchesIntent(intent store.LocalIntentRecord, command store.CommandRecord) bool {
+	if intent.Operation == "run" {
+		return true
+	}
+	return domain.CompareIdempotency(command.RequestHash, intent.RequestHash) == domain.IdempotencySamePayload
 }
 
 func mailboxOperationError(failure *localOperationFailure) *mailbox.SessionOperationError {

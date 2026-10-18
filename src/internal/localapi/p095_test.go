@@ -2,6 +2,7 @@ package localapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -265,6 +266,7 @@ func TestP095GetCommandDeniesDirectCreatedAuthorityCommand(t *testing.T) {
 type p095Harness struct {
 	server     *Server
 	authority  *store.AuthorityStore
+	db         *sql.DB
 	importer   *mailbox.Importer
 	outbox     *mailbox.Outbox
 	eventFiles *mailbox.EventFiles
@@ -273,7 +275,7 @@ type p095Harness struct {
 
 func newP095Harness(t *testing.T) *p095Harness {
 	t.Helper()
-	server, authority, _, _ := p063Server(t)
+	server, authority, db, _ := p063Server(t)
 	root := filepath.Join(t.TempDir(), "mailbox")
 	importer, err := mailbox.NewImporter(root, nil)
 	if err != nil {
@@ -294,7 +296,7 @@ func newP095Harness(t *testing.T) *p095Harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &p095Harness{server: server, authority: authority, importer: importer, outbox: outbox, eventFiles: eventFiles, processor: processor}
+	return &p095Harness{server: server, authority: authority, db: db, importer: importer, outbox: outbox, eventFiles: eventFiles, processor: processor}
 }
 
 func (h *p095Harness) createSession(t *testing.T, kind domain.TargetKind, profile, environment string, ready bool) string {

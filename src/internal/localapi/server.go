@@ -1085,7 +1085,7 @@ func (s *Server) handleGetCommand(response http.ResponseWriter, request *http.Re
 				return
 			}
 			if command.CommandID != record.CommandID || command.SessionID != record.SessionID ||
-				domain.CompareIdempotency(command.RequestHash, record.RequestHash) != domain.IdempotencySamePayload || !bytes.Equal(command.ScriptBytes, record.ScriptBytes) ||
+				!localCommandRequestHashMatchesIntent(record, command) || !bytes.Equal(command.ScriptBytes, record.ScriptBytes) ||
 				session.SessionID != record.SessionID || session.Target.Kind() != record.Target.Kind() || session.Target.Profile() != record.Target.Profile() ||
 				session.Controller.Type() != record.Controller.Type() || session.Controller.ID() != record.Controller.ID() || session.Environment != record.Environment ||
 				session.Source.Mode() != record.Source.Mode() || session.Source.RepositoryAlias() != record.Source.RepositoryAlias() ||
@@ -1163,7 +1163,7 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 		return
 	}
 	if command.SessionID != intent.SessionID || session.Target.Kind() != domain.TargetKindLocal || session.Controller.Type() != s.owner.Type() || session.Controller.ID() != s.owner.ID() ||
-		domain.CompareIdempotency(command.RequestHash, intent.RequestHash) != domain.IdempotencySamePayload || !bytes.Equal(command.ScriptBytes, intent.ScriptBytes) {
+		!localCommandRequestHashMatchesIntent(intent, command) || !bytes.Equal(command.ScriptBytes, intent.ScriptBytes) {
 		writeError(response, http.StatusServiceUnavailable, "database_unavailable", "local authority command does not match its accepted intent")
 		return
 	}
