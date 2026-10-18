@@ -49,12 +49,14 @@ func TestWorkerStartWakeStopWithoutQueuedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := lifecycle.NewGate()
+	var logOutput bytes.Buffer
 	worker, err := New(Options{
 		Service:                              service,
 		Authority:                            authority,
 		DispatchGate:                         gate,
 		RecoveryInterval:                     time.Hour,
 		RetainedLostCapacityRecoveryInterval: time.Hour,
+		Logger:                               slog.New(slog.NewTextHandler(&logOutput, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +78,9 @@ func TestWorkerStartWakeStopWithoutQueuedWork(t *testing.T) {
 	}
 	if reservations, err := authority.CountLiveSessionReservations(t.Context()); err != nil || reservations != 0 {
 		t.Fatalf("live session reservations = %d, %v; want 0, nil", reservations, err)
+	}
+	if strings.Contains(logOutput.String(), "queue worker could not claim command") {
+		t.Fatalf("normal empty-queue result emitted a claim failure diagnostic: %q", logOutput.String())
 	}
 }
 

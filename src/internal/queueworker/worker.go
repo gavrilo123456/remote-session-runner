@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"remote-session-runner/src/internal/buildinfo"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
 	"remote-session-runner/src/internal/lifecycle"
@@ -228,7 +229,6 @@ func (d *Worker) run(ctx context.Context) {
 			}
 		}
 		if err := d.dispatch(ctx, retryDeferred); err != nil {
-			d.logger.Warn("queue worker could not claim command", "lifecycle_phase", "command_claim", "reason", workerFailureReason(err))
 			d.deferSchedulingPass()
 		}
 	}
@@ -250,6 +250,7 @@ func (d *Worker) dispatch(ctx context.Context, recoveryTick bool) error {
 			release()
 			return nil
 		}
+		claimStartedAt := time.Now()
 		claim, err := d.service.ClaimNextDispatchableCommand(context.Background())
 		if err != nil {
 			if errors.Is(err, store.ErrCommandSlotsFull) {
@@ -257,6 +258,7 @@ func (d *Worker) dispatch(ctx context.Context, recoveryTick bool) error {
 					recovered, recoveryErr := d.recoverRetainedLostCapacity(ctx)
 					release()
 					if recoveryErr != nil {
+						d.logger.Warn("queue worker could not recover retained lost capacity", "lifecycle_phase", "lost_capacity_recovery", "reason", RetainedCapacityRecoveryFailureReason(recoveryErr))
 						return recoveryErr
 					}
 					if recovered {
@@ -271,10 +273,36 @@ func (d *Worker) dispatch(ctx context.Context, recoveryTick bool) error {
 			if errors.Is(err, store.ErrCommandNotEligible) {
 				return nil
 			}
+			logQueueClaimFailure(d.logger, err, time.Since(claimStartedAt))
 			return fmt.Errorf("claim next eligible command: %w", err)
 		}
 		go d.executeClaim(claim, release)
 	}
+}
+
+func logQueueClaimFailure(logger *slog.Logger, err error, elapsed time.Duration) {
+	diagnostic := store.QueueClaimDiagnostics(err)
+	attributes := []any{
+		"lifecycle_phase", "command_claim",
+		"operation", "queue_claim",
+		"component", "runner-locald",
+		"build_revision", buildinfo.Revision(),
+		"timestamp_utc", time.Now().UTC().Format(time.RFC3339Nano),
+		"elapsed_ms", float64(elapsed) / float64(time.Millisecond),
+		"failure_stage", diagnostic.Stage,
+		"error_category", diagnostic.Category,
+		"reason", workerFailureReason(err),
+	}
+	if diagnostic.HasSQLiteCode {
+		attributes = append(attributes,
+			"sqlite_primary_code", diagnostic.SQLitePrimaryCode,
+			"sqlite_extended_code", diagnostic.SQLiteExtendedCode,
+		)
+	}
+	if diagnostic.HasOSErrorCode {
+		attributes = append(attributes, "os_error_code", diagnostic.OSErrorCode)
+	}
+	logger.Warn("queue worker could not claim command", attributes...)
 }
 
 // finalizePendingLostRuntimeRecoveries retries only post-release ownership

@@ -52,10 +52,13 @@ func (s *AuthorityStore) StartNextEligibleCommand(ctx context.Context, maxSlots 
 // recorded awaiting_command, preventing a worker from racing the durable
 // acceptance-to-handoff checkpoint.
 func (s *AuthorityStore) StartNextDispatchableCommand(ctx context.Context, maxSlots int) (CommandRecord, error) {
-	return s.startNextEligibleCommand(ctx, maxSlots, true)
+	ctx = withQueueClaimDiagnosticScope(ctx)
+	record, err := s.startNextEligibleCommand(ctx, maxSlots, true)
+	return record, queueClaimDiagnosticErrorFor(ctx, err)
 }
 
 func (s *AuthorityStore) startNextEligibleCommand(ctx context.Context, maxSlots int, requireOneOffHandoff bool) (CommandRecord, error) {
+	setQueueClaimDiagnosticStage(ctx, "validate_claim_configuration")
 	if maxSlots == 0 {
 		maxSlots = DefaultRunningCommandLimit
 	}
@@ -68,6 +71,7 @@ func (s *AuthorityStore) startNextEligibleCommand(ctx context.Context, maxSlots 
 	var publishedEvent *CommandEventRecord
 	record, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
 		var controlledRestartPlan *ControlledRestartPlan
+		setQueueClaimDiagnosticStage(ctx, "read_controlled_restart_plan")
 		plan, err := readControlledRestartPlanOnConnection(ctx, connection)
 		switch {
 		case err == nil:
@@ -79,11 +83,13 @@ func (s *AuthorityStore) startNextEligibleCommand(ctx context.Context, maxSlots 
 		// admission for every command, including the planned one. Only the
 		// startup path that has already rebuilt the exact durable runtime
 		// generation may activate the plan and reopen this narrow claim.
+		setQueueClaimDiagnosticStage(ctx, "check_controlled_restart_admission")
 		if controlledRestartPlan != nil && !controlledRestartPlan.Activated {
 			return CommandRecord{}, ErrControlledRestartPlanNotActive
 		}
 
 		var liveSlots int
+		setQueueClaimDiagnosticStage(ctx, "count_live_command_slots")
 		if err := connection.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM exec_command_slots
 WHERE host_key = ? AND stop_confirmed_at IS NULL
@@ -109,18 +115,21 @@ WHERE c.state = ? AND s.state = ?
 `
 			candidateArgs = append(candidateArgs, string(JobPhaseAwaitingCommand))
 		}
+		setQueueClaimDiagnosticStage(ctx, "query_scheduler_candidates")
 		rows, err := connection.QueryContext(ctx, candidateQuery, candidateArgs...)
 		if err != nil {
 			return CommandRecord{}, fmt.Errorf("query scheduler candidates: %w", err)
 		}
 		var candidates []schedulerCandidate
 		for rows.Next() {
+			setQueueClaimDiagnosticStage(ctx, "scan_scheduler_candidate")
 			var commandIDValue, sessionIDValue, createdAtValue string
 			var ordinal int64
 			if err := rows.Scan(&commandIDValue, &sessionIDValue, &createdAtValue, &ordinal); err != nil {
 				_ = rows.Close()
 				return CommandRecord{}, fmt.Errorf("scan scheduler candidate: %w", err)
 			}
+			setQueueClaimDiagnosticStage(ctx, "validate_scheduler_order_timestamp")
 			createdAt, err := parseStoredTime(createdAtValue)
 			if err != nil {
 				_ = rows.Close()
@@ -133,10 +142,12 @@ WHERE c.state = ? AND s.state = ?
 				ordinal:   ordinal,
 			})
 		}
+		setQueueClaimDiagnosticStage(ctx, "iterate_scheduler_candidates")
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()
 			return CommandRecord{}, fmt.Errorf("iterate scheduler candidates: %w", err)
 		}
+		setQueueClaimDiagnosticStage(ctx, "close_scheduler_candidates")
 		if err := rows.Close(); err != nil {
 			return CommandRecord{}, fmt.Errorf("close scheduler candidates: %w", err)
 		}
@@ -167,6 +178,7 @@ WHERE c.state = ? AND s.state = ?
 				(candidateRow.commandID != string(controlledRestartPlan.CommandID) || candidateRow.sessionID != string(controlledRestartPlan.SessionID)) {
 				continue
 			}
+			setQueueClaimDiagnosticStage(ctx, "validate_scheduler_candidate_identity")
 			commandID, err := domain.NewCommandID(candidateRow.commandID)
 			if err != nil {
 				return CommandRecord{}, fmt.Errorf("%w: command ID: %v", ErrCommandOrderCorrupt, err)
@@ -175,6 +187,7 @@ WHERE c.state = ? AND s.state = ?
 			if err != nil {
 				return CommandRecord{}, fmt.Errorf("%w: session ID: %v", ErrCommandOrderCorrupt, err)
 			}
+			setQueueClaimDiagnosticStage(ctx, "load_eligible_command")
 			candidate, err := nextEligibleCommandOnConnection(ctx, connection, sessionID)
 			if err != nil {
 				if errors.Is(err, ErrCommandNotEligible) {
@@ -185,25 +198,30 @@ WHERE c.state = ? AND s.state = ?
 			if candidate.CommandID != commandID {
 				continue
 			}
+			setQueueClaimDiagnosticStage(ctx, "reserve_command_slot")
 			if _, err := connection.ExecContext(ctx, `
 INSERT INTO exec_command_slots (command_id, host_key, reserved_at)
 VALUES (?, ?, ?)
 `, string(commandID), schedulerHostKey, formatStoredTime(now)); err != nil {
 				return CommandRecord{}, fmt.Errorf("reserve command slot: %w", err)
 			}
+			setQueueClaimDiagnosticStage(ctx, "read_next_event_sequence")
 			sequence, err := nextEventSequenceOnConnection(ctx, connection, commandID)
 			if err != nil {
 				return CommandRecord{}, err
 			}
+			setQueueClaimDiagnosticStage(ctx, "append_command_started_event")
 			if err := insertCommandEventOnConnection(ctx, connection, commandID, sequence, "command_started", nil, 0, now); err != nil {
 				return CommandRecord{}, err
 			}
+			setQueueClaimDiagnosticStage(ctx, "transition_command_to_running")
 			if _, err := connection.ExecContext(ctx, `
 UPDATE exec_commands SET state = ?, updated_at = ?
 WHERE command_id = ? AND state = ?
 `, string(domain.CommandStateRunning), formatStoredTime(now), string(commandID), string(domain.CommandStateQueued)); err != nil {
 				return CommandRecord{}, fmt.Errorf("start command: %w", err)
 			}
+			setQueueClaimDiagnosticStage(ctx, "transition_session_to_busy")
 			if err := transitionSessionOnConnection(ctx, connection, sessionID, domain.SessionStateBusy, "command_started", now); err != nil {
 				return CommandRecord{}, err
 			}
@@ -211,14 +229,17 @@ WHERE command_id = ? AND state = ?
 				if candidate.CommandID != controlledRestartPlan.CommandID || candidate.SessionID != controlledRestartPlan.SessionID {
 					return CommandRecord{}, ErrControlledRestartPlanCorrupt
 				}
+				setQueueClaimDiagnosticStage(ctx, "consume_controlled_restart_plan")
 				if err := consumeControlledRestartPlanOnClaim(ctx, connection, *controlledRestartPlan); err != nil {
 					return CommandRecord{}, err
 				}
 			}
 			event := CommandEventRecord{CommandID: commandID, Sequence: sequence, Type: "command_started", Payload: []byte{}, ByteCount: 0, OccurredAt: now}
 			publishedEvent = &event
+			setQueueClaimDiagnosticStage(ctx, "read_claimed_command")
 			return readCommandOnConnection(ctx, connection, commandID)
 		}
+		setQueueClaimDiagnosticStage(ctx, "resolve_eligible_candidate")
 		return CommandRecord{}, ErrCommandNotEligible
 	})
 	if err != nil {

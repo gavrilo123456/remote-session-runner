@@ -1051,11 +1051,13 @@ func withImmediateTransaction[T any](ctx context.Context, owner *AuthorityStore,
 		}
 	}()
 	db := owner.db
+	setQueueClaimDiagnosticStage(ctx, "acquire_transaction_connection")
 	connection, err := db.Conn(ctx)
 	if err != nil {
 		return result, fmt.Errorf("acquire SQLite transaction connection: %w", err)
 	}
 	defer connection.Close()
+	setQueueClaimDiagnosticStage(ctx, "begin_transaction")
 	if _, err := connection.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return result, fmt.Errorf("begin SQLite transaction: %w", err)
 	}
@@ -1069,6 +1071,7 @@ func withImmediateTransaction[T any](ctx context.Context, owner *AuthorityStore,
 	if err != nil {
 		return result, err
 	}
+	setQueueClaimDiagnosticStage(ctx, "commit_transaction")
 	if _, err := connection.ExecContext(ctx, "COMMIT"); err != nil {
 		return result, fmt.Errorf("commit SQLite transaction: %w", err)
 	}
