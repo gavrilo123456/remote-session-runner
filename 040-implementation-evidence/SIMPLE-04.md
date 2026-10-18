@@ -1,13 +1,15 @@
 # SIMPLE-04 — Dev deployment and coexistence acceptance
 
-**State: IN PROGRESS.** S8 source `6a108303522c915a68ca48754448c3b6bcc89fe1`
-is delivered and synchronized; its full `make check build` gate passes on Mac
-and all three workers. The S7 diagnostic candidate exposed that Mac bundles
-were built with cgo disabled, preventing local runtime ownership recording
-before command creation. Only Mac Dev was stopped after its quiescence proof.
-The corrected S8 candidates still need rebuilding from this synchronized
-revision, followed by the remaining Dev acceptance. PRD remains installed and
-running; QAS is not started.
+**State: IN PROGRESS.** The native-cgo fix and local one-off command-read
+correction are delivered through source
+`d9223e6c2342babbd2ed4fc217e9ba04932fd4fe`; full `make check build` passes on
+Mac and all three workers. Mac Dev currently runs the native-cgo candidate
+from `afa3699`. A fresh local run executed once and completed successfully,
+but CLI event reading returned 503 because the run-level request hash differs
+from its accepted command hash. The corrected read path is delivered but still
+needs rebuilding, installation and same-key read-resumption proof. Worker Dev
+candidates still need refresh. PRD remains installed and running; QAS is not
+started.
 
 ## Scope and predecessor
 
@@ -478,8 +480,10 @@ completed its quiescence proof and stopped only Mac Dev; PRD remained running.
 The S8 source correction enables cgo only for Darwin bundles, requires the Mac
 bundle to be built natively on the target Darwin architecture, and adds a
 platform-environment regression. Focused laneinstaller tests and the full Mac
-gate pass. Source delivery and worker validation are recorded below; corrected
-candidate rebuild, Mac Dev refresh and fresh runtime acceptance remain pending.
+gate pass. Source delivery and worker validation are recorded below. The
+native-cgo candidate is installed on Mac Dev; its accepted job must be read
+again after the command-read fix is installed. Worker candidate refresh and
+the remaining Dev acceptance are still pending.
 
 ### S8 source delivery and worker validation
 
@@ -504,11 +508,73 @@ fixture error stating that the current test server certificate was no longer
 active. The isolated test was rerun once and passed; the complete sandbox
 `make check build` was then rerun and passed. This transient failure and its
 successful reruns are preserved rather than counted as a pass on the first
-attempt. Linux, sandbox, and factory all ended clean at S8. Corrected S8 bundle
-builds and Dev deployment/acceptance remain outstanding.
+attempt. Linux, sandbox, and factory all ended clean at S8. The corrected
+native-cgo bundle was then built and installed to Mac Dev; its outcome and the
+newly required local command-read correction are recorded next.
 
-After S8 delivery, rebuild the four host candidates from the exact new revision
-and refresh only Dev through the guarded installer. Then complete the
+### Mac one-off command-read correction and current Dev state
+
+The S8 native-cgo candidate was rebuilt from synchronized
+`afa369984f9e30709917a3c1f9c1d1add7d1cf28`, validated as Darwin/arm64 with Go
+1.27.1, and installed only to Mac Dev. Its manifest bundle SHA-256 was
+`308bc28754e09f25d1c149636aed031f7873f217283f0dff374adc24693c2398`. The
+guarded installer preserved the prior Dev bundle at
+`/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-dev/backups/.simple-backup-3324634733`.
+The first `runner-lane start` through the sandboxed shell failed at launchd
+bootstrap with I/O error 5 before either Dev label loaded. Read-only checks
+confirmed valid plists, correct arm64 binaries and unchanged PRD agent PIDs.
+The same guarded start through the authorized Mac shell then succeeded. Dev
+locald and API reported ready at `afa3699` with zero session/command slots,
+queued work and mailbox backlog. PRD stayed ready at its installed revision;
+its Mac locald/runner PIDs remained `48627` and `48708`.
+
+One fresh local run used idempotency key
+`simple04-20261018-s8-mac-local-02`, environment `mac-workstation-dev`, target
+`local/mac-workstation`, and produced job
+`job-e9aa7949af21cdf327f2b7a5674740f8`, session
+`sess-88ca6b02285140e85bedd70b788faeba`, command
+`cmd-eb0eca9387233911337738d15d2b4cbb`. The CLI received HTTP 503 while reading
+events at cursor 0 and explicitly reported that it had not cancelled or
+restarted the command. No second request was sent. Read-only SQLite inspection
+showed the durable job complete, command `succeeded` with exit 0, complete
+untruncated output, terminal event sequence 4, closed session teardown, and a
+released command slot. The event history contains one start, one stdout record
+(30 bytes), and `command_succeeded`; no duplicate execution occurred.
+
+The failure was an identity comparison error. A local `run` intent hashes the
+whole run request, while its command row correctly hashes a separate
+`submit_command` payload. The local command GET, events endpoint, and mailbox
+command snapshot incorrectly required those hashes to match. Source
+`d9223e6c2342babbd2ed4fc217e9ba04932fd4fe` allows the hash difference only for
+`run` intents, uses command/session/script identity for those reads, keeps
+ordinary submit-command hash checks strict, and lets mailbox command snapshots
+resolve either supported intent operation. Its regression proves all three
+read paths return the completed command and still fail closed on a script
+mismatch.
+
+The correction was pushed to Gitea `origin/dev`; direct reads confirmed the
+exact same SHA on automatic `github/dev`. All three workers fast-forwarded from
+clean `afa3699` checkouts and ended clean on the source SHA. Mac,
+linux-host, sandbox-host and factory-sandbox each passed
+`GOMAXPROCS=2 GOFLAGS=-p=1 make check build` on that revision. Factory used a
+task-owned short `TMPDIR` under `/home/ubuntu/.cache`, removed by its exit
+trap; shared Go caches were retained. The read-resumption test against the
+actual retained Mac job remains pending installation of the corrected bundle.
+
+The fresh preflight before the Mac Dev candidate refresh found all three
+worker PRD services active and ready at installed revision
+`2802f00c93eb51a80f23b9380238c309545d6329` (PIDs `149913`, `717823`, `50302`).
+Worker Dev services were ready at `6c4aa9ef73493ac513ef6897c6f414d7f7dc7b3e`
+with zero work. Sandbox PRD still showed its existing one active session slot
+and `cleanup_failures_total=1`; no PRD session or service was touched. Mac PRD
+was ready at `77910358a149d6e8fcdf4694498ebdf6c1f07f58`, retaining its existing
+one session slot and zero active commands, queues and mailbox backlog. No PRD
+binary, configuration, process, database or mailbox was changed.
+
+After the latest source and evidence delivery, rebuild the four host candidates
+from the exact synchronized revision and refresh only Dev through the guarded
+installer. Then resume the existing Mac job with its original request and
+idempotency key to prove its result is read without replay. Complete the
 remaining acceptance: fresh managed cancellation, factory direct ingress,
 configured Mac-local execution, requested timeout, permitted explicit limits,
 all required direct/queued profile routes, owned mailbox request/output/event/
