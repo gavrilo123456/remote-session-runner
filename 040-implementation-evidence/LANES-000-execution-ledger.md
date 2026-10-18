@@ -17,7 +17,7 @@ and evidence closeout as separate claims.
 | `SIMPLE-03` | Selected-lane installers, pinned artifacts and rollback | PASS — source, primary/mirror delivery, and synchronized worker validation; live lane acceptance is SIMPLE-04; [evidence](SIMPLE-03.md) |
 | `SIMPLE-04` | Dev deployment and coexistence acceptance | PASS — S9 candidate from synchronized `2204e18` passed Mac-local, direct and queued routes, bounded command/managed-session/mailbox checks, and Dev restart isolation. S10 added only a persistent factory Dev `8444` allow for Mac `/32`; authenticated direct acceptance and zero-work postflight passed. Fresh PRD API/locald health at 09:06Z passed on the original build with one preserved session slot; recurring generic claim warnings continue, while their raw SQLite/OS cause is not logged. No PRD file/service was changed. [SIMPLE-04](SIMPLE-04.md) |
 | `SIMPLE-05` | QAS promotion of the exact tested artifact | PASS — exact Dev-tested per-host `2204e18` candidates, QAS default-port SSH pins, direct/queued/Mac-local, timeout/limit, managed-session and mailbox ACK acceptance; zero-work postflight on all QAS components. [SIMPLE-05](SIMPLE-05.md) |
-| `SIMPLE-06` | PRD promotion/rollback procedure; actual upgrade only when scheduled | NOT STARTED |
+| `SIMPLE-06` | PRD promotion/rollback procedure; actual upgrade only when scheduled | PASS — stable PRD retention decision and conditional promotion/rollback package documented; optional upgrade NOT RUN; [evidence](SIMPLE-06.md) |
 | `SIMPLE-07` | Operational documentation and three-lane acceptance | NOT STARTED |
 
 Use ordinary directories on existing disks and existing users; preserve shared
