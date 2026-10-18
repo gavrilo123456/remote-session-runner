@@ -202,6 +202,22 @@ Open and triaged. Change to `FIXED — PENDING VERIFICATION` only after a correc
 candidate exists; close only after the stated required gates pass. Investigation
 and Git delivery are not fix or installed-runtime acceptance.
 
+## Registration delivery evidence
+
+Registration commit `536cb85501d8d004eab20421b1b3ac6870dbcded` was committed on
+Mac `dev`, pushed to primary Gitea `origin/dev` and verified at the exact same
+automatic GitHub `dev` SHA using explicit-identity `git ls-remote`. Clean `dev`
+checkouts on `linux-host`, `sandbox-host` and `factory-sandbox` each pulled
+`origin/dev` with `--ff-only`, reached that exact SHA and remained clean.
+
+On Mac, `git diff --check` and Python checks for links, fences, evidence JSON,
+TRIAGED/unfixed status and the single register row passed. On each Ubuntu host,
+`git diff --check` and Python checks for the bug's links, fences, status and
+register entry passed. An independent read-only review found no material
+consistency issue. No product suite or live operation was run for registration.
+The evidence-only receipt follows the same delivery sequence; its final commit
+is reported after primary/mirror and clean worker synchronization complete.
+
 ## History
 
 | Date | Change |
