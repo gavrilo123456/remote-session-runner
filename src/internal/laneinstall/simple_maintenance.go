@@ -453,8 +453,26 @@ func createSimpleLaneBackup(ctx context.Context, plan Plan, databasePath string,
 	if err := writePrivateFile(configPath, configBytes, 0o600); err != nil {
 		return SimpleLaneBackupReceipt{}, err
 	}
-	if err := store.CreateOnlineBackup(ctx, database, databaseCopyPath); err != nil {
+	var sourceSchema int
+	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&sourceSchema); err != nil || sourceSchema != proof.database {
+		return SimpleLaneBackupReceipt{}, ErrSimpleLanePreflight
+	}
+	// This backup is taken before the candidate starts and applies its schema
+	// migrations. Validate it as an existing supported authority rather than
+	// requiring the current executable schema, then prove the snapshot retained
+	// exactly the source schema recorded in the quiescence proof.
+	if err := store.CreateExistingOnlineBackup(ctx, database, databaseCopyPath); err != nil {
 		return SimpleLaneBackupReceipt{}, fmt.Errorf("create consistent lane SQLite backup: %w", err)
+	}
+	backup, err := store.OpenExistingRestartPreflightReadOnly(ctx, databaseCopyPath)
+	if err != nil {
+		return SimpleLaneBackupReceipt{}, fmt.Errorf("verify consistent lane SQLite backup: %w", err)
+	}
+	var backupSchema int
+	backupSchemaErr := backup.QueryRowContext(ctx, "PRAGMA user_version").Scan(&backupSchema)
+	closeBackupErr := backup.Close()
+	if backupSchemaErr != nil || closeBackupErr != nil || backupSchema != sourceSchema {
+		return SimpleLaneBackupReceipt{}, ErrSimpleLanePreflight
 	}
 	configHash := sha256.Sum256(configBytes)
 	databaseBytes, err := os.ReadFile(databaseCopyPath)

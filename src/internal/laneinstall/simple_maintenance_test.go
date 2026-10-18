@@ -120,6 +120,62 @@ func TestSimpleLaneBackupIsConsistentAndReceiptDetectsTampering(t *testing.T) {
 	}
 }
 
+func TestBUG025SimpleLaneBackupPreservesSchema39BeforeCandidateMigration(t *testing.T) {
+	ctx := context.Background()
+	root := simpleTestTempDir(t)
+	plan := simpleTestPlanAt(t, root)
+	if err := os.MkdirAll(plan.Namespace.Backups, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.Namespace.ConfigFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.Namespace.ConfigFile, []byte("isolated schema-39 lane config fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(ctx, plan.Namespace.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RollbackBoundedEventCleanupSchema40To39(ctx, plan.Namespace.Database); err != nil {
+		t.Fatalf("prepare disposable schema-39 authority: %v", err)
+	}
+	database, err = store.OpenExistingRestartPreflightReadOnly(ctx, plan.Namespace.Database)
+	if err != nil {
+		t.Fatalf("open disposable historical schema read-only: %v", err)
+	}
+	defer database.Close()
+	const active = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	proof := SimpleQuiescenceProof{
+		hostID: plan.HostID, lane: plan.Lane, databasePath: plan.Namespace.Database,
+		observedAt: time.Now().UTC(), database: 39, current: active,
+	}
+	receipt, err := createSimpleLaneBackup(ctx, plan, plan.Namespace.Database, database, proof)
+	if err != nil {
+		t.Fatalf("consistent backup of the pre-migration schema failed: %v", err)
+	}
+	manifest, err := readSimpleLaneBackupManifest(plan, receipt.Directory())
+	if err != nil || manifest.DatabaseSchema != 39 {
+		t.Fatalf("pre-migration backup manifest=%+v err=%v, want schema 39", manifest, err)
+	}
+	backup, err := store.OpenExistingRestartPreflightReadOnly(ctx, filepath.Join(receipt.Directory(), "authority.sqlite"))
+	if err != nil {
+		t.Fatalf("open schema-39 backup read-only: %v", err)
+	}
+	defer backup.Close()
+	var backupSchema int
+	if err := backup.QueryRowContext(ctx, "PRAGMA user_version").Scan(&backupSchema); err != nil || backupSchema != 39 {
+		t.Fatalf("backup schema=%d err=%v, want schema 39", backupSchema, err)
+	}
+	var sourceSchema int
+	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&sourceSchema); err != nil || sourceSchema != 39 {
+		t.Fatalf("source schema=%d err=%v, want source unchanged at 39", sourceSchema, err)
+	}
+}
+
 func TestSimpleLaneLifecycleLockIsExclusiveAndRetryable(t *testing.T) {
 	root := simpleTestTempDir(t)
 	plan := simpleTestPlanAt(t, root)
