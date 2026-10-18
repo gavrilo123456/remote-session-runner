@@ -307,6 +307,9 @@ last observed `operation_failed` claim warnings were at 14:42:07, 14:49:56,
 time correlations only: the command events cannot be joined reliably to a
 project, and no counter sample was taken after the 14:21 sample. In particular,
 there is no new storage-counter delta to correlate with these warnings.
+The latest persisted health-probe rows are `mac_ingress` at 14:21:31 CEST and
+`mac_local_executor` at 13:38:56 CEST. No `/metrics` probe was issued for the
+fresh snapshot.
 
 The prior publication-pause instruction remains in force. No per-publisher
 pause receipt/control has been verified, and accepted submissions exist through
