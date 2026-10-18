@@ -12,10 +12,10 @@ was published during this work.
 | Item | Evidence |
 | --- | --- |
 | Source predecessor | `397f35bbc0cde609fe302debcc81906d6988b6cc` on Mac `dev` |
-| Correction commit | Pending |
+| Correction commit | `7c205239928f885b1a22e2aee3de1f03d30e52bf` |
 | Source gate | `make check` passed on Mac with Go 1.27.1 after retrying one test that needed `/bin/ps` access: `go test ./...`, `go vet ./...`, and command build/help/version smoke gate |
 | Focused regressions | All `TestBUG025*` tests passed in `src/internal/store` and `src/internal/laneinstall`; the runner-local cleanup cadence regression is included in the passing full suite |
-| Platform source gates | Linux and sandbox passed at predecessor `397f35b`; factory failed at that revision when Go linking hit the account disk quota. Re-run all three hosts after synchronization of the correction commit |
+| Platform source gates | `PASS` on linux-host, sandbox-host and factory-sandbox at `7c205239928f885b1a22e2aee3de1f03d30e52bf`; factory used `TMPDIR=/var/tmp` because its `/tmp` tmpfs has limited capacity. Normal Ubuntu Go caches were reused; none were cleaned |
 | Dev acceptance | `NOT RUN` |
 | QAS acceptance | `NOT RUN` |
 | PRD installation/postflight | `NOT RUN` |
@@ -72,6 +72,11 @@ This path is covered by isolated laneinstaller and store regressions.
 
 The fixture checks are structural and deterministic. They are not live CPU,
 production-history timing, selected-lane acceptance or PRD progress evidence.
+`runner-lane bundle-build` produced preliminary per-host bundles from `7c20523`
+outside the checkout. They are not the final installation artifacts: this
+evidence delivery changes `dev`, so rebuild the bundles from the final
+synchronized revision and then record their hashes in the post-maintenance
+closeout. The preliminary files remain task-owned temporary build output.
 
 ## Installation and observation ledger
 
@@ -82,12 +87,12 @@ each operation's fresh work/ownership guards pass.
 
 | Machine | Lane | Pre-change version/state | Backup | Candidate hash | Installed hash | Postflight |
 | --- | --- | --- | --- | --- | --- | --- |
-| Mac | Dev | Schema 39, zero work in the baseline inventory; component revision/hash needs the fresh install preflight | `NOT RUN` | `NOT BUILT` | `NOT RUN` | `NOT RUN` |
-| Mac | QAS | Schema 39, zero work in the baseline inventory; component revision/hash needs the fresh install preflight | `NOT RUN` | `NOT BUILT` | `NOT RUN` | `NOT RUN` |
-| Mac | PRD | Installed build `f117853a9f712e734eab787e648383f5468e719c`, schema 39; fresh preflight recorded zero work | `NOT RUN` | `NOT BUILT` | `NOT RUN` | `NOT RUN` |
-| linux-host | Dev/QAS/PRD | Dev/QAS schema 39 and zero work in the baseline inventory; PRD needs the fresh install preflight | `NOT RUN` | `NOT BUILT` | `NOT BUILT` | `NOT RUN` |
-| sandbox-host | Dev/QAS/PRD | Dev/QAS schema 39 and zero work in the baseline inventory; PRD needs the fresh install preflight | `NOT RUN` | `NOT BUILT` | `NOT BUILT` | `NOT RUN` |
-| factory-sandbox | Dev/QAS/PRD | Dev/QAS schema 39 and zero work in the baseline inventory; PRD needs the fresh install preflight | `NOT RUN` | `NOT BUILT` | `NOT BUILT` | `NOT RUN` |
+| Mac | Dev | Schema 39, zero work in baseline inventory; install preflight required | `NOT RUN` | `PRELIMINARY 7c20523; rebuild` | `NOT RUN` | `NOT RUN` |
+| Mac | QAS | Schema 39, zero work in baseline inventory; install preflight required | `NOT RUN` | `PRELIMINARY 7c20523; rebuild` | `NOT RUN` | `NOT RUN` |
+| Mac | PRD | Installed build `f117853a9f712e734eab787e648383f5468e719c`, schema 39; fresh preflight recorded zero work | `NOT RUN` | `PRELIMINARY 7c20523; rebuild` | `NOT RUN` | `NOT RUN` |
+| linux-host | Dev/QAS/PRD | Dev/QAS schema 39 and zero work in baseline inventory; PRD preflight required | `NOT RUN` | `PRELIMINARY 7c20523; rebuild` | `NOT RUN` | `NOT RUN` |
+| sandbox-host | Dev/QAS/PRD | Dev/QAS schema 39 and zero work in baseline inventory; PRD preflight required | `NOT RUN` | `PRELIMINARY 7c20523; rebuild` | `NOT RUN` | `NOT RUN` |
+| factory-sandbox | Dev/QAS/PRD | Dev/QAS schema 39 and zero work in baseline inventory; PRD preflight required | `NOT RUN` | `PRELIMINARY 7c20523; rebuild` | `NOT RUN` | `NOT RUN` |
 
 Final acceptance must record, per host and lane: synchronized source SHA,
 artifact SHA-256, version/process and configuration identity, consistent

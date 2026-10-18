@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — source correction and regressions pass; Dev/QAS and installed acceptance pending |
+| Status | `FIXED — PENDING VERIFICATION` — source correction and regressions pass on Mac and all three Ubuntu hosts; Dev/QAS and installed acceptance pending |
 | Severity | High — status reads can fail with `SQLITE_BUSY`; idle history causes excessive maintenance work |
 | Priority | High |
 | Reported | 2026-10-18 |
@@ -12,7 +12,7 @@
 | Owner | Remote Session Runner implementer |
 | Affected component/path | Mac ingress job/intent status lookup, shared SQLite transaction helpers, mailbox event-file cleanup and worker cadence |
 | Affected revision | Installed PRD `f117853a9f712e734eab787e648383f5468e719c`, schema 39; relevant source unchanged at investigation baseline `4abf3f85f276f0fe1fc74e7e42e13aa136547ed4` |
-| Fixed revision | Pending source commit; candidate not installed |
+| Fixed revision | `7c205239928f885b1a22e2aee3de1f03d30e52bf`; candidate not installed |
 | Verification | Existing-code contention reproduced on a disposable production snapshot; no corrected candidate or installed fix verified |
 
 ## Reported behavior
@@ -228,4 +228,4 @@ is reported after primary/mirror and clean worker synchronization complete.
 | --- | --- |
 | 2026-10-18 | Registered the reproduced cleanup/status writer contention as BUG-025; linked the root-cause report, reproducer, limitations and implementation/acceptance contract. |
 | 2026-10-18 | Implemented consistent read transactions with SQLite error accounting, a bounded durable cleanup work queue, and a one-second rotating cleanup cadence. Isolated regressions and `make check` passed; Dev/QAS/PRD acceptance is pending. |
-| 2026-10-18 | Added guarded rollback for the additive schema-40 cleanup metadata; preservation and unsupported-schema refusal regressions pass, and Mac `make check` passes. Host validation and all installation/postflight gates remain pending. |
+| 2026-10-18 | Added guarded rollback for the additive schema-40 cleanup metadata; preservation and unsupported-schema refusal regressions pass. `make check` passed on Mac and all three synchronized Ubuntu hosts at `7c20523`; Dev/QAS installation acceptance and PRD postflight remain pending. |
