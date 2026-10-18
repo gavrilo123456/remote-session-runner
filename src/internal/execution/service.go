@@ -801,6 +801,21 @@ func (s *Service) ExecuteClaimedCommand(ctx context.Context, claim store.Command
 	if runtimeResult.ShellExited {
 		return s.finishCommandFailure(ctx, currentSession, command, ErrShellExited, "shell_exited")
 	}
+	// A signal-style exit after cancellation has already entered its durable
+	// cancelling state belongs to the cancellation path. Let CancelCommand
+	// finalize it using its runtime stop/output-boundary proof instead of
+	// recording an ordinary command_failed terminal event here. Successful
+	// completions and ordinary non-zero script exits retain their existing
+	// completion-wins behavior.
+	if runtimeResult.ExitCode < 0 {
+		current, err := s.store.GetCommand(ctx, command.CommandID)
+		if err != nil {
+			return SubmitCommandResult{Command: command}, err
+		}
+		if current.State == domain.CommandStateCancelling {
+			return SubmitCommandResult{Command: current}, nil
+		}
+	}
 	nextState := domain.CommandStateSucceeded
 	if runtimeResult.ExitCode != 0 {
 		nextState = domain.CommandStateFailed

@@ -13,22 +13,119 @@ import (
 
 type p137CompletionRaceRuntime struct {
 	p020FakeRuntime
-	executionStarted chan struct{}
-	finishExecution  chan struct{}
-	cancelStarted    chan struct{}
-	finishCancel     chan struct{}
+	executionStarted   chan struct{}
+	finishExecution    chan struct{}
+	cancelStarted      chan struct{}
+	finishCancel       chan struct{}
+	executionResult    RuntimeCommandResult
+	hasExecutionResult bool
+	cancelResult       RuntimeCommandStopResult
+	hasCancelResult    bool
 }
 
 func (r *p137CompletionRaceRuntime) ExecuteCommand(context.Context, RuntimeCommandRequest) (RuntimeCommandResult, error) {
 	close(r.executionStarted)
 	<-r.finishExecution
+	if r.hasExecutionResult {
+		return r.executionResult, nil
+	}
 	return RuntimeCommandResult{Stdout: []byte("completed"), ExitCode: 0}, nil
 }
 
 func (r *p137CompletionRaceRuntime) CancelCommand(context.Context, RuntimeCommandRequest) (RuntimeCommandStopResult, error) {
 	close(r.cancelStarted)
 	<-r.finishCancel
+	if r.hasCancelResult {
+		return r.cancelResult, nil
+	}
 	return RuntimeCommandStopResult{Confirmed: false}, nil
+}
+
+func TestP137SignalExitDuringConfirmedCancellationIsFinalizedAsCancelled(t *testing.T) {
+	runtime := &p137CompletionRaceRuntime{
+		p020FakeRuntime:  p020FakeRuntime{generation: "generation-p137-cancelled-signal"},
+		executionStarted: make(chan struct{}), finishExecution: make(chan struct{}),
+		cancelStarted: make(chan struct{}), finishCancel: make(chan struct{}),
+		executionResult: RuntimeCommandResult{Stdout: []byte("interrupted\n"), ExitCode: -126}, hasExecutionResult: true,
+		cancelResult: RuntimeCommandStopResult{Stdout: []byte("interrupted\n"), Confirmed: true}, hasCancelResult: true,
+	}
+	service, authority := newP137CompletionRaceService(t, runtime)
+	session := p021ReadySession(t, service, "session-p137-cancelled-signal", "key-p137-cancelled-signal")
+	command := p022QueueCommand(t, authority, session, "command-p137-cancelled-signal", "submit-p137-cancelled-signal")
+
+	type result struct {
+		command SubmitCommandResult
+		err     error
+	}
+	runDone := make(chan result, 1)
+	go func() {
+		completed, err := service.ResumeCommand(context.Background(), command.CommandID, session.Controller)
+		runDone <- result{command: completed, err: err}
+	}()
+	select {
+	case <-runtime.executionStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime command did not reach the controlled completion barrier")
+	}
+
+	cancelDone := make(chan result, 1)
+	cancelRequest := p022CancelRequest(t, command.CommandID, "cancel-p137-cancelled-signal", "cancel signal exit")
+	go func() {
+		cancelled, err := service.CancelCommand(context.Background(), cancelRequest)
+		cancelDone <- result{command: SubmitCommandResult{Command: cancelled.Command}, err: err}
+	}()
+	select {
+	case <-runtime.cancelStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation did not reach the controlled stop barrier")
+	}
+	close(runtime.finishExecution)
+
+	var completed result
+	select {
+	case completed = <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("running command did not return its in-progress cancellation")
+	}
+	if completed.err != nil || completed.command.Command.State != domain.CommandStateCancelling {
+		t.Fatalf("running result=%+v err=%v, want cancellation left pending for its stop proof", completed.command.Command, completed.err)
+	}
+	close(runtime.finishCancel)
+
+	var cancelled result
+	select {
+	case cancelled = <-cancelDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation did not return after the runtime stop proof")
+	}
+	if cancelled.err != nil || cancelled.command.Command.State != domain.CommandStateCancelled {
+		t.Fatalf("cancel result=%+v err=%v, want command_cancelled", cancelled.command.Command, cancelled.err)
+	}
+	stored, err := authority.GetCommand(context.Background(), command.CommandID)
+	if err != nil || stored.State != domain.CommandStateCancelled || !stored.OutputComplete {
+		t.Fatalf("stored command=%+v err=%v, want cancelled with complete output", stored, err)
+	}
+	events, err := authority.ListCommandEvents(context.Background(), command.CommandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	for _, event := range events {
+		switch event.Type {
+		case "command_succeeded", "command_failed", "command_cancelled", "command_timed_out", "command_rejected", "command_lost":
+			terminal++
+		}
+	}
+	if terminal != 1 || len(events) == 0 || events[len(events)-1].Type != "command_cancelled" {
+		t.Fatalf("terminal events=%+v, want exactly one command_cancelled event", events)
+	}
+	updated, err := service.GetSession(context.Background(), session.SessionID, session.Controller)
+	if err != nil || updated.State != domain.SessionStateReady {
+		t.Fatalf("session after cancel=%+v err=%v, want ready", updated, err)
+	}
+	if slots, err := authority.CountLiveCommandSlots(context.Background()); err != nil || slots != 0 {
+		t.Fatalf("live command slots=%d err=%v, want released", slots, err)
+	}
 }
 
 func TestP137R03RunningCompletionWinsConcurrentCancellation(t *testing.T) {

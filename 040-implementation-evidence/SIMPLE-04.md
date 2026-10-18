@@ -234,20 +234,92 @@ changed. The cloud ingress path still needs read-only inspection through a
 provider-authorized operator. OCI CLI/config were not available on the workers.
 This blocks only factory direct acceptance; queued factory health ping passes.
 
-## Current source gate and remaining acceptance
+## S4 Dev candidate and current S5 correction
 
-At the uncommitted S4 source contents, the focused regression passes; full Mac
-`make check` exits 0 and `make build` exits 0. The fix and this evidence update
-still require delivery through primary Gitea, exact GitHub mirror verification,
-and clean worker fast-forwards, followed by worker checks and a rebuilt S4
-candidate. After guarded Dev-only update, resume the exact queued job, verify
-capacity release, then test all direct/queued profile operations, Mac-local
-execution, managed-session lifecycle, timeout and permitted limits, and the
-uniquely owned mailbox request/output/events/ACK lifecycle. Preserve every
-historical response and held ACK. Do not mark SIMPLE-04 PASS until the factory
-direct route and all remaining matrix checks pass.
+Source `4147cfad3d839f8744fed06babeb507ca2c90dd5` passed Mac `make check` and
+`make build`, was pushed to Gitea, verified at the exact GitHub mirror SHA, and
+fast-forwarded to the three clean worker `dev` checkouts. Their `make check`
+gates passed at that revision. Candidate bundles were built from that source
+and installed only to Dev through `runner-lane`; all four Dev services started
+and their manifests matched the candidate build.
 
-PRD service/configuration/mailbox/credentials and host firewall rules were not
-changed. The only SSH authority changes are the Dev-only forced bridge entries
-and the Mac Dev known-host aliases; original worker SSH authority backups are
-verified above. No held ACK was touched.
+| Host | Installed S4 bundle SHA-256 | Guarded Dev backup | Current Dev process |
+| --- | --- | --- | --- |
+| Mac | `8f0419b1b2dc4b8dae8591e5d5dc04baefdf90c79099889073ff01c61c1fe0a4` | `~/Library/Application Support/RemoteSessionRunner-dev/backups/.simple-backup-3800986350` | `runner-local` PID 44544; `runner-locald` PID 44613 |
+| `linux-host` | `af8c1182920e2c5283821116569fe5e901f5015730bc4cc89570bfe1e7b4709e` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-2414843732` | Dev PID 2564104 |
+| `sandbox-host` | `94fe65e9dd70ca8a3ec399c32036374209d7ec362c767557a9a7a2268e836c29` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-1940518023` | Dev PID 840416 |
+| `factory-sandbox` | `d573f124b099d0b1d20ce67fdd49f33fc9c225e75382e2f4bd68c6bfb7ca397d` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-424317290` | Dev PID 1161689 |
+
+The worker archives were verified before transfer: Linux
+`efcebbfb7e305c01278398541ac417e31604b460fb863e45d03b3f5e1076e416`, sandbox
+`cf70c6a2083f17e3b47538e2bcf5ef2a0824608a7a0a2820d48642f7615f4e08`, and
+factory `69eb915a4b9f950ae3ea7b97cc76062290711d0428a4152b67c31c0035889ef7`.
+All three worker Dev services report successful startup and listen on the
+private `8444` interface. Unsuffixed PRD remained active at its previously
+recorded PIDs `149913`, `717823`, and `50302`; no PRD binary, configuration,
+service or database was changed.
+
+S4 acceptance completed these bounded probes with complete output, one terminal
+event, and successful teardown unless stated otherwise:
+
+| Route | Job / session / command | Result |
+| --- | --- | --- |
+| Queued Linux, retained request `simple04-20261018-linux-queued-01` | `job-46f79ce61446217a1d80f81ddde1ce52` / `sess-da7ce4093861ad6a29fc4ba18c4542ef` / `cmd-e5bb8ba2d097b3241ad9d24097f7606f` | Succeeded, exit 0; S4 event lookup returned all five events and complete history; no script replay |
+| Direct `linux-poc-dev` | `job-8bba2604fca5ecb1d88f14706ff21dd3` / `sess-dfeb9d39108d0cbe630e11b03a528683` / `cmd-05d2f7fac5c45e6bcf5ff115e7ff0e03` | Succeeded, exit 0; output complete; teardown closed |
+| Direct `sandbox-poc-dev` | `job-4298952daef2affb9596811957d8e6b3` / `sess-4371e20ab93f0a6a4df9f34e9744ff55` / `cmd-15df45a26180c1a0eed419eafea6667b` | Succeeded, exit 0; output complete; teardown closed |
+| Queued sandbox | `job-f916c22588212dcd109bbb4f38a5787e` / `sess-56822a3c46ad2b36ced0a61b881b9692` / `cmd-de31df203505602866e2ad517da4ac2d` | Succeeded, exit 0; full history confirmed on follow-up read; teardown closed |
+| Queued factory | `job-090fd8285dea535f1d6f3f5e78cfce2d` / `sess-3fb9aa0ca39273b101b7e274e4bdb289` / `cmd-cf99892bf18a2dc594464c58c61ed99a` | Succeeded, exit 0; full history confirmed on follow-up read; teardown closed |
+
+The factory direct route remains blocked: TCP `145.241.255.66:8444` returned
+connection refused while Dev was listening on `10.0.0.30:8444`; factory queued
+work succeeds. The host INPUT policy was previously read as `ACCEPT`; no host
+or provider firewall rule was changed. The required external action is a
+provider-authorized inspection and, if absent, a scoped ingress rule for Dev
+TCP 8444 from the approved test sources. PRD TCP 8443 and SSH 22 remain
+reachable.
+
+Mac-local acceptance has not passed. Three uniquely keyed S4 requests failed:
+one-off `job-458e151ce1510ef1bf9e096b07a3b178` / session
+`sess-b683019b2b00469e302c66ddc134052` / command
+`cmd-22699cc5071055d1112b0a6321b90d4d`; managed-create intent
+`intent-8a222c299360ec3827db496aa7573e6d` / session
+`sess-90618db1ef707bdacd0b7fd02f00949a`; and fresh one-off
+`job-cc74ecbb6b6d1bcd0f0fd8f1a1838b9c` / session
+`sess-5cf5289e5762c14d8999d5e83036f120` / command
+`cmd-bfe6f9ce056a3776788e1f56f81bfda2`. The first and third jobs ended
+`failed`, command state/exit code unknown, event cursor 0, and teardown pending;
+the managed create was recorded `not_delivered/locald_rejected`. Read-only
+Dev health after the retry shows zero active session/command slots, queued work,
+mailbox backlog, storage errors, and cleanup failures. No failed request was
+replayed. A temporary isolated runtime diagnostic using the actual Dev account,
+configuration, workspace root and LaunchAgent-like environment passed
+create/run/close, so it does not explain the installed-process rejection. S5
+adds a Dev-local sanitized runtime-failure log for the next fresh acceptance;
+the rejection cause remains unresolved until that candidate is installed.
+
+Managed Linux create/status/run/read passed. The cancellation probe for command
+`cmd-d8a0ee3df35bae8e460ef1758a57ea5e` returned a signal-style exit `-126` and
+was incorrectly recorded as `command_failed` while cancellation was in
+progress. The session then closed with `teardown_outcome=closed`; the active
+source correction defers negative signal-style completion to the cancellation
+path, which must prove the stop/output boundary before recording
+`command_cancelled` or `command_lost`. Regression coverage also preserves the
+existing successful-completion-wins race. The exact cancellation regression
+and full Mac `make check build` passed before the additional S5 diagnostic log
+change; source gates must be rerun at S5.
+
+The S5 working tree currently contains the cancellation race correction and
+scoped Mac-local failure logging. They are not delivered or installed yet.
+Remaining SIMPLE-04 acceptance includes fresh cancellation on S5, factory
+direct ingress, configured Mac-local execution, requested timeout, permitted
+explicit limits, all remaining direct/queued profile routes, the owned mailbox
+request/output/event/ACK lifecycle, Dev restart isolation, and fresh zero-work
+postflight. No held ACK was touched. The source gates will rerun, then follow
+the Mac → Gitea → exact GitHub mirror → clean worker fast-forward sequence before
+building S5 candidates. Do not mark SIMPLE-04 PASS until all required gates
+pass.
+
+PRD service/configuration/mailbox/credentials and host firewall rules remain
+unchanged. Existing SSH authority changes are limited to the Dev forced bridge
+entries and Mac Dev known-host aliases; the original worker SSH authority
+backups remain verified above.

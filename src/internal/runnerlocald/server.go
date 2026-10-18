@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"math/big"
 	"net"
@@ -468,6 +469,10 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 	accepted, err := s.acceptIntent(request.Context(), intent)
 	if err != nil {
 		code, _ := intentAcceptanceFailure(err)
+		if intent.Operation == "create_session" && intent.Source.Mode() == domain.SourceModeEmpty && errors.Is(err, execution.ErrRuntimeUnavailable) {
+			slog.Warn("Mac local empty-source session startup failed",
+				"session_id", string(intent.SessionID), "error_code", code, "error", sanitizeError(err))
+		}
 		writeJSON(response, http.StatusConflict, map[string]string{"code": code, "message": sanitizeError(err)})
 		return
 	}
