@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — source correction and regressions pass on Mac and all three Ubuntu hosts; Dev/QAS and installed acceptance pending |
+| Status | `FIXED — PENDING VERIFICATION` — source correction, schema-39 pre-migration backup fix, and regressions pass on Mac and all three Ubuntu hosts; Dev/QAS and installed acceptance pending |
 | Severity | High — status reads can fail with `SQLITE_BUSY`; idle history causes excessive maintenance work |
 | Priority | High |
 | Reported | 2026-10-18 |
@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner implementer |
 | Affected component/path | Mac ingress job/intent status lookup, shared SQLite transaction helpers, mailbox event-file cleanup and worker cadence |
 | Affected revision | Installed PRD `f117853a9f712e734eab787e648383f5468e719c`, schema 39; relevant source unchanged at investigation baseline `4abf3f85f276f0fe1fc74e7e42e13aa136547ed4` |
-| Fixed revision | `7c205239928f885b1a22e2aee3de1f03d30e52bf`; candidate not installed |
-| Verification | Existing-code contention reproduced on a disposable production snapshot; no corrected candidate or installed fix verified |
+| Fixed revision | `7c205239928f885b1a22e2aee3de1f03d30e52bf`, with the pre-migration backup correction in `0a921404c0a1d4b0e025e83771ad3a67ce253f1e`; candidate not installed |
+| Verification | Existing-code contention reproduced on a disposable production snapshot; schema-39 installation backup failure reproduced and fixed; corrected candidate acceptance and installation remain pending |
 
 ## Reported behavior
 
@@ -177,9 +177,20 @@ and rollback procedures, preserve retained records and held ACKs, and change
 one lane at a time. This authorization does not waive failed guards. No replay
 or manual reservation release is permitted.
 
+The first supported Mac Dev install attempt exposed an adjacent installer
+defect: `CreateOnlineBackup` validated the pre-install schema-39 snapshot as if
+it already had the candidate's schema 40. The guarded installer stopped Dev,
+rejected the backup, and left the active bundle pointer and database unchanged.
+The unchanged schema-39 Dev bundle was restarted and readiness returned. The
+correction uses the existing read-only historical-schema backup validator and
+proves that the completed snapshot schema matches the stopped-lane proof. A
+schema-39 fixture regression failed before the correction and passes afterward.
+No production database was migrated or changed by the failed attempt.
+
 ## Fix and verification
 
-The correction and isolated source regressions are implemented. Record the
+The correction and isolated source regressions are implemented. Source and
+platform gates passed at `0a921404c0a1d4b0e025e83771ad3a67ce253f1e`. Record the
 final source commit, host validations, accepted per-host artifacts and installed
 evidence here and in the register. Required gates:
 
@@ -190,6 +201,7 @@ evidence here and in the register. Required gates:
 | History scaling and fairness | Bounded reference pages persist progress across reopen; removed history is excluded; work rotates across commands | `PASS` in structural fixture regressions; production-history measurement remains pending |
 | Cleanup safety and crash recovery | Shared references, future deadlines, ACK changes, local/remote ownership, malformed metadata, retained history and interrupted unlink retry remain safe | `PASS` in isolated regressions and full source suite |
 | Concurrent service regression | Independent API/executor database users retain exactly-once claims, atomic rollback and bounded progress | `PASS` in full source suite; live representative traffic remains pending |
+| Pre-migration rollback backup | Existing lane backup preserves schema 39 and verifies source/snapshot schema equality before candidate migration | `PASS` on Mac and all three Ubuntu source gates at `0a92140` |
 | Selected-lane acceptance | Dev then QAS accept the correction with representative cleanup/status traffic, preserved lane isolation and truthful error deltas | `NOT RUN` |
 | PRD verification after approved installation | Compare counter deltas, CPU/cleanup cost and normal project progress over a recorded interval; a counter reset or readiness pass alone is insufficient | `NOT RUN` |
 
@@ -201,7 +213,8 @@ separately if they persist.
 
 ## Resolution
 
-The source correction exists and its isolated regressions and source gates pass.
+The source correction and guarded pre-migration backup fix exist, and their
+isolated regressions and source gates pass.
 Keep `FIXED — PENDING VERIFICATION` until Dev, QAS and PRD installation and
 postflight gates pass. Do not attribute unrelated queue-claim warnings to this
 mechanism without evidence.
@@ -229,3 +242,4 @@ is reported after primary/mirror and clean worker synchronization complete.
 | 2026-10-18 | Registered the reproduced cleanup/status writer contention as BUG-025; linked the root-cause report, reproducer, limitations and implementation/acceptance contract. |
 | 2026-10-18 | Implemented consistent read transactions with SQLite error accounting, a bounded durable cleanup work queue, and a one-second rotating cleanup cadence. Isolated regressions and `make check` passed; Dev/QAS/PRD acceptance is pending. |
 | 2026-10-18 | Added guarded rollback for the additive schema-40 cleanup metadata; preservation and unsupported-schema refusal regressions pass. `make check` passed on Mac and all three synchronized Ubuntu hosts at `7c20523`; Dev/QAS installation acceptance and PRD postflight remain pending. |
+| 2026-10-19 | A supported Mac Dev installation attempt found that the backup helper incorrectly required schema 40 from a schema-39 source. Added a failing-before regression, switched to existing-schema online backup validation, verified exact source/snapshot schema equality, and passed `make check` on Mac and all three Ubuntu hosts at `0a92140`. The failed attempt left the old database and bundle pointer unchanged; the old Dev service was restarted and ready. Rebuild final candidates from the final synchronized revision before Dev acceptance. |
