@@ -39,8 +39,8 @@ func TestSimpleQueuedSSHUsesExistingPort22AndLaneBoundForcedCommand(t *testing.T
 				!strings.Contains(plan.LinuxArtifacts[1].Contents, "controller_id: \""+config.MacAccount+"\"") {
 				t.Fatalf("lane key mapping or fixed wrapper command is malformed: %+v", plan.LinuxArtifacts)
 			}
-			if !strings.HasPrefix(plan.MacArtifacts[0].Contents, "["+plan.PublicHost+"]:22 ssh-ed25519 ") {
-				t.Fatalf("known_hosts does not pin existing port 22: %q", plan.MacArtifacts[0].Contents)
+			if !strings.HasPrefix(plan.MacArtifacts[0].Contents, plan.PublicHost+" ssh-ed25519 ") || strings.HasPrefix(plan.MacArtifacts[0].Contents, "[") {
+				t.Fatalf("known_hosts does not use OpenSSH's default-port host token for port 22: %q", plan.MacArtifacts[0].Contents)
 			}
 		}
 	}

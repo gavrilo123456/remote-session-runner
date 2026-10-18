@@ -83,7 +83,10 @@ func BuildSimpleQueuedSSHPlan(hostID string, lane config.ReleaseLane, dispatcher
 	dispatcherFingerprint := lowerHexFingerprint(dispatcher.blob)
 	controllerMap := fmt.Sprintf("version: 1\nkeys:\n  %q:\n    controller_type: %s\n    controller_id: %q\n", openSSHFingerprint, domain.ControllerTypeQueuedMac, config.MacAccount)
 	publicHost := endpoint.Hostname()
-	knownHost := fmt.Sprintf("[%s]:22 %s %s\n", publicHost, hostKey.keyType, hostKey.keyData)
+	// OpenSSH matches the bare host token when connecting on its default port,
+	// including when the caller explicitly supplies -p 22. Bracketed
+	// [host]:port entries are for non-default ports and do not match this route.
+	knownHost := fmt.Sprintf("%s %s %s\n", publicHost, hostKey.keyType, hostKey.keyData)
 	plan := SimpleQueuedSSHPlan{
 		HostID: hostID, Lane: lane, Profile: hostID, PublicHost: publicHost, Port: 22,
 		HostKeyFingerprint: hostFingerprint, DispatcherKeyFingerprint: dispatcherFingerprint,
