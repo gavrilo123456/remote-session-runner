@@ -199,3 +199,20 @@ of current guarantees must be an explicit owner decision, not a hidden default.
 
 Registration changes documentation only: no cleanup, migration, configuration,
 service, mailbox publication or ACK is performed or authorized here.
+
+## Registration evidence
+
+Proposal commit `81a100923056ec91f55c5e865bcc723ad7dd1de5` was committed on
+Mac `dev`, pushed to primary Gitea `origin/dev`, and verified by explicit-identity
+`git ls-remote` at the identical automatic GitHub mirror SHA. Each clean Ubuntu
+`dev` checkout (`linux-host`, `sandbox-host`, `factory-sandbox`) ran the required
+explicit-identity `git pull --ff-only origin dev`, reached that exact commit and
+remained clean.
+
+Mac and all three Ubuntu hosts passed `git diff --check` and Python checks for
+the proposed status, scope boundary, trailing newline, balanced fences and all
+12 local file links. An independent source review found no material factual or
+consistency issue. No executable product tests or runtime retention acceptance
+were run for this documentation change. This evidence-only receipt follows the
+same primary/mirror and clean-worker delivery sequence; the final commit is
+reported after synchronization, without implying implementation acceptance.
