@@ -7,8 +7,11 @@ cleanup and real production history reproduced the observed `SQLITE_BUSY`
 status failure on a disposable database. This is an investigation and fix
 handoff; **no product code, service or production state was changed**.
 
-**Delivery:** investigation checks complete; source/evidence delivery pending.
-No corrective implementation or installed acceptance is claimed.
+**Delivery:** investigation checks and source delivery passed at
+`15d33d793e6cb2658d3a22cb84c4b15b48b4e8ba` on Mac, primary Gitea, automatic
+GitHub mirror and all three clean Ubuntu checkouts. This closeout adds only
+the delivery receipt below. No corrective implementation or installed
+acceptance is claimed.
 
 ## Scope and provenance
 
@@ -221,5 +224,36 @@ them or distribute production state to workers.
 The investigation changed only this handoff, the saved diagnostic helper and
 sanitized result JSON in the checkout. Structural/link/JSON and compilation
 checks apply; no full source suite, live acceptance or Linux workload is
-claimed for this documentation/diagnostic delivery. Final primary/mirror and
-clean worker source delivery are recorded in its evidence-only closeout.
+claimed for this documentation/diagnostic delivery.
+
+## 7. Verified investigation delivery
+
+Investigation commit **S** is
+`15d33d793e6cb2658d3a22cb84c4b15b48b4e8ba`. It contains only this report,
+the diagnostic helper text and sanitized result JSON. The Mac worktree was
+clean after committing those three intended files. The primary Gitea push
+completed, and explicit-identity `git ls-remote` checks returned exactly S for
+both `origin/dev` and the automatic `github/dev` mirror.
+
+Each worker was first verified on clean `dev` with the expected GitHub origin.
+Each explicit-identity `git pull --ff-only origin dev` then advanced from
+`4abf3f85f276f0fe1fc74e7e42e13aa136547ed4` to S:
+
+| Checkout | Result at S |
+| --- | --- |
+| Mac source | Clean `dev`; diagnostic compiled; isolated experiments recorded above |
+| `linux-host` | Clean `dev`; report links, JSON result and helper presence passed |
+| `sandbox-host` | Clean `dev`; report links, JSON result and helper presence passed |
+| `factory-sandbox` | Clean `dev`; report links, JSON result and helper presence passed |
+
+`git diff --check` passed on Mac and all three workers. Mac checks also verified
+balanced report fences and that the saved formatted helper matches the compiled
+scratch source. The worker checks parse the JSON, require the recorded SQLite
+code 5 and resolve the report's relative file links. No production snapshot,
+private sample or working database was distributed to the workers; no worker
+runtime test was requested or claimed.
+
+The evidence-only commit containing this receipt follows S through the same
+primary push, exact automatic-mirror verification and three clean fast-forward
+pulls. Its final SHA and delivery outcome are reported to the owner after
+those operations, rather than embedding a self-referential commit hash here.
