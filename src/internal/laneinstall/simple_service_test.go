@@ -39,6 +39,33 @@ func TestSimpleMacServiceControllerStartsAndStopsOnlySelectedLaneAgents(t *testi
 	}
 }
 
+func TestSimpleMacServiceControllerWaitsForAsynchronousAgentUnload(t *testing.T) {
+	plan, err := BuildSimplePlan("mac-control-plane", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &simpleServiceTestRunner{
+		macActive: map[string]bool{
+			plan.Namespace.LocalAgentLabel:  true,
+			plan.Namespace.LocalDAgentLabel: true,
+		},
+		macStopPollsRemaining: map[string]int{
+			plan.Namespace.LocalAgentLabel:  2,
+			plan.Namespace.LocalDAgentLabel: 1,
+		},
+	}
+	controller := simpleTestServiceController(runner, "501", config.MacAccount, "darwin", "arm64")
+	if err := controller.Stop(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if runner.macActive[plan.Namespace.LocalAgentLabel] || runner.macActive[plan.Namespace.LocalDAgentLabel] {
+		t.Fatalf("selected Mac agents remain active after asynchronous unload: %v", runner.macActive)
+	}
+	if runner.macStatusPolls[plan.Namespace.LocalAgentLabel] < 3 || runner.macStatusPolls[plan.Namespace.LocalDAgentLabel] < 3 {
+		t.Fatalf("Stop did not poll launchd until both agents unloaded: polls=%v", runner.macStatusPolls)
+	}
+}
+
 func TestSimpleLinuxServiceControllerStartsStopsAndReportsOnlySelectedUnit(t *testing.T) {
 	plan, err := BuildSimplePlan("linux-host", config.ReleaseLaneQAS)
 	if err != nil {
@@ -236,10 +263,13 @@ func simpleTestServiceController(runner simpleCommandRunner, uid, account, goos,
 }
 
 type simpleServiceTestRunner struct {
-	calls         [][]string
-	macActive     map[string]bool
-	linuxOn       bool
-	systemdResult string
+	calls                 [][]string
+	macActive             map[string]bool
+	macStopPollsRemaining map[string]int
+	macBootoutRequested   map[string]bool
+	macStatusPolls        map[string]int
+	linuxOn               bool
+	systemdResult         string
 }
 
 func (r *simpleServiceTestRunner) Run(_ context.Context, name string, args ...string) (simpleCommandResult, error) {
@@ -248,6 +278,19 @@ func (r *simpleServiceTestRunner) Run(_ context.Context, name string, args ...st
 	if name == "/bin/launchctl" {
 		if len(args) >= 2 && args[0] == "print" {
 			label := args[1][strings.LastIndex(args[1], "/")+1:]
+			if r.macStatusPolls == nil {
+				r.macStatusPolls = make(map[string]int)
+			}
+			r.macStatusPolls[label]++
+			if r.macBootoutRequested[label] {
+				if r.macStopPollsRemaining[label] > 0 {
+					r.macStopPollsRemaining[label]--
+					return simpleCommandResult{ExitCode: 0}, nil
+				}
+				delete(r.macActive, label)
+				delete(r.macBootoutRequested, label)
+				return simpleCommandResult{ExitCode: 113}, nil
+			}
 			if r.macActive[label] {
 				return simpleCommandResult{ExitCode: 0}, nil
 			}
@@ -263,7 +306,14 @@ func (r *simpleServiceTestRunner) Run(_ context.Context, name string, args ...st
 		}
 		if len(args) >= 2 && args[0] == "bootout" {
 			label := args[1][strings.LastIndex(args[1], "/")+1:]
-			delete(r.macActive, label)
+			if r.macStopPollsRemaining[label] > 0 {
+				if r.macBootoutRequested == nil {
+					r.macBootoutRequested = make(map[string]bool)
+				}
+				r.macBootoutRequested[label] = true
+			} else {
+				delete(r.macActive, label)
+			}
 			return simpleCommandResult{}, nil
 		}
 	}

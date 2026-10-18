@@ -1,12 +1,14 @@
 # SIMPLE-04 — Dev deployment and coexistence acceptance
 
-**State: IN PROGRESS.** The S3 Dev candidate is installed and active on the Mac
-and all three workers. Linux and sandbox direct one-off probes passed;
-queued SSH pings passed on all three. The factory public direct route is
-refused, and one queued one-off probe exposed a local command-event lookup bug
-now fixed in source but not yet delivered or installed. Mailbox lifecycle,
-managed-session, timeout/limit, Mac-local and complete route acceptance remain.
-Existing PRD is still in service; QAS is not started.
+**State: IN PROGRESS.** S5 source revision `3c60844cc4c55b5fa9d12c9405855deca13cec23`
+is delivered and synchronized; Mac and worker source gates passed. Its candidate
+is installed on Linux, sandbox and factory Dev. The guarded Mac S5 install
+stopped the selected Dev agents but returned before asynchronous `launchd`
+unload completed; the Mac S4 release pointer remains unchanged and Mac Dev is
+currently stopped. The installer wait fix in the current source change has a
+delayed-unload regression and full Mac source gates passing; its Git delivery,
+worker validation and candidate installation remain pending. PRD remains
+installed and running; QAS is not started.
 
 ## Scope and predecessor
 
@@ -304,20 +306,47 @@ progress. The session then closed with `teardown_outcome=closed`; the active
 source correction defers negative signal-style completion to the cancellation
 path, which must prove the stop/output boundary before recording
 `command_cancelled` or `command_lost`. Regression coverage also preserves the
-existing successful-completion-wins race. The exact cancellation regression
-and full Mac `make check build` passed before the additional S5 diagnostic log
-change; source gates must be rerun at S5.
+existing successful-completion-wins race. The cancellation regression and full
+Mac/worker source gates were rerun at S5 after the diagnostic change and passed;
+the S5 candidate installation and remaining live acceptance are recorded below.
 
-The S5 working tree currently contains the cancellation race correction and
-scoped Mac-local failure logging. They are not delivered or installed yet.
-Remaining SIMPLE-04 acceptance includes fresh cancellation on S5, factory
-direct ingress, configured Mac-local execution, requested timeout, permitted
-explicit limits, all remaining direct/queued profile routes, the owned mailbox
-request/output/event/ACK lifecycle, Dev restart isolation, and fresh zero-work
-postflight. No held ACK was touched. The source gates will rerun, then follow
-the Mac → Gitea → exact GitHub mirror → clean worker fast-forward sequence before
-building S5 candidates. Do not mark SIMPLE-04 PASS until all required gates
-pass.
+### S5 source delivery and candidate installation
+
+S5 source `3c60844cc4c55b5fa9d12c9405855deca13cec23` was committed on Mac,
+pushed to Gitea `origin/dev`, verified at the exact GitHub mirror SHA, and
+fast-forwarded to all three clean worker `dev` checkouts. `GOMAXPROCS=2
+GOFLAGS=-p=1 make check build` passed on Mac and each worker at that revision;
+the focused `TestP137` race regression passed on Mac. The S5 source correction
+defers negative signal-style command completion while cancellation owns the
+command and records the safe Mac-local runtime-unavailable cause in Dev locald
+logs.
+
+Per-host S5 bundles were built from that exact synchronized revision and
+verified by the guarded installer:
+
+| Host | S5 bundle SHA-256 | Install result / backup |
+| --- | --- | --- |
+| Mac | `412b506a542a53a0f819be72c2aad5c1f7ae79cfdbfd69258e862ae82d6adb2a` | Install on 2026-10-18 (Europe/Warsaw) failed safely because `launchctl` still reported the selected agents active immediately after `bootout`. The current pointer remains S4 `8f0419b1b2dc4b8dae8591e5d5dc04baefdf90c79099889073ff01c61c1fe0a4`; Dev agents are now unloaded. No S5 backup was created and no PRD agent was targeted. |
+| `linux-host` | `b2dca8885906806f16f6367463f64fc908231c56cb3b155fc929161e79009645` | Installed/started; previous S4 bundle `af8c1182920e2c5283821116569fe5e901f5015730bc4cc89570bfe1e7b4709e`; backup `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-2980697414` |
+| `sandbox-host` | `fa154065ee5909cd86bc1656349d3642a642a5036cde5bdc20d914502a1912f0` | Installed/started; previous S4 bundle `94fe65e9dd70ca8a3ec399c32036374209d7ec362c767557a9a7a2268e836c29`; backup `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-864389217` |
+| `factory-sandbox` | `dd2cde775f3c26631ae67e2cf68a773ac3ff159bb2ddfa89c18fd42048555318` | Installed/started; previous S4 bundle `d573f124b099d0b1d20ce67fdd49f33fc9c225e75382e2f4bd68c6bfb7ca397d`; backup `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-3384430131` |
+
+The failed Mac stop is an observed asynchronous-unload race in
+`SimpleServiceController.Stop`: `launchctl bootout` returned successfully, but
+the immediate status check raced the unload and caused a false failure. No
+manual process termination was used. The source correction in this commit polls
+only the selected Dev agents within the existing bounded stop context and then
+requires the normal stopped-lane quiescence proof. Its regression simulates
+delayed unload for both agents. Focused `TestSimpleMacServiceController` passed;
+`GOMAXPROCS=2 GOFLAGS=-p=1 make check build` passed on Mac after this change.
+
+After source delivery, rebuild all four host candidates from the new exact
+revision and update Dev through the same guarded installer. Then complete the
+remaining acceptance: fresh managed cancellation, factory direct ingress,
+configured Mac-local execution, requested timeout, permitted explicit limits,
+all required direct/queued profile routes, owned mailbox request/output/event/
+ACK lifecycle, Dev restart isolation and fresh zero-work postflight. No held ACK
+was touched. Do not mark SIMPLE-04 PASS until all required gates pass.
 
 PRD service/configuration/mailbox/credentials and host firewall rules remain
 unchanged. Existing SSH authority changes are limited to the Dev forced bridge

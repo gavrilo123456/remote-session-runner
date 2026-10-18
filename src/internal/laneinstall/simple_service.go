@@ -353,12 +353,8 @@ func (c *SimpleServiceController) Stop(ctx context.Context, plan Plan) error {
 		if err := c.stopMacAgents(ctx, plan, labels); err != nil {
 			return err
 		}
-		active, err := c.Status(ctx, plan)
-		if err != nil {
+		if err := c.waitForMacLaneStop(ctx, plan); err != nil {
 			return err
-		}
-		if active {
-			return errors.New("selected Mac lane agents remained active after stop")
 		}
 		return c.proveStoppedLaneQuiescence(ctx, plan)
 	}
@@ -384,6 +380,25 @@ func (c *SimpleServiceController) Stop(ctx context.Context, plan Plan) error {
 		return fmt.Errorf("selected lane systemd stop did not complete cleanly (exit %d, result %q)", result.ExitCode, strings.TrimSpace(result.Output))
 	}
 	return c.proveStoppedLaneQuiescence(ctx, plan)
+}
+
+func (c *SimpleServiceController) waitForMacLaneStop(ctx context.Context, plan Plan) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		active, err := c.Status(ctx, plan)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("selected Mac lane agents remained active after stop: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func simpleBoundedContext(parent context.Context, maximum time.Duration) (context.Context, context.CancelFunc) {
