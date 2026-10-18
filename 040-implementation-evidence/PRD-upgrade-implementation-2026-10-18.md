@@ -1,18 +1,20 @@
 # PRD in-place upgrade — implementation and fresh baseline
 
-**Status (2026-10-18, pre-activation):** The authorized PRD maintenance is
-ready for postflight activation. The exact previously Dev/QAS-accepted
+**Status (2026-10-18, postflight):** The exact previously Dev/QAS-accepted
 `f117853a9f712e734eab787e648383f5468e719c` bundles are installed on Mac and all
 three Ubuntu workers. Fresh native-host preflights show all four unsuffixed
-services stopped, schema 39, unchanged PRD configs, exact accepted component
+services active, schema 39, unchanged PRD configs, exact accepted component
 hashes, and zero active work, slots, reservations, resumable jobs, or pending
 recovery finalizations. The four retained identities were handled only by
 guarded recovery; their historical failed/lost results and terminal events
 remain intact. Source correction commit `6b59e8c546d518ed0431430059f8718eb5cc171c`
 passed the Mac and all three Ubuntu `make check build` gates and is on primary
 Gitea, the exact GitHub mirror, and all three clean Ubuntu `dev` checkouts. No
-PRD service has been restarted yet. No mailbox request or ACK was published,
-and Dev/QAS services were not changed.
+mailbox request or ACK was published, and Dev/QAS services remain active.
+Functional direct and queued checks passed on all three Ubuntu workers. One Mac
+local job status lookup returned `SQLITE_BUSY`; the command itself later proved
+succeeded, but the storage error remains unresolved. Keep external publishers
+paused and do not treat this as clean resume approval.
 
 ## Scope and controls
 
@@ -220,9 +222,88 @@ then use `runner-lane prd-rollback` with that host's private backup. Rollback
 refuses to replace any subsequently accepted work and leaves the service
 stopped. No newer database is restored over accepted work.
 
-No service is active yet. Fresh zero-work, stopped-service, exact-artifact,
-config, backup, source-gate, and mirror/pull checks passed before activation.
-After this evidence is delivered under AGENTS.md, start only the four
-unsuffixed services sequentially and complete the direct-interface postflight.
-Keep publishers paused until that postflight passes. No Runner request or ACK
-was published during this transaction.
+At this pre-activation checkpoint all four PRD services were stopped. The
+following section records their authorized start and final postflight.
+
+## Activation and final postflight
+
+The exact accepted f117 artifacts were started only through the supported
+`runner-lane prd-start` path. Linux-host, sandbox-host, and factory-sandbox
+started successfully. The first Mac attempt from the restricted shell returned
+launchd bootstrap error 5; read-only checks showed valid, backup-matching
+LaunchAgent plists and runnable f117 binaries, with neither agent loaded. The
+same supported `runner-lane prd-start --host mac-control-plane` succeeded from
+the authorized native Mac shell context. It ran as `tomasz.walczuk`; no
+administrator password or manual binary/service operation was used.
+
+Final per-host preflight after the functional checks reports all four
+unsuffixed services active, schema 39, exact candidate hashes/config hashes
+from the pre-activation table, and zero active sessions, command slots,
+reservations, queued/running commands, resumable jobs, or pending recovery
+finalizations. Mac API/locald Unix-socket readiness and all three Ubuntu direct
+mTLS `/health/ready` probes returned HTTP 200 and `readiness=ready`, all at
+build `f117853a9f712e734eab787e648383f5468e719c`. All Dev/QAS Mac LaunchAgents
+and Ubuntu `runnerd-dev.service` / `runnerd-qas.service` remained active; no
+Dev/QAS configuration or service was changed.
+
+| Functional route | Job / command | Result |
+|---|---|---|
+| Mac local API, `mac-dev` / `local/mac-workstation` | `job-77f956faa467c0b899a7fea296434b8f` / `cmd-bf23869cb333c4a226b63f61844d27fc` | Initial CLI returned exit 1 because its `GET /v1/jobs/{id}` poll failed; later read-only event/SQLite evidence confirms command succeeded, exit 0, output complete, terminal sequence 4, session closed, reservation and command slot released. It was not replayed. |
+| Direct mTLS Linux | `job-c03785b3d249b79203be15a65035e4d2` / `cmd-d19fedc61465eb4ba48f0536cb74d184` | exit 0, complete output/history, teardown closed |
+| Direct mTLS sandbox | `job-9df8727c32f0c6dfc43276360bd61072` / `cmd-559aaaad95e142c861d126b605c5e202` | exit 0, complete output/history, teardown closed |
+| Direct mTLS factory | `job-c069f083bfc0012985f8d7602313fc77` / `cmd-67039a7aef0cc897b984c41e7c946645` | exit 0, complete output/history, teardown closed |
+| Queued via Mac API to Linux | `job-b45a8c01d4987ec18f7a9c0ad270f837` / `cmd-4a88b9231ffa6a2fadf3962332b6e4a3` | exit 0, complete event history confirmed by a separate read, teardown closed |
+| Queued via Mac API to sandbox | `job-a1fe6ce67555513dcdf4f680c1d084f2` / `cmd-90e9809e8759bb165693924d3af674e7` | exit 0, complete event history confirmed by a separate read, teardown closed |
+| Queued via Mac API to factory | `job-e7586c5cb9b3013abde6e2ab9a79ec62` / `cmd-a6dae5b94d7577d10d5db61d1e6e48b1` | exit 0, complete event history confirmed by a separate read, teardown closed |
+
+The one observed Mac storage failure was bounded to this operation: the `run`
+CLI's `GET /v1/jobs/{id}` status poll called local API
+`handleGetJob` → `GetLocalIntentByResource` → `withImmediateTransaction`; the
+`BEGIN IMMEDIATE` returned `database is locked`, SQLite primary/extended code
+5 (`SQLITE_BUSY`, category `sqlite_lock`). No typed OS error was present. It
+occurred during the Mac local functional probe at approximately
+`2026-10-18T19:54Z`; the HTTP error did not expose an event timestamp or elapsed
+duration, and this path did not emit the queue-claim diagnostic record. The
+request's accepted identity and terminal result were later verified without
+replay. This confirms a SQLite lock failure in the job-status read path; it
+does not identify which concurrent writer held the lock or prove the original
+queue-claim cause.
+
+Health counters immediately after restart were zero. Final counters are:
+
+| Component | `storage_errors_total` | `cleanup_failures_total` | Other final gauges |
+|---|---:|---:|---|
+| Mac `mac_ingress` | 1 | 0 | slots 0, queued commands/intents 0, mailbox backlog 0 |
+| Mac `mac_local_executor` | 0 | 0 | slots 0, queued commands/intents 0, mailbox backlog 0 |
+| Linux `linux_runnerd` | 0 | 0 | slots 0, queued commands 0, mailbox backlog 0 |
+| Sandbox `linux_runnerd` | 0 | 0 | slots 0, queued commands 0, mailbox backlog 0 |
+| Factory `linux_runnerd` | 0 | 0 | slots 0, queued commands 0, mailbox backlog 0 |
+
+The Mac ingress counter rose from 0 to 1 with the observed SQLite error. The
+counter is process-local and the restart reset the earlier historical value;
+this is a post-restart baseline, not evidence that the recurring issue is
+resolved. No diagnosis is inferred from the readiness checks or other hosts'
+zero counters.
+
+Monitoring commands (run on the Mac while watching the external publisher
+pause):
+
+```sh
+root="$HOME/Library/Application Support/RemoteSessionRunner"
+for socket in local-api.sock locald.sock; do
+  curl --fail --silent --show-error --unix-socket "$root/run/$socket" http://runner/health/ready \
+    | jq '{component,build_revision,readiness,metrics:{active_session_slots:.metrics.active_session_slots,active_command_slots:.metrics.active_command_slots,queued_commands:.metrics.queued_commands,queued_intents:.metrics.queued_intents,storage_errors_total:.metrics.storage_errors_total,cleanup_failures_total:.metrics.cleanup_failures_total,mailbox_backlog:.metrics.mailbox_backlog}}'
+done
+secrets="$root/secrets"
+curl --fail --silent --show-error --cacert "$secrets/poc-ca.pem" --cert "$secrets/direct-client.pem" --key "$secrets/direct-client.key" https://129.151.232.40:8443/health/ready
+curl --fail --silent --show-error --cacert "$secrets/poc-ca.pem" --cert "$secrets/sandbox-direct-client.pem" --key "$secrets/sandbox-direct-client.key" https://132.226.205.205:8443/health/ready
+curl --fail --silent --show-error --cacert "$secrets/factory-sandbox-ca.pem" --cert "$secrets/factory-sandbox-direct-client.pem" --key "$secrets/factory-sandbox-direct-client.key" https://145.241.255.66:8443/health/ready
+```
+
+No external publisher was resumed, no mailbox request or ACK was published,
+and no held ACK or prior mailbox item was changed. PRD is aligned to the
+accepted f117 artifacts and currently passes readiness, route, and capacity
+checks, but the fresh Mac `SQLITE_BUSY` means the recurring storage issue is
+still open. Keep publishers paused pending the owner's decision on further
+investigation; do not report the old root cause as proved or the issue as
+resolved.
