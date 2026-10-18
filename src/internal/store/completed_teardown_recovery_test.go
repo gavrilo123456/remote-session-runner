@@ -500,6 +500,7 @@ func completedTeardownSchema36AuthorityPath(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropBUG025CleanupSchemaForMigrationFixture(t, database)
 	defer database.Close()
 	for _, statement := range []string{
 		`DROP TABLE lane_capacity_reservations`,

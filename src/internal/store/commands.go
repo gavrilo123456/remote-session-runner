@@ -483,7 +483,7 @@ func (s *AuthorityStore) ReplayCommandEvents(ctx context.Context, id domain.Comm
 	if afterSequence < 0 {
 		return nil, fmt.Errorf("%w: negative cursor", ErrCommandReplayGap)
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]CommandEventRecord, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]CommandEventRecord, error) {
 		command, err := readCommandOnConnection(ctx, connection, validatedID)
 		if err != nil {
 			return nil, err
@@ -604,12 +604,9 @@ func (s *AuthorityStore) GetCommand(ctx context.Context, id domain.CommandID) (C
 	if err != nil {
 		return CommandRecord{}, err
 	}
-	connection, err := s.db.Conn(ctx)
-	if err != nil {
-		return CommandRecord{}, fmt.Errorf("acquire command connection: %w", err)
-	}
-	defer connection.Close()
-	return readCommandOnConnection(ctx, connection, validatedID)
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (CommandRecord, error) {
+		return readCommandOnConnection(ctx, connection, validatedID)
+	})
 }
 
 // GetCommandWithEvents reads command metadata and its retained contiguous
@@ -624,7 +621,7 @@ func (s *AuthorityStore) GetCommandWithEvents(ctx context.Context, id domain.Com
 		command CommandRecord
 		events  []CommandEventRecord
 	}
-	result, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
+	result, err := withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
 		command, err := readCommandOnConnection(ctx, connection, validatedID)
 		if err != nil {
 			return snapshot{}, err

@@ -169,7 +169,7 @@ func (s *AuthorityStore) LaneByteCapacitySnapshot(ctx context.Context, lane stri
 	if s == nil || s.db == nil || !validCapacityLane(lane) {
 		return LaneByteBudgetSnapshot{}, ErrLaneCapacityInvalid
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (LaneByteBudgetSnapshot, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (LaneByteBudgetSnapshot, error) {
 		var snapshot LaneByteBudgetSnapshot
 		snapshot.Lane = lane
 		var maximum int64

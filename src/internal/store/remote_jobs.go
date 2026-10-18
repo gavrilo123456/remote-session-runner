@@ -89,7 +89,7 @@ func (s *AuthorityStore) GetRemoteJobProjection(ctx context.Context, id domain.J
 	if err != nil {
 		return RemoteJobProjection{}, err
 	}
-	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteJobProjection, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteJobProjection, error) {
 		return readRemoteJobProjectionOnConnection(ctx, connection, validated)
 	})
 }

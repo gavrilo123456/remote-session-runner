@@ -31,7 +31,7 @@ func (s *AuthorityStore) ListRetainedLostRuntimeRecoveryPairs(ctx context.Contex
 	if s == nil || s.db == nil {
 		return nil, ErrLostRuntimeRecoveryNotReleasable
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LostRuntimeRecoveryPair, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]LostRuntimeRecoveryPair, error) {
 		return listRetainedLostRuntimeRecoveryPairsOnConnection(ctx, connection)
 	})
 }
@@ -97,7 +97,7 @@ func (s *AuthorityStore) ListPendingLostRuntimeRecoveryFinalizations(ctx context
 	if s == nil || s.db == nil {
 		return nil, ErrLostRuntimeRecoveryNotReleasable
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]LostRuntimeRecoveryPair, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]LostRuntimeRecoveryPair, error) {
 		rows, err := connection.QueryContext(ctx, `
 SELECT finalization.session_id, finalization.command_id,
        command.session_id, command.state, session.state,
@@ -280,7 +280,7 @@ func (s *AuthorityStore) CheckLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ct
 	if err != nil {
 		return err
 	}
-	_, err = withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
+	_, err = withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct{}, error) {
 		_, err := checkLostRuntimeRecoveryBatchPreservingQueuedOneOffs(ctx, connection, validated)
 		return struct{}{}, err
 	})

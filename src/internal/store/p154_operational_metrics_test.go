@@ -186,6 +186,7 @@ func TestP154PreMigrationReadOnlyValidationKeepsLegacyDefaultIngress(t *testing.
 		_ = db.Close()
 		t.Fatal(err)
 	}
+	dropBUG025CleanupSchemaForMigrationFixture(t, db)
 	if _, err := db.ExecContext(ctx, `DROP TABLE local_remote_status_failures`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)

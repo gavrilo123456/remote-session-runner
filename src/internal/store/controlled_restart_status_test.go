@@ -254,6 +254,7 @@ func controlledRestartStatusLegacyAuthorityPath(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropBUG025CleanupSchemaForMigrationFixture(t, database)
 	if _, err := database.Exec(`DROP TABLE exec_controlled_restart_plan_lost_pairs`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)
@@ -307,6 +308,7 @@ func controlledRestartStatusSchema35AuthorityPath(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropBUG025CleanupSchemaForMigrationFixture(t, database)
 	if _, err := database.Exec(`DROP TABLE mailbox_configuration_retirements`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)

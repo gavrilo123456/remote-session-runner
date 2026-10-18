@@ -89,8 +89,11 @@ func TestP154ConfiguredMailboxRuntimesCycleWithIsolatedArtifacts(t *testing.T) {
 	h.service.runMailboxCycles(ctx, io.Discard)
 
 	// ACK cleanup is deferred. Advance the authority clock and run the same
-	// production cycle; each root removes only its own response/event files.
+	// production cleanup turns; the scheduler rotates one mailbox per turn.
 	h.now = h.now.Add(store.MailboxAckedResponseLifetime + time.Second)
+	resetBUG025CleanupScheduleForTest(h.service)
+	h.service.runMailboxCycles(ctx, io.Discard)
+	resetBUG025CleanupScheduleForTest(h.service)
 	h.service.runMailboxCycles(ctx, io.Discard)
 	for _, runtime := range h.service.mailboxes {
 		_, responsePath := p154ReadResponsePath(runtime, sharedReadID)

@@ -162,6 +162,7 @@ func TestBUG003ServiceCycleIsolatesRemoteMailboxFailureAcrossRestart(t *testing.
 	}
 
 	now = now.Add(store.MailboxAckedResponseLifetime + time.Second)
+	resetBUG025CleanupScheduleForTest(h.service)
 	h.service.runMailboxCycles(ctx, io.Discard)
 	for _, path := range []string{
 		filepath.Join(h.mailboxRoot, "outbox", firstID+mailbox.RequestSuffix),

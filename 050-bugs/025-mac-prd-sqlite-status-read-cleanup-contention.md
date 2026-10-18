@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `TRIAGED` — contention mechanism reproduced; corrective implementation not started |
+| Status | `FIXED — PENDING VERIFICATION` — source correction and regressions pass; Dev/QAS and installed acceptance pending |
 | Severity | High — status reads can fail with `SQLITE_BUSY`; idle history causes excessive maintenance work |
 | Priority | High |
 | Reported | 2026-10-18 |
@@ -12,7 +12,7 @@
 | Owner | Remote Session Runner implementer |
 | Affected component/path | Mac ingress job/intent status lookup, shared SQLite transaction helpers, mailbox event-file cleanup and worker cadence |
 | Affected revision | Installed PRD `f117853a9f712e734eab787e648383f5468e719c`, schema 39; relevant source unchanged at investigation baseline `4abf3f85f276f0fe1fc74e7e42e13aa136547ed4` |
-| Fixed revision | None |
+| Fixed revision | Pending source commit; candidate not installed |
 | Verification | Existing-code contention reproduced on a disposable production snapshot; no corrected candidate or installed fix verified |
 
 ## Reported behavior
@@ -163,30 +163,33 @@ history or replacing SQLite is not the demonstrated correction.
    cleanup enabled and ensure eventual cleanup under sustained ingress.
 6. **Validate then promote the correction.** Run focused regressions and the
    required project gates, then accept the same per-host artifacts in Dev and
-   QAS before any separately authorized selected-lane PRD upgrade. Record source,
+   QAS before the owner-authorized selected-lane PRD installation. Record source,
    artifact identities, error deltas, work progress and performance. Preserve
    existing PRD data, retained work, held ACKs, lane separation and rollback.
 
-This bug registration authorizes no service change, recovery, replay, ACK or
-new mailbox request. Continue to use the authorized Mac shell/SSH routes for
-engineering and tests. The owner's no-mailbox instruction remains in force;
-do not silently substitute live mailbox acceptance for isolated tests. Any
-required mailbox acceptance remains explicitly `NOT RUN` until separately
-authorized.
+On 2026-10-18, the owner explicitly authorized implementation, Dev then QAS
+acceptance, and installation/restart of Runner components in PRD, Dev and QAS
+on the existing Mac and three Ubuntu workers. Use the Mac shell and normal SSH
+with explicit identities; do not publish mailbox requests or ACKs. Keep project
+publishers paused through postflight. Before each installation, capture fresh
+service/work inventories and consistent backups, use supported lane install
+and rollback procedures, preserve retained records and held ACKs, and change
+one lane at a time. This authorization does not waive failed guards. No replay
+or manual reservation release is permitted.
 
 ## Fix and verification
 
-No correction exists yet. The implementer must record the correction commit,
-test commands/results and installed evidence here and in the register.
-Required gates:
+The correction and isolated source regressions are implemented. Record the
+final source commit, host validations, accepted per-host artifacts and installed
+evidence here and in the register. Required gates:
 
 | Gate | Required result | Current status |
 | --- | --- | --- |
-| Read progress under an independent writer | Actual production read method succeeds on the permitted WAL snapshot while a writer is held; no security/identity/hash checks weakened | `NOT RUN` for a correction |
-| Read diagnostics | Genuine read-side SQLite failures remain counted and distinguishable; successful reads do not inflate counters | `NOT RUN` |
-| History scaling and fairness | Growing already-removed history does not cause proportional repeated body processing under a writer lock; bounded batches progress past ineligible candidates across inboxes | `NOT RUN` |
-| Cleanup safety and crash recovery | Shared references, future deadlines, ACKs, terminal state, physical-root isolation, local/remote references, malformed metadata and interrupted cleanup remain correct | `NOT RUN` |
-| Concurrent service regression | Independent API/executor database users retain exactly-once claims, atomic rollback and bounded status/queue progress with representative history | `NOT RUN` |
+| Read progress under an independent writer | Actual production read method succeeds on a WAL fixture while another connection holds `BEGIN IMMEDIATE`; validation is unchanged | `PASS` in isolated regression; PRD snapshot acceptance remains pending |
+| Read diagnostics | Read-side SQLite error increments storage-errors; successful read does not | `PASS` in isolated regression |
+| History scaling and fairness | Bounded reference pages persist progress across reopen; removed history is excluded; work rotates across commands | `PASS` in structural fixture regressions; production-history measurement remains pending |
+| Cleanup safety and crash recovery | Shared references, future deadlines, ACK changes, local/remote ownership, malformed metadata, retained history and interrupted unlink retry remain safe | `PASS` in isolated regressions and full source suite |
+| Concurrent service regression | Independent API/executor database users retain exactly-once claims, atomic rollback and bounded progress | `PASS` in full source suite; live representative traffic remains pending |
 | Selected-lane acceptance | Dev then QAS accept the correction with representative cleanup/status traffic, preserved lane isolation and truthful error deltas | `NOT RUN` |
 | PRD verification after approved installation | Compare counter deltas, CPU/cleanup cost and normal project progress over a recorded interval; a counter reset or readiness pass alone is insufficient | `NOT RUN` |
 
@@ -198,9 +201,10 @@ separately if they persist.
 
 ## Resolution
 
-Open and triaged. Change to `FIXED — PENDING VERIFICATION` only after a corrective
-candidate exists; close only after the stated required gates pass. Investigation
-and Git delivery are not fix or installed-runtime acceptance.
+The source correction exists and its isolated regressions and source gates pass.
+Keep `FIXED — PENDING VERIFICATION` until Dev, QAS and PRD installation and
+postflight gates pass. Do not attribute unrelated queue-claim warnings to this
+mechanism without evidence.
 
 ## Registration delivery evidence
 
@@ -223,3 +227,4 @@ is reported after primary/mirror and clean worker synchronization complete.
 | Date | Change |
 | --- | --- |
 | 2026-10-18 | Registered the reproduced cleanup/status writer contention as BUG-025; linked the root-cause report, reproducer, limitations and implementation/acceptance contract. |
+| 2026-10-18 | Implemented consistent read transactions with SQLite error accounting, a bounded durable cleanup work queue, and a one-second rotating cleanup cadence. Isolated regressions and `make check` passed; Dev/QAS/PRD acceptance is pending. |

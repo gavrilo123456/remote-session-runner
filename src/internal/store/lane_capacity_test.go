@@ -215,6 +215,7 @@ func TestLaneCapacityMigrationFromSchema38AddsEmptyDurableLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropBUG025CleanupSchemaForMigrationFixture(t, database)
 	for _, statement := range []string{
 		`DROP TABLE lane_capacity_reservations`,
 		`DROP TABLE lane_capacity_budgets`,

@@ -285,6 +285,7 @@ func downgradeMailboxRetirementSchemaTo35(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropBUG025CleanupSchemaForMigrationFixture(t, database)
 	if _, err := database.Exec(`DROP TABLE mailbox_configuration_retirements`); err != nil {
 		_ = database.Close()
 		t.Fatal(err)

@@ -44,7 +44,7 @@ func (s *AuthorityStore) CheckCompletedTeardownRecoveryBatch(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]CompletedTeardownRecovery, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]CompletedTeardownRecovery, error) {
 		return checkCompletedTeardownRecoveryBatch(ctx, connection, validated)
 	})
 }
@@ -101,7 +101,7 @@ func (s *AuthorityStore) ListPendingCompletedTeardownRecoveryFinalizations(ctx c
 	if s == nil || s.db == nil {
 		return nil, ErrCompletedTeardownRecoveryNotReleasable
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]CompletedTeardownRecovery, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]CompletedTeardownRecovery, error) {
 		pairs, err := pendingCompletedTeardownPairs(ctx, connection)
 		if err != nil {
 			return nil, err

@@ -363,7 +363,7 @@ func (s *AuthorityStore) GetMailboxExchangeInMailbox(ctx context.Context, ref Ma
 	if err != nil {
 		return MailboxExchangeRecord{}, err
 	}
-	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
 		return readMailboxExchangeOnConnection(ctx, connection, validated)
 	})
 }
@@ -387,7 +387,7 @@ func (s *AuthorityStore) FindActiveMailboxExchangeByKeyInMailbox(ctx context.Con
 		return MailboxExchangeRecord{}, false, fmt.Errorf("%w: idempotency key", ErrMailboxExchangeInvalid)
 	}
 	now := s.now().UTC()
-	record, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+	record, err := withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
 		record, found, err := readLatestMailboxExchangeByKeyOnConnection(ctx, connection, mailboxID, validatedController, operation, key)
 		if err != nil || !found {
 			return record, err
@@ -428,7 +428,7 @@ func (s *AuthorityStore) ListMailboxExchangesInMailbox(ctx context.Context, mail
 	if state != MailboxExchangeAccepted && state != MailboxExchangeComplete && state != MailboxExchangeRejected && state != MailboxExchangeIndeterminate {
 		return nil, fmt.Errorf("%w: state %q", ErrMailboxExchangeInvalid, state)
 	}
-	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
 		rows, err := connection.QueryContext(ctx, `
 		SELECT client_request_id FROM mailbox_exchanges
 	WHERE mailbox_id = ? AND controller_type = ? AND controller_id = ? AND operation = ? AND request_state = ?
@@ -483,7 +483,7 @@ func (s *AuthorityStore) ListMailboxExchangesForIntent(ctx context.Context, cont
 	if err != nil {
 		return nil, fmt.Errorf("%w: intent ID", ErrMailboxExchangeInvalid)
 	}
-	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
 		rows, err := connection.QueryContext(ctx, `
 		SELECT exchange.mailbox_id, exchange.client_request_id
 		FROM mailbox_exchanges AS exchange
@@ -566,7 +566,7 @@ func (s *AuthorityStore) listPublishableTerminalMailboxExchangesInMailbox(ctx co
 	storedNow := formatStoredTime(now)
 	legacyUnackedLifetimeDays := MailboxUnackedResponseLifetime.Hours() / (24 * time.Hour).Hours()
 	legacyAckedLifetimeDays := MailboxAckedResponseLifetime.Hours() / (24 * time.Hour).Hours()
-	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxExchangeRecord, error) {
 		var rows *sql.Rows
 		if limit == 0 {
 			rows, err = connection.QueryContext(ctx, `

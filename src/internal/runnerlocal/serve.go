@@ -34,6 +34,7 @@ const (
 	intentLeaseDuration                  = 2 * time.Minute
 	acceptedRemoteReconciliationInterval = time.Second
 	terminalArtifactRecoveryInterval     = time.Second
+	mailboxArtifactCleanupInterval       = time.Second
 )
 
 var (
@@ -261,6 +262,9 @@ type Service struct {
 	terminalArtifactRecoveryMu   sync.Mutex
 	lastTerminalArtifactRecovery time.Time
 	nextTerminalArtifactMailbox  int
+	artifactCleanupMu            sync.Mutex
+	lastArtifactCleanup          time.Time
+	nextArtifactCleanupMailbox   int
 }
 
 type mailboxMetricsSource struct {
@@ -962,9 +966,11 @@ func (s *Service) runMailboxCycles(ctx context.Context, stderr io.Writer) {
 			fmt.Fprintf(stderr, "runner-local: mailbox %s durable orphan reconciliation failed\n", runtime.id)
 		}
 	}
-	for _, runtime := range runtimes {
-		if _, err := runtime.artifactCleaner.Run(ctx); err != nil && ctx.Err() == nil {
-			s.recordOperationalError(err, true)
+	if runtime, ok := s.nextMailboxArtifactCleanupRuntime(runtimes, time.Now()); ok {
+		_, cleanupErr := runtime.artifactCleaner.Run(ctx)
+		s.markMailboxArtifactCleanupComplete(time.Now())
+		if cleanupErr != nil && ctx.Err() == nil {
+			s.recordOperationalError(cleanupErr, true)
 			fmt.Fprintf(stderr, "runner-local: mailbox %s cleanup cycle failed\n", runtime.id)
 		}
 	}
@@ -974,6 +980,33 @@ func (s *Service) runMailboxCycles(ctx context.Context, stderr io.Writer) {
 			s.logMailboxReconciliationError(stderr, runtime.id, "terminal_artifact", err)
 		}
 	}
+}
+
+// nextMailboxArtifactCleanupRuntime rotates one bounded cleanup turn across
+// configured inboxes and enforces a quiet interval between writer-owning
+// cleanup calls. The interval is measured from completion, so a slow pass
+// cannot immediately reacquire the SQLite writer on the next poll cycle.
+func (s *Service) nextMailboxArtifactCleanupRuntime(runtimes []mailboxRuntime, now time.Time) (mailboxRuntime, bool) {
+	if s == nil || len(runtimes) == 0 {
+		return mailboxRuntime{}, false
+	}
+	s.artifactCleanupMu.Lock()
+	defer s.artifactCleanupMu.Unlock()
+	if !s.lastArtifactCleanup.IsZero() && now.Before(s.lastArtifactCleanup.Add(mailboxArtifactCleanupInterval)) {
+		return mailboxRuntime{}, false
+	}
+	index := s.nextArtifactCleanupMailbox % len(runtimes)
+	s.nextArtifactCleanupMailbox = (index + 1) % len(runtimes)
+	return runtimes[index], true
+}
+
+func (s *Service) markMailboxArtifactCleanupComplete(now time.Time) {
+	if s == nil {
+		return
+	}
+	s.artifactCleanupMu.Lock()
+	s.lastArtifactCleanup = now
+	s.artifactCleanupMu.Unlock()
 }
 
 func (s *Service) configuredMailboxRuntimes(stderr io.Writer) []mailboxRuntime {

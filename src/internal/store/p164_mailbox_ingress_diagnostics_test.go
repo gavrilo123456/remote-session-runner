@@ -33,9 +33,9 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 		_ = fresh.Close()
 		t.Fatalf("fresh schema version=%d, want current %d", version, CurrentSchemaVersion)
 	}
-	if CurrentSchemaVersion != 39 {
+	if CurrentSchemaVersion != 40 {
 		_ = fresh.Close()
-		t.Fatalf("CurrentSchemaVersion=%d, want 39", CurrentSchemaVersion)
+		t.Fatalf("CurrentSchemaVersion=%d, want 40", CurrentSchemaVersion)
 	}
 	var migrationName string
 	if err := fresh.QueryRowContext(ctx, `SELECT name FROM runner_schema_migrations WHERE version = 30`).Scan(&migrationName); err != nil || migrationName != "mailbox_ingress_diagnostics" {
@@ -73,6 +73,10 @@ func TestP164MailboxIngressDiagnosticMigrationFreshAndFromV29(t *testing.T) {
 	if err := fresh.QueryRowContext(ctx, `SELECT name FROM runner_schema_migrations WHERE version = 39`).Scan(&migrationName); err != nil || migrationName != "lane_capacity_reservations" {
 		_ = fresh.Close()
 		t.Fatalf("fresh migration 39=%q err=%v", migrationName, err)
+	}
+	if err := fresh.QueryRowContext(ctx, `SELECT name FROM runner_schema_migrations WHERE version = 40`).Scan(&migrationName); err != nil || migrationName != "bounded_event_cleanup_work" {
+		_ = fresh.Close()
+		t.Fatalf("fresh migration 40=%q err=%v", migrationName, err)
 	}
 	if err := fresh.Close(); err != nil {
 		t.Fatal(err)

@@ -207,7 +207,7 @@ func (s *AuthorityStore) GetMailboxIngressDiagnosticInMailbox(ctx context.Contex
 	if err != nil {
 		return MailboxIngressDiagnosticRecord{}, err
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MailboxIngressDiagnosticRecord, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxIngressDiagnosticRecord, error) {
 		record, found, err := readMailboxIngressDiagnosticOnConnection(ctx, connection, validated)
 		if err != nil {
 			return MailboxIngressDiagnosticRecord{}, err
@@ -338,7 +338,7 @@ func (s *AuthorityStore) ListRecoverableMailboxIngressDiagnosticsInMailbox(ctx c
 		return nil, ErrMailboxIngressDiagnosticInvalid
 	}
 	now := s.now().UTC()
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]MailboxIngressDiagnosticRecord, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]MailboxIngressDiagnosticRecord, error) {
 		rows, err := connection.QueryContext(ctx, `
 SELECT client_request_id
 FROM mailbox_ingress_diagnostics

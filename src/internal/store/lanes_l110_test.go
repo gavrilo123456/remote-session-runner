@@ -280,6 +280,7 @@ func TestLanesL110MigrationFromSchema37(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dropBUG025CleanupSchemaForMigrationFixture(t, database)
 	defer database.Close()
 	if _, err := database.ExecContext(ctx, `DROP TABLE lane_capacity_reservations; DROP TABLE lane_capacity_budgets; DROP TABLE lane_ingress_admission; DELETE FROM runner_schema_migrations WHERE version > 37; PRAGMA user_version = 37`); err != nil {
 		t.Fatal(err)

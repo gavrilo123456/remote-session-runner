@@ -59,7 +59,7 @@ func (s *AuthorityStore) LookupMailboxLifecycleEvidenceForRequestIDsInMailbox(ct
 	if len(unique) == 0 {
 		return evidence, nil
 	}
-	result, err := withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (map[string]MailboxLifecycleEvidence, error) {
+	result, err := withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (map[string]MailboxLifecycleEvidence, error) {
 		for offset := 0; offset < len(unique); offset += mailboxLifecycleEvidenceQueryLimit {
 			end := offset + mailboxLifecycleEvidenceQueryLimit
 			if end > len(unique) {

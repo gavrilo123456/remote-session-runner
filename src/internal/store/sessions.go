@@ -1107,3 +1107,19 @@ func withReadTransaction[T any](ctx context.Context, db *sql.DB, fn func(context
 	committed = true
 	return result, nil
 }
+
+// withStoreReadTransaction keeps a store read on one WAL snapshot while
+// preserving the store's SQLite error accounting. Read-only API lookups must
+// not reserve the writer slot, but a failed read still remains visible in
+// storage_errors_total.
+func withStoreReadTransaction[T any](ctx context.Context, owner *AuthorityStore, fn func(context.Context, *sql.Conn) (T, error)) (result T, err error) {
+	if owner == nil || owner.db == nil {
+		return result, ErrNilDatabase
+	}
+	defer func() {
+		if IsSQLiteError(err) {
+			owner.storageErrors.Add(1)
+		}
+	}()
+	return withReadTransaction(ctx, owner.db, fn)
+}

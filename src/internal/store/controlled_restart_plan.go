@@ -196,7 +196,7 @@ func (s *AuthorityStore) ReadControlledRestartPlan(ctx context.Context) (Control
 	if s == nil || s.db == nil {
 		return ControlledRestartPlan{}, ErrNilDatabase
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (ControlledRestartPlan, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (ControlledRestartPlan, error) {
 		return readControlledRestartPlanOnConnection(ctx, connection)
 	})
 }

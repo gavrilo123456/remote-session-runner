@@ -121,7 +121,7 @@ func (s *AuthorityStore) GetRemoteSessionProjection(ctx context.Context, id doma
 	if err != nil {
 		return RemoteSessionProjection{}, err
 	}
-	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteSessionProjection, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteSessionProjection, error) {
 		return readRemoteSessionProjectionOnConnection(ctx, connection, validated)
 	})
 }
@@ -204,7 +204,7 @@ func (s *AuthorityStore) GetRemoteCommandProjection(ctx context.Context, id doma
 	if err != nil {
 		return RemoteCommandProjection{}, err
 	}
-	return withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteCommandProjection, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (RemoteCommandProjection, error) {
 		return readRemoteCommandProjectionOnConnection(ctx, connection, validated)
 	})
 }
@@ -221,7 +221,7 @@ func (s *AuthorityStore) GetRemoteCommandWithEvents(ctx context.Context, id doma
 		projection RemoteCommandProjection
 		events     []RemoteEventRecord
 	}
-	result, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
+	result, err := withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (snapshot, error) {
 		projection, err := readRemoteCommandProjectionOnConnection(ctx, connection, validated)
 		if err != nil {
 			return snapshot{}, err

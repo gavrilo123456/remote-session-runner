@@ -33,7 +33,7 @@ func (s *AuthorityStore) CheckClosedCancelledOneOffJobs(ctx context.Context, job
 	if err != nil {
 		return nil, err
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]ClosedCancelledJobSettlement, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]ClosedCancelledJobSettlement, error) {
 		candidates := make([]closedCancelledJobSettlementCandidate, 0, len(validated))
 		for _, jobID := range validated {
 			candidate, err := readClosedCancelledJobSettlementCandidate(ctx, connection, jobID)

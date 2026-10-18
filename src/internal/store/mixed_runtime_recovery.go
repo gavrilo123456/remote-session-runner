@@ -41,7 +41,7 @@ func (s *AuthorityStore) CheckMixedRuntimeRecoverySet(ctx context.Context, lost 
 	if err != nil {
 		return MixedRuntimeRecoverySet{}, err
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) (MixedRuntimeRecoverySet, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MixedRuntimeRecoverySet, error) {
 		return readMixedRuntimeRecoverySet(ctx, connection, validatedLost, validatedTeardown)
 	})
 }

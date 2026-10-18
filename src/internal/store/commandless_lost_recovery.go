@@ -38,7 +38,7 @@ func (s *AuthorityStore) CheckCommandlessLostRuntimeRecoveryBatch(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]CommandlessLostRuntimeRecovery, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]CommandlessLostRuntimeRecovery, error) {
 		return readCommandlessLostRuntimeRecoveryBatch(ctx, connection, validated)
 	})
 }
@@ -144,7 +144,7 @@ func (s *AuthorityStore) ListPendingCommandlessLostRuntimeRecoveryFinalizations(
 	if s == nil || s.db == nil {
 		return nil, ErrCommandlessLostRuntimeRecoveryNotReleasable
 	}
-	return withReadTransaction(ctx, s.db, func(ctx context.Context, connection *sql.Conn) ([]CommandlessLostRuntimeRecovery, error) {
+	return withStoreReadTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) ([]CommandlessLostRuntimeRecovery, error) {
 		rows, err := connection.QueryContext(ctx, `
 SELECT session_id
 FROM exec_commandless_lost_runtime_recovery_finalizations

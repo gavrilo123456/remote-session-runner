@@ -26,6 +26,7 @@ func TestBUG009MigrationLeavesHistoricalReleasedLostPairsOutsideNewWorkList(t *t
 		_ = database.Close()
 		t.Fatal(err)
 	}
+	dropBUG025CleanupSchemaForMigrationFixture(t, database)
 	// The current scheduler consults the controlled-restart plan table before
 	// it claims a command. This fixture intentionally begins at the v32
 	// boundary to create historical lost state, so add only that mechanical
