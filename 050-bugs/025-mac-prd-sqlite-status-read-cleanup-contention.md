@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — source correction, schema-39 pre-migration backup fix, and regressions pass on Mac and all three Ubuntu hosts; Dev/QAS and installed acceptance pending |
+| Status | `FIXED — DEPLOYED; NORMAL-LOAD OBSERVATION PENDING` — source gates, Dev/QAS acceptance and bounded PRD postflight pass; project publishers remain paused and elevated CPU samples need follow-up |
 | Severity | High — status reads can fail with `SQLITE_BUSY`; idle history causes excessive maintenance work |
 | Priority | High |
 | Reported | 2026-10-18 |
@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner implementer |
 | Affected component/path | Mac ingress job/intent status lookup, shared SQLite transaction helpers, mailbox event-file cleanup and worker cadence |
 | Affected revision | Installed PRD `f117853a9f712e734eab787e648383f5468e719c`, schema 39; relevant source unchanged at investigation baseline `4abf3f85f276f0fe1fc74e7e42e13aa136547ed4` |
-| Fixed revision | `7c205239928f885b1a22e2aee3de1f03d30e52bf`, with the pre-migration backup correction in `0a921404c0a1d4b0e025e83771ad3a67ce253f1e`; candidate not installed |
-| Verification | Existing-code contention reproduced on a disposable production snapshot; schema-39 installation backup failure reproduced and fixed; corrected candidate acceptance and installation remain pending |
+| Fixed revision | `00c1ca6e7694842c35d398583b3f26fea59e3613`; source correction in `7c205239928f885b1a22e2aee3de1f03d30e52bf`, with the pre-migration backup correction in `0a921404c0a1d4b0e025e83771ad3a67ce253f1e` |
+| Verification | Existing-code contention reproduced on a disposable production snapshot; corrected immutable bundles passed Dev then QAS and were installed in PRD on all four existing machines. Readiness and 20 bounded direct status reads per host/lane passed. Normal multi-project observation is pending. |
 
 ## Reported behavior
 
@@ -120,12 +120,15 @@ unclassified; do not claim all historical storage errors share this cause.
 
 ## Impact and scope
 
-The known reproduction and live observation concern Mac PRD ingress. API and
-executor processes intentionally share one database within that lane. The
-expected processes were present; no duplicate PRD instance was found. Dev,
-QAS and PRD used distinct database files, so independent lanes did not share
-this SQLite lock. Other hosts using shared store code may benefit from a fix,
-but no equivalent Linux runtime failure is established by this report.
+The original reproduced status-read failure and cleanup hotspot concerned Mac
+PRD ingress. API and executor processes intentionally share one database
+within that lane. The expected processes were present; no duplicate PRD
+instance was found. Dev, QAS and PRD use distinct database files, so independent
+lanes do not share this SQLite lock. The same correction is now deployed across
+all four hosts. A later bounded sample found elevated CPU on Mac PRD
+`runner-local` and sandbox-host PRD `runnerd`; that sample does not establish
+the cause or attribute it to this cleanup mechanism. No equivalent Linux
+SQLite failure has been established.
 
 Concurrency can expose the defects, but other projects need not be using Runner
 incorrectly. Restarting resets counters and may briefly change timing; it does
@@ -133,7 +136,7 @@ not remove the repeated-history algorithm or unnecessary writer reservation.
 Increasing the busy timeout, suppressing errors, disabling cleanup, deleting
 history or replacing SQLite is not the demonstrated correction.
 
-## Instructions for the implementer
+## Implementation contract
 
 1. **Add failing-before regressions on isolated fixtures.** Recreate completed
    history and competing database users without production request publication.
@@ -161,11 +164,13 @@ history or replacing SQLite is not the demonstrated correction.
 5. **Budget maintenance cadence.** Prevent overdue cleanup cycles from
    continuously reacquiring the writer or holding up fresh mailbox work. Keep
    cleanup enabled and ensure eventual cleanup under sustained ingress.
-6. **Validate then promote the correction.** Run focused regressions and the
-   required project gates, then accept the same per-host artifacts in Dev and
-   QAS before the owner-authorized selected-lane PRD installation. Record source,
-   artifact identities, error deltas, work progress and performance. Preserve
-   existing PRD data, retained work, held ACKs, lane separation and rollback.
+6. **Validate then promote the correction.** Focused regressions and project
+   gates passed; each immutable per-host artifact was accepted in Dev, then QAS,
+   before installation in PRD. The supported installer preserved production
+   data and configuration, migrated schema 39 to 40, and retained rollback
+   backups. See the [deployment evidence](../040-implementation-evidence/BUG-025-implementation-2026-10-18.md)
+   for artifact hashes, service state, counters, CPU samples and remaining
+   normal-load observation.
 
 On 2026-10-18, the owner explicitly authorized implementation, Dev then QAS
 acceptance, and installation/restart of Runner components in PRD, Dev and QAS
@@ -189,40 +194,50 @@ No production database was migrated or changed by the failed attempt.
 
 ## Fix and verification
 
-The correction and isolated source regressions are implemented. Source and
-platform gates passed at `0a921404c0a1d4b0e025e83771ad3a67ce253f1e`. Record the
-final source commit, host validations, accepted per-host artifacts and installed
-evidence here and in the register. Required gates:
+The correction and isolated source regressions are implemented. The full
+`make check` passed on Mac and all three Ubuntu hosts at
+`00c1ca6e7694842c35d398583b3f26fea59e3613`. Final artifacts, accepted host
+revisions and installed evidence are recorded in the
+[deployment evidence](../040-implementation-evidence/BUG-025-implementation-2026-10-18.md).
+Required gates:
 
 | Gate | Required result | Current status |
 | --- | --- | --- |
-| Read progress under an independent writer | Actual production read method succeeds on a WAL fixture while another connection holds `BEGIN IMMEDIATE`; validation is unchanged | `PASS` in isolated regression; PRD snapshot acceptance remains pending |
+| Read progress under an independent writer | Actual production read method succeeds on a WAL fixture while another connection holds `BEGIN IMMEDIATE`; validation is unchanged | `PASS` in isolated regression; bounded direct status reads also passed on all deployed lanes |
 | Read diagnostics | Read-side SQLite error increments storage-errors; successful read does not | `PASS` in isolated regression |
-| History scaling and fairness | Bounded reference pages persist progress across reopen; removed history is excluded; work rotates across commands | `PASS` in structural fixture regressions; production-history measurement remains pending |
+| History scaling and fairness | Bounded reference pages persist progress across reopen; removed history is excluded; work rotates across commands | `PASS` in structural fixture regressions; Mac PRD cleanup progress is recorded in deployment evidence; normal-load observation remains pending |
 | Cleanup safety and crash recovery | Shared references, future deadlines, ACK changes, local/remote ownership, malformed metadata, retained history and interrupted unlink retry remain safe | `PASS` in isolated regressions and full source suite |
-| Concurrent service regression | Independent API/executor database users retain exactly-once claims, atomic rollback and bounded progress | `PASS` in full source suite; live representative traffic remains pending |
+| Concurrent service regression | Independent API/executor database users retain exactly-once claims, atomic rollback and bounded progress | `PASS` in full source suite; live representative multi-project traffic remains pending while publishers are paused |
 | Pre-migration rollback backup | Existing lane backup preserves schema 39 and verifies source/snapshot schema equality before candidate migration | `PASS` on Mac and all three Ubuntu source gates at `0a92140` |
-| Selected-lane acceptance | Dev then QAS accept the correction with representative cleanup/status traffic, preserved lane isolation and truthful error deltas | `NOT RUN` |
-| PRD verification after approved installation | Compare counter deltas, CPU/cleanup cost and normal project progress over a recorded interval; a counter reset or readiness pass alone is insufficient | `NOT RUN` |
+| Selected-lane acceptance | Dev then QAS accepted the same per-host candidate bytes, with lane isolation, schema 40, readiness, direct status reads and zero storage/cleanup error deltas | `PASS` |
+| PRD installation and bounded postflight | Supported in-place installation on Mac and all three Ubuntu hosts; schema 40, exact candidate hashes, active services, zero work inventories, readiness, and 20/20 direct status reads per lane | `PASS` |
+| PRD counter and cleanup observation | Storage-error and cleanup-failure counters were zero during bounded post-restart reads. Mac PRD cleanup progressed from 135 to 265 completed scans out of 269; latest samples were stable over 15 seconds. Mac and linux-host PRD pre-restart process-local counter baselines were not captured and cannot be compared across restart. | `PASS WITH LIMITS` |
+| CPU and normal-load progress | Short samples found Mac PRD `runner-local` at 34–64% and sandbox-host PRD `runnerd` at 36–53%; other sampled PRD/Dev/QAS processes were low. Project publishers are paused, so multi-project progress and performance over former warning intervals remain unobserved. | `OBSERVATION PENDING` |
 
 Use bounded deterministic coordination for lock regressions and structural/work
 measurements for cleanup scaling. Do not turn the measured 310 ms/5.8 s timings
 into machine-dependent assertions or require all unrelated historical warnings
-to be explained before proving this correction. Keep unresolved symptoms tracked
-separately if they persist.
+to be explained before proving this correction. The CPU observations on Mac PRD
+and sandbox-host PRD are recorded without attributing them to this issue; compare
+them again during owner-authorized normal operation. Keep unrelated symptoms
+tracked separately if they persist.
 
 ## Resolution
 
-The source correction and guarded pre-migration backup fix exist, and their
-isolated regressions and source gates pass.
-Keep `FIXED — PENDING VERIFICATION` until Dev, QAS and PRD installation and
-postflight gates pass. Do not attribute unrelated queue-claim warnings to this
-mechanism without evidence.
+The source correction and guarded pre-migration backup fix are deployed at
+`00c1ca6e7694842c35d398583b3f26fea59e3613`. Isolated regressions, full source
+gates, Dev and QAS acceptance, supported PRD installation, readiness and
+bounded direct status checks pass. Rollback was not needed. Keep status at
+`FIXED — DEPLOYED; NORMAL-LOAD OBSERVATION PENDING` while publishers remain
+paused. Recheck the Mac PRD cleanup backlog and elevated Mac/sandbox CPU during
+owner-authorized normal traffic. Do not attribute unrelated queue-claim
+warnings to this mechanism without evidence.
 
 ## Registration delivery evidence
 
-Registration commit `536cb85501d8d004eab20421b1b3ac6870dbcded` was committed on
-Mac `dev`, pushed to primary Gitea `origin/dev` and verified at the exact same
+The initial registration commit
+`536cb85501d8d004eab20421b1b3ac6870dbcded` was committed on Mac `dev`, pushed
+to primary Gitea `origin/dev` and verified at the exact same
 automatic GitHub `dev` SHA using explicit-identity `git ls-remote`. Clean `dev`
 checkouts on `linux-host`, `sandbox-host` and `factory-sandbox` each pulled
 `origin/dev` with `--ff-only`, reached that exact SHA and remained clean.
@@ -232,8 +247,13 @@ TRIAGED/unfixed status and the single register row passed. On each Ubuntu host,
 `git diff --check` and Python checks for the bug's links, fences, status and
 register entry passed. An independent read-only review found no material
 consistency issue. No product suite or live operation was run for registration.
-The evidence-only receipt follows the same delivery sequence; its final commit
-is reported after primary/mirror and clean worker synchronization complete.
+The implementation delivery at `00c1ca6e7694842c35d398583b3f26fea59e3613`
+was pushed to primary Gitea, verified at the exact GitHub mirror SHA, and
+fast-forwarded into clean `dev` checkouts on linux-host, sandbox-host and
+factory-sandbox before host validation. This deployment evidence closeout is
+also committed on Mac `dev`, pushed to primary, mirror-verified and synchronized
+to the three clean Ubuntu checkouts; the final closeout SHA is reported with
+the Git delivery receipt.
 
 ## History
 
@@ -243,3 +263,5 @@ is reported after primary/mirror and clean worker synchronization complete.
 | 2026-10-18 | Implemented consistent read transactions with SQLite error accounting, a bounded durable cleanup work queue, and a one-second rotating cleanup cadence. Isolated regressions and `make check` passed; Dev/QAS/PRD acceptance is pending. |
 | 2026-10-18 | Added guarded rollback for the additive schema-40 cleanup metadata; preservation and unsupported-schema refusal regressions pass. `make check` passed on Mac and all three synchronized Ubuntu hosts at `7c20523`; Dev/QAS installation acceptance and PRD postflight remain pending. |
 | 2026-10-19 | A supported Mac Dev installation attempt found that the backup helper incorrectly required schema 40 from a schema-39 source. Added a failing-before regression, switched to existing-schema online backup validation, verified exact source/snapshot schema equality, and passed `make check` on Mac and all three Ubuntu hosts at `0a92140`. The failed attempt left the old database and bundle pointer unchanged; the old Dev service was restarted and ready. Rebuild final candidates from the final synchronized revision before Dev acceptance. |
+| 2026-10-19 | Built final per-host candidates from `00c1ca6`, accepted each in Dev then QAS, and installed the same bytes in PRD on Mac and all three Ubuntu hosts through supported lane controls. All twelve services are active at schema 40 with matching candidate hashes and zero work inventories; backups and configuration hashes are recorded in the deployment evidence. |
+| 2026-10-19 | Bounded readiness and 20-status-read checks passed on all twelve host/lane combinations with zero measured storage-error and cleanup-failure deltas. Mac PRD cleanup advanced to 265/269 scan-complete items. Short CPU samples were elevated on Mac PRD and sandbox-host PRD; publishers remain paused, so normal-load observation is still open. No rollback or mailbox request/ACK publication occurred. |
