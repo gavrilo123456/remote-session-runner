@@ -264,3 +264,119 @@ free memory and lack of swap make further build/test load there inappropriate
 until the host is responsive and its owner/operator can confirm capacity.
 Source remains delivered at the exact commit on all three hosts as verified
 before the test attempt.
+
+## Fresh read-only baseline, offline backport, and factory result (15:24–15:26 CEST)
+
+This addendum supersedes the earlier current-state reservation count and the
+factory-test status above. Those earlier readings remain historical evidence.
+
+At 15:24:36 CEST a new private SQLite online backup was made with the native
+SQLite CLI using a read-only source connection and `.backup`. Its separate
+owner-only `/private/tmp` path, digest, and verification are recorded in the
+private diagnostic review package. The backup passed `integrity_check`, reports
+`user_version=37` and `journal_mode=wal`, and was not copied from `local.db`
+alone. The live source was not checkpointed or opened with current source.
+
+Fresh `lsof` output shows both unsuffixed PRD processes still hold the same
+`local.db`, `local.db-wal`, and `local.db-shm`: `runner-locald` PID 48627 and
+`runner-local` PID 48708. Their installed hashes and `--version` outputs still
+match the baseline above. No service, binary, configuration, database, request,
+or ACK was changed by this investigation.
+
+The new backup has zero queued commands, zero running/cancelling commands,
+zero nonterminal jobs, and zero controlled-restart plans. It now contains three
+unreleased capacity reservations, all left untouched:
+
+- `sess-d76592166342428ba1b7b703fc87bb35` (the previously retained session)
+- `sess-e7e8f0689316b308a9a8e5d15aaf34ae`
+- `sess-e4e08eb9c942672e900bd0b411f54f1e`
+
+Two unreleased command-slot rows belong to the latter two lost sessions; the
+older retained reservation remains present without an active command slot.
+Lost-runtime, commandless-loss, and completed-teardown finalization tables have
+zero rows. No recovery, replay, release, or cleanup was attempted. Retained
+requests and held ACKs were not inspected or modified.
+
+Read-only mailbox aggregates show accepted `run` exchanges from
+`agentic-software-factory-runner-direct` through 15:21:51 CEST and from
+`slidestud-io` through 15:21:56 CEST. Command-event aggregates continue through
+15:22:44 CEST. The locald log still reports only generic claim failures; the
+last observed `operation_failed` claim warnings were at 14:42:07, 14:49:56,
+14:50:03, 14:51:41, 14:51:50, 15:02:07, 15:04:43, 15:10:35, 15:15:43, and
+15:21:03 CEST. A persistent-shell exit was recorded at 15:22:51. These are
+time correlations only: the command events cannot be joined reliably to a
+project, and no counter sample was taken after the 14:21 sample. In particular,
+there is no new storage-counter delta to correlate with these warnings.
+
+The prior publication-pause instruction remains in force. No per-publisher
+pause receipt/control has been verified, and accepted submissions exist through
+15:21:56 CEST, so publication is **not confirmed paused**. No request or ACK was
+published by this investigation. Do not infer pause from directory counts or
+resume any publisher without the owner's authorization.
+
+### Installed-revision reproducer and candidate
+
+The corrected temporary backport was rebuilt from exact base revision
+`77910358a149d6e8fcdf4694498ebdf6c1f07f58`; it includes only queue-claim
+stage instrumentation and sanitized logging, not the unrelated Mac startup
+diagnostic change present in the newer source commit. The focused store and
+queueworker tests passed on that backport, including empty-queue polling,
+independent API/locald connections and processes with concurrent health writes
+and submissions, exactly-once claims, controlled restart, and retained-loss
+recovery guards. They also reproduce controlled writer contention as
+`begin_transaction` / `SQLITE_BUSY` (primary/extended 5/5), a slot constraint
+as `reserve_command_slot` / `SQLITE_CONSTRAINT` (19/1555), and logical scheduler
+state validation without SQLite codes. The concurrent fixture drained without
+duplicate, lost, or stranded commands. This proves the diagnostic can separate
+these controlled cases; it does **not** prove any is the production failure.
+
+Opening the private schema-37 clone with the exact old source plus diagnostics
+left `user_version`, the SQL schema fingerprint, retained reservation
+identities, and queue state unchanged. No worker was started against the
+snapshot or clone. The smallest justified production change remains
+diagnostic-only instrumentation; no queue behavior correction is justified
+until an actual production stage and error code are captured.
+
+A private review package now contains the exact arm64 `runner-locald` artifact,
+filtered source/test backport, test summary, artifact and patch hashes, and
+snapshot reference. It is outside Git. It is explicitly **not an installation
+package and not approved for deployment**. `runner-lane` rejects PRD. The
+ordinary Mac installer rebuilds all three binaries from current checkout and
+cannot accept this exact artifact; its recovery install crosses a no-rollback
+boundary and does not provide a schema-preserving exact-binary rollback. The
+only safe next engineering step is a narrowly scoped supported PRD
+diagnostic-artifact path that keeps the `runner-lane` PRD restriction intact,
+accepts and verifies the one `runner-locald` hash, uses the supported service
+handoff, preserves the database and retained work, and has tested binary-only
+rollback. No install command is supplied until that path is delivered and
+validated.
+
+Dev/QAS installation and acceptance of this older schema-37 diagnostic binary
+remain **NOT RUN**. The live Dev/QAS stores are schema 39; they were not
+downgraded. Fixture tests do not substitute for lane acceptance. The required
+Dev/QAS/PRD gates remain unsatisfied, with no exception or PRD access route
+inferred from this diagnostic request.
+
+### Factory test: actual result
+
+At synchronized source revision `f63d0785d7c9abc343a9e592c6980956717038ed`,
+the focused factory command was actually run with Go 1.27.1 and conservative
+parallelism:
+
+```sh
+GOTOOLCHAIN=local GOMAXPROCS=1 GOGC=50 timeout 240s \
+  /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go \
+  test -v ./src/internal/store ./src/internal/queueworker \
+  -run 'TestQueueClaim|TestIndependentStoresClaim|TestIndependentProcessesClaim|TestWorkerStartWakeStopWithoutQueuedWork' \
+  -count=1
+```
+
+The actual exit was 1: `src/internal/store` compilation ended with `compile:
+signal: killed`; the selected `queueworker` tests passed. Therefore the store
+tests did **not** pass on factory-sandbox, and the combined focused command is
+**FAILED / RESOURCE-LIMITED**, not PASS. The host had about 317 MiB available
+and no swap before that attempt; afterward it had about 387 MiB available and
+4 GiB swap with 153 MiB used, and no Go process remained. No kernel OOM record
+was collected, so resource pressure is the likely explanation, not a proven
+kernel diagnosis. No service or mailbox state was changed. Do not rerun a
+memory-heavy build there until fresh capacity supports it.
