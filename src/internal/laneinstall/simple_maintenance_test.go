@@ -161,3 +161,115 @@ func simpleTestPlanAt(t *testing.T, root string) Plan {
 	plan.Namespace.LifecycleLock = filepath.Join(root, "run", "runnerd-lifecycle.lock")
 	return plan
 }
+
+func TestBUG025SimpleRollbackPreservesAuthorityWhenDowngradingSchema40(t *testing.T) {
+	ctx := context.Background()
+	root := simpleTestTempDir(t)
+	plan := simpleTestPlanAt(t, root)
+	previous := bug025BundleWithSchema(t, "0123456789abcdef0123456789abcdef01234567", "previous", 39)
+	candidate, err := NewSimpleBundle("linux-host", "1123456789abcdef0123456789abcdef01234567", simpleFixtureComponents("linux-host", "candidate"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installBUG025PreviousBundle(plan, previous); err != nil {
+		t.Fatal(err)
+	}
+	activation, err := installSimpleBundleAt(plan.Namespace.ServiceRoot, plan.HostID, plan.Lane, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(ctx, plan.Namespace.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+CREATE TABLE bug025_rollback_preserved_fixture (record_id TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO bug025_rollback_preserved_fixture(record_id, value) VALUES ('retained-row', 'preserve');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollbackSimpleActivationAt(ctx, plan.Namespace.ServiceRoot, plan.Namespace.Database, plan.HostID, plan.Lane, activation, store.CurrentSchemaVersion); err != nil {
+		t.Fatalf("schema-compatible rollback failed: %v", err)
+	}
+	if current, err := simpleCurrentBundle(plan.Namespace.ServiceRoot); err != nil || current != previous.Manifest.BundleSHA256 {
+		t.Fatalf("rollback active bundle=%s err=%v, want %s", current, err, previous.Manifest.BundleSHA256)
+	}
+	reopened, err := store.OpenExistingRestartPreflightReadOnly(ctx, plan.Namespace.Database)
+	if err != nil {
+		t.Fatalf("rollback database failed read-only preflight: %v", err)
+	}
+	defer reopened.Close()
+	var schema int
+	if err := reopened.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil || schema != 39 {
+		t.Fatalf("rollback schema=%d err=%v, want 39", schema, err)
+	}
+	var preserved string
+	if err := reopened.QueryRowContext(ctx,
+		`SELECT value FROM bug025_rollback_preserved_fixture WHERE record_id = ?`, "retained-row").Scan(&preserved); err != nil || preserved != "preserve" {
+		t.Fatalf("rollback lost retained authority row value=%q err=%v", preserved, err)
+	}
+}
+
+func TestBUG025SimpleRollbackRefusesOlderSchemaThanSupportedPredecessor(t *testing.T) {
+	ctx := context.Background()
+	root := simpleTestTempDir(t)
+	plan := simpleTestPlanAt(t, root)
+	previous := bug025BundleWithSchema(t, "0123456789abcdef0123456789abcdef01234567", "previous", 39)
+	candidate, err := NewSimpleBundle("linux-host", "1123456789abcdef0123456789abcdef01234567", simpleFixtureComponents("linux-host", "candidate"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installBUG025PreviousBundle(plan, previous); err != nil {
+		t.Fatal(err)
+	}
+	activation, err := installSimpleBundleAt(plan.Namespace.ServiceRoot, plan.HostID, plan.Lane, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(ctx, plan.Namespace.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollbackSimpleActivationAt(ctx, plan.Namespace.ServiceRoot, plan.Namespace.Database, plan.HostID, plan.Lane, activation, store.CurrentSchemaVersion+1); !errors.Is(err, ErrSimpleRollbackUnavailable) {
+		t.Fatalf("rollback from unknown schema-41 state error=%v, want refusal", err)
+	}
+	if current, err := simpleCurrentBundle(plan.Namespace.ServiceRoot); err != nil || current != candidate.Manifest.BundleSHA256 {
+		t.Fatalf("refused rollback changed active bundle=%s err=%v", current, err)
+	}
+	readOnly, err := store.OpenExistingRestartPreflightReadOnly(ctx, plan.Namespace.Database)
+	if err != nil {
+		t.Fatalf("refused rollback changed schema validity: %v", err)
+	}
+	defer readOnly.Close()
+	var schema int
+	if err := readOnly.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil || schema != store.CurrentSchemaVersion {
+		t.Fatalf("refused rollback changed database schema=%d err=%v", schema, err)
+	}
+}
+
+func bug025BundleWithSchema(t *testing.T, revision, version string, schema int) SimpleBundle {
+	t.Helper()
+	bundle, err := NewSimpleBundle("linux-host", revision, simpleFixtureComponents("linux-host", version))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.Manifest.DatabaseSchemaMax = schema
+	bundle.Manifest.BundleSHA256 = simpleBundleDigest(bundle.Manifest, bundle.Components)
+	if err := validateStoredSimpleBundle(bundle); err != nil {
+		t.Fatalf("validate schema-%d fixture bundle: %v", schema, err)
+	}
+	return bundle
+}
+
+func installBUG025PreviousBundle(plan Plan, bundle SimpleBundle) error {
+	release := filepath.Join(plan.Namespace.ServiceRoot, "releases", bundle.Manifest.BundleSHA256)
+	if err := writeSimpleBundleAt(release, bundle); err != nil {
+		return err
+	}
+	return switchSimpleCurrent(plan.Namespace.ServiceRoot, "", bundle.Manifest.BundleSHA256)
+}

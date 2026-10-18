@@ -242,12 +242,23 @@ func simpleBuildEnvironment(source []string, platform simplePlatform) []string {
 // ValidateSimpleBundle checks the closed host/component/platform map and all
 // binary, source, toolchain, and bundle digests.
 func ValidateSimpleBundle(bundle SimpleBundle) error {
+	return validateSimpleBundleSchema(bundle, store.CurrentSchemaVersion)
+}
+
+// validateStoredSimpleBundle accepts the exact previous schema ceiling while
+// reading an installed immutable release. New candidates still pass through
+// ValidateSimpleBundle and must declare the current schema ceiling.
+func validateStoredSimpleBundle(bundle SimpleBundle) error {
+	return validateSimpleBundleSchema(bundle, store.CurrentSchemaVersion-1)
+}
+
+func validateSimpleBundleSchema(bundle SimpleBundle, minimumSchema int) error {
 	m := bundle.Manifest
 	platform, ok := simpleHostPlatforms[m.HostID]
 	components, componentsOK := simpleHostComponents[m.HostID]
 	if !ok || !componentsOK || m.FormatVersion != simpleBundleFormatVersion ||
 		m.GOOS != platform.goos || m.GOARCH != platform.goarch || m.Toolchain != "go1.27.1" ||
-		!sourceRevisionPattern.MatchString(m.SourceRevision) || m.DatabaseSchemaMax != store.CurrentSchemaVersion ||
+		!sourceRevisionPattern.MatchString(m.SourceRevision) || m.DatabaseSchemaMax < minimumSchema || m.DatabaseSchemaMax > store.CurrentSchemaVersion ||
 		len(m.Components) != len(components) || len(bundle.Components) != len(components) {
 		return ErrInvalidSimpleBundle
 	}
@@ -361,7 +372,7 @@ func simpleBundleDigest(manifest SimpleBundleManifest, components map[string][]b
 }
 
 func writeSimpleBundleAt(destination string, bundle SimpleBundle) error {
-	if ValidateSimpleBundle(bundle) != nil || filepath.Clean(destination) != destination || !filepath.IsAbs(destination) {
+	if validateStoredSimpleBundle(bundle) != nil || filepath.Clean(destination) != destination || !filepath.IsAbs(destination) {
 		return ErrInvalidSimpleBundle
 	}
 	parent := filepath.Dir(destination)
@@ -475,7 +486,7 @@ func readSimpleBundleAt(path string) (SimpleBundle, error) {
 		components[entry.Name()] = data
 	}
 	bundle := SimpleBundle{Manifest: manifest, Components: components}
-	if err := ValidateSimpleBundle(bundle); err != nil {
+	if err := validateStoredSimpleBundle(bundle); err != nil {
 		return SimpleBundle{}, err
 	}
 	return bundle, nil

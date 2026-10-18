@@ -215,10 +215,12 @@ func (m *SimpleLaneMaintenance) InstallBundle(ctx context.Context, sourcePath st
 	return installSimpleBundleAt(m.plan.Namespace.ServiceRoot, m.plan.HostID, m.plan.Lane, bundle)
 }
 
-// Rollback restores only the previous immutable executable bundle. The
-// selected service must be stopped again, the complete authority inventory
-// empty, and a fresh backup captured before the pointer can move backward.
-// SQLite and configuration are never overwritten by this operation.
+// Rollback restores the previous immutable executable bundle. The selected
+// service must be stopped again, the complete authority inventory empty, and a
+// fresh backup captured before the pointer can move backward. When the prior
+// bundle supports schema 39 and the selected database is exactly schema 40,
+// the additive BUG-025 cleanup-work metadata is removed in one guarded
+// migration transaction; application rows and configuration are preserved.
 func (m *SimpleLaneMaintenance) Rollback(ctx context.Context, activation SimpleActivation) error {
 	if m == nil || m.closed || m.fresh || activation.hostID != m.plan.HostID || activation.lane != m.plan.Lane {
 		return ErrSimpleRollbackUnavailable
@@ -243,12 +245,13 @@ func (m *SimpleLaneMaintenance) Rollback(ctx context.Context, activation SimpleA
 	if err != nil || !simpleBackupReceiptValid(m.plan, backup, m.proof) {
 		return ErrSimpleBackupRequired
 	}
-	return rollbackSimpleBundleAt(m.plan.Namespace.ServiceRoot, m.plan.HostID, m.plan.Lane, activation, proof.database)
+	return rollbackSimpleActivation(ctx, m.plan, activation, proof.database)
 }
 
 // RollbackFromBackup reconstructs the previous immutable bundle from the
 // verified pre-install backup manifest, so a process restart does not lose
-// the rollback identity. It never restores the config or SQLite authority.
+// the rollback identity. It preserves the current SQLite authority and uses
+// only the supported schema-40-to-39 removal when required by the prior binary.
 func (m *SimpleLaneMaintenance) RollbackFromBackup(ctx context.Context, backupDirectory string) error {
 	if m == nil || m.closed || m.fresh || validateSimplePlan(m.plan) != nil {
 		return ErrSimpleRollbackUnavailable
@@ -279,7 +282,56 @@ func (m *SimpleLaneMaintenance) RollbackFromBackup(ctx context.Context, backupDi
 		return ErrSimpleBackupRequired
 	}
 	activation := SimpleActivation{hostID: m.plan.HostID, lane: m.plan.Lane, previous: manifest.ActiveBundle, activated: current}
-	return rollbackSimpleBundleAt(m.plan.Namespace.ServiceRoot, m.plan.HostID, m.plan.Lane, activation, proof.database)
+	return rollbackSimpleActivation(ctx, m.plan, activation, proof.database)
+}
+
+func rollbackSimpleActivation(ctx context.Context, plan Plan, activation SimpleActivation, schema int) error {
+	if validateSimplePlan(plan) != nil || activation.hostID != plan.HostID || activation.lane != plan.Lane ||
+		!bundleDigestPattern.MatchString(activation.previous) || !bundleDigestPattern.MatchString(activation.activated) || schema <= 0 {
+		return ErrSimpleRollbackUnavailable
+	}
+	return rollbackSimpleActivationAt(ctx, plan.Namespace.ServiceRoot, plan.Namespace.Database, plan.HostID, plan.Lane, activation, schema)
+}
+
+// rollbackSimpleActivationAt contains the filesystem/database transaction for
+// a previously validated plan. The public maintenance paths validate the
+// canonical host/lane namespace before calling it; tests use a private
+// temporary namespace so they never touch an installed service tree.
+func rollbackSimpleActivationAt(ctx context.Context, serviceRoot, databasePath, hostID string, lane config.ReleaseLane, activation SimpleActivation, schema int) error {
+	if filepath.Clean(serviceRoot) != serviceRoot || !filepath.IsAbs(serviceRoot) ||
+		filepath.Clean(databasePath) != databasePath || !filepath.IsAbs(databasePath) ||
+		activation.hostID != hostID || activation.lane != lane ||
+		!bundleDigestPattern.MatchString(activation.previous) || !bundleDigestPattern.MatchString(activation.activated) || schema <= 0 {
+		return ErrSimpleRollbackUnavailable
+	}
+	previousPath := filepath.Join(serviceRoot, "releases", activation.previous)
+	previous, err := readSimpleBundleAt(previousPath)
+	if err != nil || previous.Manifest.HostID != hostID {
+		return ErrSimpleRollbackUnavailable
+	}
+	if schema > previous.Manifest.DatabaseSchemaMax {
+		if schema != store.CurrentSchemaVersion || previous.Manifest.DatabaseSchemaMax != 39 {
+			return ErrSimpleRollbackUnavailable
+		}
+		if err := store.RollbackBoundedEventCleanupSchema40To39(ctx, databasePath); err != nil {
+			return fmt.Errorf("remove only the additive BUG-025 schema before bundle rollback: %w", err)
+		}
+		database, err := store.OpenExistingRestartPreflightReadOnly(ctx, databasePath)
+		if err != nil {
+			return fmt.Errorf("verify authority after BUG-025 schema rollback: %w", err)
+		}
+		if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil {
+			_ = database.Close()
+			return fmt.Errorf("read authority schema after BUG-025 rollback: %w", err)
+		}
+		if err := database.Close(); err != nil {
+			return fmt.Errorf("close authority after BUG-025 schema rollback: %w", err)
+		}
+	}
+	if schema > previous.Manifest.DatabaseSchemaMax {
+		return ErrSimpleRollbackUnavailable
+	}
+	return rollbackSimpleBundleAt(serviceRoot, hostID, lane, activation, schema)
 }
 
 func (m *SimpleLaneMaintenance) Close() error {

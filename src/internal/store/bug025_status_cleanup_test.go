@@ -410,3 +410,50 @@ func bug025TerminalLocalCommand(t *testing.T, store *AuthorityStore, commandID d
 	}
 	return commandID
 }
+
+func TestBUG025SchemaRollbackRemovesOnlyCleanupProgressAndPreservesAuthorityRows(t *testing.T) {
+	ctx := context.Background()
+	root := testfixture.New(t)
+	path := filepath.Join(root.Path(), "state", "bug025-schema-rollback.db")
+	database, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+CREATE TABLE bug025_rollback_preserved_fixture (record_id TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO bug025_rollback_preserved_fixture(record_id, value) VALUES ('retained-row', 'preserve');
+INSERT INTO mailbox_event_cleanup_work_cursor(mailbox_id, last_command_id, last_is_remote)
+VALUES ('default', 'cursor-row', 0);`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollbackBoundedEventCleanupSchema40To39(ctx, path); err != nil {
+		t.Fatalf("guarded schema-40 rollback failed: %v", err)
+	}
+	reopened, err := OpenExistingRestartPreflightReadOnly(ctx, path)
+	if err != nil {
+		t.Fatalf("schema-39 authority did not pass read-only preflight: %v", err)
+	}
+	defer reopened.Close()
+	var version int
+	if err := reopened.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 39 {
+		t.Fatalf("user_version=%d err=%v, want 39", version, err)
+	}
+	var preserved string
+	if err := reopened.QueryRowContext(ctx,
+		`SELECT value FROM bug025_rollback_preserved_fixture WHERE record_id = ?`, "retained-row").Scan(&preserved); err != nil || preserved != "preserve" {
+		t.Fatalf("preexisting application row=%q err=%v", preserved, err)
+	}
+	for _, object := range []string{"mailbox_event_cleanup_work", "mailbox_event_cleanup_work_cursor", "mailbox_event_cleanup_work_exchange_update"} {
+		var count int
+		if err := reopened.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_schema WHERE name = ?`, object).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("rollback object %s remains count=%d err=%v", object, count, err)
+		}
+	}
+	var integrity string
+	if err := reopened.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
+		t.Fatalf("post-rollback integrity=%q err=%v", integrity, err)
+	}
+}

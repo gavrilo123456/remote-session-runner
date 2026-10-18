@@ -47,6 +47,7 @@ var (
 	ErrDatabasePermissions = errors.New("database path must be owned by the current user with owner-only modes")
 	ErrSchemaVersion       = errors.New("database schema version is unsupported")
 	ErrSchemaHistory       = errors.New("database schema migration history is inconsistent")
+	ErrSchemaRollback      = errors.New("SQLite schema rollback is unsupported")
 	ErrSQLitePragmas       = errors.New("required SQLite settings are unavailable")
 )
 
@@ -522,6 +523,123 @@ func OpenExistingCurrentReadOnly(ctx context.Context, path string) (*sql.DB, err
 // database, sidecar, or migration.
 func OpenExistingRestartPreflightReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	return openExistingReadOnly(ctx, path, verifyRestartPreflightSchemaConnection)
+}
+
+// RollbackBoundedEventCleanupSchema40To39 removes only the additive BUG-025
+// cleanup-work tables and trigger from a stopped authority. It preserves every
+// schema-1-through-39 application table and row, including cleanup markers,
+// ACKs, requests, commands and retained results. The caller must hold the
+// selected lane's lifecycle lock and prove all Runner services using the
+// database are stopped. The old cleanup algorithm can operate on the retained
+// v39 tables; its per-command progress resumes by rescanning those references.
+func RollbackBoundedEventCleanupSchema40To39(ctx context.Context, path string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := validateExistingCurrentDatabasePath(path); err != nil {
+		return fmt.Errorf("validate existing authority for schema rollback: %w", err)
+	}
+	if err := validateExistingCurrentDatabaseReadOnly(ctx, path); err != nil {
+		return fmt.Errorf("verify schema-40 authority before rollback: %w", err)
+	}
+	database, err := sql.Open("sqlite", existingCurrentDataSourceName(path, "rw"))
+	if err != nil {
+		return fmt.Errorf("open existing authority for schema rollback: %w", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	if err := database.PingContext(ctx); err != nil {
+		return fmt.Errorf("connect to existing authority for schema rollback: %w", err)
+	}
+	if err := verifyCurrentSchema(ctx, database); err != nil {
+		return fmt.Errorf("recheck schema-40 authority before rollback: %w", err)
+	}
+	if err := verifyPragmas(ctx, database); err != nil {
+		return fmt.Errorf("verify SQLite settings before schema rollback: %w", err)
+	}
+	connection, err := database.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire schema rollback connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin schema-40 rollback transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = connection.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	version, err := userVersion(ctx, connection)
+	if err != nil {
+		return err
+	}
+	if version != CurrentSchemaVersion {
+		return fmt.Errorf("%w: got %d, require exactly %d", ErrSchemaRollback, version, CurrentSchemaVersion)
+	}
+	if err := verifyMigrationHistory(ctx, connection, version); err != nil {
+		return fmt.Errorf("verify schema-40 migration history before rollback: %w", err)
+	}
+	for _, object := range []struct{ kind, name string }{
+		{"trigger", "mailbox_event_cleanup_work_exchange_update"},
+		{"table", "mailbox_event_cleanup_work_cursor"},
+		{"table", "mailbox_event_cleanup_work"},
+	} {
+		var count int
+		if err := connection.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM sqlite_schema WHERE type = ? AND name = ?", object.kind, object.name).Scan(&count); err != nil {
+			return fmt.Errorf("verify schema-40 rollback object %s: %w", object.name, err)
+		}
+		if count != 1 {
+			return fmt.Errorf("%w: required schema-40 object %s is missing", ErrSchemaRollback, object.name)
+		}
+	}
+	for _, statement := range []string{
+		`DROP TRIGGER mailbox_event_cleanup_work_exchange_update`,
+		`DROP TABLE mailbox_event_cleanup_work_cursor`,
+		`DROP TABLE mailbox_event_cleanup_work`,
+	} {
+		if _, err := connection.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("remove additive BUG-025 schema object: %w", err)
+		}
+	}
+	result, err := connection.ExecContext(ctx,
+		`DELETE FROM runner_schema_migrations WHERE version = ? AND name = ? AND checksum = ?`,
+		40, migrations[39].name, migrationChecksum(migrations[39]))
+	if err != nil {
+		return fmt.Errorf("remove schema-40 migration record: %w", err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil || removed != 1 {
+		return fmt.Errorf("%w: schema-40 migration record was not removed exactly once", ErrSchemaRollback)
+	}
+	if _, err := connection.ExecContext(ctx, "PRAGMA user_version = 39"); err != nil {
+		return fmt.Errorf("set schema version 39 after rollback: %w", err)
+	}
+	if err := verifyMigrationHistory(ctx, connection, 39); err != nil {
+		return fmt.Errorf("verify schema-39 migration history after rollback: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit schema-40 rollback: %w", err)
+	}
+	committed = true
+	if err := validateExistingCurrentDatabasePath(path); err != nil {
+		return fmt.Errorf("validate authority sidecars after schema rollback: %w", err)
+	}
+	rolledBack, err := OpenExistingRestartPreflightReadOnly(ctx, path)
+	if err != nil {
+		return fmt.Errorf("verify schema-39 authority after rollback: %w", err)
+	}
+	defer rolledBack.Close()
+	var integrity string
+	if err := rolledBack.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
+		return fmt.Errorf("verify authority integrity after schema rollback: %w", err)
+	}
+	if integrity != "ok" {
+		return fmt.Errorf("%w: integrity check after schema rollback returned %q", ErrSchemaRollback, integrity)
+	}
+	return nil
 }
 
 // OpenExistingControlledRestartStatusReadOnly opens an existing private
