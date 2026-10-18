@@ -1,14 +1,13 @@
 # SIMPLE-04 — Dev deployment and coexistence acceptance
 
-**State: IN PROGRESS.** S6 source revision `2b50bf761e60bad9e49353ef9afc08e6de6e94b2`
-and evidence checkpoint `6c4aa9ef73493ac513ef6897c6f414d7f7dc7b3e` are
-delivered and synchronized. S6 candidates are installed and ready on the Mac
-and all three workers. A fresh correctly configured Mac-local probe still
-fails during session startup; no command was created or run. The bounded
-queueworker diagnostic and integration regression are delivered and pass the
-Mac and all three worker `make check build` gates. Diagnostic candidates and a
-fresh Mac-local probe remain pending. PRD remains installed and running; QAS
-is not started.
+**State: IN PROGRESS.** S6 is delivered and synchronized; S6 candidates remain
+on all three workers. The S7 diagnostic source is delivered and passes full
+gates on Mac and all three workers. Its Mac candidate exposed a second active
+defect: Mac bundles were built with cgo disabled, so local runtime ownership
+recording failed before command creation. Only Mac Dev was stopped after its
+quiescence proof; the S8 native-cgo correction passes the Mac full
+`make check build` gate and is pending Git delivery and worker validation. PRD
+remains installed and running; QAS is not started.
 
 ## Scope and predecessor
 
@@ -406,7 +405,7 @@ Two fresh Mac-local attempts are retained distinctly:
   diagnostic, so the underlying runtime error remains undetermined. This job
   was not replayed and no ACK or manual cleanup was performed.
 
-The current source change logs only bounded Mac-local empty-source runtime
+The S7 source change logs only bounded Mac-local empty-source runtime
 startup failures, with stable job/session IDs and bounded error text; it does
 not log the script. An integration regression drives an accepted local one-off
 through the queue worker and proves the failure is logged, creates no command
@@ -434,10 +433,57 @@ administrative SSH identity and the checkout's GitHub mirror identity to
 `sandbox-host`, and `factory-sandbox`. Factory used a unique short
 `/home/ubuntu/.cache/r.XXXXXX` TMPDIR with an exit trap to remove only that
 task-owned directory; shared Go caches were retained. The diagnostic candidate
-rebuild and selected-Dev refresh remain the next operation.
+rebuild exposed the Mac cgo build defect described next.
 
-Rebuild the four host candidates from the exact new revision and refresh only
-Dev through the guarded installer. Then complete the
+### S7 Mac candidate and cgo failure
+
+All four S7 candidate bundles were built from synchronized revision
+`e357bd7d5910d34f16cf95d43ecd6a7027870eca` and checksummed:
+
+| Host | S7 bundle SHA-256 | Result |
+| --- | --- | --- |
+| Mac | `3ecc084b7dc8d36a3e94eb67718595fede1aa874586709e646d998c10de73871` | Installed to Dev, then stopped after the failed probe |
+| `linux-host` | `ae9773da886c47781cc13d1a511247baeae5042c62dadafc6614820179231c6a` | Built only; not transferred or installed |
+| `sandbox-host` | `aea0b1fb57c1608e71f9d12d6902729d2c62a359f784bbf0230d263a46b647f3` | Built only; not transferred or installed |
+| `factory-sandbox` | `69681916a05f17fea3126004dafe7ff5f9fbdf974346f2ecc3b1aae55a7f8de1` | Built only; not transferred or installed |
+
+The Mac guarded installer created backup
+`/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-dev/backups/.simple-backup-2072801282`,
+replacing prior S6 bundle
+`1eba56e845a81161d8c9233a39b194a063ab582a901a88a22c41780c9aa2e9d3`. Mac Dev
+started at revision `e357bd7d5910d34f16cf95d43ecd6a7027870eca`; health initially
+reported ready and zero active/queued work.
+
+One fresh configured Mac-local probe used environment `mac-workstation-dev`
+and target `local/mac-workstation`: job
+`job-301e1538de1dc172a4233cc1faff5508`, session
+`sess-422d3be2b7a163548cd878bfafe0e680`, command
+`cmd-fac5705ca3dfb184bb5fc99633094888`, key
+`simple04-20261018-s7-mac-local-03`. It failed before command creation. The
+new owner-only locald diagnostic recorded:
+
+```text
+runtime unavailable: record Mac runtime ownership: Mac process start identity requires Darwin with cgo (pid 14059)
+```
+
+The cause was `simpleBuildEnvironment` forcing `CGO_ENABLED=0` for every
+platform, despite the Mac process identity implementation using Darwin libproc
+through cgo. The durable job and failed session remain preserved; no command
+row, command event, active slot, or session reservation remained. The Dev
+doctor reported ready with zero active sessions, commands, queues and mailbox
+backlog before the lane was stopped. No request was replayed and no ACK was
+published. The guarded `runner-lane stop --host mac-control-plane --lane dev`
+completed its quiescence proof and stopped only Mac Dev; PRD remained running.
+
+The S8 source correction enables cgo only for Darwin bundles, requires the Mac
+bundle to be built natively on the target Darwin architecture, and adds a
+platform-environment regression. Focused laneinstaller tests and Mac
+`GOMAXPROCS=2 GOFLAGS=-p=1 make check build` pass. S8 Git delivery, worker
+validation, corrected candidate rebuild, Mac Dev refresh and fresh runtime
+acceptance remain pending.
+
+After S8 delivery, rebuild the four host candidates from the exact new revision
+and refresh only Dev through the guarded installer. Then complete the
 remaining acceptance: fresh managed cancellation, factory direct ingress,
 configured Mac-local execution, requested timeout, permitted explicit limits,
 all required direct/queued profile routes, owned mailbox request/output/event/

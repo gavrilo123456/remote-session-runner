@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"remote-session-runner/src/internal/config"
@@ -34,6 +35,32 @@ func TestSimpleBundlePinsExactPerHostPlatformAndComponents(t *testing.T) {
 				t.Fatalf("component digest missing for %s/%s: %+v", host, component.Name, component)
 			}
 		}
+	}
+}
+
+func TestSimpleBuildEnvironmentEnablesMacProcessIdentityCGO(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		platform simplePlatform
+		wantCGO  string
+	}{
+		{name: "Mac local runtime", platform: simplePlatform{goos: "darwin", goarch: "arm64"}, wantCGO: "1"},
+		{name: "Linux amd64 worker", platform: simplePlatform{goos: "linux", goarch: "amd64"}, wantCGO: "0"},
+		{name: "Linux arm64 worker", platform: simplePlatform{goos: "linux", goarch: "arm64"}, wantCGO: "0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			environment := simpleBuildEnvironment([]string{"CGO_ENABLED=0", "GOOS=windows"}, test.platform)
+			values := make(map[string]string, len(environment))
+			for _, item := range environment {
+				name, value, ok := strings.Cut(item, "=")
+				if ok {
+					values[name] = value
+				}
+			}
+			if values["CGO_ENABLED"] != test.wantCGO || values["GOOS"] != test.platform.goos || values["GOARCH"] != test.platform.goarch || values["GOTOOLCHAIN"] != "local" {
+				t.Fatalf("simple build environment = %+v, want %s/%s cgo=%s and local toolchain", values, test.platform.goos, test.platform.goarch, test.wantCGO)
+			}
+		})
 	}
 }
 

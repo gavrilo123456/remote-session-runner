@@ -147,6 +147,9 @@ func BuildSimpleBundle(ctx context.Context, plan Plan, repositoryRoot, goBinary 
 	defer os.RemoveAll(temporary)
 	components := make(map[string][]byte, len(simpleHostComponents[plan.HostID]))
 	platform := simpleHostPlatforms[plan.HostID]
+	if platform.goos == "darwin" && (runtime.GOOS != "darwin" || runtime.GOARCH != platform.goarch) {
+		return SimpleBundle{}, errors.New("Mac lane bundle must be built natively with cgo on its target architecture")
+	}
 	ldflags := "-X remote-session-runner/src/internal/buildinfo.SourceRevision=" + revision
 	for _, component := range simpleHostComponents[plan.HostID] {
 		outputPath := filepath.Join(temporary, component)
@@ -206,8 +209,15 @@ func requireSynchronizedSimpleCheckout(ctx context.Context, repositoryRoot strin
 }
 
 func simpleBuildEnvironment(source []string, platform simplePlatform) []string {
+	cgoEnabled := "0"
+	if platform.goos == "darwin" {
+		// The Mac runtime uses Darwin libproc through cgo to record and verify
+		// process start identity. A CGO-disabled bundle cannot safely start a
+		// persistent local session.
+		cgoEnabled = "1"
+	}
 	values := map[string]string{
-		"GOOS": platform.goos, "GOARCH": platform.goarch, "CGO_ENABLED": "0", "GOTOOLCHAIN": "local",
+		"GOOS": platform.goos, "GOARCH": platform.goarch, "CGO_ENABLED": cgoEnabled, "GOTOOLCHAIN": "local",
 	}
 	if runtime.GOOS == "darwin" {
 		values["GOCACHE"] = "/private/tmp/remote-session-runner-gocache"
