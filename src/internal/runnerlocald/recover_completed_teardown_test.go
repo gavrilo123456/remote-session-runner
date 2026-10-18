@@ -15,7 +15,7 @@ import (
 	"remote-session-runner/src/internal/store"
 )
 
-func TestBUG024MacTeardownPairRequiresExactExclusiveSelection(t *testing.T) {
+func TestBUG024MacTeardownPairParsesExactAndMixedSelections(t *testing.T) {
 	valid := "sess-00000000000000000000000000000001:cmd-00000000000000000000000000000001"
 	for _, values := range [][]string{{"invalid"}, {valid, valid}, {valid + ":extra"}, {""}, {valid, "sess-00000000000000000000000000000002:cmd-00000000000000000000000000000001"}} {
 		if _, err := parseMacCompletedTeardownRecoveryPairs(values); err == nil {
@@ -30,13 +30,16 @@ func TestBUG024MacTeardownPairRequiresExactExclusiveSelection(t *testing.T) {
 		{"--config", "/fixture/mac.yaml", "--teardown-pair", valid},
 		{"--config", "/fixture/mac.yaml", "--apply", "--teardown-pair", "invalid"},
 		{"--config", "/fixture/mac.yaml", "--apply", "--teardown-pair", valid, "--teardown-pair", valid},
-		{"--config", "/fixture/mac.yaml", "--apply", "--teardown-pair", valid, "--lost-pair", valid},
 		{"--config", "/fixture/mac.yaml", "--apply", "--teardown-pair", valid, "--lost-session", "sess-00000000000000000000000000000002"},
 	} {
 		var stdout, stderr strings.Builder
 		if code := runRecoverStalled(args, &stdout, &stderr); code != 2 || stdout.Len() != 0 {
 			t.Fatalf("args=%q code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
 		}
+	}
+	var stdout, stderr strings.Builder
+	if code := runRecoverStalled([]string{"--config", "/fixture/mac.yaml", "--apply", "--teardown-pair", valid, "--lost-pair", "sess-00000000000000000000000000000002:cmd-00000000000000000000000000000002"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "configuration is not ready") {
+		t.Fatalf("mixed pair/teardown selection was rejected before config load: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -220,12 +223,15 @@ func TestBUG024MacInstallerTeardownSelectionAndForwarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	pair := "sess-00000000000000000000000000000001:cmd-00000000000000000000000000000001"
-	for _, args := range [][]string{{"--teardown-pair", pair}, {"--recover-stalled", "--teardown-pair"}, {"--recover-stalled", "--teardown-pair", "unsafe/value"}, {"--recover-stalled", "--teardown-pair", pair, "--lost-pair", pair}, {"--recover-stalled", "--teardown-pair", pair, "--lost-session", "sess-00000000000000000000000000000002"}, {"--recover-failed-startup", "--teardown-pair", pair}} {
+	for _, args := range [][]string{{"--teardown-pair", pair}, {"--recover-stalled", "--teardown-pair"}, {"--recover-stalled", "--teardown-pair", "unsafe/value"}, {"--recover-stalled", "--teardown-pair", pair, "--lost-session", "sess-00000000000000000000000000000002"}, {"--recover-failed-startup", "--teardown-pair", pair}} {
 		output, err := exec.Command("sh", append([]string{parserPath}, args...)...).CombinedOutput()
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 || strings.Contains(string(output), "accepted") {
 			t.Fatalf("installer invalid args=%q err=%v output=%s", args, err, output)
 		}
+	}
+	if output, err := exec.Command("sh", parserPath, "--recover-stalled", "--teardown-pair", pair, "--lost-pair", pair).CombinedOutput(); err != nil || string(output) != "accepted\n" {
+		t.Fatalf("installer mixed lost/teardown selection err=%v output=%s", err, output)
 	}
 	if output, err := exec.Command("sh", parserPath, "--recover-stalled", "--teardown-pair", pair).CombinedOutput(); err != nil || string(output) != "accepted\n" {
 		t.Fatalf("installer valid selection err=%v output=%s", err, output)

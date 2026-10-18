@@ -330,14 +330,21 @@ func (r *simpleServiceTestRunner) Run(_ context.Context, name string, args ...st
 		}
 		return simpleCommandResult{Output: result + "\n"}, nil
 	}
-	if name == "/usr/bin/sudo" && len(args) >= 2 && args[0] == "/usr/bin/systemctl" {
-		switch args[1] {
+	if name == "/usr/bin/sudo" && len(args) >= 2 {
+		offset := 0
+		if args[0] == "-n" {
+			offset = 1
+		}
+		if offset+1 >= len(args) || args[offset] != "/usr/bin/systemctl" {
+			return simpleCommandResult{}, errors.New("unexpected test sudo command")
+		}
+		switch args[offset+1] {
 		case "start":
 			r.linuxOn = true
 		case "stop":
 			r.linuxOn = false
 		case "enable":
-			if len(args) != 4 || args[2] != "--quiet" || (args[3] != "runnerd-dev.service" && args[3] != "runnerd-qas.service") {
+			if len(args)-offset != 4 || args[offset+2] != "--quiet" || (args[offset+3] != "runnerd-dev.service" && args[offset+3] != "runnerd-qas.service") {
 				return simpleCommandResult{ExitCode: 2, Output: "unexpected enable target"}, nil
 			}
 		default:

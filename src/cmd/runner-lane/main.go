@@ -1,6 +1,6 @@
-// Command runner-lane builds and operates only the selected Dev or QAS lane
-// on one canonical existing host. It has no PRD target or arbitrary service
-// name interface.
+// Command runner-lane builds and operates Dev/QAS lanes and a separate,
+// explicitly gated in-place maintenance path for the canonical unsuffixed
+// PRD service on one existing host. It has no arbitrary service interface.
 package main
 
 import (
@@ -26,7 +26,7 @@ const maxLaneConfigBytes = 1 << 20
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help" || args[0] == "--version" || args[0] == "version")) {
-		os.Exit(commandstub.Run("runner-lane", "Build, install, inspect, start, stop and roll back one existing-host Dev or QAS lane.", args, os.Stdout, os.Stderr))
+		os.Exit(commandstub.Run("runner-lane", "Build and operate existing-host Dev/QAS lanes; run guarded unsuffixed PRD backup, install, migration and rollback operations.", args, os.Stdout, os.Stderr))
 	}
 	os.Exit(run(args, os.Stdout, os.Stderr))
 }
@@ -51,6 +51,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runInstall(ctx, args[1:], stdout, stderr)
 	case "rollback":
 		err = runRollback(ctx, args[1:], stdout, stderr)
+	case "prd-preflight":
+		err = runPRDPreflight(ctx, args[1:], stdout, stderr)
+	case "prd-status", "prd-start", "prd-stop":
+		err = runPRDService(ctx, args[0], args[1:], stdout, stderr)
+	case "prd-backup":
+		err = runPRDBackup(ctx, args[1:], stdout, stderr)
+	case "prd-install":
+		err = runPRDInstall(ctx, args[1:], stdout, stderr)
+	case "prd-migrate":
+		err = runPRDMigrate(ctx, args[1:], stdout, stderr)
+	case "prd-rollback":
+		err = runPRDRollback(ctx, args[1:], stdout, stderr)
 	case "bridge-install":
 		err = runBridgeInstall(args[1:], stdout, stderr)
 	default:
@@ -318,6 +330,194 @@ func runRollback(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		CurrentBundle  string `json:"current_bundle_sha256"`
 		ServiceRunning bool   `json:"service_running"`
 	}{plan.HostID, string(plan.Lane), current, false})
+}
+
+func runPRDPreflight(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane prd-preflight", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host ID")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	controller, err := laneinstall.NewPRDServiceController()
+	if err != nil {
+		return err
+	}
+	preflight, err := laneinstall.ReadPRDPreflight(ctx, plan, controller)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, preflight)
+}
+
+func runPRDService(ctx context.Context, action string, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane "+action, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host ID")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	controller, err := laneinstall.NewPRDServiceController()
+	if err != nil {
+		return err
+	}
+	if action == "prd-status" {
+		active, err := controller.Status(ctx, plan)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, struct {
+			HostID string `json:"host_id"`
+			Lane   string `json:"lane"`
+			Active bool   `json:"active"`
+		}{plan.HostID, "prd", active})
+	}
+	if action == "prd-stop" {
+		err = controller.Stop(ctx, plan)
+	} else {
+		err = controller.Start(ctx, plan)
+	}
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, struct {
+		HostID string `json:"host_id"`
+		Lane   string `json:"lane"`
+		Action string `json:"action"`
+	}{plan.HostID, "prd", strings.TrimPrefix(action, "prd-")})
+}
+
+func runPRDBackup(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane prd-backup", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host ID")
+	bundleSHA := flags.String("bundle-sha256", "", "exact accepted host bundle SHA-256")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *bundleSHA == "" {
+		return errors.New("usage: runner-lane prd-backup --host HOST --bundle-sha256 SHA256")
+	}
+	plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	receipt, err := laneinstall.CreatePRDBackup(ctx, plan, *bundleSHA)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, receipt)
+}
+
+func runPRDInstall(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane prd-install", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host ID")
+	bundleDir := flags.String("bundle-dir", "", "exact accepted per-host candidate bundle")
+	bundleSHA := flags.String("bundle-sha256", "", "exact accepted host bundle SHA-256")
+	backupDir := flags.String("backup-dir", "", "verified owner-only PRD backup under the host's canonical backup root")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *bundleDir == "" || *bundleSHA == "" || *backupDir == "" {
+		return errors.New("usage: runner-lane prd-install --host HOST --bundle-dir CANDIDATE --bundle-sha256 SHA256 --backup-dir BACKUP")
+	}
+	plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	bundle, err := laneinstall.LoadSimpleBundleDirectory(*bundleDir)
+	if err != nil {
+		return err
+	}
+	controller, err := laneinstall.NewPRDServiceController()
+	if err != nil {
+		return err
+	}
+	installed, err := laneinstall.InstallPRDBundle(ctx, plan, controller, bundle, *bundleSHA, *backupDir)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, struct {
+		HostID         string                      `json:"host_id"`
+		Lane           string                      `json:"lane"`
+		SourceRevision string                      `json:"source_revision"`
+		BundleSHA256   string                      `json:"bundle_sha256"`
+		Components     []laneinstall.PRDBackupFile `json:"installed_components"`
+	}{plan.HostID, "prd", bundle.Manifest.SourceRevision, bundle.Manifest.BundleSHA256, installed})
+}
+
+func runPRDMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane prd-migrate", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host ID")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	controller, err := laneinstall.NewPRDServiceController()
+	if err != nil {
+		return err
+	}
+	schema, inventory, err := laneinstall.MigratePRDDatabase(ctx, plan, controller)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, struct {
+		HostID    string                       `json:"host_id"`
+		Lane      string                       `json:"lane"`
+		Schema    int                          `json:"schema_version"`
+		Inventory laneinstall.PRDWorkInventory `json:"post_migration_work_inventory"`
+	}{plan.HostID, "prd", schema, inventory})
+}
+
+func runPRDRollback(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane prd-rollback", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host ID")
+	backupDir := flags.String("backup-dir", "", "verified owner-only PRD backup under the host's canonical backup root")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *backupDir == "" {
+		return errors.New("usage: runner-lane prd-rollback --host HOST --backup-dir BACKUP")
+	}
+	plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	controller, err := laneinstall.NewPRDServiceController()
+	if err != nil {
+		return err
+	}
+	if err := laneinstall.RollbackPRD(ctx, plan, controller, *backupDir); err != nil {
+		return err
+	}
+	return writeJSON(stdout, struct {
+		HostID string `json:"host_id"`
+		Lane   string `json:"lane"`
+		Result string `json:"result"`
+	}{plan.HostID, "prd", "original binaries and exact pre-migration database restored; service remains stopped"})
 }
 
 func runBridgeInstall(args []string, stdout, stderr io.Writer) error {

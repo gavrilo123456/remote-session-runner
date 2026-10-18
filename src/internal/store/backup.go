@@ -27,10 +27,23 @@ type onlineBackuper interface {
 // backupPath. It uses SQLite's online backup API, so committed pages still in
 // the source WAL are included. The destination must not already exist.
 func CreateOnlineBackup(ctx context.Context, source *sql.DB, backupPath string) error {
+	return createOnlineBackup(ctx, source, backupPath, validateDatabaseContents)
+}
+
+// CreateExistingOnlineBackup snapshots an already-existing supported
+// historical/current authority without opening it through store.Open or
+// applying migrations. The source must come from an explicit read-only
+// maintenance open; the destination is validated against the same known
+// restart-preflight schema set.
+func CreateExistingOnlineBackup(ctx context.Context, source *sql.DB, backupPath string) error {
+	return createOnlineBackup(ctx, source, backupPath, validateRestartPreflightDatabaseContents)
+}
+
+func createOnlineBackup(ctx context.Context, source *sql.DB, backupPath string, validate func(context.Context, string) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if source == nil {
+	if source == nil || validate == nil {
 		return errors.New("online backup requires a source database")
 	}
 	if !validAbsoluteSQLitePath(backupPath) {
@@ -80,7 +93,7 @@ func CreateOnlineBackup(ctx context.Context, source *sql.DB, backupPath string) 
 	if err := validatePrivateDatabasePath(temporaryPath); err != nil {
 		return fmt.Errorf("validate completed online backup file: %w", err)
 	}
-	if err := validateDatabaseContents(ctx, temporaryPath); err != nil {
+	if err := validate(ctx, temporaryPath); err != nil {
 		return fmt.Errorf("validate completed online backup contents: %w", err)
 	}
 	file, err := os.OpenFile(temporaryPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
@@ -104,6 +117,70 @@ func CreateOnlineBackup(ctx context.Context, source *sql.DB, backupPath string) 
 		return fmt.Errorf("sync online backup directory: %w", err)
 	}
 	return nil
+}
+
+// RestoreExistingOnlineBackup restores an exact supported pre-migration
+// snapshot into a stopped authority without invoking store.Open and therefore
+// without upgrading the restored schema. The caller must prove the service is
+// stopped and that no new accepted work would be discarded before calling it.
+func RestoreExistingOnlineBackup(ctx context.Context, databasePath, backupPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !validAbsoluteSQLitePath(databasePath) || !validAbsoluteSQLitePath(backupPath) || databasePath == backupPath {
+		return ErrDatabasePath
+	}
+	if err := validateExistingRestartPreflightDatabasePath(ctx, backupPath); err != nil {
+		return fmt.Errorf("validate exact restore snapshot: %w", err)
+	}
+	databaseInfo, err := os.Lstat(databasePath)
+	if err != nil {
+		return fmt.Errorf("inspect stopped authority database: %w", err)
+	}
+	if err := validateDatabaseFile(databasePath, databaseInfo); err != nil {
+		return fmt.Errorf("validate stopped authority database: %w", err)
+	}
+	backupInfo, err := os.Lstat(backupPath)
+	if err != nil {
+		return fmt.Errorf("inspect exact restore snapshot: %w", err)
+	}
+	if os.SameFile(databaseInfo, backupInfo) {
+		return errors.New("restore snapshot and authority database refer to the same file")
+	}
+	database, err := sql.Open("sqlite", existingCurrentDataSourceName(databasePath, "rw"))
+	if err != nil {
+		return fmt.Errorf("open stopped authority for exact restore: %w", err)
+	}
+	database.SetMaxOpenConns(1)
+	connection, err := database.Conn(ctx)
+	if err != nil {
+		_ = database.Close()
+		return fmt.Errorf("reserve exact restore connection: %w", err)
+	}
+	restoreErr := runSQLiteBackup(ctx, connection, func(raw any) (*sqlitedriver.Backup, error) {
+		backuper, ok := raw.(onlineBackuper)
+		if !ok {
+			return nil, errors.New("SQLite driver does not support exact online restore")
+		}
+		return backuper.NewRestore(sqlitePathURI(backupPath, "ro"))
+	})
+	var busy, logFrames, checkpointedFrames int
+	if restoreErr == nil {
+		if checkpointErr := connection.QueryRowContext(ctx, "PRAGMA wal_checkpoint(FULL)").Scan(&busy, &logFrames, &checkpointedFrames); checkpointErr != nil {
+			restoreErr = fmt.Errorf("checkpoint exact restored authority: %w", checkpointErr)
+		} else if busy != 0 || logFrames != checkpointedFrames {
+			restoreErr = fmt.Errorf("exact restored authority checkpoint incomplete: busy=%d log=%d checkpointed=%d", busy, logFrames, checkpointedFrames)
+		}
+	}
+	connectionErr := connection.Close()
+	databaseErr := database.Close()
+	if err := errors.Join(restoreErr, connectionErr, databaseErr); err != nil {
+		return fmt.Errorf("restore exact SQLite snapshot: %w", err)
+	}
+	if err := validateExistingRestartPreflightDatabasePath(ctx, databasePath); err != nil {
+		return fmt.Errorf("validate exact restored authority: %w", err)
+	}
+	return syncDirectory(filepath.Dir(databasePath))
 }
 
 // RestoreOnlineBackup replaces databasePath from backupPath using SQLite's
@@ -279,6 +356,80 @@ func validateDatabaseContents(ctx context.Context, path string) error {
 	}
 	defer connection.Close()
 	return validateDatabaseConnection(ctx, connection)
+}
+
+func validateRestartPreflightDatabaseContents(ctx context.Context, path string) error {
+	database, err := sql.Open("sqlite", sqlitePathURI(path, "ro"))
+	if err != nil {
+		return fmt.Errorf("open historical SQLite snapshot read-only: %w", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	connection, err := database.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve historical SQLite snapshot validation connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("enable historical snapshot foreign-key validation: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
+		return fmt.Errorf("enable historical snapshot query-only mode: %w", err)
+	}
+	if err := verifyRestartPreflightSchemaConnection(ctx, connection); err != nil {
+		return fmt.Errorf("verify historical snapshot schema: %w", err)
+	}
+	if err := verifyPragmasConnection(ctx, connection); err != nil {
+		return err
+	}
+	rows, err := connection.QueryContext(ctx, "PRAGMA integrity_check")
+	if err != nil {
+		return fmt.Errorf("run historical snapshot integrity check: %w", err)
+	}
+	checks := 0
+	for rows.Next() {
+		var result string
+		if err := rows.Scan(&result); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		checks++
+		if result != "ok" {
+			_ = rows.Close()
+			return fmt.Errorf("historical snapshot integrity check reported %q", result)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if checks == 0 {
+		return errors.New("historical snapshot integrity check returned no result")
+	}
+	foreignKeys, err := connection.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("run historical snapshot foreign-key check: %w", err)
+	}
+	if foreignKeys.Next() {
+		_ = foreignKeys.Close()
+		return errors.New("historical snapshot foreign-key check found a violation")
+	}
+	if err := foreignKeys.Err(); err != nil {
+		_ = foreignKeys.Close()
+		return err
+	}
+	return foreignKeys.Close()
+}
+
+func validateExistingRestartPreflightDatabasePath(ctx context.Context, path string) error {
+	database, err := OpenExistingRestartPreflightReadOnly(ctx, path)
+	if err != nil {
+		return err
+	}
+	return database.Close()
 }
 
 func validateDatabaseConnection(ctx context.Context, connection *sql.Conn) error {

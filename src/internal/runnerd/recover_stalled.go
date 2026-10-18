@@ -30,15 +30,20 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "owner-only Linux runner configuration")
 	apply := flags.Bool("apply", false, "perform the explicit offline repair")
-	var jobValues, pairValues, sessionValues repeatedRecoveryValue
+	var jobValues, pairValues, sessionValues, teardownValues repeatedRecoveryValue
 	flags.Var(&jobValues, "job-id", "terminal cancelled one-off job ID; repeat for every pending job")
 	flags.Var(&pairValues, "lost-pair", "lost SESSION_ID:COMMAND_ID pair; repeat for every retained lost runtime")
 	flags.Var(&sessionValues, "lost-session", "lost SESSION_ID without a persisted command; repeat for every retained commandless lost runtime")
+	flags.Var(&teardownValues, "teardown-pair", "complete succeeded or ordinary failed command with lost teardown as SESSION_ID:COMMAND_ID; repeat for the complete retained set")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if *configPath == "" || !*apply || flags.NArg() != 0 || (len(jobValues) == 0 && len(pairValues) == 0 && len(sessionValues) == 0) {
-		fmt.Fprintln(stderr, "runnerd recover-stalled: --config, --apply, and at least one --job-id, --lost-pair, or --lost-session are required")
+	if *configPath == "" || !*apply || flags.NArg() != 0 || (len(jobValues) == 0 && len(pairValues) == 0 && len(sessionValues) == 0 && len(teardownValues) == 0) {
+		fmt.Fprintln(stderr, "runnerd recover-stalled: --config, --apply, and at least one --job-id, --lost-pair, --lost-session, or --teardown-pair are required")
+		return 2
+	}
+	if len(teardownValues) != 0 && (len(jobValues) != 0 || len(sessionValues) != 0) {
+		fmt.Fprintln(stderr, "runnerd recover-stalled: --teardown-pair can combine only with --lost-pair")
 		return 2
 	}
 	jobIDs, err := parseRecoveryJobIDs(jobValues)
@@ -52,6 +57,11 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	lostSessionRequests, err := parseLostRecoverySessions(sessionValues)
+	if err != nil {
+		fmt.Fprintf(stderr, "runnerd recover-stalled: %v\n", err)
+		return 2
+	}
+	teardownRequests, err := parseCompletedTeardownRecoveryPairs(teardownValues)
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd recover-stalled: %v\n", err)
 		return 2
@@ -120,6 +130,32 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd recover-stalled: construct execution service: %v\n", err)
 		return 1
+	}
+	if len(teardownRequests) != 0 {
+		if err := requireMixedRuntimeRecoveryInventory(ctx, authority, service, runtimeAdapter, lostRequests, teardownRequests); err != nil {
+			fmt.Fprintf(stderr, "runnerd recover-stalled: mixed preflight: %v\n", err)
+			return 1
+		}
+		lostRecovered, teardownRecovered, recoverErr := service.RecoverMixedRuntimeRecoverySet(ctx, lostRequests, teardownRequests)
+		if recoverErr != nil {
+			fmt.Fprintf(stderr, "runnerd recover-stalled: mixed recovery: %v\n", recoverErr)
+			return 1
+		}
+		if err := requireStalledRecoveryPostflight(ctx, authority); err != nil {
+			fmt.Fprintf(stderr, "runnerd recover-stalled: mixed postflight: %v\n", err)
+			return 1
+		}
+		lostCount, alreadyLost := recoveryResultCounts(lostRecovered)
+		var teardownCount, alreadyTeardown int
+		for _, result := range teardownRecovered {
+			if result.Recovery.AlreadyRecovered {
+				alreadyTeardown++
+			} else {
+				teardownCount++
+			}
+		}
+		fmt.Fprintf(stdout, "runnerd recover-stalled: recovered_lost_pairs=%d already_recovered_lost_pairs=%d recovered_teardown_pairs=%d already_recovered_teardown_pairs=%d\n", lostCount, alreadyLost, teardownCount, alreadyTeardown)
+		return 0
 	}
 	if err := requireStalledRecoveryInventory(ctx, authority, service, runtimeAdapter, jobIDs, lostRequests, lostSessionRequests); err != nil {
 		fmt.Fprintf(stderr, "runnerd recover-stalled: preflight: %v\n", err)
@@ -213,6 +249,36 @@ func parseLostRecoveryPairs(values []string) ([]execution.LostRuntimeRecoveryReq
 	return requests, nil
 }
 
+func parseCompletedTeardownRecoveryPairs(values []string) ([]execution.CompletedTeardownRecoveryRequest, error) {
+	requests := make([]execution.CompletedTeardownRecoveryRequest, 0, len(values))
+	seenSessions := make(map[domain.SessionID]struct{}, len(values))
+	seenCommands := make(map[domain.CommandID]struct{}, len(values))
+	for _, raw := range values {
+		sessionValue, commandValue, found := strings.Cut(raw, ":")
+		if !found || sessionValue == "" || commandValue == "" || strings.Contains(commandValue, ":") {
+			return nil, fmt.Errorf("invalid teardown pair; want SESSION_ID:COMMAND_ID")
+		}
+		sessionID, err := domain.NewSessionID(sessionValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid teardown session ID: %v", err)
+		}
+		commandID, err := domain.NewCommandID(commandValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid teardown command ID: %v", err)
+		}
+		if _, duplicate := seenSessions[sessionID]; duplicate {
+			return nil, fmt.Errorf("duplicate teardown session ID %s", sessionID)
+		}
+		if _, duplicate := seenCommands[commandID]; duplicate {
+			return nil, fmt.Errorf("duplicate teardown command ID %s", commandID)
+		}
+		seenSessions[sessionID] = struct{}{}
+		seenCommands[commandID] = struct{}{}
+		requests = append(requests, execution.CompletedTeardownRecoveryRequest{SessionID: sessionID, CommandID: commandID})
+	}
+	return requests, nil
+}
+
 func parseLostRecoverySessions(values []string) ([]execution.CommandlessLostRuntimeRecoveryRequest, error) {
 	requests := make([]execution.CommandlessLostRuntimeRecoveryRequest, 0, len(values))
 	seen := make(map[domain.SessionID]struct{}, len(values))
@@ -289,6 +355,38 @@ func requireStalledRecoveryInventory(ctx context.Context, authority *store.Autho
 	return nil
 }
 
+func requireMixedRuntimeRecoveryInventory(ctx context.Context, authority *store.AuthorityStore, service *execution.Service, runtimeAdapter *LinuxSessionRuntime, lost []execution.LostRuntimeRecoveryRequest, teardown []execution.CompletedTeardownRecoveryRequest) error {
+	if authority == nil || service == nil || runtimeAdapter == nil || (len(lost) == 0 && len(teardown) == 0) {
+		return fmt.Errorf("recovery dependencies are incomplete")
+	}
+	activeSessions, err := authority.CountActiveSessions(ctx)
+	if err != nil || activeSessions != 0 {
+		return fmt.Errorf("active session inventory is not empty")
+	}
+	runningCommands, err := authority.CountRunningCommands(ctx)
+	if err != nil || runningCommands != 0 {
+		return fmt.Errorf("running command inventory is not empty")
+	}
+	jobs, err := authority.ListNonterminalJobIDs(ctx)
+	if err != nil || len(jobs) != 0 {
+		return fmt.Errorf("nonterminal job inventory is not empty")
+	}
+	if _, _, err := service.CheckMixedRuntimeRecoverySet(ctx, lost, teardown); err != nil {
+		return err
+	}
+	attributable := make(map[string]struct{}, len(lost)+len(teardown))
+	for _, request := range lost {
+		attributable[string(request.SessionID)] = struct{}{}
+	}
+	for _, request := range teardown {
+		attributable[string(request.SessionID)] = struct{}{}
+	}
+	if err := runtimeAdapter.AuditOwnership(ctx, attributable); err != nil {
+		return fmt.Errorf("audit mixed recovery ownership: %w", err)
+	}
+	return nil
+}
+
 func requireStalledRecoveryPostflight(ctx context.Context, authority *store.AuthorityStore) error {
 	activeSessions, err := authority.CountActiveSessions(ctx)
 	if err != nil {
@@ -323,6 +421,13 @@ func requireStalledRecoveryPostflight(ctx context.Context, authority *store.Auth
 	}
 	if len(pendingPairs) != 0 || len(pendingSessions) != 0 {
 		return fmt.Errorf("pending lost-runtime finalizations remain: pairs=%d sessions=%d", len(pendingPairs), len(pendingSessions))
+	}
+	pendingTeardowns, err := authority.ListPendingCompletedTeardownRecoveryFinalizations(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pendingTeardowns) != 0 {
+		return fmt.Errorf("pending completed-teardown finalizations remain: pairs=%d", len(pendingTeardowns))
 	}
 	return nil
 }

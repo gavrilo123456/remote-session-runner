@@ -28,7 +28,7 @@ mac_failed_startup_sessions=''
 mac_retire_mailbox=''
 
 usage() {
-	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml] [--retire-mailbox MAILBOX_ID] [--b011-controlled-restart] [--recover-stalled [--lost-pair SESSION_ID:COMMAND_ID ...] [--lost-session SESSION_ID ...] | --recover-stalled --teardown-pair SESSION_ID:COMMAND_ID ...] [--recover-failed-startup --failed-session SESSION_ID ...]" >&2
+	printf '%s\n' "usage: $0 [--config /Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/config/mac.next.yaml] [--retire-mailbox MAILBOX_ID] [--b011-controlled-restart] [--recover-stalled [--lost-pair SESSION_ID:COMMAND_ID ...] [--teardown-pair SESSION_ID:COMMAND_ID ...] | --recover-stalled --lost-session SESSION_ID ...] [--recover-failed-startup --failed-session SESSION_ID ...]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -177,8 +177,8 @@ if [ "$mac_recover_stalled_mode" -eq 0 ] && { [ -n "$mac_recovery_pairs" ] || [ 
 	printf '%s\n' '--lost-pair, --lost-session, and --teardown-pair require --recover-stalled.' >&2
 	exit 2
 fi
-if [ -n "$mac_teardown_pairs" ] && { [ -n "$mac_recovery_pairs" ] || [ -n "$mac_recovery_sessions" ]; }; then
-	printf '%s\n' '--teardown-pair cannot combine with --lost-pair or --lost-session.' >&2
+if [ -n "$mac_teardown_pairs" ] && [ -n "$mac_recovery_sessions" ]; then
+	printf '%s\n' '--teardown-pair cannot combine with --lost-session.' >&2
 	exit 2
 fi
 if [ "$mac_recover_stalled_mode" -ne 0 ] && [ -z "$mac_recovery_pairs" ] && [ -z "$mac_recovery_sessions" ] && [ -z "$mac_teardown_pairs" ]; then

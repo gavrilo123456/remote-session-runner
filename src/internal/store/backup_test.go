@@ -164,6 +164,52 @@ func TestP139RestoreRejectsCorruptBackupBeforeChangingAuthority(t *testing.T) {
 	}
 }
 
+func TestP139ExistingOnlineBackupAndRestorePreserveHistoricalSchemaWithoutMigration(t *testing.T) {
+	ctx := context.Background()
+	sourcePath := completedTeardownSchema36AuthorityPath(t)
+	source, err := OpenExistingRestartPreflightReadOnly(ctx, sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupDirectory := filepath.Join(t.TempDir(), "backups")
+	if err := os.Mkdir(backupDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(backupDirectory, "schema36.online.db")
+	if err := CreateExistingOnlineBackup(ctx, source, backupPath); err != nil {
+		_ = source.Close()
+		t.Fatalf("create compatible existing-schema online backup: %v", err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := OpenExistingRestartPreflightReadOnly(ctx, backupPath)
+	if err != nil {
+		t.Fatalf("open exact backup through historical read-only path: %v", err)
+	}
+	var backupSchema int
+	if err := backup.QueryRowContext(ctx, "PRAGMA user_version").Scan(&backupSchema); err != nil || backupSchema != 36 {
+		t.Fatalf("snapshot schema=%d err=%v, want untouched schema 36", backupSchema, err)
+	}
+	if err := backup.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	targetPath := b008CurrentAuthorityPath(t)
+	if err := RestoreExistingOnlineBackup(ctx, targetPath, backupPath); err != nil {
+		t.Fatalf("restore exact historical schema without Open/migration: %v", err)
+	}
+	target, err := OpenExistingRestartPreflightReadOnly(ctx, targetPath)
+	if err != nil {
+		t.Fatalf("open restored historical authority read-only: %v", err)
+	}
+	defer target.Close()
+	var restoredSchema int
+	if err := target.QueryRowContext(ctx, "PRAGMA user_version").Scan(&restoredSchema); err != nil || restoredSchema != 36 {
+		t.Fatalf("restored schema=%d err=%v, want 36 without an upgrade", restoredSchema, err)
+	}
+}
+
 func checkP139BackupProbe(t *testing.T, path, value string, wantPresent bool) {
 	t.Helper()
 	database, err := Open(context.Background(), path)

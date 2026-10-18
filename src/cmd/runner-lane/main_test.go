@@ -49,6 +49,24 @@ func TestRunPlanRejectsPRDAndUnknownHost(t *testing.T) {
 	}
 }
 
+func TestPRDMaintenanceCommandsRejectNoncanonicalHostBeforeOperating(t *testing.T) {
+	for _, args := range [][]string{
+		{"prd-preflight", "--host", "unlisted"},
+		{"prd-status", "--host", "unlisted"},
+		{"prd-start", "--host", "unlisted"},
+		{"prd-stop", "--host", "unlisted"},
+		{"prd-backup", "--host", "unlisted", "--bundle-sha256", strings.Repeat("a", 64)},
+		{"prd-install", "--host", "unlisted", "--bundle-dir", "/private/tmp/no-bundle", "--bundle-sha256", strings.Repeat("a", 64), "--backup-dir", "/private/tmp/no-backup"},
+		{"prd-migrate", "--host", "unlisted"},
+		{"prd-rollback", "--host", "unlisted", "--backup-dir", "/private/tmp/no-backup"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if status := run(args, &stdout, &stderr); status == 0 {
+			t.Errorf("run(%v) accepted a noncanonical PRD host", args)
+		}
+	}
+}
+
 func TestBundleOutputCannotTargetCheckout(t *testing.T) {
 	if !pathWithin("/source/checkout", "/source/checkout/artifact") || pathWithin("/source/checkout", "/private/tmp/artifact") {
 		t.Fatal("checkout-boundary predicate does not distinguish repository and external paths")

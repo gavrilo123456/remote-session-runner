@@ -46,6 +46,25 @@ func TestParseLostRecoveryPairsRejectsAmbiguousOrDuplicateInput(t *testing.T) {
 	}
 }
 
+func TestParseCompletedTeardownRecoveryPairsAndAllowsMixedSelection(t *testing.T) {
+	first := "sess-00000000000000000000000000000001:cmd-00000000000000000000000000000001"
+	second := "sess-00000000000000000000000000000002:cmd-00000000000000000000000000000002"
+	parsed, err := parseCompletedTeardownRecoveryPairs([]string{first, second})
+	if err != nil || len(parsed) != 2 || parsed[0].SessionID != domain.SessionID("sess-00000000000000000000000000000001") || parsed[1].CommandID != domain.CommandID("cmd-00000000000000000000000000000002") {
+		t.Fatalf("parsed completed teardown pairs=%+v err=%v", parsed, err)
+	}
+	for _, values := range [][]string{{first, first}, {"sess-one:cmd-one:extra"}, {"unsafe/value"}} {
+		if _, err := parseCompletedTeardownRecoveryPairs(values); err == nil {
+			t.Fatalf("invalid completed teardown selections %q unexpectedly accepted", values)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	exit := Run([]string{"recover-stalled", "--config", "/fixture/linux.yaml", "--apply", "--lost-pair", first, "--teardown-pair", second}, &stdout, &stderr)
+	if exit != 1 || !strings.Contains(stderr.String(), "load config") {
+		t.Fatalf("mixed selection was rejected before config load: exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
+	}
+}
+
 func TestParseLostRecoverySessionsAndCrossInputValidation(t *testing.T) {
 	sessions, err := parseLostRecoverySessions([]string{"sess-one", "sess-two"})
 	if err != nil || len(sessions) != 2 || sessions[0].SessionID != domain.SessionID("sess-one") || sessions[1].SessionID != domain.SessionID("sess-two") {

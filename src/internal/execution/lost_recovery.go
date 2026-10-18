@@ -35,12 +35,13 @@ type LostRuntimeRecoveryRequest struct {
 // repair. A successful repair releases only capacity that follows a confirmed
 // runtime reconciliation.
 type LostRuntimeRecoveryResult struct {
-	Session            store.SessionRecord
-	Command            store.LostRuntimeRecoveryCommand
-	SessionReservation store.SessionReservation
-	CommandSlot        store.CommandSlotRecord
-	Runtime            RuntimeReconcileResult
-	AlreadyRecovered   bool
+	Session             store.SessionRecord
+	Command             store.LostRuntimeRecoveryCommand
+	SessionReservation  store.SessionReservation
+	CommandSlot         store.CommandSlotRecord
+	Runtime             RuntimeReconcileResult
+	AlreadyRecovered    bool
+	FinalizationPending bool
 }
 
 // CheckLostRuntimeRecoveryBatch validates a complete explicit repair set

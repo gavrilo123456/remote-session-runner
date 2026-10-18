@@ -42,8 +42,8 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runner-locald recover-stalled: --config, --apply, and at least one --lost-pair, --lost-session, or --teardown-pair are required")
 		return 2
 	}
-	if len(teardownValues) != 0 && (len(pairValues) != 0 || len(sessionValues) != 0) {
-		fmt.Fprintln(stderr, "runner-locald recover-stalled: --teardown-pair cannot be combined with --lost-pair or --lost-session")
+	if len(teardownValues) != 0 && len(sessionValues) != 0 {
+		fmt.Fprintln(stderr, "runner-locald recover-stalled: --teardown-pair cannot be combined with --lost-session")
 		return 2
 	}
 	teardownRequests, err := parseMacCompletedTeardownRecoveryPairs(teardownValues)
@@ -116,6 +116,9 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if len(teardownRequests) != 0 {
+		if len(lostRequests) != 0 {
+			return recoverMacMixedRuntimeSet(ctx, authority, service, runtimeAdapter, lostRequests, teardownRequests, stdout, stderr)
+		}
 		return recoverMacCompletedTeardownSet(ctx, authority, service, runtimeAdapter, teardownRequests, stdout, stderr)
 	}
 	if err := requireMacStalledRecoveryInventorySet(ctx, authority, service, runtimeAdapter, lostRequests, lostSessionRequests); err != nil {
@@ -135,6 +138,62 @@ func runRecoverStalled(args []string, stdout, stderr io.Writer) int {
 	recoveredSessionCount, alreadyRecoveredSessionCount := macCommandlessRecoveryResultCounts(recoveredSessions)
 	fmt.Fprintf(stdout, "runner-locald recover-stalled: recovered_lost_pairs=%d already_recovered_lost_pairs=%d recovered_lost_sessions=%d already_recovered_lost_sessions=%d\n", recoveredCount, alreadyRecoveredCount, recoveredSessionCount, alreadyRecoveredSessionCount)
 	return 0
+}
+
+func recoverMacMixedRuntimeSet(ctx context.Context, authority *store.AuthorityStore, service *execution.Service, runtimeAdapter execution.RuntimeOwnershipAuditor, lost []execution.LostRuntimeRecoveryRequest, teardown []execution.CompletedTeardownRecoveryRequest, stdout, stderr io.Writer) int {
+	if err := requireMacMixedRuntimeRecoveryInventory(ctx, authority, service, runtimeAdapter, lost, teardown); err != nil {
+		fmt.Fprintln(stderr, "runner-locald recover-stalled: mixed recovery preflight refused")
+		return 1
+	}
+	recoveredLost, recoveredTeardown, err := service.RecoverMixedRuntimeRecoverySet(ctx, lost, teardown)
+	if err != nil {
+		fmt.Fprintf(stderr, "runner-locald recover-stalled: mixed recovery failed: reason=%s\n", queueworker.RetainedCapacityRecoveryFailureReason(err))
+		return 1
+	}
+	if err := requireMacStalledRecoveryPostflight(ctx, authority); err != nil {
+		fmt.Fprintln(stderr, "runner-locald recover-stalled: mixed recovery postflight refused")
+		return 1
+	}
+	lostCount, alreadyLostCount := macRecoveryResultCounts(recoveredLost)
+	var teardownCount, alreadyTeardownCount int
+	for _, result := range recoveredTeardown {
+		if result.Recovery.AlreadyRecovered {
+			alreadyTeardownCount++
+		} else {
+			teardownCount++
+		}
+	}
+	fmt.Fprintf(stdout, "runner-locald recover-stalled: recovered_lost_pairs=%d already_recovered_lost_pairs=%d recovered_teardown_pairs=%d already_recovered_teardown_pairs=%d\n", lostCount, alreadyLostCount, teardownCount, alreadyTeardownCount)
+	return 0
+}
+
+func requireMacMixedRuntimeRecoveryInventory(ctx context.Context, authority *store.AuthorityStore, service *execution.Service, runtimeAdapter execution.RuntimeOwnershipAuditor, lost []execution.LostRuntimeRecoveryRequest, teardown []execution.CompletedTeardownRecoveryRequest) error {
+	if authority == nil || service == nil || runtimeAdapter == nil || (len(lost) == 0 && len(teardown) == 0) {
+		return errors.New("recovery dependencies are incomplete")
+	}
+	active, err := authority.CountActiveSessions(ctx)
+	if err != nil || active != 0 {
+		return errors.New("active sessions are present or unavailable")
+	}
+	running, err := authority.CountRunningCommands(ctx)
+	if err != nil || running != 0 {
+		return errors.New("running commands are present or unavailable")
+	}
+	jobs, err := authority.ListNonterminalJobIDs(ctx)
+	if err != nil || len(jobs) != 0 {
+		return errors.New("nonterminal jobs are present or unavailable")
+	}
+	if _, _, err := service.CheckMixedRuntimeRecoverySet(ctx, lost, teardown); err != nil {
+		return err
+	}
+	attributable := make(map[string]struct{}, len(lost)+len(teardown))
+	for _, request := range lost {
+		attributable[string(request.SessionID)] = struct{}{}
+	}
+	for _, request := range teardown {
+		attributable[string(request.SessionID)] = struct{}{}
+	}
+	return runtimeAdapter.AuditOwnership(ctx, attributable)
 }
 
 func macRecoveryEnvironments(loaded config.Config) ([]domain.Environment, error) {
