@@ -141,6 +141,14 @@ returned exit 78; both were fixed. Mac `make check` and `make build` then passed
 The S2 source changes in this evidence revision are not installed; S1 worker
 services remain stopped for safe replacement.
 
+The first worker `make check` on linux-host then exposed a non-hermetic existing
+test: it expected the canonical Dev install root to be absent, but that host
+now contains its S1 candidate. The test uses a fake service runner and made no
+real systemd change; it observed the installed config/bundle and returned nil
+instead of the expected missing-install error. The test now injects the
+readiness failure it is meant to assert. Focused Mac and full worker reruns are
+pending delivery of this test-only correction.
+
 ## Current route findings and next gates
 
 Fresh read-only inspection shows INPUT policy `ACCEPT` on all three workers,

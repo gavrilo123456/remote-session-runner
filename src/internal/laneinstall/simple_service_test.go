@@ -127,16 +127,16 @@ func TestSimpleServiceControllerRejectsForeignRuntimeBeforeRunningCommands(t *te
 	}
 }
 
-func TestSimpleServiceControllerRefusesStartWithoutPinnedInstall(t *testing.T) {
+func TestSimpleServiceControllerRefusesStartWhenReadinessGuardFails(t *testing.T) {
 	plan, err := BuildSimplePlan("linux-host", config.ReleaseLaneDev)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runner := &simpleServiceTestRunner{}
 	controller := simpleTestServiceController(runner, "1000", config.LinuxAccount, "linux", "amd64")
-	controller.ready = nil
+	controller.ready = func(Plan) error { return ErrSimpleLanePreflight }
 	if err := controller.Start(context.Background(), plan); !errors.Is(err, ErrSimpleLanePreflight) {
-		t.Fatalf("start without pinned bundle/config/artifacts error=%v", err)
+		t.Fatalf("start when readiness guard fails error=%v", err)
 	}
 	if len(runner.calls) != 0 {
 		t.Fatalf("unready lane reached systemd: %v", runner.calls)
