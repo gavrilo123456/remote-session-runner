@@ -1,11 +1,12 @@
 # SIMPLE-04 — Dev deployment and coexistence acceptance
 
-**State: IN PROGRESS.** The selected Mac Dev lane is installed and active. The
-first worker Dev candidates/configurations are installed, but the lane start
-and clean-stop checks exposed two additional defects corrected in the current
-source changes. Worker Dev services are stopped pending the corrected
-candidate. Factory Dev is installed but has not been started. No route, command,
-mailbox, or live acceptance PASS is claimed. Existing PRD remains in service.
+**State: IN PROGRESS.** The selected Mac Dev lane is installed and active, but
+still runs the earlier S1 bundle. Corrected S2 bundles have not yet been
+installed on Mac or workers. The first worker Dev candidates/configurations
+remain installed; Linux and sandbox Dev services are stopped after the
+preserved S1 failure trials, and factory Dev is installed but has not been
+started. No route, command, mailbox, or live acceptance PASS is claimed.
+Existing PRD remains in service.
 
 ## Scope and predecessor
 
@@ -146,8 +147,26 @@ test: it expected the canonical Dev install root to be absent, but that host
 now contains its S1 candidate. The test uses a fake service runner and made no
 real systemd change; it observed the installed config/bundle and returned nil
 instead of the expected missing-install error. The test now injects the
-readiness failure it is meant to assert. Focused Mac and full worker reruns are
-pending delivery of this test-only correction.
+readiness failure it means to assert.
+
+## Corrected source delivery and checks
+
+S2 source commit `c868ecb87d2088043175358effebc4c81aa8470f` contains the
+bounded initial-database readiness retry and graceful log-capture/systemd stop
+proof corrections described above. It passed Mac `make check` and `make build`,
+was pushed to primary Gitea, and its exact SHA was verified on the automatic
+GitHub mirror before all three clean worker `dev` checkouts fast-forwarded to
+it. The first linux-host `make check` at S2 exposed the hermeticity issue above.
+
+S3 test-only commit `d7b4f073d1d7a5924249ba827a7697ef384a54d6` injects the
+readiness failure in that regression instead of depending on an absent real
+installation. It was pushed to Gitea, the exact mirror SHA was verified, and
+all three clean worker checkouts fast-forwarded to the same SHA. Mac `make
+check` passed at S3. Full `make check` then passed on linux-host, sandbox-host,
+and factory-sandbox at the exact S3 SHA; each checkout was clean on `dev`.
+`make check` covers test, vet and smoke/build-help checks. The separately
+required Mac `make build` passed on S2, whose production source is identical to
+S3. No worker service was started or changed by these source gates.
 
 ## Current route findings and next gates
 
@@ -161,17 +180,27 @@ the existing route first; only a measured failure that requires a cloud rule
 will need an operator with provider access and an exact scoped rule request.
 Queued SSH uses the existing port 22 and was installed without changing sshd.
 
-Current next gates:
+## Current state and remaining gates
 
-- Deliver the S2 source/evidence through Mac `dev` → Gitea → exact GitHub
-  mirror → clean worker fast-forwards, then run worker `make check`.
-- Rebuild S2 candidate bundles once; then perform guarded selected-Dev updates
-  and start/stop checks. Preserve the S1 failure evidence above.
-- Test direct mTLS and queued SSH routes, Mac-local health, bounded Dev
-  command/managed-session behavior, truthful terminal/event/ACK evidence,
-  capacity release, and before/after PRD identity/health checks.
-- Do not claim SIMPLE-04 PASS until every required route and lifecycle gate
-  passes.
+Fresh Mac health at S3 shows unsuffixed PRD API and locald readiness `ready`
+at installed revision `77910358a149d6e8fcdf4694498ebdf6c1f07f58`, with its
+pre-existing one active session, zero active commands/queues, and zero mailbox
+backlog. Mac Dev API/locald are `ready` at S1 revision
+`6d971c1a30bb202a55de9eb67b12471398fd993b`, with zero Dev sessions, commands,
+queues, or backlog. Its three optional remote-router checks are `degraded` with
+`remote_transport_unavailable`, zero pending/uncertain intents, because the
+worker Dev candidates are not currently running. This is an observed expected
+pre-install condition, not route acceptance.
+
+Next, build the four corrected S2 per-host candidates from the clean,
+synchronized S3 checkout, record each manifest/component digest, and perform
+guarded Dev-only updates. Then verify clean startup and stop on Mac and all
+workers; test direct mTLS and queued SSH routes, bounded Dev command and
+managed-session behavior, truthful terminal/event/ACK evidence, capacity
+release, and before/after PRD identity/health. The direct route must be measured
+after the workers start; only an observed route failure that needs an external
+network change can trigger an operator request. Do not claim SIMPLE-04 PASS
+until every required route and lifecycle gate passes.
 
 PRD service/configuration/mailbox/credentials and host firewall rules were not
 changed. The only SSH authority changes are the Dev-only forced bridge entries,
