@@ -13,6 +13,9 @@ GitHub mirror and all three clean Ubuntu checkouts. This closeout adds only
 the delivery receipt below. No corrective implementation or installed
 acceptance is claimed.
 
+**Tracked defect:** [BUG-025 — status-read/cleanup contention](../050-bugs/025-mac-prd-sqlite-status-read-cleanup-contention.md)
+contains the implementer instructions and required correction/acceptance gates.
+
 ## Scope and provenance
 
 The user requested root-cause investigation; the implementer will make the fix.
