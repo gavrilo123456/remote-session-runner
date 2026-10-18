@@ -858,3 +858,36 @@ recurring claim warning has been fixed. No PRD restart is safe while the
 retained session slot remains, and no PRD change is justified by the available
 evidence. The stable PRD binaries, configuration, database, WAL/SHM, services,
 mailbox, firewall and credentials remain unchanged.
+
+### S12 — owner-supplied filesystem trace
+
+The owner reran the bounded root `fs_usage` capture against the exact unsuffixed
+PRD locald PID `48627`; the earlier `pgrep -x runner-locald` result had listed
+all three lane processes and was correctly rejected. The completed capture
+covered `2026-10-18 12:23:27`–`12:23:47` Europe/Warsaw. Its 33,003 lines showed
+SQLite file-descriptor lock (`fcntl SETLK`) and read (`pread`) activity, with no
+`Err#`, `EACCES`, `EPERM`, `ENOSPC`, or SQLite error text. The captured calls do
+not expose a path for each file descriptor. A subsequent read-only `lsof` of
+the still-running PID mapped FD 8 to `local.db-shm` and FD 17 to `local.db`; the
+same snapshot showed only the expected PRD API PID `48708` and locald PID
+`48627` holding the shared PRD DB/WAL/SHM. The owner trace ended before the next
+logged queue-claim warnings at `12:24:35` and `12:26:12`, so it did not capture
+or correlate with either failure.
+
+At `2026-10-18T10:27:26.281806Z`, a fresh locald `/health/ready` request
+returned HTTP 200, `readiness=ready`, `sqlite_writes=ready`, and the original
+installed build. It retained one session slot and showed zero active commands,
+queued commands/intents, and mailbox backlog; `storage_errors_total` was 628
+and `cleanup_failures_total` was 1. This health route commits its designed
+timestamp-only SQLite probe row. Read-only SQLite checks returned
+`PRAGMA quick_check=ok`, `journal_mode=wal`, and no controlled-restart plan.
+The state/DB/WAL/SHM owner and modes remained `tomasz.walczuk:staff`, `0700`
+for directories and `0600` for the files, with about 150 GiB free on the data
+volume. These checks rule out neither an intermittent transaction-specific
+failure nor a non-SQLite claim error. The cumulative storage-error counter is
+not correlated to the two warning timestamps.
+
+No production service, configuration, database file, WAL/SHM, mailbox,
+reservation, request, ACK, or retained work was changed. The filesystem trace
+did not identify the underlying cause, and the recurring queue-claim warning
+remains unresolved; no PRD corrective change or restart is justified yet.
