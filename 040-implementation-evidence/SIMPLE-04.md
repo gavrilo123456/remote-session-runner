@@ -891,3 +891,24 @@ No production service, configuration, database file, WAL/SHM, mailbox,
 reservation, request, ACK, or retained work was changed. The filesystem trace
 did not identify the underlying cause, and the recurring queue-claim warning
 remains unresolved; no PRD corrective change or restart is justified yet.
+
+### S13 — owner-supplied three-minute filesystem trace
+
+The owner supplied a second root `fs_usage -t 180` capture against the exact
+unsuffixed PRD locald PID `48627`. The filtered output contains successful
+`WrData` calls to `local.db-wal` at `12:40:47`–`12:40:50` and `12:42:42`,
+successful database-page writes at `12:40:48`, and a WAL open at `12:42:40`.
+The accompanying log tail still shows generic queue-claim warnings at
+`12:40:45` and `12:42:39`; the `12:42:39` warning is followed by ordinary
+database/WAL activity, but the trace does not identify a transaction or
+associate those writes with a particular claim. The captured search returned
+no `Err#`, `EACCES`, `EPERM`, or `ENOSPC` matches. The transcript does not show
+the exact capture start/end timestamps, so do not treat nearby successful
+filesystem calls as proof that either claim succeeded or failed at SQLite.
+
+This evidence rules against a general inability to write the PRD database at
+those observed moments, but does not expose a transaction-level SQLite error or
+explain the sanitized `operation_failed` warnings. No PRD service, database,
+WAL/SHM, mailbox, reservation, request, ACK, or retained work was changed. The
+raw queue-claim cause remains unresolved; no production corrective change or
+restart is justified by this trace.
