@@ -160,3 +160,34 @@ diagnostic deployment into PRD.
 
 No production request or ACK was published, no service was restarted, no
 binary or configuration was changed, and no database migration was run.
+
+## Git delivery and Ubuntu source validation
+
+The reviewed source/evidence commit is `9c69468ee2e12e25369f7146050e418f840042a4`
+on Mac `dev`. Primary Gitea `origin/dev` and the automatic GitHub `github/dev`
+both returned that exact SHA from `ls-remote`. The push updated Gitea; the
+sandbox denied its attempt to write the local remote-tracking ref, so an
+explicit primary fetch then synchronized Mac `origin/dev` to the pushed SHA.
+
+Before pull, all three Ubuntu checkouts were clean on `dev` at
+`e8baa97826ce41ff2b5c19573b78c5471f4a2cb7`; each `origin` resolved to the
+GitHub mirror. They fast-forwarded with the required `/home/ubuntu/.ssh/`
+GitHub identity, and their post-pull `HEAD` was the commit above. On
+`linux-host` and `sandbox-host`, the focused `go test ./src/internal/store
+./src/internal/queueworker -run 'TestQueueClaim|TestIndependentStoresClaim|TestIndependentProcessesClaim|TestWorkerStartWakeStopWithoutQueuedWork' -count=1`
+passed using Go 1.27.1.
+
+The same focused command was attempted on `factory-sandbox` at that
+synchronized revision but produced no result. A second strict-host-key SSH
+session timed out during banner exchange; after interrupting the first SSH
+session, a read-only postflight SSH session also did not return. TCP connects
+to ports 22 and 8443 succeeded, which establishes only that those ports
+accepted a TCP connection, not that SSH or Runner was healthy. The factory
+test result and post-test checkout/service state are therefore **INCOMPLETE /
+NOT VERIFIED**; they are not a pass or a diagnosed host failure. No factory
+service-control or data-mutation command was issued; a requested
+`systemctl is-active` check did not return output. The previously measured low
+free memory and lack of swap make further build/test load there inappropriate
+until the host is responsive and its owner/operator can confirm capacity.
+Source remains delivered at the exact commit on all three hosts as verified
+before the test attempt.
