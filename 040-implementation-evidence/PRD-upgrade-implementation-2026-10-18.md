@@ -1,16 +1,18 @@
 # PRD in-place upgrade — implementation and fresh baseline
 
-**Status (2026-10-18, in progress):** The authorized PRD maintenance is underway.
-All four unsuffixed PRD services are stopped. The exact previously accepted
-`f117853a9f712e734eab787e648383f5468e719c` bundles are installed on Mac and the
-three Ubuntu workers; their configs and routes remain unchanged. Mac, linux-host,
-and factory-sandbox are schema 39 with zero retained capacity. sandbox-host is
-schema 39 but still has its one retained session reservation because the
-current recovery guard initially rejected its remote queued-Mac identity. A
-focused source correction and regression now pass on Mac; primary/mirror
-delivery, Ubuntu source gates, and the guarded sandbox retry remain pending.
-No service has been restarted. No mailbox request or ACK was published, and
-Dev/QAS services were not changed.
+**Status (2026-10-18, pre-activation):** The authorized PRD maintenance is
+ready for postflight activation. The exact previously Dev/QAS-accepted
+`f117853a9f712e734eab787e648383f5468e719c` bundles are installed on Mac and all
+three Ubuntu workers. Fresh native-host preflights show all four unsuffixed
+services stopped, schema 39, unchanged PRD configs, exact accepted component
+hashes, and zero active work, slots, reservations, resumable jobs, or pending
+recovery finalizations. The four retained identities were handled only by
+guarded recovery; their historical failed/lost results and terminal events
+remain intact. Source correction commit `6b59e8c546d518ed0431430059f8718eb5cc171c`
+passed the Mac and all three Ubuntu `make check build` gates and is on primary
+Gitea, the exact GitHub mirror, and all three clean Ubuntu `dev` checkouts. No
+PRD service has been restarted yet. No mailbox request or ACK was published,
+and Dev/QAS services were not changed.
 
 ## Scope and controls
 
@@ -131,12 +133,12 @@ as proof of publisher state.
   Mac is schema 39 with all work/reservation counts zero; command results and
   events remain terminal and unchanged.
 - linux-host and factory-sandbox migrated from schema 36 to 39 through guarded
-  `prd-migrate`; both remain stopped with zero inventory. sandbox-host's
-  synchronized `6cfd9e2` helper applied schema migration before correctly
-  refusing capacity release: the stored session is a remote target controlled
-  by `queued_mac`, while the completed-teardown predicate allowed only local
-  `local_user` sessions. Its reservation remains retained; no result, event,
-  slot, or capacity record was changed by that refusal.
+  `prd-migrate`; both remain stopped with zero inventory. The initial
+  sandbox-host recovery attempt with synchronized `6cfd9e2` applied the schema
+  migration before refusing capacity release: its remote `queued_mac` session
+  was excluded by the then-current local-only teardown predicate. That refusal
+  changed no result, event, slot, or capacity record. The follow-up source fix,
+  delivery, and successful exact-pair recovery are recorded below.
 - A regression reproduces that pre-fix refusal for remote queued-Mac jobs; the
   correction allows remote worker sessions owned by `queued_mac` or
   `direct_mtls` only. The focused `store` and `execution` tests pass, including
@@ -144,15 +146,83 @@ as proof of publisher state.
   checks. `make check build` passed on Mac in the authorized shell; the first
   restricted-shell attempt failed only because `/bin/ps` was unavailable to an
   existing runner-locald ownership test.
-- The source correction is not yet committed or delivered. The full Ubuntu
-  source gates, exact sandbox recovery retry, final work/historical-record
-  checks, and service postflight are pending. Keep every PRD service stopped and
-  external publishers paused meanwhile.
+- The remote queued-Mac eligibility correction was committed and delivered as
+  `6b59e8c546d518ed0431430059f8718eb5cc171c`; the primary Gitea `origin/dev`,
+  automatic GitHub `dev` mirror, and every Ubuntu checkout resolve to that exact
+  SHA. Each Ubuntu checkout is clean on `dev`.
+- Full `make check build` passed at that SHA on linux-host and sandbox-host.
+  factory-sandbox's first run failed only because its long task temp path made
+  a Unix socket path invalid. Re-running with a short task-owned temp directory
+  passed all tests, vet, and build with exit 0. A temporary factory controller
+  build first exposed missing `gcc`; rebuilding it with CGO disabled and output
+  under `/tmp` succeeded without cleaning shared caches. The Mac full gate had
+  already passed in the authorized shell.
+- The synchronized recovery helper was built on sandbox-host from the clean
+  delivered checkout at `6b59e8c` (SHA-256
+  `237a63b49d5f28fe6ed132e7cd23576a0d498debeb5598e4af516c3411b76735`). Its
+  guarded `recover-stalled --apply --teardown-pair` operation recovered exactly
+  `sess-57e644562a61b549602aa66769daca16:cmd-edc978d8b67c89c3a39157efb9bfd43f`.
+  A read-only comparison against the immutable schema-36 backup confirms the
+  session remains `lost`, the command remains `failed` with exit 1 and complete
+  non-truncated output, all four original events and the `command_failed`
+  terminal event remain unchanged, and the command slot remains stopped and
+  released. The live schema-39 reservation is cleanup-confirmed and released;
+  pending finalization count is zero.
 
-## Delivery and operation status
+## Final pre-activation gate
 
-The source commit, primary Gitea SHA, exact GitHub mirror SHA, and three Ubuntu
-source gate results will be appended after delivery. The source correction is
-still pending delivery; the completed backup, stop, install, Mac recovery, and
-three migrations are recorded above. PRD service start and final readiness are
-not yet complete. Keep publishers paused.
+All checks below were repeated after the sandbox recovery and before restarting
+any PRD service. Native `runner-lane prd-preflight` reports are the source for
+the service, schema, config, component-hash, and work facts.
+
+| Host | PRD service | Schema | Config SHA-256 | Candidate component SHA-256 check | Work inventory |
+|---|---|---:|---|---|---|
+| Mac | stopped | 39 | `65840e66837dedfa17f5c32568d191a0bbfd6098bcc108d7ba4066f44fb95711` | runner `0eef9bf730e52391b0e444bc157d8142fa4e4ce331e7228cb4696be5cabde537`; runner-local `8fd056b200c5892f64c3d340cbf3b38d6443643b6920dc0959cb1425bddd8147`; runner-locald `c8f29a3dd730f64cbcd17e334837edefedb935e4ca4665eabee0a547727560b6`; log-capture `b54a8d229051c8c335b1d6e8f9b6676735d9492c6dd9d2de43dc9d18d7ab3c12` | all zero |
+| linux-host | stopped | 39 | `c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f` | runnerd `ff27547eace5ee60b38df200f5f3835f98a579a3625d712a15fe9fab27206baf`; bridge `2794ddf012fb610faa70e11f7f2cf261af18c61dfaf0b1c446ad9a037b6d3a33`; session-agent `c529e599f9b2b89dc69e958befc24f2c3388c97299b79b21f6cbde1243ef523b`; log-capture `1e7fedb4def5dc8093ac03addb1c67d22aa1fa8307a8cb508bb10e2e33db31fe` | all zero |
+| sandbox-host | stopped | 39 | `50f704f1b692048a149c366d0e20be2448ee8236a8cdaefcee39b2a6449e5d9a` | runnerd `010651dbc5e3318f6940dab3cec6121ad5b315f8696adfa2b9a6bece7d566a84`; bridge `49c6d88b5eab03c2f108317b9435e162e5fa6146df900da6997ef721dab257ba`; session-agent `0105cfbbe5c92cc9afa60a6eff74166460c30732b3166e48b648fc2c498eb82d`; log-capture `27a161861f44020330ff6405fc4e6d42c9a417369d77ad20c9224c76e8853488` | all zero |
+| factory-sandbox | stopped | 39 | `271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699` | same Linux components as linux-host: runnerd `ff27547eace5ee60b38df200f5f3835f98a579a3625d712a15fe9fab27206baf`; bridge `2794ddf012fb610faa70e11f7f2cf261af18c61dfaf0b1c446ad9a037b6d3a33`; session-agent `c529e599f9b2b89dc69e958befc24f2c3388c97299b79b21f6cbde1243ef523b`; log-capture `1e7fedb4def5dc8093ac03addb1c67d22aa1fa8307a8cb508bb10e2e33db31fe` | all zero |
+
+Accepted immutable per-host bundle and manifest hashes remain those in the
+Dev/QAS candidate evidence: Mac bundle
+`fac006366aeb300eb37539f19fe2b120f60c419969a29c4a2eea700028895e5f` / manifest
+`a66a167243dc640c5b4b05ae0a2e6a1841a6d6d306e266a027b60f6af7d2f78a`; linux-host
+`8776ae90f4183a2636557cbaff0b19a497624b5383cff2cee3056d50ecd68064` / manifest
+`2a968de5f9d6b3a09b3d74508bac3a98a4319ddebd8c817c479e344dc37456bb`;
+sandbox-host `d7e757c2219f55d52893525c4b4bf54df664337e6b98094fb9e0f8a7a0d66e46` /
+manifest `41b37431164edc4682c41e1316360ed5dbf58379edc3df6b016ad82dd79c496e`;
+factory-sandbox `3df6b1afa049716664120b08bdf409182904c8d312da71acf8eb4eb5a204ca5e` /
+manifest `dce09d771ea934d97e6afadc41f5c8353e94d96f9fdb3c3a8e9724137ec7b469`.
+Per-host bundle acceptance and mailbox-specific acceptance status are recorded
+in [the candidate evidence](PRD-diagnostic-upgrade-2026-10-18.md); mailbox
+acceptance remains **NOT RUN** by instruction.
+
+The immutable SQLite online-backup digests were rechecked against their
+manifests immediately before activation: Mac schema 37
+`6ed1bbfc4d22c21a71e30d2c9e43e46d1a6166763acdaedac1bffdb225fc30c7`, linux-host
+schema 36 `9c77882c5a6cdc1748054991f1b4ad83b23c84b28c25e365ee8fcfa292f5a70f`,
+sandbox-host schema 36
+`7c012682b5f03be99f9e617fe0ab6ad0333f561d6fa2f248f370b67bb5725c62`, and
+factory-sandbox schema 36
+`40e6fdfc49e9bf23c73d379dd95ba214baa45885d9c19da1c254124d8b19a5f2`. Earlier
+private-copy migrations of each schema to 39 passed `quick_check` and preserved
+all common non-ledger tables. A repeat `quick_check` on the linux-host backup
+was unavailable because its system SQLite rejects the existing `STRICT`
+schema; factory-sandbox has no `sqlite3` CLI. The backup digests still match,
+and this is a reader-tool limitation, not a database integrity finding.
+
+All three Ubuntu source checkouts are clean on `dev` at the exact primary and
+mirror commit `6b59e8c546d518ed0431430059f8718eb5cc171c`. PRD binaries remain the
+exact f117 Dev/QAS-accepted artifacts above. The newly delivered remote-session
+recovery predicate is used only by the synchronized one-off recovery helper;
+it did not change the accepted service bundles. The supported rollback
+procedure remains `deploy/PRD_UPGRADE.md`: stop the selected unsuffixed service,
+then use `runner-lane prd-rollback` with that host's private backup. Rollback
+refuses to replace any subsequently accepted work and leaves the service
+stopped. No newer database is restored over accepted work.
+
+No service is active yet. Fresh zero-work, stopped-service, exact-artifact,
+config, backup, source-gate, and mirror/pull checks passed before activation.
+After this evidence is delivered under AGENTS.md, start only the four
+unsuffixed services sequentially and complete the direct-interface postflight.
+Keep publishers paused until that postflight passes. No Runner request or ACK
+was published during this transaction.
