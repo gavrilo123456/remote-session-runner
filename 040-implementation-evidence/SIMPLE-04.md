@@ -821,3 +821,40 @@ Mac locald error/cleanup counters and missing raw cause of the earlier
 transient remain recorded as diagnostic limitations; they did not make the
 fresh service readiness endpoints fail. SIMPLE-04 is PASS, and QAS work may
 begin under SIMPLE-05 with the exact Dev-tested per-host bytes.
+
+### S11 — fresh PRD readiness and database diagnosis
+
+The owner requested a fresh PRD check before continuing QAS. Read-only GETs
+through the existing PRD owner-only Unix sockets at
+`2026-10-18T09:06:12.129124Z` (`runner-local`) and
+`2026-10-18T09:06:15.134583Z` (`runner-locald`) both reported
+`readiness=ready`, `sqlite_writes=ready`, and installed build
+`77910358a149d6e8fcdf4694498ebdf6c1f07f58`. The API and local executor each
+still report the one retained session slot, with zero active commands, queued
+commands, queued intents and mailbox backlog. The API's cumulative
+`storage_errors_total` is 2; locald's is 584 and `cleanup_failures_total` is
+1. No retained session, request, reservation, ACK, PRD service or configuration
+was changed.
+
+The read-only owner-shell diagnosis confirmed the database is in WAL mode and
+`PRAGMA quick_check` returns `ok`. `local.db` is 80 MiB, its WAL is about 4.2
+MiB and SHM is 32 KiB. The state directory is `0700`; the database, WAL and
+SHM are `0600`, owned by `tomasz.walczuk:staff`. The service root and state
+parent are owner-only, with no ACL or file flags recorded by the earlier S10
+inspection. The data volume has about 153 GiB free. `ps` and `lsof` show the
+expected PRD `runner-locald` PID `48627` and `runner-local` PID `48708` as the
+only processes holding these files open, both as `tomasz.walczuk`; each has
+read-write handles to the database/WAL/SHM. No competing process was found.
+
+The latest service warnings still say only
+`queue worker could not claim command ... reason=operation_failed` (last
+observed at `2026-10-18 11:06:11` Europe/Warsaw). The installed code maps
+unclassified claim errors to that sanitized reason and does not preserve the
+underlying SQLite/OS error in its logs. The fresh service-owned write probes
+pass, so permissions, WAL handling, disk capacity and current PRD readiness do
+not indicate a supported corrective file operation. The original transient
+`database_write_failed` cause remains unproven; this is not evidence that the
+recurring claim warning has been fixed. No PRD restart is safe while the
+retained session slot remains, and no PRD change is justified by the available
+evidence. The stable PRD binaries, configuration, database, WAL/SHM, services,
+mailbox, firewall and credentials remain unchanged.
