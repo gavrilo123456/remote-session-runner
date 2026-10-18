@@ -26,19 +26,43 @@ reservation: `sess-d76592166342428ba1b7b703fc87bb35`. Its retained work and
 reservation have not been altered. The historical lost-session rows and held
 ACKs remain untouched.
 
+At 14:22 CEST, the active owner-only `config/mac.yaml` was parsed while
+printing only inbox IDs, roots, and default execution contexts; secret values
+were not emitted. It contains these eight routes:
+
+| Inbox | Project/root | Configured default context |
+| --- | --- | --- |
+| `default` | Remote Session Runner default mailbox | `mac-local` |
+| `analytics` | Remote Session Runner analytics mailbox | `mac-local` |
+| `remote-session-runner-workspace` | Runner workspace mailbox | `mac-local` |
+| `slidestud-io` | SlideStud workspace mailbox | `ubuntu-sandbox` / `sandbox-host` |
+| `agents-work-dispatcher` | Agents Work Dispatcher workspace mailbox | `ubuntu-current` / `linux-host` |
+| `agentic-software-factory-runner-direct` | Agentic Software Factory runner mailbox | `ubuntu-factory-sandbox` / `factory-sandbox` |
+| `agentic-factory-test-project-01-runner` | Agentic Factory test project 01 | `ubuntu-factory-sandbox` / `factory-sandbox` |
+| `agentic-factory-test-project-02-runner` | Agentic Factory test project 02 | `ubuntu-factory-sandbox` / `factory-sandbox` |
+
+Historical run counts since the current locald start show traffic through
+SlideStud, Agentic Software Factory direct, and the Remote Session Runner
+workspace stream. In the fresh 13:36–14:20 CEST window, mailbox exchange rows
+show only Agentic Software Factory direct and SlideStud activity.
+The read-only authority aggregate also contains an older
+`agentic-software-factory-runner` mailbox ID whose latest exchange is
+2026-10-14; it is absent from the current configuration and was left intact as
+historical retained state.
+
 ## Warning, counter, and project activity
 
-The existing locald log contains 732 generic `operation_failed` claim warnings
-in total, including older process runs. Since the current locald process
-started, it contains 683 such warnings. At the 2026-10-18 13:36:50 CEST
-metrics sample, locald reported `storage_errors_total=685`; the API process
-reported 4. Both showed zero queued commands and zero active command slots.
+At the 2026-10-18 13:36:50 CEST sample, the locald log file contained 732
+generic `operation_failed` claim warnings in total, including older process
+runs, with 683 since the current locald process started. At that same sample,
+locald reported `storage_errors_total=685`; the API process reported 4. Both
+showed zero queued commands and zero active command slots.
 Four standard `/metrics` GETs were used for two snapshots per endpoint; each
 performed its normal timestamp-only health write. The first response parser
 looked for a nested `metrics` object and did not capture its counters; the
 second snapshot reported 685 and 4. All four health writes succeeded, but no
-counter delta is asserted from these reads. Health timestamps now reflect the
-four probes.
+counter delta is asserted from these reads. Health timestamps then reflected
+those four probes.
 
 The near-match between 683 warnings and 685 locald storage errors supports a
 SQLite-error hypothesis, but does not prove that every warning incremented
@@ -55,10 +79,59 @@ recorded request lifetimes, two different project mailboxes had work in flight
 at once, producing 12 overlapping cross-project request pairs. Four claim
 warnings fell inside those overlap intervals; 324 warnings were within 60
 seconds of a run submission and 144 were within 60 seconds of a mailbox-backed
-`command_started` event. These are correlations only. The last warning in the
-current log was at 13:28:41 CEST, while submissions and command starts
-continued afterward. Thus multi-project use is confirmed, but the current
-evidence does not establish that it caused the warnings.
+`command_started` event. These are correlations only. At the 13:36:50 CEST
+sample, the last warning in the log was at 13:28:41 CEST, while submissions
+and command starts continued afterward. Thus multi-project use is confirmed,
+but the evidence at that sample did not establish that it caused the warnings.
+
+### Fresh production correlation check, 14:13–14:21 CEST
+
+Read-only Mac process and binary checks at 14:13 CEST found the same PRD PIDs
+and installed hashes listed above. A native `sqlite3 -readonly` query (no
+current-source `store.Open`, copy, checkpoint, or migration) reconfirmed schema
+37/WAL, zero queued commands, zero running/cancelling commands, zero
+nonterminal jobs, and the single retained reservation
+`sess-d76592166342428ba1b7b703fc87bb35`.
+
+From the prior 13:36:50 CEST sample to 14:20:06 CEST, locald's cumulative
+`storage_errors_total` changed from 685 to 691 (+6). The API sample at
+14:21:31 CEST remained 4. Both endpoints were queried once through their
+existing Unix sockets; those successful `/metrics` GETs perform their normal
+timestamp-only health writes. A timestamp-filtered locald log query finds
+four claim warnings up to the 14:20:06 sample (13:56:40, 14:05:34, 14:12:57,
+and 14:19:56 CEST) and two more afterward (14:20:12 and 14:20:26). The current
+whole-file warning grep count is 738 versus the previously recorded 732. The
+counter delta exceeds the four pre-sample warning lines by two, and the two
+post-sample warning lines have no later locald counter sample. This does not
+prove a one-to-one relation between claim warnings and SQLite storage errors.
+The 14:20 metrics request itself wrote the normal health timestamp between
+those warnings, so it may have participated in database contention; the
+available observations cannot attribute any individual warning to it.
+
+A read-only aggregate of schema-37 `mailbox_exchanges` after 13:36:50 CEST
+shows seven completed requests from
+`agentic-software-factory-runner-direct` and one from `slidestud-io`; no Remote
+Session Runner workspace exchange was recorded in this interval. In the
+13:55–14:05 CEST event window, three commands were started: two succeeded and
+one failed. The 13:56:40 warning fell during one Agentic Software Factory
+command, before the SlideStud request began at 13:57:23; those two projects'
+commands did not overlap. The last command event was at 14:00:10 and the last
+ACK in this interval at 14:00:33. The 14:05:34, 14:12:57, 14:19:56,
+14:20:12, and 14:20:26 warnings occurred after those requests settled; a
+14:27:35 read-only database check still showed zero queued commands, zero
+active commands, zero nonterminal jobs, and the same single retained session
+reservation. This interval therefore contains one warning during a single
+project's command and five after project work had settled. It does not support
+concurrent cross-project work as a necessary trigger. The earlier observed
+108 seconds of cross-project request overlap still do not establish causation.
+
+The bounded Mac observations used `ps -p 48627,48708`, `shasum -a 256` on
+the two installed binaries, and each binary's `--version`; the live database
+was queried only with `/usr/bin/sqlite3 -readonly`. Mailbox activity was
+aggregated by `mailbox_id`, operation, state, and timestamp, without selecting
+request IDs or payloads. The owner-only YAML parse emitted only each inbox ID,
+root, and default execution context. The two `/metrics` GETs were through
+`run/locald.sock` and `run/local-api.sock`; both were successful health writes.
 
 ## Source trace and isolated reproduction
 
