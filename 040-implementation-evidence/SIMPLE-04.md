@@ -1,12 +1,12 @@
 # SIMPLE-04 — Dev deployment and coexistence acceptance
 
-**State: IN PROGRESS.** The selected Mac Dev lane is installed and active, but
-still runs the earlier S1 bundle. Corrected S2 bundles have not yet been
-installed on Mac or workers. The first worker Dev candidates/configurations
-remain installed; Linux and sandbox Dev services are stopped after the
-preserved S1 failure trials, and factory Dev is installed but has not been
-started. No route, command, mailbox, or live acceptance PASS is claimed.
-Existing PRD remains in service.
+**State: IN PROGRESS.** The S3 Dev candidate is installed and active on the Mac
+and all three workers. Linux and sandbox direct one-off probes passed;
+queued SSH pings passed on all three. The factory public direct route is
+refused, and one queued one-off probe exposed a local command-event lookup bug
+now fixed in source but not yet delivered or installed. Mailbox lifecycle,
+managed-session, timeout/limit, Mac-local and complete route acceptance remain.
+Existing PRD is still in service; QAS is not started.
 
 ## Scope and predecessor
 
@@ -139,8 +139,8 @@ systemd `Result=success` before recording stop/quiescence completion.
 Focused startup/stop/log-capture regressions pass. The first full `make check`
 attempt failed on a source compile error and the new shutdown regression
 returned exit 78; both were fixed. Mac `make check` and `make build` then passed.
-The S2 source changes in this evidence revision are not installed; S1 worker
-services remain stopped for safe replacement.
+S2's production source changes were included in the corrected S3 candidate
+described below; the S1 failure trials remain preserved as historical results.
 
 The first worker `make check` on linux-host then exposed a non-hermetic existing
 test: it expected the canonical Dev install root to be absent, but that host
@@ -168,40 +168,86 @@ and factory-sandbox at the exact S3 SHA; each checkout was clean on `dev`.
 required Mac `make build` passed on S2, whose production source is identical to
 S3. No worker service was started or changed by these source gates.
 
-## Current route findings and next gates
+## S3 candidate installation and first route checks
 
-Fresh read-only inspection shows INPUT policy `ACCEPT` on all three workers,
-including factory-sandbox; the earlier finding that factory INPUT ended in
-`REJECT` is stale and withdrawn. No host firewall rule was changed or is
-currently indicated. Public Dev 8444 reachability has not yet been tested from
-the Mac. OCI CLI and `~/.oci/config` were absent on all three workers, so
-provider ingress configuration cannot be inspected through those hosts. Test
-the existing route first; only a measured failure that requires a cloud rule
-will need an operator with provider access and an exact scoped rule request.
-Queued SSH uses the existing port 22 and was installed without changing sshd.
+From clean synchronized source `6eaf953e1ae29179f3c31458587a2081c9e529e7`,
+the per-host S3 bundle manifests in
+`/private/tmp/remote-session-runner-simple-04-S3-6eaf953/` bind:
 
-## Current state and remaining gates
+| Host | Bundle SHA-256 | Guarded update result |
+| --- | --- | --- |
+| `mac-control-plane` | `ab4b974bb57e94bcb3e2d9c70f6ae6fc45479b5918db4c5399e9c30c73efd92a` | Installed and started; prior Dev backup at `~/Library/Application Support/RemoteSessionRunner-dev/backups/.simple-backup-1375356866` |
+| `linux-host` | `01317ceebc093d42c6e782784194dda7bc359ce20436afc83822de23cebb8764` | Installed and started; prior Dev backup at `.../remote-session-runner-dev/backups/.simple-backup-3115583341` |
+| `sandbox-host` | `d81a43decad5cde1e314905581a2ec2bff97374efde664a105289c4769a5838a` | Installed and started; prior Dev backup at `.../remote-session-runner-dev/backups/.simple-backup-1788961269` |
+| `factory-sandbox` | `33842fd77830abee0cf2fb457765f921af704611584a3e04098a1964f2e8153f` | Installed and started through the matching initial-install marker and exact existing config hash `7af6d8ea68764f703b7aebd40966bbc7ff8b86523a2cb948d5f60e68659cd727`; first attempt refused without `--config-file`, made no service/config change, and retry succeeded |
 
-Fresh Mac health at S3 shows unsuffixed PRD API and locald readiness `ready`
-at installed revision `77910358a149d6e8fcdf4694498ebdf6c1f07f58`, with its
-pre-existing one active session, zero active commands/queues, and zero mailbox
-backlog. Mac Dev API/locald are `ready` at S1 revision
-`6d971c1a30bb202a55de9eb67b12471398fd993b`, with zero Dev sessions, commands,
-queues, or backlog. Its three optional remote-router checks are `degraded` with
-`remote_transport_unavailable`, zero pending/uncertain intents, because the
-worker Dev candidates are not currently running. This is an observed expected
-pre-install condition, not route acceptance.
+Each manifest records source `6eaf953e1ae29179f3c31458587a2081c9e529e7`,
+Go 1.27.1 and its exact component digests. Linux and sandbox updates passed the
+installer's zero-work proof and created consistent backups. Factory's initial
+marker identifies `factory-sandbox/dev`; its installed config hash exactly
+matched the owner-only config supplied to the retry. Mac update passed the
+selected-lane stop/quiescence proof and created its backup. All four services
+then started through `runner-lane`; worker systemd `Result=success`, with Dev
+PIDs 2536857 (Linux), 807237 (sandbox), and 1146464 (factory). Each listens on
+its private interface at 8444. PRD remained active on 8443 with unchanged worker
+PIDs 149913, 717823, and 50302.
 
-Next, build the four corrected S2 per-host candidates from the clean,
-synchronized S3 checkout, record each manifest/component digest, and perform
-guarded Dev-only updates. Then verify clean startup and stop on Mac and all
-workers; test direct mTLS and queued SSH routes, bounded Dev command and
-managed-session behavior, truthful terminal/event/ACK evidence, capacity
-release, and before/after PRD identity/health. The direct route must be measured
-after the workers start; only an observed route failure that needs an external
-network change can trigger an operator request. Do not claim SIMPLE-04 PASS
-until every required route and lifecycle gate passes.
+Fresh Mac PRD API/locald health is ready at installed revision
+`77910358a149d6e8fcdf4694498ebdf6c1f07f58`; it retains its pre-existing one
+active session, zero active commands/queues, and zero mailbox backlog. A single
+PRD locald read timed out once, then a bounded curl recheck returned ready with
+the same build; the LaunchAgent remained running. Mac Dev API/locald are ready
+at S3 with zero active sessions/commands, queues or backlog. All three queued
+SSH `ping` frames returned a correlated result after repairing the Dev-only
+known-host lookup. The original pinned `[IP]:22` entries remain; the plain-IP
+aliases use the same configured key SHA-256 values `7b3c6924…`, `9f68b617…`,
+and `47c9a62a…`. No PRD trust or `authorized_keys` entry changed.
+
+Direct mTLS health returned HTTP 200/ready at S3 for Linux and sandbox. The
+actual Runner CLI one-off probes also succeeded:
+
+| Route | Job / session / command | Result |
+| --- | --- | --- |
+| Direct `linux-poc-dev` | `job-976af28bbb1788dee98c0db74829a169` / `sess-328b3aca631cadfb69c4803ae7f81834` / `cmd-a82ad2a211c85395f30105a99a2b4af4` | exit 0; output complete, not truncated; terminal sequence 5; teardown closed |
+| Direct `sandbox-poc-dev` | `job-acd68db77dd84be128292821c4ca47a4` / `sess-53bfd4efc90fe41a18a3337d69fbc5bb` / `cmd-6968a35766006e6bbfe3d798299dcc8f` | exit 0; output complete, not truncated; terminal sequence 5; teardown closed |
+
+The queued Linux one-off (`simple04-20261018-linux-queued-01`, job
+`job-46f79ce61446217a1d80f81ddde1ce52`, session
+`sess-da7ce4093861ad6a29fc4ba18c4542ef`, command
+`cmd-e5bb8ba2d097b3241ad9d24097f7606f`) was accepted once and completed with
+exit 0 and closed teardown. The CLI then hit a 404 while reading its event
+history. Read-only Mac Dev database inspection confirmed the reconciled `run`
+intent and all five durable events, including both output records and
+`command_succeeded`; nothing was replayed or ACKed. Direct reads from the target
+were correctly rejected with controller mismatch. The active source correction
+uses the existing owner-bound `GetLocalIntentByCommand` lookup for command and
+event reads, covering both `submit_command` and one-off `run`. Its regression
+reproduced the 404 before the change and passes after it. Resume only this exact
+accepted job with its original idempotency key after delivery to prove the
+complete CLI read path without rerunning the script.
+
+The public `8444` route connected for Linux and sandbox. Factory's Dev process
+is listening on `10.0.0.30:8444`, while public `145.241.255.66:8444` returns
+connection refused; `22` and PRD `8443` connect. The factory host INPUT policy
+was previously observed `ACCEPT`; no host or provider firewall rule was
+changed. The cloud ingress path still needs read-only inspection through a
+provider-authorized operator. OCI CLI/config were not available on the workers.
+This blocks only factory direct acceptance; queued factory health ping passes.
+
+## Current source gate and remaining acceptance
+
+At the uncommitted S4 source contents, the focused regression passes; full Mac
+`make check` exits 0 and `make build` exits 0. The fix and this evidence update
+still require delivery through primary Gitea, exact GitHub mirror verification,
+and clean worker fast-forwards, followed by worker checks and a rebuilt S4
+candidate. After guarded Dev-only update, resume the exact queued job, verify
+capacity release, then test all direct/queued profile operations, Mac-local
+execution, managed-session lifecycle, timeout and permitted limits, and the
+uniquely owned mailbox request/output/events/ACK lifecycle. Preserve every
+historical response and held ACK. Do not mark SIMPLE-04 PASS until the factory
+direct route and all remaining matrix checks pass.
 
 PRD service/configuration/mailbox/credentials and host firewall rules were not
-changed. The only SSH authority changes are the Dev-only forced bridge entries,
-with exact original backups verified above. No held ACK was touched.
+changed. The only SSH authority changes are the Dev-only forced bridge entries
+and the Mac Dev known-host aliases; original worker SSH authority backups are
+verified above. No held ACK was touched.

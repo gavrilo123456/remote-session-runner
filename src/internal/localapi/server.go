@@ -1043,7 +1043,7 @@ func (s *Server) handleGetCommand(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	record, err := s.authority.GetLocalIntentByResource(request.Context(), "submit_command", string(commandID), s.owner)
+	record, err := s.authority.GetLocalIntentByCommand(request.Context(), commandID, s.owner)
 	if err != nil {
 		if errors.Is(err, store.ErrLocalIntentNotFound) {
 			writeError(response, http.StatusNotFound, "command_not_found", "local command intent was not found")
@@ -1132,7 +1132,7 @@ func (s *Server) handleCommandEvents(response http.ResponseWriter, request *http
 		writeError(response, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	intent, err := s.authority.GetLocalIntentByResource(request.Context(), "submit_command", string(commandID), s.owner)
+	intent, err := s.authority.GetLocalIntentByCommand(request.Context(), commandID, s.owner)
 	if err != nil {
 		if errors.Is(err, store.ErrLocalIntentNotFound) {
 			writeError(response, http.StatusNotFound, "command_not_found", "local command intent was not found")
