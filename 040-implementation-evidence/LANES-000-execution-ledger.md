@@ -7,14 +7,15 @@ The owner's latest scope in
 supersedes the advanced rollout below. Use the existing Mac and three Ubuntu
 workers, each running PRD unsuffixed, Dev `-dev`, and QAS `-qas` in parallel.
 The phased plan defines the active sequence and each unit's required tests and
-delivery evidence; this amendment records no implementation or live acceptance.
+delivery evidence. Keep source checks, installed health, route/work acceptance,
+and evidence closeout as separate claims.
 
 | Active unit | Deliverable | Status |
 | --- | --- | --- |
 | `SIMPLE-01` | Inventory/reuse and fixed lane identity contract | PASS — read-only inventory/source audit; [evidence](SIMPLE-01.md) |
 | `SIMPLE-02` | Lane-aware configuration, authentication and routing | PASS — source gates and synchronized worker validation complete; live acceptance NOT RUN until SIMPLE-04; [evidence](SIMPLE-02.md) |
 | `SIMPLE-03` | Selected-lane installers, pinned artifacts and rollback | PASS — source, primary/mirror delivery, and synchronized worker validation; live lane acceptance is SIMPLE-04; [evidence](SIMPLE-03.md) |
-| `SIMPLE-04` | Dev deployment and coexistence acceptance | IN PROGRESS — first Mac start exposed and stopped on selected-lane mailbox/root validation; zero-work evidence preserved; source correction and focused regressions pass on Mac, Mac `make check` PASS; rebuild/delivery, retry, Ubuntu installs, public factory 8444 ingress and full live acceptance remain; [evidence](SIMPLE-04.md) |
+| `SIMPLE-04` | Dev deployment and coexistence acceptance | IN PROGRESS — Mac source fix S1 is installed; S1 worker bundles/Dev configs and credentials installed, but first-start completion raced SQLite initialization on sandbox-host and old log-capture SIGTERM handling left linux-host/sandbox-host systemd units failed after guarded zero-work stops. S2 has bounded startup finalization, graceful signal forwarding, stop-result verification and regressions; focused tests and Mac `make check` PASS. S2 delivery/redeploy, route and work acceptance remain; current worker INPUT policy is ACCEPT, provider ingress and direct public reachability are unverified; [evidence](SIMPLE-04.md) |
 | `SIMPLE-05` | QAS promotion of the exact tested artifact | NOT STARTED |
 | `SIMPLE-06` | PRD promotion/rollback procedure; actual upgrade only when scheduled | NOT STARTED |
 | `SIMPLE-07` | Operational documentation and three-lane acceptance | NOT STARTED |

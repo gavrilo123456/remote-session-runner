@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/config"
 )
@@ -67,6 +68,29 @@ func TestSimpleLinuxServiceControllerStartsStopsAndReportsOnlySelectedUnit(t *te
 		if strings.Contains(strings.Join(call, " "), "runnerd.service") {
 			t.Fatalf("unsuffixed PRD systemd unit was addressed: %v", call)
 		}
+	}
+}
+
+func TestSimpleLinuxStartCompletesAnAlreadyActiveInitialInstall(t *testing.T) {
+	plan, err := BuildSimplePlan("linux-host", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &simpleServiceTestRunner{linuxOn: true}
+	controller := simpleTestServiceController(runner, "1000", config.LinuxAccount, "linux", "amd64")
+	finalized := 0
+	controller.initialInstall = func(_ context.Context, got Plan) error {
+		finalized++
+		if got.HostID != plan.HostID || got.Lane != plan.Lane {
+			t.Fatalf("initial install finalizer target=%s/%s, want %s/%s", got.HostID, got.Lane, plan.HostID, plan.Lane)
+		}
+		return nil
+	}
+	if err := controller.Start(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if finalized != 1 {
+		t.Fatalf("already-active first install finalizations=%d, want 1", finalized)
 	}
 }
 
@@ -136,6 +160,49 @@ func TestSimpleServiceStopLeavesLaneStoppedWhenTerminalInventoryCannotBeProven(t
 	}
 }
 
+func TestSimpleLinuxStopRejectsFailedSystemdResult(t *testing.T) {
+	plan, err := BuildSimplePlan("linux-host", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &simpleServiceTestRunner{linuxOn: true, systemdResult: "exit-code"}
+	controller := simpleTestServiceController(runner, "1000", config.LinuxAccount, "linux", "amd64")
+	provedStopped := false
+	controller.stoppedProof = func(Plan) error {
+		provedStopped = true
+		return nil
+	}
+	if err := controller.Stop(context.Background(), plan); err == nil || !strings.Contains(err.Error(), "did not complete cleanly") {
+		t.Fatalf("stop with failed systemd result error=%v", err)
+	}
+	if runner.linuxOn {
+		t.Fatal("failed systemd stop left the selected service active")
+	}
+	if provedStopped {
+		t.Fatal("failed systemd stop was reported as a completed quiescence proof")
+	}
+}
+
+func TestWaitForSimpleInitialDatabaseRetriesOnlyTransientPreflight(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	attempts := 0
+	err := waitForSimpleInitialDatabase(ctx, func() error {
+		attempts++
+		if attempts < 3 {
+			return ErrSimpleLanePreflight
+		}
+		return nil
+	})
+	if err != nil || attempts != 3 {
+		t.Fatalf("initial database retry attempts=%d err=%v, want 3 attempts and success", attempts, err)
+	}
+	permanent := errors.New("configuration mismatch")
+	if err := waitForSimpleInitialDatabase(context.Background(), func() error { return permanent }); !errors.Is(err, permanent) {
+		t.Fatalf("non-preflight failure=%v, want immediate original error", err)
+	}
+}
+
 func TestSimpleMacFirstStartRejectsRetainedMailboxInputWithoutRemovingIt(t *testing.T) {
 	plan, err := BuildSimplePlan("mac-control-plane", config.ReleaseLaneDev)
 	if err != nil {
@@ -169,9 +236,10 @@ func simpleTestServiceController(runner simpleCommandRunner, uid, account, goos,
 }
 
 type simpleServiceTestRunner struct {
-	calls     [][]string
-	macActive map[string]bool
-	linuxOn   bool
+	calls         [][]string
+	macActive     map[string]bool
+	linuxOn       bool
+	systemdResult string
 }
 
 func (r *simpleServiceTestRunner) Run(_ context.Context, name string, args ...string) (simpleCommandResult, error) {
@@ -204,6 +272,13 @@ func (r *simpleServiceTestRunner) Run(_ context.Context, name string, args ...st
 			return simpleCommandResult{ExitCode: 0, Output: "active\n"}, nil
 		}
 		return simpleCommandResult{ExitCode: 3, Output: "inactive\n"}, nil
+	}
+	if name == "/usr/bin/systemctl" && len(args) == 4 && args[0] == "show" && args[1] == "--property=Result" && args[2] == "--value" {
+		result := r.systemdResult
+		if result == "" {
+			result = "success"
+		}
+		return simpleCommandResult{Output: result + "\n"}, nil
 	}
 	if name == "/usr/bin/sudo" && len(args) >= 2 && args[0] == "/usr/bin/systemctl" {
 		switch args[1] {

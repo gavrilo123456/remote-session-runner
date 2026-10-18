@@ -27,6 +27,7 @@ const (
 	MiB                uint64 = 1024 * 1024
 	counterRecordBytes        = 24
 	counterFileBytes          = 2 * counterRecordBytes
+	childShutdownGrace        = 20 * time.Second
 )
 
 var (
@@ -589,7 +590,7 @@ func RunChildWithLimits(ctx context.Context, logPath string, argv []string, limi
 			_ = store.Close()
 		}
 	}()
-	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	command := exec.Command(argv[0], argv[1:]...)
 	var killOnce sync.Once
 	writer := childLogWriter{store: store, kill: func() {
 		killOnce.Do(func() {
@@ -600,10 +601,12 @@ func RunChildWithLimits(ctx context.Context, logPath string, argv []string, limi
 	}}
 	command.Stdout = writer
 	command.Stderr = writer
-	// A child may exit while a descendant still holds its output descriptors.
-	// Bound how long os/exec waits for those copies, then fail closed.
+	// Runner's bounded shutdown can take up to 12 seconds, plus listener close
+	// and dispatcher drain. Forward TERM and allow 20 seconds before escalating;
+	// the lane's systemd unit has a 30-second stop window. WaitDelay separately
+	// bounds output pipes held open by descendants after the child exits.
 	command.WaitDelay = 5 * time.Second
-	waitErr := command.Run()
+	waitErr := runChildUntilExit(ctx, command)
 	if err := store.Close(); err != nil {
 		return 78
 	}
@@ -616,6 +619,42 @@ func RunChildWithLimits(ctx context.Context, logPath string, argv []string, limi
 		return exitErr.ExitCode()
 	}
 	return 78
+}
+
+func runChildUntilExit(ctx context.Context, command *exec.Cmd) error {
+	if command == nil {
+		return errors.New("log capture child command is nil")
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- command.Wait() }()
+	if ctx == nil {
+		return <-waited
+	}
+	select {
+	case err := <-waited:
+		return err
+	case <-ctx.Done():
+	}
+	if command.Process != nil {
+		if err := command.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			_ = command.Process.Kill()
+			return errors.Join(err, <-waited)
+		}
+	}
+	timer := time.NewTimer(childShutdownGrace)
+	defer timer.Stop()
+	select {
+	case err := <-waited:
+		return err
+	case <-timer.C:
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+		return <-waited
+	}
 }
 
 type childLogWriter struct {

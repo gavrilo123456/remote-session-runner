@@ -31,13 +31,14 @@ const (
 // SimpleServiceController operates on exactly the service identity derived by
 // BuildSimplePlan. It has no API for a caller-supplied unit, label, or command.
 type SimpleServiceController struct {
-	runner       simpleCommandRunner
-	ready        func(Plan) error
-	stoppedProof func(Plan) error
-	uid          string
-	user         string
-	goos         string
-	goarch       string
+	runner         simpleCommandRunner
+	ready          func(Plan) error
+	stoppedProof   func(Plan) error
+	initialInstall func(context.Context, Plan) error
+	uid            string
+	user           string
+	goos           string
+	goarch         string
 }
 
 type simpleCommandResult struct {
@@ -163,11 +164,17 @@ func (c *SimpleServiceController) Start(ctx context.Context, plan Plan) error {
 				return fmt.Errorf("Mac selected lane agent %s did not become active", label)
 			}
 		}
-		return completeSimpleInitialInstall(ctx, plan)
+		return c.completeInitialInstall(ctx, plan)
 	}
 	active, err := c.Status(ctx, plan)
-	if err != nil || active {
+	if err != nil {
 		return err
+	}
+	if active {
+		// A previous start may have brought the service up before its fresh
+		// database finished initializing. Retry its completion proof instead
+		// of silently leaving the first-install marker behind.
+		return c.completeInitialInstall(ctx, plan)
 	}
 	result, err := c.runner.Run(ctx, "/usr/bin/sudo", "/usr/bin/systemctl", "start", plan.Namespace.RunnerUnit)
 	if err != nil {
@@ -182,6 +189,13 @@ func (c *SimpleServiceController) Start(ctx context.Context, plan Plan) error {
 	}
 	if !active {
 		return fmt.Errorf("selected lane systemd unit did not become active")
+	}
+	return c.completeInitialInstall(ctx, plan)
+}
+
+func (c *SimpleServiceController) completeInitialInstall(ctx context.Context, plan Plan) error {
+	if c.initialInstall != nil {
+		return c.initialInstall(ctx, plan)
 	}
 	return completeSimpleInitialInstall(ctx, plan)
 }
@@ -202,14 +216,44 @@ func completeSimpleInitialInstall(ctx context.Context, plan Plan) error {
 	if err != nil || bundle.Manifest.HostID != plan.HostID {
 		return ErrSimpleLanePreflight
 	}
-	databaseExists, err := simplePathExists(plan.Namespace.Database)
-	if err != nil || !databaseExists {
-		return ErrSimpleLanePreflight
-	}
-	if err := validateSimpleInstalledDatabase(ctx, plan, bundle.Manifest.DatabaseSchemaMax); err != nil {
+	if err := waitForSimpleInitialDatabase(ctx, func() error {
+		databaseExists, err := simplePathExists(plan.Namespace.Database)
+		if err != nil {
+			return err
+		}
+		if !databaseExists {
+			return ErrSimpleLanePreflight
+		}
+		return validateSimpleInstalledDatabase(ctx, plan, bundle.Manifest.DatabaseSchemaMax)
+	}); err != nil {
 		return err
 	}
 	return removeSimpleInstallMarker(plan.Namespace, plan.HostID, plan.Lane)
+}
+
+func waitForSimpleInitialDatabase(ctx context.Context, validate func() error) error {
+	if validate == nil {
+		return ErrSimpleLanePreflight
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := validate()
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrSimpleLanePreflight) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("initial lane database did not become ready before startup deadline: %w", ErrSimpleLanePreflight)
+		case <-ticker.C:
+		}
+	}
 }
 
 func (c *SimpleServiceController) requireReady(ctx context.Context, plan Plan) error {
@@ -230,8 +274,14 @@ func (c *SimpleServiceController) requireReady(ctx context.Context, plan Plan) e
 	if _, err := loadSimpleLaneAuthority(plan); err != nil {
 		return err
 	}
-	if err := validateSimpleInstalledDatabase(ctx, plan, bundle.Manifest.DatabaseSchemaMax); err != nil {
-		return err
+	marker, markerExists, err := readSimpleInstallMarker(plan.Namespace)
+	if err != nil || (markerExists && (marker.HostID != plan.HostID || marker.Lane != plan.Lane)) {
+		return ErrSimpleLanePreflight
+	}
+	if !markerExists {
+		if err := validateSimpleInstalledDatabase(ctx, plan, bundle.Manifest.DatabaseSchemaMax); err != nil {
+			return err
+		}
 	}
 	for _, artifact := range plan.Artifacts {
 		if artifact.Kind == ArtifactSystemdUnit {
@@ -325,6 +375,13 @@ func (c *SimpleServiceController) Stop(ctx context.Context, plan Plan) error {
 	}
 	if active {
 		return fmt.Errorf("selected lane systemd unit remained active after stop")
+	}
+	result, err = c.runner.Run(ctx, "/usr/bin/systemctl", "show", "--property=Result", "--value", plan.Namespace.RunnerUnit)
+	if err != nil {
+		return fmt.Errorf("read selected lane systemd stop result: %w", err)
+	}
+	if result.ExitCode != 0 || strings.TrimSpace(result.Output) != "success" {
+		return fmt.Errorf("selected lane systemd stop did not complete cleanly (exit %d, result %q)", result.ExitCode, strings.TrimSpace(result.Output))
 	}
 	return c.proveStoppedLaneQuiescence(ctx, plan)
 }
