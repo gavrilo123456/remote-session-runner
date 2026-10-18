@@ -1,15 +1,16 @@
 # SIMPLE-04 — Dev deployment and coexistence acceptance
 
-**State: IN PROGRESS.** The native-cgo fix and local one-off command-read
-correction are delivered through source
-`d9223e6c2342babbd2ed4fc217e9ba04932fd4fe`; full `make check build` passes on
-Mac and all three workers. Mac Dev currently runs the native-cgo candidate
-from `afa3699`. A fresh local run executed once and completed successfully,
-but CLI event reading returned 503 because the run-level request hash differs
-from its accepted command hash. The corrected read path is delivered but still
-needs rebuilding, installation and same-key read-resumption proof. Worker Dev
-candidates still need refresh. PRD remains installed and running; QAS is not
-started.
+**State: IN PROGRESS; two external gates remain.** The native-cgo fix and local
+one-off command-read correction are delivered through source
+`d9223e6c2342babbd2ed4fc217e9ba04932fd4fe`; full `make check build` passed on
+Mac and all three workers. Four S9 Dev bundles were rebuilt from synchronized
+revision `2204e18ecd6eddc916ffa39e75ac905d3dbe2851`, installed and started only
+in Dev. Mac-local, Linux and sandbox direct, all three queued routes, managed
+session cancellation, requested timeout, an explicit limit, mailbox/ACK, and
+Dev restart isolation passed. Factory public direct `:8444` remains refused.
+The final Mac PRD health read also reported `database_write_failed`; no PRD
+service restart or repair was made. QAS is not started. See the S9 record at
+the end for exact evidence and owner actions.
 
 ## Scope and predecessor
 
@@ -571,17 +572,153 @@ was ready at `77910358a149d6e8fcdf4694498ebdf6c1f07f58`, retaining its existing
 one session slot and zero active commands, queues and mailbox backlog. No PRD
 binary, configuration, process, database or mailbox was changed.
 
-After the latest source and evidence delivery, rebuild the four host candidates
-from the exact synchronized revision and refresh only Dev through the guarded
-installer. Then resume the existing Mac job with its original request and
-idempotency key to prove its result is read without replay. Complete the
-remaining acceptance: fresh managed cancellation, factory direct ingress,
-configured Mac-local execution, requested timeout, permitted explicit limits,
-all required direct/queued profile routes, owned mailbox request/output/event/
-ACK lifecycle, Dev restart isolation and fresh zero-work postflight. No held ACK
-was touched. Do not mark SIMPLE-04 PASS until all required gates pass.
+The pending-work instructions in this earlier snapshot were superseded by the
+S9 execution record below. No held ACK was touched. Do not mark SIMPLE-04 PASS
+until the remaining direct factory route and PRD health issue are resolved and
+all final postflight gates pass.
 
-PRD service/configuration/mailbox/credentials and host firewall rules remain
-unchanged. Existing SSH authority changes are limited to the Dev forced bridge
+No PRD service, configuration, mailbox, credential or host firewall change was
+made. Existing SSH authority changes are limited to the Dev forced bridge
 entries and Mac Dev known-host aliases; the original worker SSH authority
-backups remain verified above.
+backups remain verified above. The S9 section records the timestamp-only PRD
+health-probe write and the later health-check failure separately.
+
+## S9 install and acceptance — 2026-10-18
+
+### Candidate source, transfer and selected-lane installation
+
+The Mac source checkout was clean on `dev` at
+`2204e18ecd6eddc916ffa39e75ac905d3dbe2851`. Gitea `origin/dev` and automatic
+GitHub `github/dev` both resolved to that exact SHA. All three worker checkouts
+were clean on `dev` at the same SHA before this evidence update. The source fix
+is `d9223e6c2342babbd2ed4fc217e9ba04932fd4fe`; `2204e18` is evidence-only and
+does not change candidate code. The full `GOMAXPROCS=2 GOFLAGS=-p=1 make check
+build` gate had passed on Mac and all workers at `d9223e6`.
+
+Four immutable bundles were built once from synchronized `2204e18` with Go
+1.27.1. Worker archives were copied only as install artifacts, not as source,
+and their SHA-256 values were verified before extraction. Installation used
+`runner-lane install --host <host> --lane dev --bundle-dir <candidate>`; the
+guarded installer stopped only Dev, proved retained work quiescent, took the
+listed backup, and activated the manifest. `runner-lane start` started only
+that Dev service.
+
+| Host | Bundle SHA-256 | Worker archive SHA-256 | Guarded backup | Final Dev state |
+| --- | --- | --- | --- | --- |
+| `mac-control-plane` | `0cbaff313de36ebe030144dd4192a1138aebb4b0ad54ca6fe93d6d0ff196f757` | — | `~/Library/Application Support/RemoteSessionRunner-dev/backups/.simple-backup-4005341277` | Active; health ready at `2204e18`; zero active slots, queues and mailbox backlog |
+| `linux-host` | `3826c1406efcb9cd240e9dab55df5b09f03035d8537e85036033ad2476d38b4c` | `b7c66239c21878f76fcad6c1781dd21af06ea29b3603f03c4573f52625669110` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-3636333827` | Active; direct mTLS health ready at `2204e18`, zero active slots/queues/backlog |
+| `sandbox-host` | `6ab39974eb78cf78333a048b683a365b954d95894d785d00ef96681cb8f74917` | `72d0ac6993f934533419b5e346ab45ed72306f18b8b3700150e44eb501852859` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-984644557` | Active; direct mTLS health ready at `2204e18`, zero active slots/queues/backlog |
+| `factory-sandbox` | `d1b2399ed1af742afe6b4ffe01fd5d0e103d1efb3db7e12b41837a4e84cab37a` | `44b7b18cfb3516e48eecc4a2a12905bd2e88666f4891672b9a343ca92f4c9ec9` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-1892222392` | Active; queued bridge succeeded after restart; public direct ingress remains blocked |
+
+The Mac current manifest file SHA-256 is
+`88e82159e2719bb510fe306b540464c94270866cb3fc120e696f0360845b617a`. Each
+worker `current` symlink resolved to its bundle-SHA release directory; each
+manifest records source `2204e18`, Go 1.27.1 and the expected architecture.
+Final worker checkouts were clean at `2204e18` before this evidence edit.
+
+On each Ubuntu host, `runner-lane` was built from the synchronized checkout
+using its explicit Go toolchain and a task-owned temporary directory removed
+by an exit trap. The command form was:
+
+```sh
+GOMAXPROCS=2 GOFLAGS=-p=1 /home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go build -o "$task_tmp/runner-lane" ./src/cmd/runner-lane
+"$task_tmp/runner-lane" install --host <host> --lane dev --bundle-dir <candidate>
+"$task_tmp/runner-lane" start --host <host> --lane dev
+```
+
+Mac install and restart used the already-authorized Mac shell route because
+the sandbox could not start its LaunchAgents (I/O error 5) and could not open
+the Dev mailbox ingress lock (`operation not permitted`). The first mailbox
+attempt failed before publication; a read-only search confirmed no files for
+that request ID. The same native client test then passed through the authorized
+Mac shell. A standalone curl attempt for explicit limits failed before HTTP
+because curl rejected the existing certificate SAN syntax; no request was
+accepted. The successful explicit-limit probe used Runner's pinned mTLS client
+and did not weaken certificate validation.
+
+### Candidate acceptance evidence
+
+Every successful probe used a unique Dev idempotency key except the deliberate
+same-key resumption of the already-completed Mac job. No script was replayed;
+only the explicitly managed long command was cancelled. No historical request
+or held ACK was changed.
+
+| Path/check | Stable evidence | Result |
+| --- | --- | --- |
+| Mac-local run and same-key resumption | `simple04-20261018-s8-mac-local-02`; job `job-e9aa7949af21cdf327f2b7a5674740f8`; session `sess-88ca6b02285140e85bedd70b788faeba`; command `cmd-eb0eca9387233911337738d15d2b4cbb` | Original `run` and `events` reads returned the same IDs, one start, terminal sequence 4, exit 0, complete output, and closed teardown. No second command start. |
+| Direct Linux Dev | `simple04-20261018-s9-direct-linux-01`; job `job-7fa3b98cb7284f20b555b3dc7054b71d`; session `sess-3489743d94bc84737943a2c252310c3c`; command `cmd-2963cc9729ac36993f245b7877bde82e` | Succeeded, exit 0, complete event history/output, closed teardown. |
+| Direct sandbox Dev | `simple04-20261018-s9-direct-sandbox-01`; job `job-bd7924bb672c8fe0ce8b01e122f083d3`; session `sess-72f60f0a4620f253aba574a21ea7f81c`; command `cmd-76f1949ae0f2c3d572913505084823f9` | Succeeded, exit 0, complete event history/output, closed teardown. |
+| Direct factory Dev | `simple04-20261018-s9-direct-factory-01` | Failed before HTTP admission: `dial tcp 145.241.255.66:8444: connect: connection refused`; no job/session/command ID was returned. This is the remaining factory direct-ingress gate. |
+| Queued Linux Dev through Mac local ingress | `simple04-20261018-s9-queued-linux-01`; job `job-46810441296ab058531f7b7ef8bfe57e`; session `sess-a6727b369ff8c72f11e9c2d662d0d595`; command `cmd-c4906b4786f74d5e3059fca5da8e2b8b` | Succeeded, exit 0, output complete, closed teardown; a follow-up events read reached cursor/final sequence 4. |
+| Queued sandbox Dev through Mac local ingress | `simple04-20261018-s9-queued-sandbox-01`; job `job-92242806e64dee192ef497228897b0d4`; session `sess-a0e1a96a7e42298386b1f2e08ff0c020`; command `cmd-bed1b1086d110d479832997748da7b96` | Succeeded, exit 0, output complete, closed teardown; follow-up events read reached cursor/final sequence 4. |
+| Queued factory Dev through Mac local ingress | `simple04-20261018-s9-queued-factory-01`; job `job-b5ef41fd59c8db3ef715dcadd6d114c8`; session `sess-2864980bef7b3b427f5089845cc647b4`; command `cmd-59f11c242570929fea6fa4e32f16e4e0` | Succeeded, exit 0, output complete, closed teardown; follow-up events read reached cursor/final sequence 4. |
+| Five-second requested target timeout on Linux Dev | `simple04-20261018-s9-timeout-linux-01`; job `job-52eb13d8961a1a16a12555c9a4452cf7`; session `sess-4b51855b8ad60c155db0d306b2bbcdc3`; command `cmd-da19b26ff5ca525ba770225bf7c128e8` | A ten-second sleep with `timeout_seconds: 5` ended `command_timed_out`, final sequence 3, output complete/not truncated, closed teardown. Temporary probe used the repository's pinned mTLS client and was removed. |
+| Permitted explicit output limit on Linux Dev | `simple04-20261018-s9-limit-linux-01`; job `job-ad3e65f0c7ca1da49900b9d243588bfb`; session `sess-291564fb4778f9a87ab8640b71acbbb9`; command `cmd-95fffadffc4f4c97d7461c33a3a572cd` | `limits.output_bytes_per_command: 1024` was accepted; harmless command succeeded, exit 0, complete/not-truncated output, final sequence 4, closed teardown. |
+| Managed Linux Dev session | Session key `simple04-20261018-s9-managed-linux-01`; session `sess-b013a7366c72822810adbdbd365d9606`; harmless command `cmd-88e9f2389e1f3caf097b31bd807aefd1` | Create returned ready; status read returned authority state; harmless command succeeded with complete output and final sequence 4. |
+| Managed cancellation and close | Command key `simple04-20261018-s9-managed-linux-cancel-command-01`; command `cmd-f338667071305b02be21f77d4e9cfd5d`; cancel key `simple04-20261018-s9-managed-linux-cancel-01`; close key `simple04-20261018-s9-managed-linux-close-01` | Bounded `sleep 30` was explicitly cancelled; terminal event `command_cancelled`, final sequence 3, complete output; graceful close and subsequent status both reported session closed. |
+| Dev mailbox request/read/ACK | Request and idempotency key `simple04-20261018-s9-mailbox-dev-linux-01`; inbox `default`; job `job-dd1dcfd24dc909c48bed88da0d1c4795`; session `sess-2af85a4de3edbc68af085ac593fd5470`; command `cmd-281a0603cb236cfa1dd33efc03c43589` | Native mailbox client read terminal revision 2, four events through cursor 4, complete output and closed teardown, then wrote the exact ACK. Lifecycle read reports `terminal_acknowledged`, `acknowledged: true`, zero actionable pairs/backlog. |
+| Queued factory after Dev restart | `simple04-20261018-s9-queued-factory-postrestart-01`; job `job-60ae9bb96f17283d87f39c2116b675da`; session `sess-f7c980980c12385c1681e01682122cb3`; command `cmd-35b29cfa8cbfc8da9f70d9733ed8ff47` | Succeeded, exit 0, complete event history/output, closed teardown after factory Dev restart. |
+
+Mailbox, timeout, explicit-limit and health checks used temporary task-local
+tests under `src/internal/mailboxclient` or `src/internal/runnercli`; all were
+removed. Commands used the Mac Go 1.27.1 binary and shared caches. The mailbox
+test was `go test ./src/internal/mailboxclient -run
+'^TestSIMPLE04DevMailboxRunReadAndAck$' -count=1 -v`. The target timeout and
+explicit-limit probes were `TestSIMPLE04RequestedTimeoutProbe` and
+`TestSIMPLE04ExplicitPermittedOutputLimitProbe` in `src/internal/runnercli`.
+The post-restart worker health read used `TestSIMPLE04WorkerHealthPostRestart`.
+These were live acceptance probes, not committed regressions or additional
+source gates.
+
+### Dev restart isolation and final selected-lane postflight
+
+Each Dev stop/start ran serially through `runner-lane` after the preceding
+probe reached terminal state. The stop guard proved zero retained active work
+before each stop. Linux PRD stayed active at PID `149913`, sandbox PRD at
+`717823`, and factory PRD at `50302`; each had `Result=success` before and
+after its Dev restart. Dev units restarted successfully. Mac Dev LaunchAgent
+PIDs changed from `50865`/`50912` to `61821`/`61872`; Mac PRD LaunchAgent PIDs
+remained `48708`/`48627`.
+
+After restart, Linux and sandbox direct mTLS health both returned HTTP 200,
+`readiness=ready`, build revision `2204e18`, and zero active sessions/commands,
+queued commands/intents, and mailbox backlog. Factory Dev remained active at
+PID `1247375`; its queued post-restart probe succeeded. Mac Dev health returned
+ready at `2204e18` with zero active slots, queued work and mailbox backlog.
+The final Mac Dev local health report also showed zero uncertain/pending remote
+intents and zero storage errors.
+
+### Outstanding direct factory route and unexpected Mac PRD health failure
+
+The factory Dev HTTPS listener was not reachable at configured public endpoint
+`145.241.255.66:8444` from the Mac; Runner received TCP `connection refused`
+before HTTP and produced no accepted work. Its queued bridge on existing SSH
+port 22 passed before and after restart, and the factory Dev systemd unit is
+active. Exact external action: the authorized network/provider operator must
+inspect the current ingress mapping and permit the existing factory Dev TCP
+8444 route from the Mac's configured egress, or provide the approved existing
+direct route. No firewall or provider change was made.
+
+The first Mac PRD post-restart health read was ready at revision
+`77910358a149d6e8fcdf4694498ebdf6c1f07f58`, with one existing session slot,
+zero commands/queues, and `storage_errors_total=1`. A later health read at
+`2026-10-18T03:59:31Z` returned `readiness=not_ready` and
+`sqlite_writes: database_write_failed`; the service PIDs remained unchanged,
+the existing session slot remained 1, and `storage_errors_total` became 2.
+The PRD `runner_health_probes` row last recorded a successful Mac-ingress
+check at `03:57:22Z`. Read-only `PRAGMA quick_check` returned `ok`, the Mac
+data volume had about 154 GiB free, and filtered PRD logs contained only the
+earlier `storage_errors_total=1` warning at `03:39:46Z`; no fresh SQLite error
+detail was available. No PRD restart, configuration change, mailbox action,
+or manual database edit was made. The built-in health endpoint's timestamp
+`CheckWritable` probe is the only PRD database operation in this postflight;
+its first probe succeeded and the later one failed. Exact owner action: an
+authorized PRD operator must investigate why the existing SQLite write probe
+failed and provide a fresh ready postflight before any PRD maintenance or
+rollout dependency that relies on PRD health. Do not restart or repair PRD
+without a separate concrete approval.
+
+SIMPLE-04 therefore remains **IN PROGRESS**, not PASS. The factory direct
+ingress gate and PRD health diagnosis are outstanding. No QAS service was
+started, no production binary or configuration was changed, and no held ACK
+was touched.
