@@ -340,6 +340,32 @@ requires the normal stopped-lane quiescence proof. Its regression simulates
 delayed unload for both agents. Focused `TestSimpleMacServiceController` passed;
 `GOMAXPROCS=2 GOFLAGS=-p=1 make check build` passed on Mac after this change.
 
+### S6 source delivery and worker validation
+
+The installer fix was delivered as source commit
+`2b50bf761e60bad9e49353ef9afc08e6de6e94b2` on `dev`, pushed to primary Gitea,
+and verified at the same GitHub mirror SHA. Before pull, all three worker
+checkouts were clean on `dev` at S5 `3c60844cc4c55b5fa9d12c9405855deca13cec23`.
+Each fast-forwarded to S6 and ended clean at the exact S6 HEAD.
+
+`GOMAXPROCS=2 GOFLAGS=-p=1 make check build` passed on Mac, linux-host and
+sandbox-host at S6. It passed on factory-sandbox on the third run. The first
+factory run passed tests and vet but smoke linking failed with `disk quota
+exceeded`; measurement showed `/tmp` is a 476 MiB tmpfs with 193 MiB available,
+while the existing root filesystem had 43 GiB free. The second retry used a
+long task-owned `TMPDIR` under `/home/ubuntu/.cache` and exposed a Unix socket
+path-length limit in `TestLanesL306NativePeerEvidence`. The final retry used a
+short unique directory from `mktemp -d /home/ubuntu/.cache/r.XXXXXX`, ran the
+same full command serially, passed tests, vet, smoke and build, and removed only
+that task-owned temporary directory through an exit trap. No shared cache was
+deleted or replaced.
+
+The S6 candidate rebuild remains pending. Mac PRD agents were read-only verified
+active at PIDs 48627 (`runner-locald`) and 48708 (`runner-local`) after the
+failed Dev update; no PRD agent was targeted. Linux, sandbox and factory PRD
+units were active at preflight PIDs 149913, 717823 and 50302 respectively. A
+fresh post-install PRD identity/health comparison is still required.
+
 After source delivery, rebuild all four host candidates from the new exact
 revision and update Dev through the same guarded installer. Then complete the
 remaining acceptance: fresh managed cancellation, factory direct ingress,
