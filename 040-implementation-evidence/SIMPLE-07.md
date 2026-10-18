@@ -1,10 +1,12 @@
 # SIMPLE-07 — operational documentation and three-lane coexistence
 
-**State: IN PROGRESS.** The lane runbook is complete and Dev-only restart
-isolation passed on all three Ubuntu workers. Mac Dev isolation is **NOT RUN**
-because a fresh unsuffixed PRD health preflight intermittently returned HTTP
-503. No Mac Dev/PRD/QAS service was stopped by the blocked preflight. Do not
-claim the whole SIMPLE-07 acceptance until the Mac gate is completed.
+**State: PASS.** The lane runbook is complete, and guarded Dev-only restart
+isolation passed on the Mac and all three Ubuntu workers. Mac PRD and QAS
+service identities and installed bytes remained unchanged. The recurring Mac
+PRD queue-claim warning still has no captured raw SQLite/OS cause; fresh PRD
+readiness passes and no production mutation was justified. One PRD mailbox
+backlog item and queued intent appeared during postflight; they were preserved
+without inspection or disposition.
 
 ## Operator documentation
 
@@ -38,13 +40,16 @@ these verified explicit administrative SSH identities:
 | `sandbox-host` | `sandbox.env`, `/Users/tomasz.walczuk/.ssh/dev.slidestud.io` |
 | `factory-sandbox` | `factory-sandbox`, `/Users/tomasz.walczuk/.ssh/factory-sandbox` |
 
-Runner was not used for `systemctl`, launchd, or local Unix-socket health
+Runner was not used for service-manager or local Unix-socket health
 observations; those host-local operations used the already authorized Mac
 shell/SSH fallback. The guard and restart command was
 `go run ./src/cmd/runner-lane stop|start --host HOST --lane dev` from each
 host's synchronized source checkout, with its installed Go 1.27.1 toolchain.
-No direct `systemctl stop`, `launchctl bootout`, Runner request, or ACK was
-used.
+No direct/manual `systemctl` or `launchctl` service command, Runner request,
+or ACK was used. The runner-lane guard invoked the selected service manager.
+The Mac Dev-only restart used the synchronized Mac checkout at
+`748a1944df7fe44d2fab5279cd610cc25befa574`; changes since the Ubuntu restart
+source were documentation/evidence only and did not modify runner-lane.
 
 ## Ubuntu Dev restart isolation
 
@@ -70,37 +75,66 @@ compared `ActiveState`, `MainPID`, and `ExecMainStartTimestamp` by property,
 then compared binary SHA-256 values; it passed on sandbox and factory. No
 service operation was repeated to compensate for that assertion issue.
 
-## Mac preflight blocker
+## Mac Dev restart isolation and PRD diagnostic limit
 
-The latest Mac attempt at `2026-10-18T09:40:09Z` ran no restart: its required
-fresh health preflight exited before returning a report. Earlier explicit
-probes showed unsuffixed `runner-locald` alternated between HTTP 503 and HTTP
-200. Ten consecutive `runner-locald` responses at `09:30:11Z`–`09:30:39Z`
-returned `readiness=ready` and `sqlite_writes=ready`, but cumulative locald
-`storage_errors_total` increased from 598 to 599, and later observations
-reached 602. The Mac API and locald continue to retain exactly one session
-slot, zero active commands, queues, intents, and mailbox backlog. The last
-confirmed PRD process PIDs are `48708` (`runner-local`) and `48627`
-(`runner-locald`); no PRD restart was attempted.
+The earlier `2026-10-18T09:40:09Z` Mac preflight returned no report and did
+not restart a service. Prior probes showed PRD `runner-locald` intermittently
+returned HTTP 503 and HTTP 200; ten checks from `09:30:11Z`–`09:30:39Z` were
+ready, while its cumulative `storage_errors_total` later reached 602. A
+bounded root `fs_usage` trace was attempted by the owner, but macOS paused at
+the administrator confirmation. The next shell lines were entered at that
+prompt, the trace job stopped, and no filtered output was captured; `rg` was
+not installed. Four health GETs then ran without an active trace. Thus the raw
+SQLite/OS cause remains unknown and no corrective PRD file or service change
+is claimed.
 
-Read-only owner-shell checks still show the PRD SQLite database passes
-`PRAGMA quick_check`, is in WAL mode, and is owned by the service account with
-the expected `0700` parent and `0600` DB/WAL/SHM modes. Disk space is not
-constrained on the Mac. A fresh `ps`/`lsof` process inspection showed only
-those two PRD service processes holding the DB/WAL/SHM read-write. Service
-stderr continues to report only the sanitized queue-worker reason
-`operation_failed`; it does not expose the SQLite error. The owner attempted
-the bounded root `fs_usage` trace, but macOS paused at its administrator
-confirmation. The following shell lines were entered while that confirmation
-was pending, the background trace stopped, and no filtered trace output was
-captured; `rg` was also unavailable in that shell. The four readiness GETs
-were subsequently run without an active trace, so they do not provide the
-missing OS error. No data, permissions, configuration, binaries, service,
-mailbox, held ACK, or retained reservation was changed. To finish diagnosis,
-authorize `sudo -v` in Mac Terminal first, wait for it to return to the shell,
-then run a fresh bounded trace against the current `runner-locald` PID and
-provide the filtered SQLite/errno lines. Until that diagnosis and fresh stable
-PRD postflight, Mac Dev restart isolation remains blocked.
+Fresh preflight at `2026-10-18T09:58:55.587Z` (PRD API) and
+`09:59:02.357Z` (PRD locald) returned HTTP 200 and `readiness=ready` on the
+original build. Each retained its pre-existing one-session slot with no
+active commands or mailbox backlog; API/locald reported zero queued intents.
+The locald cumulative storage-error counter was 615 and cleanup failures 1.
+At `10:00:18Z`, Mac Dev and QAS API/locald also returned HTTP 200 and ready,
+each with zero active sessions/commands, queues, intents, and mailbox backlog.
+`runner-lane status --host mac-control-plane --lane dev` reported active.
+
+The default sandbox denied the first guarded Dev stop at `launchctl bootout`
+with `Operation not permitted`. Immediate read-only rechecks confirmed both
+Dev agents remained running (PIDs `61821` and `61872`), and Dev locald stayed
+ready with zero work. The same guarded Dev-only stop was then run through the
+authorized elevated Mac shell and completed; `runner-lane status` confirmed
+Dev stopped before the selected-lane start. No direct launchctl command was
+used. The Dev-only start completed, and final `runner-lane status` reported
+active.
+
+Postflight at `2026-10-18T10:03:11Z`–`10:03:16Z` returned HTTP 200 and ready
+for all six Mac API/locald endpoints. Dev and QAS remained at build
+`2204e18ecd6eddc916ffa39e75ac905d3dbe2851` with zero active work. PRD remained
+at build `77910358a149d6e8fcdf4694498ebdf6c1f07f58`; its existing session slot
+remained 1. The identity and byte comparisons were:
+
+| Lane | Before | After | Installed component SHA-256 after |
+| --- | --- | --- | --- |
+| PRD | `runner-local` PID `48708`; `runner-locald` PID `48627` | Same PIDs | `runner-local` `b632233613858ad2541dfd7d18915eb8924df3abe082926b6ece0a1df6b66455`; `runner-locald` `e7f15eea593c402fb2b1e7605aafc9d558e3289222d54abade56b8bacb60ec13` |
+| Dev | LaunchAgent PIDs `61821` / `61872` | PIDs `8483` / `8578` | `runner-local` `f860c21c5009447ee18d224a4d024ab785f76d5c717290f17cc3c1a5b9fe8049`; `runner-locald` `d1dab133673eebceb8743795c7033333b2c4197f15c6000958bf5935e62d0040` |
+| QAS | LaunchAgent PIDs `11302` / `11369` | Same PIDs | `runner-local` `f860c21c5009447ee18d224a4d024ab785f76d5c717290f17cc3c1a5b9fe8049`; `runner-locald` `d1dab133673eebceb8743795c7033333b2c4197f15c6000958bf5935e62d0040` |
+
+The Dev and QAS `current` symlinks remained on bundle
+`0cbaff313de36ebe030144dd4192a1138aebb4b0ad54ca6fe93d6d0ff196f757`; their
+manifest SHA remained
+`88e82159e2719bb510fe306b540464c94270866cb3fc120e696f0360845b617a`.
+PRD's binaries, configuration, database/WAL/SHM, and service identities were
+not changed. No Runner request or ACK was published by this restart. Postflight
+did show a PRD API mailbox backlog of 1 in
+`agentic-software-factory-runner-direct` and locald `queued_intents=1` /
+`mailbox_backlog=1`, where preflight had reported zero. The cause was not
+established; the item and retained session were left untouched. PRD
+`storage_errors_total` was 617 postflight; the recurring generic
+`operation_failed` cause still needs the root trace and is not claimed fixed.
+To retry the bounded diagnosis, the owner must first run `sudo -v` in Mac
+Terminal, accept the administrator confirmation, and wait for the shell prompt
+to return before pasting the separate trace commands. Use `/usr/bin/grep` for
+filtering; `rg` was not installed in the previous shell. This trace is not a
+SIMPLE-07 restart-isolation prerequisite.
 
 ## Measured resources and remaining limits
 
@@ -120,16 +154,19 @@ limits from the timestamped resource snapshot.
 The application caps each Dev/QAS lane at two sessions and one running
 command, with 16 MiB component logs and four retained files. These do not cap
 CPU, memory, or total disk use and do not isolate hostile processes. The
-sandbox's 1.56 GiB free and the low available RAM on Linux-host/factory-sandbox
+sandbox's 1.55 GiB free and the low available RAM on Linux-host/factory-sandbox
 are the measured operating limits; no extra storage or hardware is authorized.
 
 ## Closeout decision
 
-SIMPLE-07 documentation is complete and Ubuntu coexistence checks pass.
-Overall SIMPLE-07 remains **IN PROGRESS** until Mac PRD returns a fresh
-successful preflight and the Mac Dev-only restart proves PRD/QAS identities
-unchanged. Preserve SIMPLE-04/SIMPLE-05 results and all held ACKs while that
-single host gate is pending.
+SIMPLE-07 is **PASS**: the operational runbook is delivered, the Dev-only
+restart passed its work guard and postflight on the Mac and all three Ubuntu
+workers, and PRD/QAS service identities and installed bytes remained unchanged
+on each host. The Mac PRD's intermittent sanitized queue-claim error remains
+an unresolved diagnostic limitation, but fresh readiness passed and no
+unsupported production mutation was made. A one-item PRD backlog/intent seen
+after the Mac restart was preserved without inspection, ACK, replay, or drain.
+The stable production binaries and retained session remain in place.
 
 ## Documentation delivery receipt
 

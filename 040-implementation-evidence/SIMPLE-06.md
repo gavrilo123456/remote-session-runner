@@ -31,15 +31,22 @@ The candidate is the per-host bundle accepted in Dev and then QAS, all from
 source revision `2204e18ecd6eddc916ffa39e75ac905d3dbe2851`, Go 1.27.1. These
 are exact immutable bundle identities, not rebuilt production candidates.
 
-| Host | Bundle SHA-256 | Manifest SHA-256 | Accepted QAS service component SHA-256 |
+| Host | Bundle SHA-256 | Manifest SHA-256 | QAS manifest component SHA-256 |
 | --- | --- | --- | --- |
-| `mac-control-plane` | `0cbaff313de36ebe030144dd4192a1138aebb4b0ad54ca6fe93d6d0ff196f757` | `88e82159e2719bb510fe306b540464c94270866cb3fc120e696f0360845b617a` | `runner-local` `b632233613858ad2541dfd7d18915eb8924df3abe082926b6ece0a1df6b66455`; `runner-locald` `e7f15eea593c402fb2b1e7605aafc9d558e3289222d54abade56b8bacb60ec13` |
+| `mac-control-plane` | `0cbaff313de36ebe030144dd4192a1138aebb4b0ad54ca6fe93d6d0ff196f757` | `88e82159e2719bb510fe306b540464c94270866cb3fc120e696f0360845b617a` | `runner-local` `f860c21c5009447ee18d224a4d024ab785f76d5c717290f17cc3c1a5b9fe8049`; `runner-locald` `d1dab133673eebceb8743795c7033333b2c4197f15c6000958bf5935e62d0040` |
 | `linux-host` | `3826c1406efcb9cd240e9dab55df5b09f03035d8537e85036033ad2476d38b4c` | `cbc69ad44795d688326299f00c395c1cbeb1470f83f7e9bc21f28f30dcf33df1` | `runnerd` `acbc42bfc9ce496b49097e98d6de53b02f5a3ac47a56410686341ef3807e14a7` |
 | `sandbox-host` | `6ab39974eb78cf78333a048b683a365b954d95894d785d00ef96681cb8f74917` | `bc550e86fa605da09d0ad3841b7ea9192907748c927693bbad6e09b75b3905d8` | `runnerd` `5abbb5d8bcde3f11c3800a99fc1860b489e1ef3ac233c974d16a2178bda56192` |
 | `factory-sandbox` | `d1b2399ed1af742afe6b4ffe01fd5d0e103d1efb3db7e12b41837a4e84cab37a` | `06c691b604742b07fe9c8d22c3eb28f8c81967701c067334f53162002b872c9a` | `runnerd` `acbc42bfc9ce496b49097e98d6de53b02f5a3ac47a56410686341ef3807e14a7` |
 
 See [SIMPLE-05](SIMPLE-05.md) for the direct/queued QAS acceptance, mailbox
 ACK, timeout, limit, managed-session, and zero-work evidence.
+
+A fresh read-only Mac Dev/QAS manifest and executable check at
+`2026-10-18T10:00:18Z` confirmed the bundle and manifest hashes above, with
+component hashes `f860c21c...` and `d1dab133...`. The earlier component values
+in this row duplicated the unsuffixed PRD hashes; this transcription is
+corrected here. This read-only check changed no bundle, binary, configuration,
+or service.
 
 ## Prepared production procedure and limits
 
