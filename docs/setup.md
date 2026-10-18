@@ -694,6 +694,7 @@ gate that runs and fails is `FAIL`: stop, preserve the exact evidence, and do
 not mark the profile available. It must never reuse an accepted host's
 certificates, state database, bridge authorization, or proof.
 
-For normal use after setup, follow the [CLI guide](user-guide.md) or the
-[mailbox guide](mailbox.md). The current accepted status is indexed in
+For normal use after setup, select the intended existing-host lane in the
+[lane operations guide](lanes.md), then follow the [CLI guide](user-guide.md)
+or the [mailbox guide](mailbox.md). The current accepted status is indexed in
 [current-host evidence](current-host-evidence.md).

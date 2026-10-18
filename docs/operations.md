@@ -5,6 +5,10 @@ host as `ubuntu`. Do not print private keys, edit SQLite files, manufacture
 mailbox input outside the documented publisher/integration path, or use
 host-gate test scripts as everyday service controls.
 
+For existing-host Dev/QAS selection and guarded lane-specific updates, see the
+[lane operations guide](lanes.md). The procedures there never target unsuffixed
+PRD; production changes require a separate approved maintenance package.
+
 ## Current availability and evidence boundary
 
 The deployed BUG-015 correction changes how an ordinary strict-shell failure
