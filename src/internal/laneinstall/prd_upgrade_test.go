@@ -63,6 +63,7 @@ func TestPRDServiceControllerUsesOnlyFixedUnsuffixedServiceIdentity(t *testing.T
 		macStopPollsRemaining: map[string]int{},
 		macBootoutRequested:   map[string]bool{},
 		macStatusPolls:        map[string]int{},
+		linuxOn:               runtime.GOOS == "linux",
 	}
 	controller := &PRDServiceController{base: simpleTestServiceController(runner, current.Uid, current.Username, runtime.GOOS, runtime.GOARCH)}
 	active, err := controller.Status(context.Background(), plan)
