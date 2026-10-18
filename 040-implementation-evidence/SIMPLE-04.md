@@ -4,11 +4,11 @@
 and evidence checkpoint `6c4aa9ef73493ac513ef6897c6f414d7f7dc7b3e` are
 delivered and synchronized. S6 candidates are installed and ready on the Mac
 and all three workers. A fresh correctly configured Mac-local probe still
-fails during session startup; no command was created or run. A bounded
-queueworker diagnostic and integration regression are being added to expose
-the startup cause on the next fresh probe. The source change passes
-the Mac full `make check build` gate; delivery and worker validation remain
-pending. PRD remains installed and running; QAS is not started.
+fails during session startup; no command was created or run. The bounded
+queueworker diagnostic and integration regression are delivered and pass the
+Mac and all three worker `make check build` gates. Diagnostic candidates and a
+fresh Mac-local probe remain pending. PRD remains installed and running; QAS
+is not started.
 
 ## Scope and predecessor
 
@@ -415,10 +415,29 @@ queueworker tests pass. Mac `GOMAXPROCS=2 GOFLAGS=-p=1 make check build` passes
 with normal process-test access; the sandboxed attempt could not execute
 `/bin/ps` in an existing Mac process regression, then the unrestricted local
 test gate passed. Source delivery and synchronized worker validation for this
-diagnostic change remain pending.
+diagnostic change are recorded below.
 
-After that delivery, rebuild the four host candidates from the exact new
-revision and refresh only Dev through the guarded installer. Then complete the
+### Diagnostic source delivery and worker gates
+
+Source commit `57e11ab7b050c7028f501929a4b2b6a96a6179fb` was committed on Mac
+`dev` and pushed to primary Gitea `origin/dev`. Direct `ls-remote` reads of
+Gitea and automatic `github/dev` both resolved to that exact SHA. Git's push
+could not refresh the local `origin/dev` tracking ref because `.git` metadata
+is read-only in this execution environment; the authoritative remote refs were
+verified directly and both matched. No working-tree changes remained.
+
+Before pull, each Ubuntu checkout was clean on `dev` at
+`6c4aa9ef73493ac513ef6897c6f414d7f7dc7b3e`. Each used its configured explicit
+administrative SSH identity and the checkout's GitHub mirror identity to
+`git pull --ff-only origin dev`; all ended clean on the exact source SHA above.
+`GOMAXPROCS=2 GOFLAGS=-p=1 make check build` passed on `linux-host`,
+`sandbox-host`, and `factory-sandbox`. Factory used a unique short
+`/home/ubuntu/.cache/r.XXXXXX` TMPDIR with an exit trap to remove only that
+task-owned directory; shared Go caches were retained. The diagnostic candidate
+rebuild and selected-Dev refresh remain the next operation.
+
+Rebuild the four host candidates from the exact new revision and refresh only
+Dev through the guarded installer. Then complete the
 remaining acceptance: fresh managed cancellation, factory direct ingress,
 configured Mac-local execution, requested timeout, permitted explicit limits,
 all required direct/queued profile routes, owned mailbox request/output/event/
