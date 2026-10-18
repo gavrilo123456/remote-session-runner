@@ -1,13 +1,13 @@
 # SIMPLE-04 — Dev deployment and coexistence acceptance
 
-**State: IN PROGRESS.** S6 is delivered and synchronized; S6 candidates remain
-on all three workers. The S7 diagnostic source is delivered and passes full
-gates on Mac and all three workers. Its Mac candidate exposed a second active
-defect: Mac bundles were built with cgo disabled, so local runtime ownership
-recording failed before command creation. Only Mac Dev was stopped after its
-quiescence proof; the S8 native-cgo correction passes the Mac full
-`make check build` gate and is pending Git delivery and worker validation. PRD
-remains installed and running; QAS is not started.
+**State: IN PROGRESS.** S8 source `6a108303522c915a68ca48754448c3b6bcc89fe1`
+is delivered and synchronized; its full `make check build` gate passes on Mac
+and all three workers. The S7 diagnostic candidate exposed that Mac bundles
+were built with cgo disabled, preventing local runtime ownership recording
+before command creation. Only Mac Dev was stopped after its quiescence proof.
+The corrected S8 candidates still need rebuilding from this synchronized
+revision, followed by the remaining Dev acceptance. PRD remains installed and
+running; QAS is not started.
 
 ## Scope and predecessor
 
@@ -477,10 +477,35 @@ completed its quiescence proof and stopped only Mac Dev; PRD remained running.
 
 The S8 source correction enables cgo only for Darwin bundles, requires the Mac
 bundle to be built natively on the target Darwin architecture, and adds a
-platform-environment regression. Focused laneinstaller tests and Mac
-`GOMAXPROCS=2 GOFLAGS=-p=1 make check build` pass. S8 Git delivery, worker
-validation, corrected candidate rebuild, Mac Dev refresh and fresh runtime
-acceptance remain pending.
+platform-environment regression. Focused laneinstaller tests and the full Mac
+gate pass. Source delivery and worker validation are recorded below; corrected
+candidate rebuild, Mac Dev refresh and fresh runtime acceptance remain pending.
+
+### S8 source delivery and worker validation
+
+Source commit `6a108303522c915a68ca48754448c3b6bcc89fe1` was committed on Mac
+`dev` and pushed to primary Gitea. Direct `ls-remote` checks on 2026-10-18
+resolved both Gitea `origin/dev` and automatic `github/dev` to that exact SHA.
+The three worker checkouts were clean on `dev` at that exact revision after
+fast-forward delivery. The final read-back after testing confirmed each worker
+remained clean at the same SHA.
+
+The required full gate `GOMAXPROCS=2 GOFLAGS=-p=1 make check build` passed on
+`linux-host`, `sandbox-host`, and `factory-sandbox` at S8. Mac passed the same
+full gate before S8 was committed. Commands ran on the named worker via its
+configured explicit administrative SSH identity, inside the synchronized
+checkout; the Makefile selected Go 1.27.1. Factory used a task-owned short
+`/home/ubuntu/.cache/r.XXXXXX` `TMPDIR`, removed by an exit trap; shared Go
+caches were retained. No host service was changed by these gates.
+
+The first sandbox full-gate attempt failed in
+`TestLanesL311LedgerGrantSerializesCasAndPreservesRevocationSets` with a TLS
+fixture error stating that the current test server certificate was no longer
+active. The isolated test was rerun once and passed; the complete sandbox
+`make check build` was then rerun and passed. This transient failure and its
+successful reruns are preserved rather than counted as a pass on the first
+attempt. Linux, sandbox, and factory all ended clean at S8. Corrected S8 bundle
+builds and Dev deployment/acceptance remain outstanding.
 
 After S8 delivery, rebuild the four host candidates from the exact new revision
 and refresh only Dev through the guarded installer. Then complete the
