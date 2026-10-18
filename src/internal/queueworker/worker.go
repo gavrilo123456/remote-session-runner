@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -526,9 +527,12 @@ func (d *Worker) resumeStoredJobNow(id domain.JobID) {
 
 func (d *Worker) resumeStoredJob(id domain.JobID) bool {
 	if _, err := d.service.ResumeStoredJob(context.Background(), id); err != nil {
-		if job, readErr := d.authority.GetJob(context.Background(), id); readErr == nil && terminalJobPhase(job.Phase) {
-			d.clearDeferredStoredJob(id)
-			return false
+		if job, readErr := d.authority.GetJob(context.Background(), id); readErr == nil {
+			logMacLocalStartupFailure(d.logger, job, err)
+			if terminalJobPhase(job.Phase) {
+				d.clearDeferredStoredJob(id)
+				return false
+			}
 		}
 		d.deferStoredJob(id)
 		d.logger.Warn("queue worker could not resume stored job", "job_id", id, "lifecycle_phase", "job_resume", "reason", workerFailureReason(err))
@@ -536,6 +540,29 @@ func (d *Worker) resumeStoredJob(id domain.JobID) bool {
 	}
 	d.clearDeferredStoredJob(id)
 	return true
+}
+
+func logMacLocalStartupFailure(logger *slog.Logger, job store.JobRecord, err error) {
+	if logger == nil || err == nil || job.Target.Kind() != domain.TargetKindLocal || job.Source.Mode() != domain.SourceModeEmpty || job.Controller.Type() != domain.ControllerTypeLocalUser || !errors.Is(err, execution.ErrRuntimeUnavailable) {
+		return
+	}
+	logger.Warn("Mac local empty-source startup failed",
+		"job_id", job.JobID,
+		"session_id", job.SessionID,
+		"reason", workerFailureReason(err),
+		"error", boundedWorkerError(err),
+	)
+}
+
+func boundedWorkerError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " ")
+	if len(message) > 512 {
+		message = message[:512]
+	}
+	return message
 }
 
 func terminalJobPhase(phase store.JobPhase) bool {
@@ -554,6 +581,8 @@ func workerFailureReason(err error) string {
 		return "persistent_shell_unavailable"
 	case errors.Is(err, hostruntime.ErrPersistentShellCommand):
 		return "persistent_shell_io_failed"
+	case errors.Is(err, execution.ErrRuntimeUnavailable):
+		return "runtime_unavailable"
 	case errors.Is(err, context.Canceled):
 		return "context_cancelled"
 	case errors.Is(err, context.DeadlineExceeded):

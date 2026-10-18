@@ -1,14 +1,14 @@
 # SIMPLE-04 — Dev deployment and coexistence acceptance
 
-**State: IN PROGRESS.** S5 source revision `3c60844cc4c55b5fa9d12c9405855deca13cec23`
-is delivered and synchronized; Mac and worker source gates passed. Its candidate
-is installed on Linux, sandbox and factory Dev. The guarded Mac S5 install
-stopped the selected Dev agents but returned before asynchronous `launchd`
-unload completed; the Mac S4 release pointer remains unchanged and Mac Dev is
-currently stopped. The installer wait fix in the current source change has a
-delayed-unload regression and full Mac source gates passing; its Git delivery,
-worker validation and candidate installation remain pending. PRD remains
-installed and running; QAS is not started.
+**State: IN PROGRESS.** S6 source revision `2b50bf761e60bad9e49353ef9afc08e6de6e94b2`
+and evidence checkpoint `6c4aa9ef73493ac513ef6897c6f414d7f7dc7b3e` are
+delivered and synchronized. S6 candidates are installed and ready on the Mac
+and all three workers. A fresh correctly configured Mac-local probe still
+fails during session startup; no command was created or run. A bounded
+queueworker diagnostic and integration regression are being added to expose
+the startup cause on the next fresh probe. The source change passes
+the Mac full `make check build` gate; delivery and worker validation remain
+pending. PRD remains installed and running; QAS is not started.
 
 ## Scope and predecessor
 
@@ -360,14 +360,65 @@ same full command serially, passed tests, vet, smoke and build, and removed only
 that task-owned temporary directory through an exit trap. No shared cache was
 deleted or replaced.
 
-The S6 candidate rebuild remains pending. Mac PRD agents were read-only verified
-active at PIDs 48627 (`runner-locald`) and 48708 (`runner-local`) after the
-failed Dev update; no PRD agent was targeted. Linux, sandbox and factory PRD
-units were active at preflight PIDs 149913, 717823 and 50302 respectively. A
-fresh post-install PRD identity/health comparison is still required.
+## S6 candidate refresh, coexistence postflight, and Mac-local attempts
 
-After source delivery, rebuild all four host candidates from the new exact
-revision and update Dev through the same guarded installer. Then complete the
+The previous Mac installation had been blocked by an asynchronous `launchctl`
+unload race. S6 added a bounded wait for the selected Dev agents to disappear;
+the delayed-unload regression passed. After delivery of S6 and the evidence
+checkpoint, candidates were rebuilt from exact synchronized source
+`6c4aa9ef73493ac513ef6897c6f414d7f7dc7b3e`, checksum-verified, and installed
+only into Dev through the guarded lane installer:
+
+| Host | S6 candidate SHA-256 | Guarded install backup |
+| --- | --- | --- |
+| Mac | `1eba56e845a81161d8c9233a39b194a063ab582a901a88a22c41780c9aa2e9d3` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner-dev/backups/.simple-backup-1884196807` |
+| `linux-host` | `9c5b48005af1cefb67bb907fe10ff25dc3f0eadc1ca9aece5abf673225731bf1` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-2525353079` |
+| `sandbox-host` | `55892548c0939e2ebbf832eca4eaf0efee95fcff32b649aafbbd384ca1dab7fc` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-2737904280` |
+| `factory-sandbox` | `cca42aa81dc1257be59060e4d0553cc23f600b6ccf378fe89c9ba582f3afb094` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-103309046` |
+
+All four Dev services started. Fresh health showed each ready at build revision
+`6c4aa9ef73493ac513ef6897c6f414d7f7dc7b3e`, with zero active sessions,
+commands, queued work, or mailbox backlog. PRD remained ready and unchanged:
+the three worker PIDs remained 149913, 717823, and 50302 at installed revision
+`2802f00c93eb51a80f23b9380238c309545d6329`; Mac `runner-locald` PID 48627 and
+`runner-local` PID 48708 remained at revision
+`77910358a149d6e8fcdf4694498ebdf6c1f07f58`, with its pre-existing one retained
+session. No PRD process, binary, configuration, database, mailbox, or firewall
+was changed.
+
+Two fresh Mac-local attempts are retained distinctly:
+
+* The first used the wrong environment `mac-dev` for target/profile
+  `local/mac-workstation`: job `job-b72101410e94953fcbcc432207961a5d`, session
+  `sess-d0d1a77011a0089397ae72b51488aafb`, command
+  `cmd-59fd69b47446bf59bdff51f64f0ec69e`. The intent was locally accepted, but
+  environment authorization rejected it before a session or command row was
+  created. It is an invalid test input, not a runtime acceptance result; it was
+  not replayed.
+* The second used the configured environment `mac-workstation-dev`: job
+  `job-2d035e5075f245945b8247a8ab456e0f`, session
+  `sess-480ac1f7bd2e20f38283d93b1c183a8c`, command
+  `cmd-25092c53343bf5ebb0ede9ad4314a0df`. The job and session reached terminal
+  failed state during runtime startup, before a command row or command event
+  existed. No unreleased session or command reservation remained, and Dev
+  health returned to ready with zero active work. Existing owner-only
+  `locald.log` recorded the allowed run authorization but had no worker failure
+  diagnostic, so the underlying runtime error remains undetermined. This job
+  was not replayed and no ACK or manual cleanup was performed.
+
+The current source change logs only bounded Mac-local empty-source runtime
+startup failures, with stable job/session IDs and bounded error text; it does
+not log the script. An integration regression drives an accepted local one-off
+through the queue worker and proves the failure is logged, creates no command
+or live reservation, and is not retried after terminalization. Focused
+queueworker tests pass. Mac `GOMAXPROCS=2 GOFLAGS=-p=1 make check build` passes
+with normal process-test access; the sandboxed attempt could not execute
+`/bin/ps` in an existing Mac process regression, then the unrestricted local
+test gate passed. Source delivery and synchronized worker validation for this
+diagnostic change remain pending.
+
+After that delivery, rebuild the four host candidates from the exact new
+revision and refresh only Dev through the guarded installer. Then complete the
 remaining acceptance: fresh managed cancellation, factory direct ingress,
 configured Mac-local execution, requested timeout, permitted explicit limits,
 all required direct/queued profile routes, owned mailbox request/output/event/
