@@ -1,16 +1,20 @@
 # SIMPLE-04 — Dev deployment and coexistence acceptance
 
-**State: IN PROGRESS; two external gates remain.** The native-cgo fix and local
-one-off command-read correction are delivered through source
-`d9223e6c2342babbd2ed4fc217e9ba04932fd4fe`; full `make check build` passed on
-Mac and all three workers. Four S9 Dev bundles were rebuilt from synchronized
-revision `2204e18ecd6eddc916ffa39e75ac905d3dbe2851`, installed and started only
-in Dev. Mac-local, Linux and sandbox direct, all three queued routes, managed
-session cancellation, requested timeout, an explicit limit, mailbox/ACK, and
-Dev restart isolation passed. Factory public direct `:8444` remains refused.
-The final Mac PRD health read also reported `database_write_failed`; no PRD
-service restart or repair was made. QAS is not started. See the S9 record at
-the end for exact evidence and owner actions.
+**State: PASS — Dev deployment and coexistence acceptance complete.** The
+native-cgo fix and local one-off command-read correction are delivered through
+source `d9223e6c2342babbd2ed4fc217e9ba04932fd4fe`; full `make check build`
+passed on Mac and all three workers. Four S9 Dev bundles were rebuilt from
+synchronized revision `2204e18ecd6eddc916ffa39e75ac905d3dbe2851`, installed and
+started only in Dev. Mac-local, direct and queued routes, managed-session
+cancellation, requested timeout, explicit limit, mailbox/ACK and Dev restart
+isolation passed. S10 restored the exact factory Dev direct ingress rule and
+passed authenticated direct work. Fresh Mac PRD API and locald readiness both
+returned ready with SQLite writes ready; the earlier `database_write_failed`
+could not be reproduced and no PRD file, config, process, service or mailbox
+was changed. Its exact historical SQLite cause was not retained in service
+logs, and the restricted-shell `SQLITE_READONLY` result was not from the
+service. See the S10 closeout below for details and remaining diagnostic
+limits. QAS remains the next unit, SIMPLE-05.
 
 ## Scope and predecessor
 
@@ -688,7 +692,7 @@ ready at `2204e18` with zero active slots, queued work and mailbox backlog.
 The final Mac Dev local health report also showed zero uncertain/pending remote
 intents and zero storage errors.
 
-### Outstanding direct factory route and unexpected Mac PRD health failure
+### S9 blocker snapshot before S10
 
 The factory Dev HTTPS listener was not reachable at configured public endpoint
 `145.241.255.66:8444` from the Mac; Runner received TCP `connection refused`
@@ -718,7 +722,102 @@ failed and provide a fresh ready postflight before any PRD maintenance or
 rollout dependency that relies on PRD health. Do not restart or repair PRD
 without a separate concrete approval.
 
-SIMPLE-04 therefore remains **IN PROGRESS**, not PASS. The factory direct
-ingress gate and PRD health diagnosis are outstanding. No QAS service was
-started, no production binary or configuration was changed, and no held ACK
-was touched.
+SIMPLE-04 remained **IN PROGRESS** at the end of S9. The S10 closeout below
+records the subsequent factory direct-ingress repair and successful PRD
+readiness verification. No QAS service was started, no production binary or
+configuration was changed, and no held ACK was touched during S9.
+
+### S10 — factory Dev direct route and Mac PRD database-write diagnosis
+
+#### Factory Dev route
+
+Read-only SSH inspection used the configured explicit `factory-sandbox`
+identity and verified host key. `runnerd-dev.service` was active and its
+listener was correctly bound to `10.0.0.30:8444`; local TCP connected there.
+The existing PRD listener remained on `10.0.0.30:8443`, PID `50302`. The
+public `145.241.255.66:8444` attempt from Mac was rejected at the factory host:
+the nftables-backed persistent iptables configuration had an exact source
+allow for port 8443, then a final host-prohibited reject, but no 8444 allow;
+the reject counter increased by one during the failed probe. This establishes
+the host firewall as the cause; no provider change was needed.
+
+Before changing the rule, the factory Dev database was inspected read-only:
+three closed sessions/commands/jobs, zero unreleased reservations and no
+intents. Only Dev TCP `8444` was opened, from the configured Mac egress
+`81.95.203.65/32`, before the existing final reject:
+
+```text
+-s 81.95.203.65/32 -p tcp --dport 8444 -m conntrack --ctstate NEW \
+  -m comment --comment "Remote Session Runner factory-sandbox Dev mTLS Mac source" -j ACCEPT
+```
+
+The rule was saved with `netfilter-persistent save`. Exact pre-change rules
+were preserved at `/etc/iptables/rules.v4.before-simple04-20261018`. The
+existing 8443 rules, QAS route, unrelated firewall entries and services were
+not changed. The public TCP probe then succeeded, and a fresh authenticated
+Runner request through endpoint `factory-sandbox-poc-dev` succeeded:
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Dev direct mTLS work | Key `simple04-20261018-s10-direct-factory-01`; job `job-61b9190dd88d4222370fb17704ec0482`; session `sess-ac5e6a3363ebeb259a1710e9348718ea`; command `cmd-e8be957a7ff618967a1945ec09ffccf5` | `printf "SIMPLE-04 direct factory acceptance\n"`; succeeded, exit 0, complete output, terminal sequence 4, teardown closed |
+| Post-work Dev state | Read-only factory Dev SQLite query and systemd/listener inspection | Four closed sessions/commands/jobs, zero unreleased reservations, no intents; `runnerd-dev.service` and PRD remain active; PRD PID unchanged |
+
+No PRD/QAS port or route was touched. One preliminary Runner attempt used a
+nonexistent local profile name and failed during local profile selection before
+network publication; it accepted no work. The successful attempt used the
+configured `factory-sandbox-poc-dev` endpoint.
+
+#### Mac PRD database-write failure
+
+The inspection used actual unsuffixed Mac LaunchAgent processes and their
+private health sockets. `runner-local` PID `48708` and `runner-locald` PID
+`48627` both used the installed PRD configuration and shared its expected
+SQLite database. The database, WAL and SHM were owned by
+`tomasz.walczuk:staff`, mode `0600`; parent directories were mode `0700`; no
+ACL or file flags were present. `PRAGMA quick_check` returned `ok`, journal mode
+was `wal`, and the volume had about 154 GiB free. Both service processes held
+the DB/WAL/SHM open read-write as the service account. No competing process
+other than the two intended PRD components was found.
+
+At `2026-10-18T07:18:39Z`, sequential GETs of the actual PRD API and locald
+`/health/ready` endpoints both returned HTTP 200, `readiness=ready`, and
+`sqlite_writes=ready` at installed build `77910358a149d6e8fcdf4694498ebdf6c1f07f58`.
+The API retained one pre-existing session slot and had zero command slots,
+queues, intents and backlog. Locald also had one session slot and zero active
+commands, queues, intents and backlog. That slot belongs to retained work and
+was preserved. Locald reported cumulative `storage_errors_total=496` and
+`cleanup_failures_total=1`; the API reported `storage_errors_total=2`. These
+cumulative counters and the earlier health failure remain visible historical
+signals even though current write/readiness checks pass.
+
+Installed code maps a failed `CheckWritable` probe to generic
+`database_write_failed` and does not log the underlying SQLite/OS error. The
+service logs and unified log search contain no raw cause for the earlier
+failure. An out-of-process probe from the restricted tool shell returned
+`SQLITE_READONLY`, but that shell was denied access by its sandbox; it was not
+running as or inside the production service and is not evidence of a service
+permission failure. The actual service write probes succeeded on fresh checks.
+No ownership, permission, WAL/SHM or database change was indicated or applied.
+
+No Mac PRD process was restarted, and its config, binaries, database, WAL/SHM,
+mailbox, retained reservation and held ACKs were not changed. The transient
+`database_write_failed` status is cleared at the live readiness boundary, but
+its original raw SQLite error cannot be identified retrospectively from the
+available logs. This distinction is retained in the evidence; the successful
+service-owned write probes satisfy current PRD readiness without claiming a
+specific historical root cause.
+
+#### SIMPLE-04 closeout
+
+The two S9 blockers are cleared for SIMPLE-04: factory direct authenticated
+acceptance passes after the narrowly scoped host rule, and current Mac PRD
+service readiness/write checks pass without a production change. Mac, Linux,
+sandbox and factory Dev remain on their S9 candidate bytes from synchronized
+source `2204e18ecd6eddc916ffa39e75ac905d3dbe2851`; no candidate rebuild or
+restart was performed for the route change. PRD remains on its pre-existing
+installed version and process identities. Historical failed probes, the
+original retained work/reservation and held ACK are preserved. The cumulative
+Mac locald error/cleanup counters and missing raw cause of the earlier
+transient remain recorded as diagnostic limitations; they did not make the
+fresh service readiness endpoints fail. SIMPLE-04 is PASS, and QAS work may
+begin under SIMPLE-05 with the exact Dev-tested per-host bytes.
