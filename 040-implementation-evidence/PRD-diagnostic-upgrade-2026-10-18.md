@@ -121,3 +121,5 @@ The authorized service restarts, direct SSH access, and owner-reported publisher
 ## Delivery record
 
 This file is an evidence-only change. Candidate source/build revision remains `f117853a9f712e734eab787e648383f5468e719c`; the hashes above remain the frozen Dev/QAS-tested artifact snapshot. Follow the repository delivery chain for this evidence commit: Mac `dev` → primary Gitea → exact GitHub mirror SHA → clean fast-forward on all three Ubuntu Dev checkouts. No PRD action is part of that Git delivery.
+
+The initial evidence commit was `5f1de62a3b036f66f13e872a2716402f85bac2af` on Mac `dev`. `git push origin dev` succeeded to primary Gitea; `git ls-remote origin refs/heads/dev` and `git ls-remote github refs/heads/dev` both returned that exact SHA. `git pull --ff-only origin dev` succeeded on `linux-host`, `sandbox-host`, and `factory-sandbox` using each host's explicit GitHub identity. All three checkouts then reported clean `dev` at `5f1de62a3b036f66f13e872a2716402f85bac2af`. This evidence delivery changed documentation only; the tested source and candidate artifact revision remains `f117853a9f712e734eab787e648383f5468e719c`.
