@@ -1,8 +1,8 @@
 # Detailed design: Factory-style versioned Runner releases
 
-**Status:** selected design, 2026-10-19. CAT-01 source implementation has
-started under the owner's implementation assignment. Live migration remains
-gated by the phased plan and its separate operational approvals.
+**Status:** selected design, 2026-10-19. CAT-01 source, fixture and delivery
+gates have passed under the owner's implementation assignment. CAT-02 selection
+work is next; live migration remains gated by the phased plan and approvals.
 
 ## 1. Authority, scope and current compatibility
 

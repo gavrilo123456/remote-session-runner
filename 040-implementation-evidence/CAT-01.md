@@ -1,6 +1,6 @@
 # CAT-01 — sealed release identity and local catalog publication
 
-**Status: source implemented locally; delivery and native-host validation pending.**
+**Status: CAT-01 source, fixture and delivery gates complete.**
 
 ## Scope
 
@@ -55,6 +55,9 @@ also clean at that exact SHA:
 | Mac | Explicit Go 1.27.1 `gofmt` on changed Go files | PASS |
 | Mac | `make check GO='<explicit Go 1.27.1 binary>'` with the shared repository caches | PASS: all tests, `go vet ./...`, and command smoke checks |
 | Mac | `git diff --check` | PASS after source and documentation edits |
+| `linux-host` | Go 1.27.1 `go test ./src/internal/laneinstall ./src/cmd/runner-lane -run 'TestCatalog|TestSimpleBundle' -count=1` | PASS |
+| `sandbox-host` | Same Go test command with task-owned `GOTMPDIR` under `/home/ubuntu/.cache` | PASS; root retained 996 MB free afterward |
+| `factory-sandbox` | Same Go test command with task-owned `GOTMPDIR` under `/home/ubuntu/.cache` | PASS after the default `/tmp` attempt failed to link with `disk quota exceeded`; `/tmp` was a 476 MB tmpfs with 118 MB free. Root retained 37 GB free. The task-owned temp directory was removed by its shell trap; shared Go cache was preserved. |
 
 Fixture coverage includes exact four-host identity, common source/toolchain,
 schema declarations, wrong platform, missing/foreign components, unsafe
@@ -62,8 +65,8 @@ labels, traversal, exact idempotent import, tampering, unexpected entries,
 symlinked roots, interrupted staging, concurrent conflicting publication, and
 hard-linked executable rejection and sealed file/directory modes. The suite
 printed non-fatal Darwin linker warnings about a duplicate `-lproc`; all tests,
-vet and smoke gates completed successfully. Native Ubuntu-host validation is
-not yet recorded in this initial source entry.
+vet and smoke gates completed successfully. Ubuntu checks are source/fixture
+results only and do not qualify installed Dev/QAS or PRD.
 
 ## Live state and omitted acceptance
 
@@ -77,6 +80,8 @@ mailbox directory counts.
 
 ## Delivery
 
-The CAT-01 source commit, Gitea primary push, exact GitHub mirror SHA, and
-fast-forwarded Ubuntu checkout revisions will be added in the source/closeout
-delivery record before CAT-01 is declared delivered.
+Source commit `b5fa02085887db796e133b86fecb6dc82ab29139` was pushed to Gitea
+`origin/dev`; GitHub `dev` resolved to that exact SHA. The three clean Ubuntu
+`dev` checkouts fast-forwarded from `c2cac5d78dbf48663a83f6cdae9e72050bf90661`
+to the source SHA before their tests. This file is the evidence-only CAT-01
+closeout (`E`); its delivery commit is identified in the final work report.
