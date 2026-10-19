@@ -1,6 +1,6 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-**Status: implementation assigned — 2026-10-19. CAT-01 is complete; CAT-02 source implementation is active.**
+**Status: implementation assigned — 2026-10-19. CAT-01 and CAT-02 are complete; CAT-03 is next.**
 No live publication, installation, selector change or service restart has yet
 occurred; CAT-02 validation currently uses disposable fixtures. Later unit
 operations follow their own prerequisites and approval gates.
@@ -70,10 +70,10 @@ every live, rollback, recovery, backup and incomplete-operation reference.
 ## 3. Ordered units and required outcomes
 
 CAT-01 source, fixture, host source-check and Git-delivery gates are **COMPLETE**.
-CAT-02 source work is **IN PROGRESS**; its tests, host checks and Git delivery
-must pass before closeout. CAT-03 through CAT-07 remain **NOT STARTED** until
-their predecessor gates pass. A unit is accepted only by its recorded evidence
-and required delivery/qualification results.
+CAT-01 and CAT-02 source, fixture, host source-check and Git-delivery gates are
+**COMPLETE**. CAT-03 through CAT-07 remain **NOT STARTED** until predecessor
+gates pass. A unit is accepted only by its recorded evidence and required
+delivery/qualification results.
 
 | Unit | Assigned work | Exit evidence |
 | --- | --- | --- |
