@@ -172,6 +172,32 @@ func TestCatalogHostPreflightReportRetainsEveryRestartInventoryCategory(t *testi
 	}
 }
 
+func TestCatalogSelectorSelectPreservesFailuresAndRejectsEmptySuccess(t *testing.T) {
+	wantErr := errors.New("fixture selector failure")
+	if _, err := runCatalogSelectorSelect(func() (laneinstall.CatalogSelectorOperation, error) {
+		return laneinstall.CatalogSelectorOperation{}, wantErr
+	}); !errors.Is(err, wantErr) {
+		t.Fatalf("selector failure was lost: got %v, want %v", err, wantErr)
+	}
+	if _, err := runCatalogSelectorSelect(func() (laneinstall.CatalogSelectorOperation, error) {
+		return laneinstall.CatalogSelectorOperation{}, nil
+	}); !errors.Is(err, laneinstall.ErrCatalogOperationInvalid) {
+		t.Fatalf("empty successful selector result was accepted: %v", err)
+	}
+
+	want := laneinstall.CatalogSelectorOperation{
+		OperationID: "fixture-selector-operation", HostID: "linux-host",
+		NextTarget:           "/home/ubuntu/projects-runtime/runner-releases/release/linux-host",
+		BackupManifestSHA256: strings.Repeat("a", 64),
+	}
+	got, err := runCatalogSelectorSelect(func() (laneinstall.CatalogSelectorOperation, error) {
+		return want, nil
+	})
+	if err != nil || got != want {
+		t.Fatalf("valid selector result = %+v, err=%v; want %+v", got, err, want)
+	}
+}
+
 func TestCatalogWorkInventoryRejectsPRDAndUnknownHostBeforeReading(t *testing.T) {
 	for _, args := range [][]string{
 		{"--host", "unlisted", "--lane", "dev"},

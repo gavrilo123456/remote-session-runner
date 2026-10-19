@@ -474,24 +474,26 @@ func runCatalogSelectorMaintenance(ctx context.Context, action string, args []st
 		var operation laneinstall.CatalogSelectorOperation
 		switch action {
 		case "catalog-select":
-			receipt, err := laneinstall.ReadCatalogCohortReceipt(plan, *cohortOperationID)
-			if err != nil {
-				return err
-			}
-			var backup laneinstall.CatalogCohortHostPreflight
-			for _, hostPreflight := range receipt.Hosts {
-				if hostPreflight.HostID == *host {
-					backup = hostPreflight
-					break
+			operation, err = runCatalogSelectorSelect(func() (laneinstall.CatalogSelectorOperation, error) {
+				receipt, readErr := laneinstall.ReadCatalogCohortReceipt(plan, *cohortOperationID)
+				if readErr != nil {
+					return laneinstall.CatalogSelectorOperation{}, readErr
 				}
-			}
-			if backup.HostID == "" {
-				return laneinstall.ErrCatalogOperationInvalid
-			}
-			if err := maintenance.UseVerifiedBackup(ctx, backup.BackupDirectory, backup.BackupManifestSHA256); err != nil {
-				return err
-			}
-			operation, err = maintenance.Select(ctx, *releaseID, *expectedTarget, *cohortOperationID, *evidenceSHA)
+				var backup laneinstall.CatalogCohortHostPreflight
+				for _, hostPreflight := range receipt.Hosts {
+					if hostPreflight.HostID == *host {
+						backup = hostPreflight
+						break
+					}
+				}
+				if backup.HostID == "" {
+					return laneinstall.CatalogSelectorOperation{}, laneinstall.ErrCatalogOperationInvalid
+				}
+				if err := maintenance.UseVerifiedBackup(ctx, backup.BackupDirectory, backup.BackupManifestSHA256); err != nil {
+					return laneinstall.CatalogSelectorOperation{}, err
+				}
+				return maintenance.Select(ctx, *releaseID, *expectedTarget, *cohortOperationID, *evidenceSHA)
+			})
 		case "catalog-reconcile":
 			operation, err = maintenance.Reconcile(ctx, *selectorOperationID)
 		case "catalog-rollback":
@@ -514,24 +516,26 @@ func runCatalogSelectorMaintenance(ctx context.Context, action string, args []st
 	var operation laneinstall.CatalogSelectorOperation
 	switch action {
 	case "catalog-select":
-		receipt, err := laneinstall.ReadCatalogCohortReceipt(plan, *cohortOperationID)
-		if err != nil {
-			return err
-		}
-		var backup laneinstall.CatalogCohortHostPreflight
-		for _, hostPreflight := range receipt.Hosts {
-			if hostPreflight.HostID == *host {
-				backup = hostPreflight
-				break
+		operation, err = runCatalogSelectorSelect(func() (laneinstall.CatalogSelectorOperation, error) {
+			receipt, readErr := laneinstall.ReadCatalogCohortReceipt(plan, *cohortOperationID)
+			if readErr != nil {
+				return laneinstall.CatalogSelectorOperation{}, readErr
 			}
-		}
-		if backup.HostID == "" {
-			return laneinstall.ErrCatalogOperationInvalid
-		}
-		if err := maintenance.UseVerifiedBackup(ctx, backup.BackupDirectory, backup.BackupManifestSHA256); err != nil {
-			return err
-		}
-		operation, err = maintenance.Select(ctx, *releaseID, *expectedTarget, *cohortOperationID, *evidenceSHA)
+			var backup laneinstall.CatalogCohortHostPreflight
+			for _, hostPreflight := range receipt.Hosts {
+				if hostPreflight.HostID == *host {
+					backup = hostPreflight
+					break
+				}
+			}
+			if backup.HostID == "" {
+				return laneinstall.CatalogSelectorOperation{}, laneinstall.ErrCatalogOperationInvalid
+			}
+			if err := maintenance.UseVerifiedBackup(ctx, backup.BackupDirectory, backup.BackupManifestSHA256); err != nil {
+				return laneinstall.CatalogSelectorOperation{}, err
+			}
+			return maintenance.Select(ctx, *releaseID, *expectedTarget, *cohortOperationID, *evidenceSHA)
+		})
 	case "catalog-reconcile":
 		operation, err = maintenance.Reconcile(ctx, *selectorOperationID)
 	case "catalog-rollback":
@@ -541,6 +545,20 @@ func runCatalogSelectorMaintenance(ctx context.Context, action string, args []st
 		return err
 	}
 	return writeJSON(stdout, operation)
+}
+
+func runCatalogSelectorSelect(selectOperation func() (laneinstall.CatalogSelectorOperation, error)) (laneinstall.CatalogSelectorOperation, error) {
+	if selectOperation == nil {
+		return laneinstall.CatalogSelectorOperation{}, laneinstall.ErrCatalogOperationInvalid
+	}
+	operation, err := selectOperation()
+	if err != nil {
+		return laneinstall.CatalogSelectorOperation{}, err
+	}
+	if operation.OperationID == "" || operation.HostID == "" || operation.NextTarget == "" || operation.BackupManifestSHA256 == "" {
+		return laneinstall.CatalogSelectorOperation{}, laneinstall.ErrCatalogOperationInvalid
+	}
+	return operation, nil
 }
 
 func runCatalogPRDBackup(ctx context.Context, args []string, stdout, stderr io.Writer) error {
