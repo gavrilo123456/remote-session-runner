@@ -6,6 +6,15 @@ This runbook covers the existing Mac and the existing `linux-host`,
 account and filesystem. The three-lane deployment does not create hosts,
 volumes, accounts, or a production upgrade.
 
+**Selected target design — 2026-10-19:** future versioned releases use the
+[Factory-style catalog](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
+under `~/projects-runtime/runner-releases/` on each host. Each lane keeps its
+own selector and existing configuration/data/mailbox/log/credential paths.
+The [CAT implementation plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md)
+is NOT STARTED; only design and planning were assigned. The commands below
+operate the current legacy layout. Do not manually point them at a catalog
+until their supported migration and selected-lane acceptance are delivered.
+
 ## Fixed lane identities
 
 | Machine | PRD | Dev | QAS | Data/configuration root |
@@ -82,7 +91,9 @@ lane with uncertain or retained work must not be restarted or updated.
 
 ## Inspect and restart one Dev or QAS service
 
-`runner-lane` intentionally accepts only `dev` and `qas`. It derives one
+The ordinary `runner-lane status/start/stop/install/rollback` commands accept
+only `dev` and `qas`. The separate `prd-*` maintenance commands are documented
+in the [PRD runbook](../deploy/PRD_UPGRADE.md). Each route derives one
 canonical host's service identity and has no arbitrary service-name argument.
 Its `stop` and `install` paths verify selected-lane terminal state; use it
 instead of manually stopping a Mac agent or systemd unit.
@@ -168,26 +179,25 @@ Use the analogous `--host` and `--lane` values on Mac or another worker.
 
 ## Stable PRD and production changes
 
-Keep the current unsuffixed PRD binaries, configuration, database, mailboxes,
-ports, and service identities in place. The installed Mac PRD build is
-`77910358a149d6e8fcdf4694498ebdf6c1f07f58`; the three Ubuntu PRD services
-report `2802f00c93eb51a80f23b9380238c309545d6329` in the current acceptance
-snapshot. Recheck live health and build revisions before any operation; this
-snapshot is not a current-health substitute.
+Keep unsuffixed PRD configuration, database, mailbox, port and service identities
+independent of Dev/QAS. Read the live installed revision, health and work
+inventory before an operation; historical SIMPLE and bug evidence is not a
+current-health substitute.
 
-`runner-lane` rejects a PRD lane. Do not pass `prd`, rename an unsuffixed
-service, manually replace its binaries, or treat the legacy source-building
-deployment scripts as promotion of the QAS-tested immutable bundle. A PRD
-upgrade is optional and needs a separate exact maintenance package and owner
-approval. Before it can run, the selected production installer/rollback path
-must preserve the existing config and retained authority, accept the exact
-per-host candidate bytes, prove database compatibility, and have a verified
-rollback. Pause only affected producers, resolve accepted work through
-supported terminal paths, take a consistent backup, then require fresh
-preflight and postflight. The current Mac PRD has one retained session slot;
-its recurring generic claim warnings still need the underlying error
-diagnosed. Neither is cleared by this document or by the Dev/QAS restart
-checks.
+Use the supported separate `runner-lane prd-preflight`, `prd-backup`,
+`prd-stop`, `prd-install`, `prd-migrate`, `prd-start` and `prd-rollback`
+procedure in [PRD_UPGRADE.md](../deploy/PRD_UPGRADE.md). Ordinary Dev/QAS
+`--lane` commands remain closed to PRD. Production accepts only the exact
+QAS-qualified per-host bytes through an approved package with consistent backup,
+compatible rollback, affected-producer disposition and fresh selected-service
+guards. Do not manually replace binaries or substitute a source-building script.
+
+That supported PRD procedure currently uses legacy regular `bin` files. Future
+CAT adoption explicitly changes its selector, launch-path and backup/rollback
+contracts while preserving runtime state. A design update is not permission
+to use unsupported links or to migrate production now. Prior incident results
+and retained-work dispositions stay in their own evidence; no recovery or bug
+closure follows from this runbook change.
 
 ## Resource limits
 

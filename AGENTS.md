@@ -10,9 +10,18 @@ and the active `SIMPLE-01` through `SIMPLE-07` sequence in the phased plan.
 The earlier advanced `LANES-*` rollout and its unmet native F gates are
 superseded/out of scope, not PASS and not prerequisites of the SIMPLE track.
 
+The owner selected Factory-style release-catalog **design and planning only**
+on 2026-10-19. Follow the target
+[catalog design](040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
+and separate CAT-01–CAT-07 plan when that implementation is assigned. Catalogs
+belong under `~/projects-runtime/runner-releases/` on each existing host, with
+independent lane selectors and unchanged writable runtime roots. No current
+installation is migrated by this documentation update; retain existing path
+guards and commands until their supported CAT replacement is delivered.
+
 Use ordinary directories on existing disks and the same existing users.
-Separate each lane's installed binaries, configuration, DB, sockets, mailboxes,
-workspaces, logs, and keys. Keep installed PRD pinned independently of checkout
+Keep each lane's binaries independently selected and separate its configuration,
+DB, sockets, mailboxes, workspaces, logs, and keys. Keep installed PRD pinned independently of checkout
 changes; installers, restarts, upgrades and rollback act only on the selected
 lane. No new volumes, APFS provisioning, cgroup migration, reboot, dedicated
 sshd, root release authority or management bootstrap is assigned. The former

@@ -1,5 +1,13 @@
 # Existing-host PRD upgrade
 
+**Catalog migration is not implemented by this runbook.** The selected
+[Factory-style catalog design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
+and [CAT plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md)
+are design/plan only. The commands below still operate the supported legacy
+regular-file `bin` layout. CAT must deliberately adapt launch paths, selectors,
+guards, backup and rollback before an approved catalog adoption; do not replace
+the current layout with manual symlinks or relocate writable state.
+
 This procedure operates the current unsuffixed PRD instance on one of the four
 canonical machines. It does not select a Dev/QAS namespace, alter service
 definitions or configuration, publish mailbox requests or ACKs, or install a

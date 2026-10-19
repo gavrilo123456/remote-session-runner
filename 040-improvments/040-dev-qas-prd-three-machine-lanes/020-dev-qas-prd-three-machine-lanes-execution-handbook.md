@@ -9,6 +9,15 @@ L0–L7, proof-tier and A01–A10 requirements below. The old tables are histori
 contracts preserved with their code/tests and evidence, not the active work
 queue. Do not provision the withdrawn A01 fixtures or wait for their F gates.
 
+**Catalog alignment — 2026-10-19:** the selected
+[Factory-style release design](../070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
+and [CAT follow-up plan](../070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md)
+place immutable releases under `~/projects-runtime/runner-releases/` on each
+existing host. Each lane owns its own selector and keeps current writable paths.
+Design/plan only is assigned now; CAT implementation and live migration remain
+NOT STARTED. The SIMPLE checklist below describes its delivered/legacy layout
+until migrated. Use CAT evidence for catalog acceptance, not old SIMPLE PASS.
+
 ### Concrete implementation checklist
 
 1. Read `AGENTS.md`, the active profile, active plan, current ledger and evidence
@@ -21,12 +30,14 @@ queue. Do not provision the withdrawn A01 fixtures or wait for their F gates.
    and listener routes. Dev/QAS must derive independent destinations, explicitly
    select their release lane, and reject cross-lane aliases and collisions.
    Keep standard shared Go caches; do not copy or purge them.
-3. On the Mac, install separate copies of the existing component group for
-   each lane, including local/locald; on every Ubuntu worker, install separate
+3. On the Mac, independently select the existing component group for
+   each lane, including local/locald; on every Ubuntu worker, independently select
    `runnerd`, bridge/configuration and state for each lane. Labels/services use
    `-dev`, `-qas`, or no suffix. Files inside a lane root need no repeated
    suffix. Installed executables must not refer to mutable build output in the
    source checkout. Keep every lane's configuration complete and independent.
+   The legacy backend uses separate lane release copies; CAT may share verified
+   immutable catalog bytes on a host, never selectors or writable lane state.
 4. Keep HTTPS PRD `8443`, Dev `8444`, QAS `8445` and the existing SSH listener
    on `22`. Bind each new restricted bridge key to its own fixed installed
    bridge/config/socket. Use distinct lane/host mTLS identities and bindings

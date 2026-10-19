@@ -9,6 +9,14 @@ The revised [plan](015-dev-qas-prd-three-machine-lanes-phased-implementation-pla
 and [handbook](020-dev-qas-prd-three-machine-lanes-execution-handbook.md)
 define its execution and evidence order. This document changes no runtime.
 
+**Release-layout design amendment — 2026-10-19.** The owner selected the
+[Factory-style catalog design](../070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
+and [CAT plan](../070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md)
+for future release storage and selection. This is a design/plan-only assignment.
+CAT implementation and installed migration are NOT STARTED. The runtime roots,
+accounts, routes and service identities below remain unchanged; existing
+installers/layouts remain the supported baseline until migrated through CAT.
+
 ## 1. Result and boundaries
 
 Each worker runs three independent Runner services. Each Mac lane runs its
@@ -42,11 +50,13 @@ Files inside an already separate lane root may retain normal leaf names.
 | Remote HTTPS port, on every worker | `8443` | `8444` | `8445` |
 | Queued SSH listener | existing port `22` | same port `22` | same port `22` |
 
-Every lane has separate installed component binaries, complete configuration,
-SQLite databases and sidecars, private sockets, mailbox roots, workspaces,
+Every lane has independently selected component binaries and separate complete
+configuration, SQLite databases and sidecars, private sockets, mailbox roots, workspaces,
 temporary files, logs, locks and selected release metadata. Mac local/locald
 labels and plist names receive the lane suffix. Other helpers use lane-rooted
-executables and lane-specific process/service/log identities. No database,
+selectors/entrypoints and lane-specific process/service/log identities. The
+target catalog may share immutable bytes on one host when lanes select the
+same release; writable state and selector ownership are never shared. No database,
 socket or writable mailbox is shared or reached through another lane's alias.
 PRD keeps every existing root, producer and route unchanged during Dev/QAS setup.
 
@@ -99,6 +109,22 @@ or hostile-code containment between processes using the same account. It makes
 no guarantee that arbitrary Dev jobs cannot exhaust shared host resources.
 
 ## 5. Build once, test, then promote the same bytes
+
+The target release layout is one catalog per host at
+`~/projects-runtime/runner-releases/<release-id>/`, with a sealed four-host
+`release.json` and that host's native `<host-id>/manifest.json` and `bin/`.
+Mac expands the root to `/Users/tomasz.walczuk/projects-runtime/runner-releases`;
+each Ubuntu worker uses `/home/ubuntu/projects-runtime/runner-releases`.
+Each existing lane root owns an independent `current` selector into its local
+catalog; no global `current` exists. All configuration, DBs, mailboxes, sockets,
+credentials, workspaces, logs and backups retain the existing lane paths.
+
+This is the target for CAT implementation, not a command to repoint an existing
+selector. Current Dev/QAS relative `releases/<digest>` guards and PRD regular
+`bin` guards require explicit migration support. Do not move installed files
+or work around those guards. The CAT design governs publication, validation,
+legacy adoption, launch/bridge adaptation, compatible rollback and retained
+versions; the SIMPLE evidence remains historical evidence for its own layout.
 
 Follow AGENTS.md: Mac source, Gitea primary, verified automatic GitHub mirror,
 then clean fast-forwarded worker checkouts. Build each host's component set once

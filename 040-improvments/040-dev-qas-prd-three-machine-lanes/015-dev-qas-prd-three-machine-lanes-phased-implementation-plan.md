@@ -18,6 +18,16 @@ bootstrap are out of scope. The A01 allocation is withdrawn from this assignment
 Previously blocked or unrun advanced gates remain truthful historical results;
 they are neither PASS nor prerequisites for this simpler rollout.
 
+**Release-catalog design alignment — 2026-10-19.** The owner selected
+[Factory-style versioned releases](../070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
+under `~/projects-runtime/runner-releases/`, with independent per-lane selectors
+and unchanged runtime/configuration/data roots. The separate
+[CAT-01–CAT-07 plan](../070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md)
+now defines that follow-up implementation and legacy migration. This assignment
+updates design/plan only: all CAT units are NOT STARTED and no installation,
+selector, service or database is changed. Existing SIMPLE results are not
+reopened or relabelled as catalog acceptance.
+
 ### Active implementation order
 
 Start with SIMPLE-01; audit and reuse delivered code instead of rebuilding
@@ -40,6 +50,13 @@ unnecessary PRD migration. SIMPLE-07 may close the three-lane setup with the
 original stable PRD still installed and the optional PRD upgrade explicitly
 NOT RUN. Dependent source and deployment steps follow their own predecessors;
 unrelated future access or maintenance inputs do not freeze independent work.
+
+For future catalog work, CAT-01–03 refine the source/installer contracts covered
+by SIMPLE-03; CAT-04/05 repeat Dev/QAS acceptance on the catalog backend;
+CAT-06 carries its own scheduled PRD migration; CAT-07 records catalog operation
+and retained-version recovery. Do not insert these into completed SIMPLE units
+or the superseded LANES sequence. Current supported commands remain usable for
+the legacy layout until CAT supplies and validates their catalog replacement.
 
 ### Active workflow, evidence and operational boundaries
 

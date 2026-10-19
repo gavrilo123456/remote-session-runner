@@ -1,5 +1,16 @@
 # Lane execution ledger
 
+## Selected follow-up — catalog design and plan, 2026-10-19
+
+The owner selected the [Factory-style Runner release catalog design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
+and [CAT-01–CAT-07 plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md).
+The current assignment is documentation only. All CAT units and catalog live
+migrations are **NOT STARTED**; no unit acceptance is implied. Existing SIMPLE
+and historical LANES statuses below remain evidence for their original scope.
+The new target shares immutable host-local catalog bytes through independent
+lane selectors while preserving separate writable runtime roots. Supported
+legacy installations remain unchanged until their CAT migration is delivered.
+
 ## Current assignment — SIMPLE track, 2026-10-17
 
 The owner's latest scope in
