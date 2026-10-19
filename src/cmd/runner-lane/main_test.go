@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -81,6 +83,60 @@ func TestCatalogHostPreflightRejectsInvalidScopeAndMissingCapacityBeforeOperatin
 		if status := run(append([]string{"catalog-host-preflight"}, args...), &stdout, &stderr); status == 0 {
 			t.Errorf("catalog-host-preflight accepted invalid scope or capacity: %v", args)
 		}
+	}
+}
+
+type catalogHostPreflightOrderService struct {
+	events  *[]string
+	stopErr error
+}
+
+func (s catalogHostPreflightOrderService) Status(context.Context, laneinstall.Plan) (bool, error) {
+	return true, nil
+}
+
+func (s catalogHostPreflightOrderService) Stop(context.Context, laneinstall.Plan) error {
+	*s.events = append(*s.events, "stop")
+	return s.stopErr
+}
+
+func TestCatalogHostPreflightStopsBeforeAcquiringLaneMaintenanceLease(t *testing.T) {
+	plan, err := laneinstall.BuildSimplePlan("mac-control-plane", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	service := catalogHostPreflightOrderService{events: &events}
+	beginErr := errors.New("fixture maintenance lease reached")
+	_, err = stopAndBeginCatalogLaneMaintenance(context.Background(), plan, service, func() (*laneinstall.CatalogLaneMaintenance, error) {
+		events = append(events, "begin")
+		return nil, beginErr
+	})
+	if !errors.Is(err, beginErr) {
+		t.Fatalf("maintenance acquisition error=%v, want fixture error", err)
+	}
+	if strings.Join(events, ",") != "stop,begin" {
+		t.Fatalf("maintenance events=%v, want stop before begin", events)
+	}
+}
+
+func TestCatalogHostPreflightStopGuardFailureDoesNotAcquireLaneMaintenanceLease(t *testing.T) {
+	plan, err := laneinstall.BuildSimplePlan("mac-control-plane", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	stopErr := errors.New("fixture stop guard refused")
+	service := catalogHostPreflightOrderService{events: &events, stopErr: stopErr}
+	_, err = stopAndBeginCatalogLaneMaintenance(context.Background(), plan, service, func() (*laneinstall.CatalogLaneMaintenance, error) {
+		events = append(events, "begin")
+		return nil, nil
+	})
+	if !errors.Is(err, stopErr) {
+		t.Fatalf("stop error=%v, want guard failure", err)
+	}
+	if strings.Join(events, ",") != "stop" {
+		t.Fatalf("maintenance events=%v, want no lease attempt after failed guard", events)
 	}
 }
 

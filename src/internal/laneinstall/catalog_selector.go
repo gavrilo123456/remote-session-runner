@@ -283,7 +283,7 @@ func (m *CatalogLaneMaintenance) CohortHostPreflight(ctx context.Context, releas
 		return CatalogCohortHostPreflightReport{}, ErrSimpleBackupRequired
 	}
 	status, err := inspectCatalogSelector(m.layout)
-	if err != nil || status.Target != current {
+	if err != nil || catalogSelectorStatusBundleSHA256(status) != current {
 		return CatalogCohortHostPreflightReport{}, ErrCatalogSelectorConflict
 	}
 	target, err := InspectCatalogRelease(m.layout.catalogRoot, m.layout.hostID, releaseID)
@@ -592,6 +592,18 @@ func simpleCurrentBundleForPlan(plan Plan) (string, error) {
 		return "", err
 	}
 	return bundle.Manifest.BundleSHA256, nil
+}
+
+func catalogSelectorStatusBundleSHA256(status CatalogSelectorStatus) string {
+	switch status.Kind {
+	case "legacy":
+		return status.Bundle.BundleSHA256
+	case "catalog":
+		if status.Release != nil {
+			return status.Release.Identity.BundleSHA256
+		}
+	}
+	return ""
 }
 
 // InspectCatalogSelectorForPlan validates either the supported legacy

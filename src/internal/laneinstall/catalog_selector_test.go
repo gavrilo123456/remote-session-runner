@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,27 @@ type catalogSelectorFixture struct {
 	legacyTarget  string
 	firstRelease  string
 	secondRelease string
+}
+
+func TestCatalogPreflightComparesSelectorBundleIdentityNotSymlinkPayload(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	legacy := CatalogSelectorStatus{
+		Kind: "legacy", Target: "releases/" + digest,
+		Bundle: SimpleBundleManifest{BundleSHA256: digest},
+	}
+	if got := catalogSelectorStatusBundleSHA256(legacy); got != digest {
+		t.Fatalf("legacy selector bundle digest=%q, want %q", got, digest)
+	}
+	catalog := CatalogSelectorStatus{
+		Kind: "catalog", Target: "/home/ubuntu/projects-runtime/runner-releases/cat-20261019-fixture/linux-host",
+		Release: &CatalogReleaseStatus{Identity: CatalogReleaseIdentity{BundleSHA256: digest}},
+	}
+	if got := catalogSelectorStatusBundleSHA256(catalog); got != digest {
+		t.Fatalf("catalog selector bundle digest=%q, want %q", got, digest)
+	}
+	if got := catalogSelectorStatusBundleSHA256(CatalogSelectorStatus{Kind: "catalog"}); got != "" {
+		t.Fatalf("malformed catalog selector bundle digest=%q, want empty", got)
+	}
 }
 
 func newCatalogSelectorFixture(t *testing.T) catalogSelectorFixture {

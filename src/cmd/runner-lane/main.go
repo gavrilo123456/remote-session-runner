@@ -624,7 +624,9 @@ func runCatalogHostPreflight(ctx context.Context, args []string, stdout, stderr 
 	if err != nil {
 		return err
 	}
-	maintenance, err := laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
+	maintenance, err := stopAndBeginCatalogLaneMaintenance(ctx, plan, controller, func() (*laneinstall.CatalogLaneMaintenance, error) {
+		return laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
+	})
 	if err != nil {
 		return err
 	}
@@ -637,6 +639,22 @@ func runCatalogHostPreflight(ctx context.Context, args []string, stdout, stderr 
 		return err
 	}
 	return writeJSON(stdout, preflight)
+}
+
+type catalogHostMaintenanceService interface {
+	laneinstall.SimpleServiceProbe
+	Stop(context.Context, laneinstall.Plan) error
+}
+
+func stopAndBeginCatalogLaneMaintenance(ctx context.Context, plan laneinstall.Plan, service catalogHostMaintenanceService,
+	begin func() (*laneinstall.CatalogLaneMaintenance, error)) (*laneinstall.CatalogLaneMaintenance, error) {
+	if service == nil || begin == nil {
+		return nil, laneinstall.ErrSimpleLanePreflight
+	}
+	if err := service.Stop(ctx, plan); err != nil {
+		return nil, fmt.Errorf("stop selected lane before catalog preflight: %w", err)
+	}
+	return begin()
 }
 
 func runCatalogWorkInventory(ctx context.Context, args []string, stdout, stderr io.Writer) error {
