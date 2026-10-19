@@ -1,9 +1,16 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
 **Status: implementation assigned — 2026-10-19. CAT-01, CAT-02 and CAT-03 source, fixture, host-check and Git-delivery gates are complete; CAT-03 source revision `c381d8efc719a2cc22fc09158f2e6f8c07fccd2b`.**
-No live publication, installation, selector change or service restart has yet
-occurred; CAT-02 validation currently uses disposable fixtures. Later unit
-operations follow their own prerequisites and approval gates.
+CAT-04 is in progress. Candidate `cat-20261019-f0e2843` is sealed and
+published to all four immutable catalogs from source revision
+`f0e2843c5c92874ae817e7653fef01dd1311e5f6`; no selector or service has changed.
+Live Dev activation is held pending verified admission-fence evidence and the
+required installed acceptance. CAT-05 through CAT-07 have not started.
+The sealed candidate is the only live catalog publication so far. No lane
+selector, installed service binary, configuration, database schema, mailbox
+identity or service lifecycle has changed; CAT-02 validation used disposable
+fixtures. Later unit operations follow their own prerequisites and approval
+gates.
 Follow the [idea](005-initial-idea.md) and [detailed design](010-factory-style-runner-releases-detailed-design.md).
 
 ## 1. Relationship to existing work
@@ -74,9 +81,11 @@ gates are **COMPLETE**. CAT-03 closeout evidence is in
 [`CAT-03.md`](../../040-implementation-evidence/CAT-03.md). This does not pass
 or imply any installed Dev/QAS/PRD acceptance. Live migration and cohort
 actions remain separately gated by their acceptance evidence.
-CAT-04 through CAT-07 remain **NOT STARTED** until predecessor gates pass. A
-unit is accepted only by its recorded evidence and required
-delivery/qualification results.
+CAT-04 is **IN PROGRESS**; its candidate publication is not installed
+acceptance; current operational evidence is in
+[`CAT-04.md`](../../040-implementation-evidence/CAT-04.md). CAT-05 through
+CAT-07 remain **NOT STARTED** until predecessor gates pass. A unit is accepted
+only by its recorded evidence and required delivery/qualification results.
 
 | Unit | Assigned work | Exit evidence |
 | --- | --- | --- |
