@@ -61,24 +61,28 @@ type PrivateServerOptions struct {
 	// QueueWake notifies the shared queue worker after durable acceptance. The
 	// private API never starts a command or one-off job itself.
 	QueueWake func()
+	// MaintenanceAdmissionClosed retains read-only health/status access while
+	// rejecting local submissions, cancellations and intent acceptance.
+	MaintenanceAdmissionClosed bool
 }
 
 type PrivateServer struct {
-	authority      *store.AuthorityStore
-	service        *execution.Service
-	owner          domain.ControllerIdentity
-	socketPath     string
-	maxBodyBytes   int64
-	httpServer     *http.Server
-	listener       net.Listener
-	requestGate    *lifecycle.Gate
-	dispatchGate   *lifecycle.Gate
-	cancelRequests context.CancelFunc
-	mu             sync.Mutex
-	closed         bool
-	healthReport   func(context.Context) opshealth.Report
-	thresholds     *opshealth.ThresholdMonitor
-	queueWake      func()
+	authority                  *store.AuthorityStore
+	service                    *execution.Service
+	owner                      domain.ControllerIdentity
+	socketPath                 string
+	maxBodyBytes               int64
+	httpServer                 *http.Server
+	listener                   net.Listener
+	requestGate                *lifecycle.Gate
+	dispatchGate               *lifecycle.Gate
+	cancelRequests             context.CancelFunc
+	mu                         sync.Mutex
+	closed                     bool
+	healthReport               func(context.Context) opshealth.Report
+	thresholds                 *opshealth.ThresholdMonitor
+	queueWake                  func()
+	maintenanceAdmissionClosed bool
 }
 
 func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
@@ -123,7 +127,8 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 			return requestContext
 		}}, requestGate: lifecycle.NewGate(), dispatchGate: dispatchGate,
 		healthReport: options.HealthReport, queueWake: options.QueueWake,
-		cancelRequests: cancelRequests, thresholds: thresholds,
+		maintenanceAdmissionClosed: options.MaintenanceAdmissionClosed,
+		cancelRequests:             cancelRequests, thresholds: thresholds,
 	}, nil
 }
 
@@ -363,6 +368,10 @@ type targetResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	if s.maintenanceAdmissionClosed && request.Method != http.MethodGet {
+		writeJSON(response, http.StatusServiceUnavailable, map[string]string{"code": "maintenance_admission_closed", "message": "local execution mutations are closed for cohort maintenance"})
+		return
+	}
 	release, err := s.requestGate.Enter()
 	if err != nil {
 		writePrivateError(response, http.StatusServiceUnavailable, "runner-locald is shutting down")

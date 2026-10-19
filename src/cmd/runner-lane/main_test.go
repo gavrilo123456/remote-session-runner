@@ -119,7 +119,7 @@ func TestCatalogManifestCommandSealsFourPerHostMetadataFiles(t *testing.T) {
 	}
 }
 
-func TestCatalogStatusRejectsWrongHostAndProductionLaneBeforeReadingSelectors(t *testing.T) {
+func TestCatalogStatusRejectsWrongHostAndInvalidLaneBeforeReadingSelectors(t *testing.T) {
 	wrongHost := "mac-control-plane"
 	currentHost := "linux-host"
 	switch runtime.GOOS {
@@ -135,7 +135,7 @@ func TestCatalogStatusRejectsWrongHostAndProductionLaneBeforeReadingSelectors(t 
 
 	for _, args := range [][]string{
 		{"--host", wrongHost, "--lane", "dev"},
-		{"--host", currentHost, "--lane", "prd"},
+		{"--host", currentHost, "--lane", "invalid"},
 		{"--host", currentHost, "--lane", "dev", "unexpected"},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -144,6 +144,32 @@ func TestCatalogStatusRejectsWrongHostAndProductionLaneBeforeReadingSelectors(t 
 		}
 		if stdout.Len() != 0 {
 			t.Errorf("catalog-status emitted a status before rejecting %v: %s", args, stdout.String())
+		}
+	}
+}
+
+func TestCatalogAdoptRejectsWrongHostAndProductionLaneBeforeCopying(t *testing.T) {
+	wrongHost, currentHost := "mac-control-plane", "linux-host"
+	switch runtime.GOOS {
+	case "darwin":
+		wrongHost, currentHost = "linux-host", "mac-control-plane"
+	case "linux":
+		if runtime.GOARCH == "arm64" {
+			wrongHost, currentHost = "mac-control-plane", "sandbox-host"
+		}
+	default:
+		t.Skip("catalog host mapping is defined for the supported Mac and Ubuntu platforms")
+	}
+	for _, args := range [][]string{
+		{"--host", wrongHost, "--lane", "dev", "--output-dir", "/private/tmp/catalog-adoption-test"},
+		{"--host", currentHost, "--lane", "prd", "--output-dir", "/private/tmp/catalog-adoption-test"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := runCatalogAdopt(args, &stdout, &stderr); err == nil {
+			t.Errorf("catalog-adopt accepted unsafe arguments %v", args)
+		}
+		if stdout.Len() != 0 {
+			t.Errorf("catalog-adopt emitted a manifest before rejecting %v", args)
 		}
 	}
 }

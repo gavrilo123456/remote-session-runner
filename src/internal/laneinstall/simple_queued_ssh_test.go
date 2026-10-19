@@ -23,7 +23,7 @@ func TestSimpleQueuedSSHUsesExistingPort22AndLaneBoundForcedCommand(t *testing.T
 				t.Fatalf("simple queued route is not bound to the existing listener: %+v", plan)
 			}
 			wrapper := plan.LinuxArtifacts[0].Contents
-			for _, required := range []string{"runner-ssh-bridge --stdio", "SSH_ORIGINAL_COMMAND", "SSH_TTY", "--authenticated-key", plan.ControllerMapPath, "--runnerd-socket", "current/bin/runner-ssh-bridge"} {
+			for _, required := range []string{"runner-ssh-bridge --stdio", "SSH_ORIGINAL_COMMAND", "SSH_TTY", "--authenticated-key", plan.ControllerMapPath, "--runnerd-socket", "current/bin/runner-ssh-bridge", "--catalog-host", host, "--catalog-lane", string(lane)} {
 				if !strings.Contains(wrapper, required) {
 					t.Errorf("%s/%s forced wrapper omits %q", host, lane, required)
 				}

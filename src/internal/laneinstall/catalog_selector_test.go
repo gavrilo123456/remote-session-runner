@@ -393,3 +393,58 @@ func TestCatalogSelectorRejectsWrongHostAndProductionLane(t *testing.T) {
 		t.Fatalf("selector accepted a bundle for another host: %v", err)
 	}
 }
+
+func TestCatalogExecutablePathMustMatchExactSelectedComponent(t *testing.T) {
+	fixture := newCatalogSelectorFixture(t)
+	selectedBundle := filepath.Join(fixture.catalogRoot, fixture.firstRelease, "linux-host")
+	selectedRunner := filepath.Join(selectedBundle, "bin", "runnerd")
+	if err := validateCatalogExecutablePath(selectedRunner, selectedRunner); err != nil {
+		t.Fatalf("selected catalog component path rejected: %v", err)
+	}
+	otherComponent := filepath.Join(selectedBundle, "bin", "runner-ssh-bridge")
+	if err := validateCatalogExecutablePath(selectedRunner, otherComponent); !errors.Is(err, ErrInvalidCatalogRelease) {
+		t.Fatalf("catalog accepted a different component as runnerd: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "runnerd")
+	if err := os.Symlink(otherComponent, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCatalogExecutablePath(selectedRunner, alias); !errors.Is(err, ErrInvalidCatalogRelease) {
+		t.Fatalf("catalog accepted an executable alias outside the selected component: %v", err)
+	}
+}
+
+func TestCatalogLegacyAdoptionCopiesVerifiedSelectedBundleWithoutLinksOrSwitching(t *testing.T) {
+	fixture := newCatalogSelectorFixture(t)
+	destination := filepath.Join(filepath.Dir(fixture.layout.serviceRoot), "adopted-legacy-bundle")
+	manifest, err := copySelectedLegacyBundle(fixture.layout, destination)
+	if err != nil || manifest.HostID != "linux-host" || manifest.BundleSHA256 != filepath.Base(fixture.legacyTarget) {
+		t.Fatalf("legacy adoption manifest=%+v err=%v", manifest, err)
+	}
+	loaded, err := LoadSimpleBundleDirectory(destination)
+	if err != nil || loaded.Manifest.BundleSHA256 != manifest.BundleSHA256 {
+		t.Fatalf("copied legacy bundle failed verification: bundle=%+v err=%v", loaded.Manifest, err)
+	}
+	sourceInfo, sourceErr := os.Stat(filepath.Join(fixture.layout.serviceRoot, fixture.legacyTarget, "bin", "runnerd"))
+	destinationInfo, destinationErr := os.Stat(filepath.Join(destination, "bin", "runnerd"))
+	if sourceErr != nil || destinationErr != nil || os.SameFile(sourceInfo, destinationInfo) {
+		t.Fatalf("adoption hard-linked source or could not inspect copy: source=%v destination=%v errors=%v/%v", sourceInfo, destinationInfo, sourceErr, destinationErr)
+	}
+	status, err := inspectCatalogSelector(fixture.layout)
+	if err != nil || status.Target != fixture.legacyTarget || status.Kind != "legacy" {
+		t.Fatalf("adoption changed installed selector: status=%+v err=%v", status, err)
+	}
+	if _, err := copySelectedLegacyBundle(fixture.layout, destination); err != nil {
+		t.Fatalf("exact idempotent adoption copy failed: %v", err)
+	}
+	if _, err := copySelectedLegacyBundle(fixture.layout, filepath.Join(fixture.layout.serviceRoot, "staging", "unsafe")); !errors.Is(err, ErrInvalidCatalogRelease) {
+		t.Fatalf("adoption wrote inside mutable lane state: %v", err)
+	}
+	backup := fixtureCatalogBackup(t, fixture.layout, fixture.legacyTarget, store.CurrentSchemaVersion)
+	if _, err := selectCatalogReleaseAt(fixture.layout, fixture.firstRelease, fixture.legacyTarget, store.CurrentSchemaVersion, backup, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := copySelectedLegacyBundle(fixture.layout, filepath.Join(filepath.Dir(fixture.layout.serviceRoot), "adopt-after-switch")); !errors.Is(err, ErrCatalogLegacyBundleUnavailable) {
+		t.Fatalf("catalog-selected lane was accepted as a legacy source: %v", err)
+	}
+}

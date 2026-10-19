@@ -13,6 +13,7 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/queueworker"
@@ -98,6 +99,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runner-locald: Mac host configuration is required")
 		return 1
 	}
+	executable, executableErr := os.Executable()
+	if executableErr != nil || laneinstall.ValidateConfiguredCatalogExecutable(loaded, "runner-locald", executable) != nil {
+		fmt.Fprintln(stderr, "runner-locald: running binary does not match the validated lane catalog selector")
+		return 78
+	}
+	maintenanceHeld := false
+	if plan, catalogManaged, planErr := laneinstall.CatalogPlanFromConfiguration(loaded); planErr != nil {
+		fmt.Fprintln(stderr, "runner-locald: catalog lane identity is invalid")
+		return 78
+	} else if catalogManaged {
+		maintenanceHeld, _, err = laneinstall.CatalogCohortAdmissionHeld(plan)
+		if err != nil {
+			fmt.Fprintln(stderr, "runner-locald: catalog cohort receipt is invalid; refusing work admission")
+			return 78
+		}
+	}
 	releaseLifecycleLock, err := acquireRunnerLocaldLifecycleLock(settings.ServiceRoot)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: %v\n", err)
@@ -105,7 +122,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer releaseLifecycleLock()
 	ctx := context.Background()
-	authorityDB, err := store.Open(ctx, settings.Database)
+	openAuthority := store.Open
+	if maintenanceHeld {
+		// A catalog maintenance start must never migrate production state as a
+		// side effect of starting the held candidate.
+		openAuthority = store.OpenExistingCurrent
+	}
+	authorityDB, err := openAuthority(ctx, settings.Database)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: open authority database: %v\n", err)
 		return 1
@@ -130,10 +153,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runner-locald: construct execution service: %v\n", err)
 		return 1
 	}
-	reconciliation, controlledRestart, err := service.ReconcileStartupWithControlledRestartPlan(ctx)
-	if err != nil {
-		fmt.Fprintf(stderr, "runner-locald: startup runtime reconciliation: %v\n", err)
-		return 1
+	var reconciliation execution.StartupReconciliationReport
+	var controlledRestart execution.ControlledRestartStartup
+	if !maintenanceHeld {
+		reconciliation, controlledRestart, err = service.ReconcileStartupWithControlledRestartPlan(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "runner-locald: startup runtime reconciliation: %v\n", err)
+			return 1
+		}
 	}
 	slog.Info("runner-locald startup reconciliation complete",
 		"sessions_inspected", reconciliation.SessionsInspected,
@@ -151,6 +178,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		)
 	}
 	dispatchGate := lifecycle.NewGate()
+	if maintenanceHeld {
+		dispatchGate.Stop()
+	}
 	worker, err := queueworker.New(queueworker.Options{
 		Service: service, Authority: authority, DispatchGate: dispatchGate,
 	})
@@ -164,9 +194,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	thresholds := opshealth.NewThresholdMonitor()
+	var queueWake func()
+	if !maintenanceHeld {
+		queueWake = worker.Wake
+	}
 	server, err := NewPrivateServer(PrivateServerOptions{
 		Authority: authority, Service: service, Owner: owner, SocketPath: settings.LocalDSocket,
-		Thresholds: thresholds, DispatchGate: dispatchGate, QueueWake: worker.Wake,
+		Thresholds: thresholds, DispatchGate: dispatchGate, QueueWake: queueWake,
+		MaintenanceAdmissionClosed: maintenanceHeld,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: construct private API: %v\n", err)
@@ -185,18 +220,24 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runner-locald: configure shutdown: %v\n", err)
 		return 1
 	}
-	if err := worker.RecoverNonterminalJobs(signalContext); err != nil {
-		shutdownErr := coordinator.Shutdown(context.Background())
-		stop()
-		fmt.Fprintf(stderr, "runner-locald: recover queued jobs after startup reconciliation: %v\n", errors.Join(err, shutdownErr))
-		return 1
+	if !maintenanceHeld {
+		if err := worker.RecoverNonterminalJobs(signalContext); err != nil {
+			shutdownErr := coordinator.Shutdown(context.Background())
+			stop()
+			fmt.Fprintf(stderr, "runner-locald: recover queued jobs after startup reconciliation: %v\n", errors.Join(err, shutdownErr))
+			return 1
+		}
+		worker.Start(signalContext)
 	}
-	worker.Start(signalContext)
 	policyEnforcerDone := make(chan struct{})
-	go func() {
-		defer close(policyEnforcerDone)
-		enforceMacLocalPolicies(signalContext, service, macPolicySweepInterval)
-	}()
+	if maintenanceHeld {
+		close(policyEnforcerDone)
+	} else {
+		go func() {
+			defer close(policyEnforcerDone)
+			enforceMacLocalPolicies(signalContext, service, macPolicySweepInterval)
+		}()
+	}
 	metricsObserverDone := make(chan struct{})
 	go func() {
 		defer close(metricsObserverDone)

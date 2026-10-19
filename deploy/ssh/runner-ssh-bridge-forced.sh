@@ -5,6 +5,8 @@ set -eu
 # Linux service root. It is invoked by the fixed authorized_keys command and
 # never evaluates SSH_ORIGINAL_COMMAND as shell text.
 BRIDGE_BIN="/home/ubuntu/.local/share/remote-session-runner/bin/runner-ssh-bridge"
+SERVICE_ROOT="/home/ubuntu/.local/share/remote-session-runner"
+service_root="$SERVICE_ROOT"
 CONTROLLER_MAP="/home/ubuntu/.local/share/remote-session-runner/config/ssh-controller-map.yaml"
 RUNNERD_SOCKET="/home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock"
 EXPECTED_COMMAND="runner-ssh-bridge --stdio"
@@ -33,6 +35,15 @@ if [ "${SSH_ORIGINAL_COMMAND-}" != "$EXPECTED_COMMAND" ]; then
 fi
 if [ -n "${SSH_TTY-}" ]; then
 	printf '%s\n' 'runner SSH bridge: PTY is not permitted' >&2
+	exit 126
+fi
+
+# This legacy fixed-path wrapper cannot infer which of the three Linux host
+# identities the catalog selector belongs to. Fail closed so it never runs a
+# stale PRD bridge from bin after a catalog migration. Catalog migrations
+# install a host-bound wrapper from the accepted release tooling.
+if [ -e "$service_root/current" ] || [ -L "$service_root/current" ]; then
+	printf '%s\n' 'runner SSH bridge: legacy wrapper is disabled for catalog-selected PRD' >&2
 	exit 126
 fi
 

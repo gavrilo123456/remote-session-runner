@@ -20,6 +20,7 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/dispatcher"
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/localapi"
 	"remote-session-runner/src/internal/mailbox"
@@ -68,11 +69,33 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runner-local: --config is required")
 		return 2
 	}
-	service, err := New(*configPath)
+	loaded, err := config.LoadFile(*configPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "runner-local: configuration is invalid")
+		return 1
+	}
+	executable, executableErr := os.Executable()
+	if executableErr != nil || laneinstall.ValidateConfiguredCatalogExecutable(loaded, "runner-local", executable) != nil {
+		fmt.Fprintln(stderr, "runner-local: running binary does not match the validated lane catalog selector")
+		return 78
+	}
+	maintenanceHeld := false
+	if plan, catalogManaged, planErr := laneinstall.CatalogPlanFromConfiguration(loaded); planErr != nil {
+		fmt.Fprintln(stderr, "runner-local: catalog lane identity is invalid")
+		return 78
+	} else if catalogManaged {
+		maintenanceHeld, _, err = laneinstall.CatalogCohortAdmissionHeld(plan)
+		if err != nil {
+			fmt.Fprintln(stderr, "runner-local: catalog cohort receipt is invalid; refusing work admission")
+			return 78
+		}
+	}
+	service, err := newService(*configPath, maintenanceHeld)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-local: configure service: %v\n", err)
 		return 1
 	}
+	service.maintenanceHeld = maintenanceHeld
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := service.Serve(ctx, stdout, stderr); err != nil {
@@ -255,6 +278,7 @@ type Service struct {
 	remoteProbe                  func(context.Context) map[string]error
 	metricsRecorder              *opshealth.Recorder
 	thresholds                   *opshealth.ThresholdMonitor
+	maintenanceHeld              bool
 	remoteProjectionFreshnessMu  sync.Mutex
 	remoteProjectionFreshnessSet bool
 	remoteReconcileMu            sync.Mutex
@@ -289,21 +313,40 @@ type mailboxRuntime struct {
 // secret-file contents. Mailbox paths stay untouched until Serve has made the
 // configured set durable.
 func New(configPath string) (*Service, error) {
+	return newService(configPath, false)
+}
+
+func newService(configPath string, maintenanceHeld bool) (*Service, error) {
 	loaded, settings, mailboxDefinitions, err := loadSelectedMacConfig(configPath)
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureMacServiceRoot(settings.ServiceRoot); err != nil {
+	if maintenanceHeld {
+		err = validateMacServiceRoot(settings.ServiceRoot)
+	} else {
+		err = ensureMacServiceRoot(settings.ServiceRoot)
+	}
+	if err != nil {
 		return nil, err
 	}
 	// Open only the existing state directory before validating that this
 	// configuration has not removed an inbox with durable work. The complete
 	// configured mailbox tree is not created during construction.
-	if err := ensureOwnedDirectoryUnder(settings.ServiceRoot, filepath.Dir(settings.Database)); err != nil {
+	if maintenanceHeld {
+		err = validateExistingOwnedDirectoryUnder(settings.ServiceRoot, filepath.Dir(settings.Database))
+	} else {
+		err = ensureOwnedDirectoryUnder(settings.ServiceRoot, filepath.Dir(settings.Database))
+	}
+	if err != nil {
 		return nil, err
 	}
 	ctx := context.Background()
-	db, err := store.Open(ctx, settings.Database)
+	openAuthority := store.Open
+	if maintenanceHeld {
+		// Starting a held catalog candidate must not migrate the live database.
+		openAuthority = store.OpenExistingCurrent
+	}
+	db, err := openAuthority(ctx, settings.Database)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errMacDatabaseNotReady, err)
 	}
@@ -320,7 +363,12 @@ func New(configPath string) (*Service, error) {
 	if err := validateConfiguredMailboxWork(ctx, authority, mailboxDefinitions); err != nil {
 		return nil, fmt.Errorf("validate configured mailbox work: %w", err)
 	}
-	if err := ensureMacBaseServicePaths(settings); err != nil {
+	if maintenanceHeld {
+		err = validateMacBaseServicePaths(settings)
+	} else {
+		err = ensureMacBaseServicePaths(settings)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if err := validateConfiguredMailboxDirectories(settings, mailboxRoots(mailboxDefinitions)...); err != nil {
@@ -382,6 +430,22 @@ func New(configPath string) (*Service, error) {
 	}
 	closeOnError = false
 	return service, nil
+}
+
+func validateMacBaseServicePaths(settings config.MacSettings) error {
+	paths := []string{
+		filepath.Join(settings.ServiceRoot, "bin"), filepath.Join(settings.ServiceRoot, "config"),
+		filepath.Join(settings.ServiceRoot, "logs"), filepath.Dir(settings.APISocket),
+		filepath.Dir(settings.LocalDSocket), filepath.Dir(settings.Database),
+		settings.Workspaces, settings.ScriptTempRoot, settings.Backups,
+		filepath.Join(settings.ServiceRoot, "secrets"),
+	}
+	for _, path := range paths {
+		if err := validateExistingOwnedDirectoryUnder(settings.ServiceRoot, path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // loadSelectedMacConfig validates the selected owner-only document and
@@ -664,6 +728,10 @@ func (s *Service) Serve(ctx context.Context, stdout, stderr io.Writer) (returnEr
 	workerContext, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 	dispatchGate := lifecycle.NewGate()
+	if s.maintenanceHeld {
+		dispatchGate.Stop()
+		s.api.SetMaintenanceAdmissionClosed(true)
+	}
 	stopCycles := make(chan struct{})
 	var stopCyclesOnce sync.Once
 	if err := s.api.Listen(); err != nil {
@@ -672,22 +740,28 @@ func (s *Service) Serve(ctx context.Context, stdout, stderr io.Writer) (returnEr
 	// Reserve the API socket before changing the durable mailbox registry. A
 	// direct/manual start that loses this ownership race must not expose a new
 	// mailbox tree to the still-running prior service.
-	if err := s.activateAndPrepareMailboxRuntimes(ctx); err != nil {
-		_ = s.api.Close(context.Background())
-		return fmt.Errorf("activate configured mailbox set: %w", err)
-	}
-	if err := s.initializeRemoteProjectionFreshness(ctx); err != nil {
-		_ = s.api.Close(context.Background())
-		return fmt.Errorf("initialize remote projection freshness: %w", err)
+	if !s.maintenanceHeld {
+		if err := s.activateAndPrepareMailboxRuntimes(ctx); err != nil {
+			_ = s.api.Close(context.Background())
+			return fmt.Errorf("activate configured mailbox set: %w", err)
+		}
+		if err := s.initializeRemoteProjectionFreshness(ctx); err != nil {
+			_ = s.api.Close(context.Background())
+			return fmt.Errorf("initialize remote projection freshness: %w", err)
+		}
 	}
 	fmt.Fprintf(stdout, "runner-local listening on %s\n", s.api.SocketPath())
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- s.api.Serve() }()
 	workersDone := make(chan struct{})
-	go func() {
-		defer close(workersDone)
-		s.runWorkers(workerContext, stopCycles, dispatchGate, stderr)
-	}()
+	if s.maintenanceHeld {
+		close(workersDone)
+	} else {
+		go func() {
+			defer close(workersDone)
+			s.runWorkers(workerContext, stopCycles, dispatchGate, stderr)
+		}()
+	}
 	hooks := &macIngressShutdown{
 		api: s.api, dispatchGate: dispatchGate, stopCycles: stopCycles,
 		stopCyclesOnce: &stopCyclesOnce, cancelWorkers: cancelWorkers,

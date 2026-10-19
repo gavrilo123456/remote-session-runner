@@ -97,3 +97,32 @@ func TestSimplePlanRejectsPRDAndUnknownHosts(t *testing.T) {
 		}
 	}
 }
+
+func TestGeneratedLinuxEntrypointAcceptsOnlyCanonicalLegacyOrCatalogSelectors(t *testing.T) {
+	for _, host := range []string{"linux-host", "sandbox-host", "factory-sandbox"} {
+		plan, err := BuildSimplePlan(host, config.ReleaseLaneDev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entrypoint := plan.Artifacts[0].Contents
+		for _, required := range []string{
+			"catalog_root='/home/ubuntu/projects-runtime/runner-releases'",
+			"selected_host='" + host + "'",
+			"releases/*)",
+			"\"$catalog_root/\"*)",
+			"host_suffix=",
+			"$catalog_root/$release_id/$selected_host",
+			"check_sealed_directory",
+			"case \"$release_id\" in",
+			"dev|qas|prd|latest|current",
+			"runnerd: lane service path is not ready",
+		} {
+			if !strings.Contains(entrypoint, required) {
+				t.Errorf("%s entrypoint is missing catalog selector guard %q", host, required)
+			}
+		}
+		if strings.Contains(entrypoint, "eval ") || strings.Contains(entrypoint, "source ") {
+			t.Errorf("%s entrypoint evaluates selector-controlled text: %s", host, entrypoint)
+		}
+	}
+}

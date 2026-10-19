@@ -1,8 +1,10 @@
 # Detailed design: Factory-style versioned Runner releases
 
-**Status:** selected design, 2026-10-19. CAT-01 source, fixture and delivery
-gates have passed under the owner's implementation assignment. CAT-02 selection
-work is next; live migration remains gated by the phased plan and approvals.
+**Status:** selected design, 2026-10-19. CAT-01 and CAT-02 source, fixture,
+host-check and delivery gates have passed under the owner's implementation
+assignment. CAT-03 source implementation and Mac source gates are complete;
+Ubuntu validation and delivery are in progress. Live migration remains gated by
+the phased plan and its required acceptance evidence.
 
 ## 1. Authority, scope and current compatibility
 
@@ -279,5 +281,6 @@ fixed queued bridges, configured Mac-local execution, timeouts/output/teardown,
 lane isolation and unchanged peer configuration/state. Production migration,
 normal-load observation and source tests are separate evidence claims.
 The [CAT plan](015-factory-style-runner-releases-phased-implementation-plan.md)
-defines completion order. Source implementation is active; live operations
+defines completion order. CAT-03 source implementation is complete on Mac;
+Ubuntu validation and delivery remain in progress. Live operations
 remain individually gated and CAT-06 PRD migration requires separate approval.

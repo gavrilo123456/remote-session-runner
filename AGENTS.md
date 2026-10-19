@@ -13,7 +13,7 @@ superseded/out of scope, not PASS and not prerequisites of the SIMPLE track.
 The owner assigned Factory-style release-catalog implementation CAT-01 through
 CAT-07 on 2026-10-19. CAT-01 source, fixture, host source-check and delivery
 gates are complete; CAT-03 legacy adoption, launcher and cohort integration is
-next. Dev/QAS candidate actions follow their unit prerequisites, and CAT-06
+active. Dev/QAS candidate actions follow their unit prerequisites, and CAT-06
 PRD migration requires separate owner approval.
 Follow the target
 [catalog design](040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)

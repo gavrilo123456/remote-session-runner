@@ -16,13 +16,14 @@ import (
 // linuxShutdownHooks adapts runnerd's two ingress paths and shared execution
 // service to the process-independent shutdown coordinator.
 type linuxShutdownHooks struct {
-	private       *PrivateServer
-	https         *DirectHTTPSServer
-	service       *execution.Service
-	authority     *store.AuthorityStore
-	requestGate   *lifecycle.Gate
-	dispatchGate  *lifecycle.Gate
-	stopAcceptErr error
+	private            *PrivateServer
+	https              *DirectHTTPSServer
+	service            *execution.Service
+	authority          *store.AuthorityStore
+	requestGate        *lifecycle.Gate
+	privateRequestGate *lifecycle.Gate
+	dispatchGate       *lifecycle.Gate
+	stopAcceptErr      error
 }
 
 func (h *linuxShutdownHooks) StopAccepting() {
@@ -31,6 +32,9 @@ func (h *linuxShutdownHooks) StopAccepting() {
 	}
 	if h.requestGate != nil {
 		h.requestGate.Stop()
+	}
+	if privateGate := h.privateGate(); privateGate != nil && privateGate != h.requestGate {
+		privateGate.Stop()
 	}
 	h.stopAcceptErr = errors.Join(h.private.StopAccepting(), h.https.StopAccepting())
 }
@@ -42,11 +46,14 @@ func (h *linuxShutdownHooks) StopDispatch() {
 }
 
 func (h *linuxShutdownHooks) Drain(ctx context.Context) error {
-	if h == nil || h.private == nil || h.https == nil || h.service == nil || h.authority == nil || h.requestGate == nil || h.dispatchGate == nil {
+	if h == nil || h.private == nil || h.https == nil || h.service == nil || h.authority == nil || h.requestGate == nil || h.privateGate() == nil || h.dispatchGate == nil {
 		return errors.New("runnerd shutdown is not configured")
 	}
 	if err := h.requestGate.Wait(ctx); err != nil {
 		return errors.Join(h.stopAcceptErr, fmt.Errorf("drain accepted runnerd requests: %w", err))
+	}
+	if err := h.privateGate().Wait(ctx); err != nil {
+		return errors.Join(h.stopAcceptErr, fmt.Errorf("drain accepted private runnerd requests: %w", err))
 	}
 	if err := h.dispatchGate.Wait(ctx); err != nil {
 		return errors.Join(h.stopAcceptErr, fmt.Errorf("drain accepted runnerd commands: %w", err))
@@ -55,13 +62,27 @@ func (h *linuxShutdownHooks) Drain(ctx context.Context) error {
 }
 
 func (h *linuxShutdownHooks) CancelRemaining(ctx context.Context) error {
-	if h == nil || h.service == nil || h.authority == nil || h.requestGate == nil || h.dispatchGate == nil {
+	if h == nil || h.service == nil || h.authority == nil || h.requestGate == nil || h.privateGate() == nil || h.dispatchGate == nil {
 		return errors.New("runnerd shutdown is not configured")
 	}
 	closeErr := h.closeActiveSessions(ctx)
 	requestErr := h.requestGate.Wait(ctx)
+	privateRequestErr := h.privateGate().Wait(ctx)
 	dispatchErr := h.dispatchGate.Wait(ctx)
-	return errors.Join(closeErr, requestErr, dispatchErr)
+	return errors.Join(closeErr, requestErr, privateRequestErr, dispatchErr)
+}
+
+func (h *linuxShutdownHooks) privateGate() *lifecycle.Gate {
+	if h == nil {
+		return nil
+	}
+	if h.privateRequestGate != nil {
+		return h.privateRequestGate
+	}
+	// Older embedders and isolated tests share the request gate between the
+	// private and direct ingress paths. The production constructor supplies
+	// separate gates when cohort maintenance admission is enabled.
+	return h.requestGate
 }
 
 func (h *linuxShutdownHooks) Flush(ctx context.Context) error {

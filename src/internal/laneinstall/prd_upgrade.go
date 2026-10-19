@@ -29,6 +29,7 @@ const prdUpgradeBackupFormat = 1
 var (
 	ErrInvalidPRDUpgradePlan = errors.New("invalid fixed PRD upgrade plan")
 	ErrPRDUpgradeGuard       = errors.New("PRD upgrade guard refused the operation")
+	ErrPRDCatalogManaged     = errors.New("legacy PRD installer cannot modify a catalog-managed service")
 	prdDigestPattern         = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
@@ -91,14 +92,21 @@ type PRDBackupReceipt struct {
 	Manifest  PRDBackupManifest
 }
 
+// PRDBackupManifestSHA256 returns the digest of the exact canonical manifest
+// inside a verified host-local PRD backup directory.
+func PRDBackupManifestSHA256(directory string) string { return backupManifestSHA256(directory) }
+
 type PRDPreflight struct {
-	HostID            string            `json:"host_id"`
-	ServiceActive     bool              `json:"service_active"`
-	SchemaVersion     int               `json:"schema_version"`
-	ConfigSHA256      string            `json:"config_sha256"`
-	BinarySHA256      map[string]string `json:"binary_sha256"`
-	MissingComponents []string          `json:"missing_candidate_components,omitempty"`
-	Work              PRDWorkInventory  `json:"work_inventory"`
+	HostID             string            `json:"host_id"`
+	ServiceActive      bool              `json:"service_active"`
+	SchemaVersion      int               `json:"schema_version"`
+	ConfigSHA256       string            `json:"config_sha256"`
+	BinarySHA256       map[string]string `json:"binary_sha256"`
+	LegacyBundleSHA256 string            `json:"legacy_bundle_sha256,omitempty"`
+	AvailableBytes     uint64            `json:"available_bytes,omitempty"`
+	RequiredBytes      uint64            `json:"required_bytes,omitempty"`
+	MissingComponents  []string          `json:"missing_candidate_components,omitempty"`
+	Work               PRDWorkInventory  `json:"work_inventory"`
 }
 
 // ReadPRDPreflight reports service, schema, artifact and durable-work facts
@@ -106,6 +114,9 @@ type PRDPreflight struct {
 func ReadPRDPreflight(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe) (PRDPreflight, error) {
 	if validatePRDPlan(plan) != nil || service == nil {
 		return PRDPreflight{}, ErrInvalidPRDUpgradePlan
+	}
+	if err := refuseLegacyPRDMutationForCatalog(plan); err != nil {
+		return PRDPreflight{}, err
 	}
 	active, err := service.Status(ctx, plan)
 	if err != nil {
@@ -151,7 +162,19 @@ func ReadPRDPreflight(ctx context.Context, plan PRDUpgradePlan, service PRDServi
 			missing = append(missing, name)
 		}
 	}
-	return PRDPreflight{HostID: plan.HostID, ServiceActive: active, SchemaVersion: schema, ConfigSHA256: configSHA, BinarySHA256: binaries, MissingComponents: missing, Work: work}, nil
+	preflight := PRDPreflight{HostID: plan.HostID, ServiceActive: active, SchemaVersion: schema, ConfigSHA256: configSHA,
+		BinarySHA256: binaries, MissingComponents: missing, Work: work}
+	if len(missing) == 0 {
+		preflight.LegacyBundleSHA256, err = PRDLegacyBundleDigest(preflight)
+		if err != nil {
+			return PRDPreflight{}, err
+		}
+	}
+	preflight.AvailableBytes, preflight.RequiredBytes, err = measurePRDBackupCapacity(plan, plan.Namespace.Database)
+	if err != nil {
+		return PRDPreflight{}, err
+	}
+	return preflight, nil
 }
 
 func hashPRDRegularFile(path string) (string, error) {
@@ -162,12 +185,52 @@ func hashPRDRegularFile(path string) (string, error) {
 	return fileSHA256(path)
 }
 
+// PRDLegacyBundleDigest identifies the exact sorted file/hash inventory in an
+// existing unsuffixed PRD bin directory. It is deliberately only an identity:
+// it does not infer source revision or schema compatibility for legacy bytes.
+func PRDLegacyBundleDigest(preflight PRDPreflight) (string, error) {
+	if !containsCatalogHost(preflight.HostID) || len(preflight.BinarySHA256) == 0 || len(preflight.MissingComponents) != 0 {
+		return "", ErrPRDUpgradeGuard
+	}
+	for name, digest := range preflight.BinarySHA256 {
+		if filepath.Base(name) != name || name == "." || name == ".." || !prdDigestPattern.MatchString(digest) {
+			return "", ErrPRDUpgradeGuard
+		}
+	}
+	canonical, err := json.Marshal(struct {
+		HostID string            `json:"host_id"`
+		Files  map[string]string `json:"files"`
+	}{preflight.HostID, preflight.BinarySHA256})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 // CreatePRDBackup captures the old unsuffixed binaries, configuration,
 // secrets, service definitions, and a consistent online SQLite snapshot. It
 // can run before admissions are closed because every read remains read-only.
 func CreatePRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string) (PRDBackupReceipt, error) {
+	return createPRDBackup(ctx, plan, bundleSHA, false)
+}
+
+// CreatePRDCatalogBackup captures the same consistent database and host-local
+// recovery material for a selector-aware PRD transition. It is separate from
+// the legacy backup command so the ordinary PRD installer remains fail-closed
+// after catalog adoption.
+func CreatePRDCatalogBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string) (PRDBackupReceipt, error) {
+	return createPRDBackup(ctx, plan, bundleSHA, true)
+}
+
+func createPRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string, catalogManaged bool) (PRDBackupReceipt, error) {
 	if validatePRDPlan(plan) != nil || !prdDigestPattern.MatchString(bundleSHA) {
 		return PRDBackupReceipt{}, ErrInvalidPRDUpgradePlan
+	}
+	if !catalogManaged {
+		if err := refuseLegacyPRDMutationForCatalog(plan); err != nil {
+			return PRDBackupReceipt{}, err
+		}
 	}
 	if err := validatePRDConfig(plan); err != nil {
 		return PRDBackupReceipt{}, err
@@ -193,7 +256,11 @@ func CreatePRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string)
 		return PRDBackupReceipt{}, err
 	}
 	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
-	directory := filepath.Join(plan.Namespace.Backups, "prd-upgrade-"+stamp)
+	prefix := "prd-upgrade-"
+	if catalogManaged {
+		prefix = "prd-catalog-"
+	}
+	directory := filepath.Join(plan.Namespace.Backups, prefix+stamp)
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		return PRDBackupReceipt{}, fmt.Errorf("create unique private PRD backup directory: %w", err)
 	}
@@ -255,6 +322,9 @@ func InstallPRDBundle(ctx context.Context, plan PRDUpgradePlan, service PRDServi
 	if validatePRDPlan(plan) != nil || service == nil || bundle.Manifest.HostID != plan.HostID || ValidateSimpleBundle(bundle) != nil || bundle.Manifest.BundleSHA256 != expectedSHA || !prdDigestPattern.MatchString(expectedSHA) {
 		return nil, ErrInvalidPRDUpgradePlan
 	}
+	if err := refuseLegacyPRDMutationForCatalog(plan); err != nil {
+		return nil, err
+	}
 	active, err := service.Status(ctx, plan)
 	if err != nil {
 		return nil, fmt.Errorf("inspect unsuffixed PRD service before install: %w", err)
@@ -315,6 +385,9 @@ func InstallPRDBundle(ctx context.Context, plan PRDUpgradePlan, service PRDServi
 func RollbackPRD(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe, backupDirectory string) error {
 	if validatePRDPlan(plan) != nil || service == nil {
 		return ErrInvalidPRDUpgradePlan
+	}
+	if err := refuseLegacyPRDMutationForCatalog(plan); err != nil {
+		return err
 	}
 	active, err := service.Status(ctx, plan)
 	if err != nil {
@@ -380,6 +453,9 @@ func MigratePRDDatabase(ctx context.Context, plan PRDUpgradePlan, service PRDSer
 	if validatePRDPlan(plan) != nil || service == nil {
 		return 0, PRDWorkInventory{}, ErrInvalidPRDUpgradePlan
 	}
+	if err := refuseLegacyPRDMutationForCatalog(plan); err != nil {
+		return 0, PRDWorkInventory{}, err
+	}
 	if err := validatePRDConfig(plan); err != nil {
 		return 0, PRDWorkInventory{}, err
 	}
@@ -432,6 +508,23 @@ func MigratePRDDatabase(ctx context.Context, plan PRDUpgradePlan, service PRDSer
 		return schema, post, fmt.Errorf("%w: migrated schema=%d inventory=%+v", ErrPRDUpgradeGuard, schema, post)
 	}
 	return schema, post, nil
+}
+
+// refuseLegacyPRDMutationForCatalog prevents the pre-catalog PRD commands
+// from backing up only the obsolete bin directory or writing binaries there
+// after a selector migration. Catalog migration and recovery use their own
+// selector-aware procedures.
+func refuseLegacyPRDMutationForCatalog(plan PRDUpgradePlan) error {
+	return refuseLegacyPRDMutationAt(filepath.Join(plan.Namespace.ServiceRoot, "current"))
+}
+
+func refuseLegacyPRDMutationAt(selector string) error {
+	if _, err := os.Lstat(selector); err == nil {
+		return ErrPRDCatalogManaged
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: cannot inspect the PRD catalog selector", ErrPRDUpgradeGuard)
+	}
+	return nil
 }
 
 func readPRDWorkInventory(ctx context.Context, database *sql.DB) (PRDWorkInventory, error) {
@@ -527,7 +620,8 @@ func validatePRDConfig(plan PRDUpgradePlan) error {
 		return nil
 	}
 	settings, ok := loaded.LinuxSettings()
-	if !ok || settings.ServiceRoot != plan.Namespace.ServiceRoot || settings.Database != plan.Namespace.Database || settings.Account != plan.Namespace.Account {
+	if !ok || settings.ServiceRoot != plan.Namespace.ServiceRoot || settings.Database != plan.Namespace.Database || settings.Account != plan.Namespace.Account ||
+		settings.DirectHTTPSBind != plan.Namespace.DirectHTTPSBind || settings.DirectPublicEndpoint != plan.Namespace.DirectEndpointURL {
 		return ErrPRDUpgradeGuard
 	}
 	return nil
@@ -541,31 +635,39 @@ func prdServiceArtifactPaths(plan PRDUpgradePlan) []string {
 }
 
 func ensurePRDBackupCapacity(plan PRDUpgradePlan, databasePath string) error {
+	available, required, err := measurePRDBackupCapacity(plan, databasePath)
+	if err != nil {
+		return err
+	}
+	if available < required {
+		return fmt.Errorf("%w: available=%d required=%d bytes for backup and rollback headroom", ErrPRDUpgradeGuard, available, required)
+	}
+	return nil
+}
+
+func measurePRDBackupCapacity(plan PRDUpgradePlan, databasePath string) (uint64, uint64, error) {
 	var filesystem unix.Statfs_t
 	if err := unix.Statfs(plan.Namespace.ServiceRoot, &filesystem); err != nil {
-		return fmt.Errorf("inspect existing PRD filesystem capacity: %w", err)
+		return 0, 0, fmt.Errorf("inspect existing PRD filesystem capacity: %w", err)
 	}
 	databaseBytes, err := prdExistingFileSize(databasePath, false)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
 		sidecarBytes, err := prdExistingFileSize(databasePath+suffix, true)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 		databaseBytes += sidecarBytes
 	}
 	copyBytes, err := estimatePRDFileBackupBytes(plan)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	available := uint64(filesystem.Bavail) * uint64(filesystem.Bsize)
 	required := databaseBytes*2 + copyBytes + 64*1024*1024
-	if available < required {
-		return fmt.Errorf("%w: available=%d required=%d bytes for backup and rollback headroom", ErrPRDUpgradeGuard, available, required)
-	}
-	return nil
+	return available, required, nil
 }
 
 func prdExistingFileSize(path string, optional bool) (uint64, error) {

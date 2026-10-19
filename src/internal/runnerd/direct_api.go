@@ -27,13 +27,27 @@ import (
 var ErrDirectHTTPSAPIConfiguration = errors.New("direct HTTPS API configuration is incomplete")
 
 type directHTTPSAPI struct {
-	service        *execution.Service
-	requestGate    *lifecycle.Gate
-	dispatchGate   *lifecycle.Gate
-	queueWake      func()
-	maxBodyBytes   int64
-	allocateRunIDs func() (domain.JobID, domain.SessionID, domain.CommandID, error)
+	service               *execution.Service
+	requestGate           *lifecycle.Gate
+	dispatchGate          *lifecycle.Gate
+	queueWake             func()
+	maxBodyBytes          int64
+	allocateRunIDs        func() (domain.JobID, domain.SessionID, domain.CommandID, error)
+	maintenanceHeld       bool
+	maintenanceProbeGuard maintenanceProbeGuard
 }
+
+type maintenanceProbeGuard interface {
+	OperationID() string
+	ReserveCatalogMaintenanceProbe(controllerID, token, idempotencyKey string, body []byte, now time.Time) error
+	BindCatalogMaintenanceProbeJob(jobID string) error
+	MarkCatalogMaintenanceProbeAccepted(jobID string) error
+	AllowsJobRead(controllerID, jobID string, now time.Time) bool
+}
+
+type maintenanceProbeContextKey struct{}
+
+const maintenanceProbeTokenHeader = "X-Runner-Maintenance-Probe"
 
 const (
 	directEventsLastSequenceHeader = "X-Runner-Last-Sequence"
@@ -224,11 +238,58 @@ func (s *directHTTPSAPI) ServeHTTP(response http.ResponseWriter, request *http.R
 		writeDirectError(response, http.StatusBadRequest, "invalid_request", "request URL is required")
 		return
 	}
-	release, admitted := admitRunnerRequest(s.requestGate, request.URL.Path, request.Method, func() {
-		writeDirectError(response, http.StatusServiceUnavailable, "shutting_down", "runnerd is shutting down")
-	})
-	if !admitted {
-		return
+	var maintenanceRelease func()
+	if s.maintenanceHeld {
+		if s.requestGate == nil {
+			maintenanceRelease = func() {}
+		} else {
+			var gateErr error
+			maintenanceRelease, gateErr = s.requestGate.Enter()
+			if gateErr != nil {
+				writeDirectError(response, http.StatusServiceUnavailable, "shutting_down", "runnerd is shutting down")
+				return
+			}
+		}
+		var operationID string
+		var scopedRequest bool
+		if request.Method == http.MethodPost && request.URL.Path == "/v1/jobs" && s.maintenanceProbeGuard != nil {
+			principal, ok := DirectPrincipalFromContext(request.Context())
+			if ok {
+				body, bodyErr := s.readRequestBody(request)
+				if bodyErr == nil {
+					request.Body = io.NopCloser(bytes.NewReader(body))
+					request.ContentLength = int64(len(body))
+					if err := s.maintenanceProbeGuard.ReserveCatalogMaintenanceProbe(string(principal.Controller.ID()), request.Header.Get(maintenanceProbeTokenHeader),
+						request.Header.Get("Idempotency-Key"), body, time.Now().UTC()); err == nil {
+						scopedRequest = true
+						operationID = s.maintenanceProbeGuard.OperationID()
+					}
+				}
+			}
+		} else if request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/jobs/") {
+			principal, ok := DirectPrincipalFromContext(request.Context())
+			jobID, pathErr := directJobIDFromPath(request.URL)
+			if ok && pathErr == nil && s.maintenanceProbeGuard != nil &&
+				s.maintenanceProbeGuard.AllowsJobRead(string(principal.Controller.ID()), string(jobID), time.Now().UTC()) {
+				scopedRequest = true
+			}
+		}
+		if !scopedRequest {
+			maintenanceRelease()
+			writeDirectError(response, http.StatusServiceUnavailable, "maintenance_admission_closed", "ordinary work admission is closed for cohort maintenance")
+			return
+		}
+		request = request.WithContext(context.WithValue(request.Context(), maintenanceProbeContextKey{}, operationID))
+	}
+	release := maintenanceRelease
+	if release == nil {
+		var admitted bool
+		release, admitted = admitRunnerRequest(s.requestGate, request.URL.Path, request.Method, func() {
+			writeDirectError(response, http.StatusServiceUnavailable, "shutting_down", "runnerd is shutting down")
+		})
+		if !admitted {
+			return
+		}
 	}
 	defer release()
 	request = request.WithContext(audit.WithIngress(request.Context(), audit.IngressDirectMTLS))
@@ -542,6 +603,13 @@ func (s *directHTTPSAPI) handleRunJob(response http.ResponseWriter, request *htt
 		writeDirectError(response, http.StatusServiceUnavailable, "runtime_unavailable", "could not allocate job identities")
 		return
 	}
+	probeOperationID, _ := request.Context().Value(maintenanceProbeContextKey{}).(string)
+	if probeOperationID != "" && s.maintenanceProbeGuard != nil {
+		if err := s.maintenanceProbeGuard.BindCatalogMaintenanceProbeJob(string(jobID)); err != nil {
+			writeDirectError(response, http.StatusServiceUnavailable, "maintenance_probe_unavailable", "maintenance probe reservation could not be recorded")
+			return
+		}
+	}
 	jobRequest := execution.RunJobRequest{
 		Acceptance: store.JobAcceptance{
 			JobID: jobID, SessionID: sessionID, CommandID: commandID, Controller: principal.Controller,
@@ -574,6 +642,9 @@ func (s *directHTTPSAPI) handleRunJob(response http.ResponseWriter, request *htt
 		status, code, message := directJobError(serviceErr)
 		writeDirectError(response, status, code, message)
 		return
+	}
+	if probeOperationID != "" && s.maintenanceProbeGuard != nil && result.Job.JobID != "" {
+		_ = s.maintenanceProbeGuard.MarkCatalogMaintenanceProbeAccepted(string(result.Job.JobID))
 	}
 	// A durable job row is the acceptance boundary. The read route returns its
 	// command and teardown outcomes even when the coordinator reports failure.

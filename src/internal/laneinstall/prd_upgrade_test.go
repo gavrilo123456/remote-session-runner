@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
@@ -36,6 +38,65 @@ func TestBuildPRDUpgradePlanIsFixedToExistingUnsuffixedHosts(t *testing.T) {
 	}
 	if _, err := BuildSimplePlan("mac-control-plane", config.ReleaseLanePRD); err == nil {
 		t.Fatal("the existing Dev/QAS installer now accepts PRD")
+	}
+}
+
+func TestCatalogPlanCanInspectPRDWithoutOpeningSimpleInstaller(t *testing.T) {
+	for host := range simpleHostPlatforms {
+		plan, err := BuildCatalogPlan(host, config.ReleaseLanePRD)
+		if err != nil || plan.HostID != host || plan.Lane != config.ReleaseLanePRD || len(plan.Artifacts) != 0 || validateCatalogPlan(plan) != nil {
+			t.Fatalf("BuildCatalogPlan(%s, prd)=%+v err=%v", host, plan, err)
+		}
+		root, err := DefaultCatalogRootForPlan(plan)
+		if err != nil || root == "" || filepath.Base(root) != "runner-releases" {
+			t.Fatalf("PRD catalog root for %s=%q err=%v", host, root, err)
+		}
+	}
+	if _, err := BuildCatalogPlan("linux-host", config.ReleaseLane("invalid")); !errors.Is(err, ErrInvalidCatalogRelease) {
+		t.Fatalf("invalid catalog lane error=%v", err)
+	}
+}
+
+func TestLegacyPRDToolsRefuseCatalogSelector(t *testing.T) {
+	selector := filepath.Join(t.TempDir(), "current")
+	if err := refuseLegacyPRDMutationAt(selector); err != nil {
+		t.Fatalf("legacy PRD tool refused an unselected layout: %v", err)
+	}
+	if err := os.WriteFile(selector, []byte("not-a-selector"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := refuseLegacyPRDMutationAt(selector); !errors.Is(err, ErrPRDCatalogManaged) {
+		t.Fatalf("legacy PRD tool error=%v, want catalog-managed refusal", err)
+	}
+}
+
+func TestLegacyPRDDeploymentScriptsRefuseCatalogSelector(t *testing.T) {
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", ".."))
+	for _, item := range []struct {
+		path   string
+		marker string
+	}{
+		{"deploy/linux/install-systemd-service.sh", "legacy systemd installer refuses a catalog-selected PRD"},
+		{"deploy/ssh/install-queued-bridge.sh", "legacy queued-bridge installer refuses a catalog-selected PRD"},
+		{"deploy/macos/install-launchagents.sh", "legacy LaunchAgent installer refuses a catalog-selected PRD"},
+		{"deploy/backup/backup-macos-runner.sh", "legacy Mac backup refuses a catalog-selected PRD"},
+		{"deploy/ssh/runner-ssh-bridge-forced.sh", "legacy wrapper is disabled for catalog-selected PRD"},
+	} {
+		path := filepath.Join(repositoryRoot, filepath.FromSlash(item.path))
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", item.path, err)
+		}
+		if !strings.Contains(string(contents), item.marker) || !strings.Contains(string(contents), `if [ -e "$service_root/current" ] || [ -L "$service_root/current" ]; then`) {
+			t.Errorf("%s does not fail closed when a catalog selector exists", item.path)
+		}
+		if output, err := exec.Command("/bin/sh", "-n", path).CombinedOutput(); err != nil {
+			t.Errorf("%s shell syntax: %v: %s", item.path, err, output)
+		}
 	}
 }
 

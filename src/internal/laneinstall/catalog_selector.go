@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -60,6 +61,8 @@ type CatalogSelectorStatus struct {
 type CatalogSelectorOperation struct {
 	FormatVersion                int                    `json:"format_version"`
 	OperationID                  string                 `json:"operation_id"`
+	CohortOperationID            string                 `json:"cohort_operation_id,omitempty"`
+	CohortEvidenceSHA256         string                 `json:"cohort_evidence_sha256,omitempty"`
 	HostID                       string                 `json:"host_id"`
 	Lane                         config.ReleaseLane     `json:"lane"`
 	Release                      CatalogReleaseIdentity `json:"release_identity"`
@@ -88,8 +91,10 @@ type catalogSelectorLayout struct {
 }
 
 type catalogBackupReference struct {
-	Directory      string
-	ManifestSHA256 string
+	Directory            string
+	ManifestSHA256       string
+	CohortOperationID    string
+	CohortEvidenceSHA256 string
 }
 
 // CatalogLaneMaintenance holds the catalog lock before the existing selected-
@@ -104,7 +109,7 @@ type CatalogLaneMaintenance struct {
 }
 
 func catalogSelectorLayoutForPlan(plan Plan, catalogRoot string) (catalogSelectorLayout, error) {
-	if validateSimplePlan(plan) != nil || !filepath.IsAbs(catalogRoot) || filepath.Clean(catalogRoot) != catalogRoot {
+	if validateCatalogPlan(plan) != nil || !filepath.IsAbs(catalogRoot) || filepath.Clean(catalogRoot) != catalogRoot {
 		return catalogSelectorLayout{}, ErrInvalidCatalogRelease
 	}
 	expectedRoot, err := DefaultCatalogRootForPlan(plan)
@@ -123,7 +128,7 @@ func catalogSelectorLayoutForPlan(plan Plan, catalogRoot string) (catalogSelecto
 // DefaultCatalogRootForPlan derives the fixed per-account catalog directory.
 // It does not create the directory or mutate any lane state.
 func DefaultCatalogRootForPlan(plan Plan) (string, error) {
-	if validateSimplePlan(plan) != nil {
+	if validateCatalogPlan(plan) != nil {
 		return "", ErrInvalidCatalogRelease
 	}
 	home := filepath.Join("/home", plan.Namespace.Account)
@@ -137,6 +142,9 @@ func DefaultCatalogRootForPlan(plan Plan) (string, error) {
 // uses the existing supported service stop and lane quiescence procedure.
 // The caller must capture a verified backup before selecting or rolling back.
 func BeginCatalogLaneMaintenance(ctx context.Context, plan Plan, service SimpleServiceProbe) (*CatalogLaneMaintenance, error) {
+	if validateSimplePlan(plan) != nil {
+		return nil, ErrInvalidCatalogRelease
+	}
 	root, err := DefaultCatalogRootForPlan(plan)
 	if err != nil {
 		return nil, err
@@ -169,13 +177,57 @@ func (m *CatalogLaneMaintenance) Backup(ctx context.Context) (SimpleLaneBackupRe
 	return m.maintenance.Backup(ctx)
 }
 
+// UseVerifiedBackup attaches the exact host-local backup already bound by a
+// cohort preflight. This lets operators collect four backups before freezing
+// the shared receipt without silently creating a different, unbound backup
+// during selector mutation.
+func (m *CatalogLaneMaintenance) UseVerifiedBackup(ctx context.Context, directory, expectedManifestSHA256 string) error {
+	if m == nil || m.closed || m.maintenance == nil || m.maintenance.fresh ||
+		!simpleProofFresh(m.maintenance.proof, m.maintenance.plan) || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory ||
+		!bundleDigestPattern.MatchString(expectedManifestSHA256) {
+		return ErrSimpleBackupRequired
+	}
+	active, err := m.maintenance.service.Status(ctx, m.maintenance.plan)
+	if err != nil || active {
+		return ErrSimpleLaneNotQuiescent
+	}
+	current, err := simpleCurrentBundleForPlan(m.maintenance.plan)
+	if err != nil || current != m.maintenance.proof.current {
+		return ErrCatalogSelectorConflict
+	}
+	proof, err := readSimpleLaneQuiescence(ctx, m.maintenance.plan, current)
+	if err != nil || proof.database != m.maintenance.proof.database {
+		return ErrSimpleLaneNotQuiescent
+	}
+	configurationSHA256, configErr := hashCatalogConfiguration(m.layout.configFile)
+	manifest, err := readSimpleLaneBackupManifest(m.maintenance.plan, directory)
+	if err != nil || backupManifestSHA256(directory) != expectedManifestSHA256 ||
+		manifest.HostID != m.maintenance.plan.HostID || manifest.Lane != m.maintenance.plan.Lane ||
+		manifest.DatabasePath != m.maintenance.plan.Namespace.Database || manifest.ActiveBundle != current ||
+		manifest.DatabaseSchema != proof.database || configErr != nil || manifest.ConfigSHA256 != configurationSHA256 {
+		return ErrSimpleBackupRequired
+	}
+	receipt := &SimpleLaneBackupReceipt{
+		hostID: manifest.HostID, lane: manifest.Lane, databasePath: manifest.DatabasePath,
+		activeBundle: manifest.ActiveBundle, database: manifest.DatabaseSchema,
+		directory: directory, manifestHash: expectedManifestSHA256,
+	}
+	if !simpleBackupReceiptValid(m.maintenance.plan, *receipt, proof) {
+		return ErrSimpleBackupRequired
+	}
+	m.maintenance.proof = proof
+	m.maintenance.backup = receipt
+	return nil
+}
+
 // Select validates the exact predecessor and sealed local-host release,
 // checks the current database schema against the candidate read contract, and
 // atomically changes only this lane's selector. It leaves the service stopped
 // so the CAT-03 cohort coordinator can keep the whole lane held.
-func (m *CatalogLaneMaintenance) Select(ctx context.Context, releaseID, expectedTarget string) (CatalogSelectorOperation, error) {
+func (m *CatalogLaneMaintenance) Select(ctx context.Context, releaseID, expectedTarget, cohortOperationID, switchEvidenceSHA256 string) (CatalogSelectorOperation, error) {
 	if m == nil || m.closed || m.maintenance == nil || m.maintenance.fresh ||
-		!simpleProofFresh(m.maintenance.proof, m.maintenance.plan) || m.maintenance.backup == nil {
+		!simpleProofFresh(m.maintenance.proof, m.maintenance.plan) || m.maintenance.backup == nil ||
+		!validCatalogOperationID(cohortOperationID) || !bundleDigestPattern.MatchString(switchEvidenceSHA256) {
 		return CatalogSelectorOperation{}, ErrSimpleBackupRequired
 	}
 	active, err := m.maintenance.service.Status(ctx, m.maintenance.plan)
@@ -194,8 +246,33 @@ func (m *CatalogLaneMaintenance) Select(ctx context.Context, releaseID, expected
 	if !simpleBackupReceiptValid(m.maintenance.plan, *m.maintenance.backup, proof) {
 		return CatalogSelectorOperation{}, ErrSimpleBackupRequired
 	}
-	backupRef := catalogBackupReference{Directory: m.maintenance.backup.directory, ManifestSHA256: m.maintenance.backup.manifestHash}
-	return selectCatalogReleaseLocked(m.layout, releaseID, expectedTarget, proof.database, backupRef, nil)
+	receipt, err := ReadCatalogCohortReceipt(m.maintenance.plan, cohortOperationID)
+	if err != nil {
+		return CatalogSelectorOperation{}, err
+	}
+	currentStatus, err := inspectCatalogSelector(m.layout)
+	if err != nil {
+		return CatalogSelectorOperation{}, err
+	}
+	target, err := InspectCatalogRelease(m.layout.catalogRoot, m.layout.hostID, releaseID)
+	if err != nil {
+		return CatalogSelectorOperation{}, err
+	}
+	if err := validateCatalogCohortHostMaySwitch(receipt, m.layout, currentStatus.Target, target.Identity, proof.database,
+		m.maintenance.backup.directory, m.maintenance.backup.manifestHash, time.Now().UTC()); err != nil {
+		return CatalogSelectorOperation{}, err
+	}
+	backupRef := catalogBackupReference{Directory: m.maintenance.backup.directory, ManifestSHA256: m.maintenance.backup.manifestHash,
+		CohortOperationID: cohortOperationID, CohortEvidenceSHA256: switchEvidenceSHA256}
+	operation, err := selectCatalogReleaseLocked(m.layout, releaseID, expectedTarget, proof.database, backupRef, nil)
+	if err != nil {
+		return operation, err
+	}
+	if err := recordCatalogCohortSwitch(m.maintenance.plan, operation, false); err != nil {
+		return operation, err
+	}
+	_ = receipt
+	return operation, nil
 }
 
 // Reconcile completes only the recorded selector transition after confirming
@@ -251,7 +328,21 @@ func (m *CatalogLaneMaintenance) Reconcile(ctx context.Context, operationID stri
 			return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
 		}
 	}
-	return reconcileCatalogSelectorLocked(m.layout, operationID)
+	completed, err := reconcileCatalogSelectorLocked(m.layout, operationID)
+	if err != nil {
+		return completed, err
+	}
+	if completed.CohortOperationID != "" {
+		if completed.Stage == catalogOperationRolledBack {
+			err = recordCatalogCohortRollback(m.maintenance.plan, completed)
+		} else {
+			err = recordCatalogCohortSwitch(m.maintenance.plan, completed, true)
+		}
+		if err != nil {
+			return completed, err
+		}
+	}
+	return completed, nil
 }
 
 // Rollback selects the recorded predecessor only when the current database is
@@ -259,6 +350,18 @@ func (m *CatalogLaneMaintenance) Reconcile(ctx context.Context, operationID stri
 // exact digest captured at promotion. It preserves current database contents.
 func (m *CatalogLaneMaintenance) Rollback(ctx context.Context, operationID string) (CatalogSelectorOperation, error) {
 	if m == nil || m.closed || m.maintenance == nil || m.maintenance.fresh || !simpleProofFresh(m.maintenance.proof, m.maintenance.plan) {
+		return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
+	}
+	operation, err := readCatalogSelectorOperation(m.layout.operationRoot, operationID)
+	if err != nil || validateCatalogOperation(m.layout, operation) != nil || operation.CohortOperationID == "" {
+		return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
+	}
+	receipt, err := ReadCatalogCohortReceipt(m.maintenance.plan, operation.CohortOperationID)
+	if err != nil {
+		return CatalogSelectorOperation{}, err
+	}
+	currentStatus, err := inspectCatalogSelector(m.layout)
+	if err != nil || validateCatalogCohortHostMayRollback(receipt, m.layout, operation, currentStatus.Target) != nil {
 		return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
 	}
 	active, err := m.maintenance.service.Status(ctx, m.maintenance.plan)
@@ -279,8 +382,16 @@ func (m *CatalogLaneMaintenance) Rollback(ctx context.Context, operationID strin
 	if err != nil || !simpleBackupReceiptValid(m.maintenance.plan, backup, proof) {
 		return CatalogSelectorOperation{}, ErrSimpleBackupRequired
 	}
-	backupRef := catalogBackupReference{Directory: backup.directory, ManifestSHA256: backup.manifestHash}
-	return rollbackCatalogSelectorLocked(m.layout, operationID, proof.database, backupRef, nil)
+	backupRef := catalogBackupReference{Directory: backup.directory, ManifestSHA256: backup.manifestHash,
+		CohortOperationID: operation.CohortOperationID}
+	rolledBack, err := rollbackCatalogSelectorLocked(m.layout, operationID, proof.database, backupRef, nil)
+	if err != nil {
+		return rolledBack, err
+	}
+	if err := recordCatalogCohortRollback(m.maintenance.plan, rolledBack); err != nil {
+		return rolledBack, err
+	}
+	return rolledBack, nil
 }
 
 // Close releases the lane lock before the catalog lock, preserving the global
@@ -338,6 +449,219 @@ func InspectCatalogSelectorForPlan(plan Plan, catalogRoot string) (CatalogSelect
 		return CatalogSelectorStatus{}, err
 	}
 	return inspectCatalogSelector(layout)
+}
+
+// InspectCatalogSelectorOperationForPlan returns a validated durable selector
+// operation record for CLI-level cohort binding. It has no side effects.
+func InspectCatalogSelectorOperationForPlan(plan Plan, operationID string) (CatalogSelectorOperation, error) {
+	if validateCatalogPlan(plan) != nil || !validCatalogOperationID(operationID) {
+		return CatalogSelectorOperation{}, ErrCatalogOperationInvalid
+	}
+	root, err := DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return CatalogSelectorOperation{}, err
+	}
+	layout, err := catalogSelectorLayoutForPlan(plan, root)
+	if err != nil {
+		return CatalogSelectorOperation{}, err
+	}
+	operation, err := readCatalogSelectorOperation(layout.operationRoot, operationID)
+	if err != nil || validateCatalogOperation(layout, operation) != nil {
+		return CatalogSelectorOperation{}, ErrCatalogOperationInvalid
+	}
+	return operation, nil
+}
+
+// BuildCatalogPlan derives the fixed host/lane namespace used to inspect a
+// catalog selector. PRD is accepted for read-only inspection and startup
+// identity validation; its live maintenance continues through the separate
+// guarded PRD procedure.
+func BuildCatalogPlan(hostID string, lane config.ReleaseLane) (Plan, error) {
+	if lane == config.ReleaseLaneDev || lane == config.ReleaseLaneQAS {
+		return BuildSimplePlan(hostID, lane)
+	}
+	if lane != config.ReleaseLanePRD {
+		return Plan{}, ErrInvalidCatalogRelease
+	}
+	prd, err := BuildPRDUpgradePlan(hostID)
+	if err != nil {
+		return Plan{}, err
+	}
+	return Plan{HostID: hostID, Lane: config.ReleaseLanePRD, Namespace: prd.Namespace}, nil
+}
+
+// ValidateSelectedCatalogExecutableForPlan verifies that the running service
+// binary is the exact component selected by this lane's sealed catalog bundle.
+// Legacy selectors remain supported without changing their startup behavior.
+func ValidateSelectedCatalogExecutableForPlan(plan Plan, component, executablePath string) error {
+	if validateCatalogPlan(plan) != nil || component == "" || filepath.Base(component) != component ||
+		!filepath.IsAbs(executablePath) || filepath.Clean(executablePath) != executablePath {
+		return ErrInvalidCatalogRelease
+	}
+	wanted := false
+	for _, name := range simpleHostComponents[plan.HostID] {
+		if name == component {
+			wanted = true
+			break
+		}
+	}
+	if !wanted {
+		return ErrInvalidCatalogRelease
+	}
+	root, err := DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return err
+	}
+	status, err := InspectCatalogSelectorForPlan(plan, root)
+	if err != nil {
+		return err
+	}
+	if status.Kind != "catalog" {
+		return nil
+	}
+	return validateCatalogExecutablePath(filepath.Join(status.Target, "bin", component), executablePath)
+}
+
+// ValidateConfiguredCatalogExecutable binds a service's validated V3 lane
+// contract to its executable before the service opens writable runtime state.
+// Legacy PRD configurations and operations without lane profiles are unchanged.
+func ValidateConfiguredCatalogExecutable(configuration config.Config, component, executablePath string) error {
+	profiles, configured := configuration.LaneProfiles()
+	if !configured {
+		plan, selected, err := CatalogPlanFromConfiguration(configuration)
+		if err != nil {
+			return err
+		}
+		if !selected {
+			return nil
+		}
+		return ValidateSelectedCatalogExecutableForPlan(plan, component, executablePath)
+	}
+	hostID := ""
+	switch profiles.Host() {
+	case config.HostKindMac:
+		hostID = "mac-control-plane"
+	case config.HostKindLinux:
+		hostID = profiles.RemoteProfile()
+	default:
+		return ErrInvalidCatalogRelease
+	}
+	plan, err := BuildCatalogPlan(hostID, profiles.Lane())
+	if err != nil {
+		return err
+	}
+	return ValidateSelectedCatalogExecutableForPlan(plan, component, executablePath)
+}
+
+// CatalogPlanFromConfiguration derives a lane identity for installed services.
+// SIMPLE Dev/QAS configurations carry the host/profile explicitly. Existing
+// unsuffixed PRD configuration stays byte-for-byte unchanged; once its
+// selector targets the canonical catalog, the host identity is recovered
+// from that validated selector and checked against the configured service
+// root and local platform.
+func CatalogPlanFromConfiguration(configuration config.Config) (Plan, bool, error) {
+	if profiles, configured := configuration.LaneProfiles(); configured {
+		hostID := ""
+		switch profiles.Host() {
+		case config.HostKindMac:
+			hostID = "mac-control-plane"
+		case config.HostKindLinux:
+			hostID = profiles.RemoteProfile()
+		default:
+			return Plan{}, false, ErrInvalidCatalogRelease
+		}
+		plan, err := BuildCatalogPlan(hostID, profiles.Lane())
+		return plan, err == nil, err
+	}
+	if configuration.ReleaseLane() != config.ReleaseLanePRD {
+		return Plan{}, false, nil
+	}
+	serviceRoot := ""
+	if settings, ok := configuration.MacSettings(); ok {
+		serviceRoot = settings.ServiceRoot
+	} else if settings, ok := configuration.LinuxSettings(); ok {
+		serviceRoot = settings.ServiceRoot
+	}
+	if serviceRoot == "" || configuration.ReleaseLane() != config.ReleaseLanePRD {
+		return Plan{}, false, nil
+	}
+	hostID, err := configuredPRDHostID(configuration)
+	if err != nil {
+		return Plan{}, false, err
+	}
+	plan, err := BuildCatalogPlan(hostID, config.ReleaseLanePRD)
+	if err != nil || plan.Namespace.ServiceRoot != serviceRoot {
+		return Plan{}, false, ErrInvalidCatalogRelease
+	}
+	currentPath := filepath.Join(serviceRoot, "current")
+	if _, err := os.Lstat(currentPath); errors.Is(err, os.ErrNotExist) {
+		held, _, holdErr := CatalogCohortAdmissionHeld(plan)
+		if holdErr != nil {
+			return Plan{}, false, ErrInvalidCatalogRelease
+		}
+		return plan, held, nil
+	} else if err != nil {
+		return Plan{}, false, ErrInvalidCatalogRelease
+	}
+	target, err := os.Readlink(currentPath)
+	if err != nil || !filepath.IsAbs(target) || filepath.Clean(target) != target {
+		return Plan{}, false, ErrInvalidCatalogRelease
+	}
+	if !containsCatalogHost(hostID) || !CatalogHostMatchesPlatform(hostID, runtime.GOOS, runtime.GOARCH) || filepath.Base(target) != hostID {
+		return Plan{}, false, ErrInvalidCatalogRelease
+	}
+	root, err := DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return Plan{}, false, err
+	}
+	status, err := InspectCatalogSelectorForPlan(plan, root)
+	if err != nil || status.Kind != "catalog" || status.Target != target {
+		return Plan{}, false, ErrInvalidCatalogRelease
+	}
+	return plan, true, nil
+}
+
+func configuredPRDHostID(configuration config.Config) (string, error) {
+	if _, ok := configuration.MacSettings(); ok && configuration.Kind() == config.HostKindMac {
+		if !CatalogHostMatchesPlatform("mac-control-plane", runtime.GOOS, runtime.GOARCH) {
+			return "", ErrInvalidCatalogRelease
+		}
+		return "mac-control-plane", nil
+	}
+	settings, ok := configuration.LinuxSettings()
+	if !ok || configuration.Kind() != config.HostKindLinux {
+		return "", ErrInvalidCatalogRelease
+	}
+	matched := ""
+	for _, hostID := range []string{"linux-host", "sandbox-host", "factory-sandbox"} {
+		plan, err := BuildPRDUpgradePlan(hostID)
+		if err != nil {
+			continue
+		}
+		if settings.ServiceRoot == plan.Namespace.ServiceRoot && settings.Database == plan.Namespace.Database &&
+			settings.DirectHTTPSBind == plan.Namespace.DirectHTTPSBind && settings.DirectPublicEndpoint == plan.Namespace.DirectEndpointURL {
+			if matched != "" {
+				return "", ErrInvalidCatalogRelease
+			}
+			matched = hostID
+		}
+	}
+	if matched == "" || !CatalogHostMatchesPlatform(matched, runtime.GOOS, runtime.GOARCH) {
+		return "", ErrInvalidCatalogRelease
+	}
+	return matched, nil
+}
+
+func validateCatalogExecutablePath(selectedPath, executablePath string) error {
+	selected, err := filepath.EvalSymlinks(selectedPath)
+	if err != nil {
+		return ErrInvalidCatalogRelease
+	}
+	actual, err := filepath.EvalSymlinks(executablePath)
+	if err != nil || actual != selected {
+		return ErrInvalidCatalogRelease
+	}
+	return nil
 }
 
 func inspectCatalogSelector(layout catalogSelectorLayout) (CatalogSelectorStatus, error) {
@@ -414,7 +738,7 @@ func resolveCatalogSelectorTarget(layout catalogSelectorLayout, target string) (
 }
 
 func validateCatalogSelectorLayout(layout catalogSelectorLayout) error {
-	if !containsCatalogHost(layout.hostID) || (layout.lane != config.ReleaseLaneDev && layout.lane != config.ReleaseLaneQAS) {
+	if !containsCatalogHost(layout.hostID) || (layout.lane != config.ReleaseLaneDev && layout.lane != config.ReleaseLaneQAS && layout.lane != config.ReleaseLanePRD) {
 		return ErrInvalidCatalogRelease
 	}
 	for _, path := range []string{layout.serviceRoot, layout.catalogRoot, layout.operationRoot, layout.backupRoot, layout.lifecycleLock, layout.configFile, layout.databasePath} {
@@ -430,12 +754,44 @@ func validateCatalogSelectorLayout(layout catalogSelectorLayout) error {
 	return nil
 }
 
+func validateCatalogPlan(plan Plan) error {
+	if plan.Lane == config.ReleaseLaneDev || plan.Lane == config.ReleaseLaneQAS {
+		return validateSimplePlan(plan)
+	}
+	if plan.Lane != config.ReleaseLanePRD {
+		return ErrInvalidCatalogRelease
+	}
+	expected, err := BuildCatalogPlan(plan.HostID, config.ReleaseLanePRD)
+	if err != nil || expected.Namespace != plan.Namespace {
+		return ErrInvalidCatalogRelease
+	}
+	return nil
+}
+
+func validateCatalogMutationLayout(layout catalogSelectorLayout) error {
+	if layout.lane != config.ReleaseLaneDev && layout.lane != config.ReleaseLaneQAS {
+		return ErrInvalidCatalogRelease
+	}
+	return validateCatalogSelectorLayout(layout)
+}
+
+// validateCatalogTransitionLayout is used only after the caller has entered
+// the appropriate lane-specific maintenance lease. The public Dev/QAS
+// mutation entry points continue to use validateCatalogMutationLayout; PRD
+// transitions are reached only through CatalogPRDMaintenance.
+func validateCatalogTransitionLayout(layout catalogSelectorLayout) error {
+	if layout.lane != config.ReleaseLaneDev && layout.lane != config.ReleaseLaneQAS && layout.lane != config.ReleaseLanePRD {
+		return ErrInvalidCatalogRelease
+	}
+	return validateCatalogSelectorLayout(layout)
+}
+
 // selectCatalogReleaseAt performs a local selector transaction. Callers that
 // activate a real lane must first hold the whole-lane cohort receipt added by
 // CAT-03; this primitive is intentionally not exposed as a standalone live
 // CLI operation in CAT-02.
 func selectCatalogReleaseAt(layout catalogSelectorLayout, releaseID, expectedTarget string, databaseSchema int, backup catalogBackupReference, interruption func(string) error) (CatalogSelectorOperation, error) {
-	if validateCatalogSelectorLayout(layout) != nil || !validCatalogReleaseID(releaseID) || databaseSchema <= 0 {
+	if validateCatalogMutationLayout(layout) != nil || !validCatalogReleaseID(releaseID) || databaseSchema <= 0 {
 		return CatalogSelectorOperation{}, ErrInvalidCatalogRelease
 	}
 	locks, err := acquireCatalogSelectorLocks(layout)
@@ -447,7 +803,7 @@ func selectCatalogReleaseAt(layout catalogSelectorLayout, releaseID, expectedTar
 }
 
 func selectCatalogReleaseLocked(layout catalogSelectorLayout, releaseID, expectedTarget string, databaseSchema int, backup catalogBackupReference, interruption func(string) error) (CatalogSelectorOperation, error) {
-	if validateCatalogSelectorLayout(layout) != nil || !validCatalogReleaseID(releaseID) || databaseSchema <= 0 {
+	if validateCatalogTransitionLayout(layout) != nil || !validCatalogReleaseID(releaseID) || databaseSchema <= 0 {
 		return CatalogSelectorOperation{}, ErrInvalidCatalogRelease
 	}
 	current, err := inspectCatalogSelector(layout)
@@ -478,7 +834,9 @@ func selectCatalogReleaseLocked(layout catalogSelectorLayout, releaseID, expecte
 	nextTarget := filepath.Join(layout.catalogRoot, releaseID, layout.hostID)
 	operation := CatalogSelectorOperation{
 		FormatVersion: catalogOperationFormatVersion, OperationID: operationID,
-		HostID: layout.hostID, Lane: layout.lane, Release: target.Identity,
+		CohortOperationID:    backup.CohortOperationID,
+		CohortEvidenceSHA256: backup.CohortEvidenceSHA256,
+		HostID:               layout.hostID, Lane: layout.lane, Release: target.Identity,
 		PreviousTarget: current.Target, NextTarget: nextTarget,
 		ConfigurationSHA256: configurationHash, DatabaseSchemaAtSwitch: databaseSchema,
 		BackupDirectory: backup.Directory, BackupManifestSHA256: backup.ManifestSHA256,
@@ -515,7 +873,7 @@ func selectCatalogReleaseLocked(layout catalogSelectorLayout, releaseID, expecte
 // actual current link as authority after interruption. It never guesses when
 // the selector points to an identity outside the recorded predecessor/target.
 func reconcileCatalogSelectorOperation(layout catalogSelectorLayout, operationID string) (CatalogSelectorOperation, error) {
-	if validateCatalogSelectorLayout(layout) != nil || !validCatalogOperationID(operationID) {
+	if validateCatalogMutationLayout(layout) != nil || !validCatalogOperationID(operationID) {
 		return CatalogSelectorOperation{}, ErrCatalogOperationInvalid
 	}
 	locks, err := acquireCatalogSelectorLocks(layout)
@@ -527,7 +885,7 @@ func reconcileCatalogSelectorOperation(layout catalogSelectorLayout, operationID
 }
 
 func reconcileCatalogSelectorLocked(layout catalogSelectorLayout, operationID string) (CatalogSelectorOperation, error) {
-	if validateCatalogSelectorLayout(layout) != nil || !validCatalogOperationID(operationID) {
+	if validateCatalogTransitionLayout(layout) != nil || !validCatalogOperationID(operationID) {
 		return CatalogSelectorOperation{}, ErrCatalogOperationInvalid
 	}
 	operation, err := readCatalogSelectorOperation(layout.operationRoot, operationID)
@@ -595,7 +953,7 @@ func reconcileCatalogSelectorLocked(layout catalogSelectorLayout, operationID st
 }
 
 func rollbackCatalogSelectorAt(layout catalogSelectorLayout, operationID string, databaseSchema int, backup catalogBackupReference, interruption func(string) error) (CatalogSelectorOperation, error) {
-	if validateCatalogSelectorLayout(layout) != nil || !validCatalogOperationID(operationID) || databaseSchema <= 0 {
+	if validateCatalogMutationLayout(layout) != nil || !validCatalogOperationID(operationID) || databaseSchema <= 0 {
 		return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
 	}
 	locks, err := acquireCatalogSelectorLocks(layout)
@@ -607,7 +965,7 @@ func rollbackCatalogSelectorAt(layout catalogSelectorLayout, operationID string,
 }
 
 func rollbackCatalogSelectorLocked(layout catalogSelectorLayout, operationID string, databaseSchema int, backup catalogBackupReference, interruption func(string) error) (CatalogSelectorOperation, error) {
-	if validateCatalogSelectorLayout(layout) != nil || !validCatalogOperationID(operationID) || databaseSchema <= 0 {
+	if validateCatalogTransitionLayout(layout) != nil || !validCatalogOperationID(operationID) || databaseSchema <= 0 {
 		return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
 	}
 	operation, err := readCatalogSelectorOperation(layout.operationRoot, operationID)
@@ -899,21 +1257,37 @@ func validateCatalogOperation(layout catalogSelectorLayout, operation CatalogSel
 	if err != nil || status.Identity != operation.Release || operation.DatabaseSchemaAtSwitch < status.Database.ReadSchemaMin || operation.DatabaseSchemaAtSwitch > status.Database.ReadSchemaMax {
 		return ErrCatalogOperationInvalid
 	}
-	if validateCatalogBackupReference(layout, catalogBackupReference{Directory: operation.BackupDirectory, ManifestSHA256: operation.BackupManifestSHA256}, operation.PreviousTarget, operation.DatabaseSchemaAtSwitch) != nil {
+	if validateCatalogBackupReference(layout, catalogBackupReference{Directory: operation.BackupDirectory, ManifestSHA256: operation.BackupManifestSHA256, CohortOperationID: operation.CohortOperationID}, operation.PreviousTarget, operation.DatabaseSchemaAtSwitch) != nil {
 		return ErrCatalogOperationInvalid
+	}
+	if layout.lane == config.ReleaseLanePRD {
+		plan, err := BuildPRDUpgradePlan(layout.hostID)
+		manifest, loadErr := loadPRDBackupManifest(plan, operation.BackupDirectory)
+		if err != nil || loadErr != nil || manifest.BundleSHA256 != operation.Release.BundleSHA256 {
+			return ErrCatalogOperationInvalid
+		}
 	}
 	rollbackRef := catalogBackupReference{Directory: operation.RollbackBackupDirectory, ManifestSHA256: operation.RollbackBackupManifestSHA256}
 	if operation.RollbackBackupDirectory != "" || operation.RollbackBackupManifestSHA256 != "" {
 		if validateCatalogBackupReference(layout, rollbackRef, operation.NextTarget, operation.DatabaseSchemaAtSwitch) != nil {
 			return ErrCatalogOperationInvalid
 		}
+		if layout.lane == config.ReleaseLanePRD {
+			plan, err := BuildPRDUpgradePlan(layout.hostID)
+			manifest, loadErr := loadPRDBackupManifest(plan, operation.RollbackBackupDirectory)
+			if err != nil || loadErr != nil || manifest.BundleSHA256 != operation.Release.BundleSHA256 {
+				return ErrCatalogOperationInvalid
+			}
+		}
 	}
 	return nil
 }
 
 func validateCatalogOperationFields(operation CatalogSelectorOperation) error {
-	if operation.FormatVersion != catalogOperationFormatVersion || !validCatalogOperationID(operation.OperationID) || !containsCatalogHost(operation.HostID) ||
-		(operation.Lane != config.ReleaseLaneDev && operation.Lane != config.ReleaseLaneQAS) || !validCatalogReleaseID(operation.Release.ReleaseID) ||
+	if operation.FormatVersion != catalogOperationFormatVersion || !validCatalogOperationID(operation.OperationID) ||
+		(operation.CohortOperationID != "" && (!validCatalogOperationID(operation.CohortOperationID) || !bundleDigestPattern.MatchString(operation.CohortEvidenceSHA256))) ||
+		(operation.CohortOperationID == "" && operation.CohortEvidenceSHA256 != "") || !containsCatalogHost(operation.HostID) ||
+		(operation.Lane != config.ReleaseLaneDev && operation.Lane != config.ReleaseLaneQAS && operation.Lane != config.ReleaseLanePRD) || !validCatalogReleaseID(operation.Release.ReleaseID) ||
 		operation.Release.HostID != operation.HostID || !bundleDigestPattern.MatchString(operation.Release.ReleaseSHA256) ||
 		!bundleDigestPattern.MatchString(operation.Release.BundleSHA256) || !bundleDigestPattern.MatchString(operation.ConfigurationSHA256) ||
 		operation.DatabaseSchemaAtSwitch <= 0 || !filepath.IsAbs(operation.NextTarget) || filepath.Clean(operation.NextTarget) != operation.NextTarget {
@@ -943,6 +1317,25 @@ func validateCatalogOperationFields(operation CatalogSelectorOperation) error {
 }
 
 func validateCatalogBackupReference(layout catalogSelectorLayout, reference catalogBackupReference, activeTarget string, schema int) error {
+	if layout.lane == config.ReleaseLanePRD {
+		plan, err := BuildPRDUpgradePlan(layout.hostID)
+		if err != nil || plan.Namespace.Backups != layout.backupRoot || plan.Namespace.Database != layout.databasePath {
+			return catalogBackupFailure("PRD backup plan is invalid")
+		}
+		if !filepath.IsAbs(reference.Directory) || filepath.Clean(reference.Directory) != reference.Directory ||
+			filepath.Dir(reference.Directory) != layout.backupRoot ||
+			(!strings.HasPrefix(filepath.Base(reference.Directory), "prd-upgrade-") && !strings.HasPrefix(filepath.Base(reference.Directory), "prd-catalog-")) ||
+			!bundleDigestPattern.MatchString(reference.ManifestSHA256) || schema <= 0 ||
+			validateCatalogRootPath(layout.backupRoot) != nil || validateExistingPrivateDirectory(layout.backupRoot) != nil {
+			return catalogBackupFailure("PRD backup reference is outside its protected root")
+		}
+		manifest, err := loadPRDBackupManifest(plan, reference.Directory)
+		if err != nil || manifest.SchemaVersion != schema || manifest.DatabasePath != layout.databasePath ||
+			backupManifestSHA256(reference.Directory) != reference.ManifestSHA256 {
+			return catalogBackupFailure("PRD backup manifest does not match host, database, schema, or digest")
+		}
+		return nil
+	}
 	if !filepath.IsAbs(reference.Directory) || filepath.Clean(reference.Directory) != reference.Directory || filepath.Dir(reference.Directory) != layout.backupRoot ||
 		!strings.HasPrefix(filepath.Base(reference.Directory), ".simple-backup-") || !bundleDigestPattern.MatchString(reference.ManifestSHA256) || schema <= 0 {
 		return catalogBackupFailure("reference path is not inside the selected lane backup root")

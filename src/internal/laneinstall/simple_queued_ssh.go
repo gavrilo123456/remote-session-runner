@@ -118,6 +118,8 @@ set -eu
 EXPECTED_FINGERPRINT=@FINGERPRINT@
 EXPECTED_COMMAND='runner-ssh-bridge --stdio'
 BRIDGE_BIN=@BRIDGE@
+BRIDGE_HOST=@HOST@
+BRIDGE_LANE=@LANE@
 CONTROLLER_MAP=@MAP@
 RUNNERD_SOCKET=@SOCKET@
 
@@ -136,11 +138,13 @@ fi
 if [ -n "${SSH_TTY-}" ]; then
 	fail 'PTY is not permitted'
 fi
-exec "$BRIDGE_BIN" --stdio --authenticated-key "$EXPECTED_FINGERPRINT" --controller-map "$CONTROLLER_MAP" --runnerd-socket "$RUNNERD_SOCKET"
+exec "$BRIDGE_BIN" --stdio --authenticated-key "$EXPECTED_FINGERPRINT" --controller-map "$CONTROLLER_MAP" --runnerd-socket "$RUNNERD_SOCKET" --catalog-host "$BRIDGE_HOST" --catalog-lane "$BRIDGE_LANE"
 `
 	replacer := strings.NewReplacer(
 		"@FINGERPRINT@", shellQuote(fingerprint),
 		"@BRIDGE@", shellQuote(bridge),
+		"@HOST@", shellQuote(namespace.RemoteProfile),
+		"@LANE@", shellQuote(string(namespace.Lane)),
 		"@MAP@", shellQuote(controllerMap),
 		"@SOCKET@", shellQuote(namespace.PrivateSocket),
 	)

@@ -96,3 +96,27 @@ func TestP104BridgeCommandServesPingWithMappedAuthenticatedKey(t *testing.T) {
 		t.Fatalf("bridge ping reply=%+v", reply)
 	}
 }
+
+func TestCatalogIdentityArgumentsAreAnAllOrNothingStartupGuard(t *testing.T) {
+	controllerMap := filepath.Join(t.TempDir(), "ssh-controller-map.yaml")
+	body := fmt.Sprintf("version: 1\nkeys:\n  %q:\n    controller_type: queued_mac\n    controller_id: tomasz.walczuk\n", p104DispatcherFingerprint)
+	if err := os.WriteFile(controllerMap, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{
+		"--stdio", "--authenticated-key", p104DispatcherFingerprint,
+		"--controller-map", controllerMap, "--runnerd-socket", filepath.Join(t.TempDir(), "runnerd.sock"),
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run(append(append([]string{}, base...), "--catalog-host", "linux-host"), bytes.NewReader(nil), &stdout, &stderr)
+	if code != 2 || !bytes.Contains(stderr.Bytes(), []byte("catalog host and lane identity must be supplied together")) {
+		t.Fatalf("half-specified catalog identity code=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	invalid := append(append([]string{}, base...), "--catalog-host", "unknown-host", "--catalog-lane", "prd")
+	code = Run(invalid, bytes.NewReader(nil), &stdout, &stderr)
+	if code != 78 || !bytes.Contains(stderr.Bytes(), []byte("installed catalog identity is invalid")) {
+		t.Fatalf("noncanonical catalog identity code=%d stderr=%q", code, stderr.String())
+	}
+}

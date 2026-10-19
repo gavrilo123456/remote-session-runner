@@ -7,6 +7,10 @@ umask 077
 # Mac dispatcher private key remains in its owner-only Mac service root.
 
 service_root='/home/ubuntu/.local/share/remote-session-runner'
+if [ -e "$service_root/current" ] || [ -L "$service_root/current" ]; then
+	printf '%s\n' 'legacy queued-bridge installer refuses a catalog-selected PRD; publish a new catalog candidate instead' >&2
+	exit 78
+fi
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 go_bin="$service_root/toolchains/go1.27.1/bin/go"
 bin_dir="$service_root/bin"

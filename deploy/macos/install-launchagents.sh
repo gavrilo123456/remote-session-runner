@@ -9,6 +9,10 @@ fi
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 service_root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+if [ -e "$service_root/current" ] || [ -L "$service_root/current" ]; then
+	printf '%s\n' 'legacy LaunchAgent installer refuses a catalog-selected PRD; use the supported catalog migration procedure' >&2
+	exit 78
+fi
 config_file="$service_root/config/mac.yaml"
 launch_agents="$HOME/Library/LaunchAgents"
 go_bin="$service_root/toolchains/go1.27.1/bin/go"

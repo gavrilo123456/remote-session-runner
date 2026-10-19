@@ -16,6 +16,7 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	hostruntime "remote-session-runner/src/internal/runtime"
@@ -88,6 +89,30 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runnerd: Linux host configuration is required")
 		return 1
 	}
+	maintenanceHeld := false
+	var maintenanceProbe *laneinstall.CatalogMaintenanceProbeGuard
+	if plan, catalogManaged, planErr := laneinstall.CatalogPlanFromConfiguration(loaded); planErr != nil {
+		fmt.Fprintln(stderr, "runnerd: configured catalog maintenance identity is invalid")
+		return 78
+	} else if catalogManaged && plan.HostID != "mac-control-plane" {
+		maintenanceHeld, operationID, holdErr := laneinstall.CatalogCohortAdmissionHeld(plan)
+		if holdErr != nil {
+			fmt.Fprintln(stderr, "runnerd: catalog cohort receipt is invalid; refusing work admission")
+			return 78
+		}
+		if maintenanceHeld {
+			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuard(plan, operationID)
+			if err != nil {
+				fmt.Fprintln(stderr, "runnerd: catalog maintenance probe guard is invalid")
+				return 78
+			}
+		}
+	}
+	executable, executableErr := os.Executable()
+	if executableErr != nil || laneinstall.ValidateConfiguredCatalogExecutable(loaded, "runnerd", executable) != nil {
+		fmt.Fprintln(stderr, "runnerd: running binary does not match the validated lane catalog selector")
+		return 78
+	}
 	releaseLifecycleLock, err := acquireRunnerdLifecycleLock(settings.ServiceRoot)
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: %v\n", err)
@@ -100,7 +125,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	ctx := context.Background()
-	authorityDB, err := store.Open(ctx, settings.Database)
+	openAuthority := store.Open
+	if maintenanceHeld {
+		// A catalog maintenance start must never apply migrations implicitly.
+		// The prepared cohort has already proven current-schema compatibility.
+		openAuthority = store.OpenExistingCurrent
+	}
+	authorityDB, err := openAuthority(ctx, settings.Database)
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: open authority database: %v\n", err)
 		return 1
@@ -147,10 +178,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runnerd: construct execution service: %v\n", err)
 		return 1
 	}
-	reconciliation, err := service.ReconcileStartup(ctx)
-	if err != nil {
-		fmt.Fprintf(stderr, "runnerd: startup runtime reconciliation: %v\n", err)
-		return 1
+	var reconciliation execution.StartupReconciliationReport
+	if !maintenanceHeld {
+		reconciliation, err = service.ReconcileStartup(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "runnerd: startup runtime reconciliation: %v\n", err)
+			return 1
+		}
 	}
 	slog.Info("runnerd startup reconciliation complete",
 		"sessions_inspected", reconciliation.SessionsInspected,
@@ -160,7 +194,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		"cleanup_unconfirmed", reconciliation.CleanupUnconfirmed,
 	)
 	requestGate := lifecycle.NewGate()
+	privateRequestGate := lifecycle.NewGate()
 	dispatchGate := lifecycle.NewGate()
+	if maintenanceHeld {
+		privateRequestGate.Stop()
+		dispatchGate.Stop()
+	}
 	dispatcher, err := NewRunnerDispatcher(RunnerDispatcherOptions{
 		Service: service, Authority: authority, DispatchGate: dispatchGate,
 	})
@@ -168,10 +207,23 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runnerd: construct queued dispatcher: %v\n", err)
 		return 1
 	}
-	directHandler, err := newDirectHTTPSAPIHandlerWithQueueWake(service, requestGate, dispatchGate, dispatcher.Wake)
+	var queueWake func()
+	if !maintenanceHeld {
+		queueWake = dispatcher.Wake
+	}
+	directHandler, err := newDirectHTTPSAPIHandlerWithQueueWake(service, requestGate, dispatchGate, queueWake)
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: construct direct HTTPS API: %v\n", err)
 		return 1
+	}
+	if maintenanceHeld {
+		api, ok := directHandler.(*directHTTPSAPI)
+		if !ok {
+			fmt.Fprintln(stderr, "runnerd: direct maintenance admission handler is unavailable")
+			return 1
+		}
+		api.maintenanceHeld = true
+		api.maintenanceProbeGuard = maintenanceProbe
 	}
 	directHandler = opshealth.Middleware("linux_runnerd", healthReport, directHandler)
 	httpsOptions := DirectHTTPSServerOptions{
@@ -208,7 +260,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	server, err := NewPrivateServer(PrivateServerOptions{
 		Service: service, SocketPath: settings.PrivateSocket, HealthReport: healthReport,
-		RequestGate: requestGate, DispatchGate: dispatchGate, QueueWake: dispatcher.Wake,
+		RequestGate: privateRequestGate, DispatchGate: dispatchGate, QueueWake: queueWake,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: construct private API: %v\n", err)
@@ -225,7 +277,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	hooks := &linuxShutdownHooks{
 		private: server, https: httpsServer, service: service, authority: authority,
-		requestGate: requestGate, dispatchGate: dispatchGate,
+		requestGate: requestGate, privateRequestGate: privateRequestGate, dispatchGate: dispatchGate,
 	}
 	coordinator, err := lifecycle.NewCoordinator(hooks, lifecycle.RealClock{}, lifecycle.Config{
 		DrainTimeout: linuxShutdownDrainTimeout, CleanupTimeout: linuxShutdownCleanupTimeout,
@@ -236,19 +288,25 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runnerd: configure shutdown: %v\n", err)
 		return 1
 	}
-	if err := dispatcher.RecoverNonterminalJobs(signalContext); err != nil {
-		_ = coordinator.Shutdown(context.Background())
-		fmt.Fprintf(stderr, "runnerd: recover queued jobs after startup reconciliation: %v\n", err)
-		return 1
+	if !maintenanceHeld {
+		if err := dispatcher.RecoverNonterminalJobs(signalContext); err != nil {
+			_ = coordinator.Shutdown(context.Background())
+			fmt.Fprintf(stderr, "runnerd: recover queued jobs after startup reconciliation: %v\n", err)
+			return 1
+		}
+		dispatcher.Start(signalContext)
 	}
-	dispatcher.Start(signalContext)
 	policyEnforcerDone := make(chan struct{})
-	go func() {
-		defer close(policyEnforcerDone)
-		execution.RunPolicyEnforcer(signalContext, service, linuxPolicySweepInterval, func(error) {
-			slog.Warn("runnerd policy sweep failed", "lifecycle_phase", "policy_enforcement", "reason", "policy_enforcement_failed")
-		})
-	}()
+	if maintenanceHeld {
+		close(policyEnforcerDone)
+	} else {
+		go func() {
+			defer close(policyEnforcerDone)
+			execution.RunPolicyEnforcer(signalContext, service, linuxPolicySweepInterval, func(error) {
+				slog.Warn("runnerd policy sweep failed", "lifecycle_phase", "policy_enforcement", "reason", "policy_enforcement_failed")
+			})
+		}()
+	}
 	metricsObserverDone := make(chan struct{})
 	go func() {
 		defer close(metricsObserverDone)

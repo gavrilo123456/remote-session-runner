@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"remote-session-runner/src/internal/commandstub"
 	"remote-session-runner/src/internal/config"
@@ -28,7 +31,7 @@ const maxLaneConfigBytes = 1 << 20
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help" || args[0] == "--version" || args[0] == "version")) {
-		os.Exit(commandstub.Run("runner-lane", "Build and operate existing-host Dev/QAS lanes; publish, inspect and check sealed-release selectors; run guarded unsuffixed PRD maintenance.", args, os.Stdout, os.Stderr))
+		os.Exit(commandstub.Run("runner-lane", "Build and operate existing-host Dev/QAS lanes; adopt and publish sealed releases; inspect selectors; run guarded unsuffixed PRD maintenance.", args, os.Stdout, os.Stderr))
 	}
 	os.Exit(run(args, os.Stdout, os.Stderr))
 }
@@ -75,6 +78,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogInspect(args[1:], stdout, stderr)
 	case "catalog-status":
 		err = runCatalogStatus(args[1:], stdout, stderr)
+	case "catalog-adopt":
+		err = runCatalogAdopt(args[1:], stdout, stderr)
+	case "catalog-cohort":
+		err = runCatalogCohort(args[1:], stdout, stderr)
+	case "catalog-prd-backup":
+		err = runCatalogPRDBackup(ctx, args[1:], stdout, stderr)
+	case "catalog-probe-prepare":
+		err = runCatalogProbePrepare(args[1:], stdout, stderr)
+	case "catalog-select", "catalog-reconcile", "catalog-rollback":
+		err = runCatalogSelectorMaintenance(ctx, args[0], args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "runner-lane: unknown command %q\n", args[0])
 		return 2
@@ -198,14 +211,14 @@ func runCatalogStatus(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("runner-lane catalog-status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	host := flags.String("host", "", "canonical identity of this existing host")
-	lane := flags.String("lane", "", "dev or qas")
+	lane := flags.String("lane", "", "dev, qas, or prd")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || !currentCatalogHost(*host) {
-		return errors.New("usage: runner-lane catalog-status --host THIS-HOST --lane dev|qas")
+		return errors.New("usage: runner-lane catalog-status --host THIS-HOST --lane dev|qas|prd")
 	}
-	plan, err := simplePlan(*host, *lane)
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
 	if err != nil {
 		return err
 	}
@@ -220,6 +233,360 @@ func runCatalogStatus(args []string, stdout, stderr io.Writer) error {
 	return writeJSON(stdout, status)
 }
 
+func runCatalogAdopt(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-adopt", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	lane := flags.String("lane", "", "dev or qas")
+	output := flags.String("output-dir", "", "external immutable bundle copy destination")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *output == "" || !currentCatalogHost(*host) || !filepath.IsAbs(*output) || filepath.Clean(*output) != *output {
+		return errors.New("usage: runner-lane catalog-adopt --host THIS-HOST --lane dev|qas --output-dir ABSOLUTE-OUTSIDE-LANE-AND-CATALOG")
+	}
+	plan, err := simplePlan(*host, *lane)
+	if err != nil {
+		return err
+	}
+	manifest, err := laneinstall.CopySelectedLegacyBundleForCatalog(plan, *output)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, manifest)
+}
+
+func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-cohort", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	lane := flags.String("lane", "", "dev, qas, or prd")
+	action := flags.String("action", "", "prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, or open")
+	operationID := flags.String("operation-id", "", "32-character cohort operation identity")
+	receiptFile := flags.String("receipt-file", "", "owner-only cohort JSON for prepare or sync")
+	subjectHost := flags.String("subject-host", "", "host identity recorded by preflight, switch, verify, or rollback-host")
+	evidenceSHA := flags.String("evidence-sha256", "", "digest of the bounded host/operator evidence")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHost(*host) {
+		return errors.New("usage: runner-lane catalog-cohort --host THIS-HOST --lane dev|qas|prd --action ACTION [--operation-id ID] [--receipt-file FILE] [--subject-host HOST] [--evidence-sha256 SHA256]")
+	}
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
+	if err != nil {
+		return err
+	}
+	if *action == "prepare" {
+		if *receiptFile == "" || *operationID != "" || *subjectHost != "" || *evidenceSHA != "" {
+			return errors.New("prepare requires only --receipt-file in addition to host and lane")
+		}
+		receipt, err := laneinstall.LoadCatalogCohortReceiptFile(*receiptFile)
+		if err != nil || receipt.Lane != plan.Lane {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		path, err := laneinstall.WriteCatalogCohortReceipt(plan, receipt)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, struct {
+			OperationID string `json:"operation_id"`
+			Path        string `json:"local_receipt_path"`
+			Stage       string `json:"stage"`
+		}{receipt.OperationID, path, string(receipt.Stage)})
+	}
+	if *action == "sync" {
+		if *receiptFile == "" || *operationID != "" || *subjectHost != "" || *evidenceSHA != "" {
+			return errors.New("sync requires only --receipt-file in addition to host and lane")
+		}
+		incoming, err := laneinstall.LoadCatalogCohortReceiptFile(*receiptFile)
+		if err != nil || incoming.Lane != plan.Lane {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		path, err := laneinstall.WriteCatalogCohortReceipt(plan, incoming)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, struct {
+			OperationID string `json:"operation_id"`
+			Path        string `json:"local_receipt_path"`
+			Stage       string `json:"stage"`
+		}{incoming.OperationID, path, string(incoming.Stage)})
+	}
+	if *operationID == "" || *receiptFile != "" {
+		return errors.New("cohort actions require --operation-id and do not accept --receipt-file")
+	}
+	receipt, err := laneinstall.ReadCatalogCohortReceipt(plan, *operationID)
+	if err != nil {
+		return err
+	}
+	if *action == "status" {
+		if *subjectHost != "" || *evidenceSHA != "" {
+			return errors.New("status does not accept host subjects or evidence digests")
+		}
+		return writeJSON(stdout, receipt)
+	}
+	allowed := map[string]struct{}{
+		"hold": {}, "preflight": {}, "verify-start": {}, "verify": {}, "complete": {}, "block": {},
+		"resume": {}, "rollback-start": {}, "rollback-complete": {}, "open": {},
+	}
+	if _, ok := allowed[*action]; !ok || *evidenceSHA == "" {
+		return errors.New("cohort transition requires a supported --action and --evidence-sha256")
+	}
+	perHost := *action == "preflight" || *action == "verify"
+	if perHost != (*subjectHost != "") {
+		return errors.New("preflight and verify require --subject-host; other actions forbid it")
+	}
+	if perHost && *subjectHost != *host {
+		return errors.New("host-scoped cohort evidence must be recorded by that host")
+	}
+	if *action == "hold" {
+		active, err := catalogCohortLocalServiceActive(context.Background(), plan)
+		if err != nil {
+			return err
+		}
+		if active {
+			return errors.New("selected lane service must be stopped before the local cohort hold is recorded")
+		}
+	}
+	if *action == "verify-start" || *action == "verify" || *action == "complete" || *action == "open" {
+		if err := verifyLocalCatalogCohortTarget(plan, receipt); err != nil {
+			return err
+		}
+	}
+	receipt, err = laneinstall.AdvanceCatalogCohortReceipt(receipt, *action, *subjectHost, *evidenceSHA, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	path, err := laneinstall.WriteCatalogCohortReceipt(plan, receipt)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, struct {
+		OperationID string `json:"operation_id"`
+		Path        string `json:"local_receipt_path"`
+		Stage       string `json:"stage"`
+		Transitions int    `json:"transition_count"`
+	}{receipt.OperationID, path, string(receipt.Stage), len(receipt.Transitions)})
+}
+
+// runCatalogProbePrepare creates a one-time capability for the fixed harmless
+// five-second worker probe. It emits the exact harmless request body and
+// prints the bearer token once for the already-authenticated direct mTLS call.
+func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-probe-prepare", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical Linux worker identity")
+	lane := flags.String("lane", "", "dev, qas, or prd")
+	operationID := flags.String("operation-id", "", "held cohort operation identity")
+	controllerID := flags.String("controller-id", "", "existing direct-mTLS controller identity")
+	ttlSeconds := flags.Int("ttl-seconds", 120, "one-time probe token lifetime from 1 to 600 seconds")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHost(*host) || *host == "mac-control-plane" ||
+		(*lane != "dev" && *lane != "qas" && *lane != "prd") || !validCLIProbeOperationID(*operationID) ||
+		*controllerID == "" || *ttlSeconds < 1 || *ttlSeconds > 600 {
+		return errors.New("usage: runner-lane catalog-probe-prepare --host LINUX-HOST --lane dev|qas|prd --operation-id ID --controller-id ID [--ttl-seconds 1..600]")
+	}
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
+	if err != nil {
+		return err
+	}
+	idempotencyKey := "catalog-probe-" + *operationID + "-" + *host
+	requestBody, err := laneinstall.CatalogMaintenanceProbeRequestBody(plan)
+	if err != nil {
+		return err
+	}
+	expiresAt := time.Now().UTC().Add(time.Duration(*ttlSeconds) * time.Second)
+	token, err := laneinstall.PrepareCatalogMaintenanceProbe(plan, *operationID, *controllerID, idempotencyKey, requestBody, expiresAt)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(requestBody)
+	return writeJSON(stdout, struct {
+		HostID         string          `json:"host_id"`
+		Lane           string          `json:"lane"`
+		OperationID    string          `json:"operation_id"`
+		ControllerID   string          `json:"controller_id"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		RequestSHA256  string          `json:"request_body_sha256"`
+		RequestBody    json.RawMessage `json:"request_body"`
+		ExpiresAt      string          `json:"expires_at"`
+		Token          string          `json:"one_time_token"`
+	}{*host, *lane, *operationID, *controllerID, idempotencyKey, hex.EncodeToString(digest[:]), requestBody, expiresAt.Format(time.RFC3339Nano), token})
+}
+
+func validCLIProbeOperationID(value string) bool {
+	return len(value) == 32 && strings.Trim(value, "0123456789abcdef") == ""
+}
+
+func runCatalogSelectorMaintenance(ctx context.Context, action string, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane "+action, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host ID")
+	lane := flags.String("lane", "", "dev, qas, or prd")
+	releaseID := flags.String("release-id", "", "sealed catalog release label for catalog-select")
+	expectedTarget := flags.String("expected-target", "", "exact existing selector target for catalog-select")
+	cohortOperationID := flags.String("cohort-operation-id", "", "held four-host cohort receipt identity")
+	selectorOperationID := flags.String("selector-operation-id", "", "host-local selector journal identity for reconcile or rollback")
+	evidenceSHA := flags.String("evidence-sha256", "", "bounded operator switch evidence digest")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas" && *lane != "prd") {
+		return errors.New("usage: runner-lane catalog-select|catalog-reconcile|catalog-rollback --host HOST --lane dev|qas|prd --cohort-operation-id ID [operation-specific flags]")
+	}
+	if action == "catalog-select" {
+		if *releaseID == "" || *cohortOperationID == "" || *expectedTarget == "" || *evidenceSHA == "" || *selectorOperationID != "" {
+			return errors.New("catalog-select requires release, expected target, cohort operation, and evidence digest")
+		}
+	} else if *selectorOperationID == "" || *cohortOperationID == "" || *releaseID != "" || *expectedTarget != "" || *evidenceSHA != "" {
+		return errors.New("catalog-reconcile and catalog-rollback require --selector-operation-id and --cohort-operation-id")
+	}
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
+	if err != nil {
+		return err
+	}
+	if action != "catalog-select" {
+		recorded, err := laneinstall.InspectCatalogSelectorOperationForPlan(plan, *selectorOperationID)
+		if err != nil || recorded.CohortOperationID != *cohortOperationID {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+	}
+	if *lane == "prd" {
+		prdPlan, err := laneinstall.BuildPRDUpgradePlan(*host)
+		if err != nil {
+			return err
+		}
+		controller, err := laneinstall.NewPRDServiceController()
+		if err != nil {
+			return err
+		}
+		maintenance, err := laneinstall.BeginCatalogPRDMaintenance(ctx, prdPlan, controller, *cohortOperationID)
+		if err != nil {
+			return err
+		}
+		defer maintenance.Close()
+		var operation laneinstall.CatalogSelectorOperation
+		switch action {
+		case "catalog-select":
+			receipt, err := laneinstall.ReadCatalogCohortReceipt(plan, *cohortOperationID)
+			if err != nil {
+				return err
+			}
+			var backup laneinstall.CatalogCohortHostPreflight
+			for _, hostPreflight := range receipt.Hosts {
+				if hostPreflight.HostID == *host {
+					backup = hostPreflight
+					break
+				}
+			}
+			if backup.HostID == "" {
+				return laneinstall.ErrCatalogOperationInvalid
+			}
+			if err := maintenance.UseVerifiedBackup(ctx, backup.BackupDirectory, backup.BackupManifestSHA256); err != nil {
+				return err
+			}
+			operation, err = maintenance.Select(ctx, *releaseID, *expectedTarget, *cohortOperationID, *evidenceSHA)
+		case "catalog-reconcile":
+			operation, err = maintenance.Reconcile(ctx, *selectorOperationID)
+		case "catalog-rollback":
+			operation, err = maintenance.Rollback(ctx, *selectorOperationID)
+		}
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, operation)
+	}
+	controller, err := laneinstall.NewSimpleServiceController()
+	if err != nil {
+		return err
+	}
+	maintenance, err := laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
+	if err != nil {
+		return err
+	}
+	defer maintenance.Close()
+	var operation laneinstall.CatalogSelectorOperation
+	switch action {
+	case "catalog-select":
+		receipt, err := laneinstall.ReadCatalogCohortReceipt(plan, *cohortOperationID)
+		if err != nil {
+			return err
+		}
+		var backup laneinstall.CatalogCohortHostPreflight
+		for _, hostPreflight := range receipt.Hosts {
+			if hostPreflight.HostID == *host {
+				backup = hostPreflight
+				break
+			}
+		}
+		if backup.HostID == "" {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		if err := maintenance.UseVerifiedBackup(ctx, backup.BackupDirectory, backup.BackupManifestSHA256); err != nil {
+			return err
+		}
+		operation, err = maintenance.Select(ctx, *releaseID, *expectedTarget, *cohortOperationID, *evidenceSHA)
+	case "catalog-reconcile":
+		operation, err = maintenance.Reconcile(ctx, *selectorOperationID)
+	case "catalog-rollback":
+		operation, err = maintenance.Rollback(ctx, *selectorOperationID)
+	}
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, operation)
+}
+
+func runCatalogPRDBackup(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-prd-backup", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host ID")
+	releaseID := flags.String("release-id", "", "sealed catalog release label to bind the backup")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *releaseID == "" || !currentCatalogHost(*host) {
+		return errors.New("usage: runner-lane catalog-prd-backup --host HOST --release-id RELEASE")
+	}
+	plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	root, err := laneinstall.DefaultCatalogRootForPlan(laneinstall.Plan{HostID: *host, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace})
+	if err != nil {
+		return err
+	}
+	target, err := laneinstall.InspectCatalogRelease(root, *host, *releaseID)
+	if err != nil {
+		return err
+	}
+	receipt, err := laneinstall.CreatePRDCatalogBackup(ctx, plan, target.Identity.BundleSHA256)
+	if err != nil {
+		return err
+	}
+	availableBytes, requiredBytes, err := laneinstall.ReadPRDCatalogSelectorCapacity(plan)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, struct {
+		HostID               string `json:"host_id"`
+		Lane                 string `json:"lane"`
+		ReleaseID            string `json:"release_id"`
+		ReleaseSHA256        string `json:"release_sha256"`
+		BundleSHA256         string `json:"bundle_sha256"`
+		Directory            string `json:"backup_directory"`
+		ManifestSHA256       string `json:"backup_manifest_sha256"`
+		SchemaVersion        int    `json:"schema_version"`
+		DatabaseBackupSHA256 string `json:"database_backup_sha256"`
+		AvailableBytes       uint64 `json:"available_bytes_after_backup"`
+		RequiredBytes        uint64 `json:"required_selector_headroom_bytes"`
+	}{*host, "prd", *releaseID, target.Identity.ReleaseSHA256, target.Identity.BundleSHA256, receipt.Directory,
+		laneinstall.PRDBackupManifestSHA256(receipt.Directory), receipt.Manifest.SchemaVersion, receipt.Manifest.DatabaseSHA256,
+		availableBytes, requiredBytes})
+}
+
 func currentCatalogHost(hostID string) bool {
 	if !laneinstall.CatalogHostMatchesPlatform(hostID, runtime.GOOS, runtime.GOARCH) {
 		return false
@@ -229,7 +596,60 @@ func currentCatalogHost(hostID string) bool {
 		account = config.MacAccount
 	}
 	current, err := user.Current()
-	return err == nil && current.Username == account
+	if err != nil || current.Username != account {
+		return false
+	}
+	prd, err := laneinstall.BuildPRDUpgradePlan(hostID)
+	if err != nil {
+		return false
+	}
+	loaded, err := config.LoadFile(prd.Namespace.ConfigFile)
+	if err != nil {
+		return false
+	}
+	configured, _, err := laneinstall.CatalogPlanFromConfiguration(loaded)
+	return err == nil && configured.HostID == hostID && configured.Lane == config.ReleaseLanePRD
+}
+
+func catalogCohortLocalServiceActive(ctx context.Context, plan laneinstall.Plan) (bool, error) {
+	if plan.Lane == config.ReleaseLanePRD {
+		prdPlan, err := laneinstall.BuildPRDUpgradePlan(plan.HostID)
+		if err != nil {
+			return false, err
+		}
+		controller, err := laneinstall.NewPRDServiceController()
+		if err != nil {
+			return false, err
+		}
+		return controller.Status(ctx, prdPlan)
+	}
+	controller, err := laneinstall.NewSimpleServiceController()
+	if err != nil {
+		return false, err
+	}
+	return controller.Status(ctx, plan)
+}
+
+func verifyLocalCatalogCohortTarget(plan laneinstall.Plan, receipt laneinstall.CatalogCohortReceipt) error {
+	active, err := catalogCohortLocalServiceActive(context.Background(), plan)
+	if err != nil || !active {
+		return errors.New("selected lane service must be active for cohort verification")
+	}
+	root, err := laneinstall.DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return err
+	}
+	status, err := laneinstall.InspectCatalogSelectorForPlan(plan, root)
+	if err != nil || status.Kind != "catalog" || status.Release == nil ||
+		status.Release.Identity.ReleaseID != receipt.ReleaseID || status.Release.Identity.ReleaseSHA256 != receipt.ReleaseSHA256 {
+		return errors.New("local selected release does not match the held cohort identity")
+	}
+	for _, host := range receipt.Hosts {
+		if host.HostID == plan.HostID && status.Release.Identity.BundleSHA256 == host.Target.BundleSHA256 {
+			return nil
+		}
+	}
+	return errors.New("local selected host bundle does not match the held cohort identity")
 }
 
 func localCatalogRoot(hostID string) (string, error) {

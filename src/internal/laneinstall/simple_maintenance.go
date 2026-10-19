@@ -90,21 +90,6 @@ func BeginSimpleLaneMaintenance(ctx context.Context, plan Plan, service SimpleSe
 	if validateSimplePlan(plan) != nil || service == nil {
 		return nil, ErrSimpleLanePreflight
 	}
-	active, err := service.Status(ctx, plan)
-	if err != nil {
-		return nil, fmt.Errorf("read selected lane service state before maintenance: %w", err)
-	}
-	if active {
-		stopper, ok := service.(interface {
-			Stop(context.Context, Plan) error
-		})
-		if !ok {
-			return nil, ErrSimpleLaneNotQuiescent
-		}
-		if err := stopper.Stop(ctx, plan); err != nil {
-			return nil, fmt.Errorf("gracefully stop selected lane and prove its terminal inventory: %w", err)
-		}
-	}
 	lockFD, err := acquireSimpleLaneLock(plan)
 	if err != nil {
 		return nil, err
@@ -113,6 +98,21 @@ func BeginSimpleLaneMaintenance(ctx context.Context, plan Plan, service SimpleSe
 	fail := func(err error) (*SimpleLaneMaintenance, error) {
 		_ = maintenance.Close()
 		return nil, err
+	}
+	active, err := service.Status(ctx, plan)
+	if err != nil {
+		return fail(fmt.Errorf("read selected lane service state before maintenance: %w", err))
+	}
+	if active {
+		stopper, ok := service.(interface {
+			Stop(context.Context, Plan) error
+		})
+		if !ok {
+			return fail(ErrSimpleLaneNotQuiescent)
+		}
+		if err := stopper.Stop(ctx, plan); err != nil {
+			return fail(fmt.Errorf("gracefully stop selected lane and prove its terminal inventory: %w", err))
+		}
 	}
 	active, err = service.Status(ctx, plan)
 	if err != nil {

@@ -3,6 +3,10 @@ set -eu
 umask 077
 
 service_root='/home/ubuntu/.local/share/remote-session-runner'
+if [ -e "$service_root/current" ] || [ -L "$service_root/current" ]; then
+	printf '%s\n' 'legacy systemd installer refuses a catalog-selected PRD; use the supported catalog migration procedure' >&2
+	exit 78
+fi
 unit_source=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/runnerd.service
 entrypoint_source=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/runnerd-entrypoint.sh
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)

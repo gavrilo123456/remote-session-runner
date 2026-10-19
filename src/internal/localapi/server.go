@@ -53,24 +53,28 @@ type ServerOptions struct {
 	MaxBodyBytes           int64
 	HealthReport           func(context.Context) opshealth.Report
 	MailboxLifecycleStatus MailboxLifecycleStatusProvider
+	// MaintenanceAdmissionClosed leaves read-only health/status available while
+	// refusing local submissions and control mutations for a catalog cohort.
+	MaintenanceAdmissionClosed bool
 }
 
 // Server is the Mac-local HTTP/JSON adapter over an owner-only Unix socket.
 type Server struct {
-	authority              *store.AuthorityStore
-	owner                  domain.ControllerIdentity
-	socketPath             string
-	maxBodyBytes           int64
-	httpServer             *http.Server
-	listener               net.Listener
-	socketCreated          bool
-	socketInfo             os.FileInfo
-	requestGate            *lifecycle.Gate
-	cancelRequests         context.CancelFunc
-	mu                     sync.Mutex
-	closed                 bool
-	healthReport           func(context.Context) opshealth.Report
-	mailboxLifecycleStatus MailboxLifecycleStatusProvider
+	authority                  *store.AuthorityStore
+	owner                      domain.ControllerIdentity
+	socketPath                 string
+	maxBodyBytes               int64
+	httpServer                 *http.Server
+	listener                   net.Listener
+	socketCreated              bool
+	socketInfo                 os.FileInfo
+	requestGate                *lifecycle.Gate
+	cancelRequests             context.CancelFunc
+	mu                         sync.Mutex
+	closed                     bool
+	healthReport               func(context.Context) opshealth.Report
+	mailboxLifecycleStatus     MailboxLifecycleStatusProvider
+	maintenanceAdmissionClosed bool
 	// afterIntentCommit is a private crash-test seam. The production service
 	// composition never sets it; package tests use it to stop the real HTTP
 	// process after SQLite committed an idempotent local receipt.
@@ -110,10 +114,11 @@ func NewServer(options ServerOptions) (*Server, error) {
 		httpServer: &http.Server{BaseContext: func(net.Listener) context.Context {
 			return requestContext
 		}},
-		requestGate:            lifecycle.NewGate(),
-		cancelRequests:         cancelRequests,
-		healthReport:           options.HealthReport,
-		mailboxLifecycleStatus: options.MailboxLifecycleStatus,
+		requestGate:                lifecycle.NewGate(),
+		cancelRequests:             cancelRequests,
+		healthReport:               options.HealthReport,
+		mailboxLifecycleStatus:     options.MailboxLifecycleStatus,
+		maintenanceAdmissionClosed: options.MaintenanceAdmissionClosed,
 	}, nil
 }
 
@@ -122,6 +127,16 @@ func (s *Server) SocketPath() string {
 		return ""
 	}
 	return s.socketPath
+}
+
+// SetMaintenanceAdmissionClosed may be called before Listen. In this mode the
+// socket remains available for read-only status and health queries, but no
+// submission, cancellation, or other mutation is admitted.
+func (s *Server) SetMaintenanceAdmissionClosed(closed bool) {
+	if s == nil {
+		return
+	}
+	s.maintenanceAdmissionClosed = closed
 }
 
 func (s *Server) Listen() error {
@@ -400,6 +415,10 @@ type localEventHistoryDetails struct {
 }
 
 func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	if s.maintenanceAdmissionClosed && request.Method != http.MethodGet {
+		writeError(response, http.StatusServiceUnavailable, "maintenance_admission_closed", "local submissions and mutations are closed for cohort maintenance")
+		return
+	}
 	release, err := s.requestGate.Enter()
 	if err != nil {
 		writeError(response, http.StatusServiceUnavailable, "service_shutting_down", "local API is shutting down")

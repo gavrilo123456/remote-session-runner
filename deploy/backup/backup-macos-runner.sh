@@ -8,6 +8,10 @@ umask 077
 
 account='tomasz.walczuk'
 service_root='/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner'
+if [ -e "$service_root/current" ] || [ -L "$service_root/current" ]; then
+	printf '%s\n' 'legacy Mac backup refuses a catalog-selected PRD; use the selector-aware catalog backup procedure' >&2
+	exit 78
+fi
 config_file="$service_root/config/mac.yaml"
 launch_agents="$HOME/Library/LaunchAgents"
 uid=$(id -u)
