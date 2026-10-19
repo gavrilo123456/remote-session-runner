@@ -662,7 +662,7 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 	}
 	var target unix.Stat_t
 	if unix.Lstat(artifact.InstallPath, &target) != nil || target.Mode&unix.S_IFMT != unix.S_IFREG || target.Uid != uint32(os.Getuid()) ||
-		target.Gid != uint32(os.Getgid()) || uint32(target.Mode&0o777) != expectedOldMode || !catalogFileHasSingleLinkFromStat(target) {
+		(artifact.Group != "" && target.Gid != uint32(os.Getgid())) || uint32(target.Mode&0o777) != expectedOldMode || !catalogFileHasSingleLinkFromStat(target) {
 		return ErrSimpleArtifactConflict
 	}
 	oldSHA, err := fileSHA256(artifact.InstallPath)
@@ -672,7 +672,7 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 	parent := filepath.Dir(artifact.InstallPath)
 	var parentStat unix.Stat_t
 	if unix.Lstat(parent, &parentStat) != nil || parentStat.Mode&unix.S_IFMT != unix.S_IFDIR || parentStat.Uid != uint32(os.Getuid()) ||
-		parentStat.Gid != uint32(os.Getgid()) || parentStat.Mode&0o022 != 0 {
+		(artifact.Group != "" && parentStat.Gid != uint32(os.Getgid())) || parentStat.Mode&0o022 != 0 {
 		return ErrSimpleArtifactConflict
 	}
 	temporary, err := os.CreateTemp(parent, ".runner-prd-catalog-artifact-*")
