@@ -82,6 +82,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogAdopt(args[1:], stdout, stderr)
 	case "catalog-cohort":
 		err = runCatalogCohort(args[1:], stdout, stderr)
+	case "catalog-refresh-entrypoint":
+		err = runCatalogRefreshEntrypoint(ctx, args[1:], stdout, stderr)
 	case "catalog-work-inventory":
 		err = runCatalogWorkInventory(ctx, args[1:], stdout, stderr)
 	case "catalog-host-preflight":
@@ -101,6 +103,40 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func runCatalogRefreshEntrypoint(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-refresh-entrypoint", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing Linux worker identity")
+	lane := flags.String("lane", "", "dev or qas")
+	cohortOperationID := flags.String("cohort-operation-id", "", "held four-host cohort operation identity")
+	expectedCurrentSHA256 := flags.String("expected-current-sha256", "", "exact observed prior launcher digest")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || (*host != "linux-host" && *host != "sandbox-host" && *host != "factory-sandbox") ||
+		(*lane != "dev" && *lane != "qas") || *cohortOperationID == "" || len(*expectedCurrentSHA256) != 64 {
+		return errors.New("usage: runner-lane catalog-refresh-entrypoint --host LINUX-HOST --lane dev|qas --cohort-operation-id ID --expected-current-sha256 SHA256")
+	}
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
+	if err != nil {
+		return err
+	}
+	controller, err := laneinstall.NewSimpleServiceController()
+	if err != nil {
+		return err
+	}
+	maintenance, err := laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
+	if err != nil {
+		return err
+	}
+	defer maintenance.Close()
+	operation, err := maintenance.RefreshLinuxEntrypoint(ctx, *cohortOperationID, *expectedCurrentSHA256)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, operation)
 }
 
 func runCatalogManifest(args []string, stdout, stderr io.Writer) error {
