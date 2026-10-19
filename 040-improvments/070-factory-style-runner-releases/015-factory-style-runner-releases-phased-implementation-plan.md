@@ -1,16 +1,20 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
 **Status: implementation assigned — 2026-10-19. CAT-01, CAT-02 and CAT-03 source, fixture, host-check and Git-delivery gates are complete; CAT-03 source revision `c381d8efc719a2cc22fc09158f2e6f8c07fccd2b`.**
-CAT-04 is in progress. Candidate `cat-20261019-f0e2843` is sealed and
-published to all four immutable catalogs from source revision
-`f0e2843c5c92874ae817e7653fef01dd1311e5f6`; no selector or service has changed.
-Live Dev activation is held pending verified admission-fence evidence and the
-required installed acceptance. CAT-05 through CAT-07 have not started.
-The sealed candidate is the only live catalog publication so far. No lane
-selector, installed service binary, configuration, database schema, mailbox
-identity or service lifecycle has changed; CAT-02 validation used disposable
-fixtures. Later unit operations follow their own prerequisites and approval
-gates.
+CAT-04 is blocked. Candidate `cat-20261019-f0e2843` is sealed and published
+to all four immutable catalogs from source revision
+`f0e2843c5c92874ae817e7653fef01dd1311e5f6`. The four Dev selectors have been
+switched under cohort hold, and supported launcher refreshes completed on the
+three Ubuntu workers. Linux Dev then failed closed at startup because the
+candidate found multiple outstanding cohort receipts holding admissions;
+Dev acceptance is incomplete. The other Dev services remain stopped. QAS and
+PRD selectors and services are unchanged. CAT-05 through CAT-07 have not
+started. Evidence and the exact blocker are in
+[`CAT-04.md`](../../040-implementation-evidence/CAT-04.md). The sealed runtime
+candidate remains fixed; any runtime correction requires a new sealed release
+and renewed Dev then QAS acceptance. External project publishers remain
+paused as instructed. Later unit operations follow their own prerequisites
+and approval gates.
 Follow the [idea](005-initial-idea.md) and [detailed design](010-factory-style-runner-releases-detailed-design.md).
 
 ## 1. Relationship to existing work
