@@ -23,9 +23,10 @@ import (
 )
 
 var (
-	ErrCatalogSelectorConflict = errors.New("catalog selector changed from its expected predecessor")
-	ErrCatalogOperationInvalid = errors.New("invalid or inconsistent catalog selector operation")
-	ErrCatalogRollbackUnsafe   = errors.New("catalog binary rollback is incompatible with current data or configuration")
+	ErrCatalogSelectorConflict  = errors.New("catalog selector changed from its expected predecessor")
+	ErrCatalogOperationInvalid  = errors.New("invalid or inconsistent catalog selector operation")
+	ErrCatalogRollbackUnsafe    = errors.New("catalog binary rollback is incompatible with current data or configuration")
+	ErrCatalogInsufficientSpace = errors.New("insufficient free space for the catalog selector operation")
 )
 
 const catalogOperationFormatVersion = 1
@@ -175,6 +176,84 @@ func (m *CatalogLaneMaintenance) Backup(ctx context.Context) (SimpleLaneBackupRe
 		return SimpleLaneBackupReceipt{}, ErrSimpleBackupRequired
 	}
 	return m.maintenance.Backup(ctx)
+}
+
+type CatalogCohortHostPreflightReport struct {
+	Preflight     CatalogCohortHostPreflight    `json:"preflight"`
+	WorkInventory store.RestartPreflightMetrics `json:"work_inventory"`
+}
+
+// CohortHostPreflight returns the fresh, host-local evidence required by a
+// catalog cohort receipt. The selected service must already be stopped by the
+// maintenance lease, the complete restart inventory must remain empty, and a
+// verified online backup must have been captured through Backup.
+func (m *CatalogLaneMaintenance) CohortHostPreflight(ctx context.Context, releaseID string, requiredBytes uint64) (CatalogCohortHostPreflightReport, error) {
+	if m == nil || m.closed || m.maintenance == nil || m.maintenance.fresh ||
+		!validCatalogReleaseID(releaseID) || requiredBytes == 0 || m.maintenance.backup == nil {
+		return CatalogCohortHostPreflightReport{}, ErrSimpleBackupRequired
+	}
+	active, err := m.maintenance.service.Status(ctx, m.maintenance.plan)
+	if err != nil || active {
+		return CatalogCohortHostPreflightReport{}, ErrSimpleLaneNotQuiescent
+	}
+	current, err := simpleCurrentBundleForPlan(m.maintenance.plan)
+	if err != nil || current != m.maintenance.proof.current {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogSelectorConflict
+	}
+	proof, err := readSimpleLaneQuiescence(ctx, m.maintenance.plan, current)
+	if err != nil || proof.database != m.maintenance.proof.database || !simpleMetricsEmpty(proof.metrics) {
+		return CatalogCohortHostPreflightReport{}, ErrSimpleLaneNotQuiescent
+	}
+	if !simpleBackupReceiptValid(m.maintenance.plan, *m.maintenance.backup, proof) {
+		return CatalogCohortHostPreflightReport{}, ErrSimpleBackupRequired
+	}
+	status, err := inspectCatalogSelector(m.layout)
+	if err != nil || status.Target != current {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogSelectorConflict
+	}
+	target, err := InspectCatalogRelease(m.layout.catalogRoot, m.layout.hostID, releaseID)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	configurationSHA256, err := hashCatalogConfiguration(m.layout.configFile)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	workBytes, err := json.Marshal(proof.metrics)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	workDigest := sha256.Sum256(workBytes)
+	var stat unix.Statfs_t
+	if err := unix.Statfs(m.layout.backupRoot, &stat); err != nil || stat.Bsize < 0 || stat.Bavail < 0 {
+		return CatalogCohortHostPreflightReport{}, ErrSimpleLanePreflight
+	}
+	availableBytes := uint64(stat.Bavail) * uint64(stat.Bsize)
+	if availableBytes < requiredBytes {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogInsufficientSpace
+	}
+	previousBundleSHA256 := ""
+	previousReadSchemaMax := 0
+	if status.Release != nil {
+		previousBundleSHA256 = status.Release.Identity.BundleSHA256
+		previousReadSchemaMax = status.Release.Database.ReadSchemaMax
+	} else {
+		previousBundleSHA256 = status.Bundle.BundleSHA256
+		previousReadSchemaMax = status.Bundle.DatabaseSchemaMax
+	}
+	m.maintenance.proof = proof
+	return CatalogCohortHostPreflightReport{
+		Preflight: CatalogCohortHostPreflight{
+			HostID: m.layout.hostID, PreviousTarget: status.Target,
+			PreviousBundleSHA256: previousBundleSHA256, PreviousReadSchemaMax: previousReadSchemaMax,
+			Target: target.Identity, ConfigurationSHA256: configurationSHA256,
+			SchemaVersion: proof.database, WorkInventorySHA256: hex.EncodeToString(workDigest[:]),
+			WorkInventoryEmpty: true, PreflightAt: time.Now().UTC().Format(time.RFC3339Nano),
+			BackupDirectory: m.maintenance.backup.directory, BackupManifestSHA256: m.maintenance.backup.manifestHash,
+			AvailableBytes: availableBytes, RequiredBytes: requiredBytes,
+		},
+		WorkInventory: proof.metrics,
+	}, nil
 }
 
 // UseVerifiedBackup attaches the exact host-local backup already bound by a

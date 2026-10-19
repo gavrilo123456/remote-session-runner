@@ -11,6 +11,7 @@ import (
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/laneinstall"
+	"remote-session-runner/src/internal/store"
 )
 
 func TestRunPlanRendersOnlyFixedDevOrQASNamespace(t *testing.T) {
@@ -67,6 +68,41 @@ func TestPRDMaintenanceCommandsRejectNoncanonicalHostBeforeOperating(t *testing.
 		if status := run(args, &stdout, &stderr); status == 0 {
 			t.Errorf("run(%v) accepted a noncanonical PRD host", args)
 		}
+	}
+}
+
+func TestCatalogHostPreflightRejectsInvalidScopeAndMissingCapacityBeforeOperating(t *testing.T) {
+	for _, args := range [][]string{
+		{"--host", "unlisted", "--lane", "dev", "--release-id", "cat-20261019-f0e2843", "--required-free-bytes", "1"},
+		{"--host", "linux-host", "--lane", "prd", "--release-id", "cat-20261019-f0e2843", "--required-free-bytes", "1"},
+		{"--host", "linux-host", "--lane", "dev", "--release-id", "cat-20261019-f0e2843", "--required-free-bytes", "0"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if status := run(append([]string{"catalog-host-preflight"}, args...), &stdout, &stderr); status == 0 {
+			t.Errorf("catalog-host-preflight accepted invalid scope or capacity: %v", args)
+		}
+	}
+}
+
+func TestCatalogHostPreflightReportRetainsEveryRestartInventoryCategory(t *testing.T) {
+	want := store.RestartPreflightMetrics{
+		ActiveSessionSlots: 1,
+		ActiveCommandSlots: 2,
+		QueuedCommands:     3,
+		ResumableJobs:      4,
+	}
+	encoded, err := json.Marshal(laneinstall.CatalogCohortHostPreflightReport{WorkInventory: want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		WorkInventory store.RestartPreflightMetrics `json:"work_inventory"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.WorkInventory != want {
+		t.Fatalf("work inventory round trip = %+v, want %+v", decoded.WorkInventory, want)
 	}
 }
 

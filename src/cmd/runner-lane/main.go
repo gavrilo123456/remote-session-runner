@@ -82,6 +82,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogAdopt(args[1:], stdout, stderr)
 	case "catalog-cohort":
 		err = runCatalogCohort(args[1:], stdout, stderr)
+	case "catalog-host-preflight":
+		err = runCatalogHostPreflight(ctx, args[1:], stdout, stderr)
 	case "catalog-prd-backup":
 		err = runCatalogPRDBackup(ctx, args[1:], stdout, stderr)
 	case "catalog-probe-prepare":
@@ -585,6 +587,54 @@ func runCatalogPRDBackup(ctx context.Context, args []string, stdout, stderr io.W
 	}{*host, "prd", *releaseID, target.Identity.ReleaseSHA256, target.Identity.BundleSHA256, receipt.Directory,
 		laneinstall.PRDBackupManifestSHA256(receipt.Directory), receipt.Manifest.SchemaVersion, receipt.Manifest.DatabaseSHA256,
 		availableBytes, requiredBytes})
+}
+
+// runCatalogHostPreflight closes the selected Dev/QAS service through the
+// existing guarded maintenance path, verifies the complete stopped-service
+// inventory, and writes a consistent backup before returning receipt data.
+// It deliberately leaves the service stopped for the four-host cohort hold.
+func runCatalogHostPreflight(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-host-preflight", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	lane := flags.String("lane", "", "dev or qas")
+	releaseID := flags.String("release-id", "", "sealed catalog release to preflight")
+	requiredBytes := flags.Uint64("required-free-bytes", 0, "remaining free space required after the consistent backup")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas") ||
+		*releaseID == "" || *requiredBytes == 0 {
+		return errors.New("usage: runner-lane catalog-host-preflight --host HOST --lane dev|qas --release-id RELEASE --required-free-bytes BYTES")
+	}
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
+	if err != nil {
+		return err
+	}
+	root, err := laneinstall.DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return err
+	}
+	if _, err := laneinstall.InspectCatalogRelease(root, *host, *releaseID); err != nil {
+		return err
+	}
+	controller, err := laneinstall.NewSimpleServiceController()
+	if err != nil {
+		return err
+	}
+	maintenance, err := laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
+	if err != nil {
+		return err
+	}
+	defer maintenance.Close()
+	if _, err := maintenance.Backup(ctx); err != nil {
+		return err
+	}
+	preflight, err := maintenance.CohortHostPreflight(ctx, *releaseID, *requiredBytes)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, preflight)
 }
 
 func currentCatalogHost(hostID string) bool {
