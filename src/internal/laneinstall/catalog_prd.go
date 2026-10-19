@@ -612,7 +612,7 @@ func statOwner(path string) uint32 {
 func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceController, artifact Artifact, expectedOldSHA string, expectedOldMode uint32) error {
 	if service == nil || !filepath.IsAbs(artifact.InstallPath) || filepath.Clean(artifact.InstallPath) != artifact.InstallPath ||
 		!bundleDigestPattern.MatchString(expectedOldSHA) || expectedOldMode == 0 || artifact.Mode == 0 {
-		return ErrSimpleArtifactConflict
+		return fmt.Errorf("%w: invalid replacement input", ErrSimpleArtifactConflict)
 	}
 	if err := verifyPRDArtifactContents(artifact); err == nil {
 		return nil
@@ -620,7 +620,7 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 	if artifact.Owner == "root" {
 		if artifact.Kind != ArtifactSystemdUnit || artifact.Mode != 0o644 || artifact.Group != "root" ||
 			filepath.Dir(artifact.InstallPath) != "/etc/systemd/system" || filepath.Base(artifact.InstallPath) != "runnerd.service" {
-			return ErrSimpleArtifactConflict
+			return fmt.Errorf("%w: unsupported root-owned service artifact", ErrSimpleArtifactConflict)
 		}
 		staged, err := os.CreateTemp("", "runner-prd-catalog-unit-*")
 		if err != nil {
@@ -657,23 +657,23 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 		current, err := user.Current()
 		group, groupErr := user.LookupGroupId(strconv.Itoa(os.Getgid()))
 		if err != nil || groupErr != nil || artifact.Owner != current.Username || artifact.Group != group.Name || artifact.Kind != ArtifactSSHWrapper {
-			return ErrSimpleArtifactConflict
+			return fmt.Errorf("%w: unsupported current-account artifact identity", ErrSimpleArtifactConflict)
 		}
 	}
 	var target unix.Stat_t
 	if unix.Lstat(artifact.InstallPath, &target) != nil || target.Mode&unix.S_IFMT != unix.S_IFREG || target.Uid != uint32(os.Getuid()) ||
 		(artifact.Group != "" && target.Gid != uint32(os.Getgid())) || uint32(target.Mode&0o777) != expectedOldMode || !catalogFileHasSingleLinkFromStat(target) {
-		return ErrSimpleArtifactConflict
+		return fmt.Errorf("%w: existing target identity, mode, type, or link count differs", ErrSimpleArtifactConflict)
 	}
 	oldSHA, err := fileSHA256(artifact.InstallPath)
 	if err != nil || oldSHA != expectedOldSHA {
-		return ErrSimpleArtifactConflict
+		return fmt.Errorf("%w: existing target digest differs", ErrSimpleArtifactConflict)
 	}
 	parent := filepath.Dir(artifact.InstallPath)
 	var parentStat unix.Stat_t
 	if unix.Lstat(parent, &parentStat) != nil || parentStat.Mode&unix.S_IFMT != unix.S_IFDIR || parentStat.Uid != uint32(os.Getuid()) ||
 		(artifact.Group != "" && parentStat.Gid != uint32(os.Getgid())) || parentStat.Mode&0o022 != 0 {
-		return ErrSimpleArtifactConflict
+		return fmt.Errorf("%w: replacement directory identity or permissions differ", ErrSimpleArtifactConflict)
 	}
 	temporary, err := os.CreateTemp(parent, ".runner-prd-catalog-artifact-*")
 	if err != nil {
@@ -698,7 +698,7 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 	}
 	currentSHA, err := fileSHA256(artifact.InstallPath)
 	if err != nil || currentSHA != expectedOldSHA {
-		return ErrSimpleArtifactConflict
+		return fmt.Errorf("%w: target changed during replacement staging", ErrSimpleArtifactConflict)
 	}
 	if err := os.Rename(temporaryPath, artifact.InstallPath); err != nil {
 		return err
@@ -706,7 +706,10 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 	if err := syncDirectory(parent); err != nil {
 		return err
 	}
-	return verifyPRDArtifactContents(artifact)
+	if err := verifyPRDArtifactContents(artifact); err != nil {
+		return fmt.Errorf("verify installed catalog artifact: %w", err)
+	}
+	return nil
 }
 
 func catalogFileHasSingleLinkFromStat(info unix.Stat_t) bool { return info.Nlink == 1 }

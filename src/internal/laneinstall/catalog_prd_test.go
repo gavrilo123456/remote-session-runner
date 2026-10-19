@@ -2,6 +2,7 @@ package laneinstall
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -118,7 +119,7 @@ func TestPRDCatalogReplacementSupportsOnlyCurrentAccountOwnedQueuedWrapper(t *te
 	}
 	foreign := artifact
 	foreign.Owner = "nobody"
-	if err := replacePRDCatalogArtifact(context.Background(), &PRDServiceController{}, foreign, sha256HexString([]byte(artifact.Contents)), 0o700); err == nil {
-		t.Fatal("replacement accepted an artifact owner other than the current service account")
+	if err := replacePRDCatalogArtifact(context.Background(), &PRDServiceController{}, foreign, sha256HexString([]byte(artifact.Contents)), 0o700); !errors.Is(err, ErrSimpleArtifactConflict) {
+		t.Fatalf("replacement did not retain the conflict category for a foreign artifact owner: %v", err)
 	}
 }
