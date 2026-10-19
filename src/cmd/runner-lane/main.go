@@ -28,7 +28,7 @@ const maxLaneConfigBytes = 1 << 20
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help" || args[0] == "--version" || args[0] == "version")) {
-		os.Exit(commandstub.Run("runner-lane", "Build and operate existing-host Dev/QAS lanes; publish and inspect sealed releases; run guarded unsuffixed PRD maintenance.", args, os.Stdout, os.Stderr))
+		os.Exit(commandstub.Run("runner-lane", "Build and operate existing-host Dev/QAS lanes; publish, inspect and check sealed-release selectors; run guarded unsuffixed PRD maintenance.", args, os.Stdout, os.Stderr))
 	}
 	os.Exit(run(args, os.Stdout, os.Stderr))
 }
@@ -73,6 +73,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogPublish(args[1:], stdout, stderr)
 	case "catalog-inspect":
 		err = runCatalogInspect(args[1:], stdout, stderr)
+	case "catalog-status":
+		err = runCatalogStatus(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "runner-lane: unknown command %q\n", args[0])
 		return 2
@@ -159,7 +161,7 @@ func runCatalogPublish(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	root, err := localCatalogRoot()
+	root, err := localCatalogRoot(*host)
 	if err != nil {
 		return err
 	}
@@ -181,11 +183,37 @@ func runCatalogInspect(args []string, stdout, stderr io.Writer) error {
 	if flags.NArg() != 0 || *releaseID == "" || !currentCatalogHost(*host) {
 		return errors.New("usage: runner-lane catalog-inspect --host THIS-HOST --release-id ID")
 	}
-	root, err := localCatalogRoot()
+	root, err := localCatalogRoot(*host)
 	if err != nil {
 		return err
 	}
 	status, err := laneinstall.InspectCatalogRelease(root, *host, *releaseID)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, status)
+}
+
+func runCatalogStatus(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-status", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	lane := flags.String("lane", "", "dev or qas")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHost(*host) {
+		return errors.New("usage: runner-lane catalog-status --host THIS-HOST --lane dev|qas")
+	}
+	plan, err := simplePlan(*host, *lane)
+	if err != nil {
+		return err
+	}
+	root, err := localCatalogRoot(*host)
+	if err != nil {
+		return err
+	}
+	status, err := laneinstall.InspectCatalogSelectorForPlan(plan, root)
 	if err != nil {
 		return err
 	}
@@ -204,10 +232,13 @@ func currentCatalogHost(hostID string) bool {
 	return err == nil && current.Username == account
 }
 
-func localCatalogRoot() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" || filepath.Clean(home) != home || !filepath.IsAbs(home) {
-		return "", errors.New("cannot resolve the current account home for the release catalog")
+func localCatalogRoot(hostID string) (string, error) {
+	if !currentCatalogHost(hostID) {
+		return "", errors.New("release catalog host does not match the current platform and account")
+	}
+	home := filepath.Join("/home", config.LinuxAccount)
+	if hostID == "mac-control-plane" {
+		home = filepath.Join("/Users", config.MacAccount)
 	}
 	return filepath.Join(home, "projects-runtime", "runner-releases"), nil
 }

@@ -11,9 +11,10 @@ The earlier advanced `LANES-*` rollout and its unmet native F gates are
 superseded/out of scope, not PASS and not prerequisites of the SIMPLE track.
 
 The owner assigned Factory-style release-catalog implementation CAT-01 through
-CAT-07 on 2026-10-19. CAT-01 source and fixture gates are complete; CAT-02 is
-next after its evidence closeout. Dev/QAS candidate actions follow their unit
-prerequisites, and CAT-06 PRD migration requires separate owner approval.
+CAT-07 on 2026-10-19. CAT-01 source, fixture, host source-check and delivery
+gates are complete; CAT-02 selector implementation is active. Dev/QAS candidate
+actions follow their unit prerequisites, and CAT-06 PRD migration requires
+separate owner approval.
 Follow the target
 [catalog design](040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
 and separate CAT-01–CAT-07 plan. Catalogs

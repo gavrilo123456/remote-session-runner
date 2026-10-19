@@ -331,11 +331,11 @@ func CurrentSimpleBundleSHA256(plan Plan) (string, error) {
 	if err := validateSimplePlan(plan); err != nil {
 		return "", err
 	}
-	current, err := simpleCurrentBundle(plan.Namespace.ServiceRoot)
+	current, err := simpleCurrentBundleForPlan(plan)
 	if err != nil || current == "" {
 		return current, err
 	}
-	bundle, err := readSimpleBundleAt(filepath.Join(plan.Namespace.ServiceRoot, "releases", current))
+	_, bundle, err := selectedSimpleBundleForPlan(plan)
 	if err != nil || bundle.Manifest.HostID != plan.HostID || bundle.Manifest.BundleSHA256 != current {
 		return "", ErrInvalidSimpleBundle
 	}

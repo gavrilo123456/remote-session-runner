@@ -295,6 +295,13 @@ func PublishCatalogRelease(catalogRoot, hostID string, manifest CatalogReleaseMa
 	if err := validateCatalogRootPath(catalogRoot); err != nil {
 		return CatalogReleaseIdentity{}, err
 	}
+	lockFD, err := acquireCatalogRootPublicationLock(catalogRoot)
+	if err != nil {
+		return CatalogReleaseIdentity{}, err
+	}
+	defer func() {
+		releaseCatalogRootPublicationLock(lockFD)
+	}()
 	finalPath := filepath.Join(catalogRoot, manifest.ReleaseID)
 	if status, inspectErr := inspectCatalogReleasePath(finalPath, hostID); inspectErr == nil {
 		if validateCatalogLocalBundle(manifest, hostID, bundle) == nil && catalogIdentityMatches(status.Identity, manifest, hostID, bundle) {

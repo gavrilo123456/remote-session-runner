@@ -180,6 +180,10 @@ func TestP139ExistingOnlineBackupAndRestorePreserveHistoricalSchemaWithoutMigrat
 		_ = source.Close()
 		t.Fatalf("create compatible existing-schema online backup: %v", err)
 	}
+	backupEntries, err := os.ReadDir(backupDirectory)
+	if err != nil || len(backupEntries) != 1 || backupEntries[0].Name() != filepath.Base(backupPath) {
+		t.Fatalf("online backup left temporary staging artifacts: entries=%v err=%v", backupEntries, err)
+	}
 	if err := source.Close(); err != nil {
 		t.Fatal(err)
 	}

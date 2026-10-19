@@ -65,6 +65,7 @@ func createOnlineBackup(ctx context.Context, source *sql.DB, backupPath string, 
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
+	defer func() { _ = removeOnlineBackupTemporarySidecars(temporaryPath) }()
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("secure online backup staging file: %w", err)
@@ -96,6 +97,9 @@ func createOnlineBackup(ctx context.Context, source *sql.DB, backupPath string, 
 	if err := validate(ctx, temporaryPath); err != nil {
 		return fmt.Errorf("validate completed online backup contents: %w", err)
 	}
+	if err := removeOnlineBackupTemporarySidecars(temporaryPath); err != nil {
+		return fmt.Errorf("remove private online-backup validation sidecars: %w", err)
+	}
 	file, err := os.OpenFile(temporaryPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return fmt.Errorf("open completed online backup for sync: %w", err)
@@ -115,6 +119,31 @@ func createOnlineBackup(ctx context.Context, source *sql.DB, backupPath string, 
 	}
 	if err := syncDirectory(parent); err != nil {
 		return fmt.Errorf("sync online backup directory: %w", err)
+	}
+	return nil
+}
+
+// removeOnlineBackupTemporarySidecars removes only SQLite sidecars belonging
+// to the unique private staging database used by createOnlineBackup. The
+// validated standalone snapshot is linked to its final name only after these
+// read-only validation handles have closed.
+func removeOnlineBackupTemporarySidecars(temporaryPath string) error {
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		path := temporaryPath + suffix
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			return errors.New("online backup staging sidecar is not a private regular file")
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || int(stat.Uid) != os.Getuid() {
+			return errors.New("online backup staging sidecar has an unexpected owner")
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove task-owned SQLite staging sidecar: %w", err)
+		}
 	}
 	return nil
 }

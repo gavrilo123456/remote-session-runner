@@ -212,7 +212,7 @@ func completeSimpleInitialInstall(ctx context.Context, plan Plan) error {
 	if err != nil || current == "" {
 		return ErrSimpleLanePreflight
 	}
-	bundle, err := readSimpleBundleAt(filepath.Join(plan.Namespace.ServiceRoot, "releases", current))
+	_, bundle, err := selectedSimpleBundleForPlan(plan)
 	if err != nil || bundle.Manifest.HostID != plan.HostID {
 		return ErrSimpleLanePreflight
 	}
@@ -263,11 +263,11 @@ func (c *SimpleServiceController) requireReady(ctx context.Context, plan Plan) e
 	if !simplePlanArtifactsValid(plan) {
 		return ErrSimpleLanePreflight
 	}
-	current, err := simpleCurrentBundle(plan.Namespace.ServiceRoot)
+	current, err := simpleCurrentBundleForPlan(plan)
 	if err != nil || current == "" {
 		return ErrSimpleLanePreflight
 	}
-	bundle, err := readSimpleBundleAt(filepath.Join(plan.Namespace.ServiceRoot, "releases", current))
+	_, bundle, err := selectedSimpleBundleForPlan(plan)
 	if err != nil || bundle.Manifest.HostID != plan.HostID {
 		return ErrSimpleLanePreflight
 	}
@@ -427,7 +427,7 @@ func (c *SimpleServiceController) proveStoppedLaneQuiescence(ctx context.Context
 	if active {
 		return ErrSimpleLaneNotQuiescent
 	}
-	current, err := simpleCurrentBundle(plan.Namespace.ServiceRoot)
+	current, err := simpleCurrentBundleForPlan(plan)
 	if err != nil {
 		return err
 	}

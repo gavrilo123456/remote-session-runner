@@ -121,7 +121,7 @@ func BeginSimpleLaneMaintenance(ctx context.Context, plan Plan, service SimpleSe
 	if active {
 		return fail(ErrSimpleLaneNotQuiescent)
 	}
-	current, err := simpleCurrentBundle(plan.Namespace.ServiceRoot)
+	current, err := simpleCurrentBundleForPlan(plan)
 	if err != nil {
 		return fail(err)
 	}
