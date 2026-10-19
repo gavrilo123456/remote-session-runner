@@ -671,9 +671,20 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 	}
 	parent := filepath.Dir(artifact.InstallPath)
 	var parentStat unix.Stat_t
-	if unix.Lstat(parent, &parentStat) != nil || parentStat.Mode&unix.S_IFMT != unix.S_IFDIR || parentStat.Uid != uint32(os.Getuid()) ||
-		(artifact.Group != "" && parentStat.Gid != uint32(os.Getgid())) || parentStat.Mode&0o022 != 0 {
-		return fmt.Errorf("%w: replacement directory identity or permissions differ", ErrSimpleArtifactConflict)
+	if err := unix.Lstat(parent, &parentStat); err != nil {
+		return fmt.Errorf("%w: replacement directory cannot be inspected", ErrSimpleArtifactConflict)
+	}
+	if parentStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return fmt.Errorf("%w: replacement parent is not a directory", ErrSimpleArtifactConflict)
+	}
+	if parentStat.Uid != uint32(os.Getuid()) {
+		return fmt.Errorf("%w: replacement directory has an unexpected owner", ErrSimpleArtifactConflict)
+	}
+	if artifact.Group != "" && parentStat.Gid != uint32(os.Getgid()) {
+		return fmt.Errorf("%w: replacement directory has an unexpected group", ErrSimpleArtifactConflict)
+	}
+	if parentStat.Mode&0o022 != 0 {
+		return fmt.Errorf("%w: replacement directory is group- or world-writable (mode %04o)", ErrSimpleArtifactConflict, parentStat.Mode&0o777)
 	}
 	temporary, err := os.CreateTemp(parent, ".runner-prd-catalog-artifact-*")
 	if err != nil {
