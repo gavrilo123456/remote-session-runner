@@ -49,8 +49,23 @@ primary Gitea and the automatic GitHub mirror, both at
 registers configurable logging and is preserved unchanged. All three Ubuntu
 checkouts were clean `dev` at `b46a720` with the expected GitHub origin.
 
-The intended design-only commit follows AGENTS: primary Gitea push, exact
-automatic-mirror verification, then clean worker `--ff-only` source delivery and
-documentation checks. A later evidence-only receipt records the resulting
-source commit and actual host outcomes. No CAT implementation/unit completion
-or installed acceptance follows from source synchronization.
+Design-only commit **S** is
+`dde1b17b135b5b3ef268f236649065ba73c421a4`. Mac `dev` was clean after committing
+the twelve intended documentation files. The primary Gitea push completed;
+explicit-identity `git ls-remote` returned exactly S for both primary `origin/dev`
+and automatic GitHub `dev`. The earlier logging-proposal commit was delivered
+unchanged as S's existing ancestor.
+
+Each Ubuntu checkout was freshly verified clean on `dev` with its expected
+GitHub origin, then ran explicit-identity `git pull --ff-only origin dev` and
+reached S. `linux-host`, `sandbox-host` and `factory-sandbox` all remained clean.
+Each passed `git diff --check` and Python validation of all twelve documents,
+114 relative links, fences/newlines, CAT-01–07 row order and design-only/cohort
+hold markers. Mac passed the same structural checks. No executable suite or
+live acceptance was required or performed for these Markdown changes.
+
+The evidence-only commit containing this receipt follows the same primary,
+exact automatic-mirror and clean-worker fast-forward delivery. Its final SHA
+is reported after verification rather than embedded as a self-reference. No
+CAT implementation/unit completion or installed acceptance follows from source
+synchronization; all seven units remain NOT STARTED.
