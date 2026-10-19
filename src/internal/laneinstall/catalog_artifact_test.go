@@ -1,13 +1,80 @@
 package laneinstall
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/store"
 )
+
+func TestCatalogArtifactRefreshBackupMustMatchPostSwitchRelease(t *testing.T) {
+	ctx := context.Background()
+	root := simpleTestTempDir(t)
+	plan := simpleTestPlanAt(t, root)
+	if err := os.MkdirAll(plan.Namespace.Backups, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.Namespace.ConfigFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.Namespace.ConfigFile, []byte("isolated lane config fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(ctx, plan.Namespace.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = store.OpenExistingRestartPreflightReadOnly(ctx, plan.Namespace.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	const predecessor = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const selected = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	preSwitchProof := SimpleQuiescenceProof{
+		hostID: plan.HostID, lane: plan.Lane, databasePath: plan.Namespace.Database,
+		observedAt: time.Now().UTC(), database: store.CurrentSchemaVersion, current: predecessor,
+	}
+	preSwitchBackup, err := createSimpleLaneBackup(ctx, plan, plan.Namespace.Database, database, preSwitchProof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postSwitchProof := preSwitchProof
+	postSwitchProof.observedAt = time.Now().UTC()
+	postSwitchProof.current = selected
+	if simpleBackupReceiptValid(plan, preSwitchBackup, postSwitchProof) {
+		t.Fatal("cohort backup bound to the predecessor release was accepted after selector switch")
+	}
+	maintenance := &SimpleLaneMaintenance{plan: plan, proof: postSwitchProof, backup: &preSwitchBackup}
+	captures := 0
+	capture := func(ctx context.Context) (SimpleLaneBackupReceipt, error) {
+		captures++
+		return createSimpleLaneBackup(ctx, plan, plan.Namespace.Database, database, postSwitchProof)
+	}
+	postSwitchBackup, err := ensureCurrentCatalogArtifactRefreshBackup(ctx, maintenance, capture)
+	if err != nil || captures != 1 || !simpleBackupReceiptValid(plan, postSwitchBackup, postSwitchProof) {
+		t.Fatalf("post-switch backup=%+v captures=%d err=%v", postSwitchBackup, captures, err)
+	}
+	manifest, err := readSimpleLaneBackupManifest(plan, postSwitchBackup.Directory())
+	if err != nil || manifest.ActiveBundle != selected {
+		t.Fatalf("post-switch backup manifest=%+v err=%v; want selected bundle %s", manifest, err, selected)
+	}
+	retryBackup, err := ensureCurrentCatalogArtifactRefreshBackup(ctx, maintenance, capture)
+	if err != nil || captures != 1 || retryBackup.Directory() != postSwitchBackup.Directory() {
+		t.Fatalf("retry backup=%+v captures=%d err=%v; want exact previously verified backup", retryBackup, captures, err)
+	}
+	if _, err := os.Stat(filepath.Join(preSwitchBackup.Directory(), "authority.sqlite")); err != nil {
+		t.Fatalf("pre-switch cohort backup was not preserved: %v", err)
+	}
+}
 
 func TestCatalogEntrypointRefreshPreservesExactPriorFileAndRetriesSafely(t *testing.T) {
 	root := t.TempDir()

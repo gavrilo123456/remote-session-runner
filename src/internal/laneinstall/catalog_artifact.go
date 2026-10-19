@@ -43,13 +43,14 @@ type CatalogArtifactRefreshOperation struct {
 // RefreshLinuxEntrypoint replaces only the fixed Dev/QAS Linux launcher after
 // the complete four-host cohort has selected the target release and remains
 // held. It requires a stopped service, fresh empty-work proof, a verified
-// lane backup, and the caller's exact observation of the previous file hash.
+// backup bound to the selected catalog release, and the caller's exact
+// observation of the previous file hash.
 func (m *CatalogLaneMaintenance) RefreshLinuxEntrypoint(ctx context.Context, cohortOperationID, expectedCurrentSHA256 string) (CatalogArtifactRefreshOperation, error) {
 	if m == nil || m.closed || m.maintenance == nil || m.maintenance.fresh ||
 		m.layout.hostID == "mac-control-plane" ||
 		(m.layout.lane != config.ReleaseLaneDev && m.layout.lane != config.ReleaseLaneQAS) ||
 		!validCatalogOperationID(cohortOperationID) || !bundleDigestPattern.MatchString(expectedCurrentSHA256) ||
-		!simpleProofFresh(m.maintenance.proof, m.maintenance.plan) || m.maintenance.backup == nil {
+		!simpleProofFresh(m.maintenance.proof, m.maintenance.plan) {
 		return CatalogArtifactRefreshOperation{}, ErrCatalogOperationInvalid
 	}
 	receipt, err := ReadCatalogCohortReceipt(m.maintenance.plan, cohortOperationID)
@@ -73,17 +74,6 @@ func (m *CatalogLaneMaintenance) RefreshLinuxEntrypoint(ctx context.Context, coh
 		return CatalogArtifactRefreshOperation{}, ErrSimpleLaneNotQuiescent
 	}
 	m.maintenance.proof = proof
-	if !simpleBackupReceiptValid(m.maintenance.plan, *m.maintenance.backup, proof) {
-		return CatalogArtifactRefreshOperation{}, ErrSimpleBackupRequired
-	}
-	backupManifest, err := readSimpleLaneBackupManifest(m.maintenance.plan, m.maintenance.backup.directory)
-	if err != nil {
-		return CatalogArtifactRefreshOperation{}, ErrSimpleBackupRequired
-	}
-	configurationSHA256, err := hashCatalogConfiguration(m.layout.configFile)
-	if err != nil || configurationSHA256 != backupManifest.ConfigSHA256 {
-		return CatalogArtifactRefreshOperation{}, ErrSimpleBackupRequired
-	}
 	release, err := InspectCatalogRelease(m.layout.catalogRoot, m.layout.hostID, receipt.ReleaseID)
 	if err != nil || release.Identity.ReleaseSHA256 != receipt.ReleaseSHA256 || release.Identity.BundleSHA256 != current {
 		return CatalogArtifactRefreshOperation{}, ErrCatalogSelectorConflict
@@ -99,8 +89,57 @@ func (m *CatalogLaneMaintenance) RefreshLinuxEntrypoint(ctx context.Context, coh
 	if artifact == nil || artifact.InstallPath != m.maintenance.plan.Namespace.RunnerEntrypoint || artifact.Mode != 0o700 {
 		return CatalogArtifactRefreshOperation{}, ErrSimpleArtifactConflict
 	}
+	// The cohort backup is taken before the selector changes and therefore
+	// records the predecessor bundle. Refreshing the launcher happens after the
+	// new selector is active, so capture a second consistent backup bound to the
+	// selected catalog bundle. On retry, reuse the exact backup already bound to
+	// the durable artifact-operation record.
+	operationRoot := filepath.Join(m.maintenance.plan.Namespace.Staging, "catalog-artifact-operations")
+	if err := ensureCatalogPrivateDirectory(operationRoot); err != nil {
+		return CatalogArtifactRefreshOperation{}, err
+	}
+	if existing, readErr := readCatalogArtifactRefreshOperation(operationRoot, cohortOperationID); readErr == nil {
+		if existing.HostID != m.layout.hostID || existing.Lane != m.layout.lane || existing.ReleaseID != receipt.ReleaseID ||
+			existing.ArtifactPath != artifact.InstallPath || existing.PreviousSHA256 != expectedCurrentSHA256 ||
+			existing.SelectedSHA256 != catalogArtifactSHA256([]byte(artifact.Contents)) {
+			return CatalogArtifactRefreshOperation{}, ErrCatalogOperationInvalid
+		}
+		if err := m.UseVerifiedBackup(ctx, existing.DatabaseBackup, existing.DatabaseBackupManifest); err != nil {
+			return CatalogArtifactRefreshOperation{}, err
+		}
+	} else if errors.Is(readErr, os.ErrNotExist) {
+	} else {
+		return CatalogArtifactRefreshOperation{}, readErr
+	}
+	backup, err := ensureCurrentCatalogArtifactRefreshBackup(ctx, m.maintenance, m.maintenance.Backup)
+	if err != nil {
+		return CatalogArtifactRefreshOperation{}, err
+	}
 	return refreshCatalogLinuxEntrypoint(m.maintenance.plan, receipt.ReleaseID, cohortOperationID,
-		expectedCurrentSHA256, *artifact, *m.maintenance.backup)
+		expectedCurrentSHA256, *artifact, backup)
+}
+
+func ensureCurrentCatalogArtifactRefreshBackup(ctx context.Context, maintenance *SimpleLaneMaintenance,
+	capture func(context.Context) (SimpleLaneBackupReceipt, error)) (SimpleLaneBackupReceipt, error) {
+	if maintenance == nil || maintenance.closed || maintenance.fresh || capture == nil ||
+		!simpleProofFresh(maintenance.proof, maintenance.plan) {
+		return SimpleLaneBackupReceipt{}, ErrSimpleBackupRequired
+	}
+	if maintenance.backup != nil && simpleBackupReceiptValid(maintenance.plan, *maintenance.backup, maintenance.proof) {
+		return *maintenance.backup, nil
+	}
+	// A cohort backup may be bound to the pre-switch bundle. Keep it on disk,
+	// but never reuse it for an artifact change against the selected bundle.
+	maintenance.backup = nil
+	backup, err := capture(ctx)
+	if err != nil {
+		return SimpleLaneBackupReceipt{}, err
+	}
+	if !simpleBackupReceiptValid(maintenance.plan, backup, maintenance.proof) {
+		return SimpleLaneBackupReceipt{}, ErrSimpleBackupRequired
+	}
+	maintenance.backup = &backup
+	return backup, nil
 }
 
 func refreshCatalogLinuxEntrypoint(plan Plan, releaseID, operationID, expectedCurrentSHA256 string, artifact Artifact, backup SimpleLaneBackupReceipt) (CatalogArtifactRefreshOperation, error) {

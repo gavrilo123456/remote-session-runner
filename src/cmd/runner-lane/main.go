@@ -136,19 +136,6 @@ func runCatalogRefreshEntrypoint(ctx context.Context, args []string, stdout, std
 	if err != nil || receipt.Stage != laneinstall.CatalogCohortSwitching {
 		return laneinstall.ErrCatalogOperationInvalid
 	}
-	var hostPreflight laneinstall.CatalogCohortHostPreflight
-	for _, candidate := range receipt.Hosts {
-		if candidate.HostID == *host {
-			hostPreflight = candidate
-			break
-		}
-	}
-	if hostPreflight.HostID == "" {
-		return laneinstall.ErrCatalogOperationInvalid
-	}
-	if err := maintenance.UseVerifiedBackup(ctx, hostPreflight.BackupDirectory, hostPreflight.BackupManifestSHA256); err != nil {
-		return err
-	}
 	operation, err := maintenance.RefreshLinuxEntrypoint(ctx, *cohortOperationID, *expectedCurrentSHA256)
 	if err != nil {
 		return err
