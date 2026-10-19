@@ -1,6 +1,6 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-**Status: implementation assigned — 2026-10-19. CAT-01 and CAT-02 are complete; CAT-03 source implementation is complete on Mac, with Ubuntu validation and delivery in progress.**
+**Status: implementation assigned — 2026-10-19. CAT-01, CAT-02 and CAT-03 source, fixture, host-check and Git-delivery gates are complete; CAT-03 source revision `c381d8efc719a2cc22fc09158f2e6f8c07fccd2b`.**
 No live publication, installation, selector change or service restart has yet
 occurred; CAT-02 validation currently uses disposable fixtures. Later unit
 operations follow their own prerequisites and approval gates.
@@ -69,12 +69,11 @@ every live, rollback, recovery, backup and incomplete-operation reference.
 
 ## 3. Ordered units and required outcomes
 
-CAT-01 source, fixture, host source-check and Git-delivery gates are **COMPLETE**.
-CAT-01 and CAT-02 source, fixture, host source-check and Git-delivery gates are
-**COMPLETE**. CAT-03 Mac source implementation and local source gates are
-**COMPLETE**; Ubuntu validation, Git delivery and the unit closeout remain
-**IN PROGRESS**. Live migration and cohort actions remain gated by its complete
-acceptance evidence.
+CAT-01, CAT-02 and CAT-03 source, fixture, host source-check and Git-delivery
+gates are **COMPLETE**. CAT-03 closeout evidence is in
+[`CAT-03.md`](../../040-implementation-evidence/CAT-03.md). This does not pass
+or imply any installed Dev/QAS/PRD acceptance. Live migration and cohort
+actions remain separately gated by their acceptance evidence.
 CAT-04 through CAT-07 remain **NOT STARTED** until predecessor gates pass. A
 unit is accepted only by its recorded evidence and required
 delivery/qualification results.
