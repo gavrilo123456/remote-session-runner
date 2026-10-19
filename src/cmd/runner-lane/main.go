@@ -12,7 +12,9 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -26,7 +28,7 @@ const maxLaneConfigBytes = 1 << 20
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help" || args[0] == "--version" || args[0] == "version")) {
-		os.Exit(commandstub.Run("runner-lane", "Build and operate existing-host Dev/QAS lanes; run guarded unsuffixed PRD backup, install, migration and rollback operations.", args, os.Stdout, os.Stderr))
+		os.Exit(commandstub.Run("runner-lane", "Build and operate existing-host Dev/QAS lanes; publish and inspect sealed releases; run guarded unsuffixed PRD maintenance.", args, os.Stdout, os.Stderr))
 	}
 	os.Exit(run(args, os.Stdout, os.Stderr))
 }
@@ -65,6 +67,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runPRDRollback(ctx, args[1:], stdout, stderr)
 	case "bridge-install":
 		err = runBridgeInstall(args[1:], stdout, stderr)
+	case "catalog-manifest":
+		err = runCatalogManifest(args[1:], stdout, stderr)
+	case "catalog-publish":
+		err = runCatalogPublish(args[1:], stdout, stderr)
+	case "catalog-inspect":
+		err = runCatalogInspect(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "runner-lane: unknown command %q\n", args[0])
 		return 2
@@ -74,6 +82,134 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func runCatalogManifest(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-manifest", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	releaseID := flags.String("release-id", "", "immutable release label")
+	factoryManifest := flags.String("factory-manifest", "", "factory-sandbox bundle manifest.json")
+	linuxManifest := flags.String("linux-manifest", "", "linux-host bundle manifest.json")
+	macManifest := flags.String("mac-manifest", "", "mac-control-plane bundle manifest.json")
+	sandboxManifest := flags.String("sandbox-manifest", "", "sandbox-host bundle manifest.json")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *releaseID == "" {
+		return errors.New("usage: runner-lane catalog-manifest --release-id ID --factory-manifest FILE --linux-manifest FILE --mac-manifest FILE --sandbox-manifest FILE")
+	}
+	paths := map[string]string{
+		"factory-sandbox":   *factoryManifest,
+		"linux-host":        *linuxManifest,
+		"mac-control-plane": *macManifest,
+		"sandbox-host":      *sandboxManifest,
+	}
+	manifests := make(map[string]laneinstall.SimpleBundleManifest, len(paths))
+	for hostID, path := range paths {
+		if path == "" {
+			return fmt.Errorf("missing %s bundle manifest", hostID)
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		manifest, err := laneinstall.LoadSimpleBundleManifest(absolute)
+		if err != nil {
+			return fmt.Errorf("validate %s bundle metadata: %w", hostID, err)
+		}
+		manifests[hostID] = manifest
+	}
+	manifest, err := laneinstall.NewCatalogReleaseManifestFromManifests(*releaseID, manifests)
+	if err != nil {
+		return err
+	}
+	encoded, err := laneinstall.CatalogReleaseManifestBytes(manifest)
+	if err != nil {
+		return err
+	}
+	_, err = stdout.Write(encoded)
+	return err
+}
+
+func runCatalogPublish(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-publish", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	manifestPath := flags.String("manifest-file", "", "sealed release.json")
+	bundlePath := flags.String("bundle-dir", "", "this host's complete native bundle directory")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *manifestPath == "" || *bundlePath == "" || !currentCatalogHost(*host) {
+		return errors.New("usage: runner-lane catalog-publish --host THIS-HOST --manifest-file RELEASE-JSON --bundle-dir LOCAL-BUNDLE")
+	}
+	manifestFile, err := filepath.Abs(*manifestPath)
+	if err != nil {
+		return err
+	}
+	bundleDirectory, err := filepath.Abs(*bundlePath)
+	if err != nil {
+		return err
+	}
+	manifest, err := laneinstall.LoadCatalogReleaseManifest(manifestFile)
+	if err != nil {
+		return err
+	}
+	bundle, err := laneinstall.LoadSimpleBundleDirectory(bundleDirectory)
+	if err != nil {
+		return err
+	}
+	root, err := localCatalogRoot()
+	if err != nil {
+		return err
+	}
+	identity, err := laneinstall.PublishCatalogRelease(root, *host, manifest, bundle)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, identity)
+}
+
+func runCatalogInspect(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-inspect", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	releaseID := flags.String("release-id", "", "immutable release label")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *releaseID == "" || !currentCatalogHost(*host) {
+		return errors.New("usage: runner-lane catalog-inspect --host THIS-HOST --release-id ID")
+	}
+	root, err := localCatalogRoot()
+	if err != nil {
+		return err
+	}
+	status, err := laneinstall.InspectCatalogRelease(root, *host, *releaseID)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, status)
+}
+
+func currentCatalogHost(hostID string) bool {
+	if !laneinstall.CatalogHostMatchesPlatform(hostID, runtime.GOOS, runtime.GOARCH) {
+		return false
+	}
+	account := config.LinuxAccount
+	if hostID == "mac-control-plane" {
+		account = config.MacAccount
+	}
+	current, err := user.Current()
+	return err == nil && current.Username == account
+}
+
+func localCatalogRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || filepath.Clean(home) != home || !filepath.IsAbs(home) {
+		return "", errors.New("cannot resolve the current account home for the release catalog")
+	}
+	return filepath.Join(home, "projects-runtime", "runner-releases"), nil
 }
 
 func runPlan(args []string, stdout, stderr io.Writer) error {

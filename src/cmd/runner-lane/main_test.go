@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -71,4 +73,78 @@ func TestBundleOutputCannotTargetCheckout(t *testing.T) {
 	if !pathWithin("/source/checkout", "/source/checkout/artifact") || pathWithin("/source/checkout", "/private/tmp/artifact") {
 		t.Fatal("checkout-boundary predicate does not distinguish repository and external paths")
 	}
+}
+
+func TestCatalogManifestCommandSealsFourPerHostMetadataFiles(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := map[string]string{}
+	for hostID, components := range runnerLaneFixtureComponents() {
+		bundle, err := laneinstall.NewSimpleBundle(hostID, "0123456789abcdef0123456789abcdef01234567", components)
+		if err != nil {
+			t.Fatalf("build %s fixture bundle: %v", hostID, err)
+		}
+		directory := filepath.Join(root, hostID)
+		if err := laneinstall.WriteSimpleBundleDirectory(directory, bundle); err != nil {
+			t.Fatalf("write %s fixture bundle: %v", hostID, err)
+		}
+		paths[hostID] = filepath.Join(directory, "manifest.json")
+	}
+	args := []string{
+		"--release-id", "v1.5.0",
+		"--factory-manifest", paths["factory-sandbox"],
+		"--linux-manifest", paths["linux-host"],
+		"--mac-manifest", paths["mac-control-plane"],
+		"--sandbox-manifest", paths["sandbox-host"],
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runCatalogManifest(args, &stdout, &stderr); err != nil {
+		t.Fatalf("catalog-manifest: %v (%s)", err, stderr.String())
+	}
+	manifest, err := laneinstall.LoadCatalogReleaseManifest(writeCatalogManifestFixture(t, stdout.Bytes()))
+	if err != nil {
+		t.Fatalf("read command output manifest: %v", err)
+	}
+	if manifest.ReleaseID != "v1.5.0" || len(manifest.Hosts) != 4 {
+		t.Fatalf("incomplete command output manifest: %+v", manifest)
+	}
+
+	args[5] = paths["factory-sandbox"] // linux-host cannot borrow another host's identity.
+	stdout.Reset()
+	if err := runCatalogManifest(args, &stdout, &stderr); err == nil {
+		t.Fatal("catalog-manifest accepted a host label bound to another host's manifest")
+	}
+}
+
+func runnerLaneFixtureComponents() map[string]map[string][]byte {
+	names := map[string][]string{
+		"mac-control-plane": {"runner", "runner-local", "runner-locald", "runner-log-capture"},
+		"linux-host":        {"runnerd", "runner-ssh-bridge", "runner-session-agent", "runner-log-capture"},
+		"sandbox-host":      {"runnerd", "runner-ssh-bridge", "runner-session-agent", "runner-log-capture"},
+		"factory-sandbox":   {"runnerd", "runner-ssh-bridge", "runner-session-agent", "runner-log-capture"},
+	}
+	result := make(map[string]map[string][]byte, len(names))
+	for hostID, hostComponents := range names {
+		components := make(map[string][]byte, len(hostComponents))
+		for _, name := range hostComponents {
+			components[name] = []byte("fixture " + hostID + " " + name)
+		}
+		result[hostID] = components
+	}
+	return result
+}
+
+func writeCatalogManifestFixture(t *testing.T, data []byte) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "release.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

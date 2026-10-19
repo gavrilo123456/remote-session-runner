@@ -435,16 +435,41 @@ func writeSimpleBundleAt(destination string, bundle SimpleBundle) error {
 }
 
 func readSimpleBundleAt(path string) (SimpleBundle, error) {
+	return readSimpleBundleAtWithModes(path, 0o700, 0o600, 0o700, 0o700)
+}
+
+func readSimpleBundleAtWithModes(path string, directoryMode, manifestMode, binMode, componentMode os.FileMode) (SimpleBundle, error) {
 	if filepath.Clean(path) != path || !filepath.IsAbs(path) {
 		return SimpleBundle{}, ErrInvalidSimpleBundle
 	}
 	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != directoryMode {
+		return SimpleBundle{}, ErrInvalidSimpleBundle
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil || len(entries) != 2 {
+		return SimpleBundle{}, ErrInvalidSimpleBundle
+	}
+	manifestFound, binFound := false, false
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return SimpleBundle{}, ErrInvalidSimpleBundle
+		}
+		switch entry.Name() {
+		case "manifest.json":
+			manifestFound = true
+		case "bin":
+			binFound = true
+		default:
+			return SimpleBundle{}, ErrInvalidSimpleBundle
+		}
+	}
+	if !manifestFound || !binFound {
 		return SimpleBundle{}, ErrInvalidSimpleBundle
 	}
 	manifestPath := filepath.Join(path, "manifest.json")
 	manifestInfo, err := os.Lstat(manifestPath)
-	if err != nil || manifestInfo.Mode()&os.ModeSymlink != 0 || !manifestInfo.Mode().IsRegular() || manifestInfo.Mode().Perm() != 0o600 {
+	if err != nil || manifestInfo.Mode()&os.ModeSymlink != 0 || !manifestInfo.Mode().IsRegular() || manifestInfo.Mode().Perm() != manifestMode || manifestInfo.Size() > 1<<20 || !catalogFileHasSingleLink(manifestInfo) {
 		return SimpleBundle{}, ErrInvalidSimpleBundle
 	}
 	manifestBytes, err := os.ReadFile(manifestPath)
@@ -462,10 +487,10 @@ func readSimpleBundleAt(path string) (SimpleBundle, error) {
 	}
 	binDir := filepath.Join(path, "bin")
 	binInfo, err := os.Lstat(binDir)
-	if err != nil || binInfo.Mode()&os.ModeSymlink != 0 || !binInfo.IsDir() || binInfo.Mode().Perm() != 0o700 {
+	if err != nil || binInfo.Mode()&os.ModeSymlink != 0 || !binInfo.IsDir() || binInfo.Mode().Perm() != binMode {
 		return SimpleBundle{}, ErrInvalidSimpleBundle
 	}
-	entries, err := os.ReadDir(binDir)
+	entries, err = os.ReadDir(binDir)
 	if err != nil || len(entries) != len(manifest.Components) {
 		return SimpleBundle{}, ErrInvalidSimpleBundle
 	}
@@ -476,7 +501,7 @@ func readSimpleBundleAt(path string) (SimpleBundle, error) {
 		}
 		componentPath := filepath.Join(binDir, entry.Name())
 		componentInfo, statErr := os.Lstat(componentPath)
-		if statErr != nil || !componentInfo.Mode().IsRegular() || componentInfo.Mode().Perm() != 0o700 {
+		if statErr != nil || componentInfo.Mode()&os.ModeSymlink != 0 || !componentInfo.Mode().IsRegular() || componentInfo.Mode().Perm() != componentMode || !catalogFileHasSingleLink(componentInfo) {
 			return SimpleBundle{}, ErrInvalidSimpleBundle
 		}
 		data, readErr := os.ReadFile(componentPath)

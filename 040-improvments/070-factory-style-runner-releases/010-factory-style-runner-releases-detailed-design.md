@@ -1,7 +1,8 @@
 # Detailed design: Factory-style versioned Runner releases
 
-**Status:** selected design, 2026-10-19. Implementation and live migration are
-**NOT STARTED**. The owner requested design/plan alignment first.
+**Status:** selected design, 2026-10-19. CAT-01 source implementation has
+started under the owner's implementation assignment. Live migration remains
+gated by the phased plan and its separate operational approvals.
 
 ## 1. Authority, scope and current compatibility
 
@@ -278,5 +279,5 @@ fixed queued bridges, configured Mac-local execution, timeouts/output/teardown,
 lane isolation and unchanged peer configuration/state. Production migration,
 normal-load observation and source tests are separate evidence claims.
 The [CAT plan](015-factory-style-runner-releases-phased-implementation-plan.md)
-defines completion order; no implementation or live operation is assigned by
-this design-only update.
+defines completion order. Source implementation is active; live operations
+remain individually gated and CAT-06 PRD migration requires separate approval.

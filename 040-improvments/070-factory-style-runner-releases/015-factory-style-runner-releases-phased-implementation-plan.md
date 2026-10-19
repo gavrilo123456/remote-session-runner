@@ -1,7 +1,9 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-**Status: design and plan only — 2026-10-19.** This document starts no
-implementation, publication, installation, selector change or service restart.
+**Status: implementation assigned — 2026-10-19. CAT-01 source work is active.**
+No live publication, installation, selector change or service restart has yet
+occurred; later unit operations follow their own prerequisites and approval
+gates.
 Follow the [idea](005-initial-idea.md) and [detailed design](010-factory-style-runner-releases-detailed-design.md).
 
 ## 1. Relationship to existing work
@@ -67,8 +69,9 @@ every live, rollback, recovery, backup and incomplete-operation reference.
 
 ## 3. Ordered units and required outcomes
 
-All seven units are **NOT STARTED**. Their gates below describe future work;
-none is assigned or accepted by this design-only update.
+CAT-01 is **IN PROGRESS**. CAT-02 through CAT-07 remain **NOT STARTED** until
+their predecessor gates pass. A unit is accepted only by its recorded evidence
+and required delivery/qualification results.
 
 | Unit | Assigned work | Exit evidence |
 | --- | --- | --- |
