@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -115,6 +116,35 @@ func TestCatalogManifestCommandSealsFourPerHostMetadataFiles(t *testing.T) {
 	stdout.Reset()
 	if err := runCatalogManifest(args, &stdout, &stderr); err == nil {
 		t.Fatal("catalog-manifest accepted a host label bound to another host's manifest")
+	}
+}
+
+func TestCatalogStatusRejectsWrongHostAndProductionLaneBeforeReadingSelectors(t *testing.T) {
+	wrongHost := "mac-control-plane"
+	currentHost := "linux-host"
+	switch runtime.GOOS {
+	case "darwin":
+		wrongHost, currentHost = "linux-host", "mac-control-plane"
+	case "linux":
+		if runtime.GOARCH == "arm64" {
+			wrongHost, currentHost = "mac-control-plane", "sandbox-host"
+		}
+	default:
+		t.Skip("catalog host mapping is defined for the supported Mac and Ubuntu platforms")
+	}
+
+	for _, args := range [][]string{
+		{"--host", wrongHost, "--lane", "dev"},
+		{"--host", currentHost, "--lane", "prd"},
+		{"--host", currentHost, "--lane", "dev", "unexpected"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := runCatalogStatus(args, &stdout, &stderr); err == nil {
+			t.Errorf("catalog-status accepted unsafe arguments %v", args)
+		}
+		if stdout.Len() != 0 {
+			t.Errorf("catalog-status emitted a status before rejecting %v: %s", args, stdout.String())
+		}
 	}
 }
 
