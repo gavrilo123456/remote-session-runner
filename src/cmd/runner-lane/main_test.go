@@ -104,6 +104,28 @@ func TestCatalogHostPreflightReportRetainsEveryRestartInventoryCategory(t *testi
 	if decoded.WorkInventory != want {
 		t.Fatalf("work inventory round trip = %+v, want %+v", decoded.WorkInventory, want)
 	}
+	inventoryJSON, err := json.Marshal(laneinstall.CatalogWorkInventoryReport{WorkInventory: want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inventoryDecoded struct {
+		WorkInventory store.RestartPreflightMetrics `json:"work_inventory"`
+	}
+	if err := json.Unmarshal(inventoryJSON, &inventoryDecoded); err != nil || inventoryDecoded.WorkInventory != want {
+		t.Fatalf("read-only inventory did not retain resumable-job counts: got %+v, err=%v", inventoryDecoded.WorkInventory, err)
+	}
+}
+
+func TestCatalogWorkInventoryRejectsPRDAndUnknownHostBeforeReading(t *testing.T) {
+	for _, args := range [][]string{
+		{"--host", "unlisted", "--lane", "dev"},
+		{"--host", "linux-host", "--lane", "prd"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if status := run(append([]string{"catalog-work-inventory"}, args...), &stdout, &stderr); status == 0 {
+			t.Errorf("catalog-work-inventory accepted invalid scope: %v", args)
+		}
+	}
 }
 
 func TestBundleOutputCannotTargetCheckout(t *testing.T) {

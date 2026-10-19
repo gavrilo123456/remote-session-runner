@@ -82,6 +82,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogAdopt(args[1:], stdout, stderr)
 	case "catalog-cohort":
 		err = runCatalogCohort(args[1:], stdout, stderr)
+	case "catalog-work-inventory":
+		err = runCatalogWorkInventory(ctx, args[1:], stdout, stderr)
 	case "catalog-host-preflight":
 		err = runCatalogHostPreflight(ctx, args[1:], stdout, stderr)
 	case "catalog-prd-backup":
@@ -635,6 +637,32 @@ func runCatalogHostPreflight(ctx context.Context, args []string, stdout, stderr 
 		return err
 	}
 	return writeJSON(stdout, preflight)
+}
+
+func runCatalogWorkInventory(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-work-inventory", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	lane := flags.String("lane", "", "dev or qas")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas") {
+		return errors.New("usage: runner-lane catalog-work-inventory --host HOST --lane dev|qas")
+	}
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
+	if err != nil {
+		return err
+	}
+	controller, err := laneinstall.NewSimpleServiceController()
+	if err != nil {
+		return err
+	}
+	inventory, err := laneinstall.ReadCatalogWorkInventory(ctx, plan, controller)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, inventory)
 }
 
 func currentCatalogHost(hostID string) bool {

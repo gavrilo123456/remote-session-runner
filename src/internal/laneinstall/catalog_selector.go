@@ -183,6 +183,81 @@ type CatalogCohortHostPreflightReport struct {
 	WorkInventory store.RestartPreflightMetrics `json:"work_inventory"`
 }
 
+// CatalogWorkInventoryReport records the read-only lane, selector and
+// restart-guard measurements captured before a selected-service stop.
+type CatalogWorkInventoryReport struct {
+	HostID              string                        `json:"host_id"`
+	Lane                config.ReleaseLane            `json:"lane"`
+	ObservedAt          string                        `json:"observed_at"`
+	ServiceActive       bool                          `json:"service_active"`
+	SelectorTarget      string                        `json:"selector_target"`
+	BundleSHA256        string                        `json:"bundle_sha256"`
+	ConfigurationSHA256 string                        `json:"configuration_sha256"`
+	DatabaseSchema      int                           `json:"database_schema"`
+	WorkInventory       store.RestartPreflightMetrics `json:"work_inventory"`
+	WorkInventoryEmpty  bool                          `json:"work_inventory_empty"`
+}
+
+// ReadCatalogWorkInventory returns a read-only snapshot of the selected
+// Dev/QAS authority and service state. It includes resumable jobs and does not
+// require a maintenance stop; the guarded stop repeats the check under its
+// lifecycle lock before any selector effect.
+func ReadCatalogWorkInventory(ctx context.Context, plan Plan, service SimpleServiceProbe) (CatalogWorkInventoryReport, error) {
+	if validateSimplePlan(plan) != nil || service == nil {
+		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
+	}
+	if _, err := loadSimpleLaneAuthority(plan); err != nil {
+		return CatalogWorkInventoryReport{}, err
+	}
+	root, err := DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return CatalogWorkInventoryReport{}, err
+	}
+	layout, err := catalogSelectorLayoutForPlan(plan, root)
+	if err != nil {
+		return CatalogWorkInventoryReport{}, err
+	}
+	status, err := inspectCatalogSelector(layout)
+	if err != nil {
+		return CatalogWorkInventoryReport{}, err
+	}
+	configurationSHA256, err := hashCatalogConfiguration(layout.configFile)
+	if err != nil {
+		return CatalogWorkInventoryReport{}, err
+	}
+	active, err := service.Status(ctx, plan)
+	if err != nil {
+		return CatalogWorkInventoryReport{}, err
+	}
+	database, err := store.OpenExistingRestartPreflightReadOnly(ctx, plan.Namespace.Database)
+	if err != nil {
+		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
+	}
+	defer database.Close()
+	authority, err := store.NewAuthorityStore(database)
+	if err != nil {
+		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
+	}
+	metrics, err := authority.ReadRestartPreflightMetrics(ctx)
+	if err != nil {
+		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
+	}
+	var schema int
+	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil || schema <= 0 {
+		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
+	}
+	bundleSHA256 := status.Bundle.BundleSHA256
+	if status.Release != nil {
+		bundleSHA256 = status.Release.Identity.BundleSHA256
+	}
+	return CatalogWorkInventoryReport{
+		HostID: plan.HostID, Lane: plan.Lane, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		ServiceActive: active, SelectorTarget: status.Target, BundleSHA256: bundleSHA256,
+		ConfigurationSHA256: configurationSHA256, DatabaseSchema: schema,
+		WorkInventory: metrics, WorkInventoryEmpty: simpleMetricsEmpty(metrics),
+	}, nil
+}
+
 // CohortHostPreflight returns the fresh, host-local evidence required by a
 // catalog cohort receipt. The selected service must already be stopped by the
 // maintenance lease, the complete restart inventory must remain empty, and a
