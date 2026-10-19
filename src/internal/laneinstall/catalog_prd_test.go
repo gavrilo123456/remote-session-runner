@@ -37,6 +37,18 @@ func TestPRDLegacyBundleDigestBindsHostAndEveryInstalledFile(t *testing.T) {
 	}
 }
 
+func TestPRDCatalogArtifactGroupOwnershipIsCheckedOnlyWhenDeclared(t *testing.T) {
+	if !catalogArtifactGroupMatches("", 2002, 1001) {
+		t.Fatal("an unspecified artifact group rejected an otherwise owner-verified group")
+	}
+	if catalogArtifactGroupMatches("runner", 2002, 1001) {
+		t.Fatal("an explicitly declared artifact group accepted a different group")
+	}
+	if !catalogArtifactGroupMatches("runner", 1001, 1001) {
+		t.Fatal("an explicitly declared current-account group was rejected")
+	}
+}
+
 func TestPRDSelectorMutationRequiresGuardedMaintenanceAndSupportsUnselectedState(t *testing.T) {
 	fixture := newCatalogSelectorFixture(t)
 	fixture.layout.lane = config.ReleaseLanePRD

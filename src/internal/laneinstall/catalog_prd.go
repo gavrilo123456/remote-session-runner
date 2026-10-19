@@ -662,7 +662,7 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 	}
 	var target unix.Stat_t
 	if unix.Lstat(artifact.InstallPath, &target) != nil || target.Mode&unix.S_IFMT != unix.S_IFREG || target.Uid != uint32(os.Getuid()) ||
-		(artifact.Group != "" && target.Gid != uint32(os.Getgid())) || uint32(target.Mode&0o777) != expectedOldMode || !catalogFileHasSingleLinkFromStat(target) {
+		!catalogArtifactGroupMatches(artifact.Group, target.Gid, uint32(os.Getgid())) || uint32(target.Mode&0o777) != expectedOldMode || !catalogFileHasSingleLinkFromStat(target) {
 		return fmt.Errorf("%w: existing target identity, mode, type, or link count differs", ErrSimpleArtifactConflict)
 	}
 	oldSHA, err := fileSHA256(artifact.InstallPath)
@@ -680,7 +680,7 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 	if parentStat.Uid != uint32(os.Getuid()) {
 		return fmt.Errorf("%w: replacement directory has an unexpected owner", ErrSimpleArtifactConflict)
 	}
-	if artifact.Group != "" && parentStat.Gid != uint32(os.Getgid()) {
+	if !catalogArtifactGroupMatches(artifact.Group, parentStat.Gid, uint32(os.Getgid())) {
 		return fmt.Errorf("%w: replacement directory has an unexpected group", ErrSimpleArtifactConflict)
 	}
 	if parentStat.Mode&0o022 != 0 {
@@ -724,6 +724,10 @@ func replacePRDCatalogArtifact(ctx context.Context, service *PRDServiceControlle
 }
 
 func catalogFileHasSingleLinkFromStat(info unix.Stat_t) bool { return info.Nlink == 1 }
+
+func catalogArtifactGroupMatches(expectedGroup string, actualGroup, currentGroup uint32) bool {
+	return expectedGroup == "" || actualGroup == currentGroup
+}
 
 func sha256HexString(data []byte) string {
 	digest := sha256.Sum256(data)
