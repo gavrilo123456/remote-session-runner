@@ -1,8 +1,10 @@
 package laneinstall
 
 import (
+	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,6 +38,104 @@ func TestSimpleBundlePinsExactPerHostPlatformAndComponents(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestPinnedSimpleCheckoutAcceptsFrozenSourceWithEvidenceOnlyDescendant(t *testing.T) {
+	root, sourceRevision := simplePinnedGitFixture(t, "README.md", "release source\n")
+	writeAndCommit(t, root, "040-implementation-evidence/CAT-04.md", "evidence-only closeout\n")
+	updateSimpleFixtureOrigin(t, root)
+	gitFixture(t, root, "checkout", "--detach", sourceRevision)
+
+	revision, err := requirePinnedSimpleCheckout(context.Background(), root, sourceRevision)
+	if err != nil || revision != sourceRevision {
+		t.Fatalf("pinned evidence-only source revision=%q err=%v", revision, err)
+	}
+	if _, err := requireSynchronizedSimpleCheckout(context.Background(), root); !errors.Is(err, ErrInvalidSimpleBundle) {
+		t.Fatalf("ordinary synchronized checkout accepted detached frozen source: %v", err)
+	}
+}
+
+func TestPinnedSimpleCheckoutRejectsSourceChangesDirtyStateAndWrongPin(t *testing.T) {
+	t.Run("non-Markdown descendant", func(t *testing.T) {
+		root, sourceRevision := simplePinnedGitFixture(t, "README.md", "release source\n")
+		writeAndCommit(t, root, "src/changed.go", "package changed\n")
+		updateSimpleFixtureOrigin(t, root)
+		gitFixture(t, root, "checkout", "--detach", sourceRevision)
+		if _, err := requirePinnedSimpleCheckout(context.Background(), root, sourceRevision); !errors.Is(err, ErrInvalidSimpleBundle) {
+			t.Fatalf("pinned source accepted a non-Markdown descendant: %v", err)
+		}
+	})
+
+	t.Run("dirty checkout", func(t *testing.T) {
+		root, sourceRevision := simplePinnedGitFixture(t, "README.md", "release source\n")
+		if err := os.WriteFile(filepath.Join(root, "untracked.txt"), []byte("untrusted"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := requirePinnedSimpleCheckout(context.Background(), root, sourceRevision); !errors.Is(err, ErrInvalidSimpleBundle) {
+			t.Fatalf("pinned source accepted untracked content: %v", err)
+		}
+	})
+
+	t.Run("wrong expected revision", func(t *testing.T) {
+		root, sourceRevision := simplePinnedGitFixture(t, "README.md", "release source\n")
+		wrongRevision := "1123456789abcdef0123456789abcdef01234567"
+		if wrongRevision == sourceRevision {
+			t.Fatal("fixture revisions unexpectedly match")
+		}
+		if _, err := requirePinnedSimpleCheckout(context.Background(), root, wrongRevision); !errors.Is(err, ErrInvalidSimpleBundle) {
+			t.Fatalf("pinned source accepted wrong expected revision: %v", err)
+		}
+	})
+}
+
+func simplePinnedGitFixture(t *testing.T, file, contents string) (string, string) {
+	t.Helper()
+	root := filepath.Join(simpleTestTempDir(t), "repo")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitFixture(t, root, "init", "-b", "dev")
+	gitFixture(t, root, "config", "user.name", "Runner Lane Test")
+	gitFixture(t, root, "config", "user.email", "runner-lane-test@example.invalid")
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, file)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, file), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitFixture(t, root, "add", "--", file)
+	gitFixture(t, root, "commit", "-m", "source")
+	sourceRevision := strings.TrimSpace(gitFixture(t, root, "rev-parse", "HEAD"))
+	updateSimpleFixtureOrigin(t, root)
+	return root, sourceRevision
+}
+
+func writeAndCommit(t *testing.T, root, file, contents string) {
+	t.Helper()
+	path := filepath.Join(root, file)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitFixture(t, root, "add", "--", file)
+	gitFixture(t, root, "commit", "-m", "descendant")
+}
+
+func updateSimpleFixtureOrigin(t *testing.T, root string) {
+	t.Helper()
+	gitFixture(t, root, "update-ref", "refs/remotes/origin/dev", "HEAD")
+}
+
+func gitFixture(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
+	return string(output)
 }
 
 func TestSimpleBuildEnvironmentEnablesMacProcessIdentityCGO(t *testing.T) {

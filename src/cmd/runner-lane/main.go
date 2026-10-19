@@ -735,12 +735,13 @@ func runBundleBuild(ctx context.Context, args []string, stdout, stderr io.Writer
 	lane := flags.String("lane", "", "dev or qas; selects staging namespace only")
 	repository := flags.String("repo", ".", "clean synchronized Mac or worker dev checkout")
 	goBinary := flags.String("go", "", "Go 1.27.1 executable; defaults to the repository host toolchain")
+	sourceRevision := flags.String("source-revision", "", "optional frozen source commit in a clean detached checkout; later origin/dev changes must be Markdown-only")
 	output := flags.String("output-dir", "", "absolute bundle directory outside the source checkout")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || *output == "" {
-		return errors.New("usage: runner-lane bundle-build --host HOST --lane dev|qas --repo CHECKOUT --output-dir ABSOLUTE-OUTSIDE-CHECKOUT [--go TOOLCHAIN]")
+		return errors.New("usage: runner-lane bundle-build --host HOST --lane dev|qas --repo CHECKOUT --output-dir ABSOLUTE-OUTSIDE-CHECKOUT [--go TOOLCHAIN] [--source-revision FROZEN-SHA]")
 	}
 	plan, err := simplePlan(*host, *lane)
 	if err != nil {
@@ -760,7 +761,12 @@ func runBundleBuild(ctx context.Context, args []string, stdout, stderr io.Writer
 	if pathWithin(repositoryRoot, outputPath) {
 		return errors.New("bundle output must be outside the source checkout")
 	}
-	bundle, err := laneinstall.BuildSimpleBundle(ctx, plan, repositoryRoot, *goBinary)
+	var bundle laneinstall.SimpleBundle
+	if *sourceRevision == "" {
+		bundle, err = laneinstall.BuildSimpleBundle(ctx, plan, repositoryRoot, *goBinary)
+	} else {
+		bundle, err = laneinstall.BuildSimpleBundleAtRevision(ctx, plan, repositoryRoot, *goBinary, *sourceRevision)
+	}
 	if err != nil {
 		return err
 	}

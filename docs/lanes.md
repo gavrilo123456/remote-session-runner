@@ -135,14 +135,22 @@ Keep the candidate outside Git and record the source revision, host, toolchain,
 manifest hash, and bundle hash. The candidate is immutable; rebuilding makes a
 new candidate and requires repeating acceptance before promotion.
 
+When building after an evidence-only commit has advanced `origin/dev`, create a
+clean detached worktree at the frozen source revision and pass that exact SHA
+with `--source-revision`. The pinned build guard requires that the commit is an
+ancestor of `origin/dev` and that all changes after it are Markdown-only; the
+ordinary build path continues to require `dev` exactly synchronized with
+`origin/dev`.
+
 ```sh
 # Target Ubuntu worker — ubuntu — example for sandbox-host Dev
 cd /home/ubuntu/projects/remote-session-runner
 GO=/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go
 candidate="/tmp/runner-lane-sandbox-host-dev-<source-sha>"
+source_sha="<frozen-source-sha>"
 "$GO" run ./src/cmd/runner-lane bundle-build \
   --host sandbox-host --lane dev --repo "$PWD" \
-  --output-dir "$candidate" --go "$GO"
+  --output-dir "$candidate" --go "$GO" --source-revision "$source_sha"
 "$GO" run ./src/cmd/runner-lane bundle-stage \
   --host sandbox-host --lane dev --bundle-dir "$candidate"
 "$GO" run ./src/cmd/runner-lane install \

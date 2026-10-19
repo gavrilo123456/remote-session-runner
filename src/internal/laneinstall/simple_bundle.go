@@ -123,6 +123,25 @@ func BuildSimpleBundle(ctx context.Context, plan Plan, repositoryRoot, goBinary 
 	if err != nil {
 		return SimpleBundle{}, err
 	}
+	return buildSimpleBundleAtRevision(ctx, plan, repositoryRoot, goBinary, revision)
+}
+
+// BuildSimpleBundleAtRevision builds from a frozen source commit in a clean,
+// detached checkout. The pinned commit must be an ancestor of origin/dev and
+// every later change on origin/dev must be Markdown-only. This supports the
+// source-S / evidence-E workflow without rebuilding release bytes from E.
+func BuildSimpleBundleAtRevision(ctx context.Context, plan Plan, repositoryRoot, goBinary, sourceRevision string) (SimpleBundle, error) {
+	if err := validateSimplePlan(plan); err != nil {
+		return SimpleBundle{}, err
+	}
+	revision, err := requirePinnedSimpleCheckout(ctx, repositoryRoot, sourceRevision)
+	if err != nil {
+		return SimpleBundle{}, err
+	}
+	return buildSimpleBundleAtRevision(ctx, plan, repositoryRoot, goBinary, revision)
+}
+
+func buildSimpleBundleAtRevision(ctx context.Context, plan Plan, repositoryRoot, goBinary, revision string) (SimpleBundle, error) {
 	if goBinary == "" {
 		if runtime.GOOS == "darwin" {
 			goBinary = "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/toolchains/go1.27.1/bin/go"
@@ -206,6 +225,61 @@ func requireSynchronizedSimpleCheckout(ctx context.Context, repositoryRoot strin
 		return "", ErrInvalidSimpleBundle
 	}
 	return head, nil
+}
+
+func requirePinnedSimpleCheckout(ctx context.Context, repositoryRoot, expectedRevision string) (string, error) {
+	if !sourceRevisionPattern.MatchString(expectedRevision) {
+		return "", ErrInvalidSimpleBundle
+	}
+	root, err := filepath.Abs(repositoryRoot)
+	if err != nil || filepath.Clean(root) != root {
+		return "", ErrInvalidSimpleBundle
+	}
+	runGit := func(args ...string) ([]byte, error) {
+		command := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+		return command.Output()
+	}
+	topBytes, err := runGit("rev-parse", "--show-toplevel")
+	if err != nil || strings.TrimSpace(string(topBytes)) != root {
+		return "", ErrInvalidSimpleBundle
+	}
+	branchBytes, err := runGit("branch", "--show-current")
+	if err != nil || strings.TrimSpace(string(branchBytes)) != "" {
+		return "", ErrInvalidSimpleBundle
+	}
+	status, err := runGit("status", "--porcelain", "--untracked-files=all")
+	if err != nil || len(status) != 0 {
+		return "", ErrInvalidSimpleBundle
+	}
+	headBytes, err := runGit("rev-parse", "HEAD")
+	if err != nil || strings.TrimSpace(string(headBytes)) != expectedRevision {
+		return "", ErrInvalidSimpleBundle
+	}
+	upstreamBytes, err := runGit("rev-parse", "origin/dev")
+	if err != nil {
+		return "", ErrInvalidSimpleBundle
+	}
+	upstream := strings.TrimSpace(string(upstreamBytes))
+	if !sourceRevisionPattern.MatchString(upstream) {
+		return "", ErrInvalidSimpleBundle
+	}
+	ancestor := exec.CommandContext(ctx, "git", "-C", root, "merge-base", "--is-ancestor", expectedRevision, upstream)
+	if err := ancestor.Run(); err != nil {
+		return "", ErrInvalidSimpleBundle
+	}
+	changed, err := runGit("diff", "--name-only", "-z", expectedRevision, upstream)
+	if err != nil {
+		return "", ErrInvalidSimpleBundle
+	}
+	for _, path := range strings.Split(string(changed), "\x00") {
+		if path == "" {
+			continue
+		}
+		if filepath.Ext(path) != ".md" {
+			return "", ErrInvalidSimpleBundle
+		}
+	}
+	return expectedRevision, nil
 }
 
 func simpleBuildEnvironment(source []string, platform simplePlatform) []string {
