@@ -94,7 +94,8 @@ func simplePinnedGitFixture(t *testing.T, file, contents string) (string, string
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	gitFixture(t, root, "init", "-b", "dev")
+	gitFixture(t, root, "init")
+	gitFixture(t, root, "checkout", "-b", "dev")
 	gitFixture(t, root, "config", "user.name", "Runner Lane Test")
 	gitFixture(t, root, "config", "user.email", "runner-lane-test@example.invalid")
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, file)), 0o700); err != nil {
