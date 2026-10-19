@@ -67,7 +67,7 @@ func TestPRDSelectorMutationRequiresGuardedMaintenanceAndSupportsUnselectedState
 }
 
 func TestPRDCatalogArtifactReplacementIsExpectedHashBound(t *testing.T) {
-	root := t.TempDir()
+	root := catalogPRDArtifactFixtureDir(t)
 	path := filepath.Join(root, "entrypoint.sh")
 	old := []byte("#!/bin/sh\nexec /old/bin/runnerd\n")
 	if err := os.WriteFile(path, old, 0o700); err != nil {
@@ -103,7 +103,7 @@ func TestPRDCatalogReplacementSupportsOnlyCurrentAccountOwnedQueuedWrapper(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	root := catalogPRDArtifactFixtureDir(t)
 	path := filepath.Join(root, "runner-ssh-bridge-forced.sh")
 	old := []byte("#!/bin/sh\nexec /old/bin/runner-ssh-bridge\n")
 	if err := os.WriteFile(path, old, 0o700); err != nil {
@@ -122,4 +122,13 @@ func TestPRDCatalogReplacementSupportsOnlyCurrentAccountOwnedQueuedWrapper(t *te
 	if err := replacePRDCatalogArtifact(context.Background(), &PRDServiceController{}, foreign, sha256HexString([]byte(artifact.Contents)), 0o700); !errors.Is(err, ErrSimpleArtifactConflict) {
 		t.Fatalf("replacement did not retain the conflict category for a foreign artifact owner: %v", err)
 	}
+}
+
+func catalogPRDArtifactFixtureDir(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
