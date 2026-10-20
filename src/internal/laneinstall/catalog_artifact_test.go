@@ -141,8 +141,7 @@ func TestCatalogEntrypointRefreshRejectsChangedOrLinkedArtifact(t *testing.T) {
 }
 
 func TestCatalogEntrypointRefreshOperationRequiresCanonicalProtectedRecord(t *testing.T) {
-	t.Setenv("TMPDIR", "/private/tmp")
-	root := t.TempDir()
+	root := catalogTestTempDir(t)
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
