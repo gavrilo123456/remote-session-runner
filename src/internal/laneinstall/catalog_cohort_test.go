@@ -1,6 +1,8 @@
 package laneinstall
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -284,6 +286,117 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 	if successor.Stage != CatalogCohortSwitching || !catalogCohortStageHoldsAdmissions(successor.Stage) {
 		t.Fatalf("successor stage=%q did not advance with its hold intact", successor.Stage)
 	}
+}
+
+func TestCatalogCohortReceiptConstructionBindsSupportedPreflightsAndOwnerPause(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	manifest, reports := catalogCohortCreationFixture(t, now)
+	pause := CatalogCohortPublisherPause{
+		Owner: "Tomasz Walczuk", Control: "Owner instruction keeps project publishers paused for the Dev cohort switch.",
+		Paused: true, NoNewAccepted: true,
+	}
+	receipt, err := NewCatalogCohortReceipt(config.ReleaseLaneDev, manifest, reports, pause, now)
+	if err != nil {
+		t.Fatalf("construct supported prepared receipt: %v", err)
+	}
+	if err := ValidateCatalogCohortReceipt(receipt); err != nil {
+		t.Fatalf("constructed receipt failed validation: %v", err)
+	}
+	manifestBytes, err := CatalogReleaseManifestBytes(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDigest := sha256.Sum256(manifestBytes)
+	if receipt.Stage != CatalogCohortPrepared || len(receipt.Transitions) != 0 || receipt.ReleaseSHA256 != hex.EncodeToString(manifestDigest[:]) ||
+		receipt.SourceRevision != manifest.SourceRevision || len(receipt.Hosts) != len(catalogCohortSwitchOrder) {
+		t.Fatalf("constructed receipt did not bind a prepared four-host release: %+v", receipt)
+	}
+	for _, hostID := range catalogCohortSwitchOrder {
+		if !cohortContainsHost(receipt, hostID) {
+			t.Fatalf("constructed receipt omitted %s", hostID)
+		}
+	}
+	badReports := append([]CatalogCohortHostPreflightReport(nil), reports...)
+	badReports[0].Preflight.Target.BundleSHA256 = strings.Repeat("f", 64)
+	if _, err := NewCatalogCohortReceipt(config.ReleaseLaneDev, manifest, badReports, pause, now); err == nil {
+		t.Fatal("receipt accepted a host preflight for different sealed bundle bytes")
+	}
+	badReports = append([]CatalogCohortHostPreflightReport(nil), reports...)
+	badReports[0].Preflight.PreflightAt = now.Add(-11 * time.Minute).Format(time.RFC3339Nano)
+	if _, err := NewCatalogCohortReceipt(config.ReleaseLaneDev, manifest, badReports, pause, now); err == nil {
+		t.Fatal("receipt accepted an expired host backup/preflight")
+	}
+	badReports = append([]CatalogCohortHostPreflightReport(nil), reports...)
+	badReports[1].WorkInventory.QueuedCommands = 1
+	if _, err := NewCatalogCohortReceipt(config.ReleaseLaneDev, manifest, badReports, pause, now); err == nil {
+		t.Fatal("receipt accepted a nonempty restart inventory")
+	}
+	if _, err := NewCatalogCohortReceipt(config.ReleaseLaneDev, manifest, reports,
+		CatalogCohortPublisherPause{Owner: pause.Owner, Control: pause.Control, Paused: true}, now); err == nil {
+		t.Fatal("receipt accepted an owner attestation without no-new-accepted confirmation")
+	}
+}
+
+func TestCatalogCohortPreflightReportLoaderRequiresCanonicalOwnerOnlyFile(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	_, reports := catalogCohortCreationFixture(t, now)
+	report := reports[0]
+	encoded, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = append(encoded, '\n')
+	path := filepath.Join(t.TempDir(), "linux-preflight.json")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadCatalogCohortHostPreflightReportFile(path)
+	if err != nil || loaded.Preflight.HostID != report.Preflight.HostID {
+		t.Fatalf("canonical owner-only preflight report was rejected: host=%q err=%v", loaded.Preflight.HostID, err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCatalogCohortHostPreflightReportFile(path); err == nil {
+		t.Fatal("preflight report with broad permissions was accepted")
+	}
+}
+
+func catalogCohortCreationFixture(t *testing.T, now time.Time) (CatalogReleaseManifest, []CatalogCohortHostPreflightReport) {
+	t.Helper()
+	bundles := catalogFixtureBundles(t, "cohort-create")
+	manifest, err := NewCatalogReleaseManifest("v2.0.9-create", bundles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := CatalogReleaseManifestBytes(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDigest := sha256.Sum256(manifestBytes)
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	reports := make([]CatalogCohortHostPreflightReport, 0, len(catalogCohortSwitchOrder))
+	for _, hostID := range catalogCohortSwitchOrder {
+		metrics := store.RestartPreflightMetrics{}
+		metricsBytes, err := json.Marshal(metrics)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metricsDigest := sha256.Sum256(metricsBytes)
+		previous := strings.Repeat("3", 64)
+		reports = append(reports, CatalogCohortHostPreflightReport{
+			Preflight: CatalogCohortHostPreflight{
+				HostID: hostID, PreviousTarget: "releases/" + previous, PreviousBundleSHA256: previous, PreviousReadSchemaMax: store.CurrentSchemaVersion,
+				Target:              CatalogReleaseIdentity{ReleaseID: manifest.ReleaseID, ReleaseSHA256: hex.EncodeToString(manifestDigest[:]), HostID: hostID, BundleSHA256: catalogManifestBundleSHA256(manifest, hostID)},
+				ConfigurationSHA256: strings.Repeat("4", 64), SchemaVersion: store.CurrentSchemaVersion,
+				WorkInventorySHA256: hex.EncodeToString(metricsDigest[:]), WorkInventoryEmpty: true, PreflightAt: stamp,
+				BackupDirectory: filepath.Join("/private/tmp/catalog-cohort-create", hostID), BackupManifestSHA256: strings.Repeat("6", 64),
+				AvailableBytes: 2 << 30, RequiredBytes: 1 << 20,
+			},
+			WorkInventory: metrics,
+		})
+	}
+	return manifest, reports
 }
 
 func TestCatalogCohortReconcileHistoryPreservesDivergentPreSwitchCopies(t *testing.T) {
@@ -684,8 +797,19 @@ func TestCatalogCohortSwitchPreflightMustMatchTheExactLocalState(t *testing.T) {
 		t.Fatal("preflight with a different backup identity was accepted")
 	}
 	if err := validateCatalogCohortHostMaySwitch(receipt, fixture.layout, fixture.legacyTarget, target,
-		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, now.Add(3*time.Minute)); err == nil {
-		t.Fatal("expired local switch preflight was accepted")
+		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, now.Add(3*time.Minute)); err != nil {
+		t.Fatalf("fresh cohort backup was rejected before the local two-minute switch preflight: %v", err)
+	}
+	refreshed, err := AdvanceCatalogCohortReceipt(receipt, "preflight", "linux-host", proof, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("fresh local preflight was rejected against the still-valid cohort backup: %v", err)
+	}
+	if _, err := AdvanceCatalogCohortReceipt(refreshed, "switch", "linux-host", proof, now.Add(3*time.Minute+time.Second)); err != nil {
+		t.Fatalf("switch did not accept the recent local preflight: %v", err)
+	}
+	if err := validateCatalogCohortHostMaySwitch(receipt, fixture.layout, fixture.legacyTarget, target,
+		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, now.Add(11*time.Minute)); err == nil {
+		t.Fatal("expired cohort backup/preflight was accepted")
 	}
 	if _, err := AdvanceCatalogCohortReceipt(receipt, "switch", "sandbox-host", proof, now); err == nil {
 		t.Fatal("cohort receipt accepted a host that skipped the prescribed order")

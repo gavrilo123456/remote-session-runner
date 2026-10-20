@@ -20,6 +20,7 @@ import (
 )
 
 const catalogCohortFormatVersion = 1
+const catalogCohortEvidenceMaxAge = 10 * time.Minute
 
 var catalogCohortSwitchOrder = []string{"linux-host", "sandbox-host", "factory-sandbox", "mac-control-plane"}
 
@@ -63,6 +64,16 @@ type CatalogCohortHostPreflight struct {
 	BackupManifestSHA256  string                 `json:"backup_manifest_sha256"`
 	AvailableBytes        uint64                 `json:"available_bytes"`
 	RequiredBytes         uint64                 `json:"required_bytes"`
+}
+
+// CatalogCohortPublisherPause records the owner-provided pause that cannot be
+// inferred from the four host-local service observations. Host ingress fence
+// evidence is derived separately from each supported host preflight report.
+type CatalogCohortPublisherPause struct {
+	Owner         string
+	Control       string
+	Paused        bool
+	NoNewAccepted bool
 }
 
 type CatalogCohortTransition struct {
@@ -147,6 +158,128 @@ func CatalogCohortRequiredFences() []string {
 		"mac-project-publishers", "mac-ingress", "mac-queued-dispatch",
 		"linux-host-direct-ingress", "sandbox-host-direct-ingress", "factory-sandbox-direct-ingress",
 	}
+}
+
+// NewCatalogCohortReceipt builds a prepared receipt only from a validated
+// sealed release, four host-local preflight reports, and an explicit owner
+// attestation that external project publishers remain paused. It derives all
+// fence digests and host identities; callers never assemble receipt JSON.
+func NewCatalogCohortReceipt(lane config.ReleaseLane, manifest CatalogReleaseManifest,
+	reports []CatalogCohortHostPreflightReport, publisherPause CatalogCohortPublisherPause, now time.Time) (CatalogCohortReceipt, error) {
+	if (lane != config.ReleaseLaneDev && lane != config.ReleaseLaneQAS) || ValidateCatalogReleaseManifest(manifest) != nil ||
+		len(reports) != len(catalogCohortSwitchOrder) || strings.TrimSpace(publisherPause.Owner) == "" ||
+		strings.TrimSpace(publisherPause.Control) == "" || len(publisherPause.Owner) > 128 || len(publisherPause.Control) > 1024 ||
+		!publisherPause.Paused || !publisherPause.NoNewAccepted || now.IsZero() {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	manifestBytes, err := CatalogReleaseManifestBytes(manifest)
+	if err != nil {
+		return CatalogCohortReceipt{}, ErrInvalidCatalogRelease
+	}
+	manifestDigest := sha256.Sum256(manifestBytes)
+	releaseSHA256 := hex.EncodeToString(manifestDigest[:])
+	byHost := make(map[string]CatalogCohortHostPreflightReport, len(reports))
+	for _, report := range reports {
+		preflight := report.Preflight
+		if _, exists := byHost[preflight.HostID]; exists || !containsString(catalogCohortSwitchOrder, preflight.HostID) ||
+			!preflight.WorkInventoryEmpty || !simpleMetricsEmpty(report.WorkInventory) || preflight.RequiredBytes == 0 ||
+			preflight.AvailableBytes < preflight.RequiredBytes || preflight.Target.ReleaseID != manifest.ReleaseID ||
+			preflight.Target.ReleaseSHA256 != releaseSHA256 || preflight.Target.BundleSHA256 != catalogManifestBundleSHA256(manifest, preflight.HostID) ||
+			preflight.Target.HostID != preflight.HostID || preflight.SchemaVersion < manifest.Database.ReadSchemaMin ||
+			preflight.SchemaVersion > manifest.Database.ReadSchemaMax {
+			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+		}
+		metricsBytes, marshalErr := json.Marshal(report.WorkInventory)
+		if marshalErr != nil {
+			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+		}
+		metricsDigest := sha256.Sum256(metricsBytes)
+		if preflight.WorkInventorySHA256 != hex.EncodeToString(metricsDigest[:]) {
+			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+		}
+		byHost[preflight.HostID] = report
+	}
+	if len(byHost) != len(catalogCohortSwitchOrder) {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	operationID, err := newCatalogOperationID()
+	if err != nil {
+		return CatalogCohortReceipt{}, err
+	}
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	receipt := CatalogCohortReceipt{
+		FormatVersion: catalogCohortFormatVersion, OperationID: operationID, Lane: lane,
+		ReleaseID: manifest.ReleaseID, ReleaseSHA256: releaseSHA256, SourceRevision: manifest.SourceRevision,
+		Database: manifest.Database, CreatedAt: stamp, UpdatedAt: stamp, Stage: CatalogCohortPrepared,
+	}
+	for _, hostID := range catalogCohortSwitchOrder {
+		report := byHost[hostID]
+		preflight := report.Preflight
+		if err := validateCohortPreflightFreshness(preflight.PreflightAt, now); err != nil {
+			return CatalogCohortReceipt{}, err
+		}
+		receipt.Hosts = append(receipt.Hosts, preflight)
+		encoded, marshalErr := json.Marshal(report)
+		if marshalErr != nil {
+			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+		}
+		evidence := sha256.Sum256(encoded)
+		for _, scope := range cohortIngressFencesForHost(hostID) {
+			receipt.FenceProofs = append(receipt.FenceProofs, CatalogCohortFenceProof{
+				Scope: scope, Control: "Fresh supported catalog-host-preflight observed the selected service stopped and complete work inventory empty on " + hostID + ".",
+				Owner: "Runner maintenance operator", Paused: true, NoNewAccepted: true,
+				EvidenceSHA256: hex.EncodeToString(evidence[:]), VerifiedAt: preflight.PreflightAt,
+			})
+		}
+	}
+	publisherEvidence, err := json.Marshal(struct {
+		Scope         string `json:"scope"`
+		Owner         string `json:"owner"`
+		Control       string `json:"control"`
+		Paused        bool   `json:"paused"`
+		NoNewAccepted bool   `json:"no_new_accepted"`
+		VerifiedAt    string `json:"verified_at"`
+	}{"mac-project-publishers", strings.TrimSpace(publisherPause.Owner), strings.TrimSpace(publisherPause.Control), true, true, stamp})
+	if err != nil {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	publisherDigest := sha256.Sum256(publisherEvidence)
+	receipt.FenceProofs = append(receipt.FenceProofs, CatalogCohortFenceProof{
+		Scope: "mac-project-publishers", Control: strings.TrimSpace(publisherPause.Control), Owner: strings.TrimSpace(publisherPause.Owner),
+		Paused: true, NoNewAccepted: true, EvidenceSHA256: hex.EncodeToString(publisherDigest[:]), VerifiedAt: stamp,
+	})
+	if ValidateCatalogCohortReceipt(receipt) != nil {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	return receipt, nil
+}
+
+func catalogManifestBundleSHA256(manifest CatalogReleaseManifest, hostID string) string {
+	for _, host := range manifest.Hosts {
+		if host.HostID == hostID {
+			return host.BundleSHA256
+		}
+	}
+	return ""
+}
+
+func cohortIngressFencesForHost(hostID string) []string {
+	switch hostID {
+	case "linux-host", "sandbox-host", "factory-sandbox":
+		return []string{hostID + "-direct-ingress"}
+	case "mac-control-plane":
+		return []string{"mac-ingress", "mac-queued-dispatch"}
+	default:
+		return nil
+	}
+}
+
+func validateCohortPreflightFreshness(atValue string, now time.Time) error {
+	at, err := time.Parse(time.RFC3339Nano, atValue)
+	if err != nil || now.Before(at.Add(-5*time.Second)) || now.Sub(at) > catalogCohortEvidenceMaxAge {
+		return ErrCatalogOperationInvalid
+	}
+	return nil
 }
 
 // ValidateCatalogCohortReceipt verifies the exact four-host scope, sealed
@@ -500,7 +633,7 @@ func cohortEvidenceFresh(receipt CatalogCohortReceipt, nowValue string) bool {
 	if err != nil {
 		return false
 	}
-	maxAge := 10 * time.Minute
+	maxAge := catalogCohortEvidenceMaxAge
 	for _, host := range receipt.Hosts {
 		preflightAt, err := time.Parse(time.RFC3339Nano, host.PreflightAt)
 		if err != nil || now.Before(preflightAt.Add(-5*time.Second)) || now.Sub(preflightAt) > maxAge {
@@ -539,7 +672,7 @@ func catalogCohortEvidenceExpiresAt(receipt CatalogCohortReceipt) (time.Time, bo
 	if earliest.IsZero() {
 		return time.Time{}, false
 	}
-	return earliest.Add(10 * time.Minute), true
+	return earliest.Add(catalogCohortEvidenceMaxAge), true
 }
 
 func catalogCohortTransitionDigest(transition CatalogCohortTransition) string {
@@ -664,6 +797,39 @@ func LoadCatalogCohortReceiptFile(path string) (CatalogCohortReceipt, error) {
 	return readCatalogCohortReceipt(path)
 }
 
+// LoadCatalogCohortHostPreflightReportFile loads one canonical, owner-only
+// report emitted by catalog-host-preflight. The host is checked again while
+// creating the receipt, where it is bound to the sealed release manifest.
+func LoadCatalogCohortHostPreflightReportFile(path string) (CatalogCohortHostPreflightReport, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 ||
+		info.Size() > 1<<20 || !catalogFileHasSingleLink(info) {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	}
+	var stat unix.Stat_t
+	if unix.Lstat(path, &stat) != nil || stat.Uid != uint32(os.Getuid()) {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	var report CatalogCohortHostPreflightReport
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&report) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	}
+	canonical, err := json.MarshalIndent(report, "", "  ")
+	if err != nil || !bytes.Equal(data, append(canonical, '\n')) {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	}
+	return report, nil
+}
+
 func ReadCatalogCohortReceipt(plan Plan, operationID string) (CatalogCohortReceipt, error) {
 	if validateCatalogPlan(plan) != nil || !validCatalogOperationID(operationID) {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
@@ -756,7 +922,7 @@ func cohortContainsHost(receipt CatalogCohortReceipt, hostID string) bool {
 
 func validateCatalogCohortHostMaySwitch(receipt CatalogCohortReceipt, layout catalogSelectorLayout, currentTarget string,
 	target CatalogReleaseIdentity, databaseSchema int, backupDirectory, backupManifestSHA256 string, now time.Time) error {
-	if ValidateCatalogCohortReceipt(receipt) != nil || receipt.Lane != layout.lane ||
+	if ValidateCatalogCohortReceipt(receipt) != nil || !cohortEvidenceFresh(receipt, now.UTC().Format(time.RFC3339Nano)) || receipt.Lane != layout.lane ||
 		(receipt.Stage != CatalogCohortHeld && receipt.Stage != CatalogCohortSwitching) ||
 		target.ReleaseID != receipt.ReleaseID || target.ReleaseSHA256 != receipt.ReleaseSHA256 || target.HostID != layout.hostID ||
 		databaseSchema <= 0 || now.IsZero() {
@@ -767,8 +933,7 @@ func validateCatalogCohortHostMaySwitch(receipt CatalogCohortReceipt, layout cat
 		return ErrCatalogOperationInvalid
 	}
 	host := receipt.Hosts[index]
-	preflightAt, err := time.Parse(time.RFC3339Nano, host.PreflightAt)
-	if err != nil || now.Before(preflightAt) || now.Sub(preflightAt) > 2*time.Minute ||
+	if validateCohortPreflightFreshness(host.PreflightAt, now) != nil ||
 		currentTarget != host.PreviousTarget || target != host.Target || databaseSchema != host.SchemaVersion ||
 		backupDirectory != host.BackupDirectory || backupManifestSHA256 != host.BackupManifestSHA256 {
 		return ErrCatalogOperationInvalid

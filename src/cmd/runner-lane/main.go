@@ -81,7 +81,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "catalog-adopt":
 		err = runCatalogAdopt(args[1:], stdout, stderr)
 	case "catalog-cohort":
-		err = runCatalogCohort(args[1:], stdout, stderr)
+		err = runCatalogCohort(ctx, args[1:], stdout, stderr)
 	case "catalog-refresh-entrypoint":
 		err = runCatalogRefreshEntrypoint(ctx, args[1:], stdout, stderr)
 	case "catalog-work-inventory":
@@ -300,17 +300,24 @@ func runCatalogAdopt(args []string, stdout, stderr io.Writer) error {
 	return writeJSON(stdout, manifest)
 }
 
-func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
+func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("runner-lane catalog-cohort", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	host := flags.String("host", "", "canonical identity of this existing host")
 	lane := flags.String("lane", "", "dev, qas, or prd")
-	action := flags.String("action", "", "prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, open, reconcile-history, supersede-host, supersession-restart, or supersede")
+	action := flags.String("action", "", "create, prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, open, reconcile-history, supersede-host, supersession-restart, or supersede")
 	operationID := flags.String("operation-id", "", "32-character cohort operation identity")
 	successorOperationID := flags.String("successor-operation-id", "", "held successor cohort identity for safe supersession")
 	receiptFile := flags.String("receipt-file", "", "owner-only cohort JSON for prepare or sync")
+	releaseManifestFile := flags.String("release-manifest", "", "sealed release.json for supported receipt creation")
+	publisherOwner := flags.String("publisher-owner", "", "owner attesting the external project-publisher pause")
+	publisherControl := flags.String("publisher-control", "", "specific owner control keeping external publishers paused")
+	publishersPaused := flags.Bool("publishers-paused", false, "confirm the owner has paused external project publishers")
+	noNewAccepted := flags.Bool("no-new-accepted", false, "confirm no new project work is being accepted")
 	subjectHost := flags.String("subject-host", "", "host identity recorded by preflight, switch, verify, or rollback-host")
 	evidenceSHA := flags.String("evidence-sha256", "", "digest of the bounded host/operator evidence")
+	var preflightFiles repeatedStringFlag
+	flags.Var(&preflightFiles, "preflight-file", "canonical owner-only catalog-host-preflight report; repeat once per host for create")
 	var historyFiles repeatedStringFlag
 	flags.Var(&historyFiles, "history-file", "one existing receipt copy for reconcile-history; repeat once per observed history")
 	if err := flags.Parse(args); err != nil {
@@ -323,9 +330,45 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if *action == "create" {
+		if *host != "mac-control-plane" || (*lane != "dev" && *lane != "qas") || *operationID != "" || *successorOperationID != "" ||
+			*receiptFile != "" || *subjectHost != "" || *evidenceSHA != "" || *releaseManifestFile == "" || len(preflightFiles) != 4 ||
+			*publisherOwner == "" || *publisherControl == "" || !*publishersPaused || !*noNewAccepted || len(historyFiles) != 0 {
+			return errors.New("create requires the Mac coordinator, Dev/QAS, a sealed release manifest, four host preflight reports, and explicit publisher-pause attestation")
+		}
+		manifest, err := laneinstall.LoadCatalogReleaseManifest(*releaseManifestFile)
+		if err != nil {
+			return err
+		}
+		reports := make([]laneinstall.CatalogCohortHostPreflightReport, 0, len(preflightFiles))
+		for _, path := range preflightFiles {
+			report, reportErr := laneinstall.LoadCatalogCohortHostPreflightReportFile(path)
+			if reportErr != nil {
+				return reportErr
+			}
+			reports = append(reports, report)
+		}
+		receipt, err := laneinstall.NewCatalogCohortReceipt(config.ReleaseLane(*lane), manifest, reports,
+			laneinstall.CatalogCohortPublisherPause{Owner: *publisherOwner, Control: *publisherControl, Paused: *publishersPaused, NoNewAccepted: *noNewAccepted}, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		path, err := laneinstall.WriteCatalogCohortReceipt(plan, receipt)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, struct {
+			OperationID string                         `json:"operation_id"`
+			Path        string                         `json:"local_receipt_path"`
+			Stage       laneinstall.CatalogCohortStage `json:"stage"`
+			ReleaseID   string                         `json:"release_id"`
+			ReleaseSHA  string                         `json:"release_sha256"`
+		}{receipt.OperationID, path, receipt.Stage, receipt.ReleaseID, receipt.ReleaseSHA256})
+	}
 	if *action == "reconcile-history" {
 		if !validCLIProbeOperationID(*operationID) || *receiptFile != "" || *successorOperationID != "" ||
-			*subjectHost != "" || *evidenceSHA != "" || len(historyFiles) < 2 {
+			*subjectHost != "" || *evidenceSHA != "" || *releaseManifestFile != "" || len(preflightFiles) != 0 ||
+			*publisherOwner != "" || *publisherControl != "" || *publishersPaused || *noNewAccepted || len(historyFiles) < 2 {
 			return errors.New("reconcile-history requires --operation-id and at least two --history-file inputs")
 		}
 		receipts := make([]laneinstall.CatalogCohortReceipt, 0, len(historyFiles))
@@ -355,7 +398,8 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 		return errors.New("--history-file is only valid with --action reconcile-history")
 	}
 	if *action == "prepare" {
-		if *receiptFile == "" || *operationID != "" || *successorOperationID != "" || *subjectHost != "" || *evidenceSHA != "" {
+		if *receiptFile == "" || *operationID != "" || *successorOperationID != "" || *subjectHost != "" || *evidenceSHA != "" ||
+			*releaseManifestFile != "" || len(preflightFiles) != 0 || *publisherOwner != "" || *publisherControl != "" || *publishersPaused || *noNewAccepted {
 			return errors.New("prepare requires only --receipt-file in addition to host and lane")
 		}
 		receipt, err := laneinstall.LoadCatalogCohortReceiptFile(*receiptFile)
@@ -373,7 +417,8 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 		}{receipt.OperationID, path, string(receipt.Stage)})
 	}
 	if *action == "sync" {
-		if *receiptFile == "" || *operationID != "" || *successorOperationID != "" || *subjectHost != "" || *evidenceSHA != "" {
+		if *receiptFile == "" || *operationID != "" || *successorOperationID != "" || *subjectHost != "" || *evidenceSHA != "" ||
+			*releaseManifestFile != "" || len(preflightFiles) != 0 || *publisherOwner != "" || *publisherControl != "" || *publishersPaused || *noNewAccepted {
 			return errors.New("sync requires only --receipt-file in addition to host and lane")
 		}
 		incoming, err := laneinstall.LoadCatalogCohortReceiptFile(*receiptFile)
@@ -390,7 +435,8 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 			Stage       string `json:"stage"`
 		}{incoming.OperationID, path, string(incoming.Stage)})
 	}
-	if *operationID == "" || *receiptFile != "" {
+	if *operationID == "" || *receiptFile != "" || *releaseManifestFile != "" || len(preflightFiles) != 0 || *publisherOwner != "" ||
+		*publisherControl != "" || *publishersPaused || *noNewAccepted {
 		return errors.New("cohort actions require --operation-id and do not accept --receipt-file")
 	}
 	receipt, err := laneinstall.ReadCatalogCohortReceipt(plan, *operationID)
@@ -418,7 +464,9 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 		return errors.New("host-scoped cohort evidence must be recorded by that host")
 	}
 	needsSuccessor := *action == "supersede-host" || *action == "supersession-restart" || *action == "supersede"
-	if needsSuccessor != (*successorOperationID != "") || needsSuccessor && *evidenceSHA != "" || !needsSuccessor && *evidenceSHA == "" {
+	needsEvidence := !needsSuccessor && *action != "preflight"
+	if needsSuccessor != (*successorOperationID != "") || needsSuccessor && *evidenceSHA != "" ||
+		needsEvidence && *evidenceSHA == "" || *action == "preflight" && *evidenceSHA != "" {
 		return errors.New("supersession requires --successor-operation-id and computes its own evidence; other actions require --evidence-sha256")
 	}
 	if *action == "hold" {
@@ -435,7 +483,56 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	if *action == "supersede-host" {
+	if *action == "preflight" {
+		if plan.Lane != config.ReleaseLaneDev && plan.Lane != config.ReleaseLaneQAS {
+			return errors.New("cohort switch preflight supports only Dev and QAS catalog lanes")
+		}
+		active, activeErr := catalogCohortLocalServiceActive(ctx, plan)
+		if activeErr != nil || active {
+			return laneinstall.ErrSimpleLaneNotQuiescent
+		}
+		controller, controllerErr := laneinstall.NewSimpleServiceController()
+		if controllerErr != nil {
+			return controllerErr
+		}
+		maintenance, maintenanceErr := laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
+		if maintenanceErr != nil {
+			return maintenanceErr
+		}
+		defer maintenance.Close()
+		var expected laneinstall.CatalogCohortHostPreflight
+		for _, hostPreflight := range receipt.Hosts {
+			if hostPreflight.HostID == *host {
+				expected = hostPreflight
+				break
+			}
+		}
+		if expected.HostID == "" {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		if err := maintenance.UseVerifiedBackup(ctx, expected.BackupDirectory, expected.BackupManifestSHA256); err != nil {
+			return err
+		}
+		report, reportErr := maintenance.CohortHostPreflight(ctx, receipt.ReleaseID, expected.RequiredBytes)
+		if reportErr != nil {
+			return reportErr
+		}
+		observed := report.Preflight
+		if observed.HostID != expected.HostID || observed.PreviousTarget != expected.PreviousTarget ||
+			observed.PreviousBundleSHA256 != expected.PreviousBundleSHA256 || observed.PreviousReadSchemaMax != expected.PreviousReadSchemaMax ||
+			observed.Target != expected.Target || observed.ConfigurationSHA256 != expected.ConfigurationSHA256 ||
+			observed.SchemaVersion != expected.SchemaVersion || observed.WorkInventorySHA256 != expected.WorkInventorySHA256 ||
+			!observed.WorkInventoryEmpty || observed.BackupDirectory != expected.BackupDirectory ||
+			observed.BackupManifestSHA256 != expected.BackupManifestSHA256 || observed.RequiredBytes != expected.RequiredBytes {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		evidence, marshalErr := json.Marshal(report)
+		if marshalErr != nil {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		digest := sha256.Sum256(evidence)
+		receipt, err = laneinstall.AdvanceCatalogCohortReceipt(receipt, "preflight", *subjectHost, hex.EncodeToString(digest[:]), time.Now().UTC())
+	} else if *action == "supersede-host" {
 		successor, readErr := laneinstall.ReadCatalogCohortReceipt(plan, *successorOperationID)
 		if readErr != nil {
 			return readErr
