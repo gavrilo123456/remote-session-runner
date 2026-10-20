@@ -3,48 +3,93 @@
 ## Source correction and Factory gate rerun — 2026-10-20
 
 The delayed-reconciliation correction is committed as
-`2f0e72eb2896427ab79e5a5f58a90b60be5d4769`. The Mac `dev` commit was pushed
-to primary Gitea; the automatic GitHub `dev` mirror was verified at the same
-full SHA. Before host validation, each Ubuntu checkout was clean on `dev` at
-`7786fbc3e5c78aa42e898d74cfceaa265da8df99`; after fast-forward, Linux,
-Sandbox and Factory were clean on `dev` at the exact `2f0e72e` SHA.
+`2f0e72eb2896427ab79e5a5f58a90b60be5d4769`. It was pushed to primary Gitea,
+verified at the same full SHA on the automatic GitHub mirror, and fast-forwarded
+to the clean `dev` checkouts on Linux, Sandbox and Factory. On Mac and all three
+workers at that exact source revision, `make test`, `make vet`, `make build` and
+`make smoke` passed. Mac's first sandboxed test attempt could not execute `/bin/ps`;
+the authorized host-visible rerun passed. Factory's original quota-related
+failure remains preserved: linker output reported `disk quota exceeded`, and
+temporary configuration/SQLite tests reported disk-I/O errors.
 
-On Mac, Linux, Sandbox and Factory at source revision `2f0e72e`, the required
-source gates `make test`, `make vet`, `make build` and `make smoke` all passed.
-Mac's `make test` first hit the restricted shell's inability to execute `/bin/ps`
-from an existing process test; the authorized host-visible rerun passed. Linux
-and Sandbox completed all four gates. Factory's original `make test` failure is
-preserved: Go linker temporary output failed with `disk quota exceeded`, while
-related temporary configuration/SQLite tests reported disk-I/O errors. `df`
-space alone did not explain that per-user limit.
+Factory's effective `/tmp` per-user quota was read with `quotactl_fd` for UID
+1001: both soft and hard limits were 2,097,152 KiB (2 GiB), with usage
+387,293,184 bytes and 538 inodes. `/tmp` is a 4 GiB tmpfs mounted with
+`usrquota`; `df` alone did not establish the UID limit. The Factory rerun used
+the task-owned short path `/home/ubuntu/.cache/c04r` with `TMPDIR`, `GOTMPDIR`
+and `SQLITE_TMPDIR` exported. All four gates passed at `2f0e72e`; the temporary
+directory, log and status marker were removed after processes exited. Shared Go
+caches and retained data were preserved.
 
-Factory `/tmp` quota was verified through the kernel `quotactl_fd` interface
-for `ubuntu` UID 1001: hard and soft block limits are each 2,097,152 KiB
-(2 GiB); current usage was 387,293,184 bytes and 538 inodes. The mount is a
-4 GiB tmpfs with `usrquota`; the effective user limit is distinct from the
-filesystem-wide `df` capacity. The read-only query opened `/tmp` and requested
-`Q_GETQUOTA` for the current UID through `quotactl_fd` (x86-64 syscall 443).
-One rerun's SSH stream failed to return its command status after its test
-processes exited, so the gates were rerun with a remote log and status marker.
-That recorded rerun used the short, task-owned
-`/home/ubuntu/.cache/c04r` directory with `TMPDIR`, `GOTMPDIR` and
-`SQLITE_TMPDIR` exported. `make test`, `make vet`, `make build` and `make smoke`
-then passed at the exact `2f0e72e` revision. The temporary directory, log and
-status marker were removed after all gate processes exited. Shared Go caches
-were preserved.
+## Latest status — 2026-10-20 17:06 UTC: CAT-04 BLOCKED after the Dev selector switch
 
-This closes source validation and delivery only. No replacement sealed release
-has been built yet; `cat-20261020-7786fbc` remains unchanged. Its partial Linux
-Dev selector and held cohort receipt still require supported reconciliation
-and full-cohort rollback before a successor attempt. No QAS or PRD promotion
-has occurred, project publishers remain paused, and mailbox acceptance remains
-**NOT RUN**.
+The same sealed candidate was published and inspected on all four hosts:
 
-**Latest status (2026-10-20 14:55 UTC): BLOCKED during recovery of a partial Linux Dev selector switch.** Release `cat-20261020-7786fbc`, source revision `7786fbc3e5c78aa42e898d74cfceaa265da8df99`, release manifest SHA-256 `7f44d5896b7fc068b7266124ace4c4ff3f279cffd779cde02cd6117ac720d4f7`, has only its Linux Dev selector active. The selected bundle hash is `bd2537669aee2bbf8408c87d916704970f2ce990fe50032c72c14cedcb338edd`. Mac remains on legacy bundle `6154ea67ea3337939982c6d798e0cf43acea9e06e8c2a0facff0f1136ed99310`, sandbox on `2b65f490b88cbb069460a1e4276b64bdc2acc11bd326eded1e697a31160d0459`, and factory on `b59c7bdc53d50a4be2e5b78c9bb53d560e98b427c03b360ec5b394af59b11687`. All four Dev services were observed inactive with zero active session slots, active command slots, queued commands, and resumable jobs between 14:55:23Z and 14:55:35Z. No QAS or PRD operation occurred in this attempt.
+| Host | Dev selector | Bundle SHA-256 |
+| --- | --- | --- |
+| `mac-control-plane` | `/Users/tomasz.walczuk/projects-runtime/runner-releases/cat-20261020-2f0e72e/mac-control-plane` | `998caace471e798c0d1228acde9d3b631f805079c2a473da15905e4d6ded304b` |
+| `linux-host` | `/home/ubuntu/projects-runtime/runner-releases/cat-20261020-2f0e72e/linux-host` | `2d4487ff47fe4e07adb9307d9b68ca2e48c5fce137a549b900f63559ddb18fa1` |
+| `sandbox-host` | `/home/ubuntu/projects-runtime/runner-releases/cat-20261020-2f0e72e/sandbox-host` | `7d20c9e0f29e3a24ec8ba8def558025d0136e9d87b6e07d1167d6b11039f6524` |
+| `factory-sandbox` | `/home/ubuntu/projects-runtime/runner-releases/cat-20261020-2f0e72e/factory-sandbox` | `d46a836f938886f284f157893f67b0b2b340178a5808464a917a7a29837e50b2` |
+
+The sealed release ID is `cat-20261020-2f0e72e`, source revision
+`2f0e72eb2896427ab79e5a5f58a90b60be5d4769`, and `release.json` SHA-256
+`96d43c0e7013be80e0c26602538d05021062ec725f9b5163cc81dccc6d433638`. All
+four selectors point to those exact bundles; all report schema 40. The
+selector operations and pre-switch backup manifest digests are recorded in the
+current cohort receipt and host journals. The cohort operation is
+`7a30271dab023394bdd9b43116e5979e`, still at `switching` with nine transitions.
+
+| Host | Selector operation | Pre-switch backup manifest SHA-256 |
+| --- | --- | --- |
+| `linux-host` | `6fe85937d8df01d7b781005bf03bd855` | `e4143a8c0da232f29c207328722a2d3f7e456247b99b0a2d453a89dd3247146e` |
+| `sandbox-host` | `e232ac57d274938a0d2d54843c2e7d43` | `63a8864a8d69033b88a13fca8c52937c723c26b3a2dbef9aa944fca1cbb541be` |
+| `factory-sandbox` | `d198ecac5f486117177e3d1eb41242d2` | `cc00c5d6ce603f4cb6728fb16587ee3e13682d53096fd90a87361421d441651f` |
+| `mac-control-plane` | `83825c4e0619b38105ae79d7d65dcf93` | `54c695bc621cb3a1b3b7a348714c6ffb2cc28de99bac7b2cc7f23922e4f8845c` |
+
+Fresh supported status and work-inventory reads found all four Dev services
+inactive and zero active session slots, active command slots, queued commands
+or resumable jobs. QAS and PRD service status remained active on all four hosts;
+this attempt changed only Dev selectors. No QAS or PRD promotion began.
+
+The guarded Linux Dev start returned `complete`, but the service did not become
+ready: `runnerd-dev.service` exited with `ExecMainStatus=78` at 16:58:14 UTC,
+and ten private-socket readiness attempts returned connection refused. The
+service log reported `runnerd: catalog cohort receipt is invalid; refusing
+work admission`. No request was accepted or executed.
+
+Diagnosis: `CatalogCohortAdmissionHeld` validates every receipt and fails
+closed when more than one receipt holds admissions. On each of the four hosts,
+supported status reads show the current operation `7a30271dab023394bdd9b43116e5979e`
+at `switching` (nine transitions) and old operation
+`cbf3c2318d5702a0134ce8cd486d2b5f` still at `held` (one transition). Those two
+simultaneous holds explain the startup refusal. Another old operation,
+`7b310f3b76834ca3adb0a755e5483653`, remains `prepared` (zero transitions); it
+does not hold admission yet but is still an abandoned pre-switch receipt that
+needs supported disposition. Linux's Dev receipt directory contained 37
+records: these three plus 34 `superseded` records. Supported status reads on
+the other three hosts confirmed the same stages for these three operation IDs.
+This is incomplete receipt reconciliation, not evidence of a release-binary
+hash mismatch.
+
+Current state is preserved: Dev selectors remain on the sealed candidate,
+services remain stopped (Linux failed closed), and all recorded work inventories
+are empty. No rollback or receipt mutation was attempted after the failed gate.
+The next recovery must use the supported cohort path to reconcile these two
+abandoned pre-switch receipts and the already-switched current operation before
+any service starts again; do not ignore ambiguous receipts or edit receipt
+files. Dev runtime/direct acceptance is **NOT PASS**; queued/mailbox acceptance
+is **NOT RUN**. No mailbox requests or ACKs were published, and external
+publishers remain paused.
+
+The 2026-10-20 14:55 UTC status below is retained as historical evidence.
+The older 2026-10-19 failure remains historical evidence as well.
+
+**Historical status (2026-10-20 14:55 UTC): BLOCKED during recovery of a partial Linux Dev selector switch.** Release `cat-20261020-7786fbc`, source revision `7786fbc3e5c78aa42e898d74cfceaa265da8df99`, release manifest SHA-256 `7f44d5896b7fc068b7266124ace4c4ff3f279cffd779cde02cd6117ac720d4f7`, has only its Linux Dev selector active. The selected bundle hash is `bd2537669aee2bbf8408c87d916704970f2ce990fe50032c72c14cedcb338edd`. Mac remains on legacy bundle `6154ea67ea3337939982c6d798e0cf43acea9e06e8c2a0facff0f1136ed99310`, sandbox on `2b65f490b88cbb069460a1e4276b64bdc2acc11bd326eded1e697a31160d0459`, and factory on `b59c7bdc53d50a4be2e5b78c9bb53d560e98b427c03b360ec5b394af59b11687`. All four Dev services were observed inactive with zero active session slots, active command slots, queued commands, and resumable jobs between 14:55:23Z and 14:55:35Z. No QAS or PRD operation occurred in this attempt.
 
 Linux selector journal `a500acf4cdcb03a2a2e5ecb1e16a6136` is `complete`; it records cohort `cebd9ec7e0b62a26cdbdba2c4569d2cc`, predecessor legacy bundle `f60b3926d5edb7d256589173ada7a1952cf9ffbe8568644bdfc88f404ee13863`, the candidate path, and verified backup manifest `a629b7d41fd4db7813928120cca1b3cdf17731dc2d4c96b54e3fd029e00311be`. The supported `catalog-reconcile` attempt returned `invalid or inconsistent catalog selector operation` while trying to write its `switch-reconciled` receipt. A temporary read-only Go overlay test against the synchronized Linux checkout at `7786fbc3e5c78aa42e898d74cfceaa265da8df99` validated the journal fields, sealed release identity, predecessor, and backup. Source inspection then identified the exact rejection: the receipt writer required the original selector operation creation timestamp to be within two minutes of the most recent cohort preflight (`14:30:44.489942149Z` versus `14:33:53.401368469Z`). The host-local `Reconcile` path separately rechecks service stopped, work empty, schema, configuration, and a fresh backup before finalizing the durable selector journal. Applying the new-switch limit to its later receipt was therefore inconsistent.
 
-The Mac source correction now retains the two-minute limit for new selector switches and permits a delayed `switch-reconciled` event only when its journaled selector operation follows the original preflight and the supported reconciliation path has completed its fresh guards. A regression covers late reconciliation, rejects a stale ordinary switch, and rejects an operation timestamp before preflight. Mac `make test`, `make vet`, `make build`, `make smoke`, and `git diff --check` pass; the first sandboxed `make test` attempt was blocked because an existing `runnerlocald` process test could not execute `/bin/ps`, and the required rerun with host process visibility passed. This correction is not yet committed or delivered to Ubuntu; a new sealed candidate has not yet been built. Factory `/tmp` measured 3,825,668 KiB available (4 GiB total) and root `/` 36,315,128 KiB available at 14:55 UTC. Sandbox `/` measured 1,383,724 KiB available (98% used). Treat these as snapshots and recheck immediately before each backup, publication, or switch. Project publishers remain paused by owner instruction; mailbox acceptance is **NOT RUN** and no request or ACK was published.
+The Mac source correction then in progress retains the two-minute limit for new selector switches and permits a delayed `switch-reconciled` event only when its journaled selector operation follows the original preflight and the supported reconciliation path has completed its fresh guards. A regression covers late reconciliation, rejects a stale ordinary switch, and rejects an operation timestamp before preflight. The claims in this historical snapshot are superseded by the delivered source correction and latest status above. Factory `/tmp` measured 3,825,668 KiB available (4 GiB total) and root `/` 36,315,128 KiB available at 14:55 UTC. Sandbox `/` measured 1,383,724 KiB available (98% used). Treat these as snapshots and recheck immediately before each backup, publication, or switch. Project publishers remained paused; mailbox acceptance was **NOT RUN** and no request or ACK was published.
 
 The previous 13:04 UTC status is retained below as a historical snapshot; the
 older 2026-10-19 failure remains historical evidence as well.
