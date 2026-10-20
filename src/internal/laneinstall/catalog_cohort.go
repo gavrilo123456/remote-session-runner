@@ -35,6 +35,7 @@ const (
 	CatalogCohortRollingBack CatalogCohortStage = "rolling_back"
 	CatalogCohortRolledBack  CatalogCohortStage = "rolled_back"
 	CatalogCohortReleased    CatalogCohortStage = "released"
+	CatalogCohortSuperseded  CatalogCohortStage = "superseded"
 )
 
 type CatalogCohortFenceProof struct {
@@ -65,14 +66,34 @@ type CatalogCohortHostPreflight struct {
 }
 
 type CatalogCohortTransition struct {
-	Sequence       uint64             `json:"sequence"`
-	Action         string             `json:"action"`
-	HostID         string             `json:"host_id,omitempty"`
-	EvidenceSHA256 string             `json:"evidence_sha256"`
-	At             string             `json:"at"`
-	ResumeStage    CatalogCohortStage `json:"resume_stage,omitempty"`
-	PreviousSHA256 string             `json:"previous_sha256"`
-	SHA256         string             `json:"sha256"`
+	Sequence       uint64                             `json:"sequence"`
+	Action         string                             `json:"action"`
+	HostID         string                             `json:"host_id,omitempty"`
+	EvidenceSHA256 string                             `json:"evidence_sha256"`
+	At             string                             `json:"at"`
+	ResumeStage    CatalogCohortStage                 `json:"resume_stage,omitempty"`
+	Supersession   *CatalogCohortSupersessionEvidence `json:"supersession,omitempty"`
+	SuccessorID    string                             `json:"successor_operation_id,omitempty"`
+	PreviousSHA256 string                             `json:"previous_sha256"`
+	SHA256         string                             `json:"sha256"`
+}
+
+// CatalogCohortSupersessionEvidence is the local, read-only observation that
+// permits a never-switched attempt to be superseded by a prepared successor.
+// Every host records its own evidence before the old receipt stops holding
+// admissions. Selector operations are required to be absent; an interrupted
+// selector operation must first use the existing recovery procedure.
+type CatalogCohortSupersessionEvidence struct {
+	HostID               string `json:"host_id"`
+	SuccessorOperationID string `json:"successor_operation_id"`
+	ExpectedSelector     string `json:"expected_selector"`
+	ObservedSelector     string `json:"observed_selector"`
+	ServiceActive        bool   `json:"service_active"`
+	WorkInventorySHA256  string `json:"work_inventory_sha256"`
+	WorkInventoryEmpty   bool   `json:"work_inventory_empty"`
+	ConfigurationSHA256  string `json:"configuration_sha256"`
+	DatabaseSchema       int    `json:"database_schema"`
+	SelectorOperations   string `json:"selector_operations"`
 }
 
 // CatalogCohortReceipt is a durable operator record shared across the four
@@ -171,19 +192,58 @@ func ValidateCatalogCohortReceipt(receipt CatalogCohortReceipt) error {
 // Switch records are accepted only in the fixed worker-then-Mac order, and
 // final verification cannot begin until the whole cohort has switched.
 func AdvanceCatalogCohortReceipt(receipt CatalogCohortReceipt, action, hostID, evidenceSHA256 string, at time.Time) (CatalogCohortReceipt, error) {
-	if ValidateCatalogCohortReceipt(receipt) != nil || !bundleDigestPattern.MatchString(evidenceSHA256) || at.IsZero() {
+	return advanceCatalogCohortReceipt(receipt, CatalogCohortTransition{
+		Action: action, HostID: hostID, EvidenceSHA256: evidenceSHA256,
+	}, at)
+}
+
+// AdvanceCatalogCohortSupersedeHost records one host's fresh local
+// observations. Supersession is limited to attempts that never switched or
+// were fully rolled back; any interrupted switch remains under recovery.
+func AdvanceCatalogCohortSupersedeHost(receipt, successor CatalogCohortReceipt, observation CatalogCohortSupersessionEvidence, at time.Time) (CatalogCohortReceipt, error) {
+	if ValidateCatalogCohortReceipt(receipt) != nil || ValidateCatalogCohortReceipt(successor) != nil ||
+		receipt.OperationID == successor.OperationID || receipt.Lane != successor.Lane ||
+		successor.Stage != CatalogCohortHeld || !cohortEvidenceFresh(successor, at.UTC().Format(time.RFC3339Nano)) ||
+		!catalogCohortReceiptSupersessionEligible(receipt) || !observationMatchesSuccessor(receipt, successor, observation) {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	encoded, err := json.Marshal(observation)
+	if err != nil {
+		return CatalogCohortReceipt{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	return advanceCatalogCohortReceipt(receipt, CatalogCohortTransition{
+		Action: "supersede-host", HostID: observation.HostID,
+		EvidenceSHA256: hex.EncodeToString(digest[:]), Supersession: &observation,
+	}, at)
+}
+
+// AdvanceCatalogCohortSupersede finalizes only after every host has recorded
+// its own observation against the same held successor. Until this event the
+// old receipt continues to hold admissions, including across process restart.
+func AdvanceCatalogCohortSupersede(receipt CatalogCohortReceipt, successorOperationID string, at time.Time) (CatalogCohortReceipt, error) {
+	if ValidateCatalogCohortReceipt(receipt) != nil || !validCatalogOperationID(successorOperationID) || !catalogCohortReceiptSupersessionEligible(receipt) ||
+		!cohortHasAllSupersessionEvidence(receipt, successorOperationID) {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	digest := sha256.Sum256([]byte("catalog-cohort-superseded\x00" + receipt.OperationID + "\x00" + successorOperationID))
+	return advanceCatalogCohortReceipt(receipt, CatalogCohortTransition{
+		Action: "supersede", EvidenceSHA256: hex.EncodeToString(digest[:]), SuccessorID: successorOperationID,
+	}, at)
+}
+
+func advanceCatalogCohortReceipt(receipt CatalogCohortReceipt, transition CatalogCohortTransition, at time.Time) (CatalogCohortReceipt, error) {
+	if ValidateCatalogCohortReceipt(receipt) != nil || !bundleDigestPattern.MatchString(transition.EvidenceSHA256) || at.IsZero() {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}
 	previousStage, err := replayCatalogCohortTransitions(receipt)
 	if err != nil {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}
-	transition := CatalogCohortTransition{
-		Sequence: uint64(len(receipt.Transitions) + 1), Action: action, HostID: hostID,
-		EvidenceSHA256: evidenceSHA256, At: at.UTC().Format(time.RFC3339Nano),
-		PreviousSHA256: lastCohortTransitionDigest(receipt.Transitions),
-	}
-	if action == "resume" && previousStage == CatalogCohortBlocked {
+	transition.Sequence = uint64(len(receipt.Transitions) + 1)
+	transition.At = at.UTC().Format(time.RFC3339Nano)
+	transition.PreviousSHA256 = lastCohortTransitionDigest(receipt.Transitions)
+	if transition.Action == "resume" && previousStage == CatalogCohortBlocked {
 		transition.ResumeStage = blockedCohortResumeStage(receipt.Transitions)
 	}
 	transition.SHA256 = catalogCohortTransitionDigest(transition)
@@ -294,6 +354,28 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 				return "", ErrCatalogOperationInvalid
 			}
 			stage = CatalogCohortReleased
+		case "supersede-host":
+			if !catalogCohortSupersessionStageEligible(stage, blockedFrom, receipt.Transitions[:index]) ||
+				len(supersededHosts(receipt.Transitions[:index])) >= len(catalogCohortSwitchOrder) ||
+				event.HostID != catalogCohortSwitchOrder[len(supersededHosts(receipt.Transitions[:index]))] || !validSupersessionEvidence(event) {
+				return "", ErrCatalogOperationInvalid
+			}
+			if len(supersededHosts(receipt.Transitions[:index])) > 0 {
+				previous := supersessionSuccessor(receipt.Transitions[:index])
+				if previous == "" || previous != event.Supersession.SuccessorOperationID {
+					return "", ErrCatalogOperationInvalid
+				}
+			}
+		case "supersede":
+			if !catalogCohortSupersessionStageEligible(stage, blockedFrom, receipt.Transitions[:index]) || !eventHostEmpty(event.HostID) ||
+				!validCatalogOperationID(event.SuccessorID) || !cohortTransitionsHaveSupersession(receipt.Transitions[:index], event.SuccessorID) {
+				return "", ErrCatalogOperationInvalid
+			}
+			digest := sha256.Sum256([]byte("catalog-cohort-superseded\x00" + receipt.OperationID + "\x00" + event.SuccessorID))
+			if event.EvidenceSHA256 != hex.EncodeToString(digest[:]) || event.Supersession != nil || event.ResumeStage != "" {
+				return "", ErrCatalogOperationInvalid
+			}
+			stage = CatalogCohortSuperseded
 		default:
 			return "", ErrCatalogOperationInvalid
 		}

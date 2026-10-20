@@ -1,6 +1,8 @@
 package laneinstall
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -184,10 +186,298 @@ func TestCatalogCohortInterruptionAfterEveryHostSwitchKeepsAdmissionsHeld(t *tes
 			t.Errorf("maintenance stage %q does not hold lane admissions", stage)
 		}
 	}
-	for _, stage := range []CatalogCohortStage{CatalogCohortPrepared, CatalogCohortReleased} {
+	for _, stage := range []CatalogCohortStage{CatalogCohortPrepared, CatalogCohortReleased, CatalogCohortSuperseded} {
 		if catalogCohortStageHoldsAdmissions(stage) {
 			t.Errorf("stage %q unexpectedly holds lane admissions", stage)
 		}
+	}
+}
+
+func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	proof := strings.Repeat("f", 64)
+	successor := heldCatalogCohortFixture(t, now, strings.Repeat("b", 32), "v2.0.1")
+	oldAttempts := []CatalogCohortReceipt{
+		validCatalogCohortFixture(now),
+		validCatalogCohortFixture(now),
+	}
+	oldAttempts[1].OperationID = strings.Repeat("c", 32)
+	var err error
+	oldAttempts[0], err = AdvanceCatalogCohortReceipt(oldAttempts[0], "hold", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAttempts[0], err = AdvanceCatalogCohortReceipt(oldAttempts[0], "preflight", "linux-host", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAttempts[1], err = AdvanceCatalogCohortReceipt(oldAttempts[1], "hold", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAttempts[1], err = AdvanceCatalogCohortReceipt(oldAttempts[1], "block", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSimplePlan("mac-control-plane", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cohortRoot := filepath.Join(t.TempDir(), "catalog-cohorts")
+	if err := os.Mkdir(cohortRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCohortReceiptFixture(t, cohortRoot, oldAttempts[0])
+	writeCohortReceiptFixture(t, cohortRoot, oldAttempts[1])
+	writeCohortReceiptFixture(t, cohortRoot, successor)
+	if _, _, err := catalogCohortAdmissionHeldAt(plan, cohortRoot); err == nil {
+		t.Fatal("multiple abandoned receipts did not fail closed before supported reconciliation")
+	}
+
+	for attemptIndex, old := range oldAttempts {
+		for hostIndex, hostID := range catalogCohortSwitchOrder {
+			observation := fixtureCohortSupersessionEvidence(old, successor, hostIndex, "none")
+			observation.HostID = hostID
+			old, err = AdvanceCatalogCohortSupersedeHost(old, successor, observation, now)
+			if err != nil {
+				t.Fatalf("attempt %d host %s supersede observation: %v", attemptIndex, hostID, err)
+			}
+		}
+		if !catalogCohortStageHoldsAdmissions(old.Stage) {
+			t.Fatalf("attempt %d released its hold before explicit finalization", attemptIndex)
+		}
+		old, err = AdvanceCatalogCohortSupersede(old, successor.OperationID, now)
+		if err != nil || old.Stage != CatalogCohortSuperseded || catalogCohortStageHoldsAdmissions(old.Stage) {
+			t.Fatalf("attempt %d stage=%q err=%v; completed historical hold must be retired", attemptIndex, old.Stage, err)
+		}
+		if err := ValidateCatalogCohortReceipt(old); err != nil {
+			t.Fatalf("attempt %d superseded receipt lost its valid history: %v", attemptIndex, err)
+		}
+		writeCohortReceiptFixture(t, cohortRoot, old)
+	}
+	if !catalogCohortStageHoldsAdmissions(successor.Stage) {
+		t.Fatal("valid successor stopped holding admissions while still in progress")
+	}
+	held, operationID, err := catalogCohortAdmissionHeldAt(plan, cohortRoot)
+	if err != nil || !held || operationID != successor.OperationID {
+		t.Fatalf("reconciled history still blocks a unique valid successor: held=%t operation=%q err=%v", held, operationID, err)
+	}
+	for _, hostID := range catalogCohortSwitchOrder {
+		successor, err = AdvanceCatalogCohortReceipt(successor, "preflight", hostID, proof, now)
+		if err != nil {
+			t.Fatalf("successor preflight %s: %v", hostID, err)
+		}
+		successor, err = AdvanceCatalogCohortReceipt(successor, "switch", hostID, proof, now)
+		if err != nil {
+			t.Fatalf("successor switch %s: %v", hostID, err)
+		}
+	}
+	if successor.Stage != CatalogCohortSwitching || !catalogCohortStageHoldsAdmissions(successor.Stage) {
+		t.Fatalf("successor stage=%q did not advance with its hold intact", successor.Stage)
+	}
+}
+
+func TestCatalogCohortSupersessionRequiresRecoveryForAnyUnrolledBackSwitch(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	proof := strings.Repeat("a", 64)
+	old := validCatalogCohortFixture(now)
+	var err error
+	old, err = AdvanceCatalogCohortReceipt(old, "hold", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err = AdvanceCatalogCohortReceipt(old, "preflight", "linux-host", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err = AdvanceCatalogCohortReceipt(old, "switch", "linux-host", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err = AdvanceCatalogCohortReceipt(old, "block", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor := heldCatalogCohortFixture(t, now, strings.Repeat("b", 32), "v2.0.1")
+	observation := fixtureCohortSupersessionEvidence(old, successor, 0, "none")
+	if _, err := AdvanceCatalogCohortSupersedeHost(old, successor, observation, now); err == nil {
+		t.Fatal("a switched deployment with no rollback was superseded instead of requiring recovery")
+	}
+	if !catalogCohortStageHoldsAdmissions(old.Stage) {
+		t.Fatal("interrupted switched deployment lost its admission hold")
+	}
+	if err := ValidateCatalogCohortReceipt(old); err != nil {
+		t.Fatalf("interrupted receipt history became unreadable: %v", err)
+	}
+
+	// A completed supported rollback is eligible for supersession after every
+	// local selector journal is recorded as rolled back.
+	old, err = AdvanceCatalogCohortReceipt(old, "rollback-start", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err = AdvanceCatalogCohortReceipt(old, "rollback-host", "linux-host", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err = AdvanceCatalogCohortReceipt(old, "rollback-complete", "", proof, now)
+	if err != nil || old.Stage != CatalogCohortRolledBack {
+		t.Fatalf("completed rollback stage=%q err=%v", old.Stage, err)
+	}
+	for hostIndex, hostID := range catalogCohortSwitchOrder {
+		disposition := "none"
+		if hostID == "linux-host" {
+			disposition = "rolled_back"
+		}
+		observation := fixtureCohortSupersessionEvidence(old, successor, hostIndex, disposition)
+		observation.HostID = hostID
+		old, err = AdvanceCatalogCohortSupersedeHost(old, successor, observation, now)
+		if err != nil {
+			t.Fatalf("rolled-back attempt host %s supersede observation: %v", hostID, err)
+		}
+	}
+	old, err = AdvanceCatalogCohortSupersede(old, successor.OperationID, now)
+	if err != nil || old.Stage != CatalogCohortSuperseded {
+		t.Fatalf("fully rolled-back attempt was not retired: stage=%q err=%v", old.Stage, err)
+	}
+}
+
+func TestCatalogCohortSupersessionRejectsUnfinishedSelectorJournal(t *testing.T) {
+	fixture := newCatalogSelectorFixture(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	old := validCatalogCohortFixture(time.Now().UTC().Truncate(time.Second))
+	operationID, err := newCatalogOperationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := CatalogSelectorOperation{
+		FormatVersion: catalogOperationFormatVersion, OperationID: operationID,
+		CohortOperationID: old.OperationID, CohortEvidenceSHA256: strings.Repeat("a", 64),
+		HostID: "linux-host", Lane: config.ReleaseLaneDev,
+		Release:        CatalogReleaseIdentity{ReleaseID: fixture.firstRelease, ReleaseSHA256: strings.Repeat("b", 64), HostID: "linux-host", BundleSHA256: strings.Repeat("c", 64)},
+		PreviousTarget: fixture.legacyTarget, NextTarget: filepath.Join(fixture.catalogRoot, fixture.firstRelease, "linux-host"),
+		ConfigurationSHA256: strings.Repeat("d", 64), DatabaseSchemaAtSwitch: store.CurrentSchemaVersion,
+		BackupDirectory: filepath.Join(fixture.layout.backupRoot, ".simple-backup-"+operationID), BackupManifestSHA256: strings.Repeat("e", 64),
+		Stage: catalogOperationPrepared, CreatedUTC: now,
+	}
+	if err := writeCatalogSelectorOperation(fixture.layout.operationRoot, operation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalogCohortSelectorOperationDisposition(fixture.layout, old); err == nil {
+		t.Fatal("abandoned receipt ignored an unfinished host selector operation")
+	}
+}
+
+func TestCatalogCohortSupersessionRestartKeepsHoldUntilAllHostsReconcile(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	proof := strings.Repeat("e", 64)
+	old := validCatalogCohortFixture(now)
+	var err error
+	old, err = AdvanceCatalogCohortReceipt(old, "hold", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor := heldCatalogCohortFixture(t, now, strings.Repeat("d", 32), "v2.0.2")
+	for hostIndex, hostID := range catalogCohortSwitchOrder[:2] {
+		observation := fixtureCohortSupersessionEvidence(old, successor, hostIndex, "none")
+		observation.HostID = hostID
+		old, err = AdvanceCatalogCohortSupersedeHost(old, successor, observation, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	unsafe := fixtureCohortSupersessionEvidence(old, successor, 2, "none")
+	unsafe.HostID = "factory-sandbox"
+	unsafe.ServiceActive = true
+	if _, err := AdvanceCatalogCohortSupersedeHost(old, successor, unsafe, now); err == nil {
+		t.Fatal("supersession accepted an active service observation")
+	}
+	unsafe = fixtureCohortSupersessionEvidence(old, successor, 2, "none")
+	unsafe.HostID = "factory-sandbox"
+	unsafe.WorkInventoryEmpty = false
+	if _, err := AdvanceCatalogCohortSupersedeHost(old, successor, unsafe, now); err == nil {
+		t.Fatal("supersession accepted retained work")
+	}
+	unsafe = fixtureCohortSupersessionEvidence(old, successor, 2, "prepared")
+	unsafe.HostID = "factory-sandbox"
+	if _, err := AdvanceCatalogCohortSupersedeHost(old, successor, unsafe, now); err == nil {
+		t.Fatal("supersession accepted an unreconciled selector operation")
+	}
+	if old.Stage != CatalogCohortHeld || !catalogCohortStageHoldsAdmissions(old.Stage) || len(old.Transitions) != 3 {
+		t.Fatalf("partial reconciliation stage=%q transitions=%d; old hold must persist", old.Stage, len(old.Transitions))
+	}
+	encoded, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restarted CatalogCohortReceipt
+	if err := json.Unmarshal(encoded, &restarted); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCatalogCohortReceipt(restarted); err != nil {
+		t.Fatalf("receipt could not resume after process restart: %v", err)
+	}
+	if restarted.Transitions[1].SHA256 != old.Transitions[1].SHA256 || restarted.Transitions[2].SHA256 != old.Transitions[2].SHA256 {
+		t.Fatal("restart changed preserved historical reconciliation evidence")
+	}
+	for hostIndex, hostID := range catalogCohortSwitchOrder[2:] {
+		observation := fixtureCohortSupersessionEvidence(restarted, successor, hostIndex+2, "none")
+		observation.HostID = hostID
+		restarted, err = AdvanceCatalogCohortSupersedeHost(restarted, successor, observation, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !catalogCohortStageHoldsAdmissions(restarted.Stage) {
+		t.Fatal("host observations alone released the old hold before finalization")
+	}
+	restarted, err = AdvanceCatalogCohortSupersede(restarted, successor.OperationID, now)
+	if err != nil || restarted.Stage != CatalogCohortSuperseded || catalogCohortStageHoldsAdmissions(restarted.Stage) {
+		t.Fatalf("post-restart finalization stage=%q err=%v", restarted.Stage, err)
+	}
+}
+
+func heldCatalogCohortFixture(t *testing.T, now time.Time, operationID, releaseID string) CatalogCohortReceipt {
+	t.Helper()
+	receipt := validCatalogCohortFixture(now)
+	receipt.OperationID = operationID
+	receipt.ReleaseID = releaseID
+	receipt.ReleaseSHA256 = strings.Repeat("c", 64)
+	for index := range receipt.Hosts {
+		receipt.Hosts[index].Target.ReleaseID = releaseID
+		receipt.Hosts[index].Target.ReleaseSHA256 = receipt.ReleaseSHA256
+	}
+	var err error
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", strings.Repeat("9", 64), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receipt
+}
+
+func fixtureCohortSupersessionEvidence(old, successor CatalogCohortReceipt, hostIndex int, operations string) CatalogCohortSupersessionEvidence {
+	return CatalogCohortSupersessionEvidence{
+		HostID: successor.Hosts[hostIndex].HostID, SuccessorOperationID: successor.OperationID,
+		ExpectedSelector: successor.Hosts[hostIndex].PreviousTarget, ObservedSelector: successor.Hosts[hostIndex].PreviousTarget,
+		ServiceActive: false, WorkInventorySHA256: successor.Hosts[hostIndex].WorkInventorySHA256, WorkInventoryEmpty: true,
+		ConfigurationSHA256: successor.Hosts[hostIndex].ConfigurationSHA256, DatabaseSchema: successor.Hosts[hostIndex].SchemaVersion,
+		SelectorOperations: operations,
+	}
+}
+
+func writeCohortReceiptFixture(t *testing.T, root string, receipt CatalogCohortReceipt) {
+	t.Helper()
+	data, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	path := filepath.Join(root, receipt.OperationID+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

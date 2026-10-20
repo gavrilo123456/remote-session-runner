@@ -83,6 +83,13 @@ func CatalogCohortAdmissionHeld(plan Plan) (bool, string, error) {
 		return false, "", ErrCatalogOperationInvalid
 	}
 	root := filepath.Join(plan.Namespace.Staging, "catalog-cohorts")
+	return catalogCohortAdmissionHeldAt(plan, root)
+}
+
+func catalogCohortAdmissionHeldAt(plan Plan, root string) (bool, string, error) {
+	if validateCatalogPlan(plan) != nil || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return false, "", ErrCatalogOperationInvalid
+	}
 	if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
 		return false, "", nil
 	} else if err != nil || validateExistingPrivateDirectory(root) != nil {
@@ -101,8 +108,8 @@ func CatalogCohortAdmissionHeld(plan Plan) (bool, string, error) {
 		if !validCatalogOperationID(operationID) {
 			return false, "", ErrCatalogOperationInvalid
 		}
-		receipt, readErr := ReadCatalogCohortReceipt(plan, operationID)
-		if readErr != nil {
+		receipt, readErr := readCatalogCohortReceipt(filepath.Join(root, operationID+".json"))
+		if readErr != nil || receipt.Lane != plan.Lane || !cohortContainsHost(receipt, plan.HostID) {
 			return false, "", ErrCatalogOperationInvalid
 		}
 		if catalogCohortStageHoldsAdmissions(receipt.Stage) {

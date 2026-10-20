@@ -305,8 +305,9 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	host := flags.String("host", "", "canonical identity of this existing host")
 	lane := flags.String("lane", "", "dev, qas, or prd")
-	action := flags.String("action", "", "prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, or open")
+	action := flags.String("action", "", "prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, open, supersede-host, or supersede")
 	operationID := flags.String("operation-id", "", "32-character cohort operation identity")
+	successorOperationID := flags.String("successor-operation-id", "", "held successor cohort identity for safe supersession")
 	receiptFile := flags.String("receipt-file", "", "owner-only cohort JSON for prepare or sync")
 	subjectHost := flags.String("subject-host", "", "host identity recorded by preflight, switch, verify, or rollback-host")
 	evidenceSHA := flags.String("evidence-sha256", "", "digest of the bounded host/operator evidence")
@@ -314,14 +315,14 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if flags.NArg() != 0 || !currentCatalogHost(*host) {
-		return errors.New("usage: runner-lane catalog-cohort --host THIS-HOST --lane dev|qas|prd --action ACTION [--operation-id ID] [--receipt-file FILE] [--subject-host HOST] [--evidence-sha256 SHA256]")
+		return errors.New("usage: runner-lane catalog-cohort --host THIS-HOST --lane dev|qas|prd --action ACTION [--operation-id ID] [--successor-operation-id ID] [--receipt-file FILE] [--subject-host HOST] [--evidence-sha256 SHA256]")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
 	if err != nil {
 		return err
 	}
 	if *action == "prepare" {
-		if *receiptFile == "" || *operationID != "" || *subjectHost != "" || *evidenceSHA != "" {
+		if *receiptFile == "" || *operationID != "" || *successorOperationID != "" || *subjectHost != "" || *evidenceSHA != "" {
 			return errors.New("prepare requires only --receipt-file in addition to host and lane")
 		}
 		receipt, err := laneinstall.LoadCatalogCohortReceiptFile(*receiptFile)
@@ -339,7 +340,7 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 		}{receipt.OperationID, path, string(receipt.Stage)})
 	}
 	if *action == "sync" {
-		if *receiptFile == "" || *operationID != "" || *subjectHost != "" || *evidenceSHA != "" {
+		if *receiptFile == "" || *operationID != "" || *successorOperationID != "" || *subjectHost != "" || *evidenceSHA != "" {
 			return errors.New("sync requires only --receipt-file in addition to host and lane")
 		}
 		incoming, err := laneinstall.LoadCatalogCohortReceiptFile(*receiptFile)
@@ -364,24 +365,28 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if *action == "status" {
-		if *subjectHost != "" || *evidenceSHA != "" {
+		if *subjectHost != "" || *evidenceSHA != "" || *successorOperationID != "" {
 			return errors.New("status does not accept host subjects or evidence digests")
 		}
 		return writeJSON(stdout, receipt)
 	}
 	allowed := map[string]struct{}{
 		"hold": {}, "preflight": {}, "verify-start": {}, "verify": {}, "complete": {}, "block": {},
-		"resume": {}, "rollback-start": {}, "rollback-complete": {}, "open": {},
+		"resume": {}, "rollback-start": {}, "rollback-complete": {}, "open": {}, "supersede-host": {}, "supersede": {},
 	}
-	if _, ok := allowed[*action]; !ok || *evidenceSHA == "" {
-		return errors.New("cohort transition requires a supported --action and --evidence-sha256")
+	if _, ok := allowed[*action]; !ok {
+		return errors.New("unsupported cohort action")
 	}
-	perHost := *action == "preflight" || *action == "verify"
+	perHost := *action == "preflight" || *action == "verify" || *action == "supersede-host"
 	if perHost != (*subjectHost != "") {
-		return errors.New("preflight and verify require --subject-host; other actions forbid it")
+		return errors.New("host-scoped cohort actions require --subject-host; other actions forbid it")
 	}
 	if perHost && *subjectHost != *host {
 		return errors.New("host-scoped cohort evidence must be recorded by that host")
+	}
+	needsSuccessor := *action == "supersede-host" || *action == "supersede"
+	if needsSuccessor != (*successorOperationID != "") || needsSuccessor && *evidenceSHA != "" || !needsSuccessor && *evidenceSHA == "" {
+		return errors.New("supersession requires --successor-operation-id and computes its own evidence; other actions require --evidence-sha256")
 	}
 	if *action == "hold" {
 		active, err := catalogCohortLocalServiceActive(context.Background(), plan)
@@ -397,7 +402,25 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	receipt, err = laneinstall.AdvanceCatalogCohortReceipt(receipt, *action, *subjectHost, *evidenceSHA, time.Now().UTC())
+	if *action == "supersede-host" {
+		successor, readErr := laneinstall.ReadCatalogCohortReceipt(plan, *successorOperationID)
+		if readErr != nil {
+			return readErr
+		}
+		observation, observeErr := laneinstall.ObserveCatalogCohortSupersession(context.Background(), plan, receipt, successor)
+		if observeErr != nil {
+			return observeErr
+		}
+		receipt, err = laneinstall.AdvanceCatalogCohortSupersedeHost(receipt, successor, observation, time.Now().UTC())
+	} else if *action == "supersede" {
+		successor, readErr := laneinstall.ReadCatalogCohortReceipt(plan, *successorOperationID)
+		if readErr != nil || successor.Stage != laneinstall.CatalogCohortHeld {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		receipt, err = laneinstall.AdvanceCatalogCohortSupersede(receipt, *successorOperationID, time.Now().UTC())
+	} else {
+		receipt, err = laneinstall.AdvanceCatalogCohortReceipt(receipt, *action, *subjectHost, *evidenceSHA, time.Now().UTC())
+	}
 	if err != nil {
 		return err
 	}
