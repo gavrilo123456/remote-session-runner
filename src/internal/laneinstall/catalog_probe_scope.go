@@ -148,7 +148,8 @@ func CatalogMaintenanceProbeRequestBody(plan Plan) ([]byte, error) {
 		return nil, ErrCatalogProbeAdmission
 	}
 	request := catalogMaintenanceProbeRequest{
-		Environment: "linux-" + string(plan.Lane), Script: "printf 'catalog release maintenance probe\\n'", TimeoutSeconds: 5,
+		Environment: string(plan.HostID) + "-" + string(plan.Lane),
+		Script:      "printf 'catalog release maintenance probe\\n'", TimeoutSeconds: 5,
 	}
 	request.Target.Kind = "remote"
 	request.Target.Profile = plan.HostID

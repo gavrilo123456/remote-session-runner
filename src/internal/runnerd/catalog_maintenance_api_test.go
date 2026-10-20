@@ -55,7 +55,7 @@ func TestCatalogMaintenanceDirectAPIAdmitsOnlyOneBoundProbeAndItsRead(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := []byte(`{"environment":"linux-dev","execution_target":{"kind":"remote","profile":"linux-host"},"source":{"mode":"empty"},"script":"printf bounded","timeout_seconds":5}`)
+	body := []byte(`{"environment":"linux-host-dev","execution_target":{"kind":"remote","profile":"linux-host"},"source":{"mode":"empty"},"script":"printf bounded","timeout_seconds":5}`)
 	service, _ := newP046Service(t, &p046FakeRuntime{generation: "catalog-probe-fixture"})
 	handler, err := newDirectHTTPSAPIHandlerWithQueueWake(service, lifecycle.NewGate(), nil, nil)
 	if err != nil {
@@ -84,6 +84,13 @@ func TestCatalogMaintenanceDirectAPIAdmitsOnlyOneBoundProbeAndItsRead(t *testing
 	ordinary := request(http.MethodPost, "/v1/jobs", []byte(`{"environment":"linux-dev"}`))
 	if ordinary.Code != http.StatusServiceUnavailable || !strings.Contains(ordinary.Body.String(), "maintenance_admission_closed") {
 		t.Fatalf("ordinary request during hold status=%d body=%s", ordinary.Code, ordinary.Body.String())
+	}
+	malformed := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(`{}`))
+	malformed = malformed.WithContext(context.WithValue(malformed.Context(), directPrincipalContextKey{}, DirectPrincipal{Controller: controller}))
+	malformedResponse := httptest.NewRecorder()
+	api.ServeHTTP(malformedResponse, malformed)
+	if malformedResponse.Code != http.StatusServiceUnavailable || !strings.Contains(malformedResponse.Body.String(), "maintenance_admission_closed") {
+		t.Fatalf("unauthorized malformed request during hold status=%d body=%s", malformedResponse.Code, malformedResponse.Body.String())
 	}
 	accepted := request(http.MethodPost, "/v1/jobs", body)
 	if accepted.Code != http.StatusAccepted {

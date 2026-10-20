@@ -90,23 +90,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	maintenanceHeld := false
+	maintenanceOperationID := ""
 	var maintenanceProbe *laneinstall.CatalogMaintenanceProbeGuard
 	if plan, catalogManaged, planErr := laneinstall.CatalogPlanFromConfiguration(loaded); planErr != nil {
 		fmt.Fprintln(stderr, "runnerd: configured catalog maintenance identity is invalid")
 		return 78
 	} else if catalogManaged && plan.HostID != "mac-control-plane" {
-		maintenanceHeld, operationID, holdErr := laneinstall.CatalogCohortAdmissionHeld(plan)
+		var holdErr error
+		maintenanceHeld, maintenanceOperationID, holdErr = laneinstall.CatalogCohortAdmissionHeld(plan)
 		if holdErr != nil {
 			fmt.Fprintln(stderr, "runnerd: catalog cohort receipt is invalid; refusing work admission")
 			return 78
 		}
 		if maintenanceHeld {
-			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuard(plan, operationID)
+			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuard(plan, maintenanceOperationID)
 			if err != nil {
 				fmt.Fprintln(stderr, "runnerd: catalog maintenance probe guard is invalid")
 				return 78
 			}
 		}
+		slog.Info("catalog cohort admission state evaluated", "maintenance_held", maintenanceHeld, "operation_id", maintenanceOperationID)
 	}
 	executable, executableErr := os.Executable()
 	if executableErr != nil || laneinstall.ValidateConfiguredCatalogExecutable(loaded, "runnerd", executable) != nil {

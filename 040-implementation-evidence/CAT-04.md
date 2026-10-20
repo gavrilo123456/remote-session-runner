@@ -1,15 +1,130 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-**Status: BLOCKED; selectors are switched and held, but Dev acceptance failed
-at service startup on `linux-host`.** The candidate is sealed and published on
-all four hosts. Dev cohort receipt `9ae78b3bca5c6d6c178db524971ec37e` remains at
-`switching`; all four Dev selectors point to the sealed release. Linux Dev
-start was attempted through the supported operator and failed closed because
-the candidate found multiple outstanding cohort receipts holding admissions.
-Linux Dev is inactive; the other three Dev services were not started and
-remain stopped. QAS and PRD selectors and services were not changed.
+**Latest status (2026-10-20 13:04 UTC): BLOCKED; `cat-20261020-57e3775` remains selected in Dev on all four hosts, but CAT-04 acceptance failed. All Dev services remain stopped.** The current cohort receipt `b33462e2631356c319d3e14fc22397c7` remains at `verifying`; it has not been completed, rolled back, or superseded. Its byte-identical SHA-256 is `83d7de500cabcc41a145833b62c56ce5a36709a3d5c8627a106287d3fde34260` on Mac and all three Ubuntu hosts. QAS and PRD selectors/services were not changed. The older 2026-10-19 failure below is retained as historical evidence.
 
-## Candidate and source delivery
+## Fresh read-only recheck — 2026-10-20 13:04 UTC
+
+Supported `catalog-status`, `catalog-cohort status`, and
+`catalog-work-inventory` reads found the same Dev selectors and sealed bundle
+hashes listed below. At 12:55 UTC, Linux, sandbox, and Factory each reported
+the Dev service inactive and zero active session slots, command slots, queued
+commands, and resumable jobs. Mac reported the same at 13:03 UTC. Each receipt
+copy remains at `verifying` with 10 transitions; no receipt was modified.
+
+Linux's Dev `staging/catalog-cohorts` directory contains 30 receipt records:
+28 `superseded`, one `prepared` operation (`7b310f3b76834ca3adb0a755e5483653`),
+and the current `verifying` operation. The historical records are preserved;
+the old-attempt blocker no longer prevents the current single held operation.
+On Linux, a temporary read-only Go test against the clean source checkout at
+`57e3775e8580f49c3a262db7c52fbdacf081d879` called
+`CatalogCohortAdmissionHeld` using the live Dev plan and receipt directory. It
+returned `held=true`, operation `b33462e2631356c319d3e14fc22397c7`, with no
+error. The temporary test file was removed and the checkout remained clean.
+This establishes the source-level hold result against the current host state;
+it does not explain the earlier HTTP 400 from the service.
+
+The direct admission-fence discrepancy remains unresolved. No Dev service was
+started again after that HTTP 400. The source change now emits a bounded startup
+log with the evaluated hold boolean and operation ID, so the next supported
+start can show whether the daemon recognized this receipt before any functional
+probe. The direct API regression also asserts that a no-token malformed `{}`
+POST is rejected with HTTP 503 while held, before request-body validation.
+
+Factory `/tmp` is a 2 GiB tmpfs with 1,728,516 KiB available at 13:04 UTC.
+Sandbox `/` reported 1,961,640 KiB available (97% used) at 13:04 UTC, compared
+with 520,128 KiB available (100% used) at 12:55 UTC; no files or caches were
+removed by this work. Recheck the sandbox filesystem immediately before any
+backup or selector write. Mailbox requests and ACKs remain **NOT RUN**.
+
+## Latest CAT-04 attempt — 2026-10-20
+
+The sealed candidate is `cat-20261020-57e3775`, source revision
+`57e3775e8580f49c3a262db7c52fbdacf081d879`, release manifest SHA-256
+`c2c2084e0e9d651e3b5863472895c1c11b3bafcf83e8e2818dece173620a7271`.
+Per-host sealed bundle SHA-256 values are:
+
+| Host | Dev selector | Bundle SHA-256 |
+| --- | --- | --- |
+| `mac-control-plane` | `/Users/tomasz.walczuk/projects-runtime/runner-releases/cat-20261020-57e3775/mac-control-plane` | `d8c9f6fb502848fe98cebd204d2f8d4f5f75a07d48a77e3800c61a319bc08ee5` |
+| `linux-host` | `/home/ubuntu/projects-runtime/runner-releases/cat-20261020-57e3775/linux-host` | `f236285b0a78fbbb2c4225ebcaffaaa1bf852580041d394e6b59994b61102567` |
+| `sandbox-host` | `/home/ubuntu/projects-runtime/runner-releases/cat-20261020-57e3775/sandbox-host` | `ed852a2a143b8fceec32470187d5cd95c0ff62fc297892026e571104624d22aa` |
+| `factory-sandbox` | `/home/ubuntu/projects-runtime/runner-releases/cat-20261020-57e3775/factory-sandbox` | `6c45d101dda4d989e8d8c0da299c0a13d9c0ae449d2faaef30c7bbf8fdda6188` |
+
+The supported `catalog-cohort` status read on Linux confirmed receipt stage
+`verifying`, release identity and all four host bundle identities. Fresh
+`catalog-work-inventory` observations at 12:26 UTC showed zero active session
+slots, active command slots, queued commands and resumable jobs on every Dev
+host. The same inventories were zero again at 12:37 UTC and 12:48 UTC. At
+12:48 UTC the protected cohort receipt SHA-256 was
+`83d7de500cabcc41a145833b62c56ce5a36709a3d5c8627a106287d3fde34260` on Mac,
+Linux, sandbox and factory; every copy reported operation
+`b33462e2631356c319d3e14fc22397c7`, stage `verifying`, and 10 transitions.
+QAS selectors remain on their previous legacy bundle identities, and their
+Ubuntu services remain active. PRD remains `unselected` in the catalog; its
+Ubuntu services remain active, and the Mac QAS and PRD LaunchAgents were
+observed running. The owner instruction to keep external project publishers
+paused remains in force.
+
+The bounded Linux direct-mTLS check used the configured Go TLS path with the
+lane CA, normal hostname validation, configured server fingerprint and URI
+SAN; `/health/ready` returned HTTP 200 and build revision
+`57e3775e8580f49c3a262db7c52fbdacf081d879`. Native Python rejected this
+certificate with `Missing Authority Key Identifier`; native curl rejected it
+with `unsupported or invalid name syntax`. Those client attempts stopped
+before submitting work; no insecure TLS option was used.
+
+The supported one-time probe was prepared for Linux with controller
+`runner-controller-dev-linux-host`, idempotency key
+`catalog-probe-b33462e2631356c319d3e14fc22397c7-linux-host`, and request-body
+SHA-256 `928274f138b9e1ae9a49c779871a9af191b04d4c489a767938e628bd9ac0dc79`.
+The accepted job identity was `job-50057e7e639a912c938dabe66d51abf7`, with
+session identity `sess-d4cec60d8ad63484b85166ebbafae5cb` and command identity
+`cmd-6d87fc2be2d852f04404a87335490973`. The direct API returned HTTP 202;
+the authority read returned HTTP 200 with phase `failed`, no command state or
+exit code, incomplete output and teardown `not_created`. The worker's
+authorization log at `2026-10-20T12:31:24.402039298Z` records
+`reason_code=environment_denied`. The probe body used `linux-dev`, while the
+installed Dev configuration registers `linux-host-dev`. The fixed probe
+environment was therefore wrong and the harmless command did not execute.
+The failed job/session/command history remains retained; no replay occurred.
+
+The probe scope on Linux remained `ready` with no bound job after that
+request; the token expired and its temporary capability file was removed.
+After all Dev services had been stopped, Linux Dev was started once through
+the supported operator to verify the admission fence. A direct-mTLS POST of
+only `{}` with no probe token returned HTTP 400, not the expected HTTP 503
+`maintenance_admission_closed`; this malformed request created no job. That
+response shows the fence did not protect the observed request. The later
+read-only `CatalogCohortAdmissionHeld` evaluation returned true against the
+same host's current receipt and configuration, so the mismatch between that
+source-level result and the observed HTTP response remains unestablished. The
+service was stopped and no additional start or scoped probe has occurred.
+
+Following the failed fence check, supported `runner-lane stop` operations
+stopped Linux, sandbox and factory Dev services; Mac's first stop attempt
+returned `Operation not permitted` from the restricted shell, then the same
+supported stop succeeded in the authorized elevated shell. A final status
+read reported Mac Dev inactive; systemd reported the three Ubuntu Dev
+services inactive. Dev selectors, database state, configuration, mailboxes,
+workspaces and shared caches were not changed by the stops. The failed probe
+job remains recorded. Sandbox `/` had 527,244 KiB available (about 515 MiB)
+at 12:37 UTC. Factory `/tmp` is now a 2 GiB tmpfs, with 1,728,516 KiB
+available at 12:36 UTC. Recheck sandbox headroom immediately before any later
+backup or selector operation.
+
+Source corrections prepared in the Mac worktree: `CatalogMaintenanceProbeRequestBody` now uses the lane's configured `<host>-<lane>` environment (for example, `linux-host-dev`) instead of the invalid generic `linux-dev`; Linux `runnerd` logs the evaluated maintenance hold and receipt identity at startup; and the direct API regression asserts that a no-token malformed request is rejected by the hold before body validation. The probe-body regression covers all three worker profiles in Dev, QAS and PRD while asserting the fixed script, remote target, empty source and five-second timeout remain unchanged. On Mac with Go 1.27.1, the full `make test`, `make vet`, `make build`, `make smoke`, and `git diff --check` gates passed. Git delivery, required Ubuntu host gates, and publication of a new sealed release remain pending. Candidate `cat-20261020-57e3775` remains immutable and unchanged.
+
+Mailbox requests and ACKs: **NOT RUN**. No mailbox files, held ACKs or
+publisher states were altered. No QAS or PRD promotion began. CAT-04 cannot
+pass until a new corrected candidate is delivered, Dev is fully accepted on
+all four hosts, and the maintenance-fence discrepancy is resolved.
+
+## Preserved historical evidence — 2026-10-19
+
+The following records describe the prior candidate and prior startup failure;
+they are retained without being presented as the current Dev state.
+
+### Candidate and source delivery
 
 The immutable release is `cat-20261019-f0e2843`, built natively on each host
 from source revision `f0e2843c5c92874ae817e7653fef01dd1311e5f6` with Go 1.27.1.
@@ -43,7 +158,7 @@ verified at `daf9978` before their gates. At `f0e2843`, the same gates had also
 passed on Mac and all three workers. Earlier failures remain history and are
 not acceptance.
 
-## Historical pre-CAT-04 live baseline
+### Historical pre-CAT-04 live baseline
 
 The four current Dev selectors remain legacy. Their bundle identities are:
 
@@ -76,7 +191,7 @@ The small root-filesystem headroom must be rechecked immediately before any
 backup or selector switch. No cleanup, cache deletion, or retained-work change
 was made.
 
-## Current Dev cohort and qualification gates
+### Historical Dev cohort and qualification gates
 
 At approximately 20:51 UTC on 2026-10-19, the protected Dev receipt and current
 selectors were rechecked. The receipt was at `switching` for release
@@ -151,7 +266,7 @@ started. Mailbox request/ACK acceptance is **NOT RUN** by instruction. All
 mailbox contents, held ACKs, retained requests/work, configuration, secrets,
 and databases remain preserved; no replay or manual capacity release occurred.
 
-## Commands and machine scope
+### Historical commands and machine scope
 
 - **Mac and each Ubuntu source checkout:** fast-forward to `daf9978`, then run
   `make test`, `make vet`, `make build`, and `make smoke`; all passed. Operator
@@ -177,7 +292,7 @@ and databases remain preserved; no replay or manual capacity release occurred.
 - **All hosts:** mailbox acceptance is **NOT RUN**. No mailbox request/ACK,
   retained work, held ACK, configuration, secret, or database was changed.
 
-## Delivery and next gate
+### Historical delivery and next gate
 
 The operator correction source commit is `daf9978fa754e7b47fe93f13c5ac28603b1b7d1d`; Mac `dev`, Gitea `origin/dev`, and GitHub `dev` were verified at that exact SHA. All three Ubuntu checkouts were clean on `dev`, fast-forwarded from GitHub, and verified at the same SHA before host gates. This evidence/plan update is documentation-only and does not change the sealed runtime candidate or its source revision.
 

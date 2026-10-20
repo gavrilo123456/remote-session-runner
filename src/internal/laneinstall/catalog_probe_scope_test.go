@@ -106,6 +106,48 @@ func newCatalogProbeFixture(t *testing.T) catalogProbeFixture {
 	return catalogProbeFixture{guard: guard, operation: receipt.OperationID, controller: controller, key: key, token: token, body: body, now: now}
 }
 
+func TestCatalogMaintenanceProbeUsesTheSelectedHostLaneEnvironment(t *testing.T) {
+	tests := []struct {
+		hostID       string
+		environments map[config.ReleaseLane]string
+	}{
+		{hostID: "linux-host", environments: map[config.ReleaseLane]string{
+			config.ReleaseLaneDev: "linux-host-dev", config.ReleaseLaneQAS: "linux-host-qas", config.ReleaseLanePRD: "linux-host-prd",
+		}},
+		{hostID: "sandbox-host", environments: map[config.ReleaseLane]string{
+			config.ReleaseLaneDev: "sandbox-host-dev", config.ReleaseLaneQAS: "sandbox-host-qas", config.ReleaseLanePRD: "sandbox-host-prd",
+		}},
+		{hostID: "factory-sandbox", environments: map[config.ReleaseLane]string{
+			config.ReleaseLaneDev: "factory-sandbox-dev", config.ReleaseLaneQAS: "factory-sandbox-qas", config.ReleaseLanePRD: "factory-sandbox-prd",
+		}},
+	}
+	for _, test := range tests {
+		for _, lane := range []config.ReleaseLane{config.ReleaseLaneDev, config.ReleaseLaneQAS, config.ReleaseLanePRD} {
+			t.Run(test.hostID+"/"+string(lane), func(t *testing.T) {
+				plan, err := BuildCatalogPlan(test.hostID, lane)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, err := CatalogMaintenanceProbeRequestBody(plan)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var request catalogMaintenanceProbeRequest
+				if err := json.Unmarshal(body, &request); err != nil {
+					t.Fatal(err)
+				}
+				if want := test.environments[lane]; request.Environment != want {
+					t.Fatalf("probe environment=%q, want configured lane environment %q", request.Environment, want)
+				}
+				if request.Target.Kind != "remote" || request.Target.Profile != test.hostID || request.Source.Mode != "empty" ||
+					request.Script != "printf 'catalog release maintenance probe\\n'" || request.TimeoutSeconds != 5 {
+					t.Fatalf("probe request changed its bounded target or command: %+v", request)
+				}
+			})
+		}
+	}
+}
+
 func TestCatalogMaintenanceProbeIsOneShotAndJobReadIsIdentityBound(t *testing.T) {
 	fixture := newCatalogProbeFixture(t)
 	if err := fixture.guard.ReserveCatalogMaintenanceProbe(fixture.controller, fixture.token, fixture.key, fixture.body, fixture.now); err != nil {

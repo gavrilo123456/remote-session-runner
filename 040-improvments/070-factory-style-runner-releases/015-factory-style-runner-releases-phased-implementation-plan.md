@@ -1,20 +1,8 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-**Status: implementation assigned — 2026-10-19. CAT-01, CAT-02 and CAT-03 source, fixture, host-check and Git-delivery gates are complete; CAT-03 source revision `c381d8efc719a2cc22fc09158f2e6f8c07fccd2b`.**
-CAT-04 is blocked. Candidate `cat-20261019-f0e2843` is sealed and published
-to all four immutable catalogs from source revision
-`f0e2843c5c92874ae817e7653fef01dd1311e5f6`. The four Dev selectors have been
-switched under cohort hold, and supported launcher refreshes completed on the
-three Ubuntu workers. Linux Dev then failed closed at startup because the
-candidate found multiple outstanding cohort receipts holding admissions;
-Dev acceptance is incomplete. The other Dev services remain stopped. QAS and
-PRD selectors and services are unchanged. CAT-05 through CAT-07 have not
-started. Evidence and the exact blocker are in
-[`CAT-04.md`](../../040-implementation-evidence/CAT-04.md). The sealed runtime
-candidate remains fixed; any runtime correction requires a new sealed release
-and renewed Dev then QAS acceptance. External project publishers remain
-paused as instructed. Later unit operations follow their own prerequisites
-and approval gates.
+**Status: CAT-01 through CAT-03 complete; CAT-04 remains BLOCKED on live Dev acceptance.** The latest Dev candidate is `cat-20261020-57e3775`, source revision `57e3775e8580f49c3a262db7c52fbdacf081d879`, release manifest SHA-256 `c2c2084e0e9d651e3b5863472895c1c11b3bafcf83e8e2818dece173620a7271`. Its four Dev selectors remain switched to that sealed candidate, but all four Dev services are stopped after a failed scoped-probe acceptance and a direct admission-fence check returned HTTP 400 instead of the required 503. Read-only rechecks at 12:55 UTC on Ubuntu and 13:03 UTC on Mac found zero Dev work on every host and receipt `b33462e2631356c319d3e14fc22397c7` still `verifying`. Linux's live receipt set has 28 `superseded` historical attempts, one non-holding `prepared` attempt, and this single active `verifying` attempt. A source-level check against the Linux host's current receipt returned `held=true` for this operation; the prior daemon's HTTP 400 is still unexplained. The pending source correction now uses the configured `<host>-<lane>` probe environment, logs the evaluated hold and operation ID at Linux service startup, and tests rejection of an unauthorized malformed request while held. Mac `make test`, `make vet`, `make build`, and `make smoke` pass. Git delivery and required host-side gates are pending; the sealed `cat-20261020-57e3775` release remains unchanged. Sandbox root was at 100% with 520,128 KiB available at 12:55 UTC, then 97% with 1,961,640 KiB available at 13:04 UTC; Factory `/tmp` is 2 GiB with 1,728,516 KiB available. See [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md) for details. QAS and PRD selectors and services remain unchanged. CAT-05 through CAT-07 have not started. External project publishers remain paused; no mailbox request or ACK was published.
+
+**Historical CAT-04 blocker from 2026-10-19:** candidate `cat-20261019-f0e2843` failed Linux Dev startup because multiple preserved cohort receipts held admissions. That failure and its evidence remain below in [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md). The later CAT-04 correction added supported history supersession and produced the newer sealed candidate above; it did not alter the historical release.
 Follow the [idea](005-initial-idea.md) and [detailed design](010-factory-style-runner-releases-detailed-design.md).
 
 ## 1. Relationship to existing work
