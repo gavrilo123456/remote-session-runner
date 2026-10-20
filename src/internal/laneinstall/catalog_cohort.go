@@ -66,16 +66,26 @@ type CatalogCohortHostPreflight struct {
 }
 
 type CatalogCohortTransition struct {
-	Sequence       uint64                             `json:"sequence"`
-	Action         string                             `json:"action"`
-	HostID         string                             `json:"host_id,omitempty"`
-	EvidenceSHA256 string                             `json:"evidence_sha256"`
-	At             string                             `json:"at"`
-	ResumeStage    CatalogCohortStage                 `json:"resume_stage,omitempty"`
-	Supersession   *CatalogCohortSupersessionEvidence `json:"supersession,omitempty"`
-	SuccessorID    string                             `json:"successor_operation_id,omitempty"`
-	PreviousSHA256 string                             `json:"previous_sha256"`
-	SHA256         string                             `json:"sha256"`
+	Sequence           uint64                             `json:"sequence"`
+	Action             string                             `json:"action"`
+	HostID             string                             `json:"host_id,omitempty"`
+	EvidenceSHA256     string                             `json:"evidence_sha256"`
+	At                 string                             `json:"at"`
+	ResumeStage        CatalogCohortStage                 `json:"resume_stage,omitempty"`
+	ReconciledStage    CatalogCohortStage                 `json:"reconciled_stage,omitempty"`
+	HistoricalBranches []CatalogCohortHistoryBranch       `json:"historical_branches,omitempty"`
+	Supersession       *CatalogCohortSupersessionEvidence `json:"supersession,omitempty"`
+	SuccessorID        string                             `json:"successor_operation_id,omitempty"`
+	PreviousSHA256     string                             `json:"previous_sha256"`
+	SHA256             string                             `json:"sha256"`
+}
+
+// CatalogCohortHistoryBranch retains one previously valid, divergent copy of
+// a receipt. The reconciliation transition embeds each branch so the
+// supported sync path can replace local copies without discarding events.
+type CatalogCohortHistoryBranch struct {
+	Stage       CatalogCohortStage        `json:"stage"`
+	Transitions []CatalogCohortTransition `json:"transitions"`
 }
 
 // CatalogCohortSupersessionEvidence is the local, read-only observation that
@@ -354,6 +364,13 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 				return "", ErrCatalogOperationInvalid
 			}
 			stage = CatalogCohortReleased
+		case "reconcile-history":
+			if (stage != CatalogCohortPrepared && stage != CatalogCohortHeld && stage != CatalogCohortBlocked) || !eventHostEmpty(event.HostID) ||
+				!validCatalogCohortHistoryReconciliation(receipt, event, receipt.Transitions[:index]) {
+				return "", ErrCatalogOperationInvalid
+			}
+			blockedFrom = event.ReconciledStage
+			stage = CatalogCohortBlocked
 		case "supersede-host":
 			if !catalogCohortSupersessionStageEligible(stage, blockedFrom, receipt.Transitions[:index]) ||
 				len(supersededHosts(receipt.Transitions[:index])) >= len(catalogCohortSwitchOrder) ||
@@ -460,6 +477,9 @@ func blockedCohortResumeStage(transitions []CatalogCohortTransition) CatalogCoho
 			stage, _ := replayCatalogCohortTransitions(CatalogCohortReceipt{Transitions: transitions[:index]})
 			return stage
 		}
+		if transitions[index].Action == "reconcile-history" {
+			return transitions[index].ReconciledStage
+		}
 	}
 	return ""
 }
@@ -498,7 +518,7 @@ func WriteCatalogCohortReceipt(plan Plan, receipt CatalogCohortReceipt) (string,
 	defer releaseCatalogRootPublicationLock(lock)
 	path := filepath.Join(root, receipt.OperationID+".json")
 	if existing, readErr := readCatalogCohortReceipt(path); readErr == nil {
-		if !catalogCohortStaticIdentityEqual(existing, receipt) || !catalogCohortTransitionPrefix(existing.Transitions, receipt.Transitions) {
+		if !catalogCohortReceiptUpdateAllowed(existing, receipt) {
 			return "", ErrCatalogOperationInvalid
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -537,6 +557,14 @@ func WriteCatalogCohortReceipt(plan Plan, receipt CatalogCohortReceipt) (string,
 		return "", err
 	}
 	return path, nil
+}
+
+func catalogCohortReceiptUpdateAllowed(existing, next CatalogCohortReceipt) bool {
+	if !catalogCohortStaticIdentityEqual(existing, next) {
+		return false
+	}
+	return catalogCohortTransitionPrefix(existing.Transitions, next.Transitions) ||
+		catalogCohortReceiptHasHistoricalBranch(next, existing.Transitions)
 }
 
 // LoadCatalogCohortReceiptFile loads an owner-only canonical receipt supplied
@@ -615,7 +643,7 @@ func catalogCohortTransitionPrefix(old, next []CatalogCohortTransition) bool {
 		return false
 	}
 	for index := range old {
-		if old[index] != next[index] {
+		if !reflect.DeepEqual(old[index], next[index]) {
 			return false
 		}
 	}

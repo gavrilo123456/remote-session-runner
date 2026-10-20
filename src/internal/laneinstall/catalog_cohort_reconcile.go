@@ -8,11 +8,188 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"time"
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/store"
 )
+
+const maxCatalogCohortHistoryBranches = 16
+
+// ReconcileCatalogCohortReceiptHistories creates one conservative, hash-linked
+// receipt from divergent valid pre-switch copies. Every original transition
+// chain is retained as a branch. Any copy that records a switch or rollback is
+// refused and must use the normal deployment recovery path instead.
+func ReconcileCatalogCohortReceiptHistories(receipts []CatalogCohortReceipt, at time.Time) (CatalogCohortReceipt, error) {
+	if len(receipts) < 2 || len(receipts) > maxCatalogCohortHistoryBranches || at.IsZero() {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	base := receipts[0]
+	branchesByDigest := make(map[string]CatalogCohortHistoryBranch, len(receipts))
+	for _, receipt := range receipts {
+		if ValidateCatalogCohortReceipt(receipt) != nil || !catalogCohortStaticIdentityEqual(base, receipt) ||
+			(receipt.Stage != CatalogCohortPrepared && receipt.Stage != CatalogCohortHeld && receipt.Stage != CatalogCohortBlocked) ||
+			cohortHasAnySwitchTransitions(receipt.Transitions) {
+			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+		}
+		for _, transition := range receipt.Transitions {
+			if transition.Action == "reconcile-history" {
+				return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+			}
+		}
+		branch := CatalogCohortHistoryBranch{Stage: receipt.Stage, Transitions: append([]CatalogCohortTransition(nil), receipt.Transitions...)}
+		encoded, err := json.Marshal(branch)
+		if err != nil {
+			return CatalogCohortReceipt{}, err
+		}
+		digest := sha256.Sum256(encoded)
+		branchesByDigest[hex.EncodeToString(digest[:])] = branch
+	}
+	if len(branchesByDigest) < 2 {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	branches := make([]CatalogCohortHistoryBranch, 0, len(branchesByDigest))
+	branchDigests := make([]string, 0, len(branchesByDigest))
+	for digest := range branchesByDigest {
+		branchDigests = append(branchDigests, digest)
+	}
+	sort.Strings(branchDigests)
+	for _, digest := range branchDigests {
+		branches = append(branches, branchesByDigest[digest])
+	}
+
+	commonLength := len(branches[0].Transitions)
+	for _, branch := range branches[1:] {
+		if len(branch.Transitions) < commonLength {
+			commonLength = len(branch.Transitions)
+		}
+		for index := 0; index < commonLength; index++ {
+			if !reflect.DeepEqual(branches[0].Transitions[index], branch.Transitions[index]) {
+				commonLength = index
+				break
+			}
+		}
+	}
+	common := append([]CatalogCohortTransition(nil), branches[0].Transitions[:commonLength]...)
+	base.Transitions = common
+	commonStage, err := replayCatalogCohortTransitions(base)
+	if err != nil {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	base.Stage = commonStage
+	base.UpdatedAt = base.CreatedAt
+	if len(common) > 0 {
+		base.UpdatedAt = common[len(common)-1].At
+	}
+	reconciledStage := CatalogCohortPrepared
+	for _, branch := range branches {
+		if branch.Stage != CatalogCohortPrepared {
+			reconciledStage = CatalogCohortHeld
+			break
+		}
+	}
+	branchBytes, err := json.Marshal(branches)
+	if err != nil {
+		return CatalogCohortReceipt{}, err
+	}
+	evidence := sha256.Sum256(branchBytes)
+	transition := CatalogCohortTransition{
+		Sequence: uint64(len(common) + 1), Action: "reconcile-history",
+		EvidenceSHA256: hex.EncodeToString(evidence[:]), At: at.UTC().Format(time.RFC3339Nano),
+		ReconciledStage: reconciledStage, HistoricalBranches: branches,
+		PreviousSHA256: lastCohortTransitionDigest(common),
+	}
+	transition.SHA256 = catalogCohortTransitionDigest(transition)
+	base.Transitions = append(base.Transitions, transition)
+	base.Stage = CatalogCohortBlocked
+	base.UpdatedAt = transition.At
+	if ValidateCatalogCohortReceipt(base) != nil {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	return base, nil
+}
+
+func validCatalogCohortHistoryReconciliation(receipt CatalogCohortReceipt, event CatalogCohortTransition, prior []CatalogCohortTransition) bool {
+	if event.Action != "reconcile-history" || !eventHostEmpty(event.HostID) || event.ResumeStage != "" ||
+		event.Supersession != nil || event.SuccessorID != "" ||
+		(event.ReconciledStage != CatalogCohortPrepared && event.ReconciledStage != CatalogCohortHeld) ||
+		len(event.HistoricalBranches) < 2 || len(event.HistoricalBranches) > maxCatalogCohortHistoryBranches {
+		return false
+	}
+	branchBytes, err := json.Marshal(event.HistoricalBranches)
+	if err != nil {
+		return false
+	}
+	digest := sha256.Sum256(branchBytes)
+	if event.EvidenceSHA256 != hex.EncodeToString(digest[:]) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(event.HistoricalBranches))
+	conservativeStage := CatalogCohortPrepared
+	lastDigest := ""
+	for _, branch := range event.HistoricalBranches {
+		branchBytes, err := json.Marshal(branch)
+		if err != nil {
+			return false
+		}
+		branchDigest := sha256.Sum256(branchBytes)
+		branchKey := hex.EncodeToString(branchDigest[:])
+		if _, exists := seen[branchKey]; exists {
+			return false
+		}
+		seen[branchKey] = struct{}{}
+		branchReceipt := receipt
+		branchReceipt.Transitions = append([]CatalogCohortTransition(nil), branch.Transitions...)
+		branchReceipt.Stage = branch.Stage
+		branchReceipt.UpdatedAt = branchReceipt.CreatedAt
+		if len(branch.Transitions) > 0 {
+			branchReceipt.UpdatedAt = branch.Transitions[len(branch.Transitions)-1].At
+		}
+		if ValidateCatalogCohortReceipt(branchReceipt) != nil ||
+			(branch.Stage != CatalogCohortPrepared && branch.Stage != CatalogCohortHeld && branch.Stage != CatalogCohortBlocked) ||
+			cohortHasAnySwitchTransitions(branch.Transitions) || !catalogCohortTransitionPrefix(prior, branch.Transitions) {
+			return false
+		}
+		for _, transition := range branch.Transitions {
+			if transition.Action == "reconcile-history" {
+				return false
+			}
+		}
+		if branch.Stage != CatalogCohortPrepared {
+			conservativeStage = CatalogCohortHeld
+		}
+		if lastDigest != "" && branchDigestOrderKey(branch) <= lastDigest {
+			return false
+		}
+		lastDigest = branchDigestOrderKey(branch)
+	}
+	return conservativeStage == event.ReconciledStage
+}
+
+func branchDigestOrderKey(branch CatalogCohortHistoryBranch) string {
+	encoded, err := json.Marshal(branch)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func catalogCohortReceiptHasHistoricalBranch(receipt CatalogCohortReceipt, transitions []CatalogCohortTransition) bool {
+	for _, event := range receipt.Transitions {
+		if event.Action != "reconcile-history" {
+			continue
+		}
+		for _, branch := range event.HistoricalBranches {
+			if reflect.DeepEqual(branch.Transitions, transitions) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // ObserveCatalogCohortSupersession captures the local state needed to retire
 // one never-switched or fully rolled-back attempt. It does not mutate service,
@@ -220,6 +397,9 @@ func catalogCohortReceiptSupersessionEligible(receipt CatalogCohortReceipt) bool
 		return !cohortHasAnySwitchTransitions(receipt.Transitions)
 	case CatalogCohortBlocked:
 		resume := blockedCohortResumeStage(receipt.Transitions)
+		if resume == CatalogCohortPrepared {
+			return !cohortHasAnySwitchTransitions(receipt.Transitions)
+		}
 		if resume == CatalogCohortHeld {
 			return !cohortHasAnySwitchTransitions(receipt.Transitions)
 		}
@@ -236,6 +416,9 @@ func catalogCohortSupersessionStageEligible(stage, blockedFrom CatalogCohortStag
 	case CatalogCohortHeld:
 		return !cohortHasAnySwitchTransitions(transitions)
 	case CatalogCohortBlocked:
+		if blockedFrom == CatalogCohortPrepared {
+			return !cohortHasAnySwitchTransitions(transitions)
+		}
 		if blockedFrom == CatalogCohortHeld {
 			return !cohortHasAnySwitchTransitions(transitions)
 		}

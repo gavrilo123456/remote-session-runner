@@ -200,8 +200,10 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 	oldAttempts := []CatalogCohortReceipt{
 		validCatalogCohortFixture(now),
 		validCatalogCohortFixture(now),
+		validCatalogCohortFixture(now),
 	}
 	oldAttempts[1].OperationID = strings.Repeat("c", 32)
+	oldAttempts[2].OperationID = strings.Repeat("d", 32)
 	var err error
 	oldAttempts[0], err = AdvanceCatalogCohortReceipt(oldAttempts[0], "hold", "", proof, now)
 	if err != nil {
@@ -216,6 +218,13 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 		t.Fatal(err)
 	}
 	oldAttempts[1], err = AdvanceCatalogCohortReceipt(oldAttempts[1], "block", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This abandoned attempt was blocked before it ever recorded a hold. The
+	// source guard still counts blocked receipts conservatively, so it must use
+	// the same verified supersession path instead of blocking later releases.
+	oldAttempts[2], err = AdvanceCatalogCohortReceipt(oldAttempts[2], "block", "", proof, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,6 +283,110 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 	}
 	if successor.Stage != CatalogCohortSwitching || !catalogCohortStageHoldsAdmissions(successor.Stage) {
 		t.Fatalf("successor stage=%q did not advance with its hold intact", successor.Stage)
+	}
+}
+
+func TestCatalogCohortReconcileHistoryPreservesDivergentPreSwitchCopies(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	proof := strings.Repeat("a", 64)
+	base := validCatalogCohortFixture(now)
+	base.OperationID = strings.Repeat("e", 32)
+	prepared := base
+	held, err := AdvanceCatalogCohortReceipt(base, "hold", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := AdvanceCatalogCohortReceipt(held, "block", "", proof, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflighted, err := AdvanceCatalogCohortReceipt(held, "preflight", "linux-host", proof, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := ReconcileCatalogCohortReceiptHistories([]CatalogCohortReceipt{preflighted, prepared, blocked, held}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("reconcile divergent pre-switch copies: %v", err)
+	}
+	if merged.Stage != CatalogCohortBlocked || blockedCohortResumeStage(merged.Transitions) != CatalogCohortHeld ||
+		!catalogCohortStageHoldsAdmissions(merged.Stage) {
+		t.Fatalf("reconciled stage=%q resume=%q; all historic holds must remain held", merged.Stage, blockedCohortResumeStage(merged.Transitions))
+	}
+	if err := ValidateCatalogCohortReceipt(merged); err != nil {
+		t.Fatalf("merged receipt invalid: %v", err)
+	}
+	var reconciliation *CatalogCohortTransition
+	for index := range merged.Transitions {
+		if merged.Transitions[index].Action == "reconcile-history" {
+			reconciliation = &merged.Transitions[index]
+		}
+	}
+	if reconciliation == nil || len(reconciliation.HistoricalBranches) != 4 {
+		t.Fatalf("merged receipt did not retain all four histories: %+v", reconciliation)
+	}
+	for _, branch := range []CatalogCohortReceipt{prepared, held, blocked, preflighted} {
+		if !catalogCohortReceiptHasHistoricalBranch(merged, branch.Transitions) || !catalogCohortReceiptUpdateAllowed(branch, merged) {
+			t.Fatalf("supported sync would discard historical branch at stage %q", branch.Stage)
+		}
+	}
+	unrelated := validCatalogCohortFixture(now)
+	unrelated.OperationID = base.OperationID
+	unrelated, err = AdvanceCatalogCohortReceipt(unrelated, "hold", "", strings.Repeat("b", 64), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalogCohortReceiptUpdateAllowed(unrelated, merged) {
+		t.Fatal("history reconciliation accepted a local transition chain it did not preserve")
+	}
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restarted CatalogCohortReceipt
+	if err := json.Unmarshal(encoded, &restarted); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCatalogCohortReceipt(restarted); err != nil || !catalogCohortStageHoldsAdmissions(restarted.Stage) {
+		t.Fatalf("restarted divergent-history hold lost its evidence: stage=%q err=%v", restarted.Stage, err)
+	}
+}
+
+func TestCatalogCohortHistoryReconciliationRejectsSwitchedOrInconsistentCopies(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	proof := strings.Repeat("c", 64)
+	base := validCatalogCohortFixture(now)
+	base.OperationID = strings.Repeat("f", 32)
+	held, err := AdvanceCatalogCohortReceipt(base, "hold", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := AdvanceCatalogCohortReceipt(base, "block", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switched, err := AdvanceCatalogCohortReceipt(held, "preflight", "linux-host", proof, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	switched, err = AdvanceCatalogCohortReceipt(switched, "switch", "linux-host", proof, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	switched, err = AdvanceCatalogCohortReceipt(switched, "block", "", proof, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReconcileCatalogCohortReceiptHistories([]CatalogCohortReceipt{prepared, switched}, now.Add(4*time.Second)); err == nil {
+		t.Fatal("fork reconciliation erased an actual selector switch that requires recovery")
+	}
+	inconsistent := held
+	inconsistent.FenceProofs = append([]CatalogCohortFenceProof(nil), held.FenceProofs...)
+	inconsistent.FenceProofs[0].Control = "different-verified-control"
+	if err := ValidateCatalogCohortReceipt(inconsistent); err != nil {
+		t.Fatalf("static-identity fixture unexpectedly invalid: %v", err)
+	}
+	if _, err := ReconcileCatalogCohortReceiptHistories([]CatalogCohortReceipt{held, inconsistent}, now.Add(time.Second)); err == nil {
+		t.Fatal("fork reconciliation accepted different publisher-fence identities")
 	}
 }
 

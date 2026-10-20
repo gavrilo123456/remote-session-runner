@@ -305,12 +305,14 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	host := flags.String("host", "", "canonical identity of this existing host")
 	lane := flags.String("lane", "", "dev, qas, or prd")
-	action := flags.String("action", "", "prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, open, supersede-host, or supersede")
+	action := flags.String("action", "", "prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, open, reconcile-history, supersede-host, or supersede")
 	operationID := flags.String("operation-id", "", "32-character cohort operation identity")
 	successorOperationID := flags.String("successor-operation-id", "", "held successor cohort identity for safe supersession")
 	receiptFile := flags.String("receipt-file", "", "owner-only cohort JSON for prepare or sync")
 	subjectHost := flags.String("subject-host", "", "host identity recorded by preflight, switch, verify, or rollback-host")
 	evidenceSHA := flags.String("evidence-sha256", "", "digest of the bounded host/operator evidence")
+	var historyFiles repeatedStringFlag
+	flags.Var(&historyFiles, "history-file", "one existing receipt copy for reconcile-history; repeat once per observed history")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -320,6 +322,37 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
 	if err != nil {
 		return err
+	}
+	if *action == "reconcile-history" {
+		if !validCLIProbeOperationID(*operationID) || *receiptFile != "" || *successorOperationID != "" ||
+			*subjectHost != "" || *evidenceSHA != "" || len(historyFiles) < 2 {
+			return errors.New("reconcile-history requires --operation-id and at least two --history-file inputs")
+		}
+		receipts := make([]laneinstall.CatalogCohortReceipt, 0, len(historyFiles))
+		for _, path := range historyFiles {
+			receipt, readErr := laneinstall.LoadCatalogCohortReceiptFile(path)
+			if readErr != nil || receipt.OperationID != *operationID || receipt.Lane != plan.Lane {
+				return laneinstall.ErrCatalogOperationInvalid
+			}
+			receipts = append(receipts, receipt)
+		}
+		reconciled, reconcileErr := laneinstall.ReconcileCatalogCohortReceiptHistories(receipts, time.Now().UTC())
+		if reconcileErr != nil {
+			return reconcileErr
+		}
+		path, writeErr := laneinstall.WriteCatalogCohortReceipt(plan, reconciled)
+		if writeErr != nil {
+			return writeErr
+		}
+		return writeJSON(stdout, struct {
+			OperationID string `json:"operation_id"`
+			Path        string `json:"local_receipt_path"`
+			Stage       string `json:"stage"`
+			Transitions int    `json:"transition_count"`
+		}{reconciled.OperationID, path, string(reconciled.Stage), len(reconciled.Transitions)})
+	}
+	if len(historyFiles) != 0 {
+		return errors.New("--history-file is only valid with --action reconcile-history")
 	}
 	if *action == "prepare" {
 		if *receiptFile == "" || *operationID != "" || *successorOperationID != "" || *subjectHost != "" || *evidenceSHA != "" {
@@ -435,6 +468,15 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 		Transitions int    `json:"transition_count"`
 	}{receipt.OperationID, path, string(receipt.Stage), len(receipt.Transitions)})
 }
+
+type repeatedStringFlag []string
+
+func (f *repeatedStringFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
+func (f *repeatedStringFlag) String() string { return strings.Join(*f, ",") }
 
 // runCatalogProbePrepare creates a one-time capability for the fixed harmless
 // five-second worker probe. It emits the exact harmless request body and
