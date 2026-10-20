@@ -992,7 +992,7 @@ func recordCatalogCohortSwitch(plan Plan, operation CatalogSelectorOperation, re
 	}
 	preflightAt, err := time.Parse(time.RFC3339Nano, receipt.Transitions[preflightIndex].At)
 	createdAt, createdErr := time.Parse(time.RFC3339Nano, operation.CreatedUTC)
-	if err != nil || createdErr != nil || createdAt.Before(preflightAt) || createdAt.Sub(preflightAt) > 2*time.Minute {
+	if err != nil || createdErr != nil || !catalogCohortSwitchRecordTimingValid(preflightAt, createdAt, reconciled) {
 		return ErrCatalogOperationInvalid
 	}
 	action := "switch"
@@ -1005,6 +1005,19 @@ func recordCatalogCohortSwitch(plan Plan, operation CatalogSelectorOperation, re
 	}
 	_, err = WriteCatalogCohortReceipt(plan, updated)
 	return err
+}
+
+// catalogCohortSwitchRecordTimingValid keeps new selector mutations tightly
+// bound to their preflight. A reconciled mutation is different: the selector
+// journal proves that the guarded switch already happened, and Reconcile has
+// just repeated the stopped-service, empty-work, schema, configuration, and
+// backup checks. Its receipt event must follow the original preflight, but a
+// delayed recovery must not be stranded by the two-minute initiation window.
+func catalogCohortSwitchRecordTimingValid(preflightAt, operationCreatedAt time.Time, reconciled bool) bool {
+	if preflightAt.IsZero() || operationCreatedAt.IsZero() || operationCreatedAt.Before(preflightAt) {
+		return false
+	}
+	return reconciled || operationCreatedAt.Sub(preflightAt) <= 2*time.Minute
 }
 
 func validateCatalogCohortHostMayRollback(receipt CatalogCohortReceipt, layout catalogSelectorLayout, operation CatalogSelectorOperation, currentTarget string) error {

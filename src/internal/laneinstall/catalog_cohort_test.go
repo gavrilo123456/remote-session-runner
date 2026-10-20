@@ -816,6 +816,37 @@ func TestCatalogCohortSwitchPreflightMustMatchTheExactLocalState(t *testing.T) {
 	}
 }
 
+func TestCatalogCohortDelayedReconciliationMayCloseRecordedSwitchButNewSwitchStaysFresh(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	proof := strings.Repeat("c", 64)
+	receipt := validCatalogCohortFixture(now)
+	var err error
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "preflight", "linux-host", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciledAt := now.Add(4 * time.Minute)
+	if _, err := AdvanceCatalogCohortReceipt(receipt, "switch", "linux-host", proof, reconciledAt); err == nil {
+		t.Fatal("new switch accepted a preflight older than two minutes")
+	}
+	if !catalogCohortSwitchRecordTimingValid(now, reconciledAt, true) {
+		t.Fatal("delayed reconciliation of a recorded selector switch was rejected")
+	}
+	if catalogCohortSwitchRecordTimingValid(now, reconciledAt, false) {
+		t.Fatal("new selector switch bypassed the two-minute preflight window")
+	}
+	if catalogCohortSwitchRecordTimingValid(reconciledAt, now, true) {
+		t.Fatal("reconciliation accepted a selector operation created before its preflight")
+	}
+	if _, err := AdvanceCatalogCohortReceipt(receipt, "switch-reconciled", "linux-host", proof, reconciledAt); err != nil {
+		t.Fatalf("hash-linked recovery event did not preserve the original hold and preflight history: %v", err)
+	}
+}
+
 func validCatalogCohortForSelectorFixture(t *testing.T, fixture catalogSelectorFixture, now time.Time) (CatalogCohortReceipt, CatalogReleaseIdentity) {
 	t.Helper()
 	receipt := validCatalogCohortFixture(now)
