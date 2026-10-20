@@ -92,6 +92,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	maintenanceHeld := false
 	maintenanceOperationID := ""
 	var maintenanceProbe *laneinstall.CatalogMaintenanceProbeGuard
+	var queuedMaintenanceProbe *laneinstall.CatalogMaintenanceProbeGuard
 	if plan, catalogManaged, planErr := laneinstall.CatalogPlanFromConfiguration(loaded); planErr != nil {
 		fmt.Fprintln(stderr, "runnerd: configured catalog maintenance identity is invalid")
 		return 78
@@ -106,6 +107,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuard(plan, maintenanceOperationID)
 			if err != nil {
 				fmt.Fprintln(stderr, "runnerd: catalog maintenance probe guard is invalid")
+				return 78
+			}
+			queuedMaintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuardForTransport(plan, maintenanceOperationID, laneinstall.CatalogProbeQueuedSSH)
+			if err != nil {
+				fmt.Fprintln(stderr, "runnerd: queued catalog maintenance probe guard is invalid")
 				return 78
 			}
 		}
@@ -200,7 +206,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	privateRequestGate := lifecycle.NewGate()
 	dispatchGate := lifecycle.NewGate()
 	if maintenanceHeld {
-		privateRequestGate.Stop()
 		dispatchGate.Stop()
 	}
 	dispatcher, err := NewRunnerDispatcher(RunnerDispatcherOptions{
@@ -264,6 +269,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	server, err := NewPrivateServer(PrivateServerOptions{
 		Service: service, SocketPath: settings.PrivateSocket, HealthReport: healthReport,
 		RequestGate: privateRequestGate, DispatchGate: dispatchGate, QueueWake: queueWake,
+		MaintenanceAdmissionClosed: maintenanceHeld, MaintenanceProbeGuard: queuedMaintenanceProbe,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "runnerd: construct private API: %v\n", err)

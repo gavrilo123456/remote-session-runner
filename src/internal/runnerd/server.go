@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +27,7 @@ import (
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
@@ -57,24 +59,28 @@ type PrivateServerOptions struct {
 	// QueueWake notifies the Linux-owned durable dispatcher after an accepted
 	// mutation can make queued work eligible. A nil callback keeps the
 	// fixture-compatible one-shot command behavior used outside runnerd.Run.
-	QueueWake func()
+	QueueWake                  func()
+	MaintenanceAdmissionClosed bool
+	MaintenanceProbeGuard      *laneinstall.CatalogMaintenanceProbeGuard
 }
 
 // PrivateServer serves only the P046 create/read session subset.
 type PrivateServer struct {
-	service       *execution.Service
-	socketPath    string
-	maxBodyBytes  int64
-	httpServer    *http.Server
-	listener      net.Listener
-	mu            sync.Mutex
-	closed        bool
-	socketCreated bool
-	socketInfo    os.FileInfo
-	requestGate   *lifecycle.Gate
-	dispatchGate  *lifecycle.Gate
-	healthReport  func(context.Context) opshealth.Report
-	queueWake     func()
+	service                    *execution.Service
+	socketPath                 string
+	maxBodyBytes               int64
+	httpServer                 *http.Server
+	listener                   net.Listener
+	mu                         sync.Mutex
+	closed                     bool
+	socketCreated              bool
+	socketInfo                 os.FileInfo
+	requestGate                *lifecycle.Gate
+	dispatchGate               *lifecycle.Gate
+	healthReport               func(context.Context) opshealth.Report
+	queueWake                  func()
+	maintenanceAdmissionClosed bool
+	maintenanceProbeGuard      *laneinstall.CatalogMaintenanceProbeGuard
 }
 
 // NewPrivateServer validates the owner-only socket location but does not
@@ -90,14 +96,16 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 		options.MaxBodyBytes = DefaultPrivateRequestBytes
 	}
 	return &PrivateServer{
-		service:      options.Service,
-		socketPath:   options.SocketPath,
-		maxBodyBytes: options.MaxBodyBytes,
-		httpServer:   &http.Server{Handler: nil},
-		requestGate:  options.RequestGate,
-		dispatchGate: options.DispatchGate,
-		healthReport: options.HealthReport,
-		queueWake:    options.QueueWake,
+		service:                    options.Service,
+		socketPath:                 options.SocketPath,
+		maxBodyBytes:               options.MaxBodyBytes,
+		httpServer:                 &http.Server{Handler: nil},
+		requestGate:                options.RequestGate,
+		dispatchGate:               options.DispatchGate,
+		healthReport:               options.HealthReport,
+		queueWake:                  options.QueueWake,
+		maintenanceAdmissionClosed: options.MaintenanceAdmissionClosed,
+		maintenanceProbeGuard:      options.MaintenanceProbeGuard,
 	}, nil
 }
 
@@ -352,6 +360,23 @@ type sourceResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
+	if s.maintenanceAdmissionClosed {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/health/ready":
+			// Readiness remains available while the selected lane is held.
+		case request.Method == http.MethodPost && isJobCollectionPath(request.URL.Path):
+			operationID, ok := s.reserveQueuedMaintenanceProbe(response, request)
+			if !ok {
+				return
+			}
+			request = request.WithContext(context.WithValue(request.Context(), maintenanceProbeContextKey{}, operationID))
+		case request.Method == http.MethodGet && s.allowedQueuedMaintenanceJobRead(request):
+			// Only the authenticated probe identity can read its one job record.
+		default:
+			writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+			return
+		}
+	}
 	release, admitted := admitRunnerRequest(s.requestGate, request.URL.Path, request.Method, func() {
 		writePrivateError(response, http.StatusServiceUnavailable, "runnerd is shutting down")
 	})
@@ -418,6 +443,96 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	writePrivateError(response, http.StatusNotFound, "route not found")
+}
+
+func (s *PrivateServer) reserveQueuedMaintenanceProbe(response http.ResponseWriter, request *http.Request) (string, bool) {
+	if s == nil || s.maintenanceProbeGuard == nil || request == nil || request.Body == nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+		return "", false
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, s.maxBodyBytes+1))
+	if err != nil || int64(len(body)) > s.maxBodyBytes || domain.ValidateSerializedRequest(body) != nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+		return "", false
+	}
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var input runJobRequest
+	if decoder.Decode(&input) != nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+		return "", false
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+		return "", false
+	}
+	controller, controllerErr := controllerFromRequest(input.Controller)
+	target, targetErr := domain.NewExecutionTarget(domain.TargetKind(input.ExecutionTarget.Kind), input.ExecutionTarget.Profile)
+	source, sourceErr := parseSource(input.Source)
+	limits, limitsErr := parseRequestedLimits(input.Limits)
+	if controllerErr != nil || targetErr != nil || sourceErr != nil || limitsErr != nil || controller.Type() != domain.ControllerTypeQueuedMac ||
+		target.Kind() != domain.TargetKindRemote || source.Mode() != domain.SourceModeEmpty ||
+		limits.CommandTimeout != 5*time.Second || limits.IdleTimeout != 0 || limits.SessionMaxLifetime != 0 || limits.OutputBytesPerCommand != 0 ||
+		input.Script != "printf 'catalog release maintenance probe\\n'" || input.Policy != nil && len(input.Policy) != 0 || input.Isolation != nil && *input.Isolation != (isolationRequest{}) {
+		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+		return "", false
+	}
+	if err := s.maintenanceProbeGuard.ValidateFixedProbeRequest(input.Environment, string(target.Kind()), target.Profile(), string(source.Mode()), input.Script, int64(limits.CommandTimeout/time.Second)); err != nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+		return "", false
+	}
+	semanticBody, err := json.Marshal(struct {
+		Environment     string         `json:"environment"`
+		ExecutionTarget targetResponse `json:"execution_target"`
+		Source          struct {
+			Mode string `json:"mode"`
+		} `json:"source"`
+		Script string         `json:"script"`
+		Limits map[string]int `json:"limits,omitempty"`
+	}{Environment: input.Environment, ExecutionTarget: targetResponse{Kind: string(target.Kind()), Profile: target.Profile()}, Source: struct {
+		Mode string `json:"mode"`
+	}{Mode: string(source.Mode())}, Script: input.Script, Limits: map[string]int{"command_timeout_seconds": 5}})
+	if err != nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+		return "", false
+	}
+	digest := sha256.Sum256(semanticBody)
+	requestDigest := hex.EncodeToString(digest[:])
+	if requestDigest != request.Header.Get(laneinstall.CatalogMaintenanceProbeDigestHeader) || input.IdempotencyKey == "" || input.JobID == "" {
+		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+		return "", false
+	}
+	if err := s.maintenanceProbeGuard.ReserveCatalogMaintenanceProbeDigest(controller.Type(), string(controller.ID()),
+		request.Header.Get(laneinstall.CatalogMaintenanceProbeTokenHeader), input.IdempotencyKey, requestDigest, time.Now().UTC()); err != nil {
+		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
+		return "", false
+	}
+	return s.maintenanceProbeGuard.OperationID(), true
+}
+
+func (s *PrivateServer) allowedQueuedMaintenanceJobRead(request *http.Request) bool {
+	if s == nil || s.maintenanceProbeGuard == nil || request == nil || request.URL == nil {
+		return false
+	}
+	prefix := jobPathPrefix(request.URL.Path)
+	if prefix == "" {
+		return false
+	}
+	rawID, err := url.PathUnescape(strings.TrimPrefix(request.URL.Path, prefix+"/"))
+	if err != nil || rawID == "" || strings.Contains(rawID, "/") {
+		return false
+	}
+	jobID, err := domain.NewJobID(rawID)
+	if err != nil {
+		return false
+	}
+	query := request.URL.Query()
+	controllerType := query["controller_type"]
+	controllerID := query["controller_id"]
+	return len(controllerType) == 1 && controllerType[0] == string(domain.ControllerTypeQueuedMac) && len(controllerID) == 1 &&
+		s.maintenanceProbeGuard.AllowsJobReadWithToken(controllerID[0], request.Header.Get(laneinstall.CatalogMaintenanceProbeTokenHeader), string(jobID), time.Now().UTC())
 }
 
 func (s *PrivateServer) currentHealthReport(ctx context.Context) opshealth.Report {
@@ -849,6 +964,13 @@ func (s *PrivateServer) handleRunJob(response http.ResponseWriter, request *http
 		RequestedLimits: limits, Isolation: isolation, MaxActiveSessions: store.DefaultActiveSessionLimit,
 		IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
 	}
+	probeOperationID, _ := request.Context().Value(maintenanceProbeContextKey{}).(string)
+	if probeOperationID != "" {
+		if s.maintenanceProbeGuard == nil || s.queueWake != nil || s.maintenanceProbeGuard.BindCatalogMaintenanceProbeJob(string(jobID)) != nil {
+			writePrivateError(response, http.StatusServiceUnavailable, "maintenance_probe_unavailable")
+			return
+		}
+	}
 	if s.queueWake != nil {
 		accepted, serviceErr := s.service.AcceptJob(request.Context(), jobRequest.Acceptance)
 		if serviceErr != nil {
@@ -867,12 +989,18 @@ func (s *PrivateServer) handleRunJob(response http.ResponseWriter, request *http
 	if serviceErr != nil {
 		status := privateStatusForError(serviceErr)
 		if result.Job.JobID != "" {
+			if probeOperationID != "" && s.maintenanceProbeGuard != nil {
+				_ = s.maintenanceProbeGuard.MarkCatalogMaintenanceProbeAccepted(string(result.Job.JobID))
+			}
 			s.writeJobMutationResponse(response, request, result.Job, result.Duplicate)
 			s.wakeQueue()
 			return
 		}
 		writePrivateError(response, status, serviceErr.Error())
 		return
+	}
+	if probeOperationID != "" && s.maintenanceProbeGuard != nil && result.Job.JobID != "" {
+		_ = s.maintenanceProbeGuard.MarkCatalogMaintenanceProbeAccepted(string(result.Job.JobID))
 	}
 	s.writeJobMutationResponse(response, request, result.Job, result.Duplicate)
 	s.wakeQueue()

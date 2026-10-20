@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/domain"
 )
 
 type catalogProbeFixture struct {
@@ -96,6 +97,7 @@ func newCatalogProbeFixture(t *testing.T) catalogProbeFixture {
 	expires := now.Add(time.Minute)
 	scope := catalogProbeScope{
 		FormatVersion: catalogProbeScopeFormat, OperationID: receipt.OperationID, HostID: plan.HostID, Lane: plan.Lane,
+		Transport: CatalogProbeDirectMTLS, ControllerType: domain.ControllerTypeDirectMTLS,
 		ControllerID: controller, CreatedAt: now.Format(time.RFC3339Nano), ExpiresAt: expires.Format(time.RFC3339Nano),
 		TokenSHA256: hex.EncodeToString(tokenDigest[:]), IdempotencyKey: key,
 		RequestBodySHA256: hex.EncodeToString(bodyDigest[:]), State: "ready",
@@ -148,6 +150,78 @@ func TestCatalogMaintenanceProbeUsesTheSelectedHostLaneEnvironment(t *testing.T)
 	}
 }
 
+func TestCatalogMaintenanceProbeTransportBodiesRemainScoped(t *testing.T) {
+	linuxPlan, err := BuildCatalogPlan("linux-host", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, transport := range []CatalogProbeTransport{CatalogProbeDirectMTLS, CatalogProbeQueuedSSH} {
+		body, err := CatalogMaintenanceProbeRequestBodyForTransport(linuxPlan, transport)
+		if err != nil {
+			t.Fatalf("%s body: %v", transport, err)
+		}
+		var request catalogMaintenanceProbeRequest
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Environment != "linux-host-dev" || request.Target.Kind != "remote" || request.Target.Profile != "linux-host" ||
+			request.Source.Mode != "empty" || request.Script != "printf 'catalog release maintenance probe\\n'" {
+			t.Fatalf("%s probe body changed its fixed command or target: %+v", transport, request)
+		}
+		if transport == CatalogProbeDirectMTLS && (request.TimeoutSeconds != 5 || request.Limits != nil) {
+			t.Fatalf("direct probe must keep the direct API timeout field: %+v", request)
+		}
+		if transport == CatalogProbeQueuedSSH {
+			if len(request.Limits) != 1 || request.Limits["command_timeout_seconds"] != 5 || request.TimeoutSeconds != 0 {
+				t.Fatalf("queued probe must use the bridge limits shape: %+v", request)
+			}
+		}
+	}
+	if _, err := CatalogMaintenanceProbeRequestBodyForTransport(linuxPlan, CatalogProbeMacLocal); err == nil {
+		t.Fatal("Mac-local probe body was accepted for a Linux host")
+	}
+
+	macPlan, err := BuildCatalogPlan("mac-control-plane", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := CatalogMaintenanceProbeRequestBodyForTransport(macPlan, CatalogProbeMacLocal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var localRequest catalogMaintenanceProbeRequest
+	if err := json.Unmarshal(body, &localRequest); err != nil {
+		t.Fatal(err)
+	}
+	if localRequest.Environment != "mac-workstation-dev" || localRequest.Target.Kind != "local" || localRequest.Target.Profile != "mac-workstation" ||
+		localRequest.Source.Mode != "empty" || localRequest.Script != "printf 'catalog release maintenance probe\\n'" || localRequest.TimeoutSeconds != 5 {
+		t.Fatalf("Mac-local probe body changed its fixed command or configured target: %+v", localRequest)
+	}
+	if _, err := CatalogMaintenanceProbeRequestBodyForTransport(macPlan, CatalogProbeQueuedSSH); err == nil {
+		t.Fatal("queued SSH probe body was accepted for the Mac host")
+	}
+}
+
+func TestCatalogMaintenanceProbeControllerTypeIsBoundToTransport(t *testing.T) {
+	tests := []struct {
+		transport CatalogProbeTransport
+		typeName  domain.ControllerType
+		want      bool
+	}{
+		{CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS, true},
+		{CatalogProbeDirectMTLS, domain.ControllerTypeQueuedMac, false},
+		{CatalogProbeQueuedSSH, domain.ControllerTypeQueuedMac, true},
+		{CatalogProbeQueuedSSH, domain.ControllerTypeDirectMTLS, false},
+		{CatalogProbeMacLocal, domain.ControllerTypeLocalUser, true},
+		{CatalogProbeMacLocal, domain.ControllerTypeQueuedMac, false},
+	}
+	for _, test := range tests {
+		if got := catalogProbeControllerAllowed(test.transport, test.typeName); got != test.want {
+			t.Errorf("transport %q controller type %q allowed=%t, want %t", test.transport, test.typeName, got, test.want)
+		}
+	}
+}
+
 func TestCatalogMaintenanceProbeIsOneShotAndJobReadIsIdentityBound(t *testing.T) {
 	fixture := newCatalogProbeFixture(t)
 	if err := fixture.guard.ReserveCatalogMaintenanceProbe(fixture.controller, fixture.token, fixture.key, fixture.body, fixture.now); err != nil {
@@ -159,6 +233,9 @@ func TestCatalogMaintenanceProbeIsOneShotAndJobReadIsIdentityBound(t *testing.T)
 	jobID := "job-0123456789abcdef0123456789abcdef"
 	if err := fixture.guard.BindCatalogMaintenanceProbeJob(jobID); err != nil {
 		t.Fatalf("bind accepted job identity: %v", err)
+	}
+	if fixture.guard.AllowsReservedJobIntent(domain.ControllerTypeDirectMTLS, fixture.controller, fixture.token, "intent-0123456789abcdef0123456789abcdef", jobID, fixture.now) {
+		t.Fatal("unbound intent unexpectedly passed the stricter job-intent guard")
 	}
 	if !fixture.guard.AllowsJobRead(fixture.controller, jobID, fixture.now) {
 		t.Fatal("exact reserved probe job was not readable")

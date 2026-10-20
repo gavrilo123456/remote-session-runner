@@ -404,6 +404,9 @@ func (m *CatalogLaneMaintenance) Select(ctx context.Context, releaseID, expected
 	if err != nil {
 		return CatalogSelectorOperation{}, err
 	}
+	if err := CatalogCohortAdmissionHoldMatches(m.maintenance.plan, cohortOperationID); err != nil {
+		return CatalogSelectorOperation{}, err
+	}
 	currentStatus, err := inspectCatalogSelector(m.layout)
 	if err != nil {
 		return CatalogSelectorOperation{}, err

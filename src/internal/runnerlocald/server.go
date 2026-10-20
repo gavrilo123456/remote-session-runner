@@ -30,6 +30,7 @@ import (
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/execution"
+	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
@@ -64,6 +65,13 @@ type PrivateServerOptions struct {
 	// MaintenanceAdmissionClosed retains read-only health/status access while
 	// rejecting local submissions, cancellations and intent acceptance.
 	MaintenanceAdmissionClosed bool
+	MaintenanceProbeGuard      macLocalMaintenanceProbeAuthorizer
+}
+
+type macLocalMaintenanceProbeAuthorizer interface {
+	AllowsReservedIntent(domain.ControllerType, string, string, string, time.Time) bool
+	AllowsReservedJobIntent(domain.ControllerType, string, string, string, string, time.Time) bool
+	ValidateFixedProbeRequest(string, string, string, string, string, int64) error
 }
 
 type PrivateServer struct {
@@ -83,6 +91,7 @@ type PrivateServer struct {
 	thresholds                 *opshealth.ThresholdMonitor
 	queueWake                  func()
 	maintenanceAdmissionClosed bool
+	maintenanceProbeGuard      macLocalMaintenanceProbeAuthorizer
 }
 
 func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
@@ -128,6 +137,7 @@ func NewPrivateServer(options PrivateServerOptions) (*PrivateServer, error) {
 		}}, requestGate: lifecycle.NewGate(), dispatchGate: dispatchGate,
 		healthReport: options.HealthReport, queueWake: options.QueueWake,
 		maintenanceAdmissionClosed: options.MaintenanceAdmissionClosed,
+		maintenanceProbeGuard:      options.MaintenanceProbeGuard,
 		cancelRequests:             cancelRequests, thresholds: thresholds,
 	}, nil
 }
@@ -368,9 +378,29 @@ type targetResponse struct {
 }
 
 func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Request) {
-	if s.maintenanceAdmissionClosed && request.Method != http.MethodGet {
-		writeJSON(response, http.StatusServiceUnavailable, map[string]string{"code": "maintenance_admission_closed", "message": "local execution mutations are closed for cohort maintenance"})
-		return
+	if s.maintenanceAdmissionClosed {
+		if request.Method == http.MethodGet {
+			// Existing owner-only status and health reads remain available.
+		} else if request.Method == http.MethodPost && request.URL.Path == "/internal/v1/accept-intent" && s.maintenanceProbeGuard != nil {
+			body, readErr := io.ReadAll(io.LimitReader(request.Body, s.maxBodyBytes+1))
+			var input acceptIntentRequest
+			decoder := json.NewDecoder(strings.NewReader(string(body)))
+			decoder.DisallowUnknownFields()
+			ddecodeErr := decoder.Decode(&input)
+			var trailing any
+			trailingErr := decoder.Decode(&trailing)
+			token := request.Header.Get(laneinstall.CatalogMaintenanceProbeTokenHeader)
+			if readErr != nil || int64(len(body)) > s.maxBodyBytes || ddecodeErr != nil || trailingErr != io.EOF ||
+				!s.maintenanceProbeGuard.AllowsReservedIntent(domain.ControllerTypeLocalUser, string(s.owner.ID()), token, input.IntentID, time.Now().UTC()) {
+				writeJSON(response, http.StatusServiceUnavailable, map[string]string{"code": "maintenance_admission_closed", "message": "local execution mutations are closed for cohort maintenance"})
+				return
+			}
+			request.Body = io.NopCloser(bytes.NewReader(body))
+			request = request.WithContext(context.WithValue(request.Context(), localdMaintenanceProbeContextKey{}, token))
+		} else {
+			writeJSON(response, http.StatusServiceUnavailable, map[string]string{"code": "maintenance_admission_closed", "message": "local execution mutations are closed for cohort maintenance"})
+			return
+		}
 	}
 	release, err := s.requestGate.Enter()
 	if err != nil {
@@ -475,6 +505,21 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 		writeJSON(response, http.StatusConflict, map[string]string{"code": "environment_target_mismatch", "message": ErrIntentTargetMismatch.Error()})
 		return
 	}
+	maintenanceProbeToken, maintenanceProbe := request.Context().Value(localdMaintenanceProbeContextKey{}).(string)
+	if maintenanceProbe {
+		payload, payloadErr := decodeIntentPayload(intent.PayloadJSON)
+		if maintenanceProbeToken == "" || s.maintenanceProbeGuard == nil || intent.Operation != "run" ||
+			!s.maintenanceProbeGuard.AllowsReservedJobIntent(domain.ControllerTypeLocalUser, string(s.owner.ID()), maintenanceProbeToken,
+				string(intent.IntentID), string(intent.JobID), time.Now().UTC()) ||
+			payloadErr != nil || payload.RequestedLimits.CommandTimeout != 5*time.Second || payload.RequestedLimits.IdleTimeout != 0 ||
+			payload.RequestedLimits.SessionMaxLifetime != 0 || payload.RequestedLimits.OutputBytesPerCommand != 0 ||
+			payload.Timeout != 5*time.Second || payload.Policy != "" || payload.Isolation != (domain.IsolationRequirements{}) ||
+			s.maintenanceProbeGuard.ValidateFixedProbeRequest(string(intent.Environment), string(intent.Target.Kind()), intent.Target.Profile(),
+				string(intent.Source.Mode()), string(intent.ScriptBytes), int64(payload.RequestedLimits.CommandTimeout/time.Second)) != nil {
+			writeJSON(response, http.StatusServiceUnavailable, map[string]string{"code": "maintenance_admission_closed", "message": "local execution mutations are closed for cohort maintenance"})
+			return
+		}
+	}
 	accepted, err := s.acceptIntent(request.Context(), intent)
 	if err != nil {
 		code, _ := intentAcceptanceFailure(err)
@@ -491,6 +536,8 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 	// state before the caller can observe that acceptance.
 	s.wakeQueueAfterAcceptedIntent(accepted)
 }
+
+type localdMaintenanceProbeContextKey struct{}
 
 func (s *PrivateServer) currentHealthReport(ctx context.Context) opshealth.Report {
 	if s != nil && s.healthReport != nil {
@@ -575,13 +622,26 @@ func (s *PrivateServer) acceptIntent(ctx context.Context, intent store.LocalInte
 		base.SessionState = string(result.Session.State)
 		base.Duplicate = result.Duplicate
 	case "run":
-		result, err := s.service.AcceptJob(ctx, store.JobAcceptance{
+		acceptance := store.JobAcceptance{
 			JobID: intent.JobID, SessionID: intent.SessionID, CommandID: intent.CommandID,
 			Controller: intent.Controller, IdempotencyKey: intent.IdempotencyKey,
 			RequestHash: intent.RequestHash, Environment: intent.Environment, Target: intent.Target,
 			Source: intent.Source, Script: string(intent.ScriptBytes), CanonicalPayload: intent.PayloadJSON,
 			IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
-		})
+		}
+		if _, maintenanceProbe := ctx.Value(localdMaintenanceProbeContextKey{}).(string); maintenanceProbe {
+			result, err := s.service.RunJob(ctx, execution.RunJobRequest{
+				Acceptance: acceptance, RequestedLimits: payload.RequestedLimits, Isolation: payload.Isolation,
+				MaxActiveSessions: store.DefaultActiveSessionLimit, IdempotencyRetention: store.DefaultSessionIdempotencyRetention,
+			})
+			if err != nil {
+				return intentAcceptanceResponse{}, err
+			}
+			base.JobPhase = string(result.Job.Phase)
+			base.Duplicate = result.Duplicate
+			break
+		}
+		result, err := s.service.AcceptJob(ctx, acceptance)
 		if err != nil {
 			return intentAcceptanceResponse{}, err
 		}
@@ -1063,12 +1123,13 @@ func rejectControllerQuery(request *http.Request) error {
 }
 
 type decodedIntentPayload struct {
-	TimeoutSeconds            json.Number `json:"timeout_seconds,omitempty"`
-	Policy                    string      `json:"policy,omitempty"`
-	CommandTimeoutSeconds     json.Number `json:"command_timeout_seconds,omitempty"`
-	IdleTimeoutSeconds        json.Number `json:"idle_timeout_seconds,omitempty"`
-	SessionMaxLifetimeSeconds json.Number `json:"session_max_lifetime_seconds,omitempty"`
-	OutputBytesPerCommand     json.Number `json:"output_bytes_per_command,omitempty"`
+	TimeoutSeconds            json.Number     `json:"timeout_seconds,omitempty"`
+	Policy                    string          `json:"policy,omitempty"`
+	CommandTimeoutSeconds     json.Number     `json:"command_timeout_seconds,omitempty"`
+	IdleTimeoutSeconds        json.Number     `json:"idle_timeout_seconds,omitempty"`
+	SessionMaxLifetimeSeconds json.Number     `json:"session_max_lifetime_seconds,omitempty"`
+	OutputBytesPerCommand     json.Number     `json:"output_bytes_per_command,omitempty"`
+	Limits                    json.RawMessage `json:"limits,omitempty"`
 	IsolationFlags            struct {
 		FilesystemBoundary bool `json:"filesystem_boundary,omitempty"`
 		CPUControl         bool `json:"cpu_control,omitempty"`
@@ -1089,6 +1150,34 @@ func decodeIntentPayload(raw []byte) (decodedIntentPayload, error) {
 	var payload decodedIntentPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return decodedIntentPayload{}, fmt.Errorf("%w: payload: %v", ErrIntentRequest, err)
+	}
+	if len(payload.Limits) != 0 {
+		var limits map[string]json.Number
+		decoder := json.NewDecoder(bytes.NewReader(payload.Limits))
+		decoder.UseNumber()
+		if err := decoder.Decode(&limits); err != nil || limits == nil {
+			return decodedIntentPayload{}, fmt.Errorf("%w: limits", ErrIntentRequest)
+		}
+		var trailing any
+		if decoder.Decode(&trailing) != io.EOF {
+			return decodedIntentPayload{}, fmt.Errorf("%w: limits contain trailing data", ErrIntentRequest)
+		}
+		allowedLimits := map[string]*json.Number{
+			"command_timeout_seconds":      &payload.CommandTimeoutSeconds,
+			"idle_timeout_seconds":         &payload.IdleTimeoutSeconds,
+			"session_max_lifetime_seconds": &payload.SessionMaxLifetimeSeconds,
+			"output_bytes_per_command":     &payload.OutputBytesPerCommand,
+		}
+		for name, number := range limits {
+			destination, ok := allowedLimits[name]
+			if !ok || number == "" {
+				return decodedIntentPayload{}, fmt.Errorf("%w: unsupported requested limit", ErrIntentRequest)
+			}
+			if *destination != "" && *destination != number {
+				return decodedIntentPayload{}, fmt.Errorf("%w: conflicting requested limit", ErrIntentRequest)
+			}
+			*destination = number
+		}
 	}
 	timeoutSeconds, err := parseCanonicalInt64(payload.TimeoutSeconds)
 	if err != nil {

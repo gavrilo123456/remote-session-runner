@@ -80,17 +80,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 78
 	}
 	maintenanceHeld := false
+	var maintenanceProbe *laneinstall.CatalogMaintenanceProbeGuard
 	if plan, catalogManaged, planErr := laneinstall.CatalogPlanFromConfiguration(loaded); planErr != nil {
 		fmt.Fprintln(stderr, "runner-local: catalog lane identity is invalid")
 		return 78
 	} else if catalogManaged {
-		maintenanceHeld, _, err = laneinstall.CatalogCohortAdmissionHeld(plan)
+		var operationID string
+		maintenanceHeld, operationID, err = laneinstall.CatalogCohortAdmissionHeld(plan)
 		if err != nil {
 			fmt.Fprintln(stderr, "runner-local: catalog cohort receipt is invalid; refusing work admission")
 			return 78
 		}
+		if maintenanceHeld {
+			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuardForTransport(plan, operationID, laneinstall.CatalogProbeMacLocal)
+			if err != nil {
+				fmt.Fprintln(stderr, "runner-local: Mac-local catalog maintenance probe guard is invalid")
+				return 78
+			}
+		}
 	}
-	service, err := newService(*configPath, maintenanceHeld)
+	service, err := newService(*configPath, maintenanceHeld, maintenanceProbe)
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-local: configure service: %v\n", err)
 		return 1
@@ -316,7 +325,14 @@ func New(configPath string) (*Service, error) {
 	return newService(configPath, false)
 }
 
-func newService(configPath string, maintenanceHeld bool) (*Service, error) {
+func newService(configPath string, maintenanceHeld bool, maintenanceProbes ...*laneinstall.CatalogMaintenanceProbeGuard) (*Service, error) {
+	var maintenanceProbe *laneinstall.CatalogMaintenanceProbeGuard
+	if len(maintenanceProbes) > 1 {
+		return nil, errors.New("multiple Mac maintenance probe guards supplied")
+	}
+	if len(maintenanceProbes) == 1 {
+		maintenanceProbe = maintenanceProbes[0]
+	}
 	loaded, settings, mailboxDefinitions, err := loadSelectedMacConfig(configPath)
 	if err != nil {
 		return nil, err
@@ -391,7 +407,8 @@ func newService(configPath string, maintenanceHeld bool) (*Service, error) {
 	}
 	api, err := localapi.NewServer(localapi.ServerOptions{
 		Authority: authority, Owner: owner, SocketPath: settings.APISocket,
-		MailboxLifecycleStatus: lifecycleStatus,
+		MailboxLifecycleStatus:     lifecycleStatus,
+		MaintenanceAdmissionClosed: maintenanceHeld, MaintenanceProbeGuard: maintenanceProbe,
 		HealthReport: func(ctx context.Context) opshealth.Report {
 			return macIngressHealthReportWithMetrics(ctx, authority, routerHealth, mailboxMetrics.importers, mailboxMetrics.definitions, metricsRecorder, thresholds)
 		},
@@ -407,6 +424,16 @@ func newService(configPath string, maintenanceHeld bool) (*Service, error) {
 	localDriver, err := dispatcher.NewLocalDriver(authority, locald, routerOwner, intentLeaseDuration)
 	if err != nil {
 		return nil, fmt.Errorf("construct local Router driver: %w", err)
+	}
+	if maintenanceProbe != nil {
+		api.SetMaintenanceProbe(maintenanceProbe, func(ctx context.Context, rawIntentID, token string) error {
+			intentID, err := domain.NewIntentID(rawIntentID)
+			if err != nil {
+				return dispatcher.ErrDriverConfiguration
+			}
+			_, _, err = localDriver.DispatchMaintenanceIntent(ctx, intentID, token)
+			return err
+		})
 	}
 	remoteResolver, err := newPinnedRemoteCallerResolver(loaded)
 	if err != nil {

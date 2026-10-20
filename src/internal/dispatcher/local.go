@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/store"
 )
 
@@ -37,9 +38,10 @@ var (
 // PayloadJSON and ScriptBytes are deliberately absent: locald reloads both
 // from the committed intent in the shared local SQLite store.
 type AcceptIntentRequest struct {
-	IntentID      domain.IntentID
-	RequestHash   domain.CanonicalHash
-	IntentOrdinal *int64
+	IntentID              domain.IntentID
+	RequestHash           domain.CanonicalHash
+	IntentOrdinal         *int64
+	MaintenanceProbeToken string
 }
 
 // IntentAcceptance is the target-authority acknowledgement returned by locald.
@@ -120,7 +122,7 @@ func (d *LocalDriver) DispatchNext(ctx context.Context) (store.LocalIntentRecord
 		if candidate.Target.Kind() != domain.TargetKindLocal || !supportedLocalOperation(candidate.Operation) {
 			continue
 		}
-		return d.dispatchClaimed(ctx, candidate.IntentID)
+		return d.dispatchClaimed(ctx, candidate.IntentID, "")
 	}
 	return store.LocalIntentRecord{}, IntentAcceptance{}, ErrNoLocalDispatchWork
 }
@@ -142,15 +144,32 @@ func (d *LocalDriver) DispatchIntent(ctx context.Context, id domain.IntentID) (s
 	if !supportedLocalOperation(intent.Operation) {
 		return store.LocalIntentRecord{}, IntentAcceptance{}, fmt.Errorf("%w: %s", ErrUnsupportedLocalOperation, intent.Operation)
 	}
-	return d.dispatchClaimed(ctx, intent.IntentID)
+	return d.dispatchClaimed(ctx, intent.IntentID, "")
 }
 
-func (d *LocalDriver) dispatchClaimed(ctx context.Context, id domain.IntentID) (store.LocalIntentRecord, IntentAcceptance, error) {
+// DispatchMaintenanceIntent delivers one known local intent using the
+// one-time catalog probe capability. The intent is reloaded from SQLite and
+// must be the single bounded run admitted by the held-lane API.
+func (d *LocalDriver) DispatchMaintenanceIntent(ctx context.Context, id domain.IntentID, token string) (store.LocalIntentRecord, IntentAcceptance, error) {
+	if d == nil || d.authority == nil || d.acceptor == nil || token == "" {
+		return store.LocalIntentRecord{}, IntentAcceptance{}, ErrDriverConfiguration
+	}
+	intent, err := d.authority.GetLocalIntent(ctx, id)
+	if err != nil {
+		return store.LocalIntentRecord{}, IntentAcceptance{}, err
+	}
+	if intent.Target.Kind() != domain.TargetKindLocal || intent.Operation != "run" {
+		return store.LocalIntentRecord{}, IntentAcceptance{}, fmt.Errorf("%w: maintenance probe must be a local run intent", ErrUnsupportedLocalOperation)
+	}
+	return d.dispatchClaimed(ctx, intent.IntentID, token)
+}
+
+func (d *LocalDriver) dispatchClaimed(ctx context.Context, id domain.IntentID, maintenanceProbeToken string) (store.LocalIntentRecord, IntentAcceptance, error) {
 	claimed, err := d.authority.ClaimLocalIntent(ctx, id, d.owner, d.leaseDuration)
 	if err != nil {
 		return store.LocalIntentRecord{}, IntentAcceptance{}, err
 	}
-	request := AcceptIntentRequest{IntentID: claimed.IntentID, RequestHash: claimed.RequestHash, IntentOrdinal: claimed.IntentOrdinal}
+	request := AcceptIntentRequest{IntentID: claimed.IntentID, RequestHash: claimed.RequestHash, IntentOrdinal: claimed.IntentOrdinal, MaintenanceProbeToken: maintenanceProbeToken}
 	if claimed.Operation != operationSubmitCommand {
 		request.IntentOrdinal = nil
 	}
@@ -256,6 +275,9 @@ func (c *LocaldClient) AcceptIntent(ctx context.Context, input AcceptIntentReque
 		return IntentAcceptance{}, fmt.Errorf("%w: request: %v", ErrLocaldRejected, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	if input.MaintenanceProbeToken != "" {
+		request.Header.Set(laneinstall.CatalogMaintenanceProbeTokenHeader, input.MaintenanceProbeToken)
+	}
 	response, err := c.client.Do(request)
 	if err != nil {
 		return IntentAcceptance{}, fmt.Errorf("%w: %v", ErrLocaldTransport, err)

@@ -105,14 +105,23 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 78
 	}
 	maintenanceHeld := false
+	var maintenanceProbe *laneinstall.CatalogMaintenanceProbeGuard
 	if plan, catalogManaged, planErr := laneinstall.CatalogPlanFromConfiguration(loaded); planErr != nil {
 		fmt.Fprintln(stderr, "runner-locald: catalog lane identity is invalid")
 		return 78
 	} else if catalogManaged {
-		maintenanceHeld, _, err = laneinstall.CatalogCohortAdmissionHeld(plan)
+		var operationID string
+		maintenanceHeld, operationID, err = laneinstall.CatalogCohortAdmissionHeld(plan)
 		if err != nil {
 			fmt.Fprintln(stderr, "runner-locald: catalog cohort receipt is invalid; refusing work admission")
 			return 78
+		}
+		if maintenanceHeld {
+			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuardForTransport(plan, operationID, laneinstall.CatalogProbeMacLocal)
+			if err != nil {
+				fmt.Fprintln(stderr, "runner-locald: Mac-local catalog maintenance probe guard is invalid")
+				return 78
+			}
 		}
 	}
 	releaseLifecycleLock, err := acquireRunnerLocaldLifecycleLock(settings.ServiceRoot)
@@ -202,6 +211,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		Authority: authority, Service: service, Owner: owner, SocketPath: settings.LocalDSocket,
 		Thresholds: thresholds, DispatchGate: dispatchGate, QueueWake: queueWake,
 		MaintenanceAdmissionClosed: maintenanceHeld,
+		MaintenanceProbeGuard:      maintenanceProbe,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "runner-locald: construct private API: %v\n", err)

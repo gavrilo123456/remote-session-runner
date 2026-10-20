@@ -24,11 +24,17 @@
     },
     "resource_id": { "type": "string", "minLength": 1 },
     "idempotency_key": { "type": "string", "minLength": 1 },
+    "maintenance_probe_token": { "type": "string", "minLength": 43, "maxLength": 43, "pattern": "^[A-Za-z0-9_-]{43}$" },
     "payload": { "type": "object" }
   },
   "required": ["protocol_version", "request_id", "operation", "payload"],
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": { "properties": { "operation": { "enum": ["run_or_resume_job", "get_job"] } }, "required": ["operation"] },
+      "then": {},
+      "else": { "not": { "required": ["maintenance_probe_token"] } }
+    },
     {
       "if": { "properties": { "operation": { "const": "hello" } }, "required": ["operation"] },
       "then": { "properties": { "payload": { "maxProperties": 0 } }, "not": { "anyOf": [{ "required": ["resource_id"] }, { "required": ["idempotency_key"] }] } }

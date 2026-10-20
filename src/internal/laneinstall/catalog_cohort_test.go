@@ -816,6 +816,45 @@ func TestCatalogCohortSwitchPreflightMustMatchTheExactLocalState(t *testing.T) {
 	}
 }
 
+func TestCatalogPreSwitchCheckRequiresOneExactAdmissionHold(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	plan, err := BuildCatalogPlan("linux-host", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "catalog-cohorts")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := validCatalogCohortFixture(now)
+	first.OperationID = strings.Repeat("a", 32)
+	first, err = AdvanceCatalogCohortReceipt(first, "hold", "", strings.Repeat("b", 64), now)
+	if err != nil {
+		t.Fatalf("hold first cohort: %v", err)
+	}
+	writeCohortReceiptFixture(t, root, first)
+	if err := catalogCohortAdmissionHoldMatchesAt(plan, root, first.OperationID); err != nil {
+		t.Fatalf("exact single held operation was rejected: %v", err)
+	}
+	if err := catalogCohortAdmissionHoldMatchesAt(plan, root, strings.Repeat("c", 32)); err == nil {
+		t.Fatal("wrong cohort operation passed the pre-switch check")
+	}
+
+	second := validCatalogCohortFixture(now)
+	second.OperationID = strings.Repeat("d", 32)
+	second, err = AdvanceCatalogCohortReceipt(second, "hold", "", strings.Repeat("e", 64), now)
+	if err != nil {
+		t.Fatalf("hold second cohort: %v", err)
+	}
+	writeCohortReceiptFixture(t, root, second)
+	if _, _, err := catalogCohortAdmissionHeldAt(plan, root); err == nil {
+		t.Fatal("two simultaneous holds did not fail closed")
+	}
+	if err := catalogCohortAdmissionHoldMatchesAt(plan, root, first.OperationID); err == nil {
+		t.Fatal("ambiguous receipts passed the exact pre-switch check")
+	}
+}
+
 func TestCatalogCohortDelayedReconciliationMayCloseRecordedSwitchButNewSwitchStaysFresh(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	proof := strings.Repeat("c", 64)

@@ -23,6 +23,7 @@ import (
 
 	"remote-session-runner/src/internal/commandstub"
 	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/laneinstall"
 )
 
@@ -86,6 +87,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogRefreshEntrypoint(ctx, args[1:], stdout, stderr)
 	case "catalog-work-inventory":
 		err = runCatalogWorkInventory(ctx, args[1:], stdout, stderr)
+	case "catalog-pre-switch-check":
+		err = runCatalogPreSwitchCheck(ctx, args[1:], stdout, stderr)
 	case "catalog-host-preflight":
 		err = runCatalogHostPreflight(ctx, args[1:], stdout, stderr)
 	case "catalog-prd-backup":
@@ -599,45 +602,63 @@ func (f *repeatedStringFlag) String() string { return strings.Join(*f, ",") }
 func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("runner-lane catalog-probe-prepare", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	host := flags.String("host", "", "canonical Linux worker identity")
+	host := flags.String("host", "", "canonical existing host identity")
 	lane := flags.String("lane", "", "dev, qas, or prd")
+	transport := flags.String("transport", string(laneinstall.CatalogProbeDirectMTLS), "direct-mtls, queued-ssh, or mac-local")
 	operationID := flags.String("operation-id", "", "held cohort operation identity")
-	controllerID := flags.String("controller-id", "", "existing direct-mTLS controller identity")
+	controllerID := flags.String("controller-id", "", "existing authenticated controller identity")
 	ttlSeconds := flags.Int("ttl-seconds", 120, "one-time probe token lifetime from 1 to 600 seconds")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) || *host == "mac-control-plane" ||
+	if flags.NArg() != 0 || !currentCatalogHost(*host) ||
 		(*lane != "dev" && *lane != "qas" && *lane != "prd") || !validCLIProbeOperationID(*operationID) ||
 		*controllerID == "" || *ttlSeconds < 1 || *ttlSeconds > 600 {
-		return errors.New("usage: runner-lane catalog-probe-prepare --host LINUX-HOST --lane dev|qas|prd --operation-id ID --controller-id ID [--ttl-seconds 1..600]")
+		return errors.New("usage: runner-lane catalog-probe-prepare --host HOST --lane dev|qas|prd --transport direct-mtls|queued-ssh|mac-local --operation-id ID --controller-id ID [--ttl-seconds 1..600]")
+	}
+	probeTransport := laneinstall.CatalogProbeTransport(*transport)
+	var controllerType domain.ControllerType
+	switch probeTransport {
+	case laneinstall.CatalogProbeDirectMTLS:
+		controllerType = domain.ControllerTypeDirectMTLS
+	case laneinstall.CatalogProbeQueuedSSH:
+		controllerType = domain.ControllerTypeQueuedMac
+	case laneinstall.CatalogProbeMacLocal:
+		controllerType = domain.ControllerTypeLocalUser
+	default:
+		return errors.New("unsupported catalog maintenance probe transport")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
 	if err != nil {
 		return err
 	}
 	idempotencyKey := "catalog-probe-" + *operationID + "-" + *host
-	requestBody, err := laneinstall.CatalogMaintenanceProbeRequestBody(plan)
+	if probeTransport != laneinstall.CatalogProbeDirectMTLS {
+		idempotencyKey += "-" + string(probeTransport)
+	}
+	requestBody, err := laneinstall.CatalogMaintenanceProbeRequestBodyForTransport(plan, probeTransport)
 	if err != nil {
 		return err
 	}
 	expiresAt := time.Now().UTC().Add(time.Duration(*ttlSeconds) * time.Second)
-	token, err := laneinstall.PrepareCatalogMaintenanceProbe(plan, *operationID, *controllerID, idempotencyKey, requestBody, expiresAt)
+	token, err := laneinstall.PrepareCatalogMaintenanceProbeForTransport(plan, *operationID, probeTransport, controllerType, *controllerID, idempotencyKey, requestBody, expiresAt)
 	if err != nil {
 		return err
 	}
 	digest := sha256.Sum256(requestBody)
 	return writeJSON(stdout, struct {
-		HostID         string          `json:"host_id"`
-		Lane           string          `json:"lane"`
-		OperationID    string          `json:"operation_id"`
-		ControllerID   string          `json:"controller_id"`
-		IdempotencyKey string          `json:"idempotency_key"`
-		RequestSHA256  string          `json:"request_body_sha256"`
-		RequestBody    json.RawMessage `json:"request_body"`
-		ExpiresAt      string          `json:"expires_at"`
-		Token          string          `json:"one_time_token"`
-	}{*host, *lane, *operationID, *controllerID, idempotencyKey, hex.EncodeToString(digest[:]), requestBody, expiresAt.Format(time.RFC3339Nano), token})
+		HostID         string                            `json:"host_id"`
+		Lane           string                            `json:"lane"`
+		Transport      laneinstall.CatalogProbeTransport `json:"transport"`
+		OperationID    string                            `json:"operation_id"`
+		ControllerType domain.ControllerType             `json:"controller_type"`
+		ControllerID   string                            `json:"controller_id"`
+		IdempotencyKey string                            `json:"idempotency_key"`
+		RequestSHA256  string                            `json:"request_body_sha256"`
+		RequestBody    json.RawMessage                   `json:"request_body"`
+		ExpiresAt      string                            `json:"expires_at"`
+		Token          string                            `json:"one_time_token"`
+	}{*host, *lane, probeTransport, *operationID, controllerType, *controllerID, idempotencyKey, hex.EncodeToString(digest[:]), requestBody, expiresAt.Format(time.RFC3339Nano), token})
 }
 
 func validCLIProbeOperationID(value string) bool {
@@ -919,6 +940,65 @@ func runCatalogWorkInventory(ctx context.Context, args []string, stdout, stderr 
 		return err
 	}
 	return writeJSON(stdout, inventory)
+}
+
+func runCatalogPreSwitchCheck(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-pre-switch-check", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	lane := flags.String("lane", "", "dev or qas")
+	operationID := flags.String("cohort-operation-id", "", "exact held cohort operation expected on this host")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas") || !validCLIProbeOperationID(*operationID) {
+		return errors.New("usage: runner-lane catalog-pre-switch-check --host HOST --lane dev|qas --cohort-operation-id ID")
+	}
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
+	if err != nil {
+		return err
+	}
+	controller, err := laneinstall.NewSimpleServiceController()
+	if err != nil {
+		return err
+	}
+	inventory, err := laneinstall.ReadCatalogWorkInventory(ctx, plan, controller)
+	if err != nil {
+		return err
+	}
+	if inventory.ServiceActive || !inventory.WorkInventoryEmpty {
+		return laneinstall.ErrSimpleLaneNotQuiescent
+	}
+	if err := laneinstall.CatalogCohortAdmissionHoldMatches(plan, *operationID); err != nil {
+		return err
+	}
+	receipt, err := laneinstall.ReadCatalogCohortReceipt(plan, *operationID)
+	if err != nil || receipt.Stage != laneinstall.CatalogCohortHeld || len(receipt.Transitions) == 0 ||
+		countCatalogReceiptSwitches(receipt) != 0 {
+		return laneinstall.ErrCatalogOperationInvalid
+	}
+	return writeJSON(stdout, struct {
+		HostID             string                         `json:"host_id"`
+		Lane               config.ReleaseLane             `json:"lane"`
+		OperationID        string                         `json:"cohort_operation_id"`
+		HoldConfirmed      bool                           `json:"admission_hold_confirmed"`
+		ReceiptStage       laneinstall.CatalogCohortStage `json:"receipt_stage"`
+		ObservedAt         string                         `json:"observed_at"`
+		ServiceActive      bool                           `json:"service_active"`
+		WorkInventory      any                            `json:"work_inventory"`
+		WorkInventoryEmpty bool                           `json:"work_inventory_empty"`
+	}{*host, config.ReleaseLane(*lane), *operationID, true, receipt.Stage, inventory.ObservedAt,
+		inventory.ServiceActive, inventory.WorkInventory, inventory.WorkInventoryEmpty})
+}
+
+func countCatalogReceiptSwitches(receipt laneinstall.CatalogCohortReceipt) int {
+	count := 0
+	for _, transition := range receipt.Transitions {
+		if transition.Action == "switch" || transition.Action == "switch-reconciled" {
+			count++
+		}
+	}
+	return count
 }
 
 func currentCatalogHost(hostID string) bool {

@@ -20,7 +20,20 @@ import (
 	"remote-session-runner/src/internal/domain"
 )
 
-const catalogProbeScopeFormat = 1
+const catalogProbeScopeFormat = 2
+
+const (
+	CatalogMaintenanceProbeTokenHeader  = "X-Runner-Catalog-Maintenance-Token"
+	CatalogMaintenanceProbeDigestHeader = "X-Runner-Catalog-Maintenance-Request-SHA256"
+)
+
+type CatalogProbeTransport string
+
+const (
+	CatalogProbeDirectMTLS CatalogProbeTransport = "direct-mtls"
+	CatalogProbeQueuedSSH  CatalogProbeTransport = "queued-ssh"
+	CatalogProbeMacLocal   CatalogProbeTransport = "mac-local"
+)
 
 var ErrCatalogProbeAdmission = errors.New("catalog maintenance probe admission refused")
 
@@ -33,32 +46,37 @@ type catalogMaintenanceProbeRequest struct {
 	Source struct {
 		Mode string `json:"mode"`
 	} `json:"source"`
-	Script         string `json:"script"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
+	Script         string         `json:"script"`
+	TimeoutSeconds int            `json:"timeout_seconds,omitempty"`
+	Limits         map[string]int `json:"limits,omitempty"`
 }
 
 type catalogProbeScope struct {
-	FormatVersion     int                `json:"format_version"`
-	OperationID       string             `json:"operation_id"`
-	HostID            string             `json:"host_id"`
-	Lane              config.ReleaseLane `json:"lane"`
-	ControllerID      string             `json:"controller_id"`
-	CreatedAt         string             `json:"created_at"`
-	ExpiresAt         string             `json:"expires_at"`
-	TokenSHA256       string             `json:"token_sha256"`
-	IdempotencyKey    string             `json:"idempotency_key"`
-	RequestBodySHA256 string             `json:"request_body_sha256"`
-	State             string             `json:"state"`
-	JobID             string             `json:"job_id,omitempty"`
+	FormatVersion     int                   `json:"format_version"`
+	OperationID       string                `json:"operation_id"`
+	HostID            string                `json:"host_id"`
+	Lane              config.ReleaseLane    `json:"lane"`
+	Transport         CatalogProbeTransport `json:"transport"`
+	ControllerType    domain.ControllerType `json:"controller_type"`
+	ControllerID      string                `json:"controller_id"`
+	CreatedAt         string                `json:"created_at"`
+	ExpiresAt         string                `json:"expires_at"`
+	TokenSHA256       string                `json:"token_sha256"`
+	IdempotencyKey    string                `json:"idempotency_key"`
+	RequestBodySHA256 string                `json:"request_body_sha256"`
+	State             string                `json:"state"`
+	JobID             string                `json:"job_id,omitempty"`
+	IntentID          string                `json:"intent_id,omitempty"`
 }
 
-// CatalogMaintenanceProbeGuard admits only one exact direct-mTLS one-off job
-// while this host's selected cohort is in its verification stage. The
-// ephemeral token supplements, and never replaces, the normal client
-// certificate and controller mapping.
+// CatalogMaintenanceProbeGuard admits one exact transport-specific one-off
+// job while this host's selected cohort is in its verification stage. The
+// ephemeral token supplements, and never replaces, the normal authenticated
+// controller mapping.
 type CatalogMaintenanceProbeGuard struct {
 	plan        Plan
 	operationID string
+	transport   CatalogProbeTransport
 	testPaths   *catalogProbeTestPaths
 }
 
@@ -75,6 +93,22 @@ func (g *CatalogMaintenanceProbeGuard) OperationID() string {
 	return g.operationID
 }
 
+func (g *CatalogMaintenanceProbeGuard) ValidateFixedProbeRequest(environment, targetKind, targetProfile, sourceMode, script string, timeoutSeconds int64) error {
+	if g == nil {
+		return ErrCatalogProbeAdmission
+	}
+	wantEnvironment := string(g.plan.HostID) + "-" + string(g.plan.Lane)
+	wantKind, wantProfile := "remote", g.plan.HostID
+	if g.transport == CatalogProbeMacLocal {
+		wantEnvironment, wantKind, wantProfile = "mac-workstation-"+string(g.plan.Lane), "local", "mac-workstation"
+	}
+	if environment != wantEnvironment || targetKind != wantKind || targetProfile != wantProfile || sourceMode != "empty" ||
+		script != "printf 'catalog release maintenance probe\\n'" || timeoutSeconds != 5 {
+		return ErrCatalogProbeAdmission
+	}
+	return nil
+}
+
 // CatalogCohortAdmissionHeld reports whether a durable local cohort receipt
 // requires this lane to remain fenced. A corrupt or ambiguous receipt is an
 // error so a service can fail closed during startup.
@@ -84,6 +118,28 @@ func CatalogCohortAdmissionHeld(plan Plan) (bool, string, error) {
 	}
 	root := filepath.Join(plan.Namespace.Staging, "catalog-cohorts")
 	return catalogCohortAdmissionHeldAt(plan, root)
+}
+
+// CatalogCohortAdmissionHoldMatches requires exactly one valid admission hold
+// and requires that hold to belong to the expected cohort operation. Callers
+// use it immediately before a selector mutation so an unrelated retained hold
+// cannot remain undiscovered until a service restart.
+func CatalogCohortAdmissionHoldMatches(plan Plan, expectedOperationID string) error {
+	if validateCatalogPlan(plan) != nil {
+		return ErrCatalogOperationInvalid
+	}
+	return catalogCohortAdmissionHoldMatchesAt(plan, filepath.Join(plan.Namespace.Staging, "catalog-cohorts"), expectedOperationID)
+}
+
+func catalogCohortAdmissionHoldMatchesAt(plan Plan, root, expectedOperationID string) error {
+	if !validCatalogOperationID(expectedOperationID) {
+		return ErrCatalogOperationInvalid
+	}
+	held, operationID, err := catalogCohortAdmissionHeldAt(plan, root)
+	if err != nil || !held || operationID != expectedOperationID {
+		return ErrCatalogOperationInvalid
+	}
+	return nil
 }
 
 func catalogCohortAdmissionHeldAt(plan Plan, root string) (bool, string, error) {
@@ -133,27 +189,49 @@ func catalogCohortStageHoldsAdmissions(stage CatalogCohortStage) bool {
 }
 
 func NewCatalogMaintenanceProbeGuard(plan Plan, operationID string) (*CatalogMaintenanceProbeGuard, error) {
+	return NewCatalogMaintenanceProbeGuardForTransport(plan, operationID, CatalogProbeDirectMTLS)
+}
+
+func NewCatalogMaintenanceProbeGuardForTransport(plan Plan, operationID string, transport CatalogProbeTransport) (*CatalogMaintenanceProbeGuard, error) {
 	if validateCatalogPlan(plan) != nil || !validCatalogOperationID(operationID) {
 		return nil, ErrCatalogProbeAdmission
 	}
-	return &CatalogMaintenanceProbeGuard{plan: plan, operationID: operationID}, nil
+	if !validCatalogProbeTransport(plan, transport) {
+		return nil, ErrCatalogProbeAdmission
+	}
+	return &CatalogMaintenanceProbeGuard{plan: plan, operationID: operationID, transport: transport}, nil
 }
 
 // CatalogMaintenanceProbeRequestBody returns the only command body that the
 // bounded cohort maintenance scope may admit. It is deliberately fixed and
 // harmless; caller supplied scripts are never accepted by the scope.
 func CatalogMaintenanceProbeRequestBody(plan Plan) ([]byte, error) {
-	if validateCatalogPlan(plan) != nil || plan.Namespace.Host != config.HostKindLinux ||
+	return CatalogMaintenanceProbeRequestBodyForTransport(plan, CatalogProbeDirectMTLS)
+}
+
+func CatalogMaintenanceProbeRequestBodyForTransport(plan Plan, transport CatalogProbeTransport) ([]byte, error) {
+	if validateCatalogPlan(plan) != nil || !validCatalogProbeTransport(plan, transport) ||
 		(plan.Lane != config.ReleaseLaneDev && plan.Lane != config.ReleaseLaneQAS && plan.Lane != config.ReleaseLanePRD) {
 		return nil, ErrCatalogProbeAdmission
 	}
 	request := catalogMaintenanceProbeRequest{
 		Environment: string(plan.HostID) + "-" + string(plan.Lane),
-		Script:      "printf 'catalog release maintenance probe\\n'", TimeoutSeconds: 5,
+		Script:      "printf 'catalog release maintenance probe\\n'",
 	}
 	request.Target.Kind = "remote"
 	request.Target.Profile = plan.HostID
 	request.Source.Mode = "empty"
+	switch transport {
+	case CatalogProbeQueuedSSH:
+		request.Limits = map[string]int{"command_timeout_seconds": 5}
+	case CatalogProbeMacLocal:
+		request.Environment = "mac-workstation-" + string(plan.Lane)
+		request.Target.Kind = "local"
+		request.Target.Profile = "mac-workstation"
+		request.TimeoutSeconds = 5
+	default:
+		request.TimeoutSeconds = 5
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
@@ -166,13 +244,20 @@ func CatalogMaintenanceProbeRequestBody(plan Plan) ([]byte, error) {
 // exact idempotency key, authenticated controller and operation identity are
 // retained. The selected host must already be in whole-cohort verification.
 func PrepareCatalogMaintenanceProbe(plan Plan, operationID, controllerID, idempotencyKey string, requestBody []byte, expiresAt time.Time) (string, error) {
-	guard, err := NewCatalogMaintenanceProbeGuard(plan, operationID)
-	wantBody, bodyErr := CatalogMaintenanceProbeRequestBody(plan)
-	wantKey := "catalog-probe-" + operationID + "-" + plan.HostID
+	return PrepareCatalogMaintenanceProbeForTransport(plan, operationID, CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS, controllerID, idempotencyKey, requestBody, expiresAt)
+}
+
+func PrepareCatalogMaintenanceProbeForTransport(plan Plan, operationID string, transport CatalogProbeTransport, controllerType domain.ControllerType, controllerID, idempotencyKey string, requestBody []byte, expiresAt time.Time) (string, error) {
+	guard, err := NewCatalogMaintenanceProbeGuardForTransport(plan, operationID, transport)
+	wantBody, bodyErr := CatalogMaintenanceProbeRequestBodyForTransport(plan, transport)
+	wantKey := catalogProbeIdempotencyKey(operationID, plan.HostID, transport)
 	if err != nil || bodyErr != nil || !bytes.Equal(requestBody, wantBody) || idempotencyKey != wantKey || expiresAt.IsZero() {
 		return "", ErrCatalogProbeAdmission
 	}
-	if _, err := domain.NewControllerIdentity(domain.ControllerTypeDirectMTLS, domain.ControllerID(controllerID)); err != nil {
+	if !catalogProbeControllerAllowed(transport, controllerType) {
+		return "", ErrCatalogProbeAdmission
+	}
+	if _, err := domain.NewControllerIdentity(controllerType, domain.ControllerID(controllerID)); err != nil {
 		return "", ErrCatalogProbeAdmission
 	}
 	if err := guard.validateCurrentCohortForProbe(); err != nil {
@@ -192,7 +277,8 @@ func PrepareCatalogMaintenanceProbe(plan Plan, operationID, controllerID, idempo
 	bodyDigest := sha256.Sum256(requestBody)
 	scope := catalogProbeScope{
 		FormatVersion: catalogProbeScopeFormat, OperationID: operationID, HostID: plan.HostID, Lane: plan.Lane,
-		ControllerID: controllerID, CreatedAt: now.Format(time.RFC3339Nano), ExpiresAt: expiresAt.Format(time.RFC3339Nano),
+		Transport: transport, ControllerType: controllerType, ControllerID: controllerID,
+		CreatedAt: now.Format(time.RFC3339Nano), ExpiresAt: expiresAt.Format(time.RFC3339Nano),
 		TokenSHA256: hex.EncodeToString(tokenDigest[:]), IdempotencyKey: idempotencyKey,
 		RequestBodySHA256: hex.EncodeToString(bodyDigest[:]), State: "ready",
 	}
@@ -209,7 +295,7 @@ func PrepareCatalogMaintenanceProbe(plan Plan, operationID, controllerID, idempo
 		return "", err
 	}
 	defer releaseCatalogRootPublicationLock(lock)
-	path := filepath.Join(root, operationID+".json")
+	path := guard.scopePath(root)
 	if _, err := os.Lstat(path); err == nil || !errors.Is(err, os.ErrNotExist) {
 		return "", ErrCatalogProbeAdmission
 	}
@@ -223,9 +309,28 @@ func PrepareCatalogMaintenanceProbe(plan Plan, operationID, controllerID, idempo
 // before the request can enter execution. A crash after reservation remains
 // fail-closed; the request is never silently made available for a second job.
 func (g *CatalogMaintenanceProbeGuard) ReserveCatalogMaintenanceProbe(controllerID, token, idempotencyKey string, body []byte, now time.Time) error {
+	return g.ReserveCatalogMaintenanceProbeForController(domain.ControllerTypeDirectMTLS, controllerID, token, idempotencyKey, body, now)
+}
+
+func (g *CatalogMaintenanceProbeGuard) ReserveCatalogMaintenanceProbeForController(controllerType domain.ControllerType, controllerID, token, idempotencyKey string, body []byte, now time.Time) error {
 	if g == nil || now.IsZero() || len(body) == 0 || len(body) > 1<<20 {
 		return ErrCatalogProbeAdmission
 	}
+	if !catalogProbeControllerAllowed(g.transport, controllerType) {
+		return ErrCatalogProbeAdmission
+	}
+	bodyDigest := sha256.Sum256(body)
+	return g.reserveDigest(controllerType, controllerID, token, idempotencyKey, hex.EncodeToString(bodyDigest[:]), now)
+}
+
+func (g *CatalogMaintenanceProbeGuard) ReserveCatalogMaintenanceProbeDigest(controllerType domain.ControllerType, controllerID, token, idempotencyKey, requestDigest string, now time.Time) error {
+	if g == nil || now.IsZero() || !bundleDigestPattern.MatchString(requestDigest) || !catalogProbeControllerAllowed(g.transport, controllerType) {
+		return ErrCatalogProbeAdmission
+	}
+	return g.reserveDigest(controllerType, controllerID, token, idempotencyKey, requestDigest, now)
+}
+
+func (g *CatalogMaintenanceProbeGuard) reserveDigest(controllerType domain.ControllerType, controllerID, token, idempotencyKey, requestDigest string, now time.Time) error {
 	if err := g.validateCurrentCohortForProbe(); err != nil {
 		return err
 	}
@@ -239,9 +344,11 @@ func (g *CatalogMaintenanceProbeGuard) ReserveCatalogMaintenanceProbe(controller
 		return ErrCatalogProbeAdmission
 	}
 	defer releaseCatalogRootPublicationLock(lock)
-	scope, err := readCatalogProbeScope(filepath.Join(root, g.operationID+".json"))
+	path := g.scopePath(root)
+	scope, err := readCatalogProbeScope(path)
 	if err != nil || scope.OperationID != g.operationID || scope.HostID != g.plan.HostID || scope.Lane != g.plan.Lane ||
-		scope.ControllerID != controllerID || scope.IdempotencyKey != idempotencyKey || scope.State != "ready" {
+		scope.Transport != g.transport || scope.ControllerType != controllerType || scope.ControllerID != controllerID ||
+		scope.IdempotencyKey != idempotencyKey || scope.State != "ready" {
 		return ErrCatalogProbeAdmission
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, scope.ExpiresAt)
@@ -249,13 +356,12 @@ func (g *CatalogMaintenanceProbeGuard) ReserveCatalogMaintenanceProbe(controller
 		return ErrCatalogProbeAdmission
 	}
 	tokenDigest := sha256.Sum256([]byte(token))
-	bodyDigest := sha256.Sum256(body)
 	if !constantDigestEqual(scope.TokenSHA256, hex.EncodeToString(tokenDigest[:])) ||
-		!constantDigestEqual(scope.RequestBodySHA256, hex.EncodeToString(bodyDigest[:])) {
+		!constantDigestEqual(scope.RequestBodySHA256, requestDigest) {
 		return ErrCatalogProbeAdmission
 	}
 	scope.State = "reserved"
-	return writeCatalogProbeScope(filepath.Join(root, g.operationID+".json"), root, scope)
+	return writeCatalogProbeScope(path, root, scope)
 }
 
 // BindCatalogMaintenanceProbeJob records the generated job identity before
@@ -288,7 +394,63 @@ func (g *CatalogMaintenanceProbeGuard) MarkCatalogMaintenanceProbeAccepted(jobID
 	})
 }
 
+func (g *CatalogMaintenanceProbeGuard) BindCatalogMaintenanceProbeIntent(jobID, intentID string) error {
+	if g == nil || !validProbeJobID(jobID) || strings.TrimSpace(intentID) == "" || len(intentID) > 128 || strings.IndexByte(intentID, 0) >= 0 {
+		return ErrCatalogProbeAdmission
+	}
+	return g.updateScope(func(scope *catalogProbeScope) error {
+		if scope.State != "reserved" || scope.JobID != jobID || scope.IntentID != "" {
+			return ErrCatalogProbeAdmission
+		}
+		scope.IntentID = intentID
+		return nil
+	})
+}
+
+func (g *CatalogMaintenanceProbeGuard) AllowsReservedIntent(controllerType domain.ControllerType, controllerID, token, intentID string, now time.Time) bool {
+	return g.allowsReservedIntent(controllerType, controllerID, token, intentID, "", false, now)
+}
+
+// AllowsReservedJobIntent additionally binds a Mac-local maintenance intent
+// to the exact job reserved by the probe scope. This prevents another local
+// intent from reusing the token after the one permitted job was created.
+func (g *CatalogMaintenanceProbeGuard) AllowsReservedJobIntent(controllerType domain.ControllerType, controllerID, token, intentID, jobID string, now time.Time) bool {
+	if !validProbeJobID(jobID) {
+		return false
+	}
+	return g.allowsReservedIntent(controllerType, controllerID, token, intentID, jobID, true, now)
+}
+
+func (g *CatalogMaintenanceProbeGuard) allowsReservedIntent(controllerType domain.ControllerType, controllerID, token, intentID, jobID string, requireJob bool, now time.Time) bool {
+	if g == nil || controllerID == "" || token == "" || intentID == "" || now.IsZero() || g.validateCurrentCohortForProbe() != nil {
+		return false
+	}
+	paths, pathErr := g.paths()
+	if pathErr != nil {
+		return false
+	}
+	scope, err := readCatalogProbeScope(g.scopePath(paths.scopeRoot))
+	if err != nil || scope.Transport != g.transport || scope.ControllerType != controllerType || scope.ControllerID != controllerID ||
+		scope.IntentID != intentID || scope.State != "reserved" || (requireJob && scope.JobID != jobID) {
+		return false
+	}
+	tokenDigest := sha256.Sum256([]byte(token))
+	if !constantDigestEqual(scope.TokenSHA256, hex.EncodeToString(tokenDigest[:])) {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, scope.ExpiresAt)
+	return err == nil && now.UTC().Before(expiresAt)
+}
+
 func (g *CatalogMaintenanceProbeGuard) AllowsJobRead(controllerID, jobID string, now time.Time) bool {
+	return g.allowsJobRead(controllerID, "", jobID, now, false)
+}
+
+func (g *CatalogMaintenanceProbeGuard) AllowsJobReadWithToken(controllerID, token, jobID string, now time.Time) bool {
+	return g.allowsJobRead(controllerID, token, jobID, now, true)
+}
+
+func (g *CatalogMaintenanceProbeGuard) allowsJobRead(controllerID, token, jobID string, now time.Time, requireToken bool) bool {
 	if g == nil || !validProbeJobID(jobID) || now.IsZero() || g.validateCurrentCohortForProbe() != nil {
 		return false
 	}
@@ -296,9 +458,15 @@ func (g *CatalogMaintenanceProbeGuard) AllowsJobRead(controllerID, jobID string,
 	if pathErr != nil {
 		return false
 	}
-	scope, err := readCatalogProbeScope(filepath.Join(paths.scopeRoot, g.operationID+".json"))
-	if err != nil || scope.ControllerID != controllerID || scope.JobID != jobID || (scope.State != "reserved" && scope.State != "accepted") {
+	scope, err := readCatalogProbeScope(g.scopePath(paths.scopeRoot))
+	if err != nil || scope.Transport != g.transport || scope.ControllerID != controllerID || scope.JobID != jobID || (scope.State != "reserved" && scope.State != "accepted") {
 		return false
+	}
+	if requireToken {
+		tokenDigest := sha256.Sum256([]byte(token))
+		if token == "" || !constantDigestEqual(scope.TokenSHA256, hex.EncodeToString(tokenDigest[:])) {
+			return false
+		}
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, scope.ExpiresAt)
 	return err == nil && now.UTC().Before(expiresAt)
@@ -318,7 +486,7 @@ func (g *CatalogMaintenanceProbeGuard) updateScope(update func(*catalogProbeScop
 		return ErrCatalogProbeAdmission
 	}
 	defer releaseCatalogRootPublicationLock(lock)
-	path := filepath.Join(root, g.operationID+".json")
+	path := g.scopePath(root)
 	scope, err := readCatalogProbeScope(path)
 	if err != nil || scope.OperationID != g.operationID || scope.HostID != g.plan.HostID || scope.Lane != g.plan.Lane {
 		return ErrCatalogProbeAdmission
@@ -377,6 +545,46 @@ func (g *CatalogMaintenanceProbeGuard) paths() (catalogProbeTestPaths, error) {
 		cohortRoot: filepath.Join(g.plan.Namespace.Staging, "catalog-cohorts"),
 		scopeRoot:  filepath.Join(g.plan.Namespace.Staging, "catalog-probes"), layout: layout,
 	}, nil
+}
+
+func (g *CatalogMaintenanceProbeGuard) scopePath(root string) string {
+	name := g.operationID + ".json"
+	if g.transport != "" && g.transport != CatalogProbeDirectMTLS {
+		name = g.operationID + "-" + string(g.transport) + ".json"
+	}
+	return filepath.Join(root, name)
+}
+
+func catalogProbeIdempotencyKey(operationID, hostID string, transport CatalogProbeTransport) string {
+	key := "catalog-probe-" + operationID + "-" + hostID
+	if transport != "" && transport != CatalogProbeDirectMTLS {
+		key += "-" + string(transport)
+	}
+	return key
+}
+
+func validCatalogProbeTransport(plan Plan, transport CatalogProbeTransport) bool {
+	switch transport {
+	case CatalogProbeDirectMTLS, CatalogProbeQueuedSSH:
+		return plan.Namespace.Host == config.HostKindLinux && plan.HostID != "mac-control-plane"
+	case CatalogProbeMacLocal:
+		return plan.Namespace.Host == config.HostKindMac && plan.HostID == "mac-control-plane"
+	default:
+		return false
+	}
+}
+
+func catalogProbeControllerAllowed(transport CatalogProbeTransport, controllerType domain.ControllerType) bool {
+	switch transport {
+	case CatalogProbeDirectMTLS:
+		return controllerType == domain.ControllerTypeDirectMTLS
+	case CatalogProbeQueuedSSH:
+		return controllerType == domain.ControllerTypeQueuedMac
+	case CatalogProbeMacLocal:
+		return controllerType == domain.ControllerTypeLocalUser
+	default:
+		return false
+	}
 }
 
 func validProbeJobID(jobID string) bool {
@@ -465,12 +673,14 @@ func validateCatalogProbeScope(scope catalogProbeScope) error {
 	expiresAt, expiresErr := time.Parse(time.RFC3339Nano, scope.ExpiresAt)
 	if scope.FormatVersion != catalogProbeScopeFormat || !validCatalogOperationID(scope.OperationID) || !containsCatalogHost(scope.HostID) ||
 		(scope.Lane != config.ReleaseLaneDev && scope.Lane != config.ReleaseLaneQAS && scope.Lane != config.ReleaseLanePRD) || scope.ControllerID == "" ||
+		(scope.Transport != CatalogProbeDirectMTLS && scope.Transport != CatalogProbeQueuedSSH && scope.Transport != CatalogProbeMacLocal) ||
 		!validCohortTimestamp(scope.CreatedAt) || !validCohortTimestamp(scope.ExpiresAt) || !bundleDigestPattern.MatchString(scope.TokenSHA256) ||
 		createdErr != nil || expiresErr != nil || !expiresAt.After(createdAt) || expiresAt.Sub(createdAt) > 10*time.Minute ||
 		!bundleDigestPattern.MatchString(scope.RequestBodySHA256) || scope.IdempotencyKey == "" || len(scope.IdempotencyKey) > 256 || strings.IndexByte(scope.IdempotencyKey, 0) >= 0 {
 		return ErrCatalogProbeAdmission
 	}
-	if _, err := domain.NewControllerIdentity(domain.ControllerTypeDirectMTLS, domain.ControllerID(scope.ControllerID)); err != nil {
+	if _, err := domain.NewControllerIdentity(scope.ControllerType, domain.ControllerID(scope.ControllerID)); err != nil ||
+		!catalogProbeControllerAllowed(scope.Transport, scope.ControllerType) {
 		return ErrCatalogProbeAdmission
 	}
 	switch scope.State {
@@ -479,6 +689,9 @@ func validateCatalogProbeScope(scope catalogProbeScope) error {
 		return ErrCatalogProbeAdmission
 	}
 	if (scope.JobID == "") != (scope.State == "ready") && scope.State != "reserved" {
+		return ErrCatalogProbeAdmission
+	}
+	if scope.IntentID != "" && (scope.Transport != CatalogProbeMacLocal || scope.State != "reserved" && scope.State != "accepted") {
 		return ErrCatalogProbeAdmission
 	}
 	if scope.JobID != "" && !validProbeJobID(scope.JobID) {

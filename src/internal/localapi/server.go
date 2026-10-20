@@ -23,6 +23,7 @@ import (
 
 	"remote-session-runner/src/internal/audit"
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/opshealth"
@@ -56,6 +57,8 @@ type ServerOptions struct {
 	// MaintenanceAdmissionClosed leaves read-only health/status available while
 	// refusing local submissions and control mutations for a catalog cohort.
 	MaintenanceAdmissionClosed bool
+	MaintenanceProbeGuard      *laneinstall.CatalogMaintenanceProbeGuard
+	MaintenanceProbeDispatch   func(context.Context, string, string) error
 }
 
 // Server is the Mac-local HTTP/JSON adapter over an owner-only Unix socket.
@@ -75,6 +78,8 @@ type Server struct {
 	healthReport               func(context.Context) opshealth.Report
 	mailboxLifecycleStatus     MailboxLifecycleStatusProvider
 	maintenanceAdmissionClosed bool
+	maintenanceProbeGuard      *laneinstall.CatalogMaintenanceProbeGuard
+	maintenanceProbeDispatch   func(context.Context, string, string) error
 	// afterIntentCommit is a private crash-test seam. The production service
 	// composition never sets it; package tests use it to stop the real HTTP
 	// process after SQLite committed an idempotent local receipt.
@@ -119,6 +124,8 @@ func NewServer(options ServerOptions) (*Server, error) {
 		healthReport:               options.HealthReport,
 		mailboxLifecycleStatus:     options.MailboxLifecycleStatus,
 		maintenanceAdmissionClosed: options.MaintenanceAdmissionClosed,
+		maintenanceProbeGuard:      options.MaintenanceProbeGuard,
+		maintenanceProbeDispatch:   options.MaintenanceProbeDispatch,
 	}, nil
 }
 
@@ -137,6 +144,16 @@ func (s *Server) SetMaintenanceAdmissionClosed(closed bool) {
 		return
 	}
 	s.maintenanceAdmissionClosed = closed
+}
+
+// SetMaintenanceProbe installs the held-cohort, one-time Mac-local probe
+// scope. It does not open ordinary local API or Router admission.
+func (s *Server) SetMaintenanceProbe(guard *laneinstall.CatalogMaintenanceProbeGuard, dispatch func(context.Context, string, string) error) {
+	if s == nil {
+		return
+	}
+	s.maintenanceProbeGuard = guard
+	s.maintenanceProbeDispatch = dispatch
 }
 
 func (s *Server) Listen() error {
@@ -415,9 +432,22 @@ type localEventHistoryDetails struct {
 }
 
 func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) {
-	if s.maintenanceAdmissionClosed && request.Method != http.MethodGet {
-		writeError(response, http.StatusServiceUnavailable, "maintenance_admission_closed", "local submissions and mutations are closed for cohort maintenance")
-		return
+	if s.maintenanceAdmissionClosed {
+		if request.Method == http.MethodPost && request.URL.Path == "/v1/jobs" && s.maintenanceProbeGuard != nil {
+			body, readErr := s.readBody(request)
+			key := request.Header.Get("Idempotency-Key")
+			if readErr != nil || s.validateMacLocalMaintenanceProbe(key, body) != nil ||
+				s.maintenanceProbeGuard.ReserveCatalogMaintenanceProbeForController(domain.ControllerTypeLocalUser, string(s.owner.ID()),
+					request.Header.Get(laneinstall.CatalogMaintenanceProbeTokenHeader), key, body, time.Now().UTC()) != nil {
+				writeError(response, http.StatusServiceUnavailable, "maintenance_admission_closed", "local submissions and mutations are closed for cohort maintenance")
+				return
+			}
+			request.Body = io.NopCloser(bytes.NewReader(body))
+			request = request.WithContext(context.WithValue(request.Context(), localMaintenanceProbeContextKey{}, request.Header.Get(laneinstall.CatalogMaintenanceProbeTokenHeader)))
+		} else if request.Method != http.MethodGet {
+			writeError(response, http.StatusServiceUnavailable, "maintenance_admission_closed", "local submissions and mutations are closed for cohort maintenance")
+			return
+		}
 	}
 	release, err := s.requestGate.Enter()
 	if err != nil {
@@ -479,6 +509,33 @@ func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) 
 	default:
 		writeError(response, http.StatusNotFound, "resource_not_found", "local API route not found")
 	}
+}
+
+type localMaintenanceProbeContextKey struct{}
+
+func (s *Server) validateMacLocalMaintenanceProbe(idempotencyKey string, body []byte) error {
+	if idempotencyKey == "" || len(body) == 0 || domain.ValidateSerializedRequest(body) != nil {
+		return laneinstall.ErrCatalogProbeAdmission
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var input createJobRequest
+	if decoder.Decode(&input) != nil {
+		return laneinstall.ErrCatalogProbeAdmission
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF || input.Script == nil || input.Limits != nil || input.Policy != nil {
+		return laneinstall.ErrCatalogProbeAdmission
+	}
+	if input.Source == nil || input.Source.Mode != "empty" {
+		return laneinstall.ErrCatalogProbeAdmission
+	}
+	seconds, _, err := parseTimeoutSeconds(input.TimeoutSeconds)
+	if err != nil || seconds != 5 {
+		return laneinstall.ErrCatalogProbeAdmission
+	}
+	return s.maintenanceProbeGuard.ValidateFixedProbeRequest(input.Environment, input.ExecutionTarget.Kind, input.ExecutionTarget.Profile,
+		input.Source.Mode, *input.Script, seconds)
 }
 
 func (s *Server) currentHealthReport(ctx context.Context) opshealth.Report {
@@ -1860,6 +1917,22 @@ func (s *Server) handleCreateJob(response http.ResponseWriter, request *http.Req
 	if failure != nil {
 		writeError(response, failure.status, failure.code, failure.message)
 		return
+	}
+	if token, ok := request.Context().Value(localMaintenanceProbeContextKey{}).(string); ok {
+		if token == "" || s.maintenanceProbeGuard == nil || s.maintenanceProbeDispatch == nil ||
+			s.maintenanceProbeGuard.BindCatalogMaintenanceProbeJob(acceptance.JobID) != nil ||
+			s.maintenanceProbeGuard.BindCatalogMaintenanceProbeIntent(acceptance.JobID, acceptance.IntentID) != nil {
+			writeError(response, http.StatusServiceUnavailable, "maintenance_probe_unavailable", "the scoped local probe could not be bound to its durable intent")
+			return
+		}
+		if err := s.maintenanceProbeDispatch(request.Context(), acceptance.IntentID, token); err != nil {
+			writeError(response, http.StatusServiceUnavailable, "maintenance_probe_execution_failed", "the scoped local probe did not reach its target")
+			return
+		}
+		if s.maintenanceProbeGuard.MarkCatalogMaintenanceProbeAccepted(acceptance.JobID) != nil {
+			writeError(response, http.StatusServiceUnavailable, "maintenance_probe_unavailable", "the scoped local probe result could not be recorded")
+			return
+		}
 	}
 	writeJSON(response, http.StatusAccepted, acceptance)
 }

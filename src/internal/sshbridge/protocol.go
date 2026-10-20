@@ -57,12 +57,13 @@ var validOperations = map[Operation]struct{}{
 // RequestFrame is a versioned NDJSON request. Payload remains raw so the
 // operation adapter can apply its own strict DTO and byte/script limits.
 type RequestFrame struct {
-	ProtocolVersion int             `json:"protocol_version"`
-	RequestID       string          `json:"request_id"`
-	Operation       Operation       `json:"operation"`
-	ResourceID      string          `json:"resource_id,omitempty"`
-	IdempotencyKey  string          `json:"idempotency_key,omitempty"`
-	Payload         json.RawMessage `json:"payload"`
+	ProtocolVersion       int             `json:"protocol_version"`
+	RequestID             string          `json:"request_id"`
+	Operation             Operation       `json:"operation"`
+	ResourceID            string          `json:"resource_id,omitempty"`
+	IdempotencyKey        string          `json:"idempotency_key,omitempty"`
+	MaintenanceProbeToken string          `json:"maintenance_probe_token,omitempty"`
+	Payload               json.RawMessage `json:"payload"`
 }
 
 // ReplyFrame is the corresponding versioned NDJSON response envelope.
@@ -213,6 +214,12 @@ func validateRequest(request RequestFrame) error {
 	}
 	if len(request.Payload) == 0 || bytes.Equal(bytes.TrimSpace(request.Payload), []byte("null")) {
 		return fmt.Errorf("%w: payload must be an object", ErrInvalidFrame)
+	}
+	if request.MaintenanceProbeToken != "" {
+		if request.Operation != OperationRunOrResumeJob && request.Operation != OperationGetJob ||
+			len(request.MaintenanceProbeToken) != 43 || strings.Trim(request.MaintenanceProbeToken, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != "" {
+			return fmt.Errorf("%w: maintenance probe token is invalid for this operation", ErrInvalidFrame)
+		}
 	}
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(request.Payload, &payload); err != nil || payload == nil {

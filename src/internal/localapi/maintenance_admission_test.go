@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
 )
@@ -30,5 +32,33 @@ func TestMaintenanceAdmissionKeepsHealthReadableAndBlocksLocalMutations(t *testi
 	server.serveHTTP(getResponse, get)
 	if getResponse.Code != http.StatusOK {
 		t.Fatalf("read-only health status=%d body=%s", getResponse.Code, getResponse.Body.String())
+	}
+}
+
+func TestMacLocalMaintenanceProbeBodyIsFixedAndLaneBound(t *testing.T) {
+	plan, err := laneinstall.BuildCatalogPlan("mac-control-plane", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard, err := laneinstall.NewCatalogMaintenanceProbeGuardForTransport(plan, strings.Repeat("a", 32), laneinstall.CatalogProbeMacLocal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{maintenanceProbeGuard: guard}
+	body, err := laneinstall.CatalogMaintenanceProbeRequestBodyForTransport(plan, laneinstall.CatalogProbeMacLocal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.validateMacLocalMaintenanceProbe("catalog-probe-fixed-key", body); err != nil {
+		t.Fatalf("fixed Mac-local probe body rejected: %v", err)
+	}
+	for _, mutated := range []string{
+		strings.Replace(string(body), "catalog release maintenance probe", "arbitrary", 1),
+		strings.Replace(string(body), `"timeout_seconds":5`, `"timeout_seconds":10`, 1),
+		strings.Replace(string(body), `"mode":"empty"`, `"mode":"path"`, 1),
+	} {
+		if err := server.validateMacLocalMaintenanceProbe("catalog-probe-fixed-key", []byte(mutated)); err == nil {
+			t.Fatalf("unsafe Mac-local probe body accepted: %s", mutated)
+		}
 	}
 }

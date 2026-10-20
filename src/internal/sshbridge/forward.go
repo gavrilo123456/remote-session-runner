@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/laneinstall"
 )
 
 const defaultPrivateResponseBytes int64 = domain.MaxSerializedRequestBytes
@@ -351,7 +354,71 @@ func (f *RunnerdForwarder) runJob(ctx context.Context, controller domain.Control
 	if err != nil {
 		return ReplyFrame{}, fmt.Errorf("%w: run request: %v", ErrInvalidFrame, err)
 	}
+	if request.MaintenanceProbeToken != "" {
+		if controller.Type() != domain.ControllerTypeQueuedMac {
+			return ReplyFrame{}, fmt.Errorf("%w: maintenance probes require a queued Mac identity", ErrInvalidFrame)
+		}
+		probeBody, probeErr := catalogProbeSemanticBody(payload)
+		if probeErr != nil {
+			return ReplyFrame{}, probeErr
+		}
+		digest := sha256.Sum256(probeBody)
+		headers := make(http.Header)
+		headers.Set(laneinstall.CatalogMaintenanceProbeTokenHeader, request.MaintenanceProbeToken)
+		headers.Set(laneinstall.CatalogMaintenanceProbeDigestHeader, hex.EncodeToString(digest[:]))
+		return f.doJSONAllowJobOutcomeWithHeaders(ctx, request.RequestID, http.MethodPost, "/internal/v1/jobs", nil, body, headers)
+	}
 	return f.doJSONAllowJobOutcome(ctx, request.RequestID, http.MethodPost, "/internal/v1/jobs", nil, body)
+}
+
+type catalogProbeSemanticRequest struct {
+	Environment     string       `json:"environment"`
+	ExecutionTarget bridgeTarget `json:"execution_target"`
+	Source          struct {
+		Mode string `json:"mode"`
+	} `json:"source"`
+	Script string         `json:"script"`
+	Limits map[string]int `json:"limits,omitempty"`
+}
+
+func catalogProbeSemanticBody(payload bridgeRunJobPayload) ([]byte, error) {
+	if payload.Environment == "" || payload.ExecutionTarget.Kind != "remote" || payload.ExecutionTarget.Profile == "" ||
+		payload.Script != "printf 'catalog release maintenance probe\\n'" || len(payload.Policy) != 0 || len(payload.Isolation) != 0 {
+		return nil, fmt.Errorf("%w: maintenance probe request is outside the fixed command scope", ErrInvalidFrame)
+	}
+	var source struct {
+		Mode string `json:"mode"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload.Source))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&source) != nil || source.Mode != "empty" {
+		return nil, fmt.Errorf("%w: maintenance probe requires the empty source", ErrInvalidFrame)
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return nil, fmt.Errorf("%w: maintenance probe source is malformed", ErrInvalidFrame)
+	}
+	if len(payload.Limits) == 0 {
+		return nil, fmt.Errorf("%w: maintenance probe requires a five-second timeout", ErrInvalidFrame)
+	}
+	var limits map[string]json.RawMessage
+	if json.Unmarshal(payload.Limits, &limits) != nil || len(limits) != 1 {
+		return nil, fmt.Errorf("%w: maintenance probe limits are fixed", ErrInvalidFrame)
+	}
+	var timeout int
+	if raw, ok := limits["command_timeout_seconds"]; !ok || json.Unmarshal(raw, &timeout) != nil || timeout != 5 {
+		return nil, fmt.Errorf("%w: maintenance probe requires a five-second timeout", ErrInvalidFrame)
+	}
+	request := catalogProbeSemanticRequest{
+		Environment: payload.Environment, ExecutionTarget: payload.ExecutionTarget, Script: payload.Script,
+		Limits: map[string]int{"command_timeout_seconds": 5},
+	}
+	request.Source.Mode = "empty"
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("%w: maintenance probe body could not be encoded", ErrInvalidFrame)
+	}
+	return body, nil
 }
 
 func (f *RunnerdForwarder) getJob(ctx context.Context, controller domain.ControllerIdentity, request RequestFrame) (ReplyFrame, error) {
@@ -365,6 +432,11 @@ func (f *RunnerdForwarder) getJob(ctx context.Context, controller domain.Control
 	query := url.Values{}
 	query.Set("controller_type", string(controller.Type()))
 	query.Set("controller_id", string(controller.ID()))
+	if request.MaintenanceProbeToken != "" {
+		headers := make(http.Header)
+		headers.Set(laneinstall.CatalogMaintenanceProbeTokenHeader, request.MaintenanceProbeToken)
+		return f.doJSONWithHeaders(ctx, request.RequestID, http.MethodGet, "/internal/v1/jobs/"+url.PathEscape(payload.JobID), query, nil, false, headers)
+	}
 	return f.doJSON(ctx, request.RequestID, http.MethodGet, "/internal/v1/jobs/"+url.PathEscape(payload.JobID), query, nil)
 }
 
@@ -643,14 +715,18 @@ func normalizeBridgeLimits(raw json.RawMessage) (json.RawMessage, error) {
 }
 
 func (f *RunnerdForwarder) doJSON(ctx context.Context, requestID, method, route string, query url.Values, body []byte) (ReplyFrame, error) {
-	return f.doJSONWithOptions(ctx, requestID, method, route, query, body, false)
+	return f.doJSONWithHeaders(ctx, requestID, method, route, query, body, false, nil)
 }
 
 func (f *RunnerdForwarder) doJSONAllowJobOutcome(ctx context.Context, requestID, method, route string, query url.Values, body []byte) (ReplyFrame, error) {
-	return f.doJSONWithOptions(ctx, requestID, method, route, query, body, true)
+	return f.doJSONWithHeaders(ctx, requestID, method, route, query, body, true, nil)
 }
 
-func (f *RunnerdForwarder) doJSONWithOptions(ctx context.Context, requestID, method, route string, query url.Values, body []byte, allowJobOutcome bool) (ReplyFrame, error) {
+func (f *RunnerdForwarder) doJSONAllowJobOutcomeWithHeaders(ctx context.Context, requestID, method, route string, query url.Values, body []byte, headers http.Header) (ReplyFrame, error) {
+	return f.doJSONWithHeaders(ctx, requestID, method, route, query, body, true, headers)
+}
+
+func (f *RunnerdForwarder) doJSONWithHeaders(ctx context.Context, requestID, method, route string, query url.Values, body []byte, allowJobOutcome bool, headers http.Header) (ReplyFrame, error) {
 	target := f.baseURL + route
 	if len(query) != 0 {
 		target += "?" + query.Encode()
@@ -665,6 +741,11 @@ func (f *RunnerdForwarder) doJSONWithOptions(ctx context.Context, requestID, met
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
 	}
 	response, err := f.client.Do(req)
 	if err != nil {
