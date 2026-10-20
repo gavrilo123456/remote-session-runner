@@ -72,6 +72,15 @@ the other three hosts confirmed the same stages for these three operation IDs.
 This is incomplete receipt reconciliation, not evidence of a release-binary
 hash mismatch.
 
+Read-only SHA-256 checks confirmed byte-identical copies of these three
+receipts on Mac, Linux, Sandbox and Factory:
+
+| Receipt operation | Stage | Receipt SHA-256 |
+| --- | --- | --- |
+| `7a30271dab023394bdd9b43116e5979e` | `switching` | `c317edff862631d632ba6aed86056c8794c66091c053203550046c65fe45f017` |
+| `7b310f3b76834ca3adb0a755e5483653` | `prepared` | `7dbef8fd15ae81e1ccbb655c9ca3be36b5195c11546257f49a2a5fea4d9216d7` |
+| `cbf3c2318d5702a0134ce8cd486d2b5f` | `held` | `5d3d9838c02cdd6032b84fe4e7d54341e859ef367d655c73e405c14b7110d114` |
+
 Current state is preserved: Dev selectors remain on the sealed candidate,
 services remain stopped (Linux failed closed), and all recorded work inventories
 are empty. No rollback or receipt mutation was attempted after the failed gate.
