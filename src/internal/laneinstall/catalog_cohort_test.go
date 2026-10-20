@@ -550,6 +550,68 @@ func TestCatalogCohortSupersessionRestartKeepsHoldUntilAllHostsReconcile(t *test
 	}
 }
 
+func TestCatalogCohortSupersessionCanRestartAfterSuccessorEvidenceExpires(t *testing.T) {
+	started := time.Date(2026, 10, 20, 7, 0, 0, 0, time.UTC)
+	proof := strings.Repeat("e", 64)
+	old := validCatalogCohortFixture(started)
+	var err error
+	old, err = AdvanceCatalogCohortReceipt(old, "hold", "", proof, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err = AdvanceCatalogCohortReceipt(old, "block", "", proof, started.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSuccessor := heldCatalogCohortFixture(t, started, strings.Repeat("d", 32), "v2.0.2")
+	firstObservation := fixtureCohortSupersessionEvidence(old, firstSuccessor, 0, "none")
+	old, err = AdvanceCatalogCohortSupersedeHost(old, firstSuccessor, firstObservation, started.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEvidenceSHA := old.Transitions[len(old.Transitions)-1].SHA256
+
+	tooEarlyAt := started.Add(3 * time.Minute)
+	tooEarlySuccessor := heldCatalogCohortFixture(t, tooEarlyAt, strings.Repeat("f", 32), "v2.0.3")
+	if _, err := AdvanceCatalogCohortSupersessionRestart(old, firstSuccessor, tooEarlySuccessor, tooEarlyAt); err == nil {
+		t.Fatal("supersession restarted while the previous evidence was still fresh")
+	}
+
+	restartAt := started.Add(11 * time.Minute)
+	nextSuccessor := heldCatalogCohortFixture(t, restartAt, strings.Repeat("a", 32), "v2.0.4")
+	old, err = AdvanceCatalogCohortSupersessionRestart(old, firstSuccessor, nextSuccessor, restartAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Stage != CatalogCohortBlocked || !catalogCohortStageHoldsAdmissions(old.Stage) ||
+		old.Transitions[2].SHA256 != firstEvidenceSHA || old.Transitions[3].Action != "supersession-restart" {
+		t.Fatalf("restart stage=%q transitions=%d; hold and prior evidence must remain", old.Stage, len(old.Transitions))
+	}
+	encoded, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resumed CatalogCohortReceipt
+	if err := json.Unmarshal(encoded, &resumed); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCatalogCohortReceipt(resumed); err != nil {
+		t.Fatalf("restarted supersession receipt failed validation: %v", err)
+	}
+	for hostIndex, hostID := range catalogCohortSwitchOrder {
+		observation := fixtureCohortSupersessionEvidence(resumed, nextSuccessor, hostIndex, "none")
+		observation.HostID = hostID
+		resumed, err = AdvanceCatalogCohortSupersedeHost(resumed, nextSuccessor, observation, restartAt)
+		if err != nil {
+			t.Fatalf("fresh successor host %s: %v", hostID, err)
+		}
+	}
+	resumed, err = AdvanceCatalogCohortSupersede(resumed, nextSuccessor.OperationID, restartAt)
+	if err != nil || resumed.Stage != CatalogCohortSuperseded {
+		t.Fatalf("fresh supersession stage=%q err=%v", resumed.Stage, err)
+	}
+}
+
 func heldCatalogCohortFixture(t *testing.T, now time.Time, operationID, releaseID string) CatalogCohortReceipt {
 	t.Helper()
 	receipt := validCatalogCohortFixture(now)

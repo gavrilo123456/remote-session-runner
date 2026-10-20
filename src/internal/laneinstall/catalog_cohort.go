@@ -66,18 +66,19 @@ type CatalogCohortHostPreflight struct {
 }
 
 type CatalogCohortTransition struct {
-	Sequence           uint64                             `json:"sequence"`
-	Action             string                             `json:"action"`
-	HostID             string                             `json:"host_id,omitempty"`
-	EvidenceSHA256     string                             `json:"evidence_sha256"`
-	At                 string                             `json:"at"`
-	ResumeStage        CatalogCohortStage                 `json:"resume_stage,omitempty"`
-	ReconciledStage    CatalogCohortStage                 `json:"reconciled_stage,omitempty"`
-	HistoricalBranches []CatalogCohortHistoryBranch       `json:"historical_branches,omitempty"`
-	Supersession       *CatalogCohortSupersessionEvidence `json:"supersession,omitempty"`
-	SuccessorID        string                             `json:"successor_operation_id,omitempty"`
-	PreviousSHA256     string                             `json:"previous_sha256"`
-	SHA256             string                             `json:"sha256"`
+	Sequence            uint64                             `json:"sequence"`
+	Action              string                             `json:"action"`
+	HostID              string                             `json:"host_id,omitempty"`
+	EvidenceSHA256      string                             `json:"evidence_sha256"`
+	At                  string                             `json:"at"`
+	ResumeStage         CatalogCohortStage                 `json:"resume_stage,omitempty"`
+	ReconciledStage     CatalogCohortStage                 `json:"reconciled_stage,omitempty"`
+	HistoricalBranches  []CatalogCohortHistoryBranch       `json:"historical_branches,omitempty"`
+	Supersession        *CatalogCohortSupersessionEvidence `json:"supersession,omitempty"`
+	SupersessionRestart *CatalogCohortSupersessionRestart  `json:"supersession_restart,omitempty"`
+	SuccessorID         string                             `json:"successor_operation_id,omitempty"`
+	PreviousSHA256      string                             `json:"previous_sha256"`
+	SHA256              string                             `json:"sha256"`
 }
 
 // CatalogCohortHistoryBranch retains one previously valid, divergent copy of
@@ -104,6 +105,17 @@ type CatalogCohortSupersessionEvidence struct {
 	ConfigurationSHA256  string `json:"configuration_sha256"`
 	DatabaseSchema       int    `json:"database_schema"`
 	SelectorOperations   string `json:"selector_operations"`
+}
+
+// CatalogCohortSupersessionRestart records that a partially observed,
+// read-only supersession epoch has expired and will be repeated against a
+// fresh held successor. The preceding host observations remain in the
+// transition history; this record only starts a new observation epoch.
+type CatalogCohortSupersessionRestart struct {
+	PreviousSuccessorID       string   `json:"previous_successor_operation_id"`
+	NextSuccessorID           string   `json:"next_successor_operation_id"`
+	PreviousEvidenceExpiresAt string   `json:"previous_evidence_expires_at"`
+	PriorObservedHosts        []string `json:"prior_observed_hosts"`
 }
 
 // CatalogCohortReceipt is a durable operator record shared across the four
@@ -225,6 +237,45 @@ func AdvanceCatalogCohortSupersedeHost(receipt, successor CatalogCohortReceipt, 
 	return advanceCatalogCohortReceipt(receipt, CatalogCohortTransition{
 		Action: "supersede-host", HostID: observation.HostID,
 		EvidenceSHA256: hex.EncodeToString(digest[:]), Supersession: &observation,
+	}, at)
+}
+
+// AdvanceCatalogCohortSupersessionRestart preserves a partial read-only
+// supersession history while allowing it to be retried against fresh evidence.
+// The previous successor must still be held, but its preflight must have
+// expired; the new successor must be held and fresh. No host state is changed.
+func AdvanceCatalogCohortSupersessionRestart(receipt, previousSuccessor, nextSuccessor CatalogCohortReceipt, at time.Time) (CatalogCohortReceipt, error) {
+	if ValidateCatalogCohortReceipt(receipt) != nil || ValidateCatalogCohortReceipt(previousSuccessor) != nil ||
+		ValidateCatalogCohortReceipt(nextSuccessor) != nil || !catalogCohortReceiptSupersessionEligible(receipt) || at.IsZero() ||
+		receipt.Lane != previousSuccessor.Lane || receipt.Lane != nextSuccessor.Lane || previousSuccessor.Stage != CatalogCohortHeld ||
+		nextSuccessor.Stage != CatalogCohortHeld || previousSuccessor.OperationID == nextSuccessor.OperationID ||
+		currentSupersessionSuccessor(receipt.Transitions) != previousSuccessor.OperationID ||
+		cohortEvidenceFresh(previousSuccessor, at.UTC().Format(time.RFC3339Nano)) ||
+		!cohortEvidenceFresh(nextSuccessor, at.UTC().Format(time.RFC3339Nano)) {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	priorHosts := currentSupersededHosts(receipt.Transitions)
+	if len(priorHosts) == 0 || len(priorHosts) >= len(catalogCohortSwitchOrder) {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	expiresAt, ok := catalogCohortEvidenceExpiresAt(previousSuccessor)
+	if !ok || at.UTC().Before(expiresAt) {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	restart := CatalogCohortSupersessionRestart{
+		PreviousSuccessorID:       previousSuccessor.OperationID,
+		NextSuccessorID:           nextSuccessor.OperationID,
+		PreviousEvidenceExpiresAt: expiresAt.UTC().Format(time.RFC3339Nano),
+		PriorObservedHosts:        append([]string(nil), priorHosts...),
+	}
+	encoded, err := json.Marshal(restart)
+	if err != nil {
+		return CatalogCohortReceipt{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	return advanceCatalogCohortReceipt(receipt, CatalogCohortTransition{
+		Action: "supersession-restart", EvidenceSHA256: hex.EncodeToString(digest[:]),
+		SuccessorID: nextSuccessor.OperationID, SupersessionRestart: &restart,
 	}, at)
 }
 
@@ -373,15 +424,25 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 			stage = CatalogCohortBlocked
 		case "supersede-host":
 			if !catalogCohortSupersessionStageEligible(stage, blockedFrom, receipt.Transitions[:index]) ||
-				len(supersededHosts(receipt.Transitions[:index])) >= len(catalogCohortSwitchOrder) ||
-				event.HostID != catalogCohortSwitchOrder[len(supersededHosts(receipt.Transitions[:index]))] || !validSupersessionEvidence(event) {
+				len(currentSupersededHosts(receipt.Transitions[:index])) >= len(catalogCohortSwitchOrder) ||
+				event.HostID != catalogCohortSwitchOrder[len(currentSupersededHosts(receipt.Transitions[:index]))] || !validSupersessionEvidence(event) {
 				return "", ErrCatalogOperationInvalid
 			}
-			if len(supersededHosts(receipt.Transitions[:index])) > 0 {
-				previous := supersessionSuccessor(receipt.Transitions[:index])
-				if previous == "" || previous != event.Supersession.SuccessorOperationID {
-					return "", ErrCatalogOperationInvalid
-				}
+			if previous := currentSupersessionSuccessor(receipt.Transitions[:index]); previous != "" && previous != event.Supersession.SuccessorOperationID {
+				return "", ErrCatalogOperationInvalid
+			}
+		case "supersession-restart":
+			if !catalogCohortSupersessionStageEligible(stage, blockedFrom, receipt.Transitions[:index]) || !eventHostEmpty(event.HostID) ||
+				!validSupersessionRestart(event) {
+				return "", ErrCatalogOperationInvalid
+			}
+			priorHosts := currentSupersededHosts(receipt.Transitions[:index])
+			previous := currentSupersessionSuccessor(receipt.Transitions[:index])
+			if previous == "" || event.SupersessionRestart.PreviousSuccessorID != previous ||
+				event.SupersessionRestart.NextSuccessorID != event.SuccessorID || event.SuccessorID == previous ||
+				len(priorHosts) == 0 || len(priorHosts) >= len(catalogCohortSwitchOrder) ||
+				!reflect.DeepEqual(priorHosts, event.SupersessionRestart.PriorObservedHosts) {
+				return "", ErrCatalogOperationInvalid
 			}
 		case "supersede":
 			if !catalogCohortSupersessionStageEligible(stage, blockedFrom, receipt.Transitions[:index]) || !eventHostEmpty(event.HostID) ||
@@ -389,7 +450,8 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 				return "", ErrCatalogOperationInvalid
 			}
 			digest := sha256.Sum256([]byte("catalog-cohort-superseded\x00" + receipt.OperationID + "\x00" + event.SuccessorID))
-			if event.EvidenceSHA256 != hex.EncodeToString(digest[:]) || event.Supersession != nil || event.ResumeStage != "" {
+			if event.EvidenceSHA256 != hex.EncodeToString(digest[:]) || event.Supersession != nil || event.SupersessionRestart != nil ||
+				event.ResumeStage != "" || event.ReconciledStage != "" || len(event.HistoricalBranches) != 0 {
 				return "", ErrCatalogOperationInvalid
 			}
 			stage = CatalogCohortSuperseded
@@ -452,6 +514,32 @@ func cohortEvidenceFresh(receipt CatalogCohortReceipt, nowValue string) bool {
 		}
 	}
 	return true
+}
+
+func catalogCohortEvidenceExpiresAt(receipt CatalogCohortReceipt) (time.Time, bool) {
+	var earliest time.Time
+	for _, host := range receipt.Hosts {
+		at, err := time.Parse(time.RFC3339Nano, host.PreflightAt)
+		if err != nil {
+			return time.Time{}, false
+		}
+		if earliest.IsZero() || at.Before(earliest) {
+			earliest = at
+		}
+	}
+	for _, proof := range receipt.FenceProofs {
+		at, err := time.Parse(time.RFC3339Nano, proof.VerifiedAt)
+		if err != nil {
+			return time.Time{}, false
+		}
+		if earliest.IsZero() || at.Before(earliest) {
+			earliest = at
+		}
+	}
+	if earliest.IsZero() {
+		return time.Time{}, false
+	}
+	return earliest.Add(10 * time.Minute), true
 }
 
 func catalogCohortTransitionDigest(transition CatalogCohortTransition) string {

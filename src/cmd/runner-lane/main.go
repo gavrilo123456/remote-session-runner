@@ -305,7 +305,7 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	host := flags.String("host", "", "canonical identity of this existing host")
 	lane := flags.String("lane", "", "dev, qas, or prd")
-	action := flags.String("action", "", "prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, open, reconcile-history, supersede-host, or supersede")
+	action := flags.String("action", "", "prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, open, reconcile-history, supersede-host, supersession-restart, or supersede")
 	operationID := flags.String("operation-id", "", "32-character cohort operation identity")
 	successorOperationID := flags.String("successor-operation-id", "", "held successor cohort identity for safe supersession")
 	receiptFile := flags.String("receipt-file", "", "owner-only cohort JSON for prepare or sync")
@@ -405,7 +405,7 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 	}
 	allowed := map[string]struct{}{
 		"hold": {}, "preflight": {}, "verify-start": {}, "verify": {}, "complete": {}, "block": {},
-		"resume": {}, "rollback-start": {}, "rollback-complete": {}, "open": {}, "supersede-host": {}, "supersede": {},
+		"resume": {}, "rollback-start": {}, "rollback-complete": {}, "open": {}, "supersede-host": {}, "supersession-restart": {}, "supersede": {},
 	}
 	if _, ok := allowed[*action]; !ok {
 		return errors.New("unsupported cohort action")
@@ -417,7 +417,7 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 	if perHost && *subjectHost != *host {
 		return errors.New("host-scoped cohort evidence must be recorded by that host")
 	}
-	needsSuccessor := *action == "supersede-host" || *action == "supersede"
+	needsSuccessor := *action == "supersede-host" || *action == "supersession-restart" || *action == "supersede"
 	if needsSuccessor != (*successorOperationID != "") || needsSuccessor && *evidenceSHA != "" || !needsSuccessor && *evidenceSHA == "" {
 		return errors.New("supersession requires --successor-operation-id and computes its own evidence; other actions require --evidence-sha256")
 	}
@@ -445,6 +445,24 @@ func runCatalogCohort(args []string, stdout, stderr io.Writer) error {
 			return observeErr
 		}
 		receipt, err = laneinstall.AdvanceCatalogCohortSupersedeHost(receipt, successor, observation, time.Now().UTC())
+	} else if *action == "supersession-restart" {
+		previousID := ""
+		for _, transition := range receipt.Transitions {
+			if transition.Action == "supersession-restart" {
+				previousID = transition.SuccessorID
+			} else if transition.Action == "supersede-host" && transition.Supersession != nil {
+				previousID = transition.Supersession.SuccessorOperationID
+			}
+		}
+		previous, previousErr := laneinstall.ReadCatalogCohortReceipt(plan, previousID)
+		if previousErr != nil {
+			return previousErr
+		}
+		next, nextErr := laneinstall.ReadCatalogCohortReceipt(plan, *successorOperationID)
+		if nextErr != nil {
+			return nextErr
+		}
+		receipt, err = laneinstall.AdvanceCatalogCohortSupersessionRestart(receipt, previous, next, time.Now().UTC())
 	} else if *action == "supersede" {
 		successor, readErr := laneinstall.ReadCatalogCohortReceipt(plan, *successorOperationID)
 		if readErr != nil || successor.Stage != laneinstall.CatalogCohortHeld {

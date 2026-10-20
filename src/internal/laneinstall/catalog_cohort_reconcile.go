@@ -204,7 +204,7 @@ func ObserveCatalogCohortSupersession(ctx context.Context, plan Plan, receipt, s
 		return CatalogCohortSupersessionEvidence{}, ErrCatalogOperationInvalid
 	}
 	index := cohortHostIndex(successor, plan.HostID)
-	if index < 0 || index != len(supersededHosts(receipt.Transitions)) {
+	if index < 0 || index != len(currentSupersededHosts(receipt.Transitions)) {
 		return CatalogCohortSupersessionEvidence{}, ErrCatalogOperationInvalid
 	}
 	layout, err := catalogSelectorLayoutForPlan(plan, mustDefaultCatalogRoot(plan))
@@ -344,13 +344,14 @@ func catalogCohortSelectorOperationDisposition(layout catalogSelectorLayout, rec
 func observationMatchesSuccessor(receipt, successor CatalogCohortReceipt, observation CatalogCohortSupersessionEvidence) bool {
 	if !catalogCohortReceiptSupersessionEligible(receipt) || successor.Stage != CatalogCohortHeld ||
 		receipt.Lane != successor.Lane || observation.HostID == "" || observation.SuccessorOperationID != successor.OperationID ||
+		currentSupersessionSuccessor(receipt.Transitions) != "" && currentSupersessionSuccessor(receipt.Transitions) != successor.OperationID ||
 		observation.ServiceActive || !observation.WorkInventoryEmpty || observation.SelectorOperations != "none" && observation.SelectorOperations != "rolled_back" ||
 		!bundleDigestPattern.MatchString(observation.WorkInventorySHA256) || !bundleDigestPattern.MatchString(observation.ConfigurationSHA256) ||
 		observation.DatabaseSchema <= 0 {
 		return false
 	}
 	index := cohortHostIndex(successor, observation.HostID)
-	if index < 0 || index != len(supersededHosts(receipt.Transitions)) {
+	if index < 0 || index != len(currentSupersededHosts(receipt.Transitions)) {
 		return false
 	}
 	newHost := successor.Hosts[index]
@@ -369,7 +370,7 @@ func observationMatchesSuccessor(receipt, successor CatalogCohortReceipt, observ
 func validSupersessionEvidence(event CatalogCohortTransition) bool {
 	if event.Supersession == nil || event.SuccessorID != "" || event.HostID != event.Supersession.HostID ||
 		!validCatalogOperationID(event.Supersession.SuccessorOperationID) || event.Supersession.ServiceActive ||
-		event.ResumeStage != "" ||
+		event.ResumeStage != "" || event.ReconciledStage != "" || len(event.HistoricalBranches) != 0 || event.SupersessionRestart != nil ||
 		!event.Supersession.WorkInventoryEmpty || !bundleDigestPattern.MatchString(event.Supersession.WorkInventorySHA256) ||
 		!bundleDigestPattern.MatchString(event.Supersession.ConfigurationSHA256) || event.Supersession.DatabaseSchema <= 0 ||
 		(event.Supersession.SelectorOperations != "none" && event.Supersession.SelectorOperations != "rolled_back") ||
@@ -377,6 +378,29 @@ func validSupersessionEvidence(event CatalogCohortTransition) bool {
 		return false
 	}
 	encoded, err := json.Marshal(*event.Supersession)
+	if err != nil {
+		return false
+	}
+	digest := sha256.Sum256(encoded)
+	return event.EvidenceSHA256 == hex.EncodeToString(digest[:])
+}
+
+func validSupersessionRestart(event CatalogCohortTransition) bool {
+	restart := event.SupersessionRestart
+	if restart == nil || event.Action != "supersession-restart" || !eventHostEmpty(event.HostID) ||
+		event.ResumeStage != "" || event.ReconciledStage != "" || len(event.HistoricalBranches) != 0 || event.Supersession != nil ||
+		!validCatalogOperationID(event.SuccessorID) || restart.NextSuccessorID != event.SuccessorID ||
+		!validCatalogOperationID(restart.PreviousSuccessorID) || restart.PreviousSuccessorID == restart.NextSuccessorID ||
+		!validCohortTimestamp(restart.PreviousEvidenceExpiresAt) || event.At < restart.PreviousEvidenceExpiresAt ||
+		len(restart.PriorObservedHosts) == 0 || len(restart.PriorObservedHosts) >= len(catalogCohortSwitchOrder) {
+		return false
+	}
+	for index, hostID := range restart.PriorObservedHosts {
+		if index >= len(catalogCohortSwitchOrder) || hostID != catalogCohortSwitchOrder[index] {
+			return false
+		}
+	}
+	encoded, err := json.Marshal(*restart)
 	if err != nil {
 		return false
 	}
@@ -477,8 +501,33 @@ func supersededHosts(transitions []CatalogCohortTransition) []string {
 	return hosts
 }
 
-func supersessionSuccessor(transitions []CatalogCohortTransition) string {
-	for _, transition := range transitions {
+func currentSupersededHosts(transitions []CatalogCohortTransition) []string {
+	start := 0
+	for index, transition := range transitions {
+		if transition.Action == "supersession-restart" {
+			start = index + 1
+		}
+	}
+	var hosts []string
+	for _, transition := range transitions[start:] {
+		if transition.Action == "supersede-host" {
+			hosts = append(hosts, transition.HostID)
+		}
+	}
+	return hosts
+}
+
+func currentSupersessionSuccessor(transitions []CatalogCohortTransition) string {
+	start := 0
+	for index, transition := range transitions {
+		if transition.Action == "supersession-restart" {
+			start = index
+		}
+	}
+	for _, transition := range transitions[start:] {
+		if transition.Action == "supersession-restart" {
+			return transition.SuccessorID
+		}
 		if transition.Action == "supersede-host" && transition.Supersession != nil {
 			return transition.Supersession.SuccessorOperationID
 		}
@@ -486,8 +535,12 @@ func supersessionSuccessor(transitions []CatalogCohortTransition) string {
 	return ""
 }
 
+func supersessionSuccessor(transitions []CatalogCohortTransition) string {
+	return currentSupersessionSuccessor(transitions)
+}
+
 func cohortTransitionsHaveSupersession(transitions []CatalogCohortTransition, successorID string) bool {
-	return len(supersededHosts(transitions)) == len(catalogCohortSwitchOrder) && supersessionSuccessor(transitions) == successorID &&
+	return len(currentSupersededHosts(transitions)) == len(catalogCohortSwitchOrder) && supersessionSuccessor(transitions) == successorID &&
 		cohortHasAllSupersessionEvidenceFrom(transitions, successorID)
 }
 
@@ -497,7 +550,13 @@ func cohortHasAllSupersessionEvidence(receipt CatalogCohortReceipt, successorID 
 
 func cohortHasAllSupersessionEvidenceFrom(transitions []CatalogCohortTransition, successorID string) bool {
 	var evidence []CatalogCohortTransition
-	for _, transition := range transitions {
+	start := 0
+	for index, transition := range transitions {
+		if transition.Action == "supersession-restart" {
+			start = index + 1
+		}
+	}
+	for _, transition := range transitions[start:] {
 		if transition.Action == "supersede-host" {
 			evidence = append(evidence, transition)
 		}
