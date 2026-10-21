@@ -550,16 +550,24 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 			}
 			stage = CatalogCohortReleased
 		case "reconcile-history":
-			if (stage != CatalogCohortPrepared && stage != CatalogCohortHeld && stage != CatalogCohortSwitching && stage != CatalogCohortBlocked) || !eventHostEmpty(event.HostID) ||
+			if (stage != CatalogCohortPrepared && stage != CatalogCohortHeld && stage != CatalogCohortSwitching &&
+				stage != CatalogCohortVerifying && stage != CatalogCohortBlocked) || !eventHostEmpty(event.HostID) ||
 				!validCatalogCohortHistoryReconciliation(receipt, event, receipt.Transitions[:index]) {
 				return "", ErrCatalogOperationInvalid
 			}
 			blockedFrom = event.ReconciledStage
-			if event.ReconciledStage == CatalogCohortSwitching {
+			if event.ReconciledStage == CatalogCohortSwitching || event.ReconciledStage == CatalogCohortVerifying {
 				var err error
-				_, switched, err = catalogCohortReconciledBranchState(event.HistoricalBranches)
+				var branchVerified []string
+				_, switched, branchVerified, err = catalogCohortReconciledBranchState(event.HistoricalBranches)
 				if err != nil || len(switched) == 0 {
 					return "", ErrCatalogOperationInvalid
+				}
+				if event.ReconciledStage == CatalogCohortVerifying {
+					if len(switched) != len(catalogCohortSwitchOrder) {
+						return "", ErrCatalogOperationInvalid
+					}
+					verified = branchVerified
 				}
 				lastPreflight = make(map[string]time.Time, len(catalogCohortSwitchOrder))
 			}

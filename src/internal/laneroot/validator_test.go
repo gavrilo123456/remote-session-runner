@@ -132,7 +132,7 @@ func TestLanesL103InspectsEmptyDescriptorBackedMailboxTree(t *testing.T) {
 	fixture := newRootFixture(t, nil)
 	inventory, err := InspectRoot(fixture.handoff)
 	if err != nil {
-		t.Fatalf("InspectRoot rejected a valid empty root: %v", err)
+		t.Fatalf("InspectRoot rejected a valid empty root: %v (handoff validation: %v, path: %q)", err, ValidateHandoff(fixture.handoff), fixture.handoff.Path)
 	}
 	if inventory.Claim.RootIdentity != fixture.handoff.RootIdentity || len(inventory.ChildIdentities) != len(mailboxChildren) {
 		t.Fatalf("unexpected inspected inventory: %+v", inventory)
@@ -148,7 +148,7 @@ func TestLanesL103InspectsOpaqueRetainedEntriesWithoutTraversal(t *testing.T) {
 	fixture.handoff.Layout = LayoutRetained
 	fixture.handoff.AncillaryEntries = []AncillaryEntrySnapshot{snapshotAncillary(t, fixture.root, "legacy-cache")}
 	if _, err := InspectRoot(fixture.handoff); err != nil {
-		t.Fatalf("nested opaque symlink affected top-level inventory: %v", err)
+		t.Fatalf("nested opaque symlink affected top-level inventory: %v (handoff validation: %v, path: %q)", err, ValidateHandoff(fixture.handoff), fixture.handoff.Path)
 	}
 	if err := os.Remove(inside); err != nil {
 		t.Fatal(err)
@@ -304,22 +304,24 @@ func newRootFixture(t *testing.T, ancillary map[string]string) rootFixture {
 	}
 	privateParent, err := os.MkdirTemp(home, ".laneroot-test-")
 	if err != nil {
-		// Some constrained Mac shells cannot create a sibling in the home
-		// directory. Their system temp root is already owner-private and has
-		// non-writable ancestors, so use that path; Linux test hosts normally
-		// take the private-home branch above.
-		privateParent, err = filepath.EvalSymlinks(os.TempDir())
-		if err != nil {
-			t.Fatalf("resolve secure system temp path: %v", err)
+		// A shared system temp directory has a writable ancestor, which the
+		// descriptor validator correctly rejects. In constrained Mac shells,
+		// create the temporary ancestor inside this owner-only checkout instead.
+		workingDirectory, workingErr := os.Getwd()
+		if workingErr != nil {
+			t.Fatalf("resolve test working directory: %v", workingErr)
 		}
-	} else {
-		t.Cleanup(func() { _ = os.RemoveAll(privateParent) })
+		privateParent, err = os.MkdirTemp(workingDirectory, ".laneroot-test-")
+		if err != nil {
+			t.Fatalf("create private test temp parent: %v", err)
+		}
 	}
-	t.Setenv("TMPDIR", privateParent)
-	base := t.TempDir()
-	// testing.T.TempDir inherits the process umask. Some Linux hosts create
-	// the 001 fixture directory group-writable, so make the fixture ancestor
-	// owner-only before validating its descendants.
+	t.Cleanup(func() { _ = os.RemoveAll(privateParent) })
+	base, err := os.MkdirTemp(privateParent, "root-fixture-")
+	if err != nil {
+		t.Fatalf("create root fixture: %v", err)
+	}
+	// Make the fixture ancestor owner-only before validating its descendants.
 	if err := os.Chmod(base, 0o700); err != nil {
 		t.Fatal(err)
 	}

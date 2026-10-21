@@ -142,5 +142,8 @@ func catalogPRDArtifactFixtureDir(t *testing.T) string {
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chown(root, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
 	return root
 }

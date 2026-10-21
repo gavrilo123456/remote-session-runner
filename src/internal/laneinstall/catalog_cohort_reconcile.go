@@ -78,8 +78,11 @@ func ReconcileCatalogCohortReceiptHistories(receipts []CatalogCohortReceipt, at 
 	if len(common) > 0 {
 		base.UpdatedAt = common[len(common)-1].At
 	}
-	reconciledStage, _, err := catalogCohortReconciledBranchState(branches)
+	reconciledStage, _, _, err := catalogCohortReconciledBranchState(branches)
 	if err != nil {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	if reconciledStage == CatalogCohortVerifying && commonStage != CatalogCohortVerifying {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}
 	branchBytes, err := json.Marshal(branches)
@@ -106,7 +109,8 @@ func ReconcileCatalogCohortReceiptHistories(receipts []CatalogCohortReceipt, at 
 func validCatalogCohortHistoryReconciliation(receipt CatalogCohortReceipt, event CatalogCohortTransition, prior []CatalogCohortTransition) bool {
 	if event.Action != "reconcile-history" || !eventHostEmpty(event.HostID) || event.ResumeStage != "" ||
 		event.Supersession != nil || event.SuccessorID != "" ||
-		(event.ReconciledStage != CatalogCohortPrepared && event.ReconciledStage != CatalogCohortHeld && event.ReconciledStage != CatalogCohortSwitching) ||
+		(event.ReconciledStage != CatalogCohortPrepared && event.ReconciledStage != CatalogCohortHeld &&
+			event.ReconciledStage != CatalogCohortSwitching && event.ReconciledStage != CatalogCohortVerifying) ||
 		len(event.HistoricalBranches) < 2 || len(event.HistoricalBranches) > maxCatalogCohortHistoryBranches {
 		return false
 	}
@@ -149,22 +153,39 @@ func validCatalogCohortHistoryReconciliation(receipt CatalogCohortReceipt, event
 		}
 		lastDigest = branchDigestOrderKey(branch)
 	}
-	reconciledStage, _, err := catalogCohortReconciledBranchState(branches)
-	return err == nil && reconciledStage == event.ReconciledStage
+	reconciledStage, _, _, err := catalogCohortReconciledBranchState(branches)
+	if err != nil || reconciledStage != event.ReconciledStage {
+		return false
+	}
+	if event.ReconciledStage == CatalogCohortVerifying {
+		prefix := receipt
+		prefix.Transitions = append([]CatalogCohortTransition(nil), prior...)
+		commonStage, replayErr := replayCatalogCohortTransitions(prefix)
+		return replayErr == nil && commonStage == CatalogCohortVerifying
+	}
+	return true
 }
 
 // catalogCohortHistoryBranchReconcileSafe limits branch merging to deployment
-// histories that have not entered verification, rollback, supersession, or a
-// prior reconciliation. An interrupted switch remains blocked and requires
-// host-local journal verification followed by the normal rollback path.
+// histories that have not entered rollback, supersession, or a prior
+// reconciliation. Verification branches may be merged only when their shared
+// prefix already contains verify-start; the branch-state validator rejects
+// conflicting host evidence. An interrupted switch remains blocked and
+// requires host-local journal verification followed by the normal rollback
+// path.
 func catalogCohortHistoryBranchReconcileSafe(receipt CatalogCohortReceipt) bool {
 	if receipt.Stage != CatalogCohortPrepared && receipt.Stage != CatalogCohortHeld &&
-		receipt.Stage != CatalogCohortBlocked && receipt.Stage != CatalogCohortSwitching {
+		receipt.Stage != CatalogCohortBlocked && receipt.Stage != CatalogCohortSwitching &&
+		receipt.Stage != CatalogCohortVerifying {
 		return false
 	}
 	for _, transition := range receipt.Transitions {
 		switch transition.Action {
 		case "hold", "preflight", "switch", "switch-reconciled", "block":
+		case "verify-start", "verify":
+			if receipt.Stage != CatalogCohortVerifying {
+				return false
+			}
 		default:
 			return false
 		}
@@ -175,27 +196,43 @@ func catalogCohortHistoryBranchReconcileSafe(receipt CatalogCohortReceipt) bool 
 // catalogCohortReconciledBranchState derives the safe stage and ordered set of
 // switches represented by divergent histories. Duplicate records for a host
 // must be byte-for-byte identical; switch order must still match the cohort.
-func catalogCohortReconciledBranchState(branches []CatalogCohortHistoryBranch) (CatalogCohortStage, []string, error) {
+func catalogCohortReconciledBranchState(branches []CatalogCohortHistoryBranch) (CatalogCohortStage, []string, []string, error) {
 	if len(branches) == 0 {
-		return "", nil, ErrCatalogOperationInvalid
+		return "", nil, nil, ErrCatalogOperationInvalid
 	}
 	switchesByHost := make(map[string]CatalogCohortTransition)
+	verificationsByHost := make(map[string]CatalogCohortTransition)
 	preparedOnly := true
+	verifyingOnly := true
+	anyVerifying := false
 	for _, branch := range branches {
 		if branch.Stage != CatalogCohortPrepared {
 			preparedOnly = false
 		}
+		if branch.Stage == CatalogCohortVerifying {
+			anyVerifying = true
+		} else {
+			verifyingOnly = false
+		}
 		for _, transition := range branch.Transitions {
-			if transition.Action != "switch" && transition.Action != "switch-reconciled" {
-				continue
+			switch transition.Action {
+			case "switch", "switch-reconciled":
+				if !containsString(catalogCohortSwitchOrder, transition.HostID) {
+					return "", nil, nil, ErrCatalogOperationInvalid
+				}
+				if existing, ok := switchesByHost[transition.HostID]; ok && !reflect.DeepEqual(existing, transition) {
+					return "", nil, nil, ErrCatalogOperationInvalid
+				}
+				switchesByHost[transition.HostID] = transition
+			case "verify":
+				if !containsString(catalogCohortSwitchOrder, transition.HostID) {
+					return "", nil, nil, ErrCatalogOperationInvalid
+				}
+				if existing, ok := verificationsByHost[transition.HostID]; ok && !reflect.DeepEqual(existing, transition) {
+					return "", nil, nil, ErrCatalogOperationInvalid
+				}
+				verificationsByHost[transition.HostID] = transition
 			}
-			if !containsString(catalogCohortSwitchOrder, transition.HostID) {
-				return "", nil, ErrCatalogOperationInvalid
-			}
-			if existing, ok := switchesByHost[transition.HostID]; ok && !reflect.DeepEqual(existing, transition) {
-				return "", nil, ErrCatalogOperationInvalid
-			}
-			switchesByHost[transition.HostID] = transition
 		}
 	}
 	ordered := make([]string, 0, len(switchesByHost))
@@ -205,15 +242,30 @@ func catalogCohortReconciledBranchState(branches []CatalogCohortHistoryBranch) (
 		}
 	}
 	if len(ordered) != len(switchesByHost) {
-		return "", nil, ErrCatalogOperationInvalid
+		return "", nil, nil, ErrCatalogOperationInvalid
+	}
+	if anyVerifying {
+		if !verifyingOnly || len(ordered) != len(catalogCohortSwitchOrder) {
+			return "", nil, nil, ErrCatalogOperationInvalid
+		}
+		verified := make([]string, 0, len(verificationsByHost))
+		for _, hostID := range catalogCohortSwitchOrder {
+			if _, ok := verificationsByHost[hostID]; ok {
+				verified = append(verified, hostID)
+			}
+		}
+		if len(verified) != len(verificationsByHost) {
+			return "", nil, nil, ErrCatalogOperationInvalid
+		}
+		return CatalogCohortVerifying, ordered, verified, nil
 	}
 	if len(ordered) > 0 {
-		return CatalogCohortSwitching, ordered, nil
+		return CatalogCohortSwitching, ordered, nil, nil
 	}
 	if preparedOnly {
-		return CatalogCohortPrepared, ordered, nil
+		return CatalogCohortPrepared, ordered, nil, nil
 	}
-	return CatalogCohortHeld, ordered, nil
+	return CatalogCohortHeld, ordered, nil, nil
 }
 
 // ValidateCatalogCohortHistoryLocalState verifies that this host's stopped

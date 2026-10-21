@@ -220,6 +220,137 @@ func TestCatalogCohortRollbackReconciliationSyncsEveryHostAfterEachRollback(t *t
 	}
 }
 
+func TestCatalogCohortVerificationReconciliationSynchronizesEveryHost(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	proof := strings.Repeat("a", 64)
+	root := catalogTestTempDir(t)
+	catalogRootsRoot := filepath.Join(root, "runner-releases")
+	if err := os.Mkdir(catalogRootsRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bundles := catalogFixtureBundles(t, "verify-reconcile-release")
+	manifest, err := NewCatalogReleaseManifest("v2.0.0-verify-reconcile", bundles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := make(map[string]cohortRollbackSyncHostFixture, len(catalogCohortSwitchOrder))
+	receipt := validCatalogCohortFixture(now)
+	receipt.ReleaseID = manifest.ReleaseID
+	receipt.ReleaseSHA256 = ""
+	for _, hostID := range catalogCohortSwitchOrder {
+		catalogRoot := filepath.Join(catalogRootsRoot, hostID)
+		if err := os.Mkdir(catalogRoot, 0o700); err != nil {
+			t.Fatalf("mkdir catalog root for %s: %v", hostID, err)
+		}
+		if _, err := PublishCatalogRelease(catalogRoot, hostID, manifest, bundles[hostID]); err != nil {
+			t.Fatalf("publish fixture release for %s: %v", hostID, err)
+		}
+		fixture, identity := newCohortRollbackSyncHostFixture(t, root, catalogRoot, hostID, manifest.ReleaseID)
+		backup := fixtureCatalogBackup(t, fixture.layout, fixture.legacyTarget, store.CurrentSchemaVersion)
+		hosts[hostID] = cohortRollbackSyncHostFixture{selector: fixture, backup: backup}
+
+		index := cohortHostIndex(receipt, hostID)
+		if index < 0 {
+			t.Fatalf("receipt missing host %s", hostID)
+		}
+		host := &receipt.Hosts[index]
+		host.Target = identity
+		if receipt.ReleaseSHA256 == "" {
+			receipt.ReleaseSHA256 = identity.ReleaseSHA256
+		}
+		host.PreviousTarget = fixture.legacyTarget
+		host.PreviousBundleSHA256 = filepath.Base(fixture.legacyTarget)
+		host.ConfigurationSHA256, err = hashCatalogConfiguration(fixture.layout.configFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		host.SchemaVersion = store.CurrentSchemaVersion
+		host.BackupDirectory = backup.Directory
+		host.BackupManifestSHA256 = backup.ManifestSHA256
+		host.PreflightAt = now.Format(time.RFC3339Nano)
+	}
+	if err := ValidateCatalogCohortReceipt(receipt); err != nil {
+		t.Fatalf("four-host fixture receipt invalid: %v", err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, hostID := range catalogCohortSwitchOrder {
+		at := now.Add(time.Duration(index*2+1) * time.Second)
+		receipt, err = AdvanceCatalogCohortReceipt(receipt, "preflight", hostID, proof, at)
+		if err != nil {
+			t.Fatalf("preflight %s: %v", hostID, err)
+		}
+		operation := switchCohortFixtureHost(t, hosts[hostID], receipt, proof)
+		fixture := hosts[hostID]
+		fixture.operationID = operation.OperationID
+		hosts[hostID] = fixture
+		digest, digestErr := catalogSelectorOperationDigest(fixture.selector.layout, operation.OperationID)
+		if digestErr != nil {
+			t.Fatal(digestErr)
+		}
+		receipt, err = AdvanceCatalogCohortReceipt(receipt, "switch", hostID, digest, at.Add(time.Second))
+		if err != nil {
+			t.Fatalf("switch %s: %v", hostID, err)
+		}
+	}
+	verifyStart, err := AdvanceCatalogCohortReceipt(receipt, "verify-start", "", proof, now.Add(10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	branches := make([]CatalogCohortReceipt, 0, len(catalogCohortSwitchOrder))
+	for index, hostID := range catalogCohortSwitchOrder {
+		evidence := strings.Repeat(string(rune('a'+index)), 64)
+		branch, branchErr := AdvanceCatalogCohortReceipt(verifyStart, "verify", hostID, evidence, now.Add(time.Duration(11+index)*time.Second))
+		if branchErr != nil {
+			t.Fatalf("verify %s: %v", hostID, branchErr)
+		}
+		branches = append(branches, branch)
+		if _, writeErr := writeCatalogCohortReceiptAt(cohortFixtureReceiptRoot(hosts[hostID]), branch); writeErr != nil {
+			t.Fatalf("write divergent %s verification receipt: %v", hostID, writeErr)
+		}
+	}
+	reconciled, err := ReconcileCatalogCohortReceiptHistories(branches, now.Add(20*time.Second))
+	if err != nil || reconciled.Stage != CatalogCohortBlocked || blockedCohortResumeStage(reconciled.Transitions) != CatalogCohortVerifying {
+		t.Fatalf("verification reconciliation stage=%q resume=%q err=%v", reconciled.Stage,
+			blockedCohortResumeStage(reconciled.Transitions), err)
+	}
+	for _, branch := range branches {
+		if !catalogCohortReceiptHasHistoricalBranch(reconciled, branch.Transitions) {
+			t.Fatal("reconciliation discarded a host verification history")
+		}
+	}
+	syncCohortRollbackReceiptToAllHosts(t, hosts, reconciled)
+
+	resumed, err := AdvanceCatalogCohortReceipt(reconciled, "resume", "", proof, now.Add(21*time.Second))
+	if err != nil || resumed.Stage != CatalogCohortVerifying {
+		t.Fatalf("verification resume stage=%q err=%v", resumed.Stage, err)
+	}
+	syncCohortRollbackReceiptToAllHosts(t, hosts, resumed)
+	completed, err := AdvanceCatalogCohortReceipt(resumed, "complete", "", proof, now.Add(22*time.Second))
+	if err != nil || completed.Stage != CatalogCohortComplete {
+		t.Fatalf("verification completion stage=%q err=%v", completed.Stage, err)
+	}
+	syncCohortRollbackReceiptToAllHosts(t, hosts, completed)
+	for _, hostID := range catalogCohortSwitchOrder {
+		stored, readErr := readCatalogCohortReceipt(filepath.Join(cohortFixtureReceiptRoot(hosts[hostID]), completed.OperationID+".json"))
+		if readErr != nil || lastCohortTransitionDigest(stored.Transitions) != lastCohortTransitionDigest(completed.Transitions) || stored.Stage != CatalogCohortComplete {
+			t.Fatalf("%s did not receive the completed reconciled history: stage=%q err=%v", hostID, stored.Stage, readErr)
+		}
+	}
+
+	conflicting := append([]CatalogCohortReceipt(nil), branches...)
+	conflictingCopy, err := AdvanceCatalogCohortReceipt(verifyStart, "verify", "linux-host", strings.Repeat("f", 64), now.Add(30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicting = append(conflicting, conflictingCopy)
+	if _, err := ReconcileCatalogCohortReceiptHistories(conflicting, now.Add(31*time.Second)); err == nil {
+		t.Fatal("conflicting verification evidence for one host was reconciled")
+	}
+}
+
 func newCohortRollbackSyncHostFixture(t *testing.T, root, catalogRoot, hostID, releaseID string) (catalogSelectorFixture, CatalogReleaseIdentity) {
 	t.Helper()
 	serviceRoot := filepath.Join(root, hostID)

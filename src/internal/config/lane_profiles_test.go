@@ -49,9 +49,6 @@ func TestLanesL102MacProfilesContextsAndCredentialBindingsResolveWithinLane(t *t
 			if !ok || context.Target != target {
 				t.Fatalf("Mac %s pair %s/%s did not resolve: %+v, %v", lane, profile+"-dev", profile, context, ok)
 			}
-			if _, err := os.Stat(route.Queued.DispatcherPrivateKeyFile); !os.IsNotExist(err) {
-				t.Fatalf("test credential unexpectedly exists at %q (stat error %v)", route.Queued.DispatcherPrivateKeyFile, err)
-			}
 		}
 		if lane == ReleaseLanePRD {
 			if _, ok := validated.Resolve("mac-dev", V3TargetBinding{Kind: domain.TargetKindLocal, Profile: "mac-workstation"}); !ok {
@@ -188,7 +185,7 @@ func TestLanesL102RejectsCrossLaneRoutesAndUnsafeCredentialBindings(t *testing.T
 	}
 }
 
-func TestLanesL102StrictYAMLShapeAndCredentialPathsAreNeverOpened(t *testing.T) {
+func TestLanesL102StrictYAMLShapeAndCredentialPathsAreWellFormed(t *testing.T) {
 	bindings := l102MacBindings(t, ReleaseLaneQAS)
 	contents, err := yaml.Marshal(bindings)
 	if err != nil {
@@ -207,14 +204,9 @@ func TestLanesL102StrictYAMLShapeAndCredentialPathsAreNeverOpened(t *testing.T) 
 	}
 
 	mac := l102MacBindings(t, ReleaseLaneQAS)
-	for _, profile := range mac.MacProfiles {
-		for _, path := range []string{profile.Queued.KnownHostsFile, profile.Queued.DispatcherPrivateKeyFile, profile.Direct.ServerCAFile,
-			profile.Direct.ClientCertificateFile, profile.Direct.ClientPrivateKeyFile} {
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatalf("fixture credential path %q should remain absent (stat error %v)", path, err)
-			}
-		}
-	}
+	// These canonical paths may point to real credentials on the developer's
+	// Mac. Validation is structural; this test must not inspect or require the
+	// absence of files outside its fixture tree.
 	if _, err := ValidateV3ProfileBindings(mac); err != nil {
 		t.Fatalf("path-only test identities were not accepted: %v", err)
 	}
