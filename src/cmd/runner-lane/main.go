@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"syscall"
@@ -334,10 +335,10 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 		return err
 	}
 	if *action == "create" {
-		if *host != "mac-control-plane" || (*lane != "dev" && *lane != "qas") || *operationID != "" || *successorOperationID != "" ||
+		if *host != "mac-control-plane" || (*lane != "dev" && *lane != "qas" && *lane != "prd") || *operationID != "" || *successorOperationID != "" ||
 			*receiptFile != "" || *subjectHost != "" || *evidenceSHA != "" || *releaseManifestFile == "" || len(preflightFiles) != 4 ||
 			*publisherOwner == "" || *publisherControl == "" || !*publishersPaused || !*noNewAccepted || len(historyFiles) != 0 {
-			return errors.New("create requires the Mac coordinator, Dev/QAS, a sealed release manifest, four host preflight reports, and explicit publisher-pause attestation")
+			return errors.New("create requires the Mac coordinator, a lane, a sealed release manifest, four host preflight reports, and explicit publisher-pause attestation")
 		}
 		manifest, err := laneinstall.LoadCatalogReleaseManifest(*releaseManifestFile)
 		if err != nil {
@@ -454,12 +455,12 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	allowed := map[string]struct{}{
 		"hold": {}, "preflight": {}, "verify-start": {}, "verify": {}, "complete": {}, "block": {},
-		"resume": {}, "rollback-start": {}, "rollback-complete": {}, "open": {}, "supersede-host": {}, "supersession-restart": {}, "supersede": {},
+		"resume": {}, "rollback-start": {}, "rollback-complete": {}, "open": {}, "supersede-host": {}, "supersession-restart": {}, "supersede": {}, "fence-host": {},
 	}
 	if _, ok := allowed[*action]; !ok {
 		return errors.New("unsupported cohort action")
 	}
-	perHost := *action == "preflight" || *action == "verify" || *action == "supersede-host"
+	perHost := *action == "preflight" || *action == "verify" || *action == "supersede-host" || *action == "fence-host"
 	if perHost != (*subjectHost != "") {
 		return errors.New("host-scoped cohort actions require --subject-host; other actions forbid it")
 	}
@@ -467,9 +468,9 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 		return errors.New("host-scoped cohort evidence must be recorded by that host")
 	}
 	needsSuccessor := *action == "supersede-host" || *action == "supersession-restart" || *action == "supersede"
-	needsEvidence := !needsSuccessor && *action != "preflight"
+	needsEvidence := !needsSuccessor && *action != "preflight" && *action != "fence-host"
 	if needsSuccessor != (*successorOperationID != "") || needsSuccessor && *evidenceSHA != "" ||
-		needsEvidence && *evidenceSHA == "" || *action == "preflight" && *evidenceSHA != "" {
+		needsEvidence && *evidenceSHA == "" || (*action == "preflight" || *action == "fence-host") && *evidenceSHA != "" {
 		return errors.New("supersession requires --successor-operation-id and computes its own evidence; other actions require --evidence-sha256")
 	}
 	if *action == "hold" {
@@ -486,23 +487,24 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 			return err
 		}
 	}
-	if *action == "preflight" {
-		if plan.Lane != config.ReleaseLaneDev && plan.Lane != config.ReleaseLaneQAS {
-			return errors.New("cohort switch preflight supports only Dev and QAS catalog lanes")
+	if *action == "fence-host" {
+		if plan.Lane != config.ReleaseLanePRD {
+			return laneinstall.ErrCatalogOperationInvalid
 		}
-		active, activeErr := catalogCohortLocalServiceActive(ctx, plan)
-		if activeErr != nil || active {
-			return laneinstall.ErrSimpleLaneNotQuiescent
+		prdPlan, planErr := laneinstall.BuildPRDUpgradePlan(*host)
+		if planErr != nil {
+			return planErr
 		}
-		controller, controllerErr := laneinstall.NewSimpleServiceController()
-		if controllerErr != nil {
-			return controllerErr
+		service, serviceErr := laneinstall.NewPRDServiceController()
+		if serviceErr != nil {
+			return serviceErr
 		}
-		maintenance, maintenanceErr := laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
-		if maintenanceErr != nil {
-			return maintenanceErr
+		fence, fenceErr := laneinstall.FenceCatalogPRDHost(ctx, prdPlan, service, receipt)
+		if fenceErr != nil {
+			return fenceErr
 		}
-		defer maintenance.Close()
+		receipt, err = laneinstall.AdvanceCatalogCohortHostFence(receipt, fence, time.Now().UTC())
+	} else if *action == "preflight" {
 		var expected laneinstall.CatalogCohortHostPreflight
 		for _, hostPreflight := range receipt.Hosts {
 			if hostPreflight.HostID == *host {
@@ -513,12 +515,49 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 		if expected.HostID == "" {
 			return laneinstall.ErrCatalogOperationInvalid
 		}
-		if err := maintenance.UseVerifiedBackup(ctx, expected.BackupDirectory, expected.BackupManifestSHA256); err != nil {
-			return err
+		var report laneinstall.CatalogCohortHostPreflightReport
+		if plan.Lane == config.ReleaseLanePRD {
+			if err := laneinstall.CatalogCohortAdmissionHoldMatches(plan, receipt.OperationID); err != nil {
+				return err
+			}
+			prdPlan, planErr := laneinstall.BuildPRDUpgradePlan(*host)
+			if planErr != nil {
+				return planErr
+			}
+			service, serviceErr := laneinstall.NewPRDServiceController()
+			if serviceErr != nil {
+				return serviceErr
+			}
+			maintenance, maintenanceErr := laneinstall.BeginCatalogPRDMaintenance(ctx, prdPlan, service, receipt.OperationID)
+			if maintenanceErr != nil {
+				return maintenanceErr
+			}
+			defer maintenance.Close()
+			if err := maintenance.UseVerifiedBackup(ctx, expected.BackupDirectory, expected.BackupManifestSHA256); err != nil {
+				return err
+			}
+			report, err = maintenance.CohortHostPreflight(ctx, expected)
+		} else {
+			active, activeErr := catalogCohortLocalServiceActive(ctx, plan)
+			if activeErr != nil || active {
+				return laneinstall.ErrSimpleLaneNotQuiescent
+			}
+			controller, controllerErr := laneinstall.NewSimpleServiceController()
+			if controllerErr != nil {
+				return controllerErr
+			}
+			maintenance, maintenanceErr := laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
+			if maintenanceErr != nil {
+				return maintenanceErr
+			}
+			defer maintenance.Close()
+			if err := maintenance.UseVerifiedBackup(ctx, expected.BackupDirectory, expected.BackupManifestSHA256); err != nil {
+				return err
+			}
+			report, err = maintenance.CohortHostPreflight(ctx, receipt.ReleaseID, expected.RequiredBytes)
 		}
-		report, reportErr := maintenance.CohortHostPreflight(ctx, receipt.ReleaseID, expected.RequiredBytes)
-		if reportErr != nil {
-			return reportErr
+		if err != nil {
+			return err
 		}
 		observed := report.Preflight
 		if observed.HostID != expected.HostID || observed.PreviousTarget != expected.PreviousTarget ||
@@ -526,7 +565,8 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 			observed.Target != expected.Target || observed.ConfigurationSHA256 != expected.ConfigurationSHA256 ||
 			observed.SchemaVersion != expected.SchemaVersion || observed.WorkInventorySHA256 != expected.WorkInventorySHA256 ||
 			!observed.WorkInventoryEmpty || observed.BackupDirectory != expected.BackupDirectory ||
-			observed.BackupManifestSHA256 != expected.BackupManifestSHA256 || observed.RequiredBytes != expected.RequiredBytes {
+			observed.BackupManifestSHA256 != expected.BackupManifestSHA256 || observed.RequiredBytes != expected.RequiredBytes ||
+			!reflect.DeepEqual(observed.LegacyRollback, expected.LegacyRollback) {
 			return laneinstall.ErrCatalogOperationInvalid
 		}
 		evidence, marshalErr := json.Marshal(report)
@@ -850,23 +890,50 @@ func runCatalogPRDBackup(ctx context.Context, args []string, stdout, stderr io.W
 		availableBytes, requiredBytes})
 }
 
-// runCatalogHostPreflight closes the selected Dev/QAS service through the
-// existing guarded maintenance path, verifies the complete stopped-service
-// inventory, and writes a consistent backup before returning receipt data.
-// It deliberately leaves the service stopped for the four-host cohort hold.
+// runCatalogHostPreflight emits host-local receipt evidence. Dev/QAS use their
+// established stop-and-backup path. PRD takes an online consistent backup and
+// a read-only inventory first; its legacy service is stopped later by the
+// ordered, receipt-recorded fence-host action, avoiding the bootstrap cycle.
 func runCatalogHostPreflight(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("runner-lane catalog-host-preflight", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	host := flags.String("host", "", "canonical identity of this existing host")
-	lane := flags.String("lane", "", "dev or qas")
+	lane := flags.String("lane", "", "dev, qas, or prd")
 	releaseID := flags.String("release-id", "", "sealed catalog release to preflight")
 	requiredBytes := flags.Uint64("required-free-bytes", 0, "remaining free space required after the consistent backup")
+	legacyCompatibilityFile := flags.String("legacy-compatibility-file", "", "owner-only tested legacy rollback compatibility report (PRD legacy only)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas") ||
+	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas" && *lane != "prd") ||
 		*releaseID == "" || *requiredBytes == 0 {
-		return errors.New("usage: runner-lane catalog-host-preflight --host HOST --lane dev|qas --release-id RELEASE --required-free-bytes BYTES")
+		return errors.New("usage: runner-lane catalog-host-preflight --host HOST --lane dev|qas|prd --release-id RELEASE --required-free-bytes BYTES [--legacy-compatibility-file FILE]")
+	}
+	if *lane == "prd" {
+		var compatibility *laneinstall.CatalogLegacyRollbackCompatibility
+		if *legacyCompatibilityFile != "" {
+			loaded, loadErr := laneinstall.LoadCatalogLegacyRollbackCompatibilityFile(*legacyCompatibilityFile)
+			if loadErr != nil {
+				return loadErr
+			}
+			compatibility = &loaded
+		}
+		prdPlan, err := laneinstall.BuildPRDUpgradePlan(*host)
+		if err != nil {
+			return err
+		}
+		service, err := laneinstall.NewPRDServiceController()
+		if err != nil {
+			return err
+		}
+		report, err := laneinstall.ReadPRDCatalogCohortHostPreflight(ctx, prdPlan, service, *releaseID, *requiredBytes, compatibility)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, report)
+	}
+	if *legacyCompatibilityFile != "" {
+		return errors.New("--legacy-compatibility-file is valid only for a PRD legacy preflight")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
 	if err != nil {

@@ -102,10 +102,18 @@ func TestCatalogCohortRejectsStaleOrIncompleteOperationalEvidence(t *testing.T) 
 func TestCatalogPRDCohortRequiresExactLegacyIdentityAndReadCompatibility(t *testing.T) {
 	receipt := validCatalogCohortFixture(time.Now().UTC())
 	receipt.Lane = config.ReleaseLanePRD
+	for _, proof := range receipt.FenceProofs {
+		if proof.Scope == "mac-project-publishers" {
+			receipt.FenceProofs = []CatalogCohortFenceProof{proof}
+			break
+		}
+	}
 	for index := range receipt.Hosts {
 		receipt.Hosts[index].PreviousTarget = ""
 		receipt.Hosts[index].PreviousBundleSHA256 = strings.Repeat(string("abcdef"[index%6]), 64)
-		receipt.Hosts[index].PreviousReadSchemaMax = receipt.Hosts[index].SchemaVersion
+		receipt.Hosts[index].LegacyRollback = validLegacyRollbackEvidence(receipt.Hosts[index].PreviousBundleSHA256,
+			receipt.Hosts[index].ConfigurationSHA256, receipt.Hosts[index].SchemaVersion, time.Now().UTC())
+		receipt.Hosts[index].PreviousReadSchemaMax = receipt.Hosts[index].LegacyRollback.ReadSchemaMax
 	}
 	if err := ValidateCatalogCohortReceipt(receipt); err != nil {
 		t.Fatalf("PRD cohort with an exact old-bin identity and compatible schema was rejected: %v", err)
@@ -121,6 +129,68 @@ func TestCatalogPRDCohortRequiresExactLegacyIdentityAndReadCompatibility(t *test
 	unsafe.Hosts[1].PreviousBundleSHA256 = ""
 	if err := ValidateCatalogCohortReceipt(unsafe); err == nil {
 		t.Fatal("PRD cohort accepted an unbound legacy binary inventory")
+	}
+	unsafe = receipt
+	unsafe.Hosts = append([]CatalogCohortHostPreflight(nil), receipt.Hosts...)
+	unsafe.Hosts[0].LegacyRollback.ConfigurationSHA256 = strings.Repeat("a", 64)
+	if err := ValidateCatalogCohortReceipt(unsafe); err == nil {
+		t.Fatal("PRD cohort accepted compatibility evidence bound to another configuration")
+	}
+	unsafe = receipt
+	unsafe.Hosts = append([]CatalogCohortHostPreflight(nil), receipt.Hosts...)
+	unsafe.Hosts[1].LegacyRollback.SemanticChecks = []string{"current-database-read-without-migration"}
+	if err := ValidateCatalogCohortReceipt(unsafe); err == nil {
+		t.Fatal("PRD cohort accepted incomplete rollback semantic-test evidence")
+	}
+}
+
+func TestCatalogPRDCohortPreparedFenceThenHoldRequiresEveryStoppedHostInOrder(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	manifest, reports := catalogCohortCreationFixture(t, now)
+	for index := range reports {
+		host := &reports[index].Preflight
+		host.PreviousTarget = ""
+		host.PreviousBundleSHA256 = strings.Repeat(string("abcdef"[index%6]), 64)
+		host.LegacyRollback = validLegacyRollbackEvidence(host.PreviousBundleSHA256, host.ConfigurationSHA256, host.SchemaVersion, now)
+		host.PreviousReadSchemaMax = host.LegacyRollback.ReadSchemaMax
+		host.ServiceActiveAtPreflight = true
+	}
+	receipt, err := NewCatalogCohortReceipt(config.ReleaseLanePRD, manifest, reports,
+		CatalogCohortPublisherPause{Owner: "owner", Control: "publisher maintenance pause", Paused: true, NoNewAccepted: true}, now)
+	if err != nil {
+		t.Fatalf("create prepared PRD receipt: %v", err)
+	}
+	if len(receipt.FenceProofs) != 1 || receipt.Stage != CatalogCohortPrepared {
+		t.Fatalf("initial PRD receipt asserted unproven host fences: stage=%s fences=%+v", receipt.Stage, receipt.FenceProofs)
+	}
+	proof := strings.Repeat("e", 64)
+	if _, err := AdvanceCatalogCohortReceipt(receipt, "hold", "", proof, now); err == nil {
+		t.Fatal("PRD admission hold was allowed before every host had a stop proof")
+	}
+	for _, hostID := range catalogCohortSwitchOrder {
+		index := cohortHostIndex(receipt, hostID)
+		host := receipt.Hosts[index]
+		fence := CatalogCohortHostFence{HostID: hostID, ServiceWasActive: true, ServiceStopped: true,
+			WorkInventorySHA256: host.WorkInventorySHA256, ConfigurationSHA256: host.ConfigurationSHA256,
+			SelectorTarget: host.PreviousTarget, PreviousBundleSHA256: host.PreviousBundleSHA256,
+			DatabaseSchema: host.SchemaVersion, ObservedAt: now.Format(time.RFC3339Nano)}
+		receipt, err = AdvanceCatalogCohortHostFence(receipt, fence, now)
+		if err != nil {
+			t.Fatalf("record host fence %s: %v", hostID, err)
+		}
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", proof, now)
+	if err != nil || receipt.Stage != CatalogCohortHeld {
+		t.Fatalf("record initial PRD hold after all host fences: stage=%s err=%v", receipt.Stage, err)
+	}
+}
+
+func validLegacyRollbackEvidence(bundleSHA, configSHA string, schema int, at time.Time) *CatalogLegacyRollbackCompatibility {
+	return &CatalogLegacyRollbackCompatibility{
+		FormatVersion: 1, LegacyBundleSHA256: bundleSHA, ConfigurationSHA256: configSHA,
+		DatabaseSchema: schema, ReadSchemaMin: 1, ReadSchemaMax: schema,
+		TestSuite: catalogLegacyRollbackTestSuite, TestEvidenceSHA256: strings.Repeat("9", 64),
+		SemanticChecks: append([]string(nil), catalogLegacyRollbackSemanticChecks...), TestedAt: at.UTC().Format(time.RFC3339Nano),
 	}
 }
 
@@ -378,7 +448,7 @@ func catalogCohortCreationFixture(t *testing.T, now time.Time) (CatalogReleaseMa
 	stamp := now.UTC().Format(time.RFC3339Nano)
 	reports := make([]CatalogCohortHostPreflightReport, 0, len(catalogCohortSwitchOrder))
 	for _, hostID := range catalogCohortSwitchOrder {
-		metrics := store.RestartPreflightMetrics{}
+		metrics := CatalogWorkInventory{}
 		metricsBytes, err := json.Marshal(metrics)
 		if err != nil {
 			t.Fatal(err)
@@ -1038,12 +1108,16 @@ func heldCatalogCohortFixture(t *testing.T, now time.Time, operationID, releaseI
 }
 
 func fixtureCohortSupersessionEvidence(old, successor CatalogCohortReceipt, hostIndex int, operations string) CatalogCohortSupersessionEvidence {
+	selectorBundleSHA256 := old.Hosts[hostIndex].PreviousBundleSHA256
+	if operations == "completed" {
+		selectorBundleSHA256 = old.Hosts[hostIndex].Target.BundleSHA256
+	}
 	return CatalogCohortSupersessionEvidence{
 		HostID: successor.Hosts[hostIndex].HostID, SuccessorOperationID: successor.OperationID,
 		ExpectedSelector: successor.Hosts[hostIndex].PreviousTarget, ObservedSelector: successor.Hosts[hostIndex].PreviousTarget,
 		ServiceActive: false, WorkInventorySHA256: successor.Hosts[hostIndex].WorkInventorySHA256, WorkInventoryEmpty: true,
 		ConfigurationSHA256: successor.Hosts[hostIndex].ConfigurationSHA256, DatabaseSchema: successor.Hosts[hostIndex].SchemaVersion,
-		SelectorOperations: operations,
+		SelectorBundleSHA256: selectorBundleSHA256, SelectorOperations: operations,
 	}
 }
 

@@ -78,7 +78,7 @@ func ReconcileCatalogCohortReceiptHistories(receipts []CatalogCohortReceipt, at 
 	if len(common) > 0 {
 		base.UpdatedAt = common[len(common)-1].At
 	}
-	reconciledStage, _, _, err := catalogCohortReconciledBranchState(branches)
+	reconciledStage, _, _, _, err := catalogCohortReconciledBranchState(branches)
 	if err != nil {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}
@@ -110,7 +110,8 @@ func validCatalogCohortHistoryReconciliation(receipt CatalogCohortReceipt, event
 	if event.Action != "reconcile-history" || !eventHostEmpty(event.HostID) || event.ResumeStage != "" ||
 		event.Supersession != nil || event.SuccessorID != "" ||
 		(event.ReconciledStage != CatalogCohortPrepared && event.ReconciledStage != CatalogCohortHeld &&
-			event.ReconciledStage != CatalogCohortSwitching && event.ReconciledStage != CatalogCohortVerifying) ||
+			event.ReconciledStage != CatalogCohortSwitching && event.ReconciledStage != CatalogCohortVerifying &&
+			event.ReconciledStage != CatalogCohortRollingBack && event.ReconciledStage != CatalogCohortRolledBack) ||
 		len(event.HistoricalBranches) < 2 || len(event.HistoricalBranches) > maxCatalogCohortHistoryBranches {
 		return false
 	}
@@ -153,7 +154,7 @@ func validCatalogCohortHistoryReconciliation(receipt CatalogCohortReceipt, event
 		}
 		lastDigest = branchDigestOrderKey(branch)
 	}
-	reconciledStage, _, _, err := catalogCohortReconciledBranchState(branches)
+	reconciledStage, _, _, _, err := catalogCohortReconciledBranchState(branches)
 	if err != nil || reconciledStage != event.ReconciledStage {
 		return false
 	}
@@ -176,12 +177,14 @@ func validCatalogCohortHistoryReconciliation(receipt CatalogCohortReceipt, event
 func catalogCohortHistoryBranchReconcileSafe(receipt CatalogCohortReceipt) bool {
 	if receipt.Stage != CatalogCohortPrepared && receipt.Stage != CatalogCohortHeld &&
 		receipt.Stage != CatalogCohortBlocked && receipt.Stage != CatalogCohortSwitching &&
-		receipt.Stage != CatalogCohortVerifying {
+		receipt.Stage != CatalogCohortVerifying && receipt.Stage != CatalogCohortRollingBack &&
+		receipt.Stage != CatalogCohortRolledBack {
 		return false
 	}
 	for _, transition := range receipt.Transitions {
 		switch transition.Action {
-		case "hold", "preflight", "switch", "switch-reconciled", "block":
+		case "hold", "fence-host", "preflight", "switch", "switch-reconciled", "block",
+			"rollback-start", "rollback-host", "rollback-complete":
 		case "verify-start", "verify":
 			if receipt.Stage != CatalogCohortVerifying {
 				return false
@@ -196,15 +199,19 @@ func catalogCohortHistoryBranchReconcileSafe(receipt CatalogCohortReceipt) bool 
 // catalogCohortReconciledBranchState derives the safe stage and ordered set of
 // switches represented by divergent histories. Duplicate records for a host
 // must be byte-for-byte identical; switch order must still match the cohort.
-func catalogCohortReconciledBranchState(branches []CatalogCohortHistoryBranch) (CatalogCohortStage, []string, []string, error) {
+func catalogCohortReconciledBranchState(branches []CatalogCohortHistoryBranch) (CatalogCohortStage, []string, []string, []string, error) {
 	if len(branches) == 0 {
-		return "", nil, nil, ErrCatalogOperationInvalid
+		return "", nil, nil, nil, ErrCatalogOperationInvalid
 	}
 	switchesByHost := make(map[string]CatalogCohortTransition)
 	verificationsByHost := make(map[string]CatalogCohortTransition)
+	fencesByHost := make(map[string]CatalogCohortTransition)
+	rollbacksByHost := make(map[string]CatalogCohortTransition)
 	preparedOnly := true
 	verifyingOnly := true
 	anyVerifying := false
+	anyRollbackStarted := false
+	anyRollbackCompleted := false
 	for _, branch := range branches {
 		if branch.Stage != CatalogCohortPrepared {
 			preparedOnly = false
@@ -216,20 +223,42 @@ func catalogCohortReconciledBranchState(branches []CatalogCohortHistoryBranch) (
 		}
 		for _, transition := range branch.Transitions {
 			switch transition.Action {
+			case "rollback-start":
+				anyRollbackStarted = true
+			case "rollback-complete":
+				anyRollbackStarted = true
+				anyRollbackCompleted = true
+			case "rollback-host":
+				anyRollbackStarted = true
+				if !containsString(catalogCohortSwitchOrder, transition.HostID) {
+					return "", nil, nil, nil, ErrCatalogOperationInvalid
+				}
+				if existing, ok := rollbacksByHost[transition.HostID]; ok && !reflect.DeepEqual(existing, transition) {
+					return "", nil, nil, nil, ErrCatalogOperationInvalid
+				}
+				rollbacksByHost[transition.HostID] = transition
+			case "fence-host":
+				if !containsString(catalogCohortSwitchOrder, transition.HostID) || transition.HostFence == nil {
+					return "", nil, nil, nil, ErrCatalogOperationInvalid
+				}
+				if existing, ok := fencesByHost[transition.HostID]; ok && !reflect.DeepEqual(existing, transition) {
+					return "", nil, nil, nil, ErrCatalogOperationInvalid
+				}
+				fencesByHost[transition.HostID] = transition
 			case "switch", "switch-reconciled":
 				if !containsString(catalogCohortSwitchOrder, transition.HostID) {
-					return "", nil, nil, ErrCatalogOperationInvalid
+					return "", nil, nil, nil, ErrCatalogOperationInvalid
 				}
 				if existing, ok := switchesByHost[transition.HostID]; ok && !reflect.DeepEqual(existing, transition) {
-					return "", nil, nil, ErrCatalogOperationInvalid
+					return "", nil, nil, nil, ErrCatalogOperationInvalid
 				}
 				switchesByHost[transition.HostID] = transition
 			case "verify":
 				if !containsString(catalogCohortSwitchOrder, transition.HostID) {
-					return "", nil, nil, ErrCatalogOperationInvalid
+					return "", nil, nil, nil, ErrCatalogOperationInvalid
 				}
 				if existing, ok := verificationsByHost[transition.HostID]; ok && !reflect.DeepEqual(existing, transition) {
-					return "", nil, nil, ErrCatalogOperationInvalid
+					return "", nil, nil, nil, ErrCatalogOperationInvalid
 				}
 				verificationsByHost[transition.HostID] = transition
 			}
@@ -242,11 +271,11 @@ func catalogCohortReconciledBranchState(branches []CatalogCohortHistoryBranch) (
 		}
 	}
 	if len(ordered) != len(switchesByHost) {
-		return "", nil, nil, ErrCatalogOperationInvalid
+		return "", nil, nil, nil, ErrCatalogOperationInvalid
 	}
 	if anyVerifying {
 		if !verifyingOnly || len(ordered) != len(catalogCohortSwitchOrder) {
-			return "", nil, nil, ErrCatalogOperationInvalid
+			return "", nil, nil, nil, ErrCatalogOperationInvalid
 		}
 		verified := make([]string, 0, len(verificationsByHost))
 		for _, hostID := range catalogCohortSwitchOrder {
@@ -255,23 +284,49 @@ func catalogCohortReconciledBranchState(branches []CatalogCohortHistoryBranch) (
 			}
 		}
 		if len(verified) != len(verificationsByHost) {
-			return "", nil, nil, ErrCatalogOperationInvalid
+			return "", nil, nil, nil, ErrCatalogOperationInvalid
 		}
-		return CatalogCohortVerifying, ordered, verified, nil
+		if anyRollbackStarted {
+			return "", nil, nil, nil, ErrCatalogOperationInvalid
+		}
+		return CatalogCohortVerifying, ordered, verified, nil, nil
+	}
+	rolledBack := make([]string, 0, len(rollbacksByHost))
+	for index := len(ordered) - 1; index >= 0; index-- {
+		hostID := ordered[index]
+		if _, ok := rollbacksByHost[hostID]; !ok {
+			break
+		}
+		rolledBack = append(rolledBack, hostID)
+	}
+	if len(rolledBack) != len(rollbacksByHost) {
+		return "", nil, nil, nil, ErrCatalogOperationInvalid
+	}
+	if anyRollbackStarted {
+		if len(ordered) == 0 || anyVerifying || anyRollbackCompleted && len(rolledBack) != len(ordered) {
+			return "", nil, nil, nil, ErrCatalogOperationInvalid
+		}
+		if anyRollbackCompleted {
+			return CatalogCohortRolledBack, ordered, nil, rolledBack, nil
+		}
+		return CatalogCohortRollingBack, ordered, nil, rolledBack, nil
 	}
 	if len(ordered) > 0 {
-		return CatalogCohortSwitching, ordered, nil, nil
+		return CatalogCohortSwitching, ordered, nil, nil, nil
 	}
 	if preparedOnly {
-		return CatalogCohortPrepared, ordered, nil, nil
+		return CatalogCohortPrepared, ordered, nil, nil, nil
 	}
-	return CatalogCohortHeld, ordered, nil, nil
+	return CatalogCohortHeld, ordered, nil, nil, nil
 }
 
 // ValidateCatalogCohortHistoryLocalState verifies that this host's stopped
 // service, empty work inventory, selected target, and selector journal agree
 // with the switch history in a reconciled or synchronized receipt.
 func ValidateCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, receipt CatalogCohortReceipt) error {
+	if plan.Lane == config.ReleaseLanePRD {
+		return validatePRDCatalogCohortHistoryLocalState(ctx, plan, receipt)
+	}
 	if validateCatalogPlan(plan) != nil || ValidateCatalogCohortReceipt(receipt) != nil || receipt.Lane != plan.Lane ||
 		!cohortHasAnySwitch(receipt) {
 		if validateCatalogPlan(plan) == nil && ValidateCatalogCohortReceipt(receipt) == nil && !cohortHasAnySwitch(receipt) {
@@ -318,6 +373,158 @@ func ValidateCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, rece
 	return validateCatalogCohortHistoryLocalSelectorState(layout, receipt, status, proof.database, configurationSHA256)
 }
 
+func validatePRDCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, receipt CatalogCohortReceipt) error {
+	if validateCatalogPlan(plan) != nil || plan.Lane != config.ReleaseLanePRD || ValidateCatalogCohortReceipt(receipt) != nil ||
+		receipt.Lane != config.ReleaseLanePRD || !cohortContainsHost(receipt, plan.HostID) {
+		return ErrCatalogOperationInvalid
+	}
+	prdPlan, err := BuildPRDUpgradePlan(plan.HostID)
+	if err != nil || prdPlan.Namespace != plan.Namespace || validatePRDConfig(prdPlan) != nil {
+		return ErrPRDUpgradeGuard
+	}
+	service, err := NewPRDServiceController()
+	if err != nil {
+		return err
+	}
+	active, err := service.Status(ctx, prdPlan)
+	if err != nil {
+		return err
+	}
+	root, err := DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return err
+	}
+	layout, err := catalogSelectorLayoutForPlan(plan, root)
+	if err != nil {
+		return err
+	}
+	proof, err := readPRDCatalogProof(ctx, prdPlan, layout)
+	if err != nil || !proof.work.Empty() {
+		return errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	index := cohortHostIndex(receipt, plan.HostID)
+	if index < 0 {
+		return ErrCatalogOperationInvalid
+	}
+	host := receipt.Hosts[index]
+	if proof.schema != host.SchemaVersion || proof.configurationSHA256 != host.ConfigurationSHA256 ||
+		proof.workSHA256 != host.WorkInventorySHA256 || proof.selectorTarget != host.PreviousTarget ||
+		proof.previousBundleSHA256() != host.PreviousBundleSHA256 {
+		return ErrCatalogOperationInvalid
+	}
+	_, fenced := catalogCohortHostFenceFor(receipt, plan.HostID)
+	preflighted := cohortHasHostPreflight(receipt, plan.HostID)
+	wantActive := host.ServiceActiveAtPreflight && !fenced && !preflighted
+	if active != wantActive {
+		return ErrSimpleLaneNotQuiescent
+	}
+	manifest, err := loadPRDBackupManifest(prdPlan, host.BackupDirectory)
+	if err != nil || manifest.SchemaVersion != host.SchemaVersion || manifest.BundleSHA256 != host.Target.BundleSHA256 ||
+		backupManifestSHA256(host.BackupDirectory) != host.BackupManifestSHA256 {
+		return ErrSimpleBackupRequired
+	}
+	status, err := inspectCatalogSelector(layout)
+	if err != nil {
+		return err
+	}
+	if cohortHasSwitched(receipt, plan.HostID) || cohortHasRolledBackHost(receipt, plan.HostID) {
+		if active {
+			return ErrSimpleLaneNotQuiescent
+		}
+		if err := validateCatalogCohortHistoryLocalSelectorState(layout, receipt, status, proof.schema, proof.configurationSHA256); err != nil {
+			return err
+		}
+		if cohortHasRolledBackHost(receipt, plan.HostID) {
+			return verifyPRDLegacyServiceArtifactsFromBackup(prdPlan, manifest)
+		}
+		return verifyPRDCatalogServiceArtifacts(plan.HostID)
+	}
+	if !catalogCohortPreviousSelectorMatches(receipt.Lane, host, status) {
+		return ErrCatalogOperationInvalid
+	}
+	return verifyPRDBackupTargets(manifest, true)
+}
+
+func catalogCohortPreviousSelectorMatches(lane config.ReleaseLane, host CatalogCohortHostPreflight,
+	status CatalogSelectorStatus) bool {
+	if lane == config.ReleaseLanePRD && host.PreviousTarget == "" {
+		return status.Kind == "unselected" && status.Target == "" &&
+			validPreviousCatalogIdentity(host, lane)
+	}
+	return status.Target == host.PreviousTarget && catalogSelectorStatusBundleSHA256(status) == host.PreviousBundleSHA256
+}
+
+func verifyPRDCatalogServiceArtifacts(hostID string) error {
+	artifacts, err := BuildPRDCatalogServiceArtifacts(hostID)
+	if err != nil {
+		return err
+	}
+	for _, artifact := range artifacts {
+		if err := verifyPRDCatalogArtifact(artifact); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func verifyPRDLegacyServiceArtifactsFromBackup(plan PRDUpgradePlan, manifest PRDBackupManifest) error {
+	artifacts, err := BuildPRDCatalogServiceArtifacts(plan.HostID)
+	if err != nil {
+		return err
+	}
+	for _, artifact := range artifacts {
+		file, ok := findPRDBackupFile(manifest, artifact.InstallPath)
+		if !ok {
+			return ErrPRDUpgradeGuard
+		}
+		path := filepath.Join(filepath.Dir(manifest.DatabaseBackupPath), file.BackupPath)
+		if _, err := os.Stat(path); err != nil {
+			return ErrPRDUpgradeGuard
+		}
+		legacy := artifact
+		legacy.Mode = file.Mode
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		legacy.Contents = string(contents)
+		if err := verifyPRDArtifactContents(legacy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func catalogCohortHostFenceFor(receipt CatalogCohortReceipt, hostID string) (CatalogCohortHostFence, bool) {
+	var found CatalogCohortHostFence
+	var ok bool
+	var collect func([]CatalogCohortTransition)
+	collect = func(events []CatalogCohortTransition) {
+		for _, event := range events {
+			if event.Action == "fence-host" && event.HostID == hostID && event.HostFence != nil && !ok {
+				found, ok = *event.HostFence, true
+			}
+			if event.Action == "reconcile-history" {
+				for _, branch := range event.HistoricalBranches {
+					collect(branch.Transitions)
+				}
+			}
+		}
+	}
+	collect(receipt.Transitions)
+	return found, ok
+}
+
+func cohortHasHostPreflight(receipt CatalogCohortReceipt, hostID string) bool {
+	var found bool
+	walkCatalogCohortTransitions(receipt.Transitions, func(event CatalogCohortTransition) {
+		if event.Action == "preflight" && event.HostID == hostID {
+			found = true
+		}
+	})
+	return found
+}
+
 // validateCatalogCohortHistoryLocalSelectorState verifies the durable selector
 // and operation journals after the caller has established stopped-service,
 // empty-work, schema, and configuration evidence. It is shared by the live
@@ -353,6 +560,20 @@ func validateCatalogCohortHistoryLocalSelectorState(layout catalogSelectorLayout
 
 func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayout, receipt CatalogCohortReceipt,
 	status CatalogSelectorStatus, databaseSchema int, configurationSHA256 string, matching []CatalogSelectorOperation) error {
+	return validateCatalogCohortReconciledSelectorEvidenceUsing(layout, receipt, status, databaseSchema,
+		configurationSHA256, matching, validateCatalogOperation)
+}
+
+// validateCatalogCohortReconciledSelectorEvidenceUsing shares the receipt,
+// selector, and rollback-journal state machine with disposable PRD fixtures.
+// Production always supplies validateCatalogOperation, including its backup
+// and compatibility checks.
+func validateCatalogCohortReconciledSelectorEvidenceUsing(layout catalogSelectorLayout, receipt CatalogCohortReceipt,
+	status CatalogSelectorStatus, databaseSchema int, configurationSHA256 string, matching []CatalogSelectorOperation,
+	validateOperation func(catalogSelectorLayout, CatalogSelectorOperation) error) error {
+	if validateOperation == nil {
+		return ErrCatalogOperationInvalid
+	}
 	index := cohortHostIndex(receipt, layout.hostID)
 	if index < 0 {
 		return ErrCatalogOperationInvalid
@@ -366,11 +587,11 @@ func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayou
 			return ErrCatalogOperationInvalid
 		}
 		operation := matching[0]
-		if validateCatalogOperation(layout, operation) != nil || operation.Stage != catalogOperationRolledBack ||
+		if validateOperation(layout, operation) != nil || operation.Stage != catalogOperationRolledBack ||
 			operation.HostID != layout.hostID || operation.Lane != layout.lane || operation.Release != host.Target ||
 			operation.PreviousTarget != host.PreviousTarget || operation.ConfigurationSHA256 != host.ConfigurationSHA256 ||
 			operation.DatabaseSchemaAtSwitch != host.SchemaVersion || status.Target != operation.PreviousTarget ||
-			catalogSelectorStatusBundleSHA256(status) != host.PreviousBundleSHA256 {
+			!catalogCohortPreviousSelectorMatches(receipt.Lane, host, status) {
 			return ErrCatalogOperationInvalid
 		}
 		digest, digestErr := catalogSelectorOperationDigest(layout, operation.OperationID)
@@ -384,7 +605,7 @@ func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayou
 			return ErrCatalogOperationInvalid
 		}
 		operation := matching[0]
-		if validateCatalogOperation(layout, operation) != nil || operation.Stage != catalogOperationComplete ||
+		if validateOperation(layout, operation) != nil || operation.Stage != catalogOperationComplete ||
 			operation.HostID != layout.hostID || operation.Lane != layout.lane || operation.Release != host.Target ||
 			operation.PreviousTarget != host.PreviousTarget || operation.ConfigurationSHA256 != host.ConfigurationSHA256 ||
 			operation.DatabaseSchemaAtSwitch != host.SchemaVersion || status.Target != operation.NextTarget {
@@ -396,55 +617,40 @@ func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayou
 		}
 		return nil
 	}
-	if len(matching) != 0 || status.Target != host.PreviousTarget || catalogSelectorStatusBundleSHA256(status) != host.PreviousBundleSHA256 {
+	if len(matching) != 0 || !catalogCohortPreviousSelectorMatches(receipt.Lane, host, status) {
 		return ErrCatalogOperationInvalid
 	}
 	return nil
 }
 
 func cohortHasRolledBackHost(receipt CatalogCohortReceipt, hostID string) bool {
-	for _, transition := range receipt.Transitions {
+	found := false
+	walkCatalogCohortTransitions(receipt.Transitions, func(transition CatalogCohortTransition) {
 		if transition.Action == "rollback-host" && transition.HostID == hostID {
-			return true
+			found = true
 		}
-	}
-	return false
+	})
+	return found
 }
 
 func cohortHasSwitchEvidence(receipt CatalogCohortReceipt, hostID, digest string) bool {
-	for _, transition := range receipt.Transitions {
-		if transition.Action == "reconcile-history" {
-			for _, branch := range transition.HistoricalBranches {
-				for _, event := range branch.Transitions {
-					if (event.Action == "switch" || event.Action == "switch-reconciled") && event.HostID == hostID && event.EvidenceSHA256 == digest {
-						return true
-					}
-				}
-			}
-		}
+	found := false
+	walkCatalogCohortTransitions(receipt.Transitions, func(transition CatalogCohortTransition) {
 		if (transition.Action == "switch" || transition.Action == "switch-reconciled") && transition.HostID == hostID && transition.EvidenceSHA256 == digest {
-			return true
+			found = true
 		}
-	}
-	return false
+	})
+	return found
 }
 
 func cohortHasRollbackEvidence(receipt CatalogCohortReceipt, hostID, digest string) bool {
-	for _, transition := range receipt.Transitions {
-		if transition.Action == "reconcile-history" {
-			for _, branch := range transition.HistoricalBranches {
-				for _, event := range branch.Transitions {
-					if event.Action == "rollback-host" && event.HostID == hostID && event.EvidenceSHA256 == digest {
-						return true
-					}
-				}
-			}
-		}
+	found := false
+	walkCatalogCohortTransitions(receipt.Transitions, func(transition CatalogCohortTransition) {
 		if transition.Action == "rollback-host" && transition.HostID == hostID && transition.EvidenceSHA256 == digest {
-			return true
+			found = true
 		}
-	}
-	return false
+	})
+	return found
 }
 
 func branchDigestOrderKey(branch CatalogCohortHistoryBranch) string {
@@ -517,15 +723,32 @@ func ObserveCatalogCohortSupersession(ctx context.Context, plan Plan, receipt, s
 	if err != nil {
 		return CatalogCohortSupersessionEvidence{}, err
 	}
+	oldHostIndex := cohortHostIndex(receipt, plan.HostID)
+	if oldHostIndex < 0 || !catalogCohortPreviousSelectorMatches(receipt.Lane, receipt.Hosts[oldHostIndex], status) {
+		return CatalogCohortSupersessionEvidence{}, ErrCatalogOperationInvalid
+	}
+	selectorBundleSHA256 := catalogSelectorStatusBundleSHA256(status)
+	if plan.Lane == config.ReleaseLanePRD && status.Kind == "unselected" {
+		prdPlan, planErr := BuildPRDUpgradePlan(plan.HostID)
+		if planErr != nil {
+			return CatalogCohortSupersessionEvidence{}, ErrPRDUpgradeGuard
+		}
+		legacy, legacyErr := readPRDLegacyInventory(prdPlan)
+		if legacyErr != nil {
+			return CatalogCohortSupersessionEvidence{}, legacyErr
+		}
+		selectorBundleSHA256, err = PRDLegacyBundleDigest(legacy)
+		if err != nil {
+			return CatalogCohortSupersessionEvidence{}, err
+		}
+	}
 	evidence := CatalogCohortSupersessionEvidence{
 		HostID: plan.HostID, SuccessorOperationID: successor.OperationID,
 		ExpectedSelector: successor.Hosts[index].PreviousTarget, ObservedSelector: status.Target,
 		ServiceActive: active, WorkInventorySHA256: workSHA256, WorkInventoryEmpty: empty,
 		ConfigurationSHA256: configurationSHA256, DatabaseSchema: schemaVersion,
-		SelectorOperations: selectorOperations,
-	}
-	if selectorOperations == "completed" && status.Release != nil {
-		evidence.SelectorBundleSHA256 = status.Release.Identity.BundleSHA256
+		SelectorBundleSHA256: selectorBundleSHA256,
+		SelectorOperations:   selectorOperations,
 	}
 	if !observationMatchesSuccessor(receipt, successor, evidence) {
 		return CatalogCohortSupersessionEvidence{}, ErrCatalogOperationInvalid
@@ -543,12 +766,7 @@ func readCatalogCohortWorkInventory(ctx context.Context, plan Plan) (string, int
 		if err != nil {
 			return "", 0, false, false, err
 		}
-		encoded, err := json.Marshal(report.WorkInventory)
-		if err != nil {
-			return "", 0, false, false, err
-		}
-		digest := sha256.Sum256(encoded)
-		return hex.EncodeToString(digest[:]), report.DatabaseSchema, report.WorkInventoryEmpty, report.ServiceActive, nil
+		return report.WorkInventory.SHA256(), report.DatabaseSchema, report.WorkInventoryEmpty, report.ServiceActive, nil
 	}
 	prdPlan, err := BuildPRDUpgradePlan(plan.HostID)
 	if err != nil || validatePRDConfig(prdPlan) != nil {
@@ -567,20 +785,14 @@ func readCatalogCohortWorkInventory(ctx context.Context, plan Plan) (string, int
 		return "", 0, false, active, err
 	}
 	defer database.Close()
-	var schema int
-	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil || schema <= 0 {
+	schema, work, err := readPRDWorkSnapshot(ctx, database)
+	if err != nil {
+		return "", 0, false, active, err
+	}
+	if schema <= 0 {
 		return "", 0, false, active, ErrPRDUpgradeGuard
 	}
-	work, err := readPRDWorkInventory(ctx, database)
-	if err != nil {
-		return "", 0, false, active, err
-	}
-	encoded, err := json.Marshal(work)
-	if err != nil {
-		return "", 0, false, active, err
-	}
-	digest := sha256.Sum256(encoded)
-	return hex.EncodeToString(digest[:]), schema, work.Empty(), active, nil
+	return work.SHA256(), schema, work.Empty(), active, nil
 }
 
 func catalogCohortSelectorOperationDisposition(layout catalogSelectorLayout, receipt CatalogCohortReceipt) (string, error) {
@@ -668,25 +880,25 @@ func observationMatchesSuccessor(receipt, successor CatalogCohortReceipt, observ
 		return false
 	}
 	switched := cohortHasSwitched(receipt, observation.HostID)
+	oldHostIndex := cohortHostIndex(receipt, observation.HostID)
+	if oldHostIndex < 0 {
+		return false
+	}
+	oldHost := receipt.Hosts[oldHostIndex]
 	if receipt.Stage == CatalogCohortComplete {
-		oldHostIndex := cohortHostIndex(receipt, observation.HostID)
-		if oldHostIndex < 0 {
-			return false
-		}
-		oldHost := receipt.Hosts[oldHostIndex]
 		if observation.SelectorOperations != "completed" || observation.SelectorBundleSHA256 != oldHost.Target.BundleSHA256 ||
 			newHost.PreviousBundleSHA256 != oldHost.Target.BundleSHA256 {
 			return false
 		}
 		return true
 	}
-	if observation.SelectorBundleSHA256 != "" {
+	if (receipt.Lane == config.ReleaseLanePRD && observation.SelectorBundleSHA256 != oldHost.PreviousBundleSHA256) ||
+		(observation.SelectorBundleSHA256 != "" && observation.SelectorBundleSHA256 != oldHost.PreviousBundleSHA256) ||
+		newHost.PreviousBundleSHA256 != oldHost.PreviousBundleSHA256 {
 		return false
 	}
 	if switched {
-		oldHostIndex := cohortHostIndex(receipt, observation.HostID)
-		if oldHostIndex < 0 || newHost.PreviousTarget != receipt.Hosts[oldHostIndex].PreviousTarget ||
-			newHost.PreviousBundleSHA256 != receipt.Hosts[oldHostIndex].PreviousBundleSHA256 {
+		if newHost.PreviousTarget != oldHost.PreviousTarget {
 			return false
 		}
 		return receipt.Stage == CatalogCohortRolledBack && containsString(cohortRolledBackHosts(receipt), observation.HostID) && observation.SelectorOperations == "rolled_back"
@@ -701,7 +913,7 @@ func validSupersessionEvidence(event CatalogCohortTransition) bool {
 		!event.Supersession.WorkInventoryEmpty || !bundleDigestPattern.MatchString(event.Supersession.WorkInventorySHA256) ||
 		!bundleDigestPattern.MatchString(event.Supersession.ConfigurationSHA256) || event.Supersession.DatabaseSchema <= 0 ||
 		(event.Supersession.SelectorOperations != "none" && event.Supersession.SelectorOperations != "rolled_back" && event.Supersession.SelectorOperations != "completed") ||
-		(event.Supersession.SelectorOperations != "completed" && event.Supersession.SelectorBundleSHA256 != "") ||
+		(event.Supersession.SelectorBundleSHA256 != "" && !bundleDigestPattern.MatchString(event.Supersession.SelectorBundleSHA256)) ||
 		(event.Supersession.SelectorOperations == "completed" && !bundleDigestPattern.MatchString(event.Supersession.SelectorBundleSHA256)) ||
 		event.Supersession.ExpectedSelector != event.Supersession.ObservedSelector {
 		return false
@@ -736,11 +948,17 @@ func validSupersessionEvidenceForReceipt(event CatalogCohortTransition, receipt 
 	case CatalogCohortRolledBack:
 		if switched {
 			return containsString(cohortRolledBackHosts(receipt), event.HostID) &&
-				supersession.SelectorOperations == "rolled_back" && supersession.SelectorBundleSHA256 == ""
+				supersession.SelectorOperations == "rolled_back" &&
+				(supersession.SelectorBundleSHA256 == receipt.Hosts[index].PreviousBundleSHA256 ||
+					receipt.Lane != config.ReleaseLanePRD && supersession.SelectorBundleSHA256 == "")
 		}
-		return supersession.SelectorOperations == "none" && supersession.SelectorBundleSHA256 == ""
+		return supersession.SelectorOperations == "none" &&
+			(supersession.SelectorBundleSHA256 == receipt.Hosts[index].PreviousBundleSHA256 ||
+				receipt.Lane != config.ReleaseLanePRD && supersession.SelectorBundleSHA256 == "")
 	case CatalogCohortHeld, CatalogCohortPrepared:
-		return !switched && supersession.SelectorOperations == "none" && supersession.SelectorBundleSHA256 == ""
+		return !switched && supersession.SelectorOperations == "none" &&
+			(supersession.SelectorBundleSHA256 == receipt.Hosts[index].PreviousBundleSHA256 ||
+				receipt.Lane != config.ReleaseLanePRD && supersession.SelectorBundleSHA256 == "")
 	default:
 		return false
 	}
@@ -825,12 +1043,13 @@ func cohortRollbackComplete(transitions []CatalogCohortTransition) bool {
 	if len(switched) == 0 || len(rolledBack) != len(switched) {
 		return false
 	}
-	for _, transition := range transitions {
+	complete := false
+	walkCatalogCohortTransitions(transitions, func(transition CatalogCohortTransition) {
 		if transition.Action == "rollback-complete" {
-			return true
+			complete = true
 		}
-	}
-	return false
+	})
+	return complete
 }
 
 func cohortHasAnySwitch(receipt CatalogCohortReceipt) bool {
@@ -843,20 +1062,11 @@ func cohortHasAnySwitchTransitions(transitions []CatalogCohortTransition) bool {
 
 func cohortSwitchedHostsFrom(transitions []CatalogCohortTransition) []string {
 	switched := make(map[string]struct{})
-	for _, transition := range transitions {
+	walkCatalogCohortTransitions(transitions, func(transition CatalogCohortTransition) {
 		if transition.Action == "switch" || transition.Action == "switch-reconciled" {
 			switched[transition.HostID] = struct{}{}
 		}
-		if transition.Action == "reconcile-history" {
-			for _, branch := range transition.HistoricalBranches {
-				for _, event := range branch.Transitions {
-					if event.Action == "switch" || event.Action == "switch-reconciled" {
-						switched[event.HostID] = struct{}{}
-					}
-				}
-			}
-		}
-	}
+	})
 	hosts := make([]string, 0, len(switched))
 	for _, hostID := range catalogCohortSwitchOrder {
 		if _, ok := switched[hostID]; ok {

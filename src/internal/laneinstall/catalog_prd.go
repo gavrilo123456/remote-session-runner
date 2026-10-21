@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -68,6 +67,224 @@ func ReadPRDCatalogSelectorCapacity(plan PRDUpgradePlan) (availableBytes, requir
 		return 0, 0, err
 	}
 	return uint64(filesystem.Bavail) * uint64(filesystem.Bsize), prdCatalogSelectorHeadroom, nil
+}
+
+// ReadPRDCatalogCohortHostPreflight captures an online, read-only PRD work and
+// identity baseline, takes a consistent SQLite online backup, then confirms
+// the same work/selector/configuration state still holds. It does not stop or
+// mutate the service; the later ordered host-fence action does that only after
+// the prepared cohort receipt is synchronized.
+func ReadPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe,
+	releaseID string, requiredBytes uint64, legacyCompatibility *CatalogLegacyRollbackCompatibility) (CatalogCohortHostPreflightReport, error) {
+	if validatePRDPlan(plan) != nil || service == nil || !validCatalogReleaseID(releaseID) || requiredBytes == 0 {
+		return CatalogCohortHostPreflightReport{}, ErrPRDUpgradeGuard
+	}
+	cohortPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
+	if held, _, err := CatalogCohortAdmissionHeld(cohortPlan); err != nil || held {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	}
+	root, err := DefaultCatalogRootForPlan(cohortPlan)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	layout, err := catalogSelectorLayoutForPlan(cohortPlan, root)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	catalogFD, err := acquireCatalogRootPublicationLock(root)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	defer releaseCatalogRootPublicationLock(catalogFD)
+	laneFD, err := acquirePRDUpgradeLock(plan)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	defer releasePRDUpgradeLock(laneFD)
+	active, err := service.Status(ctx, plan)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	before, err := readPRDCatalogProof(ctx, plan, layout)
+	if err != nil || !before.work.Empty() {
+		return CatalogCohortHostPreflightReport{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	target, err := InspectCatalogRelease(root, plan.HostID, releaseID)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	if !catalogDatabaseSupportsSchema(resolvedCatalogSelection{kind: "catalog", release: &target}, before.schema) {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogRollbackUnsafe
+	}
+	if err := validatePRDConfig(plan); err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	backup, err := CreatePRDCatalogBackup(ctx, plan, target.Identity.BundleSHA256)
+	if err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	if backup.Manifest.SchemaVersion != before.schema || backup.Manifest.DatabaseSHA256 == "" ||
+		verifyPRDBackupWorkSnapshot(ctx, plan, backup.Manifest, before.workSHA256, before.schema) != nil {
+		return CatalogCohortHostPreflightReport{}, ErrSimpleBackupRequired
+	}
+	after, err := readPRDCatalogProof(ctx, plan, layout)
+	if err != nil || !after.work.Empty() || after.workSHA256 != before.workSHA256 || after.schema != before.schema ||
+		after.configurationSHA256 != before.configurationSHA256 || after.selectorTarget != before.selectorTarget ||
+		after.bundleSHA256 != before.bundleSHA256 || after.legacyBundleSHA256 != before.legacyBundleSHA256 {
+		return CatalogCohortHostPreflightReport{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	activeAfter, err := service.Status(ctx, plan)
+	if err != nil || activeAfter != active {
+		return CatalogCohortHostPreflightReport{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	available, selectorRequired, err := ReadPRDCatalogSelectorCapacity(plan)
+	if err != nil || selectorRequired != requiredBytes || available < requiredBytes {
+		return CatalogCohortHostPreflightReport{}, errors.Join(ErrCatalogInsufficientSpace, err)
+	}
+	previousReadSchemaMax := after.readSchemaMax
+	var compatibility *CatalogLegacyRollbackCompatibility
+	if after.selectorTarget == "" {
+		if legacyCompatibility == nil || ValidateCatalogLegacyRollbackCompatibility(*legacyCompatibility,
+			after.legacyBundleSHA256, after.configurationSHA256, after.schema) != nil {
+			return CatalogCohortHostPreflightReport{}, ErrCatalogRollbackUnsafe
+		}
+		previousReadSchemaMax = legacyCompatibility.ReadSchemaMax
+		copyEvidence := *legacyCompatibility
+		copyEvidence.SemanticChecks = append([]string(nil), legacyCompatibility.SemanticChecks...)
+		compatibility = &copyEvidence
+	} else if legacyCompatibility != nil {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	}
+	return CatalogCohortHostPreflightReport{
+		Preflight: CatalogCohortHostPreflight{
+			HostID: plan.HostID, ServiceActiveAtPreflight: active, PreviousTarget: after.selectorTarget,
+			PreviousBundleSHA256: after.previousBundleSHA256(), PreviousReadSchemaMax: previousReadSchemaMax,
+			LegacyRollback: compatibility, Target: target.Identity, ConfigurationSHA256: after.configurationSHA256,
+			SchemaVersion: after.schema, WorkInventorySHA256: after.workSHA256, WorkInventoryEmpty: after.work.Empty(),
+			PreflightAt: time.Now().UTC().Format(time.RFC3339Nano), BackupDirectory: backup.Directory,
+			BackupManifestSHA256: backupManifestSHA256(backup.Directory), AvailableBytes: available, RequiredBytes: requiredBytes,
+		},
+		WorkInventory: after.work,
+	}, nil
+}
+
+// FenceCatalogPRDHost performs the supported first-adoption stop after a
+// prepared PRD receipt has been synchronized. It verifies the receipt's exact
+// online baseline and backup, stops only this unsuffixed service, and returns
+// hashable evidence for the ordered host-fence transition.
+func FenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDServiceController,
+	receipt CatalogCohortReceipt) (CatalogCohortHostFence, error) {
+	if validatePRDPlan(plan) != nil || service == nil || ValidateCatalogCohortReceipt(receipt) != nil ||
+		receipt.Lane != config.ReleaseLanePRD || receipt.Stage != CatalogCohortPrepared ||
+		!containsString(catalogCohortSwitchOrder, plan.HostID) {
+		return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
+	}
+	if held, _, err := CatalogCohortAdmissionHeld(Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}); err != nil || held {
+		return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
+	}
+	index := cohortHostIndex(receipt, plan.HostID)
+	if index < 0 {
+		return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
+	}
+	host := receipt.Hosts[index]
+	root, err := DefaultCatalogRootForPlan(Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace})
+	if err != nil {
+		return CatalogCohortHostFence{}, err
+	}
+	layout, err := catalogSelectorLayoutForPlan(Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}, root)
+	if err != nil {
+		return CatalogCohortHostFence{}, err
+	}
+	catalogFD, err := acquireCatalogRootPublicationLock(root)
+	if err != nil {
+		return CatalogCohortHostFence{}, err
+	}
+	defer releaseCatalogRootPublicationLock(catalogFD)
+	laneFD, err := acquirePRDUpgradeLock(plan)
+	if err != nil {
+		return CatalogCohortHostFence{}, err
+	}
+	defer releasePRDUpgradeLock(laneFD)
+	active, err := service.Status(ctx, plan)
+	if err != nil || !validPRDCohortFenceServiceState(host.ServiceActiveAtPreflight, active) {
+		return CatalogCohortHostFence{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	proof, err := readPRDCatalogProof(ctx, plan, layout)
+	if err != nil || !proof.work.Empty() || proof.workSHA256 != host.WorkInventorySHA256 || proof.schema != host.SchemaVersion ||
+		proof.configurationSHA256 != host.ConfigurationSHA256 || proof.selectorTarget != host.PreviousTarget ||
+		proof.previousBundleSHA256() != host.PreviousBundleSHA256 {
+		return CatalogCohortHostFence{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	if err := validatePRDPreflightBackup(ctx, plan, host); err != nil {
+		return CatalogCohortHostFence{}, err
+	}
+	if active {
+		if err := service.Stop(ctx, plan); err != nil {
+			return CatalogCohortHostFence{}, fmt.Errorf("stop selected unsuffixed PRD service for initial cohort fence: %w", err)
+		}
+	}
+	activeAfter, err := service.Status(ctx, plan)
+	if err != nil || activeAfter {
+		return CatalogCohortHostFence{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	post, err := readPRDCatalogProof(ctx, plan, layout)
+	if err != nil || !post.work.Empty() || post.workSHA256 != host.WorkInventorySHA256 || post.schema != host.SchemaVersion ||
+		post.configurationSHA256 != host.ConfigurationSHA256 || post.selectorTarget != host.PreviousTarget ||
+		post.previousBundleSHA256() != host.PreviousBundleSHA256 {
+		return CatalogCohortHostFence{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	return CatalogCohortHostFence{
+		HostID: plan.HostID, ServiceWasActive: host.ServiceActiveAtPreflight, ServiceStopped: true, WorkInventorySHA256: post.workSHA256,
+		ConfigurationSHA256: post.configurationSHA256, SelectorTarget: post.selectorTarget,
+		PreviousBundleSHA256: post.previousBundleSHA256(), DatabaseSchema: post.schema,
+		ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
+func validPRDCohortFenceServiceState(activeAtPreflight, currentlyActive bool) bool {
+	// A crash after Stop but before the fence receipt transition is safely
+	// retryable. The subsequent proof still requires the exact empty inventory,
+	// configuration, selector, binary identity, and backup captured earlier.
+	return !currentlyActive || activeAtPreflight
+}
+
+func validatePRDPreflightBackup(ctx context.Context, plan PRDUpgradePlan, preflight CatalogCohortHostPreflight) error {
+	manifest, err := loadPRDBackupManifest(plan, preflight.BackupDirectory)
+	if err != nil || manifest.SchemaVersion != preflight.SchemaVersion || manifest.DatabasePath != plan.Namespace.Database ||
+		manifest.BundleSHA256 != preflight.Target.BundleSHA256 || backupManifestSHA256(preflight.BackupDirectory) != preflight.BackupManifestSHA256 {
+		return ErrSimpleBackupRequired
+	}
+	if err := verifyPRDBackupTargets(manifest, true); err != nil {
+		return err
+	}
+	return verifyPRDBackupWorkSnapshot(ctx, plan, manifest, preflight.WorkInventorySHA256, preflight.SchemaVersion)
+}
+
+// verifyPRDBackupWorkSnapshot reads the private online-backup database with
+// the compatible read-only connection and proves that its schema and complete
+// normalized work inventory match the preflight receipt. It never opens the
+// live PRD database through store.Open or starts a worker.
+func verifyPRDBackupWorkSnapshot(ctx context.Context, plan PRDUpgradePlan, manifest PRDBackupManifest,
+	expectedWorkSHA256 string, expectedSchema int) error {
+	if validatePRDPlan(plan) != nil || !filepath.IsAbs(manifest.DatabaseBackupPath) ||
+		filepath.Clean(manifest.DatabaseBackupPath) != manifest.DatabaseBackupPath ||
+		!bundleDigestPattern.MatchString(expectedWorkSHA256) || expectedSchema <= 0 ||
+		manifest.SchemaVersion != expectedSchema {
+		return ErrSimpleBackupRequired
+	}
+	database, err := store.OpenExistingRestartPreflightReadOnly(ctx, manifest.DatabaseBackupPath)
+	if err != nil {
+		return errors.Join(ErrSimpleBackupRequired, err)
+	}
+	schema, inventory, readErr := readPRDWorkSnapshot(ctx, database)
+	closeErr := database.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		return errors.Join(ErrSimpleBackupRequired, err)
+	}
+	if schema != expectedSchema || inventory.SHA256() != expectedWorkSHA256 {
+		return ErrSimpleBackupRequired
+	}
+	return nil
 }
 
 // BeginCatalogPRDMaintenance requires a locally recorded whole-cohort hold,
@@ -189,6 +406,52 @@ func (m *CatalogPRDMaintenance) UseVerifiedBackup(ctx context.Context, directory
 	}
 	m.backup = &PRDBackupReceipt{Directory: directory, Manifest: manifest}
 	return nil
+}
+
+// CohortHostPreflight revalidates the initial online PRD report after the
+// selected service has been stopped under its synchronized cohort hold. It
+// returns fresh evidence for the ordered preflight transition without
+// changing the original work-inventory hash or backup identity.
+func (m *CatalogPRDMaintenance) CohortHostPreflight(ctx context.Context, expected CatalogCohortHostPreflight) (CatalogCohortHostPreflightReport, error) {
+	if m == nil || m.closed || m.backup == nil || expected.HostID != m.plan.HostID ||
+		!prdCatalogProofFresh(m.proof) || !expected.WorkInventoryEmpty ||
+		!bundleDigestPattern.MatchString(expected.WorkInventorySHA256) {
+		return CatalogCohortHostPreflightReport{}, ErrSimpleBackupRequired
+	}
+	if err := m.recheck(ctx); err != nil {
+		return CatalogCohortHostPreflightReport{}, err
+	}
+	proof := m.proof
+	if proof.workSHA256 != expected.WorkInventorySHA256 || proof.schema != expected.SchemaVersion ||
+		proof.configurationSHA256 != expected.ConfigurationSHA256 || proof.selectorTarget != expected.PreviousTarget ||
+		proof.previousBundleSHA256() != expected.PreviousBundleSHA256 {
+		return CatalogCohortHostPreflightReport{}, ErrPRDUpgradeGuard
+	}
+	target, err := InspectCatalogRelease(m.layout.catalogRoot, m.layout.hostID, expected.Target.ReleaseID)
+	if err != nil || target.Identity != expected.Target {
+		return CatalogCohortHostPreflightReport{}, ErrInvalidCatalogRelease
+	}
+	if err := validatePRDPreflightBackup(ctx, m.plan, expected); err != nil ||
+		m.backup.Directory != expected.BackupDirectory || backupManifestSHA256(m.backup.Directory) != expected.BackupManifestSHA256 {
+		return CatalogCohortHostPreflightReport{}, errors.Join(ErrSimpleBackupRequired, err)
+	}
+	available, required, err := ReadPRDCatalogSelectorCapacity(m.plan)
+	if err != nil || required != expected.RequiredBytes || available < required {
+		return CatalogCohortHostPreflightReport{}, errors.Join(ErrCatalogInsufficientSpace, err)
+	}
+	proof.availableBytes, proof.requiredBytes = available, required
+	return CatalogCohortHostPreflightReport{
+		Preflight: CatalogCohortHostPreflight{
+			HostID: expected.HostID, ServiceActiveAtPreflight: expected.ServiceActiveAtPreflight,
+			PreviousTarget: expected.PreviousTarget, PreviousBundleSHA256: expected.PreviousBundleSHA256,
+			PreviousReadSchemaMax: expected.PreviousReadSchemaMax, LegacyRollback: expected.LegacyRollback,
+			Target: expected.Target, ConfigurationSHA256: proof.configurationSHA256, SchemaVersion: proof.schema,
+			WorkInventorySHA256: proof.workSHA256, WorkInventoryEmpty: proof.work.Empty(),
+			PreflightAt: time.Now().UTC().Format(time.RFC3339Nano), BackupDirectory: m.backup.Directory,
+			BackupManifestSHA256: backupManifestSHA256(m.backup.Directory), AvailableBytes: available, RequiredBytes: required,
+		},
+		WorkInventory: proof.work,
+	}, nil
 }
 
 // Select switches the PRD selector only after the exact host preflight and
@@ -405,12 +668,7 @@ func readPRDCatalogProof(ctx context.Context, plan PRDUpgradePlan, layout catalo
 	if err != nil {
 		return prdCatalogProof{}, err
 	}
-	var schema int
-	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil {
-		_ = database.Close()
-		return prdCatalogProof{}, err
-	}
-	work, inventoryErr := readPRDWorkInventory(ctx, database)
+	schema, work, inventoryErr := readPRDWorkSnapshot(ctx, database)
 	closeErr := database.Close()
 	if err := errors.Join(inventoryErr, closeErr); err != nil || schema <= 0 {
 		return prdCatalogProof{}, errors.Join(ErrPRDUpgradeGuard, err)
@@ -425,12 +683,7 @@ func readPRDCatalogProof(ctx context.Context, plan PRDUpgradePlan, layout catalo
 	}
 	proof := prdCatalogProof{observedAt: time.Now().UTC(), schema: schema, configurationSHA256: configurationSHA256,
 		selectorTarget: status.Target, work: work}
-	workBytes, err := json.Marshal(work)
-	if err != nil {
-		return prdCatalogProof{}, err
-	}
-	workDigest := sha256.Sum256(workBytes)
-	proof.workSHA256 = hex.EncodeToString(workDigest[:])
+	proof.workSHA256 = work.SHA256()
 	if status.Kind == "catalog" && status.Release != nil {
 		if !catalogDatabaseSupportsSchema(resolvedCatalogSelection{kind: "catalog", release: status.Release}, schema) {
 			return prdCatalogProof{}, ErrCatalogRollbackUnsafe
@@ -535,12 +788,28 @@ func restorePRDLegacyServiceArtifacts(ctx context.Context, plan PRDUpgradePlan, 
 	if err != nil {
 		return err
 	}
+	if err := restorePRDServiceArtifactsFromBackup(ctx, service, artifacts, backup); err != nil {
+		return err
+	}
+	if plan.Namespace.Host == config.HostKindLinux {
+		return service.base.reloadSystemd(ctx)
+	}
+	return nil
+}
+
+func restorePRDServiceArtifactsFromBackup(ctx context.Context, service *PRDServiceController, artifacts []Artifact,
+	backup PRDBackupManifest) error {
+	if service == nil || !filepath.IsAbs(backup.DatabaseBackupPath) || filepath.Clean(backup.DatabaseBackupPath) != backup.DatabaseBackupPath {
+		return ErrPRDUpgradeGuard
+	}
+	backupRoot := filepath.Dir(backup.DatabaseBackupPath)
 	for _, artifact := range artifacts {
 		file, ok := findPRDBackupFile(backup, artifact.InstallPath)
-		if !ok {
+		backupPath := filepath.Join(backupRoot, file.BackupPath)
+		if !ok || !pathContained(backupRoot, backupPath) || filepath.Clean(backupPath) != backupPath {
 			return ErrPRDUpgradeGuard
 		}
-		contents, err := os.ReadFile(filepath.Join(filepath.Dir(backup.DatabaseBackupPath), file.BackupPath))
+		contents, err := os.ReadFile(backupPath)
 		if err != nil {
 			return err
 		}
@@ -553,9 +822,6 @@ func restorePRDLegacyServiceArtifacts(ctx context.Context, plan PRDUpgradePlan, 
 		if err := replacePRDCatalogArtifact(ctx, service, legacy, sha256HexString([]byte(artifact.Contents)), artifact.Mode); err != nil {
 			return err
 		}
-	}
-	if plan.Namespace.Host == config.HostKindLinux {
-		return service.base.reloadSystemd(ctx)
 	}
 	return nil
 }

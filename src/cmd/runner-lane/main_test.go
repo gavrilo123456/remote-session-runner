@@ -13,7 +13,6 @@ import (
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/laneinstall"
-	"remote-session-runner/src/internal/store"
 )
 
 func TestRunPlanRendersOnlyFixedDevOrQASNamespace(t *testing.T) {
@@ -141,18 +140,21 @@ func TestCatalogHostPreflightStopGuardFailureDoesNotAcquireLaneMaintenanceLease(
 }
 
 func TestCatalogHostPreflightReportRetainsEveryRestartInventoryCategory(t *testing.T) {
-	want := store.RestartPreflightMetrics{
-		ActiveSessionSlots: 1,
-		ActiveCommandSlots: 2,
-		QueuedCommands:     3,
-		ResumableJobs:      4,
+	want := laneinstall.CatalogWorkInventory{
+		ActiveSessions:               1,
+		ActiveCommandSlots:           2,
+		ActiveSessionReservations:    3,
+		QueuedCommands:               4,
+		RunningCommands:              5,
+		ResumableJobs:                6,
+		PendingRecoveryFinalizations: 7,
 	}
 	encoded, err := json.Marshal(laneinstall.CatalogCohortHostPreflightReport{WorkInventory: want})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var decoded struct {
-		WorkInventory store.RestartPreflightMetrics `json:"work_inventory"`
+		WorkInventory laneinstall.CatalogWorkInventory `json:"work_inventory"`
 	}
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
@@ -165,7 +167,7 @@ func TestCatalogHostPreflightReportRetainsEveryRestartInventoryCategory(t *testi
 		t.Fatal(err)
 	}
 	var inventoryDecoded struct {
-		WorkInventory store.RestartPreflightMetrics `json:"work_inventory"`
+		WorkInventory laneinstall.CatalogWorkInventory `json:"work_inventory"`
 	}
 	if err := json.Unmarshal(inventoryJSON, &inventoryDecoded); err != nil || inventoryDecoded.WorkInventory != want {
 		t.Fatalf("read-only inventory did not retain resumable-job counts: got %+v, err=%v", inventoryDecoded.WorkInventory, err)

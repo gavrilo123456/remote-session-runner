@@ -41,6 +41,49 @@ func TestBuildPRDUpgradePlanIsFixedToExistingUnsuffixedHosts(t *testing.T) {
 	}
 }
 
+func TestPRDWorkSnapshotUsesCanonicalFullInventoryAndVerifiesBackup(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(root, "local.db")
+	database, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, empty, err := readPRDWorkSnapshot(ctx, database)
+	if err != nil || schema != store.CurrentSchemaVersion || !empty.Empty() {
+		t.Fatalf("empty fixture snapshot schema=%d inventory=%+v err=%v", schema, empty, err)
+	}
+	plan, err := BuildPRDUpgradePlan("mac-control-plane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyHash := empty.SHA256()
+	manifest := PRDBackupManifest{SchemaVersion: schema, DatabaseBackupPath: databasePath}
+	if err := verifyPRDBackupWorkSnapshot(ctx, plan, manifest, emptyHash, schema); err != nil {
+		t.Fatalf("matching isolated backup snapshot rejected: %v", err)
+	}
+	_, err = database.ExecContext(ctx, `INSERT INTO exec_sessions (
+		session_id,target_kind,target_profile,environment,controller_type,controller_id,source_mode,state,
+		command_timeout_ns,idle_timeout_ns,session_max_lifetime_ns,output_bytes_per_command,created_at,updated_at,expires_at
+	) VALUES ('fixture-session','local','mac','test','local_user','fixture-user','empty','ready',1,1,1,1,'now','now','later')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, active, err := readPRDWorkSnapshot(ctx, database)
+	if err != nil || schema != store.CurrentSchemaVersion || active.ActiveSessions != 1 || active.Empty() || active.SHA256() == emptyHash {
+		t.Fatalf("active fixture snapshot schema=%d inventory=%+v err=%v", schema, active, err)
+	}
+	if err := verifyPRDBackupWorkSnapshot(ctx, plan, manifest, emptyHash, schema); err == nil {
+		t.Fatal("backup with a different full work inventory matched the preflight hash")
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCatalogPlanCanInspectPRDWithoutOpeningSimpleInstaller(t *testing.T) {
 	for host := range simpleHostPlatforms {
 		plan, err := BuildCatalogPlan(host, config.ReleaseLanePRD)

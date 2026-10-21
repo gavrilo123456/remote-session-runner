@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/store"
 )
 
 func TestPRDLegacyBundleDigestBindsHostAndEveryInstalledFile(t *testing.T) {
@@ -78,6 +80,42 @@ func TestPRDSelectorMutationRequiresGuardedMaintenanceAndSupportsUnselectedState
 	}
 }
 
+func TestPRDReconciliationRecognizesExactUnselectedLegacyIdentity(t *testing.T) {
+	now := time.Now().UTC()
+	legacySHA := strings.Repeat("a", 64)
+	configurationSHA := strings.Repeat("b", 64)
+	host := CatalogCohortHostPreflight{
+		HostID: "mac-control-plane", PreviousBundleSHA256: legacySHA,
+		PreviousReadSchemaMax: store.CurrentSchemaVersion, ConfigurationSHA256: configurationSHA, SchemaVersion: store.CurrentSchemaVersion,
+		LegacyRollback: validLegacyRollbackEvidence(legacySHA, configurationSHA, store.CurrentSchemaVersion, now),
+	}
+	status := CatalogSelectorStatus{Kind: "unselected"}
+	if !catalogCohortPreviousSelectorMatches(config.ReleaseLanePRD, host, status) {
+		t.Fatal("an exact evidence-bound legacy PRD identity was rejected after restoring the unselected launcher")
+	}
+	status.Kind = "catalog"
+	if catalogCohortPreviousSelectorMatches(config.ReleaseLanePRD, host, status) {
+		t.Fatal("unselected legacy receipt accepted a catalog selector")
+	}
+	status = CatalogSelectorStatus{Kind: "unselected"}
+	host.LegacyRollback.ConfigurationSHA256 = strings.Repeat("c", 64)
+	if catalogCohortPreviousSelectorMatches(config.ReleaseLanePRD, host, status) {
+		t.Fatal("legacy rollback identity accepted evidence bound to another configuration")
+	}
+}
+
+func TestPRDHostFenceCanRetryAfterStopBeforeReceiptWrite(t *testing.T) {
+	if !validPRDCohortFenceServiceState(true, false) {
+		t.Fatal("fence retry refused the selected service already stopped before receipt persistence")
+	}
+	if !validPRDCohortFenceServiceState(true, true) || !validPRDCohortFenceServiceState(false, false) {
+		t.Fatal("fence service state accepted/rejected a valid preflight state incorrectly")
+	}
+	if validPRDCohortFenceServiceState(false, true) {
+		t.Fatal("fence retry accepted a service started after a stopped preflight")
+	}
+}
+
 func TestPRDCatalogArtifactReplacementIsExpectedHashBound(t *testing.T) {
 	root := catalogPRDArtifactFixtureDir(t)
 	path := filepath.Join(root, "entrypoint.sh")
@@ -133,6 +171,81 @@ func TestPRDCatalogReplacementSupportsOnlyCurrentAccountOwnedQueuedWrapper(t *te
 	foreign.Owner = "nobody"
 	if err := replacePRDCatalogArtifact(context.Background(), &PRDServiceController{}, foreign, sha256HexString([]byte(artifact.Contents)), 0o700); !errors.Is(err, ErrSimpleArtifactConflict) {
 		t.Fatalf("replacement did not retain the conflict category for a foreign artifact owner: %v", err)
+	}
+}
+
+func TestPRDLegacyRollbackRestoresLauncherAndQueuedWrapperWithoutChangingDatabase(t *testing.T) {
+	root := catalogPRDArtifactFixtureDir(t)
+	backupRoot := filepath.Join(root, "backup")
+	if err := os.Mkdir(backupRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	serviceRoot := filepath.Join(root, "service")
+	if err := os.Mkdir(serviceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	productionDatabase := filepath.Join(root, "production-local.db")
+	if err := os.WriteFile(productionDatabase, []byte("preserved production database bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	databaseBefore, err := fileSHA256(productionDatabase)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	definitions := []struct {
+		name    string
+		kind    ArtifactKind
+		legacy  []byte
+		catalog string
+	}{
+		{name: "runner-entrypoint.sh", kind: ArtifactEntrypoint, legacy: []byte("#!/bin/sh\nexec /legacy/bin/runnerd\n"), catalog: "#!/bin/sh\nexec /catalog/current/bin/runnerd\n"},
+		{name: "runner-ssh-bridge-forced.sh", kind: ArtifactSSHWrapper, legacy: []byte("#!/bin/sh\nexec /legacy/bin/runner-ssh-bridge\n"), catalog: "#!/bin/sh\nexec /catalog/current/bin/runner-ssh-bridge\n"},
+	}
+	manifest := PRDBackupManifest{FormatVersion: prdUpgradeBackupFormat, HostID: "linux-host", SchemaVersion: 40,
+		DatabasePath: productionDatabase, DatabaseBackupPath: filepath.Join(backupRoot, "database.sqlite")}
+	if err := os.WriteFile(manifest.DatabaseBackupPath, []byte("private snapshot placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var artifacts []Artifact
+	for _, definition := range definitions {
+		installPath := filepath.Join(serviceRoot, definition.name)
+		catalogBytes := []byte(definition.catalog)
+		if err := os.WriteFile(installPath, catalogBytes, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		backupPath := filepath.Join(backupRoot, "service", definition.name)
+		if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(backupPath, definition.legacy, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		manifest.Files = append(manifest.Files, PRDBackupFile{
+			TargetPath: installPath, BackupPath: filepath.Join("service", definition.name),
+			SHA256: sha256HexString(definition.legacy), Bytes: int64(len(definition.legacy)), Mode: 0o700,
+		})
+		artifacts = append(artifacts, Artifact{Kind: definition.kind, InstallPath: installPath, Mode: 0o700, Contents: definition.catalog})
+	}
+	if err := restorePRDServiceArtifactsFromBackup(context.Background(), &PRDServiceController{}, artifacts, manifest); err != nil {
+		t.Fatalf("restore exact legacy launcher and queued wrapper: %v", err)
+	}
+	for index, definition := range definitions {
+		actual, err := os.ReadFile(artifacts[index].InstallPath)
+		if err != nil || string(actual) != string(definition.legacy) {
+			t.Fatalf("restored %s=%q err=%v", definition.name, actual, err)
+		}
+		info, err := os.Stat(artifacts[index].InstallPath)
+		if err != nil {
+			t.Fatalf("stat restored %s: %v", definition.name, err)
+		}
+		if info.Mode().Perm() != 0o700 {
+			t.Fatalf("restored %s mode=%v", definition.name, info.Mode().Perm())
+		}
+	}
+	databaseAfter, err := fileSHA256(productionDatabase)
+	if err != nil || databaseAfter != databaseBefore {
+		t.Fatalf("rollback artifact restore changed production database: before=%s after=%s err=%v", databaseBefore, databaseAfter, err)
 	}
 }
 

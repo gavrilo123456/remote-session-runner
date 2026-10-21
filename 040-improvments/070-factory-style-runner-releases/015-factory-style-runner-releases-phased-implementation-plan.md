@@ -1,5 +1,26 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## Current CAT-06 engineering status — 2026-10-21 23:03 UTC
+
+The PRD bootstrap and rollback-reconciliation source correction is implemented
+on the Mac `dev` working tree, with fixture regressions and Mac source gates
+passing. The full test suite needed a rerun with read access to `/bin/ps` after
+the sandbox denied an unrelated lifecycle test's fixture-process check; that
+rerun passed. `make vet`, `make build`, `make smoke`, focused CAT-06 tests and
+`git diff --check` passed. Git delivery is pending, so no Ubuntu source gate or
+host operation is claimed here.
+
+No new release has been sealed or installed. `cat-20261021-b84caf0` remains the
+accepted Dev/QAS release, the historical `ebc4446` remains unchanged, and the
+active eight-path mailbox handoff remains assigned to QAS. QAS stayed serving;
+no mailbox request or ACK was published. CAT-06 is **NOT COMPLETE**. Before
+sealing a new candidate, finish the full PRD adoption fixture path and
+host-specific legacy binary/configuration compatibility evidence. Before live
+PRD work, refresh the exact retained-work pairs and stop/ownership evidence,
+recheck capacity, and prepare verified consistent backups and rollback. QAS
+qualification must wait for an actual publisher pause and drain; do not infer
+that from the existing mailbox handoff.
+
 ## Current deployment — 2026-10-21 22:01 UTC: S3 qualified; mailbox handoff active
 
 The separate owner-approved handoff and CPU-correction follow-up now selects

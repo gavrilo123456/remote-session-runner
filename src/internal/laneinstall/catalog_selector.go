@@ -179,23 +179,23 @@ func (m *CatalogLaneMaintenance) Backup(ctx context.Context) (SimpleLaneBackupRe
 }
 
 type CatalogCohortHostPreflightReport struct {
-	Preflight     CatalogCohortHostPreflight    `json:"preflight"`
-	WorkInventory store.RestartPreflightMetrics `json:"work_inventory"`
+	Preflight     CatalogCohortHostPreflight `json:"preflight"`
+	WorkInventory CatalogWorkInventory       `json:"work_inventory"`
 }
 
 // CatalogWorkInventoryReport records the read-only lane, selector and
 // restart-guard measurements captured before a selected-service stop.
 type CatalogWorkInventoryReport struct {
-	HostID              string                        `json:"host_id"`
-	Lane                config.ReleaseLane            `json:"lane"`
-	ObservedAt          string                        `json:"observed_at"`
-	ServiceActive       bool                          `json:"service_active"`
-	SelectorTarget      string                        `json:"selector_target"`
-	BundleSHA256        string                        `json:"bundle_sha256"`
-	ConfigurationSHA256 string                        `json:"configuration_sha256"`
-	DatabaseSchema      int                           `json:"database_schema"`
-	WorkInventory       store.RestartPreflightMetrics `json:"work_inventory"`
-	WorkInventoryEmpty  bool                          `json:"work_inventory_empty"`
+	HostID              string               `json:"host_id"`
+	Lane                config.ReleaseLane   `json:"lane"`
+	ObservedAt          string               `json:"observed_at"`
+	ServiceActive       bool                 `json:"service_active"`
+	SelectorTarget      string               `json:"selector_target"`
+	BundleSHA256        string               `json:"bundle_sha256"`
+	ConfigurationSHA256 string               `json:"configuration_sha256"`
+	DatabaseSchema      int                  `json:"database_schema"`
+	WorkInventory       CatalogWorkInventory `json:"work_inventory"`
+	WorkInventoryEmpty  bool                 `json:"work_inventory_empty"`
 }
 
 // ReadCatalogWorkInventory returns a read-only snapshot of the selected
@@ -234,16 +234,8 @@ func ReadCatalogWorkInventory(ctx context.Context, plan Plan, service SimpleServ
 		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
 	}
 	defer database.Close()
-	authority, err := store.NewAuthorityStore(database)
-	if err != nil {
-		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
-	}
-	metrics, err := authority.ReadRestartPreflightMetrics(ctx)
-	if err != nil {
-		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
-	}
-	var schema int
-	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil || schema <= 0 {
+	schema, workInventory, err := readPRDWorkSnapshot(ctx, database)
+	if err != nil || schema <= 0 {
 		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
 	}
 	bundleSHA256 := status.Bundle.BundleSHA256
@@ -254,7 +246,7 @@ func ReadCatalogWorkInventory(ctx context.Context, plan Plan, service SimpleServ
 		HostID: plan.HostID, Lane: plan.Lane, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		ServiceActive: active, SelectorTarget: status.Target, BundleSHA256: bundleSHA256,
 		ConfigurationSHA256: configurationSHA256, DatabaseSchema: schema,
-		WorkInventory: metrics, WorkInventoryEmpty: simpleMetricsEmpty(metrics),
+		WorkInventory: workInventory, WorkInventoryEmpty: workInventory.Empty(),
 	}, nil
 }
 
@@ -294,11 +286,15 @@ func (m *CatalogLaneMaintenance) CohortHostPreflight(ctx context.Context, releas
 	if err != nil {
 		return CatalogCohortHostPreflightReport{}, err
 	}
-	workBytes, err := json.Marshal(proof.metrics)
+	database, err := store.OpenExistingRestartPreflightReadOnly(ctx, m.maintenance.plan.Namespace.Database)
 	if err != nil {
-		return CatalogCohortHostPreflightReport{}, err
+		return CatalogCohortHostPreflightReport{}, ErrSimpleLanePreflight
 	}
-	workDigest := sha256.Sum256(workBytes)
+	workInventory, inventoryErr := readPRDWorkInventory(ctx, database)
+	closeErr := database.Close()
+	if err := errors.Join(inventoryErr, closeErr); err != nil || !workInventory.Empty() {
+		return CatalogCohortHostPreflightReport{}, ErrSimpleLaneNotQuiescent
+	}
 	var stat unix.Statfs_t
 	if err := unix.Statfs(m.layout.backupRoot, &stat); err != nil || stat.Bsize < 0 || stat.Bavail < 0 {
 		return CatalogCohortHostPreflightReport{}, ErrSimpleLanePreflight
@@ -322,12 +318,12 @@ func (m *CatalogLaneMaintenance) CohortHostPreflight(ctx context.Context, releas
 			HostID: m.layout.hostID, PreviousTarget: status.Target,
 			PreviousBundleSHA256: previousBundleSHA256, PreviousReadSchemaMax: previousReadSchemaMax,
 			Target: target.Identity, ConfigurationSHA256: configurationSHA256,
-			SchemaVersion: proof.database, WorkInventorySHA256: hex.EncodeToString(workDigest[:]),
+			SchemaVersion: proof.database, WorkInventorySHA256: workInventory.SHA256(),
 			WorkInventoryEmpty: true, PreflightAt: time.Now().UTC().Format(time.RFC3339Nano),
 			BackupDirectory: m.maintenance.backup.directory, BackupManifestSHA256: m.maintenance.backup.manifestHash,
 			AvailableBytes: availableBytes, RequiredBytes: requiredBytes,
 		},
-		WorkInventory: proof.metrics,
+		WorkInventory: workInventory,
 	}, nil
 }
 

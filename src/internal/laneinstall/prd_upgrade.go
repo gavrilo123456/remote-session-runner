@@ -126,15 +126,10 @@ func ReadPRDPreflight(ctx context.Context, plan PRDUpgradePlan, service PRDServi
 	if err != nil {
 		return PRDPreflight{}, err
 	}
-	var schema int
-	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil {
-		_ = database.Close()
-		return PRDPreflight{}, err
-	}
-	work, inventoryErr := readPRDWorkInventory(ctx, database)
+	schema, work, inventoryErr := readPRDWorkSnapshot(ctx, database)
 	closeErr := database.Close()
-	if err := errors.Join(inventoryErr, closeErr); err != nil {
-		return PRDPreflight{}, err
+	if err := errors.Join(inventoryErr, closeErr); err != nil || schema <= 0 {
+		return PRDPreflight{}, errors.Join(ErrPRDUpgradeGuard, err)
 	}
 	configSHA, err := hashPRDRegularFile(plan.Namespace.ConfigFile)
 	if err != nil {
@@ -427,7 +422,10 @@ func RollbackPRD(ctx context.Context, plan PRDUpgradePlan, service PRDServicePro
 	return restorePRDBinarySnapshot(plan.Namespace.Binaries, plan.HostID, manifest)
 }
 
-type PRDWorkInventory struct {
+// CatalogWorkInventory is the canonical full work snapshot used by PRD and
+// catalog cohort receipts. Keep this representation stable: preflight,
+// receipt creation, selector checks and recovery all hash these exact fields.
+type CatalogWorkInventory struct {
 	ActiveSessions               int64 `json:"active_sessions"`
 	ActiveCommandSlots           int64 `json:"active_command_slots"`
 	ActiveSessionReservations    int64 `json:"active_session_reservations"`
@@ -437,12 +435,25 @@ type PRDWorkInventory struct {
 	PendingRecoveryFinalizations int64 `json:"pending_recovery_finalizations"`
 }
 
-func (i PRDWorkInventory) Empty() bool {
+// PRDWorkInventory remains an alias for existing PRD maintenance APIs while
+// the catalog uses the shared canonical type.
+type PRDWorkInventory = CatalogWorkInventory
+
+// SHA256 returns the canonical digest shared by preflight, cohort receipts,
+// selector guards and recovery. Struct field order and JSON tags are part of
+// this durable evidence contract.
+func (i CatalogWorkInventory) SHA256() string {
+	encoded, _ := json.Marshal(i)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func (i CatalogWorkInventory) Empty() bool {
 	return i.ActiveSessions == 0 && i.ActiveCommandSlots == 0 && i.ActiveSessionReservations == 0 &&
 		i.QueuedCommands == 0 && i.RunningCommands == 0 && i.ResumableJobs == 0 && i.PendingRecoveryFinalizations == 0
 }
 
-func (i PRDWorkInventory) InstallableForGuardedRecovery() bool {
+func (i CatalogWorkInventory) InstallableForGuardedRecovery() bool {
 	return i.ActiveSessions == 0 && i.QueuedCommands == 0 && i.RunningCommands == 0 && i.ResumableJobs == 0
 }
 
@@ -527,7 +538,43 @@ func refuseLegacyPRDMutationAt(selector string) error {
 	return nil
 }
 
+type catalogSQLiteQueryRower interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func readPRDWorkInventory(ctx context.Context, database *sql.DB) (PRDWorkInventory, error) {
+	_, inventory, err := readPRDWorkSnapshot(ctx, database)
+	return inventory, err
+}
+
+// readPRDWorkSnapshot observes the schema and every work category inside one
+// read-only SQLite transaction, so all receipt hashes describe one coherent
+// database snapshot rather than adjacent count queries.
+func readPRDWorkSnapshot(ctx context.Context, database *sql.DB) (int, CatalogWorkInventory, error) {
+	if database == nil {
+		return 0, CatalogWorkInventory{}, store.ErrNilDatabase
+	}
+	tx, err := database.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return 0, CatalogWorkInventory{}, err
+	}
+	var schema int
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil || schema <= 0 {
+		_ = tx.Rollback()
+		return 0, CatalogWorkInventory{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	inventory, err := readPRDWorkInventoryTx(ctx, tx)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, CatalogWorkInventory{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, CatalogWorkInventory{}, err
+	}
+	return schema, inventory, nil
+}
+
+func readPRDWorkInventoryTx(ctx context.Context, database catalogSQLiteQueryRower) (CatalogWorkInventory, error) {
 	var inventory PRDWorkInventory
 	queries := []struct {
 		table string
@@ -570,7 +617,7 @@ func readPRDWorkInventory(ctx context.Context, database *sql.DB) (PRDWorkInvento
 	return inventory, nil
 }
 
-func sqliteTableExists(ctx context.Context, database *sql.DB, table string) (bool, error) {
+func sqliteTableExists(ctx context.Context, database catalogSQLiteQueryRower, table string) (bool, error) {
 	if !regexp.MustCompile(`^[a-z_]+$`).MatchString(table) {
 		return false, ErrPRDUpgradeGuard
 	}

@@ -51,20 +51,73 @@ type CatalogCohortFenceProof struct {
 }
 
 type CatalogCohortHostPreflight struct {
-	HostID                string                 `json:"host_id"`
-	PreviousTarget        string                 `json:"previous_target,omitempty"`
-	PreviousBundleSHA256  string                 `json:"previous_bundle_sha256,omitempty"`
-	PreviousReadSchemaMax int                    `json:"previous_read_schema_max,omitempty"`
-	Target                CatalogReleaseIdentity `json:"target_release_identity"`
-	ConfigurationSHA256   string                 `json:"configuration_sha256"`
-	SchemaVersion         int                    `json:"schema_version"`
-	WorkInventorySHA256   string                 `json:"work_inventory_sha256"`
-	WorkInventoryEmpty    bool                   `json:"work_inventory_empty"`
-	PreflightAt           string                 `json:"preflight_at"`
-	BackupDirectory       string                 `json:"backup_directory"`
-	BackupManifestSHA256  string                 `json:"backup_manifest_sha256"`
-	AvailableBytes        uint64                 `json:"available_bytes"`
-	RequiredBytes         uint64                 `json:"required_bytes"`
+	HostID                   string                              `json:"host_id"`
+	ServiceActiveAtPreflight bool                                `json:"service_active_at_preflight"`
+	PreviousTarget           string                              `json:"previous_target,omitempty"`
+	PreviousBundleSHA256     string                              `json:"previous_bundle_sha256,omitempty"`
+	PreviousReadSchemaMax    int                                 `json:"previous_read_schema_max,omitempty"`
+	LegacyRollback           *CatalogLegacyRollbackCompatibility `json:"legacy_rollback_compatibility,omitempty"`
+	Target                   CatalogReleaseIdentity              `json:"target_release_identity"`
+	ConfigurationSHA256      string                              `json:"configuration_sha256"`
+	SchemaVersion            int                                 `json:"schema_version"`
+	WorkInventorySHA256      string                              `json:"work_inventory_sha256"`
+	WorkInventoryEmpty       bool                                `json:"work_inventory_empty"`
+	PreflightAt              string                              `json:"preflight_at"`
+	BackupDirectory          string                              `json:"backup_directory"`
+	BackupManifestSHA256     string                              `json:"backup_manifest_sha256"`
+	AvailableBytes           uint64                              `json:"available_bytes"`
+	RequiredBytes            uint64                              `json:"required_bytes"`
+}
+
+// CatalogLegacyRollbackCompatibility binds rollback claims for an unselected
+// legacy PRD installation to its exact binaries and configuration, plus a
+// reviewed semantic-test record. A schema number alone is never sufficient.
+type CatalogLegacyRollbackCompatibility struct {
+	FormatVersion       int      `json:"format_version"`
+	LegacyBundleSHA256  string   `json:"legacy_bundle_sha256"`
+	ConfigurationSHA256 string   `json:"configuration_sha256"`
+	DatabaseSchema      int      `json:"database_schema"`
+	ReadSchemaMin       int      `json:"read_schema_min"`
+	ReadSchemaMax       int      `json:"read_schema_max"`
+	TestSuite           string   `json:"test_suite"`
+	TestEvidenceSHA256  string   `json:"test_evidence_sha256"`
+	SemanticChecks      []string `json:"semantic_checks"`
+	TestedAt            string   `json:"tested_at"`
+}
+
+const catalogLegacyRollbackTestSuite = "catalog-prd-legacy-semantics-v1"
+
+var catalogLegacyRollbackSemanticChecks = []string{
+	"current-database-read-without-migration",
+	"retained-history-unchanged",
+	"launcher-resolves-preserved-legacy-binaries",
+	"queued-wrapper-resolves-preserved-legacy-binaries",
+	"rollback-preserves-current-database",
+}
+
+func ValidateCatalogLegacyRollbackCompatibility(evidence CatalogLegacyRollbackCompatibility,
+	legacyBundleSHA256, configurationSHA256 string, databaseSchema int) error {
+	if evidence.FormatVersion != 1 || !bundleDigestPattern.MatchString(legacyBundleSHA256) ||
+		evidence.LegacyBundleSHA256 != legacyBundleSHA256 || !bundleDigestPattern.MatchString(configurationSHA256) ||
+		evidence.ConfigurationSHA256 != configurationSHA256 || evidence.DatabaseSchema != databaseSchema || databaseSchema <= 0 ||
+		evidence.ReadSchemaMin <= 0 || evidence.ReadSchemaMin > databaseSchema || evidence.ReadSchemaMax < databaseSchema ||
+		evidence.TestSuite != catalogLegacyRollbackTestSuite || !bundleDigestPattern.MatchString(evidence.TestEvidenceSHA256) ||
+		!reflect.DeepEqual(evidence.SemanticChecks, catalogLegacyRollbackSemanticChecks) || !validCohortTimestamp(evidence.TestedAt) {
+		return ErrCatalogRollbackUnsafe
+	}
+	return nil
+}
+
+type CatalogCohortHostFence struct {
+	HostID               string `json:"host_id"`
+	ServiceWasActive     bool   `json:"service_was_active"`
+	ServiceStopped       bool   `json:"service_stopped"`
+	WorkInventorySHA256  string `json:"work_inventory_sha256"`
+	ConfigurationSHA256  string `json:"configuration_sha256"`
+	SelectorTarget       string `json:"selector_target,omitempty"`
+	PreviousBundleSHA256 string `json:"previous_bundle_sha256"`
+	DatabaseSchema       int    `json:"database_schema"`
+	ObservedAt           string `json:"observed_at"`
 }
 
 // CatalogCohortPublisherPause records the owner-provided pause that cannot be
@@ -88,6 +141,7 @@ type CatalogCohortTransition struct {
 	HistoricalBranches  []CatalogCohortHistoryBranch       `json:"historical_branches,omitempty"`
 	Supersession        *CatalogCohortSupersessionEvidence `json:"supersession,omitempty"`
 	SupersessionRestart *CatalogCohortSupersessionRestart  `json:"supersession_restart,omitempty"`
+	HostFence           *CatalogCohortHostFence            `json:"host_fence,omitempty"`
 	SuccessorID         string                             `json:"successor_operation_id,omitempty"`
 	PreviousSHA256      string                             `json:"previous_sha256"`
 	SHA256              string                             `json:"sha256"`
@@ -113,7 +167,7 @@ type CatalogCohortSupersessionEvidence struct {
 	SuccessorOperationID string `json:"successor_operation_id"`
 	ExpectedSelector     string `json:"expected_selector"`
 	ObservedSelector     string `json:"observed_selector"`
-	SelectorBundleSHA256 string `json:"selector_bundle_sha256,omitempty"`
+	SelectorBundleSHA256 string `json:"selector_bundle_sha256,omitempty"` // Exact selected bundle, or recorded legacy PRD binary-set identity.
 	ServiceActive        bool   `json:"service_active"`
 	WorkInventorySHA256  string `json:"work_inventory_sha256"`
 	WorkInventoryEmpty   bool   `json:"work_inventory_empty"`
@@ -164,13 +218,22 @@ func CatalogCohortRequiredFences() []string {
 	}
 }
 
+func catalogCohortInitialFenceScopes(lane config.ReleaseLane) []string {
+	if lane == config.ReleaseLanePRD {
+		// PRD's legacy service cannot observe a catalog receipt before adoption.
+		// Its four service stops are recorded as ordered host-fence transitions.
+		return []string{"mac-project-publishers"}
+	}
+	return CatalogCohortRequiredFences()
+}
+
 // NewCatalogCohortReceipt builds a prepared receipt only from a validated
 // sealed release, four host-local preflight reports, and an explicit owner
 // attestation that external project publishers remain paused. It derives all
 // fence digests and host identities; callers never assemble receipt JSON.
 func NewCatalogCohortReceipt(lane config.ReleaseLane, manifest CatalogReleaseManifest,
 	reports []CatalogCohortHostPreflightReport, publisherPause CatalogCohortPublisherPause, now time.Time) (CatalogCohortReceipt, error) {
-	if (lane != config.ReleaseLaneDev && lane != config.ReleaseLaneQAS) || ValidateCatalogReleaseManifest(manifest) != nil ||
+	if (lane != config.ReleaseLaneDev && lane != config.ReleaseLaneQAS && lane != config.ReleaseLanePRD) || ValidateCatalogReleaseManifest(manifest) != nil ||
 		len(reports) != len(catalogCohortSwitchOrder) || strings.TrimSpace(publisherPause.Owner) == "" ||
 		strings.TrimSpace(publisherPause.Control) == "" || len(publisherPause.Owner) > 128 || len(publisherPause.Control) > 1024 ||
 		!publisherPause.Paused || !publisherPause.NoNewAccepted || now.IsZero() {
@@ -186,19 +249,27 @@ func NewCatalogCohortReceipt(lane config.ReleaseLane, manifest CatalogReleaseMan
 	for _, report := range reports {
 		preflight := report.Preflight
 		if _, exists := byHost[preflight.HostID]; exists || !containsString(catalogCohortSwitchOrder, preflight.HostID) ||
-			!preflight.WorkInventoryEmpty || !simpleMetricsEmpty(report.WorkInventory) || preflight.RequiredBytes == 0 ||
+			!preflight.WorkInventoryEmpty || !report.WorkInventory.Empty() || preflight.RequiredBytes == 0 ||
 			preflight.AvailableBytes < preflight.RequiredBytes || preflight.Target.ReleaseID != manifest.ReleaseID ||
 			preflight.Target.ReleaseSHA256 != releaseSHA256 || preflight.Target.BundleSHA256 != catalogManifestBundleSHA256(manifest, preflight.HostID) ||
 			preflight.Target.HostID != preflight.HostID || preflight.SchemaVersion < manifest.Database.ReadSchemaMin ||
 			preflight.SchemaVersion > manifest.Database.ReadSchemaMax {
 			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 		}
-		metricsBytes, marshalErr := json.Marshal(report.WorkInventory)
-		if marshalErr != nil {
+		if preflight.WorkInventorySHA256 != report.WorkInventory.SHA256() {
 			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 		}
-		metricsDigest := sha256.Sum256(metricsBytes)
-		if preflight.WorkInventorySHA256 != hex.EncodeToString(metricsDigest[:]) {
+		if lane == config.ReleaseLanePRD {
+			if preflight.PreviousTarget == "" || strings.HasPrefix(preflight.PreviousTarget, "legacy-bin:") {
+				if preflight.LegacyRollback == nil || ValidateCatalogLegacyRollbackCompatibility(*preflight.LegacyRollback,
+					preflight.PreviousBundleSHA256, preflight.ConfigurationSHA256, preflight.SchemaVersion) != nil ||
+					preflight.PreviousReadSchemaMax != preflight.LegacyRollback.ReadSchemaMax {
+					return CatalogCohortReceipt{}, ErrCatalogRollbackUnsafe
+				}
+			} else if preflight.LegacyRollback != nil {
+				return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+			}
+		} else if preflight.ServiceActiveAtPreflight || preflight.LegacyRollback != nil {
 			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 		}
 		byHost[preflight.HostID] = report
@@ -228,12 +299,14 @@ func NewCatalogCohortReceipt(lane config.ReleaseLane, manifest CatalogReleaseMan
 			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 		}
 		evidence := sha256.Sum256(encoded)
-		for _, scope := range cohortIngressFencesForHost(hostID) {
-			receipt.FenceProofs = append(receipt.FenceProofs, CatalogCohortFenceProof{
-				Scope: scope, Control: "Fresh supported catalog-host-preflight observed the selected service stopped and complete work inventory empty on " + hostID + ".",
-				Owner: "Runner maintenance operator", Paused: true, NoNewAccepted: true,
-				EvidenceSHA256: hex.EncodeToString(evidence[:]), VerifiedAt: preflight.PreflightAt,
-			})
+		if lane != config.ReleaseLanePRD {
+			for _, scope := range cohortIngressFencesForHost(hostID) {
+				receipt.FenceProofs = append(receipt.FenceProofs, CatalogCohortFenceProof{
+					Scope: scope, Control: "Fresh supported catalog-host-preflight observed the selected service stopped and complete work inventory empty on " + hostID + ".",
+					Owner: "Runner maintenance operator", Paused: true, NoNewAccepted: true,
+					EvidenceSHA256: hex.EncodeToString(evidence[:]), VerifiedAt: preflight.PreflightAt,
+				})
+			}
 		}
 	}
 	publisherEvidence, err := json.Marshal(struct {
@@ -298,7 +371,7 @@ func ValidateCatalogCohortReceipt(receipt CatalogCohortReceipt) error {
 		receipt.Database.WriteSchemaMin <= 0 || receipt.Database.WriteSchemaMin > receipt.Database.WriteSchemaMax ||
 		receipt.Database.ReadSchemaMax != store.CurrentSchemaVersion || receipt.Database.WriteSchemaMin != store.CurrentSchemaVersion ||
 		receipt.Database.WriteSchemaMax != store.CurrentSchemaVersion || receipt.Database.Migration != catalogMigrationPolicy || receipt.Database.Rollback != catalogRollbackPolicy ||
-		len(receipt.Hosts) != len(catalogCohortSwitchOrder) || len(receipt.FenceProofs) != len(CatalogCohortRequiredFences()) {
+		len(receipt.Hosts) != len(catalogCohortSwitchOrder) || len(receipt.FenceProofs) != len(catalogCohortInitialFenceScopes(receipt.Lane)) {
 		return ErrCatalogOperationInvalid
 	}
 	if len(receipt.Transitions) == 0 {
@@ -323,7 +396,7 @@ func ValidateCatalogCohortReceipt(receipt CatalogCohortReceipt) error {
 			return ErrCatalogOperationInvalid
 		}
 	}
-	required := CatalogCohortRequiredFences()
+	required := catalogCohortInitialFenceScopes(receipt.Lane)
 	seenFences := make(map[string]struct{}, len(receipt.FenceProofs))
 	for _, proof := range receipt.FenceProofs {
 		if !containsString(required, proof.Scope) || proof.Control == "" || proof.Owner == "" || !proof.Paused || !proof.NoNewAccepted ||
@@ -353,6 +426,21 @@ func ValidateCatalogCohortReceipt(receipt CatalogCohortReceipt) error {
 func AdvanceCatalogCohortReceipt(receipt CatalogCohortReceipt, action, hostID, evidenceSHA256 string, at time.Time) (CatalogCohortReceipt, error) {
 	return advanceCatalogCohortReceipt(receipt, CatalogCohortTransition{
 		Action: action, HostID: hostID, EvidenceSHA256: evidenceSHA256,
+	}, at)
+}
+
+func AdvanceCatalogCohortHostFence(receipt CatalogCohortReceipt, evidence CatalogCohortHostFence, at time.Time) (CatalogCohortReceipt, error) {
+	if ValidateCatalogCohortReceipt(receipt) != nil || receipt.Lane != config.ReleaseLanePRD || at.IsZero() ||
+		!containsString(catalogCohortSwitchOrder, evidence.HostID) {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	digest := sha256.Sum256(encoded)
+	return advanceCatalogCohortReceipt(receipt, CatalogCohortTransition{
+		Action: "fence-host", HostID: evidence.HostID, EvidenceSHA256: hex.EncodeToString(digest[:]), HostFence: &evidence,
 	}, at)
 }
 
@@ -474,10 +562,18 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 		}
 		switch event.Action {
 		case "hold":
-			if stage != CatalogCohortPrepared || !cohortEvidenceFresh(receipt, event.At) || !eventHostEmpty(event.HostID) {
+			if stage != CatalogCohortPrepared || !cohortEvidenceFresh(receipt, event.At) || !eventHostEmpty(event.HostID) ||
+				receipt.Lane == config.ReleaseLanePRD && !cohortHasAllHostFences(receipt, receipt.Transitions[:index]) {
 				return "", ErrCatalogOperationInvalid
 			}
 			stage = CatalogCohortHeld
+		case "fence-host":
+			if receipt.Lane != config.ReleaseLanePRD || stage != CatalogCohortPrepared || event.HostFence == nil ||
+				len(currentCohortHostFences(receipt.Transitions[:index])) >= len(catalogCohortSwitchOrder) ||
+				event.HostID != catalogCohortSwitchOrder[len(currentCohortHostFences(receipt.Transitions[:index]))] ||
+				!validCatalogCohortHostFence(receipt, event, eventAt) {
+				return "", ErrCatalogOperationInvalid
+			}
 		case "preflight":
 			if stage != CatalogCohortHeld && stage != CatalogCohortSwitching || len(switched) >= len(catalogCohortSwitchOrder) || event.HostID != catalogCohortSwitchOrder[len(switched)] {
 				return "", ErrCatalogOperationInvalid
@@ -555,15 +651,17 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 			stage = CatalogCohortReleased
 		case "reconcile-history":
 			if (stage != CatalogCohortPrepared && stage != CatalogCohortHeld && stage != CatalogCohortSwitching &&
-				stage != CatalogCohortVerifying && stage != CatalogCohortBlocked) || !eventHostEmpty(event.HostID) ||
+				stage != CatalogCohortVerifying && stage != CatalogCohortBlocked && stage != CatalogCohortRollingBack &&
+				stage != CatalogCohortRolledBack) || !eventHostEmpty(event.HostID) ||
 				!validCatalogCohortHistoryReconciliation(receipt, event, receipt.Transitions[:index]) {
 				return "", ErrCatalogOperationInvalid
 			}
 			blockedFrom = event.ReconciledStage
-			if event.ReconciledStage == CatalogCohortSwitching || event.ReconciledStage == CatalogCohortVerifying {
+			if event.ReconciledStage == CatalogCohortSwitching || event.ReconciledStage == CatalogCohortVerifying ||
+				event.ReconciledStage == CatalogCohortRollingBack || event.ReconciledStage == CatalogCohortRolledBack {
 				var err error
-				var branchVerified []string
-				_, switched, branchVerified, err = catalogCohortReconciledBranchState(event.HistoricalBranches)
+				var branchVerified, branchRolledBack []string
+				_, switched, branchVerified, branchRolledBack, err = catalogCohortReconciledBranchState(event.HistoricalBranches)
 				if err != nil || len(switched) == 0 {
 					return "", ErrCatalogOperationInvalid
 				}
@@ -573,6 +671,7 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 					}
 					verified = branchVerified
 				}
+				rolledBack = branchRolledBack
 				lastPreflight = make(map[string]time.Time, len(catalogCohortSwitchOrder))
 			}
 			stage = CatalogCohortBlocked
@@ -613,28 +712,85 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 		default:
 			return "", ErrCatalogOperationInvalid
 		}
+		if event.Action != "fence-host" && event.HostFence != nil {
+			return "", ErrCatalogOperationInvalid
+		}
 		lastDigest = event.SHA256
 		previousAt = eventAt
 	}
 	return stage, nil
 }
 
+func currentCohortHostFences(transitions []CatalogCohortTransition) []string {
+	fenced := make(map[string]struct{})
+	walkCatalogCohortTransitions(transitions, func(event CatalogCohortTransition) {
+		if event.Action == "fence-host" {
+			fenced[event.HostID] = struct{}{}
+		}
+	})
+	var hosts []string
+	for _, hostID := range catalogCohortSwitchOrder {
+		if _, ok := fenced[hostID]; ok {
+			hosts = append(hosts, hostID)
+		}
+	}
+	return hosts
+}
+
+func cohortHasAllHostFences(receipt CatalogCohortReceipt, transitions []CatalogCohortTransition) bool {
+	if receipt.Lane != config.ReleaseLanePRD {
+		return true
+	}
+	return reflect.DeepEqual(currentCohortHostFences(transitions), catalogCohortSwitchOrder)
+}
+
+func validCatalogCohortHostFence(receipt CatalogCohortReceipt, event CatalogCohortTransition, eventAt time.Time) bool {
+	if event.HostFence == nil || !validCohortTimestamp(eventAt.UTC().Format(time.RFC3339Nano)) ||
+		event.HostFence.HostID != event.HostID || !event.HostFence.ServiceStopped ||
+		!bundleDigestPattern.MatchString(event.HostFence.WorkInventorySHA256) ||
+		!bundleDigestPattern.MatchString(event.HostFence.ConfigurationSHA256) ||
+		!bundleDigestPattern.MatchString(event.HostFence.PreviousBundleSHA256) || event.HostFence.DatabaseSchema <= 0 ||
+		!validCohortTimestamp(event.HostFence.ObservedAt) {
+		return false
+	}
+	index := cohortHostIndex(receipt, event.HostID)
+	if index < 0 {
+		return false
+	}
+	host := receipt.Hosts[index]
+	observedAt, err := time.Parse(time.RFC3339Nano, event.HostFence.ObservedAt)
+	encoded, encodeErr := json.Marshal(*event.HostFence)
+	digest := sha256.Sum256(encoded)
+	return err == nil && encodeErr == nil && event.EvidenceSHA256 == hex.EncodeToString(digest[:]) &&
+		!observedAt.After(eventAt) && eventAt.Sub(observedAt) <= 2*time.Minute &&
+		event.HostFence.ServiceWasActive == host.ServiceActiveAtPreflight &&
+		event.HostFence.WorkInventorySHA256 == host.WorkInventorySHA256 && host.WorkInventoryEmpty &&
+		event.HostFence.ConfigurationSHA256 == host.ConfigurationSHA256 &&
+		event.HostFence.SelectorTarget == host.PreviousTarget &&
+		event.HostFence.PreviousBundleSHA256 == host.PreviousBundleSHA256 &&
+		event.HostFence.DatabaseSchema == host.SchemaVersion
+}
+
 func validPreviousCatalogIdentity(host CatalogCohortHostPreflight, lane config.ReleaseLane) bool {
 	if host.PreviousTarget == "" {
 		if lane == config.ReleaseLanePRD {
-			return bundleDigestPattern.MatchString(host.PreviousBundleSHA256) && host.PreviousReadSchemaMax > 0
+			return bundleDigestPattern.MatchString(host.PreviousBundleSHA256) && host.PreviousReadSchemaMax > 0 &&
+				host.LegacyRollback != nil && ValidateCatalogLegacyRollbackCompatibility(*host.LegacyRollback, host.PreviousBundleSHA256,
+				host.ConfigurationSHA256, host.SchemaVersion) == nil && host.PreviousReadSchemaMax == host.LegacyRollback.ReadSchemaMax
 		}
 		return host.PreviousBundleSHA256 == "" && host.PreviousReadSchemaMax == 0
 	}
 	if strings.HasPrefix(host.PreviousTarget, "legacy-bin:") {
 		return bundleDigestPattern.MatchString(strings.TrimPrefix(host.PreviousTarget, "legacy-bin:")) &&
 			host.PreviousBundleSHA256 == strings.TrimPrefix(host.PreviousTarget, "legacy-bin:") &&
-			(lane != config.ReleaseLanePRD || host.PreviousReadSchemaMax > 0)
+			(lane != config.ReleaseLanePRD || host.PreviousReadSchemaMax > 0 && host.LegacyRollback != nil &&
+				ValidateCatalogLegacyRollbackCompatibility(*host.LegacyRollback, host.PreviousBundleSHA256, host.ConfigurationSHA256, host.SchemaVersion) == nil &&
+				host.PreviousReadSchemaMax == host.LegacyRollback.ReadSchemaMax)
 	}
 	if strings.HasPrefix(host.PreviousTarget, "releases/") {
 		return bundleDigestPattern.MatchString(strings.TrimPrefix(host.PreviousTarget, "releases/")) &&
 			host.PreviousBundleSHA256 == strings.TrimPrefix(host.PreviousTarget, "releases/") &&
-			(lane != config.ReleaseLanePRD || host.PreviousReadSchemaMax > 0)
+			(lane != config.ReleaseLanePRD || host.PreviousReadSchemaMax > 0 && host.LegacyRollback == nil)
 	}
 	if filepath.IsAbs(host.PreviousTarget) {
 		plan, err := BuildCatalogPlan(host.HostID, lane)
@@ -645,7 +801,7 @@ func validPreviousCatalogIdentity(host CatalogCohortHostPreflight, lane config.R
 		return err == nil && filepath.Clean(host.PreviousTarget) == host.PreviousTarget &&
 			host.PreviousTarget == filepath.Join(root, filepath.Base(filepath.Dir(host.PreviousTarget)), host.HostID) &&
 			validCatalogReleaseID(filepath.Base(filepath.Dir(host.PreviousTarget))) && bundleDigestPattern.MatchString(host.PreviousBundleSHA256) &&
-			(lane != config.ReleaseLanePRD || host.PreviousReadSchemaMax > 0)
+			(lane != config.ReleaseLanePRD || host.PreviousReadSchemaMax > 0 && host.LegacyRollback == nil)
 	}
 	return false
 }
@@ -881,6 +1037,39 @@ func LoadCatalogCohortHostPreflightReportFile(path string) (CatalogCohortHostPre
 		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
 	}
 	return report, nil
+}
+
+// LoadCatalogLegacyRollbackCompatibilityFile loads the owner-only semantic
+// test record supplied to an initial legacy-PRD preflight. Exact binary,
+// configuration and schema identities are checked again against the host.
+func LoadCatalogLegacyRollbackCompatibilityFile(path string) (CatalogLegacyRollbackCompatibility, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return CatalogLegacyRollbackCompatibility{}, ErrCatalogOperationInvalid
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 ||
+		info.Size() > 1<<20 || !catalogFileHasSingleLink(info) {
+		return CatalogLegacyRollbackCompatibility{}, ErrCatalogOperationInvalid
+	}
+	var stat unix.Stat_t
+	if unix.Lstat(path, &stat) != nil || stat.Uid != uint32(os.Getuid()) {
+		return CatalogLegacyRollbackCompatibility{}, ErrCatalogOperationInvalid
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CatalogLegacyRollbackCompatibility{}, err
+	}
+	var evidence CatalogLegacyRollbackCompatibility
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&evidence) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return CatalogLegacyRollbackCompatibility{}, ErrCatalogOperationInvalid
+	}
+	canonical, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil || !bytes.Equal(data, append(canonical, '\n')) {
+		return CatalogLegacyRollbackCompatibility{}, ErrCatalogOperationInvalid
+	}
+	return evidence, nil
 }
 
 func ReadCatalogCohortReceipt(plan Plan, operationID string) (CatalogCohortReceipt, error) {
@@ -1160,13 +1349,30 @@ func cohortSwitchedHosts(receipt CatalogCohortReceipt) []string {
 }
 
 func cohortRolledBackHosts(receipt CatalogCohortReceipt) []string {
-	var hosts []string
-	for _, transition := range receipt.Transitions {
+	rolledBack := make(map[string]struct{})
+	walkCatalogCohortTransitions(receipt.Transitions, func(transition CatalogCohortTransition) {
 		if transition.Action == "rollback-host" {
-			hosts = append(hosts, transition.HostID)
+			rolledBack[transition.HostID] = struct{}{}
+		}
+	})
+	var hosts []string
+	for index := len(catalogCohortSwitchOrder) - 1; index >= 0; index-- {
+		if _, ok := rolledBack[catalogCohortSwitchOrder[index]]; ok {
+			hosts = append(hosts, catalogCohortSwitchOrder[index])
 		}
 	}
 	return hosts
+}
+
+func walkCatalogCohortTransitions(transitions []CatalogCohortTransition, visit func(CatalogCohortTransition)) {
+	for _, transition := range transitions {
+		visit(transition)
+		if transition.Action == "reconcile-history" {
+			for _, branch := range transition.HistoricalBranches {
+				walkCatalogCohortTransitions(branch.Transitions, visit)
+			}
+		}
+	}
 }
 
 func cohortHasSwitched(receipt CatalogCohortReceipt, hostID string) bool {
