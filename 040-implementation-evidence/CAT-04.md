@@ -40,6 +40,15 @@ operation. No QAS or PRD action was taken. Temporary files were not created on
 the hosts; `/tmp` capacity observed was Mac 139 GiB, Linux 16 GiB, Sandbox
 1.3 GiB, and Factory 3.5 GiB on its existing tmpfs `/tmp` mount.
 
+This status update was committed on Mac `dev` as
+`9e9372848a90e6937ea7646a276fb6b73eda8e1b`. Primary Gitea `origin/dev` and
+automatic GitHub `github/dev` both resolved to that exact SHA. Linux, Sandbox,
+and Factory were clean on `dev` at `c89c645e5fb1ca4b3b1a66a4491a17b305bc6927`,
+then each fast-forwarded from `origin/dev` to `9e9372848a90e6937ea7646a276fb6b73eda8e1b`
+with the configured explicit GitHub identity; each post-pull worktree was
+clean. `git diff --check` passed. No tests were run for this Markdown-only
+update.
+
 ## Historical status — 2026-10-21 10:19 UTC: source correction delivered and all four host gates pass
 
 The 09:39 blocker below was addressed in source without changing live host
