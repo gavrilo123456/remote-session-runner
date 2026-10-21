@@ -7,10 +7,11 @@ mailbox configuration, and activation of the same paths in QAS. After installed
 validation proved that a configuration-only transfer was unsupported, the owner
 explicitly selected **keep existing paths; implement supported handoff**.
 
-**IN PROGRESS: implementation and validation. No installed configuration,
-service, selector, mailbox request or ACK has changed for this handoff yet.**
-The accepted Dev/QAS release remains `cat-20261021-ebc4446`; source work does not
-qualify or deploy a replacement. PRD upgrade/CAT-06 remains a separate task.
+**IN PROGRESS: Dev qualification complete; QAS qualification and actual mailbox
+activation remain outstanding.** Dev now selects `cat-20261021-5bc6f43` on all
+four hosts. QAS still selects `cat-20261021-ebc4446`. PRD and both mailbox
+configurations remain unchanged; no mailbox request or ACK has been published.
+PRD upgrade/CAT-06 remains a separate task.
 
 ## Verified starting point and backups
 
@@ -133,6 +134,45 @@ controller SHA-256 is `a50acdebac0ff4f129027cb1d8e36e36033e3dbc0660de9692940e59f
 the handoff operator is `15ae9b54142ed5fb5b300b7a858bb44c513d2f2d436c977e76866b4c1424b60a`;
 the fixed scoped-probe tool is `98c24b67daca62068ab683430fa8b33ce8d0fc8516d2b75e21c4f55dd5d37dd9`.
 Dev/QAS selection and live handoff remain outstanding at this publication point.
+
+## Dev handoff-release qualification — 2026-10-21 20:29 UTC
+
+Dev operation `106ea6517ec280e7fb909ee9c6fb98f7` is `released`, with 16
+transitions and common final receipt SHA-256
+`6242a2a53a190106eee02a2e5d2fb6ca6b9e07c6bf4db015933f8bbcdba0a996`.
+All four Dev services are active on the frozen S2 release and schema 40. The
+supported preflights created consistent selected-lane backups and observed
+empty slots, queues and resumable jobs before switching Linux, Sandbox,
+Factory, then Mac. The single protected receipt prefix was extended and synced
+only onto stopped services; no receipt was deleted, rewritten by hand or forked.
+
+All seven fixed scoped checks passed: Mac-local and each worker's direct mTLS
+and queued SSH route. Every accepted probe ended with exit 0, complete output
+and closed teardown; ordinary admissions were separately observed fenced while
+held. Result aggregates and their digest are `dev-seven-routes.json` and
+`dev-seven-routes.sha256` in the private work directory. Final released receipt
+copies were synchronized before the supported worker/Mac starts.
+
+Ordinary API verification also covered all seven routes. The first harness
+stopped on Linux queued CLI's `event_history_complete_this_read=false`, despite
+successful output and closed teardown. A read-only fetch of the same command
+proved contiguous events 1–4, exact output and terminal success; it was not
+resubmitted. The corrected harness allows bounded read-only convergence, and
+three fresh queued verification commands passed. Original failure and follow-up
+remain separate in `dev-normal-routes.log`, `dev-normal-queued-followup.log`,
+`handoff-native-route-dev-0918bad2e5ea/`, and
+`handoff-queued-followup-dev-5525d65fbd07/`. New timeout/output-cap enforcement,
+managed-session and fault probes were NOT RUN for this focused handoff route
+qualification; no new live claim is made for those unchanged execution paths.
+Source/transaction/interruption regressions are recorded separately above.
+
+At 20:29 UTC all four supported Dev inventories were empty; readiness reported
+S2, and storage/cleanup counters were zero. Captured PRD/QAS process identities
+and configuration hashes matched the pre-qualification baseline. Selected-lane
+restarts and receipt synchronization did not restart peer lanes. Host postflight
+files are `dev-HOST-postflight.json` and `dev-mac-final-{work,ready}.json` in the
+private work directory. No actual filesystem mailbox request or ACK was used;
+mailbox acceptance and normal project load remain NOT RUN. Clients stay stopped.
 
 Fresh PRD read-only inspection distinguished three local terminal-lost retained
 session/command pairs from three older uncertain SlideStud remote intents.
