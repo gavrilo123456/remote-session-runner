@@ -1,6 +1,20 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current deployment — 2026-10-21 20:41 UTC
+## Current deployment — 2026-10-21 22:01 UTC
+
+The owner-approved handoff and CPU-correction follow-up now selects
+`cat-20261021-b84caf0`, source
+`b84caf07da6abdf4b625731edc913a7a52478870`, on all four Dev hosts.
+Operation `a0ce005cfc55bc36daa3924ed6b3cee8` is released, with common receipt
+SHA-256 `b83ec4d95102c667f28955d89ae431f16dce8de2690e7ab3eafeb6c2d5e68f19`.
+All seven scoped and seven ordinary API routes passed, with exact running
+source, empty work inventories, zero error counters and peer preservation.
+The same immutable bundles are now accepted and released in QAS. See
+[the handoff record](MAILBOX-HANDOFF-2026-10-21.md) for exact hashes, focused
+validation scope and retained failure evidence. Clients remain paused;
+filesystem-mailbox request/ACK acceptance remains **NOT RUN**.
+
+## Historical deployment — 2026-10-21 20:41 UTC
 
 The owner-approved handoff follow-up now selects `cat-20261021-5bc6f43` on
 all Dev hosts; operation `106ea6517ec280e7fb909ee9c6fb98f7` is released.

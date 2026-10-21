@@ -5,7 +5,26 @@
 The owner selected the [Factory-style Runner release catalog design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
 and [CAT-01–CAT-07 plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md).
 
-### Current deployment follow-up — 2026-10-21 20:41 UTC
+### Current deployment follow-up — 2026-10-21 22:01 UTC
+
+The owner-approved handoff/CPU follow-up now selects the same immutable
+`cat-20261021-b84caf0` bundles in Dev and QAS on all four hosts. Dev operation
+`a0ce005cfc55bc36daa3924ed6b3cee8` and fresh QAS operation
+`48fa7f73d80047fc865fb2293761c4e9` are released. Each lane passed seven
+scoped and seven ordinary API routes, exact running-source checks, empty
+work inventories, zero error counters and peer preservation. QAS's failed
+first attempt was preserved, rolled back and superseded through supported
+commands.
+
+The eight-path mailbox handoff is **ACTIVE** in QAS. Mac PRD remains stopped
+with an empty mailbox map and disabled ingress; original PRD binaries,
+database and keys remain preserved, and workers' PRD services are unchanged.
+CAT-06 remains blocked. [The handoff record](MAILBOX-HANDOFF-2026-10-21.md)
+contains exact source/bundle/receipt hashes, focused scope and retained
+failure evidence. Clients remain paused; no filesystem mailbox request or ACK
+was published, and filesystem-mailbox acceptance remains **NOT RUN**.
+
+### Historical deployment follow-up — 2026-10-21 20:41 UTC
 
 Owner-approved handoff support is active in Dev/QAS as
 `cat-20261021-5bc6f43`, with released four-host cohorts. Exact qualification

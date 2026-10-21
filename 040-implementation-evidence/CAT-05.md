@@ -1,6 +1,27 @@
 # CAT-05 — Frozen candidate and live QAS qualification
 
-## Current deployment — 2026-10-21 20:41 UTC
+## Current deployment — 2026-10-21 22:01 UTC
+
+QAS now accepts the same Dev-qualified `cat-20261021-b84caf0` bundles, source
+`b84caf07da6abdf4b625731edc913a7a52478870`, on all four hosts.
+Fresh operation `48fa7f73d80047fc865fb2293761c4e9` is released, with common
+receipt SHA-256
+`8cbf4409bd9e5cc13d9fbb12325b18037d0e7dbf22a95fb5d56f27d700a06c82`.
+All seven scoped and seven ordinary API routes passed, with exact running
+source, empty work inventories, zero error counters and peer preservation.
+The earlier attempt `b3bda1317ce5ab9aedd14aa8decc6643` was safely rolled back
+and then superseded through the supported path; its failure and reserved scope
+remain preserved.
+
+The eight existing physical mailbox paths are assigned to QAS and the
+handoff is **ACTIVE**. Mac PRD remains stopped with an empty mailbox map and
+disabled ingress; its original binaries, database and keys remain preserved.
+Workers' PRD services are unchanged. See
+[the handoff record](MAILBOX-HANDOFF-2026-10-21.md) for focused validation and
+retention details. Clients remain paused; no filesystem mailbox request or ACK
+was published, and that acceptance remains **NOT RUN**.
+
+## Historical deployment — 2026-10-21 20:41 UTC
 
 The owner-approved handoff follow-up now selects the same Dev-qualified
 `cat-20261021-5bc6f43` on all QAS hosts; operation

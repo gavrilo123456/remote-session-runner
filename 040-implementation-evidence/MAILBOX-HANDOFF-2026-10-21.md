@@ -7,14 +7,19 @@ mailbox configuration, and activation of the same paths in QAS. After installed
 validation proved that a configuration-only transfer was unsupported, the owner
 explicitly selected **keep existing paths; implement supported handoff**.
 
-**IN PROGRESS: the eight paths are transferred to QAS, whose services are
-currently stopped/held after a safely rolled-back qualification attempt.**
-Dev accepts `cat-20261021-b84caf0`; QAS is back at `cat-20261021-5bc6f43`
-pending a fresh same-bytes correction qualification. The mailbox configuration,
-receipt and archived PRD history remain in place. Mac PRD is stopped with an
-empty mailbox map and disabled ingress; its original state is preserved. No
-filesystem mailbox request or ACK has been published. Clients remain stopped.
-PRD upgrade/CAT-06 remains separate.
+**COMPLETE: all eight existing mailbox paths are actively owned by QAS.**
+Dev and QAS run the same qualified `cat-20261021-b84caf0` release on all four
+hosts, with released cohorts. Mac PRD is stopped with an empty mailbox map and
+disabled ingress; its original configuration, binaries, database, keys and
+retained history are preserved. The three Ubuntu PRD services are unchanged.
+No filesystem mailbox request or ACK has been published. Clients remain
+stopped for the owner's QAS trial; filesystem-mailbox acceptance and normal
+client load remain **NOT RUN**. PRD upgrade/CAT-06 remains separate.
+
+Known performance limitation: the final idle QAS ingress sample averaged
+46.96% of one CPU core over 20.037 seconds, improved from 80.67%. Repeated
+ownership verification still has measurable cost; this is not a claim that
+idle overhead or reliability under normal mailbox load is resolved.
 
 ## Verified starting point and backups
 
@@ -390,7 +395,7 @@ checkpointed private database copy proved no job by that ID **or exact key**,
 zero active sessions, zero unreleased session/command slots, and integrity `ok`.
 The copy SHA-256 is
 `84f916ea06391fb7b9a92474f9d50f9d11dbc2f026ba51735b7fbfa801a1caf2`;
-` s3-qas-linux-probe-stopped.proof.json` records the bounded queries. The
+`s3-qas-linux-probe-stopped.proof.json` records the bounded queries. The
 copied database was queried on Mac because Linux's installed SQLite 3.31.1
 cannot parse STRICT tables. No live store migration or parser downgrade ran.
 A bounded log inspection did not identify the timeout cause; it remains unknown.
@@ -416,3 +421,103 @@ will retain native CA/hostname/leaf/URI/client/SPKI checks and the exact five-
 second probe body, while allowing 60 seconds per HTTP call/100 seconds overall.
 It performs one POST only. This changes a verification deadline, not the release
 or runtime behavior. A fresh scope/key is required; original evidence is not PASS.
+
+## Final S3 QAS qualification and active ownership — 2026-10-21 22:03 UTC
+
+The failed-attempt closeout was delivered as
+`d15a3cc0357c25dc28a4bbed9f256d9600421e97`: Mac primary Gitea, exact automatic
+GitHub mirror, then clean fast-forward pulls on all three workers. Only after
+that delivery did the fresh QAS attempt begin. No candidate rebuild occurred.
+
+Fresh stopped/empty/configuration/schema and capacity guards passed on every
+host. New cohort `48fa7f73d80047fc865fb2293761c4e9` was held and synchronized;
+while all consumers remained stopped, native serial `supersede-host` and
+`supersede` retired the fully rolled-back predecessor
+`b3bda1317ce5ab9aedd14aa8decc6643`. Its original reserved scope and failed
+probe evidence remain preserved. No receipt was edited or deleted, and the
+old permission was not retried. New scopes used fresh operation-bound keys and
+600-second TTLs. The reviewed direct client retained TLS 1.3, CA and hostname
+verification, exact server/client identities and the fixed five-second body;
+local validation performed zero network requests before the qualification run.
+Its SHA-256 is `a1a4be9c3ddae76fb8e1825c1ef6598b07d3d60f48d2b276205e5e9193edf462`.
+
+The four selectors switched to the identical Dev-accepted S3 per-host bundles
+listed above. Seven held/scoped probes passed: Mac-local, plus direct-mTLS
+and queued-SSH on each worker. Ordinary admissions correctly returned 503
+while held. Every successful command completed with exit 0, complete
+non-truncated output and closed teardown. After native completion/open and
+stopped receipt synchronization, all four services restarted with ordinary
+admissions open; seven ordinary API routes passed without maintenance tokens.
+Trailing queued projection events were obtained by bounded read-only retrieval
+of the same command's stream, never by resubmitting work.
+
+The final QAS receipt is `released`, 16 transitions, common SHA-256
+`8cbf4409bd9e5cc13d9fbb12325b18037d0e7dbf22a95fb5d56f27d700a06c82`.
+Native work inventories are empty, all databases remain schema 40, both Mac
+health endpoints and each worker report exact S3, and storage/cleanup counters
+are zero. Dev/PRD peer PIDs, selectors and configuration hashes match the
+pre-attempt snapshots. No PRD service was restarted or upgraded for this retry.
+The exact per-command results are in `s3-qas-retry-qualification/summary.json`
+and its reports; ordinary API evidence is
+`cpu-candidate-b84caf07da6a-qas-7c1fbedbe1d7/`.
+
+Independent final handoff checks passed before and after the idle sample:
+
+- Operation `1f96911399ff6a678345f214ada69b49` remains `active`, with its
+  unchanged receipt SHA-256
+  `d671c93f171610b1043f34bd04467eab81c92535849aee273785429904df17ea`.
+- All eight physical root identities and markers match; QAS holds all eight
+  exclusive owner locks. Every new stream directory is private and empty.
+- All 40 archived PRD stream directories and 2,559 entries exactly match the
+  stopped pre-activation snapshot, including content hashes and inode/device
+  identities. No historical request, result or held ACK was changed.
+- PRD disabled/empty and QAS handoff configuration hashes remain exactly
+  `56c25057b58b72e592995cc00efbd042cf4d666db449d01bb03a0aa628778d11`
+  and `9856c54900e26c335c4ea7adb2d02951847d76349abdd49dc6b261f419f11f6a`.
+- Mac PRD private listeners remain stopped; its original binary hashes and
+  main database file hash are unchanged. The latter is a file comparison,
+  not an independent WAL-inclusive logical database comparison.
+- QAS's native durable mailbox registry remains only its original `default`;
+  transferred roots use the temporary receipt authority, not a permanent
+  rewrite of either lane's registry.
+
+The 20.037-second idle sample for exact QAS ingress PID 6845 recorded 9.41 CPU
+seconds, **46.96% of one core**, versus S2's 80.67%. A bounded three-second
+profile still shows receipt hashing and guarded filesystem traversal among
+the costs. It does not quantify every part of the remaining CPU or establish
+a SQLite failure. No new ownership/correctness failure was observed; the
+residual idle overhead and potential impact under real mailbox load remain
+known limitations. S3 is a measured improvement, not a complete CPU fix.
+
+The return-tool controller, receipt schema and restore contract are unchanged
+between S2 and S3. The qualified S2 return tools remain preserved independently
+of `/tmp`; actual S3-to-PRD return was **NOT RUN**. Return requires stopping
+clients again, draining/ACKing new QAS exchanges and passing the supported
+guards. It is not a raw configuration toggle. A later PRD configuration/schema
+upgrade requires its corresponding validated return package.
+
+Clients remain stopped and must reopen mailbox files for their QAS trial.
+New work needs fresh request IDs and idempotency keys. No filesystem mailbox
+request or ACK was published; actual mailbox exchange acceptance, normal
+multi-project load, and additional live limit/managed-session/fault probes
+remain **NOT RUN**. Historical PRD results stay in their preserved epoch.
+
+## Persistent closeout and return evidence
+
+Successful Dev/QAS qualification, the failed QAS attempt and supported rollback,
+fresh supersession, per-command reports, archive comparisons, CPU samples and
+profile, and reviewed operator helpers are preserved as 2,400 owner-only files
+under the existing backup root:
+
+```text
+/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/backups/mailbox-routing-to-qas-20261021T192543Z/support-b84caf0/closeout-20261021T220311Z/
+```
+
+Its `manifest.json` pins each retained file; manifest SHA-256 is
+`e956b82b7ba52178f5444beea18bda2474db4718840440e401ae9b69d1fd566a`.
+The raw configuration backups, consistent database backups, operation journal,
+qualified return tools and `RETURN.md` remain in their separately identified
+persistent locations above. Critical handoff/return evidence does not depend on
+the survival of `/tmp`. Private capabilities and historical identities are not
+committed to Git. This closeout changes documentation only; no source test
+rerun is needed after the already recorded exact-S3 gates.

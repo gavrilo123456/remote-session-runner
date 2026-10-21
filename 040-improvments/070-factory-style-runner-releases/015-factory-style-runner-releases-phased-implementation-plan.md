@@ -1,6 +1,27 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-## Current deployment — 2026-10-21 20:41 UTC: handoff support in Dev/QAS
+## Current deployment — 2026-10-21 22:01 UTC: S3 qualified; mailbox handoff active
+
+The separate owner-approved handoff and CPU-correction follow-up now selects
+`cat-20261021-b84caf0`, source
+`b84caf07da6abdf4b625731edc913a7a52478870`, in Dev then QAS on all four
+existing hosts, without changing the sealed bundles during promotion. Dev
+operation `a0ce005cfc55bc36daa3924ed6b3cee8` and fresh QAS operation
+`48fa7f73d80047fc865fb2293761c4e9` are released. Both lanes passed seven
+scoped and seven ordinary API routes, exact running-source checks, empty work
+inventories, zero error counters and peer preservation. The first S3 QAS
+attempt was safely rolled back and superseded; its failure evidence remains.
+
+The eight-path PRD-to-QAS mailbox handoff is **ACTIVE**. Mac PRD is stopped
+with an empty mailbox map and disabled ingress; its original binaries,
+database and keys remain preserved. Workers' PRD services and CAT-06 migration
+blockers are unchanged. Exact hashes, focused validation scope and retained
+evidence are in [the handoff record](../../040-implementation-evidence/MAILBOX-HANDOFF-2026-10-21.md).
+Clients remain paused; no filesystem mailbox request or ACK was published, and
+filesystem-mailbox acceptance remains **NOT RUN**. Earlier baseline acceptance
+below remains historical evidence.
+
+## Historical deployment — 2026-10-21 20:41 UTC: handoff support in Dev/QAS
 
 The separate owner-approved reversible mailbox-handoff follow-up has qualified
 and selected `cat-20261021-5bc6f43` in Dev then QAS on all four existing hosts,

@@ -1,6 +1,22 @@
 # CAT-06 — PRD adoption and promotion
 
-## Current status — 2026-10-21 18:56 UTC: PRD blocked; Dev/QAS independently opened
+## Current status — 2026-10-21 22:01 UTC: PRD migration blocked; mailbox handoff active
+
+CAT-06 PRD catalog migration remains **BLOCKED** on its existing bootstrap,
+retained-work and compatibility gates. The separate owner-approved mailbox
+handoff is active: eight existing paths are assigned to QAS, while Mac PRD is
+stopped with an empty mailbox map and disabled ingress. Its original installed
+binaries, database and keys remain preserved; workers' PRD services are
+unchanged. This routing change does not complete PRD adoption or promotion.
+
+Dev and QAS now accept the same immutable `cat-20261021-b84caf0` bundles, with
+released four-host operations and passing scoped/ordinary API routes. See
+[the handoff record](MAILBOX-HANDOFF-2026-10-21.md) for current identities,
+focused validation scope and preservation evidence. Clients remain paused.
+No filesystem mailbox request or ACK was published; filesystem-mailbox
+acceptance remains **NOT RUN**.
+
+## Historical status — 2026-10-21 18:56 UTC: PRD blocked; Dev/QAS independently opened
 
 Dev and QAS now permit normal API use on the unchanged accepted
 `cat-20261021-ebc4446` release. Both four-host operations are `released`; all
