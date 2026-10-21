@@ -1,6 +1,6 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 09:56 UTC: supported completed-receipt supersession correction passes Mac source gates
+## Current status — 2026-10-21 10:19 UTC: source correction delivered and all four host gates pass
 
 The 09:39 blocker below was addressed in source without changing live host
 state. A completed cohort receipt can now be superseded only by a fresh held
@@ -21,22 +21,51 @@ against a temporary filesystem fixture; it accepts a matching journal and
 rejects selector drift. The prior interrupted-switch and unfinished-journal
 recovery regressions continue to pass.
 
-On Mac source revision `98f4da3be252dc4a50c1ab9ca7d2821d4d9517f0` plus the
-uncommitted correction, `make test`, `make vet`, `make build`, and `make smoke`
-passed. The first sandboxed `make test` run failed only because an existing
+The correction is committed as `ebc4446ce8ce95d3e3fc076bb9985cdfbc1e9388`,
+pushed to primary Gitea `origin/dev`, and verified at the exact GitHub
+`github/dev` SHA. All three Ubuntu checkouts were clean on `dev` at
+`98f4da3be252dc4a50c1ab9ca7d2821d4d9517f0` before their required
+`--ff-only` pulls; Mac and all three workers now pass the source gates at the
+exact correction commit:
+
+Primary Gitea `refs/heads/dev` and mirrored GitHub `refs/heads/dev` both
+resolved to `ebc4446ce8ce95d3e3fc076bb9985cdfbc1e9388`. Each Ubuntu checkout
+was verified clean on `dev`, then pulled with the configured explicit
+`/home/ubuntu/.ssh/gavrilo123456-github` identity and
+`git pull --ff-only origin dev`; post-pull `HEAD` on Linux, Sandbox, and
+Factory is the same `ebc4446...` and each worktree is clean. Host gates ran
+from `/home/ubuntu/projects/remote-session-runner` with the Makefile's Go
+1.27.1 toolchain and normal per-user Go caches. Mac gates ran from the
+authoritative Mac checkout at the same commit.
+
+| Host | `make test` | `make vet` | `make build` | `make smoke` |
+| --- | --- | --- | --- | --- |
+| Mac `mac-control-plane` | PASS; host-visible rerun | PASS | PASS | PASS |
+| `linux-host` | PASS | PASS | PASS | PASS |
+| `sandbox-host` | PASS | PASS | PASS | PASS |
+| `factory-sandbox` | PASS | PASS | PASS | PASS |
+
+The first sandboxed Mac `make test` run failed only because an existing
 `runnerlocald` cleanup test could not execute `/bin/ps` (`operation not
-permitted`); the host-visible rerun passed. The focused CAT-04 tests and full
-`laneinstall` package also passed. The exact correction is not yet committed
-or delivered to the Ubuntu hosts; their required source gates remain pending.
+permitted`); the host-visible rerun passed. Factory's gates used
+`TMPDIR=/tmp GOTMPDIR=/tmp SQLITE_TMPDIR=/tmp`. The mount reports `/tmp` as
+`tmpfs` with user quotas; `quota` and `repquota` cannot query that mount, so the
+effective per-user limit was checked read-only with `quotactl_fd`. For uid
+1001 it returned 2,097,152 KiB-block soft and hard limits (2 GiB each); use after the
+Factory gates was 524,980,224 bytes. No temporary test files remained and the
+ordinary Go caches were preserved. Sandbox `/tmp` is on `/dev/sda1`; its free
+space after the suite was 1,590,632,448 bytes.
 
 No live receipt or selector changed during this source work. Operation
 `33b2c3a3f6399253444c6ae29f0ecb97` remains complete at the synchronized SHA
 `1473de3b51e5327f0f1495d7a7a9892316d63ab0df10e94047bbdffef3cb46cd`; all Dev
 selectors remain on `cat-20261021-c76bac5`, all Dev services remain stopped,
 and QAS/PRD remain unchanged. Existing `cat-20261021-740927e` is unchanged and
-must not be promoted because it does not contain this correction. After Git
-delivery and all four-host gates, seal a new cohort from the delivered source,
-then perform fresh Dev acceptance before QAS and PRD. Mailbox acceptance is
+must not be promoted because it does not contain this correction. Seal a new
+cohort from `ebc4446ce8ce95d3e3fc076bb9985cdfbc1e9388`, then perform fresh Dev
+acceptance before QAS and PRD. Any later evidence-only commits must remain
+Markdown-only so the frozen source revision and bundle bytes remain pinned.
+Mailbox acceptance is
 **NOT RUN**; no mailbox request or ACK was published. External publishers
 remain paused.
 
