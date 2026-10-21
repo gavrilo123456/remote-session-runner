@@ -1,6 +1,28 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-## Current status — 2026-10-21 13:09 UTC: CAT-04 complete in Dev; CAT-05 next
+## Current status — 2026-10-21 17:12 UTC: CAT-05 complete in QAS; CAT-06 preflight next
+
+CAT-04 Dev and CAT-05 QAS acceptance are **COMPLETE** for the same frozen
+release `cat-20261021-ebc4446`, source revision
+`ebc4446ce8ce95d3e3fc076bb9985cdfbc1e9388`, manifest SHA-256
+`ede9121d5a41a85944a98d1b585aa99aa36c343244c587dfb540aa57b852c62c`. Dev
+operation `8fdb7e5eb058a795601a2cff9e7bde78` is complete. QAS operation
+`1349821d4c363aff4b43ed92a61bcc21` is complete with the synchronized receipt
+SHA-256 `caaeb634c83d4bd60e2ecfab17bbf9c0ddeb285bfc51d20a9b79fff35de063c4`.
+CAT-05 acceptance, all seven QAS routes, exact four-host holds, peer-lane
+preservation, and mailbox limitation are recorded in
+[`CAT-05.md`](../../040-implementation-evidence/CAT-05.md). The exact native
+bundle hashes did not change during promotion.
+
+CAT-06 PRD migration is **NOT STARTED**. The owner's existing scoped
+installation/restart authorization remains in force, but fresh PRD
+quiescence, work ownership, compatible backup, selector recovery and capacity
+guards must pass before switching. Sandbox had 1,454,804,992 bytes available
+on `/dev/sda1` at 17:12 UTC (98% used); measure again against the actual PRD
+backup requirement. Keep all publishers paused and Dev/QAS unchanged. Mailbox
+acceptance remains **NOT RUN** and no mailbox request or ACK was published.
+
+**Historical status (2026-10-21 13:09 UTC): CAT-04 complete in Dev; CAT-05 next**
 
 CAT-04 is **COMPLETE** for the sealed release `cat-20261021-ebc4446`, built
 from source revision `ebc4446ce8ce95d3e3fc076bb9985cdfbc1e9388` with release
@@ -106,9 +128,11 @@ or imply any installed Dev/QAS/PRD acceptance. Live migration and cohort
 actions remain separately gated by their acceptance evidence.
 CAT-04 is **COMPLETE** on `cat-20261021-ebc4446`; the live Dev cohort and
 operation are recorded in [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md).
-CAT-05 is next and must use the exact accepted release and per-host bundle
-hashes. CAT-06 remains **NOT STARTED** until CAT-05 passes. A unit is accepted
-only by its recorded evidence and required delivery/qualification results.
+CAT-05 is **COMPLETE** on the exact same release and per-host bundle hashes;
+its QAS operation and acceptance are recorded in
+[`CAT-05.md`](../../040-implementation-evidence/CAT-05.md). CAT-06 PRD migration
+is **NOT STARTED** until fresh production guards pass. A unit is accepted only
+by its recorded evidence and required delivery/qualification results.
 
 | Unit | Assigned work | Exit evidence |
 | --- | --- | --- |

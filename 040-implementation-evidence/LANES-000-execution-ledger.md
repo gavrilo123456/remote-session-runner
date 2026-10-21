@@ -4,9 +4,24 @@
 
 The owner selected the [Factory-style Runner release catalog design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
 and [CAT-01–CAT-07 plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md).
-The current assignment is documentation only. All CAT units and catalog live
-migrations are **NOT STARTED**; no unit acceptance is implied. Existing SIMPLE
-and historical LANES statuses below remain evidence for their original scope.
+
+### Current CAT status — 2026-10-21 17:12 UTC
+
+CAT-01 through CAT-05 are **COMPLETE**. The frozen release
+`cat-20261021-ebc4446` (`ebc4446ce8ce95d3e3fc076bb9985cdfbc1e9388`, manifest
+SHA-256 `ede9121d5a41a85944a98d1b585aa99aa36c343244c587dfb540aa57b852c62c`)
+passed Dev operation `8fdb7e5eb058a795601a2cff9e7bde78` and QAS operation
+`1349821d4c363aff4b43ed92a61bcc21`. CAT-05's all-host receipt is complete at
+SHA-256 `caaeb634c83d4bd60e2ecfab17bbf9c0ddeb285bfc51d20a9b79fff35de063c4`;
+acceptance and limitations are in [CAT-05](CAT-05.md). CAT-06 PRD migration is
+**NOT STARTED** pending fresh operational preflights. Dev/QAS/PRD state remains
+separate; external publishers remain paused; mailbox acceptance is **NOT RUN**.
+
+Historical note: when this catalog follow-up was selected, the assignment was
+documentation-only and no catalog unit had yet passed. The original scope and
+later CAT evidence are preserved below. Existing SIMPLE and historical LANES
+statuses remain evidence for their original scope.
+
 The new target shares immutable host-local catalog bytes through independent
 lane selectors while preserving separate writable runtime roots. Supported
 legacy installations remain unchanged until their CAT migration is delivered.
