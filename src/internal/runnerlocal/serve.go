@@ -25,6 +25,7 @@ import (
 	"remote-session-runner/src/internal/localapi"
 	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/mailboxfence"
+	"remote-session-runner/src/internal/mailboxhandoff"
 	"remote-session-runner/src/internal/opshealth"
 	"remote-session-runner/src/internal/store"
 )
@@ -157,6 +158,30 @@ func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runner-local validate-config: configuration is invalid")
 		return 1
 	}
+	if !settings.MailboxIngressEnabled {
+		if *retireMailbox != "" {
+			fmt.Fprintln(stderr, "runner-local validate-config: disabled mailbox ingress cannot retire retained mailboxes")
+			return 1
+		}
+		fmt.Fprintf(stdout, "runner-local configuration valid: schema_version=%d mailbox_ingress=disabled\n", loaded.SchemaVersion())
+		return 0
+	}
+	var handoffLease *mailboxhandoff.Lease
+	if *activateMailboxSet {
+		lease, leaseErr := acquireMailboxHandoff(loaded, settings, mailboxes)
+		if leaseErr != nil {
+			fmt.Fprintln(stderr, "runner-local validate-config: mailbox ownership authorization failed")
+			return 1
+		}
+		if lease != nil {
+			handoffLease = lease
+			defer lease.Close()
+		}
+		if lease != nil && *retireMailbox != "" {
+			fmt.Fprintln(stderr, "runner-local validate-config: ownership handoff cannot retire retained mailboxes")
+			return 1
+		}
+	}
 	mailboxRoots := make([]string, 0, len(mailboxes))
 	for _, mailbox := range mailboxes {
 		mailboxRoots = append(mailboxRoots, mailbox.Root)
@@ -189,7 +214,15 @@ func runValidateConfig(args []string, stdout, stderr io.Writer) int {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var activationErr error
-		if *retireMailbox == "" {
+		if handoffLease != nil {
+			// The supported handoff retains the pre-existing native registry.
+			// External roots are temporary lease authority and must not become
+			// monotonic registrations at the installer activation boundary.
+			activationErr = validateRetainedMailboxSet(ctx, settings.Database, mailboxes)
+			if activationErr == nil {
+				activationErr = prepareConfiguredMailboxDirectories(settings, mailboxRoots...)
+			}
+		} else if *retireMailbox == "" {
 			activationErr = activateMailboxSetAtBoundary(ctx, settings.Database, mailboxes, func() error {
 				return prepareConfiguredMailboxDirectories(settings, mailboxRoots...)
 			})
@@ -243,6 +276,9 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer service.dbCloser.Close()
+	if service.mailboxHandoff != nil {
+		defer service.mailboxHandoff.Close()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	report := service.Doctor(ctx)
@@ -281,6 +317,8 @@ type Service struct {
 	mailboxConfig                []config.MailboxDefinition
 	mailboxOwner                 domain.ControllerIdentity
 	mailboxResolver              mailbox.MailboxExecutionResolver
+	mailboxHandoff               *mailboxhandoff.Lease
+	mailboxDisabled              bool
 	mailboxMetrics               *mailboxMetricsSource
 	pollInterval                 time.Duration
 	routerHealth                 *routerHealthMonitor
@@ -315,6 +353,7 @@ type mailboxRuntime struct {
 	ackImporter      *mailbox.AckImporter
 	orphanReconciler *mailbox.DurableOrphanReconciler
 	artifactCleaner  mailbox.ArtifactCleaner
+	authorize        func() error
 }
 
 // New constructs the Mac services from an owner-restricted selected config.
@@ -337,6 +376,22 @@ func newService(configPath string, maintenanceHeld bool, maintenanceProbes ...*l
 	if err != nil {
 		return nil, err
 	}
+	return newServiceFromConfiguration(loaded, settings, mailboxDefinitions, maintenanceHeld, maintenanceProbe)
+}
+
+func newServiceFromConfiguration(loaded config.Config, settings config.MacSettings, mailboxDefinitions []config.MailboxDefinition, maintenanceHeld bool, maintenanceProbe *laneinstall.CatalogMaintenanceProbeGuard) (*Service, error) {
+	// Ownership must be established before preparing paths or opening SQLite:
+	// even a rejected startup must not migrate a different lane's authority.
+	lease, err := acquireMailboxHandoff(loaded, settings, mailboxDefinitions)
+	if err != nil {
+		return nil, err
+	}
+	closeLeaseOnError := true
+	defer func() {
+		if closeLeaseOnError && lease != nil {
+			_ = lease.Close()
+		}
+	}()
 	if maintenanceHeld {
 		err = validateMacServiceRoot(settings.ServiceRoot)
 	} else {
@@ -376,8 +431,10 @@ func newService(configPath string, maintenanceHeld bool, maintenanceProbes ...*l
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errMacDatabaseNotReady, err)
 	}
-	if err := validateConfiguredMailboxWork(ctx, authority, mailboxDefinitions); err != nil {
-		return nil, fmt.Errorf("validate configured mailbox work: %w", err)
+	if settings.MailboxIngressEnabled {
+		if err := validateConfiguredMailboxWork(ctx, authority, mailboxDefinitions); err != nil {
+			return nil, fmt.Errorf("validate configured mailbox work: %w", err)
+		}
 	}
 	if maintenanceHeld {
 		err = validateMacBaseServicePaths(settings)
@@ -398,12 +455,15 @@ func newService(configPath string, maintenanceHeld bool, maintenanceProbes ...*l
 	metricsRecorder := opshealth.NewRecorder()
 	thresholds := opshealth.NewThresholdMonitor()
 	mailboxMetrics := &mailboxMetricsSource{definitions: append([]config.MailboxDefinition(nil), mailboxDefinitions...)}
-	lifecycleStatus, err := mailbox.NewLifecycleStatusRegistry(mailbox.LifecycleStatusRegistryOptions{
-		Authority: authority,
-		Mailboxes: lifecycleStatusMailboxes(mailboxDefinitions),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("construct mailbox lifecycle status: %w", err)
+	var lifecycleStatus *mailbox.LifecycleStatusRegistry
+	if settings.MailboxIngressEnabled {
+		lifecycleStatus, err = mailbox.NewLifecycleStatusRegistry(mailbox.LifecycleStatusRegistryOptions{
+			Authority: authority,
+			Mailboxes: lifecycleStatusMailboxes(mailboxDefinitions),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("construct mailbox lifecycle status: %w", err)
+		}
 	}
 	api, err := localapi.NewServer(localapi.ServerOptions{
 		Authority: authority, Owner: owner, SocketPath: settings.APISocket,
@@ -452,10 +512,12 @@ func newService(configPath string, maintenanceHeld bool, maintenanceProbes ...*l
 		legacyMailboxSet:   configuredMailboxBaseline(mailboxDefinitions),
 		mailboxSettings:    settings, mailboxConfig: mailboxDefinitions,
 		mailboxOwner: owner, mailboxResolver: &loaded, mailboxMetrics: mailboxMetrics,
+		mailboxHandoff: lease, mailboxDisabled: !settings.MailboxIngressEnabled,
 		pollInterval: defaultPollInterval, remoteProbe: remoteDriver.ProbeProfiles,
 		metricsRecorder: metricsRecorder, thresholds: thresholds,
 	}
 	closeOnError = false
+	closeLeaseOnError = false
 	return service, nil
 }
 
@@ -495,6 +557,12 @@ func loadSelectedMacConfig(configPath string) (config.Config, config.MacSettings
 			return config.Config{}, config.MacSettings{}, nil, errors.New("configured Mac mailbox is invalid")
 		}
 		definitions = append(definitions, definition)
+	}
+	if !settings.MailboxIngressEnabled {
+		if len(definitions) != 0 {
+			return config.Config{}, config.MacSettings{}, nil, errors.New("disabled mailbox ingress cannot configure mailboxes")
+		}
+		return loaded, settings, nil, nil
 	}
 	if len(definitions) == 0 || definitions[0].ID == "" {
 		return config.Config{}, config.MacSettings{}, nil, errors.New("default Mac mailbox configuration is required")
@@ -673,7 +741,7 @@ func configuredMailboxBaseline(definitions []config.MailboxDefinition) []store.M
 	return legacyDefaultMailboxBaseline()
 }
 
-func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *store.AuthorityStore, owner domain.ControllerIdentity, operations mailbox.SessionOperations, resolver mailbox.MailboxExecutionResolver, reconciliationDeadline time.Duration) ([]mailboxRuntime, error) {
+func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *store.AuthorityStore, owner domain.ControllerIdentity, operations mailbox.SessionOperations, resolver mailbox.MailboxExecutionResolver, reconciliationDeadline time.Duration, leases ...*mailboxhandoff.Lease) ([]mailboxRuntime, error) {
 	if authority == nil || operations == nil || resolver == nil || len(definitions) == 0 {
 		return nil, errors.New("construct mailbox runtimes: configuration is incomplete")
 	}
@@ -687,7 +755,17 @@ func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *s
 			return nil, errors.New("construct mailbox runtimes: configured mailbox is duplicated")
 		}
 		seen[definition.ID] = struct{}{}
-		importer, err := mailbox.New(mailbox.Options{MailboxID: definition.ID, Root: definition.Root})
+		var authorizeRequest func(string, string) error
+		var authorizeACK func(string) error
+		var authorize func() error
+		if len(leases) != 0 && leases[0] != nil {
+			lease := leases[0]
+			mailboxID := definition.ID
+			authorizeRequest = func(requestID, key string) error { return lease.CheckRequest(mailboxID, requestID, key) }
+			authorizeACK = func(requestID string) error { return lease.CheckACK(mailboxID, requestID) }
+			authorize = func() error { return lease.Check(mailboxID) }
+		}
+		importer, err := mailbox.New(mailbox.Options{MailboxID: definition.ID, Root: definition.Root, Authorize: authorizeRequest})
 		if err != nil {
 			return nil, fmt.Errorf("construct mailbox importer for %s: %w", definition.ID, err)
 		}
@@ -711,7 +789,7 @@ func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *s
 		if err != nil {
 			return nil, fmt.Errorf("construct mailbox processor for %s: %w", definition.ID, err)
 		}
-		ackImporter, err := mailbox.NewAckImporter(mailbox.AckImporterOptions{MailboxID: definition.ID, Root: definition.Root, Authority: authority})
+		ackImporter, err := mailbox.NewAckImporter(mailbox.AckImporterOptions{MailboxID: definition.ID, Root: definition.Root, Authority: authority, Authorize: authorizeACK})
 		if err != nil {
 			return nil, fmt.Errorf("construct mailbox ACK importer for %s: %w", definition.ID, err)
 		}
@@ -727,6 +805,7 @@ func composeMailboxRuntimes(definitions []config.MailboxDefinition, authority *s
 		runtimes = append(runtimes, mailboxRuntime{
 			id: definition.ID, importer: importer, processor: processor, ackImporter: ackImporter, orphanReconciler: orphanReconciler,
 			artifactCleaner: mailbox.ArtifactCleaner{MailboxID: definition.ID, Authority: authority, Outbox: outbox, EventFiles: eventFiles, Diagnostics: diagnostics},
+			authorize:       authorize,
 		})
 	}
 	return runtimes, nil
@@ -745,10 +824,19 @@ func mailboxRuntimeImporters(runtimes []mailboxRuntime) []*mailbox.Importer {
 // stale socket pathname.
 func (s *Service) Serve(ctx context.Context, stdout, stderr io.Writer) (returnErr error) {
 	if s == nil || s.api == nil || s.database == nil || s.dbCloser == nil || s.localDriver == nil || s.remoteDriver == nil ||
-		(len(s.mailboxes) == 0 && len(s.mailboxConfig) == 0) {
+		(!s.mailboxDisabled && len(s.mailboxes) == 0 && len(s.mailboxConfig) == 0) {
+		if s != nil && s.mailboxHandoff != nil {
+			_ = s.mailboxHandoff.Close()
+		}
 		return errors.New("Mac service is not configured")
 	}
+	if s.mailboxHandoff != nil {
+		defer func() { returnErr = errors.Join(returnErr, s.mailboxHandoff.Close()) }()
+	}
 	defer func() { returnErr = errors.Join(returnErr, s.dbCloser.Close()) }()
+	if err := s.checkMailboxOwnership(); err != nil {
+		return err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -820,6 +908,16 @@ func (s *Service) activateConfiguredMailboxSet(ctx context.Context) error {
 	if s == nil || s.database == nil {
 		return errors.New("Mac service mailbox configuration is unavailable")
 	}
+	if s.mailboxDisabled {
+		return nil
+	}
+	if s.mailboxHandoff != nil {
+		// The handoff controller requires the prior native registry to be
+		// activated and unchanged. Temporary external roots remain governed by
+		// the receipt and lease rather than the monotonic native registry, so
+		// the original configuration can be restored after their work drains.
+		return validateConfiguredMailboxWork(ctx, s.database, s.mailboxConfig)
+	}
 	return s.database.RegisterConfiguredMailboxSet(ctx, s.mailboxDefinitions, s.legacyMailboxSet)
 }
 
@@ -829,6 +927,12 @@ func (s *Service) activateConfiguredMailboxSet(ctx context.Context) error {
 func (s *Service) activateAndPrepareMailboxRuntimes(ctx context.Context) error {
 	if s == nil {
 		return errors.New("Mac service is not configured")
+	}
+	if s.mailboxDisabled {
+		return nil
+	}
+	if err := s.checkMailboxOwnership(); err != nil {
+		return err
 	}
 	if len(s.mailboxes) == 0 {
 		if err := validateConfiguredMailboxDirectories(s.mailboxSettings, mailboxRoots(s.mailboxConfig)...); err != nil {
@@ -844,7 +948,11 @@ func (s *Service) activateAndPrepareMailboxRuntimes(ctx context.Context) error {
 	if err := prepareConfiguredMailboxDirectories(s.mailboxSettings, mailboxRoots(s.mailboxConfig)...); err != nil {
 		return err
 	}
-	runtimes, err := composeMailboxRuntimes(s.mailboxConfig, s.database, s.mailboxOwner, s.api, s.mailboxResolver, s.mailboxSettings.ReconciliationDeadline)
+	resolver := s.mailboxResolver
+	if s.mailboxHandoff != nil {
+		resolver = handoffExecutionResolver{original: resolver, lease: s.mailboxHandoff}
+	}
+	runtimes, err := composeMailboxRuntimes(s.mailboxConfig, s.database, s.mailboxOwner, s.api, resolver, s.mailboxSettings.ReconciliationDeadline, s.mailboxHandoff)
 	if err != nil {
 		return err
 	}
@@ -943,12 +1051,20 @@ func withRecorder(metrics opshealth.Metrics, recorder *opshealth.Recorder) opshe
 }
 
 func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, stderr io.Writer) {
+	if err := s.checkMailboxOwnership(); err != nil {
+		fmt.Fprintln(stderr, "runner-local: mailbox ownership authorization failed")
+		return
+	}
 	if err := s.initializeRemoteProjectionFreshness(ctx); err != nil {
 		s.recordOperationalError(err, false)
 		fmt.Fprintln(stderr, "runner-local: remote projection freshness initialization failed")
 		return
 	}
 	s.runMailboxCycles(ctx, stderr)
+	if err := s.checkMailboxOwnership(); err != nil {
+		fmt.Fprintln(stderr, "runner-local: mailbox ownership authorization failed")
+		return
+	}
 	for i := 0; i < defaultDrainLimit && ctx.Err() == nil; i++ {
 		release, gateErr := dispatchGate.Enter()
 		if gateErr != nil {
@@ -1062,13 +1178,23 @@ func (s *Service) runMailboxCycles(ctx context.Context, stderr io.Writer) {
 		if runtime.orphanReconciler == nil {
 			continue
 		}
+		if runtime.authorize != nil && runtime.authorize() != nil {
+			fmt.Fprintln(stderr, "runner-local: mailbox ownership authorization failed")
+			continue
+		}
 		if _, err := runtime.orphanReconciler.Run(ctx); err != nil && ctx.Err() == nil {
 			s.recordOperationalError(err, false)
 			fmt.Fprintf(stderr, "runner-local: mailbox %s durable orphan reconciliation failed\n", runtime.id)
 		}
 	}
 	if runtime, ok := s.nextMailboxArtifactCleanupRuntime(runtimes, time.Now()); ok {
-		_, cleanupErr := runtime.artifactCleaner.Run(ctx)
+		var cleanupErr error
+		if runtime.authorize != nil {
+			cleanupErr = runtime.authorize()
+		}
+		if cleanupErr == nil {
+			_, cleanupErr = runtime.artifactCleaner.Run(ctx)
+		}
 		s.markMailboxArtifactCleanupComplete(time.Now())
 		if cleanupErr != nil && ctx.Err() == nil {
 			s.recordOperationalError(cleanupErr, true)
@@ -1111,11 +1237,16 @@ func (s *Service) markMailboxArtifactCleanupComplete(now time.Time) {
 }
 
 func (s *Service) configuredMailboxRuntimes(stderr io.Writer) []mailboxRuntime {
-	if s == nil {
+	if s == nil || s.mailboxDisabled {
 		return nil
 	}
 	runtimes := make([]mailboxRuntime, 0, len(s.mailboxes))
 	for _, runtime := range s.mailboxes {
+		if runtime.authorize != nil && runtime.authorize() != nil {
+			s.recordOperationalError(mailbox.ErrMailboxOwnership, false)
+			fmt.Fprintln(stderr, "runner-local: mailbox ownership authorization failed")
+			continue
+		}
 		if runtime.processor == nil || runtime.ackImporter == nil {
 			s.recordOperationalError(errors.New("mailbox runtime is not configured"), false)
 			fmt.Fprintf(stderr, "runner-local: mailbox %s runtime is not configured\n", runtime.id)
@@ -1146,7 +1277,7 @@ func (s *Service) nextTerminalArtifactRecoveryRuntime(runtimes []mailboxRuntime,
 }
 
 func (s *Service) reconcileMailboxRuntimes(ctx context.Context, stderr io.Writer, stage string) {
-	if s == nil {
+	if s == nil || s.mailboxDisabled {
 		return
 	}
 	for _, runtime := range s.mailboxes {

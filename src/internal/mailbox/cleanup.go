@@ -24,6 +24,9 @@ func (i *Importer) CleanupUnmarkedDrafts(ctx context.Context) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := i.checkAuthorization("", ""); err != nil {
+		return 0, err
+	}
 	now := time.Now
 	if i.clock != nil {
 		now = i.clock

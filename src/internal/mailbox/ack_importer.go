@@ -34,6 +34,9 @@ type AckImporterOptions struct {
 	Root      string
 	Authority *store.AuthorityStore
 	Clock     func() time.Time
+	// Authorize rejects historical ACKs and stale mailbox owners before any
+	// durable acknowledgement or input cleanup. Empty ID checks ownership.
+	Authorize func(requestID string) error
 }
 
 // AckImporter records exact ACKs through the durable P089 store transaction
@@ -46,6 +49,7 @@ type AckImporter struct {
 	authority *store.AuthorityStore
 	schema    *jsonschema.Schema
 	clock     func() time.Time
+	authorize func(requestID string) error
 }
 
 // NewAckImporter creates the owner-only mailbox directories and validates the
@@ -79,7 +83,14 @@ func NewAckImporter(options AckImporterOptions) (*AckImporter, error) {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &AckImporter{mailboxID: options.MailboxID, root: options.Root, inbox: inbox, acks: acks, authority: options.Authority, schema: schema, clock: clock}, nil
+	return &AckImporter{mailboxID: options.MailboxID, root: options.Root, inbox: inbox, acks: acks, authority: options.Authority, schema: schema, clock: clock, authorize: options.Authorize}, nil
+}
+
+func (i *AckImporter) checkAuthorization(requestID string) error {
+	if i != nil && i.authorize != nil && i.authorize(requestID) != nil {
+		return ErrMailboxOwnership
+	}
+	return nil
 }
 
 // MailboxID returns the trusted namespace configured for this ACK root.
@@ -107,6 +118,9 @@ func (i *AckImporter) Import(ctx context.Context) ([]Result, error) {
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := i.checkAuthorization(""); err != nil {
+		return nil, err
 	}
 	cutoff := i.clock().Add(-UnmarkedDraftLifetime)
 	for _, directory := range []string{i.inbox, i.acks} {
@@ -149,6 +163,10 @@ func (i *AckImporter) importMarker(ctx context.Context, markerName string) (Resu
 		return result, nil
 	}
 	result.RequestID = requestID
+	if err := i.checkAuthorization(requestID); err != nil {
+		result.Reason = err.Error()
+		return result, nil
+	}
 	result.RequestPath = filepath.Join(i.acks, requestID+RequestSuffix)
 	if err := validateMailboxIngressFile(result.MarkerPath, true); err != nil {
 		result.Reason = err.Error()
@@ -213,6 +231,10 @@ func (i *AckImporter) importMarker(ctx context.Context, markerName string) (Resu
 	}
 	if err := ctx.Err(); err != nil {
 		return result, err
+	}
+	if err := i.checkAuthorization(requestID); err != nil {
+		result.Reason = err.Error()
+		return result, nil
 	}
 	ref, refErr := store.NewMailboxExchangeRef(i.mailboxID, wire.RequestID)
 	if refErr != nil {

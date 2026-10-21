@@ -30,7 +30,23 @@
     "remote_hosts": {"type": "object", "maxProperties": 0}
   },
   "oneOf": [
-    {"required": ["mac", "mailboxes"], "not": {"anyOf": [{"required": ["linux"]}, {"required": ["secret_references"]}]}},
+    {
+      "required": ["mac"],
+      "not": {"anyOf": [{"required": ["linux"]}, {"required": ["secret_references"]}]},
+      "if": {
+        "properties": {
+          "mac": {
+            "required": ["mailbox_ingress_enabled"],
+            "properties": {"mailbox_ingress_enabled": {"const": false}}
+          }
+        }
+      },
+      "then": {"properties": {"mailboxes": {"maxProperties": 0}}},
+      "else": {
+        "required": ["mailboxes"],
+        "properties": {"mailboxes": {"required": ["default"]}}
+      }
+    },
     {"required": ["linux"], "not": {"anyOf": [{"required": ["mac"]}, {"required": ["mailboxes"]}]}}
   ],
   "additionalProperties": false,
@@ -45,6 +61,8 @@
         "locald_socket": {"type": "string", "minLength": 1},
         "sqlite": {"type": "string", "minLength": 1},
         "mailbox_root": {"type": "string", "minLength": 1},
+        "mailbox_ingress_enabled": {"type": "boolean", "default": true},
+        "mailbox_handoff_receipt": {"type": "string", "minLength": 1},
         "workspaces": {"type": "string", "minLength": 1},
         "script_temp_root": {"type": "string", "minLength": 1},
         "backups": {"type": "string", "minLength": 1},

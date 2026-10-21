@@ -5,6 +5,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -86,6 +87,8 @@ type MacSettings struct {
 	LocalDSocket            string
 	Database                string
 	MailboxRoot             string
+	MailboxIngressEnabled   bool
+	MailboxHandoffReceipt   string
 	Workspaces              string
 	ScriptTempRoot          string
 	Backups                 string
@@ -208,6 +211,7 @@ type MailboxDefinition struct {
 // Config is an immutable, validated host config and environment registry.
 type Config struct {
 	kind              HostKind
+	sourceSHA256      string
 	schemaVersion     int
 	releaseLane       ReleaseLane
 	laneProfiles      *ValidatedV3Profiles
@@ -229,6 +233,10 @@ func (c Config) Kind() HostKind { return c.kind }
 
 // SchemaVersion returns the accepted configuration schema version.
 func (c Config) SchemaVersion() int { return c.schemaVersion }
+
+// SourceSHA256 identifies the exact validated configuration bytes. It binds
+// runtime handoff checks to the parsed snapshot without reopening the file.
+func (c Config) SourceSHA256() string { return c.sourceSHA256 }
 
 // ReleaseLane returns the configured release lane. Legacy V1/V2 configs are
 // unsuffixed and therefore resolve to PRD for compatibility.
@@ -425,6 +433,8 @@ type macDocument struct {
 	LocalDSocket            string         `yaml:"locald_socket"`
 	Database                string         `yaml:"sqlite"`
 	MailboxRoot             string         `yaml:"mailbox_root"`
+	MailboxIngressEnabled   *bool          `yaml:"mailbox_ingress_enabled,omitempty"`
+	MailboxHandoffReceipt   string         `yaml:"mailbox_handoff_receipt,omitempty"`
 	Workspaces              string         `yaml:"workspaces"`
 	ScriptTempRoot          string         `yaml:"script_temp_root"`
 	Backups                 string         `yaml:"backups"`
@@ -587,7 +597,12 @@ func parse(contents []byte) (Config, error) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return Config{}, ErrInvalidConfig
 	}
-	return validateDocument(document)
+	config, err := validateDocument(document)
+	if err != nil {
+		return Config{}, err
+	}
+	config.sourceSHA256 = fmt.Sprintf("%x", sha256.Sum256(contents))
+	return config, nil
 }
 
 func validateYAMLDocument(contents []byte) error {
@@ -866,6 +881,9 @@ func sameStrings(left, right []string) bool {
 }
 
 func validateMacDocument(mac *macDocument, refs secretReferencesDocument) error {
+	if mac.MailboxIngressEnabled != nil || mac.MailboxHandoffReceipt != "" {
+		return ErrInvalidConfig
+	}
 	if mac.Account != MacAccount || mac.ServiceRoot != MacServiceRoot || !validServiceRoot(mac.ServiceRoot) || mac.RemoteEndpointProfile != MacEndpointName || !validateEndpoint(mac.RemoteEndpoint) ||
 		mac.SSHHostAlias != "remote-session-runner" || (mac.ReconciliationDeadline != nil && mac.ReconciliationDeadline.Duration() <= 0) {
 		return ErrInvalidConfig
@@ -999,6 +1017,8 @@ func macSettings(document *macDocument) MacSettings {
 		LocalDSocket:            document.LocalDSocket,
 		Database:                document.Database,
 		MailboxRoot:             document.MailboxRoot,
+		MailboxIngressEnabled:   macMailboxIngressEnabled(document),
+		MailboxHandoffReceipt:   document.MailboxHandoffReceipt,
 		Workspaces:              document.Workspaces,
 		ScriptTempRoot:          document.ScriptTempRoot,
 		Backups:                 document.Backups,

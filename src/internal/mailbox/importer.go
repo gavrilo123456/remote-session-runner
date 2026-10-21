@@ -47,6 +47,7 @@ var (
 	ErrMailboxSchema          = errors.New("mailbox request schema is invalid")
 	ErrMailboxRequestTooLarge = errors.New("mailbox request exceeds byte limit")
 	ErrMailboxScriptTooLarge  = errors.New("mailbox script exceeds byte limit")
+	ErrMailboxOwnership       = errors.New("mailbox ownership authorization failed")
 
 	// Request IDs are also filename stems. Restricting them to a bounded safe
 	// basename prevents traversal, separators, control characters, and names
@@ -189,6 +190,10 @@ type Options struct {
 	Root      string
 	Handler   Handler
 	Clock     func() time.Time
+	// Authorize checks a transferred mailbox's current ownership and retained
+	// identities. Empty identities mean an ownership-only check. Failures keep
+	// input files untouched and never expose the callback's error text.
+	Authorize func(requestID, idempotencyKey string) error
 }
 
 // Importer implements marker-last mailbox discovery and validation.
@@ -200,6 +205,7 @@ type Importer struct {
 	handler   Handler
 	schema    *jsonschema.Schema
 	clock     func() time.Time
+	authorize func(requestID, idempotencyKey string) error
 }
 
 // NewImporter creates an importer for root. It creates missing root/inbox
@@ -238,7 +244,14 @@ func New(options Options) (*Importer, error) {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Importer{mailboxID: options.MailboxID, root: options.Root, inbox: inbox, acks: acks, handler: options.Handler, schema: schema, clock: clock}, nil
+	return &Importer{mailboxID: options.MailboxID, root: options.Root, inbox: inbox, acks: acks, handler: options.Handler, schema: schema, clock: clock, authorize: options.Authorize}, nil
+}
+
+func (i *Importer) checkAuthorization(requestID, idempotencyKey string) error {
+	if i != nil && i.authorize != nil && i.authorize(requestID, idempotencyKey) != nil {
+		return ErrMailboxOwnership
+	}
+	return nil
 }
 
 // MailboxID returns the trusted namespace configured for this filesystem root.
@@ -298,6 +311,9 @@ func (i *Importer) importWithIngressHandlersAfterRecovery(ctx context.Context, h
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := i.checkAuthorization("", ""); err != nil {
+		return nil, err
+	}
 	if cleanupUnmarkedDrafts {
 		if _, err := i.CleanupUnmarkedDrafts(ctx); err != nil {
 			return nil, err
@@ -348,6 +364,10 @@ func (i *Importer) importMarkerWithIngressHandlers(ctx context.Context, markerNa
 		return result, nil
 	}
 	result.RequestID = requestID
+	if err := i.checkAuthorization(requestID, ""); err != nil {
+		result.Reason = err.Error()
+		return result, nil
+	}
 	requestName := requestID + RequestSuffix
 	result.RequestPath = filepath.Join(i.inbox, requestName)
 	if err := validateMailboxIngressFile(result.MarkerPath, true); err != nil {
@@ -390,6 +410,10 @@ func (i *Importer) importMarkerWithIngressHandlers(ctx context.Context, markerNa
 		return result, nil
 	}
 	if err := ctx.Err(); err != nil {
+		result.Reason = err.Error()
+		return result, nil
+	}
+	if err := i.checkAuthorization(requestID, request.IdempotencyKey); err != nil {
 		result.Reason = err.Error()
 		return result, nil
 	}

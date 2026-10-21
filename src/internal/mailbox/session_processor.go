@@ -299,6 +299,9 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	if p == nil || p.importer == nil || p.authority == nil || p.operations == nil {
 		return nil, ErrSessionProcessorConfiguration
 	}
+	if err := p.importer.checkAuthorization("", ""); err != nil {
+		return nil, err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -362,6 +365,9 @@ func (p *SessionProcessor) Reconcile(ctx context.Context) error {
 	if p == nil || p.authority == nil || p.operations == nil {
 		return ErrSessionProcessorConfiguration
 	}
+	if err := p.importer.checkAuthorization("", ""); err != nil {
+		return err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -402,6 +408,9 @@ func (p *SessionProcessor) RecoverTerminalArtifacts(ctx context.Context) error {
 	if p == nil || p.authority == nil || p.operations == nil {
 		return ErrSessionProcessorConfiguration
 	}
+	if err := p.importer.checkAuthorization("", ""); err != nil {
+		return err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -413,6 +422,22 @@ func (p *SessionProcessor) RecoverTerminalArtifacts(ctx context.Context) error {
 func (p *SessionProcessor) process(ctx context.Context, request Request) (bool, error) {
 	if request.MailboxID != p.mailboxID {
 		return false, ErrSessionProcessorConfiguration
+	}
+	// A supported ownership handoff may retain old clients' environment names
+	// while selecting the destination lane's exact matching target. Normalize
+	// only trusted parsed policy fields; RawJSON stays immutable for receipt
+	// canonicalization, conflict detection, and audit. Ordinary resolvers do
+	// not implement this boundary and keep the existing strict behavior.
+	if (request.Operation == "run" || request.Operation == "create_session") && request.EnvironmentPresent && request.ExecutionTargetPresent {
+		if normalizer, ok := p.executionResolver.(interface {
+			ResolveMailboxEnvironment(string, string) (string, error)
+		}); ok {
+			environment, err := normalizer.ResolveMailboxEnvironment(p.mailboxID, request.Environment)
+			if err != nil {
+				return false, ErrMailboxOwnership
+			}
+			request.Environment = environment
+		}
 	}
 	if request.Operation == "submit_command" || request.Operation == "get_command" {
 		return p.processCommand(ctx, request)

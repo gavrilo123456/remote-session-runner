@@ -157,7 +157,11 @@ func validateV3MacRuntimeDocument(mac *macDocument, refs secretReferencesDocumen
 	if refs.DispatcherSSHKey != nil || refs.DirectClientKey != nil || refs.LinuxServerKey != nil {
 		return ErrInvalidSecretRef
 	}
-	if len(document.Mailboxes) == 0 || len(document.RemoteHosts) != 0 || document.Linux != nil {
+	if !validMacMailboxIngress(mac, document.Mailboxes) || len(document.RemoteHosts) != 0 || document.Linux != nil {
+		return ErrInvalidConfig
+	}
+	if mac.MailboxHandoffReceipt != "" && (document.ReleaseLane != ReleaseLaneQAS ||
+		!validMacMailboxHandoffReceipt(mac.ServiceRoot, mac.MailboxHandoffReceipt)) {
 		return ErrInvalidConfig
 	}
 	if _, ok := profiles.MacProfile("linux-host"); !ok {
@@ -167,7 +171,7 @@ func validateV3MacRuntimeDocument(mac *macDocument, refs secretReferencesDocumen
 }
 
 func populateV3MacRuntimeRegistries(config *Config, document fileDocument) error {
-	if _, ok := document.Mailboxes["default"]; !ok {
+	if !validMacMailboxIngress(document.Mac, document.Mailboxes) {
 		return ErrInvalidConfig
 	}
 	for _, profile := range document.LaneProfiles.MacProfiles {
@@ -210,14 +214,17 @@ func populateV3MacRuntimeRegistries(config *Config, document fileDocument) error
 	roots := make([]string, 0, len(document.Mailboxes))
 	for id, definition := range document.Mailboxes {
 		mailbox, err := validateMailboxDefinition(config.mac.ServiceRoot, id, definition, config.executionContexts, config.remoteHosts)
-		if err != nil || !pathUnder(config.mac.ServiceRoot, mailbox.Root) {
+		if err != nil {
 			return ErrInvalidConfig
 		}
 		expected := filepath.Join(config.mac.ServiceRoot, "mailboxes", id)
 		if id == "default" {
 			expected = filepath.Join(config.mac.ServiceRoot, "mailbox")
 		}
-		if mailbox.Root != expected {
+		handoffExternal := id != "default" && document.ReleaseLane == ReleaseLaneQAS &&
+			validMacMailboxHandoffReceipt(config.mac.ServiceRoot, config.mac.MailboxHandoffReceipt) &&
+			IsExternalMailboxRoot(config.mac.ServiceRoot, mailbox.Root)
+		if mailbox.Root != expected && !handoffExternal {
 			return ErrInvalidConfig
 		}
 		for _, root := range roots {

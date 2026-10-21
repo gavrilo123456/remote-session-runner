@@ -69,6 +69,7 @@ func validateV2Document(document fileDocument) (Config, error) {
 
 func validateV2MacDocument(mac *macDocument, refs secretReferencesDocument) error {
 	if mac.Account != MacAccount || mac.ServiceRoot != MacServiceRoot || !validServiceRoot(mac.ServiceRoot) ||
+		mac.MailboxHandoffReceipt != "" ||
 		(mac.ReconciliationDeadline != nil && mac.ReconciliationDeadline.Duration() <= 0) {
 		return ErrInvalidConfig
 	}
@@ -132,10 +133,7 @@ func validateV2LinuxDocument(linux *linuxDocument, refs secretReferencesDocument
 }
 
 func populateV2MacRegistries(config *Config, document fileDocument) error {
-	if len(document.ExecutionContexts) == 0 || len(document.Mailboxes) == 0 {
-		return ErrInvalidConfig
-	}
-	if _, ok := document.Mailboxes["default"]; !ok {
+	if len(document.ExecutionContexts) == 0 || !validMacMailboxIngress(document.Mac, document.Mailboxes) {
 		return ErrInvalidConfig
 	}
 
