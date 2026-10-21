@@ -1,5 +1,88 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
+## Current status — 2026-10-21 04:26 UTC: CAT-04 remains BLOCKED before recovery
+
+The CAT-04 switched-history recovery correction is committed as
+`147138f3a82774db8713a677e365c2c40156154f` (`fix(catalog): reconcile
+interrupted cohort switches safely`). The commit was pushed to primary Gitea,
+the automatic GitHub mirror resolved to the exact same SHA, and the three
+clean Ubuntu `dev` checkouts were fast-forwarded to that SHA before validation.
+Mac and all three workers passed the required source gates at this revision:
+`make test`, `make vet`, `make build`, and `make smoke`. Mac's first sandboxed
+full-test attempt was blocked by `/bin/ps` access; its host-visible rerun passed.
+Sandbox's initial `/dev/shm`-only test attempt failed two `laneroot` fixture
+fallback cases, then the ordinary-temp rerun passed. Its first build failed at
+100% root usage; build and smoke passed with task-owned Go temporary output in
+`/dev/shm`. Factory's original quota failure remains historical; the rerun
+after its 2 GiB `/tmp` quota change passed all four gates. No shared Go cache,
+retained work, or mailbox data was cleaned.
+
+The correction adds supported `reconcile-history` handling for valid divergent
+receipt copies with real selector switches, validates each host's stopped
+service, empty work inventory, schema, configuration and selector journal
+before writing/synchronizing reconciled history, and retains historical
+branches. Regressions cover interrupted switched histories, inconsistent host
+evidence, restart hold retention, reverse rollback order, and supersession
+eligibility. The scoped `catalog-probe-once` helper and its bounded JSON digest
+tests are included in the source revision.
+
+The candidate `cat-20261021-147138f` is frozen at source revision
+`147138f3a82774db8713a677e365c2c40156154f`; its release manifest SHA-256 is
+`97c6dcf9ca634c4656f792f165a640f188ecbaccef3a9e9900836e2ce140080f`. Supported
+`catalog-inspect` on all four hosts validated the same release identity and
+these native bundle hashes:
+
+| Host | Bundle SHA-256 | Candidate publication |
+| --- | --- | --- |
+| `mac-control-plane` | `8820476ef7e0161b6055f3af464cc759da0ef0aa3cf8a078464c0e0fd3491e3f` | PASS |
+| `linux-host` | `5a10463e490ad4baf07470c3835b0922334bcbb039b17dbe6eec9db690ed1c18` | PASS |
+| `sandbox-host` | `56494835d7752ccc34498bb0621eb0c615e1c8c1d2530bdd08a7a035e17c6f25` | PASS |
+| `factory-sandbox` | `0cba389804562efa63a96858518fb133c7c2fadd29923743b9a37d58068d1afb` | PASS |
+
+Publication and inspection did not change a selector or start a service. Fresh
+supported Dev inventories at 04:24–04:25 UTC found all four services stopped,
+schema 40, and zero active session slots, command slots, queued commands, or
+resumable jobs. Linux and Sandbox still select `cat-20261020-5a77768`; Factory
+and Mac still select their legacy bundles. No QAS or PRD operation was made.
+
+The requested operation `7a30271dab023394bdd9b43116e5979e` is already
+`superseded` on all four hosts. Its synchronized receipt SHA-256 is
+`da532b48cd158cb957e1706c2dbdcd7c99faaea8dfad28fe5532baaf5f8c3d2b`; its
+history already records switches on Linux, Sandbox, Factory and Mac followed
+by rollbacks in reverse order (Mac, Factory, Sandbox, Linux). It cannot safely
+receive another `block` or `rollback-start` transition.
+
+The only non-superseded receipt found in each Dev receipt directory is instead
+`5c9d691cc33016b1ef5bb7b741dea0de`. Mac, Linux and Factory copies are at
+`blocked` (SHA-256
+`8ffea32af5764b8d1e4cd324154f3fcba8694e8f98fe8c92d8381590abe7d9ce`); the
+Sandbox copy is at `switching` (SHA-256
+`926e6a442f4450f2f7701883e9b6deb73d2b3c77976219f31087e23bdf49f07e`). The
+Sandbox history includes the Linux and Sandbox switches. Their completed
+selector journals are Linux `f647cb04c9c03cc6e254408f45d949c6` and Sandbox
+`81bac94cd52f3a8fb8a4b8da867e639e`; Factory and Mac have no selector switch
+for this receipt. The supported source rules classify `blocked` and
+`switching` as admission-holding stages. The prior authorization names `7a…`,
+not this different live operation `5c9…`; no receipt reconciliation, rollback,
+successor creation, or supersession was attempted pending confirmation of the
+correct operation ID.
+
+Sandbox root has only 46,808 KiB available (100% used). Its Dev database is
+634,880 bytes, WAL 0 bytes, SHM 32,768 bytes, and configuration 3,835 bytes.
+The recorded cohort preflight used a 67,108,864-byte free-space requirement,
+which the current filesystem does not meet; do not attempt a fresh successor
+preflight or selector change until capacity is restored and measured again.
+The current database/configuration sizes are not permission to remove retained
+backups or shared caches.
+
+The exact `CatalogCohortAdmissionHeld` pre-switch check for a new successor,
+Dev direct-MTLS acceptance, queued-SSH acceptance, and Mac-local acceptance are
+**NOT RUN**. No selector was switched and no service was started. Mailbox
+acceptance is **NOT RUN** by instruction; no request or ACK was published.
+QAS and PRD promotion have not begun. CAT-04 remains **BLOCKED** on
+confirmation of whether to recover the actual held operation `5c9…` and on
+Sandbox capacity restoration; CAT-05 through CAT-07 remain **NOT STARTED**.
+
 ## Source correction and Factory gate rerun — 2026-10-20
 
 The delayed-reconciliation correction is committed as
