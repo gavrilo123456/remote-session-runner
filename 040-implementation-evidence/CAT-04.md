@@ -80,6 +80,23 @@ then passed review and the supported completion succeeded. The longer
 read-only receipt census attempt was interrupted before finishing; it made no
 state changes. A later per-host local census completed successfully.
 
+The recovery evidence and plan update were committed on Mac `dev` as
+`2dfbd44e6d8179adaa6d5c75eeba4e6e8c1e3f86`. The commit was pushed with the
+configured Gitea identity using `git -c core.sshCommand='ssh -i
+/Users/tomasz.walczuk/.ssh/local-gitea-key -o IdentitiesOnly=yes -o
+BatchMode=yes -o StrictHostKeyChecking=yes' push origin dev`; the push
+succeeded. A read-only `git ls-remote github refs/heads/dev` using the
+configured GitHub identity returned the exact same SHA. Before pulling, Linux,
+Sandbox, and Factory were each on clean `dev` worktrees at
+`2750eeae03ea0c600679e8ac4f823f7e0e0e5b0c`. Each ran the required
+`git -c core.sshCommand='ssh -i /home/ubuntu/.ssh/gavrilo123456-github -o
+IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' pull
+--ff-only origin dev`; all three fast-forwarded to
+`2dfbd44e6d8179adaa6d5c75eeba4e6e8c1e3f86` and reported clean `dev` worktrees.
+`git diff --check` passed on Mac. Runtime tests were not rerun for this
+documentation-only commit; `740927e` source gates remain the recorded Mac and
+three-worker `make test`, `make vet`, `make build`, and `make smoke` PASS.
+
 ## Historical status — 2026-10-21 08:36 UTC: corrected release sealed; current Dev receipt awaited authorization
 
 The verification-history reconciliation correction is committed as
