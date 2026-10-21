@@ -1,6 +1,30 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-## Current status — 2026-10-21 17:44 UTC: CAT-05 complete; CAT-06 PRD preflight blocked before mutation
+## Current status — 2026-10-21 18:56 UTC: Dev/QAS open; CAT-06 PRD remains blocked
+
+CAT-04 and CAT-05 remain **COMPLETE** on the unchanged accepted
+`cat-20261021-ebc4446` release. Under the owner's subsequent instruction,
+normal Dev and QAS API admissions are now open. Dev operation
+`8fdb7e5eb058a795601a2cff9e7bde78` is `released` with 14 transitions and
+receipt SHA-256
+`cd5e3f06290f806ea66205cc283b1f27704ce9401f73fe31a7cbe60440d1cf9d`;
+QAS operation `1349821d4c363aff4b43ed92a61bcc21` is `released` with 16
+transitions and receipt SHA-256
+`9172b0f3219e65a2fa3048a4f4010f1cb1f6d896df5b741898bc188fbf68e46e`.
+Each receipt is synchronized across its four hosts. All seven ordinary routes
+per lane passed without maintenance tokens. The 18:56 UTC postflight found
+all eight host/lane services ready, with empty work inventories and zero error
+counters. See [admission-opening evidence](../../040-implementation-evidence/CAT-Dev-QAS-admission-open-2026-10-21.md).
+
+PRD process identities, configuration and binary hashes remain unchanged;
+CAT-06 remains **BLOCKED** on its existing bootstrap, retained-work and legacy
+compatibility gates. No external publisher control was operated, and the
+existing publisher pause instruction remains in force. No mailbox request or
+ACK was published; filesystem-mailbox acceptance remains **NOT RUN**. Earlier
+instructions below to keep Dev/QAS admissions held are historical and are
+superseded by this opening; PRD guards remain applicable.
+
+## Historical status — 2026-10-21 17:44 UTC: CAT-05 complete; CAT-06 PRD preflight blocked before mutation
 
 CAT-04 Dev and CAT-05 QAS acceptance are **COMPLETE** for the same frozen
 release `cat-20261021-ebc4446`, source revision

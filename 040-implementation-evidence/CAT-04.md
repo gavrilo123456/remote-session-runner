@@ -1,6 +1,25 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 13:09 UTC: CAT-04 PASS; Dev cohort complete
+## Current status — 2026-10-21 18:56 UTC: CAT-04 PASS; Dev open for normal API use
+
+The owner-authorized admission opening is complete. Dev operation
+`8fdb7e5eb058a795601a2cff9e7bde78` is `released` on all four hosts, with 14
+transitions and common receipt SHA-256
+`cd5e3f06290f806ea66205cc283b1f27704ce9401f73fe31a7cbe60440d1cf9d`.
+The accepted `cat-20261021-ebc4446` release and per-host bundle bytes are
+unchanged. All seven ordinary API/queued routes passed without maintenance
+tokens. At 18:56 UTC, Dev and QAS were ready on all four hosts, with empty work
+inventories and zero error counters. API admissions are open for normal use;
+PRD process identities, configuration and binary hashes are unchanged.
+
+The opening sequence, released receipts and postflight evidence are in
+[Dev/QAS admission opening](CAT-Dev-QAS-admission-open-2026-10-21.md).
+No external publisher control was operated; the existing publisher pause
+instruction remains in force. No mailbox request or ACK was published, and
+filesystem-mailbox acceptance remains **NOT RUN**. The held snapshots below
+describe the earlier acceptance closeout, before this opening.
+
+## Historical status — 2026-10-21 13:09 UTC: CAT-04 PASS; Dev cohort complete and held
 
 The owner superseded the earlier c76bac5 retention and 740927e qualification
 instructions and authorized completion of the current Dev qualification for

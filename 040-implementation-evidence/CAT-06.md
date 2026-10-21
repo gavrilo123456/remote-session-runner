@@ -1,5 +1,22 @@
 # CAT-06 — PRD adoption and promotion
 
+## Current status — 2026-10-21 18:56 UTC: PRD blocked; Dev/QAS independently opened
+
+Dev and QAS now permit normal API use on the unchanged accepted
+`cat-20261021-ebc4446` release. Both four-host operations are `released`; all
+seven ordinary routes per lane passed, and the final postflight found all
+eight host/lane services ready with empty work inventories and zero error
+counters. See [Dev/QAS admission opening](CAT-Dev-QAS-admission-open-2026-10-21.md).
+PRD process identities, configuration and binary hashes are unchanged. The
+CAT-06 bootstrap, retained-work and legacy-compatibility blockers below remain
+unresolved; opening Dev/QAS does not satisfy those PRD gates.
+
+No external publisher control was operated; the existing publisher pause
+instruction remains in force. No mailbox request or ACK was published, and
+filesystem-mailbox acceptance remains **NOT RUN**.
+
+## Historical PRD preflight — 2026-10-21 17:44 UTC
+
 **Status — 2026-10-21 17:44 UTC: BLOCKED before PRD mutation.** The frozen
 release `cat-20261021-ebc4446` remains accepted in Dev and QAS. No PRD service,
 selector, database, backup, receipt, journal, mailbox, or ACK was changed in

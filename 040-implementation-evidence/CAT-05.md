@@ -1,5 +1,27 @@
 # CAT-05 — Frozen candidate and live QAS qualification
 
+## Current status — 2026-10-21 18:56 UTC: CAT-05 PASS; QAS open for normal API use
+
+The owner-authorized admission opening is complete. QAS operation
+`1349821d4c363aff4b43ed92a61bcc21` is `released` on all four hosts, with 16
+transitions and common receipt SHA-256
+`9172b0f3219e65a2fa3048a4f4010f1cb1f6d896df5b741898bc188fbf68e46e`.
+The Dev-accepted `cat-20261021-ebc4446` release and per-host bundle bytes are
+unchanged. All seven ordinary API/queued routes passed without maintenance
+tokens. At 18:56 UTC, Dev and QAS were ready on all four hosts, with empty work
+inventories and zero error counters. API admissions are open for normal use;
+PRD process identities, configuration and binary hashes are unchanged.
+
+The opening sequence, released receipts and postflight evidence are in
+[Dev/QAS admission opening](CAT-Dev-QAS-admission-open-2026-10-21.md).
+No external publisher control was operated; the existing publisher pause
+instruction remains in force. No mailbox request or ACK was published, and
+filesystem-mailbox acceptance remains **NOT RUN**. The held snapshots and
+handoff below are historical and precede this opening; CAT-06 blockers remain
+unchanged.
+
+## Historical acceptance and held closeout — before admission opening
+
 **Status: PASS** for the sealed release `cat-20261021-ebc4446` on QAS,
 operation `1349821d4c363aff4b43ed92a61bcc21`. Project publishers remain paused;
 the QAS admission hold remains closed. Filesystem-mailbox acceptance is

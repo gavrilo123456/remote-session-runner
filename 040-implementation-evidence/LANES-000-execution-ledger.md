@@ -5,7 +5,29 @@
 The owner selected the [Factory-style Runner release catalog design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
 and [CAT-01–CAT-07 plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md).
 
-### Current CAT status — 2026-10-21 17:44 UTC
+### Current CAT status — 2026-10-21 18:56 UTC
+
+CAT-01 through CAT-05 remain **COMPLETE**. Normal Dev and QAS API admissions
+are now open on the unchanged accepted `cat-20261021-ebc4446` release. Dev
+operation `8fdb7e5eb058a795601a2cff9e7bde78` is `released` with 14 transitions,
+receipt SHA-256
+`cd5e3f06290f806ea66205cc283b1f27704ce9401f73fe31a7cbe60440d1cf9d`;
+QAS operation `1349821d4c363aff4b43ed92a61bcc21` is `released` with 16
+transitions, receipt SHA-256
+`9172b0f3219e65a2fa3048a4f4010f1cb1f6d896df5b741898bc188fbf68e46e`.
+Both receipts are synchronized across their four hosts. All seven ordinary
+routes per lane passed without maintenance tokens; the 18:56 UTC postflight
+found all eight host/lane services ready, empty work inventories and zero error
+counters. [Admission-opening evidence](CAT-Dev-QAS-admission-open-2026-10-21.md)
+records the supported release/sync/restart sequence and PRD preservation.
+
+PRD process identities, configuration and binary hashes are unchanged. CAT-06
+remains **BLOCKED** on the existing bootstrap, retained-work and legacy
+compatibility gates. No external publisher control was operated; the existing
+publisher pause instruction remains in force. No mailbox request or ACK was
+published, and filesystem-mailbox acceptance remains **NOT RUN**.
+
+### Historical CAT status — 2026-10-21 17:44 UTC
 
 CAT-01 through CAT-05 are **COMPLETE**. The frozen release
 `cat-20261021-ebc4446` (`ebc4446ce8ce95d3e3fc076bb9985cdfbc1e9388`, manifest
