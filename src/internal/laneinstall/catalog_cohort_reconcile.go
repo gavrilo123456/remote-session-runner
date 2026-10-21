@@ -471,10 +471,11 @@ func catalogCohortReceiptHasHistoricalBranch(receipt CatalogCohortReceipt, trans
 }
 
 // ObserveCatalogCohortSupersession captures the local state needed to retire
-// one never-switched or fully rolled-back attempt. It does not mutate service,
-// selector, or database state. Ambiguous selector journals, an active service,
-// or any retained/resumable work refuse the observation. The successor must
-// already be held with fresh four-host preflight and backup evidence.
+// one never-switched, fully rolled-back, or completed attempt. It does not
+// mutate service, selector, or database state. Ambiguous selector journals,
+// an active service, or any retained/resumable work refuse the observation.
+// The successor must already be held with fresh four-host preflight and backup
+// evidence.
 func ObserveCatalogCohortSupersession(ctx context.Context, plan Plan, receipt, successor CatalogCohortReceipt) (CatalogCohortSupersessionEvidence, error) {
 	if validateCatalogPlan(plan) != nil || ValidateCatalogCohortReceipt(receipt) != nil || ValidateCatalogCohortReceipt(successor) != nil ||
 		receipt.Lane != plan.Lane || successor.Lane != plan.Lane || receipt.OperationID == successor.OperationID ||
@@ -522,6 +523,9 @@ func ObserveCatalogCohortSupersession(ctx context.Context, plan Plan, receipt, s
 		ServiceActive: active, WorkInventorySHA256: workSHA256, WorkInventoryEmpty: empty,
 		ConfigurationSHA256: configurationSHA256, DatabaseSchema: schemaVersion,
 		SelectorOperations: selectorOperations,
+	}
+	if selectorOperations == "completed" && status.Release != nil {
+		evidence.SelectorBundleSHA256 = status.Release.Identity.BundleSHA256
 	}
 	if !observationMatchesSuccessor(receipt, successor, evidence) {
 		return CatalogCohortSupersessionEvidence{}, ErrCatalogOperationInvalid
@@ -613,6 +617,30 @@ func catalogCohortSelectorOperationDisposition(layout catalogSelectorLayout, rec
 		}
 		return "none", nil
 	}
+	if receipt.Stage == CatalogCohortComplete {
+		index := cohortHostIndex(receipt, layout.hostID)
+		if index < 0 || len(matching) != 1 {
+			return "", ErrCatalogOperationInvalid
+		}
+		host := receipt.Hosts[index]
+		operation := matching[0]
+		expectedTarget := filepath.Join(layout.catalogRoot, receipt.ReleaseID, layout.hostID)
+		status, statusErr := inspectCatalogSelector(layout)
+		if statusErr != nil || validateCatalogOperation(layout, operation) != nil ||
+			operation.HostID != layout.hostID || operation.Lane != layout.lane || operation.Stage != catalogOperationComplete ||
+			operation.CohortOperationID != receipt.OperationID ||
+			operation.Release != host.Target || operation.PreviousTarget != host.PreviousTarget || operation.NextTarget != expectedTarget ||
+			operation.ConfigurationSHA256 != host.ConfigurationSHA256 || operation.DatabaseSchemaAtSwitch != host.SchemaVersion ||
+			operation.BackupDirectory != host.BackupDirectory || operation.BackupManifestSHA256 != host.BackupManifestSHA256 ||
+			status.Kind != "catalog" || status.Target != expectedTarget || status.Release == nil || status.Release.Identity != host.Target {
+			return "", ErrCatalogOperationInvalid
+		}
+		digest, digestErr := catalogSelectorOperationDigest(layout, operation.OperationID)
+		if digestErr != nil || !cohortHasSwitchEvidence(receipt, layout.hostID, digest) {
+			return "", ErrCatalogOperationInvalid
+		}
+		return "completed", nil
+	}
 	if receipt.Stage != CatalogCohortRolledBack || !containsString(cohortRolledBackHosts(receipt), layout.hostID) || len(matching) != 1 ||
 		matching[0].HostID != layout.hostID || matching[0].Stage != catalogOperationRolledBack {
 		return "", ErrCatalogOperationInvalid
@@ -624,7 +652,7 @@ func observationMatchesSuccessor(receipt, successor CatalogCohortReceipt, observ
 	if !catalogCohortReceiptSupersessionEligible(receipt) || successor.Stage != CatalogCohortHeld ||
 		receipt.Lane != successor.Lane || observation.HostID == "" || observation.SuccessorOperationID != successor.OperationID ||
 		currentSupersessionSuccessor(receipt.Transitions) != "" && currentSupersessionSuccessor(receipt.Transitions) != successor.OperationID ||
-		observation.ServiceActive || !observation.WorkInventoryEmpty || observation.SelectorOperations != "none" && observation.SelectorOperations != "rolled_back" ||
+		observation.ServiceActive || !observation.WorkInventoryEmpty ||
 		!bundleDigestPattern.MatchString(observation.WorkInventorySHA256) || !bundleDigestPattern.MatchString(observation.ConfigurationSHA256) ||
 		observation.DatabaseSchema <= 0 {
 		return false
@@ -640,7 +668,27 @@ func observationMatchesSuccessor(receipt, successor CatalogCohortReceipt, observ
 		return false
 	}
 	switched := cohortHasSwitched(receipt, observation.HostID)
+	if receipt.Stage == CatalogCohortComplete {
+		oldHostIndex := cohortHostIndex(receipt, observation.HostID)
+		if oldHostIndex < 0 {
+			return false
+		}
+		oldHost := receipt.Hosts[oldHostIndex]
+		if observation.SelectorOperations != "completed" || observation.SelectorBundleSHA256 != oldHost.Target.BundleSHA256 ||
+			newHost.PreviousBundleSHA256 != oldHost.Target.BundleSHA256 {
+			return false
+		}
+		return true
+	}
+	if observation.SelectorBundleSHA256 != "" {
+		return false
+	}
 	if switched {
+		oldHostIndex := cohortHostIndex(receipt, observation.HostID)
+		if oldHostIndex < 0 || newHost.PreviousTarget != receipt.Hosts[oldHostIndex].PreviousTarget ||
+			newHost.PreviousBundleSHA256 != receipt.Hosts[oldHostIndex].PreviousBundleSHA256 {
+			return false
+		}
 		return receipt.Stage == CatalogCohortRolledBack && containsString(cohortRolledBackHosts(receipt), observation.HostID) && observation.SelectorOperations == "rolled_back"
 	}
 	return observation.SelectorOperations == "none"
@@ -652,7 +700,9 @@ func validSupersessionEvidence(event CatalogCohortTransition) bool {
 		event.ResumeStage != "" || event.ReconciledStage != "" || len(event.HistoricalBranches) != 0 || event.SupersessionRestart != nil ||
 		!event.Supersession.WorkInventoryEmpty || !bundleDigestPattern.MatchString(event.Supersession.WorkInventorySHA256) ||
 		!bundleDigestPattern.MatchString(event.Supersession.ConfigurationSHA256) || event.Supersession.DatabaseSchema <= 0 ||
-		(event.Supersession.SelectorOperations != "none" && event.Supersession.SelectorOperations != "rolled_back") ||
+		(event.Supersession.SelectorOperations != "none" && event.Supersession.SelectorOperations != "rolled_back" && event.Supersession.SelectorOperations != "completed") ||
+		(event.Supersession.SelectorOperations != "completed" && event.Supersession.SelectorBundleSHA256 != "") ||
+		(event.Supersession.SelectorOperations == "completed" && !bundleDigestPattern.MatchString(event.Supersession.SelectorBundleSHA256)) ||
 		event.Supersession.ExpectedSelector != event.Supersession.ObservedSelector {
 		return false
 	}
@@ -662,6 +712,38 @@ func validSupersessionEvidence(event CatalogCohortTransition) bool {
 	}
 	digest := sha256.Sum256(encoded)
 	return event.EvidenceSHA256 == hex.EncodeToString(digest[:])
+}
+
+func validSupersessionEvidenceForReceipt(event CatalogCohortTransition, receipt CatalogCohortReceipt,
+	stage, blockedFrom CatalogCohortStage) bool {
+	if !validSupersessionEvidence(event) {
+		return false
+	}
+	index := cohortHostIndex(receipt, event.HostID)
+	if index < 0 {
+		return false
+	}
+	effectiveStage := stage
+	if stage == CatalogCohortBlocked {
+		effectiveStage = blockedFrom
+	}
+	supersession := event.Supersession
+	switched := cohortHasSwitched(receipt, event.HostID)
+	switch effectiveStage {
+	case CatalogCohortComplete:
+		return switched && supersession.SelectorOperations == "completed" &&
+			supersession.SelectorBundleSHA256 == receipt.Hosts[index].Target.BundleSHA256
+	case CatalogCohortRolledBack:
+		if switched {
+			return containsString(cohortRolledBackHosts(receipt), event.HostID) &&
+				supersession.SelectorOperations == "rolled_back" && supersession.SelectorBundleSHA256 == ""
+		}
+		return supersession.SelectorOperations == "none" && supersession.SelectorBundleSHA256 == ""
+	case CatalogCohortHeld, CatalogCohortPrepared:
+		return !switched && supersession.SelectorOperations == "none" && supersession.SelectorBundleSHA256 == ""
+	default:
+		return false
+	}
 }
 
 func validSupersessionRestart(event CatalogCohortTransition) bool {
@@ -696,6 +778,8 @@ func catalogCohortReceiptSupersessionEligible(receipt CatalogCohortReceipt) bool
 		return false
 	}
 	switch stage {
+	case CatalogCohortComplete:
+		return len(cohortSwitchedHostsFrom(receipt.Transitions)) == len(catalogCohortSwitchOrder)
 	case CatalogCohortHeld:
 		return !cohortHasAnySwitchTransitions(receipt.Transitions)
 	case CatalogCohortBlocked:
@@ -716,6 +800,8 @@ func catalogCohortReceiptSupersessionEligible(receipt CatalogCohortReceipt) bool
 
 func catalogCohortSupersessionStageEligible(stage, blockedFrom CatalogCohortStage, transitions []CatalogCohortTransition) bool {
 	switch stage {
+	case CatalogCohortComplete:
+		return len(cohortSwitchedHostsFrom(transitions)) == len(catalogCohortSwitchOrder)
 	case CatalogCohortHeld:
 		return !cohortHasAnySwitchTransitions(transitions)
 	case CatalogCohortBlocked:

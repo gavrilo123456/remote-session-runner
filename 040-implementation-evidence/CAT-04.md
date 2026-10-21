@@ -1,6 +1,46 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 09:39 UTC: candidate Dev rollout blocked by receipt/runtime incompatibility
+## Current status — 2026-10-21 09:56 UTC: supported completed-receipt supersession correction passes Mac source gates
+
+The 09:39 blocker below was addressed in source without changing live host
+state. A completed cohort receipt can now be superseded only by a fresh held
+successor and only after each host proves a stopped service, empty work
+inventory, unchanged configuration/schema, exact current selector, and one
+valid completed selector journal whose digest is present in the receipt. The
+successor's previous selector bundle identity must equal the completed
+predecessor's target identity. Interrupted or divergent selector operations
+remain ineligible and continue to require the existing recovery flow. Receipt
+history is append-only; the change neither edits old receipts nor releases
+admissions before all four host observations and explicit finalization.
+
+Regressions cover exact bundle identity, wrong successor predecessor identity,
+divergent current selector rejection, completed predecessor retirement only
+after all four observations, and preservation of the admission hold until
+finalization. The actual completed local selector-journal validator is tested
+against a temporary filesystem fixture; it accepts a matching journal and
+rejects selector drift. The prior interrupted-switch and unfinished-journal
+recovery regressions continue to pass.
+
+On Mac source revision `98f4da3be252dc4a50c1ab9ca7d2821d4d9517f0` plus the
+uncommitted correction, `make test`, `make vet`, `make build`, and `make smoke`
+passed. The first sandboxed `make test` run failed only because an existing
+`runnerlocald` cleanup test could not execute `/bin/ps` (`operation not
+permitted`); the host-visible rerun passed. The focused CAT-04 tests and full
+`laneinstall` package also passed. The exact correction is not yet committed
+or delivered to the Ubuntu hosts; their required source gates remain pending.
+
+No live receipt or selector changed during this source work. Operation
+`33b2c3a3f6399253444c6ae29f0ecb97` remains complete at the synchronized SHA
+`1473de3b51e5327f0f1495d7a7a9892316d63ab0df10e94047bbdffef3cb46cd`; all Dev
+selectors remain on `cat-20261021-c76bac5`, all Dev services remain stopped,
+and QAS/PRD remain unchanged. Existing `cat-20261021-740927e` is unchanged and
+must not be promoted because it does not contain this correction. After Git
+delivery and all four-host gates, seal a new cohort from the delivered source,
+then perform fresh Dev acceptance before QAS and PRD. Mailbox acceptance is
+**NOT RUN**; no mailbox request or ACK was published. External publishers
+remain paused.
+
+## Historical status — 2026-10-21 09:39 UTC: candidate Dev rollout blocked by receipt/runtime incompatibility
 
 The owner-authorized recovery of operation
 `33b2c3a3f6399253444c6ae29f0ecb97` completed before the following rollout

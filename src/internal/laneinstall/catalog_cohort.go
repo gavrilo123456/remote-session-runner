@@ -102,15 +102,18 @@ type CatalogCohortHistoryBranch struct {
 }
 
 // CatalogCohortSupersessionEvidence is the local, read-only observation that
-// permits a never-switched attempt to be superseded by a prepared successor.
-// Every host records its own evidence before the old receipt stops holding
-// admissions. Selector operations are required to be absent; an interrupted
-// selector operation must first use the existing recovery procedure.
+// permits a never-switched attempt, a fully rolled-back attempt, or a
+// completed release to be superseded by a fresh held successor. Every host
+// records its own evidence before the old receipt stops holding admissions.
+// A completed predecessor must still match its completed selector journal;
+// an interrupted selector operation must first use the existing recovery
+// procedure.
 type CatalogCohortSupersessionEvidence struct {
 	HostID               string `json:"host_id"`
 	SuccessorOperationID string `json:"successor_operation_id"`
 	ExpectedSelector     string `json:"expected_selector"`
 	ObservedSelector     string `json:"observed_selector"`
+	SelectorBundleSHA256 string `json:"selector_bundle_sha256,omitempty"`
 	ServiceActive        bool   `json:"service_active"`
 	WorkInventorySHA256  string `json:"work_inventory_sha256"`
 	WorkInventoryEmpty   bool   `json:"work_inventory_empty"`
@@ -354,8 +357,9 @@ func AdvanceCatalogCohortReceipt(receipt CatalogCohortReceipt, action, hostID, e
 }
 
 // AdvanceCatalogCohortSupersedeHost records one host's fresh local
-// observations. Supersession is limited to attempts that never switched or
-// were fully rolled back; any interrupted switch remains under recovery.
+// observations. Supersession is limited to attempts that never switched,
+// were fully rolled back, or completed on every host; any interrupted switch
+// remains under recovery.
 func AdvanceCatalogCohortSupersedeHost(receipt, successor CatalogCohortReceipt, observation CatalogCohortSupersessionEvidence, at time.Time) (CatalogCohortReceipt, error) {
 	if ValidateCatalogCohortReceipt(receipt) != nil || ValidateCatalogCohortReceipt(successor) != nil ||
 		receipt.OperationID == successor.OperationID || receipt.Lane != successor.Lane ||
@@ -575,7 +579,8 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 		case "supersede-host":
 			if !catalogCohortSupersessionStageEligible(stage, blockedFrom, receipt.Transitions[:index]) ||
 				len(currentSupersededHosts(receipt.Transitions[:index])) >= len(catalogCohortSwitchOrder) ||
-				event.HostID != catalogCohortSwitchOrder[len(currentSupersededHosts(receipt.Transitions[:index]))] || !validSupersessionEvidence(event) {
+				event.HostID != catalogCohortSwitchOrder[len(currentSupersededHosts(receipt.Transitions[:index]))] ||
+				!validSupersessionEvidenceForReceipt(event, receipt, stage, blockedFrom) {
 				return "", ErrCatalogOperationInvalid
 			}
 			if previous := currentSupersessionSuccessor(receipt.Transitions[:index]); previous != "" && previous != event.Supersession.SuccessorOperationID {
