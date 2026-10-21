@@ -1,6 +1,113 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 04:26 UTC: CAT-04 remains BLOCKED before recovery
+## Current status — 2026-10-21 06:10 UTC: recovery correction delivered; Dev rollback complete
+
+The receipt rollback/synchronization correction is delivered at source revision
+`c76bac5e15b3c1d9ac004024f8062f43f0e6a4f4`. Mac `dev`, primary Gitea
+`origin/dev`, automatic GitHub `dev`, and all three clean Ubuntu `dev`
+checkouts resolve to this revision. The required source gates passed at this
+revision on Mac and all workers: `make test`, `make vet`, `make build`, and
+`make smoke`. Mac's first sandboxed test run could not inspect processes; its
+host-visible rerun passed. Linux passed all gates. Sandbox's first full run
+using a custom `/tmp/catc76` wrapper failed two `laneroot` fixture tests; the
+two focused tests then passed using normal `/tmp`, and the full `make test`
+plus `make vet build smoke` passed without the wrapper. Factory's full test,
+vet, build, and smoke gates passed using its normal `/tmp`. On Factory,
+`/tmp` is mounted as `tmpfs`; no `/dev/shm` path or custom temporary wrapper
+was used. These failed attempts remain recorded and were not counted as PASS.
+
+The regression in
+[`catalog_cohort_rollback_sync_test.go`](../src/internal/laneinstall/catalog_cohort_rollback_sync_test.go)
+exercises reconciliation, Sandbox rollback, receipt synchronization to all
+four fixture hosts, Linux rollback, synchronization again, and finalization
+through the actual local selector validation path. It accepts a rolled-back
+host only when its completed journal, rollback evidence, and `PreviousTarget`
+agree; the existing stopped-service, empty-work, schema, and configuration
+guards remain in force.
+
+Fresh supported Dev inventories on 2026-10-21 at 06:04–06:10 UTC showed all
+four services stopped, schema 40, and zero active session slots, active
+command slots, queued commands, or resumable jobs. The only receipt that held
+the current operation was `5c9d691cc33016b1ef5bb7b741dea0de`; the other
+historical nonterminal-looking entries were `2ae3b253be9c4c211d00fff162e1dfdd`
+and `da3b42aefd53e1a529efed575d1044e3`, and supported status reads show both
+already `superseded`. Operation `7a30271dab023394bdd9b43116e5979e` remains
+superseded and was not changed.
+
+The four-host receipt copies initially diverged: Mac, Linux, and Factory held
+the `blocked` history (SHA-256
+`8ffea32af5764b8d1e4cd324154f3fcba8694e8f98fe8c92d8381590abe7d9ce`), while
+Sandbox held the `switching` history (SHA-256
+`926e6a442f4450f2f7701883e9b6deb73d2b3c77976219f31087e23bdf49f07e`). The
+supported Mac `reconcile-history` operation produced a blocked receipt with
+both histories retained as branches. Its reconciliation evidence digest is
+`1b7a928f5133634ab8362a11174ca260b6f1cdd2825eb399ea8c9d58e177f7ef`; the
+resulting receipt SHA-256 was `a68fb97a8ee3c7d8a904462db227e3080a1d4cd47d089d2373181f93207d5b5e`
+on all four hosts.
+
+`rollback-start` used fresh all-host inventory, selector, journal, and measured
+Sandbox-capacity evidence SHA-256
+`777c2b0107913dad8f37823a68c77ae5fe08b2c0767e59a7990053958eeea812`. The
+receipt was synchronized to all hosts at SHA-256
+`44ad504c48aba8241bfa9f6dd927b1c80261338019637f4c776b0b36ff3328af` before
+the first selector rollback.
+
+Sandbox was rolled back first using journal
+`81bac94cd52f3a8fb8a4b8da867e639e`. Its completed journal SHA-256 is
+`4cf568eb1b2ce983aa25e938d50242afb36372676fafd30fbfde2f6fe84fdae6`; it
+returned to legacy bundle `2b65f490b88cbb069460a1e4276b64bdc2acc11bd326eded1e697a31160d0459`.
+The supported operation created a fresh rollback backup at
+`/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-408777429`
+with manifest SHA-256
+`a5b8db816ab1e180103ecb51c0812b1ba6580e92fe27ec44163ba729a05c357c`. The
+Sandbox rollback receipt was synchronized to all four hosts at SHA-256
+`b844a9e7ef58b4f93452afbad9243c7a60362aab32817f7445d4b50e74a3a27f`.
+
+Linux was rolled back second using journal
+`f647cb04c9c03cc6e254408f45d949c6`. Its completed journal SHA-256 is
+`8818fcec8c3bf7b569c2367d10055d25b9083f684cb51185571b9e21c278c104`; it
+returned to legacy bundle `f60b3926d5edb7d256589173ada7a1952cf9ffbe8568644bdfc88f404ee13863`.
+The supported operation created a fresh rollback backup at
+`/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-1583166030`
+with manifest SHA-256
+`127f46172874c9d32336723ce630e18c0bbf6b073a5332fc5f7a68df48f091c3`. The
+Linux rollback receipt was synchronized to all four hosts at SHA-256
+`4112891635fc9ce499a07a6adc497f548df1a3ac13bf5dc7865b87ba8da1751f`.
+
+`rollback-complete` used fresh post-rollback state and backup-manifest
+evidence SHA-256
+`89234bc5849ce43a599d0e3dbcbcdf15000a7f50a8ca64e79a195b9d5c26a679`. The
+final rolled-back receipt is byte-identical on Mac, Linux, Sandbox, and
+Factory: SHA-256
+`201deb4ee39c40812b7aa937fd6c11be8248214a8c99356cf47a1182c0b90f9e`.
+Final selectors are back on their prior bundles: Mac
+`6154ea67ea3337939982c6d798e0cf43acea9e06e8c2a0facff0f1136ed99310`, Linux
+`f60b3926d5edb7d256589173ada7a1952cf9ffbe8568644bdfc88f404ee13863`,
+Sandbox `2b65f490b88cbb069460a1e4276b64bdc2acc11bd326eded1e697a31160d0459`,
+and Factory `b59c7bdc53d50a4be2e5b78c9bb53d560e98b427c03b360ec5b394af59b11687`.
+All four Dev services remain stopped and all inventories remain empty. Mac and
+Factory did not switch and were not rolled back. The databases remain at
+schema 40; no older database was restored. Existing and newly created backups,
+mailboxes, held ACKs, retained work, and shared caches were preserved.
+
+Immediately before Sandbox rollback, `/dev/sda1` had 1,224,752 KiB available;
+the Dev database, WAL, SHM, and config measured 634,880, 0, 32,768, and 3,835
+bytes respectively. A conservative reserve of 73,823,694 bytes (ten times
+those measured inputs plus the 64 MiB floor) left 1,180,322,354 bytes of
+headroom. After both new backups, Sandbox still had 1,223,376 KiB available.
+No existing backup or shared cache was removed.
+
+No mailbox request or ACK was published. Mailbox acceptance, direct
+functional acceptance, queued-SSH acceptance, and Mac-local acceptance are
+**NOT RUN**. No new successor has been created, no selector has been changed
+after rollback, and QAS/PRD have not been operated in this recovery. Next:
+publish a new sealed candidate from the corrected revision, prepare fresh
+four-host preflights and backups, supersede the fully rolled-back operation
+through the supported host-by-host flow, verify one exact admission hold on
+every host, then proceed through Dev → QAS → PRD. The prior sealed candidate
+`cat-20261021-147138f` remains unchanged and unselected.
+
+## Historical status — 2026-10-21 04:26 UTC: CAT-04 blocked before recovery
 
 The CAT-04 switched-history recovery correction is committed as
 `147138f3a82774db8713a677e365c2c40156154f` (`fix(catalog): reconcile
