@@ -1,5 +1,34 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 validation follow-up — 2026-10-21 23:39 UTC
+
+The synchronized source commit `140b0e94cd1be817695c77219208bea455133401`
+reached all three clean Ubuntu `dev` checkouts, but the host `make test` gates
+did not pass. Factory exposed a fixture selecting the Mac PRD plan on Linux;
+the Mac focused check had passed because it ran on Darwin. The fixture is now
+corrected to choose a plan for the current platform, pending a new commit and
+delivery.
+
+On `linux-host`, the full test run hit Go's 10-minute package timeout in three
+unrelated packages while SQLite fixture opens were in `fsync` or schema/index
+creation. The task-owned test process tree and temporary directory were stopped
+and cleaned after those failures. This does not establish a production or
+CAT-06 defect. Sandbox host tests were not started at 532,760 KiB free on
+`/dev/sda1`; its shared Go cache was left intact. CAT-06 has no new release
+candidate, and no host service was changed. Re-run the focused CAT-06 regression
+and remaining gates after the test correction is delivered; keep any full-suite
+host timeouts recorded as failures unless a complete rerun passes.
+
+Mac validation update — 2026-10-21 23:43 UTC: on the working tree containing
+the platform-aware test correction, `make test`, `make vet`, `make build`,
+`make smoke`, `git diff --check`, and Go 1.27.1 `gofmt` all pass. The correction
+is not yet delivered. Fresh checks show Linux `/tmp` is disk-backed with 15 GiB
+free; Factory `/tmp` is tmpfs, so source-check temporary files must use its
+disk-backed `/var/tmp` (33 GiB free). Sandbox `/tmp` is on `/dev/sda1` with 489
+MiB free, and its host gates remain blocked on capacity. This latest Sandbox
+measurement supersedes the earlier 532,760 KiB figure and differs from the
+owner's pasted 1.5 GiB snapshot. No host data or shared cache was removed.
+
 ## Current CAT-06 engineering status — 2026-10-21 23:03 UTC
 
 The PRD bootstrap and rollback-reconciliation source correction is implemented

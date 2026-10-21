@@ -56,7 +56,11 @@ func TestPRDWorkSnapshotUsesCanonicalFullInventoryAndVerifiesBackup(t *testing.T
 	if err != nil || schema != store.CurrentSchemaVersion || !empty.Empty() {
 		t.Fatalf("empty fixture snapshot schema=%d inventory=%+v err=%v", schema, empty, err)
 	}
-	plan, err := BuildPRDUpgradePlan("mac-control-plane")
+	hostID := "linux-host"
+	if runtime.GOOS == "darwin" {
+		hostID = "mac-control-plane"
+	}
+	plan, err := BuildPRDUpgradePlan(hostID)
 	if err != nil {
 		t.Fatal(err)
 	}
