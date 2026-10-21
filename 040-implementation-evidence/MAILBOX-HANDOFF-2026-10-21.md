@@ -8,8 +8,8 @@ validation proved that a configuration-only transfer was unsupported, the owner
 explicitly selected **keep existing paths; implement supported handoff**.
 
 **ACTIVE: all eight original mailbox paths belong to QAS. Post-activation CPU
-correction is being qualified before client handback.** Dev and QAS currently
-select `cat-20261021-5bc6f43` on all four hosts. Mac PRD is stopped with an empty
+correction is being qualified before client handback.** Dev now selects `cat-20261021-b84caf0` on all four hosts; QAS remains on
+`cat-20261021-5bc6f43` until the identical correction bundles pass QAS. Mac PRD is stopped with an empty
 mailbox map and disabled ingress; its original binaries, database and fallback
 configuration are preserved. No filesystem mailbox request or ACK has been
 published. Clients remain stopped. PRD upgrade/CAT-06 remains a separate task.
@@ -336,3 +336,42 @@ recorded switch-preflight digests; it does not edit receipts or publish mailbox
 files. Worker live inventories use the supported Go reader, avoiding Linux's
 old system SQLite parser. Mac's retained PRD main-file hash comparison does not
 claim a WAL-inclusive logical database comparison.
+
+During Dev cohort `a0ce005cfc55bc36daa3924ed6b3cee8`, the Sandbox select
+SSH command timed out at 120 seconds with no returned output. It was not
+repeated. Fresh supported status and an independent read-only check proved
+Sandbox's selector already at S3 and selector journal
+`b79a10690876b1886caa53e9303785e4.json` complete, bound to the same cohort and
+fresh preflight digest. Cohort transition 5 recorded the Sandbox switch at
+21:12:13 UTC. No native catalog controller process remained, and 707,620,864
+bytes were free. The timeout cause remains UNKNOWN. Existing failure evidence
+is preserved under `s3-dev-qualification/`; no receipt or selector was edited.
+The continuation checks the exact partial selectors, stopped/empty work,
+configuration/schema and original peer snapshots, synchronizes the existing
+Sandbox receipt through the supported API, and switches only remaining hosts.
+SSH commands explicitly disable TTY allocation and use bounded keepalives;
+those precautions are not a claimed diagnosis of the timeout.
+
+## S3 Dev qualification — 2026-10-21 21:25 UTC
+
+Dev cohort `a0ce005cfc55bc36daa3924ed6b3cee8` is released, with common
+receipt SHA-256
+`b83ec4d95102c667f28955d89ae431f16dce8de2690e7ab3eafeb6c2d5e68f19`.
+The exact published S3 bundles passed seven held/scoped routes, including
+ordinary-admission rejection while held, then seven ordinary API routes after
+release. Each successful request has exit 0, complete output and closed teardown.
+Queued projections with a trailing event were confirmed through bounded
+read-only retrieval of the same command's contiguous final stream, without
+resubmission. All four ingress/executor/worker health reports identify exact S3;
+work inventories are empty and storage/cleanup counters zero. Original QAS/PRD
+process identities, selectors and raw configuration hashes are unchanged.
+
+Evidence is `s3-dev-qualification/summary.json`, its preserved failed step033,
+supported continuation, final receipt and per-command reports in the private
+work directory. The same operation finished; Linux/Sandbox selection was never
+repeated. No new cohort replaced it and no historical receipt was removed.
+Source-gate/publication closeout `4e22914e9740eb8bfc786fb549d7c61abe0712a2`
+was primary/mirror verified and fast-forwarded to all workers before Dev work.
+QAS promotion is pending this closeout delivery; no rebuild is permitted.
+Actual filesystem-mailbox acceptance, normal client load and additional limit,
+managed-session or fault probes remain NOT RUN for this focused follow-up.
