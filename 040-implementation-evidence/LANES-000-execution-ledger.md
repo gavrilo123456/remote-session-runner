@@ -5,7 +5,15 @@
 The owner selected the [Factory-style Runner release catalog design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
 and [CAT-01–CAT-07 plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md).
 
-### Current CAT status — 2026-10-21 18:56 UTC
+### Current deployment follow-up — 2026-10-21 20:41 UTC
+
+Owner-approved handoff support is active in Dev/QAS as
+`cat-20261021-5bc6f43`, with released four-host cohorts. Exact qualification
+scope, hashes and unrun checks are in [the handoff record](MAILBOX-HANDOFF-2026-10-21.md).
+Mailbox transfer remains pending, clients remain stopped, and PRD/CAT-06 is
+unchanged. The earlier accepted CAT baseline below is historical.
+
+### Historical CAT status — 2026-10-21 18:56 UTC
 
 CAT-01 through CAT-05 remain **COMPLETE**. Normal Dev and QAS API admissions
 are now open on the unchanged accepted `cat-20261021-ebc4446` release. Dev

@@ -1,6 +1,18 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-## Current status — 2026-10-21 18:56 UTC: Dev/QAS open; CAT-06 PRD remains blocked
+## Current deployment — 2026-10-21 20:41 UTC: handoff support in Dev/QAS
+
+The separate owner-approved reversible mailbox-handoff follow-up has qualified
+and selected `cat-20261021-5bc6f43` in Dev then QAS on all four existing hosts,
+using identical sealed bytes. Both cohorts are released and active; source,
+scoped/ordinary route, empty-work and peer-preservation evidence is in
+[the handoff record](../../040-implementation-evidence/MAILBOX-HANDOFF-2026-10-21.md).
+That record states its focused validation scope and unrun checks explicitly.
+The actual PRD-to-QAS mailbox transfer is pending; clients remain stopped.
+PRD installation and CAT-06 blockers are unchanged. Earlier CAT-04/05 baseline
+acceptance below remains historical evidence, not the current selector target.
+
+## Historical status — 2026-10-21 18:56 UTC: Dev/QAS open; CAT-06 PRD remains blocked
 
 CAT-04 and CAT-05 remain **COMPLETE** on the unchanged accepted
 `cat-20261021-ebc4446` release. Under the owner's subsequent instruction,

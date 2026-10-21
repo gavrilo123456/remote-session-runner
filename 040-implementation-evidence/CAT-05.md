@@ -1,6 +1,14 @@
 # CAT-05 — Frozen candidate and live QAS qualification
 
-## Current status — 2026-10-21 18:56 UTC: CAT-05 PASS; QAS open for normal API use
+## Current deployment — 2026-10-21 20:41 UTC
+
+The owner-approved handoff follow-up now selects the same Dev-qualified
+`cat-20261021-5bc6f43` on all QAS hosts; operation
+`28e49a5f0a4edb6a35ed73f3944ee907` is released. See
+[exact hashes, scoped/ordinary route results and validation limits](MAILBOX-HANDOFF-2026-10-21.md).
+The actual mailbox handoff is pending. Earlier CAT-05 acceptance below is historical.
+
+## Historical status — 2026-10-21 18:56 UTC: CAT-05 PASS; QAS open for normal API use
 
 The owner-authorized admission opening is complete. QAS operation
 `1349821d4c363aff4b43ed92a61bcc21` is `released` on all four hosts, with 16

@@ -7,9 +7,9 @@ mailbox configuration, and activation of the same paths in QAS. After installed
 validation proved that a configuration-only transfer was unsupported, the owner
 explicitly selected **keep existing paths; implement supported handoff**.
 
-**IN PROGRESS: Dev qualification complete; QAS qualification and actual mailbox
-activation remain outstanding.** Dev now selects `cat-20261021-5bc6f43` on all
-four hosts. QAS still selects `cat-20261021-ebc4446`. PRD and both mailbox
+**IN PROGRESS: Dev/QAS route qualification complete; actual mailbox activation
+remains outstanding.** Dev and QAS select `cat-20261021-5bc6f43` on all
+four hosts. PRD and both mailbox
 configurations remain unchanged; no mailbox request or ACK has been published.
 PRD upgrade/CAT-06 remains a separate task.
 
@@ -173,6 +173,42 @@ restarts and receipt synchronization did not restart peer lanes. Host postflight
 files are `dev-HOST-postflight.json` and `dev-mac-final-{work,ready}.json` in the
 private work directory. No actual filesystem mailbox request or ACK was used;
 mailbox acceptance and normal project load remain NOT RUN. Clients stay stopped.
+
+## QAS handoff-release qualification — 2026-10-21 20:41 UTC
+
+The Dev closeout `c492eee5bb42b72a222261a13f453e0106bdff52` was pushed to
+Gitea. The first mirror check still observed `30a31c0`; remote progress stopped
+until the automatic mirror matched `c492eee` exactly. All three clean workers
+then fast-forwarded before QAS preflights. No rebuild or dependency resolution
+occurred during QAS promotion: release and native bundle hashes above are
+identical to Dev.
+
+QAS operation `28e49a5f0a4edb6a35ed73f3944ee907` is `released`, with 16
+transitions and common final receipt SHA-256
+`4069f1b93c55eba7f7c87e3d25cb9a2a5ed75c26953b009558559054d826e546`.
+Fresh consistent backups, full empty-work reports and at least 536,870,912
+bytes remaining headroom preceded the ordered Linux/Sandbox/Factory/Mac
+switches. Scoped admissions stayed fenced through seven fixed route checks;
+all had exit 0, complete output and closed teardown. The single receipt prefix
+was extended serially and synchronized through supported stopped-service
+operations. No historical receipt was removed or manually edited.
+
+After release, all seven ordinary QAS API routes also passed, with bounded
+read-only event follow-up where needed. Evidence is `qas-seven-routes.json`,
+`qas-normal-routes.log`, and `handoff-qas-normal-qas-a93af90a9b91/`. As in Dev,
+this is focused handoff route qualification; additional live limit enforcement,
+managed-session and fault probes were NOT RUN, and no new claim is made for
+those unchanged paths. The source/transaction regressions remain separate.
+
+At final pre-handoff postflight, every Dev/QAS service was active on S2 and
+schema 40, QAS inventories were empty, and storage/cleanup counters were zero.
+Dev process IDs captured before QAS switching were unchanged; PRD process IDs
+and configuration hashes matched the starting baseline. Both Mac mailbox raw
+configurations still match their original backups. Host evidence is
+`qas-HOST-postflight.json` and `qas-mac-final-{work,ready}.json`. The next action
+is the supported initial Mac PRD/QAS stop, private handoff package preparation,
+and guarded activation. No filesystem mailbox request or ACK has been published;
+clients remain stopped and mailbox/normal-project acceptance is NOT RUN.
 
 Fresh PRD read-only inspection distinguished three local terminal-lost retained
 session/command pairs from three older uncertain SlideStud remote intents.

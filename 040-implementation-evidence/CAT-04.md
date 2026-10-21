@@ -1,6 +1,13 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 18:56 UTC: CAT-04 PASS; Dev open for normal API use
+## Current deployment — 2026-10-21 20:41 UTC
+
+The owner-approved handoff follow-up now selects `cat-20261021-5bc6f43` on
+all Dev hosts; operation `106ea6517ec280e7fb909ee9c6fb98f7` is released.
+See [exact hashes, scoped/ordinary route results and validation limits](MAILBOX-HANDOFF-2026-10-21.md).
+The earlier CAT-04 acceptance below is preserved historical evidence.
+
+## Historical status — 2026-10-21 18:56 UTC: CAT-04 PASS; Dev open for normal API use
 
 The owner-authorized admission opening is complete. Dev operation
 `8fdb7e5eb058a795601a2cff9e7bde78` is `released` on all four hosts, with 14
