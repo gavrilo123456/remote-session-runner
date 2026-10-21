@@ -1,6 +1,73 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 06:10 UTC: recovery correction delivered; Dev rollback complete
+## Current status — 2026-10-21 08:36 UTC: corrected release sealed; current Dev receipt awaits authorization
+
+The verification-history reconciliation correction is committed as
+`740927e93306dec8a3a9487a5aca6bc7be5d9819` and delivered on Mac `dev`,
+primary Gitea `origin/dev`, the exact GitHub mirror `dev`, and all three clean
+Ubuntu `dev` checkouts. Mac `origin/dev` was refreshed from primary Gitea before
+the bundle build; every checkout reported `HEAD` and `origin/dev` at this SHA.
+
+At this exact source revision, all four required gates passed on all four
+machines: `make test`, `make vet`, `make build`, and `make smoke` (each exit 0).
+Linux and Factory full tests passed on their first current-revision run. Sandbox
+has one preserved earlier `make test` attempt that was interrupted at the
+owner's request to prevent root exhaustion when only 166,896 KiB remained; that
+attempt is not PASS. The later full rerun passed: `/dev/sda1` had 1,909,124 KiB
+available before it and 1,780,112 KiB after it. Sandbox `make vet`, `make build`,
+and `make smoke` then passed; the last measured free space during smoke was
+1,530,828 KiB. No shared cache or host data was removed. All Go commands set
+`TMPDIR`, `GOTMPDIR`, and `SQLITE_TMPDIR` to `/tmp`; on Factory, `/tmp` is
+currently mounted as `tmpfs`, and no `/dev/shm` path was used. On Mac, the
+supported bundle writer rejected `/tmp` because it is a symlink to
+`/private/tmp`; the Mac build artifacts therefore use the canonical
+disk-backed `/private/tmp` path.
+
+One new immutable release was built from source `740927e` and sealed as
+`cat-20261021-740927e`, release-manifest SHA-256
+`ab01036a2824b680dd37e90e043d744f817db724a4e233b7916e2bad6ca36382`. Supported
+`catalog-inspect` passed on all four hosts with this identical release digest
+and these per-host bundle hashes:
+
+| Host | Bundle SHA-256 | Catalog publication/inspection |
+| --- | --- | --- |
+| `mac-control-plane` | `3a48ac5f852adab5ee10eb054b8cedf373e63d687be31975275efd64c16b98f0` | PASS |
+| `linux-host` | `81971e45af48fad539d89d682848fa47dfe83ceb002c139751a828ff2122c07b` | PASS |
+| `sandbox-host` | `7ee54e47f57fb6117607b027e871487319fc03673f19f2860c4836b1140b9577` | PASS |
+| `factory-sandbox` | `4300444e0d1a421514fe0201d947464a57654390f2da9c7e28035d9f441f511e` | PASS |
+
+Publication added this release only; no selector, Runner service, configuration,
+database, mailbox, or receipt was changed by publication. It remains unselected.
+
+Fresh supported read-only checks at 2026-10-21 08:34 UTC found Dev stopped on
+all four hosts with zero active session slots, command slots, queued commands,
+and resumable jobs. All four selectors still resolve to the previous
+`cat-20261021-c76bac5` bundles; schema is 40. The current operation is
+`33b2c3a3f6399253444c6ae29f0ecb97` at stage `verifying`. Its four existing
+receipt copies each contain the common hold/switch/verify-start prefix and one
+distinct, host-specific `verify` transition:
+
+| Host | Existing receipt SHA-256 | Verify host |
+| --- | --- | --- |
+| `mac-control-plane` | `69d6d5ddc28f4e706e8fde7b7dd0758461eba4b99e1d08bc526ca5cee81a071a` | Mac |
+| `linux-host` | `4a8d64839888330ce2f7c7890291a692684378e53b266d85ec9fb001207a646c` | Linux |
+| `sandbox-host` | `64200b559cb70fdd401b3d716b6e4258867a157b7e45d3908e23c9a171bb799d` | Sandbox |
+| `factory-sandbox` | `c66ddcd32d5d2bb2ebbda1ae71f3e2060bc88e46fb431eca04dc62cd13cb825f` | Factory |
+
+The corrected `reconcile-history` command was attempted on Mac with all four
+preserved receipt copies. It returned `operation not permitted` before any
+receipt write; the four hashes above remained unchanged. The follow-up request
+for host-level execution was rejected by automatic approval review because the
+owner's latest exact recovery authorization names `5c9d691cc33016b1ef5bb7b741dea0de`,
+whereas the current operation is `33b2c3a3f6399253444c6ae29f0ecb97`. No
+alternate path was used. This live receipt reconciliation/finalization is
+blocked pending explicit owner authorization for `33b2…` as the current
+operation. The selected release remains `cat-20261021-c76bac5`; the new
+`cat-20261021-740927e` candidate has not been activated or accepted in Dev.
+QAS and PRD remain unchanged. Mailbox requests and ACKs remain unpublished;
+mailbox acceptance is **NOT RUN**; external publishers remain paused.
+
+## Historical status — 2026-10-21 06:10 UTC: recovery correction delivered; Dev rollback complete
 
 The receipt rollback/synchronization correction is delivered at source revision
 `c76bac5e15b3c1d9ac004024f8062f43f0e6a4f4`. Mac `dev`, primary Gitea
