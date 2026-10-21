@@ -386,10 +386,7 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 		if reconcileErr != nil {
 			return reconcileErr
 		}
-		if err := laneinstall.ValidateCatalogCohortHistoryLocalState(context.Background(), plan, reconciled); err != nil {
-			return err
-		}
-		path, writeErr := laneinstall.WriteCatalogCohortReceipt(plan, reconciled)
+		path, writeErr := laneinstall.SyncCatalogCohortReceipt(context.Background(), plan, reconciled)
 		if writeErr != nil {
 			return writeErr
 		}
@@ -431,10 +428,7 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 		if err != nil || incoming.Lane != plan.Lane {
 			return laneinstall.ErrCatalogOperationInvalid
 		}
-		if err := laneinstall.ValidateCatalogCohortHistoryLocalState(context.Background(), plan, incoming); err != nil {
-			return err
-		}
-		path, err := laneinstall.WriteCatalogCohortReceipt(plan, incoming)
+		path, err := laneinstall.SyncCatalogCohortReceipt(context.Background(), plan, incoming)
 		if err != nil {
 			return err
 		}

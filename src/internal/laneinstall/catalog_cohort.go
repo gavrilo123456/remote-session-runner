@@ -2,6 +2,7 @@ package laneinstall
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -737,6 +738,37 @@ func WriteCatalogCohortReceipt(plan Plan, receipt CatalogCohortReceipt) (string,
 		return "", ErrCatalogOperationInvalid
 	}
 	root := filepath.Join(plan.Namespace.Staging, "catalog-cohorts")
+	return writeCatalogCohortReceiptAt(root, receipt)
+}
+
+// SyncCatalogCohortReceipt validates this host's fresh stopped/empty local
+// state and durable selector history before atomically updating its receipt
+// copy. The same operation is used by the supported cohort CLI sync and
+// reconcile-history actions.
+func SyncCatalogCohortReceipt(ctx context.Context, plan Plan, receipt CatalogCohortReceipt) (string, error) {
+	if validateCatalogPlan(plan) != nil || ValidateCatalogCohortReceipt(receipt) != nil || receipt.Lane != plan.Lane || !cohortContainsHost(receipt, plan.HostID) {
+		return "", ErrCatalogOperationInvalid
+	}
+	root := filepath.Join(plan.Namespace.Staging, "catalog-cohorts")
+	return syncCatalogCohortReceiptAt(root, receipt, func() error {
+		return ValidateCatalogCohortHistoryLocalState(ctx, plan, receipt)
+	})
+}
+
+func syncCatalogCohortReceiptAt(root string, receipt CatalogCohortReceipt, validateLocal func() error) (string, error) {
+	if validateLocal == nil || ValidateCatalogCohortReceipt(receipt) != nil {
+		return "", ErrCatalogOperationInvalid
+	}
+	if err := validateLocal(); err != nil {
+		return "", err
+	}
+	return writeCatalogCohortReceiptAt(root, receipt)
+}
+
+func writeCatalogCohortReceiptAt(root string, receipt CatalogCohortReceipt) (string, error) {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || ValidateCatalogCohortReceipt(receipt) != nil {
+		return "", ErrCatalogOperationInvalid
+	}
 	if err := ensureCatalogPrivateDirectory(root); err != nil {
 		return "", err
 	}

@@ -263,6 +263,19 @@ func ValidateCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, rece
 	if err != nil {
 		return ErrCatalogOperationInvalid
 	}
+	return validateCatalogCohortHistoryLocalSelectorState(layout, receipt, status, proof.database, configurationSHA256)
+}
+
+// validateCatalogCohortHistoryLocalSelectorState verifies the durable selector
+// and operation journals after the caller has established stopped-service,
+// empty-work, schema, and configuration evidence. It is shared by the live
+// reconciliation path and fixture tests so rollback recovery exercises the
+// same on-disk validation logic as synchronization.
+func validateCatalogCohortHistoryLocalSelectorState(layout catalogSelectorLayout, receipt CatalogCohortReceipt,
+	status CatalogSelectorStatus, databaseSchema int, configurationSHA256 string) error {
+	if ValidateCatalogCohortReceipt(receipt) != nil || receipt.Lane != layout.lane || cohortHostIndex(receipt, layout.hostID) < 0 {
+		return ErrCatalogOperationInvalid
+	}
 	entries, err := os.ReadDir(layout.operationRoot)
 	if errors.Is(err, os.ErrNotExist) {
 		entries = nil
@@ -283,7 +296,7 @@ func ValidateCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, rece
 			matching = append(matching, operation)
 		}
 	}
-	return validateCatalogCohortReconciledSelectorEvidence(layout, receipt, status, proof.database, configurationSHA256, matching)
+	return validateCatalogCohortReconciledSelectorEvidence(layout, receipt, status, databaseSchema, configurationSHA256, matching)
 }
 
 func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayout, receipt CatalogCohortReceipt,
@@ -295,6 +308,24 @@ func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayou
 	host := receipt.Hosts[index]
 	if databaseSchema != host.SchemaVersion || configurationSHA256 != host.ConfigurationSHA256 {
 		return ErrCatalogOperationInvalid
+	}
+	if cohortHasRolledBackHost(receipt, layout.hostID) {
+		if len(matching) != 1 {
+			return ErrCatalogOperationInvalid
+		}
+		operation := matching[0]
+		if validateCatalogOperation(layout, operation) != nil || operation.Stage != catalogOperationRolledBack ||
+			operation.HostID != layout.hostID || operation.Lane != layout.lane || operation.Release != host.Target ||
+			operation.PreviousTarget != host.PreviousTarget || operation.ConfigurationSHA256 != host.ConfigurationSHA256 ||
+			operation.DatabaseSchemaAtSwitch != host.SchemaVersion || status.Target != operation.PreviousTarget ||
+			catalogSelectorStatusBundleSHA256(status) != host.PreviousBundleSHA256 {
+			return ErrCatalogOperationInvalid
+		}
+		digest, digestErr := catalogSelectorOperationDigest(layout, operation.OperationID)
+		if digestErr != nil || !cohortHasRollbackEvidence(receipt, layout.hostID, digest) {
+			return ErrCatalogOperationInvalid
+		}
+		return nil
 	}
 	if cohortHasSwitched(receipt, layout.hostID) {
 		if len(matching) != 1 {
@@ -319,6 +350,15 @@ func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayou
 	return nil
 }
 
+func cohortHasRolledBackHost(receipt CatalogCohortReceipt, hostID string) bool {
+	for _, transition := range receipt.Transitions {
+		if transition.Action == "rollback-host" && transition.HostID == hostID {
+			return true
+		}
+	}
+	return false
+}
+
 func cohortHasSwitchEvidence(receipt CatalogCohortReceipt, hostID, digest string) bool {
 	for _, transition := range receipt.Transitions {
 		if transition.Action == "reconcile-history" {
@@ -331,6 +371,24 @@ func cohortHasSwitchEvidence(receipt CatalogCohortReceipt, hostID, digest string
 			}
 		}
 		if (transition.Action == "switch" || transition.Action == "switch-reconciled") && transition.HostID == hostID && transition.EvidenceSHA256 == digest {
+			return true
+		}
+	}
+	return false
+}
+
+func cohortHasRollbackEvidence(receipt CatalogCohortReceipt, hostID, digest string) bool {
+	for _, transition := range receipt.Transitions {
+		if transition.Action == "reconcile-history" {
+			for _, branch := range transition.HistoricalBranches {
+				for _, event := range branch.Transitions {
+					if event.Action == "rollback-host" && event.HostID == hostID && event.EvidenceSHA256 == digest {
+						return true
+					}
+				}
+			}
+		}
+		if transition.Action == "rollback-host" && transition.HostID == hostID && transition.EvidenceSHA256 == digest {
 			return true
 		}
 	}
