@@ -549,11 +549,19 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 			}
 			stage = CatalogCohortReleased
 		case "reconcile-history":
-			if (stage != CatalogCohortPrepared && stage != CatalogCohortHeld && stage != CatalogCohortBlocked) || !eventHostEmpty(event.HostID) ||
+			if (stage != CatalogCohortPrepared && stage != CatalogCohortHeld && stage != CatalogCohortSwitching && stage != CatalogCohortBlocked) || !eventHostEmpty(event.HostID) ||
 				!validCatalogCohortHistoryReconciliation(receipt, event, receipt.Transitions[:index]) {
 				return "", ErrCatalogOperationInvalid
 			}
 			blockedFrom = event.ReconciledStage
+			if event.ReconciledStage == CatalogCohortSwitching {
+				var err error
+				_, switched, err = catalogCohortReconciledBranchState(event.HistoricalBranches)
+				if err != nil || len(switched) == 0 {
+					return "", ErrCatalogOperationInvalid
+				}
+				lastPreflight = make(map[string]time.Time, len(catalogCohortSwitchOrder))
+			}
 			stage = CatalogCohortBlocked
 		case "supersede-host":
 			if !catalogCohortSupersessionStageEligible(stage, blockedFrom, receipt.Transitions[:index]) ||
@@ -1103,13 +1111,7 @@ func cohortHostIndex(receipt CatalogCohortReceipt, hostID string) int {
 func countCohortSwitches(receipt CatalogCohortReceipt) int { return len(cohortSwitchedHosts(receipt)) }
 
 func cohortSwitchedHosts(receipt CatalogCohortReceipt) []string {
-	var hosts []string
-	for _, transition := range receipt.Transitions {
-		if transition.Action == "switch" || transition.Action == "switch-reconciled" {
-			hosts = append(hosts, transition.HostID)
-		}
-	}
-	return hosts
+	return cohortSwitchedHostsFrom(receipt.Transitions)
 }
 
 func cohortRolledBackHosts(receipt CatalogCohortReceipt) []string {

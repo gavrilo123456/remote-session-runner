@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -464,7 +465,7 @@ func TestCatalogCohortReconcileHistoryPreservesDivergentPreSwitchCopies(t *testi
 	}
 }
 
-func TestCatalogCohortHistoryReconciliationRejectsSwitchedOrInconsistentCopies(t *testing.T) {
+func TestCatalogCohortHistoryReconciliationPreservesSwitchesAndRequiresRollback(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	proof := strings.Repeat("c", 64)
 	base := validCatalogCohortFixture(now)
@@ -473,25 +474,89 @@ func TestCatalogCohortHistoryReconciliationRejectsSwitchedOrInconsistentCopies(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := AdvanceCatalogCohortReceipt(base, "block", "", proof, now)
+	linuxPreflight, err := AdvanceCatalogCohortReceipt(held, "preflight", "linux-host", proof, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	switched, err := AdvanceCatalogCohortReceipt(held, "preflight", "linux-host", proof, now.Add(time.Second))
+	linuxSwitched, err := AdvanceCatalogCohortReceipt(linuxPreflight, "switch", "linux-host", proof, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	switched, err = AdvanceCatalogCohortReceipt(switched, "switch", "linux-host", proof, now.Add(2*time.Second))
+	sandboxPreflight, err := AdvanceCatalogCohortReceipt(linuxSwitched, "preflight", "sandbox-host", proof, now.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	switched, err = AdvanceCatalogCohortReceipt(switched, "block", "", proof, now.Add(3*time.Second))
+	switched, err := AdvanceCatalogCohortReceipt(sandboxPreflight, "switch", "sandbox-host", strings.Repeat("d", 64), now.Add(4*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReconcileCatalogCohortReceiptHistories([]CatalogCohortReceipt{prepared, switched}, now.Add(4*time.Second)); err == nil {
-		t.Fatal("fork reconciliation erased an actual selector switch that requires recovery")
+	blocked, err := AdvanceCatalogCohortReceipt(sandboxPreflight, "block", "", strings.Repeat("e", 64), now.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
 	}
+	merged, err := ReconcileCatalogCohortReceiptHistories([]CatalogCohortReceipt{blocked, switched}, now.Add(6*time.Second))
+	if err != nil {
+		t.Fatalf("reconcile a switched host receipt branch: %v", err)
+	}
+	if merged.Stage != CatalogCohortBlocked || blockedCohortResumeStage(merged.Transitions) != CatalogCohortSwitching ||
+		!reflect.DeepEqual(cohortSwitchedHosts(merged), []string{"linux-host", "sandbox-host"}) {
+		t.Fatalf("reconciliation stage=%q resume=%q switched=%v", merged.Stage, blockedCohortResumeStage(merged.Transitions), cohortSwitchedHosts(merged))
+	}
+	if !catalogCohortStageHoldsAdmissions(merged.Stage) || ValidateCatalogCohortReceipt(merged) != nil {
+		t.Fatal("reconciled switched history did not retain a valid admission hold")
+	}
+	if !catalogCohortReceiptHasHistoricalBranch(merged, blocked.Transitions) || !catalogCohortReceiptHasHistoricalBranch(merged, switched.Transitions) {
+		t.Fatal("reconciliation did not retain both divergent switched histories")
+	}
+	currentBytes, err := json.Marshal(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var afterRestart CatalogCohortReceipt
+	if err := json.Unmarshal(currentBytes, &afterRestart); err != nil || ValidateCatalogCohortReceipt(afterRestart) != nil ||
+		!catalogCohortStageHoldsAdmissions(afterRestart.Stage) ||
+		!catalogCohortReceiptHasHistoricalBranch(afterRestart, switched.Transitions) {
+		t.Fatalf("restart during recovery lost the admission hold or switched branch: err=%v", err)
+	}
+	merged = afterRestart
+	merged, err = AdvanceCatalogCohortReceipt(merged, "rollback-start", "", proof, now.Add(7*time.Second))
+	if err != nil {
+		t.Fatalf("reconciled switched attempt could not enter supported rollback: %v", err)
+	}
+	merged, err = AdvanceCatalogCohortReceipt(merged, "rollback-host", "sandbox-host", proof, now.Add(8*time.Second))
+	if err != nil {
+		t.Fatalf("reconciled sandbox switch was not recovered first: %v", err)
+	}
+	merged, err = AdvanceCatalogCohortReceipt(merged, "rollback-host", "linux-host", proof, now.Add(9*time.Second))
+	if err != nil {
+		t.Fatalf("reconciled linux switch was not recovered second: %v", err)
+	}
+	merged, err = AdvanceCatalogCohortReceipt(merged, "rollback-complete", "", proof, now.Add(10*time.Second))
+	if err != nil || merged.Stage != CatalogCohortRolledBack {
+		t.Fatalf("reconciled rollback stage=%q err=%v", merged.Stage, err)
+	}
+	if !catalogCohortReceiptSupersessionEligible(merged) {
+		t.Fatal("a fully rolled-back reconciled attempt was not eligible for supported supersession")
+	}
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restarted CatalogCohortReceipt
+	if err := json.Unmarshal(encoded, &restarted); err != nil || ValidateCatalogCohortReceipt(restarted) != nil ||
+		!catalogCohortReceiptHasHistoricalBranch(restarted, switched.Transitions) {
+		t.Fatalf("restart during reconciliation lost the hold or switch history: err=%v", err)
+	}
+
+	conflicting := sandboxPreflight
+	conflicting, err = AdvanceCatalogCohortReceipt(conflicting, "switch", "sandbox-host", strings.Repeat("f", 64), now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReconcileCatalogCohortReceiptHistories([]CatalogCohortReceipt{switched, conflicting}, now.Add(6*time.Second)); err == nil {
+		t.Fatal("reconciliation accepted conflicting selector-switch evidence for the same host")
+	}
+
 	inconsistent := held
 	inconsistent.FenceProofs = append([]CatalogCohortFenceProof(nil), held.FenceProofs...)
 	inconsistent.FenceProofs[0].Control = "different-verified-control"
@@ -500,6 +565,60 @@ func TestCatalogCohortHistoryReconciliationRejectsSwitchedOrInconsistentCopies(t
 	}
 	if _, err := ReconcileCatalogCohortReceiptHistories([]CatalogCohortReceipt{held, inconsistent}, now.Add(time.Second)); err == nil {
 		t.Fatal("fork reconciliation accepted different publisher-fence identities")
+	}
+}
+
+func TestCatalogCohortReconciledSwitchRequiresMatchingLocalSelectorJournal(t *testing.T) {
+	fixture := newCatalogSelectorFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt, identity := validCatalogCohortForSelectorFixture(t, fixture, now)
+	cohortEvidence := strings.Repeat("a", 64)
+	var err error
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", cohortEvidence, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "preflight", "linux-host", cohortEvidence, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID, err := newCatalogOperationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := CatalogSelectorOperation{
+		FormatVersion: catalogOperationFormatVersion, OperationID: operationID,
+		CohortOperationID: receipt.OperationID, CohortEvidenceSHA256: cohortEvidence,
+		HostID: "linux-host", Lane: config.ReleaseLaneDev, Release: identity,
+		PreviousTarget: fixture.legacyTarget, NextTarget: filepath.Join(fixture.catalogRoot, fixture.firstRelease, "linux-host"),
+		ConfigurationSHA256: receipt.Hosts[0].ConfigurationSHA256, DatabaseSchemaAtSwitch: store.CurrentSchemaVersion,
+		BackupDirectory: receipt.Hosts[0].BackupDirectory, BackupManifestSHA256: receipt.Hosts[0].BackupManifestSHA256,
+		Stage: catalogOperationComplete, CreatedUTC: now.Add(2 * time.Second).Format(time.RFC3339Nano),
+	}
+	if err := writeCatalogSelectorOperation(fixture.layout.operationRoot, operation); err != nil {
+		t.Fatal(err)
+	}
+	switchDigest, err := catalogSelectorOperationDigest(fixture.layout, operation.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "switch", "linux-host", switchDigest, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := CatalogSelectorStatus{Kind: "catalog", Target: operation.NextTarget}
+	if err := validateCatalogCohortReconciledSelectorEvidence(fixture.layout, receipt, status,
+		store.CurrentSchemaVersion, receipt.Hosts[0].ConfigurationSHA256, []CatalogSelectorOperation{operation}); err != nil {
+		t.Fatalf("matching local selector journal was rejected: %v", err)
+	}
+	if err := validateCatalogCohortReconciledSelectorEvidence(fixture.layout, receipt, status,
+		store.CurrentSchemaVersion, receipt.Hosts[0].ConfigurationSHA256, nil); err == nil {
+		t.Fatal("switched selector without its journal was accepted")
+	}
+	status.Target = fixture.legacyTarget
+	if err := validateCatalogCohortReconciledSelectorEvidence(fixture.layout, receipt, status,
+		store.CurrentSchemaVersion, receipt.Hosts[0].ConfigurationSHA256, []CatalogSelectorOperation{operation}); err == nil {
+		t.Fatal("selector target that disagrees with the switch journal was accepted")
 	}
 }
 

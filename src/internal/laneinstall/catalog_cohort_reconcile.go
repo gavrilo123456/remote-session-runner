@@ -19,9 +19,10 @@ import (
 const maxCatalogCohortHistoryBranches = 16
 
 // ReconcileCatalogCohortReceiptHistories creates one conservative, hash-linked
-// receipt from divergent valid pre-switch copies. Every original transition
-// chain is retained as a branch. Any copy that records a switch or rollback is
-// refused and must use the normal deployment recovery path instead.
+// receipt from divergent valid copies. Every original transition chain is
+// retained as a branch. A history containing a selector switch is reconciled
+// to a blocked switching stage; host-local selector journals and work state
+// must then be verified before the merged receipt is written or synchronized.
 func ReconcileCatalogCohortReceiptHistories(receipts []CatalogCohortReceipt, at time.Time) (CatalogCohortReceipt, error) {
 	if len(receipts) < 2 || len(receipts) > maxCatalogCohortHistoryBranches || at.IsZero() {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
@@ -30,14 +31,8 @@ func ReconcileCatalogCohortReceiptHistories(receipts []CatalogCohortReceipt, at 
 	branchesByDigest := make(map[string]CatalogCohortHistoryBranch, len(receipts))
 	for _, receipt := range receipts {
 		if ValidateCatalogCohortReceipt(receipt) != nil || !catalogCohortStaticIdentityEqual(base, receipt) ||
-			(receipt.Stage != CatalogCohortPrepared && receipt.Stage != CatalogCohortHeld && receipt.Stage != CatalogCohortBlocked) ||
-			cohortHasAnySwitchTransitions(receipt.Transitions) {
+			!catalogCohortHistoryBranchReconcileSafe(receipt) {
 			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
-		}
-		for _, transition := range receipt.Transitions {
-			if transition.Action == "reconcile-history" {
-				return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
-			}
 		}
 		branch := CatalogCohortHistoryBranch{Stage: receipt.Stage, Transitions: append([]CatalogCohortTransition(nil), receipt.Transitions...)}
 		encoded, err := json.Marshal(branch)
@@ -83,12 +78,9 @@ func ReconcileCatalogCohortReceiptHistories(receipts []CatalogCohortReceipt, at 
 	if len(common) > 0 {
 		base.UpdatedAt = common[len(common)-1].At
 	}
-	reconciledStage := CatalogCohortPrepared
-	for _, branch := range branches {
-		if branch.Stage != CatalogCohortPrepared {
-			reconciledStage = CatalogCohortHeld
-			break
-		}
+	reconciledStage, _, err := catalogCohortReconciledBranchState(branches)
+	if err != nil {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}
 	branchBytes, err := json.Marshal(branches)
 	if err != nil {
@@ -114,7 +106,7 @@ func ReconcileCatalogCohortReceiptHistories(receipts []CatalogCohortReceipt, at 
 func validCatalogCohortHistoryReconciliation(receipt CatalogCohortReceipt, event CatalogCohortTransition, prior []CatalogCohortTransition) bool {
 	if event.Action != "reconcile-history" || !eventHostEmpty(event.HostID) || event.ResumeStage != "" ||
 		event.Supersession != nil || event.SuccessorID != "" ||
-		(event.ReconciledStage != CatalogCohortPrepared && event.ReconciledStage != CatalogCohortHeld) ||
+		(event.ReconciledStage != CatalogCohortPrepared && event.ReconciledStage != CatalogCohortHeld && event.ReconciledStage != CatalogCohortSwitching) ||
 		len(event.HistoricalBranches) < 2 || len(event.HistoricalBranches) > maxCatalogCohortHistoryBranches {
 		return false
 	}
@@ -127,7 +119,7 @@ func validCatalogCohortHistoryReconciliation(receipt CatalogCohortReceipt, event
 		return false
 	}
 	seen := make(map[string]struct{}, len(event.HistoricalBranches))
-	conservativeStage := CatalogCohortPrepared
+	branches := make([]CatalogCohortHistoryBranch, 0, len(event.HistoricalBranches))
 	lastDigest := ""
 	for _, branch := range event.HistoricalBranches {
 		branchBytes, err := json.Marshal(branch)
@@ -147,25 +139,202 @@ func validCatalogCohortHistoryReconciliation(receipt CatalogCohortReceipt, event
 		if len(branch.Transitions) > 0 {
 			branchReceipt.UpdatedAt = branch.Transitions[len(branch.Transitions)-1].At
 		}
-		if ValidateCatalogCohortReceipt(branchReceipt) != nil ||
-			(branch.Stage != CatalogCohortPrepared && branch.Stage != CatalogCohortHeld && branch.Stage != CatalogCohortBlocked) ||
-			cohortHasAnySwitchTransitions(branch.Transitions) || !catalogCohortTransitionPrefix(prior, branch.Transitions) {
+		if ValidateCatalogCohortReceipt(branchReceipt) != nil || !catalogCohortHistoryBranchReconcileSafe(branchReceipt) ||
+			!catalogCohortTransitionPrefix(prior, branch.Transitions) {
 			return false
 		}
-		for _, transition := range branch.Transitions {
-			if transition.Action == "reconcile-history" {
-				return false
-			}
-		}
-		if branch.Stage != CatalogCohortPrepared {
-			conservativeStage = CatalogCohortHeld
-		}
+		branches = append(branches, branch)
 		if lastDigest != "" && branchDigestOrderKey(branch) <= lastDigest {
 			return false
 		}
 		lastDigest = branchDigestOrderKey(branch)
 	}
-	return conservativeStage == event.ReconciledStage
+	reconciledStage, _, err := catalogCohortReconciledBranchState(branches)
+	return err == nil && reconciledStage == event.ReconciledStage
+}
+
+// catalogCohortHistoryBranchReconcileSafe limits branch merging to deployment
+// histories that have not entered verification, rollback, supersession, or a
+// prior reconciliation. An interrupted switch remains blocked and requires
+// host-local journal verification followed by the normal rollback path.
+func catalogCohortHistoryBranchReconcileSafe(receipt CatalogCohortReceipt) bool {
+	if receipt.Stage != CatalogCohortPrepared && receipt.Stage != CatalogCohortHeld &&
+		receipt.Stage != CatalogCohortBlocked && receipt.Stage != CatalogCohortSwitching {
+		return false
+	}
+	for _, transition := range receipt.Transitions {
+		switch transition.Action {
+		case "hold", "preflight", "switch", "switch-reconciled", "block":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// catalogCohortReconciledBranchState derives the safe stage and ordered set of
+// switches represented by divergent histories. Duplicate records for a host
+// must be byte-for-byte identical; switch order must still match the cohort.
+func catalogCohortReconciledBranchState(branches []CatalogCohortHistoryBranch) (CatalogCohortStage, []string, error) {
+	if len(branches) == 0 {
+		return "", nil, ErrCatalogOperationInvalid
+	}
+	switchesByHost := make(map[string]CatalogCohortTransition)
+	preparedOnly := true
+	for _, branch := range branches {
+		if branch.Stage != CatalogCohortPrepared {
+			preparedOnly = false
+		}
+		for _, transition := range branch.Transitions {
+			if transition.Action != "switch" && transition.Action != "switch-reconciled" {
+				continue
+			}
+			if !containsString(catalogCohortSwitchOrder, transition.HostID) {
+				return "", nil, ErrCatalogOperationInvalid
+			}
+			if existing, ok := switchesByHost[transition.HostID]; ok && !reflect.DeepEqual(existing, transition) {
+				return "", nil, ErrCatalogOperationInvalid
+			}
+			switchesByHost[transition.HostID] = transition
+		}
+	}
+	ordered := make([]string, 0, len(switchesByHost))
+	for _, hostID := range catalogCohortSwitchOrder {
+		if _, ok := switchesByHost[hostID]; ok {
+			ordered = append(ordered, hostID)
+		}
+	}
+	if len(ordered) != len(switchesByHost) {
+		return "", nil, ErrCatalogOperationInvalid
+	}
+	if len(ordered) > 0 {
+		return CatalogCohortSwitching, ordered, nil
+	}
+	if preparedOnly {
+		return CatalogCohortPrepared, ordered, nil
+	}
+	return CatalogCohortHeld, ordered, nil
+}
+
+// ValidateCatalogCohortHistoryLocalState verifies that this host's stopped
+// service, empty work inventory, selected target, and selector journal agree
+// with the switch history in a reconciled or synchronized receipt.
+func ValidateCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, receipt CatalogCohortReceipt) error {
+	if validateCatalogPlan(plan) != nil || ValidateCatalogCohortReceipt(receipt) != nil || receipt.Lane != plan.Lane ||
+		!cohortHasAnySwitch(receipt) {
+		if validateCatalogPlan(plan) == nil && ValidateCatalogCohortReceipt(receipt) == nil && !cohortHasAnySwitch(receipt) {
+			return nil
+		}
+		return ErrCatalogOperationInvalid
+	}
+	controller, err := NewSimpleServiceController()
+	if err != nil {
+		return err
+	}
+	active, err := controller.Status(ctx, plan)
+	if err != nil || active {
+		return ErrSimpleLaneNotQuiescent
+	}
+	current, err := simpleCurrentBundleForPlan(plan)
+	if err != nil {
+		return err
+	}
+	proof, err := readSimpleLaneQuiescence(ctx, plan, current)
+	if err != nil || !simpleMetricsEmpty(proof.metrics) {
+		return ErrSimpleLaneNotQuiescent
+	}
+	index := cohortHostIndex(receipt, plan.HostID)
+	if index < 0 {
+		return ErrCatalogOperationInvalid
+	}
+	host := receipt.Hosts[index]
+	if proof.database != host.SchemaVersion {
+		return ErrCatalogOperationInvalid
+	}
+	layout, err := catalogSelectorLayoutForPlan(plan, mustDefaultCatalogRoot(plan))
+	if err != nil {
+		return err
+	}
+	status, err := inspectCatalogSelector(layout)
+	if err != nil {
+		return err
+	}
+	configurationSHA256, err := hashCatalogConfiguration(layout.configFile)
+	if err != nil {
+		return ErrCatalogOperationInvalid
+	}
+	entries, err := os.ReadDir(layout.operationRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		entries = nil
+	} else if err != nil {
+		return err
+	}
+	var matching []CatalogSelectorOperation
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		operationID := entry.Name()[:len(entry.Name())-len(filepath.Ext(entry.Name()))]
+		operation, readErr := readCatalogSelectorOperation(layout.operationRoot, operationID)
+		if readErr != nil {
+			return ErrCatalogOperationInvalid
+		}
+		if operation.CohortOperationID == receipt.OperationID {
+			matching = append(matching, operation)
+		}
+	}
+	return validateCatalogCohortReconciledSelectorEvidence(layout, receipt, status, proof.database, configurationSHA256, matching)
+}
+
+func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayout, receipt CatalogCohortReceipt,
+	status CatalogSelectorStatus, databaseSchema int, configurationSHA256 string, matching []CatalogSelectorOperation) error {
+	index := cohortHostIndex(receipt, layout.hostID)
+	if index < 0 {
+		return ErrCatalogOperationInvalid
+	}
+	host := receipt.Hosts[index]
+	if databaseSchema != host.SchemaVersion || configurationSHA256 != host.ConfigurationSHA256 {
+		return ErrCatalogOperationInvalid
+	}
+	if cohortHasSwitched(receipt, layout.hostID) {
+		if len(matching) != 1 {
+			return ErrCatalogOperationInvalid
+		}
+		operation := matching[0]
+		if validateCatalogOperation(layout, operation) != nil || operation.Stage != catalogOperationComplete ||
+			operation.HostID != layout.hostID || operation.Lane != layout.lane || operation.Release != host.Target ||
+			operation.PreviousTarget != host.PreviousTarget || operation.ConfigurationSHA256 != host.ConfigurationSHA256 ||
+			operation.DatabaseSchemaAtSwitch != host.SchemaVersion || status.Target != operation.NextTarget {
+			return ErrCatalogOperationInvalid
+		}
+		digest, digestErr := catalogSelectorOperationDigest(layout, operation.OperationID)
+		if digestErr != nil || !cohortHasSwitchEvidence(receipt, layout.hostID, digest) {
+			return ErrCatalogOperationInvalid
+		}
+		return nil
+	}
+	if len(matching) != 0 || status.Target != host.PreviousTarget || catalogSelectorStatusBundleSHA256(status) != host.PreviousBundleSHA256 {
+		return ErrCatalogOperationInvalid
+	}
+	return nil
+}
+
+func cohortHasSwitchEvidence(receipt CatalogCohortReceipt, hostID, digest string) bool {
+	for _, transition := range receipt.Transitions {
+		if transition.Action == "reconcile-history" {
+			for _, branch := range transition.HistoricalBranches {
+				for _, event := range branch.Transitions {
+					if (event.Action == "switch" || event.Action == "switch-reconciled") && event.HostID == hostID && event.EvidenceSHA256 == digest {
+						return true
+					}
+				}
+			}
+		}
+		if (transition.Action == "switch" || transition.Action == "switch-reconciled") && transition.HostID == hostID && transition.EvidenceSHA256 == digest {
+			return true
+		}
+	}
+	return false
 }
 
 func branchDigestOrderKey(branch CatalogCohortHistoryBranch) string {
@@ -473,19 +642,29 @@ func cohortHasAnySwitch(receipt CatalogCohortReceipt) bool {
 }
 
 func cohortHasAnySwitchTransitions(transitions []CatalogCohortTransition) bool {
-	for _, transition := range transitions {
-		if transition.Action == "switch" || transition.Action == "switch-reconciled" {
-			return true
-		}
-	}
-	return false
+	return len(cohortSwitchedHostsFrom(transitions)) > 0
 }
 
 func cohortSwitchedHostsFrom(transitions []CatalogCohortTransition) []string {
-	var hosts []string
+	switched := make(map[string]struct{})
 	for _, transition := range transitions {
 		if transition.Action == "switch" || transition.Action == "switch-reconciled" {
-			hosts = append(hosts, transition.HostID)
+			switched[transition.HostID] = struct{}{}
+		}
+		if transition.Action == "reconcile-history" {
+			for _, branch := range transition.HistoricalBranches {
+				for _, event := range branch.Transitions {
+					if event.Action == "switch" || event.Action == "switch-reconciled" {
+						switched[event.HostID] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	hosts := make([]string, 0, len(switched))
+	for _, hostID := range catalogCohortSwitchOrder {
+		if _, ok := switched[hostID]; ok {
+			hosts = append(hosts, hostID)
 		}
 	}
 	return hosts
