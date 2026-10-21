@@ -85,6 +85,33 @@ coverage. The final `make test`, `make vet`, `make build`, and `make smoke` all
 passed on Mac. Exact logs are `mac-release-{test,vet,build,smoke}.log` in the
 same private work directory. The earlier failed smoke logs are preserved.
 
+Source S1 `65e746f46789d54915a60a22ec7a0e6eb018cd4b` was committed on Mac,
+pushed to primary Gitea `origin/dev`, verified at the exact automatic GitHub
+mirror SHA and fast-forwarded to all three initially clean Ubuntu checkouts.
+Native source validation found a test-fixture permission problem: Go's numbered
+`t.TempDir` child inherits the host umask; under `0002` it was group writable,
+so the production ancestor guard correctly refused it. The failures remain in
+`/tmp/runner-mailbox-handoff-gates.hNKe5i/test.log` on Linux,
+`/tmp/runner-mailbox-handoff-gates.2MGHdx/test.log` on Sandbox, and
+`/tmp/runner-mailbox-handoff-gates.Z5WGT8/test.log` on Factory. The correction
+makes only the new fixture roots explicitly 0700 and adds a regression that
+still rejects a group-writable parent. Production path guards are unchanged.
+The S1 Mac bundle was built but never published or selected.
+
+The corrected handoff suite passed on Mac under explicit `umask 0002` (7.340s).
+The full Mac `make test`, `make vet`, `make build`, and `make smoke` rerun also
+passed; logs are `mac-s2-{test,vet,build,smoke}.log` in the private work directory.
+
+Fresh PRD read-only inspection distinguished three local terminal-lost retained
+session/command pairs from three older uncertain SlideStud remote intents.
+The latter have terminal `indeterminate` mailbox responses but no proven remote
+delivery; Sandbox PRD has no matching jobs by their IDs or exact idempotency
+keys and no active execution work. Mac has no active sessions, queued/running
+commands, resumable jobs, pending finalizations or accepted mailbox exchanges.
+The operation preserves these uncertainties and unreleased reservations; it
+does not recover them, claim clean reconciliation or require zero historical
+`queued_intents` metrics. Original files and identities will be archived/fenced.
+
 Before live activation: complete source review, source gates and the required
 Gitea-primary/exact-GitHub-mirror/clean-worker delivery; qualify the exact native
 candidate through the applicable Dev/QAS release gates; repeat fresh stopped

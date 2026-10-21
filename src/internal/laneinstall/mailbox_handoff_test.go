@@ -198,7 +198,7 @@ func TestMailboxHandoffRestoreRejectsArchiveIdentityDrift(t *testing.T) {
 }
 
 func TestMailboxHandoffConfigCASNeverOverwritesUnrelatedBytes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "mac.yaml")
+	path := filepath.Join(handoffTestTempDir(t), "mac.yaml")
 	original, candidate, changed := []byte("original\n"), []byte("candidate\n"), []byte("unrelated operator change\n")
 	if err := os.WriteFile(path, changed, 0o600); err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func TestMailboxHandoffConfigCASNeverOverwritesUnrelatedBytes(t *testing.T) {
 }
 
 func TestMailboxHandoffArtifactReaderAllowsBoundedReadonlyClientFiles(t *testing.T) {
-	root := t.TempDir()
+	root := handoffTestTempDir(t)
 	path := filepath.Join(root, "req-original.json")
 	raw := []byte(`{"request_id":"req-original","idempotency_key":"preserve-key"}`)
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
@@ -305,7 +305,7 @@ func TestMailboxHandoffOperationRejectsUnsafeDirectoryJournal(t *testing.T) {
 
 func handoffDirectoryFixture(t *testing.T) (MailboxHandoffOperation, mailboxhandoff.Mailbox, map[string][]byte) {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), "mailbox")
+	root := filepath.Join(handoffTestTempDir(t), "mailbox")
 	handoffTestMkdir(t, root)
 	dev, ino, err := handoffIdentity(root, true)
 	if err != nil {
@@ -331,6 +331,18 @@ func handoffDirectoryFixture(t *testing.T) (MailboxHandoffOperation, mailboxhand
 		op.Directories = append(op.Directories, handoffDirectory{Root: root, Name: name, Device: d, Inode: i})
 	}
 	return op, entry, contents
+}
+
+func handoffTestTempDir(t *testing.T) string {
+	t.Helper()
+	root := simpleTestTempDir(t)
+	// testing.TempDir's numbered child uses 0777 subject to the host umask.
+	// Match the private production roots even on hosts whose umask is 0002;
+	// the production guard must keep rejecting writable parent directories.
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func handoffTestMkdir(t *testing.T, path string) {

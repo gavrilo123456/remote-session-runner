@@ -26,7 +26,7 @@ type handoffTransactionFixture struct {
 
 func newHandoffTransactionFixture(t *testing.T) handoffTransactionFixture {
 	t.Helper()
-	base := simpleTestTempDir(t)
+	base := handoffTestTempDir(t)
 	prdRoot, qasRoot := filepath.Join(base, "prd"), filepath.Join(base, "qas")
 	for _, root := range []string{prdRoot, qasRoot} {
 		for _, name := range []string{"config", "state", "backups", "staging", "mailbox"} {
@@ -307,8 +307,28 @@ func TestMailboxHandoffTransactionRefusesChangedConfigAndUnprovenStop(t *testing
 	}
 }
 
+func TestMailboxHandoffFilesystemHelpersRejectWritableParent(t *testing.T) {
+	base := handoffTestTempDir(t)
+	parent := filepath.Join(base, "writable")
+	handoffTestMkdir(t, parent)
+	path := filepath.Join(parent, "private.json")
+	if err := os.WriteFile(path, []byte("preserved"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handoffRead(path); !errors.Is(err, ErrMailboxHandoff) {
+		t.Fatalf("writable parent was not rejected: %v", err)
+	}
+	if err := handoffAtomic(path, []byte("replace")); !errors.Is(err, ErrMailboxHandoff) {
+		t.Fatalf("writer accepted writable parent: %v", err)
+	}
+	handoffTestContents(t, path, []byte("preserved"))
+}
+
 func TestMailboxHandoffFilesystemHelpersRejectParentSymlinks(t *testing.T) {
-	base := simpleTestTempDir(t)
+	base := handoffTestTempDir(t)
 	actual, alias := filepath.Join(base, "actual"), filepath.Join(base, "alias")
 	handoffTestMkdir(t, actual)
 	private := filepath.Join(actual, "private.json")
