@@ -1,6 +1,86 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 08:36 UTC: corrected release sealed; current Dev receipt awaits authorization
+## Current status — 2026-10-21 09:24 UTC: operation 33b2 reconciled and complete; candidate acceptance remains pending
+
+The owner authorized recovery of Dev operation
+`33b2c3a3f6399253444c6ae29f0ecb97`. Using the supported operator built from
+`740927e93306dec8a3a9487a5aca6bc7be5d9819`, I validated the four preserved
+receipt copies against their live hashes and status reads. They shared the
+same 10-transition prefix and carried one distinct `verify` transition per
+host. The owner-only `/tmp` snapshots were mode `0600`; their hashes were Mac
+`69d6d5ddc28f4e706e8fde7b7dd0758461eba4b99e1d08bc526ca5cee81a071a`, Linux
+`4a8d64839888330ce2f7c7890291a692684378e53b266d85ec9fb001207a646c`, Sandbox
+`64200b559cb70fdd401b3d716b6e4258867a157b7e45d3908e23c9a171bb799d`, and
+Factory `c66ddcd32d5d2bb2ebbda1ae71f3e2060bc88e46fb431eca04dc62cd13cb825f`.
+The host-specific verify evidence digests are preserved in the four branches:
+
+| Host | Verify evidence SHA-256 |
+| --- | --- |
+| `mac-control-plane` | `1a5fd8946bdec5b900082ad6625b90a13ca6a83fa47bb1d8094d57e403437f4c` |
+| `linux-host` | `06a96c62675f34ce3bd23ddf4e1056fc3a273b363a4d82b7ef6320b60044904c` |
+| `sandbox-host` | `f8171981e99803c94ff2d18551cf4cfaf285b35309cef549650e5e198fd0a8cc` |
+| `factory-sandbox` | `861e980a7c3a5ce98924fbb28c628ad3ced6f2b4acbe32f1342489206e9961db` |
+
+Supported `reconcile-history` on Mac produced a blocked receipt with
+`reconciled_stage=verifying`, all four original histories retained, and
+reconciliation evidence SHA-256
+`e350f6e1970e591bec63be983aae4b6c4c4539b0a1aa6628a596941cef85dab5`. The
+reconciled receipt SHA-256 was
+`8265bd994fd1a1b2129940c3f810aa41ec3907ea61acccceafc22b7ae277b5b2`; it was
+synchronized to Linux, Sandbox, and Factory through `catalog-cohort sync`,
+with each local guard passing. Fresh all-host evidence at 09:11:45 UTC
+(`ca399b610eecbd7faa366ef0a644fb53c1bc81767fce738fc94e3e6c69b2550f`) showed
+the same receipt, c76 selectors, zero work, unchanged QAS bundles, and
+unselected PRD. The supported `resume` transition returned the receipt to
+`verifying`; its synchronized SHA-256 was
+`85eb937c9286cbd2ef1e767664e5c10e4189d23af2599ff1e3cb5a7256090aa2`.
+
+Before completion, a fresh single-run per-host collector validated all four
+receipt copies and selector/work inventories, enumerated 67 receipts on each
+host, and found exactly one admission-holding receipt everywhere: this
+operation at `verifying`. It retained all four host verify evidence digests.
+Mac Dev was started only because the supported `complete` action requires its
+selected-lane service to be active; the verifying hold continued to block
+ordinary admissions and the work inventory remained zero. Completion evidence
+SHA-256 was
+`9123f61d41f18cbd5919fd5c01c19c3de290a890d9d3e6f68d4b8041237f82cd`.
+Supported completion produced stage `complete` with 13 transitions. Mac Dev
+was then stopped, and the final receipt was synchronized to Linux, Sandbox,
+and Factory. All four final copies are byte-identical at SHA-256
+`1473de3b51e5327f0f1495d7a7a9892316d63ab0df10e94047bbdffef3cb46cd`.
+
+Final supported checks show all four Dev services stopped and work inventories
+empty. Dev remains on `cat-20261021-c76bac5` (release SHA-256
+`4e03f8c7e18beacf50f5478bcae0e9a0d83e88ca866a8c1f5a94d8da466e40fc`) with
+these selected bundle hashes:
+
+| Host | Dev bundle SHA-256 |
+| --- | --- |
+| `mac-control-plane` | `17349ead4f2b0bf631bae4300a3aedaa048403baf7532aa9cd4060cdd148989b` |
+| `linux-host` | `006640d0b045264f90f16c2f8ba8e37cc386b370f153c35c74f1598bb61ac30f` |
+| `sandbox-host` | `7047be682acd5d28df26751aa377d582748cb5d3bfb3b1d5f8d03ac946c09908` |
+| `factory-sandbox` | `62942404849e14f5788ba32dc4b81f07aa7438844c751f9dfe1f74e42e498850` |
+
+The `complete` stage continues to hold admissions by design; the exact
+operation above is still the sole hold on each host. QAS remains on the four
+legacy bundle hashes recorded below, and PRD remains `unselected`. External
+project publishers remain paused. No mailbox request or ACK was published.
+This receipt recovery does not claim fresh direct-mTLS, queued-SSH, Mac-local,
+or mailbox functional acceptance. Candidate `cat-20261021-740927e` (manifest
+SHA-256 `ab01036a2824b680dd37e90e043d744f817db724a4e233b7916e2bad6ca36382`,
+source `740927e`) remains unselected; its own Dev acceptance is the next
+rollout gate before QAS or PRD.
+
+The first resume attempt was rejected by automatic review because its evidence
+digest was deemed stale; no receipt changed. A new same-run four-host capture
+was accepted. The first completion attempt was likewise rejected as stale;
+no receipt changed. Source inspection and its regression confirm that
+`complete` continues to hold admissions. A new single-run four-host capture
+then passed review and the supported completion succeeded. The longer
+read-only receipt census attempt was interrupted before finishing; it made no
+state changes. A later per-host local census completed successfully.
+
+## Historical status — 2026-10-21 08:36 UTC: corrected release sealed; current Dev receipt awaited authorization
 
 The verification-history reconciliation correction is committed as
 `740927e93306dec8a3a9487a5aca6bc7be5d9819` and delivered on Mac `dev`,
