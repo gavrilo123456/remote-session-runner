@@ -285,3 +285,54 @@ active handoff configuration, receipt and archived history must stay unchanged.
 The correction's Mac `make test`, `make vet`, `make build` and `make smoke`
 gates passed; logs are `mac-s3-{test,vet,build,smoke}.log`. Worker source gates
 and new release qualification are pending at this source freeze.
+
+## CPU correction source gates — S3 `b84caf07da6abdf4b625731edc913a7a52478870`
+
+S3 was pushed to primary Gitea; its first GitHub check still showed the preceding
+`4b7b2ce`. No worker validation began until the automatic mirror matched S3
+exactly, then all three clean Ubuntu `dev` checkouts fast-forwarded to S3.
+`make test`, `make vet`, `make build` and `make smoke` now pass on Mac and all
+three workers at that exact source. Mac logs use `mac-s3-*`; worker successful
+logs are `s3-normal-umask-*` in the existing S2 task directories listed below.
+
+The initial worker test invocation mistakenly inherited `umask 077`, which
+changed a fixture deliberately testing group-readable controller-map rejection.
+All three initial logs retain the P104 fixture assertion. Factory additionally
+retains `TestBUG009DispatcherRetriesAfterThrottleWithoutRestart`:
+`lost-runtime proofs before retry interval=2, want 1`. Its cause is not assigned
+to the umask. One full normal-umask chain per host passed without a source,
+production guard or test assertion change; initial failures are not relabeled
+PASS. Factory's 2 GiB temporary-file quota was sufficient, and no shared cache
+was purged. Exact worker paths are Linux
+`/tmp/runner-mailbox-handoff-s2.1cAHxC`, Sandbox
+`/tmp/runner-mailbox-handoff-s2.ZzIloF`, and Factory
+`/tmp/runner-mailbox-handoff-s2.2bOdbg`.
+
+The 20-second idle baseline of the active S2 QAS ingress measured 16.17 CPU
+seconds (80.67% of one core); `qas-cpu-before.json` preserves its PID and start
+identity. A fresh ownership/config/main-database-file recheck still passed while source
+qualification ran. The supported persistent return instructions are in
+`mailbox-routing-to-qas-20261021T192543Z/RETURN.md`, SHA-256
+`57313260d0f1408f6e3427b686c802c015f1dd7ffe274eb2de4b5cf31471c188`.
+They use the retained qualified S2 tools and exact active handoff operation;
+no return, PRD upgrade or publisher resumption has been performed.
+
+All four native S3 bundles are sealed and published, without activation, as
+`cat-20261021-b84caf0`; common release SHA-256
+`bfd700265008eae11ba7592ab2f8751e8f4f8213af06d8d1a66123b6f0abe96e`.
+The immutable per-host bundle hashes are:
+
+| Host | Bundle SHA-256 |
+| --- | --- |
+| Mac | `0860e38943109298337b221f2f57495cae100d8e6f34ccdb70ac1090aaca24b8` |
+| Linux | `2554a01bba0acfda0ff4e64d45b77c5e71bf3a4b0f2906148aa3887004b3c437` |
+| Sandbox | `dc5c98e5420ca96dd1475dc4dcd499240f51acf650e0dd9176acce41ee2d572b` |
+| Factory | `627d600d9882d42c51709f94544024a1249a2f6060c373d24565474bf7efb71c` |
+
+Publication is distinct from live acceptance. Dev then QAS acceptance is pending
+at this checkpoint. Promotion must not rebuild these bundles. The task-private
+reviewed serial coordinator uses supported native commands and exact freshly
+recorded switch-preflight digests; it does not edit receipts or publish mailbox
+files. Worker live inventories use the supported Go reader, avoiding Linux's
+old system SQLite parser. Mac's retained PRD main-file hash comparison does not
+claim a WAL-inclusive logical database comparison.

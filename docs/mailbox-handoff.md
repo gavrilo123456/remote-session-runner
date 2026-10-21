@@ -30,8 +30,10 @@ Use the explicitly owner-authorized Mac shell and supported maintenance tools.
   QAS does not permanently register the transferred roots in its native registry.
 - Historical request IDs, ACK identities and hashed idempotency keys are fenced.
   Explicit old environment names map to QAS only for transferred mailboxes and
-  only through the approved target policies. Original request bytes remain in
-  the durable audit record. Old PRD sessions are not migrated into QAS.
+  only through the approved target policies. The original explicit environment
+  stays in the canonical request receipt; resolved QAS selection is recorded
+  separately. Archived source files keep their original bytes. Old PRD sessions
+  are not migrated into QAS.
 
 The QAS runtime and its matching config parser must be qualified and installed
 before activation. This feature does not open general PRD catalog installation.
