@@ -64,8 +64,15 @@ alternate path was used. This live receipt reconciliation/finalization is
 blocked pending explicit owner authorization for `33b2…` as the current
 operation. The selected release remains `cat-20261021-c76bac5`; the new
 `cat-20261021-740927e` candidate has not been activated or accepted in Dev.
-QAS and PRD remain unchanged. Mailbox requests and ACKs remain unpublished;
-mailbox acceptance is **NOT RUN**; external publishers remain paused.
+Read-only selector checks at 2026-10-21 08:38 UTC show QAS remains on its
+legacy bundles: Mac `6154ea67ea3337939982c6d798e0cf43acea9e06e8c2a0facff0f1136ed99310`,
+Linux `f60b3926d5edb7d256589173ada7a1952cf9ffbe8568644bdfc88f404ee13863`,
+Sandbox `2b65f490b88cbb069460a1e4276b64bdc2acc11bd326eded1e697a31160d0459`,
+and Factory `b59c7bdc53d50a4be2e5b78c9bb53d560e98b427c03b360ec5b394af59b11687`.
+PRD catalog status remains `unselected` on all four hosts; this candidate did
+not alter the unsuffixed PRD installation. Mailbox requests and ACKs remain
+unpublished; mailbox acceptance is **NOT RUN**; external publishers remain
+paused.
 
 ## Historical status — 2026-10-21 06:10 UTC: recovery correction delivered; Dev rollback complete
 
