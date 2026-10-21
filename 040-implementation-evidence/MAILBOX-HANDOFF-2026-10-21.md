@@ -7,12 +7,14 @@ mailbox configuration, and activation of the same paths in QAS. After installed
 validation proved that a configuration-only transfer was unsupported, the owner
 explicitly selected **keep existing paths; implement supported handoff**.
 
-**ACTIVE: all eight original mailbox paths belong to QAS. Post-activation CPU
-correction is being qualified before client handback.** Dev now selects `cat-20261021-b84caf0` on all four hosts; QAS remains on
-`cat-20261021-5bc6f43` until the identical correction bundles pass QAS. Mac PRD is stopped with an empty
-mailbox map and disabled ingress; its original binaries, database and fallback
-configuration are preserved. No filesystem mailbox request or ACK has been
-published. Clients remain stopped. PRD upgrade/CAT-06 remains a separate task.
+**IN PROGRESS: the eight paths are transferred to QAS, whose services are
+currently stopped/held after a safely rolled-back qualification attempt.**
+Dev accepts `cat-20261021-b84caf0`; QAS is back at `cat-20261021-5bc6f43`
+pending a fresh same-bytes correction qualification. The mailbox configuration,
+receipt and archived PRD history remain in place. Mac PRD is stopped with an
+empty mailbox map and disabled ingress; its original state is preserved. No
+filesystem mailbox request or ACK has been published. Clients remain stopped.
+PRD upgrade/CAT-06 remains separate.
 
 ## Verified starting point and backups
 
@@ -375,3 +377,42 @@ was primary/mirror verified and fast-forwarded to all workers before Dev work.
 QAS promotion is pending this closeout delivery; no rebuild is permitted.
 Actual filesystem-mailbox acceptance, normal client load and additional limit,
 managed-session or fault probes remain NOT RUN for this focused follow-up.
+
+## First S3 QAS attempt and supported rollback — 2026-10-21 21:45 UTC
+
+QAS operation `b3bda1317ce5ab9aedd14aa8decc6643` switched all four hosts
+and entered verification. Its first Linux direct maintenance POST hit the native
+test client's 12-second HTTP deadline: no HTTP response/acceptance was returned.
+The server scope was reserved and bound to
+`job-73af462f623ba3bff5afc091febd9f23`; the permission was not reused, renewed
+or deleted. Native work inventory was empty. A supported worker stop and
+checkpointed private database copy proved no job by that ID **or exact key**,
+zero active sessions, zero unreleased session/command slots, and integrity `ok`.
+The copy SHA-256 is
+`84f916ea06391fb7b9a92474f9d50f9d11dbc2f026ba51735b7fbfa801a1caf2`;
+` s3-qas-linux-probe-stopped.proof.json` records the bounded queries. The
+copied database was queried on Mac because Linux's installed SQLite 3.31.1
+cannot parse STRICT tables. No live store migration or parser downgrade ran.
+A bounded log inspection did not identify the timeout cause; it remains unknown.
+
+Through supported block/rollback-start and exact reverse-order selector
+rollback (Mac, Factory, Sandbox, Linux), all four QAS selectors returned to S2.
+No database restore or raw configuration change occurred. Schema 40, prior
+sealed bundle hashes/read-schema compatibility, stopped/empty inventories,
+configuration hashes and unchanged Dev/PRD identities were verified. Dynamic
+S2 service readiness was not rerun and QAS is not open for normal use.
+The failed cohort is `rolled_back`, common receipt SHA-256
+`017f04afef7dc997b42be7d1fe645724ccd665f27f425b8badd24f0e9aaea10b`.
+All receipts, expired/reserved scope, failed request evidence and backups stay
+preserved. Evidence is `s3-qas-qualification/rollback-summary.json` and its
+per-command reports. No filesystem mailbox request/ACK was published.
+
+The supported next step is a fresh held successor with the **same immutable
+S3 bundles**, then fully-rolled-back supersession of this attempt before any
+runtime restarts. The old cohort will not be opened: the existing CLI's `open`
+guard expects its S3 target and cannot open its S2 predecessor. That separate
+CLI gap is not being changed or bypassed. A task-private reviewed mTLS client
+will retain native CA/hostname/leaf/URI/client/SPKI checks and the exact five-
+second probe body, while allowing 60 seconds per HTTP call/100 seconds overall.
+It performs one POST only. This changes a verification deadline, not the release
+or runtime behavior. A fresh scope/key is required; original evidence is not PASS.
