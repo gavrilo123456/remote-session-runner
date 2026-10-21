@@ -1,6 +1,71 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 09:24 UTC: operation 33b2 reconciled and complete; candidate acceptance remains pending
+## Current status — 2026-10-21 09:39 UTC: candidate Dev rollout blocked by receipt/runtime incompatibility
+
+The owner-authorized recovery of operation
+`33b2c3a3f6399253444c6ae29f0ecb97` completed before the following rollout
+attempt. Fresh checks at 09:38 UTC found the same final receipt SHA-256
+`1473de3b51e5327f0f1495d7a7a9892316d63ab0df10e94047bbdffef3cb46cd` on all
+four hosts, stage `complete`, and all four Dev selectors still on
+`cat-20261021-c76bac5`. Dev services were inactive with zero active session
+slots, command slots, queued commands, or resumable jobs. QAS remained on its
+prior legacy bundles and PRD remained unselected. No candidate preflight,
+backup, selector change, QAS action, or PRD action was performed after the
+blocker below was encountered. No mailbox request or ACK was published; the
+external publisher pause remains in force.
+
+The first supported Mac Dev start attempt returned
+`launchctl bootstrap ... failed (exit 5): Bootstrap failed: 5: Input/output
+error`. A retry under the already-authorized host-operation scope reported
+`start complete`, but subsequent `launchctl print` reported both selected
+LaunchAgents absent and `runner-lane status` reported inactive. The bounded
+Mac Dev logs contain the exact error:
+`runner-local: catalog cohort receipt is invalid; refusing work admission`
+and
+`runner-locald: catalog cohort receipt is invalid; refusing work admission`.
+Both log files were updated at 09:35:54 UTC; the matching bounded tail entries
+are local lines 154–155 and locald lines 151–152. The 09:35:45 UTC Mac status,
+inventory, and selector snapshot is preserved in task-owned `/tmp` evidence
+with SHA-256
+`814c7ccced502e7a9f1ee85ed11c2656c7ca842850f73283e39efb7a9106d49a`. The
+inventory remained empty. Source comparison identifies the incompatibility:
+selected release `cat-20261021-c76bac5` was built from `c76bac5`, whose receipt
+validator does not accept a reconciled `verifying` history; the supported
+recovery receipt contains `reconcile-history` with
+`reconciled_stage=verifying` and the four preserved host verification
+branches. The source correction at `740927e` adds that validation. Thus the
+currently selected runtime fails closed on a receipt accepted by the newer
+operator; the `740927e` runtime is still unselected.
+
+The subsequent supported `open` attempt did not append a transition: the
+operator returned `operation not permitted`. The follow-up selected-lane stop
+also returned `open selected lane lifecycle lock: operation not permitted`;
+fresh service status remained inactive, the receipt stayed at its original
+SHA-256, and no selector changed. These attempts are recorded as failures, not
+successful transitions. Current `cat-20261021-c76bac5` and operation `33b2…`
+must remain preserved. The current supersession validator also does not allow
+a `complete` receipt to be superseded, and `open` requires an active service
+matching the receipt. Therefore there is no supported path to retire this
+completed hold while the selected service rejects the receipt. Do not bypass
+the receipt guard or select `cat-20261021-740927e` under operation `33b2…`.
+
+Storage was not the guard that stopped this attempt. A fresh Sandbox read at
+09:39 UTC measured 1,696,821,248 bytes free on `/`; the already-published
+Sandbox bundle occupies 42,159,445 bytes and the retained prior Dev backup
+occupies 676,085 bytes. No new backup was made, so this is not a backup or
+selector preflight PASS.
+
+The exact next dependency is a supported compatibility/finalization path that
+preserves the completed receipt and keeps admissions fenced while allowing the
+selected `c76bac5` runtime to validate its recovered history, or safely
+replaces the completed hold while all services are stopped and inventories are
+empty. Any source correction needs its required tests, Git delivery, a new
+sealed candidate, and fresh Dev acceptance before QAS and PRD. Until that
+dependency is delivered, candidate `cat-20261021-740927e` remains unselected;
+Dev functional acceptance is **BLOCKED**, QAS and PRD remain unchanged, and
+mailbox acceptance remains **NOT RUN**.
+
+## Historical status — 2026-10-21 09:24 UTC: operation 33b2 reconciled and complete; candidate acceptance remains pending
 
 The owner authorized recovery of Dev operation
 `33b2c3a3f6399253444c6ae29f0ecb97`. Using the supported operator built from
