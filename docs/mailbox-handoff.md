@@ -44,7 +44,12 @@ qualified native `runner-mailbox-handoff` artifact; use its recorded exact hash,
 not an unrelated temporary helper or a newly rebuilt replacement.
 
 ```sh
-# Mac: clients are stopped; prepare consistent database and raw config backups.
+# Mac: after fresh read-only work checks, stop the selected Mac consumers.
+# PRD terminal-lost reservations are retained; no active execution is allowed.
+"$LANE_TOOL" prd-stop --host mac-control-plane
+"$LANE_TOOL" stop --host mac-control-plane --lane qas
+
+# Mac: confirm both process trees and private listeners are stopped, then back up.
 "$TOOL" prepare --owner 'Tomasz Walczuk' --publishers-paused
 
 # Mac: use the exact operation.json path returned by prepare.
@@ -60,6 +65,11 @@ Preparation writes a private operation directory under PRD's existing `backups`
 root, with the original configs, staged configs, consistent online SQLite
 backups and durable operation journal. It requires an already registered native
 QAS mailbox baseline. All source targets must have a corresponding QAS target.
+Both executors hold their lifecycle locks while running, so preparation follows
+the supported initial stops above. Do not remove or bypass those locks. The
+handoff `stop` action is an idempotent recheck after preparation and the supported
+pause when returning from active QAS ownership. Preserve a hashed copy of the
+qualified operator tools with the persistent operation backup for later return.
 
 Stopping refuses active sessions, queued/running commands, resumable jobs or
 pending recovery finalizations. Existing terminal-lost PRD reservations are

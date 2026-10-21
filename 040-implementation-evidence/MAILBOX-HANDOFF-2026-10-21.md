@@ -102,6 +102,38 @@ The corrected handoff suite passed on Mac under explicit `umask 0002` (7.340s).
 The full Mac `make test`, `make vet`, `make build`, and `make smoke` rerun also
 passed; logs are `mac-s2-{test,vet,build,smoke}.log` in the private work directory.
 
+## Frozen source and publication — before any lane switch
+
+Source S2 is `5bc6f4352bffd634c48297c98f283b3727d38d17`. It was pushed to
+primary Gitea, verified at the exact automatic GitHub mirror SHA and pulled
+with `--ff-only` into all three clean Ubuntu `dev` checkouts. All four required
+gates (`make test`, `make vet`, `make build`, `make smoke`) passed on Mac and
+every worker. Native worker logs and qualified controller/bundle artifacts are:
+
+| Host | Private evidence directory |
+| --- | --- |
+| Linux | `/tmp/runner-mailbox-handoff-s2.1cAHxC/` |
+| Sandbox | `/tmp/runner-mailbox-handoff-s2.ZzIloF/` |
+| Factory | `/tmp/runner-mailbox-handoff-s2.2bOdbg/` |
+
+The immutable release `cat-20261021-5bc6f43` was published, without activation,
+on all four hosts. Common release SHA-256:
+`540f4f2b75a7d2b6031dd478f41a3fe847bc52041e828de2c45aa9a2ec56ab47`.
+
+| Host | Native bundle SHA-256 |
+| --- | --- |
+| Mac | `188f89d88ee426a7b73ede34d7a178c5be92191b6c29412223056216924b7cf7` |
+| Linux | `6640cc2490898d69f0a0280b9ece1bcac75905ace163c83f05a3fdf8cae62265` |
+| Sandbox | `e59bcc2a23dfa6c09c9e911f9e54c6efb79bfa187598e4b52ae6fb088a6980e6` |
+| Factory | `bf0fe031c0dd2911fc65e718bb74879b48cb93dc3e9eb887df1fd0322b9022b1` |
+
+Mac native artifacts were built from a clean detached S2 worktree, preserving
+the unrelated canonical untracked helper. The qualified source-attested Mac
+controller SHA-256 is `a50acdebac0ff4f129027cb1d8e36e36033e3dbc0660de9692940e59ff0ea660`;
+the handoff operator is `15ae9b54142ed5fb5b300b7a858bb44c513d2f2d436c977e76866b4c1424b60a`;
+the fixed scoped-probe tool is `98c24b67daca62068ab683430fa8b33ce8d0fc8516d2b75e21c4f55dd5d37dd9`.
+Dev/QAS selection and live handoff remain outstanding at this publication point.
+
 Fresh PRD read-only inspection distinguished three local terminal-lost retained
 session/command pairs from three older uncertain SlideStud remote intents.
 The latter have terminal `indeterminate` mailbox responses but no proven remote
@@ -119,3 +151,11 @@ client, work, configuration and filesystem-identity checks; run only the support
 operator path. Record actual release/bundle/tool hashes and terminal postflight
 before calling the mailbox switch complete. No mailbox request or ACK is to be
 published by maintenance.
+
+An early preparation attempt while both installed executors were still active
+refused with `selected lane lifecycle lock is held`, before producing a package
+or changing anything active. The runbook now makes the existing lock contract
+explicit: fresh read-only idle checks, supported initial Mac PRD/QAS stops,
+process/listener stop proof, then preparation under both lifecycle locks. No lock
+is deleted or bypassed. Consistent backups still precede all configuration and
+mailbox changes. QAS must first receive the qualified handoff runtime.
