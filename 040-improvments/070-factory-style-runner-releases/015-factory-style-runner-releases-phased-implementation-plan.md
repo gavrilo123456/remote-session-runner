@@ -1,6 +1,6 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-## Current status — 2026-10-21 17:12 UTC: CAT-05 complete in QAS; CAT-06 preflight next
+## Current status — 2026-10-21 17:44 UTC: CAT-05 complete; CAT-06 PRD preflight blocked before mutation
 
 CAT-04 Dev and CAT-05 QAS acceptance are **COMPLETE** for the same frozen
 release `cat-20261021-ebc4446`, source revision
@@ -14,13 +14,17 @@ preservation, and mailbox limitation are recorded in
 [`CAT-05.md`](../../040-implementation-evidence/CAT-05.md). The exact native
 bundle hashes did not change during promotion.
 
-CAT-06 PRD migration is **NOT STARTED**. The owner's existing scoped
-installation/restart authorization remains in force, but fresh PRD
-quiescence, work ownership, compatible backup, selector recovery and capacity
-guards must pass before switching. Sandbox had 1,454,804,992 bytes available
-on `/dev/sda1` at 17:12 UTC (98% used); measure again against the actual PRD
-backup requirement. Keep all publishers paused and Dev/QAS unchanged. Mailbox
-acceptance remains **NOT RUN** and no mailbox request or ACK was published.
+CAT-06 read-only PRD preflight is recorded in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md). The PRD services
+remain active and selectors unselected. CAT-06 is **BLOCKED before mutation**:
+the accepted ebc4446 operator refuses PRD cohort receipt creation and host
+preflight, PRD legacy read-compatibility evidence is absent, and seven
+unreleased terminal-lost reservations remain. Sandbox measured 1,401,548,800
+bytes available to the preflight on `/dev/sda1` (98% used); its estimated PRD
+backup requirement was 347,526,129 bytes. No backup or service operation was
+started. The owner-reported journal deletion was not performed by Runner. Keep
+all publishers paused and Dev/QAS unchanged. Mailbox acceptance remains
+**NOT RUN** and no mailbox request or ACK was published.
 
 **Historical status (2026-10-21 13:09 UTC): CAT-04 complete in Dev; CAT-05 next**
 
@@ -130,9 +134,10 @@ CAT-04 is **COMPLETE** on `cat-20261021-ebc4446`; the live Dev cohort and
 operation are recorded in [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md).
 CAT-05 is **COMPLETE** on the exact same release and per-host bundle hashes;
 its QAS operation and acceptance are recorded in
-[`CAT-05.md`](../../040-implementation-evidence/CAT-05.md). CAT-06 PRD migration
-is **NOT STARTED** until fresh production guards pass. A unit is accepted only
-by its recorded evidence and required delivery/qualification results.
+[`CAT-05.md`](../../040-implementation-evidence/CAT-05.md). CAT-06 PRD
+migration is **BLOCKED before mutation** as recorded in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md). A unit is accepted
+only by its recorded evidence and required delivery/qualification results.
 
 | Unit | Assigned work | Exit evidence |
 | --- | --- | --- |
