@@ -1,6 +1,46 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 10:19 UTC: source correction delivered and all four host gates pass
+## Current status — 2026-10-21 12:06 UTC: recovery target already superseded; live Dev diverged
+
+The owner-requested read-only recheck used the supported `runner-lane status`,
+`catalog-status`, and `catalog-cohort -action status` commands on Mac,
+`linux-host`, `sandbox-host`, and `factory-sandbox`. Operation
+`33b2c3a3f6399253444c6ae29f0ecb97` is already `superseded` on all four hosts;
+each status command returned 18 transitions and the receipt files have the
+same SHA-256 `21b1f6da486c582dd2fdaa2cd536cded34e9520ca8f2ff74c9f749a8b9cbfe78`.
+The receipt records `reconcile-history` at transition 11 with four retained
+verification branches, `resume` at 12, `complete` at 13, and `supersede` at 18
+to operation `9940d64e28bf103bd4b53b48d06417da`. The requested recovery is
+therefore already complete in the preserved history and cannot be resumed as
+an active operation.
+
+The live Dev state no longer matches the required recovery baseline. Fresh
+status shows the same later operation `8fdb7e5eb058a795601a2cff9e7bde78` at
+stage `verifying` on all four hosts, with common receipt SHA-256
+`fe161efb19ac6cb05d1c706d0378ea2a1e80e1e4809c99663eba2855dfa1bf24`; all
+four Dev services are active and all four Dev selectors point to
+`cat-20261021-ebc4446`, not the required `cat-20261021-c76bac5`. The ebc4446
+bundle SHA-256 values are Mac
+`942570512c160953b450839d88f7b8a79c6e5a4b59db31fb89e8f94c16fc3475`, Linux
+`4e7795aa8d5484d8ed77efd3977b5d5693dba6b3d4ffd56d71cf439485b4766f`, Sandbox
+`ba07943174dd7d1a7eafa49a3d9a005884ee1e9beeb11f4e10b1b12b90bd9a07`, and
+Factory `6f95571437db8d96bebf0d166416a4f129a55c05dce0eb706b9fa32d099f4762`.
+QAS remains on the previously recorded legacy selectors and PRD remains
+unselected. The requested `cat-20261021-740927e` directories are present on
+all four hosts but are not selected. The previously recorded CAT-04 source
+review says that candidate predates the ebc4446 correction.
+
+No receipt, selector, service, mailbox, or retained-work state was changed by
+this recheck. No fresh work inventory was taken, so the earlier empty
+inventory is not treated as current proof. No mailbox request or ACK was
+published; external publishers remain under the existing pause instruction.
+CAT-04 cannot advance from this state without resolving the mismatch between
+the required c76bac5 recovery baseline and the active ebc4446 verification
+operation. No QAS or PRD action was taken. Temporary files were not created on
+the hosts; `/tmp` capacity observed was Mac 139 GiB, Linux 16 GiB, Sandbox
+1.3 GiB, and Factory 3.5 GiB on its existing tmpfs `/tmp` mount.
+
+## Historical status — 2026-10-21 10:19 UTC: source correction delivered and all four host gates pass
 
 The 09:39 blocker below was addressed in source without changing live host
 state. A completed cohort receipt can now be superseded only by a fresh held
