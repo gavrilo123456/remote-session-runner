@@ -1,6 +1,91 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
-## Current status — 2026-10-21 12:06 UTC: recovery target already superseded; live Dev diverged
+## Current status — 2026-10-21 13:09 UTC: CAT-04 PASS; Dev cohort complete
+
+The owner superseded the earlier c76bac5 retention and 740927e qualification
+instructions and authorized completion of the current Dev qualification for
+operation `8fdb7e5eb058a795601a2cff9e7bde78`. The sealed release remains
+`cat-20261021-ebc4446`, source revision
+`ebc4446ce8ce95d3e3fc076bb9985cdfbc1e9388`, release-manifest SHA-256
+`ede9121d5a41a85944a98d1b585aa99aa36c343244c587dfb540aa57b852c62c`.
+No rebuild occurred during acceptance.
+
+### Fresh Dev inventory, identities and capacity
+
+The final inventory found no sessions, command slots, queued commands, or
+resumable jobs on any Dev host. All four Dev services were active, schema 40,
+and selected the expected release and lane-specific configuration. Capacity
+was measured from the task run's existing `/tmp` paths; Sandbox remains tight
+and must be rechecked before QAS backup or switch operations.
+
+| Host | Bundle SHA-256 | Configuration SHA-256 | Work inventory | Service / capacity observation |
+| --- | --- | --- | --- | --- |
+| `mac-control-plane` | `942570512c160953b450839d88f7b8a79c6e5a4b59db31fb89e8f94c16fc3475` | `2a256f44cf14031b8463854aa77c190ba265a419b624a0538a6c42ba130395d9` | Empty; schema 40 | Active; LaunchAgent wrapper PIDs 4293 and 4413 at observation; `/private/tmp` 145,438,072 KiB free |
+| `linux-host` | `4e7795aa8d5484d8ed77efd3977b5d5693dba6b3d4ffd56d71cf439485b4766f` | `842a17572ba218ee770b39d8cf95c442c4885204d479d5b34ef6d2e4e5ff82f5` | Empty; schema 40 | Active; PID 3236872; `/tmp` 15,905,248 KiB free |
+| `sandbox-host` | `ba07943174dd7d1a7eafa49a3d9a005884ee1e9beeb11f4e10b1b12b90bd9a07` | `9a9adcd3236d8a92f2d405ef59f1199180310a03df6c9d246b784a702653d82a` | Empty; schema 40 | Active; PID 3895195; `/tmp` 1,201,412 KiB free on `/dev/sda1` (98% used) |
+| `factory-sandbox` | `6f95571437db8d96bebf0d166416a4f129a55c05dce0eb706b9fa32d099f4762` | `7af6d8ea68764f703b7aebd40966bbc7ff8b86523a2cb948d5f60e68659cd727` | Empty; schema 40 | Active; PID 4130166; `/tmp` 3,606,264 KiB free on its existing tmpfs mount |
+
+These are observation-time process IDs and capacity values, not reservations.
+The Sandbox value is a limiting preflight constraint, not spare capacity for
+large staging. No new backup or release bundle was staged during CAT-04.
+
+### Required functional and lifecycle acceptance
+
+Archived, bounded probe outputs were checked against the host-specific verify
+branches already retained in the cohort receipt. All seven applicable routes
+passed: Mac-local, plus direct-mTLS and queued-SSH on Linux, Sandbox, and
+Factory. Every terminal result had `phase=complete`, command state
+`succeeded`, exit 0, final event sequence 4, complete non-truncated output,
+and teardown closed. Direct probes were accepted with HTTP 202 and readiness
+HTTP 200; queued helpers exited 0 and returned a terminal `result`. Each used
+the bounded five-second command limit. The evidence digests are the exact
+receipt-validated hashes:
+
+| Host and coverage | Evidence SHA-256 | Job IDs |
+| --- | --- | --- |
+| Mac-local | `3572e8e912e991e3b6e500614e90023b8cdae1cd4a890e32aa77e34afc79bd56` | `job-4e18d43f4ebd4cb1d1317f0e1bab6155` |
+| Linux direct-mTLS + queued-SSH | `cd4517089c346ecf11c070c40893be22164001ce0144d184fafcbae7aef1dab4` | `job-a93200defcec32eeee575346f858f7ae`; `job-30741af55ca19a888e18417b51414099` |
+| Sandbox direct-mTLS + queued-SSH | `55dd1b02429474cd99c3800d689c7d04429507431b45caa9b04cec1a475496c2` | `job-c171f2299ba977fbaa38b5a52d9f12e4`; `job-5aa283f3afc060198b61f1dac8baf994` |
+| Factory direct-mTLS + queued-SSH | `057c2ec4af1b29b3b3fc9a525e603215d6518db9e84d3a6c95dc65b7cd6dd93d` | `job-75ae931563edf17459167377090cd234`; `job-edb81fb07a55c98ace3787a5e03b6a00` |
+
+The evidence files are under the private task directory
+`/private/tmp/cat-20261021-ebc4446-cohort/`; source files remain outside Git.
+The worker verify files contain a trailing literal backslash-n in their raw
+bytes; validation parsed that suffix safely and computed digests over the
+original bytes, which match the receipt. Post-probe inventories again showed
+no active or resumable work.
+
+The supported completion transition was recorded after validating all four
+host histories. Operation `8fdb7e5eb058a795601a2cff9e7bde78` is `complete` on
+all four Dev hosts, with 13 transitions and common receipt SHA-256
+`2c0e3f489cb701627c1c1e6bc9ad92bb04b31d952cceee7adf781d7ac566dc10`.
+The completion-evidence digest is
+`e5d1b022910e8de6bb47a864181366c8772589f263532f3cd6b8758b6e929afd`. The
+supported receipt sync ran while each Ubuntu Dev service was stopped and its
+work inventory empty; each service was restarted and verified active with an
+empty inventory. The Mac Dev service remained active. Post-completion
+admission-fence checks on all four hosts returned readiness HTTP 200 and
+rejected an unscoped admission with HTTP 503 / phase `blocked`.
+
+### Scope and next gate
+
+QAS remains on its recorded legacy bundles; PRD remains on its unsuffixed
+installed version with catalog selector unselected. Neither lane changed for
+CAT-04. Dev's publisher/admission fence remains active, external project
+publishers remain paused, no mailbox request or ACK was published, and
+filesystem-mailbox acceptance is **NOT RUN**. There was no source change or
+candidate rebuild for this closeout; the ebc4446 source gates previously
+passed on Mac and all three Ubuntu hosts, as recorded below.
+
+CAT-05 may now begin with a fresh QAS work/capacity/release preflight and
+consistent backup checks. Use the exact release ID, manifest digest, and four
+bundle hashes above; do not rebuild during promotion. Given Sandbox's 1.2 GiB
+free-space observation, measure the actual required backup/staging footprint
+and available space again before each operation. Do not proceed if the backup,
+switch, and recovery needs do not fit. CAT-06 PRD remains dependent on QAS
+acceptance and its own fresh work, backup, and rollback guards.
+
+## Historical status — 2026-10-21 12:06 UTC: recovery target already superseded; live Dev divergence later resolved
 
 The owner-requested read-only recheck used the supported `runner-lane status`,
 `catalog-status`, and `catalog-cohort -action status` commands on Mac,

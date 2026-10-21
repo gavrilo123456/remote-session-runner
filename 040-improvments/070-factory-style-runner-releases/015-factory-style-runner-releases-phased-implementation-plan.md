@@ -1,6 +1,31 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
-**Current status (2026-10-21 12:06 UTC): CAT-04 is BLOCKED by live Dev state that differs from the owner-specified recovery baseline.** Read-only supported status confirms operation `33b2c3a3f6399253444c6ae29f0ecb97` already reconciled four verification histories, completed, and was later superseded; its synchronized receipt SHA-256 is `21b1f6da486c582dd2fdaa2cd536cded34e9520ca8f2ff74c9f749a8b9cbfe78`. A later operation `8fdb7e5eb058a795601a2cff9e7bde78` remains at `verifying` on all four hosts, and the Dev services/selectors currently use `cat-20261021-ebc4446`, not the required recovery baseline `cat-20261021-c76bac5`. QAS remains on legacy selectors and PRD is unselected. `cat-20261021-740927e` is present but unselected; the detailed evidence notes it predates the ebc4446 correction. No state was changed in this recheck, and no fresh work inventory was taken. Do not advance QAS or PRD until the live Dev operation and intended release sequence are reconciled. Mailbox acceptance remains **NOT RUN**; no mailbox requests or ACKs were published; external publishers remain paused. Full details and per-host bundle hashes are in [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md). **Historical status (2026-10-21 10:19 UTC):** source correction delivered and source gates passed. **Historical status (2026-10-21 09:56 UTC):** Mac gates passed; Ubuntu gates were pending. **Historical status (2026-10-21 09:39 UTC):** Dev start blocked on recovered receipt/runtime incompatibility. **Historical status (2026-10-21 09:24 UTC):** operation recovery completed and candidate acceptance remained pending. **Historical status (2026-10-21 08:36 UTC):** CAT-04 was blocked before reconciliation while awaiting authorization; preserved evidence is in [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md).
+## Current status — 2026-10-21 13:09 UTC: CAT-04 complete in Dev; CAT-05 next
+
+CAT-04 is **COMPLETE** for the sealed release `cat-20261021-ebc4446`, built
+from source revision `ebc4446ce8ce95d3e3fc076bb9985cdfbc1e9388` with release
+manifest SHA-256 `ede9121d5a41a85944a98d1b585aa99aa36c343244c587dfb540aa57b852c62c`.
+Operation `8fdb7e5eb058a795601a2cff9e7bde78` reached `complete`; the
+byte-identical four-host receipt SHA-256 is
+`2c0e3f489cb701627c1c1e6bc9ad92bb04b31d952cceee7adf781d7ac566dc10`.
+The Mac-local check and both direct-mTLS and queued-SSH probes on all three
+workers passed with complete output, exit 0, terminal event sequence 4, and
+teardown closed. Fresh inventories show all four Dev services active with
+zero sessions, commands, queued work, or resumable jobs. Per-host identities,
+configuration hashes, evidence digests, receipt synchronization, current
+capacity, and the post-completion admission fence are in
+[`CAT-04.md`](../../040-implementation-evidence/CAT-04.md).
+
+QAS remains on its existing legacy bundles and PRD remains on its unsuffixed
+installed version; neither lane was changed for CAT-04. CAT-05 is the next
+unit: qualify this exact sealed release and per-host bundle bytes in QAS with
+fresh inventory, backup, and recovery guards. Do not rebuild during promotion.
+CAT-06 remains gated on CAT-05 acceptance and its fresh production guards.
+External project publishers remain paused. Mailbox acceptance is **NOT RUN**;
+no mailbox request or ACK was published. The owner-specified c76bac5 and
+740927e baselines are superseded for the current rollout and are not targets.
+
+**Historical status (2026-10-21 12:06 UTC): CAT-04 was blocked by live Dev state that differed from the then-requested recovery baseline.** Read-only supported status confirmed operation `33b2c3a3f6399253444c6ae29f0ecb97` had reconciled four verification histories, completed, and was later superseded; its synchronized receipt SHA-256 was `21b1f6da486c582dd2fdaa2cd536cded34e9520ca8f2ff74c9f749a8b9cbfe78`. Operation `8fdb7e5eb058a795601a2cff9e7bde78` was at `verifying` on all four hosts, and Dev used `cat-20261021-ebc4446` rather than the previously requested `cat-20261021-c76bac5`. The owner later superseded those targets and authorized completion of this ebc4446 operation. QAS remained on legacy selectors and PRD unselected. No state changed during that recheck; its lack of a fresh work inventory was corrected by the later CAT-04 completion evidence. The old candidate `cat-20261021-740927e` remains unselected and is not a target. Mailbox acceptance remained **NOT RUN**; no mailbox requests or ACKs were published; external publishers remained paused. Full historical details are in [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md). **Historical status (2026-10-21 10:19 UTC):** source correction delivered and source gates passed. **Historical status (2026-10-21 09:56 UTC):** Mac gates passed; Ubuntu gates were pending. **Historical status (2026-10-21 09:39 UTC):** Dev start blocked on recovered receipt/runtime incompatibility. **Historical status (2026-10-21 09:24 UTC):** operation recovery completed and candidate acceptance remained pending. **Historical status (2026-10-21 08:36 UTC):** CAT-04 was blocked before reconciliation while awaiting authorization; preserved evidence is in [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md).
 
 **Historical status (2026-10-21 06:10 UTC): CAT-01 through CAT-03 were complete; CAT-04 was IN PROGRESS after supported recovery of operation `5c9d691cc33016b1ef5bb7b741dea0de`.** The rollback/synchronization correction at `c76bac5e15b3c1d9ac004024f8062f43f0e6a4f4` passed `make test`, `make vet`, `make build`, and `make smoke` on Mac and all three workers, was pushed to primary Gitea, verified at the exact GitHub mirror SHA, and fast-forwarded to all three clean Ubuntu `dev` checkouts. Recovery reconciled the preserved blocked and switching histories, rolled back only Sandbox and Linux using their recorded journals, and synchronized the rollback receipt to all four hosts. The final receipt was `rolled_back`, SHA-256 `201deb4ee39c40812b7aa937fd6c11be8248214a8c99356cf47a1182c0b90f9e`; all four Dev services were stopped with empty work inventories and prior selectors restored. The old candidate `cat-20261021-147138f` remained unchanged and unselected. See [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md) for transition hashes, host journals, backup manifests, source gate details and limits.
 
@@ -79,14 +104,10 @@ gates are **COMPLETE**. CAT-03 closeout evidence is in
 [`CAT-03.md`](../../040-implementation-evidence/CAT-03.md). This does not pass
 or imply any installed Dev/QAS/PRD acceptance. Live migration and cohort
 actions remain separately gated by their acceptance evidence.
-CAT-04 is **IN PROGRESS**; the c76 receipt recovery is complete and the
-completed-receipt supersession correction is delivered with all four-host
-source gates passing. A new candidate must be sealed from the exact corrected
-source revision; existing `cat-20261021-740927e` does not contain the
-correction and is not promotable. Fresh live Dev acceptance remains pending.
-Current operational evidence is in
-[`CAT-04.md`](../../040-implementation-evidence/CAT-04.md). CAT-05 through
-CAT-07 remain **NOT STARTED** until predecessor gates pass. A unit is accepted
+CAT-04 is **COMPLETE** on `cat-20261021-ebc4446`; the live Dev cohort and
+operation are recorded in [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md).
+CAT-05 is next and must use the exact accepted release and per-host bundle
+hashes. CAT-06 remains **NOT STARTED** until CAT-05 passes. A unit is accepted
 only by its recorded evidence and required delivery/qualification results.
 
 | Unit | Assigned work | Exit evidence |
