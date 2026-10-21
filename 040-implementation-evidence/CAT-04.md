@@ -11,9 +11,10 @@ the bundle build; every checkout reported `HEAD` and `origin/dev` at this SHA.
 At this exact source revision, all four required gates passed on all four
 machines: `make test`, `make vet`, `make build`, and `make smoke` (each exit 0).
 Linux and Factory full tests passed on their first current-revision run. Sandbox
-has one preserved earlier `make test` attempt that was interrupted at the
-owner's request to prevent root exhaustion when only 166,896 KiB remained; that
-attempt is not PASS. The later full rerun passed: `/dev/sda1` had 1,909,124 KiB
+has one preserved earlier `make test` attempt that I interrupted to prevent
+root exhaustion when only 166,896 KiB remained; that attempt is not PASS. The
+owner had directed me to try within the tight capacity limit, not to interrupt
+the test. The later full rerun passed: `/dev/sda1` had 1,909,124 KiB
 available before it and 1,780,112 KiB after it. Sandbox `make vet`, `make build`,
 and `make smoke` then passed; the last measured free space during smoke was
 1,530,828 KiB. No shared cache or host data was removed. All Go commands set
