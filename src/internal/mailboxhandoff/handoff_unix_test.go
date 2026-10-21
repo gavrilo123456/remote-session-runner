@@ -4,6 +4,7 @@ package mailboxhandoff
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,7 +167,7 @@ func TestHandoffFailsClosedForIdentityConfigurationAndPhaseMismatch(t *testing.T
 }
 
 func TestHandoffRevalidatesReceiptMarkerAndRootBeforeFurtherWork(t *testing.T) {
-	for _, change := range []string{"receipt", "marker", "lock", "root"} {
+	for _, change := range []string{"receipt", "receipt-mode", "receipt-hardlink", "receipt-symlink", "receipt-parent-symlink", "service-root-mode", "marker", "lock", "root"} {
 		t.Run(change, func(t *testing.T) {
 			f := newFixture(t)
 			lease, err := f.acquire()
@@ -179,6 +180,29 @@ func TestHandoffRevalidatesReceiptMarkerAndRootBeforeFurtherWork(t *testing.T) {
 			case "receipt":
 				f.receipt.Phase = "returning"
 				f.writeReceipt(t)
+			case "receipt-mode":
+				if err := os.Chmod(f.path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "receipt-hardlink":
+				if err := os.Link(f.path, f.path+"-linked"); err != nil {
+					t.Fatal(err)
+				}
+			case "receipt-symlink", "receipt-parent-symlink":
+				path := f.path
+				if change == "receipt-parent-symlink" {
+					path = filepath.Dir(path)
+				}
+				if err := os.Rename(path, path+"-real"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(path+"-real", path); err != nil {
+					t.Fatal(err)
+				}
+			case "service-root-mode":
+				if err := os.Chmod(f.receipt.TargetServiceRoot, 0o755); err != nil {
+					t.Fatal(err)
+				}
 			case "marker":
 				if err := os.WriteFile(filepath.Join(root, MarkerFileName), []byte(`{}`), 0o600); err != nil {
 					t.Fatal(err)
@@ -205,6 +229,110 @@ func TestHandoffRevalidatesReceiptMarkerAndRootBeforeFurtherWork(t *testing.T) {
 				t.Fatalf("changed alias error=%v", err)
 			}
 		})
+	}
+}
+
+func TestHandoffLeaseHashesEveryCheckDespiteUnchangedSizeAndMtime(t *testing.T) {
+	f := newFixture(t)
+	lease, err := f.acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	before, err := os.Stat(f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(raw), `"phase": "active"`, `"phase": "return"`, 1)
+	if changed == string(raw) || len(changed) != len(raw) {
+		t.Fatal("tamper fixture did not preserve receipt length")
+	}
+	if err := os.WriteFile(f.path, []byte(changed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(f.path, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(f.path)
+	if err != nil || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("tamper fixture metadata changed: after=%v error=%v", after, err)
+	}
+	if err := lease.Check("project"); !errors.Is(err, ErrOwnership) {
+		t.Fatalf("same-size same-mtime receipt tamper accepted: %v", err)
+	}
+	if err := lease.CheckRequest("project", "req-new", "new-key"); !errors.Is(err, ErrOwnership) {
+		t.Fatalf("tampered receipt admitted new request: %v", err)
+	}
+}
+
+func TestHandoffLargeReceiptChecksDoNotRebuildHistoricalIndexes(t *testing.T) {
+	small := newFixture(t)
+	smallLease, err := small.acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer smallLease.Close()
+	large := newFixture(t)
+	mailbox := &large.receipt.Mailboxes[0]
+	mailbox.BlockedRequestIDs = make([]string, 5694)
+	mailbox.BlockedIdempotencySHA256 = make([]string, 5164)
+	for i := range mailbox.BlockedRequestIDs {
+		mailbox.BlockedRequestIDs[i] = fmt.Sprintf("req-%06d-%s", i, strings.Repeat("history", 7))
+	}
+	for i := range mailbox.BlockedIdempotencySHA256 {
+		mailbox.BlockedIdempotencySHA256[i] = SHA256([]byte(fmt.Sprintf("history-key-%06d", i)))
+	}
+	large.writeReceipt(t)
+	if info, err := os.Stat(large.path); err != nil || info.Size() < 700<<10 {
+		t.Fatalf("large receipt fixture too small: info=%v error=%v", info, err)
+	}
+	if err := WriteMarker(mailbox.Root, Marker{OperationID: large.receipt.OperationID, OwnerLane: "qas", ReceiptSHA256: large.digest,
+		Device: mailbox.Device, Inode: mailbox.Inode}); err != nil {
+		t.Fatal(err)
+	}
+	largeLease, err := large.acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer largeLease.Close()
+	// Full acquisition still builds the replay fences from every history
+	// entry. Repeated idle checks must not allocate one object per entry.
+	if err := largeLease.CheckRequest("project", mailbox.BlockedRequestIDs[len(mailbox.BlockedRequestIDs)-1], "fresh-key"); !errors.Is(err, ErrReplay) {
+		t.Fatalf("last historical request was not fenced: %v", err)
+	}
+	if err := largeLease.CheckRequest("project", "req-fresh", "history-key-005163"); !errors.Is(err, ErrReplay) {
+		t.Fatalf("last historical key was not fenced: %v", err)
+	}
+	checkAllocs := func(lease *Lease) float64 {
+		return testing.AllocsPerRun(3, func() {
+			if err := lease.Check("project"); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	smallAllocs, largeAllocs := checkAllocs(smallLease), checkAllocs(largeLease)
+	t.Logf("ownership check allocations: small=%.0f large=%.0f", smallAllocs, largeAllocs)
+	// Parsing/rebuilding >10,000 history entries grows by thousands instead.
+	if largeAllocs > smallAllocs+64 {
+		t.Fatalf("ownership check allocations scale with historical entries: small=%.0f large=%.0f", smallAllocs, largeAllocs)
+	}
+	benchmark := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if err := largeLease.Check("project"); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	t.Logf("large receipt guard: %s %s", benchmark.String(), benchmark.MemString())
+	// Guard calls must not allocate history-sized byte buffers, even if they
+	// avoid decoding the JSON. The lease owns one reusable streaming buffer.
+	if benchmark.AllocedBytesPerOp() > 64<<10 {
+		t.Fatalf("large receipt check allocated %d bytes per call", benchmark.AllocedBytesPerOp())
 	}
 }
 

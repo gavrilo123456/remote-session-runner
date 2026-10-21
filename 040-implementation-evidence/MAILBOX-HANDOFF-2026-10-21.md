@@ -7,11 +7,12 @@ mailbox configuration, and activation of the same paths in QAS. After installed
 validation proved that a configuration-only transfer was unsupported, the owner
 explicitly selected **keep existing paths; implement supported handoff**.
 
-**IN PROGRESS: Dev/QAS route qualification complete; actual mailbox activation
-remains outstanding.** Dev and QAS select `cat-20261021-5bc6f43` on all
-four hosts. PRD and both mailbox
-configurations remain unchanged; no mailbox request or ACK has been published.
-PRD upgrade/CAT-06 remains a separate task.
+**ACTIVE: all eight original mailbox paths belong to QAS. Post-activation CPU
+correction is being qualified before client handback.** Dev and QAS currently
+select `cat-20261021-5bc6f43` on all four hosts. Mac PRD is stopped with an empty
+mailbox map and disabled ingress; its original binaries, database and fallback
+configuration are preserved. No filesystem mailbox request or ACK has been
+published. Clients remain stopped. PRD upgrade/CAT-06 remains a separate task.
 
 ## Verified starting point and backups
 
@@ -235,3 +236,52 @@ explicit: fresh read-only idle checks, supported initial Mac PRD/QAS stops,
 process/listener stop proof, then preparation under both lifecycle locks. No lock
 is deleted or bypassed. Consistent backups still precede all configuration and
 mailbox changes. QAS must first receive the qualified handoff runtime.
+
+## Live activation and receipt-check correction — 2026-10-21 20:52 UTC
+
+Handoff `1f96911399ff6a678345f214ada69b49` is active. Its persistent journal is
+`/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/backups/mailbox-handoff-1f96911399ff6a678345f214ada69b49/operation.json`.
+The eight physical paths stayed unchanged. All 40 original stream directories,
+covering 2,559 filesystem entries, were compared by content hash and physical
+identity before/after their supported archive renames; every comparison matched.
+The new live stream directories were empty before QAS started. All eight
+exclusive owner leases were independently observed held. QAS's native registry
+still contains only its original `default`; transferred roots remain temporary
+receipt authority. The PRD main database bytes were unchanged after activation.
+
+Active receipt SHA-256 is
+`d671c93f171610b1043f34bd04467eab81c92535849aee273785429904df17ea`.
+Active raw configuration hashes are PRD
+`56c25057b58b72e592995cc00efbd042cf4d666db449d01bb03a0aa628778d11`
+and QAS `9856c54900e26c335c4ea7adb2d02951847d76349abdd49dc6b261f419f11f6a`.
+PRD has zero mailbox definitions and disabled ingress. Mac PRD remains stopped;
+its worker services, original binaries, retained reservations, uncertain remote
+intents and held results have not been repaired, released, replayed or ACKed.
+The original Mac PRD and pre-stop QAS listeners/processes were confirmed gone
+before activation. Both configs and consistent databases were backed up first.
+
+Seven ordinary QAS API routes passed after activation, with exit 0, complete
+output and closed teardown; final active/queued/resumable/finalization gauges
+and storage/cleanup counters were zero. Evidence is `handoff-postflight.json`,
+`streams-{before,archived}.json`, `handoff-active-qas-routes.log`, and
+`handoff-active-qas-qas-8675133a54d4/` under the private work directory. Actual
+filesystem-mailbox acceptance and normal client load remain NOT RUN.
+
+A subsequent idle sample found QAS ingress at 93.4% CPU. The bounded native
+sample confirmed `Lease.checkRootLocked` repeatedly calling `LoadReceipt`,
+JSON decoding and regex-validating the 767 KiB history receipt on each guard.
+This is a defect in the new handoff implementation, not evidence about the
+original PRD SQLite issue. Clients remain stopped while its narrow correction
+is qualified. Acquire still fully validates the receipt once; subsequent guards
+stream every byte through the pinned SHA-256 using a reusable 32 KiB buffer,
+retaining path/descriptor/owner/mode/link/size/root/marker/lease guards. There is
+no timestamp-only cache. Source regressions cover roughly 800 KiB receipts,
+constant-sized allocations (3,359 B/check, 62 allocations), replay fences,
+same-size/same-mtime tampering and unsafe metadata/ancestor changes. Focused,
+race and vet checks pass; independent review found no guard relaxation. The new
+candidate must pass native source gates, then the same bytes through Dev/QAS;
+active handoff configuration, receipt and archived history must stay unchanged.
+
+The correction's Mac `make test`, `make vet`, `make build` and `make smoke`
+gates passed; logs are `mac-s3-{test,vet,build,smoke}.log`. Worker source gates
+and new release qualification are pending at this source freeze.

@@ -5,6 +5,7 @@ package mailboxhandoff
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,7 @@ type Lease struct {
 	mu                         sync.Mutex
 	receiptPath, receiptSHA256 string
 	receipt                    Receipt
+	receiptBuffer              [32 << 10]byte
 	roots                      map[string]*ownedRoot
 	definitions                map[string]bool
 	closed                     bool
@@ -231,10 +233,22 @@ func (l *Lease) checkLocked(mailboxID string) (*ownedRoot, error) {
 }
 
 func (l *Lease) checkRootLocked(root *ownedRoot) error {
-	_, digest, err := LoadReceipt(l.receiptPath)
+	// Acquire fully validates the receipt and pins its exact bytes. Repeating
+	// JSON decoding and history validation here scales every idle ownership
+	// check with all preserved request IDs and keys. Keep the same guarded
+	// file read and compare its digest instead; unchanged bytes retain the
+	// already-validated meaning without rebuilding that history.
+	digest, err := hashPrivatePath(l.receiptPath, 4<<20, l.receiptBuffer[:])
 	if err != nil || digest != l.receiptSHA256 {
 		return ErrOwnership
 	}
+	// LoadReceipt also requires this ancestor to remain a private service
+	// root, beyond the safe-ancestor checks in readPrivatePath.
+	serviceFD, err := openPrivateDirectory(l.receipt.TargetServiceRoot)
+	if err != nil {
+		return ErrOwnership
+	}
+	_ = unix.Close(serviceFD)
 	currentFD, err := openPrivateDirectory(root.mailbox.Root)
 	if err != nil {
 		return ErrOwnership
@@ -444,6 +458,38 @@ func readPrivateAt(parent int, name string, maximum int64) ([]byte, error) {
 		return nil, ErrUnsafe
 	}
 	return raw, nil
+}
+
+// hashPrivatePath keeps the receipt's no-follow, ownership, size and identity
+// checks without allocating the entire immutable history on every guard call.
+// Lease callers serialize reuse of the fixed buffer with their mutex.
+func hashPrivatePath(path string, maximum int64, buffer []byte) (string, error) {
+	if !cleanAbsolute(path) || len(buffer) == 0 {
+		return "", ErrUnsafe
+	}
+	parent, err := openPrivateDirectory(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	defer unix.Close(parent)
+	name := filepath.Base(path)
+	fd, err := unix.Openat(parent, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return "", ErrUnsafe
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer file.Close()
+	var before, after, current unix.Stat_t
+	if unix.Fstat(fd, &before) != nil || !privateRegular(before) || before.Size < 1 || before.Size > maximum {
+		return "", ErrUnsafe
+	}
+	digest := sha256.New()
+	count, err := io.CopyBuffer(digest, io.LimitReader(file, maximum+1), buffer)
+	if err != nil || count != before.Size || unix.Fstat(fd, &after) != nil || !sameFile(before, after) || before.Size != after.Size ||
+		unix.Fstatat(parent, name, &current, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameFile(after, current) || !privateRegular(current) {
+		return "", ErrUnsafe
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 // Every path component is pinned with O_NOFOLLOW. Ancestors may be root-owned
