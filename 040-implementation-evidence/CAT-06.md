@@ -1,5 +1,42 @@
 # CAT-06 — PRD adoption and promotion
 
+## Owner source-test assignment amendment — 2026-10-22 08:17 UTC
+
+The owner approved using **existing Factory for the complete Linux/AMD64
+source suite** and retaining focused and host-specific verification on the
+CPU-starved Linux host. Only the `linux-host` full-suite source-test requirement
+is reassigned. Historical Linux timeouts/interrupted suites remain **NOT PASS**;
+do not retry them merely to obtain a host-level full-suite PASS label.
+
+The [current source-test matrix](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md#owner-source-test-assignment-amendment--2026-10-22-0817-utc)
+requires a full Factory test/vet/build/smoke result on the actual candidate's
+delivered source, exact Go version and recorded build settings. Earlier full
+Factory passes at `9113b44` precede the capacity-policy correction `638e351`;
+the later focused capacity tests do not relabel those earlier full results.
+Mac and Sandbox full-source requirements are unchanged.
+
+Linux retains focused PRD/catalog/changed-package and public-command fixtures,
+the exact P025/P101 regression cases named in the plan, and native
+vet/build/smoke plus applicable already-required host checks. Record which
+tests actually ran and investigate any real assertion failure. Record
+platform, `GOAMD64`, `CGO_ENABLED` and relevant flags; do not infer unrun race
+or host-specific coverage from the representative Factory suite.
+
+The revised source gate can close after Factory's representative suite and
+Linux's retained native checks pass; Linux's interrupted full run is no longer
+an independent sealing prerequisite. This does not close the retained-work,
+compatibility, backup, capacity, rollback or four-host release-acceptance gates.
+The separate operating buffer remains **500,000,000 bytes** plus the measured
+backup/selector allowance. Existing users stay on QAS and all eight mailbox
+paths remain assigned to it until the owner requests their return.
+
+At this documentation amendment no executable test, candidate seal, service,
+selector, recovery, database, mailbox or ACK operation was performed. Current
+candidate-source tests and live deployment remain pending their actual
+results. The unrelated untracked `src/cmd/catalog-holdcheck/` is preserved.
+Documentation verification is `git diff --check` plus amendment consistency
+and local-link checks; delivery follows the primary/mirror/clean-worker route.
+
 ## Owner capacity-policy amendment — 2026-10-22 08:08 UTC
 
 The owner explicitly reduced the separate operating buffer to **0.5 GB =

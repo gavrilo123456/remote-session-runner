@@ -1,5 +1,17 @@
 # Lane execution ledger
 
+## CAT-06 source-test assignment amendment — 2026-10-22 08:17 UTC
+
+The owner assigned the common full Linux/AMD64 source suite to existing
+`factory-sandbox`. `linux-host` retains focused regressions, native
+vet/build/smoke and applicable host-specific checks. Previous interrupted or
+failed Linux full suites remain **NOT PASS** and no longer independently block
+sealing once the amended source checks pass. Factory must test the actual
+candidate source, including the 0.5 GB capacity policy; prior source results
+do not become current by this amendment. All four hosts still require their
+own bundles, fresh live guards and Dev/QAS/PRD acceptance. No new test or live
+operation ran here. See [the current matrix and evidence](CAT-06.md#owner-source-test-assignment-amendment--2026-10-22-0817-utc).
+
 ## CAT-06 capacity-policy amendment — 2026-10-22 08:08 UTC
 
 The owner reduced the separate operating buffer from 2 GiB to **0.5 GB =

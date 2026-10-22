@@ -1,5 +1,49 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## Owner source-test assignment amendment — 2026-10-22 08:17 UTC
+
+The owner authorizes **existing `factory-sandbox` as the full Linux/AMD64
+source-suite host for CAT-06**, replacing only the full `make test` requirement
+on CPU-starved `linux-host`. This takes precedence over older checkpoint text
+that makes another complete Linux-host suite a prerequisite. Preserve every
+previous timeout/interrupted run as **NOT PASS**; the assignment change is not
+a passing rerun and does not close the gate until the replacement checks pass.
+
+| Existing host | Current CAT-06 source checks |
+| --- | --- |
+| Mac | Existing full `make test`, vet, build, smoke and applicable native/fixture gates remain required. |
+| Sandbox (Linux/ARM64) | Existing full `make test`, vet, build, smoke and applicable native/fixture gates remain required. |
+| Factory (Linux/AMD64) | Full `make test`, vet, build and smoke on the actual candidate source and Go 1.27.1; this supplies the common Linux/AMD64 full-suite evidence. |
+| Linux host (Linux/AMD64) | Focused CAT-06/changed-package tests, the P025/P101 cases below, native vet/build/smoke and already-required host-specific checks; a full-suite rerun is no longer a prerequisite under this amendment. |
+
+Record the exact committed source revision, Go version, commands, exit status
+and logs. Capture `GOOS`, `GOARCH`, `GOAMD64`, `CGO_ENABLED` and relevant build
+flags; describe coverage differences rather than assuming identical host
+settings. This introduces no requirement to install compilers or run unrelated
+new test campaigns. Full Factory results at predecessor `9113b44` do not
+establish a full-suite pass for the later capacity-policy source `638e351`.
+Use the candidate's exact delivered source, including the 500,000,000-byte
+buffer correction, for the representative full-suite result.
+
+Linux's focused selection must include the real test names
+`TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice` and
+`TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary`, with evidence
+that they actually ran, plus the affected PRD/catalog packages and public
+command fixtures. Any assertion failure remains a failure to investigate;
+this amendment does not waive it or authorize weakened assertions.
+
+Factory source evidence does not substitute for Linux-host identities, native
+bundle/build, installed legacy compatibility, filesystem/permissions/capacity,
+service/wrapper behavior, retained-pair ownership/recovery, consistent backups,
+rollback, routing or four-host Dev/QAS/PRD acceptance. Those gates and the
+fixed switch order remain unchanged. Keep users and all eight mailbox paths
+in QAS; coordinate any necessary QAS pause before its candidate qualification.
+No new machine, service restart, mailbox request or ACK is assigned here.
+
+This is a documentation-only amendment; the representative current-candidate
+suite and remaining Linux native checks are **pending**, not newly PASS.
+See [current gate assignment and continuation](../../040-implementation-evidence/CAT-06.md#owner-source-test-assignment-amendment--2026-10-22-0817-utc).
+
 ## Owner capacity-policy amendment — 2026-10-22 08:08 UTC
 
 The owner reduced the CAT-06 operating buffer from 2 GiB to **0.5 GB**, meaning

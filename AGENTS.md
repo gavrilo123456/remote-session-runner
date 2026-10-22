@@ -32,6 +32,26 @@ sshd, root release authority or management bootstrap is assigned. The former
 A01 paid OCI/physical-Mac-disk package is withdrawn; no procurement or erasure
 is authorized. Preserve existing PRD, shared caches and retained work.
 
+## CAT-06 source-test assignment — owner amendment, 2026-10-22
+
+For CAT-06, the owner authorizes the existing `factory-sandbox` Linux/AMD64
+worker to supply the full source-suite result otherwise required from the
+CPU-starved `linux-host`. Use the same candidate source revision and Go 1.27.1;
+record platform/build settings and any coverage differences. Keep Mac and
+Sandbox full-suite requirements unchanged. On `linux-host`, retain focused
+CAT-06/changed-package regressions, the previously timed-out P025/P101 cases,
+and native vet/build/smoke and applicable host-specific checks. Do not transfer
+Factory results for checks that depend on Linux-host-only build settings,
+kernel, service configuration or runtime ownership.
+
+Keep previous Linux timeouts/interrupted suites recorded as NOT PASS. The
+source gate is satisfied by the documented alternate-host assignment plus
+passing native Linux checks, not by relabeling those failed runs. This is not
+a waiver of four-host native bundles, retained-work/backup guards, or actual
+Dev/QAS/PRD cohort acceptance. Do not rerun the starved host's full suite merely
+to remove its historical status. Follow the current CAT-06 plan and evidence;
+no new host or live service change is authorized by this test-plan amendment.
+
 ## Authoritative source checkout
 
 Make all Runner source-code, test, schema, deployment-file, and project-documentation changes in the Mac checkout at `/Users/tomasz.walczuk/projects/remote-session-runner`. This checkout is the development source for the current PoC. Do **not** edit tracked project files directly in the Ubuntu checkout at `/home/ubuntu/projects/remote-session-runner`, and do not copy changed source files there with `scp` or `rsync`.
