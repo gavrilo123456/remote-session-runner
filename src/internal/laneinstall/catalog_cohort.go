@@ -1110,10 +1110,84 @@ func readCatalogCohortReceipt(path string) (CatalogCohortReceipt, error) {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}
 	canonical, err := json.MarshalIndent(receipt, "", "  ")
-	if err != nil || !bytes.Equal(data, append(canonical, '\n')) {
+	if err != nil {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	if bytes.Equal(data, append(canonical, '\n')) {
+		return receipt, nil
+	}
+	legacyCanonical, legacyErr := marshalCatalogCohortReceiptWithoutServiceActiveField(receipt)
+	if legacyErr != nil || !bytes.Equal(data, legacyCanonical) {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}
 	return receipt, nil
+}
+
+// The first format-1 receipt writer predated ServiceActiveAtPreflight. Keep
+// reading that exact canonical representation so terminal histories continue
+// to participate in admission checks after an upgrade. The JSON decoder,
+// receipt validator, file ownership/mode checks, and history digests still
+// apply before this compatibility check. The omitted field can only represent
+// false, which is also required here.
+func marshalCatalogCohortReceiptWithoutServiceActiveField(receipt CatalogCohortReceipt) ([]byte, error) {
+	type legacyHostPreflight struct {
+		HostID                string                              `json:"host_id"`
+		PreviousTarget        string                              `json:"previous_target,omitempty"`
+		PreviousBundleSHA256  string                              `json:"previous_bundle_sha256,omitempty"`
+		PreviousReadSchemaMax int                                 `json:"previous_read_schema_max,omitempty"`
+		LegacyRollback        *CatalogLegacyRollbackCompatibility `json:"legacy_rollback_compatibility,omitempty"`
+		Target                CatalogReleaseIdentity              `json:"target_release_identity"`
+		ConfigurationSHA256   string                              `json:"configuration_sha256"`
+		SchemaVersion         int                                 `json:"schema_version"`
+		WorkInventorySHA256   string                              `json:"work_inventory_sha256"`
+		WorkInventoryEmpty    bool                                `json:"work_inventory_empty"`
+		PreflightAt           string                              `json:"preflight_at"`
+		BackupDirectory       string                              `json:"backup_directory"`
+		BackupManifestSHA256  string                              `json:"backup_manifest_sha256"`
+		AvailableBytes        uint64                              `json:"available_bytes"`
+		RequiredBytes         uint64                              `json:"required_bytes"`
+	}
+	type legacyReceipt struct {
+		FormatVersion  int                          `json:"format_version"`
+		OperationID    string                       `json:"operation_id"`
+		Lane           config.ReleaseLane           `json:"lane"`
+		ReleaseID      string                       `json:"release_id"`
+		ReleaseSHA256  string                       `json:"release_sha256"`
+		SourceRevision string                       `json:"source_revision"`
+		Database       CatalogDatabaseCompatibility `json:"database_compatibility"`
+		CreatedAt      string                       `json:"created_at"`
+		UpdatedAt      string                       `json:"updated_at"`
+		Stage          CatalogCohortStage           `json:"stage"`
+		FenceProofs    []CatalogCohortFenceProof    `json:"fence_proofs"`
+		Hosts          []legacyHostPreflight        `json:"hosts"`
+		Transitions    []CatalogCohortTransition    `json:"transitions"`
+	}
+
+	legacy := legacyReceipt{
+		FormatVersion: receipt.FormatVersion, OperationID: receipt.OperationID, Lane: receipt.Lane,
+		ReleaseID: receipt.ReleaseID, ReleaseSHA256: receipt.ReleaseSHA256, SourceRevision: receipt.SourceRevision,
+		Database: receipt.Database, CreatedAt: receipt.CreatedAt, UpdatedAt: receipt.UpdatedAt, Stage: receipt.Stage,
+		FenceProofs: receipt.FenceProofs, Transitions: receipt.Transitions,
+		Hosts: make([]legacyHostPreflight, len(receipt.Hosts)),
+	}
+	for index, host := range receipt.Hosts {
+		if host.ServiceActiveAtPreflight {
+			return nil, ErrCatalogOperationInvalid
+		}
+		legacy.Hosts[index] = legacyHostPreflight{
+			HostID: host.HostID, PreviousTarget: host.PreviousTarget, PreviousBundleSHA256: host.PreviousBundleSHA256,
+			PreviousReadSchemaMax: host.PreviousReadSchemaMax, LegacyRollback: host.LegacyRollback, Target: host.Target,
+			ConfigurationSHA256: host.ConfigurationSHA256, SchemaVersion: host.SchemaVersion,
+			WorkInventorySHA256: host.WorkInventorySHA256, WorkInventoryEmpty: host.WorkInventoryEmpty,
+			PreflightAt: host.PreflightAt, BackupDirectory: host.BackupDirectory,
+			BackupManifestSHA256: host.BackupManifestSHA256, AvailableBytes: host.AvailableBytes, RequiredBytes: host.RequiredBytes,
+		}
+	}
+	canonical, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(canonical, '\n'), nil
 }
 
 func acquireCohortReceiptLock(root string) (int, error) {

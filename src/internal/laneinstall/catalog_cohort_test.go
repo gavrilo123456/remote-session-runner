@@ -309,8 +309,9 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 	if err := os.Mkdir(cohortRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeCohortReceiptFixture(t, cohortRoot, oldAttempts[0])
-	writeCohortReceiptFixture(t, cohortRoot, oldAttempts[1])
+	writeLegacyCohortReceiptFixture(t, cohortRoot, oldAttempts[0])
+	writeLegacyCohortReceiptFixture(t, cohortRoot, oldAttempts[1])
+	writeLegacyCohortReceiptFixture(t, cohortRoot, oldAttempts[2])
 	writeCohortReceiptFixture(t, cohortRoot, successor)
 	if _, _, err := catalogCohortAdmissionHeldAt(plan, cohortRoot); err == nil {
 		t.Fatal("multiple abandoned receipts did not fail closed before supported reconciliation")
@@ -335,7 +336,7 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 		if err := ValidateCatalogCohortReceipt(old); err != nil {
 			t.Fatalf("attempt %d superseded receipt lost its valid history: %v", attemptIndex, err)
 		}
-		writeCohortReceiptFixture(t, cohortRoot, old)
+		writeLegacyCohortReceiptFixture(t, cohortRoot, old)
 	}
 	if !catalogCohortStageHoldsAdmissions(successor.Stage) {
 		t.Fatal("valid successor stopped holding admissions while still in progress")
@@ -356,6 +357,45 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 	}
 	if successor.Stage != CatalogCohortSwitching || !catalogCohortStageHoldsAdmissions(successor.Stage) {
 		t.Fatalf("successor stage=%q did not advance with its hold intact", successor.Stage)
+	}
+}
+
+func TestReadCatalogCohortReceiptAcceptsOnlyValidatedLegacyCanonicalEncoding(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt := validCatalogCohortFixture(now)
+	receipt.OperationID = strings.Repeat("a", 32)
+	var err error
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", strings.Repeat("b", 64), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Join(t.TempDir(), "catalog-cohorts")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeLegacyCohortReceiptFixture(t, root, receipt)
+	plan, err := BuildCatalogPlan("mac-control-plane", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := readCatalogCohortReceipt(filepath.Join(root, receipt.OperationID+".json"))
+	if err != nil || !reflect.DeepEqual(loaded, receipt) {
+		t.Fatalf("valid legacy receipt was not preserved: equal=%t err=%v", reflect.DeepEqual(loaded, receipt), err)
+	}
+	held, operationID, err := catalogCohortAdmissionHeldAt(plan, root)
+	if err != nil || !held || operationID != receipt.OperationID {
+		t.Fatalf("legacy receipt hold was not surfaced exactly: held=%t operation=%q err=%v", held, operationID, err)
+	}
+
+	// Keep the old encoding but corrupt a transition digest. Compatibility must
+	// not weaken the existing chain-integrity validation.
+	corrupt := receipt
+	corrupt.Transitions = append([]CatalogCohortTransition(nil), receipt.Transitions...)
+	corrupt.Transitions[0].EvidenceSHA256 = strings.Repeat("c", 64)
+	writeLegacyCohortReceiptFixture(t, root, corrupt)
+	if _, err := readCatalogCohortReceipt(filepath.Join(root, receipt.OperationID+".json")); err == nil {
+		t.Fatal("legacy encoding with an invalid transition was accepted")
 	}
 }
 
@@ -1128,6 +1168,21 @@ func writeCohortReceiptFixture(t *testing.T, root string, receipt CatalogCohortR
 		t.Fatal(err)
 	}
 	data = append(data, '\n')
+	path := filepath.Join(root, receipt.OperationID+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeLegacyCohortReceiptFixture(t *testing.T, root string, receipt CatalogCohortReceipt) {
+	t.Helper()
+	data, err := marshalCatalogCohortReceiptWithoutServiceActiveField(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(root, receipt.OperationID+".json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
