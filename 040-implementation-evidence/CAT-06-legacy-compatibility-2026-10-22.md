@@ -119,3 +119,62 @@ per-user quota report. No writes or cleanup were performed; no Go/shared cache,
 backup, retained work, mailbox, service, or selector was touched. Do not start
 Sandbox tests, backup, or catalog mutation until a fresh disk-backed capacity
 check meets the 2 GiB buffer.
+
+## Fresh PRD retained-work and service recheck — 2026-10-22 05:37–05:42 UTC
+
+Read-only database snapshots on all four PRD authorities confirmed schema 40
+and the same seven unreleased command-slot/session-reservation pairs. The
+canonical work counts and hashes are unchanged:
+
+| Host | Active sessions | Unreleased slots | Unreleased reservations | Queued | Running | Resumable | Finalizations | Inventory SHA-256 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Mac | 0 | 3 | 3 | 0 | 0 | 0 | 0 | `5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0` |
+| Linux | 0 | 1 | 1 | 0 | 0 | 0 | 0 | `5dd44373b3a9421f25af8fa4db58b9b107a7e7e66b54ed93a6ca78bc67d4743d` |
+| Sandbox | 0 | 3 | 3 | 0 | 0 | 0 | 0 | `5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0` |
+| Factory | 0 | 0 | 0 | 0 | 0 | 0 | 0 | `92103a248a6dc1bd114512bc8b084280e339ff6972656bb42c4224f77a121f8b` |
+
+The seven exact session/command/job tuples remain those in the table above;
+each still has state `lost` / `lost` / `lost`, incomplete command output, and
+empty slot-stop, slot-release, reservation-cleanup, and reservation-release
+timestamps. Current ownership observations were:
+
+| Host | Pair(s) | Owner record | Process-group observation |
+| --- | --- | --- | --- |
+| Mac | `sess-227a0bc9f416e36532e99346ce273367` / `cmd-9e2033c5d6106b2e88f2cff200d7dbfe`; `sess-a68baa8f1dd9e66c2871e128002240ef` / `cmd-a66ce02cbaddf294e13afb3a409c317c`; `sess-cf91a7902aceebd6ef20daaf6f090514` / `cmd-b524b94074ee26855f1778d52c9655cf` | All three existing owner markers remain mode `0600`, UID 502, link count 1, matching the session and generation; hashes match the previously recorded markers. PIDs 12701, 22367, and 54385 are absent. | No recorded PID is running. `launchctl print gui/502/com.remote-session-runner.local` and `.locald` both report no such loaded service. |
+| Linux | `sess-a8073cda44eb88573398d462c523ba83` / `cmd-6618114b0f1100e4d50479cf0e57ea2c` / `job-a73371770d4d29e2fc22fafd135396e9` | Marker SHA-256 `7f4fe1a17bc04bf9bb50b94f917d4c10d21ae4b606bfb6c693d967ec2ef86b2e`; mode `0600`, UID 1001, link count 1; session/generation, PID/PGID 118705, owner, and start identity match the database. | The recorded PGID contains only PID 118705, UID 1001, zombie `bash`; no other process-group members were observed. `runnerd.service` is active (PID 3858597). |
+| Sandbox | `sess-1797a73cdca867b343ef077b44f7dfda` / `cmd-bf1d015e3a6afb00e578f6f6a8119cd2` / `job-9b7cfd9b07a1edc1a2b1d8ffcf6c6cfe`; `sess-5abb5d808cd5623f3dbd49202f15822c` / `cmd-a06764547029ef15e4726ebd56a03cdf` / `job-3cb15f466008a37dc2bb719d83a573d4`; `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` / `cmd-8cf6db5bb3871e721133825520367598` / `job-77ea4fda0582a7e9d3e49d269830d6ba` | All three existing owner markers remain mode `0600`, UID 1001, link count 1, matching session/generation and recorded PID/PGID; marker hashes match the previously recorded values. | Each recorded PGID (2851086, 3969302, 3253996) contains only its zombie `bash` PID; no other process-group members were observed. `runnerd.service` is active (PID 2353257). |
+| Factory | none | none | `runnerd.service` is active (PID 1970144). |
+
+The SQLite inventory reads used a read-only transaction. Linux's installed
+SQLite 3.31 CLI does not understand the newer `STRICT` schema syntax; the
+bounded inventory query used its `-readonly` mode, `PRAGMA query_only=ON`,
+and a connection-local `PRAGMA writable_schema=ON` to skip parsing unrelated
+newer table declarations. No database file or schema was changed. The installed
+revision's schema-40 read-only preflight had previously passed independently.
+
+These observations refresh identity and process-group state; they do not create
+the durable stop or cleanup proofs that supported retained-capacity recovery
+requires. No recovery command, process signal, database write, service action,
+backup, selector, mailbox publication, or ACK occurred. The exact seven pairs
+remain blocked on supported recovery.
+
+## Sandbox source-gate result — 2026-10-22 05:50–05:57 UTC
+
+The synchronized Sandbox `dev` checkout was clean at evidence revision
+`4305b6e7300b9a4f195ce35764589a91347dbe77`, with Runner source unchanged from
+`93e229dd71a4f513ac1d4edcdd0d4d90e9ef8ccb`. Go 1.27.1 (`linux/arm64`) was
+invoked explicitly. `TMPDIR`, `GOTMPDIR`, and `SQLITE_TMPDIR` used disk-backed
+`/tmp`; the existing account caches were reused. Before the corrected test
+run, `/tmp` had 1,212,305,408 bytes available. The full `make test` ended
+successfully at `2026-10-22T05:54:36Z` with 1,140,256,768 bytes available.
+`make vet`, `make build`, and `make smoke` then passed. A final read-only check
+at `2026-10-22T05:57:03Z` found 1,137,782,784 bytes available, a clean checkout,
+and no remaining test/build process.
+
+The first test invocation was made from the home directory and returned
+`make: No rule to make target 'test'`; no tests ran in that attempt. The
+corrected invocation ran from the synchronized repository and passed the full
+suite. This attempt and correction are both retained in evidence. The owner's
+agreement to proceed with source gates under tight capacity did not waive the
+2 GiB minimum for backups or catalog selector operations. No cleanup, backup,
+service, selector, receipt, database, mailbox, or ACK changed in this gate.

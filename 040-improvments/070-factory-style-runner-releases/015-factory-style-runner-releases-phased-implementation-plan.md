@@ -1,5 +1,42 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 05:57 UTC — Sandbox source gates complete; deployment remains blocked
+
+At clean synchronized `dev` revision
+`4305b6e7300b9a4f195ce35764589a91347dbe77`, Sandbox full `make test`,
+`make vet`, `make build`, and `make smoke` all pass with Go 1.27.1. The first
+test invocation ran from the home directory and returned `No rule to make target 'test'`;
+it did not run tests. The corrected invocation ran from the repository and
+passed `go test ./...` with exit 0. The corrected suite and remaining gates
+used disk-backed `/tmp` (`/dev/sda1`), the explicit Go toolchain, and the
+already present Go caches.
+The checkout remained clean and no Runner service was started or changed.
+Detailed start/end capacity and commands are recorded in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md).
+
+The latest post-gate reading at `2026-10-22T05:57:03Z` is 1,137,782,784 bytes
+free on `/dev/sda1` (about 1.06 GiB), still below the 2 GiB operational
+preflight for backups or selector changes. The owner's agreement to continue
+source checks under this tight constraint allowed these non-deployment gates;
+it does not waive the backup/switch threshold. No cleanup, backup, receipt,
+service, selector, mailbox, or database operation was performed. The Linux
+full-suite timeout, incomplete public-command subprocess sequence, seven
+retained-pair recovery, typed per-host compatibility inputs, and Dev→QAS
+acceptance still block CAT-06 PRD deployment.
+
+## CAT-06 checkpoint — 2026-10-22 05:42 UTC — retained work refreshed; recovery still required
+
+Fresh read-only PRD inventories confirm the same seven retained pairs (Mac 3,
+Linux 1, Sandbox 3, Factory 0), with no queued/running/resumable work. Mac
+recorded PIDs are absent; the Linux and Sandbox process groups contain only
+their recorded zombie `bash` entries. Every pair still lacks durable slot-stop,
+slot-release, reservation-cleanup, and reservation-release timestamps; process
+observations do not substitute for the supported exact-pair recovery. Worker
+PRD services remain active and Mac's two unsuffixed LaunchAgents are not
+loaded. No pair was released, replayed, or altered. The full fresh inventory
+and owner observations are in
+[`CAT-06-legacy-compatibility-2026-10-22.md`](../../040-implementation-evidence/CAT-06-legacy-compatibility-2026-10-22.md#fresh-prd-retained-work-and-service-recheck--2026-10-22-05370542-utc).
+
 ## CAT-06 checkpoint — 2026-10-22 05:33 UTC — Sandbox remains below required buffer
 
 A fresh direct check on `sandbox-host` at `2026-10-22T05:33:50Z` found
@@ -8,8 +45,11 @@ bytes below the required 2 GiB buffer. `ulimit -f` was unlimited, while the
 `quota` command is unavailable; neither fact establishes a per-user filesystem
 quota. This supersedes the earlier 861 MiB observation but still fails the
 preflight. No cleanup, backup, service, selector, receipt, or mailbox operation
-was performed. Keep Sandbox gates and mutations on hold until a fresh check
-meets the 2 GiB requirement.
+was performed in that check. Following the owner's later instruction to
+continue with source gates under a tight constraint, non-deployment Sandbox
+checks were attempted and are recorded in the newer 05:57 checkpoint above;
+this did not waive the 2 GiB operational buffer for backups or selector
+changes.
 
 ## CAT-06 checkpoint — 2026-10-22 05:26 UTC — Factory green, Linux full suite blocked
 

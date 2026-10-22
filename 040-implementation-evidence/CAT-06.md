@@ -1,5 +1,33 @@
 # CAT-06 — PRD adoption and promotion
 
+## Sandbox source gates — 2026-10-22 05:50–05:57 UTC
+
+On `sandbox-host`, the clean `dev` checkout was synchronized at
+`4305b6e7300b9a4f195ce35764589a91347dbe77`; its Runner source content is
+unchanged from `93e229dd71a4f513ac1d4edcdd0d4d90e9ef8ccb`. The explicit Go
+toolchain was Go 1.27.1 (`linux/arm64`), and `TMPDIR`, `GOTMPDIR`, and
+`SQLITE_TMPDIR` were `/tmp`, which is disk-backed on `/dev/sda1`. Existing Go
+caches were reused.
+
+The first `make test` call was issued from the home directory by mistake and
+returned `make: No rule to make target 'test'`; it ran no tests. The corrected
+call ran from `/home/ubuntu/projects/remote-session-runner` and passed the full
+`go test ./...` suite with exit 0, ending at `2026-10-22T05:54:36Z`. Then
+`make vet`, `make build`, and `make smoke` each passed at the same checkout
+revision. Smoke built each command under its task-owned `/tmp` directory and
+removed it after completion. The final read-only check at
+`2026-10-22T05:57:03Z` found `/dev/sda1` available bytes `1,137,782,784` (about
+1.06 GiB); no test process remained and the checkout was still clean.
+
+The owner's agreement to continue under tight disk headroom applies to these
+source gates only. Sandbox remains below the 2 GiB buffer required before
+backups or selector operations. No cleanup, backup, release, receipt, service,
+selector, database, mailbox, or ACK operation occurred. This closes the
+Sandbox source-test, vet, build, and smoke gates; it does not pass the Linux
+full-suite gate, the public `runner-lane` subprocess sequence, retained-work
+recovery, typed legacy-compatibility inputs, Dev/QAS acceptance, or any PRD
+deployment gate.
+
 ## Current capacity check — 2026-10-22 05:33 UTC
 
 A fresh strict-host-key SSH observation on `sandbox-host` at `2026-10-22T05:33:50Z`
@@ -8,6 +36,19 @@ buffer by 932,339,712 bytes. `ulimit -f` was unlimited; `quota` is unavailable,
 so no per-user quota was established. The prior 861 MiB reading is superseded.
 No Sandbox mutation or test ran. See the [capacity and legacy compatibility
 record](CAT-06-legacy-compatibility-2026-10-22.md#sandbox-capacity-recheck--2026-10-22-0533-utc).
+
+## Retained-work refresh — 2026-10-22 05:37–05:42 UTC
+
+The latest read-only PRD inventories still show seven retained lost pairs:
+Mac 3, Linux 1, Sandbox 3, Factory 0. No queued/running/resumable work or
+pending recovery-finalization rows were found. Mac recorded PIDs are absent;
+Linux and Sandbox recorded process groups contain only their zombie `bash`
+entries. Durable stop, cleanup and release timestamps remain empty, so the
+pairs still require the supported exact-pair recovery path. Worker PRD services
+remain active; the two Mac unsuffixed LaunchAgents are not loaded. No recovery,
+service change, backup, selector mutation, mailbox request or ACK occurred.
+Full IDs, inventory hashes, owner-marker results and command details are in
+the [refreshed compatibility and work record](CAT-06-legacy-compatibility-2026-10-22.md#fresh-prd-retained-work-and-service-recheck--2026-10-22-05370542-utc).
 
 ## Current CAT-06 checkpoint — 2026-10-22 05:26 UTC — Factory gates pass; Linux full test gate fails; PRD remains blocked
 
