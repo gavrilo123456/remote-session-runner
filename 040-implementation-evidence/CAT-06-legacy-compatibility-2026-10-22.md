@@ -1,5 +1,105 @@
 # CAT-06 legacy PRD compatibility evidence — 2026-10-22
 
+## Dependency correction and candidate source gates — 2026-10-22 14:51 UTC
+
+The active dependency order is: freeze source and pass source gates; seal one
+candidate; accept its exact per-host bundles through Dev and then QAS; recover
+the seven retained PRD pairs through the supported recovery installer using
+those already accepted artifacts; then run fresh PRD preflight/backup/hold and
+catalog adoption. PRD recovery is a PRD-only prerequisite, not a blocker for
+candidate sealing or Dev/QAS acceptance, because the recovery installer also
+installs the selected binaries. No retained pair was recovered or released.
+
+The frozen runtime source is
+`b637d632efb166f8dd3bee3a2e6cdd408a2b64b0`. It contains historical receipt
+compatibility from `3cbd5d6`, abandoned prepared-attempt supersession from
+`56f5027`, and a new lane-scoped publisher fence. New receipts say
+`project-publishers:dev|qas|prd`; validation continues to accept older
+hash-valid `mac-project-publishers` receipts. This is required because QAS
+publishers are active while Dev is being qualified. All eight mailbox paths
+remain assigned to QAS. The Dev control records only the Dev fence; QAS is not
+claimed paused. Before restarting QAS, its affected publishers must actually
+pause and accepted work must drain.
+
+The source commit was delivered before host validation:
+
+| Delivery point | Exact result |
+| --- | --- |
+| Mac source commit on `dev` | `b637d632efb166f8dd3bee3a2e6cdd408a2b64b0` |
+| Primary Gitea `origin/dev` | Push fast-forwarded `56f5027..b637d63` |
+| GitHub mirror `github/dev` | `b637d632efb166f8dd3bee3a2e6cdd408a2b64b0` |
+| `linux-host` checkout | Clean `dev`, fast-forwarded to the exact SHA |
+| `sandbox-host` checkout | Clean `dev`, fast-forwarded to the exact SHA |
+| `factory-sandbox` checkout | Clean `dev`, fast-forwarded to the exact SHA |
+
+Mac, Go 1.27.1, Darwin/ARM64:
+
+- `make test` PASS, `make vet` PASS, `make build` PASS, `make smoke` PASS.
+- The first restricted-shell full-test attempt failed only because the
+  test-owned `/bin/ps` observation in
+  `TestBUG020MacShellExitWithInheritedControlWriterSettlesOnce` was denied as
+  `operation not permitted`. The isolated test passed with process-inspection
+  permission, followed by a full suite PASS with that permission. No Runner
+  service or production process was changed.
+
+Factory, Go 1.27.1 Linux/AMD64, GOAMD64=v1, CGO enabled, `GOFLAGS=-p=1`,
+`GOMAXPROCS=1`, and task temporary files under `/var/tmp`:
+
+- Full `make test` PASS (43 package pass lines), `make vet` PASS,
+  `make build` PASS, and `make smoke` PASS; all commands exited 0.
+- CPU steal peaked at 0%; final `/dev/sda1` free space was 34,684,534,784
+  bytes. Test-log SHA-256:
+  `cd89d01d9f8d1548b53496cd0758ec5bae226440f7b78079ca8d52ff64ffa90d`.
+  vmstat-log SHA-256:
+  `bce136dbf98ae7d18fe879772557d6d6ed81c4065ce3f039765bb767358f3534`.
+
+Sandbox, Go 1.27.1 Linux/ARM64, CGO enabled, `GOFLAGS=-p=1`,
+`GOMAXPROCS=1`, and task temporary files under disk-backed `/tmp`:
+
+- Full `make test` PASS (43 package pass lines), `make vet` PASS,
+  `make build` PASS, and a separately confirmed `make smoke` PASS; all
+  commands exited 0. The first smoke session ended before its output was
+  available, so only that smoke command was repeated. No source suite was
+  repeated.
+- `/tmp` is `/dev/sda1`; free space was 1,148,059,648 bytes before the full
+  suite and 1,068,322,816 bytes at completion. CPU steal peaked at 26%.
+  Test-log SHA-256:
+  `36a28a15c68278eb966c078b3bce22ca7dac652be796ba241ee446aec1cd8afc`.
+  vmstat-log SHA-256:
+  `06dc94edbe65f45a2f49ce90cfe9de7d499edd8d70b0ee49d49cd51b0afcae25`.
+  Standalone smoke-log SHA-256 (empty success output):
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+Linux, Go 1.27.1 Linux/AMD64, native vet/build/smoke:
+
+- `go test ./src/internal/laneinstall ./src/cmd/runner-lane -count=1` PASS.
+- `go test ./src/internal/execution -run
+  '^TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice$' -count=1`
+  PASS.
+- `go test ./src/internal/localapi -run
+  '^TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary$' -count=1`
+  PASS.
+- Native `make vet`, `make build`, and `make smoke` PASS. The first wrapper
+  attempt invoked bare `go` and failed with `command not found`; the required
+  focused and regression commands were rerun using the explicit Go 1.27.1
+  path and passed. Full Linux suite remains NOT RUN under the approved Factory
+  replacement; historical interrupted Linux full-suite runs remain NOT PASS.
+- Focused-test SHA-256:
+  `70c5b5e95a2b99fc02e7c6b4db88a101cdbcd301656503001fd8bac0bb2a3e55`;
+  P025 SHA-256:
+  `0528be38e63bd7f05cf8f98bfc0e2e7cb7a582b8c89b32b433369ce0f50967eb`;
+  P101 SHA-256:
+  `32eafd95334efe407714ca0ebe6b424172d6facb7d664938b1ccf72942f51e`;
+  vet SHA-256:
+  `ea105d600441ee01024daa62416f82064db2d3cd45bdb6523aaeac537316da91`.
+
+At this checkpoint the new candidate has not been built. The previous
+`cat-20261022-56f5027` release remains immutable and unselected; it is not
+eligible for the current rollout because it lacks the lane-scoped publisher
+proof correction. Dev/QAS acceptance, fresh PRD retained-work recovery,
+catalog adoption, and PRD migration remain pending. No mailbox request or ACK
+was published, and no service, selector, database, or mailbox routing changed.
+
 ## Consistent PRD backups and fresh Sandbox capacity — 2026-10-22 09:59–10:10 UTC
 
 Supported `runner-lane prd-backup` completed on all four hosts after the

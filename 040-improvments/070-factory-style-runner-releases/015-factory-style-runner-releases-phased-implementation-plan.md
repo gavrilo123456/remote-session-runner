@@ -1,5 +1,45 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 14:51 UTC — source gates delivered; recovery sequenced after qualification
+
+The active order is corrected. PRD retained-pair recovery is a prerequisite
+only to PRD catalog adoption; it does **not** block independent candidate
+sealing or Dev/QAS qualification. The supported recovery installer also
+installs Runner binaries, so run it only after one exact candidate has passed
+Dev and QAS. Then recover the exact retained pairs with those accepted
+artifacts before PRD preflight, hold, and selector adoption. Do not run
+recovery against an unaccepted candidate.
+
+The frozen runtime source is `b637d632efb166f8dd3bee3a2e6cdd408a2b64b0`
+(`b637d63`), on top of `3cbd5d6`'s historical-receipt reader and
+`56f5027`'s prepared-attempt supersession. It adds a lane-scoped publisher
+fence so Dev qualification does not claim that active QAS publishers are
+paused, while preserving validation of historical global-scope receipts.
+Source gates passed: Mac full test/vet/build/smoke; Sandbox full test/vet/
+build/smoke; Factory full Linux/AMD64 test/vet/build/smoke; and Linux focused
+catalog tests, exact P025/P101 regressions, native vet/build/smoke. Full host
+results, commands, environment, and log hashes are in the
+[`CAT-06 evidence`](../../040-implementation-evidence/CAT-06-legacy-compatibility-2026-10-22.md#dependency-correction-and-candidate-source-gates--2026-10-22-1451-utc).
+The Mac source change was pushed to primary Gitea, verified at the identical
+GitHub mirror SHA, and fast-forwarded to all three clean Ubuntu `dev`
+checkouts before host tests.
+
+No new release was built from `b637d63` yet. The prior immutable
+`cat-20261022-56f5027` remains unselected and is not the candidate for this
+source. Next: build and seal one new per-host cohort from the frozen source,
+publish it, complete Dev acceptance, then coordinate a real publisher pause
+and drain before any QAS restart and accept the identical bytes in QAS.
+
+The seven PRD retained lost pairs remain preserved (Mac 3, Linux 1,
+Sandbox 3, Factory 0); recovery and cleanup proof are still NOT RUN. Their
+recovery does not start until after QAS acceptance. The existing 10:19 UTC
+capacity checkpoint below remains historical; the latest Sandbox test ended
+with 1,068,322,816 bytes free on `/dev/sda1`, above the 849,205,489-byte
+operating/backup/selector gate. Measure again immediately before each new
+write. No Runner service, selector, PRD database, mailbox assignment, request,
+or ACK changed. QAS and all eight QAS mailbox paths remain active and
+unchanged; no QAS pause has been asserted.
+
 ## CAT-06 checkpoint — 2026-10-22 10:19 UTC — exact work refreshed; capacity blocks recovery
 
 Fresh current-source preflights and read-only SQLite queries confirm only the
