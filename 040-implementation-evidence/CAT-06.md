@@ -44,8 +44,26 @@ Mac verification passed for both affected packages:
 Regression coverage retains arithmetic/overflow and the unchanged selector
 reserve; the observed Sandbox case now requires exactly 849,205,489 bytes.
 This does not relabel any interrupted Linux full suite PASS or establish
-acceptance for a newly sealed release. Delivery and worker focused results
-follow below after the primary/mirror handoff.
+acceptance for a newly sealed release.
+
+Policy source `638e3512bb22e5347eea3228239f88f730a1c424` was committed on Mac,
+pushed to primary Gitea `origin/dev`, verified at the identical automatic
+GitHub mirror SHA, and fast-forwarded into all three clean Ubuntu `dev`
+checkouts before focused worker tests. On each host the explicit Go 1.27.1
+toolchain, normal shared caches, `/tmp` and `GOMAXPROCS=2` ran:
+
+```text
+go test ./src/internal/laneinstall -run '^TestPRDCatalog(PreBackupCapacitySeparatesBackupBufferAndSelectorReserve|HostPreflightRejectsOperatingBufferAsSelectorReserveBeforeBackup)$' -count=1 -v
+```
+
+Both capacity-policy tests passed on Linux (0.200s), Sandbox (0.034s) and
+Factory (0.006s). Worker verification is intentionally focused: no full suite,
+vet/build/smoke gate or live deployment at the new source is claimed. Existing
+Linux starvation/interruption evidence remains unchanged. The implementer
+must rebuild the operator/candidate from this updated source and complete the
+remaining required release gates; old compiled tools retain their old policy.
+No installed service, mailbox, ACK, backup, database or selector was changed,
+and the unrelated untracked `src/cmd/catalog-holdcheck/` remains untouched.
 
 ## CAT-06 checkpoint — 2026-10-22 07:56 UTC — compatibility inputs validated; Linux full suite interrupted; PRD remains blocked
 
