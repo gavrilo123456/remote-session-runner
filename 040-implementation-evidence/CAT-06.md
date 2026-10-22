@@ -1,5 +1,54 @@
 # CAT-06 — PRD adoption and promotion
 
+## Current CAT-06 checkpoint — 2026-10-22 04:23 UTC — arm64 fixture correction delivered; PRD still blocked
+
+The Sandbox run at the previous source exposed a **test-fixture platform
+selection defect**: on Linux/arm64 the test selected the `linux-host`
+`linux/amd64` plan, and the expected fixed-platform guard rejected it before
+checking the isolated backup snapshot. The production code and installed PRD
+were not changed. The regression now selects `sandbox-host` on Linux/arm64,
+`linux-host` on Linux/amd64, and `mac-control-plane` on Darwin/arm64.
+
+The correction is commit `93e229dd71a4f513ac1d4edcdd0d4d90e9ef8ccb`. Mac
+primary Gitea `origin/dev` and GitHub `github/dev` both resolve to this SHA.
+The `linux-host`, `sandbox-host`, and `factory-sandbox` checkouts were clean on
+the predecessor before an explicit-identity `pull --ff-only`; each is now clean
+at this exact SHA. Mac's unrelated untracked `src/cmd/catalog-holdcheck/`
+directory remains untouched and unstaged.
+
+| Host | Validation at `93e229dd71a4f513ac1d4edcdd0d4d90e9ef8ccb` | Result |
+| --- | --- | --- |
+| Mac | `make test`, `make vet`, `make build`, `make smoke`, Go 1.27.1 `gofmt`, `git diff --check` | **PASS** |
+| Linux | `go test ./src/internal/laneinstall ./src/cmd/runner-lane -run '^(TestPRD|TestCatalog)' -count=1` | **PASS** |
+| Sandbox | Same focused PRD/Catalog test command; `make vet`, `make build`, `make smoke` | **PASS** |
+| Factory | Same focused PRD/Catalog test command | **PASS** |
+
+Factory's full `make test`, vet, build, and smoke passed at predecessor
+`a43a862`; Linux's vet, build, smoke, and focused tests passed there. Linux's
+full `make test` at that predecessor remains **FAIL** at Go's 10-minute timeout
+in unrelated `TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice` during
+fixture SQLite migration. The full Linux suite was not rerun at the test-only
+correction. Sandbox full `make test` was not run; the CAT-06 focused suite and
+all three non-test build gates above passed. These limits are not PASS claims.
+
+Sandbox capacity observations: the owner's pasted `df -h` showed 861 MiB free.
+Strict-host-key-verified SSH at `2026-10-22T04:14:06Z` measured 880,996 KiB
+free on `/dev/sda1`; `/tmp`, `/var/tmp`, and `/home/ubuntu` share that ext4
+filesystem, and `quota` is not installed. After the focused PRD/Catalog tests,
+vet, build, and smoke, the latest reading at `2026-10-22T04:21:23Z` was
+1,280,228 KiB free. The shared Go cache and all retained data were preserved.
+This remains below the previously requested 2 GiB operating buffer. No Sandbox
+backup, candidate, selector, receipt, hold, or service operation was attempted.
+
+No new release was sealed. The exact legacy binary/configuration compatibility
+report and tested data-semantic evidence remain outstanding; schema 40 alone
+does not establish compatibility. The exact seven retained pairs and their
+ownership markers from the prior inventory have not been refreshed in this
+checkpoint, and supported recovery has not run. No production backups, receipts,
+admission holds, selectors, services, databases, mailbox contents, or ACKs were
+changed. QAS remains serving, all eight mailbox paths remain assigned to QAS,
+and existing `cat-20261021-b84caf0` and historical `ebc4446` are unchanged.
+
 ## Current CAT-06 checkpoint — 2026-10-22 00:51 UTC — delivered source `a43a862`
 
 The PRD bootstrap/reconciliation source correction and platform-aware fixture

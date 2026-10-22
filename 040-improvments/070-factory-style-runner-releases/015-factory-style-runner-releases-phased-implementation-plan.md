@@ -1,5 +1,31 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 04:23 UTC — arm64 fixture correction delivered; PRD still blocked
+
+The test fixture now selects the canonical host identity for its actual OS and
+architecture. Commit `93e229dd71a4f513ac1d4edcdd0d4d90e9ef8ccb` is on primary
+Gitea, matches the automatic GitHub mirror, and is present in clean `dev`
+checkouts on Linux, Sandbox, and Factory. Mac full `make test`, vet, build,
+smoke, gofmt, and diff checks pass at this source. Sandbox's focused PRD/Catalog
+tests plus vet, build, and smoke pass; Linux and Factory focused PRD/Catalog
+tests pass. The Linux full-suite timeout from the previous checkpoint remains
+recorded as a failure and was not rerun. No candidate was sealed.
+
+The user-reported Sandbox figure was 861 MiB. Fresh SSH measured 880,996 KiB
+free at 04:14 UTC; after the focused suite, vet, build, and smoke, the latest
+measurement was 1,280,228 KiB at 04:21 UTC. `/tmp` is on the same disk-backed
+`/dev/sda1`, and the host has no `quota` utility. This is below the previously
+requested 2 GiB operating buffer; preserve caches and data and recheck before
+any backup or selector operation.
+
+The exact legacy binary/configuration compatibility report, refreshed seven-pair
+ownership/stop inventory, consistent production backups, and supported retained
+work recovery remain outstanding. PRD services, selectors, receipts, databases,
+mailboxes, and ACKs were unchanged. QAS remains serving and all eight mailbox
+paths remain assigned to it; qualification must wait for the affected QAS
+publishers to pause and drain. Existing `cat-20261021-b84caf0` and historical
+`ebc4446` remain unchanged.
+
 ## CAT-06 checkpoint — 2026-10-22 00:51 UTC — source delivered, PRD still blocked
 
 Source commit `a43a862ba27e818f0ece0cc3a2a5a481723d40f7` is on primary Gitea,
