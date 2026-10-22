@@ -78,12 +78,12 @@ func TestCatalogCohortRejectsStaleOrIncompleteOperationalEvidence(t *testing.T) 
 		t.Fatal("stale preflight and fence evidence was accepted")
 	}
 	unpaused := validCatalogCohortFixture(now)
-	unpaused.FenceProofs[0].Paused = false
+	unpaused.FenceProofs[catalogCohortFenceProofIndex(unpaused.FenceProofs, "mac-project-publishers")].Paused = false
 	if err := ValidateCatalogCohortReceipt(unpaused); err == nil {
 		t.Fatal("publisher pause without confirmation was accepted")
 	}
 	acceptedWork := validCatalogCohortFixture(now)
-	acceptedWork.FenceProofs[0].NoNewAccepted = false
+	acceptedWork.FenceProofs[catalogCohortFenceProofIndex(acceptedWork.FenceProofs, "mac-project-publishers")].NoNewAccepted = false
 	if err := ValidateCatalogCohortReceipt(acceptedWork); err == nil {
 		t.Fatal("fence proof that allows new accepted work was accepted")
 	}
@@ -424,6 +424,9 @@ func TestCatalogCohortReceiptConstructionBindsSupportedPreflightsAndOwnerPause(t
 	if err := ValidateCatalogCohortReceipt(receipt); err != nil {
 		t.Fatalf("constructed receipt failed validation: %v", err)
 	}
+	if catalogCohortFenceProofIndex(receipt.FenceProofs, "project-publishers:dev") < 0 {
+		t.Fatalf("Dev receipt did not bind its publisher fence to Dev only: %+v", receipt.FenceProofs)
+	}
 	manifestBytes, err := CatalogReleaseManifestBytes(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -457,6 +460,47 @@ func TestCatalogCohortReceiptConstructionBindsSupportedPreflightsAndOwnerPause(t
 		CatalogCohortPublisherPause{Owner: pause.Owner, Control: pause.Control, Paused: true}, now); err == nil {
 		t.Fatal("receipt accepted an owner attestation without no-new-accepted confirmation")
 	}
+}
+
+func TestCatalogCohortPublisherFenceIsLaneScopedAndLegacyGlobalReceiptsRemainValid(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	manifest, reports := catalogCohortCreationFixture(t, now)
+	for _, lane := range []config.ReleaseLane{config.ReleaseLaneDev, config.ReleaseLaneQAS, config.ReleaseLanePRD} {
+		receipt, err := NewCatalogCohortReceipt(lane, manifest, reports, CatalogCohortPublisherPause{
+			Owner: "owner", Control: "selected lane publisher fence", Paused: true, NoNewAccepted: true,
+		}, now)
+		if err != nil {
+			t.Fatalf("create %s receipt: %v", lane, err)
+		}
+		if catalogCohortFenceProofIndex(receipt.FenceProofs, "project-publishers:"+string(lane)) < 0 {
+			t.Fatalf("%s receipt has the wrong publisher fence scope: %+v", lane, receipt.FenceProofs)
+		}
+		if err := ValidateCatalogCohortReceipt(receipt); err != nil {
+			t.Fatalf("validate %s lane-scoped receipt: %v", lane, err)
+		}
+	}
+	legacy := validCatalogCohortFixture(now)
+	if err := ValidateCatalogCohortReceipt(legacy); err != nil {
+		t.Fatalf("historical global-publisher receipt became unreadable: %v", err)
+	}
+	invalid := validCatalogCohortFixture(now)
+	for index := range invalid.FenceProofs {
+		if invalid.FenceProofs[index].Scope == "mac-project-publishers" {
+			invalid.FenceProofs[index].Scope = "project-publishers:qas"
+		}
+	}
+	if err := ValidateCatalogCohortReceipt(invalid); err == nil {
+		t.Fatal("historical Dev receipt accepted a publisher proof for another lane")
+	}
+}
+
+func catalogCohortFenceProofIndex(proofs []CatalogCohortFenceProof, scope string) int {
+	for index, proof := range proofs {
+		if proof.Scope == scope {
+			return index
+		}
+	}
+	return -1
 }
 
 func TestCatalogCohortPreflightReportLoaderRequiresCanonicalOwnerOnlyFile(t *testing.T) {

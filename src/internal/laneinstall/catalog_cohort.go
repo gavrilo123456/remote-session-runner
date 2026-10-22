@@ -207,10 +207,10 @@ type CatalogCohortReceipt struct {
 	Transitions    []CatalogCohortTransition    `json:"transitions"`
 }
 
-// CatalogCohortRequiredFences lists the minimum scoped closures before a
-// whole-lane switch. Project publishers are named by their real owner in the
-// receipt; each worker direct route and Mac dispatch route has independent
-// evidence.
+// CatalogCohortRequiredFences returns the historical global fence set. New
+// receipts use CatalogCohortRequiredFencesForLane so an inactive lane can be
+// qualified without claiming that publishers for a different, serving lane
+// have paused.
 func CatalogCohortRequiredFences() []string {
 	return []string{
 		"mac-project-publishers", "mac-ingress", "mac-queued-dispatch",
@@ -218,7 +218,34 @@ func CatalogCohortRequiredFences() []string {
 	}
 }
 
+// CatalogCohortRequiredFencesForLane lists the publisher fence for the
+// selected lane plus its independent host ingress and dispatch fences.
+func CatalogCohortRequiredFencesForLane(lane config.ReleaseLane) []string {
+	if lane != config.ReleaseLaneDev && lane != config.ReleaseLaneQAS && lane != config.ReleaseLanePRD {
+		return nil
+	}
+	if lane == config.ReleaseLanePRD {
+		return []string{catalogCohortPublisherScope(lane)}
+	}
+	return append([]string{catalogCohortPublisherScope(lane)}, catalogCohortHostIngressFenceScopes()...)
+}
+
+func catalogCohortPublisherScope(lane config.ReleaseLane) string {
+	return "project-publishers:" + string(lane)
+}
+
+func catalogCohortHostIngressFenceScopes() []string {
+	return []string{
+		"mac-ingress", "mac-queued-dispatch",
+		"linux-host-direct-ingress", "sandbox-host-direct-ingress", "factory-sandbox-direct-ingress",
+	}
+}
+
 func catalogCohortInitialFenceScopes(lane config.ReleaseLane) []string {
+	return CatalogCohortRequiredFencesForLane(lane)
+}
+
+func catalogCohortLegacyFenceScopes(lane config.ReleaseLane) []string {
 	if lane == config.ReleaseLanePRD {
 		// PRD's legacy service cannot observe a catalog receipt before adoption.
 		// Its four service stops are recorded as ordered host-fence transitions.
@@ -229,8 +256,9 @@ func catalogCohortInitialFenceScopes(lane config.ReleaseLane) []string {
 
 // NewCatalogCohortReceipt builds a prepared receipt only from a validated
 // sealed release, four host-local preflight reports, and an explicit owner
-// attestation that external project publishers remain paused. It derives all
-// fence digests and host identities; callers never assemble receipt JSON.
+// attestation scoped to the selected lane's external project publishers. It
+// derives all fence digests and host identities; callers never assemble
+// receipt JSON.
 func NewCatalogCohortReceipt(lane config.ReleaseLane, manifest CatalogReleaseManifest,
 	reports []CatalogCohortHostPreflightReport, publisherPause CatalogCohortPublisherPause, now time.Time) (CatalogCohortReceipt, error) {
 	if (lane != config.ReleaseLaneDev && lane != config.ReleaseLaneQAS && lane != config.ReleaseLanePRD) || ValidateCatalogReleaseManifest(manifest) != nil ||
@@ -309,6 +337,7 @@ func NewCatalogCohortReceipt(lane config.ReleaseLane, manifest CatalogReleaseMan
 			}
 		}
 	}
+	publisherScope := catalogCohortPublisherScope(lane)
 	publisherEvidence, err := json.Marshal(struct {
 		Scope         string `json:"scope"`
 		Owner         string `json:"owner"`
@@ -316,13 +345,13 @@ func NewCatalogCohortReceipt(lane config.ReleaseLane, manifest CatalogReleaseMan
 		Paused        bool   `json:"paused"`
 		NoNewAccepted bool   `json:"no_new_accepted"`
 		VerifiedAt    string `json:"verified_at"`
-	}{"mac-project-publishers", strings.TrimSpace(publisherPause.Owner), strings.TrimSpace(publisherPause.Control), true, true, stamp})
+	}{publisherScope, strings.TrimSpace(publisherPause.Owner), strings.TrimSpace(publisherPause.Control), true, true, stamp})
 	if err != nil {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}
 	publisherDigest := sha256.Sum256(publisherEvidence)
 	receipt.FenceProofs = append(receipt.FenceProofs, CatalogCohortFenceProof{
-		Scope: "mac-project-publishers", Control: strings.TrimSpace(publisherPause.Control), Owner: strings.TrimSpace(publisherPause.Owner),
+		Scope: publisherScope, Control: strings.TrimSpace(publisherPause.Control), Owner: strings.TrimSpace(publisherPause.Owner),
 		Paused: true, NoNewAccepted: true, EvidenceSHA256: hex.EncodeToString(publisherDigest[:]), VerifiedAt: stamp,
 	})
 	if ValidateCatalogCohortReceipt(receipt) != nil {
@@ -371,7 +400,7 @@ func ValidateCatalogCohortReceipt(receipt CatalogCohortReceipt) error {
 		receipt.Database.WriteSchemaMin <= 0 || receipt.Database.WriteSchemaMin > receipt.Database.WriteSchemaMax ||
 		receipt.Database.ReadSchemaMax != store.CurrentSchemaVersion || receipt.Database.WriteSchemaMin != store.CurrentSchemaVersion ||
 		receipt.Database.WriteSchemaMax != store.CurrentSchemaVersion || receipt.Database.Migration != catalogMigrationPolicy || receipt.Database.Rollback != catalogRollbackPolicy ||
-		len(receipt.Hosts) != len(catalogCohortSwitchOrder) || len(receipt.FenceProofs) != len(catalogCohortInitialFenceScopes(receipt.Lane)) {
+		len(receipt.Hosts) != len(catalogCohortSwitchOrder) {
 		return ErrCatalogOperationInvalid
 	}
 	if len(receipt.Transitions) == 0 {
@@ -397,6 +426,14 @@ func ValidateCatalogCohortReceipt(receipt CatalogCohortReceipt) error {
 		}
 	}
 	required := catalogCohortInitialFenceScopes(receipt.Lane)
+	if !catalogCohortFenceScopesMatch(receipt.FenceProofs, required) {
+		// Receipts written before lane-scoped publisher proofs remain readable
+		// and hash-valid, but new constructors never issue this global scope.
+		required = catalogCohortLegacyFenceScopes(receipt.Lane)
+	}
+	if len(receipt.FenceProofs) != len(required) {
+		return ErrCatalogOperationInvalid
+	}
 	seenFences := make(map[string]struct{}, len(receipt.FenceProofs))
 	for _, proof := range receipt.FenceProofs {
 		if !containsString(required, proof.Scope) || proof.Control == "" || proof.Owner == "" || !proof.Paused || !proof.NoNewAccepted ||
@@ -418,6 +455,23 @@ func ValidateCatalogCohortReceipt(receipt CatalogCohortReceipt) error {
 		return ErrCatalogOperationInvalid
 	}
 	return nil
+}
+
+func catalogCohortFenceScopesMatch(proofs []CatalogCohortFenceProof, required []string) bool {
+	if len(proofs) != len(required) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(proofs))
+	for _, proof := range proofs {
+		if !containsString(required, proof.Scope) {
+			return false
+		}
+		if _, ok := seen[proof.Scope]; ok {
+			return false
+		}
+		seen[proof.Scope] = struct{}{}
+	}
+	return len(seen) == len(required)
 }
 
 // AdvanceCatalogCohortReceipt appends one hash-linked operator observation.
