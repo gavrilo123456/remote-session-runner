@@ -1,5 +1,26 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 10:10 UTC — backups complete; Sandbox gate remains
+
+Supported consistent schema-40 PRD backups were completed on Mac, Linux,
+Sandbox, and Factory from 09:59 to 10:05 UTC. Their exact paths, manifest and
+database hashes, and verification results are in the
+[`CAT-06 backup evidence`](../../040-implementation-evidence/CAT-06-legacy-compatibility-2026-10-22.md#consistent-prd-backups-and-fresh-sandbox-capacity--2026-10-22-0959-1010-utc).
+This supersedes the earlier checkpoint's statement that no backup had
+started. No service stop/restart, retained-pair recovery, selector/database
+change, or mailbox publication occurred.
+
+The owner reported Sandbox `1002M` free; direct SSH at `2026-10-22T10:10:08Z`
+measured 813,338,624 bytes available on `/dev/sda1` for both `/` and `/tmp`.
+This is 35,866,865 bytes short of the current 849,205,489-byte backup/staging
+allowance + 500,000,000-byte operating buffer + separate 64 MiB selector
+reserve. Keep all existing caches, retained work, backups and journals. No
+additional disk-writing backup/recovery/selector operation may start until a
+fresh check meets the threshold. The previously completed backups remain
+available. Exact seven lost pairs still require supported disposition and
+durable cleanup proof. QAS and its eight mailbox paths remain unchanged and
+serving. Sealing and Dev → QAS → PRD acceptance are not started.
+
 ## CAT-06 checkpoint — 2026-10-22 09:53 UTC — hold state verified; recovery still gated
 
 Current-source PRD preflights and catalog status were reread on all four
@@ -20,11 +41,12 @@ Sandbox had 1,026,310,144 bytes free at 09:43:34 UTC. A fresh SSH check at
 849,205,489-byte minimum; the owner separately reported `1002M`. At 09:53:25
 UTC, supported preflight read 998,350,848 bytes free, 149,145,359 above the
 minimum. Capacity is tight and must be freshly measured before each backup or
-service/recovery action. No PRD backup or recovery has started. Continue with
-supported per-host backups, selected-service stops and
-exact lost-pair recovery under current work/ownership guards; do not manually
-release capacity. QAS and its eight mailbox paths remain serving. Source gates
-are complete; release sealing and Dev → QAS → PRD acceptance remain pending.
+service/recovery action. At this checkpoint, backups had not yet started;
+they were subsequently completed as recorded in the 10:10 UTC entry above.
+Exact lost-pair recovery remains subject to the refreshed capacity and current
+work/ownership guards; do not manually release capacity. QAS and its eight
+mailbox paths remain serving. Source gates are complete; release sealing and
+Dev → QAS → PRD acceptance remain pending.
 
 ## CAT-06 checkpoint — 2026-10-22 09:30 UTC — source gates complete; live rollout remains gated
 

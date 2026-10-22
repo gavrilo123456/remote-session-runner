@@ -1,5 +1,40 @@
 # CAT-06 legacy PRD compatibility evidence — 2026-10-22
 
+## Consistent PRD backups and fresh Sandbox capacity — 2026-10-22 09:59–10:10 UTC
+
+Supported `runner-lane prd-backup` completed on all four hosts after the
+09:53 preflight. The tool uses an existing read-only PRD connection and SQLite
+online backup, then validates the backup. It did not stop services, change
+databases/configuration/selectors, recover retained work, or publish mailbox
+items. Each database backup reported schema 40.
+
+| Host | Backup directory | Created UTC | Manifest SHA-256 | Online DB SHA-256 | Manifest files | Verification |
+| --- | --- | --- | --- | --- | ---: | --- |
+| Mac | `~/Library/Application Support/RemoteSessionRunner/backups/prd-upgrade-20261022T095936.332087000Z` | `2026-10-22T09:59:36.332304Z` | `b8e4904ee044c91399716e545025697a09141d1772c0453b09d1603ef2a5035e` | `2ce248a8278ceed9086e2fcb5d1ffb46124fba43888e9936e292be2f22dae09e` | 30 | All manifest file sizes/modes/hashes matched; directory 0700, manifest 0600; online DB quick_check `ok`, schema 40. |
+| Linux | `/home/ubuntu/.local/share/remote-session-runner/backups/prd-upgrade-20261022T100319.204563053Z` | `2026-10-22T10:03:19.205852259Z` | `4a65814ad2f4ab8bd30b00950a9eb7cbf83e151bad5a6f7ea8c2bb621b06836b` | `59c955c2aed8becc32dd10b4460ada804c0ab8bce5e838390554460f2b23d0fb` | 15 | Manifest file sizes/modes/hashes matched. System Python SQLite could not parse `STRICT`; a temporary current-source Go read-only check passed `quick_check=ok`, schema 40. |
+| Sandbox | `/home/ubuntu/.local/share/remote-session-runner/backups/prd-upgrade-20261022T100515.655659446Z` | `2026-10-22T10:05:15.656538294Z` | `311b9da765f6d0dd39783aa271db8475ea919b822e69e2fa66ca9f2243a83be7` | `8d55b620733edd451c99adbb2cf23f45a1df3b1a40a06bec2269007edc92d87c` | 15 | Manifest file sizes/modes/hashes and online DB hash matched; owner-only directory/manifest modes; backup creator integrity validation passed. |
+| Factory | `/home/ubuntu/.local/share/remote-session-runner/backups/prd-upgrade-20261022T100544.519438083Z` | `2026-10-22T10:05:44.519807562Z` | `8b6a2d52c704a062b550986eb6d88a229716edf7c02cbc84025bfd9f03b9ec37` | `025019f348e6661f691dd0ec0c91122fd0cb77752ba859692e5c888a1e45d190` | 15 | Manifest file sizes/modes/hashes and online DB hash matched; owner-only directory/manifest modes; backup creator integrity validation passed. |
+
+The Sandbox owner reported rounded `1002M` free. A direct SSH recheck at
+`2026-10-22T10:10:08Z` measured exactly `813,338,624` available bytes for
+both `/` and `/tmp`; both resolve to `/dev/sda1` (99% used). The current
+pre-operation threshold remains `849,205,489` bytes: 349,205,489 bytes of
+backup/staging allowance, 500,000,000 bytes of operating buffer, and the
+separate 64 MiB selector reserve. The fresh reading is 35,866,865 bytes below
+that threshold. It is 246,229,760 bytes above the 567,108,864-byte operating
+buffer plus selector reserve after the already-created backup. Do not start a
+new backup, recovery installer, or selector operation until a fresh capacity
+check satisfies the applicable 849,205,489-byte requirement. No cleanup of
+shared caches, retained work, backups or journals is authorized or needed for
+this evidence update.
+
+The four backups provide the consistent pre-change recovery points; they do
+not satisfy retained-pair disposition, stop/cleanup proofs, candidate sealing,
+or Dev/QAS/PRD acceptance. All seven terminal-lost pairs remain retained and
+unreleased. No PRD service was stopped or restarted, no database or selector
+was changed, and QAS plus all eight mailbox paths remain unchanged. Mailbox
+requests and ACKs were not published.
+
 ## Current-source read-only revalidation — 2026-10-22 09:29 UTC
 
 After the required source gates passed at source change

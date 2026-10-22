@@ -1,5 +1,23 @@
 # Lane execution ledger
 
+## CAT-06 backup and Sandbox capacity update — 2026-10-22 10:10 UTC
+
+The supported per-host PRD backup command completed on Mac, Linux, Sandbox,
+and Factory between 09:59–10:05 UTC. All four schema-40 backups passed the
+recorded manifest/file verification; paths and hashes are in
+[`CAT-06`](CAT-06-legacy-compatibility-2026-10-22.md#consistent-prd-backups-and-fresh-sandbox-capacity--2026-10-22-0959-1010-utc).
+This corrects the 09:53 checkpoint below: backups have been taken; no PRD
+service stop, retained-work recovery, selector or database mutation has
+occurred.
+
+At `2026-10-22T10:10:08Z`, direct SSH measured Sandbox `/dev/sda1` at
+813,338,624 bytes available for both `/` and `/tmp`. The 849,205,489-byte
+pre-operation requirement (measured backup/staging allowance + 500,000,000
+operating buffer + separate 64 MiB selector reserve) is short by 35,866,865
+bytes. Do not begin a new backup/recovery/install/selector write under this
+reading; remeasure when capacity changes. Existing QAS service and all eight
+QAS mailbox paths remain as before. No mailbox item was published.
+
 ## CAT-06 retained-work and admission-hold refresh — 2026-10-22 09:53 UTC
 
 Read-only current-source PRD preflights and catalog status confirm all four

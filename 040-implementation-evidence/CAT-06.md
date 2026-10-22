@@ -1,5 +1,28 @@
 # CAT-06 — PRD adoption and promotion
 
+## CAT-06 backup and Sandbox capacity update — 2026-10-22 10:10 UTC
+
+Supported consistent schema-40 PRD backups were completed and verified on
+Mac, Linux, Sandbox, and Factory between 09:59 and 10:05 UTC. Exact paths,
+creation times, manifest/database hashes, file counts and verification notes
+are in the [backup evidence](CAT-06-legacy-compatibility-2026-10-22.md#consistent-prd-backups-and-fresh-sandbox-capacity--2026-10-22-0959-1010-utc).
+The Mac/Linux/Sandbox/Factory manifests are respectively
+`b8e4904ee044c91399716e545025697a09141d1772c0453b09d1603ef2a5035e`,
+`4a65814ad2f4ab8bd30b00950a9eb7cbf83e151bad5a6f7ea8c2bb621b06836b`,
+`311b9da765f6d0dd39783aa271db8475ea919b822e69e2fa66ca9f2243a83be7`, and
+`8b6a2d52c704a062b550986eb6d88a229716edf7c02cbc84025bfd9f03b9ec37`.
+
+The owner reported Sandbox `1002M` free. Direct SSH at `10:10:08 UTC`
+measured `813,338,624` bytes on `/dev/sda1` for both `/` and `/tmp`, which is
+35,866,865 bytes below the current 849,205,489-byte backup/staging plus
+500,000,000-byte buffer and 64 MiB selector-reserve threshold. Existing
+backups are intact; no new backup, service action, recovery, or selector
+change is started under this reading. Recheck before any later disk-writing
+operation. No PRD services/databases/configuration/selectors or QAS routing
+changed; no mailbox request or ACK was published. CAT-06 remains blocked on
+supported retained-pair recovery and its guards, sufficient capacity,
+candidate sealing, and successive Dev → QAS → PRD acceptance.
+
 ## CAT-06 source gates and compatibility recheck — 2026-10-22 09:30 UTC
 
 The required source gates and read-only legacy compatibility checks now pass
