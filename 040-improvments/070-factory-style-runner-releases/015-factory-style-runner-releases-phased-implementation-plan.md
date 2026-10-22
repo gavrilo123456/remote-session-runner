@@ -1,5 +1,67 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 15:44 UTC — sealed candidate; Dev receipt sync blocked by Sandbox capacity
+
+The runtime source remains frozen at `b637d632efb166f8dd3bee3a2e6cdd408a2b64b0`.
+Source gates passed on Mac, Sandbox, Factory, and the amended focused/native
+Linux assignment. One immutable release cohort was built and published without
+rebuilding during promotion:
+
+| Identity | SHA-256 |
+| --- | --- |
+| Release | `cat-20261022-b637d63` |
+| Canonical `release.json` | `d4e14dee5682d37b23776afdd0e54ffb62638d61d32bf3dba025609ad4b7cea5` |
+| Mac bundle | `d69f107e7ab28642ac25f335dec1c62433d657380874b5ddcd00229b7b822f14` |
+| Linux bundle | `6a178ae8d94ca4ff4fec6285b17eedd9e3dc4b99e2fc4f92a96481cc4704c94d` |
+| Sandbox bundle | `d04c0c3f4cd7f7249e438c2fb57a19b6674c5848c0a9267c39f41c793b65dc54` |
+| Factory bundle | `6fe66f13ae7faa598119143930fa6e8b002f52f579e3a6c4d06ce2181cf858d4` |
+
+All four publication/inspection checks matched those sealed hashes. Dev
+selectors remain on `cat-20261021-b84caf0`; its four services were freshly
+observed stopped with empty inventories, schema 40, and unchanged lane
+configuration. Fresh supported Dev preflights produced and validated
+backup-bound reports at 15:36–15:37 UTC. Candidate-specific Dev acceptance is
+**NOT RUN**: no selector was changed and no service was started. QAS acceptance
+for this candidate is also **NOT RUN**. QAS remains active with all eight
+mailbox paths assigned there; no QAS pause/restart occurred.
+
+The old held attempts are being retired only through the supported
+supersession workflow. `a417184c04493191c5a5b8b79fb09a41` has recorded its
+Linux, Sandbox, and Factory observations against fresh successor
+`6228b0253816711909d471ad7e5f3a56`. The latest `a417` receipt is synchronized
+on Mac, Linux, and Factory at SHA-256
+`667f4affaffa4285a3a58d2a940159a7519e55aee77d99d8b185370f852f3139`; Sandbox
+still has the preceding two-host copy at
+`bc2de050af93c2e8a0d3030dc148e7afee1089774ad773e1c393d860c2fd4d89`. Both
+receipts remain admission holds until supersession completes. The fresh
+successor `6228…3a56` is held and synchronized on all four hosts at SHA-256
+`4936bb420c811d6db9d6e5587e5b25c733688b94508122413c92520aa7390b32`.
+The stale held successor `589b…1e74` remains preserved pending supported
+supersession. Earlier receipts `7097…e1f1`, `979a…39e3`, and `ce38…78dd5`
+remain superseded with their histories retained.
+
+At 15:43:53 UTC Sandbox `/dev/sda1` had 843,087,872 bytes free. The required
+pre-write threshold remains 849,205,489 bytes (349,205,489-byte measured
+backup/staging allowance + 500,000,000-byte operating buffer + separate
+67,108,864-byte selector reserve), so the host was 6,117,617 bytes short.
+The supported sync to Sandbox stopped at its capacity guard before copying
+the temporary receipt or updating its history. Do not lower the reserve or
+remove preserved caches, backups, databases, retained work, or receipts.
+
+Next, recheck capacity and successor freshness. When the capacity gate passes,
+synchronize the existing `a417` receipt through `catalog-cohort sync` and
+verify its identical digest on all four hosts before recording another host
+transition. If successor `6228…3a56` has expired, use a newly preflighted,
+held successor and the supported supersession-restart transition; preserve
+the partial `a417` history. Retire both remaining held attempts, verify
+exactly one intended Dev hold on every host with the public pre-switch check,
+then perform Dev selector switching and full candidate acceptance. Only
+after Dev passes, coordinate an actual QAS publisher pause/drain and accept
+the same bytes in QAS. The seven PRD retained-pair recoveries remain
+after-QAS prerequisites to PRD adoption; they are not prerequisites to
+candidate sealing or Dev/QAS qualification, and their installer must use
+these already accepted artifacts.
+
 ## CAT-06 checkpoint — 2026-10-22 14:51 UTC — source gates delivered; recovery sequenced after qualification
 
 The active order is corrected. PRD retained-pair recovery is a prerequisite

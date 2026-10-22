@@ -1,5 +1,80 @@
 # CAT-06 legacy PRD compatibility evidence — 2026-10-22
 
+## Frozen candidate and interrupted Dev receipt supersession — 2026-10-22 15:44 UTC
+
+The runtime source stayed frozen at
+`b637d632efb166f8dd3bee3a2e6cdd408a2b64b0`; no runtime code changed. Mac,
+Sandbox, Factory, and the amended Linux-focused/native source checks remain
+the completed gates listed below. The sealed cohort is
+`cat-20261022-b637d63`, canonical `release.json` SHA-256
+`d4e14dee5682d37b23776afdd0e54ffb62638d61d32bf3dba025609ad4b7cea5`, with
+Mac bundle `d69f107e7ab28642ac25f335dec1c62433d657380874b5ddcd00229b7b822f14`,
+Linux bundle `6a178ae8d94ca4ff4fec6285b17eedd9e3dc4b99e2fc4f92a96481cc4704c94d`,
+Sandbox bundle `d04c0c3f4cd7f7249e438c2fb57a19b6674c5848c0a9267c39f41c793b65dc54`,
+and Factory bundle `6fe66f13ae7faa598119143930fa6e8b002f52f579e3a6c4d06ce2181cf858d4`.
+Publication and `catalog-inspect` passed on all four hosts with matching
+release/source/native bundle identities. No rebuild occurred during these
+steps.
+
+Fresh `catalog-work-inventory` observations at 15:35:58–15:36:02 UTC showed
+all Dev services stopped, schema 40, all seven work categories at zero, and
+selectors still on `cat-20261021-b84caf0`. The fresh supported
+`catalog-host-preflight` reports below each created and verified a Dev backup;
+their canonical report files were copied to private task evidence at mode
+0600. The CLI's `--required-free-bytes` remains the 67,108,864-byte selector
+reserve; the separately enforced operating/capacity threshold is 849,205,489
+bytes.
+
+| Host | Preflight UTC | Backup directory | Manifest SHA-256 | Free after backup |
+| --- | --- | --- | --- | ---: |
+| Mac | `2026-10-22T15:37:01.066759Z` | `~/Library/Application Support/RemoteSessionRunner-dev/backups/.simple-backup-150621336` | `8b7cfcd7800e49849827a7de7e5859ddceee6feea7dad7b5bcd9278aedd1416f` | 141,154,250,752 |
+| Linux | `2026-10-22T15:36:23.190852113Z` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-1226654486` | `5cb2d50b3bed2768a2ce8d5bd174e1c2e916ec4061d0a2614626495dc378ef98` | 15,654,100,992 |
+| Sandbox | `2026-10-22T15:37:45.742513409Z` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-3321693858` | `45c4086d5327891525c8a6b816b779c6efa9d50fde630eb63eb11a3c3111728b` | 869,851,136 |
+| Factory | `2026-10-22T15:37:33.628347836Z` | `/home/ubuntu/.local/share/remote-session-runner-dev/backups/.simple-backup-1132967395` | `c9b024b7134448bb0bf0c64f66725f1b68636e3efdb550b2b9b8be36e78b1458` | 34,542,256,128 |
+
+The reports are preserved under
+`/private/tmp/cat06-release-b637d63-20261022/preflight-fresh-*.json`; their
+SHA-256 values are Mac `ef923ef9becec39bf5fcb368f01855a7604100889091f38abb1fab945af6a685`,
+Linux `9ac8a51684cb9a82ca40c6e3cd4c197634edc3fa330cfb0592a6ba8039933017`,
+Sandbox `ec038d4dc71ea985dd00d5794de70805fd8f8bceed21b7f62dbedf1e64830043`,
+and Factory `fe7b94eb1e11d82e645cb877f951603a129d56509bcb350c9b31b7f8b13c2606`.
+These are Dev-lane backups and preflight evidence, not PRD backups or live
+candidate acceptance.
+
+The supersession attempt against old successor
+`589b358a7ec477608fcdfa30ebfb1e74` failed with
+`invalid or inconsistent catalog selector operation` because its preflight
+evidence had expired; the command wrote no transition. A fresh successor,
+`6228b0253816711909d471ad7e5f3a56`, was then created from the four reports,
+held on Mac, and synchronized to all workers. Its receipt SHA-256 is
+`4936bb420c811d6db9d6e5587e5b25c733688b94508122413c92520aa7390b32`.
+
+Supported supersession of `a417184c04493191c5a5b8b79fb09a41` against that
+successor recorded Linux at `15:41:39.931667179Z`, Sandbox at
+`15:42:18.516212258Z`, and Factory at `15:42:47.434148264Z`. The latest
+four-transition receipt (original hold plus those three host observations)
+has SHA-256
+`667f4affaffa4285a3a58d2a940159a7519e55aee77d99d8b185370f852f3139` and is
+present on Mac, Linux, and Factory. Sandbox retains the preceding three-
+transition version at SHA-256
+`bc2de050af93c2e8a0d3030dc148e7afee1089774ad773e1c393d860c2fd4d89`.
+The next supported sync to Sandbox was refused before writing because the
+immediate `/dev/sda1` measurement was 843,300,864 bytes, below the
+849,205,489-byte threshold. The subsequent read at `15:43:53Z` measured
+843,087,872 bytes, 6,117,617 bytes short. No receipt bytes were copied to
+Sandbox in that attempt; no selector, service, database, or mailbox changed.
+
+At this checkpoint, Dev acceptance for `cat-20261022-b637d63` is **NOT RUN**;
+no selector has changed and no service has started. QAS acceptance of this
+candidate is **NOT RUN**; QAS and all eight assigned mailbox paths remain
+active and unchanged. PRD retained-pair recovery and PRD adoption have not
+started. Next action is to restore the measured Sandbox capacity gate, recheck
+the age of `6228…3a56`, synchronize the current `a417` history through the
+supported CLI, and complete/restart supersession as supported before any
+Dev selector switch. The dependency remains candidate seal → Dev acceptance
+→ coordinated QAS pause/drain and acceptance → exact retained-pair recovery
+with those accepted artifacts → PRD preflight/hold/adoption.
+
 ## Dependency correction and candidate source gates — 2026-10-22 14:51 UTC
 
 The active dependency order is: freeze source and pass source gates; seal one
