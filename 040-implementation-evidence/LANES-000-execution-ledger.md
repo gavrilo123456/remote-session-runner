@@ -1,5 +1,22 @@
 # Lane execution ledger
 
+## CAT-06 source-gate closeout — 2026-10-22 09:30 UTC
+
+The owner-amended source matrix is complete on delivered source
+`638e3512bb22e5347eea3228239f88f730a1c424` / synchronized checkout
+`812a742290e2f0584791cd08f5746518f8e73310`: Mac and Sandbox full gates,
+Factory Linux/AMD64 full gates, Linux focused/P025/P101 plus native vet/build/
+smoke. The Linux full suite remains **INTERRUPTED / NOT PASS** as historically
+recorded; the owner reassigned its representative full-suite requirement to
+Factory. All four read-only legacy compatibility checks pass at schema 40.
+Sandbox's 09:29:42 UTC free-space reading was 1,030,074,368 bytes, only
+180,868,879 above the 849,205,489-byte pre-backup requirement. Recheck before
+every live operation. Exact retained-pair recovery, backup/rollback gates,
+sealing, and Dev → QAS → PRD acceptance remain incomplete; CAT-06 is not
+closed. QAS and all eight mailbox paths remain serving. See
+[`CAT-06`](CAT-06.md#cat-06-source-gates-and-compatibility-recheck--2026-10-22-0930-utc)
+for commands, platform details, hashes, and the current operational boundary.
+
 ## CAT-06 source-test assignment amendment — 2026-10-22 08:17 UTC
 
 The owner assigned the common full Linux/AMD64 source suite to existing

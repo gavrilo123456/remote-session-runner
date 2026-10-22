@@ -1,5 +1,46 @@
 # CAT-06 — PRD adoption and promotion
 
+## CAT-06 source gates and compatibility recheck — 2026-10-22 09:30 UTC
+
+The required source gates and read-only legacy compatibility checks now pass
+at the current delivered source. Source implementation revision is
+`638e3512bb22e5347eea3228239f88f730a1c424`; the synchronized Mac and three
+Ubuntu `dev` checkouts were at `812a742290e2f0584791cd08f5746518f8e73310`,
+with clean tracked trees. The unrelated untracked
+`src/cmd/catalog-holdcheck/` remains preserved on Mac. All hosts used Go
+1.27.1 and reused their existing Go caches.
+
+| Host | Platform | Required source checks and result |
+| --- | --- | --- |
+| Mac | Darwin/arm64 | Full `go test ./... -count=1`, `make vet`, `make build`, and `make smoke` passed. The first sandboxed full-suite run could not inspect a test-owned child with `/bin/ps` (`operation not permitted`); the same full suite then passed with the required process-inspection permission. This was an execution-environment restriction, not a test assertion failure. |
+| Sandbox | Linux/arm64 | `nice -n 19 make test`, `nice -n 19 make vet`, `nice -n 19 make build`, and `nice -n 19 make smoke` all exited 0 at 09:19:47–09:23:50 UTC. Environment: `/tmp`, `GOMAXPROCS=1`, `GOFLAGS=-p=1`; sampled steal peaked at 15% while the suite progressed. |
+| Factory | Linux/amd64 | `make test`, `make vet`, `make build`, and `make smoke` all exited 0 at 08:40:46–08:44:24 UTC. Environment: `/var/tmp`, `GOMAXPROCS=2`, `GOFLAGS=-p=1`, `GOAMD64=v1`, `CGO_ENABLED=1`; sampled steal peaked at 58% while packages progressed. |
+| Linux | Linux/amd64 | Focused `go test ./src/internal/laneinstall ./src/cmd/runner-lane -count=1`, exact P025 `TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice`, exact P101 `TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary`, `make vet`, `make build`, and the single retried `make smoke` all passed. The smoke retry ran 09:25:08–09:27:20 UTC with `/tmp`, `GOMAXPROCS=2`, `GOFLAGS=-p=1`; steal peaked at 94%, but the command exited 0. The full Linux suite remains historically INTERRUPTED / NOT PASS; the owner reassigned that full-suite evidence to Factory, so it is not relabeled or repeated. |
+
+All four current-source
+`catalog-compatibility-check --host HOST --legacy-compatibility-file FILE`
+commands returned `read_only_no_backup`, schema 40, and exit 0. The outputs
+bind the tested legacy bundle/configuration to current read-only host state:
+
+| Host | Legacy bundle SHA-256 | Configuration SHA-256 | Service active | Work-inventory SHA-256 |
+| --- | --- | --- | --- | --- |
+| Mac | `0feb2b15957ad6dee4f90ac30949409300afaaf1f10e0c2f9c1aa04a63d2deda` | `56c25057b58b72e592995cc00efbd042cf4d666db449d01bb03a0aa628778d11` | no | `5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0` |
+| Linux | `a774b0be0d758e42193165ece1b4bf97462726e703c34aff54ee0d63010f763c` | `c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f` | yes | `5dd44373b3a9421f25af8fa4db58b9b107a7e7e66b54ed93a6ca78bc67d4743d` |
+| Sandbox | `69755bfb0316939f99af2bea220260518f4fe96e9fd11aa9816fe8f64c1b7932` | `50f704f1b692048a149c366d0e20be2448ee8236a8cdaefcee39b2a6449e5d9a` | yes | `5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0` |
+| Factory | `c89aefe08fdcdc984525e218fd858eabd5489a5c5479f929d818a4b2ab4d6712` | `271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699` | yes | `92103a248a6dc1bd114512bc8b084280e339ff6972656bb42c4224f77a121f8b` |
+
+At 09:29:42 UTC Sandbox had 1,030,074,368 bytes free on `/dev/sda1`,
+180,868,879 bytes above the current 849,205,489-byte pre-backup requirement.
+This is a live point measurement, not reserved capacity; remeasure immediately
+before every backup, recovery, or selector operation. No backup, receipt,
+hold, selector, service, database, mailbox or retained-work state changed
+during these source and compatibility checks. QAS and its eight mailbox paths
+remain in service. The source gate is complete, but CAT-06 remains blocked on
+fresh exact retained-pair disposition/ownership evidence, supported recovery,
+backup and rollback gates, a sealed cohort, and successive Dev → QAS → PRD
+acceptance. Mailbox requests and ACKs remain unpublished; filesystem mailbox
+acceptance is NOT RUN.
+
 ## Owner source-test assignment amendment — 2026-10-22 08:17 UTC
 
 The owner approved using **existing Factory for the complete Linux/AMD64

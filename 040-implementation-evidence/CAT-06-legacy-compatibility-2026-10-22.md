@@ -1,5 +1,18 @@
 # CAT-06 legacy PRD compatibility evidence — 2026-10-22
 
+## Current-source read-only revalidation — 2026-10-22 09:29 UTC
+
+After the required source gates passed at source change
+`638e3512bb22e5347eea3228239f88f730a1c424` (synchronized checkout
+`812a742290e2f0584791cd08f5746518f8e73310`), the supported
+`catalog-compatibility-check` was rerun on Mac, Linux, Sandbox, and Factory
+using Go 1.27.1. All four returned `read_only_no_backup`, schema 40, and exit
+0. Current bundle/configuration hashes and the read-only work-inventory hashes
+are recorded in the latest [CAT-06 checkpoint](CAT-06.md#cat-06-source-gates-and-compatibility-recheck--2026-10-22-0930-utc).
+These commands did not create backups or stop/change services. They do not
+replace the fresh full ownership/runtime inventory or the durable stop and
+cleanup proof required before supported retained-pair recovery.
+
 ## Current capacity-policy override — 2026-10-22 08:08 UTC
 
 The owner reduced the additional CAT-06 operating buffer to **0.5 GB =

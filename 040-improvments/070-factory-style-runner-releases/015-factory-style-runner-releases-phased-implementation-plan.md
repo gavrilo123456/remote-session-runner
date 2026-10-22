@@ -1,5 +1,26 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 09:30 UTC — source gates complete; live rollout remains gated
+
+At delivered checkout `812a742290e2f0584791cd08f5746518f8e73310` (source
+change `638e3512bb22e5347eea3228239f88f730a1c424`), the amended source-test
+matrix is complete: Mac full suite/vet/build/smoke, Sandbox full test/vet/
+build/smoke, Factory Linux/AMD64 full test/vet/build/smoke, and Linux focused
+CAT-06, exact P025/P101 cases, vet/build/smoke all passed. The interrupted
+Linux full-suite attempts remain **NOT PASS** and are not required under the
+owner's reassignment to Factory. Linux's one smoke retry passed while steal
+peaked at 94%; this is recorded as a host-load limitation.
+
+All four typed compatibility inputs passed the current-source read-only
+`catalog-compatibility-check`, schema 40, with host-specific binary/config
+hashes and current inventory hashes recorded in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#cat-06-source-gates-and-compatibility-recheck--2026-10-22-0930-utc).
+Sandbox had 1,030,074,368 bytes free at 09:29:42 UTC against 849,205,489
+required, a 180,868,879-byte point-in-time margin. Fresh capacity is required
+again before each live operation. Source gates do not satisfy retained-work
+recovery, backup/rollback, release-seal, or Dev/QAS/PRD acceptance. No live
+state changed; QAS and its eight mailbox paths remain active.
+
 ## Owner source-test assignment amendment — 2026-10-22 08:17 UTC
 
 The owner authorizes **existing `factory-sandbox` as the full Linux/AMD64
