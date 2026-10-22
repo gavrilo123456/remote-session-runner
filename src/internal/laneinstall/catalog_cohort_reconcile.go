@@ -996,6 +996,8 @@ func catalogCohortReceiptSupersessionEligible(receipt CatalogCohortReceipt) bool
 		return false
 	}
 	switch stage {
+	case CatalogCohortPrepared:
+		return !cohortHasAnySwitchTransitions(receipt.Transitions)
 	case CatalogCohortComplete:
 		return len(cohortSwitchedHostsFrom(receipt.Transitions)) == len(catalogCohortSwitchOrder)
 	case CatalogCohortHeld:
@@ -1018,6 +1020,8 @@ func catalogCohortReceiptSupersessionEligible(receipt CatalogCohortReceipt) bool
 
 func catalogCohortSupersessionStageEligible(stage, blockedFrom CatalogCohortStage, transitions []CatalogCohortTransition) bool {
 	switch stage {
+	case CatalogCohortPrepared:
+		return !cohortHasAnySwitchTransitions(transitions)
 	case CatalogCohortComplete:
 		return len(cohortSwitchedHostsFrom(transitions)) == len(catalogCohortSwitchOrder)
 	case CatalogCohortHeld:

@@ -274,9 +274,11 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 		validCatalogCohortFixture(now),
 		validCatalogCohortFixture(now),
 		validCatalogCohortFixture(now),
+		validCatalogCohortFixture(now),
 	}
 	oldAttempts[1].OperationID = strings.Repeat("c", 32)
 	oldAttempts[2].OperationID = strings.Repeat("d", 32)
+	oldAttempts[3].OperationID = strings.Repeat("e", 32)
 	var err error
 	oldAttempts[0], err = AdvanceCatalogCohortReceipt(oldAttempts[0], "hold", "", proof, now)
 	if err != nil {
@@ -301,6 +303,11 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A prepared attempt can be retired only after each host verifies that its
+	// selector and local operation journal still match the prepared evidence.
+	if oldAttempts[3].Stage != CatalogCohortPrepared || len(oldAttempts[3].Transitions) != 0 {
+		t.Fatalf("fixture must be an abandoned pre-hold attempt: stage=%q transitions=%d", oldAttempts[3].Stage, len(oldAttempts[3].Transitions))
+	}
 	plan, err := BuildSimplePlan("mac-control-plane", config.ReleaseLaneDev)
 	if err != nil {
 		t.Fatal(err)
@@ -312,6 +319,7 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 	writeLegacyCohortReceiptFixture(t, cohortRoot, oldAttempts[0])
 	writeLegacyCohortReceiptFixture(t, cohortRoot, oldAttempts[1])
 	writeLegacyCohortReceiptFixture(t, cohortRoot, oldAttempts[2])
+	writeLegacyCohortReceiptFixture(t, cohortRoot, oldAttempts[3])
 	writeCohortReceiptFixture(t, cohortRoot, successor)
 	if _, _, err := catalogCohortAdmissionHeldAt(plan, cohortRoot); err == nil {
 		t.Fatal("multiple abandoned receipts did not fail closed before supported reconciliation")
@@ -326,7 +334,10 @@ func TestCatalogCohortSupersedesAbandonedPreSwitchAttemptsAndThenAllowsSuccessor
 				t.Fatalf("attempt %d host %s supersede observation: %v", attemptIndex, hostID, err)
 			}
 		}
-		if !catalogCohortStageHoldsAdmissions(old.Stage) {
+		if old.Stage == CatalogCohortPrepared && catalogCohortStageHoldsAdmissions(old.Stage) {
+			t.Fatalf("attempt %d prepared stage unexpectedly holds admissions", attemptIndex)
+		}
+		if old.Stage != CatalogCohortPrepared && !catalogCohortStageHoldsAdmissions(old.Stage) {
 			t.Fatalf("attempt %d released its hold before explicit finalization", attemptIndex)
 		}
 		old, err = AdvanceCatalogCohortSupersede(old, successor.OperationID, now)
