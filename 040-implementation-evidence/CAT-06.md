@@ -1,5 +1,14 @@
 # CAT-06 — PRD adoption and promotion
 
+## Current capacity check — 2026-10-22 05:33 UTC
+
+A fresh strict-host-key SSH observation on `sandbox-host` at `2026-10-22T05:33:50Z`
+reported 1,215,143,936 bytes free on `/dev/sda1`, below the required 2 GiB
+buffer by 932,339,712 bytes. `ulimit -f` was unlimited; `quota` is unavailable,
+so no per-user quota was established. The prior 861 MiB reading is superseded.
+No Sandbox mutation or test ran. See the [capacity and legacy compatibility
+record](CAT-06-legacy-compatibility-2026-10-22.md#sandbox-capacity-recheck--2026-10-22-0533-utc).
+
 ## Current CAT-06 checkpoint — 2026-10-22 05:26 UTC — Factory gates pass; Linux full test gate fails; PRD remains blocked
 
 The Linux and Factory checkouts were clean on `dev` at

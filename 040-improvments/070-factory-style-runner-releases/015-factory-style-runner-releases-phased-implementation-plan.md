@@ -1,5 +1,16 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 05:33 UTC — Sandbox remains below required buffer
+
+A fresh direct check on `sandbox-host` at `2026-10-22T05:33:50Z` found
+`/dev/sda1` has 1,215,143,936 bytes available (about 1.13 GiB), 932,339,712
+bytes below the required 2 GiB buffer. `ulimit -f` was unlimited, while the
+`quota` command is unavailable; neither fact establishes a per-user filesystem
+quota. This supersedes the earlier 861 MiB observation but still fails the
+preflight. No cleanup, backup, service, selector, receipt, or mailbox operation
+was performed. Keep Sandbox gates and mutations on hold until a fresh check
+meets the 2 GiB requirement.
+
 ## CAT-06 checkpoint — 2026-10-22 05:26 UTC — Factory green, Linux full suite blocked
 
 At synchronized source/evidence revision
@@ -15,10 +26,12 @@ test process disposition and historical Linux timeout.
 The required public-command subprocess sequence on disposable PRD-shaped
 paths remains **NOT RUN**; existing underlying API fixtures do not satisfy
 that gate. Sandbox remains below the requested 2 GiB disk-backed buffer at the
-owner-reported 861 MiB and its full suite remains unrun. The corrected exact
-retained-work inventory still has seven reservations without durable stop or
-cleanup evidence. No release was sealed and no production state changed. Keep
-CAT-06 blocked until these gates, supported retained-work recovery, typed
+previously measured 861 MiB and its full suite remains unrun. The fresh direct
+check above found 1,215,143,936 bytes available, still below the gate. The
+corrected exact retained-work inventory still has seven reservations without
+durable stop or cleanup evidence. No release was sealed and no production
+state changed. Keep CAT-06 blocked until these gates, supported retained-work
+recovery, typed
 per-host compatibility inputs, fresh backups, Dev/QAS acceptance, and PRD
 postflight pass.
 

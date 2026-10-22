@@ -99,3 +99,23 @@ service, selector, receipt, hold, database, configuration, mailbox, or ACK was
 changed. Fresh consistent backups, final work disposition/recovery, a new
 sealed release, Dev then QAS acceptance, and the guarded PRD switch remain
 separate gates. Do not treat this report as authorization to skip any of them.
+
+## Sandbox capacity recheck — 2026-10-22 05:33 UTC
+
+From Mac, a read-only SSH command to `sandbox-host` using the configured
+`dev.slidestud.io` identity and strict host-key checking observed at
+`2026-10-22T05:33:50Z`:
+
+```text
+/dev/sda1  size=54958841856 used=53726920704 avail=1215143936 use=98%
+ulimit -f: unlimited
+quota: command unavailable
+```
+
+The observed free bytes are 932,339,712 below the 2 GiB preflight buffer. The
+previous 861 MiB report is stale. The shell file-size limit does not measure a
+filesystem quota, and this host has no `quota` command available for a
+per-user quota report. No writes or cleanup were performed; no Go/shared cache,
+backup, retained work, mailbox, service, or selector was touched. Do not start
+Sandbox tests, backup, or catalog mutation until a fresh disk-backed capacity
+check meets the 2 GiB buffer.
