@@ -57,8 +57,13 @@ func TestPRDWorkSnapshotUsesCanonicalFullInventoryAndVerifiesBackup(t *testing.T
 		t.Fatalf("empty fixture snapshot schema=%d inventory=%+v err=%v", schema, empty, err)
 	}
 	hostID := "linux-host"
-	if runtime.GOOS == "darwin" {
+	switch {
+	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
 		hostID = "mac-control-plane"
+	case runtime.GOOS == "linux" && runtime.GOARCH == "arm64":
+		hostID = "sandbox-host"
+	case runtime.GOOS != "linux" || runtime.GOARCH != "amd64":
+		t.Fatalf("no canonical PRD test host for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	plan, err := BuildPRDUpgradePlan(hostID)
 	if err != nil {
