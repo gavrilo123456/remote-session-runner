@@ -1,5 +1,41 @@
 # CAT-06 — PRD adoption and promotion
 
+## Dev recovery and timing correction — 2026-10-22 23:06 UTC
+
+The expired Dev candidate attempt was rolled back through the supported
+procedure. Its final rollback-complete receipt for operation
+`cb3c172eaba53c87844cd1f82a3c5602` has identical bytes on Mac, Linux, Sandbox,
+and Factory (SHA-256
+`badbd8c5a13f17a2ad65983e7fefb4e8959e25c892bd829de964b363ad9e629c`). Fresh
+read-only checks using the synchronized `b1fce21204c512bc8a68c2e7fb1dcee8eff73755`
+operator source reported, for each host: Dev service inactive, selector
+restored to `cat-20261021-b84caf0`, schema 40, and all seven work-inventory
+counts zero. All four receipts have identical `rolled_back` histories; no
+selector, service, database, QAS or PRD state changed during this check.
+
+The source change extends the maximum age of whole-cohort
+preflight/fence evidence from 10 to 60 minutes while preserving the separate
+two-minute latest-local-preflight-to-selector-mutation limit. The local bound
+is now checked before the selector effect as well as while recording the
+receipt transition, so an expired local observation fails closed before
+mutation. Tests cover both inclusive boundaries and rejection immediately
+after expiry. The focused cohort regressions passed on Mac. The first Mac full
+suite attempt failed only because sandbox policy denied `/bin/ps` to an
+existing test's test-owned child; the failure was preserved in
+`/private/tmp/cat06-runnerlocald-mac-20261022-2315Z.log`. Rerunning with normal
+process-inspection permission passed full `make test`, `make vet`, `make build`,
+and `make smoke` on Go 1.27.1 darwin/arm64. Ubuntu source gates and Git
+delivery, a replacement sealed candidate, and Dev acceptance are pending.
+Existing `cat-20261022-b637d63` and its sealed bytes remain unchanged and
+unselected.
+
+Sandbox had 1,252,507,648 bytes free at the most recent check, compared with the
+recorded 849,205,489-byte minimum for the previous operation; this is not a
+future-operation guarantee. Recheck the exact capacity formula immediately
+before each write. QAS/PRD remain unchanged; all eight mailbox paths remain
+assigned to QAS. QAS acceptance for the next candidate has not been performed.
+No mailbox request or ACK was published.
+
 ## CAT-06 refreshed work inventory — 2026-10-22 10:19 UTC
 
 The supported current-source preflight and bounded read-only database queries

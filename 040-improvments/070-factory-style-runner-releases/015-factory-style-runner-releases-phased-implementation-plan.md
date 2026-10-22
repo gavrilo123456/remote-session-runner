@@ -1,5 +1,34 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 23:17 UTC — rollback receipt reconciled; Mac source gates pass
+
+The final rollback-complete receipt for Dev operation
+`cb3c172eaba53c87844cd1f82a3c5602` is synchronized byte-for-byte on Mac,
+Linux, Sandbox, and Factory (SHA-256
+`badbd8c5a13f17a2ad65983e7fefb4e8959e25c892bd829de964b363ad9e629c`). Fresh
+read-only Dev checks on all four hosts report stage `rolled_back`, selector
+`cat-20261021-b84caf0`, stopped service, schema 40, and zero active sessions,
+command slots, reservations, queued/running commands, resumable jobs, and
+pending recovery finalizations. No PRD or QAS state changed; QAS remains the
+mailbox owner.
+
+The source correction now sets whole-cohort preflight/fence freshness to 60
+minutes and enforces the existing two-minute per-host recorded-preflight bound
+at the selector effect boundary. Boundary regressions cover inclusive
+60-minute and two-minute limits and refusal immediately after either expires;
+the focused cohort regressions and Mac full source gates pass.
+The 500,000,000-byte Sandbox operating buffer plus measured backup allowance
+and separate 64 MiB selector reserve remain in force; the latest observed
+Sandbox availability was 1,252,507,648 bytes against the prior operation's
+849,205,489-byte requirement. Recheck immediately before each later write.
+
+The sealed `cat-20261022-b637d63` candidate and its hashes below are preserved
+unchanged and are not selected on Dev. The timing change still requires Ubuntu
+source gates, Git delivery, a new frozen candidate, and full Dev acceptance. QAS acceptance
+and any QAS service changes remain pending; coordinate its pause/drain only
+after Dev acceptance. PRD recovery/adoption remain behind their applicable
+accepted-artifact and fresh operational guards.
+
 ## CAT-06 checkpoint — 2026-10-22 15:44 UTC — sealed candidate; Dev receipt sync blocked by Sandbox capacity
 
 The runtime source remains frozen at `b637d632efb166f8dd3bee3a2e6cdd408a2b64b0`.
@@ -778,6 +807,25 @@ proof blocks it. Preserve IDs, output, events, reservations and held ACKs.
 Record one protected cohort receipt and matching host-local stage/backup
 receipts. Switch `linux-host`, `sandbox-host`, `factory-sandbox`, then Mac,
 stopping only the affected components and starting with admissions held.
+
+The whole-cohort preflight/fence evidence window is **60 minutes**, measured
+from the earliest covered host preflight or fence observation; exactly 60
+minutes is valid and any later instant is expired. This does not change the
+separate per-host bound: a new selector mutation must begin no later than two
+minutes after that host's latest recorded cohort `preflight` transition; the
+exact two-minute boundary is valid. A refreshed host preflight cannot renew
+expired evidence elsewhere in the cohort. Do not backdate or reuse expired
+evidence. Keep the lane held and use supported recovery/supersession before
+collecting a wholly fresh set for another attempt.
+
+Prepare the operator binary/commands, explicit SSH identities and host-key
+connectivity, required capacity, and host-specific readiness checks before
+starting the fresh evidence window. Parallelize independent preparation when
+safe. Then collect preflights/backups and advance the receipt only when all
+hosts are ready. Selector changes and receipt transitions remain serial in the
+prescribed host order, with each transition synchronized to all four hosts
+before proceeding. If timing or a guard fails, stop before the next effect and
+preserve the current hold and history.
 
 Old/new mixtures are maintenance states, not rolling acceptance. Final direct
 and queued protocol/identity checks must pass for all four target hosts. Run

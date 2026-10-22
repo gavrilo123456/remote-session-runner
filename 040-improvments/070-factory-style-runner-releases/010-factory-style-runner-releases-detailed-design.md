@@ -175,6 +175,23 @@ all four hosts before the first switch. Hold the selected lane throughout the
 operation. Stop/switch/start workers in fixed order `linux-host`, `sandbox-host`,
 `factory-sandbox`, then the Mac component group. Leave other lanes running.
 
+The whole-cohort preflight and fence evidence expires 60 minutes after the
+earliest covered observation. The 60-minute boundary is inclusive; evidence
+older by any amount is rejected. This cohort window is independent of the
+per-host switch bound: each new selector mutation must begin no more than two
+minutes after that host's latest recorded cohort `preflight` transition, also
+inclusive. Refreshing a host-local preflight does not renew older cohort
+evidence. Never backdate or reuse expired evidence; recover or supersede the
+held attempt through supported controls and collect a complete fresh set.
+
+Before collecting fresh preflights, prepare the operator binary and commands,
+verify explicit SSH identities/host keys and connectivity, and measure the
+required capacity on every host. Parallelize independent preparation where
+safe. Once evidence collection starts, keep receipt transitions and selector
+effects in the prescribed host order; synchronize each transition to all four
+hosts before proceeding to the next host. If an operation cannot fit within
+the cohort window, keep the lane held and start a new supported attempt.
+
 Intermediate old/new host mixtures are maintenance states, not accepted service
 cohorts. Use host-local authorized maintenance for inventory if old/new protocol
 readers cannot interoperate; do not dispatch normal work through that mixture.

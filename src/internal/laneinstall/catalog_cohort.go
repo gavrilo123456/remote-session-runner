@@ -21,7 +21,7 @@ import (
 )
 
 const catalogCohortFormatVersion = 1
-const catalogCohortEvidenceMaxAge = 10 * time.Minute
+const catalogCohortEvidenceMaxAge = 60 * time.Minute
 
 var catalogCohortSwitchOrder = []string{"linux-host", "sandbox-host", "factory-sandbox", "mac-control-plane"}
 
@@ -1299,7 +1299,12 @@ func validateCatalogCohortHostMaySwitch(receipt CatalogCohortReceipt, layout cat
 		return ErrCatalogOperationInvalid
 	}
 	index := cohortHostIndex(receipt, layout.hostID)
-	if index < 0 || index != countCohortSwitches(receipt) || lastCohortTransitionForHost(receipt, "preflight", layout.hostID) < 0 {
+	preflightIndex := lastCohortTransitionForHost(receipt, "preflight", layout.hostID)
+	if index < 0 || index != countCohortSwitches(receipt) || preflightIndex < 0 {
+		return ErrCatalogOperationInvalid
+	}
+	preflightAt, err := time.Parse(time.RFC3339Nano, receipt.Transitions[preflightIndex].At)
+	if err != nil || now.Before(preflightAt) || now.Sub(preflightAt) > 2*time.Minute {
 		return ErrCatalogOperationInvalid
 	}
 	host := receipt.Hosts[index]

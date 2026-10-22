@@ -73,7 +73,7 @@ func TestCatalogCohortRequiresFreshScopedFencesAndFixedFourHostOrder(t *testing.
 
 func TestCatalogCohortRejectsStaleOrIncompleteOperationalEvidence(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	stale := validCatalogCohortFixture(now.Add(-11 * time.Minute))
+	stale := validCatalogCohortFixture(now.Add(-61 * time.Minute))
 	if _, err := AdvanceCatalogCohortReceipt(stale, "hold", "", strings.Repeat("a", 64), now); err == nil {
 		t.Fatal("stale preflight and fence evidence was accepted")
 	}
@@ -447,7 +447,7 @@ func TestCatalogCohortReceiptConstructionBindsSupportedPreflightsAndOwnerPause(t
 		t.Fatal("receipt accepted a host preflight for different sealed bundle bytes")
 	}
 	badReports = append([]CatalogCohortHostPreflightReport(nil), reports...)
-	badReports[0].Preflight.PreflightAt = now.Add(-11 * time.Minute).Format(time.RFC3339Nano)
+	badReports[0].Preflight.PreflightAt = now.Add(-61 * time.Minute).Format(time.RFC3339Nano)
 	if _, err := NewCatalogCohortReceipt(config.ReleaseLaneDev, manifest, badReports, pause, now); err == nil {
 		t.Fatal("receipt accepted an expired host backup/preflight")
 	}
@@ -1149,7 +1149,7 @@ func TestCatalogCohortSupersessionCanRestartAfterSuccessorEvidenceExpires(t *tes
 		t.Fatal("supersession restarted while the previous evidence was still fresh")
 	}
 
-	restartAt := started.Add(11 * time.Minute)
+	restartAt := started.Add(61 * time.Minute)
 	nextSuccessor := heldCatalogCohortFixture(t, restartAt, strings.Repeat("a", 32), "v2.0.4")
 	old, err = AdvanceCatalogCohortSupersessionRestart(old, firstSuccessor, nextSuccessor, restartAt)
 	if err != nil {
@@ -1275,18 +1275,27 @@ func TestCatalogCohortSwitchPreflightMustMatchTheExactLocalState(t *testing.T) {
 		t.Fatal("preflight with a different backup identity was accepted")
 	}
 	if err := validateCatalogCohortHostMaySwitch(receipt, fixture.layout, fixture.legacyTarget, target,
-		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, now.Add(3*time.Minute)); err != nil {
-		t.Fatalf("fresh cohort backup was rejected before the local two-minute switch preflight: %v", err)
+		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, now.Add(3*time.Minute)); err == nil {
+		t.Fatal("switch preflight older than two minutes passed the pre-effect guard")
 	}
 	refreshed, err := AdvanceCatalogCohortReceipt(receipt, "preflight", "linux-host", proof, now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatalf("fresh local preflight was rejected against the still-valid cohort backup: %v", err)
 	}
+	refreshedHost := refreshed.Hosts[0]
+	if err := validateCatalogCohortHostMaySwitch(refreshed, fixture.layout, fixture.legacyTarget, target,
+		store.CurrentSchemaVersion, refreshedHost.BackupDirectory, refreshedHost.BackupManifestSHA256, now.Add(3*time.Minute+2*time.Minute)); err != nil {
+		t.Fatalf("pre-effect guard rejected an exact two-minute local preflight: %v", err)
+	}
+	if err := validateCatalogCohortHostMaySwitch(refreshed, fixture.layout, fixture.legacyTarget, target,
+		store.CurrentSchemaVersion, refreshedHost.BackupDirectory, refreshedHost.BackupManifestSHA256, now.Add(3*time.Minute+2*time.Minute+time.Nanosecond)); err == nil {
+		t.Fatal("pre-effect guard accepted a local preflight one nanosecond past two minutes")
+	}
 	if _, err := AdvanceCatalogCohortReceipt(refreshed, "switch", "linux-host", proof, now.Add(3*time.Minute+time.Second)); err != nil {
 		t.Fatalf("switch did not accept the recent local preflight: %v", err)
 	}
-	if err := validateCatalogCohortHostMaySwitch(receipt, fixture.layout, fixture.legacyTarget, target,
-		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, now.Add(11*time.Minute)); err == nil {
+	if err := validateCatalogCohortHostMaySwitch(refreshed, fixture.layout, fixture.legacyTarget, target,
+		store.CurrentSchemaVersion, refreshedHost.BackupDirectory, refreshedHost.BackupManifestSHA256, now.Add(61*time.Minute)); err == nil {
 		t.Fatal("expired cohort backup/preflight was accepted")
 	}
 	if _, err := AdvanceCatalogCohortReceipt(receipt, "switch", "sandbox-host", proof, now); err == nil {
@@ -1361,6 +1370,99 @@ func TestCatalogCohortDelayedReconciliationMayCloseRecordedSwitchButNewSwitchSta
 	}
 	if _, err := AdvanceCatalogCohortReceipt(receipt, "switch-reconciled", "linux-host", proof, reconciledAt); err != nil {
 		t.Fatalf("hash-linked recovery event did not preserve the original hold and preflight history: %v", err)
+	}
+}
+
+func TestCatalogCohortEvidenceWindowAcceptsSixtyMinutesAndRejectsAfterExpiry(t *testing.T) {
+	started := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	proof := strings.Repeat("c", 64)
+	receipt := validCatalogCohortFixture(started)
+	boundary := started.Add(60 * time.Minute)
+
+	if !cohortEvidenceFresh(receipt, boundary.Format(time.RFC3339Nano)) {
+		t.Fatal("whole-cohort evidence was stale at the inclusive 60-minute boundary")
+	}
+	if err := validateCohortPreflightFreshness(started.Format(time.RFC3339Nano), boundary); err != nil {
+		t.Fatalf("individual host preflight rejected the inclusive 60-minute boundary: %v", err)
+	}
+	if expiresAt, ok := catalogCohortEvidenceExpiresAt(receipt); !ok || !expiresAt.Equal(boundary) {
+		t.Fatalf("cohort expiry=%s valid=%t; want inclusive boundary %s", expiresAt, ok, boundary)
+	}
+	if _, err := AdvanceCatalogCohortReceipt(receipt, "hold", "", proof, boundary); err != nil {
+		t.Fatalf("hold rejected evidence exactly 60 minutes old: %v", err)
+	}
+
+	afterExpiry := boundary.Add(time.Nanosecond)
+	if cohortEvidenceFresh(receipt, afterExpiry.Format(time.RFC3339Nano)) {
+		t.Fatal("whole-cohort evidence remained fresh after the 60-minute window")
+	}
+	if err := validateCohortPreflightFreshness(started.Format(time.RFC3339Nano), afterExpiry); err == nil {
+		t.Fatal("individual host preflight remained fresh one nanosecond after expiry")
+	}
+	if _, err := AdvanceCatalogCohortReceipt(receipt, "hold", "", proof, afterExpiry); err == nil {
+		t.Fatal("hold accepted whole-cohort evidence one nanosecond past expiry")
+	}
+}
+
+func TestCatalogCohortSwitchChecksWholeCohortExpiryAtEffectBoundary(t *testing.T) {
+	started := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	proof := strings.Repeat("d", 64)
+	fixture := newCatalogSelectorFixture(t)
+	receipt, target := validCatalogCohortForSelectorFixture(t, fixture, started)
+	var err error
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", proof, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflightAt := started.Add(59 * time.Minute)
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "preflight", "linux-host", proof, preflightAt)
+	if err != nil {
+		t.Fatalf("record local preflight before whole-cohort expiry: %v", err)
+	}
+	host := receipt.Hosts[0]
+	boundary := started.Add(60 * time.Minute)
+	if err := validateCatalogCohortHostMaySwitch(receipt, fixture.layout, fixture.legacyTarget, target,
+		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, boundary); err != nil {
+		t.Fatalf("switch rejected at the inclusive whole-cohort expiry boundary: %v", err)
+	}
+	afterExpiry := boundary.Add(time.Nanosecond)
+	if err := validateCatalogCohortHostMaySwitch(receipt, fixture.layout, fixture.legacyTarget, target,
+		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, afterExpiry); err == nil {
+		t.Fatal("switch passed after whole-cohort expiry despite a fresh local preflight")
+	}
+}
+
+func TestCatalogCohortSwitchKeepsTwoMinutePreflightBoundInsideCohortWindow(t *testing.T) {
+	started := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	proof := strings.Repeat("e", 64)
+	fixture := newCatalogSelectorFixture(t)
+	receipt, target := validCatalogCohortForSelectorFixture(t, fixture, started)
+	var err error
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", proof, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflightAt := started.Add(57 * time.Minute)
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "preflight", "linux-host", proof, preflightAt)
+	if err != nil {
+		t.Fatalf("record local preflight: %v", err)
+	}
+	host := receipt.Hosts[0]
+	boundary := preflightAt.Add(2 * time.Minute)
+	if err := validateCatalogCohortHostMaySwitch(receipt, fixture.layout, fixture.legacyTarget, target,
+		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, boundary); err != nil {
+		t.Fatalf("pre-effect guard rejected exactly two minutes: %v", err)
+	}
+	if _, err := AdvanceCatalogCohortReceipt(receipt, "switch", "linux-host", proof, boundary); err != nil {
+		t.Fatalf("receipt rejected switch exactly two minutes after local preflight: %v", err)
+	}
+	tooLate := boundary.Add(time.Nanosecond)
+	if err := validateCatalogCohortHostMaySwitch(receipt, fixture.layout, fixture.legacyTarget, target,
+		store.CurrentSchemaVersion, host.BackupDirectory, host.BackupManifestSHA256, tooLate); err == nil {
+		t.Fatal("pre-effect guard accepted a local preflight one nanosecond older than two minutes")
+	}
+	if _, err := AdvanceCatalogCohortReceipt(receipt, "switch", "linux-host", proof, tooLate); err == nil {
+		t.Fatal("receipt accepted a switch one nanosecond past the two-minute local bound")
 	}
 }
 
