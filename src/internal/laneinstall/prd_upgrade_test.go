@@ -93,6 +93,43 @@ func TestPRDWorkSnapshotUsesCanonicalFullInventoryAndVerifiesBackup(t *testing.T
 	}
 }
 
+func TestPRDLegacyCompatibilityReadsSchemaWithoutMigration(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(root, "legacy-schema-40.db")
+	database, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `CREATE TABLE compatibility_sentinel(value TEXT NOT NULL); INSERT INTO compatibility_sentinel(value) VALUES ('retained')`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := fileSHA256(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := store.OpenExistingRestartPreflightReadOnly(ctx, databasePath)
+	if err != nil {
+		t.Fatalf("open existing schema-40 fixture through the PRD read-only path: %v", err)
+	}
+	schema, inventory, err := readPRDWorkSnapshot(ctx, readOnly)
+	closeErr := readOnly.Close()
+	if err := errors.Join(err, closeErr); err != nil || schema != store.CurrentSchemaVersion || !inventory.Empty() {
+		t.Fatalf("read-only schema/work snapshot schema=%d inventory=%+v err=%v", schema, inventory, err)
+	}
+	after, err := fileSHA256(databasePath)
+	if err != nil || after != before {
+		t.Fatalf("read-only compatibility path changed the database: before=%s after=%s err=%v", before, after, err)
+	}
+}
+
 func TestCatalogPlanCanInspectPRDWithoutOpeningSimpleInstaller(t *testing.T) {
 	for host := range simpleHostPlatforms {
 		plan, err := BuildCatalogPlan(host, config.ReleaseLanePRD)

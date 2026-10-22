@@ -76,7 +76,8 @@ func ReadPRDCatalogSelectorCapacity(plan PRDUpgradePlan) (availableBytes, requir
 // the prepared cohort receipt is synchronized.
 func ReadPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe,
 	releaseID string, requiredBytes uint64, legacyCompatibility *CatalogLegacyRollbackCompatibility) (CatalogCohortHostPreflightReport, error) {
-	if validatePRDPlan(plan) != nil || service == nil || !validCatalogReleaseID(releaseID) || requiredBytes == 0 {
+	if validatePRDPlan(plan) != nil || service == nil || !validCatalogReleaseID(releaseID) ||
+		requiredBytes != prdCatalogSelectorHeadroom {
 		return CatalogCohortHostPreflightReport{}, ErrPRDUpgradeGuard
 	}
 	cohortPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
@@ -119,6 +120,20 @@ func ReadPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 	if err := validatePRDConfig(plan); err != nil {
 		return CatalogCohortHostPreflightReport{}, err
 	}
+	previousReadSchemaMax := before.readSchemaMax
+	var compatibility *CatalogLegacyRollbackCompatibility
+	if before.selectorTarget == "" {
+		if legacyCompatibility == nil || ValidateCatalogLegacyRollbackCompatibility(*legacyCompatibility,
+			before.legacyBundleSHA256, before.configurationSHA256, before.schema) != nil {
+			return CatalogCohortHostPreflightReport{}, ErrCatalogRollbackUnsafe
+		}
+		previousReadSchemaMax = legacyCompatibility.ReadSchemaMax
+		copyEvidence := *legacyCompatibility
+		copyEvidence.SemanticChecks = append([]string(nil), legacyCompatibility.SemanticChecks...)
+		compatibility = &copyEvidence
+	} else if legacyCompatibility != nil {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	}
 	backup, err := CreatePRDCatalogBackup(ctx, plan, target.Identity.BundleSHA256)
 	if err != nil {
 		return CatalogCohortHostPreflightReport{}, err
@@ -140,20 +155,6 @@ func ReadPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 	available, selectorRequired, err := ReadPRDCatalogSelectorCapacity(plan)
 	if err != nil || selectorRequired != requiredBytes || available < requiredBytes {
 		return CatalogCohortHostPreflightReport{}, errors.Join(ErrCatalogInsufficientSpace, err)
-	}
-	previousReadSchemaMax := after.readSchemaMax
-	var compatibility *CatalogLegacyRollbackCompatibility
-	if after.selectorTarget == "" {
-		if legacyCompatibility == nil || ValidateCatalogLegacyRollbackCompatibility(*legacyCompatibility,
-			after.legacyBundleSHA256, after.configurationSHA256, after.schema) != nil {
-			return CatalogCohortHostPreflightReport{}, ErrCatalogRollbackUnsafe
-		}
-		previousReadSchemaMax = legacyCompatibility.ReadSchemaMax
-		copyEvidence := *legacyCompatibility
-		copyEvidence.SemanticChecks = append([]string(nil), legacyCompatibility.SemanticChecks...)
-		compatibility = &copyEvidence
-	} else if legacyCompatibility != nil {
-		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
 	}
 	return CatalogCohortHostPreflightReport{
 		Preflight: CatalogCohortHostPreflight{

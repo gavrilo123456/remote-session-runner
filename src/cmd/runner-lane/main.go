@@ -30,10 +30,52 @@ import (
 
 const maxLaneConfigBytes = 1 << 20
 
+// catalogCommandSubprocessFixtureBackend is a test-only dependency seam for
+// the public-command acceptance harness. Production binaries never populate
+// this package-local variable and expose no CLI flag or environment switch
+// for fixture roots; their existing platform, account, service, and path
+// guards remain the only execution path.
+type catalogCommandSubprocessFixtureBackend interface {
+	RunCohort(context.Context, catalogCohortCommand, io.Writer, io.Writer) error
+	RunSelector(context.Context, string, catalogSelectorCommand, io.Writer, io.Writer) error
+}
+
+// Set only by package tests running the subprocess harness. It is nil in all
+// normal runner-lane builds.
+var catalogCommandSubprocessFixtureBackendForTests catalogCommandSubprocessFixtureBackend
+
+type catalogCohortCommand struct {
+	HostID             string
+	Lane               string
+	Action             string
+	OperationID        string
+	SuccessorOperation string
+	ReceiptFile        string
+	ReleaseManifest    string
+	PublisherOwner     string
+	PublisherControl   string
+	PublishersPaused   bool
+	NoNewAccepted      bool
+	SubjectHost        string
+	EvidenceSHA256     string
+	PreflightFiles     []string
+	HistoryFiles       []string
+}
+
+type catalogSelectorCommand struct {
+	HostID            string
+	Lane              string
+	ReleaseID         string
+	ExpectedTarget    string
+	CohortOperationID string
+	SelectorOperation string
+	EvidenceSHA256    string
+}
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help" || args[0] == "--version" || args[0] == "version")) {
-		os.Exit(commandstub.Run("runner-lane", "Build and operate existing-host Dev/QAS lanes; adopt and publish sealed releases; inspect selectors; run guarded unsuffixed PRD maintenance.", args, os.Stdout, os.Stderr))
+		os.Exit(commandstub.Run("runner-lane", "Build and operate existing-host Dev/QAS lanes; adopt and publish sealed releases; inspect selectors; validate legacy PRD compatibility; run guarded unsuffixed PRD maintenance.", args, os.Stdout, os.Stderr))
 	}
 	os.Exit(run(args, os.Stdout, os.Stderr))
 }
@@ -92,6 +134,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogPreSwitchCheck(ctx, args[1:], stdout, stderr)
 	case "catalog-host-preflight":
 		err = runCatalogHostPreflight(ctx, args[1:], stdout, stderr)
+	case "catalog-compatibility-check":
+		err = runCatalogCompatibilityCheck(ctx, args[1:], stdout, stderr)
 	case "catalog-prd-backup":
 		err = runCatalogPRDBackup(ctx, args[1:], stdout, stderr)
 	case "catalog-probe-prepare":
@@ -327,7 +371,21 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) {
+	if flags.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	if catalogCommandSubprocessFixtureBackendForTests != nil {
+		return catalogCommandSubprocessFixtureBackendForTests.RunCohort(ctx, catalogCohortCommand{
+			HostID: *host, Lane: *lane, Action: *action, OperationID: *operationID,
+			SuccessorOperation: *successorOperationID, ReceiptFile: *receiptFile,
+			ReleaseManifest: *releaseManifestFile, PublisherOwner: *publisherOwner,
+			PublisherControl: *publisherControl, PublishersPaused: *publishersPaused,
+			NoNewAccepted: *noNewAccepted, SubjectHost: *subjectHost,
+			EvidenceSHA256: *evidenceSHA, PreflightFiles: append([]string(nil), preflightFiles...),
+			HistoryFiles: append([]string(nil), historyFiles...),
+		}, stdout, stderr)
+	}
+	if !currentCatalogHost(*host) {
 		return errors.New("usage: runner-lane catalog-cohort --host THIS-HOST --lane dev|qas|prd --action ACTION [--operation-id ID] [--successor-operation-id ID] [--receipt-file FILE] [--subject-host HOST] [--evidence-sha256 SHA256]")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
@@ -718,7 +776,17 @@ func runCatalogSelectorMaintenance(ctx context.Context, action string, args []st
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas" && *lane != "prd") {
+	if flags.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	if catalogCommandSubprocessFixtureBackendForTests != nil {
+		return catalogCommandSubprocessFixtureBackendForTests.RunSelector(ctx, action, catalogSelectorCommand{
+			HostID: *host, Lane: *lane, ReleaseID: *releaseID,
+			ExpectedTarget: *expectedTarget, CohortOperationID: *cohortOperationID,
+			SelectorOperation: *selectorOperationID, EvidenceSHA256: *evidenceSHA,
+		}, stdout, stderr)
+	}
+	if !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas" && *lane != "prd") {
 		return errors.New("usage: runner-lane catalog-select|catalog-reconcile|catalog-rollback --host HOST --lane dev|qas|prd --cohort-operation-id ID [operation-specific flags]")
 	}
 	if action == "catalog-select" {
@@ -888,6 +956,54 @@ func runCatalogPRDBackup(ctx context.Context, args []string, stdout, stderr io.W
 	}{*host, "prd", *releaseID, target.Identity.ReleaseSHA256, target.Identity.BundleSHA256, receipt.Directory,
 		laneinstall.PRDBackupManifestSHA256(receipt.Directory), receipt.Manifest.SchemaVersion, receipt.Manifest.DatabaseSHA256,
 		availableBytes, requiredBytes})
+}
+
+// runCatalogCompatibilityCheck validates a typed legacy rollback proof against
+// the current host's installed PRD binaries, configuration, and schema. It
+// calls only the read-only PRD preflight path; unlike catalog-host-preflight,
+// it creates no backup and does not stop or change the service.
+func runCatalogCompatibilityCheck(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-compatibility-check", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	compatibilityFile := flags.String("legacy-compatibility-file", "", "owner-only tested legacy rollback compatibility report")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHost(*host) || *compatibilityFile == "" {
+		return errors.New("usage: runner-lane catalog-compatibility-check --host THIS-HOST --legacy-compatibility-file FILE")
+	}
+	compatibility, err := laneinstall.LoadCatalogLegacyRollbackCompatibilityFile(*compatibilityFile)
+	if err != nil {
+		return err
+	}
+	plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	service, err := laneinstall.NewPRDServiceController()
+	if err != nil {
+		return err
+	}
+	actual, err := laneinstall.ReadPRDPreflight(ctx, plan, service)
+	if err != nil {
+		return err
+	}
+	if actual.LegacyBundleSHA256 == "" || len(actual.MissingComponents) != 0 ||
+		laneinstall.ValidateCatalogLegacyRollbackCompatibility(compatibility, actual.LegacyBundleSHA256,
+			actual.ConfigSHA256, actual.SchemaVersion) != nil {
+		return laneinstall.ErrCatalogRollbackUnsafe
+	}
+	return writeJSON(stdout, struct {
+		HostID             string `json:"host_id"`
+		Mode               string `json:"validation_mode"`
+		LegacyBundleSHA256 string `json:"legacy_bundle_sha256"`
+		ConfigurationSHA   string `json:"configuration_sha256"`
+		DatabaseSchema     int    `json:"database_schema"`
+		ServiceActive      bool   `json:"service_active"`
+		WorkInventorySHA   string `json:"work_inventory_sha256"`
+	}{*host, "read_only_no_backup", actual.LegacyBundleSHA256, actual.ConfigSHA256, actual.SchemaVersion,
+		actual.ServiceActive, actual.Work.SHA256()})
 }
 
 // runCatalogHostPreflight emits host-local receipt evidence. Dev/QAS use their

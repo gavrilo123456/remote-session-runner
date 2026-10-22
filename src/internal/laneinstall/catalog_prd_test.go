@@ -2,10 +2,14 @@ package laneinstall
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,6 +40,80 @@ func TestPRDLegacyBundleDigestBindsHostAndEveryInstalledFile(t *testing.T) {
 	preflight.BinarySHA256["../runnerd"] = strings.Repeat("d", 64)
 	if _, err := PRDLegacyBundleDigest(preflight); err == nil {
 		t.Fatal("legacy identity accepted a path-bearing component name")
+	}
+}
+
+func TestCatalogLegacyCompatibilityInputIsCanonicalOwnerOnlyAndHashBound(t *testing.T) {
+	root := catalogPRDArtifactFixtureDir(t)
+	path := filepath.Join(root, "legacy-compatibility.json")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	compatibility := CatalogLegacyRollbackCompatibility{
+		FormatVersion: 1, LegacyBundleSHA256: strings.Repeat("a", 64), ConfigurationSHA256: strings.Repeat("b", 64),
+		DatabaseSchema: store.CurrentSchemaVersion, ReadSchemaMin: store.CurrentSchemaVersion, ReadSchemaMax: store.CurrentSchemaVersion,
+		TestSuite: catalogLegacyRollbackTestSuite, TestEvidenceSHA256: strings.Repeat("c", 64),
+		SemanticChecks: append([]string(nil), catalogLegacyRollbackSemanticChecks...), TestedAt: now,
+	}
+	data, err := json.MarshalIndent(compatibility, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadCatalogLegacyRollbackCompatibilityFile(path)
+	if err != nil {
+		t.Fatalf("load canonical owner-only compatibility input: %v", err)
+	}
+	if err := ValidateCatalogLegacyRollbackCompatibility(loaded, compatibility.LegacyBundleSHA256,
+		compatibility.ConfigurationSHA256, compatibility.DatabaseSchema); err != nil {
+		t.Fatalf("exact legacy binary/config/schema compatibility was rejected: %v", err)
+	}
+	if err := ValidateCatalogLegacyRollbackCompatibility(loaded, strings.Repeat("d", 64),
+		compatibility.ConfigurationSHA256, compatibility.DatabaseSchema); err == nil {
+		t.Fatal("compatibility proof was accepted for a different installed binary set")
+	}
+	if err := ValidateCatalogLegacyRollbackCompatibility(loaded, compatibility.LegacyBundleSHA256,
+		strings.Repeat("e", 64), compatibility.DatabaseSchema); err == nil {
+		t.Fatal("compatibility proof was accepted for a different installed configuration")
+	}
+	if err := ValidateCatalogLegacyRollbackCompatibility(loaded, compatibility.LegacyBundleSHA256,
+		compatibility.ConfigurationSHA256, compatibility.DatabaseSchema+1); err == nil {
+		t.Fatal("compatibility proof was accepted for a different database schema")
+	}
+}
+
+func TestPRDCatalogPreBackupCapacitySeparatesBackupBufferAndSelectorReserve(t *testing.T) {
+	selectorReserve := PRDCatalogSelectorHeadroomBytes()
+	if selectorReserve != 64*1024*1024 {
+		t.Fatalf("selector reserve=%d, want 64 MiB", selectorReserve)
+	}
+	backupAndSelector := uint64(400 * 1024 * 1024)
+	required, err := prdCatalogPreBackupRequiredBytes(backupAndSelector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if required != backupAndSelector+(2<<30) {
+		t.Fatalf("pre-backup required=%d, want backup/staging estimate %d plus separate 2 GiB operating buffer", required, backupAndSelector)
+	}
+	if _, err := prdCatalogPreBackupRequiredBytes(^uint64(0)); !errors.Is(err, ErrPRDUpgradeGuard) {
+		t.Fatalf("overflowing pre-backup requirement error=%v", err)
+	}
+}
+
+func TestPRDCatalogHostPreflightRejectsOperatingBufferAsSelectorReserveBeforeBackup(t *testing.T) {
+	hostID := "linux-host"
+	if runtime.GOOS == "darwin" {
+		hostID = "mac-control-plane"
+	} else if runtime.GOARCH == "arm64" {
+		hostID = "sandbox-host"
+	}
+	plan, err := BuildPRDUpgradePlan(hostID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReadPRDCatalogCohortHostPreflight(context.Background(), plan, nil, "fixture-release", 2<<30, nil)
+	if !errors.Is(err, ErrPRDUpgradeGuard) {
+		t.Fatalf("preflight accepted 2 GiB as selector reserve or touched dependencies first: %v", err)
 	}
 }
 
@@ -192,6 +270,18 @@ func TestPRDLegacyRollbackRestoresLauncherAndQueuedWrapperWithoutChangingDatabas
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacyBinDir := filepath.Join(root, "legacy", "bin")
+	if err := os.MkdirAll(legacyBinDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyRunner := filepath.Join(legacyBinDir, "runnerd")
+	legacyBridge := filepath.Join(legacyBinDir, "runner-ssh-bridge")
+	for path, marker := range map[string]string{legacyRunner: "legacy-runner-resolved", legacyBridge: "legacy-bridge-resolved"} {
+		script := []byte("#!/bin/sh\nprintf '" + marker + "\\n'\nprintf '%s\\n' \"$@\"\n")
+		if err := os.WriteFile(path, script, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	definitions := []struct {
 		name    string
@@ -199,8 +289,8 @@ func TestPRDLegacyRollbackRestoresLauncherAndQueuedWrapperWithoutChangingDatabas
 		legacy  []byte
 		catalog string
 	}{
-		{name: "runner-entrypoint.sh", kind: ArtifactEntrypoint, legacy: []byte("#!/bin/sh\nexec /legacy/bin/runnerd\n"), catalog: "#!/bin/sh\nexec /catalog/current/bin/runnerd\n"},
-		{name: "runner-ssh-bridge-forced.sh", kind: ArtifactSSHWrapper, legacy: []byte("#!/bin/sh\nexec /legacy/bin/runner-ssh-bridge\n"), catalog: "#!/bin/sh\nexec /catalog/current/bin/runner-ssh-bridge\n"},
+		{name: "runner-entrypoint.sh", kind: ArtifactEntrypoint, legacy: []byte(fmt.Sprintf("#!/bin/sh\nexec %q \"$@\"\n", legacyRunner)), catalog: "#!/bin/sh\nexec /catalog/current/bin/runnerd\n"},
+		{name: "runner-ssh-bridge-forced.sh", kind: ArtifactSSHWrapper, legacy: []byte(fmt.Sprintf("#!/bin/sh\nexec %q --stdio \"$@\"\n", legacyBridge)), catalog: "#!/bin/sh\nexec /catalog/current/bin/runner-ssh-bridge\n"},
 	}
 	manifest := PRDBackupManifest{FormatVersion: prdUpgradeBackupFormat, HostID: "linux-host", SchemaVersion: 40,
 		DatabasePath: productionDatabase, DatabaseBackupPath: filepath.Join(backupRoot, "database.sqlite")}
@@ -242,10 +332,116 @@ func TestPRDLegacyRollbackRestoresLauncherAndQueuedWrapperWithoutChangingDatabas
 		if info.Mode().Perm() != 0o700 {
 			t.Fatalf("restored %s mode=%v", definition.name, info.Mode().Perm())
 		}
+		output, err := exec.Command(artifacts[index].InstallPath, "fixture-argument").CombinedOutput()
+		if err != nil {
+			t.Fatalf("execute restored legacy artifact %s: %v; output=%s", definition.name, err, output)
+		}
+		want := "legacy-runner-resolved"
+		if definition.kind == ArtifactSSHWrapper {
+			want = "legacy-bridge-resolved"
+		}
+		if !strings.Contains(string(output), want) || !strings.Contains(string(output), "fixture-argument") {
+			t.Fatalf("restored %s did not resolve its preserved binary: %q", definition.name, output)
+		}
 	}
 	databaseAfter, err := fileSHA256(productionDatabase)
 	if err != nil || databaseAfter != databaseBefore {
 		t.Fatalf("rollback artifact restore changed production database: before=%s after=%s err=%v", databaseBefore, databaseAfter, err)
+	}
+}
+
+func TestPRDMacLegacyRollbackKeepsDisabledQASHandoffConfigAndStoppedService(t *testing.T) {
+	root := catalogPRDArtifactFixtureDir(t)
+	backupRoot := filepath.Join(root, "backup")
+	if err := os.Mkdir(backupRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	serviceRoot := filepath.Join(root, "service")
+	if err := os.Mkdir(serviceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(serviceRoot, "mac.yaml")
+	currentDisabledConfig := []byte("mac:\n  mailbox_ingress_enabled: false\nmailboxes: {}\n")
+	if err := os.WriteFile(configPath, currentDisabledConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldQASOwnedConfig := []byte("mac:\n  mailbox_ingress_enabled: true\nmailboxes:\n  project-a:\n    root: /Users/runner/qas-mailbox/project-a\n")
+	oldConfigBackupPath := filepath.Join(backupRoot, "config", "mac.yaml")
+	if err := os.MkdirAll(filepath.Dir(oldConfigBackupPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldConfigBackupPath, oldQASOwnedConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(serviceRoot, "local.db")
+	retainedDatabase := []byte("preserved schema-40 PRD database sentinel")
+	if err := os.WriteFile(databasePath, retainedDatabase, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	databaseBefore, err := fileSHA256(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	definitions := []struct {
+		name     string
+		original []byte
+		catalog  []byte
+	}{
+		{name: "com.remote-session-runner.local.plist", original: []byte("legacy local LaunchAgent\n"), catalog: []byte("catalog local LaunchAgent\n")},
+		{name: "com.remote-session-runner.locald.plist", original: []byte("legacy locald LaunchAgent\n"), catalog: []byte("catalog locald LaunchAgent\n")},
+	}
+	manifest := PRDBackupManifest{FormatVersion: prdUpgradeBackupFormat, HostID: "mac-control-plane",
+		SchemaVersion: 40, DatabasePath: databasePath, DatabaseBackupPath: filepath.Join(backupRoot, "local.db")}
+	if err := os.WriteFile(manifest.DatabaseBackupPath, []byte("consistent pre-switch database snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Files = append(manifest.Files, PRDBackupFile{
+		TargetPath: configPath, BackupPath: filepath.Join("config", "mac.yaml"),
+		SHA256: sha256HexString(oldQASOwnedConfig), Bytes: int64(len(oldQASOwnedConfig)), Mode: 0o600,
+	})
+	var artifacts []Artifact
+	for _, definition := range definitions {
+		target := filepath.Join(serviceRoot, definition.name)
+		backupPath := filepath.Join(backupRoot, "service", definition.name)
+		if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, definition.catalog, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(backupPath, definition.original, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		manifest.Files = append(manifest.Files, PRDBackupFile{
+			TargetPath: target, BackupPath: filepath.Join("service", definition.name),
+			SHA256: sha256HexString(definition.original), Bytes: int64(len(definition.original)), Mode: 0o644,
+		})
+		artifacts = append(artifacts, Artifact{Kind: ArtifactLaunchAgent, InstallPath: target,
+			Mode: 0o644, Contents: string(definition.catalog)})
+	}
+
+	runner := &simpleServiceTestRunner{macActive: map[string]bool{}}
+	service := &PRDServiceController{base: simpleTestServiceController(runner, "501", config.MacAccount, "darwin", "arm64")}
+	if err := restorePRDServiceArtifactsFromBackup(context.Background(), service, artifacts, manifest); err != nil {
+		t.Fatalf("restore only the preserved Mac launcher artifacts: %v", err)
+	}
+	for index, definition := range definitions {
+		actual, err := os.ReadFile(artifacts[index].InstallPath)
+		if err != nil || string(actual) != string(definition.original) {
+			t.Fatalf("legacy launch artifact %s=%q err=%v", definition.name, actual, err)
+		}
+	}
+	currentConfigAfter, err := os.ReadFile(configPath)
+	if err != nil || string(currentConfigAfter) != string(currentDisabledConfig) {
+		t.Fatalf("rollback changed the current disabled-ingress/QAS-handoff config: %q err=%v", currentConfigAfter, err)
+	}
+	databaseAfter, err := fileSHA256(databasePath)
+	if err != nil || databaseAfter != databaseBefore {
+		t.Fatalf("rollback changed the preserved PRD database: before=%s after=%s err=%v", databaseBefore, databaseAfter, err)
+	}
+	if len(runner.calls) != 0 || runner.macActive["com.remote-session-runner.local"] || runner.macActive["com.remote-session-runner.locald"] {
+		t.Fatalf("artifact rollback started or controlled PRD services: calls=%v active=%v", runner.calls, runner.macActive)
 	}
 }
 

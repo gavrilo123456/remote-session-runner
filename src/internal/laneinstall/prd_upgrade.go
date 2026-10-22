@@ -230,6 +230,11 @@ func createPRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string,
 	if err := validatePRDConfig(plan); err != nil {
 		return PRDBackupReceipt{}, err
 	}
+	if catalogManaged {
+		if err := ensurePRDCatalogOperatingBuffer(plan, plan.Namespace.Database); err != nil {
+			return PRDBackupReceipt{}, err
+		}
+	}
 	database, err := store.OpenExistingRestartPreflightReadOnly(ctx, plan.Namespace.Database)
 	if err != nil {
 		return PRDBackupReceipt{}, fmt.Errorf("open existing PRD authority read-only for backup: %w", err)
@@ -690,6 +695,36 @@ func ensurePRDBackupCapacity(plan PRDUpgradePlan, databasePath string) error {
 		return fmt.Errorf("%w: available=%d required=%d bytes for backup and rollback headroom", ErrPRDUpgradeGuard, available, required)
 	}
 	return nil
+}
+
+// ensurePRDCatalogOperatingBuffer keeps the fixed 2 GiB operating buffer
+// separate from the 64 MiB selector reserve. The existing backup estimate
+// already includes the consistent DB copy, current binaries/config/secrets,
+// and the selector reserve. Catalog releases are already sealed in place, so
+// selector activation creates no second executable staging copy.
+func ensurePRDCatalogOperatingBuffer(plan PRDUpgradePlan, databasePath string) error {
+	available, backupAndSelectorRequired, err := measurePRDBackupCapacity(plan, databasePath)
+	if err != nil {
+		return err
+	}
+	required, err := prdCatalogPreBackupRequiredBytes(backupAndSelectorRequired)
+	if err != nil {
+		return fmt.Errorf("%w: catalog pre-backup capacity calculation overflow", ErrPRDUpgradeGuard)
+	}
+	if available < required {
+		return fmt.Errorf("%w: catalog pre-backup free space is insufficient: available=%d required=%d (backup and selector reserve=%d, operating buffer=%d)",
+			ErrPRDUpgradeGuard, available, required, backupAndSelectorRequired, prdCatalogOperatingBufferBytes)
+	}
+	return nil
+}
+
+const prdCatalogOperatingBufferBytes uint64 = 2 << 30
+
+func prdCatalogPreBackupRequiredBytes(backupAndSelectorRequired uint64) (uint64, error) {
+	if backupAndSelectorRequired > ^uint64(0)-prdCatalogOperatingBufferBytes {
+		return 0, ErrPRDUpgradeGuard
+	}
+	return backupAndSelectorRequired + prdCatalogOperatingBufferBytes, nil
 }
 
 func measurePRDBackupCapacity(plan PRDUpgradePlan, databasePath string) (uint64, uint64, error) {
