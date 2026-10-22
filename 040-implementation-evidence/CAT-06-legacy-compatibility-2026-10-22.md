@@ -13,6 +13,103 @@ These commands did not create backups or stop/change services. They do not
 replace the fresh full ownership/runtime inventory or the durable stop and
 cleanup proof required before supported retained-pair recovery.
 
+## Fresh PRD inventory and ownership recheck — 2026-10-22 09:37-09:43 UTC
+
+The synchronized current-source `runner-lane prd-preflight --host HOST` was
+run read-only on all four hosts. It uses
+`OpenExistingRestartPreflightReadOnly`, not `store.Open`; each PRD database
+reported schema 40. Catalog status was `unselected` on every host. That
+status alone did not establish admission-hold state; the separate hold check
+is recorded below. Current inventory:
+
+| Host | PRD service active | Sessions | Unreleased slots | Unreleased reservations | Queued | Running | Resumable | Recovery finalizations | Inventory SHA-256 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Mac | no | 0 | 3 | 3 | 0 | 0 | 0 | 0 | `5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0` |
+| Linux | yes | 0 | 1 | 1 | 0 | 0 | 0 | 0 | `5dd44373b3a9421f25af8fa4db58b9b107a7e7e66b54ed93a6ca78bc67d4743d` |
+| Sandbox | yes | 0 | 3 | 3 | 0 | 0 | 0 | 0 | `5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0` |
+| Factory | yes | 0 | 0 | 0 | 0 | 0 | 0 | 0 | `92103a248a6dc1bd114512bc8b084280e339ff6972656bb42c4224f77a121f8b` |
+
+For Mac, Linux and Sandbox, a bounded SQLite query ran with
+`sqlite3 -readonly`, `PRAGMA query_only=ON`, `PRAGMA writable_schema=ON`, and
+one read transaction. It selected only session/command/job IDs, runtime
+generation, terminal states, output-complete flag, last event type, and slot/
+reservation stop/release timestamps. It did not read scripts, payloads,
+credentials or output. At 09:37:42 UTC Mac returned the same three pairs; at
+09:37:26 UTC Linux returned its same one pair; at 09:37:35 UTC Sandbox
+returned its same three pairs. Every row remains `lost` / `lost` / `lost`,
+with last event `command_lost`, `output_complete=0`, and all four stop/release
+timestamps `NULL`. The exact seven IDs are listed in the retained-work table
+below. Factory's SQLite CLI is absent; its supported current-source preflight
+reported zero slots/reservations and zero other work categories.
+
+Correction: an earlier Sandbox row for session
+`sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` recorded a 62-hex-character value as
+the marker SHA-256. The current verified 64-character digest is
+`a49c560f83ebe81c1bf65e7b156f051f268dc60982bc06398c1a5955b7f8d0d5`; the
+historical typo is corrected in both retained-work tables below.
+
+Owner markers were independently reread. They remain regular files, mode
+`0600`, one link, and owned by the Runner account; session, generation, PID,
+PGID and recorded process-start identity match the database/evidence. Their
+current hashes are listed in the retained-work table. None contains
+`lost_recovery_cleanup_confirmed_at`.
+
+| Host | Fresh marker/process observation |
+| --- | --- |
+| Mac | At 09:40:35 UTC a bounded read-only `/bin/ps` query found no process in recorded PIDs/PGIDs 12701, 22367, or 54385. The markers rechecked at 09:42:52 UTC remain UID 502, mode `0600`, one link, with all three start identities matching. No signal was sent. |
+| Linux | At 09:38:57 UTC PGID 118705 contained only UID-1001 zombie `bash` PID 118705 (PPID 3858597); no other group member. The marker rechecked at 09:43:00 UTC matches generation, PID/PGID, start identity `38701379`, UID 1001 and recorded SHA-256. |
+| Sandbox | At 09:39:09 UTC PGIDs 2851086, 3969302 and 3253996 each contained only their respective UID-1001 zombie `bash` process (PPID 2353257); no other group members. The three markers rechecked at 09:43:09 UTC match their recorded generations, PIDs/PGIDs, start identities, UID 1001 and SHA-256 values. |
+| Factory | No unreleased pair exists in the supported preflight; no owner-marker or process recovery was attempted. |
+
+All three worker `runnerd` binaries and Mac `runner-locald` report installed
+revision `00c1ca6e7694842c35d398583b3f26fea59e3613`. The reviewed offline
+`recover-stalled` implementation is unchanged between that source and the
+current source, and both have schema version 40. The supported repair still
+requires the selected service stopped and a lifecycle lock; process
+observations alone do not establish durable cleanup. No recovery, signal,
+service stop, database change or backup occurred in this recheck.
+
+At 09:43:34 UTC Sandbox had 1,026,310,144 bytes available on `/dev/sda1`.
+The backup/staging allowance plus separate operating buffer and selector
+reserve totals 849,205,489 bytes, leaving a 177,104,655-byte point-in-time
+margin. This is not reserved capacity; remeasure immediately before every
+backup or service/recovery operation. QAS and all eight mailbox paths remain
+active and unchanged; no request or ACK was published.
+
+## Fresh admission-hold and PRD preflight check — 2026-10-22 09:48-09:53 UTC
+
+A temporary diagnostic overlay built from synchronized source `9e3314c` with
+Go 1.27.1 called `CatalogCohortAdmissionHeld` directly. The Mac result and
+the three Ubuntu results were all `held=false`, empty operation ID, no error.
+The helper used temporary host-native binaries; those binaries were removed
+after execution, and the preserved untracked `src/cmd/catalog-holdcheck/`
+directory was not modified. No service, receipt or selector changed. SSH used
+the explicit existing host identities, `IdentitiesOnly=yes`,
+`BatchMode=yes`, and `StrictHostKeyChecking=yes`; the sandboxed Mac shell
+could not update its known-hosts file, but each connection succeeded with the
+existing pinned host key.
+
+Fresh supported `runner-lane prd-preflight` results at 09:53 UTC confirm
+schema 40 and the same seven retained lost pairs, with no queued, running,
+resumable or finalization work. The worker source checkouts were clean at
+`9e3314c81389194f2a0130f9efa97b05e37b0b0b` (`dev`); source code is unchanged
+from the tested source revision. The Mac checkout is on that commit with
+documentation edits in progress.
+
+| Host | PRD active | Config SHA-256 | Installed bundle SHA-256 | Available / backup-and-selector bytes | Sessions / slots / reservations / queued / running / resumable / finalizations |
+| --- | --- | --- | --- | ---: | ---: |
+| Mac | no | `56c25057b58b72e592995cc00efbd042cf4d666db449d01bb03a0aa628778d11` | `0feb2b15957ad6dee4f90ac30949409300afaaf1f10e0c2f9c1aa04a63d2deda` | 146,237,255,680 / 392,873,782 | 0 / 3 / 3 / 0 / 0 / 0 / 0 |
+| Linux | yes | `c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f` | `a774b0be0d758e42193165ece1b4bf97462726e703c34aff54ee0d63010f763c` | 15,594,262,528 / 126,470,672 | 0 / 1 / 1 / 0 / 0 / 0 / 0 |
+| Sandbox | yes | `50f704f1b692048a149c366d0e20be2448ee8236a8cdaefcee39b2a6449e5d9a` | `69755bfb0316939f99af2bea220260518f4fe96e9fd11aa9816fe8f64c1b7932` | 998,350,848 / 349,205,489 | 0 / 3 / 3 / 0 / 0 / 0 / 0 |
+| Factory | yes | `271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699` | `c89aefe08fdcdc984525e218fd858eabd5489a5c5479f929d818a4b2ab4d6712` | 34,727,055,360 / 108,012,935 | 0 / 0 / 0 / 0 / 0 / 0 / 0 |
+
+Sandbox `/dev/sda1` was 998,350,848 bytes free at 09:53:25 UTC, versus the
+849,205,489-byte current pre-backup threshold (the 349,205,489-byte backup
+and selector allowance plus the separate 500,000,000-byte operating buffer),
+leaving 149,145,359 bytes. The owner-reported `1002M` is not the byte-exact
+preflight value. No backup or recovery has started; remeasure immediately
+before each backup or state-changing operation.
+
 ## Current capacity-policy override — 2026-10-22 08:08 UTC
 
 The owner reduced the additional CAT-06 operating buffer to **0.5 GB =
@@ -95,7 +192,7 @@ proofs.
 | Linux | `sess-a8073cda44eb88573398d462c523ba83` → `cmd-6618114b0f1100e4d50479cf0e57ea2c` → `job-a73371770d4d29e2fc22fafd135396e9` | `linux-6783b82a3e9f846e79ca28e4c3085e96`; `ubuntu` (1001); 118705/118705; `38701379` | `7f4fe1a17bc04bf9bb50b94f917d4c10d21ae4b606bfb6c693d967ec2ef86b2e` | PID/PGID 118705 observed zombie (`Z`, `bash`) |
 | Sandbox | `sess-1797a73cdca867b343ef077b44f7dfda` → `cmd-bf1d015e3a6afb00e578f6f6a8119cd2` → `job-9b7cfd9b07a1edc1a2b1d8ffcf6c6cfe` | `linux-c63e12bbd7246fd7c41773c188c8a958`; `ubuntu` (1001); 2851086/2851086; `625457721` | `c932f38efb1695dfdc8f34e2e4663ad7ffcb2f74ea857a8443dbb4b86597ef49` | PID/PGID 2851086 observed zombie (`Z`, `bash`) |
 | Sandbox | `sess-5abb5d808cd5623f3dbd49202f15822c` → `cmd-a06764547029ef15e4726ebd56a03cdf` → `job-3cb15f466008a37dc2bb719d83a573d4` | `linux-9e7b4ccbe132f0fce46d51f1636fe92f`; `ubuntu` (1001); 3969302/3969302; `645723329` | `e060c9e338cb8d59da47bcae7dd1ec106098da6c2e89598072dbdb84fa4c8177` | PID/PGID 3969302 observed zombie (`Z`, `bash`) |
-| Sandbox | `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` → `cmd-8cf6db5bb3871e721133825520367598` → `job-77ea4fda0582a7e9d3e49d269830d6ba` | `linux-aefd261855c13ca0b8461d575cefb174`; `ubuntu` (1001); 3253996/3253996; `642533456` | `a49c560f83ebe81c1bf65e7b156f051f268dc60982bc063c1a5955b7f8d0d5` | PID/PGID 3253996 observed zombie (`Z`, `bash`) |
+| Sandbox | `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` → `cmd-8cf6db5bb3871e721133825520367598` → `job-77ea4fda0582a7e9d3e49d269830d6ba` | `linux-aefd261855c13ca0b8461d575cefb174`; `ubuntu` (1001); 3253996/3253996; `642533456` | `a49c560f83ebe81c1bf65e7b156f051f268dc60982bc06398c1a5955b7f8d0d5` | PID/PGID 3253996 observed zombie (`Z`, `bash`) |
 | Factory | none | — | — | No unreleased reservation or slot rows |
 
 The Mac process check was run through the permitted direct shell after the
@@ -167,7 +264,7 @@ timestamps. Current ownership observations were:
 | --- | --- | --- | --- |
 | Mac | `sess-227a0bc9f416e36532e99346ce273367` / `cmd-9e2033c5d6106b2e88f2cff200d7dbfe`; `sess-a68baa8f1dd9e66c2871e128002240ef` / `cmd-a66ce02cbaddf294e13afb3a409c317c`; `sess-cf91a7902aceebd6ef20daaf6f090514` / `cmd-b524b94074ee26855f1778d52c9655cf` | All three existing owner markers remain mode `0600`, UID 502, link count 1, matching the session and generation; hashes match the previously recorded markers. PIDs 12701, 22367, and 54385 are absent. | No recorded PID is running. `launchctl print gui/502/com.remote-session-runner.local` and `.locald` both report no such loaded service. |
 | Linux | `sess-a8073cda44eb88573398d462c523ba83` / `cmd-6618114b0f1100e4d50479cf0e57ea2c` / `job-a73371770d4d29e2fc22fafd135396e9` | Marker SHA-256 `7f4fe1a17bc04bf9bb50b94f917d4c10d21ae4b606bfb6c693d967ec2ef86b2e`; mode `0600`, UID 1001, link count 1; session/generation, PID/PGID 118705, owner, and start identity match the database. | The recorded PGID contains only PID 118705, UID 1001, zombie `bash`; no other process-group members were observed. `runnerd.service` is active (PID 3858597). |
-| Sandbox | `sess-1797a73cdca867b343ef077b44f7dfda` / `cmd-bf1d015e3a6afb00e578f6f6a8119cd2` / `job-9b7cfd9b07a1edc1a2b1d8ffcf6c6cfe`; `sess-5abb5d808cd5623f3dbd49202f15822c` / `cmd-a06764547029ef15e4726ebd56a03cdf` / `job-3cb15f466008a37dc2bb719d83a573d4`; `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` / `cmd-8cf6db5bb3871e721133825520367598` / `job-77ea4fda0582a7e9d3e49d269830d6ba` | All three existing owner markers remain mode `0600`, UID 1001, link count 1, matching session/generation and recorded PID/PGID; marker hashes match the previously recorded values. | Each recorded PGID (2851086, 3969302, 3253996) contains only its zombie `bash` PID; no other process-group members were observed. `runnerd.service` is active (PID 2353257). |
+| Sandbox | `sess-1797a73cdca867b343ef077b44f7dfda` / `cmd-bf1d015e3a6afb00e578f6f6a8119cd2` / `job-9b7cfd9b07a1edc1a2b1d8ffcf6c6cfe`; `sess-5abb5d808cd5623f3dbd49202f15822c` / `cmd-a06764547029ef15e4726ebd56a03cdf` / `job-3cb15f466008a37dc2bb719d83a573d4`; `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` / `cmd-8cf6db5bb3871e721133825520367598` / `job-77ea4fda0582a7e9d3e49d269830d6ba` | All three markers remain mode `0600`, UID 1001, link count 1, matching session/generation/PID/PGID/start identity; the third marker's previously recorded digest was truncated and is corrected above. | Each recorded PGID (2851086, 3969302, 3253996) contains only its zombie `bash` PID; no other process-group members were observed. `runnerd.service` is active (PID 2353257). |
 | Factory | none | none | `runnerd.service` is active (PID 1970144). |
 
 The SQLite inventory reads used a read-only transaction. Linux's installed
@@ -257,7 +354,7 @@ contains `lost_recovery_cleanup_confirmed_at`.
 | Linux | `sess-a8073cda44eb88573398d462c523ba83` → `cmd-6618114b0f1100e4d50479cf0e57ea2c` → `job-a73371770d4d29e2fc22fafd135396e9` | 118705/118705; `38701379` | `7f4fe1a17bc04bf9bb50b94f917d4c10d21ae4b606bfb6c693d967ec2ef86b2e` | only UID-1001 zombie `bash <defunct>` |
 | Sandbox | `sess-1797a73cdca867b343ef077b44f7dfda` → `cmd-bf1d015e3a6afb00e578f6f6a8119cd2` → `job-9b7cfd9b07a1edc1a2b1d8ffcf6c6cfe` | 2851086/2851086; `625457721` | `c932f38efb1695dfdc8f34e2e4663ad7ffcb2f74ea857a8443dbb4b86597ef49` | only UID-1001 zombie `bash <defunct>` |
 | Sandbox | `sess-5abb5d808cd5623f3dbd49202f15822c` → `cmd-a06764547029ef15e4726ebd56a03cdf` → `job-3cb15f466008a37dc2bb719d83a573d4` | 3969302/3969302; `645723329` | `e060c9e338cb8d59da47bcae7dd1ec106098da6c2e89598072dbdb84fa4c8177` | only UID-1001 zombie `bash <defunct>` |
-| Sandbox | `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` → `cmd-8cf6db5bb3871e721133825520367598` → `job-77ea4fda0582a7e9d3e49d269830d6ba` | 3253996/3253996; `642533456` | `a49c560f83ebe81c1bf65e7b156f051f268dc60982bc063c1a5955b7f8d0d5` | only UID-1001 zombie `bash <defunct>` |
+| Sandbox | `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` → `cmd-8cf6db5bb3871e721133825520367598` → `job-77ea4fda0582a7e9d3e49d269830d6ba` | 3253996/3253996; `642533456` | `a49c560f83ebe81c1bf65e7b156f051f268dc60982bc06398c1a5955b7f8d0d5` | only UID-1001 zombie `bash <defunct>` |
 | Factory | none | — | — | no unreleased pair |
 
 The inventory hashes remain as in the first table; the refreshed records still

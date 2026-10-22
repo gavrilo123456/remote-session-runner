@@ -1,5 +1,24 @@
 # Lane execution ledger
 
+## CAT-06 retained-work and admission-hold refresh — 2026-10-22 09:53 UTC
+
+Read-only current-source PRD preflights and catalog status confirm all four
+selectors remain unselected. A separate direct call to
+`CatalogCohortAdmissionHeld` confirms `held=false`, empty operation ID, and no
+error on all four hosts. Fresh counts remain seven exact terminal-lost pairs
+(Mac 3, Linux 1, Sandbox 3, Factory 0), with no queued/running/resumable work.
+Owner-marker identity and
+process-group observations were refreshed; durable cleanup/release proof is
+still absent, so no pair was released. Sandbox free space was 1,026,310,144
+bytes at 09:43:34 UTC versus 849,205,489 required, a narrow point-in-time
+margin of 177,104,655 bytes. A fresh SSH measurement at 09:49:30 UTC returned
+999,419,904 bytes available, 150,214,415 above the current requirement. The
+owner also reported `1002M`. At 09:53:25 UTC supported preflight read
+998,350,848 bytes, 149,145,359 above the minimum. Recheck before every live
+operation. No backup,
+stop, recovery, selector or DB mutation has occurred. QAS and all eight paths
+remain serving. See the detailed [fresh PRD recovery evidence](CAT-06-legacy-compatibility-2026-10-22.md#fresh-prd-inventory-and-ownership-recheck--2026-10-22-0937-0943-utc).
+
 ## CAT-06 source-gate closeout — 2026-10-22 09:30 UTC
 
 The owner-amended source matrix is complete on delivered source

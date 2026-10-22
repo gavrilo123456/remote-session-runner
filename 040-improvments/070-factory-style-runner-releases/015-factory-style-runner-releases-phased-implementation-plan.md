@@ -1,5 +1,31 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 09:53 UTC — hold state verified; recovery still gated
+
+Current-source PRD preflights and catalog status were reread on all four
+hosts. The exact seven unreleased pairs remain unchanged: Mac 3, Linux 1,
+Sandbox 3, Factory 0. They are terminal lost records with incomplete output,
+`command_lost` final events and no durable stop/release or cleanup/release
+timestamps. Owner markers and recorded process identities were refreshed;
+Mac's three recorded process groups are absent, Linux has only its recorded
+zombie shell, and Sandbox has only the three recorded zombie shells. No
+cleanup proof is present yet. All PRD catalog selectors are unselected. A
+separate direct `CatalogCohortAdmissionHeld` check returned `held=false`, an
+empty operation ID, and no error on each host. Detailed identity, marker
+hashes, counts, read-only query method and process observations are in the
+[`CAT-06 recovery evidence`](../../040-implementation-evidence/CAT-06-legacy-compatibility-2026-10-22.md#fresh-prd-inventory-and-ownership-recheck--2026-10-22-0937-0943-utc).
+
+Sandbox had 1,026,310,144 bytes free at 09:43:34 UTC. A fresh SSH check at
+09:49:30 UTC returned 999,419,904 bytes, 150,214,415 above the
+849,205,489-byte minimum; the owner separately reported `1002M`. At 09:53:25
+UTC, supported preflight read 998,350,848 bytes free, 149,145,359 above the
+minimum. Capacity is tight and must be freshly measured before each backup or
+service/recovery action. No PRD backup or recovery has started. Continue with
+supported per-host backups, selected-service stops and
+exact lost-pair recovery under current work/ownership guards; do not manually
+release capacity. QAS and its eight mailbox paths remain serving. Source gates
+are complete; release sealing and Dev → QAS → PRD acceptance remain pending.
+
 ## CAT-06 checkpoint — 2026-10-22 09:30 UTC — source gates complete; live rollout remains gated
 
 At delivered checkout `812a742290e2f0584791cd08f5746518f8e73310` (source
