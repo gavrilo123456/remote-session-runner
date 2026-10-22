@@ -1,5 +1,35 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 06:15 UTC — Linux full suite interrupted under host starvation
+
+At clean synchronized revision
+`6ff1d0252358d2fb1d46d2a887b5bd4d7832631c`, Linux's constrained full-suite
+retry began with all three Runner services active and 15,322,692 KiB free on
+`/tmp`'s backing filesystem. The command was
+`GOMAXPROCS=2 GOFLAGS=-p=1 TMPDIR=/tmp GOTMPDIR=/tmp SQLITE_TMPDIR=/tmp make test`.
+`src/internal/dispatcher` passed in 421.356 seconds and `src/cmd/runner-lane`
+passed in 0.058 seconds. The run then reached `src/internal/execution`.
+
+During that package, `vmstat` recorded a run queue of 68 and 86% CPU steal
+(a second sample was run queue 13 and 84% steal); the three Runner services
+remained active. To avoid adding test contention to the starved PRD worker, a
+SIGINT was sent only to the exact task-owned `execution.test` process, then to
+the exact task-owned `go test ./...` parent. The execution package reported
+`signal: interrupt`; `make test` exited 2 and the suite is **INTERRUPTED / NOT
+PASS**. The task-owned `/tmp/go-build889206804` directory was absent after all
+processes exited. A final check at `2026-10-22T06:15:15Z` found PRD, Dev, and
+QAS services active, 15,319,676 KiB free, a clean checkout, and no test process.
+No Runner service, source file, database, selector, receipt, or work item was
+changed. This is distinct from the earlier Linux full-suite timeout in the
+unrelated `localapi` test; both remain recorded failures/non-passing gates.
+
+The Sandbox source gates are complete, but CAT-06 cannot advance to candidate
+sealing or live deployment while the Linux full-suite gate is incomplete, the
+public-command subprocess sequence remains **NOT RUN**, the seven retained PRD
+pairs lack supported recovery, per-host legacy compatibility inputs are
+missing, Sandbox is below the 2 GiB backup/switch buffer, and QAS requires a
+publisher-coordinated pause before qualification.
+
 ## CAT-06 checkpoint — 2026-10-22 05:57 UTC — Sandbox source gates complete; deployment remains blocked
 
 At clean synchronized `dev` revision

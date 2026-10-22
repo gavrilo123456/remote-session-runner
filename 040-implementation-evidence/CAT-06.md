@@ -1,5 +1,31 @@
 # CAT-06 — PRD adoption and promotion
 
+## Linux full-suite retry — 2026-10-22 06:02–06:15 UTC
+
+The clean Linux `dev` checkout was at
+`6ff1d0252358d2fb1d46d2a887b5bd4d7832631c`. PRD, Dev, and QAS `runnerd`
+services were active before the run. With Go 1.27.1 and existing caches, the
+bounded command used `GOMAXPROCS=2 GOFLAGS=-p=1 TMPDIR=/tmp GOTMPDIR=/tmp
+SQLITE_TMPDIR=/tmp make test`. The initial `/tmp` backing filesystem had
+15,322,692 KiB available.
+
+`src/internal/dispatcher` passed in 421.356 seconds and
+`src/cmd/runner-lane` passed in 0.058 seconds. The run then entered
+`src/internal/execution`. `vmstat` at 06:10 UTC reported run queue 68 with 86%
+CPU steal; its next sample was run queue 13 with 84% CPU steal. All three
+Runner services remained active. To limit additional pressure on the starved
+PRD host, SIGINT was sent to the exact task-owned `execution.test` process, then
+to the exact task-owned `go test ./...` process. The execution package reported
+`signal: interrupt`; `make test` exited 2. This run is **INTERRUPTED / NOT
+PASS**, not a test assertion failure. The earlier separate Linux full-suite
+timeout in `src/internal/localapi` remains a distinct non-passing result.
+
+After all test processes exited, the task-owned `/tmp/go-build889206804` was
+absent. The final read-only check at `2026-10-22T06:15:15Z` found all three
+services active, `/tmp` backing storage with 15,319,676 KiB free, clean Git
+state at the exact revision, and no test process. No Runner service, work,
+source, database, selector, or receipt changed.
+
 ## Sandbox source gates — 2026-10-22 05:50–05:57 UTC
 
 On `sandbox-host`, the clean `dev` checkout was synchronized at
