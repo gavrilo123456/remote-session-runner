@@ -1,5 +1,89 @@
 # CAT-06 — PRD adoption and promotion
 
+## Current CAT-06 checkpoint — 2026-10-22 05:26 UTC — Factory gates pass; Linux full test gate fails; PRD remains blocked
+
+The Linux and Factory checkouts were clean on `dev` at
+`40a62d93d7eaa8bc567482aa3bfbab0dfb93befd` before validation. The Factory
+full source gates now pass at this exact revision. The Linux full suite has a
+new, separate timeout; its CAT-06 packages passed, and the non-test gates
+passed:
+
+| Host | Exact-revision checks | Result |
+| --- | --- | --- |
+| Factory | `TMPDIR=/var/tmp GOTMPDIR=/var/tmp SQLITE_TMPDIR=/var/tmp make test`, then `make vet`, `make build`, `make smoke` | **PASS** |
+| Linux | `make test` (`go test ./...`) | **FAIL** — `src/internal/localapi` timed out after 10 minutes in unrelated `TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary`, while fixture `store.Open` verified migration checksums. `src/internal/laneinstall` and `src/cmd/runner-lane` passed in that run. After recording the failure, only the remaining task-owned `go test ./...` process was interrupted to limit CPU load on the PRD host; `make test` exited 1. |
+| Linux | `make vet`, `make build`, `make smoke` | **PASS** |
+
+The 05:26 source gate remains incomplete because Linux `make test` did not
+pass. The previous Linux full-suite timeout in the execution package remains
+historical and distinct. No production service or retained Runner work was
+stopped. Mac full gates passed at code commit `93e229d`; this evidence commit
+changes documentation only. Sandbox's focused PRD/Catalog tests plus vet,
+build, and smoke passed at the same source bytes; its full suite remains
+unrun. The owner's latest Sandbox reading is 861 MiB free on `/dev/sda1`, below
+the requested 2 GiB buffer. No additional Sandbox gates, backups, or selector
+operations were attempted.
+
+The current fixture evidence exercises PRD receipt construction, ordered
+fences, the underlying reconciliation/rollback/synchronization APIs, and
+launcher/wrapper restoration while preserving a database sentinel. A complete
+`runner-lane` subprocess sequence for initial legacy adoption, successful
+completion, interrupted switching, and reverse rollback on disposable
+host-path fixtures has **NOT RUN**. Do not count the API-level fixtures as
+that public-command acceptance.
+
+The corrected seven-pair inventory and exact installed config/bundle hashes
+remain in
+[`CAT-06-legacy-compatibility-2026-10-22.md`](CAT-06-legacy-compatibility-2026-10-22.md).
+The typed per-host compatibility inputs still need to be generated and
+validated. All seven retained reservations remain without durable stop,
+cleanup, or release timestamps. There is no supported recovery result yet.
+No new release was sealed, no PRD backup/receipt/hold was created, and no
+service, selector, database, mailbox, or ACK was changed. QAS remains serving
+with the eight mailbox paths assigned to it.
+
+## Current CAT-06 checkpoint — 2026-10-22 04:45 UTC — corrected compatibility evidence; Sandbox headroom and retained work still block
+
+The owner supplied a fresh Sandbox reading of **861 MiB available** on
+`/dev/sda1`. This remains below the requested 2 GiB operating buffer. Do not
+start Sandbox source gates, PRD backups, or selector operations until a fresh
+measurement meets the required headroom. No data, shared cache, mailbox,
+backup, journal, service, selector, receipt, or database was changed in this
+checkpoint.
+
+The delivered source correction remains at `93e229dd71a4f513ac1d4edcdd0d4d90e9ef8ccb`;
+the preceding evidence update is at `40a62d93d7eaa8bc567482aa3bfbab0dfb93befd`.
+Both were pushed to primary Gitea, the exact GitHub mirror SHA was verified,
+and the three clean Ubuntu `dev` checkouts were fast-forwarded to the evidence
+commit. The unrelated untracked `src/cmd/catalog-holdcheck/` directory remains
+untouched. The rollback-semantic fixture passed on Mac, Linux, Sandbox, and
+Factory at `40a62d9`; this was not a live rollback.
+
+The compatibility evidence and corrected retained-work identities
+are recorded in
+[`CAT-06-legacy-compatibility-2026-10-22.md`](CAT-06-legacy-compatibility-2026-10-22.md).
+That record binds the fresh per-host config and legacy-bundle hashes to schema
+40, a read-only inspection with the installed source revision, and the
+four-host launcher/wrapper/database-preservation fixture result. It is not a
+live rollback, backup, or installed-service acceptance. The operational
+`CatalogLegacyRollbackCompatibility` input has not yet been generated and
+validated for each host; do not treat the Markdown record as that input.
+
+The corrected inventory still contains seven unreleased terminal-lost
+reservations. Their current command/session/job states are lost, but no durable
+slot-stop, reservation-cleanup, or release timestamps exist. Mac process IDs
+were absent and Linux/Sandbox recorded PIDs were zombies; those observations
+are not the supported cleanup proof. The exact recovery path is not yet run.
+Do not create the PRD receipt or claim an empty work inventory until the
+supported recovery records the required disposition. QAS remains serving, all
+eight mailbox paths remain assigned to QAS, and no mailbox request or ACK was
+published.
+
+No new release was sealed. Candidate qualification remains blocked on Sandbox
+headroom, supported disposition of the seven retained pairs, the per-host
+operational compatibility inputs and fresh backups. No Dev/QAS/PRD service,
+selector, receipt, hold, database, or mailbox state changed.
+
 ## Current CAT-06 checkpoint — 2026-10-22 04:23 UTC — arm64 fixture correction delivered; PRD still blocked
 
 The Sandbox run at the previous source exposed a **test-fixture platform
@@ -100,6 +184,12 @@ consistent transaction. No normal `store.Open`, migration, checkpoint, or
 database write was used.
 
 ### Refreshed retained-work pairs
+
+**Correction:** the session-to-command/job associations in the table below
+were transcribed incorrectly. Keep this historical snapshot for audit, but do
+not use it for recovery. The corrected four-host inventory, owner identities,
+marker digests, and process observations are in the linked
+[`2026-10-22 compatibility evidence`](CAT-06-legacy-compatibility-2026-10-22.md#fresh-retained-work-and-ownership-observations).
 
 All seven commands, sessions, and jobs remain terminal `lost`; command output
 is incomplete, teardown is `lost`, and every command-slot stop/release and

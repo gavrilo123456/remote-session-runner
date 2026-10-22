@@ -1,5 +1,47 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 05:26 UTC — Factory green, Linux full suite blocked
+
+At synchronized source/evidence revision
+`40a62d93d7eaa8bc567482aa3bfbab0dfb93befd`, Factory full `make test`, vet,
+build, and smoke pass using disk-backed `/var/tmp`. Linux vet, build, and smoke
+pass, and its CAT-06 `laneinstall`/`runner-lane` packages passed. Linux full
+`make test` **fails** at the 10-minute timeout in unrelated
+`src/internal/localapi/TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary`
+while its fixture opens SQLite and verifies migration checksums. See the
+[CAT-06 evidence](../../040-implementation-evidence/CAT-06.md) for the exact
+test process disposition and historical Linux timeout.
+
+The required public-command subprocess sequence on disposable PRD-shaped
+paths remains **NOT RUN**; existing underlying API fixtures do not satisfy
+that gate. Sandbox remains below the requested 2 GiB disk-backed buffer at the
+owner-reported 861 MiB and its full suite remains unrun. The corrected exact
+retained-work inventory still has seven reservations without durable stop or
+cleanup evidence. No release was sealed and no production state changed. Keep
+CAT-06 blocked until these gates, supported retained-work recovery, typed
+per-host compatibility inputs, fresh backups, Dev/QAS acceptance, and PRD
+postflight pass.
+
+## CAT-06 checkpoint — 2026-10-22 04:45 UTC — compatibility evidence refreshed; deployment remains blocked
+
+The owner supplied a fresh Sandbox `/dev/sda1` reading of 861 MiB available,
+below the requested 2 GiB operating buffer. Preserve shared caches and
+retained data; rerun Sandbox source gates only after fresh disk-backed
+headroom meets that buffer. The corrected per-host PRD compatibility and
+retained-work inventory is recorded in
+[`CAT-06-legacy-compatibility-2026-10-22.md`](../../040-implementation-evidence/CAT-06-legacy-compatibility-2026-10-22.md).
+
+The rollback-semantic fixture passed on all four platforms at delivered
+source/evidence commit `40a62d93d7eaa8bc567482aa3bfbab0dfb93befd`. The fixture
+does not prove live rollback. Seven terminal-lost PRD reservations remain
+without durable stop/cleanup/release evidence; the exact previous pair mapping
+in the older CAT-06 table is superseded by the linked corrected inventory.
+The required typed per-host `CatalogLegacyRollbackCompatibility` inputs,
+supported retained-work recovery, fresh consistent backups, new sealed
+candidate, Dev→QAS acceptance, and PRD deployment remain incomplete. QAS
+continues serving with all eight mailbox paths assigned to it. No production
+state changed.
+
 ## CAT-06 checkpoint — 2026-10-22 04:23 UTC — arm64 fixture correction delivered; PRD still blocked
 
 The test fixture now selects the canonical host identity for its actual OS and
