@@ -1,5 +1,14 @@
 # Lane execution ledger
 
+## CAT-06 capacity-policy amendment — 2026-10-22 08:08 UTC
+
+The owner reduced the separate operating buffer from 2 GiB to **0.5 GB =
+500,000,000 bytes**. The backup estimator and 64 MiB selector reserve are
+unchanged; the recorded Sandbox total becomes 849,205,489 bytes. Fresh
+capacity and the other deployment gates remain required. No service, mailbox,
+database, receipt or selector was changed; QAS users keep running. See
+[policy, arithmetic and validation](CAT-06.md#owner-capacity-policy-amendment--2026-10-22-0808-utc).
+
 ## Selected follow-up — catalog design and plan, 2026-10-19
 
 The owner selected the [Factory-style Runner release catalog design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)

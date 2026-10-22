@@ -697,7 +697,7 @@ func ensurePRDBackupCapacity(plan PRDUpgradePlan, databasePath string) error {
 	return nil
 }
 
-// ensurePRDCatalogOperatingBuffer keeps the fixed 2 GiB operating buffer
+// ensurePRDCatalogOperatingBuffer keeps the owner-selected 0.5 GB operating buffer
 // separate from the 64 MiB selector reserve. The existing backup estimate
 // already includes the consistent DB copy, current binaries/config/secrets,
 // and the selector reserve. Catalog releases are already sealed in place, so
@@ -718,7 +718,8 @@ func ensurePRDCatalogOperatingBuffer(plan PRDUpgradePlan, databasePath string) e
 	return nil
 }
 
-const prdCatalogOperatingBufferBytes uint64 = 2 << 30
+// GB is decimal here: the owner's 0.5 GB policy is 500,000,000 bytes.
+const prdCatalogOperatingBufferBytes uint64 = 500_000_000
 
 func prdCatalogPreBackupRequiredBytes(backupAndSelectorRequired uint64) (uint64, error) {
 	if backupAndSelectorRequired > ^uint64(0)-prdCatalogOperatingBufferBytes {

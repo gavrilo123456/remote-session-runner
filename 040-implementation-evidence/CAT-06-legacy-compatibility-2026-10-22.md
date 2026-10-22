@@ -1,5 +1,17 @@
 # CAT-06 legacy PRD compatibility evidence — 2026-10-22
 
+## Current capacity-policy override — 2026-10-22 08:08 UTC
+
+The owner reduced the additional CAT-06 operating buffer to **0.5 GB =
+500,000,000 bytes**. Older 2 GiB requirements and resulting deficits in the
+dated observations below are superseded, not current blockers by themselves.
+Preserve the existing backup estimator and separate 64 MiB selector reserve.
+For the recorded 349,205,489-byte allowance, the revised required availability
+is **849,205,489 bytes**. Always remeasure immediately before live operations.
+The installed-identity/semantic compatibility records are unchanged; reducing
+the buffer neither disposes retained work nor proves deployment acceptance.
+See [policy and measured breakdown](CAT-06.md#owner-capacity-policy-amendment--2026-10-22-0808-utc).
+
 ## Scope
 
 This record binds the existing PRD binaries and application configuration on

@@ -1,5 +1,26 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## Owner capacity-policy amendment — 2026-10-22 08:08 UTC
+
+The owner reduced the CAT-06 operating buffer from 2 GiB to **0.5 GB**, meaning
+exactly **500,000,000 bytes** (decimal GB). This supersedes the operating-buffer
+requirements in all older checkpoints below. Their dated measurements and
+failure results remain historical evidence, not the current capacity policy.
+
+Required pre-backup free space is the freshly measured backup allowance,
+including its separate 64 MiB selector reserve, **plus 500,000,000 bytes**.
+The selector CLI argument remains `--required-free-bytes 67108864`; do not pass
+the operating buffer as that argument. Do not delete retained data or skip
+backups to meet either requirement.
+
+The recorded Sandbox allowance of 349,205,489 bytes is not source-code size:
+it contains twice the DB/WAL/SHM size (246,139,008 bytes), installed binaries
+and other backed-up files (35,957,617 bytes), and the selector reserve
+(67,108,864 bytes). With the new buffer the total is **849,205,489 bytes**.
+Fresh availability must be rechecked immediately before each operation; a
+capacity arithmetic pass alone does not authorize recovery or deployment.
+See [current policy, verification and scope](../../040-implementation-evidence/CAT-06.md#owner-capacity-policy-amendment--2026-10-22-0808-utc).
+
 ## CAT-06 checkpoint — 2026-10-22 07:56 UTC — Linux suite interrupted; all compatibility inputs checked
 
 The current delivered revision is `9113b44fc436014c4017522ca2c2432ed66c79b9`.

@@ -92,8 +92,14 @@ func TestPRDCatalogPreBackupCapacitySeparatesBackupBufferAndSelectorReserve(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if required != backupAndSelector+(2<<30) {
-		t.Fatalf("pre-backup required=%d, want backup/staging estimate %d plus separate 2 GiB operating buffer", required, backupAndSelector)
+	if required != backupAndSelector+500_000_000 {
+		t.Fatalf("pre-backup required=%d, want backup/staging estimate %d plus separate 0.5 GB operating buffer", required, backupAndSelector)
+	}
+	// Keep the observed Sandbox budget separate from the policy reserve:
+	// reducing the reserve does not remove the backup or selector allowance.
+	const sandboxBackupAndSelector = uint64(349_205_489)
+	if sandboxRequired, err := prdCatalogPreBackupRequiredBytes(sandboxBackupAndSelector); err != nil || sandboxRequired != 849_205_489 {
+		t.Fatalf("Sandbox pre-backup required=%d, err=%v; want 849205489 bytes", sandboxRequired, err)
 	}
 	if _, err := prdCatalogPreBackupRequiredBytes(^uint64(0)); !errors.Is(err, ErrPRDUpgradeGuard) {
 		t.Fatalf("overflowing pre-backup requirement error=%v", err)
@@ -111,9 +117,9 @@ func TestPRDCatalogHostPreflightRejectsOperatingBufferAsSelectorReserveBeforeBac
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = ReadPRDCatalogCohortHostPreflight(context.Background(), plan, nil, "fixture-release", 2<<30, nil)
+	_, err = ReadPRDCatalogCohortHostPreflight(context.Background(), plan, nil, "fixture-release", prdCatalogOperatingBufferBytes, nil)
 	if !errors.Is(err, ErrPRDUpgradeGuard) {
-		t.Fatalf("preflight accepted 2 GiB as selector reserve or touched dependencies first: %v", err)
+		t.Fatalf("preflight accepted the 0.5 GB operating buffer as selector reserve or touched dependencies first: %v", err)
 	}
 }
 

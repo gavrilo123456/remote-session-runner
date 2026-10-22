@@ -1,5 +1,52 @@
 # CAT-06 — PRD adoption and promotion
 
+## Owner capacity-policy amendment — 2026-10-22 08:08 UTC
+
+The owner explicitly reduced the separate operating buffer to **0.5 GB =
+500,000,000 bytes**. This supersedes the former 2 GiB operating-buffer rules
+in the dated records below. The source guard and its regressions now use the
+new amount; the native selector reserve remains **64 MiB = 67,108,864 bytes**.
+The `catalog-host-preflight` flag still takes that selector reserve, not the
+operating buffer. No backup, installer, selector, service or mailbox operation
+is authorized or performed by this policy-only change.
+
+Read-only Sandbox file-size inspection explains the prior 349,205,489-byte
+allowance:
+
+| Component | Bytes | Meaning |
+| --- | ---: | --- |
+| Existing DB | 118,636,544 | Persistent runtime data, not source code |
+| WAL + SHM | 4,432,960 | SQLite sidecars |
+| Twice DB + sidecars | 246,139,008 | Conservative consistent-backup budget |
+| Installed compiled binaries | 35,951,479 | Six existing native executables |
+| Configuration, credentials and service definition | 6,138 | Preserved rollback inputs; contents not read |
+| Selector reserve | 67,108,864 | Space kept free, not a file copy |
+| **Backup allowance plus selector reserve** | **349,205,489** | Existing estimator, unchanged |
+| New operating buffer | 500,000,000 | Owner-selected additional reserve |
+| **Required pre-backup availability** | **849,205,489** | Freshly remeasure before live operations |
+
+The twofold database term is conservative budgeting, not a claim that two
+permanent database backups are written. The backup creates one consistent
+snapshot and publishes it by hard link. The catalog is already sealed; no
+second executable staging copy is needed for selector activation. No database
+shrink, cleanup or backup-policy change is included here.
+
+The read-only Sandbox observation found 903,520,256 bytes available, leaving
+54,314,767 bytes above the revised total. This is an observation-time margin,
+not reserved space or deployment acceptance. Linux's full-suite gate, exact
+retained-pair recovery, fresh backups and candidate Dev/QAS acceptance remain
+separate. QAS continues serving the eight handoff paths.
+
+Mac verification passed for both affected packages:
+`go test ./src/internal/laneinstall ./src/cmd/runner-lane -count=1`
+(28.125s and 3.386s), using Go 1.27.1 and the existing shared caches.
+`go vet` passed for the same two packages; `gofmt` and `git diff --check` pass.
+Regression coverage retains arithmetic/overflow and the unchanged selector
+reserve; the observed Sandbox case now requires exactly 849,205,489 bytes.
+This does not relabel any interrupted Linux full suite PASS or establish
+acceptance for a newly sealed release. Delivery and worker focused results
+follow below after the primary/mirror handoff.
+
 ## CAT-06 checkpoint — 2026-10-22 07:56 UTC — compatibility inputs validated; Linux full suite interrupted; PRD remains blocked
 
 Revision `9113b44fc436014c4017522ca2c2432ed66c79b9` remains the clean source
