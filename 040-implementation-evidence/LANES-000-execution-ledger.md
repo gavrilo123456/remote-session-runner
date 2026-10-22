@@ -1,5 +1,26 @@
 # Lane execution ledger
 
+## CAT-06 fresh work/ownership and capacity check — 2026-10-22 10:19 UTC
+
+At synchronized checkout `39c884447785c7883e119d512a3d00c26319e6f5`, the
+read-only current-source preflight reports schema 40 and unchanged bundle and
+configuration hashes on all four hosts. It reports zero queued/running/
+resumable/finalization work and seven unreleased slots/reservations matching
+the three Mac, one Linux, and three Sandbox terminal-lost pairs. Bounded
+read-only SQLite queries confirm every exact ID remains `lost` with
+`command_lost`, incomplete output, and all stop/release/cleanup timestamps
+null. Fresh owner-marker checks found no cleanup proofs; Linux and Sandbox
+groups contain only their recorded zombie shells, and Mac groups are absent.
+No signal, service stop, recovery, or state write occurred. See the detailed
+[CAT-06 ownership evidence](CAT-06-legacy-compatibility-2026-10-22.md#fresh-prd-work-and-ownership-refresh--2026-10-22-1012-1019-utc).
+
+Sandbox `/dev/sda1` and `/tmp` both measured 810,663,936 bytes available at
+`10:19:01Z`. The 849,205,489-byte pre-operation threshold is short by
+38,541,553 bytes. Keep all existing caches, backups, and retained data; do
+not start a new backup, recovery installer, or selector change until a fresh
+measurement meets the threshold. QAS and all eight mailbox assignments
+remain unchanged, and no mailbox item was published.
+
 ## CAT-06 backup and Sandbox capacity update — 2026-10-22 10:10 UTC
 
 The supported per-host PRD backup command completed on Mac, Linux, Sandbox,

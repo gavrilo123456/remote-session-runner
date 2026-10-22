@@ -1,5 +1,24 @@
 # CAT-06 — PRD adoption and promotion
 
+## CAT-06 refreshed work inventory — 2026-10-22 10:19 UTC
+
+The supported current-source preflight and bounded read-only database queries
+confirm the same seven unreleased terminal-lost pairs, with no queued, running,
+resumable, or pending-finalization work. Owner markers still match the
+recorded process identities and have no durable cleanup proof; Mac process
+groups are absent, while Linux and Sandbox each contain only the recorded
+zombie shells. PRD service state is unchanged (Mac inactive, three workers
+active). Exact IDs, marker hashes, per-host inventories and query methods are
+in the [refreshed evidence](CAT-06-legacy-compatibility-2026-10-22.md#fresh-prd-work-and-ownership-refresh--2026-10-22-1012-1019-utc).
+
+Sandbox capacity at `10:19:01 UTC` is `810,663,936` bytes available on
+disk-backed `/dev/sda1` for `/` and `/tmp`; it is 38,541,553 bytes below the
+849,205,489-byte current pre-operation threshold. No new backup, stop,
+recovery, selector, or database operation is started. Keep caches, retained
+work and backups. QAS and all eight mailbox assignments remain unchanged.
+CAT-06 remains blocked on the capacity gate and supported exact-pair recovery,
+then candidate sealing and Dev → QAS → PRD acceptance.
+
 ## CAT-06 backup and Sandbox capacity update — 2026-10-22 10:10 UTC
 
 Supported consistent schema-40 PRD backups were completed and verified on

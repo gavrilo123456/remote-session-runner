@@ -1,5 +1,27 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 10:19 UTC — exact work refreshed; capacity blocks recovery
+
+Fresh current-source preflights and read-only SQLite queries confirm only the
+same seven unreleased terminal-lost pairs (Mac 3, Linux 1, Sandbox 3); every
+record remains `lost` with incomplete output, final `command_lost` event, and
+no durable stop/release or cleanup proof. There is no queued, running,
+resumable, or pending-finalization work. The owner markers still match the
+recorded process identity. Mac process groups are absent; Linux and Sandbox
+groups contain only their recorded zombie shells. No signal or service
+change occurred. Detailed per-host outputs and exact identifiers are in the
+[`CAT-06 evidence`](../../040-implementation-evidence/CAT-06-legacy-compatibility-2026-10-22.md#fresh-prd-work-and-ownership-refresh--2026-10-22-1012-1019-utc).
+
+At `2026-10-22T10:19:01Z`, Sandbox had 810,663,936 bytes available on
+disk-backed `/dev/sda1` for `/` and `/tmp`, 38,541,553 bytes short of the
+849,205,489-byte backup/staging + 500,000,000-byte operating buffer + 64 MiB
+selector reserve. The already-created four consistent backups remain intact;
+do not start another backup, recovery installer, or selector operation until
+a fresh reading meets the threshold. Preserve all retained work, shared
+caches, backups, and journals. PRD services remain Mac inactive and Linux,
+Sandbox, Factory active; QAS and its eight mailbox paths remain unchanged.
+CAT-06 is still blocked before recovery and rollout acceptance.
+
 ## CAT-06 checkpoint — 2026-10-22 10:10 UTC — backups complete; Sandbox gate remains
 
 Supported consistent schema-40 PRD backups were completed on Mac, Linux,

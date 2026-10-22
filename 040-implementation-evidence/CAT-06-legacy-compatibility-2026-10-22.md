@@ -35,6 +35,56 @@ unreleased. No PRD service was stopped or restarted, no database or selector
 was changed, and QAS plus all eight mailbox paths remain unchanged. Mailbox
 requests and ACKs were not published.
 
+## Fresh PRD work and ownership refresh — 2026-10-22 10:12–10:19 UTC
+
+The current-source `runner-lane prd-preflight` was run read-only on all four
+hosts using explicit Go 1.27.1 and the synchronized `dev` checkout at
+`39c884447785c7883e119d512a3d00c26319e6f5`. All databases remain schema 40;
+configuration and installed bundle hashes match the 09:53 records. Mac PRD
+is inactive; Linux, Sandbox, and Factory PRD remain active. Work-category
+counts remain: Mac 0 sessions / 3 unreleased slots / 3 reservations; Linux
+0 / 1 / 1; Sandbox 0 / 3 / 3; Factory 0 / 0 / 0. Every host reports zero
+queued, running, resumable, and pending-finalization work.
+
+Hashing each coherent preflight snapshot with the shared canonical
+`CatalogWorkInventory` JSON representation gives Mac
+`5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0`, Linux
+`5dd44373b3a9421f25af8fa4db58b9b107a7e7e66b54ed93a6ca78bc67d4743d`,
+Sandbox `5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0`,
+and Factory `92103a248a6dc1bd114512bc8b084280e339ff6972656bb42c4224f77a121f8b`.
+These match the 09:53 values. The last direct admission-hold check at 09:53
+found no PRD cohort hold; no receipt or selector mutation occurred since.
+
+Fresh bounded SQLite reads used `-readonly`, `PRAGMA query_only=ON`,
+`PRAGMA writable_schema=ON`, and a single read transaction, selecting only
+identities, state, final event, output completeness, and release timestamps.
+They confirm precisely the seven unreleased pairs previously listed: Mac's
+all-lost scan at `10:17:46Z` and unreleased-only scan at `10:18:10Z`; Linux's
+one at `10:18:29Z`; and Sandbox's three at `10:18:27Z`. Every pair remains
+session/command/job `lost`,
+with final event `command_lost`, `output_complete=0`, and null slot stop,
+slot release, reservation cleanup, and reservation release timestamps. No
+additional unreleased pair was returned. Factory remains at zero.
+
+Owner markers were reread at `10:17:06–10:17:08Z`: all seven remain regular
+owner-only files (mode 0600, expected UID, one link), with the same session,
+generation, PID/PGID, and start identity. Their digests remain the recorded
+values in the retained-work table below, and none contains cleanup proof. Mac's recorded
+process groups are absent. Linux PGID 118705 contains only its recorded
+zombie `bash`; Sandbox PGIDs 2851086, 3969302, and 3253996 each contain only
+their recorded zombie `bash`. No signal or cleanup action occurred.
+
+At `2026-10-22T10:19:01Z`, direct SSH measured Sandbox `/dev/sda1` at
+810,663,936 bytes available for both `/` and `/tmp` (99% used). This is
+38,541,553 bytes below the 849,205,489-byte backup/staging + 500,000,000-byte
+operating buffer + 64 MiB selector reserve. The post-backup 567,108,864-byte
+buffer-plus-selector amount is still exceeded by 243,555,072 bytes, but the
+larger owner-specified pre-operation gate controls before another backup or
+recovery/install/selector operation. `/tmp` is on the same disk-backed root
+filesystem, not a separate volume. Keep existing work, backups, and shared
+caches; do not reclaim them to manufacture headroom. PRD services, databases,
+receipts, selectors, and all QAS mailbox assignments remain unchanged.
+
 ## Current-source read-only revalidation — 2026-10-22 09:29 UTC
 
 After the required source gates passed at source change
