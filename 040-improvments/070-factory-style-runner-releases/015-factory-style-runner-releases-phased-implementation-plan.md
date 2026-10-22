@@ -1,5 +1,64 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 07:56 UTC — Linux suite interrupted; all compatibility inputs checked
+
+The current delivered revision is `9113b44fc436014c4017522ca2c2432ed66c79b9`.
+The corrected P025 test and the previous P101 timeout case pass on Linux. Its
+single full-suite retry reached the command packages and `runner-lane`, then
+was interrupted when host load reached 19.67 and CPU steal 93%; the exact
+task-owned Go test process received SIGINT. Record Linux `make test` as
+**INTERRUPTED / NOT PASS**. Do not repeat the full suite until fresh host
+observations show stable CPU availability. Linux vet/build/smoke remain
+unrun at this revision. Mac's focused CAT-06 tests and full gates, plus
+Sandbox and Factory full gates, pass at `9113b44`.
+
+All four canonical owner-only compatibility inputs now pass
+`catalog-compatibility-check` against current host hashes, schema 40, and
+inventory hashes in read-only/no-backup mode. They bind semantic evidence
+SHA-256 `99ccfc61ae6756895d253889135d8b11d6214f3787772f62524836bde0a10f33`;
+their paths and hashes are in the linked CAT-06 compatibility record. Do not
+invoke `catalog-host-preflight` as a dry run: it creates a consistent backup.
+The selector reserve is exactly 64 MiB; the 2 GiB operating buffer is
+additional.
+
+At 07:56:08 UTC Sandbox had 906,756,096 bytes free. The current
+backup/staging estimate plus the separate operating buffer requires
+2,496,689,137 bytes, so the shortfall is 1,589,933,041 bytes. Seven retained
+lost pairs remain without durable cleanup/release proofs; use the supported recovery only as an installation
+action with fresh backup and acceptance guards. No release was sealed and no
+backup, receipt, hold, selector, or service was changed. Keep QAS and all eight
+mailbox paths serving. The exact gates and blockers are in
+[CAT-06 evidence](../../040-implementation-evidence/CAT-06.md#cat-06-checkpoint--2026-10-22-0756-utc--compatibility-inputs-validated-linux-full-suite-interrupted-prd-remains-blocked).
+
+## CAT-06 checkpoint — 2026-10-22 07:45 UTC — resume only after Linux load and Sandbox headroom gates
+
+The current delivered source is `9113b44fc436014c4017522ca2c2432ed66c79b9`.
+It contains the test-only public-command subprocess acceptance harness and
+read-only compatibility-input validator. Mac's focused CAT-06 tests and full
+source gates, plus Sandbox and Factory full test/vet/build/smoke gates, pass at
+this revision. Linux's corrected targeted P025 and P101 tests pass, but full
+`make test` remains unrun because fresh observations returned 77–99% CPU steal
+while PRD/Dev/QAS services were active. Do not treat the prior misnamed P025
+selection or earlier Linux suite interruption as passing evidence.
+
+Four typed owner-only compatibility inputs now bind to the exact installed
+PRD bundle/configuration hashes and reviewed semantic evidence. Mac, Sandbox,
+and Factory pass the read-only identity check; Linux's revised input remains
+unchecked. This check creates no backup. The operational `catalog-host-preflight`
+does create one and is still gated. The `--required-free-bytes` argument is
+67,108,864 bytes (64 MiB) for selector headroom; the 2 GiB operating buffer is
+separate.
+
+Sandbox currently has 935,182,336 bytes free versus 2,496,689,137 bytes needed
+for the current backup/staging estimate plus that separate buffer. The
+1,561,506,801-byte deficit blocks backups and selector changes. The refreshed
+seven-pair lost-work inventory still has no durable stop/cleanup/release
+proofs; preserve it for exact supported recovery. Keep users and all eight
+mailbox paths in QAS. No candidate is sealed or promoted until the Linux
+full-suite gate, Sandbox space, exact-pair recovery, and subsequent Dev → QAS
+acceptance gates pass. See [CAT-06 evidence](../../040-implementation-evidence/CAT-06.md#cat-06-checkpoint--2026-10-22-0745-utc--public-harness-and-three-platform-gates-pass-prd-remains-blocked)
+and the linked detailed compatibility and retained-work record.
+
 ## CAT-06 checkpoint — 2026-10-22 06:15 UTC — Linux full suite interrupted under host starvation
 
 At clean synchronized revision

@@ -178,3 +178,65 @@ suite. This attempt and correction are both retained in evidence. The owner's
 agreement to proceed with source gates under tight capacity did not waive the
 2 GiB minimum for backups or catalog selector operations. No cleanup, backup,
 service, selector, receipt, database, mailbox, or ACK changed in this gate.
+
+## Compatibility inputs and refreshed retained work — 2026-10-22
+
+The reviewed semantic evidence is
+[`CAT-06-legacy-semantic-test-evidence-2026-10-22.md`](CAT-06-legacy-semantic-test-evidence-2026-10-22.md), SHA-256
+`99ccfc61ae6756895d253889135d8b11d6214f3787772f62524836bde0a10f33`.
+The four canonical JSON inputs use format version 1, schema/read range 40,
+test suite `catalog-prd-legacy-semantics-v1`, the five required semantic check
+IDs, and tested time `2026-10-22T07:50:13Z`. Each input is bound to the exact
+legacy bundle and configuration digests in the first table above.
+
+| Host | Owner-only input path | SHA-256 | File identity |
+| --- | --- | --- | --- |
+| Mac | `/private/tmp/cat06-legacy-compatibility-mac-control-plane-20261022-r4.json` | `acc1a1d445519cda69b4fca9def7d27b3defdfeaa273953b299c814fde5e7412` | mode 0600, UID 502, one link |
+| Linux | `/home/ubuntu/.local/share/remote-session-runner/cat06-legacy-compatibility-linux-host-20261022-r4.json` | `4a75b3b4c3d365fcb51a3ea10c52cfe618d2e61b00251807786af52f1dcfe224` | mode 0600, UID 1001, one link |
+| Sandbox | `/home/ubuntu/.local/share/remote-session-runner/cat06-legacy-compatibility-sandbox-host-20261022-r4.json` | `647762789eb2af19e4f21cf4e2fce1d214015ed5df18fdfac100325d4211ace8` | mode 0600, UID 1001, one link |
+| Factory | `/home/ubuntu/.local/share/remote-session-runner/cat06-legacy-compatibility-factory-sandbox-20261022-r4.json` | `844bf6583cdc27876be0065eedb56692e806ba71aa1ec0b184fdea5bbc16c693` | mode 0600, UID 1001, one link |
+
+At 2026-10-22 07:55–07:56 UTC, the exact-revision
+`runner-lane catalog-compatibility-check` returned `read_only_no_backup` on
+all four hosts. It reported each exact bundle/config hash, schema 40, and the
+same work-inventory hash as the fresh PRD table; service state was false on
+Mac and true on all three workers. Older task-owned input revisions r1–r3
+were removed only after their hashes and ownership were verified; only the
+current r4 files remain. `catalog-host-preflight` creates a consistent backup
+and is not a dry run. No backup was created by these read-only checks.
+
+The Sandbox filesystem calculation remains a separate live-operation gate.
+The required pre-backup amount is 349,205,489 bytes (consistent backup/staging
+estimate plus the 67,108,864-byte selector reserve); the 2 GiB operating buffer
+is additional, for a total of 2,496,689,137 bytes. At 07:56:08 UTC, Sandbox
+had 906,756,096 bytes free on `/dev/sda1`, a 1,589,933,041-byte shortfall. The
+shared cache was not cleaned. No backup, journal, database, mailbox, service,
+receipt, selector, or retained work was removed or changed.
+
+Fresh read-only SQLite snapshots at approximately 07:39 UTC used `mode=ro`,
+`query_only=ON`, and one transaction per database. They read session/command/job
+identities and terminal metadata, not scripts, payloads, credentials, or raw
+SQL parameters. The same seven unreleased pairs remain: all three Mac pairs,
+the Linux pair, and all three Sandbox pairs. Every row is `lost` at session,
+command, job, and teardown levels; the last command event is `command_lost`,
+output is incomplete, and slot stop/release plus reservation cleanup/release
+timestamps are null. Each marker below is mode 0600, singly linked, owned by
+the recorded service UID, and matches its session and generation. No marker
+contains `lost_recovery_cleanup_confirmed_at`.
+
+| Host | Session → command → job | Recorded PID/PGID; start identity | Marker SHA-256 | Fresh process observation |
+| --- | --- | --- | --- | --- |
+| Mac | `sess-227a0bc9f416e36532e99346ce273367` → `cmd-9e2033c5d6106b2e88f2cff200d7dbfe` → `job-2b4d2e3c9682d54e89342f7a486b5ddd` | 12701/12701; `1792524938329971` | `582aa7f474104a738a03368664630d2d453855e896f944b8d9d419a7693e9c91` | direct read-only `ps` had no matching group |
+| Mac | `sess-a68baa8f1dd9e66c2871e128002240ef` → `cmd-a66ce02cbaddf294e13afb3a409c317c` → `job-c40088894069e76f12650ea3bb0376bc` | 22367/22367; `1792525566416842` | `02862e07e173fa4d75071b821179bd3c48c552904d593d83af4a9ca4972ced93` | direct read-only `ps` had no matching group |
+| Mac | `sess-cf91a7902aceebd6ef20daaf6f090514` → `cmd-b524b94074ee26855f1778d52c9655cf` → `job-d46393c75fc5a21dc2fa38a58329d2bc` | 54385/54385; `1792510335431810` | `d47128d18d241ab9c0364a08df609c4f89657a33cd5fe5b6c4c189926bfb4631` | direct read-only `ps` had no matching group |
+| Linux | `sess-a8073cda44eb88573398d462c523ba83` → `cmd-6618114b0f1100e4d50479cf0e57ea2c` → `job-a73371770d4d29e2fc22fafd135396e9` | 118705/118705; `38701379` | `7f4fe1a17bc04bf9bb50b94f917d4c10d21ae4b606bfb6c693d967ec2ef86b2e` | only UID-1001 zombie `bash <defunct>` |
+| Sandbox | `sess-1797a73cdca867b343ef077b44f7dfda` → `cmd-bf1d015e3a6afb00e578f6f6a8119cd2` → `job-9b7cfd9b07a1edc1a2b1d8ffcf6c6cfe` | 2851086/2851086; `625457721` | `c932f38efb1695dfdc8f34e2e4663ad7ffcb2f74ea857a8443dbb4b86597ef49` | only UID-1001 zombie `bash <defunct>` |
+| Sandbox | `sess-5abb5d808cd5623f3dbd49202f15822c` → `cmd-a06764547029ef15e4726ebd56a03cdf` → `job-3cb15f466008a37dc2bb719d83a573d4` | 3969302/3969302; `645723329` | `e060c9e338cb8d59da47bcae7dd1ec106098da6c2e89598072dbdb84fa4c8177` | only UID-1001 zombie `bash <defunct>` |
+| Sandbox | `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` → `cmd-8cf6db5bb3871e721133825520367598` → `job-77ea4fda0582a7e9d3e49d269830d6ba` | 3253996/3253996; `642533456` | `a49c560f83ebe81c1bf65e7b156f051f268dc60982bc063c1a5955b7f8d0d5` | only UID-1001 zombie `bash <defunct>` |
+| Factory | none | — | — | no unreleased pair |
+
+The inventory hashes remain as in the first table; the refreshed records still
+do not supply durable runtime cleanup and capacity-release proofs. Do not
+manually clear these seven reservations. The supported recovery installer
+also installs artifacts, so budget and approve it as an installation action,
+not cleanup-only. No pair was recovered, replayed, or released in this refresh.

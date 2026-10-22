@@ -1,5 +1,100 @@
 # CAT-06 — PRD adoption and promotion
 
+## CAT-06 checkpoint — 2026-10-22 07:56 UTC — compatibility inputs validated; Linux full suite interrupted; PRD remains blocked
+
+Revision `9113b44fc436014c4017522ca2c2432ed66c79b9` remains the clean source
+revision on Mac `dev`, primary Gitea, the exact GitHub mirror, and all three
+Ubuntu `dev` checkouts. The untracked `src/cmd/catalog-holdcheck/` remains
+untouched. The source contains the public-command subprocess harness and
+read-only compatibility-input checker.
+
+The corrected Linux P025 test and the previously slow P101 test both pass at
+this revision. One full `make test` attempt started at 07:46:04 UTC; the
+command packages and `runner-lane` passed, but no further package output
+arrived before host load reached 19.67 and CPU steal 93%. SIGINT was sent only
+to task-owned Go PID 4133338. The make target exited 2 and remains
+**INTERRUPTED / NOT PASS**. No assertion failure is established. Linux vet,
+build, and smoke did not run after the test gate stopped the sequence. At
+07:50:13 UTC all three Runner services were active, no test process remained,
+and the synchronized checkout was clean at `9113b44`. Detailed output and
+previous attempts remain in the [semantic test evidence](CAT-06-legacy-semantic-test-evidence-2026-10-22.md).
+
+The exact command was `TMPDIR=/tmp GOTMPDIR=/tmp SQLITE_TMPDIR=/tmp
+GOMAXPROCS=2 GOFLAGS=-p=1 make test`. The start samples showed CPU steal of
+7%, 0%, and 18%. The observed package results were `cmd/catalog-probe-once`
+(cached), `cmd/lane-preflight` (cached), `cmd/runner` (no test files), and
+`cmd/runner-lane` (38.402 seconds). The suite then produced no further package
+result before the 93% steal observation at 07:48:59 UTC. At 07:50:13 UTC,
+`/tmp` had 15,610,396,672 bytes free, all Runner services were active, the
+checkout remained clean, and no test process remained.
+
+Mac, Sandbox, and Factory current-revision full gates passed; Mac's focused
+CAT-06 tests also passed. Four mode-0600 compatibility inputs bound to the
+reviewed evidence SHA-256
+`99ccfc61ae6756895d253889135d8b11d6214f3787772f62524836bde0a10f33` passed
+`catalog-compatibility-check` on all four hosts in `read_only_no_backup` mode.
+Their per-host hashes and paths are in the
+[compatibility record](CAT-06-legacy-compatibility-2026-10-22.md#compatibility-inputs-and-refreshed-retained-work--2026-10-22). No operational preflight or backup was run.
+
+Sandbox had 906,756,096 bytes free at 07:56:08 UTC versus 2,496,689,137 bytes
+required for the measured backup/staging estimate plus the separate 2 GiB
+operating buffer, a 1,589,933,041-byte shortfall. The selector argument stays
+67,108,864 bytes (64 MiB); the 2 GiB buffer is separate. Do not start a
+backup or selector operation until the measured total fits.
+
+Fresh read-only inventories still show seven retained lost pairs (Mac 3,
+Linux 1, Sandbox 3, Factory 0), with no durable stop, cleanup, or release
+proofs. Their current identities, markers, and process observations remain
+linked above. Do not manually free their capacity; the supported recovery
+installer also installs binaries and must be treated as an installation.
+QAS and its eight mailbox paths remain in service. No retained work was
+recovered/replayed, no PRD backup/selector/receipt/service/database changed,
+and no mailbox request or ACK was published. No new candidate was sealed and
+Dev→QAS acceptance is not complete; PRD remains blocked.
+
+## CAT-06 checkpoint — 2026-10-22 07:45 UTC — public harness and three platform gates pass; PRD remains blocked
+
+Source revision `9113b44fc436014c4017522ca2c2432ed66c79b9` is on Mac `dev`,
+primary Gitea `origin/dev`, the exact automatic GitHub mirror `github/dev`,
+and all three clean Ubuntu `dev` checkouts. The untracked
+`src/cmd/catalog-holdcheck/` remains untouched. The public-command subprocess
+harness and read-only legacy-compatibility validator are part of this
+revision.
+
+At this exact revision, Mac's focused CAT-06 tests passed; its full test, vet,
+build, and smoke gates had passed in the preceding validation. Sandbox and
+Factory each passed full `make test`, vet, build, and smoke, with restricted
+concurrency and existing caches. Linux's corrected P025 and P101 targeted
+tests now pass, but its full-suite gate remains incomplete: repeated fresh
+`vmstat` samples reached 77–99% CPU steal with all three services active. One
+current-revision full suite has not been started during those intervals. The
+exact commands, package progress, prior interruptions, and current samples are
+in the [semantic test evidence](CAT-06-legacy-semantic-test-evidence-2026-10-22.md).
+
+Four canonical mode-0600 compatibility inputs are generated outside Git and
+bound to the exact installed bundle/configuration hashes and semantic evidence
+SHA-256 `ea976ed988edd0cbe49e82b6bb6e3e75cdfde515ecf1e34826bdb820c2ae21c7`.
+Their current owner-only file hashes and read-only validation results are in
+the [compatibility record](CAT-06-legacy-compatibility-2026-10-22.md#compatibility-inputs-and-refreshed-retained-work--2026-10-22). The
+Mac, Sandbox, and Factory inputs passed `catalog-compatibility-check` in
+`read_only_no_backup` mode. Linux's revised input is not yet validated. No
+`catalog-host-preflight` was invoked; that command creates a backup.
+
+Sandbox had 935,182,336 bytes free after its read-only compatibility check.
+The current estimate for backup/staging plus the separate 2 GiB operating
+buffer is 2,496,689,137 bytes, leaving a 1,561,506,801-byte shortfall. The
+CLI's `--required-free-bytes` remains exactly 67,108,864 bytes for the selector
+reserve; the 2 GiB buffer must not be passed to that flag.
+
+A fresh read-only inventory again found three retained lost pairs on Mac, one
+on Linux, three on Sandbox, and none on Factory. All seven still lack durable
+stop, cleanup, and release proofs; Linux/Sandbox owner groups have only zombie
+`bash` entries, and Mac's recorded groups were absent. Exact IDs, owner-marker
+hashes, and state are linked in the compatibility record. No pair was
+recovered, released, or replayed. No PRD backup, selector, receipt, service,
+database, configuration, mailbox, or ACK changed. QAS and its eight mailbox
+paths remain in service. CAT-06 deployment and release sealing remain blocked.
+
 ## Linux full-suite retry — 2026-10-22 06:02–06:15 UTC
 
 The clean Linux `dev` checkout was at
