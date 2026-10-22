@@ -1,5 +1,36 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-22 00:51 UTC — source delivered, PRD still blocked
+
+Source commit `a43a862ba27e818f0ece0cc3a2a5a481723d40f7` is on primary Gitea,
+matches the automatic GitHub mirror, and is present in clean `dev` checkouts on
+all three Ubuntu hosts. Mac and Factory full source gates pass. Linux
+catalog/PRD-focused tests, vet, build and smoke pass; full `make test` still
+fails at its 10-minute timeout in unrelated execution fixture
+`TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice` during SQLite
+migration. Sandbox tests remain NOT RUN because the fresh disk-backed `/tmp`
+measurement shows 443,699,200 bytes free, only 94,493,711 bytes over the
+current PRD backup requirement. Preserve caches and retained data; restore at
+least 2 GiB of disk headroom before Sandbox source gates.
+
+All installed PRD bundles report legacy source revision
+`00c1ca6e7694842c35d398583b3f26fea59e3613`, schema 40. Fresh config/bundle
+hashes, service state, capacity, canonical work hashes and exact seven
+retained pair identities are in [CAT-06 evidence](../../040-implementation-evidence/CAT-06.md#fresh-prd-baseline-and-capacity).
+The seven pairs still lack durable stop/cleanup/release timestamps. Mac
+processes are absent; Linux and Sandbox recorded process identities match
+zombie entries. No supported recovery, backup, admission hold, candidate seal,
+or service change has occurred.
+
+The initial PRD creation path and rollback synchronization tests pass on the
+focused Linux tests, Mac full suite and Factory full suite. Exact legacy
+binary/config/data-semantic rollback compatibility evidence remains missing;
+the schema number alone is insufficient. Candidate sealing and the Dev → QAS
+→ PRD acceptance sequence remain blocked until Sandbox source gates and
+legacy-compatibility evidence pass. QAS remains serving on all four hosts;
+the active eight-path handoff remains assigned to QAS, and QAS must be paused
+and drained by its publishers before candidate qualification restarts it.
+
 ## CAT-06 validation follow-up — 2026-10-21 23:39 UTC
 
 The synchronized source commit `140b0e94cd1be817695c77219208bea455133401`

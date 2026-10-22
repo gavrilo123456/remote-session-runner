@@ -1,5 +1,97 @@
 # CAT-06 — PRD adoption and promotion
 
+## Current CAT-06 checkpoint — 2026-10-22 00:51 UTC — delivered source `a43a862`
+
+The PRD bootstrap/reconciliation source correction and platform-aware fixture
+fix are delivered on `dev` at `a43a862ba27e818f0ece0cc3a2a5a481723d40f7`.
+Primary Gitea and the automatic GitHub mirror resolve to that exact SHA; all
+three Ubuntu `dev` checkouts are clean at that SHA. The untracked
+`src/cmd/catalog-holdcheck/` directory remains untouched and unstaged.
+No CAT candidate was sealed, no selector or service was changed, and no PRD
+backup, receipt, or admission hold was created.
+
+Source validation at this exact source tree:
+
+| Host | Required checks | Result |
+| --- | --- | --- |
+| Mac | `make test`, `make vet`, `make build`, `make smoke`, `gofmt`, `git diff --check` | **PASS** |
+| Factory | full `make test`, `make vet`, `make build`, `make smoke` | **PASS**; temporary test files used disk-backed `/var/tmp` because this host mounts `/tmp` as tmpfs |
+| Linux | focused `go test ./src/internal/laneinstall ./src/cmd/runner-lane -run '^(TestPRD|TestCatalog)' -count=1`, `make vet`, `make build`, `make smoke` | **PASS** |
+| Linux | full `make test` (`GOFLAGS=-p=1`) | **FAIL** — Go's 10-minute `src/internal/execution` timeout in unrelated `TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice`, while fixture `store.Open` applied migrations (`modernc.org/sqlite` B-tree insert). No assertion failure. Remaining task-owned test process was stopped after this failure; only its unique `/tmp/go-build91547467` was removed after process exit. |
+| Sandbox | source tests and build gates | **NOT RUN** — fresh `/dev/sda1` availability was 443,699,200 bytes. The measured PRD backup requirement is 349,205,489 bytes, leaving only 94,493,711 bytes; do not risk filling this filesystem with Go tests. |
+
+The owner previously pasted a Sandbox observation with 1.9 GiB available; a
+fresh direct measurement on the same `oracle-gustaw-janecki-ubuntu-flex-02`
+now reports 443,699,200 bytes free. No cache, retained record, backup, mailbox,
+or journal data was removed. Recheck before any future operation.
+
+### Fresh PRD baseline and capacity
+
+The four installed native bundles report build revision
+`00c1ca6e7694842c35d398583b3f26fea59e3613`; that commit exists locally and is
+an ancestor of the current source. Every listed service binary reported that
+revision. All four databases report schema 40. The hashes identify installed
+bytes only and do not establish compatibility by themselves.
+
+| Host | PRD service | Config SHA-256 | Legacy bundle SHA-256 | Available / required bytes | Canonical work counts `(sessions, slots, reservations, queued, running, resumable, finalizations)` | Inventory SHA-256 |
+| --- | --- | --- | --- | ---: | --- | --- |
+| Mac | stopped | `56c25057b58b72e592995cc00efbd042cf4d666db449d01bb03a0aa628778d11` | `0feb2b15957ad6dee4f90ac30949409300afaaf1f10e0c2f9c1aa04a63d2deda` | 147,109,834,752 / 392,873,782 | `(0,3,3,0,0,0,0)` | `5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0` |
+| Linux | active | `c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f` | `a774b0be0d758e42193165ece1b4bf97462726e703c34aff54ee0d63010f763c` | 15,768,182,784 / 126,470,672 | `(0,1,1,0,0,0,0)` | `5dd44373b3a9421f25af8fa4db58b9b107a7e7e66b54ed93a6ca78bc67d4743d` |
+| Sandbox | active | `50f704f1b692048a149c366d0e20be2448ee8236a8cdaefcee39b2a6449e5d9a` | `69755bfb0316939f99af2bea220260518f4fe96e9fd11aa9816fe8f64c1b7932` | 443,699,200 / 349,205,489 | `(0,3,3,0,0,0,0)` | `5d34dfc272eca5fe2f80442377a5b31346d27cf1d959cf4bd2b532c7cb782fc0` |
+| Factory | active | `271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699` | `c89aefe08fdcdc984525e218fd858eabd5489a5c5479f929d818a4b2ab4d6712` | 34,951,086,080 / 108,012,935 | `(0,0,0,0,0,0,0)` | `92103a248a6dc1bd114512bc8b084280e339ff6972656bb42c4224f77a121f8b` |
+
+Fresh PRD preflight used the Go 1.27.1 source command and its read-only SQLite
+opener on Mac, Linux, and Factory. Sandbox hashes were freshly recomputed from
+the config and exact binary files without writing to its nearly full disk;
+its exact work rows were read in a compatible SQLite read transaction. The
+host's system `sqlite3` library rejected the Linux schema's `STRICT` table
+syntax, so Linux work details were instead read using the repository's Go
+1.27.1 `modernc.org/sqlite` driver, `mode=ro`, `query_only=ON`, and one
+consistent transaction. No normal `store.Open`, migration, checkpoint, or
+database write was used.
+
+### Refreshed retained-work pairs
+
+All seven commands, sessions, and jobs remain terminal `lost`; command output
+is incomplete, teardown is `lost`, and every command-slot stop/release and
+session-reservation cleanup/release timestamp is unset. There are no queued or
+running commands, resumable jobs, or pending recovery finalizations. The
+owner-only runtime markers remain mode 0600 with one link and no recorded
+lost-recovery cleanup confirmation. These are retained ownership records, not
+authorization to release capacity.
+
+| Host | Session → command → job | Runtime generation; owner PID/process observation |
+| --- | --- | --- |
+| Mac | `sess-cf91a7902aceebd6ef20daaf6f090514` → `cmd-a66ce02cbaddf294e13afb3a409c317c` → `job-c40088894069e76f12650ea3bb0376bc` | `c1e43518ad81e68495c65e69b996ec02`; PID 54385 absent; marker SHA-256 `d47128d18d241ab9c0364a08df609c4f89657a33cd5fe5b6c4c189926bfb4631` |
+| Mac | `sess-227a0bc9f416e36532e99346ce273367` → `cmd-9e2033c5d6106b2e88f2cff200d7dbfe` → `job-2b4d2e3c9682d54e89342f7a486b5ddd` | `91e709684a1f4b02c35ab53c9d73b30c`; PID 12701 absent; marker SHA-256 `582aa7f474104a738a03368664630d2d453855e896f944b8d9d419a7693e9c91` |
+| Mac | `sess-a68baa8f1dd9e66c2871e128002240ef` → `cmd-b524b94074ee26855f1778d52c9655cf` → `job-d46393c75fc5a21dc2fa38a58329d2bc` | `337ab8c2bd8e79f6f369ecf3e934cf2a`; PID 22367 absent; marker SHA-256 `02862e07e173fa4d75071b821179bd3c48c552904d593d83af4a9ca4972ced93` |
+| Linux | `sess-a8073cda44eb88573398d462c523ba83` → `cmd-6618114b0f1100e4d50479cf0e57ea2c` → `job-a73371770d4d29e2fc22fafd135396e9` | `linux-6783b82a3e9f846e79ca28e4c3085e96`; PID/PGID 118705 is a zombie whose start identity matches the marker; marker SHA-256 `7f4fe1a17bc04bf9bb50b94f917d4c10d21ae4b606bfb6c693d967ec2ef86b2e` |
+| Sandbox | `sess-1797a73cdca867b343ef077b44f7dfda` → `cmd-bf1d015e3a6afb00e578f6f6a8119cd2` → `job-9b7cfd9b07a1edc1a2b1d8ffcf6c6cfe` | `linux-c63e12bbd7246fd7c41773c188c8a958`; PID/PGID 2851086 zombie; marker SHA-256 `c932f38efb1695dfdc8f34e2e4663ad7ffcb2f74ea857a8443dbb4b86597ef49` |
+| Sandbox | `sess-5abb5d808cd5623f3dbd49202f15822c` → `cmd-8cf6db5bb3871e721133825520367598` → `job-77ea4fda0582a7e9d3e49d269830d6ba` | `linux-9e7b4ccbe132f0fce46d51f1636fe92f`; PID/PGID 3969302 zombie; marker SHA-256 `e060c9e338cb8d59da47bcae7dd1ec106098da6c2e89598072dbdb84fa4c8177` |
+| Sandbox | `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` → `cmd-a06764547029ef15e4726ebd56a03cdf` → `job-3cb15f466008a37dc2bb719d83a573d4` | `linux-aefd261855c13ca0b8461d575cefb174`; PID/PGID 3253996 zombie; marker SHA-256 `a49c560f83ebe81c1bf65e7b156f051f268dc60982bc06398c1a5955b7f8d0d5` |
+| Factory | none | No unreleased work rows or ownership markers |
+
+Mac's absent process IDs and Linux/Sandbox zombie states are observations, not
+the persisted supported stop proof: the DB timestamps remain unset. The
+supported recovery must revalidate exact process-group ownership and write
+its own cleanup/stop evidence. No result, history, workspace, marker, or ACK
+was changed.
+
+### Deployment gates still open
+
+The legacy compatibility report has **not** been generated or accepted. It
+must bind each exact old bundle/configuration hash above to a private,
+consistent database backup and tested data semantics; schema 40 is not that
+evidence. Sandbox needs more disk-backed headroom before its source suite and
+any backup. The sealed candidate and final per-host hashes do not exist yet.
+Dev qualification and then QAS qualification remain required; QAS users are
+active, so the owner must coordinate their pause and drain before any QAS
+restart. Fresh selected-lane guards, supported retained-work recovery,
+consistent backups, synchronized PRD receipt/hold, cohort switching and
+postflight remain unrun. Existing b84caf0 and historical ebc4446 releases are
+unchanged; all eight mailbox paths remain assigned to QAS. No mailbox request
+or ACK was published.
+
 ## Current engineering update — 2026-10-21 23:03 UTC: bootstrap and rollback-source work implemented; no candidate sealed
 
 Source work based on Mac `dev` predecessor `b5683e69507a58a93827c57500da4a315e1b6c3d` now adds a supported initial PRD cohort path. `catalog-host-preflight --lane prd` captures a read-only PRD snapshot, writes a consistent online backup, then verifies that the schema and canonical seven-field work inventory in the backup match the live preflight. The coordinator can create a PRD receipt without a pre-existing PRD hold; four ordered `fence-host` transitions stop and record each selected unsuffixed service, and only then may the receipt enter `held`. The public `preflight` action requires that exact synchronized hold.
