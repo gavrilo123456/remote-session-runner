@@ -1942,3 +1942,64 @@ fully rolled-back `b707…` attempt, verify one intended Dev hold, create fresh
 preflights/scopes for the same sealed candidate, and rerun Dev acceptance.
 PRD work follows only after that acceptance; QAS acceptance remains DEFERRED,
 NOT PASS.
+
+## Corrected Dev qualification accepted — 2026-10-23 17:52 UTC
+
+This checkpoint closes the failed `b707f52d55a6ee547541a97b08fc4ac8` attempt
+without changing its history, and records successful Dev acceptance under a
+fresh successor. `b707…` remains a preserved failed probe followed by a
+supported rollback; it has not been relabeled PASS. The accepted Dev operation
+is `c02b2c01b3504c067de9d3b77605b87e` on the unchanged sealed
+`cat-20261023-c01e633` release. The source revision, manifest, and four native
+bundle hashes remain those listed in the candidate section above.
+
+The supported receipt is `complete` with 16 transitions and identical
+SHA-256 `15147c8a896c2c86fa942f3aff394282d2e45bcdbb550b65970e991653bc5b2b`
+on Mac, Linux, Sandbox, and Factory. Host verification was recorded and
+synchronized in Linux → Sandbox → Factory → Mac order. Final fresh inventories
+were captured after functional probes and before completion:
+
+| Host | Observed UTC | Dev bundle SHA-256 | Config SHA-256 | Schema | Service | Work inventory |
+| --- | --- | --- | --- | ---: | --- | --- |
+| Linux | `2026-10-23T17:52:00.700088315Z` | `9a98537d38c98bcd9e9834ceb6ad23544dc85e8f038aed74f123bad1491df9cb` | `842a17572ba218ee770b39d8cf95c442c4885204d479d5b34ef6d2e4e5ff82f5` | 40 | active | empty |
+| Sandbox | `2026-10-23T17:51:59.631511834Z` | `43a92d91a43c954fd20efc6c5f8e5d5d01fca6487bf0a5da8929c3c73caed049` | `9a9adcd3236d8a92f2d405ef59f1199180310a03df6c9d246b784a702653d82a` | 40 | active | empty |
+| Factory | `2026-10-23T17:52:01.306397582Z` | `652b3c428c82c19b8a982e8fe6d0acb71f2734a87dfcfaf480db5530a22799d4` | `7af6d8ea68764f703b7aebd40966bbc7ff8b86523a2cb948d5f60e68659cd727` | 40 | active | empty |
+| Mac | `2026-10-23T17:51:56.107016Z` | `a338761463afe7dbe8f558f7166dd10f0d3890a0e9e151c1d906e955221067ee` | `2a256f44cf14031b8463854aa77c190ba265a419b624a0538a6c42ba130395d9` | 40 | active | empty |
+
+Each supported holdcheck returned exactly `held=true`, operation
+`c02b2c01b3504c067de9d3b77605b87e`, and `error=false`. Four ordinary-producer
+fence checks returned readiness HTTP 200 and POST HTTP 503; the probe helper
+validated response code `maintenance_admission_closed` and exited 0. The
+ordinary Dev admission hold remains active after cohort completion.
+
+All seven bounded fixed-script routes completed with command state `succeeded`,
+exit 0, final event sequence 4, complete non-truncated output, and confirmed
+`closed` teardown. Direct-mTLS and Mac-local calls returned HTTP 202 with
+readiness HTTP 200; both queued-SSH bridge calls returned a `result` response.
+The complete per-route outcomes are owner-only under
+`/private/tmp/rsr-cat06-b707-recovery-20261023T1816/`; no capability tokens or
+scripts are included here.
+
+| Host | Route | Job ID | Session ID | Command ID |
+| --- | --- | --- | --- | --- |
+| Linux | direct-mTLS | `job-d67234ede903ab25feee494e0c3a9dc7` | `sess-4d50d40b56cd8119c35a2628fa59d01d` | `cmd-73e7e7170fd084d83d76973522a69cb2` |
+| Linux | queued-SSH | `job-9d2c538d6a2eacd186c17cd01bdfbedf` | `sess-fecf12c8d8106533823e839f6019b5b6` | `cmd-9bac6afde683c36510d643c654df9dab` |
+| Sandbox | direct-mTLS | `job-28b53b77837d864f8e81083bec1b6a50` | `sess-01a82ae88f0ac8fa6fdd1272e09e1ad6` | `cmd-c7bfe3bdc5c07ed989bac9fa35a0f177` |
+| Sandbox | queued-SSH | `job-cb38c4fca73f3050f258c8bb8f25a1a5` | `sess-7b7c9fd80869a2d25ab6901df242f348` | `cmd-c3985a624b617fa192bb2bb5121a2855` |
+| Factory | direct-mTLS | `job-c2179e3125e287e01a1b9a3d66f12842` | `sess-b0af211d740bc10715f8c7d4bf6f0935` | `cmd-f53b74664476a4b31b17c40f0d9fcb53` |
+| Factory | queued-SSH | `job-119b74909b05ab538373a67d5f2070e7` | `sess-bacf40cb5cfbed10c3ce3871f0fa5c3a` | `cmd-da44f25dc1f6bb5657a252e0d474d95c` |
+| Mac | local | `job-89f875b4112838e269490110fa4402eb` | `sess-818c6775b14a4975209fb5507682dc2c` | `cmd-2b60751a2a25eabf1563651ed20d6a80` |
+
+QAS remained active on `cat-20261021-b84caf0` on all four hosts, and PRD
+selectors remained on `cat-20261022-7a42f3b`. QAS's existing Mac reservation
+(one command slot and one session reservation) remains intact. All eight
+mailbox paths remain assigned to QAS. No mailbox acceptance was attempted and
+no request or ACK was published. QAS acceptance is **DEFERRED, NOT PASS**.
+
+No PRD recovery or selector change is recorded in this Dev completion. Next is
+the already-authorized PRD leg: refresh exact retained-work identities and
+ownership, verify current receipt/selector state, capacity, backups and
+compatibility, then use the accepted `c01e633` artifacts for supported exact
+recovery and the guarded PRD cohort. Keep QAS serving its users and preserve
+all eight mailbox paths there through PRD acceptance. The QAS-to-PRD handoff
+remains a separate coordinated step after PRD acceptance.

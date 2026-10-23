@@ -1409,3 +1409,32 @@ the same sealed candidate. Rerun Dev functional acceptance before any PRD
 deployment. QAS remains serving with its eight mailbox assignments unchanged;
 the one-time Dev → PRD → mailbox handoff → QAS order still applies, and QAS
 acceptance remains DEFERRED, NOT PASS.
+
+## CAT-06 continuation — Dev accepted; PRD is next — 2026-10-23 17:52 UTC
+
+The prior rollback checkpoint is historical. Fresh successor operation
+`c02b2c01b3504c067de9d3b77605b87e` completed Dev acceptance for the unchanged
+sealed `cat-20261023-c01e633` candidate. Its four-host receipt is `complete`
+with 16 transitions and SHA-256
+`15147c8a896c2c86fa942f3aff394282d2e45bcdbb550b65970e991653bc5b2b` on all
+hosts. All seven direct-mTLS, queued-SSH and Mac-local bounded routes passed;
+all four ordinary-admission fence checks returned the expected denial. Fresh
+postflight found the candidate selected and active with empty Dev work
+inventories on all four hosts. The ordinary Dev admission hold remains active.
+See the [CAT-06 accepted Dev evidence](../../040-implementation-evidence/CAT-06.md#corrected-dev-qualification-accepted--2026-10-23-1752-utc).
+
+The earlier failed `b707…` probe and its supported rollback remain preserved
+as a separate **FAILED / NOT PASS** history; they are not relabeled by the
+successful successor. Source revision, release manifest, and per-host bundle
+bytes did not change. QAS remains active on `cat-20261021-b84caf0`, with the
+known Mac reservation preserved, and all eight mailbox paths remain assigned
+to QAS. QAS acceptance is **DEFERRED, NOT PASS**; no mailbox request or ACK
+was published.
+
+Proceed next to the owner-approved PRD leg using the same Dev-accepted sealed
+bytes. Refresh exact PRD retained-work identities and ownership, selectors,
+service state, receipt history, backups, compatibility and capacity before
+any write. Complete only supported exact-pair recovery and cohort adoption;
+keep QAS serving and unchanged. Coordinate the separate QAS-to-PRD mailbox
+handoff only after PRD functional acceptance. The normal 60-minute cohort
+evidence window and two-minute per-host preflight-to-switch bound still apply.
