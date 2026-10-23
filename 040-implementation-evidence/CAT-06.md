@@ -1,5 +1,44 @@
 # CAT-06 — PRD adoption and promotion
 
+## Current continuation-renewal checkpoint — 2026-10-23 08:53 UTC
+
+The Sandbox capacity recheck at `08:45:14Z` measured `1649299456` bytes free
+on `/dev/sda1`; immediately before host source gates `/tmp` on the same
+filesystem measured `1648234496` bytes. This exceeded the last recorded
+renewal threshold (`567108864` bytes). The operation-specific capacity
+calculation must still be refreshed immediately before the renewal write.
+
+The supported renewal `issue` initially refused a fresh Mac observation
+because free bytes changed by `4411392` between its captured report and the
+coordinator's own fresh check, even though all stable host proof fields
+matched. No renewal file was written. Source correction
+`7fafb20de7b74858f8ff83679d85df2ea3db1e1d` now compares stable host evidence
+without capture time/free-byte jitter; every observation still independently
+enforces its current capacity minimum, and the coordinator binds its fresh
+Mac reading into the issued record. Regression coverage proves that capacity
+jitter is accepted while configuration identity changes and below-threshold
+capacity remain rejected.
+
+The source commit is on primary Gitea and the automatic GitHub mirror at the
+exact SHA above. All Ubuntu `dev` checkouts were clean before fast-forwarding
+and are clean at that revision. Go 1.27.1 gates passed:
+
+| Host | Gates | Result and capacity evidence |
+| --- | --- | --- |
+| Mac | Full `make test`, `make vet`, `make smoke` through `make check`, plus standalone `make build` | PASS, exit 0 for both commands. Darwin/arm64. Shared configured Go caches used. |
+| Sandbox | Full `make test`, `make vet`, `make build`, `make smoke` | PASS, each exit 0 on linux/arm64. `/tmp` is on `/dev/sda1`; free bytes were `1648234496` before gates and `1576251392` after. The earlier interrupted run remains **INTERRUPTED / NOT PASS**. |
+| Factory | Full `make test`, `make vet`, `make build`, `make smoke` | PASS, each exit 0 on linux/amd64 with `GOMAXPROCS=1`, `GOFLAGS=-p=1`, `nice -n 19`; temporary paths used the existing `/tmp` mount, with no new mount created. |
+| Linux | Focused `laneinstall`/`runner-lane` tests; exact P025 `TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice`; exact P101 `TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary`; native vet/build/smoke | PASS, each exit 0 on linux/amd64. Full Linux suite remains outside the amended assignment; prior interrupted runs remain **NOT PASS**. |
+
+The frozen service release `cat-20261022-7a42f3b` is unchanged. No PRD service,
+selector, receipt, database, backup, mailbox path or ACK changed during these
+source checks. QAS and its eight mailbox paths remain unchanged. Next, rebuild
+only the temporary renewal operators from `7fafb20`, collect a wholly fresh
+four-host observation set, issue/synchronize/verify the supported four-hour
+renewal, then continue Sandbox → Factory → Mac while preserving Linux's
+completed switch. Keep the two-minute fresh preflight before every selector
+change.
+
 ## Current renewal-guard checkpoint — 2026-10-23 08:38 UTC
 
 The first fresh observation attempt at 08:16 UTC passed on Mac, Sandbox and

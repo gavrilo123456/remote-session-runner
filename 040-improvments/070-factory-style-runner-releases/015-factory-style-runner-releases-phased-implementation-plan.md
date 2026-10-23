@@ -1179,3 +1179,31 @@ operators built from `49bfc87`, followed by supported renewal issue, identical
 four-host sync/verify, and forward continuation Sandbox → Factory → Mac. The
 complete diagnosis and gate details are in
 [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#current-renewal-guard-checkpoint--2026-10-23-0838-utc).
+
+## CAT-06 continuation-renewal update — 2026-10-23 08:53 UTC
+
+The first renewal issue attempt after fresh host observations refused because
+the Mac free-byte reading changed between the captured observation and the
+coordinator's fresh local check. No renewal evidence was written. Source fix
+`7fafb20de7b74858f8ff83679d85df2ea3db1e1d` ignores only capture-time and
+available-byte jitter in stable host-state comparison. Fresh observation
+capacity guards remain active, and the renewal binds the coordinator's fresh
+Mac reading. Regression coverage preserves rejection of changed stable
+configuration and insufficient free space.
+
+The correction passed its required Go 1.27.1 gates: Mac full test/vet/build/
+smoke; Sandbox and Factory full test/vet/build/smoke; Linux focused CAT-06,
+exact P025/P101, and native vet/build/smoke. Sandbox had `1648234496` bytes
+free before and `1576251392` after the gates. Its earlier interrupted run and
+previous interrupted Linux full-suite runs remain historical **NOT PASS**.
+The source SHA is synchronized through primary Gitea, the exact GitHub mirror,
+and all clean Ubuntu `dev` checkouts. The sealed
+`cat-20261022-7a42f3b` service release remains unchanged.
+
+Next, rebuild temporary operators from `7fafb20`, take fresh four-host PRD
+observations, issue the operation-specific four-hour renewal, synchronize and
+verify its identical evidence across the cohort, then continue
+Sandbox → Factory → Mac with a fresh two-minute check before each selector
+change. QAS and its mailbox ownership remain unchanged. See the current
+checkpoint and per-host gate results in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#current-continuation-renewal-checkpoint--2026-10-23-0853-utc).
