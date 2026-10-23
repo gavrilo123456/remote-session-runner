@@ -1312,3 +1312,18 @@ Sandbox → Factory → Mac with a fresh two-minute check before each selector
 change. QAS and its mailbox ownership remain unchanged. See the current
 checkpoint and per-host gate results in
 [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#current-continuation-renewal-checkpoint--2026-10-23-0853-utc).
+
+## CAT-06 source-gate update — 2026-10-23 14:17 UTC
+
+The Factory full Linux/AMD64 `make test`, `make vet`, `make build`, and
+`make smoke` gates now pass at runtime source `c01e6339e9330ff6bf7dbde042b1cd5287c55c4e`
+(evidence-only delivery is at `1d6473301aa677109d6671655b8c6ec152285fa3`).
+The owner directed use of `/tmp` despite its tmpfs mount; all four commands
+used Go 1.27.1 with bounded concurrency. `quota -v` cannot report a per-user
+limit on that tmpfs, which is recorded as a measurement limitation rather than
+inferred from `df`. Together with the previously recorded Mac, Sandbox, and
+Linux assigned gates, source validation is complete for this correction.
+This does not pass installed acceptance: seal a new candidate from the frozen
+source, then complete Dev acceptance before any PRD operation. The existing
+one-time QAS defer order remains Dev → PRD → coordinated mailbox handoff → QAS;
+QAS acceptance remains DEFERRED, NOT PASS.

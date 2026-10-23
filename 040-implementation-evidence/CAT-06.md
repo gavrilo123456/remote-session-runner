@@ -1589,6 +1589,49 @@ schema identities, and supported exact-pair recovery evidence. The earlier
 PRD inventory and Sandbox capacity numbers above are historical, not current
 preflight results.
 
+## CAT-06 Factory source gates — 2026-10-23 14:17 UTC
+
+The owner resolved the Factory temporary-path choice: use `/tmp` despite its
+tmpfs mount. On `factory-sandbox`, the clean `dev` checkout was at
+`1d6473301aa677109d6671655b8c6ec152285fa3`; the runtime source tree is
+unchanged from `c01e6339e9330ff6bf7dbde042b1cd5287c55c4e` (the intervening
+commit adds evidence only). The primary Gitea `origin/dev` and automatic
+GitHub `github/dev` both resolve to `1d6473301aa677109d6671655b8c6ec152285fa3`.
+The Factory checkout was clean before the gates. The declared Makefile
+toolchain exists and reports `go version go1.27.1 linux/amd64`.
+
+All Factory gates used `GOMAXPROCS=2`, `GOFLAGS=-p=1`, `GOTOOLCHAIN=local`,
+and `TMPDIR=GOTMPDIR=SQLITE_TMPDIR=/tmp`:
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Full source suite | `make test` | **PASS**, exit 0; full Linux/AMD64 suite |
+| Vet | `make vet` | **PASS**, exit 0 |
+| Build | `make build` | **PASS**, exit 0 |
+| Smoke | `make smoke` | **PASS**, exit 0 |
+
+Immediately before `make test`, `make vet`, and `make build`, `/tmp` reported
+3,379,322,880 bytes available of 4,294,967,296. The same availability was
+observed before smoke and after all gates. No shared cache, retained data,
+service, selector, database, backup, receipt, mailbox assignment, request or
+ACK was changed by these source checks. `quota -v` still cannot report a
+per-user limit on the tmpfs mount (`Cannot stat() mounted device tmpfs`); the
+owner-approved `/tmp` path was used, and the available-byte measurement is not
+represented as a per-user quota measurement.
+
+With Factory complete, all assigned source gates for the correction now pass
+at `c01e633` runtime source: full Go 1.27.1 suite/vet/build/smoke on Mac,
+Sandbox and Factory; Linux changed-package tests, exact P025/P101 regressions,
+and native vet/build/smoke. Linux's full suite remains **NOT RUN** under the
+amended assignment, and prior interrupted full-suite attempts remain
+**NOT PASS**. The source correction is ready for the next candidate-sealing
+and Dev-acceptance gates; no release has yet been sealed from `c01e633`.
+Dev/PRD command-level acceptance, PRD replacement/deployment/acceptance,
+QAS→PRD mailbox handoff and QAS alignment remain **NOT RUN**. QAS continues
+serving with mailbox ownership unchanged; QAS acceptance remains DEFERRED,
+NOT PASS. The unrelated untracked `src/cmd/catalog-holdcheck/` directory
+remains preserved and unstaged.
+
 
 ## CAT-06 source delivery and Ubuntu host gates — 2026-10-23 14:06 UTC — Linux/Sandbox PASS; Factory scratch-path decision pending
 
