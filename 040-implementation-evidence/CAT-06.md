@@ -2003,3 +2003,14 @@ compatibility, then use the accepted `c01e633` artifacts for supported exact
 recovery and the guarded PRD cohort. Keep QAS serving its users and preserve
 all eight mailbox paths there through PRD acceptance. The QAS-to-PRD handoff
 remains a separate coordinated step after PRD acceptance.
+
+### Delivery of this Dev acceptance checkpoint
+
+The CAT-06 evidence and plan update was committed on Mac `dev` as
+`7880ecc5f1333e81fa1cf53543dfb505a2600c87`. The commit was pushed to primary
+Gitea `origin/dev`; `github/dev` was verified at the exact same SHA. Before
+pulling, Linux, Sandbox, and Factory were each clean on `dev` at
+`324b58aa4c23e9be3f5f47c206188d4a7f8154af`. Each used the required explicit
+GitHub SSH identity with `git pull --ff-only origin dev`; all three ended
+clean at `7880ecc5f1333e81fa1cf53543dfb505a2600c87`. `git diff --check`
+passed. No source tests were rerun for this documentation-only delivery.
