@@ -521,3 +521,44 @@ persistent locations above. Critical handoff/return evidence does not depend on
 the survival of `/tmp`. Private capabilities and historical identities are not
 committed to Git. This closeout changes documentation only; no source test
 rerun is needed after the already recorded exact-S3 gates.
+
+## CAT-06 return checkpoint — owner-reported QAS pause; settlement incomplete — 2026-10-23
+
+After PRD acceptance for `cat-20261023-c01e633`, the owner reported that all
+QAS users were stopped. The supported handoff operation
+`1f96911399ff6a678345f214ada69b49` remains `active` with the eight original
+mailbox roots assigned to QAS. QAS services remain active on
+`cat-20261021-b84caf0`; no QAS config, database, service or path assignment was
+changed during this checkpoint.
+
+Fresh read-only inventory found the three worker QAS databases empty. Mac QAS
+still has one unreleased command slot and one unreleased session reservation:
+job `job-c94f2ae5e541766a8e906b49084c863b`, session
+`sess-3312ec933b87677f4e0df158c93ca0a1`, command
+`cmd-e524fdc8d0e0d3d9309bf8722ad28122`. Its command/job are terminal `lost`
+with final event 7, incomplete output, `capture_boundary_unconfirmed`, and
+`runtime_cleanup_unconfirmed`; stop/release and cleanup/release confirmations
+are absent. The pair remains retained. The documented Mac lost-pair installer
+procedure is PRD-scoped and was not used against QAS.
+
+The QAS return guard also found 84 exchanges without ACKs: 3 for
+`agentic-software-factory-runner-direct` and 81 for `slidestud-io`. Three
+SlideStud requests remain accepted without terminal responses; 78 other
+exchanges have complete/rejected responses waiting for ACK. Both QAS `stop`
+and `restore` remain gated until these are settled and the Mac QAS inventory
+has a supported empty-state disposition. In particular, request
+`req-asf-p09-srt-argv-unit-fix-20261022-348` is complete at response revision 3
+and event 33 but is still unacknowledged; request
+`req-asf-p09-argv-unit-after-recovery-20261023-349` is complete at revision 3
+and event 7 but is also unacknowledged. Maintenance did not publish requests
+or ACKs.
+
+The existing return operation's current-source hash matches the active
+disabled Mac PRD configuration; the receipt target hash matches current QAS
+configuration. The saved pre-handoff PRD configuration was parsed by the
+current candidate's unchanged config parser as PRD with enabled Mac mailbox
+ingress and eight definitions. This is static parser/hash compatibility only;
+the live return was not activated. Keep PRD admission held and all eight paths
+in QAS until client result/ACK settlement and the exact retained-pair guard
+are resolved. Full runtime results and per-host hashes are in
+[`CAT-06.md`](CAT-06.md#prd-cohort-complete-qas-return-awaiting-work-settlement--2026-10-23-1944-utc).

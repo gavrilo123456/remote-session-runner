@@ -2014,3 +2014,106 @@ pulling, Linux, Sandbox, and Factory were each clean on `dev` at
 GitHub SSH identity with `git pull --ff-only origin dev`; all three ended
 clean at `7880ecc5f1333e81fa1cf53543dfb505a2600c87`. `git diff --check`
 passed. No source tests were rerun for this documentation-only delivery.
+
+## PRD cohort complete; QAS return awaiting work settlement — 2026-10-23 19:44 UTC
+
+This checkpoint supersedes the previous “PRD is next” state. The frozen
+`cat-20261023-c01e633` candidate was activated and accepted in PRD under
+operation `d6f245f466ef825375fdb133fb57923f`. The candidate remains source
+`c01e6339e9330ff6bf7dbde042b1cd5287c55c4e`, manifest SHA-256
+`7a9f705484906c7889c4776da0ef64769662fd0c5360e4d3767ca8021a5c4c81`. No
+bundle was rebuilt during promotion. The four PRD receipt files are identical
+(SHA-256 `95acaf5636d1cf461773ed2b34838502f1239d5bb5389fbb0ca6886eb691dd1a`),
+stage `complete`, 17 transitions. Fresh `catalog-cohort status` on every host
+reported the same operation, stage, transition count, and release identity.
+
+Fresh read-only observations at `2026-10-23T19:44:04Z`–
+`2026-10-23T19:44:05Z` show the final service state:
+
+| Host | Service | Bundle SHA-256 | Config SHA-256 | Schema | Work inventory | Admission hold | Available / required bytes |
+| --- | --- | --- | --- | ---: | --- | --- | ---: |
+| Linux | active | `9a98537d38c98bcd9e9834ceb6ad23544dc85e8f038aed74f123bad1491df9cb` | `c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f` | 40 | empty | `d6f245f466ef825375fdb133fb57923f` | 15,529,627,648 / 622,238,527 |
+| Sandbox | active | `43a92d91a43c954fd20efc6c5f8e5d5d01fca6487bf0a5da8929c3c73caed049` | `50f704f1b692048a149c366d0e20be2448ee8236a8cdaefcee39b2a6449e5d9a` | 40 | empty | `d6f245f466ef825375fdb133fb57923f` | 956,317,696 / 840,581,284 |
+| Factory | active | `652b3c428c82c19b8a982e8fe6d0acb71f2734a87dfcfaf480db5530a22799d4` | `271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699` | 40 | empty | `d6f245f466ef825375fdb133fb57923f` | 34,110,693,376 / 607,093,952 |
+| Mac | active | `a338761463afe7dbe8f558f7166dd10f0d3890a0e9e151c1d906e955221067ee` | `56c25057b58b72e592995cc00efbd042cf4d666db449d01bb03a0aa628778d11` | 40 | empty | `d6f245f466ef825375fdb133fb57923f` | 129,740,357,632 / 892,874,307 |
+
+PRD services restarted in Linux → Sandbox → Factory → Mac order after the
+complete receipt was synchronized. Fresh post-start observations confirm the
+installed release identities, schema, readiness, empty work, and exact still-
+held admission operation. The seven earlier bounded PRD functional routes
+(Linux direct and queued SSH; Sandbox direct and queued SSH; Factory direct
+and queued SSH; Mac local) each ended `succeeded`, exit 0, final event 4,
+complete output, not truncated, and teardown `closed`. Their exact identities
+and outcomes are in owner-only files under
+`/private/tmp/rsr-cat06-prd-observe-20261023/`. These commands ran before the
+final receipt-sync restart. After restart, readiness and held-admission fence
+checks passed; ordinary POST was correctly denied while the hold remains. No
+new functional command was submitted after that restart. PRD bounded
+acceptance passed, but project admission remains held pending the approved
+mailbox transition.
+
+The owner reported that all QAS users were stopped before this checkpoint.
+This pause is recorded as owner-reported; an external client-process inventory
+was unavailable. Fresh QAS status/inventory observations at
+`2026-10-23T19:41:58Z`–`2026-10-23T19:42:03Z` show QAS still active on
+`cat-20261021-b84caf0` on all four hosts, with all eight paths assigned to the
+active handoff. Linux, Sandbox, and Factory work inventories are empty. Mac
+QAS is **not drained**:
+
+| QAS host | Service | Active sessions | Command slots | Reservations | Queued/running | Resumable/finalization |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Linux | active | 0 | 0 | 0 | 0 / 0 | 0 / 0 |
+| Sandbox | active | 0 | 0 | 0 | 0 / 0 | 0 / 0 |
+| Factory | active | 0 | 0 | 0 | 0 / 0 | 0 / 0 |
+| Mac | active | 0 | 1 | 1 | 0 / 0 | 0 / 0 |
+
+The Mac QAS slot/reservation belongs to exact local-executor job
+`job-c94f2ae5e541766a8e906b49084c863b`, session
+`sess-3312ec933b87677f4e0df158c93ca0a1`, command
+`cmd-e524fdc8d0e0d3d9309bf8722ad28122`. Its durable state is terminal `lost`,
+final event 7 (`command_lost`), no exit code, output incomplete,
+`capture_boundary_unconfirmed`, and teardown `lost` with
+`runtime_cleanup_unconfirmed`. The command slot has no stop confirmation or
+release; the session reservation has no cleanup confirmation or release.
+This is retained history, not proof of active execution or safe cleanup. No
+recovery, replay, capacity release, or database edit was attempted. The
+documented Mac `--recover-stalled` installer path is for the unsuffixed PRD
+authority; it was not applied to the QAS database.
+
+The supported mailbox return operation remains
+`1f96911399ff6a678345f214ada69b49`, phase `active`, with eight mailbox
+definitions. The return guard also finds 84 unacknowledged QAS exchanges in
+the Mac database: 3 under `agentic-software-factory-runner-direct` and 81
+under `slidestud-io`. Three `slidestud-io` requests remain `accepted` without
+terminal responses; 78 others have complete or rejected responses but no
+ACK. This includes request
+`req-asf-p09-srt-argv-unit-fix-20261022-348` (complete, revision 3, event 33,
+unacknowledged) and
+`req-asf-p09-argv-unit-after-recovery-20261023-349` (complete, revision 3,
+event 7, unacknowledged). No request or ACK was published. The supported
+handoff `stop` and `restore` actions were not run: the retained Mac pair and
+accepted/unacknowledged exchanges fail their explicit drain guards.
+
+Return-package compatibility was checked without changing runtime state. The
+current Mac PRD config hash equals the operation's expected disabled-source
+hash; the QAS config hash equals the receipt-bound target hash. The saved
+pre-handoff PRD config is SHA-256
+`65840e66837dedfa17f5c32568d191a0bbfd6098bcc108d7ba4066f44fb95711` and the
+current candidate's unchanged config parser accepts it as PRD with enabled
+Mac ingress and eight mailbox definitions. The saved QAS baseline hash is
+`e00766f638ceb1f6102989ac1b2325128fda54daf6cabe63e87fd8beeb74c89a`. This
+confirms expected-hash scope and parser compatibility, not live return
+activation. The return remains unperformed until accepted requests have
+terminal results, the required responses are acknowledged by their clients,
+and Mac QAS work reaches a supported empty state. QAS acceptance for
+`cat-20261023-c01e633` remains **DEFERRED, NOT PASS**; filesystem-mailbox
+acceptance remains **NOT RUN**.
+
+Next owner-controlled work: settle the three accepted QAS requests and all 84
+outstanding response acknowledgements through the mailbox clients; separately
+decide whether to preserve/defer the exact terminal-lost Mac QAS pair or
+authorize a QAS-scoped supported recovery path for it. Once these guards pass,
+repeat fresh QAS inventories, run the existing supported handoff sequence,
+verify PRD mailbox ownership and postflight, then align and accept the same
+frozen candidate in QAS. Keep QAS assignments unchanged and PRD held until
+those guarded actions pass.

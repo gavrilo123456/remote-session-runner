@@ -1438,3 +1438,39 @@ any write. Complete only supported exact-pair recovery and cohort adoption;
 keep QAS serving and unchanged. Coordinate the separate QAS-to-PRD mailbox
 handoff only after PRD functional acceptance. The normal 60-minute cohort
 evidence window and two-minute per-host preflight-to-switch bound still apply.
+
+## Current CAT-06 checkpoint — PRD accepted; QAS handoff blocked on drain — 2026-10-23 19:44 UTC
+
+The preceding “PRD is next” note is historical. The unchanged sealed
+`cat-20261023-c01e633` is now selected and accepted in PRD on all four existing
+hosts. PRD operation `d6f245f466ef825375fdb133fb57923f` is `complete` with 17
+transitions and identical receipt SHA-256
+`95acaf5636d1cf461773ed2b34838502f1239d5bb5389fbb0ca6886eb691dd1a` on all
+hosts. All four PRD services are active, schema 40, work inventories empty,
+and held under that operation. Exact bundle/configuration hashes and measured
+capacity are in the [CAT-06 evidence](../../040-implementation-evidence/CAT-06.md#prd-cohort-complete-qas-return-awaiting-work-settlement--2026-10-23-1944-utc).
+The seven bounded direct, queued-SSH and Mac-local probes passed before the
+final receipt-sync restart. Post-start readiness and admission-fence checks
+passed; ordinary admissions remain closed.
+
+The owner reported stopping all QAS users. Fresh status shows the QAS services
+still active on the prior `cat-20261021-b84caf0` release and all eight mailbox
+paths remain assigned to QAS. Linux, Sandbox and Factory inventories are
+empty; Mac retains one terminal-lost command slot and session reservation,
+with unconfirmed runtime cleanup. The Mac QAS database also has 84
+unacknowledged mailbox exchanges, including three requests still `accepted`
+without terminal results. The supported return guard will not run until those
+accepted requests resolve, completed/rejected results are acknowledged by
+their clients, and Mac QAS work has a supported empty-state disposition. No
+request/ACK was published and no QAS service, configuration, database, or
+mailbox assignment was changed. The exact retained identities, counts and
+return-package compatibility check are in CAT-06 evidence above.
+
+Do not open PRD admission or restore mailbox ownership yet. The next owner
+actions are to settle the three accepted QAS requests and the 84
+unacknowledged exchanges through the mailbox clients, and decide whether to
+preserve/defer the exact Mac QAS lost pair or authorize a QAS-scoped supported
+recovery route. After those guards pass, run supported handoff stop/restore,
+verify ownership and PRD postflight, then align and accept the same frozen
+candidate in QAS. QAS acceptance remains **DEFERRED, NOT PASS** and
+filesystem-mailbox acceptance remains **NOT RUN**.
