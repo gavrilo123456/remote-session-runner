@@ -1161,3 +1161,21 @@ Sandbox, Factory, and Mac. Preserve the sealed
 `cat-20261022-7a42f3b` release, QAS services and mailbox assignment.
 See [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#current-source-gate-checkpoint--2026-10-23-0810-utc)
 for commands, results and exact capacity readings.
+
+## CAT-06 renewal-guard update — 2026-10-23 08:38 UTC
+
+The first fresh renewal observation found that Linux's receipt-bound backup
+copies were valid, but three live legacy service artifacts changed as part of
+its already-recorded selector switch. Source correction `49bfc87` now keeps
+unswitched hosts strict while validating the switched host through its intact
+backup, selected service artifacts and selector journal. The regression and
+all assigned source gates pass on the corrected source: full gates on Mac,
+Sandbox and Factory, plus Linux's focused, P025/P101 and native gates. The
+sealed `cat-20261022-7a42f3b` remains unchanged. The failed Linux observation
+and three older successful-but-stale reports were not used to issue renewal.
+
+The remaining next step is a fresh four-host observation set using temporary
+operators built from `49bfc87`, followed by supported renewal issue, identical
+four-host sync/verify, and forward continuation Sandbox → Factory → Mac. The
+complete diagnosis and gate details are in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#current-renewal-guard-checkpoint--2026-10-23-0838-utc).

@@ -1,6 +1,55 @@
 # CAT-06 — PRD adoption and promotion
 
-## Current source-gate checkpoint — 2026-10-23 08:10 UTC
+## Current renewal-guard checkpoint — 2026-10-23 08:38 UTC
+
+The first fresh observation attempt at 08:16 UTC passed on Mac, Sandbox and
+Factory, but Linux was rejected by the supported renewal tool with
+`existing lane update requires a verified config and database backup`. No
+renewal was issued and no receipt or selector changed. The three successful
+reports were retained in owner-only task directories but are stale and will
+not be reused.
+
+Read-only Linux backup inspection established the precise mismatch. The
+receipt-bound backup at
+`/home/ubuntu/.local/share/remote-session-runner/backups/prd-catalog-20261023T053112.802903416Z`
+has the expected manifest digest
+`0d3f84432644ce745edc3e0dd8d9e2b32a07511174b2b367b1edf0c258fb1627`; all 15
+archived target copies matched their manifest hashes, including the online
+database snapshot. Three live service artifacts differ from those retained
+pre-switch copies: `service/runnerd.service`,
+`bin/runner-ssh-bridge-forced.sh`, and `bin/runnerd-entrypoint.sh`. Their
+modification times (05:54:00Z) coincide with Linux's recorded selector switch
+(05:54:03Z); the backup was created at 05:31:12Z. The supported history
+validator had already confirmed Linux's selected service artifacts, stopped
+state, work inventory, configuration/schema, and selector journal. The
+renewal observer then incorrectly required those switched artifacts to remain
+identical to their pre-switch bytes.
+
+Source correction `49bfc877a49712c6b6b1dcc045212f3a65e60459` makes the
+observer use the already-verified backup contents and the history validator's
+current selected-artifact/journal proof for a host recorded as switched. An
+unswitched host still must match every live legacy artifact to its backup. The
+new regression changes a live service artifact after Linux's recorded switch,
+proves the archived copy remains valid, accepts that switched state, and
+continues to reject the same drift for an unswitched host. The sealed
+`cat-20261022-7a42f3b` release was not rebuilt or changed.
+
+The correction is delivered on Gitea and the automatic GitHub mirror at
+`49bfc87`; all three Ubuntu `dev` checkouts were clean and fast-forwarded to
+that exact commit before validation. Go 1.27.1 gates on the corrected source
+all passed: Mac full `make test`, vet, build and smoke; Factory Linux/AMD64
+full `make test`, vet, build and smoke; Sandbox linux/arm64 full `make test`,
+vet, build and smoke; and Linux focused laneinstall/runner-lane tests, exact
+P025/P101 regressions, vet, build and smoke. The prior interrupted Sandbox
+run remains **INTERRUPTED / NOT PASS**. No production services, receipts,
+selectors, databases or mailbox contents were changed by these source gates.
+
+Next: rebuild temporary operator binaries from source `49bfc87`, refresh all
+four host observations together, issue the one-time renewal on Mac, synchronize
+and verify its identical digest everywhere, and then continue Sandbox →
+Factory → Mac. Keep QAS and its eight mailbox paths unchanged.
+
+## Historical source-gate checkpoint — 2026-10-23 08:10 UTC
 
 The requested Sandbox rerun for runtime source
 `036512d13be296b6812ddfe52c45f37d70a8deb5` is complete. The checkout was
