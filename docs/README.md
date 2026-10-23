@@ -10,11 +10,12 @@ selection, or automatic fallback.
 
 | Document | Use it for |
 | --- | --- |
+| [From a code change to production](promotion-guide.md) | Short, plain-language Dev → QAS → PRD guide: build once, test, approve, deploy and recover. |
 | [Architecture](architecture.md) | Components, trust boundaries, multi-inbox routing, diagrams, and supported scope. |
 | [Configuration reference](configuration.md) | Exact paths, V1 compatibility, V2 registries, active policy, secret handling, and limits. |
 | [Setup and upgrade runbook](setup.md) | First install, V1→V2 upgrade, safe external mailbox roots, deliberate mailbox retirement, service deployment, bridge setup, and P157 onboarding. |
 | [Existing-host lanes](lanes.md) | Select, inspect, update, and roll back the existing Mac and Ubuntu Dev/QAS lanes while preserving stable PRD. |
-| [Factory-style release catalog design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md) | Selected future `~/projects-runtime/runner-releases/` layout, independent lane selectors and legacy migration; design/plan only, not installed behavior. |
+| [Factory-style release catalog design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md) | Technical release layout, lane selectors, promotion, rollback and migration rules; consult phase evidence for installed status. |
 | [CLI user guide](user-guide.md) | Local, direct remote, queued remote, sessions, events, cancellation, and close. |
 | [LLM client guide](llm-client-guide.md) | Practical guide for LLMs and coding agents: local read/edit work, mailbox-only execution and validation, route selection, results, ACKs, retries, lifecycle status, and safe failure handling. |
 | [Mailbox guide](mailbox.md) | Native and direct workspace file-mailbox integration, roots, defaults, overrides, deterministic request-result lookup, lifecycle status, events, ACKs, retries, and safe invalid-input diagnostics. |

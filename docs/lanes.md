@@ -6,14 +6,18 @@ This runbook covers the existing Mac and the existing `linux-host`,
 account and filesystem. The three-lane deployment does not create hosts,
 volumes, accounts, or a production upgrade.
 
-**Selected target design — 2026-10-19:** future versioned releases use the
+For the normal **Dev → QAS → PRD** promotion flow, start with the short
+[promotion guide](promotion-guide.md).
+
+Catalog-managed releases use the
 [Factory-style catalog](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
 under `~/projects-runtime/runner-releases/` on each host. Each lane keeps its
 own selector and existing configuration/data/mailbox/log/credential paths.
 The [CAT implementation plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md)
-is NOT STARTED; only design and planning were assigned. The commands below
-operate the current legacy layout. Do not manually point them at a catalog
-until their supported migration and selected-lane acceptance are delivered.
+and its evidence record implementation and acceptance. The build/install
+sections below describe the earlier legacy layout; they are not the catalog
+promotion procedure. Use the qualified catalog controller for a catalog-managed
+installation. Do not copy binaries or change selectors manually.
 
 ## Fixed lane identities
 
@@ -65,8 +69,8 @@ CONFIG="$root/config/mac.yaml"
 Use `linux-poc-$lane` with `linux-host` / `linux-host-dev`, or
 `sandbox-poc-$lane` with `sandbox-host` / `sandbox-host-dev` for the other
 workers. The direct endpoint and target profile must match. Use the selected
-lane's config for both direct and queued work. For PRD, use the existing
-unsuffixed `RemoteSessionRunner/bin/runner` and
+lane's config for both direct and queued work. For catalog-managed PRD, use
+the unsuffixed `RemoteSessionRunner/current/bin/runner` with
 `RemoteSessionRunner/config/mac.yaml`; the existing V2 environment names and
 routes remain unchanged. The [CLI guide](user-guide.md) documents command,
 session, event, cancellation, and mailbox operations.
@@ -192,20 +196,21 @@ independent of Dev/QAS. Read the live installed revision, health and work
 inventory before an operation; historical SIMPLE and bug evidence is not a
 current-health substitute.
 
-Use the supported separate `runner-lane prd-preflight`, `prd-backup`,
-`prd-stop`, `prd-install`, `prd-migrate`, `prd-start` and `prd-rollback`
-procedure in [PRD_UPGRADE.md](../deploy/PRD_UPGRADE.md). Ordinary Dev/QAS
-`--lane` commands remain closed to PRD. Production accepts only the exact
-QAS-qualified per-host bytes through an approved package with consistent backup,
+For catalog-managed PRD, use the supported CAT cohort procedure in the
+[release design, section 5](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md#5-promotion-and-selected-lane-upgrade)
+and its phased plan. The separate legacy `prd-*` procedures in
+[PRD_UPGRADE.md](../deploy/PRD_UPGRADE.md) retain their own layout guards;
+they are not substitutes for catalog promotion. Ordinary Dev/QAS
+`--lane` commands remain closed to PRD. Normal production promotion accepts
+the exact QAS-qualified per-host bytes through an approved package with consistent backup,
 compatible rollback, affected-producer disposition and fresh selected-service
 guards. Do not manually replace binaries or substitute a source-building script.
 
-That supported PRD procedure currently uses legacy regular `bin` files. Future
-CAT adoption explicitly changes its selector, launch-path and backup/rollback
-contracts while preserving runtime state. A design update is not permission
-to use unsupported links or to migrate production now. Prior incident results
-and retained-work dispositions stay in their own evidence; no recovery or bug
-closure follows from this runbook change.
+Legacy regular `bin` files and catalog selectors have different launch and
+backup/rollback contracts. Determine the selected installation before choosing
+a procedure; preserve runtime state. Prior incident results and retained-work
+dispositions stay in their own evidence; no recovery or bug closure follows
+from this runbook change.
 
 ## Resource limits
 
