@@ -1,5 +1,35 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 owner direction — 2026-10-23 12:10 UTC — existing IDs do not satisfy sealed probe guard
+
+For the in-progress PRD operation
+`c2f074a84bc864830266a209943319eb`, the owner directs continued use of the
+unchanged sealed `cat-20261022-7a42f3b`, with the live PRD endpoints/sockets
+and each host's existing environment ID. Do not add aliases, alter configs,
+rebuild the service release, or begin another qualification cycle solely to
+obtain `*-prd` names. Record the actual environment ID and route per host.
+
+The live mappings are: Linux `linux-dev` → `remote:linux-host`;
+Sandbox `sandbox-dev` → `remote:sandbox-host`; Factory `factory-sandbox-dev`
+→ `remote:factory-sandbox`; Mac-local `mac-dev` → `local:mac-workstation`.
+Worker direct endpoints are `https://129.151.232.40:8443`,
+`https://132.226.205.205:8443`, and `https://145.241.255.66:8443`; their
+queued-SSH routes use the same hosts on port 22. Mac-local uses the unsuffixed
+PRD API socket. Full live config hashes and checks are in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md).
+
+The sealed probe implementation cannot accept these names while the PRD
+cohort hold is active: it constructs and requires `<host>-prd`, or
+`mac-workstation-prd` for local probes, and exposes no environment override.
+Its service guard enforces the same exact name. Current evidence confirms
+readiness and the existing admission fence, but no command-level probe has
+passed. Keep the operation at **BLOCKED / `verifying`**; do not append host
+verification or completion, hand-edit capabilities, or reopen ordinary
+admissions. Resolving this requires an explicitly approved guarded-runtime
+compatibility change and new sealed-release qualification, or a separately
+approved config/release path. Until then, preserve the sealed bytes, receipt,
+QAS service, and all eight QAS mailbox assignments.
+
 ## CAT-06 checkpoint — 2026-10-23 10:10 UTC — sealed release active; environment guard blocks functional acceptance
 
 The four-hour renewal and operation-specific receipts remain valid for

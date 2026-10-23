@@ -1,5 +1,64 @@
 # CAT-06 — PRD adoption and promotion
 
+## Owner-selected legacy environment IDs — 2026-10-23 12:10 UTC — acceptance still blocked
+
+The owner directed the operator to keep the sealed release
+`cat-20261022-7a42f3b`, avoid configuration aliases or changes, and use the
+existing environment IDs through each PRD-specific endpoint or socket. This
+was checked against the live configs and the exact source revision bound to
+the release (`7a42f3bb6712e5186f855df4bc50493041404841`). The IDs do map to
+the requested targets and routes:
+
+| PRD service | Config version / SHA-256 | Existing environment ID → target | PRD route |
+| --- | --- | --- | --- |
+| Linux | V1 / `c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f` | `linux-dev` → `remote:linux-host` | direct `https://129.151.232.40:8443`; queued SSH `129.151.232.40:22` |
+| Sandbox | V2 / `50f704f1b692048a149c366d0e20be2448ee8236a8cdaefcee39b2a6449e5d9a` | `sandbox-dev` → `remote:sandbox-host` | direct `https://132.226.205.205:8443`; queued SSH `132.226.205.205:22` |
+| Factory | V2 / `271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699` | `factory-sandbox-dev` → `remote:factory-sandbox` | direct `https://145.241.255.66:8443`; queued SSH `145.241.255.66:22` |
+| Mac local | V2 / `56c25057b58b72e592995cc00efbd042cf4d666db449d01bb03a0aa628778d11` | `mac-dev` → `local:mac-workstation` | Mac PRD API socket `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock` |
+
+Fresh read-only checks confirmed all four PRD selectors still resolve inside
+`cat-20261022-7a42f3b`; the PRD receipt remains byte-identical at SHA-256
+`9431286a588bbeecabeead390d7bc7baa83022cb8ba90d4b8973edc3c54aac40`, stage
+`verifying`, with 17 transitions. The three unsuffixed `runnerd.service`
+instances use the unsuffixed PRD `current/bin/runnerd` and
+`config/linux.yaml`; each `/proc/<pid>/exe` resolves to its host directory
+under the sealed release. The Mac unsuffixed `local` and `locald` LaunchAgents
+are running from the PRD `current` selector. Worker direct readiness GETs
+returned HTTP 200 over TLS 1.3 with the configured CA, client certificate,
+and hostname verification. The supported Mac-local fence returned readiness
+200 and the expected admission-closed 503. No command-level probe was
+accepted, no receipt transition was appended, and QAS and its eight mailbox
+assignments were not touched.
+
+The owner-selected IDs cannot pass the sealed maintenance probe guard. At
+the release's exact source revision,
+`CatalogMaintenanceProbeRequestBodyForTransport` generates
+`<host>-prd` for remote requests and `mac-workstation-prd` for Mac-local;
+`CatalogMaintenanceProbeGuard.ValidateFixedProbeRequest` requires those exact
+names. The `catalog-probe-prepare` CLI has no environment override and calls
+that fixed-body generator. Replacing the generated name with an existing ID
+would still be rejected by the service guard before execution. Therefore
+there is no supported way to do the requested direct, queued-SSH, or
+Mac-local command acceptance with the frozen service release and unchanged
+configs while the cohort hold remains active. Do not hand-edit a scope or
+receipt, open ordinary admissions, or claim CAT-06 acceptance.
+
+The strict direct probe helper also refused its preflight locally with
+`configured direct TLS material failed certificate, CA, fingerprint, or URI
+validation`: the active Mac route is V2 path-based configuration and does not
+carry the V3 fingerprint/URI fields required by that helper. This did not
+reach a worker; it is not evidence of a server TLS failure. The separate
+CA-validated readiness GETs passed, but they are not functional acceptance.
+
+No config, service, selector, database, receipt, mailbox, or release bytes
+were changed. No request or ACK was published, and expired probe scopes were
+not reused. The four-host operation remains **BLOCKED at `verifying`**. A
+future supported resolution must either add an approved compatibility path
+for the existing environment IDs to the guarded probe implementation (which
+changes runtime code and needs a new sealed release and requalification), or
+use a separately approved config/release change. Until one is authorized and
+validated, keep PRD admissions held and QAS/mailbox ownership unchanged.
+
 ## PRD verification checkpoint — 2026-10-23 10:10 UTC — release running; functional admission blocked by active config
 
 The renewed operation `c2f074a84bc864830266a209943319eb` remains at
