@@ -38,6 +38,7 @@ const maxLaneConfigBytes = 1 << 20
 type catalogCommandSubprocessFixtureBackend interface {
 	RunCohort(context.Context, catalogCohortCommand, io.Writer, io.Writer) error
 	RunSelector(context.Context, string, catalogSelectorCommand, io.Writer, io.Writer) error
+	RunPRDRecovery(context.Context, catalogPRDRecoveryCommand, io.Writer, io.Writer) error
 }
 
 // Set only by package tests running the subprocess harness. It is nil in all
@@ -70,6 +71,16 @@ type catalogSelectorCommand struct {
 	CohortOperationID string
 	SelectorOperation string
 	EvidenceSHA256    string
+}
+
+type catalogPRDRecoveryCommand struct {
+	HostID                    string
+	ReleaseID                 string
+	ExpectedReleaseSHA256     string
+	ExpectedBundleSHA256      string
+	BackupDirectory           string
+	ExpectedBackupManifestSHA string
+	LostPairs                 []string
 }
 
 func main() {
@@ -138,6 +149,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogCompatibilityCheck(ctx, args[1:], stdout, stderr)
 	case "catalog-prd-backup":
 		err = runCatalogPRDBackup(ctx, args[1:], stdout, stderr)
+	case "catalog-prd-recover":
+		err = runCatalogPRDRecover(ctx, args[1:], stdout, stderr)
 	case "catalog-probe-prepare":
 		err = runCatalogProbePrepare(args[1:], stdout, stderr)
 	case "catalog-select", "catalog-reconcile", "catalog-rollback":
@@ -790,7 +803,7 @@ func runCatalogSelectorMaintenance(ctx context.Context, action string, args []st
 		return errors.New("usage: runner-lane catalog-select|catalog-reconcile|catalog-rollback --host HOST --lane dev|qas|prd --cohort-operation-id ID [operation-specific flags]")
 	}
 	if action == "catalog-select" {
-		if *releaseID == "" || *cohortOperationID == "" || *expectedTarget == "" || *evidenceSHA == "" || *selectorOperationID != "" {
+		if *releaseID == "" || *cohortOperationID == "" || (*lane != "prd" && *expectedTarget == "") || *evidenceSHA == "" || *selectorOperationID != "" {
 			return errors.New("catalog-select requires release, expected target, cohort operation, and evidence digest")
 		}
 	} else if *selectorOperationID == "" || *cohortOperationID == "" || *releaseID != "" || *expectedTarget != "" || *evidenceSHA != "" {
@@ -956,6 +969,58 @@ func runCatalogPRDBackup(ctx context.Context, args []string, stdout, stderr io.W
 	}{*host, "prd", *releaseID, target.Identity.ReleaseSHA256, target.Identity.BundleSHA256, receipt.Directory,
 		laneinstall.PRDBackupManifestSHA256(receipt.Directory), receipt.Manifest.SchemaVersion, receipt.Manifest.DatabaseSHA256,
 		availableBytes, requiredBytes})
+}
+
+// runCatalogPRDRecover performs exact retained-pair recovery with the
+// host-native executable from a sealed catalog release. It does not build,
+// install, start, or select a service binary. The service must already be
+// stopped and a fresh consistent backup must be supplied.
+func runCatalogPRDRecover(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-prd-recover", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host ID")
+	releaseID := flags.String("release-id", "", "Dev-accepted sealed catalog release ID")
+	releaseSHA := flags.String("release-sha256", "", "exact sealed release manifest SHA-256")
+	bundleSHA := flags.String("bundle-sha256", "", "exact host bundle SHA-256")
+	backupDir := flags.String("backup-dir", "", "fresh consistent pre-recovery backup directory")
+	backupSHA := flags.String("backup-manifest-sha256", "", "exact backup manifest SHA-256")
+	var lostPairs repeatedStringFlag
+	flags.Var(&lostPairs, "lost-pair", "exact terminal-lost SESSION_ID:COMMAND_ID pair; repeat for the complete host set")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	_, knownHost := laneinstall.CatalogPRDRecoveryCommandComponent(*host)
+	if flags.NArg() != 0 || *releaseID == "" || *releaseSHA == "" || *bundleSHA == "" ||
+		*backupDir == "" || *backupSHA == "" || len(lostPairs) == 0 || !knownHost {
+		return errors.New("usage: runner-lane catalog-prd-recover --host HOST --release-id RELEASE --release-sha256 SHA256 --bundle-sha256 SHA256 --backup-dir DIR --backup-manifest-sha256 SHA256 --lost-pair SESSION_ID:COMMAND_ID [...]")
+	}
+	request := laneinstall.CatalogPRDRecoveryRequest{
+		ReleaseID: *releaseID, ExpectedReleaseSHA256: *releaseSHA, ExpectedBundleSHA256: *bundleSHA,
+		BackupDirectory: *backupDir, ExpectedBackupManifestSHA: *backupSHA, LostPairs: append([]string(nil), lostPairs...),
+	}
+	if catalogCommandSubprocessFixtureBackendForTests != nil {
+		return catalogCommandSubprocessFixtureBackendForTests.RunPRDRecovery(ctx, catalogPRDRecoveryCommand{
+			HostID: *host, ReleaseID: request.ReleaseID, ExpectedReleaseSHA256: request.ExpectedReleaseSHA256,
+			ExpectedBundleSHA256: request.ExpectedBundleSHA256, BackupDirectory: request.BackupDirectory,
+			ExpectedBackupManifestSHA: request.ExpectedBackupManifestSHA, LostPairs: request.LostPairs,
+		}, stdout, stderr)
+	}
+	if !currentCatalogHost(*host) {
+		return errors.New("catalog-prd-recover must run on the selected canonical host")
+	}
+	plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	service, err := laneinstall.NewPRDServiceController()
+	if err != nil {
+		return err
+	}
+	report, err := laneinstall.RecoverCatalogPRDLostPairs(ctx, plan, service, request, nil)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, report)
 }
 
 // runCatalogCompatibilityCheck validates a typed legacy rollback proof against

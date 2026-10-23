@@ -36,6 +36,26 @@ func TestCatalogPublicCommandSequenceSubprocess(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := prepareCatalogSubprocessFixture(t, root, "fixture-next", "second-bundle", &first)
+	first.RecoveryPairs = map[string][]string{
+		"mac-control-plane": {"sess-mac-one:cmd-mac-one", "sess-mac-two:cmd-mac-two", "sess-mac-three:cmd-mac-three"},
+		"linux-host":        {"sess-linux-one:cmd-linux-one"},
+		"sandbox-host":      {"sess-sandbox-one:cmd-sandbox-one", "sess-sandbox-two:cmd-sandbox-two", "sess-sandbox-three:cmd-sandbox-three"},
+	}
+	for _, hostID := range catalogFixtureSwitchOrder {
+		state := readCatalogFixtureHost(t, root, hostID)
+		state.SelectorTarget = ""
+		state.ServiceActive = false
+		state.AdmissionsClosed = true
+		state.RetainedLostPairs = append([]string(nil), first.RecoveryPairs[hostID]...)
+		state.RetainedHistory = []string{"original-command-result", "original-terminal-event", "held-ack-unchanged"}
+		if err := writeCatalogFixtureJSON(filepath.Join(root, "hosts", hostID, "host-state.json"), state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refreshCatalogFixturePreflights(t, root, first)
+	if err := writeCatalogFixtureJSON(filepath.Join(root, "seeds", "fixture-first.json"), first); err != nil {
+		t.Fatal(err)
+	}
 
 	command := exec.Command(os.Args[0], "-test.run=^TestCatalogPublicCommandSequenceSubprocessHelper$")
 	command.Env = append(os.Environ(), catalogSubprocessFixtureRootEnv+"="+root)
@@ -122,6 +142,43 @@ func TestCatalogPublicCommandSequenceSubprocessHelper(t *testing.T) {
 			t.Fatalf("runner-lane %v status=%d stderr=%q; want error containing %q", args, status, stderr.String(), want)
 		}
 	}
+	for _, hostID := range catalogFixtureSwitchOrder {
+		pairs := first.RecoveryPairs[hostID]
+		if len(pairs) == 0 {
+			continue
+		}
+		var preflight laneinstall.CatalogCohortHostPreflightReport
+		readCatalogFixtureJSON(t, first.PreflightPaths[hostID], &preflight)
+		base := []string{"catalog-prd-recover", "--host", hostID, "--release-id", first.ReleaseID,
+			"--release-sha256", first.ReleaseSHA, "--bundle-sha256", first.TargetBundleSHA[hostID],
+			"--backup-dir", preflight.Preflight.BackupDirectory,
+			"--backup-manifest-sha256", preflight.Preflight.BackupManifestSHA256}
+		wrongBundle := append([]string(nil), base...)
+		wrongBundle[8] = fixtureDigest("wrong candidate bundle")
+		wrongBundle = append(wrongBundle, "--lost-pair", pairs[0])
+		invokeExpectError("fixture recovery identity mismatch", wrongBundle...)
+		incomplete := append([]string(nil), base...)
+		badPairs := pairs[:len(pairs)-1]
+		if len(badPairs) == 0 {
+			badPairs = []string{"sess-extra:cmd-extra"}
+		}
+		for _, pair := range badPairs {
+			incomplete = append(incomplete, "--lost-pair", pair)
+		}
+		invokeExpectError("fixture recovery pair set mismatch", incomplete...)
+		args := append([]string(nil), base...)
+		for _, pair := range pairs {
+			args = append(args, "--lost-pair", pair)
+		}
+		invoke(args...)
+		state := readCatalogFixtureHost(t, root, hostID)
+		if state.ServiceActive || len(state.RetainedLostPairs) != 0 || state.ReplayCount != 0 ||
+			!state.AdmissionsClosed || strings.Join(state.RetainedHistory, ",") != "original-command-result,original-terminal-event,held-ack-unchanged,recovery-release-proof" {
+			t.Fatalf("fixture recovery changed unsafe state on %s: %+v", hostID, state)
+		}
+	}
+	first.RecoveryPairs = nil
+	refreshCatalogFixturePreflights(t, root, first)
 	syncAll := func(operationID, sourceHost string) {
 		t.Helper()
 		path := filepath.Join(root, "hosts", sourceHost, "receipts", operationID+".json")
@@ -154,7 +211,7 @@ func TestCatalogPublicCommandSequenceSubprocessHelper(t *testing.T) {
 		invoke("catalog-cohort", "--host", hostID, "--lane", "prd", "--action", "preflight", "--operation-id", first.OperationID,
 			"--subject-host", hostID)
 		syncAll(first.OperationID, hostID)
-		target := "legacy-bin:" + readCatalogFixtureHost(t, root, hostID).LegacyBundleSHA256
+		target := ""
 		selected := invoke("catalog-select", "--host", hostID, "--lane", "prd", "--release-id", first.ReleaseID,
 			"--expected-target", target, "--cohort-operation-id", first.OperationID, "--evidence-sha256", fixtureDigest("select "+hostID))
 		if fixtureOutputOperationID(t, selected) == "" {
@@ -248,23 +305,29 @@ func TestCatalogPublicCommandSequenceSubprocessHelper(t *testing.T) {
 }
 
 type catalogSubprocessFixtureSeed struct {
-	OperationID     string            `json:"operation_id,omitempty"`
-	ReleaseID       string            `json:"release_id"`
-	ManifestPath    string            `json:"manifest_path"`
-	PreflightPaths  map[string]string `json:"preflight_paths"`
-	TargetBundleSHA map[string]string `json:"target_bundle_sha256"`
+	OperationID     string              `json:"operation_id,omitempty"`
+	ReleaseID       string              `json:"release_id"`
+	ReleaseSHA      string              `json:"release_sha256"`
+	ManifestPath    string              `json:"manifest_path"`
+	PreflightPaths  map[string]string   `json:"preflight_paths"`
+	TargetBundleSHA map[string]string   `json:"target_bundle_sha256"`
+	RecoveryPairs   map[string][]string `json:"recovery_pairs,omitempty"`
 }
 
 type catalogSubprocessFixtureHost struct {
-	HostID             string `json:"host_id"`
-	SelectorTarget     string `json:"selector_target"`
-	LegacyBundleSHA256 string `json:"legacy_bundle_sha256"`
-	ServiceActive      bool   `json:"service_active"`
-	ConfigurationPath  string `json:"configuration_path"`
-	ConfigurationSHA   string `json:"configuration_sha256"`
-	DatabasePath       string `json:"database_path"`
-	DatabaseSHA256     string `json:"database_sha256"`
-	SchemaVersion      int    `json:"schema_version"`
+	HostID             string   `json:"host_id"`
+	SelectorTarget     string   `json:"selector_target"`
+	LegacyBundleSHA256 string   `json:"legacy_bundle_sha256"`
+	ServiceActive      bool     `json:"service_active"`
+	ConfigurationPath  string   `json:"configuration_path"`
+	ConfigurationSHA   string   `json:"configuration_sha256"`
+	DatabasePath       string   `json:"database_path"`
+	DatabaseSHA256     string   `json:"database_sha256"`
+	SchemaVersion      int      `json:"schema_version"`
+	AdmissionsClosed   bool     `json:"admissions_closed,omitempty"`
+	RetainedLostPairs  []string `json:"retained_lost_pairs,omitempty"`
+	RetainedHistory    []string `json:"retained_history,omitempty"`
+	ReplayCount        int      `json:"replay_count,omitempty"`
 }
 
 type catalogSubprocessFixtureBackup struct {
@@ -287,6 +350,60 @@ type fixtureSelectorJournal struct {
 }
 
 type catalogSubprocessFixtureBackend struct{ root string }
+
+func (b *catalogSubprocessFixtureBackend) RunPRDRecovery(ctx context.Context, command catalogPRDRecoveryCommand, stdout, stderr io.Writer) error {
+	if ctx == nil || !containsCatalogFixtureHost(command.HostID) || command.ReleaseID == "" ||
+		!fixtureValidDigest(command.ExpectedReleaseSHA256) || !fixtureValidDigest(command.ExpectedBundleSHA256) ||
+		!fixtureValidDigest(command.ExpectedBackupManifestSHA) || len(command.LostPairs) == 0 {
+		return laneinstall.ErrCatalogPRDRecovery
+	}
+	var seed catalogSubprocessFixtureSeed
+	if err := readCatalogFixtureJSON(nil, filepath.Join(b.root, "seeds", command.ReleaseID+".json"), &seed); err != nil {
+		return err
+	}
+	if seed.ReleaseSHA != command.ExpectedReleaseSHA256 || seed.TargetBundleSHA[command.HostID] != command.ExpectedBundleSHA256 {
+		return errors.New("fixture recovery identity mismatch")
+	}
+	state, err := b.readHost(command.HostID)
+	if err != nil || state.ServiceActive || !state.AdmissionsClosed || state.SelectorTarget != "" ||
+		!equalStrings(state.RetainedLostPairs, command.LostPairs) {
+		return errors.New("fixture recovery pair set mismatch")
+	}
+	var preflight laneinstall.CatalogCohortHostPreflightReport
+	if err := readCatalogFixtureJSON(nil, seed.PreflightPaths[command.HostID], &preflight); err != nil ||
+		preflight.Preflight.BackupDirectory != command.BackupDirectory ||
+		preflight.Preflight.BackupManifestSHA256 != command.ExpectedBackupManifestSHA {
+		return errors.New("fixture recovery backup identity mismatch")
+	}
+	databaseBytes, readErr := os.ReadFile(state.DatabasePath)
+	databaseHash := sha256.Sum256(databaseBytes)
+	if readErr != nil || !catalogFixtureDatabaseIsValid(state.DatabasePath) || hex.EncodeToString(databaseHash[:]) != state.DatabaseSHA256 {
+		return errors.New("fixture recovery database invalid")
+	}
+	state.RetainedLostPairs = nil
+	state.RetainedHistory = append(state.RetainedHistory, "recovery-release-proof")
+	if err := b.writeHost(state); err != nil {
+		return err
+	}
+	return writeJSON(stdout, map[string]any{
+		"host_id": command.HostID, "release_id": command.ReleaseID,
+		"release_sha256": command.ExpectedReleaseSHA256, "bundle_sha256": command.ExpectedBundleSHA256,
+		"recovered_lost_pairs": len(command.LostPairs), "service_remains_stopped": true,
+		"selector_remains_unselected": true, "replay_count": state.ReplayCount,
+	})
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
 
 func (b *catalogSubprocessFixtureBackend) RunCohort(ctx context.Context, command catalogCohortCommand, stdout, stderr io.Writer) error {
 	if command.Lane != "prd" || !containsCatalogFixtureHost(command.HostID) {
@@ -367,15 +484,15 @@ func (b *catalogSubprocessFixtureBackend) RunCohort(ctx context.Context, command
 				return laneinstall.ErrCatalogOperationInvalid
 			}
 			host, err := b.readHost(command.HostID)
-			if err != nil || !host.ServiceActive || !catalogFixtureDatabaseIsValid(host.DatabasePath) {
+			preflight := fixtureHostPreflight(receipt, command.HostID)
+			if err != nil || host.ServiceActive != preflight.ServiceActiveAtPreflight || !catalogFixtureDatabaseIsValid(host.DatabasePath) {
 				return laneinstall.ErrCatalogOperationInvalid
 			}
 			host.ServiceActive = false
 			if err := b.writeHost(host); err != nil {
 				return err
 			}
-			preflight := fixtureHostPreflight(receipt, command.HostID)
-			fence := laneinstall.CatalogCohortHostFence{HostID: command.HostID, ServiceWasActive: true, ServiceStopped: true,
+			fence := laneinstall.CatalogCohortHostFence{HostID: command.HostID, ServiceWasActive: preflight.ServiceActiveAtPreflight, ServiceStopped: true,
 				WorkInventorySHA256: preflight.WorkInventorySHA256, ConfigurationSHA256: host.ConfigurationSHA,
 				SelectorTarget: preflight.PreviousTarget, PreviousBundleSHA256: preflight.PreviousBundleSHA256,
 				DatabaseSchema: host.SchemaVersion, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}
@@ -582,7 +699,7 @@ func prepareCatalogSubprocessFixture(t *testing.T, root, releaseID, bundleLabel 
 	writeCatalogFixtureCanonical(t, manifestPath, manifestBytes)
 	manifestSHA := sha256.Sum256(manifestBytes)
 	manifestDigest := hex.EncodeToString(manifestSHA[:])
-	seed := catalogSubprocessFixtureSeed{ReleaseID: releaseID, ManifestPath: manifestPath,
+	seed := catalogSubprocessFixtureSeed{ReleaseID: releaseID, ReleaseSHA: manifestDigest, ManifestPath: manifestPath,
 		PreflightPaths: make(map[string]string, len(catalogFixtureSwitchOrder)), TargetBundleSHA: make(map[string]string, len(catalogFixtureSwitchOrder))}
 
 	for _, hostID := range catalogFixtureSwitchOrder {

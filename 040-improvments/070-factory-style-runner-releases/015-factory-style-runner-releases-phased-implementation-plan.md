@@ -35,6 +35,56 @@ The Dev acceptance and current QAS baseline are recorded in
 and preserved gates are recorded in
 [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md).
 
+## CAT-06 checkpoint — 2026-10-23 01:32 UTC — exact-artifact recovery control under source gates
+
+The frozen candidate remains `cat-20261022-7a42f3b` with source revision
+`7a42f3bb6712e5186f855df4bc50493041404841`; its Dev acceptance remains PASS.
+QAS acceptance remains DEFERRED, NOT PASS, under the one-time owner-approved
+order above. No native service bundle was changed or rebuilt for this checkpoint.
+
+The Linux/Mac legacy recovery installers rebuild from the checkout, so they
+cannot recover PRD while preserving the already accepted exact bundle bytes.
+Add a control-only `runner-lane catalog-prd-recover` path that validates the
+sealed release and fresh pre-recovery backup, runs only its sealed host-native
+`runnerd`/`runner-locald` guarded recovery command, proves exact pair counts,
+and leaves PRD stopped and unselected. The control utility is not included in
+the four native service bundles. The initial implementation also corrects
+`catalog-select` to accept the empty expected target only for PRD's supported
+unselected legacy state; Dev/QAS still require an explicit prior target.
+
+The first focused run failed: the public PRD command sequence was refused
+because the selector CLI treated the valid empty unselected target as invalid.
+The regression is retained in the subprocess harness. After the PRD-only parser
+correction, exact-schema recovery guard and stricter recovery-summary
+validation, the Mac Go 1.27.1 focused tests
+`go test ./src/internal/laneinstall ./src/cmd/runner-lane` pass. Mac
+`make test`, `make vet`, `make build`, and `make smoke` also pass. The first
+full-suite attempt was denied permission for an existing test-owned `/bin/ps`
+child; the suite passed when rerun with that process-inspection permission.
+Git delivery and Ubuntu source gates for the control-tool correction remain
+pending. The earlier native bundle bytes, Dev receipt, and QAS installation
+remain unchanged.
+
+Fresh read-only PRD evidence remains the 2026-10-23 01:09–01:13 UTC inventory:
+Mac has three, Linux one, Sandbox three and Factory zero exact terminal-lost
+pairs; no active/queued/running/resumable/finalization work was present. Service
+state is Mac inactive and the three Ubuntu PRD services active; no recovery was
+run. The last Sandbox free-space read was 899,325,952 bytes against the
+pre-backup threshold of 849,205,489 bytes. It is historical only; refresh
+capacity before every backup, recovery or selector write. QAS remains active,
+including its one Mac retained reservation, and all eight mailbox paths remain
+assigned to QAS. No QAS service or configuration changed.
+
+Next: commit only intended files, deliver through primary Gitea and the exact
+GitHub mirror, then fast-forward clean Ubuntu checkouts. Run Sandbox's full
+Linux/ARM64 gates, Factory's full Linux/AMD64 gates, and Linux's focused
+CAT-06/P025/P101 plus native gates on that exact revision. Preserve the sealed
+candidate unchanged. Only after delivery, refresh PRD inventory and
+ownership, verify backup/capacity and compatibility, stop each selected PRD
+service through supported controls, recover only its exact pairs through the
+new command, and obtain fresh empty-work preflights/holds before cohort
+selection. Keep QAS serving throughout PRD deployment.
+
 ## CAT-06 checkpoint — 2026-10-22 23:17 UTC — rollback receipt reconciled; Mac source gates pass
 
 The final rollback-complete receipt for Dev operation

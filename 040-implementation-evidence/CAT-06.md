@@ -1,5 +1,88 @@
 # CAT-06 — PRD adoption and promotion
 
+## Control-tool checkpoint — 2026-10-23 01:32 UTC
+
+The owner-approved one-time order remains Dev PASS → PRD deployment and
+acceptance → QAS→PRD mailbox handoff → QAS alignment. The frozen service
+candidate remains `cat-20261022-7a42f3b` (source
+`7a42f3bb6712e5186f855df4bc50493041404841`); its Dev acceptance is unchanged
+and PASS. QAS acceptance for this candidate is DEFERRED, NOT PASS. The native
+per-host bundle bytes, Dev selectors/receipt, QAS selectors/services and QAS
+mailbox ownership have not changed.
+
+### Why an exact-artifact recovery command was needed
+
+The documented Linux/Mac `--recover-stalled` installers build and install from
+the synchronized source checkout. That is incompatible with this frozen
+promotion because it would rebuild during promotion and could install bytes
+different from the Dev-accepted per-host bundles. Calling the candidate's
+`runnerd recover-stalled` or `runner-locald recover-stalled` directly is also
+not an operator-supported path. The new `runner-lane catalog-prd-recover`
+control command closes this gap without modifying the service bundles: it
+validates the sealed catalog release and expected per-host hashes, the fresh
+owner-only backup and manifest digest, schema/read bounds, unchanged backup
+targets and work identities, the stopped service, unselected selector, absent
+cohort hold, exact lost-pair count, and post-backup operating headroom. It
+executes only the host-native recovery binary in the sealed bundle. It then
+requires the exact recovered count, unchanged schema/configuration/release,
+empty work inventory, and a still-stopped service and unselected selector.
+The command neither installs nor starts service binaries, runs stored scripts,
+edits SQLite directly, or restores a database. The ordinary support installers
+remain unchanged.
+
+The public `catalog-select` parser also required a PRD-specific correction:
+first adoption has an empty expected selector target, but the common CLI
+argument guard rejected that valid state. PRD now permits the empty previous
+target; Dev/QAS continue requiring an explicit target. Regression coverage
+executes the public command dispatcher with disposable PRD-shaped fixture
+state, including pre-adoption recovery, initial adoption/completion,
+interrupted switching, reconciliation, reverse rollback and synchronized
+receipts. Negative cases reject a mismatched bundle identity and an incomplete
+lost-pair set; fixture history and the database sentinel remain unchanged, and
+the replay counter remains zero.
+
+The first focused validation run is preserved as a failure: the public
+subprocess sequence reached `catalog-select` for `linux-host` and the CLI
+returned `invalid or inconsistent catalog selector operation` because it
+required a nonempty expected target even for PRD's unselected legacy state.
+The same run also exposed overbroad assumptions in two new unit-test inputs;
+the malformed-ID test now uses an actually invalid path-bearing value, and
+recovery-summary parsing now rejects partial/already-recovered counts itself.
+After correction, Mac Go 1.27.1 `go test ./src/internal/laneinstall
+./src/cmd/runner-lane` passed. Full Mac `make test`, `make vet`, `make build`,
+and `make smoke` also pass on `darwin/arm64` with Go 1.27.1. The first
+`make test` attempt was blocked when the sandbox denied an existing test's
+test-owned `/bin/ps` child; an isolated retry without explicit cache settings
+was separately denied access to the default user Go cache before tests began.
+The full suite passed after rerunning with normal test-owned process-inspection
+permission. The new recovery preflight additionally refuses a database schema
+that would require migration by the offline recovery binary; its regression
+passes for the current-schema case and rejects older, newer, or inconsistent
+schema bounds. No service bundle was rebuilt. Ubuntu host gates, Git delivery,
+and live recovery remain PENDING.
+
+The 2026-10-23 01:09–01:13 UTC PRD inventory still reports seven exact
+terminal-lost pairs (Mac 3, Linux 1, Sandbox 3, Factory 0), no other active or
+resumable work, and no recovery disposition. PRD service state remained Mac
+inactive and Ubuntu workers active. The last Sandbox disk reading was
+899,325,952 bytes free, only 50,120,463 bytes above the historical
+849,205,489-byte pre-backup threshold; refresh it before any write. QAS remains
+active on all four hosts with all eight mailbox paths assigned there and one
+retained Mac QAS reservation. No production write, backup, service stop,
+recovery, selector mutation, mailbox publication or ACK occurred in this
+checkpoint.
+
+Next: deliver the scoped control-tool changes through primary Gitea, exact
+GitHub mirror verification and clean Ubuntu fast-forward pulls. Run Sandbox's
+full Linux/ARM64 checks, Factory's full Linux/AMD64 checks and Linux's focused
+CAT-06/P025/P101 plus native checks on that exact revision. Keep the candidate
+release frozen. Then refresh every PRD
+preflight and ownership marker, capacity-check each write, create/validate
+consistent backups, stop only selected PRD services, and run exact-pair
+recovery through `catalog-prd-recover`. Create fresh empty-work preflights and
+the cohort hold only after recovery. QAS stays serving; its one active
+reservation is preserved.
+
 ## Current checkpoint — 2026-10-23 — Dev accepted; one-time order advances PRD next
 
 The owner approved this release-specific order:

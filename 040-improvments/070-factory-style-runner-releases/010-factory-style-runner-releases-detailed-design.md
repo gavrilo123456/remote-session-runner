@@ -142,6 +142,43 @@ checks must be deliberately adapted; do not weaken them to accept arbitrary
 symlinks. The ordinary Dev/QAS installer still cannot silently select PRD.
 PRD retains its separate guarded maintenance entrypoints.
 
+### Exact-artifact recovery of retained PRD work
+
+When the selected unsuffixed PRD database contains only specifically identified
+terminal-lost reservations, the ordinary Linux/Mac recovery installers are not
+the recovery path for a frozen catalog promotion: they build and install from
+the moving checkout. Use the control-only `runner-lane catalog-prd-recover`
+command with the exact host bundle from the sealed catalog release instead.
+`runner-lane` is not a member of the native service bundles; this command does
+not rebuild, install, select, migrate or start a service binary.
+
+Before invoking it, create a fresh consistent pre-recovery backup bound to the
+candidate release, verify the complete host work and ownership inventory, and
+stop only that host's PRD service through the supported PRD service controller.
+The command requires an inactive service, an unselected legacy selector, no
+existing cohort hold, an unchanged configuration/binary/service-artifact
+snapshot, a recent owner-only backup whose schema and work identities still
+match, and the complete explicit terminal-lost pair set. The database schema
+must equal the sealed candidate's current schema so the offline recovery binary
+cannot implicitly migrate it. At least the 500,000,000-byte operating buffer
+plus the separate 64 MiB selector reserve must remain after backup. The sealed
+bundle identity and backup manifest digest are mandatory inputs. It runs only `runnerd` on Ubuntu or
+`runner-locald` on Mac from that sealed bundle; those binaries independently
+prove stopped-service/process ownership and exact retained-pair disposition.
+The operator command verifies that every supplied pair was recovered, the
+schema is unchanged, the work inventory is empty, and the service, selector,
+configuration, installed binaries and backup remain in the expected state.
+It never executes a stored script, edits SQLite directly, restores an older
+database, or starts PRD. Preserve the pre-recovery backup and recovery report.
+
+After recovery, take fresh post-recovery backups and host preflights before
+creating/synchronizing the PRD cohort receipt and admission hold. The stop is
+the host admission fence for the recovery interval; do not represent it as a
+cohort hold before the required empty-work preflight exists. Any new, active,
+resumable, unowned or inconsistent work fails closed. The existing per-host
+two-minute preflight-to-selector bound and 60-minute whole-cohort evidence
+window remain unchanged.
+
 ## 5. Promotion and selected-lane upgrade
 
 1. Publish the sealed release cohort without activating it. Record its source,
