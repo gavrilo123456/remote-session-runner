@@ -1323,7 +1323,12 @@ used Go 1.27.1 with bounded concurrency. `quota -v` cannot report a per-user
 limit on that tmpfs, which is recorded as a measurement limitation rather than
 inferred from `df`. Together with the previously recorded Mac, Sandbox, and
 Linux assigned gates, source validation is complete for this correction.
-This does not pass installed acceptance: seal a new candidate from the frozen
-source, then complete Dev acceptance before any PRD operation. The existing
-one-time QAS defer order remains Dev → PRD → coordinated mailbox handoff → QAS;
-QAS acceptance remains DEFERRED, NOT PASS.
+The new candidate is now sealed and published on all four hosts as
+`cat-20261023-c01e633`, source `c01e6339e9330ff6bf7dbde042b1cd5287c55c4e`,
+release manifest SHA-256
+`7a9f705484906c7889c4776da0ef64769662fd0c5360e4d3767ca8021a5c4c81`. Exact
+per-host bundle hashes and the fresh four-host Dev/QAS baseline are recorded
+in [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#cat-06-corrected-candidate-sealed-fresh-devqas-baseline-2026-10-23-1433-utc).
+It remains unselected pending Dev acceptance. The existing one-time order is
+Dev → PRD → coordinated mailbox handoff → QAS; QAS acceptance remains
+DEFERRED, NOT PASS.

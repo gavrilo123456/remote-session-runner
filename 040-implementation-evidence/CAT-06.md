@@ -1589,6 +1589,75 @@ schema identities, and supported exact-pair recovery evidence. The earlier
 PRD inventory and Sandbox capacity numbers above are historical, not current
 preflight results.
 
+## CAT-06 corrected candidate sealed; fresh Dev/QAS baseline — 2026-10-23 14:33 UTC
+
+After source-gate delivery `3976a476a34399d0ff6048736e1d7820261f06c6`, one
+new candidate was built from frozen runtime source
+`c01e6339e9330ff6bf7dbde042b1cd5287c55c4e` with Go 1.27.1 and published using
+the supported `runner-lane catalog-manifest` / `catalog-publish` commands.
+The new immutable release is **`cat-20261023-c01e633`**, with release manifest
+SHA-256 `7a9f705484906c7889c4776da0ef64769662fd0c5360e4d3767ca8021a5c4c81`.
+All four hosts report that same release digest and source revision. Per-host
+bundle identities are:
+
+| Host | Native platform | Bundle SHA-256 | Catalog location |
+| --- | --- | --- | --- |
+| Mac | Darwin/arm64 | `a338761463afe7dbe8f558f7166dd10f0d3890a0e9e151c1d906e955221067ee` | `/Users/tomasz.walczuk/projects-runtime/runner-releases/cat-20261023-c01e633/mac-control-plane` |
+| Linux | Linux/amd64 | `9a98537d38c98bcd9e9834ceb6ad23544dc85e8f038aed74f123bad1491df9cb` | `/home/ubuntu/projects-runtime/runner-releases/cat-20261023-c01e633/linux-host` |
+| Sandbox | Linux/arm64 | `43a92d91a43c954fd20efc6c5f8e5d5d01fca6487bf0a5da8929c3c73caed049` | `/home/ubuntu/projects-runtime/runner-releases/cat-20261023-c01e633/sandbox-host` |
+| Factory | Linux/amd64 | `652b3c428c82c19b8a982e8fe6d0acb71f2734a87dfcfaf480db5530a22799d4` | `/home/ubuntu/projects-runtime/runner-releases/cat-20261023-c01e633/factory-sandbox` |
+
+Each bundle manifest and binary set was locally published, then checked with
+`catalog-inspect` against the release manifest's host entry. Linux and Factory
+were built natively from the same source but have distinct host-bound bundle
+digests. The existing `cat-20261022-7a42f3b` release was not modified. The new
+candidate is published but **not selected** in any lane.
+
+Read-only `catalog-status` and `catalog-work-inventory` observations on all
+four hosts were captured at 2026-10-23 14:29:42–14:30:21 UTC. All eight lane
+databases reported schema 40, and all eight services were active at observation
+time. Dev remained selected on `cat-20261022-7a42f3b` with empty work on every
+host. QAS remained selected on `cat-20261021-b84caf0`; Linux, Sandbox and
+Factory QAS inventories were empty. Mac QAS had one active command slot and
+one session reservation, with no active session, running/queued command,
+resumable job or pending finalization. That retained QAS state is preserved;
+QAS was not stopped, modified, or used for candidate acceptance.
+
+| Host | Dev config SHA-256 | QAS config SHA-256 |
+| --- | --- | --- |
+| Mac | `2a256f44cf14031b8463854aa77c190ba265a419b624a0538a6c42ba130395d9` | `9856c54900e26c335c4ea7adb2d02951847d76349abdd49dc6b261f419f11f6a` |
+| Linux | `842a17572ba218ee770b39d8cf95c442c4885204d479d5b34ef6d2e4e5ff82f5` | `3084e76eb6068d2d45fe82d4f259c2eec765628fc8cc15af2670743312bbe91b` |
+| Sandbox | `9a9adcd3236d8a92f2d405ef59f1199180310a03df6c9d246b784a702653d82a` | `f69e5df67057c81588c6e553bec9c9d701495b71e878ae52021f4ad0af39cb41` |
+| Factory | `7af6d8ea68764f703b7aebd40966bbc7ff8b86523a2cb948d5f60e68659cd727` | `9dfcadaebf7bfeb9cd1d7b56fc2517ef3e693970a5f5e006d4c228db0694729` |
+
+No selector, service, configuration, database, mailbox assignment, request,
+ACK, PRD retained pair, or receipt changed during candidate construction and
+these observations. The task-owned temporary bundles and manifests remain
+outside Git. `src/cmd/catalog-holdcheck/` remains unrelated, untracked, and
+untouched.
+
+Operator command corrections during sealing: the initial Mac build refused an
+already-created empty immutable output directory; after confirming it was
+empty, only that task-owned directory was removed and the build succeeded with
+the destination absent. The initial Linux build was launched from the wrong
+working directory and failed before compilation with `go.mod file not found`;
+rerun from the synchronized checkout succeeded. The first post-publish
+verification script expected a nested `identity` in `catalog-publish` output;
+the supported publication had succeeded, and a corrected read-only validator
+then matched publication output, inspection, manifest and bundle digests on
+all workers. Mac's sandboxed catalog write returned `operation not permitted`
+with no release directory created; the supported publication was retried with
+the required sandbox escalation and `catalog-inspect` passed. These command
+failures did not change any selected service or prior release.
+
+The next gate is a fresh supported Dev cohort operation: apply the Dev-only
+publisher/admission fence, prepare and verify host backups/preflights, switch
+workers in the planned order then Mac, and complete direct, queued-SSH,
+Mac-local, lifecycle, limits, capacity and isolation acceptance on the exact
+sealed bytes. PRD recovery/deployment and QAS handoff have not started. QAS
+acceptance remains **DEFERRED, NOT PASS**; filesystem mailbox requests/ACKs
+remain **NOT RUN**.
+
 ## CAT-06 Factory source gates — 2026-10-23 14:17 UTC
 
 The owner resolved the Factory temporary-path choice: use `/tmp` despite its
