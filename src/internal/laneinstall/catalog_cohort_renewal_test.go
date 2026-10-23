@@ -324,6 +324,42 @@ func TestCatalogCohortContinuationCapacityKeepsBufferAndSelectorReserveSeparate(
 	}
 }
 
+func TestContinuationCoordinatorRefreshesVolatileCapacityReading(t *testing.T) {
+	started := time.Date(2026, 10, 23, 5, 0, 0, 0, time.UTC)
+	receipt := expiredPRDSwitchingReceiptFixture(t, started)
+	observedAt := started.Add(61*time.Minute + 5*time.Second)
+	observations := continuationObservationFixtures(t, receipt, observedAt)
+	mac := observations[len(observations)-1]
+	mac.ObservedAt = observedAt.Add(30 * time.Second).Format(time.RFC3339Nano)
+	mac.AvailableBytes += 4_411_392
+	if !SameCatalogCohortContinuationHostState(observations[len(observations)-1], mac) {
+		t.Fatal("coordinator rejected a fresh Mac observation only because its free-space counter changed")
+	}
+	mac.ConfigurationSHA256 = strings.Repeat("f", 64)
+	if SameCatalogCohortContinuationHostState(observations[len(observations)-1], mac) {
+		t.Fatal("coordinator ignored a stable configuration identity change")
+	}
+
+	mac = observations[len(observations)-1]
+	mac.ObservedAt = observedAt.Add(30 * time.Second).Format(time.RFC3339Nano)
+	mac.AvailableBytes += 4_411_392
+	observations[len(observations)-1] = mac
+	verifiedAt := observedAt.Add(31 * time.Second)
+	renewal, err := NewCatalogCohortContinuationRenewal(receipt, observations, verifiedAt)
+	if err != nil {
+		t.Fatalf("renewal rejected a fresh, above-threshold capacity reading: %v", err)
+	}
+	if renewal.Hosts[len(renewal.Hosts)-1].AvailableBytes != mac.AvailableBytes ||
+		renewal.Hosts[len(renewal.Hosts)-1].ObservedAt != mac.ObservedAt {
+		t.Fatal("renewal did not bind the coordinator's fresh Mac observation")
+	}
+
+	mac.AvailableBytes = mac.RequiredBytes - 1
+	if validateCatalogCohortContinuationHostObservationFields(mac) == nil {
+		t.Fatal("fresh observation accepted a capacity reading below its required reserve")
+	}
+}
+
 func TestContinuationObservationAcceptsSwitchedServiceArtifactsWhilePreservingBackup(t *testing.T) {
 	started := time.Date(2026, 10, 23, 5, 0, 0, 0, time.UTC)
 	receipt := expiredPRDSwitchingReceiptFixture(t, started)

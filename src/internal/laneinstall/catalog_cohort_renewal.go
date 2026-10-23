@@ -420,7 +420,7 @@ func SyncCatalogCohortContinuationRenewal(ctx context.Context, plan Plan, renewa
 		return "", err
 	}
 	expected, ok := catalogCohortContinuationObservationForHost(renewal, plan.HostID)
-	if !ok || !sameCatalogCohortContinuationHostState(expected, observation) {
+	if !ok || !SameCatalogCohortContinuationHostState(expected, observation) {
 		return "", ErrCatalogOperationInvalid
 	}
 	return WriteCatalogCohortContinuationRenewal(plan, renewal)
@@ -442,7 +442,7 @@ func VerifyCatalogCohortContinuationRenewal(ctx context.Context, plan Plan, oper
 		return CatalogCohortContinuationRenewal{}, err
 	}
 	expected, ok := catalogCohortContinuationObservationForHost(renewal, plan.HostID)
-	if !ok || !sameCatalogCohortContinuationHostState(expected, observation) {
+	if !ok || !SameCatalogCohortContinuationHostState(expected, observation) {
 		return CatalogCohortContinuationRenewal{}, ErrCatalogOperationInvalid
 	}
 	return renewal, nil
@@ -565,9 +565,15 @@ func catalogCohortContinuationPath(plan Plan, operationID string) string {
 	return filepath.Join(plan.Namespace.Staging, "catalog-cohort-continuations", operationID+".json")
 }
 
-func sameCatalogCohortContinuationHostState(expected, observed CatalogCohortContinuationHostObservation) bool {
+// SameCatalogCohortContinuationHostState compares the stable host identity and
+// proof fields while ignoring capture time and free-space counter movement.
+// Callers obtain a fresh observation first, which independently enforces the
+// current minimum-capacity requirement.
+func SameCatalogCohortContinuationHostState(expected, observed CatalogCohortContinuationHostObservation) bool {
 	expected.ObservedAt = ""
 	observed.ObservedAt = ""
+	expected.AvailableBytes = 0
+	observed.AvailableBytes = 0
 	return reflect.DeepEqual(expected, observed)
 }
 

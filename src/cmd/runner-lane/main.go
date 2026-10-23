@@ -762,11 +762,14 @@ func runCatalogCohortRenewal(ctx context.Context, args []string, stdout, stderr 
 		if err != nil {
 			return err
 		}
-		macObservation := observations[len(observations)-1]
-		local.ObservedAt, macObservation.ObservedAt = "", ""
-		if !reflect.DeepEqual(local, macObservation) {
+		macIndex := len(observations) - 1
+		if !laneinstall.SameCatalogCohortContinuationHostState(local, observations[macIndex]) {
 			return laneinstall.ErrCatalogOperationInvalid
 		}
+		// Capacity is checked by the fresh local observation, but it can change
+		// between the file capture and coordinator invocation. Bind the current
+		// reading and timestamp into the renewal.
+		observations[macIndex] = local
 		renewal, err := laneinstall.NewCatalogCohortContinuationRenewal(receipt, observations, time.Now().UTC())
 		if err != nil {
 			return err
