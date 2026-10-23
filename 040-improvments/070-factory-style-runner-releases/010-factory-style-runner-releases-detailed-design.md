@@ -227,7 +227,35 @@ required capacity on every host. Parallelize independent preparation where
 safe. Once evidence collection starts, keep receipt transitions and selector
 effects in the prescribed host order; synchronize each transition to all four
 hosts before proceeding to the next host. If an operation cannot fit within
-the cohort window, keep the lane held and start a new supported attempt.
+the cohort window, keep the lane held and start a new supported attempt, except
+for the following single owner-approved continuation.
+
+There is one owner-approved, operation-specific continuation for PRD operation
+`c2f074a84bc864830266a209943319eb`, release
+`cat-20261022-7a42f3b`. It does not change the normal 60-minute rule and is not
+available to another operation or release. It permits forward continuation
+only while the original receipt remains `switching` and Linux is the sole
+switched host. Each of the four hosts must freshly prove the exact operation
+hold, stopped PRD service, empty work inventory, unchanged configuration and
+schema, valid existing backup and manifest, current selector, and matching
+selector journal when switched. Each report is bound to the same receipt
+transition prefix, captured after the original evidence expires, and must
+precede coordinator verification by no more than two minutes. Each host must
+also have at least 500,000,000 bytes plus the separate 64 MiB selector reserve.
+
+The Mac coordinator writes one canonical owner-only renewal record under the
+staging sibling `catalog-cohort-continuations/<operation-id>.json`, outside
+the receipt directory. It binds the four ordered host observations, the exact
+operation/release and receipt prefix, and a fixed four-hour interval beginning
+at `verified_at`; expiry is inclusive. Synchronize the identical record to all
+four hosts and reverify it locally on all four before any new receipt
+transition. The existing sealed service binaries do not read this file, and
+the renewal leaves the existing receipt bytes, timestamps and transition
+history unchanged. Before each subsequent selector effect, append a fresh
+host-local preflight and perform the existing local checks; the effect must
+begin within two minutes. Any failed proof blocks forward progress. Expiry
+alone does not automatically roll back this specifically authorized operation;
+if the continuation expires, retain the hold and use supported recovery.
 
 Intermediate old/new host mixtures are maintenance states, not accepted service
 cohorts. Use host-local authorized maintenance for inventory if old/new protocol

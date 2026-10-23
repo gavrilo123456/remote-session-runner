@@ -487,6 +487,12 @@ func (m *CatalogPRDMaintenance) Select(ctx context.Context, releaseID, expectedT
 		m.backup.Directory, backupManifestSHA256(m.backup.Directory), time.Now().UTC()); err != nil {
 		return CatalogSelectorOperation{}, err
 	}
+	if !cohortEvidenceFresh(receipt, time.Now().UTC().Format(time.RFC3339Nano)) {
+		required, requiredErr := catalogCohortContinuationRequiredBytes(prdCatalogSelectorHeadroom)
+		if requiredErr != nil || m.proof.availableBytes < required {
+			return CatalogSelectorOperation{}, errors.Join(ErrCatalogInsufficientSpace, requiredErr)
+		}
+	}
 	index := cohortHostIndex(receipt, m.plan.HostID)
 	previousMaxMatches := index >= 0 && receipt.Hosts[index].PreviousReadSchemaMax == m.proof.readSchemaMax
 	if index >= 0 && m.proof.selectorTarget == "" {

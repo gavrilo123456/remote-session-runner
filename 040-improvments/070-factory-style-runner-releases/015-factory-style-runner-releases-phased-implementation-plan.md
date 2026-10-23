@@ -1,5 +1,52 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## Owner-approved PRD continuation — 2026-10-23 07:20 UTC
+
+For the in-progress PRD operation
+`c2f074a84bc864830266a209943319eb`, targeting the unchanged Dev-accepted
+release `cat-20261022-7a42f3b`, the owner explicitly directs that expiry of the
+original 60-minute cohort window alone must not trigger rollback. Preserve the
+Linux selector switch, sealed release, backups, and every receipt transition.
+This is a one-time, exact-operation exception; other deployments retain the
+normal 60-minute rule.
+
+Before issuing the fixed four-hour continuation, validate the operator tooling
+and freshly observe Mac, Linux, Sandbox, and Factory. Every observation must
+show the exact operation hold, stopped PRD service, empty work inventory,
+unchanged configuration/schema, valid backup and manifest, and the actual
+selector state; Linux must match its recorded selector journal, while the
+other three hosts must remain on their recorded previous selectors. Bind all
+four canonical reports to the same current receipt transition prefix and
+require at least 500,000,000 bytes plus the separate 64 MiB selector reserve
+on each host. All observations must be no more than two minutes old when the
+Mac coordinator verifies them. Start the four-hour interval at that
+verification timestamp.
+
+Keep the renewal in owner-only sibling evidence
+`catalog-cohort-continuations/<operation-id>.json`, outside the existing
+receipt. Do not change the sealed runtime release, rewrite receipt timestamps,
+add receipt fields, or discard history. Synchronize and verify the identical
+renewal on all four hosts before appending a new host preflight. Then continue
+Sandbox → Factory → Mac, with each fresh per-host preflight synchronized and
+each selector effect beginning within two minutes. Verify the complete PRD
+cohort and functional acceptance; keep QAS and its eight mailbox assignments
+unchanged.
+
+The delivered operator syntax is `runner-lane catalog-cohort-renewal`:
+`observe` takes `--host`, `--operation-id`, and a private `--output-file`;
+`issue` runs on `mac-control-plane` with exactly four `--observation-file`
+arguments in Linux, Sandbox, Factory, Mac order; `sync` takes the canonical
+`--renewal-file` on each host; and `verify` rechecks the local state. Use a
+task-owned mode-0700 directory under `/tmp` for exchanged JSON, transfer over
+the already verified SSH routes, and keep the renewal evidence out of Git.
+Complete all four `sync` and `verify` actions before the first new cohort
+preflight transition.
+
+The initial expired-window stop checkpoint below records the decision in force
+at that time. This owner approval supersedes its instruction to roll back
+solely because of expiry; it does not waive any fresh host, capacity, backup,
+receipt, selector-journal, or acceptance guard.
+
 ## Owner-approved one-time promotion order — 2026-10-23
 
 For the frozen release `cat-20261022-7a42f3b` only, the owner replaces the
@@ -74,15 +121,14 @@ No mailbox request or ACK was published and QAS was not paused or restarted.
 The earliest cohort observation is Factory's preflight at
 `2026-10-23T05:31:13.326679771Z`; the inclusive 60-minute window expired at
 `2026-10-23T06:31:13.326679771Z`. At the 06:32 UTC read-only reconciliation,
-the hold and partial selector state were intact. Following the explicit
-stop-on-expiry instruction, no further selector mutation or service start was
-attempted. PRD acceptance is **NOT PASS**. The held operation cannot resume
-forward after expiry. First use supported full-cohort rollback for its one
-switched host (Linux), follow the recorded selector journal, and synchronize
-each receipt transition until rollback is complete. Then collect fresh
-four-host preflights, backups, and fences before creating another attempt. Do
-not reuse the expired cohort evidence. The existing deployment authorization
-remains recorded but does not waive the expiry guard.
+the hold and partial selector state were intact. Under the instruction then in
+force, no further selector mutation or service start was attempted; PRD
+acceptance was **NOT PASS**. The recorded recommendation at that checkpoint
+was rollback followed by a fresh attempt. The owner subsequently authorized
+the exact-operation renewal described at the top of this plan, which
+supersedes rollback solely for expiry. The older preflights remain expired and
+must not be reused or backdated; renewal requires four newly collected host
+observations and all stated guards.
 
 ## CAT-06 checkpoint — 2026-10-23 01:32 UTC — exact-artifact recovery control under source gates
 

@@ -30,6 +30,8 @@ import (
 
 const maxLaneConfigBytes = 1 << 20
 
+var catalogCLIHostOrder = []string{"linux-host", "sandbox-host", "factory-sandbox", "mac-control-plane"}
+
 // catalogCommandSubprocessFixtureBackend is a test-only dependency seam for
 // the public-command acceptance harness. Production binaries never populate
 // this package-local variable and expose no CLI flag or environment switch
@@ -137,6 +139,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogAdopt(args[1:], stdout, stderr)
 	case "catalog-cohort":
 		err = runCatalogCohort(ctx, args[1:], stdout, stderr)
+	case "catalog-cohort-renewal":
+		err = runCatalogCohortRenewal(ctx, args[1:], stdout, stderr)
 	case "catalog-refresh-entrypoint":
 		err = runCatalogRefreshEntrypoint(ctx, args[1:], stdout, stderr)
 	case "catalog-work-inventory":
@@ -696,6 +700,126 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 		Stage       string `json:"stage"`
 		Transitions int    `json:"transition_count"`
 	}{receipt.OperationID, path, string(receipt.Stage), len(receipt.Transitions)})
+}
+
+// runCatalogCohortRenewal maintains the separate, operation-specific PRD
+// continuation record. It never rewrites a cohort receipt or starts a service.
+func runCatalogCohortRenewal(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-cohort-renewal", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical identity of this existing host")
+	action := flags.String("action", "", "observe, issue, sync, or verify")
+	operationID := flags.String("operation-id", "", "existing PRD cohort operation identity")
+	outputFile := flags.String("output-file", "", "private-directory output path for observe")
+	renewalFile := flags.String("renewal-file", "", "canonical renewal evidence file for sync")
+	var observationFiles repeatedStringFlag
+	flags.Var(&observationFiles, "observation-file", "canonical host observation for issue; repeat once per host")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHost(*host) || !validCLIProbeOperationID(*operationID) {
+		return errors.New("usage: runner-lane catalog-cohort-renewal --host HOST --action observe|issue|sync|verify --operation-id ID")
+	}
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLanePRD)
+	if err != nil {
+		return err
+	}
+	switch *action {
+	case "observe":
+		if *outputFile == "" || *renewalFile != "" || len(observationFiles) != 0 {
+			return errors.New("observe requires --output-file and accepts no input files")
+		}
+		observation, err := laneinstall.ObserveCatalogCohortContinuationHost(ctx, plan, *operationID)
+		if err != nil {
+			return err
+		}
+		if err := laneinstall.WriteCatalogCohortContinuationHostObservationFile(*outputFile, observation); err != nil {
+			return err
+		}
+		return writeJSON(stdout, struct {
+			HostID      string `json:"host_id"`
+			OperationID string `json:"operation_id"`
+			ObservedAt  string `json:"observed_at"`
+			OutputFile  string `json:"output_file"`
+		}{observation.HostID, observation.OperationID, observation.ObservedAt, *outputFile})
+	case "issue":
+		if *host != "mac-control-plane" || *outputFile != "" || *renewalFile != "" || len(observationFiles) != len(catalogCLIHostOrder) {
+			return errors.New("issue requires the Mac coordinator and exactly four --observation-file inputs")
+		}
+		receipt, err := laneinstall.ReadCatalogCohortReceipt(plan, *operationID)
+		if err != nil {
+			return err
+		}
+		observations := make([]laneinstall.CatalogCohortContinuationHostObservation, 0, len(observationFiles))
+		for _, path := range observationFiles {
+			observation, loadErr := laneinstall.LoadCatalogCohortContinuationHostObservationFile(path)
+			if loadErr != nil {
+				return loadErr
+			}
+			observations = append(observations, observation)
+		}
+		local, err := laneinstall.ObserveCatalogCohortContinuationHost(ctx, plan, *operationID)
+		if err != nil {
+			return err
+		}
+		macObservation := observations[len(observations)-1]
+		local.ObservedAt, macObservation.ObservedAt = "", ""
+		if !reflect.DeepEqual(local, macObservation) {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		renewal, err := laneinstall.NewCatalogCohortContinuationRenewal(receipt, observations, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		path, err := laneinstall.WriteCatalogCohortContinuationRenewal(plan, renewal)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, struct {
+			OperationID string `json:"operation_id"`
+			RenewalID   string `json:"renewal_id"`
+			SHA256      string `json:"sha256"`
+			VerifiedAt  string `json:"verified_at"`
+			ExpiresAt   string `json:"expires_at"`
+			Path        string `json:"path"`
+		}{renewal.OperationID, renewal.RenewalID, renewal.SHA256, renewal.VerifiedAt, renewal.ExpiresAt, path})
+	case "sync":
+		if *renewalFile == "" || *outputFile != "" || len(observationFiles) != 0 {
+			return errors.New("sync requires --renewal-file and accepts no observation files")
+		}
+		renewal, err := laneinstall.LoadCatalogCohortContinuationRenewalFile(*renewalFile)
+		if err != nil || renewal.OperationID != *operationID {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		path, err := laneinstall.SyncCatalogCohortContinuationRenewal(ctx, plan, renewal)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, struct {
+			HostID      string `json:"host_id"`
+			OperationID string `json:"operation_id"`
+			SHA256      string `json:"sha256"`
+			Path        string `json:"path"`
+		}{*host, renewal.OperationID, renewal.SHA256, path})
+	case "verify":
+		if *renewalFile != "" || *outputFile != "" || len(observationFiles) != 0 {
+			return errors.New("verify accepts no input files")
+		}
+		renewal, err := laneinstall.VerifyCatalogCohortContinuationRenewal(ctx, plan, *operationID)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, struct {
+			HostID      string `json:"host_id"`
+			OperationID string `json:"operation_id"`
+			RenewalID   string `json:"renewal_id"`
+			SHA256      string `json:"sha256"`
+			VerifiedAt  string `json:"verified_at"`
+			ExpiresAt   string `json:"expires_at"`
+		}{*host, renewal.OperationID, renewal.RenewalID, renewal.SHA256, renewal.VerifiedAt, renewal.ExpiresAt})
+	default:
+		return errors.New("action must be observe, issue, sync, or verify")
+	}
 }
 
 type repeatedStringFlag []string

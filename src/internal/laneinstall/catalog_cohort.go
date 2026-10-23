@@ -1292,11 +1292,22 @@ func cohortContainsHost(receipt CatalogCohortReceipt, hostID string) bool {
 
 func validateCatalogCohortHostMaySwitch(receipt CatalogCohortReceipt, layout catalogSelectorLayout, currentTarget string,
 	target CatalogReleaseIdentity, databaseSchema int, backupDirectory, backupManifestSHA256 string, now time.Time) error {
-	if ValidateCatalogCohortReceipt(receipt) != nil || !cohortEvidenceFresh(receipt, now.UTC().Format(time.RFC3339Nano)) || receipt.Lane != layout.lane ||
+	if ValidateCatalogCohortReceipt(receipt) != nil || receipt.Lane != layout.lane ||
 		(receipt.Stage != CatalogCohortHeld && receipt.Stage != CatalogCohortSwitching) ||
 		target.ReleaseID != receipt.ReleaseID || target.ReleaseSHA256 != receipt.ReleaseSHA256 || target.HostID != layout.hostID ||
 		databaseSchema <= 0 || now.IsZero() {
 		return ErrCatalogOperationInvalid
+	}
+	continuationRenewed := false
+	if !cohortEvidenceFresh(receipt, now.UTC().Format(time.RFC3339Nano)) {
+		if layout.lane != config.ReleaseLanePRD {
+			return ErrCatalogOperationInvalid
+		}
+		renewal, err := readCatalogCohortContinuationRenewalAt(layout, receipt.OperationID)
+		if err != nil || ValidateCatalogCohortContinuationRenewalForReceipt(renewal, receipt, now) != nil {
+			return ErrCatalogOperationInvalid
+		}
+		continuationRenewed = true
 	}
 	index := cohortHostIndex(receipt, layout.hostID)
 	preflightIndex := lastCohortTransitionForHost(receipt, "preflight", layout.hostID)
@@ -1308,7 +1319,7 @@ func validateCatalogCohortHostMaySwitch(receipt CatalogCohortReceipt, layout cat
 		return ErrCatalogOperationInvalid
 	}
 	host := receipt.Hosts[index]
-	if validateCohortPreflightFreshness(host.PreflightAt, now) != nil ||
+	if (!continuationRenewed && validateCohortPreflightFreshness(host.PreflightAt, now) != nil) ||
 		currentTarget != host.PreviousTarget || target != host.Target || databaseSchema != host.SchemaVersion ||
 		backupDirectory != host.BackupDirectory || backupManifestSHA256 != host.BackupManifestSHA256 {
 		return ErrCatalogOperationInvalid

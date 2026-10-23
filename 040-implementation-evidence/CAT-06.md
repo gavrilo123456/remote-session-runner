@@ -1,5 +1,52 @@
 # CAT-06 — PRD adoption and promotion
 
+## Current continuation checkpoint — 2026-10-23 07:25 UTC — renewal tooling implemented; Mac gates pass
+
+The owner has authorized one operation-specific four-hour continuation for
+PRD operation `c2f074a84bc864830266a209943319eb`, release
+`cat-20261022-7a42f3b`. The 06:35 UTC expiry checkpoint below is preserved as
+history; its recommendation to roll back solely for expiry is superseded. No
+rollback or selector change was made in this continuation turn.
+
+The source now adds `runner-lane catalog-cohort-renewal` and a separate
+canonical owner-only evidence file outside `catalog-cohorts`. The tool binds
+four newly observed host reports to the operation/release and exact receipt
+transition prefix, validates current holds, stopped services, empty work,
+configuration/schema, valid backups, selector state/journal, and at least
+500,000,000 bytes plus the separate 64 MiB selector reserve. The coordinator
+starts the fixed four-hour interval only after all observations, rejects any
+observation over two minutes old or later than coordinator verification, and
+keeps the original receipt bytes, fields, transition history, and timestamps
+unchanged. Subsequent selector changes still require each host's fresh
+two-minute receipt preflight. Scope and command sequence are recorded in the
+[design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
+and [plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md).
+
+Mac source gates used Go 1.27.1 and the Makefile's shared caches. The first
+restricted-shell `make test` attempt failed only because the sandbox denied
+the test-owned `/bin/ps` child in
+`TestBUG020MacShellExitWithInheritedControlWriterSettlesOnce`; it was not
+counted as PASS. Repeating the full gate in the normal Mac shell passed
+(exit 0, log SHA-256
+`7332fca388880cfb6684076f703e716589438da9b0817d0cc53880515f8487b2`); that
+full run includes the final strict timestamp-ordering regression. The earlier
+focused renewal package run also passed. `make vet`, `make build`, and `make
+smoke` each exited 0; log SHA-256 values are
+`b6104d309f1f528289d22571591532714364a7c6e03c52323e580833e4dbaca7`,
+`4b874c9029f8b147785d85d743e4dd2c47bbe3018c78d560621375447c7f64b9`, and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+The earlier sandboxed test log is retained at
+`/tmp/cat06-renewal.bJH18d/mac-test.log` (SHA-256
+`e251dec4bab1cc7431cfb138cd78ac0ac28b8457b475862cd250657970d51eab`).
+
+Source commit and cross-host gates are pending. The previously recorded
+06:35 UTC host observations are stale for renewal; after delivery, freshly
+observe all four hosts, issue the continuation on Mac, synchronize and verify
+the same file everywhere, then continue Sandbox → Factory → Mac. This turn
+did not touch PRD or QAS services, selectors, receipts, backups or mailbox
+contents and published no requests or ACKs. The unrelated untracked
+`src/cmd/catalog-holdcheck/` directory remains untouched.
+
 ## Current checkpoint — 2026-10-23 06:35 UTC — source gates passed; stop at expired PRD cohort window
 
 The frozen service release remains `cat-20261022-7a42f3b` (source
