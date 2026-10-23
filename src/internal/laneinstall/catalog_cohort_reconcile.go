@@ -407,9 +407,7 @@ func validatePRDCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, r
 		return ErrCatalogOperationInvalid
 	}
 	host := receipt.Hosts[index]
-	if proof.schema != host.SchemaVersion || proof.configurationSHA256 != host.ConfigurationSHA256 ||
-		proof.workSHA256 != host.WorkInventorySHA256 || proof.selectorTarget != host.PreviousTarget ||
-		proof.previousBundleSHA256() != host.PreviousBundleSHA256 {
+	if err := validatePRDCatalogCohortHostObservation(receipt, host, proof); err != nil {
 		return ErrCatalogOperationInvalid
 	}
 	_, fenced := catalogCohortHostFenceFor(receipt, plan.HostID)
@@ -443,6 +441,25 @@ func validatePRDCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, r
 		return ErrCatalogOperationInvalid
 	}
 	return verifyPRDBackupTargets(manifest, true)
+}
+
+// validatePRDCatalogCohortHostObservation compares stable local state with the
+// cohort preflight. Before any selector operation, the current target and
+// bundle must still be the recorded previous release. After a recorded switch
+// or rollback, selector-journal validation below establishes the current
+// target; comparing it to PreviousTarget here would reject the legitimate
+// switched state before that journal can be checked.
+func validatePRDCatalogCohortHostObservation(receipt CatalogCohortReceipt, host CatalogCohortHostPreflight, proof prdCatalogProof) error {
+	if proof.schema != host.SchemaVersion || proof.configurationSHA256 != host.ConfigurationSHA256 ||
+		proof.workSHA256 != host.WorkInventorySHA256 {
+		return ErrCatalogOperationInvalid
+	}
+	selectorChanged := cohortHasSwitched(receipt, host.HostID) || cohortHasRolledBackHost(receipt, host.HostID)
+	if !selectorChanged && (proof.selectorTarget != host.PreviousTarget ||
+		proof.previousBundleSHA256() != host.PreviousBundleSHA256) {
+		return ErrCatalogOperationInvalid
+	}
+	return nil
 }
 
 func catalogCohortPreviousSelectorMatches(lane config.ReleaseLane, host CatalogCohortHostPreflight,

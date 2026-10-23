@@ -787,6 +787,71 @@ func TestCatalogCohortReconciledSwitchRequiresMatchingLocalSelectorJournal(t *te
 	}
 }
 
+func TestCatalogCohortSyncAcceptsSwitchedHostAfterMatchingJournalValidation(t *testing.T) {
+	fixture := newCatalogSelectorFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt, identity := validCatalogCohortForSelectorFixture(t, fixture, now)
+	evidenceSHA256 := strings.Repeat("a", 64)
+	var err error
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", evidenceSHA256, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "preflight", "linux-host", evidenceSHA256, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID, err := newCatalogOperationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := CatalogSelectorOperation{
+		FormatVersion: catalogOperationFormatVersion, OperationID: operationID,
+		CohortOperationID: receipt.OperationID, CohortEvidenceSHA256: evidenceSHA256,
+		HostID: "linux-host", Lane: receipt.Lane, Release: identity,
+		PreviousTarget: fixture.legacyTarget, NextTarget: filepath.Join(fixture.catalogRoot, fixture.firstRelease, "linux-host"),
+		ConfigurationSHA256: receipt.Hosts[0].ConfigurationSHA256, DatabaseSchemaAtSwitch: store.CurrentSchemaVersion,
+		BackupDirectory: receipt.Hosts[0].BackupDirectory, BackupManifestSHA256: receipt.Hosts[0].BackupManifestSHA256,
+		Stage: catalogOperationComplete, CreatedUTC: now.Add(2 * time.Second).Format(time.RFC3339Nano),
+	}
+	if err := writeCatalogSelectorOperation(fixture.layout.operationRoot, operation); err != nil {
+		t.Fatal(err)
+	}
+	switchDigest, err := catalogSelectorOperationDigest(fixture.layout, operation.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "switch", "linux-host", switchDigest, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := receipt.Hosts[cohortHostIndex(receipt, "linux-host")]
+	proof := prdCatalogProof{
+		schema: host.SchemaVersion, configurationSHA256: host.ConfigurationSHA256,
+		workSHA256: host.WorkInventorySHA256, selectorTarget: operation.NextTarget,
+		bundleSHA256: identity.BundleSHA256,
+	}
+	if err := validatePRDCatalogCohortHostObservation(receipt, host, proof); err != nil {
+		t.Fatalf("post-switch snapshot was compared to the previous selector before journal validation: %v", err)
+	}
+	status := CatalogSelectorStatus{Kind: "catalog", Target: operation.NextTarget}
+	cohortRoot := filepath.Join(fixture.layout.serviceRoot, "staging", "catalog-cohorts")
+	_, err = syncCatalogCohortReceiptAt(cohortRoot, receipt, func() error {
+		if err := validatePRDCatalogCohortHostObservation(receipt, host, proof); err != nil {
+			return err
+		}
+		return validateCatalogCohortReconciledSelectorEvidence(fixture.layout, receipt, status,
+			host.SchemaVersion, host.ConfigurationSHA256, []CatalogSelectorOperation{operation})
+	})
+	if err != nil {
+		t.Fatalf("synchronize switched receipt through the local validation path: %v", err)
+	}
+	stored, err := readCatalogCohortReceipt(filepath.Join(cohortRoot, receipt.OperationID+".json"))
+	if err != nil || stored.Stage != CatalogCohortSwitching || !cohortHasSwitched(stored, "linux-host") {
+		t.Fatalf("synchronized switched receipt stage=%q err=%v", stored.Stage, err)
+	}
+}
+
 func TestCatalogCohortSupersessionRequiresRecoveryForAnyUnrolledBackSwitch(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	proof := strings.Repeat("a", 64)
