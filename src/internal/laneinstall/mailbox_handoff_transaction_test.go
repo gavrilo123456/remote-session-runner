@@ -3,6 +3,7 @@ package laneinstall
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -278,6 +279,177 @@ func TestMailboxHandoffTransactionResumesMixedReturnStates(t *testing.T) {
 			f.assertDatabasesPreserved(t)
 		})
 	}
+}
+
+func TestReleasedCohortStopSyncThenMailboxReturnSurvivesUnexpectedMacRestart(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		point string
+		lane  string
+	}{
+		{name: "QAS restarts before ownership markers transition", point: "restore-returning-journal", lane: "qas"},
+		{name: "legacy PRD restarts after its restored configuration is safe", point: "restore-source-config", lane: "prd"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newHandoffTransactionFixture(t)
+			active, err := activateMailboxHandoffLocked(context.Background(), f.op, f.deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.op = active
+
+			cohortBytes := releasedMailboxReturnCohortFixture(t, f)
+			cohortRoot := filepath.Join(filepath.Dir(f.op.Directory), "cohort-release")
+			cohortPaths := make([]string, 0, len(catalogCohortSwitchOrder)+1)
+			for _, hostID := range append([]string{"coordinator"}, catalogCohortSwitchOrder...) {
+				directory := filepath.Join(cohortRoot, hostID)
+				handoffTestMkdir(t, directory)
+				path := filepath.Join(directory, "released.json")
+				if err := os.WriteFile(path, cohortBytes, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cohortPaths = append(cohortPaths, path)
+			}
+			wantCohortSHA := handoffSHA(cohortBytes)
+			cohortSynchronized := func() bool {
+				for _, path := range cohortPaths {
+					raw, readErr := os.ReadFile(path)
+					if readErr != nil || handoffSHA(raw) != wantCohortSHA {
+						return false
+					}
+					var receipt CatalogCohortReceipt
+					if json.Unmarshal(raw, &receipt) != nil || receipt.Stage != CatalogCohortReleased || ValidateCatalogCohortReceipt(receipt) != nil {
+						return false
+					}
+				}
+				return true
+			}
+			if !cohortSynchronized() {
+				t.Fatal("released cohort history was not identical and valid at every host before mailbox return")
+			}
+
+			prdActive, qasActive := false, false
+			var unexpectedQASLease *mailboxhandoff.Lease
+			deps := f.deps
+			deps.stopped = func(context.Context) error {
+				if prdActive || qasActive || !cohortSynchronized() {
+					return ErrMailboxHandoff
+				}
+				return nil
+			}
+			deps.checkpoint = func(point string) error {
+				if point != test.point {
+					return nil
+				}
+				if test.lane == "qas" {
+					unexpectedQASLease, err = mailboxhandoff.Acquire(f.op.ReceiptPath, "qas", f.op.Receipt.TargetServiceRoot,
+						f.op.Receipt.TargetConfigSHA256, f.definitions)
+					if err != nil {
+						return err
+					}
+					qasActive = true
+					return nil
+				}
+				prdActive = true
+				current, readErr := handoffRead(f.op.SourceConfig)
+				if readErr != nil || handoffSHA(current) != f.op.OriginalSourceSHA256 {
+					return errors.New("unexpected PRD restart did not observe the restored configuration")
+				}
+				for _, directory := range f.op.Directories {
+					handoffTestIdentity(t, filepath.Join(directory.Root, directory.Name), directory)
+				}
+				f.assertPRDArchives(t, true)
+				return errHandoffFixtureInterrupted
+			}
+			_, err = restoreMailboxHandoffLocked(context.Background(), active, deps)
+			if test.lane == "qas" {
+				if !errors.Is(err, mailboxhandoff.ErrBusy) || unexpectedQASLease == nil {
+					t.Fatalf("QAS restart did not block the first owner-marker transition: lease=%t err=%v", unexpectedQASLease != nil, err)
+				}
+			} else if !errors.Is(err, errHandoffFixtureInterrupted) {
+				t.Fatalf("expected interruption after the restored PRD state became safe: %v", err)
+			}
+
+			journal, err := readMailboxHandoffJournal(filepath.Join(f.op.Directory, "operation.json"))
+			if err != nil || journal.Phase != "returning" {
+				t.Fatalf("interrupted return journal phase=%q err=%v", journal.Phase, err)
+			}
+			if _, retryErr := restoreMailboxHandoffLocked(context.Background(), journal, deps); !errors.Is(retryErr, ErrMailboxHandoff) {
+				t.Fatalf("retry with unexpectedly active %s service error=%v; want stopped-state refusal", test.lane, retryErr)
+			}
+			if unexpectedQASLease != nil {
+				if closeErr := unexpectedQASLease.Close(); closeErr != nil {
+					t.Fatal(closeErr)
+				}
+			}
+			prdActive, qasActive = false, false
+
+			resumed, err := restoreMailboxHandoffLocked(context.Background(), journal, f.deps)
+			if err != nil || resumed.Phase != "returned" {
+				t.Fatalf("supported return retry phase=%q err=%v", resumed.Phase, err)
+			}
+			if !cohortSynchronized() {
+				t.Fatal("mailbox return changed the released cohort history")
+			}
+			if err := handoffExpectedConfigs(resumed, false); err != nil {
+				t.Fatal(err)
+			}
+			f.assertPRDArchives(t, true)
+			f.assertDatabasesPreserved(t)
+			if lease, acquireErr := mailboxhandoff.Acquire(resumed.ReceiptPath, "qas", resumed.Receipt.TargetServiceRoot,
+				resumed.Receipt.TargetConfigSHA256, f.definitions); acquireErr == nil {
+				_ = lease.Close()
+				t.Fatal("stale QAS return configuration acquired paths after PRD ownership was restored")
+			}
+		})
+	}
+}
+
+func releasedMailboxReturnCohortFixture(t *testing.T, f handoffTransactionFixture) []byte {
+	t.Helper()
+	now := time.Now().UTC()
+	receipt := catalogPRDSupersessionReceiptFixture(t, "cat-20261023-c01e633", nil, now)
+	receipt.OperationID = strings.Repeat("b", 32)
+	for index := range receipt.Hosts {
+		receipt.Hosts[index].ConfigurationSHA256 = strings.Repeat("d", 64)
+		if receipt.Hosts[index].HostID == "mac-control-plane" {
+			receipt.Hosts[index].ConfigurationSHA256 = f.op.DisabledSourceSHA256
+		}
+	}
+	proof := strings.Repeat("e", 64)
+	var err error
+	receipt = catalogPRDAdvanceToVerifying(t, receipt, now)
+	for _, hostID := range catalogCohortSwitchOrder {
+		receipt, err = AdvanceCatalogCohortReceipt(receipt, "verify", hostID, proof, now)
+		if err != nil {
+			t.Fatalf("fixture cohort verify %s: %v", hostID, err)
+		}
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "complete", "", proof, now)
+	if err == nil {
+		receipt, err = AdvanceCatalogCohortReceipt(receipt, "open", "", proof, now)
+	}
+	if err != nil || receipt.Stage != CatalogCohortReleased {
+		t.Fatalf("fixture cohort release stage=%s err=%v", receipt.Stage, err)
+	}
+	if err := ValidateCatalogCohortReceipt(receipt); err != nil {
+		t.Fatalf("released fixture receipt invalid: %v", err)
+	}
+	current, err := handoffRead(f.op.SourceConfig)
+	macConfigSHA := ""
+	for _, host := range receipt.Hosts {
+		if host.HostID == "mac-control-plane" {
+			macConfigSHA = host.ConfigurationSHA256
+		}
+	}
+	if err != nil || handoffSHA(current) != f.op.DisabledSourceSHA256 || macConfigSHA != f.op.DisabledSourceSHA256 {
+		t.Fatalf("cohort was released without the existing disabled PRD configuration hash: err=%v", err)
+	}
+	encoded, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(encoded, '\n')
 }
 
 func TestMailboxHandoffTransactionRefusesChangedConfigAndUnprovenStop(t *testing.T) {

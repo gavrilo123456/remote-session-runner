@@ -75,8 +75,8 @@ func TestCatalogPublicCommandSequenceSubprocess(t *testing.T) {
 	secondReceipt := readCatalogFixtureReceipt(t, filepath.Join(root, "coordinator", second.OperationID+".json"))
 	thirdReceipt := readCatalogFixtureReceipt(t, filepath.Join(root, "coordinator", third.OperationID+".json"))
 	fourthReceipt := readCatalogFixtureReceipt(t, filepath.Join(root, "coordinator", fourth.OperationID+".json"))
-	if firstReceipt.Stage != laneinstall.CatalogCohortComplete {
-		t.Fatalf("successful legacy adoption stage=%s, want complete", firstReceipt.Stage)
+	if firstReceipt.Stage != laneinstall.CatalogCohortReleased {
+		t.Fatalf("successful legacy adoption and return release stage=%s, want released", firstReceipt.Stage)
 	}
 	if secondReceipt.Stage != laneinstall.CatalogCohortRolledBack {
 		t.Fatalf("interrupted migration recovery stage=%s, want rolled_back", secondReceipt.Stage)
@@ -252,6 +252,36 @@ func TestCatalogPublicCommandSequenceSubprocessHelper(t *testing.T) {
 	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "complete", "--operation-id", first.OperationID,
 		"--evidence-sha256", fixtureDigest("initial complete"))
 	syncAll(first.OperationID, "mac-control-plane")
+
+	// Return preparation releases the completed cohort while the existing
+	// configuration still matches, then stops the services and synchronizes
+	// that exact released history to every host before mailbox restoration.
+	for _, hostID := range catalogFixtureSwitchOrder {
+		state := readCatalogFixtureHost(t, root, hostID)
+		currentReceipt := readCatalogFixtureReceipt(t, filepath.Join(root, "hosts", hostID, "receipts", first.OperationID+".json"))
+		if state.SelectorTarget != "releases/"+first.TargetBundleSHA[hostID] ||
+			state.ConfigurationSHA != fixtureHostPreflight(currentReceipt, hostID).ConfigurationSHA256 {
+			t.Fatalf("release precondition changed on %s: %+v", hostID, state)
+		}
+	}
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "open", "--operation-id", first.OperationID,
+		"--evidence-sha256", fixtureDigest("release before mailbox return"))
+	for _, hostID := range catalogFixtureSwitchOrder {
+		state := readCatalogFixtureHost(t, root, hostID)
+		state.ServiceActive = false // The supported selected-lane stop is represented by test-backend state.
+		if err := backend.writeHost(state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	syncAll(first.OperationID, "mac-control-plane")
+	for _, hostID := range catalogFixtureSwitchOrder {
+		released := readCatalogFixtureReceipt(t, filepath.Join(root, "hosts", hostID, "receipts", first.OperationID+".json"))
+		state := readCatalogFixtureHost(t, root, hostID)
+		if released.Stage != laneinstall.CatalogCohortReleased || len(released.Transitions) == 0 ||
+			released.Transitions[len(released.Transitions)-1].Action != "open" || state.ServiceActive {
+			t.Fatalf("release and stop state on %s = stage %s services_active=%t", hostID, released.Stage, state.ServiceActive)
+		}
+	}
 
 	// A second candidate switches Linux, then crashes after Sandbox's durable
 	// selector write. The public reconcile command records that switch, after
@@ -775,6 +805,26 @@ func (b *catalogSubprocessFixtureBackend) RunCohort(ctx context.Context, command
 				if !host.ServiceActive || fixtureHostDatabaseSentinel(ctx, host.DatabasePath) != "retained" {
 					return fmt.Errorf("fixture verify state mismatch for %s: active=%v sentinel=%q", command.HostID,
 						host.ServiceActive, fixtureHostDatabaseSentinel(ctx, host.DatabasePath))
+				}
+			}
+			if command.Action == "open" {
+				if receipt.Stage != laneinstall.CatalogCohortComplete && receipt.Stage != laneinstall.CatalogCohortRolledBack {
+					return laneinstall.ErrCatalogOperationInvalid
+				}
+				for _, fence := range receipt.FenceProofs {
+					if !fence.Paused || !fence.NoNewAccepted || fence.Owner == "" || fence.Control == "" {
+						return laneinstall.ErrCatalogOperationInvalid
+					}
+				}
+				for _, hostID := range catalogFixtureSwitchOrder {
+					host, hostErr := b.readHost(hostID)
+					preflight := fixtureHostPreflight(receipt, hostID)
+					if hostErr != nil || host.SelectorTarget != "releases/"+preflight.Target.BundleSHA256 ||
+						host.ConfigurationSHA != preflight.ConfigurationSHA256 || host.SchemaVersion != preflight.SchemaVersion ||
+						!preflight.WorkInventoryEmpty || !catalogFixtureDatabaseIsValid(host.DatabasePath) ||
+						!fixtureFileSHA256Matches(host.DatabasePath, host.DatabaseSHA256) {
+						return fmt.Errorf("fixture release precondition failed for %s", hostID)
+					}
 				}
 			}
 			evidence := command.EvidenceSHA256
