@@ -1,5 +1,31 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-23 10:10 UTC — sealed release active; environment guard blocks functional acceptance
+
+The four-hour renewal and operation-specific receipts remain valid for
+`c2f074a84bc864830266a209943319eb`; the identical receipt hash
+`9431286a588bbeecabeead390d7bc7baa83022cb8ba90d4b8973edc3c54aac40` is at
+stage `verifying` on all four hosts. All PRD selectors and services now use
+the unchanged sealed `cat-20261022-7a42f3b` bundles, and readiness passes on
+Mac, Linux, Sandbox, and Factory. Ordinary admission remains closed on all
+four hosts. Do not append host `verify` or cohort `complete` transitions until
+the required command-level acceptance passes.
+
+The direct-mTLS and queued-SSH one-time probes on Linux reached the PRD
+service but were denied with `environment_denied` for `linux-host-prd` before
+runtime execution. The active Mac and worker PRD configs register only `*-dev`
+environment names; exact configuration hashes, audit record IDs, job results,
+and failed commands are recorded in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#prd-verification-checkpoint--2026-10-23-1010-utc--release-running-functional-admission-blocked-by-active-config).
+The Mac-local and remaining worker probes were not consumed, and their
+one-time scopes expired. No config or trust policy was changed, no mailbox
+request/ACK was published, and QAS and its eight mailbox paths remain
+untouched. Config changes would invalidate the receipt-bound configuration
+hashes and need a separately approved, freshly backed-up and preflighted
+supported operation. Keep PRD held and report CAT-06 acceptance as **NOT
+PASS** until that dependency is resolved and direct, queued-SSH, and
+Mac-local functional probes pass.
+
 ## Owner-approved PRD continuation — 2026-10-23 07:20 UTC
 
 For the in-progress PRD operation

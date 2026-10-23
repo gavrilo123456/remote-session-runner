@@ -1,5 +1,116 @@
 # CAT-06 — PRD adoption and promotion
 
+## PRD verification checkpoint — 2026-10-23 10:10 UTC — release running; functional admission blocked by active config
+
+The renewed operation `c2f074a84bc864830266a209943319eb` remains at
+`verifying`. Its four-hour renewal `eff2967e19cdc8fe9f29f7c888cb2694` expires
+at `2026-10-23T13:03:34.029851Z`. The receipt has 17 transitions and exact
+SHA-256 `9431286a588bbeecabeead390d7bc7baa83022cb8ba90d4b8973edc3c54aac40`
+on Mac, Linux, Sandbox, and Factory. No host verification or completion
+transition was recorded. No further selector change is needed: every PRD
+selector already points to the unchanged sealed release
+`cat-20261022-7a42f3b` (`b2c0ec9d47b3ebed966e3ebd115a994865910142170358af95ad9857e8bb4e7c`):
+
+| Host | Active per-host bundle SHA-256 | PRD service | Readiness |
+| --- | --- | --- | --- |
+| Linux | `cbff1c52fceb11ce76b42519de54702d3b2b628df3b134560ddaeb0cb7c1d582` | active | ready; revision `7a42f3bb6712e5186f855df4bc50493041404841` |
+| Sandbox | `ff2aab3fbbcbc6a0e671c8185d8da2bda71a2170014ade18b7200d66f5263b5d` | active | ready; revision `7a42f3bb6712e5186f855df4bc50493041404841` |
+| Factory | `ca0746f242be8918d58352e621235058f5c2f582fb5f17850ababd9996fe8ab1` | active | ready; revision `7a42f3bb6712e5186f855df4bc50493041404841` |
+| Mac | `fe143c888978276349c3575af6e1bbc063c69cd6051b9f1e8bb7c90266afcbac` | both launch agents running | ready; revision `7a42f3bb6712e5186f855df4bc50493041404841` |
+
+Fresh direct mTLS readiness returned HTTP 200 on all three workers with normal
+certificate and hostname verification. Their ordinary POST fence checks
+returned HTTP 503 `maintenance_admission_closed`. The Mac-local readiness
+returned HTTP 200 and its supported fence check returned HTTP 503 with the
+same code. Linux, Sandbox, and Factory health snapshots had zero active
+session/command slots, queued commands/intents, mailbox backlog, storage
+errors, cleanup failures, and event gaps. The Mac snapshot had zero active
+slots, queued commands, mailbox backlog, storage errors, cleanup failures,
+output truncations, and event gaps; it still reports `queued_intents=3` and an
+old reconciliation age. No attempt was made to replay or clear those intents.
+Sandbox measured `1,462,018,048` available bytes on `/dev/sda1`
+immediately after its small scope-file writes, above the operation's
+`849,205,489`-byte minimum by `612,812,559` bytes.
+
+The scoped direct probe exposed a concrete authorization/configuration
+failure. Command:
+
+```sh
+python3 /private/tmp/cat06-renewal-ef398f2/run-direct-probe.py --routes /private/tmp/cat06-renewal-ef398f2/direct-routes.json --prepared /private/tmp/cat06-renewal-ef398f2/probe-linux-direct.json --host linux-host
+```
+
+It exited 1 with `direct probe did not complete within 15 seconds`. The
+wrapper job `job-af883bb8fa37e28842db336faed68eab` then read as
+`phase=failed`, with no command state, exit code, final event sequence, or
+created teardown. The Linux service audit records `record_id=968`,
+`reason_code=environment_denied`, at `2026-10-23T10:00:12.996223536Z`, for
+`environment=linux-host-prd`; no runtime command was executed.
+
+The one-time queued-SSH probe also reached Linux PRD but was denied before
+execution. The helper exited 0 while reporting a failed job, so it is not a
+passing acceptance result:
+
+```sh
+/private/tmp/cat06-renewal-ef398f2/catalog-probe-once --mode=queued --config "$HOME/Library/Application Support/RemoteSessionRunner/config/mac.yaml" --prepared /private/tmp/cat06-renewal-ef398f2/probe-linux-queued.json
+```
+
+It returned `phase=failed`, `teardown_state=not_created`, and
+`bridge_response_type=result` for job `job-20f4fc4a7375132f1159b9e0926fb87a`.
+The Linux service audit records `record_id=969`,
+`reason_code=environment_denied`, at `2026-10-23T10:04:54.828635764Z`, again
+for `linux-host-prd`. Neither probe reached runtime execution; the subsequent
+health snapshots show zero active slots and queued commands.
+Both one-time Linux scopes are retained as consumed. Sandbox and Factory
+direct/queued scopes and the Mac-local scope remain unconsumed; they expired
+between `10:08:12Z` and `10:08:28Z` and will not be reused. No filesystem
+mailbox request or ACK was published.
+
+The active PRD configs confirm the guard's cause. The Mac service loads
+`config/mac.yaml`, SHA-256
+`56c25057b58b72e592995cc00efbd042cf4d666db449d01bb03a0aa628778d11`; its
+environment keys are `factory-sandbox-dev`, `linux-dev`, `mac-dev`, and
+`sandbox-dev`. Worker PRD config hashes and environment keys are:
+
+| Host | Active config SHA-256 | Registered environments |
+| --- | --- | --- |
+| Linux | `c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f` | `mac-dev`, `linux-dev` |
+| Sandbox | `50f704f1b692048a149c366d0e20be2448ee8236a8cdaefcee39b2a6449e5d9a` | `sandbox-dev` |
+| Factory | `271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699` | `factory-sandbox-dev` |
+
+Thus the active PRD configuration on each host lacks the exact PRD environment
+name used by its lane-bound acceptance probe. No configuration, credentials,
+routes, databases, selectors, or mailbox assignments were changed to bypass
+this guard. A config change would change receipt-bound configuration hashes
+and requires a separately reviewed, freshly backed-up and preflighted
+supported operation; it cannot be treated as a continuation of the current
+receipt without its guards. The earlier strict `catalog-probe-once --mode
+direct` helper also rejected the legacy V2 TLS config before network access
+because its optional fingerprint/URI pin fields are absent. The mTLS health
+and scoped POST checks above used the configured CA and client identity with
+normal certificate and endpoint verification; no insecure TLS option was
+used.
+
+One idempotent Mac receipt-sync attempt was refused because the selected lane
+was active or had retained work. It changed no receipt. The Mac copy already
+matches the same four-host receipt SHA above, so no synchronization gap exists
+at this checkpoint. A prior sandboxed Mac start returned launchd exit 5; the
+same supported start from the authorized elevated shell then succeeded, and
+both Mac agents are running. An earlier Sandbox stop recorded a shutdown
+flush timeout; the subsequent start succeeded and current readiness is
+healthy. These failures remain historical evidence.
+
+**CAT-06 PRD acceptance remains NOT PASS.** Preserve the `verifying` receipt,
+all four selected release identities, the operation hold, the two failed
+Linux probe records, unconsumed expired scopes, backups, and Mac's three
+queued intents. Keep PRD admissions closed. QAS was not accessed, restarted,
+reconfigured, or moved; its eight mailbox paths remain assigned to QAS. The
+specific next dependency is owner-approved, reviewed PRD environment policy
+for the four existing services (or an existing approved PRD config containing
+those mappings). Any resulting config hash change must go through fresh
+backup/preflight and supported cohort-history handling before another
+acceptance attempt. Do not resume or hand off mailbox users before PRD
+functional acceptance passes.
+
 ## Current continuation-renewal checkpoint — 2026-10-23 08:53 UTC
 
 The Sandbox capacity recheck at `08:45:14Z` measured `1649299456` bytes free

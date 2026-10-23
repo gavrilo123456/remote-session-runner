@@ -1,5 +1,19 @@
 # Lane execution ledger
 
+## CAT-06 PRD acceptance blocker — 2026-10-23 10:10 UTC
+
+The unchanged sealed `cat-20261022-7a42f3b` release is selected and running on
+Mac and all three workers. Readiness and ordinary-admission fences pass; the
+four-host receipt is identical at SHA-256
+`9431286a588bbeecabeead390d7bc7baa83022cb8ba90d4b8973edc3c54aac40`, stage
+`verifying`, with no host verification events. Scoped direct-mTLS and
+queued-SSH probes on Linux reached PRD but both failed before runtime execution
+with `environment_denied`: active PRD configs lack `linux-host-prd`. Their
+failed job IDs and the exact per-host config hashes are recorded in
+[CAT-06 evidence](CAT-06.md#prd-verification-checkpoint--2026-10-23-1010-utc--release-running-functional-admission-blocked-by-active-config).
+No config or mailbox changes were made, and QAS remains serving its existing
+mailbox users. PRD admissions remain held; CAT-06 acceptance is **NOT PASS**.
+
 ## CAT-06 PRD partial switch and expired cohort window — 2026-10-23 06:35 UTC
 
 The current PRD operation is `c2f074a84bc864830266a209943319eb`, target
