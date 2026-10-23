@@ -448,7 +448,7 @@ func validateResponseMatchesRecord(response mailboxclient.Response, record store
 
 func validateRequestIdentity(ctx context.Context, authority *store.AuthorityStore, record store.MailboxExchangeRecord, approved approvedRequest) error {
 	if record.MailboxID != ownerMailboxID || record.RequestID != approved.RequestID || record.Operation != "run" ||
-		record.ResourceID != string(approved.JobID) || record.Controller.Type() != domain.ControllerTypeLocalUser || record.Controller.ID() != ownerIdentity {
+		(record.ResourceID != "" && record.ResourceID != string(approved.JobID)) || record.Controller.Type() != domain.ControllerTypeLocalUser || record.Controller.ID() != ownerIdentity {
 		return errors.New("mailbox exchange differs from the exact owner-approved identity")
 	}
 	intent, err := authority.GetLocalIntent(ctx, approved.IntentID)

@@ -111,6 +111,15 @@ func TestOwnerAbandonmentRejectsActiveLeaseAndInconsistentEvidence(t *testing.T)
 				*clock.now = clock.leaseExpiry.Add(time.Second)
 			},
 		},
+		{
+			name: "exchange is bound to a different nonempty resource",
+			mutate: func(t *testing.T, authority *AuthorityStore, clock *ownerAbandonmentTestClock) {
+				if _, err := authority.db.Exec(`UPDATE mailbox_exchanges SET resource_id = 'job-unrelated' WHERE client_request_id = ?`, clock.ref.ClientRequestID); err != nil {
+					t.Fatal(err)
+				}
+				*clock.now = clock.leaseExpiry.Add(time.Second)
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 23, 22, 0, 0, 0, time.UTC)
@@ -177,7 +186,7 @@ func ownerAbandonmentFixture(t *testing.T, now *time.Time, requestID string) (*A
 	if _, _, err := authority.AcceptMailboxExchangeInMailbox(ctx, ref, MailboxExchangeCreate{
 		RequestID: requestID, Operation: "run", Controller: controller, IdempotencyKey: clientKey,
 		ExecutionIdempotencyKey: executionKey, RequestHash: hash, CanonicalPayload: canonical,
-		ResourceID: string(jobID), Selection: selection, SelectionState: MailboxExecutionSelectionResolved,
+		ResourceID: "", Selection: selection, SelectionState: MailboxExecutionSelectionResolved,
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -836,7 +836,8 @@ func (s *AuthorityStore) CloseUncertainRemoteRunAsIndeterminateInMailbox(
 		if err != nil {
 			return MailboxExchangeRecord{}, err
 		}
-		if intent.IntentID != intentID || intent.Operation != "run" || intent.ResourceID != string(jobID) || current.ResourceID != string(jobID) ||
+		if intent.IntentID != intentID || intent.Operation != "run" || intent.ResourceID != string(jobID) ||
+			(current.ResourceID != "" && current.ResourceID != string(jobID)) ||
 			intent.JobID != jobID || intent.SessionID != sessionID || intent.CommandID != commandID ||
 			intent.Controller.Type() != current.Controller.Type() || intent.Controller.ID() != current.Controller.ID() {
 			return MailboxExchangeRecord{}, ErrMailboxOwnerAbandonmentNotEligible
