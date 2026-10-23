@@ -1,6 +1,39 @@
 # CAT-06 — PRD adoption and promotion
 
-## Current continuation checkpoint — 2026-10-23 07:39 UTC — source delivered; Sandbox storage blocks remaining gates
+## Current source-gate checkpoint — 2026-10-23 08:10 UTC
+
+The requested Sandbox rerun for runtime source
+`036512d13be296b6812ddfe52c45f37d70a8deb5` is complete. The checkout was
+clean on `dev` at evidence closeout `b7b48a7cfd6777dcc09286d4990c481c2eb56121`;
+the only tracked difference from source `036512d` was this CAT-06 evidence
+file. Gitea `origin/dev` and the automatic GitHub `dev` mirror both resolved
+to `b7b48a7`, and Sandbox fast-forwarded from `036512d` to that evidence
+closeout before testing. Linux and Factory were already clean at `b7b48a7`.
+
+On `oracle-gustaw-janecki-ubuntu-flex-02` (Linux ARM64), the explicit Go
+1.27.1 toolchain was
+`/home/ubuntu/.local/share/remote-session-runner/toolchains/go1.27.1/bin/go`.
+The four commands ran sequentially with
+`TMPDIR=/tmp GOTMPDIR=/tmp SQLITE_TMPDIR=/tmp GOMAXPROCS=2 GOFLAGS=-p=1
+GOTOOLCHAIN=local`; each exited 0:
+
+| Gate | Start (UTC) | Exit | Free bytes before → after |
+| --- | --- | ---: | ---: |
+| `make test` | 08:06:25 | 0 | 1,846,796,288 → 1,814,200,320 |
+| `make vet` | 08:09:57 | 0 | 1,814,130,688 → 1,813,876,736 |
+| `make build` | 08:10:13 | 0 | 1,813,737,472 → 1,811,894,272 |
+| `make smoke` | 08:10:35 | 0 | 1,811,849,216 → 1,811,804,160 |
+
+The earlier interrupted Sandbox suite remains **INTERRUPTED / NOT PASS**; this
+successful run is recorded separately and does not relabel it. The fresh
+available space exceeds the conservative 672,019,712-byte retry threshold and
+the recorded 849,205,489-byte backup/staging + operating-buffer + selector
+reserve requirement. No Runner service, selector, receipt, database or mailbox
+was changed by these source gates. Next, collect new four-host PRD observations
+and issue/synchronize the supported operation-specific renewal; the older
+06:35 UTC observations remain stale and cannot be reused.
+
+## Historical continuation checkpoint — 2026-10-23 07:39 UTC — Sandbox storage blocked remaining gates
 
 The owner has authorized one operation-specific four-hour continuation for
 PRD operation `c2f074a84bc864830266a209943319eb`, release

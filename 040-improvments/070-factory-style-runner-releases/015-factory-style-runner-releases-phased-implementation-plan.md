@@ -1105,7 +1105,7 @@ phase dependencies and `git diff --check`. Run no builds, source tests, fixture
 publication or live probes merely to register the proposal. Operational approval
 for earlier bug maintenance is not approval to start this new catalogue rollout.
 
-## Current PRD pre-write checkpoint — 2026-10-23 02:19–02:23 UTC
+## Historical PRD pre-write checkpoint — 2026-10-23 02:19–02:23 UTC
 
 The one-time owner-approved order remains Dev acceptance → PRD deployment and
 acceptance → QAS→PRD mailbox handoff → QAS alignment. The frozen
@@ -1143,3 +1143,21 @@ guard passes. Keep the eight mailbox paths in QAS through PRD acceptance, then
 coordinate and validate the supported handoff before QAS alignment. The
 full host-by-host read-only results and exact retained identities are in
 [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#fresh-prdqas-pre-write-guard--2026-10-23-0219-0223-utc).
+
+## CAT-06 continuation update — 2026-10-23 08:10 UTC
+
+The Sandbox source-gate blocker in the 07:39 UTC evidence checkpoint is
+resolved. At runtime source `036512d13be296b6812ddfe52c45f37d70a8deb5`,
+Sandbox `make test`, `make vet`, `make build`, and `make smoke` all passed on
+Go 1.27.1; the interrupted earlier suite remains historical **NOT PASS**.
+Gitea and its GitHub mirror both contain evidence closeout `b7b48a7`, and all
+three Ubuntu checkouts are clean at that SHA. Fresh Sandbox space after the
+gates is 1,811,804,160 bytes, above the measured 849,205,489-byte operation
+requirement. The four-host renewal for operation
+`c2f074a84bc864830266a209943319eb` is still pending: gather new observations,
+issue it with the supported renewal tool, synchronize and verify it everywhere,
+then continue forward from Linux's existing completed selector switch through
+Sandbox, Factory, and Mac. Preserve the sealed
+`cat-20261022-7a42f3b` release, QAS services and mailbox assignment.
+See [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#current-source-gate-checkpoint--2026-10-23-0810-utc)
+for commands, results and exact capacity readings.
