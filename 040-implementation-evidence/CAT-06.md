@@ -1,6 +1,6 @@
 # CAT-06 — PRD adoption and promotion
 
-## Current continuation checkpoint — 2026-10-23 07:25 UTC — renewal tooling implemented; Mac gates pass
+## Current continuation checkpoint — 2026-10-23 07:39 UTC — source delivered; Sandbox storage blocks remaining gates
 
 The owner has authorized one operation-specific four-hour continuation for
 PRD operation `c2f074a84bc864830266a209943319eb`, release
@@ -22,6 +22,15 @@ two-minute receipt preflight. Scope and command sequence are recorded in the
 [design](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
 and [plan](../040-improvments/070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md).
 
+Source commit `036512d13be296b6812ddfe52c45f37d70a8deb5` was pushed to primary
+Gitea `origin/dev`; direct `ls-remote` checks confirmed both the primary and
+automatic GitHub `dev` mirror at that exact SHA. Linux, Sandbox, and Factory
+were clean on `dev` at the prior source SHA before delivery, then each
+fast-forwarded to `036512d` from GitHub and verified clean at the exact commit.
+The push itself succeeded; the sandbox could not update its local
+`refs/remotes/origin/dev` tracking ref, so the remote SHA was independently
+verified. Ubuntu builds/tests below ran only after those exact pulls.
+
 Mac source gates used Go 1.27.1 and the Makefile's shared caches. The first
 restricted-shell `make test` attempt failed only because the sandbox denied
 the test-owned `/bin/ps` child in
@@ -39,13 +48,60 @@ The earlier sandboxed test log is retained at
 `/tmp/cat06-renewal.bJH18d/mac-test.log` (SHA-256
 `e251dec4bab1cc7431cfb138cd78ac0ac28b8457b475862cd250657970d51eab`).
 
-Source commit and cross-host gates are pending. The previously recorded
-06:35 UTC host observations are stale for renewal; after delivery, freshly
-observe all four hosts, issue the continuation on Mac, synchronize and verify
-the same file everywhere, then continue Sandbox → Factory → Mac. This turn
-did not touch PRD or QAS services, selectors, receipts, backups or mailbox
-contents and published no requests or ACKs. The unrelated untracked
-`src/cmd/catalog-holdcheck/` directory remains untouched.
+Factory full Linux/AMD64 `make test`, `make vet`, `make build`, and `make
+smoke` all passed at Go 1.27.1, with `GOMAXPROCS=1`, `GOFLAGS=-p=1`, `nice
+-n 19`, and task-owned `/tmp/c06r.1DibSm` logs. Their SHA-256 values are
+`e2da448ac1fb279bf0262a7f1cdaae3f3de4f844cb675db1b4e16171d40e69f5`,
+`ea105d600441ee01024daa62416f82064db2d3cd45bdb6523aaeac537316da91`,
+`1b46940323a3207ceca21ad2bde10aa3c58bc808a5250c76e33ac0f7c0cf6e7b`, and
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+The final `/tmp` aggregate free space was 3,426,177,024 bytes. Its mount is a
+4 GiB tmpfs with `usrquota`; the installed `quota`/`repquota` tools cannot
+query that tmpfs (`Cannot stat() mounted device tmpfs`), and `ulimit -f` is
+unlimited. Thus Factory's effective per-user quota remains unverified even
+though the full source gates passed.
+
+Linux focused `go test ./src/internal/laneinstall ./src/cmd/runner-lane
+-count=1`, exact P025 and P101 regressions, native vet/build/smoke all passed
+at Go 1.27.1. The first three direct test invocations used bare `go`, which
+was not on the non-login SSH `PATH` and exited 127 before running tests; they
+were rerun with the explicit toolchain path. Log SHA-256 values: focused
+`efa9652f7746a628d5fb2ae71163b08fd5d70b74a4621127e5f335bf92f59932`, P025
+`66f5b592dbb6e57e322bb7225c53e3b378262d4385224f3916a1037be889e4ab`, P101
+`b42e6ea04df7b9e2489c9f776aa469f4516cefe2cd450b6e30613c1c3720d08b`, vet
+`ea105d600441ee01024daa62416f82064db2d3cd45bdb6523aaeac537316da91`, build
+`1b46940323a3207ceca21ad2bde10aa3c58bc808a5250c76e33ac0f7c0cf6e7b`, and
+smoke `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Full Linux suite remains **NOT RUN** under the owner amendment; the historical
+interrupted runs remain **NOT PASS**.
+
+Sandbox is linux/arm64 with Go 1.27.1. `/dev/sda1` had 636,420,096 bytes
+available before its full-suite attempt. `make test` used a mode-0700 task
+directory under `/tmp`, `GOMAXPROCS=1`, `GOFLAGS=-p=1`, and `nice -n 19`. As
+free space fell to 556,769,280 bytes—below the 567,108,864-byte 500 MB plus
+64 MiB reserve—the task stopped only its own test process. The command ended
+143 and is **NOT PASS**, not a test assertion failure; its log SHA-256 is
+`85bc7cb4d7002912ae1074d343ba3ac7171811e6e0615537e3bb34dc68574aa1`. After
+the process exited, the task-owned 59,665,982-byte temporary directory was
+removed; shared Go caches were preserved. Free space then measured
+589,967,360 bytes, only 22,858,496 bytes above the reserve. Based on the
+104,910,848-byte decline observed during the partial run, a retry needs at
+least 672,019,712 bytes at start merely to repeat that observed peak while
+retaining the reserve; the completed full suite and vet/build/smoke may need
+more. Sandbox vet/build/smoke were not started. The exact owner action needed
+to resume those gates is to free at least 82,052,352 additional bytes on
+`/dev/sda1` beyond the last measured state, without deleting retained work,
+shared caches, backups, or mailbox data; remeasure before retrying.
+
+The host source gates are incomplete, so renewal evidence has not been
+collected or issued and no PRD selector effect was attempted. The previously
+recorded 06:35 UTC host observations are stale for renewal. After Sandbox
+gates pass, build the operator from the delivered source, freshly observe all
+four hosts, issue on Mac, synchronize and verify the same renewal everywhere,
+then continue Sandbox → Factory → Mac. This work did not touch PRD or QAS
+services, selectors, receipts, backups or mailbox contents and published no
+requests or ACKs. The unrelated untracked `src/cmd/catalog-holdcheck/`
+directory remains untouched.
 
 ## Current checkpoint — 2026-10-23 06:35 UTC — source gates passed; stop at expired PRD cohort window
 
