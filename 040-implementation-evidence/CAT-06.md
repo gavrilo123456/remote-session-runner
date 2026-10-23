@@ -1,5 +1,64 @@
 # CAT-06 — PRD adoption and promotion
 
+## Current checkpoint — 2026-10-23 — Dev accepted; one-time order advances PRD next
+
+The owner approved this release-specific order:
+`Dev acceptance → PRD deployment and acceptance → supported QAS→PRD mailbox
+handoff → QAS alignment and acceptance`. Dev acceptance is **PASS** for
+`cat-20261022-7a42f3b`, source revision
+`7a42f3bb6712e5186f855df4bc50493041404841`. The sealed manifest SHA-256 is
+`b2c0ec9d47b3ebed966e3ebd115a994865910142170358af95ad9857e8bb4e7c`; per-host
+bundle hashes and the complete seven-route Dev evidence are in
+[`CAT-04.md`](CAT-04.md). No build occurred during promotion.
+
+The candidate source gates passed against this exact revision using Go 1.27.1:
+
+| Machine | Required source checks | Result |
+| --- | --- | --- |
+| Mac (`darwin/arm64`) | Full `make test`, `make vet`, `make build`, `make smoke` | PASS |
+| Sandbox (`linux/arm64`) | Full `make test`, `make vet`, `make build`, `make smoke` | PASS |
+| Factory (`linux/amd64`) | Full `make test`, `make vet`, `make build`, `make smoke` | PASS |
+| Linux (`linux/amd64`) | Focused CAT-06/changed-package checks, the exact P025/P101 regressions, native vet/build/smoke checks | PASS |
+
+Earlier interrupted Linux full-suite attempts remain **NOT PASS** and are not
+used as qualification evidence; the amended assignment requires Factory's
+full Linux/AMD64 suite and Linux's focused/native checks. The prior
+`cat-20261022-b637d63` release remains preserved unchanged. The candidate
+source revision was delivered through Mac primary Gitea, verified at the exact
+GitHub mirror SHA, and fast-forwarded to the three clean Ubuntu `dev`
+checkouts before candidate acceptance.
+
+This exception replaces QAS acceptance as a prerequisite for this candidate's
+PRD deployment and retained-work recovery only. CAT-05 acceptance for this
+candidate is **DEFERRED, NOT PASS**. All CAT-06 PRD protections remain: fresh
+per-host inventory and ownership, supported exact-pair recovery with accepted
+artifacts, verified consistent backups, candidate/schema/configuration
+compatibility, one unambiguous selected-lane admission hold, capacity, tested
+rollback, ordered worker-then-Mac switching, and complete PRD postflight.
+Do not restore an older database automatically.
+
+QAS is confirmed still active on `cat-20261021-b84caf0` across all four hosts;
+it was not restarted or changed during Dev acceptance. The 00:55 UTC read
+found one active command slot/reservation on Mac QAS and zero work on the three
+worker QAS inventories. Preserve that work. Keep all eight mailbox paths
+assigned to QAS while PRD is deployed and after PRD acceptance; do not copy
+configs or databases to perform handoff. Only after PRD acceptance should the
+supported mailbox return package be validated, clients paused/drained, results
+and ACKs settled (including a fresh `#348` disposition check), and ownership
+transferred. Resume users on PRD only after handoff postflight, then align and
+accept the same frozen release in QAS. The owner must explicitly request any
+later mailbox return. No mailbox requests or ACKs were published by the
+operator; filesystem-mailbox acceptance remains **NOT RUN**.
+
+The Dev receipt `f64a50ed3593c66fc217d6d431f963a9` is `complete` with 15
+transitions and identical SHA-256
+`258614552cda7cb70646043eb14d4b500fbfb4d72d83776ab461de792e3bc575` on Mac,
+Linux, Sandbox and Factory. Final Dev services were active with empty work
+inventories on all four hosts; the four public hold checks returned the exact
+operation ID and no error. QAS was active. PRD remains untouched. The latest
+Sandbox free-space observation was 929,722,368 bytes; calculate and recheck the
+exact requirement immediately before every PRD/Sandbox write.
+
 ## Dev recovery and timing correction — 2026-10-22 23:06 UTC
 
 The expired Dev candidate attempt was rolled back through the supported

@@ -1,5 +1,30 @@
 # CAT-05 — Frozen candidate and live QAS qualification
 
+## Current candidate status — 2026-10-23 — acceptance deferred, not PASS
+
+The owner approved a one-time promotion order for the Dev-accepted
+`cat-20261022-7a42f3b`: Dev acceptance → PRD deployment and acceptance →
+supported QAS→PRD mailbox handoff → QAS alignment and acceptance. Therefore
+CAT-05 acceptance for this candidate is **DEFERRED, NOT PASS**. This supersedes
+the normal QAS-before-PRD dependency for this candidate only; all other PRD
+gates remain required.
+
+At 00:55 UTC, all four QAS services were active on the prior
+`cat-20261021-b84caf0` release with schema 40. QAS was not restarted,
+reconfigured or migrated during Dev acceptance. The Mac QAS work inventory had
+one active command slot and one reservation; Linux, Sandbox and Factory QAS
+inventories were empty. Preserve the Mac QAS work and refresh all work and
+ownership evidence before any later QAS pause or restart. All eight mailbox
+paths remain assigned to QAS through PRD postflight and afterward until the
+owner explicitly requests their return. No mailbox requests or ACKs were
+published by the operator; filesystem-mailbox acceptance is **NOT RUN**.
+
+After PRD acceptance, prepare and validate the supported handoff, coordinate a
+brief client pause/drain, settle outstanding results and ACKs (including a
+fresh disposition check for `#348`), and verify ownership before resuming users
+on PRD. Then accept the same frozen `cat-20261022-7a42f3b` bytes in QAS without
+rebuilding. Future releases use normal Dev→QAS→PRD promotion.
+
 ## Current deployment — 2026-10-21 22:01 UTC
 
 QAS now accepts the same Dev-qualified `cat-20261021-b84caf0` bundles, source

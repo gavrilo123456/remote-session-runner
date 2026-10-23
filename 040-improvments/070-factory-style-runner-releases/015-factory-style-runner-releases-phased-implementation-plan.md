@@ -1,5 +1,40 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## Owner-approved one-time promotion order — 2026-10-23
+
+For the frozen release `cat-20261022-7a42f3b` only, the owner replaces the
+normal `Dev → QAS → PRD` order with:
+
+1. Complete Dev acceptance (**PASS**; operation
+   `f64a50ed3593c66fc217d6d431f963a9`).
+2. Deploy and accept the same sealed bytes in PRD, after every existing
+   retained-work, backup, compatibility, admission-hold, installation and
+   rollback guard passes.
+3. Validate and perform the supported mailbox ownership handoff `QAS → PRD`
+   after PRD acceptance. Coordinate the client pause/drain, settle work and
+   outstanding results/ACKs (including a fresh check of `#348`), and verify
+   ownership through the supported handoff procedure.
+4. Only after handoff verification, align QAS to the same frozen release and
+   complete its deferred acceptance. Resume users on PRD only after the
+   handoff postflight passes.
+
+CAT-05 acceptance for `cat-20261022-7a42f3b` is **DEFERRED, NOT PASS** until
+step 4. QAS remains on its existing `cat-20261021-b84caf0` release and serves
+users during PRD deployment; all eight mailbox paths stay assigned to QAS
+through PRD postflight and afterward until the owner explicitly requests their
+return. Do not pause, restart, reconfigure or migrate QAS as part of PRD
+deployment. Do not build during promotion. No mailbox requests or ACKs are to
+be published by the operator, and filesystem-mailbox acceptance remains
+**NOT RUN**. This exception changes only the order for this release and does
+not waive any CAT-06 gate. Future releases use normal `Dev → QAS → PRD`
+promotion.
+
+The Dev acceptance and current QAS baseline are recorded in
+[`CAT-04.md`](../../040-implementation-evidence/CAT-04.md) and
+[`CAT-05.md`](../../040-implementation-evidence/CAT-05.md); PRD's next work
+and preserved gates are recorded in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md).
+
 ## CAT-06 checkpoint — 2026-10-22 23:17 UTC — rollback receipt reconciled; Mac source gates pass
 
 The final rollback-complete receipt for Dev operation
@@ -765,12 +800,14 @@ gates are **COMPLETE**. CAT-03 closeout evidence is in
 [`CAT-03.md`](../../040-implementation-evidence/CAT-03.md). This does not pass
 or imply any installed Dev/QAS/PRD acceptance. Live migration and cohort
 actions remain separately gated by their acceptance evidence.
-CAT-04 is **COMPLETE** on `cat-20261021-ebc4446`; the live Dev cohort and
-operation are recorded in [`CAT-04.md`](../../040-implementation-evidence/CAT-04.md).
-CAT-05 is **COMPLETE** on the exact same release and per-host bundle hashes;
-its QAS operation and acceptance are recorded in
-[`CAT-05.md`](../../040-implementation-evidence/CAT-05.md). CAT-06 PRD
-migration is **BLOCKED before mutation** as recorded in
+CAT-04 is **COMPLETE** on the frozen `cat-20261022-7a42f3b` candidate in Dev.
+CAT-05 remains complete for the previously accepted `cat-20261021-b84caf0`,
+but acceptance of `cat-20261022-7a42f3b` in QAS is **DEFERRED, NOT PASS** under
+the one-time order above. The current QAS baseline and live work are recorded
+in [`CAT-05.md`](../../040-implementation-evidence/CAT-05.md). CAT-06 is the
+next promotion unit for the Dev-accepted `7a42f3b` bytes; fresh PRD inventory,
+supported retained-work recovery, backups, compatibility, holds and rollback
+remain required before any PRD switch. See
 [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md). A unit is accepted
 only by its recorded evidence and required delivery/qualification results.
 
@@ -780,13 +817,16 @@ only by its recorded evidence and required delivery/qualification results.
 | CAT-02 | Add independent catalogue selectors, selected-lane install/status and compatible binary rollback. Use deployment locks, expected predecessor checks, protected stage records and durable atomic switches. | Concurrent and interrupted switches reconcile observed state before acting; wrong-lane/host/catalogue targets fail. Rollback validates current schema, newly written record semantics and configuration compatibility, not just a numeric schema ceiling. |
 | CAT-03 | Implement legacy Dev/QAS adoption and explicit PRD layout migration/recovery. Update every supported launcher, queued bridge wrapper, installer, backup, status and rollback entry point that assumes old paths. Implement cohort hold/receipts and scoped maintenance-probe admission. | Real-file/process fixtures prove copy/hash verification, no source-dependent launch, no DB/config/mailbox movement, no hidden rebuild and no legacy tool silently writing obsolete paths. Interruption after each host switch preserves the whole selected-lane hold; scoped probes cannot admit ordinary producers. |
 | CAT-04 | Publish one frozen cohort candidate and accept it in Dev on all four hosts, retaining the old installation for recovery. | Same sealed metadata and expected local bundle hashes; Mac-local operation and all three configured direct/queued worker routes, execution limits, lifecycle/teardown and capacity checks pass. Peer lane identities, configuration and ordinary health remain unchanged. |
-| CAT-05 | Promote the same sealed candidate to QAS on all four hosts, with no build or dependency resolution during promotion. | Repeat applicable functional checks, selected-lane restart/isolation, upgrade/interruption recovery and previous-binary/current-data compatibility. Any changed bytes or inputs require a new candidate and renewed affected Dev/QAS acceptance. |
-| CAT-06 | Prepare and execute a separately scheduled, explicitly approved PRD adoption/promotion on the existing hosts. Hold the selected lane across all four hosts; switch workers in the specified order, then Mac, without per-host resumption. | Fresh selected-service inventory, supported retained-work disposition, verified consistent backups and compatible cohort recovery precede switching. Accepted QAS bytes pass all four installed identities, direct/queued routes, readiness, scoped functional probes and peer-preservation checks before any normal admissions resume. |
+| CAT-05 | Promote the same sealed candidate to QAS on all four hosts, with no build or dependency resolution during promotion. | Repeat applicable functional checks, selected-lane restart/isolation, upgrade/interruption recovery and previous-binary/current-data compatibility. Any changed bytes or inputs require a new candidate and renewed affected Dev/QAS acceptance. For `cat-20261022-7a42f3b` only, QAS acceptance is deferred until after the approved PRD deployment and verified QAS→PRD mailbox handoff. |
+| CAT-06 | Prepare and execute the separately authorized PRD adoption/promotion on the existing hosts. Hold the selected lane across all four hosts; switch workers in the specified order, then Mac, without per-host resumption. | Fresh selected-service inventory, supported retained-work disposition, verified consistent backups and compatible cohort recovery precede switching. Normal candidates require QAS-accepted bytes; the explicit `cat-20261022-7a42f3b` exception uses the exact Dev-accepted bytes while QAS continues serving unchanged. Direct/queued routes, readiness, scoped functional probes and peer-preservation checks remain required before handoff or admission changes. |
 | CAT-07 | Close operator instructions, identity/evidence reconciliation and recovery procedures. Provide a preview of old-layout and catalogue retention references; retire nothing automatically. | Exact commands/paths for publish, inspect, promote and rollback; all four hosts and three lane selectors accounted for; required backup/recovery pins retained; any proposed retirement is a separate guarded action. Normal-load observations and limitations remain explicit. |
 
-Dependencies are `CAT-01 → CAT-02 → CAT-03 → CAT-04 → CAT-05 → CAT-06 → CAT-07`.
+The normal dependency is `CAT-01 → CAT-02 → CAT-03 → CAT-04 → CAT-05 → CAT-06 → CAT-07`.
+For `cat-20261022-7a42f3b` only, the owner-approved dependency is
+`CAT-04 Dev acceptance → CAT-06 PRD acceptance → verified QAS→PRD mailbox handoff → CAT-05 QAS alignment and acceptance → CAT-07`.
 Source tests and disposable fixtures do not prove installed acceptance. Publish
-readiness does not authorize switching, and QAS PASS does not itself approve PRD.
+readiness does not authorize switching; the one-time order above is explicit
+authorization for this candidate only and preserves every other PRD gate.
 If PRD scheduling is pending, record CAT-06 pending and preserve the accepted
 candidate; do not claim full rollout or weaken the promotion gate.
 

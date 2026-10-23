@@ -1,5 +1,75 @@
 # CAT-04 — Frozen candidate and live Dev qualification
 
+## Current acceptance — 2026-10-23 00:49 UTC — Dev PASS; QAS/PRD unchanged
+
+The source revision `7a42f3bb6712e5186f855df4bc50493041404841` is delivered
+and frozen as release `cat-20261022-7a42f3b`; no rebuild occurred during
+acceptance. The verified sealed `release.json` SHA-256 is
+`b2c0ec9d47b3ebed966e3ebd115a994865910142170358af95ad9857e8bb4e7c`.
+The candidate-specific source gates are recorded with CAT-06 evidence.
+
+| Host | Selected bundle SHA-256 | Configuration SHA-256 | Schema / final Dev state |
+| --- | --- | --- | --- |
+| `mac-control-plane` | `fe143c888978276349c3575af6e1bbc063c69cd6051b9f1e8bb7c90266afcbac` | `2a256f44cf14031b8463854aa77c190ba265a419b624a0538a6c42ba130395d9` | Schema 40; active; empty inventory |
+| `linux-host` | `cbff1c52fceb11ce76b42519de54702d3b2b628df3b134560ddaeb0cb7c1d582` | `842a17572ba218ee770b39d8cf95c442c4885204d479d5b34ef6d2e4e5ff82f5` | Schema 40; active; empty inventory |
+| `sandbox-host` | `ff2aab3fbbcbc6a0e671c8185d8da2bda71a2170014ade18b7200d66f5263b5d` | `9a9adcd3236d8a92f2d405ef59f1199180310a03df6c9d246b784a702653d82a` | Schema 40; active; empty inventory |
+| `factory-sandbox` | `ca0746f242be8918d58352e621235058f5c2f582fb5f17850ababd9996fe8ab1` | `7af6d8ea68764f703b7aebd40966bbc7ff8b86523a2cb948d5f60e68659cd727` | Schema 40; active; empty inventory |
+
+The four-host Dev operation `f64a50ed3593c66fc217d6d431f963a9` completed
+with 15 transitions. Its final receipt is synchronized byte-for-byte across
+Mac, Linux, Sandbox and Factory at SHA-256
+`258614552cda7cb70646043eb14d4b500fbfb4d72d83776ab461de792e3bc575`.
+Per-host verification transitions are ordered Linux (`d752ffce17facc5fe276957a05d3ad84de4765557cb7da8ccce6b9bc4fea4708`),
+Sandbox (`c5e756f2e4d3465e088d9d009c229a5fae7f7e85d582c309a4e91b91e29fa7ff`),
+Factory (`fbc7e22e0eaba5a02f77c2aa6ca03c8b70506570dd1ea0100f553be0ad6ffbc0`),
+and Mac (`541fc9c485e105a4b92a678962e76bf5783dc06258eb039fac33fe555aead950`).
+The completion-evidence digest is
+`44cd35d0dfe14caea6810e28f135fb01b33d5a1f1e565b9857008ce0e3f9da85`.
+Final service/work observations were taken at 00:52 UTC. A public read-only
+hold check on all four hosts returned `held=true`, operation
+`f64a50ed3593c66fc217d6d431f963a9`, `error=false`; no admission-open action
+was run.
+
+All seven applicable bounded five-second functional probes passed: Mac-local,
+and direct-mTLS plus queued-SSH on Linux, Sandbox and Factory. Each ended
+`complete/succeeded`, exit 0, event sequence 4, complete non-truncated output,
+and closed teardown. Probe job/session/command identities are:
+
+| Host / route | Job ID | Session ID | Command ID |
+| --- | --- | --- | --- |
+| Linux direct-mTLS | `job-1800be6ab853d99a3fd165030f691a94` | `sess-004918036d4065e86215157842581306` | `cmd-099d441963479c321fcebe1c0a97d896` |
+| Linux queued-SSH | `job-52ee75dcb6d7e98253b6c151b09f5f32` | `sess-f64b7f6f5df9b097c2e50326ddbf59b8` | `cmd-281c1985f36a440a0ed395e66cdd5c85` |
+| Sandbox direct-mTLS | `job-3415e4795db89d0174e1710d2b978054` | `sess-dadd83b16ccdc1065f76cb70baaed849` | `cmd-1fa025e91611bf6e20460537babd6152` |
+| Sandbox queued-SSH | `job-a09c759b1ef05079d67f538d60b98df0` | `sess-f8d158577c7f5f3319321f52f1bd6800` | `cmd-7504bf83aa057e4f5506ef3092467cac` |
+| Factory direct-mTLS | `job-69d0b3f588a8cf21dcc13206e879e662` | `sess-8c4024ca66a354662d0d78354799b166` | `cmd-18186a84425929a77b0a05e30dd1f16d` |
+| Factory queued-SSH | `job-8fa3d1a3465406bd851ef6c9101692ec` | `sess-319fd7e5c63e3c1a989fcf8de804d309` | `cmd-3961b1ab0efbe9a7d1aa0db8e94b4194` |
+| Mac local | `job-ffc92eb8f13db5585942f90d2cfad952` | `sess-4e1b17f340b0a36088ab9031f524ecc8` | `cmd-d7cdbe4198022c48be42a16985b2f512` |
+
+Post-start status confirmed Dev active and empty on all four hosts, with the
+same target and hashes. QAS remained active and untouched. A fresh QAS inventory
+at 00:55 UTC found all four QAS selectors still on `cat-20261021-b84caf0`;
+Mac QAS had one active command slot and reservation, while the three worker
+QAS inventories were empty. Preserve that QAS work and do not restart or
+reconfigure QAS during PRD deployment. The existing eight mailbox paths remain
+assigned to QAS. PRD was not changed.
+
+Sandbox's latest read-only `/dev/sda1` measurement at 00:55 UTC was
+929,722,368 bytes free, against the current 849,205,489-byte pre-write
+threshold; this is a measurement, not a future guarantee. Recheck before each
+Sandbox write.
+
+Mailbox/filesystem acceptance is **NOT RUN**; no mailbox request or ACK was
+published by the operator. An optional Linux `jq` receipt-summary pipeline
+failed because `jq` is absent there; the preceding service, work-inventory and
+QAS checks succeeded, all four receipt sync commands reported the same final
+hash, and the separate hold check passed on Linux.
+
+Under the owner's one-time promotion exception, CAT-05 acceptance of this
+candidate is **DEFERRED, NOT PASS**. Continue with CAT-06 PRD safeguards and
+the exact Dev-accepted bytes, keep QAS serving unchanged, then complete the
+supported QAS→PRD mailbox handoff and deferred QAS alignment as described in
+the phased plan. Future releases return to normal Dev→QAS→PRD order.
+
 ## Current deployment — 2026-10-21 22:01 UTC
 
 The owner-approved handoff and CPU-correction follow-up now selects
