@@ -93,6 +93,13 @@ to resume those gates is to free at least 82,052,352 additional bytes on
 `/dev/sda1` beyond the last measured state, without deleting retained work,
 shared caches, backups, or mailbox data; remeasure before retrying.
 
+A later read-only pre-pull check measured Sandbox at 562,266,112 bytes free,
+4,842,752 bytes below the 567,108,864-byte reserve. The evidence-only commit
+`7da8173` was not pulled there; its clean `dev` checkout remains at source
+commit `036512d13be296b6812ddfe52c45f37d70a8deb5`. At this newer measurement,
+the conservative 672,019,712-byte retry target is short by 109,753,600 bytes.
+No checkout write was attempted after this check.
+
 The host source gates are incomplete, so renewal evidence has not been
 collected or issued and no PRD selector effect was attempted. The previously
 recorded 06:35 UTC host observations are stale for renewal. After Sandbox
