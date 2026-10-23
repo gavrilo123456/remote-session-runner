@@ -1759,3 +1759,86 @@ remain **NOT RUN**. No live service, selector, database, backup, receipt,
 mailbox assignment, request or ACK changed. QAS remains serving and its eight
 mailbox assignments were not touched. The unrelated untracked
 `src/cmd/catalog-holdcheck/` directory remains unstaged and preserved.
+## Dev probe failure and recovery checkpoint — 2026-10-23 15:42–15:55 UTC
+
+The immutable compatibility-correction candidate remains
+`cat-20261023-c01e633`, source `c01e6339e9330ff6bf7dbde042b1cd5287c55c4e`,
+manifest `7a9f705484906c7889c4776da0ef64769662fd0c5360e4d3767ca8021a5c4c81`.
+The previous release `cat-20261022-7a42f3b` is unchanged. Source gates remain
+PASS per the source-gate sections above; this checkpoint records live Dev
+acceptance and recovery only.
+
+### Failed functional check
+
+Dev operation `b707f52d55a6ee547541a97b08fc4ac8` reached `verifying` after
+switching Linux, Sandbox, Factory and Mac to the same sealed release. Its
+Factory direct-mTLS probe failed before submitting a request: helper exit 1,
+`direct readiness failed: HTTP 0`. The operation was then blocked with the
+failure evidence SHA-256
+`a09491ecca458f9220b74c9d09487cfddf4474286a181d8d4c5606437b905193`.
+The owner-only source record remains outside Git at
+`/private/tmp/rsr-cat06-candidate-cat-20261023-c01e633/factory-direct-failure-evidence.json`.
+The attempted capability expired at `2026-10-23T15:32:30.011432085Z`; a
+second prepare was refused because that one-time scope already exists. No
+capability was replayed, deleted, or edited.
+
+Factory host diagnosis found that `runnerd` listened on `10.0.0.30:8444`,
+while the existing INPUT chain rejected the connection and the Dev allowlist
+contained stale source `81.95.203.65`. The observed Mac SSH source was
+`31.61.247.154`. The Factory Dev TCP/8444 allowlist was narrowed to
+`31.61.247.154/32`; after the correction, TCP connected and the candidate's
+configured V3 direct-fence TLS and unauthenticated-admission denial check
+passed. This route check is not the fixed-command direct functional probe and
+does not satisfy Dev acceptance. PRD and QAS firewall routes were not changed.
+
+### Fresh stopped-state, selector and receipt observations
+
+Read-only `catalog-work-inventory` observations on Mac, Linux, Sandbox and
+Factory at 15:47:54–15:49:53 UTC report `service_active=false`, schema 40,
+zero active sessions, command slots, reservations, queued/running commands,
+resumable jobs, and pending recovery finalizations. All four selectors still
+point to `cat-20261023-c01e633` and each configuration hash matches its
+preflight/journal:
+
+| Host | Candidate bundle SHA-256 | Configuration SHA-256 | Selector journal | Previous selector |
+| --- | --- | --- | --- | --- |
+| Mac | `a338761463afe7dbe8f558f7166dd10f0d3890a0e9e151c1d906e955221067ee` | `2a256f44cf14031b8463854aa77c190ba265a419b624a0538a6c42ba130395d9` | `2cf405adee79c460bbfff9c039004bce` | `cat-20261022-7a42f3b` |
+| Linux | `9a98537d38c98bcd9e9834ceb6ad23544dc85e8f038aed74f123bad1491df9cb` | `842a17572ba218ee770b39d8cf95c442c4885204d479d5b34ef6d2e4e5ff82f5` | `a18ff2ad6c3cf7de6944f48b52136d3a` | `cat-20261022-7a42f3b` |
+| Sandbox | `43a92d91a43c954fd20efc6c5f8e5d5d01fca6487bf0a5da8929c3c73caed049` | `9a9adcd3236d8a92f2d405ef59f1199180310a03df6c9d246b784a702653d82a` | `721c2224bfc49e55c9d8d95f41af5d23` | `cat-20261022-7a42f3b` |
+| Factory | `652b3c428c82c19b8a982e8fe6d0acb71f2734a87dfcfaf480db5530a22799d4` | `7af6d8ea68764f703b7aebd40966bbc7ff8b86523a2cb948d5f60e68659cd727` | `7a439f7cd1b3e312b7bc42939d96dabe` | `cat-20261022-7a42f3b` |
+
+The blocked receipt is byte-identical across all four staging roots, SHA-256
+`1bbd682bf2d64e92153183035b2e428ecdb8308603a6432270aa14f5146d773f`, stage
+`blocked`, 11 transitions. The supported `catalog-holdcheck` reports exactly
+operation `b707f52d55a6ee547541a97b08fc4ac8` and no error on Mac, Linux and
+Factory. The Sandbox check could not be refreshed: verified SSH connected to
+`132.226.205.205:22` but timed out during banner exchange, exit 255. A
+temporary hold-check binary transfer was interrupted; inspect and clean only
+that task-owned temporary path after SSH is restored. Because all four-host
+hold evidence is not fresh, rollback has not begun.
+
+Sandbox had 1,552,470,016 bytes free on `/dev/sda1` at 15:49 UTC; its Dev
+database file was 761,856 bytes and `remote.db-wal` was zero bytes. Continue to
+recheck exact available bytes immediately before each rollback backup or
+selector write, keeping the 500,000,000-byte operating buffer, measured backup
+allowance and separate 64 MiB selector reserve. The prescribed reverse order
+is Mac → Factory → Sandbox → Linux, with receipt synchronization after every
+host. The existing selector journals bind their prior-release backups; their
+contents must still pass supported integrity checks at the rollback operation.
+
+QAS was not changed. Fresh QAS observations show all four services active on
+`cat-20261021-b84caf0`; Mac retains one active command slot and one session
+reservation, which remain untouched. All eight mailbox paths remain assigned
+to QAS. No filesystem mailbox request or ACK was published. QAS acceptance is
+DEFERRED, NOT PASS.
+
+**Disposition:** candidate Dev acceptance is **BLOCKED / NOT PASS**. Factory's
+queued-SSH probe and the Linux direct/queued, Sandbox queued, Mac-local, and
+negative admission-fence checks previously passed for this attempt; the
+Factory direct functional probe did not. The failed operation remains held and
+its receipt history is preserved. No rollback transition or selector rollback
+has been started. Next, regain verified SSH access to Sandbox, verify its exact
+hold and fresh stopped/empty state, validate the recorded backups, and use
+supported rollback in the order above. Then create a fresh Dev cohort for the
+same sealed candidate and rerun fresh functional acceptance. PRD deployment,
+mailbox handoff and QAS alignment have not started.

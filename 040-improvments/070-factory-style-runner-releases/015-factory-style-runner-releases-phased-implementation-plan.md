@@ -1,5 +1,55 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 checkpoint — 2026-10-23 15:55 UTC — Dev verification blocked; rollback not started
+
+The compatibility correction is already source-tested, delivered, and sealed
+as `cat-20261023-c01e633` from `c01e6339e9330ff6bf7dbde042b1cd5287c55c4e`.
+Preserve that candidate and `cat-20261022-7a42f3b` unchanged. The assigned
+Mac, Sandbox, Factory and Linux source gates are complete as recorded in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#dev-probe-failure-and-recovery-checkpoint--2026-10-23-1542-1555-utc).
+
+Dev operation `b707f52d55a6ee547541a97b08fc4ac8` is **BLOCKED** after the
+Factory direct-mTLS probe failed before request submission with `HTTP 0`.
+The one-time scope expired and cannot be reused. Factory's narrow Dev firewall
+allowlist was corrected to the observed Mac source `/32`; a subsequent TCP
+connect and configured V3 direct-fence TLS/admission-denial check passed. This
+does not convert the earlier functional probe to PASS. No new probe scope can
+be prepared until the failed cohort is safely rolled back and a fresh Dev
+successor operation is held.
+
+At the 15:47–15:50 UTC refresh, all four Dev services were stopped, all work
+inventories were empty, schema was 40, and each selector still selected
+`cat-20261023-c01e633`. The exact journals are Mac
+`2cf405adee79c460bbfff9c039004bce`, Factory
+`7a439f7cd1b3e312b7bc42939d96dabe`, Sandbox
+`721c2224bfc49e55c9d8d95f41af5d23`, and Linux
+`a18ff2ad6c3cf7de6944f48b52136d3a`; each records the previous
+`cat-20261022-7a42f3b` selector and the current candidate. Receipt SHA-256
+`1bbd682bf2d64e92153183035b2e428ecdb8308603a6432270aa14f5146d773f` is
+identical on all four hosts, stage `blocked`, 11 transitions. Supported
+hold-checks on Mac, Linux and Factory report exactly this operation with no
+error. Sandbox's latest hold-check could not be completed: SSH port 22 accepts
+TCP but times out during SSH banner exchange (exit 255). Therefore no
+`rollback-start`, selector rollback, or receipt change has been made.
+
+Sandbox had 1,552,470,016 bytes free at the last measurement; its Dev database
+file was 761,856 bytes, with a zero-byte WAL. Recheck free space and exact
+backup/journal integrity immediately before each rollback write, retaining the
+500,000,000-byte operating buffer and 64 MiB selector reserve. The rollback
+order remains Mac → Factory → Sandbox → Linux; synchronize the receipt after
+each host. QAS remains active and unchanged, including Mac QAS's one retained
+command slot and reservation; all eight mailbox paths remain assigned to
+QAS.
+
+**Next:** restore a working verified-SSH session to Sandbox, confirm its exact
+Dev hold and current empty/stopped state, validate each recorded selector
+journal and backup, then perform the supported rollback and synchronize each
+receipt transition. From the restored baseline, create a fresh held successor
+for the same sealed candidate, collect fresh probes, and finish Dev acceptance.
+Do not rebuild or reuse the expired one-time capability. PRD work, mailbox
+handoff, and QAS alignment remain pending; QAS acceptance remains DEFERRED,
+NOT PASS.
+
 ## CAT-06 owner direction — 2026-10-23 13:40 UTC — compatibility correction and one-time promotion order
 
 For the correction that resolves the existing PRD probe-environment and
