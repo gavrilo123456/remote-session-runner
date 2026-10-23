@@ -85,6 +85,35 @@ service through supported controls, recover only its exact pairs through the
 new command, and obtain fresh empty-work preflights/holds before cohort
 selection. Keep QAS serving throughout PRD deployment.
 
+## CAT-06 recovery-control delivery — 2026-10-23 02:08 UTC
+
+Control-only recovery and the PRD empty-selector CLI correction are delivered
+at `ce9ae8929c8bfefaf989f1a0733eec90770af5bb`; the Gitea primary, verified
+GitHub mirror, and all three clean Ubuntu `dev` checkouts match this SHA. Mac
+full test/vet/build/smoke, Sandbox full Linux/ARM64 test/vet/build/smoke,
+Factory full Linux/AMD64 test/vet/build/smoke, and Linux focused CAT-06 plus
+exact P025/P101 tests and native vet/build/smoke pass at this source revision.
+The full Linux suite remains NOT RUN; earlier interrupted Linux runs remain
+NOT PASS. Detailed commands, platforms, quota check and test-log hashes are in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#recovery-control-source-gates-and-delivery--2026-10-23-0208-utc).
+
+This control utility is outside the sealed native service bundles. Preserve
+`cat-20261022-7a42f3b`, its per-host bytes and Dev acceptance unchanged; QAS
+acceptance remains DEFERRED, NOT PASS. The owner-approved promotion order is
+still Dev → PRD → verified QAS→PRD mailbox handoff → QAS alignment. Keep all
+eight mailbox paths in active QAS while PRD is prepared and deployed; do not
+restart or reconfigure QAS during the PRD leg. No mailbox requests or ACKs are
+published by the operator.
+
+Next: refresh PRD work/ownership and storage observations; validate the seven
+exact retained-pair identities, per-host compatibility, and fresh consistent
+backup inputs. Use the sealed candidate's per-host bundles for supported
+recovery only after fresh guards pass; then obtain fresh empty-work preflights,
+backups, admission holds and rollback evidence before switching PRD workers
+and Mac. After PRD acceptance, coordinate the brief client pause/drain and
+settle outstanding results/ACKs (including #348) before the supported mailbox
+handoff. QAS alignment and acceptance follow that handoff.
+
 ## CAT-06 checkpoint — 2026-10-22 23:17 UTC — rollback receipt reconciled; Mac source gates pass
 
 The final rollback-complete receipt for Dev operation

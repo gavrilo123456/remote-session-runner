@@ -83,6 +83,34 @@ recovery through `catalog-prd-recover`. Create fresh empty-work preflights and
 the cohort hold only after recovery. QAS stays serving; its one active
 reservation is preserved.
 
+## Recovery-control source gates and delivery — 2026-10-23 02:08 UTC
+
+The control-tool change is delivered at Mac commit
+`ce9ae8929c8bfefaf989f1a0733eec90770af5bb` on `dev`. Primary Gitea accepted
+the push; GitHub `dev` was verified at the same SHA. All three Ubuntu
+`/home/ubuntu/projects/remote-session-runner` checkouts were clean on `dev`
+before fast-forward and are clean at this exact commit. The unrelated
+untracked `src/cmd/catalog-holdcheck/` directory remains untouched. This
+control-only change is not part of the sealed service bundles; the frozen
+candidate `cat-20261022-7a42f3b`, its hashes and prior Dev acceptance remain
+unchanged. QAS acceptance for that candidate remains DEFERRED, NOT PASS.
+
+| Machine | Platform/toolchain | Commands and result |
+| --- | --- | --- |
+| Mac | darwin/arm64, Go 1.27.1 | Focused `go test ./src/internal/laneinstall ./src/cmd/runner-lane`; full `make test`, `make vet`, `make build`, and `make smoke` — PASS. The first sandboxed full-suite attempt was blocked by denial of the existing test-owned `/bin/ps` child; the full suite passed after normal test process-inspection permission was granted. A direct package attempt without the configured shared cache was denied before tests by the sandbox. |
+| Sandbox | linux/arm64, Go 1.27.1; `TMPDIR=/tmp`, `GOMAXPROCS=1`, `GOFLAGS=-p=1`, `nice -n 19` | Full `make test`, `make vet`, `make build`, and `make smoke` — PASS. Test log SHA-256 `81054ccadfb376a90c55208196e9b303ab9f78b67fcba299f1fbce9a0eb79c65`; native-gate log SHA-256 `a852bfb96177adebe19e5196a18ead37b16ed1feccdbb8d53049d59bb011e230`. Minimum observed disk free space during the full suite was 638,640,128 bytes; it stayed above the 500,000,000-byte operating buffer. |
+| Factory | linux/amd64, Go 1.27.1, `GOAMD64=v1`, `CGO_ENABLED=1`; `/tmp` hard and soft per-user quota verified by `quotactl_fd` at 2,147,483,648 bytes, not inferred from `df`; `TMPDIR/GOTMPDIR/SQLITE_TMPDIR=/tmp`, `GOMAXPROCS=2`, `GOFLAGS=-p=1`, `nice -n 19` | Full `make test`, `make vet`, `make build`, and `make smoke` — PASS. Test log SHA-256 `e407e7775a2b41c6a4d2123d9b6e1d278d50beba41c99a0aba67dff25cad5f9b`; native-gate log SHA-256 `a852bfb96177adebe19e5196a18ead37b16ed1feccdbb8d53049d59bb011e230`. |
+| Linux | linux/amd64, Go 1.27.1, `GOAMD64=v1`, `CGO_ENABLED=1`; `TMPDIR/GOTMPDIR/SQLITE_TMPDIR=/tmp`, `GOMAXPROCS=2`, `GOFLAGS=-p=1`, `nice -n 19` | `go test ./src/internal/laneinstall ./src/cmd/runner-lane -count=1`; exact P025 `TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice`; exact P101 `TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary`; `make vet`, `make build`, and `make smoke` — PASS. The P025/P101 verbose output shows both named tests ran. Log SHA-256 `bc25e128a917523a84e616f4271b6a44784dede3d4112312bce716e249b750ba`. The full Linux suite remains NOT RUN under the amended assignment; earlier interrupted runs remain NOT PASS. |
+
+No Runner service was restarted, no PRD database or selector was changed, and
+QAS remained active with all eight mailbox paths assigned to it. No mailbox
+request or ACK was published. The next action is the owner-approved PRD leg:
+refresh per-host PRD work/ownership/capacity, verify exact retained pairs and
+compatibility, then create/validate fresh backups and run only supported
+recovery/adoption controls. Keep QAS serving until PRD acceptance passes; only
+then prepare the QAS→PRD mailbox return, coordinate client pause/drain, settle
+results/ACKs including #348, and proceed to QAS alignment.
+
 ## Current checkpoint — 2026-10-23 — Dev accepted; one-time order advances PRD next
 
 The owner approved this release-specific order:
