@@ -14,13 +14,14 @@ import (
 )
 
 var (
-	ErrMailboxExchangeInvalid       = errors.New("invalid mailbox exchange")
-	ErrMailboxExchangeConflict      = errors.New("mailbox request ID or idempotency conflict")
-	ErrMailboxExchangeNotFound      = errors.New("mailbox exchange not found")
-	ErrMailboxResponseInvalid       = errors.New("invalid mailbox response")
-	ErrMailboxResponseExpired       = errors.New("terminal mailbox response cleanup deadline has passed")
-	ErrMailboxEventReferenceExpired = errors.New("mailbox event file cleanup has started")
-	ErrMailboxTerminalImmutable     = errors.New("terminal mailbox response is immutable")
+	ErrMailboxExchangeInvalid             = errors.New("invalid mailbox exchange")
+	ErrMailboxExchangeConflict            = errors.New("mailbox request ID or idempotency conflict")
+	ErrMailboxExchangeNotFound            = errors.New("mailbox exchange not found")
+	ErrMailboxResponseInvalid             = errors.New("invalid mailbox response")
+	ErrMailboxResponseExpired             = errors.New("terminal mailbox response cleanup deadline has passed")
+	ErrMailboxEventReferenceExpired       = errors.New("mailbox event file cleanup has started")
+	ErrMailboxTerminalImmutable           = errors.New("terminal mailbox response is immutable")
+	ErrMailboxOwnerAbandonmentNotEligible = errors.New("mailbox request is not eligible for owner-abandoned indeterminate closeout")
 	// ErrMailboxConfigurationPending prevents an inbox removal or relocation
 	// from abandoning accepted work, a live response, or a marker-last request
 	// that a file-only producer can publish while the service is stopped.
@@ -30,6 +31,9 @@ var (
 const (
 	MailboxAckedResponseLifetime   = 24 * time.Hour
 	MailboxUnackedResponseLifetime = 7 * 24 * time.Hour
+	MailboxOwnerAbandonedReason    = "owner_abandoned_indeterminate"
+	MailboxOwnerAbandonedCode      = "transport_uncertain"
+	MailboxOwnerAbandonedMessage   = "owner administrative closeout; execution outcome unknown"
 
 	// MailboxExecutionSelectionInboxDefault identifies a selection supplied by
 	// the trusted configured mailbox default.
@@ -780,6 +784,222 @@ SET request_state = ?, response_revision = ?, response_bytes = ?, response_sha25
 		}
 		return readMailboxExchangeOnConnection(ctx, connection, validated)
 	})
+}
+
+// CloseUncertainRemoteRunAsIndeterminateInMailbox records a narrowly defined
+// owner-abandoned disposition for one accepted remote one-off run. It commits
+// the local intent stop-dispatch disposition and immutable mailbox terminal
+// response in one SQLite transaction. It never asserts that the remote work
+// did not execute, and it never writes a target terminal proof.
+//
+// An already-terminal exchange is returned unchanged so a concurrent or prior
+// terminal result always wins. The caller may then publish/ACK that exact
+// existing response through the ordinary mailbox protocol.
+func (s *AuthorityStore) CloseUncertainRemoteRunAsIndeterminateInMailbox(
+	ctx context.Context,
+	ref MailboxExchangeRef,
+	expectedIntentID domain.IntentID,
+	expectedJobID domain.JobID,
+	expectedSessionID domain.SessionID,
+	expectedCommandID domain.CommandID,
+) (record MailboxExchangeRecord, closed bool, err error) {
+	validated, err := validateMailboxExchangeRef(ref)
+	if err != nil {
+		return MailboxExchangeRecord{}, false, err
+	}
+	intentID, err := domain.NewIntentID(string(expectedIntentID))
+	if err != nil {
+		return MailboxExchangeRecord{}, false, fmt.Errorf("%w: expected intent ID", ErrMailboxOwnerAbandonmentNotEligible)
+	}
+	jobID, err := domain.NewJobID(string(expectedJobID))
+	if err != nil {
+		return MailboxExchangeRecord{}, false, fmt.Errorf("%w: expected job ID", ErrMailboxOwnerAbandonmentNotEligible)
+	}
+	sessionID, err := domain.NewSessionID(string(expectedSessionID))
+	if err != nil {
+		return MailboxExchangeRecord{}, false, fmt.Errorf("%w: expected session ID", ErrMailboxOwnerAbandonmentNotEligible)
+	}
+	commandID, err := domain.NewCommandID(string(expectedCommandID))
+	if err != nil {
+		return MailboxExchangeRecord{}, false, fmt.Errorf("%w: expected command ID", ErrMailboxOwnerAbandonmentNotEligible)
+	}
+	didClose := false
+	updatedRecord, txErr := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (MailboxExchangeRecord, error) {
+		current, err := readMailboxExchangeOnConnection(ctx, connection, validated)
+		if err != nil {
+			return MailboxExchangeRecord{}, err
+		}
+		if current.Operation != "run" || current.RequestID != validated.ClientRequestID {
+			return MailboxExchangeRecord{}, ErrMailboxOwnerAbandonmentNotEligible
+		}
+		intent, err := readLocalIntentByMailboxExchangeOnConnection(ctx, connection, current)
+		if err != nil {
+			return MailboxExchangeRecord{}, err
+		}
+		if intent.IntentID != intentID || intent.Operation != "run" || intent.ResourceID != string(jobID) || current.ResourceID != string(jobID) ||
+			intent.JobID != jobID || intent.SessionID != sessionID || intent.CommandID != commandID ||
+			intent.Controller.Type() != current.Controller.Type() || intent.Controller.ID() != current.Controller.ID() {
+			return MailboxExchangeRecord{}, ErrMailboxOwnerAbandonmentNotEligible
+		}
+		if current.State != MailboxExchangeAccepted {
+			// Preserve every pre-existing terminal outcome byte-for-byte. Do not
+			// translate a completed result into administrative abandonment.
+			if current.State == MailboxExchangeComplete || current.State == MailboxExchangeRejected || current.State == MailboxExchangeIndeterminate {
+				return current, nil
+			}
+			return MailboxExchangeRecord{}, ErrMailboxOwnerAbandonmentNotEligible
+		}
+		if current.ResponseRevision < 1 || len(current.TerminalResponseBytes) != 0 || current.AcknowledgedAt != nil ||
+			current.ResponseCleanupStartedAt != nil || current.ResponseFileRemovedAt != nil ||
+			current.AvailableEventSequence != nil || intent.Target.Kind() != domain.TargetKindRemote ||
+			intent.DeliveryState != LocalIntentUncertain || intent.RemoteTerminalProofVersion != 0 ||
+			intent.Reason != "remote_transport_uncertain" || intent.AttemptCount < 1 || intent.LeaseOwner == "" || intent.LeaseExpiresAt == nil {
+			return MailboxExchangeRecord{}, ErrMailboxOwnerAbandonmentNotEligible
+		}
+		if s.now().UTC().Before(*intent.LeaseExpiresAt) {
+			return MailboxExchangeRecord{}, ErrMailboxOwnerAbandonmentNotEligible
+		}
+		var lifecycleState, lifecycleReason string
+		if err := connection.QueryRowContext(ctx, `
+SELECT new_state, reason FROM local_intent_lifecycle
+WHERE intent_id = ? ORDER BY lifecycle_sequence DESC LIMIT 1
+`, string(intentID)).Scan(&lifecycleState, &lifecycleReason); err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("read owner-abandonment lifecycle guard: %w", err)
+		}
+		if lifecycleState != string(LocalIntentUncertain) || lifecycleReason != "remote_transport_uncertain" {
+			return MailboxExchangeRecord{}, ErrMailboxOwnerAbandonmentNotEligible
+		}
+		var previous ownerAbandonedRunResponse
+		if err := json.Unmarshal(current.ResponseBytes, &previous); err != nil ||
+			previous.RequestID != current.RequestID || previous.Operation != "run" || previous.RequestState != MailboxExchangeAccepted ||
+			previous.ResponseRevision != current.ResponseRevision || previous.JobID != string(jobID) ||
+			previous.SessionID != string(sessionID) || previous.CommandID != string(commandID) ||
+			previous.DeliveryState != string(LocalIntentUncertain) || previous.Error != nil ||
+			previous.JobPhase != "" || previous.CommandState != "" || previous.ExitCode != nil ||
+			previous.Stdout != "" || previous.Stderr != "" || previous.FinalEventSequence != nil ||
+			previous.AvailableEventSequence != nil || previous.OutputComplete != nil ||
+			previous.OutputTruncated != nil || previous.OutputUnavailableReason != "" ||
+			previous.EventsFile != "" || previous.TeardownOutcome != "" {
+			return MailboxExchangeRecord{}, ErrMailboxOwnerAbandonmentNotEligible
+		}
+		nextRevision := current.ResponseRevision + 1
+		if nextRevision <= 0 {
+			return MailboxExchangeRecord{}, fmt.Errorf("%w: response revision overflow", ErrMailboxResponseInvalid)
+		}
+		response := ownerAbandonedRunResponse{
+			InboxID: current.MailboxID, RequestID: current.RequestID, Operation: "run",
+			RequestState: MailboxExchangeIndeterminate, ResponseRevision: nextRevision,
+			IdempotencyWarning: previous.IdempotencyWarning,
+			JobID:              string(jobID), SessionID: string(sessionID), CommandID: string(commandID),
+			DeliveryState:            string(LocalIntentUncertain),
+			ExecutionSelectionSource: previous.ExecutionSelectionSource,
+			ResolvedEnvironment:      previous.ResolvedEnvironment,
+			ResolvedExecutionTarget:  previous.ResolvedExecutionTarget,
+			Error:                    &ownerAbandonedRunError{Code: MailboxOwnerAbandonedCode, Message: MailboxOwnerAbandonedMessage},
+		}
+		responseBytes, err := json.Marshal(response)
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("encode owner-abandoned mailbox response: %w", err)
+		}
+		now := s.now().UTC()
+		intentUpdate, err := connection.ExecContext(ctx, `
+UPDATE local_intents
+SET delivery_state = ?, reason = ?, lease_owner = '', lease_expires_at = NULL, updated_at = ?
+WHERE intent_id = ? AND delivery_state = ?
+		`, string(LocalIntentReconciled), MailboxOwnerAbandonedReason, formatStoredTime(now), string(intentID), string(LocalIntentUncertain))
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("close owner-abandoned local intent: %w", err)
+		}
+		if rows, rowsErr := intentUpdate.RowsAffected(); rowsErr != nil || rows != 1 {
+			return MailboxExchangeRecord{}, fmt.Errorf("close owner-abandoned local intent affected %d rows: %v", rows, rowsErr)
+		}
+		if err := appendLocalIntentLifecycleOnConnection(ctx, connection, intentID, LocalIntentReconciled, MailboxOwnerAbandonedReason, now); err != nil {
+			return MailboxExchangeRecord{}, err
+		}
+		responseHash := sha256Bytes(responseBytes)
+		exchangeUpdate, err := connection.ExecContext(ctx, `
+UPDATE mailbox_exchanges
+SET request_state = ?, response_revision = ?, response_bytes = ?, response_sha256 = ?,
+    terminal_response_bytes = ?, terminal_response_sha256 = ?, available_event_sequence = NULL,
+    response_cleanup_at = ?, updated_at = ?
+WHERE exchange_id = ? AND request_state = 'accepted' AND response_revision = ?
+`, string(MailboxExchangeIndeterminate), nextRevision, responseBytes, responseHash,
+			responseBytes, responseHash, formatStoredTime(now.Add(MailboxUnackedResponseLifetime)),
+			formatStoredTime(now), current.ExchangeID, current.ResponseRevision)
+		if err != nil {
+			return MailboxExchangeRecord{}, fmt.Errorf("publish owner-abandoned mailbox response: %w", err)
+		}
+		if rows, rowsErr := exchangeUpdate.RowsAffected(); rowsErr != nil || rows != 1 {
+			return MailboxExchangeRecord{}, fmt.Errorf("publish owner-abandoned mailbox response affected %d rows: %v", rows, rowsErr)
+		}
+		updated, err := readMailboxExchangeOnConnection(ctx, connection, validated)
+		if err != nil {
+			return MailboxExchangeRecord{}, err
+		}
+		didClose = true
+		return updated, nil
+	})
+	if txErr != nil {
+		return MailboxExchangeRecord{}, false, txErr
+	}
+	return updatedRecord, didClose, nil
+}
+
+type ownerAbandonedRunResponse struct {
+	InboxID                  string                   `json:"inbox_id,omitempty"`
+	RequestID                string                   `json:"request_id"`
+	Operation                string                   `json:"operation"`
+	RequestState             MailboxExchangeState     `json:"request_state"`
+	ResponseRevision         int64                    `json:"response_revision"`
+	IdempotencyWarning       string                   `json:"idempotency_warning,omitempty"`
+	JobID                    string                   `json:"job_id,omitempty"`
+	JobPhase                 string                   `json:"job_phase,omitempty"`
+	SessionID                string                   `json:"session_id,omitempty"`
+	CommandID                string                   `json:"command_id,omitempty"`
+	DeliveryState            string                   `json:"delivery_state,omitempty"`
+	CommandState             string                   `json:"command_state,omitempty"`
+	QueueBlockedReason       string                   `json:"queue_blocked_reason,omitempty"`
+	ExitCode                 *int                     `json:"exit_code,omitempty"`
+	Stdout                   string                   `json:"stdout,omitempty"`
+	Stderr                   string                   `json:"stderr,omitempty"`
+	FinalEventSequence       *int64                   `json:"final_event_sequence,omitempty"`
+	AvailableEventSequence   *int64                   `json:"available_event_sequence,omitempty"`
+	OutputComplete           *bool                    `json:"output_complete,omitempty"`
+	OutputTruncated          *bool                    `json:"output_truncated,omitempty"`
+	OutputUnavailableReason  string                   `json:"output_unavailable_reason,omitempty"`
+	EventsFile               string                   `json:"events_file,omitempty"`
+	TeardownOutcome          string                   `json:"teardown_outcome,omitempty"`
+	ExecutionSelectionSource string                   `json:"execution_selection_source,omitempty"`
+	ResolvedEnvironment      string                   `json:"resolved_environment,omitempty"`
+	ResolvedExecutionTarget  *ownerAbandonedRunTarget `json:"resolved_execution_target,omitempty"`
+	ObservedAt               *time.Time               `json:"observed_at,omitempty"`
+	Error                    *ownerAbandonedRunError  `json:"error,omitempty"`
+}
+
+type ownerAbandonedRunTarget struct {
+	Kind    string `json:"kind"`
+	Profile string `json:"profile"`
+}
+
+type ownerAbandonedRunError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+}
+
+func readLocalIntentByMailboxExchangeOnConnection(ctx context.Context, connection *sql.Conn, exchange MailboxExchangeRecord) (LocalIntentRecord, error) {
+	var rawIntentID string
+	if err := connection.QueryRowContext(ctx, `
+SELECT intent_id FROM local_idempotency
+WHERE operation = ? AND idempotency_key = ? AND controller_type = ? AND controller_id = ?
+`, exchange.Operation, exchange.ExecutionIdempotencyKey, string(exchange.Controller.Type()), string(exchange.Controller.ID())).Scan(&rawIntentID); err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("read mailbox exchange's local intent binding: %w", err)
+	}
+	intentID, err := domain.NewIntentID(rawIntentID)
+	if err != nil {
+		return LocalIntentRecord{}, fmt.Errorf("%w: mailbox intent binding", ErrLocalIdempotencyCorrupt)
+	}
+	return readLocalIntentOnConnection(ctx, connection, intentID)
 }
 
 // PublishAcceptedRemoteStatusUnavailableInMailbox atomically freezes the
