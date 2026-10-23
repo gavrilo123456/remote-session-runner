@@ -136,9 +136,14 @@ func ObserveCatalogCohortContinuationHost(ctx context.Context, plan Plan, operat
 		return CatalogCohortContinuationHostObservation{}, ErrCatalogOperationInvalid
 	}
 	manifest, err := loadPRDBackupManifest(prdPlan, host.BackupDirectory)
-	if err != nil || manifest.SchemaVersion != host.SchemaVersion || manifest.DatabasePath != prdPlan.Namespace.Database ||
-		manifest.BundleSHA256 != host.Target.BundleSHA256 || backupManifestSHA256(host.BackupDirectory) != host.BackupManifestSHA256 ||
-		verifyPRDBackupTargets(manifest, true) != nil {
+	if err != nil {
+		return CatalogCohortContinuationHostObservation{}, errors.Join(ErrSimpleBackupRequired, err)
+	}
+	if manifest.SchemaVersion != host.SchemaVersion || manifest.DatabasePath != prdPlan.Namespace.Database ||
+		manifest.BundleSHA256 != host.Target.BundleSHA256 || backupManifestSHA256(host.BackupDirectory) != host.BackupManifestSHA256 {
+		return CatalogCohortContinuationHostObservation{}, ErrSimpleBackupRequired
+	}
+	if err := validateCatalogCohortContinuationBackupTargets(receipt, plan.HostID, manifest); err != nil {
 		return CatalogCohortContinuationHostObservation{}, errors.Join(ErrSimpleBackupRequired, err)
 	}
 	available, selectorReserve, err := ReadPRDCatalogSelectorCapacity(prdPlan)
@@ -171,6 +176,23 @@ func ObserveCatalogCohortContinuationHost(ctx context.Context, plan Plan, operat
 		return CatalogCohortContinuationHostObservation{}, err
 	}
 	return observation, nil
+}
+
+// validateCatalogCohortContinuationBackupTargets keeps the original legacy
+// installation bound to its verified backup before a host switches. After a
+// recorded switch, live service artifacts are expected to differ: the caller
+// has already validated the selector journal and current catalog service
+// artifacts through ValidateCatalogCohortHistoryLocalState, while
+// loadPRDBackupManifest has verified every retained backup copy. Requiring the
+// installed legacy files to remain byte-identical would reject a valid switch.
+func validateCatalogCohortContinuationBackupTargets(receipt CatalogCohortReceipt, hostID string, manifest PRDBackupManifest) error {
+	if !cohortContainsHost(receipt, hostID) {
+		return ErrCatalogOperationInvalid
+	}
+	if cohortHasSwitched(receipt, hostID) {
+		return nil
+	}
+	return verifyPRDBackupTargets(manifest, true)
 }
 
 // NewCatalogCohortContinuationRenewal creates a four-hour continuation only

@@ -323,3 +323,54 @@ func TestCatalogCohortContinuationCapacityKeepsBufferAndSelectorReserveSeparate(
 		t.Fatal("renewal accepted less than the operating buffer plus selector reserve")
 	}
 }
+
+func TestContinuationObservationAcceptsSwitchedServiceArtifactsWhilePreservingBackup(t *testing.T) {
+	started := time.Date(2026, 10, 23, 5, 0, 0, 0, time.UTC)
+	receipt := expiredPRDSwitchingReceiptFixture(t, started)
+	backupRoot := filepath.Join(t.TempDir(), "backup")
+	backupArtifactDir := filepath.Join(backupRoot, "service")
+	if err := os.MkdirAll(backupArtifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(backupRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "runnerd.service")
+	original := []byte("legacy service artifact\n")
+	selected := []byte("catalog-selected service artifact\n")
+	if err := os.WriteFile(target, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(backupArtifactDir, "runnerd.service")
+	if err := os.WriteFile(backupPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := fileSHA256(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := PRDBackupFile{
+		TargetPath: target, BackupPath: filepath.Join("service", "runnerd.service"),
+		SHA256: digest, Bytes: int64(len(original)), Mode: 0o644,
+	}
+	manifest := PRDBackupManifest{Files: []PRDBackupFile{file}}
+	if err := validatePRDBackupFile(backupRoot, backupPath, file); err != nil {
+		t.Fatalf("original backup copy is not valid: %v", err)
+	}
+	if err := validateCatalogCohortContinuationBackupTargets(receipt, "linux-host", manifest); err != nil {
+		t.Fatalf("unmodified legacy target was rejected before selector switch: %v", err)
+	}
+
+	if err := os.WriteFile(target, selected, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCatalogCohortContinuationBackupTargets(receipt, "linux-host", manifest); err != nil {
+		t.Fatalf("recorded Linux switch was rejected despite its verified backup copy: %v", err)
+	}
+	if err := validatePRDBackupFile(backupRoot, backupPath, file); err != nil {
+		t.Fatalf("switch-side target change altered the retained backup copy: %v", err)
+	}
+	if err := validateCatalogCohortContinuationBackupTargets(receipt, "sandbox-host", manifest); err == nil {
+		t.Fatal("unswitched Sandbox accepted a changed legacy service artifact")
+	}
+}
