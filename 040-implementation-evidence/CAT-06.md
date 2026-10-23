@@ -1,5 +1,87 @@
 # CAT-06 — PRD adoption and promotion
 
+## Current checkpoint — 2026-10-23 06:35 UTC — source gates passed; stop at expired PRD cohort window
+
+The frozen service release remains `cat-20261022-7a42f3b` (source
+`7a42f3bb6712e5186f855df4bc50493041404841`, manifest SHA-256
+`b2c0ec9d47b3ebed966e3ebd115a994865910142170358af95ad9857e8bb4e7c`). Dev
+acceptance is **PASS**. QAS acceptance remains **DEFERRED, NOT PASS** under the
+owner-approved one-time order. The fix below changes the `runner-lane`
+operator/reconciliation code only; it does not alter the sealed Runner
+components, release identity, or accepted Dev bytes.
+
+### Receipt synchronization correction and delivery
+
+The switched-host proof was rejected before its durable selector journal could
+be checked: `validatePRDCatalogCohortHostObservation` compared the current
+selector with the pre-switch target unconditionally. The corrected helper
+skips that old-target comparison only for a receipt-recorded switch or
+rollback; `validateCatalogCohortReconciledSelectorEvidence` still requires the
+matching host/lane/release journal, exact target or rollback evidence,
+configuration/schema identity, backup validity, stopped service, and empty
+work inventory. New regression
+`TestCatalogCohortSyncAcceptsSwitchedHostAfterMatchingJournalValidation`
+exercises the local observation path and `syncCatalogCohortReceiptAt`.
+
+Source commit `ad41b56ec82d6557b0d03db3563edf232097a17f` is on primary Gitea,
+matches the automatic GitHub `dev` mirror, and is present in clean `dev`
+checkouts on Linux, Sandbox, and Factory. The untracked
+`src/cmd/catalog-holdcheck/` directory remains untouched.
+
+| Host | Platform/toolchain and checks | Result and evidence |
+| --- | --- | --- |
+| Mac | darwin/arm64, Go 1.27.1; focused regression, full `make test`, `make vet`, `make build`, `make smoke` | **PASS**. The first sandboxed full-suite invocation was denied an existing test-owned `/bin/ps` child; the same full suite passed via the authorized elevated Mac shell. |
+| Sandbox | linux/arm64, Go 1.27.1; `TMPDIR/GOTMPDIR/SQLITE_TMPDIR=/tmp`, `GOMAXPROCS=1`, `GOFLAGS=-p=1`, `nice -n 19`; full test/vet/build/smoke | **PASS**. Confirmation `make test` exit 0 at 06:25:57–06:26:02 UTC, log SHA-256 `4a598bbbdd4fa3a514805933192ecf7ef707e593797c56dd4eea555a158004ea`; vet `03e8db17ff2a2378dd65f7ff1b2036dbe40e8a32c3c2b1c241560af2cfa08dab`; build `fe0b0a6d881d188a311485a602fd68e0b4d762f6aa86c2bb408b3cae39aa9088`; smoke `08621bae0d6393b5556fbec2a0b0e943ce4da16ec4661a9fe07e5ed3f2ac6c69`. Earlier corrected full run executed the uncached package tests; confirmation used Go's test cache. A prior home-directory invocation failed before tests (`No rule to make target`); it is not counted as a test result. |
+| Factory | linux/amd64, Go 1.27.1; `TMPDIR/GOTMPDIR/SQLITE_TMPDIR=/tmp`, `GOMAXPROCS=1`, `GOFLAGS=-p=1`, `nice -n 19`; full test/vet/build/smoke | **PASS**, each exit 0. Full test 06:15:24–06:18:08 UTC, log SHA-256 `cdcf3255c46933790faa33ba08c6a948050b70efc9cba731004d9404b3f2a25d`; vet `03e8db17ff2a2378dd65f7ff1b2036dbe40e8a32c3c2b1c241560af2cfa08dab`; build `fe0b0a6d881d188a311485a602fd68e0b4d762f6aa86c2bb408b3cae39aa9088`; smoke `08621bae0d6393b5556fbec2a0b0e943ce4da16ec4661a9fe07e5ed3f2ac6c69`. Existing `/tmp` was a 4-GiB tmpfs mount with 3,453,743,104 bytes free before the suite and 3,453,739,008 after. The per-user limit was not independently verified in this rerun. |
+| Linux | linux/amd64, Go 1.27.1; `go test ./src/internal/laneinstall ./src/cmd/runner-lane -count=1`; exact `TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice` and `TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary`; native vet/build/smoke | **PASS**, each exit 0. Focused log `ed824da43abdc4f45512f49d1ed6d17c4eb37385d1bd98e97fac75edd4d57c3b`; P025 `68f19836cf234463a7020697c532205eaa4661cac61f7bff2d3622e118eabcf1`; P101 `aab72b38c828f0d902a2a97dfd9dbe30763f1c2c4d75e8c5c443e34912f5b5e3`; vet `ea105d600441ee01024daa62416f82064db2d3cd45bdb6523aaeac537316da91`; build `1b46940323a3207ceca21ad2bde10aa3c58bc808a5250c76e33ac0f7c0cf6e7b`; smoke `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. Full Linux suite remains **NOT RUN** under the amended assignment; historic interrupted runs remain **NOT PASS**. |
+
+Corrected `runner-lane` operator hashes built from `ad41b56` with Go 1.27.1:
+Darwin/arm64 `fd37b461abb788c3372f7afde4fc05873c9aefe22ee1edfb2fae3f452faf08b4`,
+Linux/amd64 `283923dfd8e8ea2b296a56d125f4204a95ebaefc92c086dc3115af87619b9ab4`,
+Linux/arm64 `922f677705630a477528c848226925c00459af2b707db939ffd292f283f11ef1`.
+The accompanying read-only hold-checker hashes are Darwin/arm64
+`edbaa374d8600e5ad822c462ce0666bd73dd27369f68fa6ab609c8708cab947f`,
+Linux/amd64 `4c242a0625870563a78c20c5ccd5df37b89aabbc176402d67eeed5467ae25332`,
+and Linux/arm64 `d3b288d43422dcc0f20f7d105c1366acc228e4ea9536440484215e0b6669d336`.
+All temporary operator copies are task-owned under `/tmp/cat06-operator-ad41b56`;
+the installed Runner bundles were not rebuilt.
+
+### Live PRD state and expired cohort evidence
+
+The stopped PRD operation is `c2f074a84bc864830266a209943319eb`, targeting
+the unchanged Dev-accepted release above. Its stage is `switching`, and the
+supported receipt is synchronized byte-for-byte on Mac, Linux, Sandbox, and
+Factory at SHA-256
+`030679481366de192adf4a37bf06e4b66177f2bda216e8a56139df939b82f3a1`. Read-only
+hold checks on all four hosts return exactly this operation ID with
+`error=false`; fresh service checks report all PRD services stopped. Linux
+alone points to
+`/home/ubuntu/projects-runtime/runner-releases/cat-20261022-7a42f3b/linux-host`
+with bundle SHA-256
+`cbff1c52fceb11ce76b42519de54702d3b2b628df3b134560ddaeb0cb7c1d582`. Mac,
+Sandbox, and Factory remain `unselected`. No PRD service was started. The
+legacy `prd-preflight` command refuses Linux after catalog selection with
+`legacy PRD installer cannot modify a catalog-managed service`; it did not
+mutate state. The corrected supported cohort sync then validated Linux's
+matching selector journal and local state.
+
+The earliest covered host observation is Factory preflight
+`2026-10-23T05:31:13.326679771Z`, so the inclusive 60-minute cohort boundary
+was `2026-10-23T06:31:13.326679771Z`. A read-only inspection at 06:32 UTC
+found the cohort evidence expired. In accordance with the explicit stop-on-
+expiry instruction, no additional selector mutation was attempted. The
+operation remains held and partially switched; PRD acceptance is **NOT PASS**.
+Before any new selector effect, use supported recovery for Linux's recorded
+selector journal, synchronize and preserve the full operation history, and
+collect a wholly fresh cohort evidence set. Do not reuse or backdate these
+preflights.
+
+QAS remains active on all four hosts and selects `cat-20261021-b84caf0`; all
+eight mailbox paths remain assigned to QAS. No QAS pause/restart or mailbox
+configuration change occurred. No mailbox request or ACK was published. The
+QAS→PRD mailbox handoff and QAS alignment remain pending; normal project
+publishers must not resume based on this partial PRD result.
+
 ## Control-tool checkpoint — 2026-10-23 01:32 UTC
 
 The owner-approved one-time order remains Dev PASS → PRD deployment and

@@ -35,6 +35,55 @@ The Dev acceptance and current QAS baseline are recorded in
 and preserved gates are recorded in
 [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md).
 
+## CAT-06 checkpoint — 2026-10-23 06:35 UTC — receipt sync fixed; PRD cohort evidence expired mid-switch
+
+The frozen service release remains `cat-20261022-7a42f3b`; its source, sealed
+manifest, native bundles, and Dev acceptance were not rebuilt or changed. The
+operator-only reconciliation correction is delivered at
+`ad41b56ec82d6557b0d03db3563edf232097a17f`. Its Gitea primary, verified GitHub
+mirror, Mac checkout, and all three clean Ubuntu `dev` checkouts match that
+SHA. The fix lets a host with a recorded selector switch reach selector-journal
+validation before comparing its current selector with the old target; all
+schema, configuration, empty-work, backup, stopped-service, and journal checks
+remain in force. A regression exercises the real local-state validation and
+receipt synchronization after a host switch.
+
+The required source gates pass at this source. Mac full test/vet/build/smoke
+pass; Sandbox full test/vet/build/smoke pass; Factory Linux/AMD64 full
+test/vet/build/smoke pass; Linux focused CAT-06 packages, exact P025/P101
+regressions, and native vet/build/smoke pass. The full Linux suite remains
+**NOT RUN** under the owner amendment; earlier interrupted attempts remain
+**NOT PASS**. Commands, exit statuses, toolchains, platform details, and log
+hashes are in [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md).
+The Sandbox test first invoked from the wrong working directory and failed
+before running tests; the corrected checkout command passed. Factory's
+observed `/tmp` mount is 4 GiB tmpfs with 3.45 GB available; this rerun did not
+independently verify a per-user quota and does not claim one.
+
+PRD operation `c2f074a84bc864830266a209943319eb` targets this same frozen
+release. The corrected supported `catalog-cohort sync` now has identical
+receipt SHA-256 `030679481366de192adf4a37bf06e4b66177f2bda216e8a56139df939b82f3a1`
+on Mac and all three workers, at stage `switching`. Fresh read-only checks
+confirm the exact admission hold remains on every host and all PRD services
+are stopped. Linux alone selects the target release, with bundle SHA-256
+`cbff1c52fceb11ce76b42519de54702d3b2b628df3b134560ddaeb0cb7c1d582`; Sandbox,
+Factory, and Mac remain unselected. QAS remains active on all four hosts at
+`cat-20261021-b84caf0`, with all eight mailbox paths still assigned to QAS.
+No mailbox request or ACK was published and QAS was not paused or restarted.
+
+The earliest cohort observation is Factory's preflight at
+`2026-10-23T05:31:13.326679771Z`; the inclusive 60-minute window expired at
+`2026-10-23T06:31:13.326679771Z`. At the 06:32 UTC read-only reconciliation,
+the hold and partial selector state were intact. Following the explicit
+stop-on-expiry instruction, no further selector mutation or service start was
+attempted. PRD acceptance is **NOT PASS**. The held operation cannot resume
+forward after expiry. First use supported full-cohort rollback for its one
+switched host (Linux), follow the recorded selector journal, and synchronize
+each receipt transition until rollback is complete. Then collect fresh
+four-host preflights, backups, and fences before creating another attempt. Do
+not reuse the expired cohort evidence. The existing deployment authorization
+remains recorded but does not waive the expiry guard.
+
 ## CAT-06 checkpoint — 2026-10-23 01:32 UTC — exact-artifact recovery control under source gates
 
 The frozen candidate remains `cat-20261022-7a42f3b` with source revision

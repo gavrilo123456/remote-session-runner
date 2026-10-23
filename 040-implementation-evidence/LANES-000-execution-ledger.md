@@ -1,5 +1,26 @@
 # Lane execution ledger
 
+## CAT-06 PRD partial switch and expired cohort window — 2026-10-23 06:35 UTC
+
+The current PRD operation is `c2f074a84bc864830266a209943319eb`, target
+`cat-20261022-7a42f3b`. Corrected source/operator commit
+`ad41b56ec82d6557b0d03db3563edf232097a17f` is delivered to Gitea, the exact
+GitHub mirror, and clean Ubuntu `dev` checkouts. The source gates are recorded
+in [CAT-06](CAT-06.md). The synchronized `switching` receipt SHA-256 is
+`030679481366de192adf4a37bf06e4b66177f2bda216e8a56139df939b82f3a1` on all
+four hosts. Exactly one PRD selector changed: Linux selects the target bundle
+`cbff1c52fceb11ce76b42519de54702d3b2b628df3b134560ddaeb0cb7c1d582`; Sandbox,
+Factory, and Mac remain unselected. All four PRD services are stopped and the
+exact operation hold remains on every host.
+
+The earliest cohort observation `2026-10-23T05:31:13.326679771Z` expired at
+`2026-10-23T06:31:13.326679771Z`. No further selector mutation or service
+start was attempted after expiry. PRD acceptance is **NOT PASS**. QAS remains
+active on all four hosts at `cat-20261021-b84caf0`; its eight mailbox paths
+remain assigned there. No mailbox request or ACK was published. See the
+linked CAT-06 evidence for the required supported Linux selector recovery and
+fresh cohort evidence before another selector change.
+
 ## CAT-06 fresh work/ownership and capacity check — 2026-10-22 10:19 UTC
 
 At synchronized checkout `39c884447785c7883e119d512a3d00c26319e6f5`, the
