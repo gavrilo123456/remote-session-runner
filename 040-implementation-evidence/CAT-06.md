@@ -1842,3 +1842,103 @@ hold and fresh stopped/empty state, validate the recorded backups, and use
 supported rollback in the order above. Then create a fresh Dev cohort for the
 same sealed candidate and rerun fresh functional acceptance. PRD deployment,
 mailbox handoff and QAS alignment have not started.
+
+## Supported Dev rollback completed — 2026-10-23 16:40 UTC
+
+This checkpoint supersedes only the preceding section's next-action statement.
+At that earlier observation time rollback had not started; it has now completed
+through the supported `runner-lane` commands. No selector or receipt JSON was
+edited manually, no database was restored, and no request or ACK was published.
+
+### Delivery and operator identity
+
+The sealed service candidate remains `cat-20261023-c01e633`, source
+`c01e6339e9330ff6bf7dbde042b1cd5287c55c4e`, unchanged. Runtime source files in
+that commit are identical to the source tree at delivered evidence revision
+`18a09090ee1ff426987511d86f9249e4d22c6c11`. Mac `dev`, Gitea `origin/dev`,
+GitHub `github/dev`, and the clean Ubuntu checkouts were at
+`18a09090ee1ff426987511d86f9249e4d22c6c11`; Sandbox was fast-forwarded from
+clean `728f3423eb3bb5d8f3cec5346122bf165c734b52` and verified clean at the same
+SHA. Primary and mirror refs matched before the pull.
+
+Temporary operators were built from the exact sealed source commit with the
+Mac Go 1.27.1 toolchain and `CGO_ENABLED=0`; they operated only on Dev:
+
+| Operator | SHA-256 |
+| --- | --- |
+| Darwin/arm64 `runner-lane` | `8d84052eb458556664d8407a9f0db62de1cd89ca654d689df0f2dd0dc9ff8302` |
+| Linux/amd64 `runner-lane` | `9f395dcd55460e3ec8689aae8f4ce6344e5ab098ee2eb86889f1e3c1514dfb1a` |
+| Linux/arm64 `runner-lane` | `40daa636a0b9099106cae1d1a8ee449218caf3ceffff9d162fa6185b6487e4b2` |
+
+### Fresh preflight and rollback transitions
+
+The owner-only fresh preflight record is outside Git at
+`/private/tmp/rsr-cat06-b707-recovery-20261023T1816/dev-b707-rollback-preflight.json`,
+SHA-256 `b52ea6ec43c95484131a4d32aa4e4c1123d327c3de2980471f54b325be14f697`.
+It verified all four services stopped, all seven work counts zero, the exact
+`b707f52d55a6ee547541a97b08fc4ac8` hold with no error, identical blocked
+receipt SHA `1bbd682bf2d64e92153183035b2e428ecdb8308603a6432270aa14f5146d773f`,
+schema 40, unchanged configuration hashes, exact complete selector journals,
+and valid prior backups. Each selector journal bound the candidate as its
+current target and `cat-20261022-7a42f3b` as its predecessor.
+
+Space checks used the 500,000,000-byte operating buffer, measured imminent
+backup allowance, and separate 64 MiB selector reserve. Every check passed:
+
+| Host | Available bytes at preflight | Required bytes |
+| --- | ---: | ---: |
+| Linux | 15,664,443,392 | 569,025,997 |
+| Sandbox | 1,495,293,952 | 568,956,406 |
+| Factory | 34,164,727,808 | 568,944,177 |
+| Mac | 130,835,546,112 | 569,003,762 |
+
+The supported `rollback-start` used evidence SHA
+`b52ea6ec43c95484131a4d32aa4e4c1123d327c3de2980471f54b325be14f697` and was
+synchronized to all four hosts as receipt SHA
+`7aafb17608cfe4ade55f224e0f253f001a02f5c58b0a22131b3c4b6e2f8fa15d`.
+Each supported selector rollback created and retained a fresh online backup;
+the recorded journal IDs and rollback-backup manifest digests are:
+
+| Order | Host | Selector journal | Rollback backup | Manifest SHA-256 |
+| ---: | --- | --- | --- | --- |
+| 1 | Mac | `2cf405adee79c460bbfff9c039004bce` | `.simple-backup-3324965675` | `65200a423a0aa0ab85dacb7439900107d5f850b0f614e198b8e6521d085a01a4` |
+| 2 | Factory | `7a439f7cd1b3e312b7bc42939d96dabe` | `.simple-backup-2957204691` | `f13c564daac7de0b89e3350dc35a7b89220ab8c821e9936f6ff7ddf219f23fc4` |
+| 3 | Sandbox | `721c2224bfc49e55c9d8d95f41af5d23` | `.simple-backup-1331651015` | `5b81c6fa1209c40c00d82e8861217f63c1786ce430279504be0ef7518f9d040a` |
+| 4 | Linux | `a18ff2ad6c3cf7de6944f48b52136d3a` | `.simple-backup-3250017815` | `558025c5dd41e42aa499da61020ad9fc44fc7265e88a1e031f3114d4c6ebdf78` |
+
+After each host rollback, its supported `rollback-host` transition was
+synchronized to the Mac coordinator and then all three workers before the next
+selector rollback. Receipt hashes after the synchronized host results were:
+
+| Transition | Receipt SHA-256 on all four hosts |
+| --- | --- |
+| Mac rollback | `9af82437ff26c29e4d8564e4bf6bf13a1c492aeb17958267464c2cc8406f735e` |
+| Factory rollback | `90fd755a3e15cb4d996e8b0817e7e50efa089095af0efcbdfaf445aa1dc45a14` |
+| Sandbox rollback | `a8fe561706d5344da2101c36bf88ac869fdc391de473e6613a9c81b60e39bb4c` |
+| Linux rollback | `beb24340c97f81a9846239881c39e3b2772d2f479b0cb65b59c434c9049d8145` |
+
+The post-rollback evidence digest is
+`1e78f752cc04b6c4a7144afabe1d779ff0a1fc2aa9c56d73e502a6f3b97d555f`.
+The supported `rollback-complete` transition was synchronized to every host;
+the final receipt SHA is
+`8a12245b139ea847fddad24ee4c6cc034d914c4a8fd6aedda0b9b897f1187211` with
+stage `rolled_back` and 17 transitions. The final owner-only host-state record
+is outside Git at
+`/private/tmp/rsr-cat06-b707-recovery-20261023T1816/dev-b707-rollback-final.json`,
+SHA-256 `4171de4609d4e6f8e582c77da6bab78da46eeddbe0a0847d55e87cb521bfd113`.
+It confirms all four selectors restored to `cat-20261022-7a42f3b`, all Dev
+services stopped, all work inventories empty, each exact `b707…` hold still
+present, and every selector journal in `rolled_back` state. The original and
+new backups, databases, configurations, receipts and release bytes remain
+preserved.
+
+QAS was not accessed or changed during this rollback. Its services and eight
+mailbox assignments remain outside this Dev operation; no QAS restart,
+mailbox handoff, request publication, or ACK publication occurred. The
+candidate's Factory direct functional probe remains **FAILED / NOT PASS** for
+the abandoned expired scope. The rollback closes that attempt; it does not
+convert its acceptance to PASS. Next, use supported supersession for the
+fully rolled-back `b707…` attempt, verify one intended Dev hold, create fresh
+preflights/scopes for the same sealed candidate, and rerun Dev acceptance.
+PRD work follows only after that acceptance; QAS acceptance remains DEFERRED,
+NOT PASS.

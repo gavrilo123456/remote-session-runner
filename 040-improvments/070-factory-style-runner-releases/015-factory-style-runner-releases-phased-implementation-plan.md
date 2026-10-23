@@ -1382,3 +1382,30 @@ in [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#cat-06-corrected-ca
 It remains unselected pending Dev acceptance. The existing one-time order is
 Dev → PRD → coordinated mailbox handoff → QAS; QAS acceptance remains
 DEFERRED, NOT PASS.
+
+## CAT-06 current checkpoint — Dev rollback complete — 2026-10-23 16:40 UTC
+
+The prior source-gate note describes the state at its recorded time. The
+sealed `cat-20261023-c01e633` remains unchanged, but its first Dev qualification
+operation `b707f52d55a6ee547541a97b08fc4ac8` failed Factory direct functional
+readiness and is now fully rolled back through supported controls. The
+rollback order was Mac → Factory → Sandbox → Linux. No database was restored;
+each host kept its original database and received a verified fresh online
+rollback backup. The final `rolled_back` receipt has 17 transitions and exact
+SHA-256 `8a12245b139ea847fddad24ee4c6cc034d914c4a8fd6aedda0b9b897f1187211`
+on all four hosts. Every Dev selector is back on
+`cat-20261022-7a42f3b`; services remain stopped, work inventories are empty,
+and the exact old operation hold remains in place.
+
+The four-host preflight and postflight evidence, per-host journals, rollback
+backup hashes, receipt hashes after each transition and capacity calculations
+are recorded in [`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#supported-dev-rollback-completed--2026-10-23-1640-utc). Source code and the
+sealed candidate did not change, so already-passed assigned source gates remain
+valid; the abandoned Factory direct probe remains **FAILED / NOT PASS**.
+
+Next, use supported supersession for the fully rolled-back attempt, verify one
+intended Dev admission hold, and create fresh preflights and one-time scopes for
+the same sealed candidate. Rerun Dev functional acceptance before any PRD
+deployment. QAS remains serving with its eight mailbox assignments unchanged;
+the one-time Dev → PRD → mailbox handoff → QAS order still applies, and QAS
+acceptance remains DEFERRED, NOT PASS.
