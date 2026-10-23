@@ -1009,3 +1009,42 @@ For this design-only registration, validate Markdown links, layout consistency,
 phase dependencies and `git diff --check`. Run no builds, source tests, fixture
 publication or live probes merely to register the proposal. Operational approval
 for earlier bug maintenance is not approval to start this new catalogue rollout.
+
+## Current PRD pre-write checkpoint — 2026-10-23 02:19–02:23 UTC
+
+The one-time owner-approved order remains Dev acceptance → PRD deployment and
+acceptance → QAS→PRD mailbox handoff → QAS alignment. The frozen
+`cat-20261022-7a42f3b` candidate remains Dev-accepted; QAS acceptance is
+DEFERRED, NOT PASS. No service bundle was rebuilt.
+
+Fresh read-only checks reconfirmed the exact seven retained PRD lost pairs,
+their matching owner-only records, no other queued/running/resumable work, and
+schema 40 on all four hosts. PRD selectors remain unselected. Legacy
+compatibility checks passed against the exact installed binary and
+configuration identities. The three Ubuntu PRD services are active; Mac PRD
+is stopped. No backup, hold, service change, recovery or selector mutation has
+started.
+
+QAS remains active on all four hosts with its existing `cat-20261021-b84caf0`
+selectors and configuration hashes. Mac QAS retains one slot/reservation;
+worker QAS inventories are empty. The supported handoff status reports the
+existing operation active with eight mailbox definitions. QAS remains the
+mailbox owner during the PRD leg; no client pause or QAS restart is part of
+that leg.
+
+Sandbox is the sole present write-capacity blocker. At
+`2026-10-23T02:23:51Z`, `/dev/sda1` had `668127232` bytes free. The measured
+pre-backup requirement is `849205489` bytes, which includes its current
+backup estimate and the 64 MiB selector reserve plus the approved
+500,000,000-byte operating buffer. The shortfall is `181078257` bytes. Do not
+start the cohort backups, hold, recovery or switch until fresh Sandbox
+capacity meets that threshold; do not reclaim retained work, backups or shared
+caches to manufacture headroom.
+
+Once capacity passes, refresh the preflights, verify backups and exact work
+inventories, establish the PRD hold, and use the accepted sealed candidate for
+exact-pair recovery. Continue the ordered PRD cohort switch only after every
+guard passes. Keep the eight mailbox paths in QAS through PRD acceptance, then
+coordinate and validate the supported handoff before QAS alignment. The
+full host-by-host read-only results and exact retained identities are in
+[`CAT-06.md`](../../040-implementation-evidence/CAT-06.md#fresh-prdqas-pre-write-guard--2026-10-23-0219-0223-utc).

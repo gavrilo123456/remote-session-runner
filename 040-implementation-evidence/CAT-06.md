@@ -951,3 +951,90 @@ remains scoped to this approved catalog migration, conditional on those gates.
 
 At this evidence point no PRD backup, hold, service stop/restart, release
 publication, selector change, functional probe, request, or ACK was performed.
+
+## Fresh PRD/QAS pre-write guard — 2026-10-23 02:19–02:23 UTC
+
+The delivered source checkout is `4223285e5f59a46fde6e633803ec826f7b2b32a2`
+on Mac and on all three clean Ubuntu `dev` checkouts. The unrelated untracked
+`src/cmd/catalog-holdcheck/` directory remains untouched. The accepted service
+candidate is still `cat-20261022-7a42f3b`, source
+`7a42f3bb6712e5186f855df4bc50493041404841`, release manifest SHA-256
+`b2c0ec9d47b3ebed966e3ebd115a994865910142170358af95ad9857e8bb4e7c`; Dev
+acceptance remains PASS and QAS acceptance remains DEFERRED, NOT PASS. Fresh
+`catalog-inspect` checks matched the existing per-host hashes recorded in
+CAT-04. No service bundle was rebuilt.
+
+Read-only `prd-preflight`, selector inspection and compatibility checks passed
+on all four canonical hosts. PRD remains unselected on every host and schema
+40. The fresh state is:
+
+| Host | PRD active | Legacy bundle SHA-256 | Config SHA-256 | Unreleased slots / reservations | Other work | Preflight free / required bytes |
+| --- | --- | --- | --- | ---: | --- | ---: |
+| Mac | no | `0feb2b15957ad6dee4f90ac30949409300afaaf1f10e0c2f9c1aa04a63d2deda` | `56c25057b58b72e592995cc00efbd042cf4d666db449d01bb03a0aa628778d11` | 3 / 3 | No active sessions, queued/running commands, resumable jobs or pending finalizations | `141602156544 / 392873782` |
+| Linux | yes | `a774b0be0d758e42193165ece1b4bf97462726e703c34aff54ee0d63010f763c` | `c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f` | 1 / 1 | All other work categories zero | `15394877440 / 126470672` |
+| Sandbox | yes | `69755bfb0316939f99af2bea220260518f4fe96e9fd11aa9816fe8f64c1b7932` | `50f704f1b692048a149c366d0e20be2448ee8236a8cdaefcee39b2a6449e5d9a` | 3 / 3 | All other work categories zero | `685555712 / 349205489` |
+| Factory | yes | `c89aefe08fdcdc984525e218fd858eabd5489a5c5479f929d818a4b2ab4d6712` | `271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699` | 0 / 0 | All work categories zero | `34227179520 / 108012935` |
+
+The three current owner-only compatibility files matched the exact installed
+legacy bundle/configuration identities on Linux, Sandbox and Factory; the Mac
+compatibility check also passed with schema 40 and no backup. These checks are
+read-only and do not create a backup or stop a service.
+
+A fresh read-only SQLite snapshot reconfirmed exactly seven retained
+terminal-lost pairs, with no complete-output claim and no slot/reservation
+release or cleanup timestamps. The query selected identities, terminal state
+and ownership fields only; it did not read scripts, output payloads or
+credentials. Linux's system SQLite CLI rejected its unsupported `-json` option
+before opening the query, so the exact Linux inventory was read with a
+temporary Go 1.27.1 helper using SQLite `mode=ro`, `PRAGMA query_only=ON`, and
+one read transaction; the helper was removed after exit. Mac and Sandbox
+read-only queries returned the same retained set.
+
+| Host | Session → command | Fresh terminal state |
+| --- | --- | --- |
+| Mac | `sess-227a0bc9f416e36532e99346ce273367` → `cmd-9e2033c5d6106b2e88f2cff200d7dbfe` | lost / `command_lost`; output incomplete |
+| Mac | `sess-a68baa8f1dd9e66c2871e128002240ef` → `cmd-a66ce02cbaddf294e13afb3a409c317c` | lost / `command_lost`; output incomplete |
+| Mac | `sess-cf91a7902aceebd6ef20daaf6f090514` → `cmd-b524b94074ee26855f1778d52c9655cf` | lost / `command_lost`; output incomplete |
+| Linux | `sess-a8073cda44eb88573398d462c523ba83` → `cmd-6618114b0f1100e4d50479cf0e57ea2c` | lost / `command_lost`; output incomplete |
+| Sandbox | `sess-1797a73cdca867b343ef077b44f7dfda` → `cmd-bf1d015e3a6afb00e578f6f6a8119cd2` | lost / `command_lost`; output incomplete |
+| Sandbox | `sess-5abb5d808cd5623f3dbd49202f15822c` → `cmd-a06764547029ef15e4726ebd56a03cdf` | lost / `command_lost`; output incomplete |
+| Sandbox | `sess-7d1dbb5d59db346b7cfd0a8aa64cb10e` → `cmd-8cf6db5bb3871e721133825520367598` | lost / `command_lost`; output incomplete |
+
+Every retained pair's current marker remains a regular mode-0600, singly linked
+file owned by the service UID. Its recorded session, generation, PID/PGID and
+start identity match the current row; none has a cleanup proof. A bounded
+process-group read found no recorded group members on Mac, Linux or Sandbox.
+This is fresh absence evidence, not a substitute for the sealed recovery
+binary's final ownership and cleanup guards. Factory has no retained pair.
+
+QAS was not stopped, reconfigured or written. Read-only status on Mac, Linux,
+Sandbox and Factory reports all four QAS services active on
+`cat-20261021-b84caf0`. Their configuration hashes remain Mac
+`9856c54900e26c335c4ea7adb2d02951847d76349abdd49dc6b261f419f11f6a`, Linux
+`3084e76eb6068d2d45fe82d4f259c2eec765628fc8cc15af2670743312bbe91b`, Sandbox
+`f69e5df67057c81588c6e553bec9c9d701495b71e878ae52021f4ad0af39cb41`, and
+Factory `9dfcadaebf7bfeb9cd1d7b56fc2517ef3e693970a5f5e006d4c228db0694729`.
+Mac QAS still has one retained command-slot/reservation and no active session;
+the three worker QAS inventories are empty. The supported
+`runner-mailbox-handoff status` reports operation
+`1f96911399ff6a678345f214ada69b49` active with eight mailbox definitions.
+The existing QAS mailbox assignment is preserved; this read-only check did
+not pause clients or move ownership.
+
+The latest direct Sandbox capacity sample at `2026-10-23T02:23:51Z` measured
+`668127232` bytes free on `/dev/sda1` (also `/tmp`). The current pre-backup
+requirement is `849205489` bytes: measured backup allowance plus the separate
+`67108864`-byte selector reserve, and the approved `500000000`-byte operating
+buffer. Sandbox is short `181078257` bytes. No backup, PRD admission hold,
+service stop/restart, recovery, selector change, install, mailbox publication
+or ACK was attempted. Capacity is the immediate write blocker; increase safe
+Sandbox free space to at least the measured requirement and recheck it directly
+before the first backup. Preserve retained work, existing backups and shared
+caches.
+
+Next action after capacity passes: collect fresh per-host PRD backups and
+preflights, synchronize the supported PRD admission hold, recover only these
+seven exact pairs through the sealed candidate, then continue the authorized
+PRD cohort switch and acceptance. Keep QAS serving and all eight mailbox paths
+assigned there until PRD acceptance and the separately coordinated supported
+handoff.
