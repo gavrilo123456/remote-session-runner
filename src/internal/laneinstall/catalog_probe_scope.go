@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 	"remote-session-runner/src/internal/domain"
 )
 
-const catalogProbeScopeFormat = 2
+const catalogProbeScopeFormat = 3
 
 const (
 	CatalogMaintenanceProbeTokenHeader  = "X-Runner-Catalog-Maintenance-Token"
@@ -36,6 +37,8 @@ const (
 )
 
 var ErrCatalogProbeAdmission = errors.New("catalog maintenance probe admission refused")
+
+var probeEnvironmentName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
 type catalogMaintenanceProbeRequest struct {
 	Environment string `json:"environment"`
@@ -59,6 +62,8 @@ type catalogProbeScope struct {
 	Transport         CatalogProbeTransport `json:"transport"`
 	ControllerType    domain.ControllerType `json:"controller_type"`
 	ControllerID      string                `json:"controller_id"`
+	Environment       string                `json:"environment"`
+	ConfigurationSHA  string                `json:"configuration_sha256"`
 	CreatedAt         string                `json:"created_at"`
 	ExpiresAt         string                `json:"expires_at"`
 	TokenSHA256       string                `json:"token_sha256"`
@@ -74,10 +79,80 @@ type catalogProbeScope struct {
 // ephemeral token supplements, and never replaces, the normal authenticated
 // controller mapping.
 type CatalogMaintenanceProbeGuard struct {
-	plan        Plan
-	operationID string
-	transport   CatalogProbeTransport
-	testPaths   *catalogProbeTestPaths
+	plan          Plan
+	operationID   string
+	transport     CatalogProbeTransport
+	configuration config.Config
+	testPaths     *catalogProbeTestPaths
+}
+
+// CatalogMaintenanceProbeBinding is the unique policy binding for one fixed
+// maintenance probe. Its configuration digest is the digest of the exact
+// validated bytes loaded by the host.
+type CatalogMaintenanceProbeBinding struct {
+	Environment      string
+	ConfigurationSHA string
+	TargetKind       string
+	TargetProfile    string
+}
+
+// ResolveCatalogMaintenanceProbeBinding resolves the only environment that
+// permits the fixed empty-source five-second probe for this authenticated
+// controller and transport. V3 keeps its explicit lane environment name;
+// V1/V2 use their existing policy names and are rejected when resolution is
+// missing or ambiguous.
+func ResolveCatalogMaintenanceProbeBinding(loaded config.Config, plan Plan, transport CatalogProbeTransport,
+	controllerType domain.ControllerType, controllerID string) (CatalogMaintenanceProbeBinding, error) {
+	if validateCatalogPlan(plan) != nil || !validCatalogProbeTransport(plan, transport) ||
+		loaded.SourceSHA256() == "" || loaded.ReleaseLane() != plan.Lane ||
+		(plan.Namespace.Host == config.HostKindMac && loaded.Kind() != config.HostKindMac) ||
+		(plan.Namespace.Host == config.HostKindLinux && loaded.Kind() != config.HostKindLinux) ||
+		!catalogProbeControllerAllowed(transport, controllerType) {
+		return CatalogMaintenanceProbeBinding{}, ErrCatalogProbeAdmission
+	}
+	targetKind, targetProfile := domain.TargetKindRemote, plan.HostID
+	if transport == CatalogProbeMacLocal {
+		targetKind, targetProfile = domain.TargetKindLocal, "mac-workstation"
+	}
+	target, err := domain.NewExecutionTarget(targetKind, targetProfile)
+	if err != nil {
+		return CatalogMaintenanceProbeBinding{}, ErrCatalogProbeAdmission
+	}
+	controller, err := domain.NewControllerIdentity(controllerType, domain.ControllerID(controllerID))
+	if err != nil {
+		return CatalogMaintenanceProbeBinding{}, ErrCatalogProbeAdmission
+	}
+	request := domain.SessionPolicyRequest{
+		Target: target, Source: domain.NewEmptySource(), Controller: controller,
+		Limits: domain.RequestedLimits{CommandTimeout: 5 * time.Second},
+	}
+	var matches []string
+	for _, name := range loaded.EnvironmentNames() {
+		if !catalogMaintenanceEnvironmentAllowed(loaded.SchemaVersion(), name, targetProfile, plan.Lane) {
+			continue
+		}
+		registered, ok := loaded.Environment(name)
+		if !ok {
+			continue
+		}
+		if _, policyErr := registered.Policy().ValidateSessionPolicy(request); policyErr == nil {
+			matches = append(matches, name)
+		}
+	}
+	if len(matches) != 1 {
+		return CatalogMaintenanceProbeBinding{}, ErrCatalogProbeAdmission
+	}
+	return CatalogMaintenanceProbeBinding{
+		Environment: matches[0], ConfigurationSHA: loaded.SourceSHA256(),
+		TargetKind: string(targetKind), TargetProfile: targetProfile,
+	}, nil
+}
+
+func catalogMaintenanceEnvironmentAllowed(schemaVersion int, name, targetProfile string, lane config.ReleaseLane) bool {
+	if schemaVersion != config.VersionV3 {
+		return schemaVersion == config.VersionV1 || schemaVersion == config.VersionV2
+	}
+	return name == targetProfile+"-"+string(lane)
 }
 
 type catalogProbeTestPaths struct {
@@ -97,12 +172,54 @@ func (g *CatalogMaintenanceProbeGuard) ValidateFixedProbeRequest(environment, ta
 	if g == nil {
 		return ErrCatalogProbeAdmission
 	}
-	wantEnvironment := string(g.plan.HostID) + "-" + string(g.plan.Lane)
-	wantKind, wantProfile := "remote", g.plan.HostID
-	if g.transport == CatalogProbeMacLocal {
-		wantEnvironment, wantKind, wantProfile = "mac-workstation-"+string(g.plan.Lane), "local", "mac-workstation"
+	if g.configuration.SourceSHA256() == "" {
+		// Compatibility for isolated handler tests. Production services always
+		// construct the guard with the already-loaded configuration snapshot.
+		wantEnvironment := string(g.plan.HostID) + "-" + string(g.plan.Lane)
+		wantKind, wantProfile := "remote", g.plan.HostID
+		if g.transport == CatalogProbeMacLocal {
+			wantEnvironment, wantKind, wantProfile = "mac-workstation-"+string(g.plan.Lane), "local", "mac-workstation"
+		}
+		if environment != wantEnvironment || targetKind != wantKind || targetProfile != wantProfile || sourceMode != "empty" ||
+			script != "printf 'catalog release maintenance probe\\n'" || timeoutSeconds != 5 {
+			return ErrCatalogProbeAdmission
+		}
+		return nil
 	}
-	if environment != wantEnvironment || targetKind != wantKind || targetProfile != wantProfile || sourceMode != "empty" ||
+	paths, err := g.paths()
+	if err != nil {
+		return ErrCatalogProbeAdmission
+	}
+	scope, err := readCatalogProbeScope(g.scopePath(paths.scopeRoot))
+	if err != nil {
+		return ErrCatalogProbeAdmission
+	}
+	return g.ValidateFixedProbeRequestForController(environment, targetKind, targetProfile, sourceMode, script,
+		timeoutSeconds, scope.ControllerType, scope.ControllerID)
+}
+
+// ValidateFixedProbeRequestForController validates the exact fixed command
+// against the loaded policy and the authenticated controller. It also
+// reopens the owner-only config to detect drift since service startup.
+func (g *CatalogMaintenanceProbeGuard) ValidateFixedProbeRequestForController(environment, targetKind, targetProfile, sourceMode, script string,
+	timeoutSeconds int64, controllerType domain.ControllerType, controllerID string) error {
+	if g == nil {
+		return ErrCatalogProbeAdmission
+	}
+	if g.configuration.SourceSHA256() == "" {
+		if _, err := domain.NewControllerIdentity(controllerType, domain.ControllerID(controllerID)); err != nil ||
+			!catalogProbeControllerAllowed(g.transport, controllerType) {
+			return ErrCatalogProbeAdmission
+		}
+		return g.ValidateFixedProbeRequest(environment, targetKind, targetProfile, sourceMode, script, timeoutSeconds)
+	}
+	current, err := config.LoadFile(g.plan.Namespace.ConfigFile)
+	if err != nil || current.SourceSHA256() != g.configuration.SourceSHA256() {
+		return ErrCatalogProbeAdmission
+	}
+	binding, err := ResolveCatalogMaintenanceProbeBinding(current, g.plan, g.transport, controllerType, controllerID)
+	if err != nil || binding.ConfigurationSHA != g.configuration.SourceSHA256() || environment != binding.Environment ||
+		targetKind != binding.TargetKind || targetProfile != binding.TargetProfile || sourceMode != "empty" ||
 		script != "printf 'catalog release maintenance probe\\n'" || timeoutSeconds != 5 {
 		return ErrCatalogProbeAdmission
 	}
@@ -155,7 +272,7 @@ func catalogCohortAdmissionHeldAt(plan Plan, root string) (bool, string, error) 
 	if err != nil {
 		return false, "", err
 	}
-	activeID := ""
+	var active []CatalogCohortReceipt
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -169,13 +286,56 @@ func catalogCohortAdmissionHeldAt(plan Plan, root string) (bool, string, error) 
 			return false, "", ErrCatalogOperationInvalid
 		}
 		if catalogCohortStageHoldsAdmissions(receipt.Stage) {
-			if activeID != "" {
-				return false, "", ErrCatalogOperationInvalid
-			}
-			activeID = operationID
+			active = append(active, receipt)
 		}
 	}
-	return activeID != "", activeID, nil
+	if len(active) == 0 {
+		return false, "", nil
+	}
+	if len(active) == 1 {
+		return true, active[0].OperationID, nil
+	}
+	if len(active) == 2 {
+		for _, predecessor := range active {
+			for _, successor := range active {
+				if catalogCohortReplacementHoldPair(predecessor, successor, time.Now().UTC()) {
+					return true, successor.OperationID, nil
+				}
+			}
+		}
+	}
+	return false, "", ErrCatalogOperationInvalid
+}
+
+func catalogCohortReplacementHoldPair(predecessor, successor CatalogCohortReceipt, now time.Time) bool {
+	if ValidateCatalogCohortReceipt(predecessor) != nil || ValidateCatalogCohortReceipt(successor) != nil ||
+		predecessor.Lane != config.ReleaseLanePRD || successor.Lane != config.ReleaseLanePRD ||
+		predecessor.OperationID == successor.OperationID || predecessor.ReleaseID == successor.ReleaseID ||
+		predecessor.ReleaseSHA256 == successor.ReleaseSHA256 || predecessor.Stage != CatalogCohortVerifying ||
+		successor.Stage != CatalogCohortHeld || !catalogCohortReceiptSupersessionEligible(predecessor) ||
+		!cohortEvidenceFresh(successor, now.Format(time.RFC3339Nano)) ||
+		(currentSupersessionSuccessor(predecessor.Transitions) != "" && currentSupersessionSuccessor(predecessor.Transitions) != successor.OperationID) {
+		return false
+	}
+	for index, hostID := range catalogCohortSwitchOrder {
+		oldHost, nextHost := predecessor.Hosts[index], successor.Hosts[index]
+		if oldHost.HostID != hostID || nextHost.HostID != hostID || !cohortHasSwitched(predecessor, hostID) ||
+			nextHost.ServiceActiveAtPreflight ||
+			nextHost.PreviousBundleSHA256 != oldHost.Target.BundleSHA256 || nextHost.ConfigurationSHA256 != oldHost.ConfigurationSHA256 ||
+			nextHost.SchemaVersion != oldHost.SchemaVersion || nextHost.WorkInventorySHA256 != oldHost.WorkInventorySHA256 ||
+			!nextHost.WorkInventoryEmpty || nextHost.BackupDirectory == "" || !bundleDigestPattern.MatchString(nextHost.BackupManifestSHA256) {
+			return false
+		}
+		plan, err := BuildCatalogPlan(hostID, config.ReleaseLanePRD)
+		if err != nil {
+			return false
+		}
+		root, err := DefaultCatalogRootForPlan(plan)
+		if err != nil || nextHost.PreviousTarget != filepath.Join(root, predecessor.ReleaseID, hostID) {
+			return false
+		}
+	}
+	return true
 }
 
 func catalogCohortStageHoldsAdmissions(stage CatalogCohortStage) bool {
@@ -193,13 +353,23 @@ func NewCatalogMaintenanceProbeGuard(plan Plan, operationID string) (*CatalogMai
 }
 
 func NewCatalogMaintenanceProbeGuardForTransport(plan Plan, operationID string, transport CatalogProbeTransport) (*CatalogMaintenanceProbeGuard, error) {
-	if validateCatalogPlan(plan) != nil || !validCatalogOperationID(operationID) {
-		return nil, ErrCatalogProbeAdmission
-	}
-	if !validCatalogProbeTransport(plan, transport) {
+	if validateCatalogPlan(plan) != nil || !validCatalogOperationID(operationID) || !validCatalogProbeTransport(plan, transport) {
 		return nil, ErrCatalogProbeAdmission
 	}
 	return &CatalogMaintenanceProbeGuard{plan: plan, operationID: operationID, transport: transport}, nil
+}
+
+// NewCatalogMaintenanceProbeGuardForTransportWithConfig binds the guard to
+// the exact configuration snapshot already loaded by the service.
+func NewCatalogMaintenanceProbeGuardForTransportWithConfig(plan Plan, operationID string, transport CatalogProbeTransport,
+	loaded config.Config) (*CatalogMaintenanceProbeGuard, error) {
+	if validateCatalogPlan(plan) != nil || !validCatalogOperationID(operationID) {
+		return nil, ErrCatalogProbeAdmission
+	}
+	if !validCatalogProbeTransport(plan, transport) || loaded.SourceSHA256() == "" || loaded.ReleaseLane() != plan.Lane {
+		return nil, ErrCatalogProbeAdmission
+	}
+	return &CatalogMaintenanceProbeGuard{plan: plan, operationID: operationID, transport: transport, configuration: loaded}, nil
 }
 
 // CatalogMaintenanceProbeRequestBody returns the only command body that the
@@ -239,6 +409,26 @@ func CatalogMaintenanceProbeRequestBodyForTransport(plan Plan, transport Catalog
 	return body, nil
 }
 
+// CatalogMaintenanceProbeRequestBodyForBinding creates the fixed harmless
+// request with the exact environment resolved from the host configuration.
+func CatalogMaintenanceProbeRequestBodyForBinding(plan Plan, transport CatalogProbeTransport,
+	binding CatalogMaintenanceProbeBinding) ([]byte, error) {
+	if validateCatalogPlan(plan) != nil || !validCatalogProbeTransport(plan, transport) || binding.Environment == "" ||
+		!bundleDigestPattern.MatchString(binding.ConfigurationSHA) {
+		return nil, ErrCatalogProbeAdmission
+	}
+	body, err := CatalogMaintenanceProbeRequestBodyForTransport(plan, transport)
+	if err != nil {
+		return nil, err
+	}
+	var request catalogMaintenanceProbeRequest
+	if json.Unmarshal(body, &request) != nil {
+		return nil, ErrCatalogProbeAdmission
+	}
+	request.Environment = binding.Environment
+	return json.Marshal(request)
+}
+
 // PrepareCatalogMaintenanceProbe creates an owner-only scope and returns its
 // one-time bearer token. The request body itself is not stored; only its hash,
 // exact idempotency key, authenticated controller and operation identity are
@@ -248,10 +438,24 @@ func PrepareCatalogMaintenanceProbe(plan Plan, operationID, controllerID, idempo
 }
 
 func PrepareCatalogMaintenanceProbeForTransport(plan Plan, operationID string, transport CatalogProbeTransport, controllerType domain.ControllerType, controllerID, idempotencyKey string, requestBody []byte, expiresAt time.Time) (string, error) {
-	guard, err := NewCatalogMaintenanceProbeGuardForTransport(plan, operationID, transport)
-	wantBody, bodyErr := CatalogMaintenanceProbeRequestBodyForTransport(plan, transport)
+	loaded, loadErr := config.LoadFile(plan.Namespace.ConfigFile)
+	if loadErr != nil {
+		return "", ErrCatalogProbeAdmission
+	}
+	return PrepareCatalogMaintenanceProbeForTransportWithConfig(plan, operationID, transport, controllerType, controllerID,
+		idempotencyKey, requestBody, expiresAt, loaded)
+}
+
+// PrepareCatalogMaintenanceProbeForTransportWithConfig creates a capability
+// bound to the caller's exact validated configuration snapshot.
+func PrepareCatalogMaintenanceProbeForTransportWithConfig(plan Plan, operationID string, transport CatalogProbeTransport,
+	controllerType domain.ControllerType, controllerID, idempotencyKey string, requestBody []byte, expiresAt time.Time,
+	loaded config.Config) (string, error) {
+	guard, err := NewCatalogMaintenanceProbeGuardForTransportWithConfig(plan, operationID, transport, loaded)
+	binding, bindingErr := ResolveCatalogMaintenanceProbeBinding(loaded, plan, transport, controllerType, controllerID)
+	wantBody, bodyErr := CatalogMaintenanceProbeRequestBodyForBinding(plan, transport, binding)
 	wantKey := catalogProbeIdempotencyKey(operationID, plan.HostID, transport)
-	if err != nil || bodyErr != nil || !bytes.Equal(requestBody, wantBody) || idempotencyKey != wantKey || expiresAt.IsZero() {
+	if err != nil || bindingErr != nil || bodyErr != nil || !bytes.Equal(requestBody, wantBody) || idempotencyKey != wantKey || expiresAt.IsZero() {
 		return "", ErrCatalogProbeAdmission
 	}
 	if !catalogProbeControllerAllowed(transport, controllerType) {
@@ -278,6 +482,7 @@ func PrepareCatalogMaintenanceProbeForTransport(plan Plan, operationID string, t
 	scope := catalogProbeScope{
 		FormatVersion: catalogProbeScopeFormat, OperationID: operationID, HostID: plan.HostID, Lane: plan.Lane,
 		Transport: transport, ControllerType: controllerType, ControllerID: controllerID,
+		Environment: binding.Environment, ConfigurationSHA: binding.ConfigurationSHA,
 		CreatedAt: now.Format(time.RFC3339Nano), ExpiresAt: expiresAt.Format(time.RFC3339Nano),
 		TokenSHA256: hex.EncodeToString(tokenDigest[:]), IdempotencyKey: idempotencyKey,
 		RequestBodySHA256: hex.EncodeToString(bodyDigest[:]), State: "ready",
@@ -319,6 +524,12 @@ func (g *CatalogMaintenanceProbeGuard) ReserveCatalogMaintenanceProbeForControll
 	if !catalogProbeControllerAllowed(g.transport, controllerType) {
 		return ErrCatalogProbeAdmission
 	}
+	var request catalogMaintenanceProbeRequest
+	if json.Unmarshal(body, &request) != nil || g.ValidateFixedProbeRequestForController(request.Environment,
+		request.Target.Kind, request.Target.Profile, request.Source.Mode, request.Script,
+		int64(request.TimeoutSeconds), controllerType, controllerID) != nil {
+		return ErrCatalogProbeAdmission
+	}
 	bodyDigest := sha256.Sum256(body)
 	return g.reserveDigest(controllerType, controllerID, token, idempotencyKey, hex.EncodeToString(bodyDigest[:]), now)
 }
@@ -351,6 +562,9 @@ func (g *CatalogMaintenanceProbeGuard) reserveDigest(controllerType domain.Contr
 		scope.IdempotencyKey != idempotencyKey || scope.State != "ready" {
 		return ErrCatalogProbeAdmission
 	}
+	if err := g.validateScopeConfiguration(scope, controllerType, controllerID); err != nil {
+		return ErrCatalogProbeAdmission
+	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, scope.ExpiresAt)
 	if err != nil || !now.UTC().Before(expiresAt) {
 		return ErrCatalogProbeAdmission
@@ -362,6 +576,40 @@ func (g *CatalogMaintenanceProbeGuard) reserveDigest(controllerType domain.Contr
 	}
 	scope.State = "reserved"
 	return writeCatalogProbeScope(path, root, scope)
+}
+
+func (g *CatalogMaintenanceProbeGuard) validateScopeConfiguration(scope catalogProbeScope, controllerType domain.ControllerType, controllerID string) error {
+	paths, err := g.paths()
+	if err != nil {
+		return ErrCatalogProbeAdmission
+	}
+	receipt, err := readCatalogCohortReceipt(filepath.Join(paths.cohortRoot, g.operationID+".json"))
+	if err != nil {
+		return ErrCatalogProbeAdmission
+	}
+	index := cohortHostIndex(receipt, g.plan.HostID)
+	if index < 0 || scope.ConfigurationSHA != receipt.Hosts[index].ConfigurationSHA256 {
+		return ErrCatalogProbeAdmission
+	}
+	if g.configuration.SourceSHA256() == "" {
+		return nil // Isolated state-machine tests use a synthetic config digest.
+	}
+	current, err := config.LoadFile(g.plan.Namespace.ConfigFile)
+	if err != nil || current.SourceSHA256() != g.configuration.SourceSHA256() {
+		return ErrCatalogProbeAdmission
+	}
+	binding, err := ResolveCatalogMaintenanceProbeBinding(current, g.plan, g.transport, controllerType, controllerID)
+	if err != nil || validateProbeScopeBinding(scope, binding) != nil {
+		return ErrCatalogProbeAdmission
+	}
+	return g.validateConfigurationAgainstCohort(current)
+}
+
+func validateProbeScopeBinding(scope catalogProbeScope, binding CatalogMaintenanceProbeBinding) error {
+	if scope.ConfigurationSHA != binding.ConfigurationSHA || scope.Environment != binding.Environment {
+		return ErrCatalogProbeAdmission
+	}
+	return nil
 }
 
 // BindCatalogMaintenanceProbeJob records the generated job identity before
@@ -512,9 +760,31 @@ func (g *CatalogMaintenanceProbeGuard) validateCurrentCohortForProbe() error {
 	if receipt.Lane != g.plan.Lane || !cohortContainsHost(receipt, g.plan.HostID) {
 		return ErrCatalogProbeAdmission
 	}
+	if g.configuration.SourceSHA256() != "" && g.validateConfigurationAgainstCohort(g.configuration) != nil {
+		return ErrCatalogProbeAdmission
+	}
 	status, err := inspectCatalogSelector(paths.layout)
 	if err != nil || status.Kind != "catalog" || status.Release == nil || status.Release.Identity.ReleaseID != receipt.ReleaseID ||
 		status.Release.Identity.ReleaseSHA256 != receipt.ReleaseSHA256 {
+		return ErrCatalogProbeAdmission
+	}
+	return nil
+}
+
+func (g *CatalogMaintenanceProbeGuard) validateConfigurationAgainstCohort(loaded config.Config) error {
+	if g == nil || loaded.SourceSHA256() == "" {
+		return ErrCatalogProbeAdmission
+	}
+	paths, err := g.paths()
+	if err != nil {
+		return ErrCatalogProbeAdmission
+	}
+	receipt, err := readCatalogCohortReceipt(filepath.Join(paths.cohortRoot, g.operationID+".json"))
+	if err != nil || receipt.Lane != g.plan.Lane {
+		return ErrCatalogProbeAdmission
+	}
+	index := cohortHostIndex(receipt, g.plan.HostID)
+	if index < 0 || receipt.Hosts[index].ConfigurationSHA256 != loaded.SourceSHA256() {
 		return ErrCatalogProbeAdmission
 	}
 	return nil
@@ -673,6 +943,7 @@ func validateCatalogProbeScope(scope catalogProbeScope) error {
 	expiresAt, expiresErr := time.Parse(time.RFC3339Nano, scope.ExpiresAt)
 	if scope.FormatVersion != catalogProbeScopeFormat || !validCatalogOperationID(scope.OperationID) || !containsCatalogHost(scope.HostID) ||
 		(scope.Lane != config.ReleaseLaneDev && scope.Lane != config.ReleaseLaneQAS && scope.Lane != config.ReleaseLanePRD) || scope.ControllerID == "" ||
+		scope.Environment == "" || !probeEnvironmentName.MatchString(scope.Environment) || !bundleDigestPattern.MatchString(scope.ConfigurationSHA) ||
 		(scope.Transport != CatalogProbeDirectMTLS && scope.Transport != CatalogProbeQueuedSSH && scope.Transport != CatalogProbeMacLocal) ||
 		!validCohortTimestamp(scope.CreatedAt) || !validCohortTimestamp(scope.ExpiresAt) || !bundleDigestPattern.MatchString(scope.TokenSHA256) ||
 		createdErr != nil || expiresErr != nil || !expiresAt.After(createdAt) || expiresAt.Sub(createdAt) > 10*time.Minute ||

@@ -6,6 +6,41 @@ assignment. CAT-03 source revision is
 `c381d8efc719a2cc22fc09158f2e6f8c07fccd2b`; live migration remains gated by
 the phased plan and its required acceptance evidence.
 
+## CAT-06 compatibility addendum — 2026-10-23
+
+The owner approved a new sealed candidate for the bounded PRD compatibility
+correction, while preserving the already sealed
+`cat-20261022-7a42f3b` unchanged. Probe preparation and service admission share
+one policy-aware environment binding from the exact loaded configuration and
+authenticated controller. The scope records that configuration SHA-256 and
+resolved environment; service admission revalidates both against current
+configuration and cohort evidence. V1/V2 use one uniquely matching existing
+policy; V3 retains its lane-specific environment rule.
+
+Legacy V1/V2 direct probes use configured CA trust, normal hostname
+verification, the configured client certificate and TLS 1.3. V3 direct probes
+continue through the existing pin, certificate fingerprint and URI SAN
+checks; a V3 failure cannot fall back to legacy trust. A probe is accepted only
+when its terminal result is successful, exit code is zero, output is complete
+and untruncated, a final event is confirmed, and teardown is closed. Failed or
+lost jobs emit their bounded result and return a failing status.
+
+The PRD replacement path permits one exact fresh held successor alongside a
+fully switched `verifying` predecessor only while their per-host release,
+selector, configuration, schema, work-inventory and backup identities agree.
+The old receipt remains an admission hold until all four hosts record their
+own supported supersession observations and the coordinator finalizes and
+synchronizes the transition. Rollback of the successor returns to the exact
+selected predecessor release without restoring an older database. These
+constraints supplement the normal cohort procedure; they do not waive backup,
+quiescence, capacity, retained-work or selector-journal guards.
+
+For this corrected candidate only, the owner approved Dev acceptance followed
+by PRD acceptance, then a coordinated QAS-to-PRD mailbox handoff and QAS
+alignment. QAS acceptance is DEFERRED, NOT PASS, until it is aligned. QAS
+continues serving users and keeps all eight mailbox paths until the later
+coordinated handoff. Future candidates return to Dev → QAS → PRD.
+
 ## 1. Authority, scope and current compatibility
 
 This is the target design for the separate

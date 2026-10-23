@@ -104,12 +104,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 78
 		}
 		if maintenanceHeld {
-			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuard(plan, maintenanceOperationID)
+			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuardForTransportWithConfig(plan, maintenanceOperationID, laneinstall.CatalogProbeDirectMTLS, loaded)
 			if err != nil {
 				fmt.Fprintln(stderr, "runnerd: catalog maintenance probe guard is invalid")
 				return 78
 			}
-			queuedMaintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuardForTransport(plan, maintenanceOperationID, laneinstall.CatalogProbeQueuedSSH)
+			queuedMaintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuardForTransportWithConfig(plan, maintenanceOperationID, laneinstall.CatalogProbeQueuedSSH, loaded)
 			if err != nil {
 				fmt.Fprintln(stderr, "runnerd: queued catalog maintenance probe guard is invalid")
 				return 78

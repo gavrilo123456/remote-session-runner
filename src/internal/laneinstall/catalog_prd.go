@@ -76,13 +76,43 @@ func ReadPRDCatalogSelectorCapacity(plan PRDUpgradePlan) (availableBytes, requir
 // the prepared cohort receipt is synchronized.
 func ReadPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe,
 	releaseID string, requiredBytes uint64, legacyCompatibility *CatalogLegacyRollbackCompatibility) (CatalogCohortHostPreflightReport, error) {
+	return readPRDCatalogCohortHostPreflight(ctx, plan, service, releaseID, requiredBytes, legacyCompatibility, "")
+}
+
+// ReadPRDCatalogReplacementHostPreflight captures the same consistent PRD
+// backup and work/configuration/schema proof as an ordinary preflight while
+// permitting only the exact fully switched verifying predecessor to remain
+// as the current admission hold. The predecessor's selected release must be
+// the current rollback baseline on this host.
+func ReadPRDCatalogReplacementHostPreflight(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe,
+	releaseID string, requiredBytes uint64, predecessorOperationID string) (CatalogCohortHostPreflightReport, error) {
+	if !validCatalogOperationID(predecessorOperationID) {
+		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	}
+	return readPRDCatalogCohortHostPreflight(ctx, plan, service, releaseID, requiredBytes, nil, predecessorOperationID)
+}
+
+func readPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe,
+	releaseID string, requiredBytes uint64, legacyCompatibility *CatalogLegacyRollbackCompatibility,
+	predecessorOperationID string) (CatalogCohortHostPreflightReport, error) {
 	if validatePRDPlan(plan) != nil || service == nil || !validCatalogReleaseID(releaseID) ||
 		requiredBytes != prdCatalogSelectorHeadroom {
 		return CatalogCohortHostPreflightReport{}, ErrPRDUpgradeGuard
 	}
 	cohortPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
-	if held, _, err := CatalogCohortAdmissionHeld(cohortPlan); err != nil || held {
-		return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+	var predecessor CatalogCohortReceipt
+	if predecessorOperationID == "" {
+		if held, _, err := CatalogCohortAdmissionHeld(cohortPlan); err != nil || held {
+			return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+		}
+	} else {
+		var err error
+		predecessor, err = ReadCatalogCohortReceipt(cohortPlan, predecessorOperationID)
+		if err != nil || predecessor.Stage != CatalogCohortVerifying ||
+			!catalogCohortReceiptSupersessionEligible(predecessor) ||
+			CatalogCohortAdmissionHoldMatches(cohortPlan, predecessorOperationID) != nil {
+			return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+		}
 	}
 	root, err := DefaultCatalogRootForPlan(cohortPlan)
 	if err != nil {
@@ -106,9 +136,18 @@ func ReadPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 	if err != nil {
 		return CatalogCohortHostPreflightReport{}, err
 	}
+	if predecessorOperationID != "" && active {
+		return CatalogCohortHostPreflightReport{}, ErrSimpleLaneNotQuiescent
+	}
 	before, err := readPRDCatalogProof(ctx, plan, layout)
 	if err != nil || !before.work.Empty() {
 		return CatalogCohortHostPreflightReport{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	if predecessorOperationID != "" {
+		index := cohortHostIndex(predecessor, plan.HostID)
+		if index < 0 || validatePRDCatalogReplacementBaseline(layout, predecessor, predecessor.Hosts[index], before) != nil {
+			return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+		}
 	}
 	target, err := InspectCatalogRelease(root, plan.HostID, releaseID)
 	if err != nil {
@@ -152,6 +191,12 @@ func ReadPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 	if err != nil || activeAfter != active {
 		return CatalogCohortHostPreflightReport{}, errors.Join(ErrPRDUpgradeGuard, err)
 	}
+	if predecessorOperationID != "" {
+		index := cohortHostIndex(predecessor, plan.HostID)
+		if index < 0 || validatePRDCatalogReplacementBaseline(layout, predecessor, predecessor.Hosts[index], after) != nil {
+			return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+		}
+	}
 	available, selectorRequired, err := ReadPRDCatalogSelectorCapacity(plan)
 	if err != nil || selectorRequired != requiredBytes || available < requiredBytes {
 		return CatalogCohortHostPreflightReport{}, errors.Join(ErrCatalogInsufficientSpace, err)
@@ -169,19 +214,61 @@ func ReadPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 	}, nil
 }
 
+func validatePRDCatalogReplacementBaseline(layout catalogSelectorLayout, predecessor CatalogCohortReceipt,
+	oldHost CatalogCohortHostPreflight, proof prdCatalogProof) error {
+	if predecessor.Lane != config.ReleaseLanePRD || predecessor.Stage != CatalogCohortVerifying ||
+		!catalogCohortReceiptSupersessionEligible(predecessor) || !cohortHasSwitched(predecessor, layout.hostID) ||
+		oldHost.HostID != layout.hostID || proof.work.Empty() == false ||
+		proof.workSHA256 != oldHost.WorkInventorySHA256 || proof.schema != oldHost.SchemaVersion ||
+		proof.configurationSHA256 != oldHost.ConfigurationSHA256 ||
+		proof.selectorTarget != filepath.Join(layout.catalogRoot, predecessor.ReleaseID, layout.hostID) ||
+		proof.bundleSHA256 != oldHost.Target.BundleSHA256 {
+		return ErrCatalogOperationInvalid
+	}
+	return nil
+}
+
 // FenceCatalogPRDHost performs the supported first-adoption stop after a
 // prepared PRD receipt has been synchronized. It verifies the receipt's exact
 // online baseline and backup, stops only this unsuffixed service, and returns
 // hashable evidence for the ordered host-fence transition.
 func FenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDServiceController,
 	receipt CatalogCohortReceipt) (CatalogCohortHostFence, error) {
+	return fenceCatalogPRDHost(ctx, plan, service, receipt, "")
+}
+
+// FenceCatalogPRDReplacementHost records the already-stopped host fence for
+// a prepared successor while the exact verifying predecessor continues to
+// hold admissions. It does not stop or start a service.
+func FenceCatalogPRDReplacementHost(ctx context.Context, plan PRDUpgradePlan, service *PRDServiceController,
+	receipt CatalogCohortReceipt, predecessorOperationID string) (CatalogCohortHostFence, error) {
+	if !validCatalogOperationID(predecessorOperationID) {
+		return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
+	}
+	return fenceCatalogPRDHost(ctx, plan, service, receipt, predecessorOperationID)
+}
+
+func fenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDServiceController,
+	receipt CatalogCohortReceipt, predecessorOperationID string) (CatalogCohortHostFence, error) {
 	if validatePRDPlan(plan) != nil || service == nil || ValidateCatalogCohortReceipt(receipt) != nil ||
 		receipt.Lane != config.ReleaseLanePRD || receipt.Stage != CatalogCohortPrepared ||
 		!containsString(catalogCohortSwitchOrder, plan.HostID) {
 		return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
 	}
-	if held, _, err := CatalogCohortAdmissionHeld(Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}); err != nil || held {
-		return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
+	cohortPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
+	var predecessor CatalogCohortReceipt
+	if predecessorOperationID == "" {
+		if held, _, err := CatalogCohortAdmissionHeld(cohortPlan); err != nil || held {
+			return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
+		}
+	} else {
+		var err error
+		predecessor, err = ReadCatalogCohortReceipt(cohortPlan, predecessorOperationID)
+		if err != nil || predecessor.Stage != CatalogCohortVerifying ||
+			!catalogCohortReceiptSupersessionEligible(predecessor) ||
+			CatalogCohortAdmissionHoldMatches(cohortPlan, predecessorOperationID) != nil {
+			return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
+		}
 	}
 	index := cohortHostIndex(receipt, plan.HostID)
 	if index < 0 {
@@ -215,6 +302,16 @@ func FenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDS
 		proof.configurationSHA256 != host.ConfigurationSHA256 || proof.selectorTarget != host.PreviousTarget ||
 		proof.previousBundleSHA256() != host.PreviousBundleSHA256 {
 		return CatalogCohortHostFence{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	if predecessorOperationID != "" {
+		if active || host.ServiceActiveAtPreflight || host.LegacyRollback != nil {
+			return CatalogCohortHostFence{}, ErrSimpleLaneNotQuiescent
+		}
+		oldIndex := cohortHostIndex(predecessor, plan.HostID)
+		if oldIndex < 0 || validatePRDCatalogReplacementBaseline(layout, predecessor, predecessor.Hosts[oldIndex], proof) != nil ||
+			validatePRDPreflightBackup(ctx, plan, host) != nil {
+			return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
+		}
 	}
 	if err := validatePRDPreflightBackup(ctx, plan, host); err != nil {
 		return CatalogCohortHostFence{}, err

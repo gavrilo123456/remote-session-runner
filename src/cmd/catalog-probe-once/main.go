@@ -24,19 +24,23 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/laneinstall"
+	"remote-session-runner/src/internal/runnerclient"
 	"remote-session-runner/src/internal/sshbridge"
 	"remote-session-runner/src/internal/sshclient"
 )
 
 type prepared struct {
-	HostID         string          `json:"host_id"`
-	Transport      string          `json:"transport"`
-	OperationID    string          `json:"operation_id"`
-	ControllerID   string          `json:"controller_id"`
-	IdempotencyKey string          `json:"idempotency_key"`
-	RequestSHA256  string          `json:"request_body_sha256"`
-	RequestBody    json.RawMessage `json:"request_body"`
-	Token          string          `json:"one_time_token"`
+	HostID              string          `json:"host_id"`
+	Lane                string          `json:"lane"`
+	Transport           string          `json:"transport"`
+	OperationID         string          `json:"operation_id"`
+	ControllerID        string          `json:"controller_id"`
+	Environment         string          `json:"environment"`
+	ConfigurationSHA256 string          `json:"configuration_sha256"`
+	IdempotencyKey      string          `json:"idempotency_key"`
+	RequestSHA256       string          `json:"request_body_sha256"`
+	RequestBody         json.RawMessage `json:"request_body"`
+	Token               string          `json:"one_time_token"`
 }
 
 type outcome struct {
@@ -72,6 +76,8 @@ type jobFields struct {
 	OutputTruncated    bool   `json:"output_truncated"`
 	TeardownState      string `json:"teardown_state"`
 }
+
+var errProbeNotAccepted = errors.New("maintenance probe did not meet functional acceptance; see emitted outcome")
 
 func main() {
 	if err := run(); err != nil {
@@ -112,7 +118,9 @@ func run() error {
 		return errors.New("prepared capability is unavailable")
 	}
 	var p prepared
-	if json.Unmarshal(raw, &p) != nil || p.HostID == "" || p.OperationID == "" || p.Token == "" || p.IdempotencyKey == "" || len(p.RequestBody) == 0 {
+	if json.Unmarshal(raw, &p) != nil || p.HostID == "" || (p.Lane != "dev" && p.Lane != "qas" && p.Lane != "prd") ||
+		p.OperationID == "" || p.Token == "" || p.IdempotencyKey == "" || p.Environment == "" ||
+		!validSHA256(p.ConfigurationSHA256) || len(p.RequestBody) == 0 {
 		return errors.New("prepared capability is invalid")
 	}
 	if p.Transport != map[string]string{"direct": "direct-mtls", "queued": "queued-ssh", "local": "mac-local"}[*mode] {
@@ -123,6 +131,9 @@ func run() error {
 		return errors.New("prepared request body digest is invalid")
 	}
 	p.RequestBody = preparedBody
+	if err := validatePreparedProbeRequest(p); err != nil {
+		return errors.New("prepared capability request does not match its bound host, lane, or environment")
+	}
 	switch *mode {
 	case "direct":
 		return direct(ctx, *configPath, p)
@@ -131,6 +142,52 @@ func run() error {
 	default:
 		return local(ctx, *socketPath, p)
 	}
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validatePreparedProbeRequest(p prepared) error {
+	var request struct {
+		Environment string `json:"environment"`
+		Target      struct {
+			Kind    string `json:"kind"`
+			Profile string `json:"profile"`
+		} `json:"execution_target"`
+		Source struct {
+			Mode string `json:"mode"`
+		} `json:"source"`
+		Script         string         `json:"script"`
+		TimeoutSeconds int            `json:"timeout_seconds"`
+		Limits         map[string]int `json:"limits"`
+	}
+	if json.Unmarshal(p.RequestBody, &request) != nil || request.Environment != p.Environment || request.Source.Mode != "empty" ||
+		request.Script != "printf 'catalog release maintenance probe\\n'" {
+		return errors.New("prepared request fields are inconsistent")
+	}
+	if p.Transport == "mac-local" {
+		if p.HostID != "mac-control-plane" || request.Target.Kind != "local" || request.Target.Profile != "mac-workstation" ||
+			request.TimeoutSeconds != 5 || len(request.Limits) != 0 {
+			return errors.New("prepared Mac-local request is inconsistent")
+		}
+		return nil
+	}
+	if (p.Transport != "direct-mtls" && p.Transport != "queued-ssh") || p.HostID == "mac-control-plane" ||
+		request.Target.Kind != "remote" || request.Target.Profile != p.HostID {
+		return errors.New("prepared worker request is inconsistent")
+	}
+	if p.Transport == "direct-mtls" && (request.TimeoutSeconds != 5 || len(request.Limits) != 0) {
+		return errors.New("prepared direct request is inconsistent")
+	}
+	if p.Transport == "queued-ssh" && (request.TimeoutSeconds != 0 || len(request.Limits) != 1 || request.Limits["command_timeout_seconds"] != 5) {
+		return errors.New("prepared queued request is inconsistent")
+	}
+	return nil
 }
 
 func compactPreparedRequestBody(body json.RawMessage, expectedSHA256 string) (json.RawMessage, error) {
@@ -150,7 +207,7 @@ func compactPreparedRequestBody(body json.RawMessage, expectedSHA256 string) (js
 
 func directFence(ctx context.Context, configPath, host string) error {
 	loaded, err := config.LoadFile(configPath)
-	if err != nil {
+	if err != nil || loaded.Kind() != config.HostKindMac {
 		return errors.New("Mac lane config could not be validated")
 	}
 	remote, ok := loaded.RemoteHost(host)
@@ -170,8 +227,7 @@ func directFence(ctx context.Context, configPath, host string) error {
 	if err != nil {
 		return errors.New("configured client key is unavailable")
 	}
-	tlsConfig, err := validatedTLSConfig(d.Endpoint, d.ServerCAFingerprint, d.ExpectedServerFingerprint, d.ServerURISAN,
-		d.ClientCertFingerprint, d.ClientSPKIFingerprint, d.ClientURISAN, caPEM, clientCertPEM, clientKeyPEM)
+	tlsConfig, err := configuredTLSConfig(loaded, d, caPEM, clientCertPEM, clientKeyPEM)
 	if err != nil {
 		return errors.New("configured direct TLS material failed certificate, CA, fingerprint, or URI validation")
 	}
@@ -221,7 +277,7 @@ func reportFence(transport, host string, readinessStatus, status int, body []byt
 
 func direct(ctx context.Context, configPath string, p prepared) error {
 	loaded, err := config.LoadFile(configPath)
-	if err != nil {
+	if err != nil || loaded.Kind() != config.HostKindMac || string(loaded.ReleaseLane()) != p.Lane {
 		return errors.New("Mac lane config could not be validated")
 	}
 	remote, ok := loaded.RemoteHost(p.HostID)
@@ -241,8 +297,7 @@ func direct(ctx context.Context, configPath string, p prepared) error {
 	if err != nil {
 		return errors.New("configured client key is unavailable")
 	}
-	tlsConfig, err := validatedTLSConfig(d.Endpoint, d.ServerCAFingerprint, d.ExpectedServerFingerprint, d.ServerURISAN,
-		d.ClientCertFingerprint, d.ClientSPKIFingerprint, d.ClientURISAN, caPEM, clientCertPEM, clientKeyPEM)
+	tlsConfig, err := configuredTLSConfig(loaded, d, caPEM, clientCertPEM, clientKeyPEM)
 	if err != nil {
 		return errors.New("configured direct TLS material failed certificate, CA, fingerprint, or URI validation")
 	}
@@ -284,7 +339,36 @@ func direct(ctx context.Context, configPath string, p prepared) error {
 	if !terminal(final) {
 		return errors.New("direct probe did not reach a terminal state within the bound")
 	}
-	return printOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: acceptance.JobID, SessionID: acceptance.SessionID, CommandID: acceptance.CommandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, HTTPStatus: accepted.status, ReadinessHTTPStatus: ready.status})
+	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: acceptance.JobID, SessionID: acceptance.SessionID, CommandID: acceptance.CommandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, HTTPStatus: accepted.status, ReadinessHTTPStatus: ready.status})
+}
+
+func configuredTLSConfig(loaded config.Config, endpoint *config.DirectEndpointProfile, caPEM, clientCertPEM, clientKeyPEM []byte) (*tls.Config, error) {
+	if endpoint == nil {
+		return nil, errors.New("configured direct endpoint is unavailable")
+	}
+	if loaded.SchemaVersion() == config.VersionV3 {
+		// V3 pin and SAN checks are mandatory. Never retry with legacy trust if
+		// a pin, SAN, or fingerprint check fails.
+		return validatedTLSConfig(endpoint.Endpoint, endpoint.ServerCAFingerprint, endpoint.ExpectedServerFingerprint, endpoint.ServerURISAN,
+			endpoint.ClientCertFingerprint, endpoint.ClientSPKIFingerprint, endpoint.ClientURISAN, caPEM, clientCertPEM, clientKeyPEM)
+	}
+	if loaded.SchemaVersion() != config.VersionV1 && loaded.SchemaVersion() != config.VersionV2 {
+		return nil, errors.New("unsupported direct TLS configuration version")
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("configured direct CA is invalid")
+	}
+	pair, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
+	if err != nil || len(pair.Certificate) == 0 {
+		return nil, errors.New("configured direct client identity is invalid")
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil || time.Now().Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) {
+		return nil, errors.New("configured direct client certificate is not currently valid")
+	}
+	pair.Leaf = leaf
+	return runnerclient.NewHTTPSClientTLSConfig(endpoint.Endpoint, roots, pair)
 }
 
 func validatedTLSConfig(endpoint, caFingerprint, serverFingerprint, serverURI, clientFingerprint, clientSPKI, clientURI string,
@@ -376,7 +460,7 @@ func verifiedChainEndsAt(chains [][]*x509.Certificate, expected string) bool {
 
 func queued(ctx context.Context, configPath string, p prepared) error {
 	loaded, err := config.LoadFile(configPath)
-	if err != nil {
+	if err != nil || loaded.Kind() != config.HostKindMac || string(loaded.ReleaseLane()) != p.Lane {
 		return errors.New("Mac lane config could not be validated")
 	}
 	remote, ok := loaded.RemoteHost(p.HostID)
@@ -449,7 +533,7 @@ func queued(ctx context.Context, configPath string, p prepared) error {
 	if !terminal(final) {
 		return errors.New("queued probe did not reach a terminal state within the bound")
 	}
-	return printOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: jobID, SessionID: sessionID, CommandID: commandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, BridgeResponseType: accepted.ResponseType})
+	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: jobID, SessionID: sessionID, CommandID: commandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, BridgeResponseType: accepted.ResponseType})
 }
 
 func local(ctx context.Context, socketPath string, p prepared) error {
@@ -497,7 +581,7 @@ func local(ctx context.Context, socketPath string, p prepared) error {
 	if !terminal(final) {
 		return errors.New("Mac-local probe did not reach a terminal state within the bound")
 	}
-	return printOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: acceptance.JobID, SessionID: acceptance.SessionID, CommandID: acceptance.CommandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, HTTPStatus: accepted.status, ReadinessHTTPStatus: ready.status})
+	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: acceptance.JobID, SessionID: acceptance.SessionID, CommandID: acceptance.CommandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, HTTPStatus: accepted.status, ReadinessHTTPStatus: ready.status})
 }
 
 type response struct {
@@ -587,10 +671,34 @@ func randomID(prefix string) (string, error) {
 	return prefix + "-" + hex.EncodeToString(value[:]), nil
 }
 func printOutcome(value outcome) error {
+	return writeOutcome(os.Stdout, value)
+}
+
+func printProbeOutcome(value outcome) error {
+	return printProbeOutcomeTo(os.Stdout, value)
+}
+
+func printProbeOutcomeTo(writer io.Writer, value outcome) error {
+	if err := writeOutcome(writer, value); err != nil {
+		return err
+	}
+	if !probeOutcomeAccepted(value) {
+		return errProbeNotAccepted
+	}
+	return nil
+}
+
+func writeOutcome(writer io.Writer, value outcome) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return errors.New("probe result could not be encoded")
 	}
-	_, err = os.Stdout.Write(append(data, '\n'))
+	_, err = writer.Write(append(data, '\n'))
 	return err
+}
+
+func probeOutcomeAccepted(value outcome) bool {
+	return value.Phase == "complete" && value.CommandState == "succeeded" && value.ExitCode != nil && *value.ExitCode == 0 &&
+		value.FinalEventSequence != nil && *value.FinalEventSequence > 0 && value.OutputComplete && !value.OutputTruncated &&
+		value.TeardownState == "closed"
 }

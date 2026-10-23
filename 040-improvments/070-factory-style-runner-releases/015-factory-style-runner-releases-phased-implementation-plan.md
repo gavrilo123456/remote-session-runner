@@ -1,5 +1,54 @@
 # Phased plan: Factory-style Runner releases on the existing hosts
 
+## CAT-06 owner direction — 2026-10-23 13:40 UTC — compatibility correction and one-time promotion order
+
+For the correction that resolves the existing PRD probe-environment and
+replacement-receipt blockers, the owner authorizes a new sealed candidate.
+Preserve `cat-20261022-7a42f3b`, its bundle bytes, manifest, and recorded Dev
+acceptance unchanged. This direction supersedes the earlier no-rebuild
+instruction for this correction only.
+
+The corrected candidate's one-time order is **Dev acceptance → PRD deployment
+and acceptance → coordinated QAS→PRD mailbox handoff → QAS alignment and
+acceptance**. QAS acceptance for this candidate is DEFERRED, NOT PASS, until
+after the verified mailbox handoff. Keep QAS serving users and all eight
+mailbox paths assigned there during PRD work; coordinate a client pause and
+drain only for the later handoff and any QAS restart it requires. The operator
+publishes no mailbox requests or ACKs.
+
+The correction must resolve the maintenance-probe environment from the exact
+validated host configuration and authenticated controller, binding both its
+configuration hash and environment to host evidence and one-time scope. V1/V2
+must accept exactly one policy-valid legacy environment; V3 remains restricted
+to its explicit `<target>-<lane>` environment. The fixed empty-source,
+five-second command, authenticated transport, host/lane identity, one-time
+capability and replay guard remain unchanged. Legacy direct TLS uses the
+configured CA, hostname verification, client certificate and TLS 1.3; V3 pins
+and SAN checks remain mandatory, with no downgrade fallback. Probe acceptance
+requires success, exit zero, complete non-truncated output and confirmed
+teardown; failed/lost terminal jobs still emit evidence and return failure.
+
+The supported PRD replacement path applies only to the exact fully switched
+`verifying` predecessor and an exact fresh prepared successor. It must prove
+the predecessor selector/journal, stopped services, empty and unchanged work,
+configuration/schema identities, fresh backup manifests, and the selected
+predecessor release as the successor rollback baseline. Keep both receipt
+histories and admissions closed while the successor replaces the predecessor;
+only supported transition and synchronization commands may change receipts.
+Demonstrate interruption, synchronization, retry and rollback with disposable
+fixtures before live use. Ordinary PRD preflight and replacement preflight
+remain distinct.
+
+After source gates and required Git delivery, seal one candidate and accept
+its exact per-host bytes in Dev. Then use those same bytes for PRD. Before any
+PRD change, refresh capacity and work/ownership evidence and complete the
+supported retained-work recovery, backups, config/schema checks, holds and
+rollback preparation. QAS remains unchanged until PRD functional acceptance
+passes and the separately coordinated mailbox handoff is verified. Then align
+QAS to the same candidate and complete its deferred acceptance. Do not rebuild
+during either promotion leg. At this checkpoint, host gates, Git delivery,
+candidate sealing, Dev/PRD/QAS acceptance and deployment are still pending.
+
 ## CAT-06 owner direction — 2026-10-23 12:10 UTC — existing IDs do not satisfy sealed probe guard
 
 For the in-progress PRD operation

@@ -1092,6 +1092,189 @@ func TestCatalogCohortCompletedSupersessionRequiresMatchingLocalSelectorJournal(
 	}
 }
 
+func TestCatalogPRDVerifyingReplacementKeepsOneEffectiveHoldAndRetainsHistory(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	predecessor := catalogPRDSupersessionReceiptFixture(t, "cat-fixture-predecessor", nil, now)
+	predecessor = catalogPRDAdvanceToVerifying(t, predecessor, now)
+	successor := catalogPRDSupersessionReceiptFixture(t, "cat-fixture-successor", &predecessor, now)
+	successor = catalogPRDAdvanceToHeld(t, successor, now)
+	if predecessor.Stage != CatalogCohortVerifying || !catalogCohortReceiptSupersessionEligible(predecessor) {
+		t.Fatalf("fully switched verifying predecessor is not eligible: stage=%s", predecessor.Stage)
+	}
+	if err := ValidateCatalogCohortReceipt(predecessor); err != nil {
+		t.Fatalf("verifying predecessor receipt invalid: %v", err)
+	}
+	if err := ValidateCatalogCohortReceipt(successor); err != nil {
+		t.Fatalf("held successor receipt invalid: %v", err)
+	}
+	if !catalogCohortReplacementHoldPair(predecessor, successor, now) {
+		t.Fatal("exact verifying predecessor and fresh held successor did not form one replacement hold")
+	}
+
+	root := filepath.Join(t.TempDir(), "catalog-cohorts")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCohortReceiptFixture(t, root, predecessor)
+	writeCohortReceiptFixture(t, root, successor)
+	plan, err := BuildCatalogPlan("linux-host", config.ReleaseLanePRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, operationID, err := catalogCohortAdmissionHeldAt(plan, root)
+	if err != nil || !held || operationID != successor.OperationID {
+		t.Fatalf("replacement hold resolution held=%v operation=%q err=%v", held, operationID, err)
+	}
+
+	for _, mutate := range []struct {
+		name string
+		edit func(*CatalogCohortReceipt)
+	}{
+		{"wrong rollback selector", func(receipt *CatalogCohortReceipt) { receipt.Hosts[0].PreviousTarget = "/tmp/other-release/linux-host" }},
+		{"configuration drift", func(receipt *CatalogCohortReceipt) { receipt.Hosts[1].ConfigurationSHA256 = strings.Repeat("a", 64) }},
+		{"work inventory drift", func(receipt *CatalogCohortReceipt) { receipt.Hosts[2].WorkInventorySHA256 = strings.Repeat("b", 64) }},
+		{"service active", func(receipt *CatalogCohortReceipt) { receipt.Hosts[3].ServiceActiveAtPreflight = true }},
+		{"missing backup evidence", func(receipt *CatalogCohortReceipt) { receipt.Hosts[1].BackupManifestSHA256 = "" }},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			unsafe := successor
+			unsafe.Hosts = append([]CatalogCohortHostPreflight(nil), successor.Hosts...)
+			mutate.edit(&unsafe)
+			if catalogCohortReplacementHoldPair(predecessor, unsafe, now) {
+				t.Fatal("unsafe predecessor/successor pair was accepted")
+			}
+		})
+	}
+	if catalogCohortReplacementHoldPair(predecessor, successor, now.Add(catalogCohortEvidenceMaxAge+time.Second)) {
+		t.Fatal("expired successor preflight was accepted")
+	}
+
+	originalTransitions := append([]CatalogCohortTransition(nil), predecessor.Transitions...)
+	for index, hostID := range catalogCohortSwitchOrder {
+		observation := fixtureCohortSupersessionEvidence(predecessor, successor, index, "completed")
+		observation.HostID = hostID
+		observation.SelectorBundleSHA256 = predecessor.Hosts[index].Target.BundleSHA256
+		predecessor, err = AdvanceCatalogCohortSupersedeHost(predecessor, successor, observation, now.Add(time.Duration(index+1)*time.Second))
+		if err != nil {
+			t.Fatalf("supersede verifying predecessor host %s: %v", hostID, err)
+		}
+		writeCohortReceiptFixture(t, root, predecessor)
+		held, operationID, err = catalogCohortAdmissionHeldAt(plan, root)
+		if err != nil || !held || operationID != successor.OperationID {
+			t.Fatalf("after predecessor host %s, effective hold=%q held=%v err=%v", hostID, operationID, held, err)
+		}
+	}
+	predecessor, err = AdvanceCatalogCohortSupersede(predecessor, successor.OperationID, now.Add(5*time.Second))
+	if err != nil || predecessor.Stage != CatalogCohortSuperseded {
+		t.Fatalf("finalize verifying replacement stage=%s err=%v", predecessor.Stage, err)
+	}
+	if !reflect.DeepEqual(predecessor.Transitions[:len(originalTransitions)], originalTransitions) {
+		t.Fatal("replacement changed the predecessor's original transition history")
+	}
+	writeCohortReceiptFixture(t, root, predecessor)
+	held, operationID, err = catalogCohortAdmissionHeldAt(plan, root)
+	if err != nil || !held || operationID != successor.OperationID {
+		t.Fatalf("after predecessor retirement, successor hold=%q held=%v err=%v", operationID, held, err)
+	}
+}
+
+func catalogPRDSupersessionReceiptFixture(t *testing.T, releaseID string, predecessor *CatalogCohortReceipt,
+	now time.Time) CatalogCohortReceipt {
+	t.Helper()
+	bundles := catalogFixtureBundles(t, releaseID)
+	manifest, err := NewCatalogReleaseManifest(releaseID, bundles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := CatalogReleaseManifestBytes(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDigest := sha256.Sum256(manifestBytes)
+	manifestSHA := hex.EncodeToString(manifestDigest[:])
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	var reports []CatalogCohortHostPreflightReport
+	for _, hostID := range catalogCohortSwitchOrder {
+		plan, err := BuildCatalogPlan(hostID, config.ReleaseLanePRD)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, err := DefaultCatalogRootForPlan(plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		previousTarget := filepath.Join(root, "cat-fixture-baseline", hostID)
+		previousBundle := strings.Repeat("3", 64)
+		if predecessor != nil {
+			previousTarget = filepath.Join(root, predecessor.ReleaseID, hostID)
+			previousBundle = predecessor.Hosts[cohortHostIndex(*predecessor, hostID)].Target.BundleSHA256
+		}
+		work := CatalogWorkInventory{}
+		reports = append(reports, CatalogCohortHostPreflightReport{
+			Preflight: CatalogCohortHostPreflight{
+				HostID: hostID, ServiceActiveAtPreflight: false,
+				PreviousTarget: previousTarget, PreviousBundleSHA256: previousBundle, PreviousReadSchemaMax: store.CurrentSchemaVersion,
+				Target: CatalogReleaseIdentity{ReleaseID: manifest.ReleaseID, ReleaseSHA256: manifestSHA, HostID: hostID,
+					BundleSHA256: catalogManifestBundleSHA256(manifest, hostID)},
+				ConfigurationSHA256: strings.Repeat("4", 64), SchemaVersion: store.CurrentSchemaVersion,
+				WorkInventorySHA256: work.SHA256(), WorkInventoryEmpty: true, PreflightAt: stamp,
+				BackupDirectory:      filepath.Join("/private/tmp", "cat06-fixture-backup-"+releaseID, hostID),
+				BackupManifestSHA256: strings.Repeat("6", 64), AvailableBytes: 2 << 30, RequiredBytes: prdCatalogSelectorHeadroom,
+			},
+			WorkInventory: work,
+		})
+	}
+	returnPRD, err := NewCatalogCohortReceipt(config.ReleaseLanePRD, manifest, reports,
+		CatalogCohortPublisherPause{Owner: "fixture-owner", Control: "fixture-prd-publisher-fence", Paused: true, NoNewAccepted: true}, now)
+	if err != nil {
+		t.Fatalf("new PRD fixture receipt: %v", err)
+	}
+	return returnPRD
+}
+
+func catalogPRDAdvanceToHeld(t *testing.T, receipt CatalogCohortReceipt, now time.Time) CatalogCohortReceipt {
+	t.Helper()
+	var err error
+	for _, hostID := range catalogCohortSwitchOrder {
+		host := receipt.Hosts[cohortHostIndex(receipt, hostID)]
+		fence := CatalogCohortHostFence{HostID: hostID, ServiceWasActive: false, ServiceStopped: true,
+			WorkInventorySHA256: host.WorkInventorySHA256, ConfigurationSHA256: host.ConfigurationSHA256,
+			SelectorTarget: host.PreviousTarget, PreviousBundleSHA256: host.PreviousBundleSHA256,
+			DatabaseSchema: host.SchemaVersion, ObservedAt: now.Format(time.RFC3339Nano)}
+		receipt, err = AdvanceCatalogCohortHostFence(receipt, fence, now)
+		if err != nil {
+			t.Fatalf("record PRD host fence %s: %v", hostID, err)
+		}
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", strings.Repeat("9", 64), now)
+	if err != nil {
+		t.Fatalf("record PRD hold: %v", err)
+	}
+	return receipt
+}
+
+func catalogPRDAdvanceToVerifying(t *testing.T, receipt CatalogCohortReceipt, now time.Time) CatalogCohortReceipt {
+	t.Helper()
+	proof := strings.Repeat("a", 64)
+	var err error
+	receipt = catalogPRDAdvanceToHeld(t, receipt, now)
+	for _, hostID := range catalogCohortSwitchOrder {
+		receipt, err = AdvanceCatalogCohortReceipt(receipt, "preflight", hostID, proof, now)
+		if err != nil {
+			t.Fatalf("record predecessor preflight %s: %v", hostID, err)
+		}
+		receipt, err = AdvanceCatalogCohortReceipt(receipt, "switch", hostID, proof, now)
+		if err != nil {
+			t.Fatalf("record predecessor switch %s: %v", hostID, err)
+		}
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "verify-start", "", proof, now)
+	if err != nil {
+		t.Fatalf("record predecessor verify-start: %v", err)
+	}
+	return receipt
+}
+
 func TestCatalogCohortSupersessionRejectsUnfinishedSelectorJournal(t *testing.T) {
 	fixture := newCatalogSelectorFixture(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)

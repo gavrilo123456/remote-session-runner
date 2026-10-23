@@ -409,6 +409,60 @@ func TestSimpleLaneHTTPSClientPinsServerCertificateAndURISAN(t *testing.T) {
 	}
 }
 
+func TestSharedConfiguredTLSDefaultsRequireChainHostnameTLS13AndClientIdentity(t *testing.T) {
+	serverCertificate, clientCertificate, roots := p118MTLSCertificates(t)
+	var negotiatedVersion uint16
+	var sawClientIdentity bool
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.TLS != nil {
+			negotiatedVersion = request.TLS.Version
+			sawClientIdentity = len(request.TLS.PeerCertificates) == 1
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	server.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientCAs: roots, Certificates: []tls.Certificate{serverCertificate},
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	tlsConfig, err := NewHTTPSClientTLSConfig(server.URL, roots, clientCertificate)
+	if err != nil {
+		t.Fatalf("build shared configured TLS defaults: %v", err)
+	}
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tlsConfig.MinVersion != tls.VersionTLS13 || tlsConfig.ServerName != parsed.Hostname() || tlsConfig.RootCAs == nil || len(tlsConfig.Certificates) != 1 {
+		t.Fatalf("shared TLS defaults omitted required bindings: min=%d server=%q roots=%v client-certs=%d",
+			tlsConfig.MinVersion, tlsConfig.ServerName, tlsConfig.RootCAs != nil, len(tlsConfig.Certificates))
+	}
+	transport := &http.Transport{Proxy: nil, TLSClientConfig: tlsConfig}
+	client := &http.Client{Transport: transport}
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("valid chain/hostname/client certificate handshake: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent || negotiatedVersion != tls.VersionTLS13 || !sawClientIdentity {
+		t.Fatalf("handshake status=%d TLS=%d client identity=%t", response.StatusCode, negotiatedVersion, sawClientIdentity)
+	}
+	transport.CloseIdleConnections()
+
+	wrongHost := tlsConfig.Clone()
+	wrongHost.ServerName = "wrong.example.invalid"
+	badClient := &http.Client{Transport: &http.Transport{Proxy: nil, TLSClientConfig: wrongHost}}
+	if response, err := badClient.Get(server.URL); err == nil {
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		t.Fatal("hostname mismatch was accepted")
+	}
+	badClient.CloseIdleConnections()
+}
+
 func TestP118ResourceAndIdempotencyValidation(t *testing.T) {
 	client, err := NewUnixSocketClient("/tmp/runnerclient-test.sock")
 	if err != nil {

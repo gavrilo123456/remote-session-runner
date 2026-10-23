@@ -71,7 +71,7 @@ type PrivateServerOptions struct {
 type macLocalMaintenanceProbeAuthorizer interface {
 	AllowsReservedIntent(domain.ControllerType, string, string, string, time.Time) bool
 	AllowsReservedJobIntent(domain.ControllerType, string, string, string, string, time.Time) bool
-	ValidateFixedProbeRequest(string, string, string, string, string, int64) error
+	ValidateFixedProbeRequestForController(string, string, string, string, string, int64, domain.ControllerType, string) error
 }
 
 type PrivateServer struct {
@@ -514,8 +514,9 @@ func (s *PrivateServer) serveHTTP(response http.ResponseWriter, request *http.Re
 			payloadErr != nil || payload.RequestedLimits.CommandTimeout != 5*time.Second || payload.RequestedLimits.IdleTimeout != 0 ||
 			payload.RequestedLimits.SessionMaxLifetime != 0 || payload.RequestedLimits.OutputBytesPerCommand != 0 ||
 			payload.Timeout != 5*time.Second || payload.Policy != "" || payload.Isolation != (domain.IsolationRequirements{}) ||
-			s.maintenanceProbeGuard.ValidateFixedProbeRequest(string(intent.Environment), string(intent.Target.Kind()), intent.Target.Profile(),
-				string(intent.Source.Mode()), string(intent.ScriptBytes), int64(payload.RequestedLimits.CommandTimeout/time.Second)) != nil {
+			s.maintenanceProbeGuard.ValidateFixedProbeRequestForController(string(intent.Environment), string(intent.Target.Kind()), intent.Target.Profile(),
+				string(intent.Source.Mode()), string(intent.ScriptBytes), int64(payload.RequestedLimits.CommandTimeout/time.Second),
+				domain.ControllerTypeLocalUser, string(s.owner.ID())) != nil {
 			writeJSON(response, http.StatusServiceUnavailable, map[string]string{"code": "maintenance_admission_closed", "message": "local execution mutations are closed for cohort maintenance"})
 			return
 		}

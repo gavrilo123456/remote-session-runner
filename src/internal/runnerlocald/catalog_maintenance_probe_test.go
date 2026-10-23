@@ -29,9 +29,11 @@ func (g macLocalProbeAuthorizerFixture) AllowsReservedJobIntent(_ domain.Control
 	return token == g.token && intentID == g.intentID && jobID == g.jobID
 }
 
-func (g macLocalProbeAuthorizerFixture) ValidateFixedProbeRequest(environment, targetKind, targetProfile, sourceMode, script string, timeoutSeconds int64) error {
+func (g macLocalProbeAuthorizerFixture) ValidateFixedProbeRequestForController(environment, targetKind, targetProfile, sourceMode, script string,
+	timeoutSeconds int64, controllerType domain.ControllerType, controllerID string) error {
 	if environment != "mac-workstation-dev" || targetKind != "local" || targetProfile != "mac-workstation" || sourceMode != "empty" ||
-		script != "printf 'catalog release maintenance probe\\n'" || timeoutSeconds != 5 {
+		script != "printf 'catalog release maintenance probe\\n'" || timeoutSeconds != 5 ||
+		controllerType != domain.ControllerTypeLocalUser || controllerID != "tomasz.walczuk" {
 		return ErrIntentRequest
 	}
 	return nil

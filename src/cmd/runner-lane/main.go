@@ -48,21 +48,22 @@ type catalogCommandSubprocessFixtureBackend interface {
 var catalogCommandSubprocessFixtureBackendForTests catalogCommandSubprocessFixtureBackend
 
 type catalogCohortCommand struct {
-	HostID             string
-	Lane               string
-	Action             string
-	OperationID        string
-	SuccessorOperation string
-	ReceiptFile        string
-	ReleaseManifest    string
-	PublisherOwner     string
-	PublisherControl   string
-	PublishersPaused   bool
-	NoNewAccepted      bool
-	SubjectHost        string
-	EvidenceSHA256     string
-	PreflightFiles     []string
-	HistoryFiles       []string
+	HostID                 string
+	Lane                   string
+	Action                 string
+	OperationID            string
+	SuccessorOperation     string
+	ReceiptFile            string
+	ReleaseManifest        string
+	PublisherOwner         string
+	PublisherControl       string
+	PublishersPaused       bool
+	NoNewAccepted          bool
+	SubjectHost            string
+	EvidenceSHA256         string
+	ReplacementPredecessor string
+	PreflightFiles         []string
+	HistoryFiles           []string
 }
 
 type catalogSelectorCommand struct {
@@ -373,6 +374,7 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 	action := flags.String("action", "", "create, prepare, sync, status, hold, preflight, verify-start, verify, complete, block, resume, rollback-start, rollback-complete, open, reconcile-history, supersede-host, supersession-restart, or supersede")
 	operationID := flags.String("operation-id", "", "32-character cohort operation identity")
 	successorOperationID := flags.String("successor-operation-id", "", "held successor cohort identity for safe supersession")
+	replacementPredecessor := flags.String("replacement-predecessor", "", "exact fully switched verifying PRD predecessor during guarded replacement preflight/fence")
 	receiptFile := flags.String("receipt-file", "", "owner-only cohort JSON for prepare or sync")
 	releaseManifestFile := flags.String("release-manifest", "", "sealed release.json for supported receipt creation")
 	publisherOwner := flags.String("publisher-owner", "", "owner attesting the selected lane's publisher fence")
@@ -394,7 +396,7 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 	if catalogCommandSubprocessFixtureBackendForTests != nil {
 		return catalogCommandSubprocessFixtureBackendForTests.RunCohort(ctx, catalogCohortCommand{
 			HostID: *host, Lane: *lane, Action: *action, OperationID: *operationID,
-			SuccessorOperation: *successorOperationID, ReceiptFile: *receiptFile,
+			SuccessorOperation: *successorOperationID, ReplacementPredecessor: *replacementPredecessor, ReceiptFile: *receiptFile,
 			ReleaseManifest: *releaseManifestFile, PublisherOwner: *publisherOwner,
 			PublisherControl: *publisherControl, PublishersPaused: *publishersPaused,
 			NoNewAccepted: *noNewAccepted, SubjectHost: *subjectHost,
@@ -404,6 +406,9 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	if !currentCatalogHost(*host) {
 		return errors.New("usage: runner-lane catalog-cohort --host THIS-HOST --lane dev|qas|prd --action ACTION [--operation-id ID] [--successor-operation-id ID] [--receipt-file FILE] [--subject-host HOST] [--evidence-sha256 SHA256]")
+	}
+	if *replacementPredecessor != "" && (*lane != "prd" || *action != "fence-host" || !validCLIProbeOperationID(*replacementPredecessor)) {
+		return errors.New("--replacement-predecessor is valid only for a PRD fence-host action with an exact operation ID")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
 	if err != nil {
@@ -574,7 +579,13 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 		if serviceErr != nil {
 			return serviceErr
 		}
-		fence, fenceErr := laneinstall.FenceCatalogPRDHost(ctx, prdPlan, service, receipt)
+		var fence laneinstall.CatalogCohortHostFence
+		var fenceErr error
+		if *replacementPredecessor == "" {
+			fence, fenceErr = laneinstall.FenceCatalogPRDHost(ctx, prdPlan, service, receipt)
+		} else {
+			fence, fenceErr = laneinstall.FenceCatalogPRDReplacementHost(ctx, prdPlan, service, receipt, *replacementPredecessor)
+		}
 		if fenceErr != nil {
 			return fenceErr
 		}
@@ -870,33 +881,44 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	loaded, err := config.LoadFile(plan.Namespace.ConfigFile)
+	if err != nil {
+		return errors.New("host lane configuration could not be validated")
+	}
+	binding, err := laneinstall.ResolveCatalogMaintenanceProbeBinding(loaded, plan, probeTransport, controllerType, *controllerID)
+	if err != nil {
+		return err
+	}
 	idempotencyKey := "catalog-probe-" + *operationID + "-" + *host
 	if probeTransport != laneinstall.CatalogProbeDirectMTLS {
 		idempotencyKey += "-" + string(probeTransport)
 	}
-	requestBody, err := laneinstall.CatalogMaintenanceProbeRequestBodyForTransport(plan, probeTransport)
+	requestBody, err := laneinstall.CatalogMaintenanceProbeRequestBodyForBinding(plan, probeTransport, binding)
 	if err != nil {
 		return err
 	}
 	expiresAt := time.Now().UTC().Add(time.Duration(*ttlSeconds) * time.Second)
-	token, err := laneinstall.PrepareCatalogMaintenanceProbeForTransport(plan, *operationID, probeTransport, controllerType, *controllerID, idempotencyKey, requestBody, expiresAt)
+	token, err := laneinstall.PrepareCatalogMaintenanceProbeForTransportWithConfig(plan, *operationID, probeTransport, controllerType, *controllerID, idempotencyKey, requestBody, expiresAt, loaded)
 	if err != nil {
 		return err
 	}
 	digest := sha256.Sum256(requestBody)
 	return writeJSON(stdout, struct {
-		HostID         string                            `json:"host_id"`
-		Lane           string                            `json:"lane"`
-		Transport      laneinstall.CatalogProbeTransport `json:"transport"`
-		OperationID    string                            `json:"operation_id"`
-		ControllerType domain.ControllerType             `json:"controller_type"`
-		ControllerID   string                            `json:"controller_id"`
-		IdempotencyKey string                            `json:"idempotency_key"`
-		RequestSHA256  string                            `json:"request_body_sha256"`
-		RequestBody    json.RawMessage                   `json:"request_body"`
-		ExpiresAt      string                            `json:"expires_at"`
-		Token          string                            `json:"one_time_token"`
-	}{*host, *lane, probeTransport, *operationID, controllerType, *controllerID, idempotencyKey, hex.EncodeToString(digest[:]), requestBody, expiresAt.Format(time.RFC3339Nano), token})
+		HostID              string                            `json:"host_id"`
+		Lane                string                            `json:"lane"`
+		Transport           laneinstall.CatalogProbeTransport `json:"transport"`
+		OperationID         string                            `json:"operation_id"`
+		ControllerType      domain.ControllerType             `json:"controller_type"`
+		ControllerID        string                            `json:"controller_id"`
+		Environment         string                            `json:"environment"`
+		ConfigurationSHA256 string                            `json:"configuration_sha256"`
+		IdempotencyKey      string                            `json:"idempotency_key"`
+		RequestSHA256       string                            `json:"request_body_sha256"`
+		RequestBody         json.RawMessage                   `json:"request_body"`
+		ExpiresAt           string                            `json:"expires_at"`
+		Token               string                            `json:"one_time_token"`
+	}{*host, *lane, probeTransport, *operationID, controllerType, *controllerID, binding.Environment, binding.ConfigurationSHA,
+		idempotencyKey, hex.EncodeToString(digest[:]), requestBody, expiresAt.Format(time.RFC3339Nano), token})
 }
 
 func validCLIProbeOperationID(value string) bool {
@@ -1210,14 +1232,18 @@ func runCatalogHostPreflight(ctx context.Context, args []string, stdout, stderr 
 	releaseID := flags.String("release-id", "", "sealed catalog release to preflight")
 	requiredBytes := flags.Uint64("required-free-bytes", 0, "remaining free space required after the consistent backup")
 	legacyCompatibilityFile := flags.String("legacy-compatibility-file", "", "owner-only tested legacy rollback compatibility report (PRD legacy only)")
+	replacementPredecessor := flags.String("replacement-predecessor", "", "exact fully switched verifying PRD operation whose selected release is the rollback baseline")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas" && *lane != "prd") ||
 		*releaseID == "" || *requiredBytes == 0 {
-		return errors.New("usage: runner-lane catalog-host-preflight --host HOST --lane dev|qas|prd --release-id RELEASE --required-free-bytes BYTES [--legacy-compatibility-file FILE]")
+		return errors.New("usage: runner-lane catalog-host-preflight --host HOST --lane dev|qas|prd --release-id RELEASE --required-free-bytes BYTES [--legacy-compatibility-file FILE] [--replacement-predecessor OPERATION]")
 	}
 	if *lane == "prd" {
+		if *replacementPredecessor != "" && (*legacyCompatibilityFile != "" || !validCLIProbeOperationID(*replacementPredecessor)) {
+			return errors.New("replacement preflight requires one exact operation ID and forbids legacy compatibility input")
+		}
 		var compatibility *laneinstall.CatalogLegacyRollbackCompatibility
 		if *legacyCompatibilityFile != "" {
 			loaded, loadErr := laneinstall.LoadCatalogLegacyRollbackCompatibilityFile(*legacyCompatibilityFile)
@@ -1234,14 +1260,19 @@ func runCatalogHostPreflight(ctx context.Context, args []string, stdout, stderr 
 		if err != nil {
 			return err
 		}
-		report, err := laneinstall.ReadPRDCatalogCohortHostPreflight(ctx, prdPlan, service, *releaseID, *requiredBytes, compatibility)
+		var report laneinstall.CatalogCohortHostPreflightReport
+		if *replacementPredecessor == "" {
+			report, err = laneinstall.ReadPRDCatalogCohortHostPreflight(ctx, prdPlan, service, *releaseID, *requiredBytes, compatibility)
+		} else {
+			report, err = laneinstall.ReadPRDCatalogReplacementHostPreflight(ctx, prdPlan, service, *releaseID, *requiredBytes, *replacementPredecessor)
+		}
 		if err != nil {
 			return err
 		}
 		return writeJSON(stdout, report)
 	}
-	if *legacyCompatibilityFile != "" {
-		return errors.New("--legacy-compatibility-file is valid only for a PRD legacy preflight")
+	if *legacyCompatibilityFile != "" || *replacementPredecessor != "" {
+		return errors.New("legacy compatibility and replacement predecessor inputs are valid only for PRD preflight")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
 	if err != nil {

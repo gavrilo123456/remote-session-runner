@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,298 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 )
+
+func writeLegacyProbeConfig(t *testing.T, environmentNames ...string) config.Config {
+	return writeLegacyProbeConfigForTarget(t, "linux-host", environmentNames...)
+}
+
+func writeLegacyProbeConfigForTarget(t *testing.T, hostID string, environmentNames ...string) config.Config {
+	t.Helper()
+	var environments strings.Builder
+	for _, name := range environmentNames {
+		fmt.Fprintf(&environments, `  %s:
+    base_system: Ubuntu
+    host_class: Ubuntu Linux worker
+    effective_account: ubuntu
+    allowed_targets:
+      - kind: remote
+        profile: linux-host
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers:
+      - type: direct_mtls
+        id: tomasz.walczuk
+      - type: queued_mac
+        id: tomasz.walczuk
+`, name)
+	}
+	contents := `version: 2
+linux:
+  account: ubuntu
+  service_root: /home/ubuntu/.local/share/remote-session-runner
+  sqlite: /home/ubuntu/.local/share/remote-session-runner/state/remote.db
+  private_socket: /home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock
+  workspaces: /home/ubuntu/.local/share/remote-session-runner/workspaces
+  script_temp_root: /home/ubuntu/.local/share/remote-session-runner/tmp/scripts
+  backups: /home/ubuntu/.local/share/remote-session-runner/backups
+  direct_https_bind: 10.0.0.200:8443
+  direct_public_endpoint: https://129.151.232.40:8443
+  server_cert: /home/ubuntu/.local/share/remote-session-runner/secrets/server.pem
+  client_ca: /home/ubuntu/.local/share/remote-session-runner/secrets/client-ca.pem
+  client_principal_map: /home/ubuntu/.local/share/remote-session-runner/config/client-principals.yaml
+  tls_min_version: "1.3"
+  runtime_adapter: linux-host-process
+  remote_target_profile: linux-host
+secret_references:
+  linux_server_private_key:
+    file: /home/ubuntu/.local/share/remote-session-runner/secrets/server.key
+environment_registry:
+` + environments.String()
+	contents = strings.ReplaceAll(contents, "profile: linux-host", "profile: "+hostID)
+	contents = strings.ReplaceAll(contents, "remote_target_profile: linux-host", "remote_target_profile: "+hostID)
+	path := filepath.Join(t.TempDir(), "linux.yaml")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatalf("load disposable legacy config: %v", err)
+	}
+	return loaded
+}
+
+func writeLegacyV1LinuxProbeConfig(t *testing.T) config.Config {
+	t.Helper()
+	contents := `version: 1
+linux:
+  account: ubuntu
+  service_root: /home/ubuntu/.local/share/remote-session-runner
+  sqlite: /home/ubuntu/.local/share/remote-session-runner/state/remote.db
+  private_socket: /home/ubuntu/.local/share/remote-session-runner/run/runnerd.sock
+  workspaces: /home/ubuntu/.local/share/remote-session-runner/workspaces
+  script_temp_root: /home/ubuntu/.local/share/remote-session-runner/tmp/scripts
+  backups: /home/ubuntu/.local/share/remote-session-runner/backups
+  direct_https_bind: 10.0.0.200:8443
+  direct_public_endpoint: https://129.151.232.40:8443
+  server_cert: /home/ubuntu/.local/share/remote-session-runner/secrets/server.pem
+  client_ca: /home/ubuntu/.local/share/remote-session-runner/secrets/client-ca.pem
+  client_principal_map: /home/ubuntu/.local/share/remote-session-runner/config/client-principals.yaml
+  tls_min_version: "1.3"
+  runtime_adapter: linux-host-process
+secret_references:
+  linux_server_private_key:
+    file: /home/ubuntu/.local/share/remote-session-runner/secrets/server.key
+environment_registry:
+  mac-dev:
+    base_system: macOS
+    host_class: macOS workstation
+    effective_account: tomasz.walczuk
+    allowed_targets:
+      - kind: local
+        profile: mac-workstation
+    allowed_source_modes: [empty, local_worktree]
+    allowed_repository_aliases: []
+    allowed_controllers:
+      - type: local_user
+        id: tomasz.walczuk
+  linux-dev:
+    base_system: Ubuntu 20.04.6 LTS
+    host_class: Ubuntu Linux host
+    effective_account: ubuntu
+    allowed_targets:
+      - kind: remote
+        profile: linux-host
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers:
+      - type: queued_mac
+        id: tomasz.walczuk
+      - type: direct_mtls
+        id: tomasz.walczuk
+`
+	path := filepath.Join(t.TempDir(), "linux-v1.yaml")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.LoadFile(path)
+	if err != nil || loaded.SchemaVersion() != config.VersionV1 {
+		t.Fatalf("load V1 Linux config: schema=%d err=%v", loaded.SchemaVersion(), err)
+	}
+	return loaded
+}
+
+func writeLegacyV2MacProbeConfig(t *testing.T) config.Config {
+	t.Helper()
+	root := config.MacServiceRoot
+	contents := fmt.Sprintf(`version: 2
+mac:
+  account: %s
+  service_root: %q
+  api_socket: %q
+  locald_socket: %q
+  sqlite: %q
+  workspaces: %q
+  script_temp_root: %q
+  backups: %q
+  mailbox_ingress_enabled: false
+environment_registry:
+  mac-production:
+    base_system: macOS
+    host_class: macOS workstation
+    effective_account: %s
+    allowed_targets: [{kind: local, profile: mac-workstation}]
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers: [{type: local_user, id: %s}]
+execution_contexts:
+  mac-local-production:
+    environment: mac-production
+    execution_target: {kind: local, profile: mac-workstation}
+`, config.MacAccount, root,
+		filepath.Join(root, "run", "local-api.sock"), filepath.Join(root, "run", "locald.sock"),
+		filepath.Join(root, "state", "local.db"), filepath.Join(root, "workspaces"),
+		filepath.Join(root, "tmp", "scripts"), filepath.Join(root, "backups"), config.MacAccount, config.MacAccount)
+	path := filepath.Join(t.TempDir(), "mac-v2.yaml")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.LoadFile(path)
+	if err != nil || loaded.SchemaVersion() != config.VersionV2 {
+		t.Fatalf("load V2 Mac config: schema=%d err=%v", loaded.SchemaVersion(), err)
+	}
+	return loaded
+}
+
+func TestResolveLegacyProbeBindingUsesUniqueValidatedPolicy(t *testing.T) {
+	plan, err := BuildCatalogPlan("linux-host", config.ReleaseLanePRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := writeLegacyProbeConfig(t, "linux-production")
+	for _, transport := range []CatalogProbeTransport{CatalogProbeDirectMTLS, CatalogProbeQueuedSSH} {
+		controllerType := domain.ControllerTypeDirectMTLS
+		if transport == CatalogProbeQueuedSSH {
+			controllerType = domain.ControllerTypeQueuedMac
+		}
+		binding, err := ResolveCatalogMaintenanceProbeBinding(loaded, plan, transport, controllerType, "tomasz.walczuk")
+		if err != nil || binding.Environment != "linux-production" || binding.ConfigurationSHA != loaded.SourceSHA256() ||
+			binding.TargetKind != "remote" || binding.TargetProfile != "linux-host" {
+			t.Fatalf("%s legacy binding=%+v, err=%v", transport, binding, err)
+		}
+		body, err := CatalogMaintenanceProbeRequestBodyForBinding(plan, transport, binding)
+		if err != nil {
+			t.Fatalf("%s body: %v", transport, err)
+		}
+		var request catalogMaintenanceProbeRequest
+		if json.Unmarshal(body, &request) != nil || request.Environment != "linux-production" {
+			t.Fatalf("%s body did not use resolved legacy environment: %s", transport, body)
+		}
+	}
+	if _, err := ResolveCatalogMaintenanceProbeBinding(loaded, plan, CatalogProbeDirectMTLS,
+		domain.ControllerTypeDirectMTLS, "unconfigured-controller"); err == nil {
+		t.Fatal("unconfigured authenticated controller resolved a maintenance environment")
+	}
+
+	v1Plan, err := BuildCatalogPlan("linux-host", config.ReleaseLanePRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1 := writeLegacyV1LinuxProbeConfig(t)
+	for _, test := range []struct {
+		transport  CatalogProbeTransport
+		controller domain.ControllerType
+	}{
+		{CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS},
+		{CatalogProbeQueuedSSH, domain.ControllerTypeQueuedMac},
+	} {
+		binding, bindErr := ResolveCatalogMaintenanceProbeBinding(v1, v1Plan, test.transport, test.controller, "tomasz.walczuk")
+		if bindErr != nil || binding.Environment != "linux-dev" || binding.ConfigurationSHA != v1.SourceSHA256() {
+			t.Fatalf("V1 %s binding=%+v err=%v", test.transport, binding, bindErr)
+		}
+	}
+
+	for _, hostID := range []string{"sandbox-host", "factory-sandbox"} {
+		t.Run("V2/"+hostID, func(t *testing.T) {
+			legacy := writeLegacyProbeConfigForTarget(t, hostID, "legacy-prd")
+			legacyPlan, planErr := BuildCatalogPlan(hostID, config.ReleaseLanePRD)
+			if planErr != nil {
+				t.Fatal(planErr)
+			}
+			for _, test := range []struct {
+				transport  CatalogProbeTransport
+				controller domain.ControllerType
+			}{
+				{CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS},
+				{CatalogProbeQueuedSSH, domain.ControllerTypeQueuedMac},
+			} {
+				binding, bindErr := ResolveCatalogMaintenanceProbeBinding(legacy, legacyPlan, test.transport, test.controller, "tomasz.walczuk")
+				if bindErr != nil || binding.Environment != "legacy-prd" || binding.TargetProfile != hostID {
+					t.Errorf("V2 %s binding=%+v err=%v", test.transport, binding, bindErr)
+				}
+			}
+		})
+	}
+
+	macPlan, err := BuildCatalogPlan("mac-control-plane", config.ReleaseLanePRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac := writeLegacyV2MacProbeConfig(t)
+	macBinding, err := ResolveCatalogMaintenanceProbeBinding(mac, macPlan, CatalogProbeMacLocal,
+		domain.ControllerTypeLocalUser, config.MacAccount)
+	if err != nil || macBinding.Environment != "mac-production" || macBinding.TargetKind != "local" ||
+		macBinding.TargetProfile != "mac-workstation" || macBinding.ConfigurationSHA != mac.SourceSHA256() {
+		t.Fatalf("V2 Mac-local binding=%+v err=%v", macBinding, err)
+	}
+	ambiguous := writeLegacyProbeConfig(t, "linux-production", "linux-alias")
+	if _, err := ResolveCatalogMaintenanceProbeBinding(ambiguous, plan, CatalogProbeDirectMTLS,
+		domain.ControllerTypeDirectMTLS, "tomasz.walczuk"); err == nil {
+		t.Fatal("ambiguous legacy environment match was accepted")
+	}
+}
+
+func TestCatalogProbeEnvironmentCompatibilityAndScopeBinding(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		schema       int
+		environment  string
+		target       string
+		lane         config.ReleaseLane
+		wantAccepted bool
+	}{
+		{name: "V1 legacy PRD policy name", schema: config.VersionV1, environment: "linux-dev", target: "linux-host", lane: config.ReleaseLanePRD, wantAccepted: true},
+		{name: "V2 legacy arbitrary policy name", schema: config.VersionV2, environment: "mac-production", target: "mac-workstation", lane: config.ReleaseLanePRD, wantAccepted: true},
+		{name: "V3 exact PRD lane", schema: config.VersionV3, environment: "linux-host-prd", target: "linux-host", lane: config.ReleaseLanePRD, wantAccepted: true},
+		{name: "V3 rejects legacy environment", schema: config.VersionV3, environment: "linux-production", target: "linux-host", lane: config.ReleaseLanePRD},
+		{name: "V3 rejects another lane", schema: config.VersionV3, environment: "linux-host-dev", target: "linux-host", lane: config.ReleaseLanePRD},
+		{name: "V3 rejects another host", schema: config.VersionV3, environment: "sandbox-host-prd", target: "linux-host", lane: config.ReleaseLanePRD},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := catalogMaintenanceEnvironmentAllowed(test.schema, test.environment, test.target, test.lane); got != test.wantAccepted {
+				t.Fatalf("environment allowed=%t, want %t", got, test.wantAccepted)
+			}
+		})
+	}
+
+	want := CatalogMaintenanceProbeBinding{Environment: "legacy-prd", ConfigurationSHA: strings.Repeat("a", 64)}
+	scope := catalogProbeScope{Environment: want.Environment, ConfigurationSHA: want.ConfigurationSHA}
+	if err := validateProbeScopeBinding(scope, want); err != nil {
+		t.Fatalf("exact config binding refused: %v", err)
+	}
+	for _, mismatch := range []string{"environment", "configuration"} {
+		t.Run("scope drift/"+mismatch, func(t *testing.T) {
+			candidate := scope
+			if mismatch == "environment" {
+				candidate.Environment = "another-prd"
+			} else {
+				candidate.ConfigurationSHA = strings.Repeat("b", 64)
+			}
+			if err := validateProbeScopeBinding(candidate, want); err == nil {
+				t.Fatal("scope bound to different configuration was accepted")
+			}
+		})
+	}
+}
 
 type catalogProbeFixture struct {
 	guard      *CatalogMaintenanceProbeGuard
@@ -98,7 +391,8 @@ func newCatalogProbeFixture(t *testing.T) catalogProbeFixture {
 	scope := catalogProbeScope{
 		FormatVersion: catalogProbeScopeFormat, OperationID: receipt.OperationID, HostID: plan.HostID, Lane: plan.Lane,
 		Transport: CatalogProbeDirectMTLS, ControllerType: domain.ControllerTypeDirectMTLS,
-		ControllerID: controller, CreatedAt: now.Format(time.RFC3339Nano), ExpiresAt: expires.Format(time.RFC3339Nano),
+		ControllerID: controller, Environment: "linux-host-dev", ConfigurationSHA: receipt.Hosts[cohortHostIndex(receipt, plan.HostID)].ConfigurationSHA256,
+		CreatedAt: now.Format(time.RFC3339Nano), ExpiresAt: expires.Format(time.RFC3339Nano),
 		TokenSHA256: hex.EncodeToString(tokenDigest[:]), IdempotencyKey: key,
 		RequestBodySHA256: hex.EncodeToString(bodyDigest[:]), State: "ready",
 	}

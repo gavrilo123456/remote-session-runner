@@ -68,9 +68,13 @@ func TestCatalogPublicCommandSequenceSubprocess(t *testing.T) {
 	}
 	first = readCatalogFixtureSeed(t, filepath.Join(root, "seeds", "fixture-first-final.json"))
 	second = readCatalogFixtureSeed(t, filepath.Join(root, "seeds", "fixture-next-final.json"))
+	third := readCatalogFixtureSeed(t, filepath.Join(root, "seeds", "fixture-third-final.json"))
+	fourth := readCatalogFixtureSeed(t, filepath.Join(root, "seeds", "fixture-fourth-final.json"))
 
 	firstReceipt := readCatalogFixtureReceipt(t, filepath.Join(root, "coordinator", first.OperationID+".json"))
 	secondReceipt := readCatalogFixtureReceipt(t, filepath.Join(root, "coordinator", second.OperationID+".json"))
+	thirdReceipt := readCatalogFixtureReceipt(t, filepath.Join(root, "coordinator", third.OperationID+".json"))
+	fourthReceipt := readCatalogFixtureReceipt(t, filepath.Join(root, "coordinator", fourth.OperationID+".json"))
 	if firstReceipt.Stage != laneinstall.CatalogCohortComplete {
 		t.Fatalf("successful legacy adoption stage=%s, want complete", firstReceipt.Stage)
 	}
@@ -83,24 +87,42 @@ func TestCatalogPublicCommandSequenceSubprocess(t *testing.T) {
 	if err := laneinstall.ValidateCatalogCohortReceipt(secondReceipt); err != nil {
 		t.Fatalf("rolled-back receipt is invalid: %v", err)
 	}
+	if thirdReceipt.Stage != laneinstall.CatalogCohortSuperseded || fourthReceipt.Stage != laneinstall.CatalogCohortRolledBack {
+		t.Fatalf("verifying replacement stages predecessor=%s successor=%s", thirdReceipt.Stage, fourthReceipt.Stage)
+	}
+	if err := laneinstall.ValidateCatalogCohortReceipt(thirdReceipt); err != nil {
+		t.Fatalf("superseded verifying predecessor lost valid history: %v", err)
+	}
+	if err := laneinstall.ValidateCatalogCohortReceipt(fourthReceipt); err != nil {
+		t.Fatalf("held replacement successor receipt invalid: %v", err)
+	}
+	if len(thirdReceipt.Transitions) <= 4 || thirdReceipt.Transitions[len(thirdReceipt.Transitions)-1].Action != "supersede" {
+		t.Fatalf("predecessor history does not include the supported replacement: %+v", thirdReceipt.Transitions)
+	}
 
 	for _, hostID := range catalogFixtureSwitchOrder {
 		state := readCatalogFixtureHost(t, root, hostID)
-		want := "releases/" + first.TargetBundleSHA[hostID]
-		if state.SelectorTarget != want || state.ServiceActive {
-			t.Fatalf("host %s after rollback selector=%q active=%v; want restored prior release %q and stopped service", hostID, state.SelectorTarget, state.ServiceActive, want)
-		}
 		if got := catalogFixtureDatabaseSentinel(t, state.DatabasePath); got != "retained" {
 			t.Fatalf("host %s database sentinel=%q after switch and rollback", hostID, got)
 		}
 		if got := fileSHA256ForTest(t, state.DatabasePath); got != state.DatabaseSHA256 {
 			t.Fatalf("host %s database bytes changed during binary-only rollout", hostID)
 		}
-		for _, operationID := range []string{first.OperationID, second.OperationID} {
+		want := "releases/" + third.TargetBundleSHA[hostID]
+		if state.SelectorTarget != want || state.ServiceActive || !state.AdmissionsClosed {
+			t.Fatalf("replacement changed the selected baseline or reopened the stopped cohort on %s: %+v", hostID, state)
+		}
+		for _, operationID := range []string{first.OperationID, second.OperationID, third.OperationID, fourth.OperationID} {
 			for _, peer := range catalogFixtureSwitchOrder {
 				receipt := readCatalogFixtureReceipt(t, filepath.Join(root, "hosts", peer, "receipts", operationID+".json"))
 				if receipt.OperationID != operationID {
 					t.Fatalf("host %s has wrong synchronized receipt %s", peer, receipt.OperationID)
+				}
+				var coordinator laneinstall.CatalogCohortReceipt
+				readCatalogFixtureJSON(t, filepath.Join(root, "coordinator", operationID+".json"), &coordinator)
+				if len(receipt.Transitions) != len(coordinator.Transitions) || len(receipt.Transitions) == 0 ||
+					receipt.Transitions[len(receipt.Transitions)-1].SHA256 != coordinator.Transitions[len(coordinator.Transitions)-1].SHA256 {
+					t.Fatalf("host %s receipt %s is not synchronized to coordinator history", peer, operationID)
 				}
 			}
 		}
@@ -292,6 +314,148 @@ func TestCatalogPublicCommandSequenceSubprocessHelper(t *testing.T) {
 		"--evidence-sha256", fixtureDigest("rollback-complete"))
 	syncAll(second.OperationID, "mac-control-plane")
 
+	// Install a fully switched but unaccepted release and keep its services
+	// stopped. A held successor must replace this exact verifying predecessor.
+	third := prepareCatalogSubprocessFixture(t, root, "fixture-third", "third-bundle", &first)
+	refreshCatalogFixturePreflights(t, root, third)
+	create = []string{"catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "create",
+		"--release-manifest", third.ManifestPath, "--publisher-owner", "fixture-owner", "--publisher-control", "fixture-pause",
+		"--publishers-paused", "--no-new-accepted"}
+	for _, hostID := range catalogFixtureSwitchOrder {
+		create = append(create, "--preflight-file", third.PreflightPaths[hostID])
+	}
+	created = invoke(create...)
+	third.OperationID = fixtureOutputOperationID(t, created)
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "prepare", "--receipt-file",
+		filepath.Join(root, "coordinator", third.OperationID+".json"))
+	syncAll(third.OperationID, "mac-control-plane")
+	for _, hostID := range catalogFixtureSwitchOrder {
+		invoke("catalog-cohort", "--host", hostID, "--lane", "prd", "--action", "fence-host", "--operation-id", third.OperationID,
+			"--subject-host", hostID)
+		syncAll(third.OperationID, hostID)
+	}
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "hold", "--operation-id", third.OperationID,
+		"--evidence-sha256", fixtureDigest("third hold"))
+	syncAll(third.OperationID, "mac-control-plane")
+	for _, hostID := range catalogFixtureSwitchOrder {
+		invoke("catalog-cohort", "--host", hostID, "--lane", "prd", "--action", "preflight", "--operation-id", third.OperationID,
+			"--subject-host", hostID)
+		syncAll(third.OperationID, hostID)
+		expected := "releases/" + fixtureHostPreflight(readCatalogFixtureReceipt(t,
+			filepath.Join(root, "hosts", hostID, "receipts", third.OperationID+".json")), hostID).PreviousBundleSHA256
+		invoke("catalog-select", "--host", hostID, "--lane", "prd", "--release-id", third.ReleaseID,
+			"--expected-target", expected, "--cohort-operation-id", third.OperationID,
+			"--evidence-sha256", fixtureDigest("third select "+hostID))
+		syncAll(third.OperationID, hostID)
+	}
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "verify-start", "--operation-id", third.OperationID,
+		"--evidence-sha256", fixtureDigest("third verify-start"))
+	syncAll(third.OperationID, "mac-control-plane")
+	for _, hostID := range catalogFixtureSwitchOrder {
+		state := readCatalogFixtureHost(t, root, hostID)
+		state.ServiceActive = false // Acceptance failed; recovery stops every selected service.
+		state.AdmissionsClosed = true
+		if err := backend.writeHost(state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	thirdReceipt := readCatalogFixtureReceipt(t, filepath.Join(root, "coordinator", third.OperationID+".json"))
+	if thirdReceipt.Stage != laneinstall.CatalogCohortVerifying || len(fixtureSwitchedHosts(thirdReceipt)) != len(catalogFixtureSwitchOrder) {
+		t.Fatalf("replacement predecessor stage=%s switched=%v", thirdReceipt.Stage, fixtureSwitchedHosts(thirdReceipt))
+	}
+
+	// The replacement's reports are generated from the exact selected release,
+	// stopped services, unchanged configuration/database and new backups.
+	fourth := prepareCatalogSubprocessFixture(t, root, "fixture-fourth", "fourth-bundle", &third)
+	refreshCatalogFixturePreflights(t, root, fourth)
+	create = []string{"catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "create",
+		"--release-manifest", fourth.ManifestPath, "--publisher-owner", "fixture-owner", "--publisher-control", "fixture-pause",
+		"--publishers-paused", "--no-new-accepted"}
+	for _, hostID := range catalogFixtureSwitchOrder {
+		create = append(create, "--preflight-file", fourth.PreflightPaths[hostID])
+	}
+	created = invoke(create...)
+	fourth.OperationID = fixtureOutputOperationID(t, created)
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "prepare", "--receipt-file",
+		filepath.Join(root, "coordinator", fourth.OperationID+".json"))
+	syncAll(fourth.OperationID, "mac-control-plane")
+	for _, hostID := range catalogFixtureSwitchOrder {
+		invoke("catalog-cohort", "--host", hostID, "--lane", "prd", "--action", "fence-host", "--operation-id", fourth.OperationID,
+			"--subject-host", hostID, "--replacement-predecessor", third.OperationID)
+		syncAll(fourth.OperationID, hostID)
+	}
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "hold", "--operation-id", fourth.OperationID,
+		"--evidence-sha256", fixtureDigest("fourth replacement hold"))
+	syncAll(fourth.OperationID, "mac-control-plane")
+
+	// Interrupt after two host observations. A new backend instance reloads
+	// the durable receipt and continues, proving command retry uses history.
+	for _, hostID := range catalogFixtureSwitchOrder[:2] {
+		invoke("catalog-cohort", "--host", hostID, "--lane", "prd", "--action", "supersede-host",
+			"--operation-id", third.OperationID, "--successor-operation-id", fourth.OperationID, "--subject-host", hostID)
+		syncAll(third.OperationID, hostID)
+	}
+	partial, err := backend.readReceipt("coordinator", third.OperationID)
+	if err != nil || len(currentSupersededHostsForFixture(partial.Transitions)) != 2 || partial.Stage != laneinstall.CatalogCohortVerifying {
+		t.Fatalf("partial replacement history stage=%s superseded=%v err=%v", partial.Stage, currentSupersededHostsForFixture(partial.Transitions), err)
+	}
+	catalogCommandSubprocessFixtureBackendForTests = nil
+	backend = &catalogSubprocessFixtureBackend{root: root}
+	catalogCommandSubprocessFixtureBackendForTests = backend
+	for _, hostID := range catalogFixtureSwitchOrder[2:] {
+		invoke("catalog-cohort", "--host", hostID, "--lane", "prd", "--action", "supersede-host",
+			"--operation-id", third.OperationID, "--successor-operation-id", fourth.OperationID, "--subject-host", hostID)
+		syncAll(third.OperationID, hostID)
+	}
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "supersede",
+		"--operation-id", third.OperationID, "--successor-operation-id", fourth.OperationID)
+	syncAll(third.OperationID, "mac-control-plane")
+
+	// Continue the accepted replacement attempt, interrupt after Sandbox has
+	// published its selector journal, reconcile, and roll back to the exact
+	// selected predecessor release. The database remains byte-identical.
+	if err := os.WriteFile(filepath.Join(root, "interrupt-sandbox-once"), []byte(fourth.ReleaseID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, hostID := range catalogFixtureSwitchOrder[:2] {
+		invoke("catalog-cohort", "--host", hostID, "--lane", "prd", "--action", "preflight", "--operation-id", fourth.OperationID,
+			"--subject-host", hostID)
+		syncAll(fourth.OperationID, hostID)
+		local := readCatalogFixtureReceipt(t, filepath.Join(root, "hosts", hostID, "receipts", fourth.OperationID+".json"))
+		expected := fixtureHostPreflight(local, hostID).PreviousTarget
+		selectArgs := []string{"catalog-select", "--host", hostID, "--lane", "prd", "--release-id", fourth.ReleaseID,
+			"--expected-target", expected, "--cohort-operation-id", fourth.OperationID,
+			"--evidence-sha256", fixtureDigest("fourth select " + hostID)}
+		if hostID == "sandbox-host" {
+			invokeExpectError("simulated crash after selector journal", selectArgs...)
+			journal := filepath.Join(root, "hosts", hostID, "journals", fourth.OperationID+"-"+hostID+".json")
+			var stored fixtureSelectorJournal
+			readCatalogFixtureJSON(t, journal, &stored)
+			invoke("catalog-reconcile", "--host", hostID, "--lane", "prd", "--cohort-operation-id", fourth.OperationID,
+				"--selector-operation-id", stored.OperationID)
+		} else {
+			invoke(selectArgs...)
+		}
+		syncAll(fourth.OperationID, hostID)
+	}
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "block", "--operation-id", fourth.OperationID,
+		"--evidence-sha256", fixtureDigest("replacement switch interrupted"))
+	syncAll(fourth.OperationID, "mac-control-plane")
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "rollback-start", "--operation-id", fourth.OperationID,
+		"--evidence-sha256", fixtureDigest("replacement rollback-start"))
+	syncAll(fourth.OperationID, "mac-control-plane")
+	for _, hostID := range []string{"sandbox-host", "linux-host"} {
+		journal := filepath.Join(root, "hosts", hostID, "journals", fourth.OperationID+"-"+hostID+".json")
+		var stored fixtureSelectorJournal
+		readCatalogFixtureJSON(t, journal, &stored)
+		invoke("catalog-rollback", "--host", hostID, "--lane", "prd", "--cohort-operation-id", fourth.OperationID,
+			"--selector-operation-id", stored.OperationID)
+		syncAll(fourth.OperationID, hostID)
+	}
+	invoke("catalog-cohort", "--host", "mac-control-plane", "--lane", "prd", "--action", "rollback-complete",
+		"--operation-id", fourth.OperationID, "--evidence-sha256", fixtureDigest("replacement rollback-complete"))
+	syncAll(fourth.OperationID, "mac-control-plane")
+
 	if err := os.WriteFile(filepath.Join(root, "command-output.txt"), commandOutput.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -299,6 +463,12 @@ func TestCatalogPublicCommandSequenceSubprocessHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeCatalogFixtureJSON(filepath.Join(root, "seeds", "fixture-next-final.json"), second); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCatalogFixtureJSON(filepath.Join(root, "seeds", "fixture-third-final.json"), third); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCatalogFixtureJSON(filepath.Join(root, "seeds", "fixture-fourth-final.json"), fourth); err != nil {
 		t.Fatal(err)
 	}
 	fmt.Fprintln(os.Stdout, "CATALOG_SUBPROCESS_FIXTURE_SEQUENCE_OK")
@@ -463,7 +633,8 @@ func (b *catalogSubprocessFixtureBackend) RunCohort(ctx context.Context, command
 		return writeJSON(stdout, map[string]string{"operation_id": receipt.OperationID, "stage": string(receipt.Stage)})
 	default:
 		if command.OperationID == "" || command.ReceiptFile != "" || command.ReleaseManifest != "" || len(command.PreflightFiles) != 0 ||
-			len(command.HistoryFiles) != 0 || command.PublisherOwner != "" || command.PublisherControl != "" || command.PublishersPaused || command.NoNewAccepted {
+			len(command.HistoryFiles) != 0 || command.PublisherOwner != "" || command.PublisherControl != "" || command.PublishersPaused || command.NoNewAccepted ||
+			(command.ReplacementPredecessor != "" && command.Action != "fence-host") {
 			return laneinstall.ErrCatalogOperationInvalid
 		}
 		receipt, err := b.readReceipt(command.HostID, command.OperationID)
@@ -488,6 +659,18 @@ func (b *catalogSubprocessFixtureBackend) RunCohort(ctx context.Context, command
 			if err != nil || host.ServiceActive != preflight.ServiceActiveAtPreflight || !catalogFixtureDatabaseIsValid(host.DatabasePath) {
 				return laneinstall.ErrCatalogOperationInvalid
 			}
+			if command.ReplacementPredecessor != "" {
+				predecessor, predecessorErr := b.readReceipt(command.HostID, command.ReplacementPredecessor)
+				oldHost := fixtureHostPreflight(predecessor, command.HostID)
+				if predecessorErr != nil || predecessor.Stage != laneinstall.CatalogCohortVerifying ||
+					host.ServiceActive || !host.AdmissionsClosed || host.SelectorTarget != preflight.PreviousTarget ||
+					preflight.PreviousBundleSHA256 != oldHost.Target.BundleSHA256 ||
+					preflight.ConfigurationSHA256 != oldHost.ConfigurationSHA256 || preflight.SchemaVersion != oldHost.SchemaVersion ||
+					preflight.WorkInventorySHA256 != oldHost.WorkInventorySHA256 || !preflight.WorkInventoryEmpty ||
+					!catalogFixtureDatabaseIsValid(host.DatabasePath) || !fixtureFileSHA256Matches(host.DatabasePath, host.DatabaseSHA256) {
+					return laneinstall.ErrCatalogOperationInvalid
+				}
+			}
 			host.ServiceActive = false
 			if err := b.writeHost(host); err != nil {
 				return err
@@ -497,6 +680,56 @@ func (b *catalogSubprocessFixtureBackend) RunCohort(ctx context.Context, command
 				SelectorTarget: preflight.PreviousTarget, PreviousBundleSHA256: preflight.PreviousBundleSHA256,
 				DatabaseSchema: host.SchemaVersion, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 			receipt, err = laneinstall.AdvanceCatalogCohortHostFence(receipt, fence, time.Now().UTC())
+		case "supersede-host":
+			if command.SubjectHost != command.HostID || command.SuccessorOperation == "" || command.EvidenceSHA256 != "" {
+				return laneinstall.ErrCatalogOperationInvalid
+			}
+			successor, successorErr := b.readReceipt(command.HostID, command.SuccessorOperation)
+			if successorErr != nil || successor.Stage != laneinstall.CatalogCohortHeld {
+				return laneinstall.ErrCatalogOperationInvalid
+			}
+			index := -1
+			for candidateIndex, candidate := range successor.Hosts {
+				if candidate.HostID == command.HostID {
+					index = candidateIndex
+					break
+				}
+			}
+			if index < 0 || index != len(currentSupersededHostsForFixture(receipt.Transitions)) {
+				return laneinstall.ErrCatalogOperationInvalid
+			}
+			state, stateErr := b.readHost(command.HostID)
+			oldHost := fixtureHostPreflight(receipt, command.HostID)
+			newHost := successor.Hosts[index]
+			journal, journalErr := b.readJournal(command.HostID, receipt.OperationID,
+				fixtureOperationID(receipt.OperationID, command.HostID, false))
+			if stateErr != nil || journalErr != nil || receipt.Stage != laneinstall.CatalogCohortVerifying ||
+				state.ServiceActive || !state.AdmissionsClosed || state.SelectorTarget != newHost.PreviousTarget ||
+				state.ConfigurationSHA != newHost.ConfigurationSHA256 || state.SchemaVersion != newHost.SchemaVersion ||
+				newHost.PreviousBundleSHA256 != oldHost.Target.BundleSHA256 ||
+				newHost.WorkInventorySHA256 != oldHost.WorkInventorySHA256 || !newHost.WorkInventoryEmpty ||
+				journal.Stage != "complete" || journal.Rollback || journal.NextTarget != state.SelectorTarget ||
+				!catalogFixtureDatabaseIsValid(state.DatabasePath) || !fixtureFileSHA256Matches(state.DatabasePath, state.DatabaseSHA256) ||
+				fixtureHostDatabaseSentinel(ctx, state.DatabasePath) != "retained" {
+				return laneinstall.ErrCatalogOperationInvalid
+			}
+			observation := laneinstall.CatalogCohortSupersessionEvidence{
+				HostID: command.HostID, SuccessorOperationID: successor.OperationID,
+				ExpectedSelector: newHost.PreviousTarget, ObservedSelector: state.SelectorTarget,
+				SelectorBundleSHA256: oldHost.Target.BundleSHA256, ServiceActive: state.ServiceActive,
+				WorkInventorySHA256: newHost.WorkInventorySHA256, WorkInventoryEmpty: newHost.WorkInventoryEmpty,
+				ConfigurationSHA256: state.ConfigurationSHA, DatabaseSchema: state.SchemaVersion, SelectorOperations: "completed",
+			}
+			receipt, err = laneinstall.AdvanceCatalogCohortSupersedeHost(receipt, successor, observation, time.Now().UTC())
+		case "supersede":
+			if command.SuccessorOperation == "" || command.SubjectHost != "" || command.EvidenceSHA256 != "" {
+				return laneinstall.ErrCatalogOperationInvalid
+			}
+			successor, successorErr := b.readReceipt("coordinator", command.SuccessorOperation)
+			if successorErr != nil || successor.Stage != laneinstall.CatalogCohortHeld {
+				return laneinstall.ErrCatalogOperationInvalid
+			}
+			receipt, err = laneinstall.AdvanceCatalogCohortSupersede(receipt, successor.OperationID, time.Now().UTC())
 		case "hold", "preflight", "verify-start", "verify", "complete", "block", "rollback-start", "rollback-complete", "open":
 			if command.Action == "preflight" {
 				if command.SubjectHost != command.HostID || command.EvidenceSHA256 != "" {
@@ -1001,6 +1234,22 @@ func fixtureRolledBackHosts(receipt laneinstall.CatalogCohortReceipt) []string {
 	return result
 }
 
+func currentSupersededHostsForFixture(transitions []laneinstall.CatalogCohortTransition) []string {
+	start := 0
+	for index, transition := range transitions {
+		if transition.Action == "supersession-restart" {
+			start = index + 1
+		}
+	}
+	var hosts []string
+	for _, transition := range transitions[start:] {
+		if transition.Action == "supersede-host" {
+			hosts = append(hosts, transition.HostID)
+		}
+	}
+	return hosts
+}
+
 func fixtureJournalDigest(journal fixtureSelectorJournal) string {
 	data, _ := json.Marshal(journal)
 	return fixtureDigest(string(data))
@@ -1109,6 +1358,15 @@ func fileSHA256ForTest(t *testing.T, path string) string {
 	}
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
+}
+
+func fixtureFileSHA256Matches(path, expected string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:]) == expected
 }
 
 func fixtureDigest(value string) string {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/opshealth"
@@ -44,7 +45,11 @@ func TestMacLocalMaintenanceProbeBodyIsFixedAndLaneBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{maintenanceProbeGuard: guard}
+	owner, err := domain.NewControllerIdentity(domain.ControllerTypeLocalUser, "tomasz.walczuk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{maintenanceProbeGuard: guard, owner: owner}
 	body, err := laneinstall.CatalogMaintenanceProbeRequestBodyForTransport(plan, laneinstall.CatalogProbeMacLocal)
 	if err != nil {
 		t.Fatal(err)

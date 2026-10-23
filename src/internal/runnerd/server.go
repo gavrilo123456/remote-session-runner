@@ -479,7 +479,8 @@ func (s *PrivateServer) reserveQueuedMaintenanceProbe(response http.ResponseWrit
 		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
 		return "", false
 	}
-	if err := s.maintenanceProbeGuard.ValidateFixedProbeRequest(input.Environment, string(target.Kind()), target.Profile(), string(source.Mode()), input.Script, int64(limits.CommandTimeout/time.Second)); err != nil {
+	if err := s.maintenanceProbeGuard.ValidateFixedProbeRequestForController(input.Environment, string(target.Kind()), target.Profile(),
+		string(source.Mode()), input.Script, int64(limits.CommandTimeout/time.Second), controller.Type(), string(controller.ID())); err != nil {
 		writePrivateError(response, http.StatusServiceUnavailable, "maintenance_admission_closed")
 		return "", false
 	}

@@ -82,27 +82,15 @@ func NewUnixSocketClient(socketPath string) (*Client, error) {
 // NewHTTPSClient binds a client to one HTTPS endpoint and requires explicit
 // trust roots and a client certificate. TLS 1.3 is enforced as the minimum.
 func NewHTTPSClient(config HTTPSConfig) (*Client, error) {
-	endpoint, err := url.Parse(config.Endpoint)
-	if err != nil || endpoint == nil || endpoint.Scheme != "https" || endpoint.Host == "" ||
-		endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Opaque != "" ||
-		(endpoint.Path != "" && endpoint.Path != "/") {
-		return nil, fmt.Errorf("%w: HTTPS endpoint must be an origin URL without credentials or a path", ErrConfiguration)
+	tlsConfig, err := NewHTTPSClientTLSConfig(config.Endpoint, config.RootCAs, config.ClientCertificate)
+	if err != nil {
+		return nil, err
 	}
-	if config.RootCAs == nil {
-		return nil, fmt.Errorf("%w: HTTPS root CA pool is required", ErrConfiguration)
-	}
-	if len(config.ClientCertificate.Certificate) == 0 || config.ClientCertificate.PrivateKey == nil {
-		return nil, fmt.Errorf("%w: HTTPS client certificate and private key are required", ErrConfiguration)
-	}
+	endpoint, _ := url.Parse(config.Endpoint)
 	if (config.ExpectedServerFingerprint == "") != (config.ExpectedServerURISAN == "") {
 		return nil, fmt.Errorf("%w: server certificate pin and URI SAN must be supplied together", ErrConfiguration)
 	}
 	endpointURL := "https://" + endpoint.Host
-	tlsConfig := &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		RootCAs:      config.RootCAs.Clone(),
-		Certificates: []tls.Certificate{config.ClientCertificate},
-	}
 	if config.ExpectedServerFingerprint != "" {
 		tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
 			if len(state.PeerCertificates) == 0 {
@@ -121,6 +109,28 @@ func NewHTTPSClient(config HTTPSConfig) (*Client, error) {
 		ForceAttemptHTTP2: true,
 	}
 	return newClient(endpointURL, EndpointHTTPS, transport), nil
+}
+
+// NewHTTPSClientTLSConfig returns the shared, chain-validating TLS defaults
+// used by configured HTTPS clients: TLS 1.3 minimum, explicit trust roots,
+// client identity and hostname verification for the origin URL.
+func NewHTTPSClientTLSConfig(endpointURL string, roots *x509.CertPool, certificate tls.Certificate) (*tls.Config, error) {
+	endpoint, err := url.Parse(endpointURL)
+	if err != nil || endpoint == nil || endpoint.Scheme != "https" || endpoint.Host == "" ||
+		endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Opaque != "" ||
+		(endpoint.Path != "" && endpoint.Path != "/") {
+		return nil, fmt.Errorf("%w: HTTPS endpoint must be an origin URL without credentials or a path", ErrConfiguration)
+	}
+	if roots == nil {
+		return nil, fmt.Errorf("%w: HTTPS root CA pool is required", ErrConfiguration)
+	}
+	if len(certificate.Certificate) == 0 || certificate.PrivateKey == nil {
+		return nil, fmt.Errorf("%w: HTTPS client certificate and private key are required", ErrConfiguration)
+	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13, ServerName: endpoint.Hostname(),
+		RootCAs: roots.Clone(), Certificates: []tls.Certificate{certificate},
+	}, nil
 }
 
 func certificateFingerprint(certificate *x509.Certificate) string {

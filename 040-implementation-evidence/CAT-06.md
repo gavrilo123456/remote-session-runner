@@ -1529,3 +1529,62 @@ seven exact pairs through the sealed candidate, then continue the authorized
 PRD cohort switch and acceptance. Keep QAS serving and all eight mailbox paths
 assigned there until PRD acceptance and the separately coordinated supported
 handoff.
+
+## CAT-06 compatibility correction — 2026-10-23 13:40 UTC — Mac gates pass; host delivery pending
+
+The source worktree at starting revision `4be93fac8bd8394ce1e7e581bdc92be2b7fcfa55`
+implements the owner-approved compatibility correction. The changes use one
+configuration-aware policy binding for probe preparation and all service
+guards; bind the exact environment and loaded configuration SHA-256 into the
+one-time scope; retain strict V3 environment/pin/SAN checks; use shared
+trusted-CA, hostname-verifying TLS 1.3 client defaults for legacy direct TLS;
+and treat a result as accepted only when success, exit zero, complete
+non-truncated output, a final event and confirmed teardown are all present.
+Failure results are emitted before the command returns nonzero.
+
+The PRD replacement path now has explicit replacement-preflight and
+replacement-fence commands for an exact fully switched `verifying` predecessor.
+It requires a stopped service, fresh successor backup, unchanged selector,
+configuration, schema and empty work inventory, and binds the new rollback
+baseline to the exact predecessor bundle. A dual receipt hold is recognized
+only for the matching predecessor/successor pair. Supported per-host
+supersession evidence and final synchronization retain both histories and keep
+admissions closed until finalization. The public-command subprocess fixture
+exercises adoption and completion, interruption/reconciliation, reverse
+rollback, a verifying predecessor replacement, partial supersession across a
+fixture process restart, synchronization, a second interrupted switch, and
+rollback to the selected predecessor without changing database bytes.
+
+Mac Go 1.27.1 gates:
+
+| Gate | Result |
+| --- | --- |
+| Focused replacement subprocess and probe binding/result/TLS regressions | **PASS** |
+| `make test` (full `go test ./...`) | **PASS**, exit 0 on the authorized rerun. The first sandboxed run exited 2 because the existing `runnerlocald` process-settlement test could not execute its read-only `/bin/ps`; `runnerlocald` passed outside the sandbox and the complete suite then passed. |
+| `make vet` | **PASS**, exit 0 |
+| `make build` | **PASS**, exit 0 |
+| `make smoke` | **PASS**, exit 0 |
+| `git diff --check` | **PASS** |
+
+The Mac source, design, plan and evidence changes are not yet committed or
+delivered; the final source commit is pending. The focused config-binding
+regressions cover legacy V1/V2 resolution, strict V3 lane names, and rejection
+of environment/configuration-hash drift. Factory full Linux/AMD64 gates,
+Sandbox full Linux/ARM64 gates, and Linux focused CAT-06/P025/P101 plus native
+gates are **NOT RUN** for this correction. Host sync, new release sealing, Dev
+acceptance, PRD replacement/deployment/acceptance, mailbox handoff and QAS
+alignment are also **NOT RUN**. No live service, selector, database, backup, receipt, mailbox assignment,
+request or ACK was changed in this source-gate checkpoint. Disposable test
+fixtures exercised receipt transitions and were confined to test temporary
+directories. The untracked `src/cmd/catalog-holdcheck/` directory remains
+untouched. The old sealed `cat-20261022-7a42f3b` remains unchanged.
+
+The correction candidate uses the owner-approved one-time order: Dev acceptance
+→ PRD acceptance → coordinated QAS→PRD mailbox handoff → QAS alignment and
+acceptance. QAS acceptance remains DEFERRED, NOT PASS, until alignment. Keep
+QAS serving with all eight mailbox paths assigned there and publish no mailbox
+requests or ACKs. Before live PRD work, recheck current work and ownership,
+per-host capacity, exact predecessor selector journals, backups/configuration/
+schema identities, and supported exact-pair recovery evidence. The earlier
+PRD inventory and Sandbox capacity numbers above are historical, not current
+preflight results.

@@ -534,8 +534,8 @@ func (s *Server) validateMacLocalMaintenanceProbe(idempotencyKey string, body []
 	if err != nil || seconds != 5 {
 		return laneinstall.ErrCatalogProbeAdmission
 	}
-	return s.maintenanceProbeGuard.ValidateFixedProbeRequest(input.Environment, input.ExecutionTarget.Kind, input.ExecutionTarget.Profile,
-		input.Source.Mode, *input.Script, seconds)
+	return s.maintenanceProbeGuard.ValidateFixedProbeRequestForController(input.Environment, input.ExecutionTarget.Kind, input.ExecutionTarget.Profile,
+		input.Source.Mode, *input.Script, seconds, domain.ControllerTypeLocalUser, string(s.owner.ID()))
 }
 
 func (s *Server) currentHealthReport(ctx context.Context) opshealth.Report {

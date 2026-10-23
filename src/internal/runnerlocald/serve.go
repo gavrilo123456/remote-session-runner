@@ -117,7 +117,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 78
 		}
 		if maintenanceHeld {
-			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuardForTransport(plan, operationID, laneinstall.CatalogProbeMacLocal)
+			maintenanceProbe, err = laneinstall.NewCatalogMaintenanceProbeGuardForTransportWithConfig(plan, operationID, laneinstall.CatalogProbeMacLocal, loaded)
 			if err != nil {
 				fmt.Fprintln(stderr, "runner-locald: Mac-local catalog maintenance probe guard is invalid")
 				return 78
