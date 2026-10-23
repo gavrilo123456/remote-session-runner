@@ -111,6 +111,14 @@ backup/preflight and supported cohort-history handling before another
 acceptance attempt. Do not resume or hand off mailbox users before PRD
 functional acceptance passes.
 
+This checkpoint was committed on Mac `dev` as
+`6bf7cea05c5033b7807a42fcce194afd1b435db5`, pushed to primary Gitea, and
+verified at the exact same SHA on the automatic GitHub mirror. Linux, Sandbox,
+and Factory were clean on `dev` before pull and fast-forwarded to that SHA;
+their checkouts remain clean. This was documentation/evidence-only; the
+already-passed source suites were not rerun. `git diff --check` passed. The
+untracked `src/cmd/catalog-holdcheck/` directory remains untouched.
+
 ## Current continuation-renewal checkpoint — 2026-10-23 08:53 UTC
 
 The Sandbox capacity recheck at `08:45:14Z` measured `1649299456` bytes free
