@@ -1588,3 +1588,62 @@ per-host capacity, exact predecessor selector journals, backups/configuration/
 schema identities, and supported exact-pair recovery evidence. The earlier
 PRD inventory and Sandbox capacity numbers above are historical, not current
 preflight results.
+
+
+## CAT-06 source delivery and Ubuntu host gates — 2026-10-23 14:06 UTC — Linux/Sandbox PASS; Factory scratch-path decision pending
+
+The correction source and initial plan/design/evidence commit is
+`c01e6339e9330ff6bf7dbde042b1cd5287c55c4e` on Mac `dev`. The primary Gitea
+`origin/dev` and automatic GitHub `github/dev` both resolved directly to that
+exact SHA. The clean Ubuntu `dev` checkouts were fast-forwarded from GitHub
+using the configured explicit identity and verified host keys; each ended at
+that same SHA with a clean worktree before tests:
+
+| Host | SSH profile / identity | Checkout | Result |
+| --- | --- | --- | --- |
+| Linux | `remote-session-runner` / `/Users/tomasz.walczuk/.ssh/remote-session-runner` | `c01e6339e9330ff6bf7dbde042b1cd5287c55c4e` | clean `dev` |
+| Sandbox | `sandbox.env` / `/Users/tomasz.walczuk/.ssh/dev.slidestud.io` | `c01e6339e9330ff6bf7dbde042b1cd5287c55c4e` | clean `dev` |
+| Factory | `factory-sandbox` / `/Users/tomasz.walczuk/.ssh/factory-sandbox` | `c01e6339e9330ff6bf7dbde042b1cd5287c55c4e` | clean `dev` |
+
+Linux on `remote-session-runner` passed the changed-package suite with
+`GOMAXPROCS=2`, `GOFLAGS=-p=1`, and
+`TMPDIR=GOTMPDIR=SQLITE_TMPDIR=/tmp`:
+
+```sh
+go test ./src/cmd/catalog-probe-once ./src/cmd/runner-lane ./src/internal/laneinstall ./src/internal/localapi ./src/internal/runnerclient ./src/internal/runnerd ./src/internal/runnerlocal ./src/internal/runnerlocald -count=1
+```
+
+It also passed exact `TestP025D16ResumeAfterCommandAcceptanceDoesNotSourceTwice`
+and `TestP101M10NeverDeliveredCancelCloseAndRunKeepIntentBoundary`, each with
+`-count=1 -v`. Native `make vet`, `make build`, and `make smoke` each exited
+0. The full Linux suite remains **NOT RUN** under the owner-amended assignment;
+prior full-suite interruptions remain **NOT PASS**. An initial `vmstat 1 3`
+sample showed 7% steal, and one sample during serial tests showed 19%; no test
+timeout or assertion failure occurred.
+
+Sandbox on `sandbox.env` passed full `make test`, `make vet`, `make build`, and
+`make smoke` on Linux/ARM64 with Go 1.27.1, `GOMAXPROCS=2`, `GOFLAGS=-p=1`,
+and `TMPDIR=GOTMPDIR=SQLITE_TMPDIR=/tmp`. `/tmp` was disk-backed on
+`/dev/sda1`: 1,143,054,336 bytes available immediately before the full suite,
+1,879,957,504 bytes after it, 1,854,418,944 before `make build`, and
+1,852,334,080 before `make smoke`. No caches or retained files were deleted.
+All four gate commands exited 0.
+
+Factory remains **NOT RUN** pending resolution of the requested temporary-path
+constraint. Its fresh `df -B1 /tmp` reported 3,379,322,880 bytes available of
+a 4,294,967,296-byte mount. `findmnt` identifies `/tmp` as `tmpfs` with
+`usrquota`; `ulimit -f` is `unlimited`. `quota -v`, `quota -f /tmp`, and
+`quota --filesystem=/tmp -u ubuntu` could not report the effective per-user
+limit (`Cannot stat() mounted device tmpfs` / `not found or has no quota
+enabled`). `/var/tmp` is disk-backed on `/dev/sda1` with 33,798,340,608 bytes
+available. The user instructed both “use `/tmp`” and “do not use tmpfs”; these
+conflict on the current Factory mount. No Factory build/test scratch writes
+were started while awaiting direction. This does not establish the prior
+reported 2 GiB user limit.
+
+These are source gates only. No candidate was sealed; Dev/PRD command-level
+acceptance, live PRD replacement/deployment, QAS handoff and QAS acceptance
+remain **NOT RUN**. No live service, selector, database, backup, receipt,
+mailbox assignment, request or ACK changed. QAS remains serving and its eight
+mailbox assignments were not touched. The unrelated untracked
+`src/cmd/catalog-holdcheck/` directory remains unstaged and preserved.
