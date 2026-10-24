@@ -1021,9 +1021,8 @@ func (b *NativePromotionBackend) runLane(ctx context.Context, host string, args 
 
 func (b *NativePromotionBackend) readLaneSnapshot(ctx context.Context, host, lane string) (promotionLaneSnapshot, error) {
 	var snapshot promotionLaneSnapshot
-	plan, planErr := laneinstall.BuildCatalogPlan(host, config.ReleaseLane(lane))
-	if planErr != nil {
-		return snapshot, planErr
+	if !contains(HostOrder, host) || !contains(LaneOrder, lane) {
+		return snapshot, ErrInvalidInput
 	}
 	statusBytes, err := b.runLane(ctx, host, []string{"catalog-status", "--host", host, "--lane", lane}, nil)
 	if err != nil || decodeStrictJSON(statusBytes, &snapshot.Selector) != nil {
@@ -1040,7 +1039,7 @@ func (b *NativePromotionBackend) readLaneSnapshot(ctx context.Context, host, lan
 		}
 		snapshot.Active, snapshot.Config, snapshot.Schema, snapshot.Work = prd.ServiceActive, prd.ConfigSHA256, prd.SchemaVersion, prd.Work
 		snapshot.Empty = prd.Work.Empty()
-		if err := measurePromotionCapacity(plan.Namespace.Backups, lane, b.OperatingBuffer, &snapshot); err != nil {
+		if err := b.readPromotionCapacity(ctx, host, lane, &snapshot); err != nil {
 			return snapshot, err
 		}
 		return snapshot, nil
@@ -1055,23 +1054,10 @@ func (b *NativePromotionBackend) readLaneSnapshot(ctx context.Context, host, lan
 	}
 	snapshot.Active, snapshot.Config, snapshot.Schema, snapshot.Work, snapshot.Empty = inventory.ServiceActive, inventory.ConfigurationSHA256,
 		inventory.DatabaseSchema, inventory.WorkInventory, inventory.WorkInventoryEmpty
-	if err := measurePromotionCapacity(plan.Namespace.Backups, lane, b.OperatingBuffer, &snapshot); err != nil {
+	if err := b.readPromotionCapacity(ctx, host, lane, &snapshot); err != nil {
 		return snapshot, err
 	}
 	return snapshot, nil
-}
-
-func measurePromotionCapacity(path, lane string, operatingBuffer uint64, snapshot *promotionLaneSnapshot) error {
-	if snapshot == nil || !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return ErrOperationCorrupted
-	}
-	var stat unix.Statfs_t
-	if err := unix.Statfs(path, &stat); err != nil || stat.Bsize < 0 || stat.Bavail < 0 {
-		return errors.Join(errors.New("read-only lane backup-volume capacity measurement failed"), err)
-	}
-	snapshot.AvailableBytes = uint64(stat.Bavail) * uint64(stat.Bsize)
-	snapshot.RequiredBytes = promotionRequiredCapacity(lane, operatingBuffer)
-	return nil
 }
 
 func (b *NativePromotionBackend) currentHost(ctx context.Context, host, lane string) (laneinstall.CatalogSelectorStatus, promotionLaneSnapshot, error) {

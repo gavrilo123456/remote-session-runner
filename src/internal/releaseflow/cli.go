@@ -576,6 +576,26 @@ func RunHostCLI(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "host-capacity":
+		f := flag.NewFlagSet("runner-release host-capacity", flag.ContinueOnError)
+		f.SetOutput(stderr)
+		host := f.String("host", "", "canonical host being measured")
+		lane := f.String("lane", "", "dev, qas, or prd")
+		repo := f.String("repository", "", "clean dev controller checkout")
+		controller := f.String("controller-revision", "", "pinned tool revision")
+		if err := f.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if f.NArg() != 0 {
+			fmt.Fprintln(stderr, "host-capacity accepts flags only")
+			return 2
+		}
+		report, err := RunHostCapacity(context.Background(), *host, *lane, *repo, *controller)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return writeCLIResult(stdout, stderr, report, true)
 	case "host-lane-rpc":
 		if len(args) != 1 {
 			fmt.Fprintln(stderr, "host-lane-rpc accepts one JSON request on stdin")
