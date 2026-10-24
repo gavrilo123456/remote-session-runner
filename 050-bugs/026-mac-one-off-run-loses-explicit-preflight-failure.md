@@ -106,7 +106,8 @@ not evaluated by this execution.
 
 ## Contract overlap and triage question
 
-The Runner documentation at the incident's original contract boundary says that an explicit shell
+The Runner documentation at the incident's original contract boundary says
+that an explicit shell
 `exit` can invalidate the persistent Bash and be reported as `lost`/incomplete,
 even for `run` with an ephemeral session. See the [CLI result contract](../docs/user-guide.md#strict-shell-result-semantics),
 [API contract](../docs/api.md), and [operations guidance](../docs/operations.md).
@@ -186,6 +187,12 @@ maintainer confirms the prior runtime cleanup and capacity disposition.
 
 - 2026-10-24 — Registered from the preserved #349 failure. No correction,
   installed-build identification, cleanup, ACK, or QAS acceptance is claimed.
+- 2026-10-24 — Source correction committed as
+  `ba0eb1b658acdbe27a5049ef492efe1844550883`; full Mac/Factory/Sandbox source
+  gates, Mac race checks and Linux-host focused/native gates pass. Installed
+  QAS acceptance remains pending. Newer
+  handoff evidence confirms #349's already-completed recovery and ACK;
+  its original lost result is preserved.
 
 ## Current #349 disposition
 
