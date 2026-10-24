@@ -213,3 +213,56 @@ PRD, and all project-mailbox ownership remain unchanged. Resume this same
 operation only after a fresh capacity check passes and the controller's
 per-backup capacity guards pass; do not create a successor or rebuild the
 sealed release.
+
+## Interrupted active-switch recovery correction
+
+The owner later raised Sandbox capacity. A fresh check before worker source
+gates showed 1,195,696,128 bytes available on `/dev/sda1`; after those gates,
+1,186,000,896 bytes remained. These exceed the 500,000,000-byte operating
+buffer. No cleanup was performed.
+
+Resuming the existing Dev operation `dea80fa695a606e64985f0b2b53ebeb4` with
+the `f31de51` controller passed capacity and then recorded a new failed
+`observe-host` event (sequence 12): Linux's candidate selector was already
+active, while the supported receipt-sync path requires the selected lane to
+be stopped. This failure is preserved in the operation record. No new
+selector, receipt, backup, mailbox, or peer-lane changes were made by that
+failed observation.
+
+Controller revision `d6f0a54b0a5ed708de567303493b2c82916d19d7` adds a narrow
+recovery path: an active service may be stopped and its receipt synchronized
+only when the exact candidate release/bundle is selected, the selector journal
+is complete, the matching switch transition is present, and the operation
+still owns the admission hold. The existing all-four-host inventory,
+configuration, schema, and work checks run before the stop; all hosts must be
+empty and identity-matched. After synchronization, the host is observed again.
+An active service with any host retaining work, a missing switch transition,
+an incomplete journal, a different selector, or a different hold remains
+blocked without a stop or receipt write.
+
+Regressions exercise the actual native observation and receipt-sync path for
+an interrupted Linux switch, including synchronization to all four fixture
+receipts, and verify refusal before mutation for retained work or missing
+switch evidence. The sealed service release `rr-20261024-43a4e675` and its
+four bundle hashes are unchanged.
+
+Source validation and delivery for `d6f0a54`:
+
+- Mac Go 1.27.1 `make test`, `make vet`, `make build`, `make smoke`, and
+  `git diff --check`: PASS. The standalone smoke/diff rerun also exited 0.
+- Linux (`linux-host`, Go 1.27.1 linux/amd64), Sandbox (`sandbox-host`, Go
+  1.27.1 linux/arm64), and Factory (`factory-sandbox`, Go 1.27.1 linux/amd64):
+  `go test ./src/internal/releaseflow -count=1`, vet of `releaseflow`,
+  `promote-to`, and `runner-release`, `make build`, and `TMPDIR=/tmp make
+  smoke`: PASS on each host.
+- The Mac `promote-to` and `runner-release` controller binaries were built
+  from `d6f0a54`; their SHA-256 values are respectively
+  `e6507b188ecad163d2ad7071b3d028ddf9bf81f1cbee06a2b54576e849141124` and
+  `922130d89e9ec317325d1fe7c89100bec8b657edc6353da9e20735cdd912de81`.
+- Commit `d6f0a54b0a5ed708de567303493b2c82916d19d7` was pushed to primary
+  Gitea; the automatic GitHub mirror matched exactly; all three clean Ubuntu
+  `dev` checkouts fast-forwarded to the same commit before their gates.
+- This is controller/source validation only. The supported resume, Dev
+  functional acceptance, QAS promotion/acceptance, and filesystem-mailbox
+  acceptance remain NOT RUN at this checkpoint. PRD and its project mailboxes
+  remain outside scope.
