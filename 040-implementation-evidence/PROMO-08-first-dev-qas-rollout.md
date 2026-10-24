@@ -140,3 +140,76 @@ Mac source gates for this controller patch (working tree based on delivered
 These are controller/source gates only. They do not qualify or accept the
 sealed service release; all four worker fast-forwards and native controller
 checks remain pending until delivery.
+
+## Receipt-sync and selected-service ordering correction
+
+The first resume of Dev operation `dea80fa695a606e64985f0b2b53ebeb4`
+reconciled the held operation, selected `rr-20261024-43a4e675` on
+`linux-host`, and then failed while syncing the receipt because the selected
+Dev service was active. The failure was truthful and preserved: the prior
+durable operation history still records the failed Linux switch/sync attempt.
+The corrected controller does not rewrite that history or the sealed service
+release.
+
+The cause was an ordering defect in native promotion: it attempted cohort
+receipt synchronization after selector activation had started the lane. The
+host-side sync guard correctly requires the selected lane stopped and empty.
+The correction stops only the selected lane, and only after verifying the
+operation hold and empty, identity-matching inventories across all four hosts.
+It then synchronizes the receipt before proceeding. Cohort acceptance starts
+services only under the exact hold; final release starts the lane only after
+the released receipt has synchronized and verifies all four hosts. Refusal
+tests confirm that a host with retained work is never stopped.
+
+Regression coverage in `f31de51548e4007165261a48592bcce1ce0bad4a` exercises
+active-empty-lane stop before sync, retained-work refusal, and selector
+transition/sync before service start. The sealed release remains
+`rr-20261024-43a4e675`, digest
+`093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69`; no
+service bundle was rebuilt.
+
+Source/controller validation for `f31de51548e4007165261a48592bcce1ce0bad4a`:
+
+- Mac Go 1.27.1 `make test`, `make vet`, `make build`, `make smoke`, and
+  `git diff --check`: PASS.
+- Linux (`linux-host`, Go 1.27.1 linux/amd64): focused
+  `releaseflow` receipt-sync/switch/resume regressions, package vet, `make
+  build`, and `TMPDIR=/tmp make smoke`: PASS.
+- Factory (`factory-sandbox`, Go 1.27.1 linux/amd64): the same focused
+  regressions, package vet, `make build`, and `TMPDIR=/tmp make smoke`: PASS.
+- Sandbox (`sandbox-host`, Go 1.27.1 linux/arm64): the same focused
+  regressions, package vet, `make build`, and `TMPDIR=/tmp make smoke`: PASS.
+- Before the Sandbox gates, `/dev/sda1` had 502,272,000 bytes available. The
+  gates completed successfully; no task-owned smoke directory remained. The
+  shared Go cache was preserved.
+- Source commit `f31de51548e4007165261a48592bcce1ce0bad4a` was pushed to
+  primary Gitea, verified at the identical GitHub mirror SHA, and fast-forward
+  pulled to all three clean Ubuntu `dev` checkouts before their gates.
+
+## Live retry blocked before new effects
+
+The corrected controller binary was built on the Mac from the synchronized
+`f31de51548e4007165261a48592bcce1ce0bad4a` source. Its retry of operation
+`dea80fa695a606e64985f0b2b53ebeb4` stopped on Sandbox capacity before any new
+selected-lane hold, stop, backup, or selector change:
+
+```text
+sandbox-host measured free space 491794432 is below the read-only minimum 500000000
+```
+
+A subsequent read-only measurement on Sandbox `/dev/sda1` was 491,270,144
+bytes available (100% reported utilization), 8,729,856 bytes below the
+500,000,000-byte minimum. `/tmp` is on the same filesystem. The shared Go
+build cache (3.8 GiB), module cache (348 MiB), release catalog (846 MiB), and
+release-operation records (41 MiB) were inspected and preserved; no
+task-owned smoke temporary directory was present. No cleanup was performed.
+
+At this checkpoint the operation remains `blocked`, with its prior hold and
+receipt history preserved. The earlier Linux selector transition remains to
+be reconciled by the supported resume. The latest failed preflight made no
+additional lane changes. Dev functional acceptance is NOT RUN; QAS promotion
+and acceptance are NOT RUN; filesystem-mailbox acceptance is NOT RUN. QAS,
+PRD, and all project-mailbox ownership remain unchanged. Resume this same
+operation only after a fresh capacity check passes and the controller's
+per-backup capacity guards pass; do not create a successor or rebuild the
+sealed release.
