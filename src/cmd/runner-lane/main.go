@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,6 +22,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"remote-session-runner/src/internal/commandstub"
 	"remote-session-runner/src/internal/config"
@@ -969,6 +972,7 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	operationID := flags.String("operation-id", "", "held cohort operation identity")
 	controllerID := flags.String("controller-id", "", "existing authenticated controller identity")
 	ttlSeconds := flags.Int("ttl-seconds", 120, "one-time probe token lifetime from 1 to 600 seconds")
+	observeExisting := flags.Bool("observe-existing", false, "read the exact existing probe scope without minting a capability")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -1009,12 +1013,20 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	digest := sha256.Sum256(requestBody)
+	if *observeExisting {
+		observation, err := observeCatalogProbeScope(plan, *operationID, probeTransport, controllerType, *controllerID,
+			binding.Environment, binding.ConfigurationSHA, idempotencyKey, hex.EncodeToString(digest[:]))
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, observation)
+	}
 	expiresAt := time.Now().UTC().Add(time.Duration(*ttlSeconds) * time.Second)
 	token, err := laneinstall.PrepareCatalogMaintenanceProbeForTransportWithConfig(plan, *operationID, probeTransport, controllerType, *controllerID, idempotencyKey, requestBody, expiresAt, loaded)
 	if err != nil {
 		return err
 	}
-	digest := sha256.Sum256(requestBody)
 	return writeJSON(stdout, struct {
 		HostID              string                            `json:"host_id"`
 		Lane                string                            `json:"lane"`
@@ -1029,8 +1041,145 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 		RequestBody         json.RawMessage                   `json:"request_body"`
 		ExpiresAt           string                            `json:"expires_at"`
 		Token               string                            `json:"one_time_token"`
+		State               string                            `json:"state"`
+		JobID               string                            `json:"job_id,omitempty"`
+		IntentID            string                            `json:"intent_id,omitempty"`
 	}{*host, *lane, probeTransport, *operationID, controllerType, *controllerID, binding.Environment, binding.ConfigurationSHA,
-		idempotencyKey, hex.EncodeToString(digest[:]), requestBody, expiresAt.Format(time.RFC3339Nano), token})
+		idempotencyKey, hex.EncodeToString(digest[:]), requestBody, expiresAt.Format(time.RFC3339Nano), token, "ready", "", ""})
+}
+
+type catalogProbeScopeObservation struct {
+	HostID              string                            `json:"host_id"`
+	Lane                string                            `json:"lane"`
+	Transport           laneinstall.CatalogProbeTransport `json:"transport"`
+	OperationID         string                            `json:"operation_id"`
+	ControllerType      domain.ControllerType             `json:"controller_type"`
+	ControllerID        string                            `json:"controller_id"`
+	Environment         string                            `json:"environment"`
+	ConfigurationSHA256 string                            `json:"configuration_sha256"`
+	IdempotencyKey      string                            `json:"idempotency_key"`
+	RequestSHA256       string                            `json:"request_body_sha256"`
+	ExpiresAt           string                            `json:"expires_at"`
+	State               string                            `json:"state"`
+	JobID               string                            `json:"job_id,omitempty"`
+	IntentID            string                            `json:"intent_id,omitempty"`
+}
+
+type catalogProbeScopeRecord struct {
+	FormatVersion     int                               `json:"format_version"`
+	OperationID       string                            `json:"operation_id"`
+	HostID            string                            `json:"host_id"`
+	Lane              string                            `json:"lane"`
+	Transport         laneinstall.CatalogProbeTransport `json:"transport"`
+	ControllerType    domain.ControllerType             `json:"controller_type"`
+	ControllerID      string                            `json:"controller_id"`
+	Environment       string                            `json:"environment"`
+	ConfigurationSHA  string                            `json:"configuration_sha256"`
+	CreatedAt         string                            `json:"created_at"`
+	ExpiresAt         string                            `json:"expires_at"`
+	TokenSHA256       string                            `json:"token_sha256"`
+	IdempotencyKey    string                            `json:"idempotency_key"`
+	RequestBodySHA256 string                            `json:"request_body_sha256"`
+	State             string                            `json:"state"`
+	JobID             string                            `json:"job_id,omitempty"`
+	IntentID          string                            `json:"intent_id,omitempty"`
+}
+
+// observeCatalogProbeScope is a read-only recovery path for a controller that
+// lost its bounded result after the host consumed the one-time capability. It
+// validates the complete immutable binding before returning job identity and
+// never emits the token digest or changes scope state.
+func observeCatalogProbeScope(plan laneinstall.Plan, operationID string, transport laneinstall.CatalogProbeTransport,
+	controllerType domain.ControllerType, controllerID, environment, configurationSHA, idempotencyKey, requestSHA string) (catalogProbeScopeObservation, error) {
+	if len(operationID) != 32 || strings.Trim(operationID, "0123456789abcdef") != "" ||
+		!validCatalogProbeHostID(plan.HostID) || (plan.Lane != config.ReleaseLaneDev && plan.Lane != config.ReleaseLaneQAS && plan.Lane != config.ReleaseLanePRD) ||
+		transport == "" || environment == "" || len(configurationSHA) != 64 || len(requestSHA) != 64 || idempotencyKey == "" {
+		return catalogProbeScopeObservation{}, errors.New("catalog probe observation binding is invalid")
+	}
+	root := filepath.Join(plan.Namespace.Staging, "catalog-probes")
+	rootInfo, rootErr := os.Lstat(root)
+	if errors.Is(rootErr, os.ErrNotExist) {
+		return catalogProbeScopeObservation{HostID: plan.HostID, Lane: string(plan.Lane), Transport: transport,
+			OperationID: operationID, ControllerType: controllerType, ControllerID: controllerID, Environment: environment,
+			ConfigurationSHA256: configurationSHA, IdempotencyKey: idempotencyKey, RequestSHA256: requestSHA, State: "absent"}, nil
+	}
+	var rootStat unix.Stat_t
+	if rootErr != nil || rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() || rootInfo.Mode().Perm() != 0o700 ||
+		unix.Lstat(root, &rootStat) != nil || rootStat.Uid != uint32(os.Getuid()) {
+		return catalogProbeScopeObservation{}, errors.New("catalog probe scope directory is not private and owner-controlled")
+	}
+	name := operationID + ".json"
+	if transport != laneinstall.CatalogProbeDirectMTLS {
+		name = operationID + "-" + string(transport) + ".json"
+	}
+	path := filepath.Join(root, name)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return catalogProbeScopeObservation{HostID: plan.HostID, Lane: string(plan.Lane), Transport: transport,
+			OperationID: operationID, ControllerType: controllerType, ControllerID: controllerID, Environment: environment,
+			ConfigurationSHA256: configurationSHA, IdempotencyKey: idempotencyKey, RequestSHA256: requestSHA, State: "absent"}, nil
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > 1<<16 {
+		return catalogProbeScopeObservation{}, errors.New("catalog probe scope is not a private regular file")
+	}
+	var stat unix.Stat_t
+	if unix.Lstat(path, &stat) != nil || stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 {
+		return catalogProbeScopeObservation{}, errors.New("catalog probe scope ownership or link count is invalid")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return catalogProbeScopeObservation{}, errors.New("catalog probe scope could not be read")
+	}
+	var scope catalogProbeScopeRecord
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&scope) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return catalogProbeScopeObservation{}, errors.New("catalog probe scope JSON is invalid")
+	}
+	canonical, err := json.MarshalIndent(scope, "", "  ")
+	if err != nil || !bytes.Equal(data, append(canonical, '\n')) || scope.FormatVersion != 3 ||
+		scope.OperationID != operationID || scope.HostID != plan.HostID || scope.Lane != string(plan.Lane) || scope.Transport != transport ||
+		scope.ControllerType != controllerType || scope.ControllerID != controllerID || scope.Environment != environment ||
+		scope.ConfigurationSHA != configurationSHA || scope.IdempotencyKey != idempotencyKey || scope.RequestBodySHA256 != requestSHA ||
+		!validProbeScopeDigest(scope.TokenSHA256) || !validProbeScopeTime(scope.CreatedAt, scope.ExpiresAt) ||
+		(scope.State != "ready" && scope.State != "reserved" && scope.State != "accepted") ||
+		(scope.State == "ready" && (scope.JobID != "" || scope.IntentID != "")) ||
+		(scope.State == "accepted" && !validProbeScopeJobID(scope.JobID)) ||
+		(scope.JobID != "" && !validProbeScopeJobID(scope.JobID)) ||
+		(scope.IntentID != "" && (transport != laneinstall.CatalogProbeMacLocal || scope.State != "reserved" && scope.State != "accepted")) {
+		return catalogProbeScopeObservation{}, errors.New("catalog probe scope does not match the requested immutable binding")
+	}
+	return catalogProbeScopeObservation{HostID: scope.HostID, Lane: scope.Lane, Transport: scope.Transport, OperationID: scope.OperationID,
+		ControllerType: scope.ControllerType, ControllerID: scope.ControllerID, Environment: scope.Environment,
+		ConfigurationSHA256: scope.ConfigurationSHA, IdempotencyKey: scope.IdempotencyKey, RequestSHA256: scope.RequestBodySHA256,
+		ExpiresAt: scope.ExpiresAt, State: scope.State, JobID: scope.JobID, IntentID: scope.IntentID}, nil
+}
+
+func validProbeScopeDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validProbeScopeTime(createdText, expiresText string) bool {
+	created, err1 := time.Parse(time.RFC3339Nano, createdText)
+	expires, err2 := time.Parse(time.RFC3339Nano, expiresText)
+	return err1 == nil && err2 == nil && expires.After(created) && expires.Sub(created) <= 10*time.Minute
+}
+
+func validProbeScopeJobID(value string) bool {
+	return len(value) == 36 && strings.HasPrefix(value, "job-") && strings.Trim(value[4:], "0123456789abcdef") == ""
+}
+
+func validCatalogProbeHostID(value string) bool {
+	for _, host := range catalogCLIHostOrder {
+		if value == host {
+			return true
+		}
+	}
+	return false
 }
 
 func validCLIProbeOperationID(value string) bool {

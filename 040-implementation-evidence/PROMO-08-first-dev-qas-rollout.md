@@ -334,3 +334,50 @@ performed. The operation remains blocked pending its corrected acceptance
 retry. Dev functional acceptance is NOT RUN; QAS promotion/acceptance and
 filesystem-mailbox acceptance are NOT RUN. No QAS or PRD configuration,
 service, selector, database, or mailbox state was changed.
+
+## Probe result decoding and accepted-scope recovery
+
+The next synchronized-controller retry first read the Linux direct-mTLS
+probe's terminal status successfully. The accepted scope is bound to job
+`job-705974bc8f474d77898670837be15b61`; the helper returned exit 0. The
+promotion controller then rejected its JSON because its strict outcome type
+did not include the helper's `accepted_at`, `http_status`, or
+`readiness_http_status` fields. This was a controller decoding failure after
+one accepted probe, not a Runner command failure. No second request was
+submitted. The Dev operation remains held and blocked; QAS and PRD are
+unchanged.
+
+The controller correction adds the complete public outcome schema and a
+read-only scope recovery path. Before preparing a capability, the controller
+asks the selected host to inspect its existing owner-only canonical scope.
+The host validates its file ownership/mode, exact host/lane/operation,
+transport, authenticated controller, configuration digest, environment,
+idempotency key and request digest. It returns no token. An accepted scope is
+observed through a bounded status-only GET using the configured mTLS endpoint
+(or the Mac Unix socket); the request is never replayed. An active unused
+capability or an ambiguous reserved scope fails closed, while only an expired,
+unused ready scope can be prepared again. No scope or Runner bundle is deleted
+or rewritten by observation.
+
+Regressions cover complete strict decoding of the actual helper result,
+unknown-field rejection, exact accepted-scope observation without token
+disclosure, configuration/job-identity validation, absent-scope read-only
+behavior, and refusal to replace active or replay ambiguous/consumed scopes.
+
+Mac Go 1.27.1 source gates for this correction:
+
+- `make test`: PASS (full `go test ./...`).
+- `make vet`: PASS.
+- `make build`: PASS.
+- `make smoke`: PASS.
+- `git diff --check`: PASS.
+
+The sealed release `rr-20261024-43a4e675`, digest
+`093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69`, and its
+four per-host bundle hashes above remain unchanged. The correction is
+promotion/probe-controller tooling, not a service-bundle change. Ubuntu
+fast-forward delivery and native source checks for this correction are still
+pending at this evidence checkpoint. The exact Linux direct probe result has
+not yet been recovered into the durable promotion acceptance record; Dev
+acceptance, BUG-026 live exit-1 acceptance, QAS acceptance, and filesystem-
+mailbox acceptance remain NOT RUN.

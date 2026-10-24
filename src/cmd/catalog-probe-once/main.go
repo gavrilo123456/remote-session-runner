@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"remote-session-runner/src/internal/config"
@@ -30,17 +31,22 @@ import (
 )
 
 type prepared struct {
-	HostID              string          `json:"host_id"`
-	Lane                string          `json:"lane"`
-	Transport           string          `json:"transport"`
-	OperationID         string          `json:"operation_id"`
-	ControllerID        string          `json:"controller_id"`
-	Environment         string          `json:"environment"`
-	ConfigurationSHA256 string          `json:"configuration_sha256"`
-	IdempotencyKey      string          `json:"idempotency_key"`
-	RequestSHA256       string          `json:"request_body_sha256"`
-	RequestBody         json.RawMessage `json:"request_body"`
-	Token               string          `json:"one_time_token"`
+	HostID              string                `json:"host_id"`
+	Lane                string                `json:"lane"`
+	Transport           string                `json:"transport"`
+	OperationID         string                `json:"operation_id"`
+	ControllerType      domain.ControllerType `json:"controller_type"`
+	ControllerID        string                `json:"controller_id"`
+	Environment         string                `json:"environment"`
+	ConfigurationSHA256 string                `json:"configuration_sha256"`
+	IdempotencyKey      string                `json:"idempotency_key"`
+	RequestSHA256       string                `json:"request_body_sha256"`
+	RequestBody         json.RawMessage       `json:"request_body"`
+	Token               string                `json:"one_time_token"`
+	ExpiresAt           string                `json:"expires_at"`
+	State               string                `json:"state"`
+	JobID               string                `json:"job_id,omitempty"`
+	IntentID            string                `json:"intent_id,omitempty"`
 }
 
 type outcome struct {
@@ -61,6 +67,7 @@ type outcome struct {
 	HTTPStatus          int    `json:"http_status,omitempty"`
 	BridgeResponseType  string `json:"bridge_response_type,omitempty"`
 	ReadinessHTTPStatus int    `json:"readiness_http_status"`
+	ObservedExisting    bool   `json:"observed_existing,omitempty"`
 }
 
 type jobFields struct {
@@ -110,7 +117,7 @@ func run() error {
 		}
 		return localFence(ctx, *socketPath)
 	}
-	if *preparedPath == "" || (*mode != "direct" && *mode != "queued" && *mode != "local") {
+	if *preparedPath == "" || (*mode != "direct" && *mode != "queued" && *mode != "local" && *mode != "observe") {
 		return errors.New("invalid probe helper arguments")
 	}
 	raw, err := os.ReadFile(*preparedPath)
@@ -119,8 +126,17 @@ func run() error {
 	}
 	var p prepared
 	if json.Unmarshal(raw, &p) != nil || p.HostID == "" || (p.Lane != "dev" && p.Lane != "qas" && p.Lane != "prd") ||
-		p.OperationID == "" || p.Token == "" || p.IdempotencyKey == "" || p.Environment == "" ||
-		!validSHA256(p.ConfigurationSHA256) || len(p.RequestBody) == 0 {
+		p.OperationID == "" || p.IdempotencyKey == "" || p.Environment == "" ||
+		!validSHA256(p.ConfigurationSHA256) || !validSHA256(p.RequestSHA256) {
+		return errors.New("prepared capability is invalid")
+	}
+	if *mode == "observe" {
+		if p.State != "accepted" || p.JobID == "" || p.Token != "" || p.ControllerID == "" {
+			return errors.New("accepted probe observation scope is invalid")
+		}
+		return observeExisting(ctx, *configPath, *socketPath, p)
+	}
+	if p.Token == "" || len(p.RequestBody) == 0 {
 		return errors.New("prepared capability is invalid")
 	}
 	if p.Transport != map[string]string{"direct": "direct-mtls", "queued": "queued-ssh", "local": "mac-local"}[*mode] {
@@ -142,6 +158,140 @@ func run() error {
 	default:
 		return local(ctx, *socketPath, p)
 	}
+}
+
+// observeExisting reads the terminal state of the exact job named by a
+// previously accepted, host-validated probe scope. It performs no submission
+// and uses the configured direct HTTPS ingress for workers or the existing
+// Mac-local socket for the local transport.
+func observeExisting(ctx context.Context, configPath, socketPath string, p prepared) error {
+	loaded, err := config.LoadFile(configPath)
+	if err != nil || loaded.Kind() != config.HostKindMac || string(loaded.ReleaseLane()) != p.Lane {
+		return errors.New("Mac status-route configuration could not be validated")
+	}
+	transport := laneinstall.CatalogProbeTransport(p.Transport)
+	plan, err := laneinstall.BuildCatalogPlan(p.HostID, config.ReleaseLane(p.Lane))
+	if err != nil {
+		return errors.New("accepted probe host binding is invalid")
+	}
+	targetKind, targetProfile := "remote", p.HostID
+	if transport == laneinstall.CatalogProbeMacLocal {
+		targetKind, targetProfile = "local", "mac-workstation"
+		if loaded.SourceSHA256() != p.ConfigurationSHA256 {
+			return errors.New("accepted Mac-local probe configuration binding changed")
+		}
+		macPlan, planErr := laneinstall.BuildCatalogPlan("mac-control-plane", config.ReleaseLane(p.Lane))
+		binding, bindingErr := laneinstall.ResolveCatalogMaintenanceProbeBinding(loaded, macPlan, transport, p.ControllerType, p.ControllerID)
+		if planErr != nil || bindingErr != nil || binding.Environment != p.Environment || binding.ConfigurationSHA != p.ConfigurationSHA256 {
+			return errors.New("accepted Mac-local probe policy binding changed")
+		}
+	}
+	binding := laneinstall.CatalogMaintenanceProbeBinding{Environment: p.Environment, ConfigurationSHA: p.ConfigurationSHA256,
+		TargetKind: targetKind, TargetProfile: targetProfile}
+	expectedKey := "catalog-probe-" + p.OperationID + "-" + p.HostID
+	if transport != laneinstall.CatalogProbeDirectMTLS {
+		expectedKey += "-" + string(transport)
+	}
+	requestBody, err := laneinstall.CatalogMaintenanceProbeRequestBodyForBinding(plan, transport, binding)
+	if err != nil || expectedKey != p.IdempotencyKey || sha256Hex(requestBody) != p.RequestSHA256 || !validProbeJobID(p.JobID) {
+		return errors.New("accepted probe request identity is invalid")
+	}
+	if transport == laneinstall.CatalogProbeMacLocal {
+		if socketPath == "" || !filepath.IsAbs(socketPath) || filepath.Clean(socketPath) != socketPath || p.HostID != "mac-control-plane" {
+			return errors.New("Mac-local accepted probe route is invalid")
+		}
+		return observeExistingLocal(ctx, socketPath, p)
+	}
+	if p.HostID == "mac-control-plane" {
+		return errors.New("worker accepted probe has a Mac host identity")
+	}
+	remote, ok := loaded.RemoteHost(p.HostID)
+	if !ok || remote.DirectEndpoint == nil || remote.DirectEndpoint.ControllerID == "" {
+		return errors.New("configured worker status route is unavailable")
+	}
+	if transport == laneinstall.CatalogProbeDirectMTLS && p.ControllerID != remote.DirectEndpoint.ControllerID ||
+		transport == laneinstall.CatalogProbeQueuedSSH && p.ControllerID != config.MacAccount {
+		return errors.New("accepted probe controller binding changed")
+	}
+	return observeExistingDirect(ctx, loaded, remote.DirectEndpoint, p)
+}
+
+func observeExistingDirect(ctx context.Context, loaded config.Config, endpoint *config.DirectEndpointProfile, p prepared) error {
+	caPEM, err := os.ReadFile(endpoint.ServerCA)
+	if err != nil {
+		return errors.New("configured server CA is unavailable")
+	}
+	clientCertPEM, err := os.ReadFile(endpoint.ClientCertificate)
+	if err != nil {
+		return errors.New("configured client certificate is unavailable")
+	}
+	clientKeyPEM, err := os.ReadFile(endpoint.ClientPrivateKeyFile)
+	if err != nil {
+		return errors.New("configured client key is unavailable")
+	}
+	tlsConfig, err := configuredTLSConfig(loaded, endpoint, caPEM, clientCertPEM, clientKeyPEM)
+	if err != nil {
+		return errors.New("configured direct TLS material failed certificate, CA, fingerprint, or URI validation")
+	}
+	client := &http.Client{Timeout: 12 * time.Second, Transport: &http.Transport{Proxy: nil, TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true}}
+	var final jobFields
+	statusURL := endpoint.Endpoint + "/v1/jobs/" + p.JobID
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		read, readErr := request(ctx, client, http.MethodGet, statusURL, nil, nil)
+		if readErr != nil || read.status != http.StatusOK || parseJob(read.body, &final) != nil || final.JobID != p.JobID {
+			return errors.New("accepted probe status read failed")
+		}
+		if terminal(final) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !terminal(final) {
+		return errors.New("accepted probe did not reach a terminal state within the bound")
+	}
+	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, JobID: final.JobID,
+		SessionID: final.SessionID, CommandID: final.CommandID, Phase: finalPhase(final), CommandState: final.CommandState,
+		ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete,
+		OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, ObservedExisting: true})
+}
+
+func observeExistingLocal(ctx context.Context, socketPath string, p prepared) error {
+	transport := &http.Transport{Proxy: nil}
+	transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socketPath)
+	}
+	client := &http.Client{Timeout: 12 * time.Second, Transport: transport}
+	var final jobFields
+	statusURL := "http://runner/v1/jobs/" + p.JobID
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		read, readErr := request(ctx, client, http.MethodGet, statusURL, nil, nil)
+		if readErr != nil || read.status != http.StatusOK || parseJob(read.body, &final) != nil || final.JobID != p.JobID {
+			return errors.New("accepted Mac-local probe status read failed")
+		}
+		if terminal(final) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !terminal(final) {
+		return errors.New("accepted Mac-local probe did not reach a terminal state within the bound")
+	}
+	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, JobID: final.JobID,
+		SessionID: final.SessionID, CommandID: final.CommandID, Phase: finalPhase(final), CommandState: final.CommandState,
+		ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete,
+		OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, ObservedExisting: true})
+}
+
+func sha256Hex(value []byte) string {
+	digest := sha256.Sum256(value)
+	return hex.EncodeToString(digest[:])
+}
+
+func validProbeJobID(value string) bool {
+	return len(value) == 36 && strings.HasPrefix(value, "job-") && strings.Trim(value[4:], "0123456789abcdef") == ""
 }
 
 func validSHA256(value string) bool {

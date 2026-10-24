@@ -140,6 +140,63 @@ func TestDecodePromotionAdmissionMatchesCatalogCohortDiscoverEnvelope(t *testing
 	}
 }
 
+func TestPromotionProbeOutcomeDecodesCompletePublicHelperResult(t *testing.T) {
+	const output = `{"transport":"direct-mtls","host_id":"linux-host","operation_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","accepted_at":"2026-10-24T21:05:35.923209659Z","job_id":"job-705974bc8f474d77898670837be15b61","session_id":"sess-11111111111111111111111111111111","command_id":"cmd-22222222222222222222222222222222","phase":"complete","command_state":"succeeded","exit_code":0,"final_event_sequence":7,"output_complete":true,"output_truncated":false,"teardown_state":"closed","http_status":202,"readiness_http_status":200}`
+	var got promotionProbeOutcome
+	if err := decodeStrictJSON([]byte(output), &got); err != nil {
+		t.Fatalf("strict decoder rejected public catalog-probe-once result: %v", err)
+	}
+	if got.Transport != "direct-mtls" || got.JobID != "job-705974bc8f474d77898670837be15b61" || got.HTTPStatus != 202 ||
+		got.ReadinessHTTPStatus != 200 || got.AcceptedAt == "" || got.CommandState != "succeeded" || got.ExitCode == nil || *got.ExitCode != 0 {
+		t.Fatalf("public probe result fields were not retained: %+v", got)
+	}
+	if err := decodeStrictJSON([]byte(strings.TrimSuffix(output, "}")+`,"unreviewed":true}`), &got); err == nil {
+		t.Fatal("strict probe result decoder accepted an unknown output field")
+	}
+}
+
+func TestExistingPromotionProbeScopeNeverReplaysConsumedCapability(t *testing.T) {
+	now := time.Date(2026, 10, 24, 21, 0, 0, 0, time.UTC)
+	base := promotionProbeScopeObservation{
+		HostID: "linux-host", Lane: "dev", Transport: laneinstall.CatalogProbeDirectMTLS,
+		OperationID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ControllerType: "direct_mtls", ControllerID: "tomasz.walczuk",
+		Environment: "linux-dev", ConfigurationSHA256: stringsOf("b"), IdempotencyKey: "catalog-probe-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-linux-host",
+		RequestSHA256: stringsOf("c"), State: "absent",
+	}
+	classify := func(value promotionProbeScopeObservation) (string, error) {
+		return existingProbeDisposition(value, "linux-host", "dev", "direct-mtls", base.OperationID, "tomasz.walczuk", now)
+	}
+	if action, err := classify(base); err != nil || action != "prepare" {
+		t.Fatalf("absent scope disposition=%q err=%v", action, err)
+	}
+	ready := base
+	ready.State = "ready"
+	ready.ExpiresAt = now.Add(time.Minute).Format(time.RFC3339Nano)
+	if _, err := classify(ready); err == nil {
+		t.Fatal("active unused capability was allowed to be replaced")
+	}
+	ready.ExpiresAt = now.Add(-time.Second).Format(time.RFC3339Nano)
+	if action, err := classify(ready); err != nil || action != "prepare" {
+		t.Fatalf("expired unused scope disposition=%q err=%v", action, err)
+	}
+	reserved := ready
+	reserved.State = "reserved"
+	reserved.ExpiresAt = now.Add(time.Minute).Format(time.RFC3339Nano)
+	if _, err := classify(reserved); err == nil {
+		t.Fatal("ambiguous reserved capability was allowed to be replayed")
+	}
+	accepted := reserved
+	accepted.State = "accepted"
+	accepted.JobID = "job-705974bc8f474d77898670837be15b61"
+	if action, err := classify(accepted); err != nil || action != "observe" {
+		t.Fatalf("accepted scope disposition=%q err=%v", action, err)
+	}
+	accepted.ControllerID = "other-controller"
+	if _, err := classify(accepted); err == nil {
+		t.Fatal("accepted scope with controller drift was allowed to be observed")
+	}
+}
+
 func TestPeerLaneDigestIgnoresSharedFilesystemHeadroom(t *testing.T) {
 	snapshot := promotionLaneSnapshot{Config: "config", Schema: 40, AvailableBytes: 2_000_000_000, RequiredBytes: 500_000_000}
 	first := promotionPeerSnapshotDigest(snapshot)
@@ -219,12 +276,13 @@ func TestPromotionPreparedProbeAcceptsAndValidatesPublicCommandControllerType(t 
 		RequestBody         json.RawMessage `json:"request_body"`
 		ExpiresAt           string          `json:"expires_at"`
 		Token               string          `json:"one_time_token"`
+		State               string          `json:"state"`
 	}{
 		HostID: "linux-host", Lane: "dev", Transport: "direct-mtls", OperationID: strings.Repeat("a", 32),
 		ControllerType: "direct_mtls", ControllerID: "tomasz.walczuk", Environment: "linux-host-dev",
 		ConfigurationSHA256: stringsOf("b"), IdempotencyKey: "catalog-probe-test", RequestSHA256: stringsOf("c"),
 		RequestBody: []byte(`{"script":"printf 'catalog release maintenance probe\\n'"}`),
-		ExpiresAt:   "2026-10-24T20:00:00Z", Token: "one-time-token",
+		ExpiresAt:   "2026-10-24T20:00:00Z", Token: "one-time-token", State: "ready",
 	})
 	if err != nil {
 		t.Fatal(err)

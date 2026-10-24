@@ -96,25 +96,50 @@ type promotionPreparedProbe struct {
 	RequestBody         json.RawMessage `json:"request_body"`
 	ExpiresAt           string          `json:"expires_at"`
 	Token               string          `json:"one_time_token"`
+	State               string          `json:"state"`
+	JobID               string          `json:"job_id,omitempty"`
+	IntentID            string          `json:"intent_id,omitempty"`
+}
+
+type promotionProbeScopeObservation struct {
+	HostID              string                            `json:"host_id"`
+	Lane                string                            `json:"lane"`
+	Transport           laneinstall.CatalogProbeTransport `json:"transport"`
+	OperationID         string                            `json:"operation_id"`
+	ControllerType      string                            `json:"controller_type"`
+	ControllerID        string                            `json:"controller_id"`
+	Environment         string                            `json:"environment"`
+	ConfigurationSHA256 string                            `json:"configuration_sha256"`
+	IdempotencyKey      string                            `json:"idempotency_key"`
+	RequestSHA256       string                            `json:"request_body_sha256"`
+	ExpiresAt           string                            `json:"expires_at"`
+	State               string                            `json:"state"`
+	JobID               string                            `json:"job_id,omitempty"`
+	IntentID            string                            `json:"intent_id,omitempty"`
 }
 
 type promotionProbeOutcome struct {
-	Transport          string `json:"transport"`
-	HostID             string `json:"host_id"`
-	OperationID        string `json:"operation_id"`
-	JobID              string `json:"job_id"`
-	SessionID          string `json:"session_id"`
-	CommandID          string `json:"command_id"`
-	Phase              string `json:"phase"`
-	CommandState       string `json:"command_state"`
-	ExitCode           *int   `json:"exit_code"`
-	FinalEventSequence *int64 `json:"final_event_sequence"`
-	OutputComplete     bool   `json:"output_complete"`
-	OutputTruncated    bool   `json:"output_truncated"`
-	TeardownState      string `json:"teardown_state"`
-	ConfigurationSHA   string `json:"configuration_sha256"`
-	RequestSHA256      string `json:"request_body_sha256"`
-	RequestedTimeout   int    `json:"requested_timeout_seconds"`
+	Transport           string `json:"transport"`
+	HostID              string `json:"host_id"`
+	OperationID         string `json:"operation_id"`
+	AcceptedAt          string `json:"accepted_at"`
+	JobID               string `json:"job_id"`
+	SessionID           string `json:"session_id"`
+	CommandID           string `json:"command_id"`
+	Phase               string `json:"phase"`
+	CommandState        string `json:"command_state"`
+	ExitCode            *int   `json:"exit_code"`
+	FinalEventSequence  *int64 `json:"final_event_sequence"`
+	OutputComplete      bool   `json:"output_complete"`
+	OutputTruncated     bool   `json:"output_truncated"`
+	TeardownState       string `json:"teardown_state"`
+	HTTPStatus          int    `json:"http_status"`
+	BridgeResponseType  string `json:"bridge_response_type"`
+	ReadinessHTTPStatus int    `json:"readiness_http_status"`
+	ObservedExisting    bool   `json:"observed_existing,omitempty"`
+	ConfigurationSHA    string `json:"configuration_sha256"`
+	RequestSHA256       string `json:"request_body_sha256"`
+	RequestedTimeout    int    `json:"requested_timeout_seconds"`
 }
 
 type promotionLaneSnapshot struct {
@@ -1027,6 +1052,26 @@ func (b *NativePromotionBackend) ensureCohortVerifying(ctx context.Context, op O
 func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, host, transport, controller, configPath, socket string) (promotionProbeOutcome, error) {
 	preparedArgs := []string{"catalog-probe-prepare", "--host", host, "--lane", op.Lane, "--transport", transport,
 		"--operation-id", op.CohortOperationID, "--controller-id", controller, "--ttl-seconds", "120"}
+	observeArgs := append(append([]string(nil), preparedArgs...), "--observe-existing")
+	observedBytes, err := b.runLane(ctx, host, observeArgs, nil)
+	if err != nil {
+		return promotionProbeOutcome{}, err
+	}
+	var existing promotionProbeScopeObservation
+	if decodeStrictJSON(observedBytes, &existing) != nil {
+		return promotionProbeOutcome{}, ErrOperationCorrupted
+	}
+	disposition, err := existingProbeDisposition(existing, host, op.Lane, transport, op.CohortOperationID, controller, time.Now().UTC())
+	if err != nil {
+		return promotionProbeOutcome{}, err
+	}
+	if disposition == "observe" {
+		observationBytes, err := json.Marshal(existing)
+		if err != nil {
+			return promotionProbeOutcome{}, err
+		}
+		return b.observeAcceptedProbe(ctx, op, host, transport, configPath, socket, observationBytes, existing)
+	}
 	preparedBytes, err := b.runLane(ctx, host, preparedArgs, nil)
 	if err != nil {
 		return promotionProbeOutcome{}, err
@@ -1076,11 +1121,90 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 	return outcome, nil
 }
 
+func (b *NativePromotionBackend) observeAcceptedProbe(ctx context.Context, op Operation, host, transport, configPath, socket string,
+	observationBytes []byte, observation promotionProbeScopeObservation) (promotionProbeOutcome, error) {
+	path, cleanup, err := writePrivateTemp(observationBytes)
+	if err != nil {
+		return promotionProbeOutcome{}, err
+	}
+	defer cleanup()
+	profile := b.Config.Hosts["mac-control-plane"]
+	args := []string{"run", "./src/cmd/catalog-probe-once", "--mode", "observe", "--prepared", path}
+	if transport == "mac-local" {
+		args = append(args, "--socket", socket)
+	} else {
+		args = append(args, "--config", configPath)
+	}
+	cmd := exec.CommandContext(ctx, profile.GoBinary, args...)
+	cmd.Dir = b.Repository
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	observeErr := cmd.Run()
+	var outcome promotionProbeOutcome
+	if decodeStrictJSON(stdout.Bytes(), &outcome) != nil || outcome.HostID != host || outcome.OperationID != op.CohortOperationID ||
+		outcome.Transport != transport || outcome.JobID != observation.JobID || !outcome.ObservedExisting {
+		return promotionProbeOutcome{}, fmt.Errorf("existing accepted probe could not be safely observed (exit=%v): %w", observeErr, ErrOperationCorrupted)
+	}
+	if observeErr != nil {
+		return outcome, fmt.Errorf("existing accepted probe did not pass bounded status observation: %w", observeErr)
+	}
+	outcome.ConfigurationSHA = observation.ConfigurationSHA256
+	outcome.RequestSHA256 = observation.RequestSHA256
+	outcome.RequestedTimeout = 5
+	return outcome, nil
+}
+
+func validProbeJobIdentity(value string) bool {
+	return len(value) == 36 && strings.HasPrefix(value, "job-") && strings.Trim(value[4:], "0123456789abcdef") == ""
+}
+
+func existingProbeDisposition(existing promotionProbeScopeObservation, host, lane, transport, operationID, controller string, now time.Time) (string, error) {
+	expectedKey := "catalog-probe-" + operationID + "-" + host
+	if transport != "direct-mtls" {
+		expectedKey += "-" + transport
+	}
+	if existing.HostID != host || existing.Lane != lane || string(existing.Transport) != transport || existing.OperationID != operationID ||
+		existing.ControllerType != expectedProbeControllerType(transport) || existing.ControllerID != controller || existing.Environment == "" ||
+		!digestPattern.MatchString(existing.ConfigurationSHA256) || !digestPattern.MatchString(existing.RequestSHA256) || existing.IdempotencyKey != expectedKey {
+		return "", ErrOperationCorrupted
+	}
+	switch existing.State {
+	case "absent":
+		if existing.JobID != "" || existing.IntentID != "" || existing.ExpiresAt != "" {
+			return "", ErrOperationCorrupted
+		}
+		return "prepare", nil
+	case "ready":
+		expires, err := time.Parse(time.RFC3339Nano, existing.ExpiresAt)
+		if err != nil || existing.JobID != "" || existing.IntentID != "" {
+			return "", ErrOperationCorrupted
+		}
+		if expires.After(now) {
+			return "", errors.New("unused maintenance probe capability remains live; refusing to replace or replay it")
+		}
+		return "prepare", nil
+	case "reserved":
+		return "", errors.New("maintenance probe scope is reserved without a safely observable accepted result; refusing replay")
+	case "accepted":
+		if !validProbeJobIdentity(existing.JobID) || (existing.IntentID != "" && transport != "mac-local") {
+			return "", ErrOperationCorrupted
+		}
+		if _, err := time.Parse(time.RFC3339Nano, existing.ExpiresAt); err != nil {
+			return "", ErrOperationCorrupted
+		}
+		return "observe", nil
+	default:
+		return "", ErrOperationCorrupted
+	}
+}
+
 func validatePreparedPromotionProbe(prepared promotionPreparedProbe, host, lane, transport, operationID, controllerID string) error {
 	_, expiryErr := time.Parse(time.RFC3339Nano, prepared.ExpiresAt)
 	if prepared.HostID != host || prepared.Lane != lane || prepared.Transport != transport ||
 		prepared.OperationID != operationID || prepared.ControllerType != expectedProbeControllerType(transport) ||
-		prepared.ControllerID != controllerID || !digestPattern.MatchString(prepared.ConfigurationSHA256) || prepared.Token == "" || expiryErr != nil {
+		prepared.ControllerID != controllerID || !digestPattern.MatchString(prepared.ConfigurationSHA256) || prepared.Token == "" || expiryErr != nil ||
+		prepared.State != "ready" || prepared.JobID != "" || prepared.IntentID != "" {
 		return ErrOperationCorrupted
 	}
 	return nil
