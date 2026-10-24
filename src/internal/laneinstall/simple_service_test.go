@@ -275,6 +275,9 @@ type simpleServiceTestRunner struct {
 func (r *simpleServiceTestRunner) Run(_ context.Context, name string, args ...string) (simpleCommandResult, error) {
 	call := append([]string{name}, args...)
 	r.calls = append(r.calls, call)
+	if name == "/usr/sbin/lsof" {
+		return simpleCommandResult{}, nil
+	}
 	if name == "/bin/launchctl" {
 		if len(args) >= 2 && args[0] == "print" {
 			label := args[1][strings.LastIndex(args[1], "/")+1:]

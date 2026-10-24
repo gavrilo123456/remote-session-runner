@@ -35,6 +35,7 @@ type SimpleServiceController struct {
 	ready          func(Plan) error
 	stoppedProof   func(Plan) error
 	initialInstall func(context.Context, Plan) error
+	resolvePath    func(string) (string, error)
 	uid            string
 	user           string
 	goos           string
@@ -345,18 +346,33 @@ func (c *SimpleServiceController) Stop(ctx context.Context, plan Plan) error {
 		return err
 	}
 	active, err := c.Status(ctx, plan)
-	if err != nil || !active {
+	if err != nil {
 		return err
 	}
 	if plan.Namespace.Host == config.HostKindMac {
-		labels := []string{plan.Namespace.LocalAgentLabel, plan.Namespace.LocalDAgentLabel}
-		if err := c.stopMacAgents(ctx, plan, labels); err != nil {
+		if active {
+			labels := []string{plan.Namespace.LocalAgentLabel, plan.Namespace.LocalDAgentLabel}
+			if err := c.stopMacAgents(ctx, plan, labels); err != nil {
+				return err
+			}
+			if err := c.waitForMacLaneStop(ctx, plan); err != nil {
+				return err
+			}
+		}
+		// launchd can unload while an older runner-local child still owns its
+		// Unix socket. Prove the lane has no work before gracefully stopping
+		// only a listener whose executable, account, working directory, and
+		// socket all identify this exact lane.
+		if err := c.proveStoppedLaneQuiescence(ctx, plan); err != nil {
 			return err
 		}
-		if err := c.waitForMacLaneStop(ctx, plan); err != nil {
+		if err := c.stopMacOrphanSocketListeners(ctx, plan); err != nil {
 			return err
 		}
 		return c.proveStoppedLaneQuiescence(ctx, plan)
+	}
+	if !active {
+		return nil
 	}
 	result, err := c.runner.Run(ctx, "/usr/bin/sudo", "/usr/bin/systemctl", "stop", plan.Namespace.RunnerUnit)
 	if err != nil {
