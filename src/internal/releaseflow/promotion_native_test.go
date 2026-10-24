@@ -60,6 +60,76 @@ func TestPromotionCapacityKeepsOperatingBufferAndPRDReserveSeparate(t *testing.T
 	}
 }
 
+func TestDecodePromotionAdmissionMatchesCatalogCohortDiscoverEnvelope(t *testing.T) {
+	const operationID = "c02b2c01b3504c067de9d3b77605b87e"
+	tests := []struct {
+		name    string
+		view    any
+		wantErr bool
+	}{
+		{
+			name: "unheld lane",
+			view: map[string]any{"host_id": "linux-host", "lane": "dev", "admission_held": false},
+		},
+		{
+			name: "held lane includes receipt",
+			view: map[string]any{"host_id": "linux-host", "lane": "dev", "admission_held": true,
+				"operation_id": operationID, "receipt": laneinstall.CatalogCohortReceipt{
+					OperationID: operationID, Lane: "dev",
+				}},
+		},
+		{
+			name: "held lane without receipt",
+			view: map[string]any{"host_id": "linux-host", "lane": "dev", "admission_held": true,
+				"operation_id": operationID},
+			wantErr: true,
+		},
+		{
+			name: "receipt operation mismatch",
+			view: map[string]any{"host_id": "linux-host", "lane": "dev", "admission_held": true,
+				"operation_id": operationID, "receipt": laneinstall.CatalogCohortReceipt{
+					OperationID: "11111111111111111111111111111111", Lane: "dev",
+				}},
+			wantErr: true,
+		},
+		{
+			name:    "host mismatch",
+			view:    map[string]any{"host_id": "sandbox-host", "lane": "dev", "admission_held": false},
+			wantErr: true,
+		},
+		{
+			name:    "lane mismatch",
+			view:    map[string]any{"host_id": "linux-host", "lane": "qas", "admission_held": false},
+			wantErr: true,
+		},
+		{
+			name: "unheld lane with receipt",
+			view: map[string]any{"host_id": "linux-host", "lane": "dev", "admission_held": false,
+				"receipt": laneinstall.CatalogCohortReceipt{OperationID: operationID, Lane: "dev"}},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.view)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = decodePromotionAdmission(data, "linux-host", "dev")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("decodePromotionAdmission error=%v wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+
+	// This is the public catalog-cohort discover envelope: its host, lane and
+	// optional full receipt must be accepted by the promotion controller's
+	// strict decoder rather than misclassified as a corrupt record.
+	if _, err := decodePromotionAdmission([]byte(`{"host_id":"linux-host","lane":"dev","admission_held":true,"operation_id":"`+operationID+`","receipt":{"operation_id":"`+operationID+`","lane":"dev"}}`), "linux-host", "dev"); err != nil {
+		t.Fatalf("catalog-cohort discover envelope rejected: %v", err)
+	}
+}
+
 func TestPeerLaneDigestIgnoresSharedFilesystemHeadroom(t *testing.T) {
 	snapshot := promotionLaneSnapshot{Config: "config", Schema: 40, AvailableBytes: 2_000_000_000, RequiredBytes: 500_000_000}
 	first := promotionPeerSnapshotDigest(snapshot)

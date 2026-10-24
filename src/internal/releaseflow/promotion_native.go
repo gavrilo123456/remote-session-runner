@@ -72,8 +72,11 @@ type promotionReceiptView struct {
 }
 
 type promotionAdmissionView struct {
-	AdmissionHeld bool   `json:"admission_held"`
-	OperationID   string `json:"operation_id"`
+	HostID        string                            `json:"host_id"`
+	Lane          config.ReleaseLane                `json:"lane"`
+	AdmissionHeld bool                              `json:"admission_held"`
+	OperationID   string                            `json:"operation_id"`
+	Receipt       *laneinstall.CatalogCohortReceipt `json:"receipt,omitempty"`
 }
 
 type promotionPreparedProbe struct {
@@ -1070,8 +1073,20 @@ func (b *NativePromotionBackend) readAdmission(ctx context.Context, host, lane s
 	if err != nil {
 		return promotionAdmissionView{}, err
 	}
+	return decodePromotionAdmission(out, host, lane)
+}
+
+func decodePromotionAdmission(data []byte, host, lane string) (promotionAdmissionView, error) {
 	var view promotionAdmissionView
-	if decodeStrictJSON(out, &view) != nil || view.AdmissionHeld && !operationPattern.MatchString(view.OperationID) || !view.AdmissionHeld && view.OperationID != "" {
+	if decodeStrictJSON(data, &view) != nil || view.HostID != host || string(view.Lane) != lane {
+		return promotionAdmissionView{}, ErrOperationCorrupted
+	}
+	if view.AdmissionHeld {
+		if !operationPattern.MatchString(view.OperationID) || view.Receipt == nil ||
+			view.Receipt.OperationID != view.OperationID || string(view.Receipt.Lane) != lane {
+			return promotionAdmissionView{}, ErrOperationCorrupted
+		}
+	} else if view.OperationID != "" || view.Receipt != nil {
 		return promotionAdmissionView{}, ErrOperationCorrupted
 	}
 	return view, nil
