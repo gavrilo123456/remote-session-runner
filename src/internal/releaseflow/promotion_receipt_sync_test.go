@@ -246,6 +246,11 @@ func (f *switchReceiptFixture) run(_ context.Context, host string, args []string
 			return []byte("[{\"operation_id\":\"selector-" + host + "\",\"stage\":\"complete\"}]"), nil
 		}
 		return []byte("[]"), nil
+	case "stop":
+		f.commands = append(f.commands, "stop:"+host)
+		state.active = false
+		f.states[host] = state
+		return []byte("stopped\\n"), nil
 	case "catalog-select":
 		f.commands = append(f.commands, "select:"+host)
 		f.selected[host] = true
@@ -319,5 +324,125 @@ func TestSwitchHostSynchronizesSelectedReceiptBeforeStartingService(t *testing.T
 	}
 	if selectIndex < 0 || syncAfterSelect < selectIndex {
 		t.Fatalf("selected receipt was not synchronized after selector change: %v", fixture.commands)
+	}
+}
+
+func interruptedActiveSwitchFixture(t *testing.T, nonEmptyHost string) (*switchReceiptFixture, *NativePromotionBackend, Operation) {
+	t.Helper()
+	op := Operation{Lane: "dev", OperationID: strings.Repeat("7", 32), Stage: StageSwitching, Release: testRelease()}
+	op.CohortOperationID = strings.Repeat("8", 32)
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt := promotionTestCohortReceipt(t, now, op.CohortOperationID, "v2.0.0", nil, true)
+	receipt.ReleaseID = op.Release.ID
+	receipt.ReleaseSHA256 = op.Release.Digest
+	receipt.SourceRevision = op.Release.Source.Commit
+	states := make(map[string]receiptSyncHostState, len(HostOrder))
+	receipts := make(map[string]laneinstall.CatalogCohortReceipt, len(HostOrder))
+	selected := make(map[string]bool, len(HostOrder))
+	for index, host := range HostOrder {
+		configSHA := strings.Repeat(fmt.Sprintf("%x", index+1), 64)
+		receipt.Hosts[index].Target = laneinstall.CatalogReleaseIdentity{ReleaseID: op.Release.ID,
+			ReleaseSHA256: op.Release.Digest, HostID: host, BundleSHA256: op.Release.Bundles[host].SHA256}
+		receipt.Hosts[index].ConfigurationSHA256 = configSHA
+		receipt.Hosts[index].WorkInventorySHA256 = (laneinstall.CatalogWorkInventory{}).SHA256()
+		receipt.Hosts[index].PreflightAt = now.Format(time.RFC3339Nano)
+		state := receiptSyncHostState{target: receipt.Hosts[index].PreviousTarget,
+			bundle: receipt.Hosts[index].PreviousBundleSHA256, config: configSHA, schema: store.CurrentSchemaVersion}
+		if host == nonEmptyHost {
+			state.work.ActiveSessions = 1
+		}
+		states[host] = state
+	}
+	var err error
+	receipt, err = laneinstall.AdvanceCatalogCohortReceipt(receipt, "preflight", "linux-host", strings.Repeat("e", 64), now)
+	if err != nil {
+		t.Fatalf("add Linux preflight transition: %v", err)
+	}
+	for _, host := range HostOrder {
+		receipts[host] = receipt
+	}
+	linuxReceipt, err := laneinstall.AdvanceCatalogCohortReceipt(receipt, "switch", "linux-host", strings.Repeat("f", 64), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("record interrupted Linux switch: %v", err)
+	}
+	receipts["linux-host"] = linuxReceipt
+	selected["linux-host"] = true
+	linux := states["linux-host"]
+	linux.active = true
+	linux.target = filepath.Join("/catalog", op.Release.ID, "linux-host")
+	linux.bundle = op.Release.Bundles["linux-host"].SHA256
+	states["linux-host"] = linux
+	fixture := &switchReceiptFixture{op: op, receipts: receipts, states: states, selected: selected}
+	backend := &NativePromotionBackend{laneCommandRunner: fixture.run,
+		capacityReader: func(_ context.Context, _ string, _ string, snapshot *promotionLaneSnapshot) error {
+			snapshot.AvailableBytes, snapshot.RequiredBytes = 2_000_000_000, 500_000_000
+			return nil
+		}}
+	return fixture, backend, op
+}
+
+func TestObserveHostRecoversInterruptedActiveHeldSwitchThroughReceiptSync(t *testing.T) {
+	fixture, backend, op := interruptedActiveSwitchFixture(t, "")
+	observation, err := backend.ObserveHost(context.Background(), op, "linux-host")
+	if err != nil {
+		t.Fatalf("observe interrupted held Linux switch: %v", err)
+	}
+	if observation.SelectedReleaseID != op.Release.ID || observation.SelectedBundleSHA != op.Release.Bundles["linux-host"].SHA256 ||
+		!observation.JournalVerified || !observation.ServiceStopped || !observation.WorkInventoryEmpty {
+		t.Fatalf("interrupted Linux switch was not reconciled to stopped, verified state: %+v", observation)
+	}
+	stopIndex, firstSync := -1, -1
+	for index, command := range fixture.commands {
+		if command == "stop:linux-host" && stopIndex < 0 {
+			stopIndex = index
+		}
+		if strings.HasSuffix(command, ":sync") && firstSync < 0 {
+			firstSync = index
+		}
+	}
+	if stopIndex < 0 || firstSync < 0 || stopIndex > firstSync {
+		t.Fatalf("active selected lane was not stopped before receipt synchronization: %v", fixture.commands)
+	}
+	for _, host := range HostOrder {
+		if fixture.states[host].active {
+			t.Errorf("%s remained active after receipt synchronization", host)
+		}
+		if !reflectReceiptEqual(fixture.receipts[host], fixture.receipts["linux-host"]) {
+			t.Errorf("%s receipt did not receive the interrupted switch history", host)
+		}
+	}
+}
+
+func TestObserveHostDoesNotStopInterruptedSwitchWhenAnyHostHasWork(t *testing.T) {
+	fixture, backend, op := interruptedActiveSwitchFixture(t, "factory-sandbox")
+	if _, err := backend.ObserveHost(context.Background(), op, "linux-host"); err == nil {
+		t.Fatal("active interrupted selector was reconciled while Factory retained work")
+	}
+	if !fixture.states["linux-host"].active {
+		t.Fatal("Linux service was stopped before every cohort work inventory passed")
+	}
+	for _, command := range fixture.commands {
+		if strings.HasPrefix(command, "stop:") || strings.HasSuffix(command, ":sync") {
+			t.Fatalf("receipt or service mutation occurred before all-host empty-work checks: %v", fixture.commands)
+		}
+	}
+}
+
+func TestObserveHostDoesNotStopActiveCandidateWithoutMatchingSwitchReceipt(t *testing.T) {
+	fixture, backend, op := interruptedActiveSwitchFixture(t, "")
+	// The selector and journal report the candidate, but the local receipt has
+	// only the held preflight history. Recovery must not infer the missing
+	// switch transition from selector state alone.
+	fixture.receipts["linux-host"] = fixture.receipts["sandbox-host"]
+	if _, err := backend.ObserveHost(context.Background(), op, "linux-host"); err == nil {
+		t.Fatal("active candidate selector without matching receipt evidence was accepted")
+	}
+	if !fixture.states["linux-host"].active {
+		t.Fatal("active lane was stopped without its matching switch transition")
+	}
+	for _, command := range fixture.commands {
+		if strings.HasPrefix(command, "stop:") || strings.HasSuffix(command, ":sync") {
+			t.Fatalf("host state changed without matching switch receipt: %v", fixture.commands)
+		}
 	}
 }

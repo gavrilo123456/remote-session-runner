@@ -646,6 +646,10 @@ func (b *NativePromotionBackend) preflightPath(op Operation, host string) string
 }
 
 func (b *NativePromotionBackend) ObserveHost(ctx context.Context, op Operation, host string) (HostObservation, error) {
+	return b.observeHost(ctx, op, host, true)
+}
+
+func (b *NativePromotionBackend) observeHost(ctx context.Context, op Operation, host string, synchronizeActiveSwitch bool) (HostObservation, error) {
 	status, snapshot, err := b.currentHost(ctx, host, op.Lane)
 	if err != nil {
 		return HostObservation{}, err
@@ -679,7 +683,24 @@ func (b *NativePromotionBackend) ObserveHost(ctx context.Context, op Operation, 
 			return HostObservation{}, ErrOperationCorrupted
 		}
 	}
-	if !snapshot.Empty || snapshot.Active || snapshot.Config != preflight.ConfigurationSHA256 || snapshot.Schema != preflight.SchemaVersion || snapshot.Work.SHA256() != preflight.WorkInventorySHA256 {
+	if snapshot.Active {
+		// A prior controller attempt can have completed the exact selected-lane
+		// selector switch before receipt synchronization failed. Recover only
+		// when that candidate is selected, its journal is complete, its switch
+		// transition is present, and this operation still owns the admission
+		// hold. syncReceiptFrom rechecks all four work/config/schema identities,
+		// stops only this held lane, and synchronizes the preserved receipt
+		// history before this observation is repeated.
+		if !synchronizeActiveSwitch || selectedID != op.Release.ID ||
+			selectedSHA != op.Release.Bundles[host].SHA256 || !journalVerified {
+			return HostObservation{}, laneinstall.ErrSimpleLaneNotQuiescent
+		}
+		if err := b.syncReceiptFrom(ctx, host, op.Lane, op.CohortOperationID); err != nil {
+			return HostObservation{}, fmt.Errorf("reconcile active selected %s before observation: %w", host, err)
+		}
+		return b.observeHost(ctx, op, host, false)
+	}
+	if !snapshot.Empty || snapshot.Config != preflight.ConfigurationSHA256 || snapshot.Schema != preflight.SchemaVersion || snapshot.Work.SHA256() != preflight.WorkInventorySHA256 {
 		return HostObservation{}, laneinstall.ErrSimpleLaneNotQuiescent
 	}
 	capacityRequired := promotionRequiredCapacity(op.Lane, b.OperatingBuffer)
