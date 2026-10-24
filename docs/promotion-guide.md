@@ -100,6 +100,14 @@ promote-to dev all --release <immutable-release-id> --resume <operation-id> \
   --publishers-paused --no-new-accepted --json
 ```
 
+After every host selector and journal is verified, the controller first
+advances and synchronizes the cohort receipt to `verifying`, then records the
+per-host verification transitions with a sync after each host. It starts the
+selected services under the still-held admission fence only after those
+receipt checks pass, and only then creates one-time functional probe scopes.
+Probe preparation is intentionally rejected while the synchronized receipt is
+still `switching`; do not hand-edit receipts or bypass this transition.
+
 For a new QAS operation, the same release must already have a passed Dev
 acceptance receipt binding its digest, profile and all four bundle hashes.
 PRD similarly requires the QAS acceptance and a current owner approval file

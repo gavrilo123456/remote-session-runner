@@ -204,6 +204,28 @@ func (f *switchReceiptFixture) run(_ context.Context, host string, args []string
 			}
 			f.receipts[host] = updated
 			return []byte("{}"), nil
+		case "verify-start":
+			if host != "mac-control-plane" {
+				return nil, ErrInvalidInput
+			}
+			receipt := f.receipts[host]
+			updated, err := laneinstall.AdvanceCatalogCohortReceipt(receipt, "verify-start", "", value("--evidence-sha256"), time.Now().UTC())
+			if err != nil {
+				return nil, err
+			}
+			f.receipts[host] = updated
+			return []byte("{}"), nil
+		case "verify":
+			if value("--subject-host") != host {
+				return nil, ErrInvalidInput
+			}
+			receipt := f.receipts[host]
+			updated, err := laneinstall.AdvanceCatalogCohortReceipt(receipt, "verify", host, value("--evidence-sha256"), time.Now().UTC())
+			if err != nil {
+				return nil, err
+			}
+			f.receipts[host] = updated
+			return []byte("{}"), nil
 		case "sync":
 			if value("--receipt-file") != "@promo-stdin@" || len(stdin) == 0 || stdin[len(stdin)-1] != '\n' {
 				return nil, ErrInvalidInput
@@ -271,6 +293,99 @@ func (f *switchReceiptFixture) run(_ context.Context, host string, args []string
 		return []byte("started\n"), nil
 	default:
 		return nil, fmt.Errorf("unexpected switch fixture command %q", command)
+	}
+}
+
+func TestEnsureCohortVerifyingSynchronizesAllHostProofBeforeAcceptance(t *testing.T) {
+	op := Operation{Lane: "dev", OperationID: strings.Repeat("7", 32), Stage: StageVerifying, Release: testRelease()}
+	op.CohortOperationID = strings.Repeat("8", 32)
+	now := time.Now().UTC().Add(-30 * time.Second).Truncate(time.Second)
+	receipt := promotionTestCohortReceipt(t, now, op.CohortOperationID, "v2.0.0", nil, true)
+	receipt.ReleaseID = op.Release.ID
+	receipt.ReleaseSHA256 = op.Release.Digest
+	receipt.SourceRevision = op.Release.Source.Commit
+	states := make(map[string]receiptSyncHostState, len(HostOrder))
+	receipts := make(map[string]laneinstall.CatalogCohortReceipt, len(HostOrder))
+	selected := make(map[string]bool, len(HostOrder))
+	for index, host := range HostOrder {
+		configSHA := strings.Repeat(fmt.Sprintf("%x", index+1), 64)
+		receipt.Hosts[index].Target = laneinstall.CatalogReleaseIdentity{ReleaseID: op.Release.ID,
+			ReleaseSHA256: op.Release.Digest, HostID: host, BundleSHA256: op.Release.Bundles[host].SHA256}
+		receipt.Hosts[index].ConfigurationSHA256 = configSHA
+		receipt.Hosts[index].WorkInventorySHA256 = (laneinstall.CatalogWorkInventory{}).SHA256()
+		receipt.Hosts[index].PreflightAt = now.Format(time.RFC3339Nano)
+		states[host] = receiptSyncHostState{active: true, target: filepath.Join("/catalog", op.Release.ID, host),
+			bundle: op.Release.Bundles[host].SHA256, config: configSHA, schema: store.CurrentSchemaVersion}
+		selected[host] = true
+	}
+	var err error
+	for index, host := range HostOrder {
+		preflightAt := now.Add(time.Duration(index*2) * time.Second)
+		receipt, err = laneinstall.AdvanceCatalogCohortReceipt(receipt, "preflight", host, strings.Repeat("e", 64), preflightAt)
+		if err != nil {
+			t.Fatalf("record %s preflight: %v", host, err)
+		}
+		receipt, err = laneinstall.AdvanceCatalogCohortReceipt(receipt, "switch", host, strings.Repeat("f", 64), preflightAt.Add(time.Second))
+		if err != nil {
+			t.Fatalf("record %s switch: %v", host, err)
+		}
+	}
+	for _, host := range HostOrder {
+		receipts[host] = receipt
+	}
+	fixture := &switchReceiptFixture{op: op, receipts: receipts, states: states, selected: selected}
+	backend := &NativePromotionBackend{laneCommandRunner: fixture.run,
+		capacityReader: func(_ context.Context, _ string, _ string, snapshot *promotionLaneSnapshot) error {
+			snapshot.AvailableBytes, snapshot.RequiredBytes = 2_000_000_000, 500_000_000
+			return nil
+		}}
+	if err := backend.ensureCohortVerifying(context.Background(), op); err != nil {
+		t.Fatalf("prepare synchronized verification state before probes: %v; commands=%v", err, fixture.commands)
+	}
+	for _, host := range HostOrder {
+		current := fixture.receipts[host]
+		if current.Stage != laneinstall.CatalogCohortVerifying || !receiptHasVerify(current, host) {
+			t.Fatalf("%s receipt is not synchronized and verified before probe admission: stage=%s transitions=%+v", host, current.Stage, current.Transitions)
+		}
+		if fixture.states[host].active {
+			t.Fatalf("%s was left active after receipt synchronization", host)
+		}
+	}
+	if !reflectReceiptEqual(fixture.receipts[HostOrder[0]], fixture.receipts[HostOrder[len(HostOrder)-1]]) {
+		t.Fatal("host receipts diverged after verification preparation")
+	}
+	startIndex := -1
+	for index, command := range fixture.commands {
+		if command == "cohort:mac-control-plane:verify-start" {
+			startIndex = index
+			break
+		}
+	}
+	if startIndex < 0 {
+		t.Fatalf("verify-start was not issued through the public cohort command: %v", fixture.commands)
+	}
+	for index, host := range HostOrder {
+		want := "cohort:" + host + ":verify"
+		found := -1
+		for commandIndex := startIndex + 1; commandIndex < len(fixture.commands); commandIndex++ {
+			if fixture.commands[commandIndex] == want {
+				found = commandIndex
+				break
+			}
+		}
+		if found < 0 || index > 0 && found <= startIndex {
+			t.Fatalf("ordered verification command %s missing after verify-start: %v", want, fixture.commands)
+		}
+		startIndex = found
+	}
+	commandsBeforeRetry := len(fixture.commands)
+	if err := backend.ensureCohortVerifying(context.Background(), op); err != nil {
+		t.Fatalf("resume already synchronized verifying receipt: %v", err)
+	}
+	for _, command := range fixture.commands[commandsBeforeRetry:] {
+		if strings.Contains(command, ":verify-start") || strings.HasSuffix(command, ":verify") {
+			t.Fatalf("retry repeated a completed receipt transition: %v", fixture.commands[commandsBeforeRetry:])
+		}
 	}
 }
 

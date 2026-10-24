@@ -266,3 +266,49 @@ Source validation and delivery for `d6f0a54`:
   functional acceptance, QAS promotion/acceptance, and filesystem-mailbox
   acceptance remain NOT RUN at this checkpoint. PRD and its project mailboxes
   remain outside scope.
+
+## Acceptance ordering defect exposed by the first live Dev run
+
+The owner-provided space increase was rechecked on Sandbox before continuing.
+The latest read-only `df -Pk /` returned 992,544 KiB available on `/dev/sda1`
+(1,016,365,056 bytes), above the Dev 500,000,000-byte operating-buffer gate.
+No cleanup was performed.
+
+The existing Dev operation `dea80fa695a606e64985f0b2b53ebeb4` resumed under
+its synchronized four-hour continuation `825dd659a1116657bd5a9b334ccbb9e7`
+(renewal digest `e0fe18d3de17b5b71e8684114868497018cf6b2ba35d49f2fa51d8b7e233af65`,
+valid through `2026-10-24T23:30:55.733951Z`). The supported verifier passed on
+Linux, Sandbox, Factory and Mac. Linux remained selected and verified; the
+controller then completed Sandbox and Factory, and Mac. The durable operation
+record contains host-verified events for all four exact bundle hashes:
+
+- Linux `f3628574b1ffd50e0e0f11790039f8b404701de475a34770b7b64b63d9f56c37`
+- Sandbox `3da6a23a44ef96bbd8681bc7f8504e6ec114fa9d5049336240b80085e543f0d9`
+- Factory `206a1b7e010aadf64139f81b26077716be7a5090de4c4e19e318c975f3309e29`
+- Mac `a67cec224af031d269132d4c09dc22909d76bd1395e61e76fc828c5895ec6062`
+
+At `2026-10-24T19:48:19.577496Z`, whole-cohort acceptance stopped before the
+first direct-mTLS command. `catalog-probe-prepare` returned
+`catalog maintenance probe admission refused`. Read-only inspection of the
+cohort receipt on Linux and Mac showed `stage=switching` with ten transitions;
+the probe guard correctly requires the synchronized receipt to be
+`verifying`. The controller had deferred `verify-start` and the ordered
+per-host receipt verification/synchronization to `ReleaseCohort`, which is
+called only after acceptance. This is a controller ordering defect, not a
+service-bundle or TLS finding. The operation is `blocked`; it was not marked
+accepted, and QAS/PRD remain outside the operation.
+
+Correction: move the supported `verify-start` and ordered per-host
+verification/synchronization before functional probe preparation. The
+controller retains all admission, empty-work, exact-selector, backup,
+configuration/schema and capacity checks; retries recognize an already
+`verifying` receipt and do not repeat completed transitions. The regression
+drives the public cohort command sequence, verifies all four synchronized
+receipts and transition order, and retries without duplicating verification.
+
+Mac Go 1.27.1 gates for this controller correction: `make test`, `make vet`,
+`make build`, `make smoke`, and `git diff --check` PASS. Git delivery and the
+three worker validations are pending. The sealed service candidate
+`rr-20261024-43a4e675` and all four bundle hashes remain unchanged. Dev
+functional acceptance, QAS promotion/acceptance, and filesystem-mailbox
+acceptance remain NOT RUN.

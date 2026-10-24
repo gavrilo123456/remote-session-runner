@@ -891,6 +891,13 @@ func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation)
 	if err != nil {
 		return Acceptance{}, err
 	}
+	// The maintenance probe guard is intentionally available only after the
+	// synchronized cohort receipt enters Verifying. Prepare that durable state
+	// before issuing any probe capability; previously ReleaseCohort advanced
+	// the receipt only after acceptance, which made the first probe impossible.
+	if err := b.ensureCohortVerifying(ctx, op); err != nil {
+		return Acceptance{}, err
+	}
 	for _, host := range HostOrder {
 		if err := b.startHostUnderHold(ctx, op, host); err != nil {
 			return Acceptance{}, err
@@ -956,6 +963,62 @@ func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation)
 	return Acceptance{Profile: op.Profile, ReleaseID: op.Release.ID, ReleaseSHA256: op.Release.Digest, BundleHashes: hashes,
 		Passed: true, Gates: map[string]string{"direct-mtls": "passed", "queued-ssh": "passed", "mac-local": "passed", "limits": "passed",
 			"capacity": "passed", "lifecycle": "passed", "teardown": "passed", "isolation": "passed"}, EvidenceSHA: hashJSON(gateEvidence)}, nil
+}
+
+// ensureCohortVerifying performs the receipt transitions required before
+// catalog-probe-prepare can mint one-time capabilities. Each mutation uses
+// the public host command and synchronizes the complete receipt while the
+// selected lane is stopped and empty. It is idempotent across interruptions.
+func (b *NativePromotionBackend) ensureCohortVerifying(ctx context.Context, op Operation) error {
+	view, err := b.readReceipt(ctx, "mac-control-plane", op.Lane, op.CohortOperationID)
+	if err != nil || !view.Present {
+		return errors.Join(ErrOperationCorrupted, err)
+	}
+	if view.Receipt.Stage == laneinstall.CatalogCohortHeld || view.Receipt.Stage == laneinstall.CatalogCohortSwitching {
+		if err := b.startHostUnderHold(ctx, op, "mac-control-plane"); err != nil {
+			return err
+		}
+		if _, err := b.runLane(ctx, "mac-control-plane", []string{"catalog-cohort", "--host", "mac-control-plane", "--lane", op.Lane,
+			"--action", "verify-start", "--operation-id", op.CohortOperationID, "--evidence-sha256", operationAcceptanceDigest(op)}, nil); err != nil {
+			return err
+		}
+		if err := b.syncReceiptFrom(ctx, "mac-control-plane", op.Lane, op.CohortOperationID); err != nil {
+			return err
+		}
+	}
+	for _, host := range HostOrder {
+		view, err = b.readReceipt(ctx, host, op.Lane, op.CohortOperationID)
+		if err != nil || !view.Present {
+			return errors.Join(ErrOperationCorrupted, err)
+		}
+		if view.Receipt.Stage != laneinstall.CatalogCohortVerifying {
+			return fmt.Errorf("%s cohort receipt is not in verifying state before acceptance: %w", host, ErrOperationCorrupted)
+		}
+		if receiptHasVerify(view.Receipt, host) {
+			continue
+		}
+		if err := b.startHostUnderHold(ctx, op, host); err != nil {
+			return err
+		}
+		if _, err := b.runLane(ctx, host, []string{"catalog-cohort", "--host", host, "--lane", op.Lane,
+			"--action", "verify", "--operation-id", op.CohortOperationID, "--subject-host", host,
+			"--evidence-sha256", operationAcceptanceDigest(op)}, nil); err != nil {
+			return err
+		}
+		if err := b.syncReceiptFrom(ctx, host, op.Lane, op.CohortOperationID); err != nil {
+			return err
+		}
+	}
+	view, err = b.readReceipt(ctx, "mac-control-plane", op.Lane, op.CohortOperationID)
+	if err != nil || !view.Present || view.Receipt.Stage != laneinstall.CatalogCohortVerifying {
+		return errors.Join(errors.New("cohort receipt did not reach synchronized verifying state before acceptance"), err)
+	}
+	for _, host := range HostOrder {
+		if !receiptHasVerify(view.Receipt, host) {
+			return fmt.Errorf("cohort receipt lacks verification for %s before acceptance: %w", host, ErrOperationCorrupted)
+		}
+	}
+	return nil
 }
 
 func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, host, transport, controller, configPath, socket string) (promotionProbeOutcome, error) {
