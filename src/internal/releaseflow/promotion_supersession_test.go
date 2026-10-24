@@ -59,6 +59,9 @@ func (f *cohortCommandFixture) run(_ context.Context, host string, args []string
 		data, err := json.Marshal(promotionAdmissionView{HostID: host, Lane: "dev", AdmissionHeld: held != "", OperationID: held, Receipt: heldReceipt})
 		return data, err
 	case "sync":
+		if len(stdin) == 0 || stdin[len(stdin)-1] != '\n' {
+			return nil, errors.New("receipt sync input is not canonical JSON with a terminal newline")
+		}
 		var receipt laneinstall.CatalogCohortReceipt
 		if value("--receipt-file") != "@promo-stdin@" || json.Unmarshal(stdin, &receipt) != nil || receipt.OperationID == "" {
 			return nil, ErrInvalidInput

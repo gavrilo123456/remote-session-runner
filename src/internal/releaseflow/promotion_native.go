@@ -1380,6 +1380,7 @@ func (b *NativePromotionBackend) syncReceiptFrom(ctx context.Context, source, la
 	if err != nil {
 		return err
 	}
+	data = append(data, '\n')
 	for _, host := range HostOrder {
 		if _, err := b.runLane(ctx, host, []string{"catalog-cohort", "--host", host, "--lane", lane, "--action", "sync", "--receipt-file", "@promo-stdin@"}, data); err != nil {
 			return fmt.Errorf("synchronize %s receipt to %s: %w", id, host, err)
