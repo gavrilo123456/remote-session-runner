@@ -486,12 +486,22 @@ incomplete extracted modules; `go mod verify` flagged those directories and
 cache repair was denied. The existing user Go module cache supplied the
 already verified dependencies for the passing gates and controller run.
 
-This controller-only correction does not change the sealed release
-`rr-20261024-43a4e675` or any host service bundle. Factory/Sandbox full-suite
-and Linux focused/native results above apply to `6b3ed49`, not this new source
-change; current-correction host checks remain pending Git delivery. The Dev
-operation is not accepted yet. The other direct/queued transports, Mac-local
-route, limits, capacity, lifecycle, isolation, BUG-026 exit-1, and dedicated
-filesystem-mailbox acceptance remain NOT RUN. QAS promotion and acceptance
-remain NOT RUN. QAS/PRD services, selectors, configurations, databases, and
-mailbox paths remain unchanged.
+The controller-only correction at source commit
+`af688abc344b9e62f2066b445ad5f4599fcecbdb` does not change the sealed release
+`rr-20261024-43a4e675` or any host service bundle. On that exact revision,
+`factory-sandbox` passed the full Linux/AMD64 `make test`, `make vet`,
+`make build`, `make smoke`, and `git diff --check`. `sandbox-host` passed its
+full Linux/arm64 suite and the same remaining gates; free space was
+1,290,891,264 bytes before and 1,280,495,616 bytes after. `linux-host` passed
+focused `catalog-probe-once`, `runner-lane`, and `releaseflow` tests plus native
+vet/build/smoke/diff checks; its earlier interrupted full suite remains NOT
+PASS. All worker checkouts were clean and at `af688ab` before testing. Mac
+Go 1.27.1 full test/vet/build/smoke/diff gates also passed on this source.
+
+The Dev operation remains held after event 26; the `af688ab` correction has
+not yet been exercised by a live retry. No complete Dev acceptance is
+recorded. Other direct/queued transports, Mac-local route, limits, capacity,
+lifecycle, isolation, BUG-026 exit-1, and dedicated filesystem-mailbox
+acceptance remain NOT RUN. QAS promotion and acceptance remain NOT RUN. QAS/PRD
+services, selectors, configurations, databases, and mailbox paths remain
+unchanged.
