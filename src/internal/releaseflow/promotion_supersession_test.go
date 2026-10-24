@@ -24,6 +24,31 @@ func (f *cohortCommandFixture) run(_ context.Context, host string, args []string
 	if len(args) < 1 || len(args) < 2 {
 		return nil, ErrInvalidInput
 	}
+	if args[0] == "catalog-work-inventory" {
+		if len(args) != 5 || args[1] != "--host" || args[2] != host || args[3] != "--lane" || args[4] != "dev" {
+			return nil, ErrInvalidInput
+		}
+		var hostReceipt laneinstall.CatalogCohortReceipt
+		found := false
+		for _, candidate := range f.receipts[host] {
+			hostReceipt, found = candidate, true
+			break
+		}
+		if !found {
+			return nil, ErrOperationCorrupted
+		}
+		index := hostIndex(host)
+		if index < 0 {
+			return nil, ErrInvalidInput
+		}
+		preflight := hostReceipt.Hosts[index]
+		report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLaneDev,
+			ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ServiceActive: false,
+			SelectorTarget: preflight.PreviousTarget, BundleSHA256: preflight.PreviousBundleSHA256,
+			ConfigurationSHA256: preflight.ConfigurationSHA256, DatabaseSchema: preflight.SchemaVersion,
+			WorkInventory: laneinstall.CatalogWorkInventory{}, WorkInventoryEmpty: true}
+		return json.Marshal(report)
+	}
 	if args[0] != "catalog-cohort" {
 		return nil, ErrInvalidInput
 	}
@@ -224,6 +249,7 @@ func promotionTestCohortReceipt(t *testing.T, now time.Time, operationID, releas
 			WriteSchemaMin: store.CurrentSchemaVersion, WriteSchemaMax: store.CurrentSchemaVersion,
 			Migration: migrationPolicy, Rollback: rollbackPolicy},
 	}
+	emptyWorkSHA := (laneinstall.CatalogWorkInventory{}).SHA256()
 	for index, host := range HostOrder {
 		previous := strings.Repeat("3", 64)
 		previousTarget := "releases/" + previous
@@ -244,7 +270,7 @@ func promotionTestCohortReceipt(t *testing.T, now time.Time, operationID, releas
 			Target: laneinstall.CatalogReleaseIdentity{ReleaseID: releaseID, ReleaseSHA256: releaseSHA,
 				HostID: host, BundleSHA256: strings.Repeat(string("456789abcdef"[index]), 64)},
 			ConfigurationSHA256: strings.Repeat("4", 64), SchemaVersion: store.CurrentSchemaVersion,
-			WorkInventorySHA256: strings.Repeat("5", 64), WorkInventoryEmpty: true, PreflightAt: stamp,
+			WorkInventorySHA256: emptyWorkSHA, WorkInventoryEmpty: true, PreflightAt: stamp,
 			BackupDirectory: "/private/tmp/promotion-cohort/" + host, BackupManifestSHA256: strings.Repeat("6", 64),
 			AvailableBytes: 2 << 30, RequiredBytes: 500_000_000,
 		})

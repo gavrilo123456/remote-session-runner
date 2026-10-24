@@ -13,6 +13,9 @@ import (
 // never stat a worker's /home/ubuntu path on the Mac coordinator, even if a path
 // with that name happens to exist there.
 func (b *NativePromotionBackend) readPromotionCapacity(ctx context.Context, host, lane string, snapshot *promotionLaneSnapshot) error {
+	if b != nil && b.capacityReader != nil {
+		return b.capacityReader(ctx, host, lane, snapshot)
+	}
 	if b == nil || snapshot == nil || !contains(HostOrder, host) || !contains(LaneOrder, lane) || !shaPattern.MatchString(b.ControllerRevision) {
 		return ErrInvalidInput
 	}

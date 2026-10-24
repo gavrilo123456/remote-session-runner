@@ -1,0 +1,323 @@
+package releaseflow
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/laneinstall"
+	"remote-session-runner/src/internal/store"
+)
+
+type receiptSyncHostState struct {
+	active bool
+	work   laneinstall.CatalogWorkInventory
+	target string
+	bundle string
+	config string
+	schema int
+}
+
+type receiptSyncFixture struct {
+	receipt  laneinstall.CatalogCohortReceipt
+	states   map[string]receiptSyncHostState
+	commands []string
+}
+
+func (f *receiptSyncFixture) run(_ context.Context, host string, args []string, stdin []byte) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, ErrInvalidInput
+	}
+	value := func(flag string) string {
+		for index := 0; index+1 < len(args); index++ {
+			if args[index] == flag {
+				return args[index+1]
+			}
+		}
+		return ""
+	}
+	state := f.states[host]
+	switch args[0] {
+	case "catalog-work-inventory":
+		if value("--host") != host || value("--lane") != "dev" {
+			return nil, ErrInvalidInput
+		}
+		report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLaneDev,
+			ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ServiceActive: state.active,
+			SelectorTarget: state.target, BundleSHA256: state.bundle, ConfigurationSHA256: state.config,
+			DatabaseSchema: state.schema, WorkInventory: state.work, WorkInventoryEmpty: state.work.Empty()}
+		return json.Marshal(report)
+	case "stop":
+		if value("--host") != host || value("--lane") != "dev" {
+			return nil, ErrInvalidInput
+		}
+		f.commands = append(f.commands, "stop:"+host)
+		state.active = false
+		f.states[host] = state
+		return []byte("stopped\n"), nil
+	case "catalog-cohort":
+		if value("--host") != host || value("--lane") != "dev" {
+			return nil, ErrInvalidInput
+		}
+		switch value("--action") {
+		case "discover":
+			held := f.receipt.Stage != laneinstall.CatalogCohortReleased
+			view := promotionAdmissionView{HostID: host, Lane: config.ReleaseLaneDev, AdmissionHeld: held}
+			if held {
+				view.OperationID = f.receipt.OperationID
+				receipt := f.receipt
+				view.Receipt = &receipt
+			}
+			return json.Marshal(view)
+		case "inspect":
+			view := promotionReceiptView{Present: true, Receipt: f.receipt}
+			return json.Marshal(view)
+		case "sync":
+			if value("--receipt-file") != "@promo-stdin@" || len(stdin) == 0 || stdin[len(stdin)-1] != '\n' {
+				return nil, ErrInvalidInput
+			}
+			for _, hostState := range f.states {
+				if hostState.active {
+					return nil, errors.New("receipt was synchronized while a selected lane service remained active")
+				}
+			}
+			var receipt laneinstall.CatalogCohortReceipt
+			if json.Unmarshal(stdin, &receipt) != nil || receipt.OperationID != f.receipt.OperationID {
+				return nil, ErrInvalidInput
+			}
+			f.commands = append(f.commands, "sync:"+host)
+			f.receipt = receipt
+			return json.Marshal(map[string]string{"operation_id": receipt.OperationID, "stage": string(receipt.Stage)})
+		default:
+			return nil, ErrInvalidInput
+		}
+	default:
+		return nil, fmt.Errorf("unexpected fixture command %q", args[0])
+	}
+}
+
+func newReceiptSyncFixture(t *testing.T, activeHost string, nonEmptyHost string) *receiptSyncFixture {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt := promotionTestCohortReceipt(t, now, strings.Repeat("8", 32), "v2.0.0", nil, true)
+	emptyWorkSHA := (laneinstall.CatalogWorkInventory{}).SHA256()
+	states := make(map[string]receiptSyncHostState, len(HostOrder))
+	for index, host := range HostOrder {
+		configSHA := strings.Repeat(fmt.Sprintf("%x", index+1), 64)
+		receipt.Hosts[index].ConfigurationSHA256 = configSHA
+		receipt.Hosts[index].WorkInventorySHA256 = emptyWorkSHA
+		state := receiptSyncHostState{active: host == activeHost, target: receipt.Hosts[index].PreviousTarget,
+			bundle: receipt.Hosts[index].PreviousBundleSHA256, config: configSHA, schema: store.CurrentSchemaVersion}
+		if host == nonEmptyHost {
+			state.work.ActiveSessions = 1
+		}
+		states[host] = state
+	}
+	return &receiptSyncFixture{receipt: receipt, states: states}
+}
+
+func TestSyncReceiptStopsHeldEmptyLaneBeforePublishingReceipt(t *testing.T) {
+	fixture := newReceiptSyncFixture(t, "linux-host", "")
+	backend := &NativePromotionBackend{laneCommandRunner: fixture.run}
+	if err := backend.syncReceiptFrom(context.Background(), "linux-host", "dev", fixture.receipt.OperationID); err != nil {
+		t.Fatalf("synchronize held empty receipt: %v", err)
+	}
+	firstSync := -1
+	firstStop := -1
+	for index, command := range fixture.commands {
+		if strings.HasPrefix(command, "stop:") && firstStop < 0 {
+			firstStop = index
+		}
+		if strings.HasPrefix(command, "sync:") && firstSync < 0 {
+			firstSync = index
+		}
+	}
+	if firstStop < 0 || firstSync < 0 || firstStop > firstSync {
+		t.Fatalf("receipt sync was not preceded by selected-lane stop: %v", fixture.commands)
+	}
+	for host, state := range fixture.states {
+		if state.active {
+			t.Errorf("%s remained active after receipt synchronization", host)
+		}
+	}
+}
+
+func TestSyncReceiptRefusesWorkBeforeStoppingAnyLane(t *testing.T) {
+	fixture := newReceiptSyncFixture(t, "linux-host", "factory-sandbox")
+	backend := &NativePromotionBackend{laneCommandRunner: fixture.run}
+	if err := backend.syncReceiptFrom(context.Background(), "linux-host", "dev", fixture.receipt.OperationID); err == nil {
+		t.Fatal("receipt synchronization accepted retained work")
+	}
+	if fixture.states["linux-host"].active == false {
+		t.Fatal("active Linux service was stopped before all-host work preflight passed")
+	}
+	for _, command := range fixture.commands {
+		if strings.HasPrefix(command, "stop:") || strings.HasPrefix(command, "sync:") {
+			t.Fatalf("mutation occurred before all-host empty-work checks: %v", fixture.commands)
+		}
+	}
+}
+
+type switchReceiptFixture struct {
+	op       Operation
+	receipts map[string]laneinstall.CatalogCohortReceipt
+	states   map[string]receiptSyncHostState
+	selected map[string]bool
+	commands []string
+}
+
+func (f *switchReceiptFixture) run(_ context.Context, host string, args []string, stdin []byte) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, ErrInvalidInput
+	}
+	value := func(flag string) string {
+		for index := 0; index+1 < len(args); index++ {
+			if args[index] == flag {
+				return args[index+1]
+			}
+		}
+		return ""
+	}
+	state := f.states[host]
+	command := args[0]
+	if command == "catalog-cohort" {
+		action := value("--action")
+		f.commands = append(f.commands, "cohort:"+host+":"+action)
+		switch action {
+		case "inspect":
+			return json.Marshal(promotionReceiptView{Present: true, Receipt: f.receipts[host]})
+		case "discover":
+			receipt := f.receipts[host]
+			return json.Marshal(promotionAdmissionView{HostID: host, Lane: config.ReleaseLaneDev,
+				AdmissionHeld: true, OperationID: receipt.OperationID, Receipt: &receipt})
+		case "preflight":
+			receipt := f.receipts[host]
+			updated, err := laneinstall.AdvanceCatalogCohortReceipt(receipt, "preflight", host, strings.Repeat("e", 64), time.Now().UTC())
+			if err != nil {
+				return nil, err
+			}
+			f.receipts[host] = updated
+			return []byte("{}"), nil
+		case "sync":
+			if value("--receipt-file") != "@promo-stdin@" || len(stdin) == 0 || stdin[len(stdin)-1] != '\n' {
+				return nil, ErrInvalidInput
+			}
+			var receipt laneinstall.CatalogCohortReceipt
+			if json.Unmarshal(stdin, &receipt) != nil {
+				return nil, ErrInvalidInput
+			}
+			for _, hostState := range f.states {
+				if hostState.active {
+					return nil, laneinstall.ErrSimpleLaneNotQuiescent
+				}
+			}
+			f.receipts[host] = receipt
+			return []byte("{}"), nil
+		default:
+			return nil, ErrInvalidInput
+		}
+	}
+	switch command {
+	case "catalog-work-inventory":
+		report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLaneDev,
+			ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ServiceActive: state.active,
+			SelectorTarget: state.target, BundleSHA256: state.bundle, ConfigurationSHA256: state.config,
+			DatabaseSchema: state.schema, WorkInventory: state.work, WorkInventoryEmpty: state.work.Empty()}
+		return json.Marshal(report)
+	case "catalog-status":
+		var releaseID, releaseSHA, bundleSHA string
+		if f.selected[host] {
+			releaseID, releaseSHA, bundleSHA = f.op.Release.ID, f.op.Release.Digest, f.op.Release.Bundles[host].SHA256
+		} else {
+			releaseID, releaseSHA, bundleSHA = "cat-20261023-c01e633", strings.Repeat("9", 64), state.bundle
+		}
+		status := laneinstall.CatalogSelectorStatus{HostID: host, Lane: config.ReleaseLaneDev, Target: state.target, Kind: "catalog",
+			Release: &laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{
+				ReleaseID: releaseID, ReleaseSHA256: releaseSHA, HostID: host, BundleSHA256: bundleSHA}}}
+		return json.Marshal(status)
+	case "catalog-selector-find":
+		if f.selected[host] {
+			return []byte("[{\"operation_id\":\"selector-" + host + "\",\"stage\":\"complete\"}]"), nil
+		}
+		return []byte("[]"), nil
+	case "catalog-select":
+		f.commands = append(f.commands, "select:"+host)
+		f.selected[host] = true
+		receipt := f.receipts[host]
+		updated, err := laneinstall.AdvanceCatalogCohortReceipt(receipt, "switch", host, value("--evidence-sha256"), time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		f.receipts[host] = updated
+		state.target = filepath.Join("/catalog", f.op.Release.ID, host)
+		state.bundle = f.op.Release.Bundles[host].SHA256
+		f.states[host] = state
+		return []byte("{\"operation_id\":\"selector-" + host + "\",\"stage\":\"complete\"}"), nil
+	case "start":
+		f.commands = append(f.commands, "start:"+host)
+		state.active = true
+		f.states[host] = state
+		return []byte("started\n"), nil
+	default:
+		return nil, fmt.Errorf("unexpected switch fixture command %q", command)
+	}
+}
+
+func TestSwitchHostSynchronizesSelectedReceiptBeforeStartingService(t *testing.T) {
+	op := Operation{Lane: "dev", OperationID: strings.Repeat("7", 32), Stage: StageSwitching, Release: testRelease()}
+	op.CohortOperationID = strings.Repeat("8", 32)
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt := promotionTestCohortReceipt(t, now, op.CohortOperationID, "v2.0.0", nil, true)
+	receipt.ReleaseID = op.Release.ID
+	receipt.ReleaseSHA256 = op.Release.Digest
+	receipt.SourceRevision = op.Release.Source.Commit
+	states := make(map[string]receiptSyncHostState, len(HostOrder))
+	receipts := make(map[string]laneinstall.CatalogCohortReceipt, len(HostOrder))
+	selected := make(map[string]bool, len(HostOrder))
+	for index, host := range HostOrder {
+		configSHA := strings.Repeat(fmt.Sprintf("%x", index+1), 64)
+		receipt.Hosts[index].Target = laneinstall.CatalogReleaseIdentity{ReleaseID: op.Release.ID,
+			ReleaseSHA256: op.Release.Digest, HostID: host, BundleSHA256: op.Release.Bundles[host].SHA256}
+		receipt.Hosts[index].ConfigurationSHA256 = configSHA
+		receipt.Hosts[index].WorkInventorySHA256 = (laneinstall.CatalogWorkInventory{}).SHA256()
+		receipt.Hosts[index].PreflightAt = now.Format(time.RFC3339Nano)
+		states[host] = receiptSyncHostState{target: receipt.Hosts[index].PreviousTarget,
+			bundle: receipt.Hosts[index].PreviousBundleSHA256, config: configSHA, schema: store.CurrentSchemaVersion}
+		receipts[host] = receipt
+	}
+	fixture := &switchReceiptFixture{op: op, receipts: receipts, states: states, selected: selected}
+	backend := &NativePromotionBackend{laneCommandRunner: fixture.run,
+		capacityReader: func(_ context.Context, _ string, _ string, snapshot *promotionLaneSnapshot) error {
+			snapshot.AvailableBytes, snapshot.RequiredBytes = 2_000_000_000, 500_000_000
+			return nil
+		}}
+	observation, err := backend.SwitchHost(context.Background(), op, "linux-host")
+	if err != nil {
+		t.Fatalf("switch Linux selector and synchronize receipt: %v", err)
+	}
+	if observation.SelectedReleaseID != op.Release.ID || observation.ServiceStopped != true || !observation.JournalVerified {
+		t.Fatalf("selector should be verified while the held service remains stopped: %+v", observation)
+	}
+	selectIndex, syncAfterSelect := -1, -1
+	for index, command := range fixture.commands {
+		if command == "select:linux-host" {
+			selectIndex = index
+		}
+		if selectIndex >= 0 && strings.HasPrefix(command, "cohort:") && strings.HasSuffix(command, ":sync") {
+			syncAfterSelect = index
+			break
+		}
+		if strings.HasPrefix(command, "start:") {
+			t.Fatalf("service started before cohort acceptance: %v", fixture.commands)
+		}
+	}
+	if selectIndex < 0 || syncAfterSelect < selectIndex {
+		t.Fatalf("selected receipt was not synchronized after selector change: %v", fixture.commands)
+	}
+}

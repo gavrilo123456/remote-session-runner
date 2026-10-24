@@ -65,6 +65,7 @@ type NativePromotionBackend struct {
 	OperatingBuffer    uint64
 	Approval           *Approval
 	laneCommandRunner  func(context.Context, string, []string, []byte) ([]byte, error)
+	capacityReader     func(context.Context, string, string, *promotionLaneSnapshot) error
 }
 
 type promotionReceiptView struct {
@@ -714,12 +715,6 @@ func (b *NativePromotionBackend) SwitchHost(ctx context.Context, op Operation, h
 			if err := b.syncReceiptFrom(ctx, host, op.Lane, op.CohortOperationID); err != nil {
 				return HostObservation{}, err
 			}
-			_, snapshot, err := b.currentHost(ctx, host, op.Lane)
-			if err != nil || !snapshot.Active {
-				if err := b.startIfStopped(ctx, host, op.Lane, snapshot.Active); err != nil {
-					return HostObservation{}, err
-				}
-			}
 			return b.verifiedHostObservation(ctx, op, host, existing[0].OperationID)
 		}
 		return HostObservation{}, errors.New("selector journal is outside the supported promotion reconciliation stages")
@@ -760,9 +755,6 @@ func (b *NativePromotionBackend) SwitchHost(ctx context.Context, op Operation, h
 	if decodeStrictJSON(out, &selector) != nil || selector.OperationID == "" || selector.Stage != "complete" {
 		return HostObservation{}, ErrOperationCorrupted
 	}
-	if err := b.startIfStopped(ctx, host, op.Lane, false); err != nil {
-		return HostObservation{}, err
-	}
 	if err := b.syncReceiptFrom(ctx, host, op.Lane, op.CohortOperationID); err != nil {
 		return HostObservation{}, err
 	}
@@ -782,8 +774,8 @@ func (b *NativePromotionBackend) verifiedHostObservation(ctx context.Context, op
 		CapacityVerified: snapshot.AvailableBytes >= promotionRequiredCapacity(op.Lane, b.OperatingBuffer),
 		AvailableBytes:   snapshot.AvailableBytes, RequiredBytes: promotionRequiredCapacity(op.Lane, b.OperatingBuffer),
 		CanSwitch: snapshot.AvailableBytes >= promotionRequiredCapacity(op.Lane, b.OperatingBuffer)}
-	if obs.SelectedReleaseID != op.Release.ID || obs.SelectedBundleSHA != op.Release.Bundles[host].SHA256 || !snapshot.Active || !snapshot.Empty {
-		return HostObservation{}, errors.New("selected host post-switch identity or stopped-work guard failed")
+	if obs.SelectedReleaseID != op.Release.ID || obs.SelectedBundleSHA != op.Release.Bundles[host].SHA256 || !snapshot.Empty {
+		return HostObservation{}, errors.New("selected host post-switch identity or empty-work guard failed")
 	}
 	return obs, nil
 }
@@ -796,12 +788,92 @@ func (b *NativePromotionBackend) startIfStopped(ctx context.Context, host, lane 
 	return err
 }
 
+// startHostUnderHold starts only the selected lane, and only after checking
+// the exact cohort hold, selected bytes, empty work inventory, and operating
+// buffer. Receipt synchronization stops the lane again before publishing the
+// next host receipt, so the hold remains in force throughout the sequence.
+func (b *NativePromotionBackend) startHostUnderHold(ctx context.Context, op Operation, host string) error {
+	admission, err := b.readAdmission(ctx, host, op.Lane)
+	if err != nil || !admission.AdmissionHeld || admission.OperationID != op.CohortOperationID {
+		return errors.Join(fmt.Errorf("%s selected-lane admission hold changed before service start", host), err)
+	}
+	status, snapshot, err := b.currentHost(ctx, host, op.Lane)
+	wantID, wantBundle := op.Release.ID, op.Release.Bundles[host].SHA256
+	if op.Stage == StageRollingBack {
+		index := hostIndex(host)
+		if index < 0 {
+			return ErrInvalidInput
+		}
+		wantID, wantBundle = op.Hosts[index].PreviousReleaseID, op.Hosts[index].PreviousBundleSHA256
+	}
+	if err != nil || wantID == "" || selectedReleaseID(status) != wantID || selectedBundleSHA(status) != wantBundle ||
+		!snapshot.Empty || snapshot.AvailableBytes < promotionRequiredCapacity(op.Lane, b.OperatingBuffer) {
+		return errors.Join(fmt.Errorf("%s selected identity, empty-work, or capacity guard failed before service start", host), err)
+	}
+	if err := b.startIfStopped(ctx, host, op.Lane, snapshot.Active); err != nil {
+		return err
+	}
+	status, snapshot, err = b.currentHost(ctx, host, op.Lane)
+	if err != nil || selectedReleaseID(status) != wantID || selectedBundleSHA(status) != wantBundle ||
+		!snapshot.Active || !snapshot.Empty || snapshot.AvailableBytes < promotionRequiredCapacity(op.Lane, b.OperatingBuffer) {
+		return errors.Join(fmt.Errorf("%s selected service did not start with the held identity and empty inventory", host), err)
+	}
+	return nil
+}
+
+// startReleasedCohort runs only after one released receipt has synchronized
+// to all hosts. It starts the selected lane in cohort order and verifies each
+// exact selector, active service, empty inventory, and capacity before the
+// promotion can report completion.
+func (b *NativePromotionBackend) startReleasedCohort(ctx context.Context, op Operation) error {
+	view, err := b.readReceipt(ctx, "mac-control-plane", op.Lane, op.CohortOperationID)
+	if err != nil || !view.Present || view.Receipt.Stage != laneinstall.CatalogCohortReleased {
+		return errors.Join(ErrOperationCorrupted, err)
+	}
+	for index, host := range HostOrder {
+		admission, err := b.readAdmission(ctx, host, op.Lane)
+		if err != nil || admission.AdmissionHeld || admission.OperationID != "" {
+			return errors.Join(fmt.Errorf("%s admissions are not released from the synchronized cohort receipt", host), err)
+		}
+		status, snapshot, err := b.currentHost(ctx, host, op.Lane)
+		if err != nil {
+			return err
+		}
+		wantID, wantBundle := op.Release.ID, op.Release.Bundles[host].SHA256
+		if op.Stage == StageRollingBack {
+			wantID, wantBundle = op.Hosts[index].PreviousReleaseID, op.Hosts[index].PreviousBundleSHA256
+		}
+		if wantID == "" || selectedReleaseID(status) != wantID || selectedBundleSHA(status) != wantBundle || !snapshot.Empty ||
+			snapshot.AvailableBytes < promotionRequiredCapacity(op.Lane, b.OperatingBuffer) {
+			return fmt.Errorf("%s released selector, empty-work, or capacity postflight failed", host)
+		}
+		if err := b.startIfStopped(ctx, host, op.Lane, snapshot.Active); err != nil {
+			return fmt.Errorf("start released %s service: %w", host, err)
+		}
+		status, snapshot, err = b.currentHost(ctx, host, op.Lane)
+		if err != nil || !snapshot.Active || !snapshot.Empty || selectedReleaseID(status) != wantID ||
+			selectedBundleSHA(status) != wantBundle || snapshot.AvailableBytes < promotionRequiredCapacity(op.Lane, b.OperatingBuffer) {
+			return errors.Join(fmt.Errorf("%s released service postflight failed", host), err)
+		}
+	}
+	if op.PlanSnapshot != nil {
+		peerEvidence, err := b.readPeerEvidence(ctx, op.Lane)
+		if err != nil || !equalNestedStringMaps(peerEvidence, op.PlanSnapshot.PeerLaneEvidence) {
+			return errors.Join(errors.New("peer-lane isolation changed during selected-lane restart"), err)
+		}
+	}
+	return nil
+}
+
 func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation) (Acceptance, error) {
 	macPlan, err := laneinstall.BuildCatalogPlan("mac-control-plane", config.ReleaseLane(op.Lane))
 	if err != nil {
 		return Acceptance{}, err
 	}
 	for _, host := range HostOrder {
+		if err := b.startHostUnderHold(ctx, op, host); err != nil {
+			return Acceptance{}, err
+		}
 		status, snapshot, err := b.currentHost(ctx, host, op.Lane)
 		if err != nil || selectedReleaseID(status) != op.Release.ID || selectedBundleSHA(status) != op.Release.Bundles[host].SHA256 ||
 			!snapshot.Active || !snapshot.Empty || snapshot.AvailableBytes < promotionRequiredCapacity(op.Lane, b.OperatingBuffer) {
@@ -983,14 +1055,12 @@ func (b *NativePromotionBackend) ReleaseCohort(ctx context.Context, op Operation
 				return nil, err
 			}
 		}
-		for _, host := range HostOrder {
-			if _, err := b.runLane(ctx, host, serviceAction(op.Lane, "start", host), nil); err != nil {
-				return nil, err
-			}
-		}
 		return b.openAdmissions(ctx, op)
 	}
 	if view.Receipt.Stage == laneinstall.CatalogCohortHeld || view.Receipt.Stage == laneinstall.CatalogCohortSwitching {
+		if err := b.startHostUnderHold(ctx, op, "mac-control-plane"); err != nil {
+			return nil, err
+		}
 		if _, err := b.runLane(ctx, "mac-control-plane", []string{"catalog-cohort", "--host", "mac-control-plane", "--lane", op.Lane,
 			"--action", "verify-start", "--operation-id", op.CohortOperationID, "--evidence-sha256", operationAcceptanceDigest(op)}, nil); err != nil {
 			return nil, err
@@ -1005,6 +1075,9 @@ func (b *NativePromotionBackend) ReleaseCohort(ctx context.Context, op Operation
 			}
 			if receiptHasVerify(view.Receipt, host) {
 				continue
+			}
+			if err := b.startHostUnderHold(ctx, op, host); err != nil {
+				return nil, err
 			}
 			if _, err := b.runLane(ctx, host, []string{"catalog-cohort", "--host", host, "--lane", op.Lane,
 				"--action", "verify", "--operation-id", op.CohortOperationID, "--subject-host", host,
@@ -1021,6 +1094,9 @@ func (b *NativePromotionBackend) ReleaseCohort(ctx context.Context, op Operation
 		}
 	}
 	if view.Receipt.Stage == laneinstall.CatalogCohortVerifying {
+		if err := b.startHostUnderHold(ctx, op, "mac-control-plane"); err != nil {
+			return nil, err
+		}
 		if _, err := b.runLane(ctx, "mac-control-plane", []string{"catalog-cohort", "--host", "mac-control-plane", "--lane", op.Lane,
 			"--action", "complete", "--operation-id", op.CohortOperationID, "--evidence-sha256", operationAcceptanceDigest(op)}, nil); err != nil {
 			return nil, err
@@ -1041,6 +1117,9 @@ func (b *NativePromotionBackend) openAdmissions(ctx context.Context, op Operatio
 		if view.Receipt.Stage != laneinstall.CatalogCohortComplete && view.Receipt.Stage != laneinstall.CatalogCohortRolledBack {
 			return nil, errors.New("cohort is not complete on all hosts; admissions remain held")
 		}
+		if err := b.startHostUnderHold(ctx, op, "mac-control-plane"); err != nil {
+			return nil, err
+		}
 		evidence := digest([]byte(op.OperationID + "|open-admissions|" + op.Release.Digest))
 		if _, err := b.runLane(ctx, "mac-control-plane", []string{"catalog-cohort", "--host", "mac-control-plane", "--lane", op.Lane,
 			"--action", "open", "--operation-id", op.CohortOperationID, "--evidence-sha256", evidence}, nil); err != nil {
@@ -1048,6 +1127,9 @@ func (b *NativePromotionBackend) openAdmissions(ctx context.Context, op Operatio
 		}
 	}
 	if err := b.syncReceiptFrom(ctx, "mac-control-plane", op.Lane, op.CohortOperationID); err != nil {
+		return nil, err
+	}
+	if err := b.startReleasedCohort(ctx, op); err != nil {
 		return nil, err
 	}
 	return map[string]any{"cohort_operation_id": op.CohortOperationID, "receipt_stage": "released", "synchronized_hosts": HostOrder}, nil
@@ -1333,6 +1415,9 @@ func (b *NativePromotionBackend) syncReceiptFrom(ctx context.Context, source, la
 			needsReconciliation = true
 		}
 	}
+	if err := b.stopCohortForReceiptSync(ctx, lane, view.Receipt); err != nil {
+		return err
+	}
 	if needsReconciliation {
 		if len(histories) < 2 {
 			return ErrOperationCorrupted
@@ -1390,6 +1475,84 @@ func (b *NativePromotionBackend) syncReceiptFrom(ctx context.Context, source, la
 		copyView, err := b.readReceipt(ctx, host, lane, id)
 		if err != nil || !copyView.Present || !reflectReceiptEqual(copyView.Receipt, view.Receipt) {
 			return errors.Join(fmt.Errorf("receipt synchronization verification failed on %s", host), err)
+		}
+	}
+	return nil
+}
+
+// stopCohortForReceiptSync preserves the host-native stopped/empty guard used
+// by catalog-cohort sync. A selector or verification transition can leave a
+// selected-lane service running; stop only that lane, after every host reports
+// an empty inventory and the exact operation remains fenced. Peer lanes are
+// never addressed here.
+func (b *NativePromotionBackend) stopCohortForReceiptSync(ctx context.Context, lane string,
+	receipt laneinstall.CatalogCohortReceipt) error {
+	if receipt.Lane != config.ReleaseLane(lane) || receipt.OperationID == "" {
+		return ErrOperationCorrupted
+	}
+	type hostView struct {
+		report laneinstall.CatalogWorkInventoryReport
+	}
+	views := make(map[string]hostView, len(HostOrder))
+	for index, host := range HostOrder {
+		out, err := b.runLane(ctx, host, promotionWorkInventoryArgs(host, lane), nil)
+		if err != nil {
+			return fmt.Errorf("read %s before receipt synchronization: %w", host, err)
+		}
+		var report laneinstall.CatalogWorkInventoryReport
+		if decodeStrictJSON(out, &report) != nil || report.HostID != host || string(report.Lane) != lane ||
+			!report.WorkInventoryEmpty || !report.WorkInventory.Empty() {
+			return fmt.Errorf("%s selected lane is not empty before receipt synchronization: %w", host, laneinstall.ErrSimpleLaneNotQuiescent)
+		}
+		preflight := receipt.Hosts[index]
+		if preflight.HostID != host || report.ConfigurationSHA256 != preflight.ConfigurationSHA256 ||
+			report.DatabaseSchema != preflight.SchemaVersion || report.WorkInventory.SHA256() != preflight.WorkInventorySHA256 {
+			return fmt.Errorf("%s configuration, schema, or work identity changed before receipt synchronization: %w", host, ErrOperationCorrupted)
+		}
+		if report.ServiceActive {
+			admission, err := b.readAdmission(ctx, host, lane)
+			if err != nil {
+				return fmt.Errorf("inspect %s admission before receipt synchronization: %w", host, err)
+			}
+			localReceipt, err := b.readReceipt(ctx, host, lane, receipt.OperationID)
+			if err != nil {
+				return fmt.Errorf("inspect %s operation receipt before synchronization: %w", host, err)
+			}
+			if admission.AdmissionHeld {
+				if admission.OperationID != receipt.OperationID {
+					return fmt.Errorf("%s active service is held by another operation: %w", host, ErrAdmissionHeld)
+				}
+			} else if receipt.Stage != laneinstall.CatalogCohortReleased || !localReceipt.Present ||
+				localReceipt.Receipt.Stage != laneinstall.CatalogCohortReleased {
+				return fmt.Errorf("%s active service has no matching selected-lane admission hold: %w", host, ErrAdmissionHeld)
+			}
+		}
+		views[host] = hostView{report: report}
+	}
+	for _, host := range HostOrder {
+		before := views[host].report
+		if !before.ServiceActive {
+			continue
+		}
+		if _, err := b.runLane(ctx, host, serviceAction(lane, "stop", host), nil); err != nil {
+			return fmt.Errorf("stop %s before receipt synchronization: %w", host, err)
+		}
+	}
+	for _, host := range HostOrder {
+		before := views[host].report
+		if !before.ServiceActive {
+			continue
+		}
+		out, err := b.runLane(ctx, host, promotionWorkInventoryArgs(host, lane), nil)
+		if err != nil {
+			return fmt.Errorf("verify %s stopped before receipt synchronization: %w", host, err)
+		}
+		var after laneinstall.CatalogWorkInventoryReport
+		if decodeStrictJSON(out, &after) != nil || after.HostID != host || string(after.Lane) != lane ||
+			after.ServiceActive || !after.WorkInventoryEmpty || !after.WorkInventory.Empty() ||
+			after.SelectorTarget != before.SelectorTarget || after.BundleSHA256 != before.BundleSHA256 ||
+			after.ConfigurationSHA256 != before.ConfigurationSHA256 || after.DatabaseSchema != before.DatabaseSchema {
+			return fmt.Errorf("%s selected lane did not remain empty and identity-stable after stop: %w", host, laneinstall.ErrSimpleLaneNotQuiescent)
 		}
 	}
 	return nil
