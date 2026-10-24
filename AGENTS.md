@@ -52,6 +52,20 @@ Dev/QAS/PRD cohort acceptance. Do not rerun the starved host's full suite merely
 to remove its historical status. Follow the current CAT-06 plan and evidence;
 no new host or live service change is authorized by this test-plan amendment.
 
+## Build and promotion CLI assignment — 2026-10-24
+
+The owner assigned the source implementation in
+[`030-build-release-and-promotion-cli-implementation-plan.md`](040-improvments/040-dev-qas-prd-three-machine-lanes/030-build-release-and-promotion-cli-implementation-plan.md), PROMO-01 through PROMO-07. The commands are `build-release`, `promote-to`, and `runner-release`; details and safe examples are in [`docs/promotion-guide.md`](docs/promotion-guide.md). Build and promotion workflow records stay under `~/projects-runtime/runner-release-operations/`; release bundles stay in the existing per-host catalog. Do not put credentials or live host configuration in Git.
+
+PROMO source tests and four-host bundle construction are separate from
+installed-lane acceptance. PROMO-08 is a separately instructed live walkthrough;
+source implementation does not authorize service stop/start, selector changes,
+mailbox publication, ACK publication, or live promotion. PRD still requires a
+current release-bound owner approval before any future PRD mutation. Keep the
+common selected-lane preparation scope visible even for a named-host selector
+step, preserve peer lanes and retained work, and use the supported catalog
+backup/receipt/selector/recovery commands rather than editing runtime state.
+
 ## Authoritative source checkout
 
 Make all Runner source-code, test, schema, deployment-file, and project-documentation changes in the Mac checkout at `/Users/tomasz.walczuk/projects/remote-session-runner`. This checkout is the development source for the current PoC. Do **not** edit tracked project files directly in the Ubuntu checkout at `/home/ubuntu/projects/remote-session-runner`, and do not copy changed source files there with `scp` or `rsync`.

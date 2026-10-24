@@ -755,6 +755,19 @@ PRD uses its own scheduled maintenance window.
 
 ## 7. Source delivery, release records, and promotion
 
+### Build and promotion CLI overlay
+
+The additive `build-release` / `promote-to` workflow is specified in
+[`030-build-release-and-promotion-cli-implementation-plan.md`](030-build-release-and-promotion-cli-implementation-plan.md)
+and operated through the [promotion guide](../../../docs/promotion-guide.md).
+It freezes and publishes immutable per-host bundles without activation,
+persists lane promotion operations outside Git, requires digest-bound prior
+lane acceptance and PRD owner approval, and delegates installation, backup,
+receipt, selector and service effects to guarded `runner-lane` operations.
+Named-host steps still share four-host lane preparation. This overlay does not
+change lane identities or writable paths, and source qualification does not
+claim live acceptance.
+
 The authoritative source checkout remains the Mac `dev` checkout. The current
 Gitea-primary → GitHub-mirror → clean Ubuntu `dev` checkout workflow remains
 the source-delivery rule. QAS and PRD are **not** source-edit branches or

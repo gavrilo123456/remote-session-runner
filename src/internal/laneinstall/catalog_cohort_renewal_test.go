@@ -12,6 +12,9 @@ import (
 	"remote-session-runner/src/internal/store"
 )
 
+const catalogCohortContinuationOperationID = "c2f074a84bc864830266a209943319eb"
+const catalogCohortContinuationReleaseID = "cat-20261022-7a42f3b"
+
 func TestCatalogCohortContinuationRenewalKeepsReceiptSeparateAndBounded(t *testing.T) {
 	started := time.Date(2026, 10, 23, 5, 0, 0, 0, time.UTC)
 	receipt := expiredPRDSwitchingReceiptFixture(t, started)
@@ -99,6 +102,105 @@ func TestCatalogCohortContinuationRenewalRequiresFreshConsistentHostProofs(t *te
 	}
 	if _, err := NewCatalogCohortContinuationRenewal(receipt, observations, started.Add(59*time.Minute)); err == nil {
 		t.Fatal("renewal started before the original cohort evidence expired")
+	}
+}
+
+func TestCatalogCohortContinuationIsGenericAcrossLanesAndHeldState(t *testing.T) {
+	started := time.Date(2026, 10, 23, 5, 0, 0, 0, time.UTC)
+	receipt := validCatalogCohortFixture(started)
+	receipt, err := AdvanceCatalogCohortReceipt(receipt, "hold", "", strings.Repeat("a", 64), started.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Lane != config.ReleaseLaneDev || receipt.Stage != CatalogCohortHeld || !catalogCohortContinuationEligible(receipt) {
+		t.Fatalf("Dev held cohort is not continuation eligible: lane=%s stage=%s", receipt.Lane, receipt.Stage)
+	}
+	observedAt := started.Add(61*time.Minute + 5*time.Second)
+	observations := make([]CatalogCohortContinuationHostObservation, 0, len(catalogCohortSwitchOrder))
+	for index, hostID := range catalogCohortSwitchOrder {
+		host := receipt.Hosts[index]
+		kind := "catalog"
+		if hostID == "mac-control-plane" {
+			kind = "legacy"
+		}
+		observations = append(observations, CatalogCohortContinuationHostObservation{
+			FormatVersion: catalogCohortContinuationFormatVersion, OperationID: receipt.OperationID, HostID: hostID,
+			Lane: receipt.Lane, ReleaseID: receipt.ReleaseID, ReleaseSHA256: receipt.ReleaseSHA256,
+			BaseTransitionCount: len(receipt.Transitions), BaseTransitionSHA256: lastCohortTransitionDigest(receipt.Transitions),
+			SelectorKind: kind, SelectorTarget: host.PreviousTarget, SelectorBundleSHA256: host.PreviousBundleSHA256,
+			ConfigurationSHA256: host.ConfigurationSHA256, DatabaseSchema: host.SchemaVersion,
+			WorkInventorySHA256: host.WorkInventorySHA256, WorkInventoryEmpty: true,
+			BackupDirectory: host.BackupDirectory, BackupManifestSHA256: host.BackupManifestSHA256,
+			AvailableBytes: 2 << 30, RequiredBytes: host.RequiredBytes, ServiceStopped: true,
+			AdmissionHeld: true, AdmissionOperationID: receipt.OperationID, ObservedAt: observedAt.Format(time.RFC3339Nano),
+		})
+	}
+	verifiedAt := observedAt.Add(10 * time.Second)
+	for _, observation := range observations {
+		if err := validateCatalogCohortContinuationHostObservation(observation, receipt); err != nil {
+			t.Fatalf("validate generic observation for %s: %v; %+v", observation.HostID, err, observation)
+		}
+	}
+	renewal, err := NewCatalogCohortContinuationRenewal(receipt, observations, verifiedAt)
+	if err != nil {
+		t.Fatalf("create generic Dev continuation: %v", err)
+	}
+	if renewal.Lane != config.ReleaseLaneDev || renewal.OperationID != receipt.OperationID {
+		t.Fatalf("renewal lost lane or operation binding: %+v", renewal)
+	}
+	if err := ValidateCatalogCohortContinuationRenewalForReceipt(renewal, receipt, verifiedAt.Add(CatalogCohortContinuationWindow)); err != nil {
+		t.Fatalf("generic renewal rejected at its inclusive expiry: %v", err)
+	}
+	if err := ValidateCatalogCohortContinuationRenewalForReceipt(renewal, receipt, verifiedAt.Add(CatalogCohortContinuationWindow+time.Nanosecond)); err == nil {
+		t.Fatal("generic renewal exceeded its bounded four-hour continuation")
+	}
+	mutated := renewal
+	mutated.Lane = config.ReleaseLaneQAS
+	mutated.SHA256 = catalogCohortContinuationDigest(mutated)
+	if ValidateCatalogCohortContinuationRenewalForReceipt(mutated, receipt, verifiedAt) == nil {
+		t.Fatal("renewal was accepted after changing its selected lane")
+	}
+}
+
+func TestCatalogCohortContinuationRejectsIllegalPrefixAndTerminalStages(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt := validCatalogCohortFixture(now)
+	if catalogCohortContinuationEligible(receipt) {
+		t.Fatal("prepared receipt must receive its supported hold before continuation")
+	}
+	held, err := AdvanceCatalogCohortReceipt(receipt, "hold", "", strings.Repeat("a", 64), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := AdvanceCatalogCohortReceipt(held, "block", "", strings.Repeat("b", 64), now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalogCohortContinuationEligible(blocked) {
+		t.Fatal("blocked receipt must be reconciled through supported controls before continuation")
+	}
+	complete := held
+	for _, hostID := range catalogCohortSwitchOrder {
+		complete, err = AdvanceCatalogCohortReceipt(complete, "preflight", hostID, strings.Repeat("c", 64), now.Add(time.Duration(len(complete.Transitions)+1)*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		complete, err = AdvanceCatalogCohortReceipt(complete, "switch", hostID, strings.Repeat("d", 64), now.Add(time.Duration(len(complete.Transitions)+1)*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete, err = AdvanceCatalogCohortReceipt(complete, "verify-start", "", strings.Repeat("e", 64), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catalogCohortContinuationEligible(complete) {
+		t.Fatal("fully switched verifying receipt should be continuation eligible")
+	}
+	wrongOrder := complete
+	wrongOrder.Stage = CatalogCohortSwitching
+	if catalogCohortContinuationEligible(wrongOrder) {
+		t.Fatal("receipt with a stage inconsistent with its transition history was accepted")
 	}
 }
 

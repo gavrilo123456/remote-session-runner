@@ -20,12 +20,9 @@ import (
 
 const catalogCohortContinuationFormatVersion = 1
 
-const catalogCohortContinuationOperationID = "c2f074a84bc864830266a209943319eb"
-const catalogCohortContinuationReleaseID = "cat-20261022-7a42f3b"
-
-// CatalogCohortContinuationWindow is the bounded operation-specific extension
-// for a PRD cohort whose original whole-cohort evidence has expired. Host
-// selector effects still require a new two-minute local preflight.
+// CatalogCohortContinuationWindow is the single bounded extension for an
+// expired selected-lane cohort. Host selector effects still require a new
+// two-minute local preflight.
 const CatalogCohortContinuationWindow = 4 * time.Hour
 
 const catalogCohortContinuationObservationMaxAge = 2 * time.Minute
@@ -80,15 +77,14 @@ type CatalogCohortContinuationRenewal struct {
 	SHA256               string                                     `json:"sha256"`
 }
 
-// ObserveCatalogCohortContinuationHost validates the current PRD host without
+// ObserveCatalogCohortContinuationHost validates the current selected-lane host without
 // changing its service, selector, database, receipt, or work state.
 func ObserveCatalogCohortContinuationHost(ctx context.Context, plan Plan, operationID string) (CatalogCohortContinuationHostObservation, error) {
-	if validateCatalogPlan(plan) != nil || plan.Lane != config.ReleaseLanePRD || !validCatalogOperationID(operationID) {
+	if validateCatalogPlan(plan) != nil || !validCatalogOperationID(operationID) {
 		return CatalogCohortContinuationHostObservation{}, ErrCatalogOperationInvalid
 	}
 	receipt, err := ReadCatalogCohortReceipt(plan, operationID)
-	if err != nil || receipt.OperationID != catalogCohortContinuationOperationID || receipt.ReleaseID != catalogCohortContinuationReleaseID ||
-		receipt.Stage != CatalogCohortSwitching || !reflect.DeepEqual(cohortSwitchedHosts(receipt), []string{"linux-host"}) {
+	if err != nil || !catalogCohortContinuationEligible(receipt) {
 		return CatalogCohortContinuationHostObservation{}, ErrCatalogOperationInvalid
 	}
 	now := time.Now().UTC()
@@ -102,18 +98,6 @@ func ObserveCatalogCohortContinuationHost(ctx context.Context, plan Plan, operat
 	if err := ValidateCatalogCohortHistoryLocalState(ctx, plan, receipt); err != nil {
 		return CatalogCohortContinuationHostObservation{}, err
 	}
-	prdPlan, err := BuildPRDUpgradePlan(plan.HostID)
-	if err != nil {
-		return CatalogCohortContinuationHostObservation{}, err
-	}
-	service, err := NewPRDServiceController()
-	if err != nil {
-		return CatalogCohortContinuationHostObservation{}, err
-	}
-	active, err := service.Status(ctx, prdPlan)
-	if err != nil || active {
-		return CatalogCohortContinuationHostObservation{}, errors.Join(ErrSimpleLaneNotQuiescent, err)
-	}
 	root, err := DefaultCatalogRootForPlan(plan)
 	if err != nil {
 		return CatalogCohortContinuationHostObservation{}, err
@@ -122,34 +106,68 @@ func ObserveCatalogCohortContinuationHost(ctx context.Context, plan Plan, operat
 	if err != nil {
 		return CatalogCohortContinuationHostObservation{}, err
 	}
-	proof, err := readPRDCatalogProof(ctx, prdPlan, layout)
-	if err != nil || !proof.work.Empty() {
-		return CatalogCohortContinuationHostObservation{}, errors.Join(ErrPRDUpgradeGuard, err)
-	}
 	index := cohortHostIndex(receipt, plan.HostID)
 	if index < 0 {
 		return CatalogCohortContinuationHostObservation{}, ErrCatalogOperationInvalid
 	}
 	host := receipt.Hosts[index]
-	if proof.schema != host.SchemaVersion || proof.configurationSHA256 != host.ConfigurationSHA256 ||
-		proof.workSHA256 != host.WorkInventorySHA256 {
+	var active bool
+	var work CatalogWorkInventory
+	var configurationSHA string
+	var schema int
+	if plan.Lane == config.ReleaseLanePRD {
+		prdPlan, planErr := BuildPRDUpgradePlan(plan.HostID)
+		service, serviceErr := NewPRDServiceController()
+		if planErr != nil || serviceErr != nil {
+			return CatalogCohortContinuationHostObservation{}, errors.Join(planErr, serviceErr)
+		}
+		active, err = service.Status(ctx, prdPlan)
+		if err == nil && !active {
+			var proof prdCatalogProof
+			proof, err = readPRDCatalogProof(ctx, prdPlan, layout)
+			if err == nil {
+				work, configurationSHA, schema = proof.work, proof.configurationSHA256, proof.schema
+			}
+		}
+	} else {
+		service, serviceErr := NewSimpleServiceController()
+		if serviceErr != nil {
+			return CatalogCohortContinuationHostObservation{}, serviceErr
+		}
+		var report CatalogWorkInventoryReport
+		report, err = ReadCatalogWorkInventory(ctx, plan, service)
+		if err == nil {
+			active, work, configurationSHA, schema = report.ServiceActive, report.WorkInventory, report.ConfigurationSHA256, report.DatabaseSchema
+		}
+	}
+	if err != nil || active || !work.Empty() || schema != host.SchemaVersion || configurationSHA != host.ConfigurationSHA256 ||
+		work.SHA256() != host.WorkInventorySHA256 {
 		return CatalogCohortContinuationHostObservation{}, ErrCatalogOperationInvalid
 	}
-	manifest, err := loadPRDBackupManifest(prdPlan, host.BackupDirectory)
-	if err != nil {
+	backupReference := catalogBackupReference{Directory: host.BackupDirectory, ManifestSHA256: host.BackupManifestSHA256,
+		CohortOperationID: receipt.OperationID}
+	if err := validateCatalogBackupReference(layout, backupReference, host.PreviousTarget, host.SchemaVersion); err != nil ||
+		backupManifestSHA256(host.BackupDirectory) != host.BackupManifestSHA256 {
 		return CatalogCohortContinuationHostObservation{}, errors.Join(ErrSimpleBackupRequired, err)
 	}
-	if manifest.SchemaVersion != host.SchemaVersion || manifest.DatabasePath != prdPlan.Namespace.Database ||
-		manifest.BundleSHA256 != host.Target.BundleSHA256 || backupManifestSHA256(host.BackupDirectory) != host.BackupManifestSHA256 {
-		return CatalogCohortContinuationHostObservation{}, ErrSimpleBackupRequired
+	if plan.Lane == config.ReleaseLanePRD {
+		prdPlan, planErr := BuildPRDUpgradePlan(plan.HostID)
+		manifest, loadErr := loadPRDBackupManifest(prdPlan, host.BackupDirectory)
+		if planErr != nil || loadErr != nil || manifest.BundleSHA256 != host.Target.BundleSHA256 {
+			return CatalogCohortContinuationHostObservation{}, errors.Join(ErrSimpleBackupRequired, planErr, loadErr)
+		}
+		if err := validateCatalogCohortContinuationBackupTargets(receipt, plan.HostID, manifest); err != nil {
+			return CatalogCohortContinuationHostObservation{}, errors.Join(ErrSimpleBackupRequired, err)
+		}
 	}
-	if err := validateCatalogCohortContinuationBackupTargets(receipt, plan.HostID, manifest); err != nil {
-		return CatalogCohortContinuationHostObservation{}, errors.Join(ErrSimpleBackupRequired, err)
+	var stat unix.Statfs_t
+	if err := unix.Statfs(layout.backupRoot, &stat); err != nil || stat.Bsize < 0 || stat.Bavail < 0 {
+		return CatalogCohortContinuationHostObservation{}, errors.Join(ErrCatalogInsufficientSpace, err)
 	}
-	available, selectorReserve, err := ReadPRDCatalogSelectorCapacity(prdPlan)
-	required, requiredErr := catalogCohortContinuationRequiredBytes(selectorReserve)
-	if err != nil || requiredErr != nil || available < required {
-		return CatalogCohortContinuationHostObservation{}, errors.Join(ErrCatalogInsufficientSpace, err, requiredErr)
+	available := uint64(stat.Bavail) * uint64(stat.Bsize)
+	required, requiredErr := catalogCohortContinuationRequiredBytesForLane(plan.Lane, host.RequiredBytes)
+	if requiredErr != nil || available < required {
+		return CatalogCohortContinuationHostObservation{}, errors.Join(ErrCatalogInsufficientSpace, requiredErr)
 	}
 	status, err := inspectCatalogSelector(layout)
 	if err != nil {
@@ -163,10 +181,10 @@ func ObserveCatalogCohortContinuationHost(ctx context.Context, plan Plan, operat
 		FormatVersion: catalogCohortContinuationFormatVersion, OperationID: receipt.OperationID, HostID: plan.HostID,
 		Lane: receipt.Lane, ReleaseID: receipt.ReleaseID, ReleaseSHA256: receipt.ReleaseSHA256,
 		BaseTransitionCount: len(receipt.Transitions), BaseTransitionSHA256: lastCohortTransitionDigest(receipt.Transitions),
-		SelectorKind: status.Kind, SelectorTarget: status.Target, SelectorBundleSHA256: proof.previousBundleSHA256(),
+		SelectorKind: status.Kind, SelectorTarget: status.Target, SelectorBundleSHA256: catalogSelectorStatusBundleSHA256(status),
 		SelectorJournalOperationID: journalID, SelectorJournalSHA256: journalSHA,
-		ConfigurationSHA256: proof.configurationSHA256, DatabaseSchema: proof.schema,
-		WorkInventorySHA256: proof.workSHA256, WorkInventoryEmpty: proof.work.Empty(),
+		ConfigurationSHA256: configurationSHA, DatabaseSchema: schema,
+		WorkInventorySHA256: work.SHA256(), WorkInventoryEmpty: work.Empty(),
 		BackupDirectory: host.BackupDirectory, BackupManifestSHA256: host.BackupManifestSHA256,
 		AvailableBytes: available, RequiredBytes: required,
 		ServiceStopped: true, AdmissionHeld: true, AdmissionOperationID: operationID,
@@ -195,14 +213,13 @@ func validateCatalogCohortContinuationBackupTargets(receipt CatalogCohortReceipt
 	return verifyPRDBackupTargets(manifest, true)
 }
 
-// NewCatalogCohortContinuationRenewal creates a four-hour continuation only
-// from a fully expired PRD switching receipt with its Linux switch preserved
+// NewCatalogCohortContinuationRenewal creates one bounded continuation for an
+// expired held/switching/verifying receipt with a legal ordered switch prefix
 // and four mutually consistent, recent host observations.
 func NewCatalogCohortContinuationRenewal(receipt CatalogCohortReceipt,
 	observations []CatalogCohortContinuationHostObservation, verifiedAt time.Time) (CatalogCohortContinuationRenewal, error) {
-	if ValidateCatalogCohortReceipt(receipt) != nil || receipt.OperationID != catalogCohortContinuationOperationID ||
-		receipt.ReleaseID != catalogCohortContinuationReleaseID || receipt.Lane != config.ReleaseLanePRD || receipt.Stage != CatalogCohortSwitching ||
-		!reflect.DeepEqual(cohortSwitchedHosts(receipt), []string{"linux-host"}) || len(observations) != len(catalogCohortSwitchOrder) || verifiedAt.IsZero() {
+	if ValidateCatalogCohortReceipt(receipt) != nil || !catalogCohortContinuationEligible(receipt) ||
+		len(observations) != len(catalogCohortSwitchOrder) || verifiedAt.IsZero() {
 		return CatalogCohortContinuationRenewal{}, ErrCatalogOperationInvalid
 	}
 	verifiedAt = verifiedAt.UTC()
@@ -254,8 +271,8 @@ func NewCatalogCohortContinuationRenewal(receipt CatalogCohortReceipt,
 // evidence format and its fixed four-hour lifetime.
 func ValidateCatalogCohortContinuationRenewal(renewal CatalogCohortContinuationRenewal) error {
 	if renewal.FormatVersion != catalogCohortContinuationFormatVersion || !validCatalogOperationID(renewal.RenewalID) ||
-		renewal.OperationID != catalogCohortContinuationOperationID || renewal.Lane != config.ReleaseLanePRD ||
-		renewal.ReleaseID != catalogCohortContinuationReleaseID || !validCatalogReleaseID(renewal.ReleaseID) ||
+		!validCatalogOperationID(renewal.OperationID) || (renewal.Lane != config.ReleaseLaneDev && renewal.Lane != config.ReleaseLaneQAS && renewal.Lane != config.ReleaseLanePRD) ||
+		!validCatalogReleaseID(renewal.ReleaseID) ||
 		!bundleDigestPattern.MatchString(renewal.ReleaseSHA256) || renewal.BaseTransitionCount <= 0 ||
 		!bundleDigestPattern.MatchString(renewal.BaseTransitionSHA256) || len(renewal.Hosts) != len(catalogCohortSwitchOrder) ||
 		!validCohortTimestamp(renewal.VerifiedAt) || !validCohortTimestamp(renewal.ExpiresAt) ||
@@ -295,8 +312,7 @@ func ValidateCatalogCohortContinuationRenewalForReceipt(renewal CatalogCohortCon
 	}
 	base.Stage, _ = replayCatalogCohortTransitions(base)
 	base.UpdatedAt = base.Transitions[len(base.Transitions)-1].At
-	if ValidateCatalogCohortReceipt(base) != nil || base.Stage != CatalogCohortSwitching ||
-		!reflect.DeepEqual(cohortSwitchedHosts(base), []string{"linux-host"}) {
+	if ValidateCatalogCohortReceipt(base) != nil || !catalogCohortContinuationEligible(base) {
 		return ErrCatalogOperationInvalid
 	}
 	verifiedAt, _ := time.Parse(time.RFC3339Nano, renewal.VerifiedAt)
@@ -326,10 +342,40 @@ func catalogCohortContinuationRequiredBytes(selectorReserve uint64) (uint64, err
 	return selectorReserve + prdCatalogOperatingBufferBytes, nil
 }
 
+func catalogCohortContinuationRequiredBytesForLane(lane config.ReleaseLane, recorded uint64) (uint64, error) {
+	minimum := prdCatalogOperatingBufferBytes
+	if lane == config.ReleaseLanePRD {
+		minimum += prdCatalogSelectorHeadroom
+	} else if lane != config.ReleaseLaneDev && lane != config.ReleaseLaneQAS {
+		return 0, ErrCatalogOperationInvalid
+	}
+	if recorded > minimum {
+		minimum = recorded
+	}
+	return minimum, nil
+}
+
+func catalogCohortContinuationEligible(receipt CatalogCohortReceipt) bool {
+	if ValidateCatalogCohortReceipt(receipt) != nil ||
+		(receipt.Stage != CatalogCohortHeld && receipt.Stage != CatalogCohortSwitching && receipt.Stage != CatalogCohortVerifying) {
+		return false
+	}
+	switched := cohortSwitchedHosts(receipt)
+	if len(switched) > len(catalogCohortSwitchOrder) {
+		return false
+	}
+	for index, host := range switched {
+		if host != catalogCohortSwitchOrder[index] {
+			return false
+		}
+	}
+	return receipt.Stage != CatalogCohortVerifying || len(switched) == len(catalogCohortSwitchOrder)
+}
+
 // ReadCatalogCohortContinuationRenewal loads the separate owner-only renewal
 // file for one PRD operation. The sealed receipt parser never reads this path.
 func ReadCatalogCohortContinuationRenewal(plan Plan, operationID string) (CatalogCohortContinuationRenewal, error) {
-	if validateCatalogPlan(plan) != nil || plan.Lane != config.ReleaseLanePRD || !validCatalogOperationID(operationID) {
+	if validateCatalogPlan(plan) != nil || !validCatalogOperationID(operationID) {
 		return CatalogCohortContinuationRenewal{}, ErrCatalogOperationInvalid
 	}
 	path := catalogCohortContinuationPath(plan, operationID)
@@ -379,7 +425,7 @@ func LoadCatalogCohortContinuationRenewalFile(path string) (CatalogCohortContinu
 // only by guarded PRD selector mutation. Its path is outside catalog-cohorts,
 // so older Runner processes continue to parse the unchanged receipt format.
 func readCatalogCohortContinuationRenewalAt(layout catalogSelectorLayout, operationID string) (CatalogCohortContinuationRenewal, error) {
-	if layout.lane != config.ReleaseLanePRD || !validCatalogOperationID(operationID) {
+	if !validCatalogOperationID(operationID) {
 		return CatalogCohortContinuationRenewal{}, ErrCatalogOperationInvalid
 	}
 	path := filepath.Join(filepath.Dir(layout.operationRoot), "catalog-cohort-continuations", operationID+".json")
@@ -393,7 +439,7 @@ func readCatalogCohortContinuationRenewalAt(layout catalogSelectorLayout, operat
 // WriteCatalogCohortContinuationRenewal stores the immutable renewal beside
 // the unchanged receipt tree. Repeating the exact same write is idempotent.
 func WriteCatalogCohortContinuationRenewal(plan Plan, renewal CatalogCohortContinuationRenewal) (string, error) {
-	if validateCatalogPlan(plan) != nil || plan.Lane != config.ReleaseLanePRD || ValidateCatalogCohortContinuationRenewal(renewal) != nil {
+	if validateCatalogPlan(plan) != nil || plan.Lane != renewal.Lane || ValidateCatalogCohortContinuationRenewal(renewal) != nil {
 		return "", ErrCatalogOperationInvalid
 	}
 	path := catalogCohortContinuationPath(plan, renewal.OperationID)
@@ -466,7 +512,7 @@ func validateCatalogCohortContinuationHostObservation(observation CatalogCohortC
 		return ErrCatalogOperationInvalid
 	}
 	if cohortHasSwitched(receipt, observation.HostID) {
-		plan, err := BuildCatalogPlan(observation.HostID, config.ReleaseLanePRD)
+		plan, err := BuildCatalogPlan(observation.HostID, receipt.Lane)
 		if err != nil {
 			return ErrCatalogOperationInvalid
 		}
@@ -478,18 +524,25 @@ func validateCatalogCohortContinuationHostObservation(observation CatalogCohortC
 			!cohortHasSwitchEvidence(receipt, observation.HostID, observation.SelectorJournalSHA256) {
 			return ErrCatalogOperationInvalid
 		}
-	} else if !catalogCohortPreviousSelectorMatches(receipt.Lane, host, CatalogSelectorStatus{
-		HostID: observation.HostID, Lane: config.ReleaseLanePRD, Kind: observation.SelectorKind, Target: observation.SelectorTarget,
-		Bundle: SimpleBundleManifest{BundleSHA256: observation.SelectorBundleSHA256},
-	}) || observation.SelectorJournalOperationID != "" || observation.SelectorJournalSHA256 != "" {
-		return ErrCatalogOperationInvalid
+	} else {
+		status := CatalogSelectorStatus{
+			HostID: observation.HostID, Lane: observation.Lane, Kind: observation.SelectorKind, Target: observation.SelectorTarget,
+			Bundle: SimpleBundleManifest{BundleSHA256: observation.SelectorBundleSHA256},
+		}
+		if observation.SelectorKind == "catalog" {
+			status.Release = &CatalogReleaseStatus{Identity: CatalogReleaseIdentity{BundleSHA256: observation.SelectorBundleSHA256}}
+		}
+		if !catalogCohortPreviousSelectorMatches(receipt.Lane, host, status) || observation.SelectorJournalOperationID != "" || observation.SelectorJournalSHA256 != "" {
+			return ErrCatalogOperationInvalid
+		}
 	}
 	return nil
 }
 
 func validateCatalogCohortContinuationHostObservationFields(observation CatalogCohortContinuationHostObservation) error {
 	if observation.FormatVersion != catalogCohortContinuationFormatVersion || !validCatalogOperationID(observation.OperationID) ||
-		!containsString(catalogCohortSwitchOrder, observation.HostID) || observation.Lane != config.ReleaseLanePRD ||
+		!containsString(catalogCohortSwitchOrder, observation.HostID) ||
+		(observation.Lane != config.ReleaseLaneDev && observation.Lane != config.ReleaseLaneQAS && observation.Lane != config.ReleaseLanePRD) ||
 		!validCatalogReleaseID(observation.ReleaseID) || !bundleDigestPattern.MatchString(observation.ReleaseSHA256) ||
 		observation.BaseTransitionCount <= 0 || !bundleDigestPattern.MatchString(observation.BaseTransitionSHA256) ||
 		(observation.SelectorKind != "catalog" && observation.SelectorKind != "legacy" && observation.SelectorKind != "unselected") ||
@@ -498,8 +551,11 @@ func validateCatalogCohortContinuationHostObservationFields(observation CatalogC
 		!bundleDigestPattern.MatchString(observation.WorkInventorySHA256) || !observation.WorkInventoryEmpty ||
 		!filepath.IsAbs(observation.BackupDirectory) || filepath.Clean(observation.BackupDirectory) != observation.BackupDirectory ||
 		!bundleDigestPattern.MatchString(observation.BackupManifestSHA256) || !observation.ServiceStopped || !observation.AdmissionHeld ||
-		observation.AdmissionOperationID != observation.OperationID || observation.RequiredBytes != prdCatalogOperatingBufferBytes+prdCatalogSelectorHeadroom ||
-		observation.AvailableBytes < observation.RequiredBytes || !validCohortTimestamp(observation.ObservedAt) {
+		observation.AdmissionOperationID != observation.OperationID || !validCohortTimestamp(observation.ObservedAt) {
+		return ErrCatalogOperationInvalid
+	}
+	required, err := catalogCohortContinuationRequiredBytesForLane(observation.Lane, observation.RequiredBytes)
+	if err != nil || required != observation.RequiredBytes || observation.AvailableBytes < required {
 		return ErrCatalogOperationInvalid
 	}
 	return nil

@@ -1,17 +1,20 @@
 # Build and promotion commands — implementation plan
 
-**Status:** proposed, 2026-10-24. The owner requested this plan; implementation
-and live execution have not started. All `PROMO-*` units below are UNSTARTED.
+**Status:** implementation and source qualification in progress, 2026-10-24.
+PROMO-01 through PROMO-06 source work is implemented; PROMO-07 source/public-
+command and native-host qualification plus Git delivery remain in progress.
+PROMO-08 is separately instructed and NOT RUN. No live deployment or service
+restart is part of this assignment.
 
 ## 1. Outcome in simple words
 
 Prepare a release once, then choose where to run it:
 
 ```sh
-# Mac coordinator — proposed commands, not implemented yet
-build-release --branch dev
-build-release --commit <full-commit-sha>
-build-release --branch prd --commit <full-commit-sha>
+# Mac coordinator — source-test receipts are required for an actual build
+build-release --branch dev --source-test-receipt <receipt-per-host>...
+build-release --commit <full-commit-sha> --source-test-receipt <receipt-per-host>...
+build-release --branch prd --commit <full-commit-sha> --source-test-receipt <receipt-per-host>...
 
 promote-to dev linux-host --release <release-id>
 promote-to dev all --release <release-id>
@@ -85,6 +88,7 @@ must cover their installation/launchers and old-candidate compatibility.
 | `build-release --branch NAME` | Resolve that primary branch once and build its captured tip. |
 | `build-release --commit SHA` | Build that exact published commit, with a verified primary/mirror reachability witness. |
 | `build-release --branch NAME --commit SHA` | Build SHA only if it is in the captured branch's history; it need not be the tip. |
+| `build-release ... --source-test-receipt FILE` | Required four times for a non-plan build: one owner-only native-full receipt per host, bound to the frozen source and checked against the actual bundle platform and toolchain. |
 | `build-release ... --release-id ID` | Optional explicit immutable label; otherwise generate and print one, then retain it on retry. |
 | `build-release --resume BUILD-ID` | Resume the same frozen build/publication; never re-resolve its source. |
 | `promote-to LANE HOST --release ID` | Advance only the next permitted host in one four-host operation. |

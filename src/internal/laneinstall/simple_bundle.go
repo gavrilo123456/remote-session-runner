@@ -141,6 +141,49 @@ func BuildSimpleBundleAtRevision(ctx context.Context, plan Plan, repositoryRoot,
 	return buildSimpleBundleAtRevision(ctx, plan, repositoryRoot, goBinary, revision)
 }
 
+// BuildSimpleBundleAtFrozenRevision is the release-catalog build policy. It
+// accepts only an exact clean detached checkout at sourceRevision. Unlike the
+// legacy dev/evidence policy above, it does not require dev ancestry or
+// Markdown-only commits after the selected immutable source.
+func BuildSimpleBundleAtFrozenRevision(ctx context.Context, plan Plan, repositoryRoot, goBinary, sourceRevision string) (SimpleBundle, error) {
+	if err := validateSimplePlan(plan); err != nil {
+		return SimpleBundle{}, err
+	}
+	if err := requireFrozenSimpleCheckout(ctx, repositoryRoot, sourceRevision); err != nil {
+		return SimpleBundle{}, err
+	}
+	return buildSimpleBundleAtRevision(ctx, plan, repositoryRoot, goBinary, sourceRevision)
+}
+
+func requireFrozenSimpleCheckout(ctx context.Context, repositoryRoot, sourceRevision string) error {
+	if !sourceRevisionPattern.MatchString(sourceRevision) || !filepath.IsAbs(repositoryRoot) || filepath.Clean(repositoryRoot) != repositoryRoot {
+		return ErrInvalidSimpleBundle
+	}
+	root, err := filepath.EvalSymlinks(repositoryRoot)
+	if err != nil || root != repositoryRoot {
+		return ErrInvalidSimpleBundle
+	}
+	info, err := os.Lstat(repositoryRoot)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return ErrInvalidSimpleBundle
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", repositoryRoot, "rev-parse", "--verify", "HEAD^{commit}")
+	out, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(out)) != sourceRevision {
+		return ErrInvalidSimpleBundle
+	}
+	branchCmd := exec.CommandContext(ctx, "git", "-C", repositoryRoot, "symbolic-ref", "-q", "HEAD")
+	if branchCmd.Run() == nil {
+		return ErrInvalidSimpleBundle
+	}
+	statusCmd := exec.CommandContext(ctx, "git", "-C", repositoryRoot, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := statusCmd.Output()
+	if err != nil || len(status) != 0 {
+		return ErrInvalidSimpleBundle
+	}
+	return nil
+}
+
 func buildSimpleBundleAtRevision(ctx context.Context, plan Plan, repositoryRoot, goBinary, revision string) (SimpleBundle, error) {
 	if goBinary == "" {
 		if runtime.GOOS == "darwin" {

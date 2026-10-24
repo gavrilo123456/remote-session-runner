@@ -120,6 +120,20 @@ type CatalogCohortHostFence struct {
 	ObservedAt           string `json:"observed_at"`
 }
 
+// CatalogCohortRollbackFence is a fresh, host-local proof that a previously
+// released cohort is stopped and empty before its admission hold is restored
+// for reverse selector rollback.
+type CatalogCohortRollbackFence struct {
+	HostID               string `json:"host_id"`
+	ServiceStopped       bool   `json:"service_stopped"`
+	SelectedReleaseID    string `json:"selected_release_id"`
+	SelectedBundleSHA256 string `json:"selected_bundle_sha256"`
+	WorkInventorySHA256  string `json:"work_inventory_sha256"`
+	ConfigurationSHA256  string `json:"configuration_sha256"`
+	DatabaseSchema       int    `json:"database_schema"`
+	ObservedAt           string `json:"observed_at"`
+}
+
 // CatalogCohortPublisherPause records the owner-provided pause that cannot be
 // inferred from the four host-local service observations. Host ingress fence
 // evidence is derived separately from each supported host preflight report.
@@ -142,6 +156,7 @@ type CatalogCohortTransition struct {
 	Supersession        *CatalogCohortSupersessionEvidence `json:"supersession,omitempty"`
 	SupersessionRestart *CatalogCohortSupersessionRestart  `json:"supersession_restart,omitempty"`
 	HostFence           *CatalogCohortHostFence            `json:"host_fence,omitempty"`
+	RollbackFence       *CatalogCohortRollbackFence        `json:"rollback_fence,omitempty"`
 	SuccessorID         string                             `json:"successor_operation_id,omitempty"`
 	PreviousSHA256      string                             `json:"previous_sha256"`
 	SHA256              string                             `json:"sha256"`
@@ -261,10 +276,22 @@ func catalogCohortLegacyFenceScopes(lane config.ReleaseLane) []string {
 // receipt JSON.
 func NewCatalogCohortReceipt(lane config.ReleaseLane, manifest CatalogReleaseManifest,
 	reports []CatalogCohortHostPreflightReport, publisherPause CatalogCohortPublisherPause, now time.Time) (CatalogCohortReceipt, error) {
+	operationID, err := newCatalogOperationID()
+	if err != nil {
+		return CatalogCohortReceipt{}, err
+	}
+	return NewCatalogCohortReceiptWithOperationID(lane, manifest, reports, publisherPause, operationID, now)
+}
+
+// NewCatalogCohortReceiptWithOperationID binds a coordinator's durable
+// operation identity to the native four-host receipt. Retries inspect this
+// exact identity instead of creating a second admission hold.
+func NewCatalogCohortReceiptWithOperationID(lane config.ReleaseLane, manifest CatalogReleaseManifest,
+	reports []CatalogCohortHostPreflightReport, publisherPause CatalogCohortPublisherPause, operationID string, now time.Time) (CatalogCohortReceipt, error) {
 	if (lane != config.ReleaseLaneDev && lane != config.ReleaseLaneQAS && lane != config.ReleaseLanePRD) || ValidateCatalogReleaseManifest(manifest) != nil ||
 		len(reports) != len(catalogCohortSwitchOrder) || strings.TrimSpace(publisherPause.Owner) == "" ||
 		strings.TrimSpace(publisherPause.Control) == "" || len(publisherPause.Owner) > 128 || len(publisherPause.Control) > 1024 ||
-		!publisherPause.Paused || !publisherPause.NoNewAccepted || now.IsZero() {
+		!publisherPause.Paused || !publisherPause.NoNewAccepted || !validCatalogOperationID(operationID) || now.IsZero() {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}
 	manifestBytes, err := CatalogReleaseManifestBytes(manifest)
@@ -304,10 +331,6 @@ func NewCatalogCohortReceipt(lane config.ReleaseLane, manifest CatalogReleaseMan
 	}
 	if len(byHost) != len(catalogCohortSwitchOrder) {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
-	}
-	operationID, err := newCatalogOperationID()
-	if err != nil {
-		return CatalogCohortReceipt{}, err
 	}
 	stamp := now.UTC().Format(time.RFC3339Nano)
 	receipt := CatalogCohortReceipt{
@@ -498,6 +521,20 @@ func AdvanceCatalogCohortHostFence(receipt CatalogCohortReceipt, evidence Catalo
 	}, at)
 }
 
+func AdvanceCatalogCohortRollbackFence(receipt CatalogCohortReceipt, evidence CatalogCohortRollbackFence, at time.Time) (CatalogCohortReceipt, error) {
+	if ValidateCatalogCohortReceipt(receipt) != nil || at.IsZero() || !containsString(catalogCohortSwitchOrder, evidence.HostID) {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	digest := sha256.Sum256(encoded)
+	return advanceCatalogCohortReceipt(receipt, CatalogCohortTransition{
+		Action: "rollback-fence-host", HostID: evidence.HostID, EvidenceSHA256: hex.EncodeToString(digest[:]), RollbackFence: &evidence,
+	}, at)
+}
+
 // AdvanceCatalogCohortSupersedeHost records one host's fresh local
 // observations. Supersession is limited to attempts that never switched,
 // were fully rolled back, or completed on every host; any interrupted switch
@@ -684,10 +721,20 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 			}
 			stage = blockedFrom
 		case "rollback-start":
-			if stage != CatalogCohortBlocked || len(switched) == 0 || !eventHostEmpty(event.HostID) {
+			fromHeldFailure := stage == CatalogCohortBlocked
+			fromReleased := (stage == CatalogCohortComplete || stage == CatalogCohortReleased) &&
+				len(currentCohortRollbackFences(receipt.Transitions[:index])) == len(catalogCohortSwitchOrder)
+			if (!fromHeldFailure && !fromReleased) || len(switched) == 0 || !eventHostEmpty(event.HostID) {
 				return "", ErrCatalogOperationInvalid
 			}
 			stage = CatalogCohortRollingBack
+		case "rollback-fence-host":
+			if (stage != CatalogCohortComplete && stage != CatalogCohortReleased) || event.RollbackFence == nil ||
+				len(currentCohortRollbackFences(receipt.Transitions[:index])) >= len(catalogCohortSwitchOrder) ||
+				event.HostID != catalogCohortSwitchOrder[len(currentCohortRollbackFences(receipt.Transitions[:index]))] ||
+				!validCatalogCohortRollbackFence(receipt, event, eventAt) {
+				return "", ErrCatalogOperationInvalid
+			}
 		case "rollback-host":
 			if stage != CatalogCohortRollingBack || len(rolledBack) >= len(switched) || event.HostID != switched[len(switched)-1-len(rolledBack)] {
 				return "", ErrCatalogOperationInvalid
@@ -766,13 +813,122 @@ func replayCatalogCohortTransitions(receipt CatalogCohortReceipt) (CatalogCohort
 		default:
 			return "", ErrCatalogOperationInvalid
 		}
-		if event.Action != "fence-host" && event.HostFence != nil {
+		if event.Action != "fence-host" && event.HostFence != nil || event.Action != "rollback-fence-host" && event.RollbackFence != nil {
 			return "", ErrCatalogOperationInvalid
 		}
 		lastDigest = event.SHA256
 		previousAt = eventAt
 	}
 	return stage, nil
+}
+
+// ObserveCatalogCohortRollbackFence captures a fresh read-only local proof
+// after the selected lane service has been stopped for a supported rollback.
+func ObserveCatalogCohortRollbackFence(ctx context.Context, host, lane, operationID string) (CatalogCohortRollbackFence, error) {
+	if !containsCatalogHost(host) || (lane != "dev" && lane != "qas" && lane != "prd") || !validCatalogOperationID(operationID) {
+		return CatalogCohortRollbackFence{}, ErrCatalogOperationInvalid
+	}
+	plan, err := BuildCatalogPlan(host, config.ReleaseLane(lane))
+	if err != nil {
+		return CatalogCohortRollbackFence{}, err
+	}
+	receipt, err := ReadCatalogCohortReceipt(plan, operationID)
+	if err != nil || receipt.ReleaseID == "" || (receipt.Stage != CatalogCohortComplete && receipt.Stage != CatalogCohortReleased) {
+		return CatalogCohortRollbackFence{}, errors.Join(ErrCatalogOperationInvalid, err)
+	}
+	index := cohortHostIndex(receipt, host)
+	if index < 0 {
+		return CatalogCohortRollbackFence{}, ErrCatalogOperationInvalid
+	}
+	expected := receipt.Hosts[index]
+	root, err := DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return CatalogCohortRollbackFence{}, err
+	}
+	selector, err := InspectCatalogSelectorForPlan(plan, root)
+	if err != nil || selector.Release == nil {
+		return CatalogCohortRollbackFence{}, errors.Join(ErrCatalogOperationInvalid, err)
+	}
+	var active bool
+	var work CatalogWorkInventory
+	var workSHA, configSHA string
+	var schema int
+	var selectedID, selectedSHA string
+	if lane == "prd" {
+		prdPlan, planErr := BuildPRDUpgradePlan(host)
+		if planErr != nil {
+			return CatalogCohortRollbackFence{}, planErr
+		}
+		service, serviceErr := NewPRDServiceController()
+		if serviceErr != nil {
+			return CatalogCohortRollbackFence{}, serviceErr
+		}
+		active, err = service.Status(ctx, prdPlan)
+		if err != nil {
+			return CatalogCohortRollbackFence{}, err
+		}
+		layout, layoutErr := catalogSelectorLayoutForPlan(plan, root)
+		if layoutErr != nil {
+			return CatalogCohortRollbackFence{}, layoutErr
+		}
+		proof, proofErr := readPRDCatalogProof(ctx, prdPlan, layout)
+		if proofErr != nil {
+			return CatalogCohortRollbackFence{}, proofErr
+		}
+		work, workSHA, configSHA, schema = proof.work, proof.workSHA256, proof.configurationSHA256, proof.schema
+		selectedID, selectedSHA = selector.Release.Identity.ReleaseID, selector.Release.Identity.BundleSHA256
+	} else {
+		service, serviceErr := NewSimpleServiceController()
+		if serviceErr != nil {
+			return CatalogCohortRollbackFence{}, serviceErr
+		}
+		report, inventoryErr := ReadCatalogWorkInventory(ctx, plan, service)
+		if inventoryErr != nil {
+			return CatalogCohortRollbackFence{}, inventoryErr
+		}
+		active, work, workSHA, configSHA, schema = report.ServiceActive, report.WorkInventory, report.WorkInventory.SHA256(), report.ConfigurationSHA256, report.DatabaseSchema
+		selectedID, selectedSHA = selector.Release.Identity.ReleaseID, selector.Release.Identity.BundleSHA256
+	}
+	if active || !work.Empty() || workSHA != expected.WorkInventorySHA256 || configSHA != expected.ConfigurationSHA256 || schema != expected.SchemaVersion ||
+		selectedID != receipt.ReleaseID || selectedSHA != expected.Target.BundleSHA256 {
+		return CatalogCohortRollbackFence{}, ErrSimpleLaneNotQuiescent
+	}
+	return CatalogCohortRollbackFence{HostID: host, ServiceStopped: true, SelectedReleaseID: selectedID,
+		SelectedBundleSHA256: selectedSHA, WorkInventorySHA256: workSHA, ConfigurationSHA256: configSHA,
+		DatabaseSchema: schema, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}, nil
+}
+
+func currentCohortRollbackFences(transitions []CatalogCohortTransition) []string {
+	var hosts []string
+	for _, transition := range transitions {
+		if transition.Action == "rollback-fence-host" {
+			hosts = append(hosts, transition.HostID)
+		}
+	}
+	return hosts
+}
+
+func validCatalogCohortRollbackFence(receipt CatalogCohortReceipt, event CatalogCohortTransition, eventAt time.Time) bool {
+	fence := event.RollbackFence
+	if fence == nil || fence.HostID != event.HostID || !fence.ServiceStopped ||
+		!validCatalogOperationID(receipt.OperationID) || !validCohortTimestamp(fence.ObservedAt) ||
+		!bundleDigestPattern.MatchString(fence.SelectedBundleSHA256) || !bundleDigestPattern.MatchString(fence.WorkInventorySHA256) ||
+		!bundleDigestPattern.MatchString(fence.ConfigurationSHA256) || fence.DatabaseSchema <= 0 {
+		return false
+	}
+	index := cohortHostIndex(receipt, event.HostID)
+	if index < 0 || index >= len(receipt.Hosts) {
+		return false
+	}
+	host := receipt.Hosts[index]
+	observedAt, err := time.Parse(time.RFC3339Nano, fence.ObservedAt)
+	encoded, encodeErr := json.Marshal(*fence)
+	digest := sha256.Sum256(encoded)
+	return err == nil && encodeErr == nil && event.EvidenceSHA256 == hex.EncodeToString(digest[:]) &&
+		!observedAt.After(eventAt) && eventAt.Sub(observedAt) <= 2*time.Minute &&
+		fence.SelectedReleaseID == receipt.ReleaseID && fence.SelectedBundleSHA256 == host.Target.BundleSHA256 &&
+		fence.WorkInventorySHA256 == host.WorkInventorySHA256 && host.WorkInventoryEmpty &&
+		fence.ConfigurationSHA256 == host.ConfigurationSHA256 && fence.DatabaseSchema == host.SchemaVersion
 }
 
 func currentCohortHostFences(transitions []CatalogCohortTransition) []string {
@@ -1051,6 +1207,14 @@ func catalogCohortReceiptUpdateAllowed(existing, next CatalogCohortReceipt) bool
 		catalogCohortReceiptHasHistoricalBranch(next, existing.Transitions)
 }
 
+// CatalogCohortReceiptCanAdvance reports whether a supported receipt sync may
+// replace one valid local history with the supplied receipt. It does not
+// write anything; callers use false to route divergent copies through the
+// explicit history-reconciliation command rather than overwriting evidence.
+func CatalogCohortReceiptCanAdvance(existing, next CatalogCohortReceipt) bool {
+	return catalogCohortReceiptUpdateAllowed(existing, next)
+}
+
 // LoadCatalogCohortReceiptFile loads an owner-only canonical receipt supplied
 // for local installation into the selected host's staging area.
 func LoadCatalogCohortReceiptFile(path string) (CatalogCohortReceipt, error) {
@@ -1300,9 +1464,6 @@ func validateCatalogCohortHostMaySwitch(receipt CatalogCohortReceipt, layout cat
 	}
 	continuationRenewed := false
 	if !cohortEvidenceFresh(receipt, now.UTC().Format(time.RFC3339Nano)) {
-		if layout.lane != config.ReleaseLanePRD {
-			return ErrCatalogOperationInvalid
-		}
 		renewal, err := readCatalogCohortContinuationRenewalAt(layout, receipt.OperationID)
 		if err != nil || ValidateCatalogCohortContinuationRenewalForReceipt(renewal, receipt, now) != nil {
 			return ErrCatalogOperationInvalid

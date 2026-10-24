@@ -14,9 +14,13 @@ queue. Do not provision the withdrawn A01 fixtures or wait for their F gates.
 and [CAT follow-up plan](../070-factory-style-runner-releases/015-factory-style-runner-releases-phased-implementation-plan.md)
 place immutable releases under `~/projects-runtime/runner-releases/` on each
 existing host. Each lane owns its own selector and keeps current writable paths.
-Design/plan only is assigned now; CAT implementation and live migration remain
-NOT STARTED. The SIMPLE checklist below describes its delivered/legacy layout
-until migrated. Use CAT evidence for catalog acceptance, not old SIMPLE PASS.
+CAT implementation is in progress. The additive PROMO workflow in
+[`030-build-release-and-promotion-cli-implementation-plan.md`](030-build-release-and-promotion-cli-implementation-plan.md)
+provides build, plan, promotion, status, renewal and rollback commands over the
+catalog controls; its source implementation does not itself migrate a live
+lane. The SIMPLE checklist below describes the existing layout until a
+separately accepted catalog migration. Use CAT/live evidence for installed
+acceptance, not source test results or old SIMPLE PASS.
 
 ### Concrete implementation checklist
 

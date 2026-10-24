@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -635,6 +636,51 @@ func InspectCatalogSelectorOperationForPlan(plan Plan, operationID string) (Cata
 		return CatalogSelectorOperation{}, ErrCatalogOperationInvalid
 	}
 	return operation, nil
+}
+
+// FindCatalogSelectorOperationsForPlan lists the exact durable selector
+// journals attached to one cohort. It is used to reconcile a selector effect
+// after the coordinator lost the command response; ambiguous journals fail
+// closed at the caller.
+func FindCatalogSelectorOperationsForPlan(plan Plan, cohortOperationID string) ([]CatalogSelectorOperation, error) {
+	if validateCatalogPlan(plan) != nil || !validCatalogOperationID(cohortOperationID) {
+		return nil, ErrCatalogOperationInvalid
+	}
+	root, err := DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return nil, err
+	}
+	layout, err := catalogSelectorLayoutForPlan(plan, root)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(layout.operationRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return []CatalogSelectorOperation{}, nil
+	}
+	if err != nil || len(entries) > 4096 {
+		return nil, ErrCatalogOperationInvalid
+	}
+	operations := make([]CatalogSelectorOperation, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			return nil, ErrCatalogOperationInvalid
+		}
+		info, statErr := os.Lstat(filepath.Join(layout.operationRoot, entry.Name()))
+		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			return nil, ErrCatalogOperationInvalid
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		operation, readErr := readCatalogSelectorOperation(layout.operationRoot, id)
+		if readErr != nil || validateCatalogOperation(layout, operation) != nil {
+			return nil, ErrCatalogOperationInvalid
+		}
+		if operation.CohortOperationID == cohortOperationID {
+			operations = append(operations, operation)
+		}
+	}
+	sort.Slice(operations, func(i, j int) bool { return operations[i].CreatedUTC < operations[j].CreatedUTC })
+	return operations, nil
 }
 
 // BuildCatalogPlan derives the fixed host/lane namespace used to inspect a

@@ -9,6 +9,13 @@ volumes, accounts, or a production upgrade.
 For the normal **Dev → QAS → PRD** promotion flow, start with the short
 [promotion guide](promotion-guide.md).
 
+The source workflow commands are `build-release`, `promote-to`, and
+`runner-release`. Use `build-release` to freeze and publish one release without
+activation; use `promote-to ... --plan` to inspect full selected-lane scope
+before any cohort mutation. The guide documents exact flags, resume, acceptance
+prerequisites and rollback. PROMO source test results do not prove that any
+installed lane accepted a release.
+
 Catalog-managed releases use the
 [Factory-style catalog](../040-improvments/070-factory-style-runner-releases/010-factory-style-runner-releases-detailed-design.md)
 under `~/projects-runtime/runner-releases/` on each host. Each lane keeps its
