@@ -910,6 +910,22 @@ func (b *NativePromotionBackend) startReleasedCohort(ctx context.Context, op Ope
 			snapshot.AvailableBytes < promotionRequiredCapacity(op.Lane, b.OperatingBuffer) {
 			return fmt.Errorf("%s released selector, empty-work, or capacity postflight failed", host)
 		}
+		// Acceptance runs while selected processes are started under the cohort
+		// hold. Their admission state is read once during startup, so changing
+		// the synchronized receipt to Released does not reopen an already-running
+		// process. Restart an active, empty selected-lane service after release
+		// so it reloads the now-open admission state. Recheck the stopped state
+		// before starting it again.
+		if snapshot.Active {
+			if _, err := b.runLane(ctx, host, serviceAction(op.Lane, "stop", host), nil); err != nil {
+				return fmt.Errorf("stop %s service to reload released admissions: %w", host, err)
+			}
+			status, snapshot, err = b.currentHost(ctx, host, op.Lane)
+			if err != nil || selectedReleaseID(status) != wantID || selectedBundleSHA(status) != wantBundle ||
+				snapshot.Active || !snapshot.Empty || snapshot.AvailableBytes < promotionRequiredCapacity(op.Lane, b.OperatingBuffer) {
+				return errors.Join(fmt.Errorf("%s did not stop cleanly with the released selector and empty-work guard", host), err)
+			}
+		}
 		if err := b.startIfStopped(ctx, host, op.Lane, snapshot.Active); err != nil {
 			return fmt.Errorf("start released %s service: %w", host, err)
 		}

@@ -11,9 +11,96 @@ import (
 	"testing"
 	"time"
 
+	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/store"
 )
+
+func TestStartReleasedCohortRestartsActiveServicesAfterAcceptance(t *testing.T) {
+	release := testRelease()
+	const operationID = "dea80fa695a606e64985f0b2b53ebeb4"
+	receipt := laneinstall.CatalogCohortReceipt{OperationID: operationID, Lane: config.ReleaseLaneDev,
+		ReleaseID: release.ID, ReleaseSHA256: release.Digest, Stage: laneinstall.CatalogCohortReleased}
+	active := make(map[string]bool, len(HostOrder))
+	for _, host := range HostOrder {
+		active[host] = true // acceptance left each server running under the hold
+	}
+	var actions []string
+	backend := NativePromotionBackend{OperatingBuffer: defaultPromotionOperatingBuffer}
+	backend.capacityReader = func(_ context.Context, _ string, _ string, snapshot *promotionLaneSnapshot) error {
+		snapshot.AvailableBytes = 1_000_000_000
+		snapshot.RequiredBytes = defaultPromotionOperatingBuffer
+		return nil
+	}
+	backend.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		argValue := func(name string) string {
+			for i := 0; i+1 < len(args); i++ {
+				if args[i] == name {
+					return args[i+1]
+				}
+			}
+			return ""
+		}
+		switch args[0] {
+		case "catalog-cohort":
+			switch argValue("--action") {
+			case "inspect":
+				return json.Marshal(promotionReceiptView{Present: true, Receipt: receipt})
+			case "discover":
+				return json.Marshal(promotionAdmissionView{HostID: host, Lane: config.ReleaseLaneDev})
+			default:
+				t.Fatalf("unexpected cohort action: %v", args)
+			}
+		case "catalog-status":
+			bundle := release.Bundles[host]
+			status := laneinstall.CatalogSelectorStatus{HostID: host, Lane: config.ReleaseLaneDev, Kind: "catalog",
+				Release: &laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{
+					ReleaseID: release.ID, ReleaseSHA256: release.Digest, HostID: host, BundleSHA256: bundle.SHA256,
+				}}}
+			return json.Marshal(status)
+		case "catalog-work-inventory":
+			bundle := release.Bundles[host]
+			report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLaneDev,
+				ServiceActive: active[host], SelectorTarget: "/sealed/" + release.ID + "/" + host,
+				BundleSHA256: bundle.SHA256, ConfigurationSHA256: stringsOf("b"), DatabaseSchema: 40,
+				WorkInventoryEmpty: true}
+			return json.Marshal(report)
+		case "stop":
+			if !active[host] {
+				t.Fatalf("attempted to stop already-stopped %s", host)
+			}
+			active[host] = false
+			actions = append(actions, host+":stop")
+			return []byte("{}"), nil
+		case "start":
+			if active[host] {
+				t.Fatalf("attempted to start already-active %s", host)
+			}
+			active[host] = true
+			actions = append(actions, host+":start")
+			return []byte("{}"), nil
+		default:
+			t.Fatalf("unexpected host command: %v", args)
+		}
+		return nil, ErrInvalidInput
+	}
+
+	op := Operation{OperationID: operationID, Lane: "dev", Stage: StageAccepted,
+		CohortOperationID: operationID, Release: release}
+	if err := backend.startReleasedCohort(context.Background(), op); err != nil {
+		t.Fatalf("startReleasedCohort failed: %v", err)
+	}
+	want := make([]string, 0, len(HostOrder)*2)
+	for _, host := range HostOrder {
+		want = append(want, host+":stop", host+":start")
+		if !active[host] {
+			t.Errorf("%s was not active after the released-cohort restart", host)
+		}
+	}
+	if strings.Join(actions, ",") != strings.Join(want, ",") {
+		t.Fatalf("released cohort restart order = %v, want %v", actions, want)
+	}
+}
 
 func TestInitialPRDPlanRequiresExactLegacyCompatibilityInput(t *testing.T) {
 	if _, err := legacyCompatibilityInputSHA(HostProfile{}); err == nil {
