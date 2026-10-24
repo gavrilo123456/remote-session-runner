@@ -1,6 +1,7 @@
 package laneinstall
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -400,6 +401,108 @@ func newCatalogProbeFixture(t *testing.T) catalogProbeFixture {
 		t.Fatal(err)
 	}
 	return catalogProbeFixture{guard: guard, operation: receipt.OperationID, controller: controller, key: key, token: token, body: body, now: now}
+}
+
+func TestCatalogMaintenanceProbeRenewsOnlyExpiredUnusedExactScope(t *testing.T) {
+	t.Run("expired unused scope can be reissued for identical request", func(t *testing.T) {
+		fixture := newCatalogProbeFixture(t)
+		paths, err := fixture.guard.paths()
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := fixture.guard.scopePath(paths.scopeRoot)
+		previous, err := readCatalogProbeScope(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldTokenSHA := previous.TokenSHA256
+		previous.CreatedAt = fixture.now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+		previous.ExpiresAt = fixture.now.Add(-time.Minute).Format(time.RFC3339Nano)
+		if err := writeCatalogProbeScope(path, paths.scopeRoot, previous); err != nil {
+			t.Fatal(err)
+		}
+		next := previous
+		next.CreatedAt = fixture.now.Format(time.RFC3339Nano)
+		next.ExpiresAt = fixture.now.Add(2 * time.Minute).Format(time.RFC3339Nano)
+		next.TokenSHA256 = strings.Repeat("e", 64)
+		if err := writeOrReplaceExpiredUnusedProbeScope(path, paths.scopeRoot, next, fixture.now); err != nil {
+			t.Fatalf("renew exact expired unused scope: %v", err)
+		}
+		got, err := readCatalogProbeScope(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State != "ready" || got.JobID != "" || got.IntentID != "" || got.TokenSHA256 == oldTokenSHA ||
+			got.OperationID != previous.OperationID || got.HostID != previous.HostID || got.Lane != previous.Lane ||
+			got.Transport != previous.Transport || got.ControllerType != previous.ControllerType || got.ControllerID != previous.ControllerID ||
+			got.Environment != previous.Environment || got.ConfigurationSHA != previous.ConfigurationSHA ||
+			got.IdempotencyKey != previous.IdempotencyKey || got.RequestBodySHA256 != previous.RequestBodySHA256 {
+			t.Fatalf("renewal changed request identity or retained a consumed scope: before=%+v after=%+v", previous, got)
+		}
+	})
+
+	cases := []struct {
+		name   string
+		change func(*catalogProbeScope, *catalogProbeScope, time.Time)
+	}{
+		{name: "unexpired", change: func(_, _ *catalogProbeScope, _ time.Time) {}},
+		{name: "reserved", change: func(previous, _ *catalogProbeScope, now time.Time) {
+			previous.CreatedAt = now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+			previous.ExpiresAt = now.Add(-time.Minute).Format(time.RFC3339Nano)
+			previous.State = "reserved"
+		}},
+		{name: "configuration drift", change: func(previous, _ *catalogProbeScope, now time.Time) {
+			previous.CreatedAt = now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+			previous.ExpiresAt = now.Add(-time.Minute).Format(time.RFC3339Nano)
+			previous.ConfigurationSHA = strings.Repeat("d", 64)
+		}},
+		{name: "request drift", change: func(previous, _ *catalogProbeScope, now time.Time) {
+			previous.CreatedAt = now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+			previous.ExpiresAt = now.Add(-time.Minute).Format(time.RFC3339Nano)
+			previous.RequestBodySHA256 = strings.Repeat("d", 64)
+		}},
+		{name: "controller drift", change: func(previous, _ *catalogProbeScope, now time.Time) {
+			previous.CreatedAt = now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+			previous.ExpiresAt = now.Add(-time.Minute).Format(time.RFC3339Nano)
+			previous.ControllerID = "other-controller"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newCatalogProbeFixture(t)
+			paths, err := fixture.guard.paths()
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := fixture.guard.scopePath(paths.scopeRoot)
+			previous, err := readCatalogProbeScope(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next := previous
+			next.CreatedAt = fixture.now.Format(time.RFC3339Nano)
+			next.ExpiresAt = fixture.now.Add(2 * time.Minute).Format(time.RFC3339Nano)
+			next.TokenSHA256 = strings.Repeat("e", 64)
+			tc.change(&previous, &next, fixture.now)
+			if err := writeCatalogProbeScope(path, paths.scopeRoot, previous); err != nil {
+				t.Fatalf("write test previous scope: %v", err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeOrReplaceExpiredUnusedProbeScope(path, paths.scopeRoot, next, fixture.now); err == nil {
+				t.Fatal("unsafe scope replacement was accepted")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("refused scope replacement modified the original scope")
+			}
+		})
+	}
 }
 
 func TestCatalogMaintenanceProbeUsesTheSelectedHostLaneEnvironment(t *testing.T) {

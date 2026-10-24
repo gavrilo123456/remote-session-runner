@@ -544,13 +544,37 @@ func PrepareCatalogMaintenanceProbeForTransportWithConfig(plan Plan, operationID
 	}
 	defer releaseCatalogRootPublicationLock(lock)
 	path := guard.scopePath(root)
-	if _, err := os.Lstat(path); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return "", ErrCatalogProbeAdmission
-	}
-	if err := writeCatalogProbeScope(path, root, scope); err != nil {
+	if err := writeOrReplaceExpiredUnusedProbeScope(path, root, scope, now); err != nil {
 		return "", err
 	}
 	return token, nil
+}
+
+// writeOrReplaceExpiredUnusedProbeScope is called while the cohort scope lock
+// is held. It never replaces a live, consumed, or differently bound capability.
+func writeOrReplaceExpiredUnusedProbeScope(path, root string, next catalogProbeScope, now time.Time) error {
+	if _, err := os.Lstat(path); err == nil {
+		previous, readErr := readCatalogProbeScope(path)
+		if readErr != nil || !isExpiredUnusedProbeScopeForSameRequest(previous, next, now) {
+			return ErrCatalogProbeAdmission
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ErrCatalogProbeAdmission
+	}
+	return writeCatalogProbeScope(path, root, next)
+}
+
+// isExpiredUnusedProbeScopeForSameRequest allows a controller retry to replace
+// only the expired capability left before a request was issued. A reserved,
+// accepted, or otherwise bound scope stays single-use and cannot be replaced.
+func isExpiredUnusedProbeScopeForSameRequest(previous, next catalogProbeScope, now time.Time) bool {
+	expiresAt, err := time.Parse(time.RFC3339Nano, previous.ExpiresAt)
+	return err == nil && !now.UTC().Before(expiresAt) && previous.State == "ready" && previous.JobID == "" && previous.IntentID == "" &&
+		previous.FormatVersion == next.FormatVersion && previous.OperationID == next.OperationID && previous.HostID == next.HostID &&
+		previous.Lane == next.Lane && previous.Transport == next.Transport && previous.ControllerType == next.ControllerType &&
+		previous.ControllerID == next.ControllerID && previous.Environment == next.Environment &&
+		previous.ConfigurationSHA == next.ConfigurationSHA && previous.IdempotencyKey == next.IdempotencyKey &&
+		previous.RequestBodySHA256 == next.RequestBodySHA256
 }
 
 // ReserveCatalogMaintenanceProbe consumes the sole mutation opportunity
