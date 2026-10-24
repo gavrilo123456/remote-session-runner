@@ -298,13 +298,56 @@ func catalogCohortAdmissionHeldAt(plan Plan, root string) (bool, string, error) 
 	if len(active) == 2 {
 		for _, predecessor := range active {
 			for _, successor := range active {
-				if catalogCohortReplacementHoldPair(predecessor, successor, time.Now().UTC()) {
+				if catalogCohortCompletedSupersessionHoldPair(plan, predecessor, successor, time.Now().UTC()) ||
+					catalogCohortReplacementHoldPair(predecessor, successor, time.Now().UTC()) {
 					return true, successor.OperationID, nil
 				}
 			}
 		}
 	}
 	return false, "", ErrCatalogOperationInvalid
+}
+
+// catalogCohortCompletedSupersessionHoldPair recognizes the brief, guarded
+// overlap between one completed predecessor hold and its fresh held
+// successor. The predecessor continues to hold admissions until supported
+// per-host evidence has been synchronized and its supersede transition lands.
+func catalogCohortCompletedSupersessionHoldPair(plan Plan, predecessor, successor CatalogCohortReceipt, now time.Time) bool {
+	if validateCatalogPlan(plan) != nil || ValidateCatalogCohortReceipt(predecessor) != nil ||
+		ValidateCatalogCohortReceipt(successor) != nil || predecessor.Lane != plan.Lane || successor.Lane != plan.Lane ||
+		predecessor.OperationID == successor.OperationID || predecessor.Stage != CatalogCohortComplete ||
+		successor.Stage != CatalogCohortHeld || predecessor.ReleaseID == successor.ReleaseID ||
+		predecessor.ReleaseSHA256 == successor.ReleaseSHA256 ||
+		!catalogCohortReceiptSupersessionEligible(predecessor) ||
+		!cohortEvidenceFresh(successor, now.UTC().Format(time.RFC3339Nano)) {
+		return false
+	}
+	currentSuccessor := currentSupersessionSuccessor(predecessor.Transitions)
+	if currentSuccessor != "" && currentSuccessor != successor.OperationID {
+		return false
+	}
+	index := cohortHostIndex(predecessor, plan.HostID)
+	if index < 0 || index != cohortHostIndex(successor, plan.HostID) {
+		return false
+	}
+	oldHost, nextHost := predecessor.Hosts[index], successor.Hosts[index]
+	root, err := DefaultCatalogRootForPlan(plan)
+	if err != nil || oldHost.Target.ReleaseID != predecessor.ReleaseID ||
+		oldHost.Target.ReleaseSHA256 != predecessor.ReleaseSHA256 ||
+		nextHost.Target.ReleaseID != successor.ReleaseID || nextHost.Target.ReleaseSHA256 != successor.ReleaseSHA256 ||
+		nextHost.PreviousTarget != filepath.Join(root, predecessor.ReleaseID, plan.HostID) ||
+		nextHost.PreviousBundleSHA256 != oldHost.Target.BundleSHA256 ||
+		nextHost.ConfigurationSHA256 != oldHost.ConfigurationSHA256 || nextHost.SchemaVersion != oldHost.SchemaVersion ||
+		nextHost.WorkInventoryEmpty != true {
+		return false
+	}
+	for _, transition := range predecessor.Transitions {
+		if transition.Action == "supersede-host" && transition.Supersession != nil &&
+			transition.Supersession.SuccessorOperationID != successor.OperationID {
+			return false
+		}
+	}
+	return true
 }
 
 func catalogCohortReplacementHoldPair(predecessor, successor CatalogCohortReceipt, now time.Time) bool {

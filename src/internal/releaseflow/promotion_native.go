@@ -64,6 +64,7 @@ type NativePromotionBackend struct {
 	NoNewAccepted      bool
 	OperatingBuffer    uint64
 	Approval           *Approval
+	laneCommandRunner  func(context.Context, string, []string, []byte) ([]byte, error)
 }
 
 type promotionReceiptView struct {
@@ -182,6 +183,10 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 		}
 		plan.PeerLaneEvidence[host] = peer
 	}
+	if len(plan.ExistingHolds) > 0 {
+		plan.CommonEffects = append(plan.CommonEffects,
+			"preserve any synchronized completed admission hold until the new four-host receipt is held, then supersede it with fresh per-host selector/work/config/schema evidence; unfinished or ambiguous holds remain blocked")
+	}
 	if lane == "qas" || lane == "prd" {
 		marker, exists, err := b.readBranchMarker(ctx, lane)
 		if err != nil {
@@ -207,6 +212,45 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 	return plan, nil
 }
 
+// ValidateExistingCohortHold allows replacement only for one synchronized,
+// completed receipt whose exact selected bundles, config/schema identities,
+// and empty work inventories still match the read-only plan. Interrupted or
+// ambiguous cohorts remain blocked for their dedicated recovery path.
+func (b *NativePromotionBackend) ValidateExistingCohortHold(ctx context.Context, plan PromotionPlan) error {
+	operationID, err := commonExistingCohortHold(plan.ExistingHolds)
+	if err != nil || operationID == "" {
+		return errors.Join(ErrAdmissionHeld, err)
+	}
+	var canonical laneinstall.CatalogCohortReceipt
+	for _, host := range HostOrder {
+		view, readErr := b.readReceipt(ctx, host, plan.Lane, operationID)
+		if readErr != nil || !view.Present {
+			return errors.Join(fmt.Errorf("%s completed predecessor receipt is unavailable", host), readErr)
+		}
+		if canonical.OperationID == "" {
+			canonical = view.Receipt
+		} else if !reflectReceiptEqual(canonical, view.Receipt) {
+			return fmt.Errorf("completed predecessor receipt differs across hosts: %w", ErrOperationCorrupted)
+		}
+	}
+	if canonical.Stage != laneinstall.CatalogCohortComplete || canonical.Lane != config.ReleaseLane(plan.Lane) {
+		return fmt.Errorf("held predecessor %s is not a completed cohort: %w", operationID, ErrAdmissionHeld)
+	}
+	for index, host := range HostOrder {
+		if index >= len(canonical.Hosts) || index >= len(plan.HostBaselines) {
+			return ErrOperationCorrupted
+		}
+		predecessor, baseline := canonical.Hosts[index], plan.HostBaselines[index]
+		if predecessor.HostID != host || baseline.HostID != host || baseline.Lane != plan.Lane ||
+			baseline.SelectedReleaseID != canonical.ReleaseID || baseline.SelectedBundleSHA != predecessor.Target.BundleSHA256 ||
+			baseline.ConfigurationSHA != predecessor.ConfigurationSHA256 || baseline.SchemaVersion != predecessor.SchemaVersion ||
+			!baseline.WorkInventoryEmpty {
+			return fmt.Errorf("%s no longer matches the completed predecessor receipt or has retained work: %w", host, ErrAdmissionHeld)
+		}
+	}
+	return nil
+}
+
 func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation) (any, error) {
 	if !b.PublishersPaused || !b.NoNewAccepted || strings.TrimSpace(b.PublisherOwner) == "" || strings.TrimSpace(b.PublisherControl) == "" {
 		return nil, errors.New("execution requires explicit owner, publisher control, paused confirmation, and no-new-accepted confirmation")
@@ -221,13 +265,21 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 		if err := b.finishInitialFencesAndHold(ctx, op, existing.Receipt); err != nil {
 			return nil, err
 		}
+		if err := b.supersedeCompletedPredecessor(ctx, op, existing.Receipt); err != nil {
+			return nil, err
+		}
 		return map[string]any{"cohort_operation_id": op.CohortOperationID, "release_id": op.Release.ID, "resumed": true,
-			"affected_hosts": HostOrder}, nil
+			"superseded_predecessor_operation_id": op.PreviousCohortOperationID, "affected_hosts": HostOrder}, nil
 	} else if err != nil {
 		return nil, err
 	}
 	if op.PlanSnapshot == nil || len(op.PlanSnapshot.HostBaselines) != len(HostOrder) {
 		return nil, ErrOperationCorrupted
+	}
+	if op.PreviousCohortOperationID != "" {
+		if err := b.ValidateExistingCohortHold(ctx, *op.PlanSnapshot); err != nil {
+			return nil, fmt.Errorf("revalidate completed predecessor cohort %s before backup: %w", op.PreviousCohortOperationID, err)
+		}
 	}
 	for index, host := range HostOrder {
 		baseline := op.PlanSnapshot.HostBaselines[index]
@@ -242,7 +294,8 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 			return nil, errors.Join(fmt.Errorf("%s fresh pre-stop inventory, identity, or capacity no longer matches its read-only plan", host), err)
 		}
 		admission, err := b.readAdmission(ctx, host, op.Lane)
-		if err != nil || admission.AdmissionHeld {
+		if err != nil || admission.AdmissionHeld && admission.OperationID != op.PreviousCohortOperationID ||
+			!admission.AdmissionHeld && op.PreviousCohortOperationID != "" {
 			return nil, errors.Join(fmt.Errorf("%s lane already has an admission hold before this operation owns one", host), err)
 		}
 		for _, peer := range LaneOrder {
@@ -310,8 +363,170 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 	if err := b.finishInitialFencesAndHold(ctx, op, view.Receipt); err != nil {
 		return nil, err
 	}
+	if err := b.supersedeCompletedPredecessor(ctx, op, view.Receipt); err != nil {
+		return nil, err
+	}
 	return map[string]any{"cohort_operation_id": op.CohortOperationID, "release_id": op.Release.ID,
-		"receipt_stage": "held", "affected_hosts": HostOrder, "host_preflights": reports}, nil
+		"receipt_stage": "held", "superseded_predecessor_operation_id": op.PreviousCohortOperationID,
+		"affected_hosts": HostOrder, "host_preflights": reports}, nil
+}
+
+func (b *NativePromotionBackend) supersedeCompletedPredecessor(ctx context.Context, op Operation,
+	successor laneinstall.CatalogCohortReceipt) error {
+	predecessorID := op.PreviousCohortOperationID
+	if predecessorID == "" {
+		return nil
+	}
+	if predecessorID == successor.OperationID || successor.Stage != laneinstall.CatalogCohortHeld {
+		return ErrOperationCorrupted
+	}
+	_, predecessor, err := b.synchronizeReceiptHead(ctx, op.Lane, predecessorID)
+	if err != nil {
+		return fmt.Errorf("synchronize completed predecessor history: %w", err)
+	}
+	if predecessor.Stage == laneinstall.CatalogCohortSuperseded {
+		if cohortSupersessionSuccessor(predecessor) != successor.OperationID {
+			return fmt.Errorf("completed predecessor was superseded by a different operation: %w", ErrOperationCorrupted)
+		}
+		return b.verifySuccessorHold(ctx, op.Lane, successor.OperationID)
+	}
+	if predecessor.Stage != laneinstall.CatalogCohortComplete {
+		return fmt.Errorf("predecessor %s requires recovery before supersession: %w", predecessorID, ErrAdmissionHeld)
+	}
+	if current := cohortSupersessionSuccessor(predecessor); current != "" && current != successor.OperationID {
+		return fmt.Errorf("predecessor supersession is bound to %s: %w", current, ErrOperationCorrupted)
+	}
+	if err := b.verifySuccessorHold(ctx, op.Lane, successor.OperationID); err != nil {
+		return err
+	}
+	for _, host := range HostOrder {
+		_, predecessor, err = b.synchronizeReceiptHead(ctx, op.Lane, predecessorID)
+		if err != nil {
+			return fmt.Errorf("synchronize predecessor before %s evidence: %w", host, err)
+		}
+		if cohortHostHasSupersession(predecessor, host, successor.OperationID) {
+			continue
+		}
+		if _, err := b.runLane(ctx, host, []string{"catalog-cohort", "--host", host, "--lane", op.Lane,
+			"--action", "supersede-host", "--operation-id", predecessorID,
+			"--successor-operation-id", successor.OperationID, "--subject-host", host}, nil); err != nil {
+			return fmt.Errorf("record %s completed-predecessor observation: %w", host, err)
+		}
+		if _, _, err := b.synchronizeReceiptHead(ctx, op.Lane, predecessorID); err != nil {
+			return fmt.Errorf("synchronize %s completed-predecessor observation: %w", host, err)
+		}
+	}
+	_, predecessor, err = b.synchronizeReceiptHead(ctx, op.Lane, predecessorID)
+	if err != nil || predecessor.Stage != laneinstall.CatalogCohortComplete {
+		return errors.Join(ErrOperationCorrupted, err)
+	}
+	if cohortSupersessionSuccessor(predecessor) != successor.OperationID {
+		return ErrOperationCorrupted
+	}
+	for _, host := range HostOrder {
+		if !cohortHostHasSupersession(predecessor, host, successor.OperationID) {
+			return fmt.Errorf("%s completed-predecessor evidence is missing: %w", host, ErrOperationCorrupted)
+		}
+	}
+	if _, err := b.runLane(ctx, "mac-control-plane", []string{"catalog-cohort", "--host", "mac-control-plane", "--lane", op.Lane,
+		"--action", "supersede", "--operation-id", predecessorID,
+		"--successor-operation-id", successor.OperationID}, nil); err != nil {
+		return fmt.Errorf("finalize completed-predecessor supersession: %w", err)
+	}
+	_, predecessor, err = b.synchronizeReceiptHead(ctx, op.Lane, predecessorID)
+	if err != nil || predecessor.Stage != laneinstall.CatalogCohortSuperseded ||
+		cohortSupersessionSuccessor(predecessor) != successor.OperationID {
+		return errors.Join(ErrOperationCorrupted, err)
+	}
+	return b.verifySuccessorHold(ctx, op.Lane, successor.OperationID)
+}
+
+func (b *NativePromotionBackend) verifySuccessorHold(ctx context.Context, lane, operationID string) error {
+	for _, host := range HostOrder {
+		admission, err := b.readAdmission(ctx, host, lane)
+		if err != nil || !admission.AdmissionHeld || admission.OperationID != operationID {
+			return errors.Join(fmt.Errorf("%s does not report exactly the successor admission hold %s", host, operationID), err)
+		}
+	}
+	return nil
+}
+
+// synchronizeReceiptHead selects only a receipt that safely extends every
+// host copy. It never resolves divergent completed histories by guessing.
+func (b *NativePromotionBackend) synchronizeReceiptHead(ctx context.Context, lane, operationID string) (string, laneinstall.CatalogCohortReceipt, error) {
+	type copy struct {
+		host    string
+		receipt laneinstall.CatalogCohortReceipt
+	}
+	copies := make([]copy, 0, len(HostOrder))
+	for _, host := range HostOrder {
+		view, err := b.readReceipt(ctx, host, lane, operationID)
+		if err != nil || !view.Present {
+			return "", laneinstall.CatalogCohortReceipt{}, errors.Join(fmt.Errorf("%s receipt copy unavailable", host), err)
+		}
+		copies = append(copies, copy{host: host, receipt: view.Receipt})
+	}
+	var head *copy
+	for index := range copies {
+		candidate := &copies[index]
+		advancesAll := true
+		for other := range copies {
+			if !laneinstall.CatalogCohortReceiptCanAdvance(copies[other].receipt, candidate.receipt) {
+				advancesAll = false
+				break
+			}
+		}
+		if advancesAll {
+			if head != nil && !reflectReceiptEqual(head.receipt, candidate.receipt) {
+				return "", laneinstall.CatalogCohortReceipt{}, ErrOperationCorrupted
+			}
+			head = candidate
+		}
+	}
+	if head == nil {
+		return "", laneinstall.CatalogCohortReceipt{}, fmt.Errorf("receipt histories are not one safe linear extension: %w", ErrOperationCorrupted)
+	}
+	if err := b.syncReceiptFrom(ctx, head.host, lane, operationID); err != nil {
+		return "", laneinstall.CatalogCohortReceipt{}, err
+	}
+	view, err := b.readReceipt(ctx, "mac-control-plane", lane, operationID)
+	if err != nil || !view.Present {
+		return "", laneinstall.CatalogCohortReceipt{}, errors.Join(ErrOperationCorrupted, err)
+	}
+	return head.host, view.Receipt, nil
+}
+
+func cohortSupersessionSuccessor(receipt laneinstall.CatalogCohortReceipt) string {
+	successor := ""
+	for _, transition := range receipt.Transitions {
+		switch transition.Action {
+		case "supersession-restart":
+			successor = transition.SuccessorID
+		case "supersede-host":
+			if transition.Supersession != nil {
+				successor = transition.Supersession.SuccessorOperationID
+			}
+		case "supersede":
+			successor = transition.SuccessorID
+		}
+	}
+	return successor
+}
+
+func cohortHostHasSupersession(receipt laneinstall.CatalogCohortReceipt, host, successor string) bool {
+	start := 0
+	for index, transition := range receipt.Transitions {
+		if transition.Action == "supersession-restart" {
+			start = index + 1
+		}
+	}
+	for _, transition := range receipt.Transitions[start:] {
+		if transition.Action == "supersede-host" && transition.HostID == host && transition.Supersession != nil &&
+			transition.Supersession.SuccessorOperationID == successor {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *NativePromotionBackend) finishInitialFencesAndHold(ctx context.Context, op Operation, receipt laneinstall.CatalogCohortReceipt) error {
@@ -997,6 +1212,9 @@ func (b *NativePromotionBackend) UpdateSourceBranch(ctx context.Context, lane, c
 }
 
 func (b *NativePromotionBackend) runLane(ctx context.Context, host string, args []string, stdin []byte) ([]byte, error) {
+	if b.laneCommandRunner != nil {
+		return b.laneCommandRunner(ctx, host, append([]string(nil), args...), append([]byte(nil), stdin...))
+	}
 	profile, ok := b.Config.Hosts[host]
 	if !ok || !contains(HostOrder, host) {
 		return nil, ErrInvalidInput

@@ -1301,6 +1301,192 @@ func TestCatalogCohortSupersessionRejectsUnfinishedSelectorJournal(t *testing.T)
 	}
 }
 
+func TestCatalogCohortAdmissionRecognizesCompletedPredecessorSuccessorOverlap(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	predecessor := heldCatalogCohortFixture(t, now, strings.Repeat("1", 32), "v2.0.0")
+	proof := strings.Repeat("d", 64)
+	var err error
+	for _, host := range catalogCohortSwitchOrder {
+		predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "preflight", host, proof, now)
+		if err != nil {
+			t.Fatalf("predecessor preflight %s: %v", host, err)
+		}
+		predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "switch", host, proof, now)
+		if err != nil {
+			t.Fatalf("predecessor switch %s: %v", host, err)
+		}
+	}
+	predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "verify-start", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range catalogCohortSwitchOrder {
+		predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "verify", host, proof, now)
+		if err != nil {
+			t.Fatalf("predecessor verify %s: %v", host, err)
+		}
+	}
+	predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "complete", "", proof, now)
+	if err != nil || predecessor.Stage != CatalogCohortComplete {
+		t.Fatalf("predecessor completion stage=%q err=%v", predecessor.Stage, err)
+	}
+
+	plan, err := BuildCatalogPlan("linux-host", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogRoot, err := DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor := validCatalogCohortFixture(now)
+	successor.OperationID = strings.Repeat("b", 32)
+	successor.ReleaseID = "v2.0.1"
+	successor.ReleaseSHA256 = strings.Repeat("b", 64)
+	for index, host := range catalogCohortSwitchOrder {
+		hostPlan, planErr := BuildCatalogPlan(host, config.ReleaseLaneDev)
+		if planErr != nil {
+			t.Fatal(planErr)
+		}
+		hostRoot, rootErr := DefaultCatalogRootForPlan(hostPlan)
+		if rootErr != nil {
+			t.Fatal(rootErr)
+		}
+		successor.Hosts[index].Target.ReleaseID = successor.ReleaseID
+		successor.Hosts[index].Target.ReleaseSHA256 = successor.ReleaseSHA256
+		successor.Hosts[index].PreviousTarget = filepath.Join(hostRoot, predecessor.ReleaseID, host)
+		successor.Hosts[index].PreviousBundleSHA256 = predecessor.Hosts[index].Target.BundleSHA256
+		successor.Hosts[index].ConfigurationSHA256 = predecessor.Hosts[index].ConfigurationSHA256
+		successor.Hosts[index].SchemaVersion = predecessor.Hosts[index].SchemaVersion
+		successor.Hosts[index].WorkInventorySHA256 = predecessor.Hosts[index].WorkInventorySHA256
+		successor.Hosts[index].WorkInventoryEmpty = true
+	}
+	if catalogRoot == "" { // Keep root derivation in this fixture explicit.
+		t.Fatal("catalog root was empty")
+	}
+	successor, err = AdvanceCatalogCohortReceipt(successor, "hold", "", proof, now)
+	if err != nil || successor.Stage != CatalogCohortHeld {
+		t.Fatalf("successor hold stage=%q err=%v", successor.Stage, err)
+	}
+
+	root := filepath.Join(t.TempDir(), "catalog-cohorts")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCohortReceiptFixture(t, root, predecessor)
+	writeCohortReceiptFixture(t, root, successor)
+	held, operation, err := catalogCohortAdmissionHeldAt(plan, root)
+	if err != nil || !held || operation != successor.OperationID {
+		t.Fatalf("completed predecessor overlap should resolve to successor: held=%v operation=%s err=%v", held, operation, err)
+	}
+
+	for index, host := range catalogCohortSwitchOrder {
+		observation := fixtureCohortSupersessionEvidence(predecessor, successor, index, "completed")
+		observation.HostID = host
+		observation.SelectorBundleSHA256 = predecessor.Hosts[index].Target.BundleSHA256
+		predecessor, err = AdvanceCatalogCohortSupersedeHost(predecessor, successor, observation, now.Add(time.Duration(index+1)*time.Second))
+		if err != nil {
+			t.Fatalf("predecessor supersession evidence %s: %v", host, err)
+		}
+		writeCohortReceiptFixture(t, root, predecessor)
+		held, operation, err = catalogCohortAdmissionHeldAt(plan, root)
+		if err != nil || !held || operation != successor.OperationID {
+			t.Fatalf("partial supersession at %s lost the successor hold: held=%v operation=%s err=%v", host, held, operation, err)
+		}
+	}
+	predecessor, err = AdvanceCatalogCohortSupersede(predecessor, successor.OperationID, now.Add(10*time.Second))
+	if err != nil || predecessor.Stage != CatalogCohortSuperseded {
+		t.Fatalf("predecessor supersession stage=%q err=%v", predecessor.Stage, err)
+	}
+	writeCohortReceiptFixture(t, root, predecessor)
+	held, operation, err = catalogCohortAdmissionHeldAt(plan, root)
+	if err != nil || !held || operation != successor.OperationID {
+		t.Fatalf("completed handover did not leave the successor hold: held=%v operation=%s err=%v", held, operation, err)
+	}
+}
+
+func TestCatalogCohortAdmissionRejectsMismatchedCompletedSupersessionPair(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	predecessor := heldCatalogCohortFixture(t, now, strings.Repeat("1", 32), "v2.0.0")
+	proof := strings.Repeat("d", 64)
+	var err error
+	for _, host := range catalogCohortSwitchOrder {
+		predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "preflight", host, proof, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "switch", host, proof, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "verify-start", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range catalogCohortSwitchOrder {
+		predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "verify", host, proof, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "complete", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildCatalogPlan("linux-host", config.ReleaseLaneDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*CatalogCohortReceipt){
+		"wrong predecessor target": func(r *CatalogCohortReceipt) { r.Hosts[0].PreviousTarget += ".wrong" },
+		"wrong previous bundle":    func(r *CatalogCohortReceipt) { r.Hosts[0].PreviousBundleSHA256 = strings.Repeat("f", 64) },
+		"configuration drift":      func(r *CatalogCohortReceipt) { r.Hosts[0].ConfigurationSHA256 = strings.Repeat("f", 64) },
+		"schema drift":             func(r *CatalogCohortReceipt) { r.Hosts[0].SchemaVersion-- },
+		"retained work":            func(r *CatalogCohortReceipt) { r.Hosts[0].WorkInventoryEmpty = false },
+		"expired evidence": func(r *CatalogCohortReceipt) {
+			r.Hosts[0].PreflightAt = now.Add(-2 * time.Hour).Format(time.RFC3339Nano)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			successor := validCatalogCohortFixture(now)
+			successor.OperationID = strings.Repeat("b", 32)
+			successor.ReleaseID = "v2.0.1"
+			successor.ReleaseSHA256 = strings.Repeat("b", 64)
+			for index, host := range catalogCohortSwitchOrder {
+				hostPlan, err := BuildCatalogPlan(host, config.ReleaseLaneDev)
+				if err != nil {
+					t.Fatal(err)
+				}
+				catalogRoot, err := DefaultCatalogRootForPlan(hostPlan)
+				if err != nil {
+					t.Fatal(err)
+				}
+				successor.Hosts[index].Target.ReleaseID = successor.ReleaseID
+				successor.Hosts[index].Target.ReleaseSHA256 = successor.ReleaseSHA256
+				successor.Hosts[index].PreviousTarget = filepath.Join(catalogRoot, predecessor.ReleaseID, host)
+				successor.Hosts[index].PreviousBundleSHA256 = predecessor.Hosts[index].Target.BundleSHA256
+				successor.Hosts[index].ConfigurationSHA256 = predecessor.Hosts[index].ConfigurationSHA256
+				successor.Hosts[index].WorkInventoryEmpty = true
+			}
+			successor, err = AdvanceCatalogCohortReceipt(successor, "hold", "", proof, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate(&successor)
+			root := filepath.Join(t.TempDir(), "catalog-cohorts")
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeCohortReceiptFixture(t, root, predecessor)
+			writeCohortReceiptFixture(t, root, successor)
+			if held, operation, err := catalogCohortAdmissionHeldAt(plan, root); err == nil || held || operation != "" {
+				t.Fatalf("mismatched predecessor/successor overlap was accepted: held=%v operation=%s err=%v", held, operation, err)
+			}
+		})
+	}
+}
+
 func TestCatalogCohortSupersessionRestartKeepsHoldUntilAllHostsReconcile(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	proof := strings.Repeat("e", 64)

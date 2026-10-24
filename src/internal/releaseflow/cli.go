@@ -299,10 +299,6 @@ func RunPromoteCLI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "promotion execution requires explicit --publisher-owner, --publisher-control, --publishers-paused, and --no-new-accepted")
 		return 3
 	}
-	if *resume == "" && len(plan.ExistingHolds) > 0 {
-		fmt.Fprintf(stderr, "%v: %v\n", ErrAdmissionHeld, plan.ExistingHolds)
-		return 3
-	}
 	if *resume == "" && *opID == "" {
 		id, err := newID()
 		if err != nil {

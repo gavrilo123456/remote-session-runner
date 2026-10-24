@@ -29,16 +29,51 @@ type fakeBackend struct {
 	failSwitchAfterEffect  string
 	failPrepareAfterEffect bool
 	failBranch             bool
+	existingHolds          map[string]string
+	validatedHolds         int
+	supersededPredecessor  string
+}
+
+type completedHoldBackend struct {
+	*fakeBackend
+	holds       map[string]string
+	validateErr error
+	validated   int
+}
+
+func (b *completedHoldBackend) Plan(ctx context.Context, lane string, r Release, approval string) (PromotionPlan, error) {
+	plan, err := b.fakeBackend.Plan(ctx, lane, r, approval)
+	if err == nil {
+		plan.ExistingHolds = b.holds
+	}
+	return plan, err
+}
+
+func (b *completedHoldBackend) ValidateExistingCohortHold(context.Context, PromotionPlan) error {
+	b.validated++
+	return b.validateErr
 }
 
 func (f *fakeBackend) Plan(_ context.Context, lane string, r Release, _ string) (PromotionPlan, error) {
 	plan, err := BuildPlan(lane, "all", r)
 	plan.ExpectedBranchMarker = r.Source.CapturedTip
 	plan.ExpectedBranchMarkerExists = true
+	plan.ExistingHolds = f.existingHolds
 	return plan, err
+}
+func (f *fakeBackend) ValidateExistingCohortHold(context.Context, PromotionPlan) error {
+	f.validatedHolds++
+	return nil
 }
 func (f *fakeBackend) PrepareCohort(_ context.Context, op Operation) (any, error) {
 	f.prepareCalls++
+	if op.PreviousCohortOperationID != "" {
+		f.supersededPredecessor = op.PreviousCohortOperationID
+		f.existingHolds = make(map[string]string, len(HostOrder))
+		for _, host := range HostOrder {
+			f.existingHolds[host] = op.CohortOperationID
+		}
+	}
 	if f.failPrepareAfterEffect {
 		f.prepared = true
 		f.failPrepareAfterEffect = false
@@ -177,6 +212,71 @@ func testComponents(host string) []laneinstall.SimpleBundleComponent {
 	}
 	sort.Slice(components, func(i, j int) bool { return components[i].Name < components[j].Name })
 	return components
+}
+
+func TestPromotePersistsAndSupersedesOneValidatedCompletedHold(t *testing.T) {
+	store := testStore(t)
+	release := testRelease()
+	saveTestRelease(t, store, release)
+	predecessor := strings.Repeat("c", 32)
+	backend := &completedHoldBackend{fakeBackend: &fakeBackend{selected: map[string]bool{}}, holds: map[string]string{}}
+	for _, host := range HostOrder {
+		backend.holds[host] = predecessor
+	}
+	operationID := strings.Repeat("d", 32)
+	result, err := Promote(context.Background(), store, backend, PromoteRequest{Lane: "dev", Target: "all", ReleaseID: release.ID,
+		OperationID: operationID, Profile: "profile-v1"}, time.Now)
+	if err != nil {
+		t.Fatalf("promotion with validated completed predecessor failed: %v", err)
+	}
+	if backend.validated != 1 || backend.prepareCalls != 1 || result.Operation.PreviousCohortOperationID != predecessor ||
+		result.Operation.Stage != StageComplete {
+		t.Fatalf("completed predecessor handover was not durable: validations=%d prepared=%d previous=%s stage=%s",
+			backend.validated, backend.prepareCalls, result.Operation.PreviousCohortOperationID, result.Operation.Stage)
+	}
+	loaded, err := store.LoadOperation("dev", operationID)
+	if err != nil || loaded.PreviousCohortOperationID != predecessor {
+		t.Fatalf("predecessor identity did not survive operation reload: previous=%s err=%v", loaded.PreviousCohortOperationID, err)
+	}
+}
+
+func TestPromoteRejectsPartialAmbiguousOrUnverifiedExistingHoldsBeforeEffects(t *testing.T) {
+	for name, tc := range map[string]struct {
+		holds       map[string]string
+		validateErr error
+	}{
+		"partial host set": {holds: map[string]string{"linux-host": strings.Repeat("c", 32)}},
+		"different operations": {holds: map[string]string{
+			"linux-host": strings.Repeat("c", 32), "sandbox-host": strings.Repeat("c", 32),
+			"factory-sandbox": strings.Repeat("e", 32), "mac-control-plane": strings.Repeat("c", 32),
+		}},
+		"failed predecessor validation": {holds: func() map[string]string {
+			holds := map[string]string{}
+			for _, host := range HostOrder {
+				holds[host] = strings.Repeat("c", 32)
+			}
+			return holds
+		}(), validateErr: ErrOperationCorrupted},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := testStore(t)
+			release := testRelease()
+			saveTestRelease(t, store, release)
+			backend := &completedHoldBackend{fakeBackend: &fakeBackend{selected: map[string]bool{}}, holds: tc.holds, validateErr: tc.validateErr}
+			operationID := strings.Repeat("d", 32)
+			_, err := Promote(context.Background(), store, backend, PromoteRequest{Lane: "dev", Target: "all", ReleaseID: release.ID,
+				OperationID: operationID, Profile: "profile-v1"}, time.Now)
+			if !errors.Is(err, ErrAdmissionHeld) && !errors.Is(err, ErrOperationCorrupted) {
+				t.Fatalf("unsafe existing hold was not rejected: %v", err)
+			}
+			if backend.prepareCalls != 0 {
+				t.Fatalf("preparation ran before predecessor proof: %d", backend.prepareCalls)
+			}
+			if _, loadErr := store.LoadOperation("dev", operationID); loadErr == nil {
+				t.Fatal("blocked predecessor validation created a promotion operation")
+			}
+		})
+	}
 }
 
 func TestPromoteNamedHostsCommonPreparationAndResume(t *testing.T) {

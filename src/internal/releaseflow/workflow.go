@@ -78,6 +78,14 @@ type Backend interface {
 	UpdateSourceBranch(context.Context, string, string, string) error
 }
 
+// ExistingCohortHoldValidator is implemented by the native backend to allow
+// a new operation to supersede one synchronized, completed cohort receipt.
+// The check is read-only; the predecessor remains held until a fresh successor
+// receipt is held and every host records its local supersession evidence.
+type ExistingCohortHoldValidator interface {
+	ValidateExistingCohortHold(context.Context, PromotionPlan) error
+}
+
 type PromoteRequest struct {
 	Lane        string
 	Target      string
@@ -112,6 +120,24 @@ func BuildPlan(lane, target string, release Release) (PromotionPlan, error) {
 		p.Approval = "none beyond existing lane/publisher controls"
 	}
 	return p, nil
+}
+
+func commonExistingCohortHold(holds map[string]string) (string, error) {
+	if len(holds) == 0 {
+		return "", nil
+	}
+	if len(holds) != len(HostOrder) {
+		return "", ErrAdmissionHeld
+	}
+	wanted := ""
+	for _, host := range HostOrder {
+		id, ok := holds[host]
+		if !ok || !operationPattern.MatchString(id) || wanted != "" && id != wanted {
+			return "", ErrAdmissionHeld
+		}
+		wanted = id
+	}
+	return wanted, nil
 }
 
 // Promote serializes one lane, persists intent before each backend effect, and
@@ -184,9 +210,34 @@ func Promote(ctx context.Context, store *Store, backend Backend, req PromoteRequ
 			return result, fmt.Errorf("%s measured free space %d is below the read-only minimum %d before any selected-lane hold, stop, or backup", baseline.HostID, baseline.AvailableBytes, baseline.RequiredBytes)
 		}
 	}
-	for host, heldOperation := range plan.ExistingHolds {
-		if req.ResumeID == "" || op.CohortOperationID != heldOperation {
-			return result, fmt.Errorf("%s lane admission is held by %s: %w", host, heldOperation, ErrAdmissionHeld)
+	heldOperation, holdErr := commonExistingCohortHold(plan.ExistingHolds)
+	if holdErr != nil {
+		return result, holdErr
+	}
+	if heldOperation != "" {
+		allowedResumeHold := req.ResumeID != "" &&
+			(heldOperation == op.CohortOperationID || heldOperation == op.PreviousCohortOperationID)
+		if allowedResumeHold {
+			if heldOperation == op.PreviousCohortOperationID {
+				validator, ok := backend.(ExistingCohortHoldValidator)
+				if !ok {
+					return result, ErrAdmissionHeld
+				}
+				if err := validator.ValidateExistingCohortHold(ctx, plan); err != nil {
+					return result, fmt.Errorf("validate held predecessor cohort %s: %w", heldOperation, err)
+				}
+			}
+		} else {
+			if req.ResumeID != "" || req.OperationID == heldOperation {
+				return result, fmt.Errorf("selected lane admission is held by %s: %w", heldOperation, ErrAdmissionHeld)
+			}
+			validator, ok := backend.(ExistingCohortHoldValidator)
+			if !ok {
+				return result, fmt.Errorf("selected lane admission is held by %s: %w", heldOperation, ErrAdmissionHeld)
+			}
+			if err := validator.ValidateExistingCohortHold(ctx, plan); err != nil {
+				return result, fmt.Errorf("validate held predecessor cohort %s: %w", heldOperation, err)
+			}
 		}
 	}
 	return result, store.WithLaneLock(req.Lane, func() error {
@@ -204,6 +255,7 @@ func Promote(ctx context.Context, store *Store, backend Backend, req PromoteRequ
 			if err != nil {
 				return err
 			}
+			op.PreviousCohortOperationID = heldOperation
 			if err = AppendEvent(&op, "operation-created", "", false, "recorded", map[string]any{"plan": plan}, now()); err != nil {
 				return err
 			}

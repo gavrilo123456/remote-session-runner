@@ -127,6 +127,7 @@ type Operation struct {
 	UpdatedUTC                 string         `json:"updated_utc"`
 	ApprovalSHA                string         `json:"approval_sha256,omitempty"`
 	CohortOperationID          string         `json:"cohort_operation_id,omitempty"`
+	PreviousCohortOperationID  string         `json:"previous_cohort_operation_id,omitempty"`
 	ExpectedBranchMarker       string         `json:"expected_branch_marker,omitempty"`
 	ExpectedBranchMarkerExists bool           `json:"expected_branch_marker_exists"`
 	PlanSnapshot               *PromotionPlan `json:"plan_snapshot,omitempty"`
@@ -296,6 +297,10 @@ func ValidateOperation(op Operation) error {
 		return ErrOperationCorrupted
 	}
 	if op.CohortOperationID != "" && !operationPattern.MatchString(op.CohortOperationID) {
+		return ErrInvalidInput
+	}
+	if op.PreviousCohortOperationID != "" && (!operationPattern.MatchString(op.PreviousCohortOperationID) ||
+		op.PreviousCohortOperationID == op.CohortOperationID) {
 		return ErrInvalidInput
 	}
 	if err := validateEvents(op.Events); err != nil {

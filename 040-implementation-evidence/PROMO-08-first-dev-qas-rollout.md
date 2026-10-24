@@ -93,3 +93,50 @@ canonical-lane predicate, while invalid host/lane scopes continue to be
 rejected before host state is read. Mac changed-package tests passed after the
 test correction. A corrected cross-host rerun is required after its Git
 delivery; no lane state was changed.
+
+## Completed-hold replacement correction
+
+The first valid Dev plan exposed the existing completed
+`c02b2c01b3504c067de9d3b77605b87e` receipt as an admission hold. The initial
+promotion CLI rejected every non-empty hold before the workflow could inspect
+its history, so no new operation could be created. After removing that blanket
+CLI rejection, fresh preparation also needed to distinguish the exact
+validated predecessor hold from an unrelated or conflicting hold.
+
+The controller now permits one common predecessor operation only when all
+four hosts report it and its receipt copies are identical, `complete`,
+eligible for supersession, selected on every host, and still match the fresh
+plan's bundle, configuration, schema and empty-work evidence. It persists the
+predecessor ID in the durable promotion operation. Preparation revalidates the
+old receipt before backups, allows only that exact hold while collecting fresh
+preflights, holds the successor on all four hosts, and then uses the existing
+`catalog-cohort supersede-host` / `supersede` operations. It synchronizes each
+recorded transition; partial or divergent histories refuse to continue. The
+old hold therefore remains effective until the successor hold is recognized
+cohort-wide. The sealed Runner release and its four bundle hashes are
+unchanged.
+
+Regressions cover public `promote-to` acceptance of one validated completed
+hold, persistence of its predecessor identity, refusal of partial/mixed or
+unverified holds before effects, the four-host native receipt synchronization
+path, interruption after a local supersession write and safe retry, and
+admission lookup during the completed-predecessor/successor-held overlap.
+Live Dev/QAS rollout is not claimed until the controller source is delivered
+and the run finishes its functional gates.
+
+Mac source gates for this controller patch (working tree based on delivered
+`3ef2b9df256e6c30e280addc1a6418851ade6e5c`):
+
+- `go test ./... -count=1`: PASS with Go 1.27.1. The first sandboxed run
+  failed only because existing `TestBUG020MacShellExitWithInheritedControlWriterSettlesOnce`
+  could not invoke `/bin/ps` for its own test-owned child (`operation not
+  permitted`). The isolated package and the full uncached suite were rerun
+  with the required process-inspection permission and passed.
+- `make vet`: PASS.
+- `make build`: PASS.
+- `make smoke`: PASS.
+- `git diff --check`: PASS.
+
+These are controller/source gates only. They do not qualify or accept the
+sealed service release; all four worker fast-forwards and native controller
+checks remain pending until delivery.

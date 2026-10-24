@@ -12,11 +12,12 @@ import (
 )
 
 type promotionCLIBackendState struct {
-	Selected               map[string]bool `json:"selected"`
-	Prepared               bool            `json:"prepared"`
-	FailPrepareAfterEffect bool            `json:"fail_prepare_after_effect"`
-	FailSwitchAfterEffect  string          `json:"fail_switch_after_effect"`
-	FailBranch             bool            `json:"fail_branch"`
+	Selected               map[string]bool   `json:"selected"`
+	Prepared               bool              `json:"prepared"`
+	FailPrepareAfterEffect bool              `json:"fail_prepare_after_effect"`
+	FailSwitchAfterEffect  string            `json:"fail_switch_after_effect"`
+	FailBranch             bool              `json:"fail_branch"`
+	ExistingHolds          map[string]string `json:"existing_holds,omitempty"`
 }
 
 // TestPromotionCLIHelper is the subprocess entry point for public-command
@@ -37,7 +38,7 @@ func TestPromotionCLIHelper(t *testing.T) {
 	}
 	backend := &fakeBackend{selected: state.Selected, prepared: state.Prepared,
 		failPrepareAfterEffect: state.FailPrepareAfterEffect, failSwitchAfterEffect: state.FailSwitchAfterEffect,
-		failBranch: state.FailBranch}
+		failBranch: state.FailBranch, existingHolds: state.ExistingHolds}
 	promotionBackendForTests = backend
 	separator := -1
 	for i, arg := range os.Args {
@@ -60,7 +61,7 @@ func TestPromotionCLIHelper(t *testing.T) {
 	}
 	state = promotionCLIBackendState{Selected: backend.selected, Prepared: backend.prepared,
 		FailPrepareAfterEffect: backend.failPrepareAfterEffect, FailSwitchAfterEffect: backend.failSwitchAfterEffect,
-		FailBranch: backend.failBranch}
+		FailBranch: backend.failBranch, ExistingHolds: backend.existingHolds}
 	data, err := json.Marshal(state)
 	if err != nil || os.WriteFile(statePath, data, 0o600) != nil {
 		os.Exit(92)
@@ -199,6 +200,42 @@ func TestPublicPromoteSubprocessRetriesPartialPreparation(t *testing.T) {
 	op, err = store.LoadOperation("dev", opID)
 	if err != nil || op.Stage != StageComplete {
 		t.Fatalf("retry did not finish the exact operation: stage=%s err=%v", op.Stage, err)
+	}
+}
+
+func TestPublicPromoteSubprocessSupersedesOneCompletedHold(t *testing.T) {
+	store := testStore(t)
+	release := saveCLIRelease(t, store)
+	statePath := filepath.Join(t.TempDir(), "backend-state.json")
+	predecessor := strings.Repeat("c", 32)
+	holds := make(map[string]string, len(HostOrder))
+	for _, host := range HostOrder {
+		holds[host] = predecessor
+	}
+	writePromotionCLIState(t, statePath, promotionCLIBackendState{Selected: map[string]bool{}, ExistingHolds: holds})
+	opID := strings.Repeat("d", 32)
+	output, err := runPromotionCLIChild(t, statePath, append([]string{"promote-to"},
+		cliPromotionArgs("dev", "all", release.ID, opID, store.Root)...)...)
+	if err != nil {
+		t.Fatalf("public command rejected a validated completed hold: %v: %s", err, output)
+	}
+	op, err := store.LoadOperation("dev", opID)
+	if err != nil || op.Stage != StageComplete || op.PreviousCohortOperationID != predecessor {
+		t.Fatalf("public command did not complete the durable hold handover: stage=%s predecessor=%s err=%v output=%s",
+			op.Stage, op.PreviousCohortOperationID, err, output)
+	}
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state promotionCLIBackendState
+	if json.Unmarshal(stateData, &state) != nil {
+		t.Fatalf("could not read updated backend state: %s", stateData)
+	}
+	for _, host := range HostOrder {
+		if state.ExistingHolds[host] != op.CohortOperationID {
+			t.Fatalf("successor hold on %s = %q, want %q", host, state.ExistingHolds[host], op.CohortOperationID)
+		}
 	}
 }
 
