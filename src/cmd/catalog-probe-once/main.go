@@ -239,9 +239,14 @@ func observeExistingDirect(ctx context.Context, loaded config.Config, endpoint *
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		read, readErr := request(ctx, client, http.MethodGet, statusURL, nil, nil)
-		if readErr != nil || read.status != http.StatusOK || parseJob(read.body, &final) != nil || final.JobID != p.JobID {
-			return errors.New("accepted probe status read failed")
+		if readErr != nil {
+			return errors.New("accepted probe status transport read failed")
 		}
+		observed, decodeErr := decodeObservedJobResponse(read, p.JobID)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		final = observed
 		if terminal(final) {
 			break
 		}
@@ -268,9 +273,14 @@ func observeExistingLocal(ctx context.Context, socketPath string, p prepared) er
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		read, readErr := request(ctx, client, http.MethodGet, statusURL, nil, nil)
-		if readErr != nil || read.status != http.StatusOK || parseJob(read.body, &final) != nil || final.JobID != p.JobID {
-			return errors.New("accepted Mac-local probe status read failed")
+		if readErr != nil {
+			return errors.New("accepted Mac-local probe status transport read failed")
 		}
+		observed, decodeErr := decodeObservedJobResponse(read, p.JobID)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		final = observed
 		if terminal(final) {
 			break
 		}
@@ -283,6 +293,20 @@ func observeExistingLocal(ctx context.Context, socketPath string, p prepared) er
 		SessionID: final.SessionID, CommandID: final.CommandID, Phase: finalPhase(final), CommandState: final.CommandState,
 		ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete,
 		OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, ObservedExisting: true})
+}
+
+func decodeObservedJobResponse(read response, expectedJobID string) (jobFields, error) {
+	if read.status != http.StatusOK {
+		return jobFields{}, fmt.Errorf("accepted probe status read returned HTTP %d (response_code %s)", read.status, responseErrorCode(read.body))
+	}
+	var job jobFields
+	if parseJob(read.body, &job) != nil {
+		return jobFields{}, errors.New("accepted probe status response violated the job schema")
+	}
+	if job.JobID != expectedJobID {
+		return jobFields{}, errors.New("accepted probe status response job identity did not match its scope")
+	}
+	return job, nil
 }
 
 func sha256Hex(value []byte) string {

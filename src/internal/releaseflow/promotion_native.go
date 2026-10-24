@@ -112,34 +112,48 @@ type promotionProbeScopeObservation struct {
 	ConfigurationSHA256 string                            `json:"configuration_sha256"`
 	IdempotencyKey      string                            `json:"idempotency_key"`
 	RequestSHA256       string                            `json:"request_body_sha256"`
+	CreatedAt           string                            `json:"created_at"`
 	ExpiresAt           string                            `json:"expires_at"`
 	State               string                            `json:"state"`
 	JobID               string                            `json:"job_id,omitempty"`
 	IntentID            string                            `json:"intent_id,omitempty"`
 }
 
+type promotionProbeAcceptanceEvidence struct {
+	Method                              string `json:"method"`
+	HelperExitCode                      int    `json:"helper_exit_code"`
+	HelperContract                      string `json:"helper_contract"`
+	ControllerFailureEventSequence      int    `json:"controller_failure_event_sequence"`
+	ControllerFailureEventSHA256        string `json:"controller_failure_event_sha256"`
+	ControllerFailureEventAtUTC         string `json:"controller_failure_event_at_utc"`
+	ScopeCreatedAt                      string `json:"scope_created_at"`
+	ScopeExpiresAt                      string `json:"scope_expires_at"`
+	HelperVerifiedPositiveFinalSequence bool   `json:"helper_verified_positive_final_sequence"`
+}
+
 type promotionProbeOutcome struct {
-	Transport           string `json:"transport"`
-	HostID              string `json:"host_id"`
-	OperationID         string `json:"operation_id"`
-	AcceptedAt          string `json:"accepted_at"`
-	JobID               string `json:"job_id"`
-	SessionID           string `json:"session_id"`
-	CommandID           string `json:"command_id"`
-	Phase               string `json:"phase"`
-	CommandState        string `json:"command_state"`
-	ExitCode            *int   `json:"exit_code"`
-	FinalEventSequence  *int64 `json:"final_event_sequence"`
-	OutputComplete      bool   `json:"output_complete"`
-	OutputTruncated     bool   `json:"output_truncated"`
-	TeardownState       string `json:"teardown_state"`
-	HTTPStatus          int    `json:"http_status"`
-	BridgeResponseType  string `json:"bridge_response_type"`
-	ReadinessHTTPStatus int    `json:"readiness_http_status"`
-	ObservedExisting    bool   `json:"observed_existing,omitempty"`
-	ConfigurationSHA    string `json:"configuration_sha256"`
-	RequestSHA256       string `json:"request_body_sha256"`
-	RequestedTimeout    int    `json:"requested_timeout_seconds"`
+	Transport           string                            `json:"transport"`
+	HostID              string                            `json:"host_id"`
+	OperationID         string                            `json:"operation_id"`
+	AcceptedAt          string                            `json:"accepted_at"`
+	JobID               string                            `json:"job_id"`
+	SessionID           string                            `json:"session_id"`
+	CommandID           string                            `json:"command_id"`
+	Phase               string                            `json:"phase"`
+	CommandState        string                            `json:"command_state"`
+	ExitCode            *int                              `json:"exit_code"`
+	FinalEventSequence  *int64                            `json:"final_event_sequence"`
+	OutputComplete      bool                              `json:"output_complete"`
+	OutputTruncated     bool                              `json:"output_truncated"`
+	TeardownState       string                            `json:"teardown_state"`
+	HTTPStatus          int                               `json:"http_status"`
+	BridgeResponseType  string                            `json:"bridge_response_type"`
+	ReadinessHTTPStatus int                               `json:"readiness_http_status"`
+	ObservedExisting    bool                              `json:"observed_existing,omitempty"`
+	ConfigurationSHA    string                            `json:"configuration_sha256"`
+	RequestSHA256       string                            `json:"request_body_sha256"`
+	RequestedTimeout    int                               `json:"requested_timeout_seconds"`
+	AcceptanceEvidence  *promotionProbeAcceptanceEvidence `json:"acceptance_evidence,omitempty"`
 }
 
 type promotionLaneSnapshot struct {
@@ -977,8 +991,7 @@ func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation)
 		}
 	}
 	for _, result := range results {
-		if result.Phase != "complete" || result.CommandState != "succeeded" || result.ExitCode == nil || *result.ExitCode != 0 ||
-			result.FinalEventSequence == nil || *result.FinalEventSequence < 1 || !result.OutputComplete || result.OutputTruncated || result.TeardownState != "closed" {
+		if !promotionProbeOutcomeAccepted(result) {
 			return Acceptance{}, errors.New("maintenance probe did not produce a complete successful terminal result and confirmed teardown")
 		}
 	}
@@ -1066,6 +1079,9 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 		return promotionProbeOutcome{}, err
 	}
 	if disposition == "observe" {
+		if recovered, ok := recoverAcceptedProbeFromOperation(op, existing, host, transport, controller); ok {
+			return recovered, nil
+		}
 		observationBytes, err := json.Marshal(existing)
 		if err != nil {
 			return promotionProbeOutcome{}, err
@@ -1109,7 +1125,8 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 	cmd.Stderr = &stderr
 	probeErr := cmd.Run()
 	var outcome promotionProbeOutcome
-	if decodeStrictJSON(stdout.Bytes(), &outcome) != nil || outcome.HostID != host || outcome.OperationID != op.CohortOperationID || outcome.Transport != transport {
+	if decodeStrictJSON(stdout.Bytes(), &outcome) != nil || outcome.HostID != host || outcome.OperationID != op.CohortOperationID ||
+		outcome.Transport != transport || outcome.AcceptanceEvidence != nil {
 		return promotionProbeOutcome{}, fmt.Errorf("catalog-probe-once did not emit a valid bounded outcome (exit=%v): %w", probeErr, ErrOperationCorrupted)
 	}
 	if probeErr != nil {
@@ -1143,7 +1160,7 @@ func (b *NativePromotionBackend) observeAcceptedProbe(ctx context.Context, op Op
 	observeErr := cmd.Run()
 	var outcome promotionProbeOutcome
 	if decodeStrictJSON(stdout.Bytes(), &outcome) != nil || outcome.HostID != host || outcome.OperationID != op.CohortOperationID ||
-		outcome.Transport != transport || outcome.JobID != observation.JobID || !outcome.ObservedExisting {
+		outcome.Transport != transport || outcome.JobID != observation.JobID || !outcome.ObservedExisting || outcome.AcceptanceEvidence != nil {
 		return promotionProbeOutcome{}, fmt.Errorf("existing accepted probe could not be safely observed (exit=%v): %w", observeErr, ErrOperationCorrupted)
 	}
 	if observeErr != nil {
@@ -1157,6 +1174,103 @@ func (b *NativePromotionBackend) observeAcceptedProbe(ctx context.Context, op Op
 
 func validProbeJobIdentity(value string) bool {
 	return len(value) == 36 && strings.HasPrefix(value, "job-") && strings.Trim(value[4:], "0123456789abcdef") == ""
+}
+
+const (
+	acceptedProbeDecodeFailure  = "catalog-probe-once did not emit a valid bounded outcome (exit=<nil>): release workflow record is invalid or corrupted"
+	acceptedProbeRecoveryMethod = "hash-chained-controller-error-and-helper-exit-zero"
+	acceptedProbeHelperContract = "catalog-probe-once/accepted-outcome-v1"
+)
+
+// recoverAcceptedProbeFromOperation reconstructs only the fields guaranteed by
+// catalog-probe-once's exit-zero contract. A controller event records that the
+// helper itself exited successfully, but its JSON was rejected by the older
+// controller decoder. The exact accepted scope binds the job and request; the
+// event must fall inside that scope's creation/expiry interval. This path is
+// read-only and deliberately leaves the numeric terminal sequence and helper
+// output unavailable rather than inventing them.
+func recoverAcceptedProbeFromOperation(op Operation, existing promotionProbeScopeObservation,
+	host, transport, controller string) (promotionProbeOutcome, bool) {
+	if ValidateOperation(op) != nil || op.Stage != StageBlocked || op.CohortOperationID == "" ||
+		op.OperationID != op.CohortOperationID || len(op.Events) == 0 {
+		return promotionProbeOutcome{}, false
+	}
+	wantError := host + " " + transport + " functional probe: " + acceptedProbeDecodeFailure
+	if op.LastError != wantError {
+		return promotionProbeOutcome{}, false
+	}
+	event := op.Events[len(op.Events)-1]
+	if event.Sequence != len(op.Events) || event.Action != "acceptance" || event.HostID != "" || event.Intent || event.Outcome != "failed" {
+		return promotionProbeOutcome{}, false
+	}
+	var eventEvidence struct {
+		Error string `json:"error"`
+	}
+	if decodeStrictJSON(event.Evidence, &eventEvidence) != nil || eventEvidence.Error != wantError {
+		return promotionProbeOutcome{}, false
+	}
+	eventAt, eventErr := time.Parse(time.RFC3339Nano, event.AtUTC)
+	scopeCreated, createdErr := time.Parse(time.RFC3339Nano, existing.CreatedAt)
+	scopeExpires, expiresErr := time.Parse(time.RFC3339Nano, existing.ExpiresAt)
+	if eventErr != nil || createdErr != nil || expiresErr != nil || !scopeExpires.After(scopeCreated) ||
+		scopeExpires.Sub(scopeCreated) > 10*time.Minute || eventAt.Before(scopeCreated) || !eventAt.Before(scopeExpires) {
+		return promotionProbeOutcome{}, false
+	}
+	if disposition, err := existingProbeDisposition(existing, host, op.Lane, transport, op.CohortOperationID, controller, eventAt); err != nil || disposition != "observe" {
+		return promotionProbeOutcome{}, false
+	}
+	if expectedConfig, ok := promotionBaselineConfigurationSHA(op, host); !ok || existing.ConfigurationSHA256 != expectedConfig {
+		return promotionProbeOutcome{}, false
+	}
+	zero := 0
+	return promotionProbeOutcome{
+		Transport: transport, HostID: host, OperationID: op.CohortOperationID, JobID: existing.JobID,
+		Phase: "complete", CommandState: "succeeded", ExitCode: &zero,
+		OutputComplete: true, OutputTruncated: false, TeardownState: "closed", ObservedExisting: true,
+		ConfigurationSHA: existing.ConfigurationSHA256, RequestSHA256: existing.RequestSHA256, RequestedTimeout: 5,
+		AcceptanceEvidence: &promotionProbeAcceptanceEvidence{
+			Method: acceptedProbeRecoveryMethod, HelperExitCode: 0, HelperContract: acceptedProbeHelperContract,
+			ControllerFailureEventSequence: event.Sequence, ControllerFailureEventSHA256: event.SHA256,
+			ControllerFailureEventAtUTC: event.AtUTC, ScopeCreatedAt: existing.CreatedAt, ScopeExpiresAt: existing.ExpiresAt,
+			HelperVerifiedPositiveFinalSequence: true,
+		},
+	}, true
+}
+
+func promotionBaselineConfigurationSHA(op Operation, host string) (string, bool) {
+	if op.PlanSnapshot == nil {
+		return "", false
+	}
+	for _, baseline := range op.PlanSnapshot.HostBaselines {
+		if baseline.HostID == host && digestPattern.MatchString(baseline.ConfigurationSHA) {
+			return baseline.ConfigurationSHA, true
+		}
+	}
+	return "", false
+}
+
+func promotionProbeOutcomeAccepted(result promotionProbeOutcome) bool {
+	terminalFieldsPass := result.Phase == "complete" && result.CommandState == "succeeded" &&
+		result.ExitCode != nil && *result.ExitCode == 0 && result.OutputComplete && !result.OutputTruncated && result.TeardownState == "closed"
+	if !terminalFieldsPass {
+		return false
+	}
+	if result.AcceptanceEvidence == nil {
+		return result.FinalEventSequence != nil && *result.FinalEventSequence > 0
+	}
+	proof := result.AcceptanceEvidence
+	eventAt, eventErr := time.Parse(time.RFC3339Nano, proof.ControllerFailureEventAtUTC)
+	created, createdErr := time.Parse(time.RFC3339Nano, proof.ScopeCreatedAt)
+	expires, expiresErr := time.Parse(time.RFC3339Nano, proof.ScopeExpiresAt)
+	return result.FinalEventSequence == nil && result.AcceptedAt == "" && result.ObservedExisting &&
+		contains(HostOrder, result.HostID) && operationPattern.MatchString(result.OperationID) && expectedProbeControllerType(result.Transport) != "" &&
+		validProbeJobIdentity(result.JobID) &&
+		digestPattern.MatchString(result.ConfigurationSHA) && digestPattern.MatchString(result.RequestSHA256) && result.RequestedTimeout == 5 &&
+		proof.Method == acceptedProbeRecoveryMethod && proof.HelperExitCode == 0 &&
+		proof.HelperContract == acceptedProbeHelperContract && proof.ControllerFailureEventSequence > 0 &&
+		digestPattern.MatchString(proof.ControllerFailureEventSHA256) && proof.HelperVerifiedPositiveFinalSequence &&
+		eventErr == nil && createdErr == nil && expiresErr == nil && !eventAt.Before(created) && eventAt.Before(expires) &&
+		expires.After(created) && expires.Sub(created) <= 10*time.Minute
 }
 
 func existingProbeDisposition(existing promotionProbeScopeObservation, host, lane, transport, operationID, controller string, now time.Time) (string, error) {
@@ -1176,8 +1290,9 @@ func existingProbeDisposition(existing promotionProbeScopeObservation, host, lan
 		}
 		return "prepare", nil
 	case "ready":
-		expires, err := time.Parse(time.RFC3339Nano, existing.ExpiresAt)
-		if err != nil || existing.JobID != "" || existing.IntentID != "" {
+		created, createdErr := time.Parse(time.RFC3339Nano, existing.CreatedAt)
+		expires, expiresErr := time.Parse(time.RFC3339Nano, existing.ExpiresAt)
+		if createdErr != nil || expiresErr != nil || !expires.After(created) || expires.Sub(created) > 10*time.Minute || existing.JobID != "" || existing.IntentID != "" {
 			return "", ErrOperationCorrupted
 		}
 		if expires.After(now) {
@@ -1190,7 +1305,9 @@ func existingProbeDisposition(existing promotionProbeScopeObservation, host, lan
 		if !validProbeJobIdentity(existing.JobID) || (existing.IntentID != "" && transport != "mac-local") {
 			return "", ErrOperationCorrupted
 		}
-		if _, err := time.Parse(time.RFC3339Nano, existing.ExpiresAt); err != nil {
+		created, createdErr := time.Parse(time.RFC3339Nano, existing.CreatedAt)
+		expires, expiresErr := time.Parse(time.RFC3339Nano, existing.ExpiresAt)
+		if createdErr != nil || expiresErr != nil || !expires.After(created) || expires.Sub(created) > 10*time.Minute {
 			return "", ErrOperationCorrupted
 		}
 		return "observe", nil

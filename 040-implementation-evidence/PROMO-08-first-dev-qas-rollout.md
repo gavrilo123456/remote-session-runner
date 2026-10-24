@@ -381,3 +381,56 @@ pending at this evidence checkpoint. The exact Linux direct probe result has
 not yet been recovered into the durable promotion acceptance record; Dev
 acceptance, BUG-026 live exit-1 acceptance, QAS acceptance, and filesystem-
 mailbox acceptance remain NOT RUN.
+
+## Accepted Linux probe evidence recovery and current source gates
+
+The Linux direct-mTLS helper did complete successfully. The retained Dev
+operation `dea80fa695a606e64985f0b2b53ebeb4` has a hash-chained final event
+(sequence 25, SHA-256
+`7cb8b3d2730b0a8a6b1fb585b3d22dc3b1e1db0826aacc9dd4735b7c32b31251`) at
+`2026-10-24T21:05:40.977410Z`. Its exact error is
+`linux-host direct-mtls functional probe: catalog-probe-once did not emit a valid bounded outcome (exit=<nil>): release workflow record is invalid or corrupted`.
+The controller source then used is at `3e8afc9`; its strict result decoder
+omitted helper fields `accepted_at`, `http_status`, and
+`readiness_http_status`, while the helper emitted those fields. `cmd.Run()`
+returned nil, and the helper's exit-zero contract requires a complete,
+successful terminal result, exit code 0, positive final event sequence,
+complete untruncated output, and closed teardown. The accepted scope is still
+owner-only (0600, one link) and binds Linux/Dev/direct-mTLS, operation
+`dea80fa695a606e64985f0b2b53ebeb4`, controller
+`runner-controller-dev-linux-host`, configuration SHA-256
+`842a17572ba218ee770b39d8cf95c442c4885204d479d5b34ef6d2e4e5ff82f5`, request
+SHA-256 `5f422ed1d2e7f61d21dec92437ef566f29abba73ea321410070929ca23152f60`,
+and job `job-705974bc8f474d77898670837be15b61`. Scope creation was
+`2026-10-24T21:05:35.923209659Z`; expiry was
+`2026-10-24T21:07:35.404263511Z`, so the controller error followed creation by
+about 5.05 seconds and preceded expiry. The later status-only read returned
+HTTP 503 `maintenance_admission_closed`; no request was resubmitted.
+
+The recovery correction accepts only this exact latest hash-chained
+controller-error event paired with the accepted owner-only scope, exact job,
+operation, host, transport, configuration, and an event timestamp inside the
+scope lifetime. It records the helper exit-zero contract and event digest,
+does not invent an accepted-at timestamp or numeric final sequence, and never
+replays the probe. All other accepted scopes still require successful
+status-only observation; a failed status read remains a failure. Regression
+coverage exercises the public `runProbe` path without replay, malformed or
+mismatched scope data, configuration drift, time-boundary failures, a later
+operation event, event-chain tampering, and the normal-versus-recovered
+acceptance rules. The diagnostic status reader now reports bounded HTTP and
+response-code details.
+
+Mac Go 1.27.1 gates for the recovery/diagnostic source change: `make test`,
+`make vet`, `make build`, `make smoke`, and `git diff --check` PASS. The
+focused `releaseflow`, `catalog-probe-once`, and `runner-lane` test packages
+also PASS. Linux and Factory checks for this exact source revision and
+Sandbox fast-forward/test are pending. A fresh Sandbox `df -PB1 /` returned
+327,888,896 bytes available, 172,111,104 bytes below the 500,000,000-byte
+operating floor. An earlier sample during this turn was 1,124,872,192 bytes;
+the lower fresh reading governs. No Sandbox files were changed or cleaned.
+
+No complete Dev acceptance is recorded yet. The remaining Dev checks, including
+the other direct/queued transports, Mac-local route, limits, capacity,
+lifecycle, isolation, BUG-026 exit-1 and dedicated filesystem-mailbox scope,
+remain NOT RUN. QAS promotion and acceptance remain NOT RUN. No QAS/PRD
+services, selectors, configurations, databases, or mailbox paths were changed.

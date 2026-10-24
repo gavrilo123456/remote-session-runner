@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +71,27 @@ func TestProbeOutcomePrintsEvidenceAndFailsAcceptanceWhenAnyGateFails(t *testing
 				t.Fatal("incomplete or unsuccessful command was accepted")
 			}
 		})
+	}
+}
+
+func TestDecodeObservedJobResponseRequiresExactTerminalResourceIdentity(t *testing.T) {
+	const jobID = "job-705974bc8f474d77898670837be15b61"
+	good := response{status: http.StatusOK, body: []byte(`{"resource":{"job_id":"job-705974bc8f474d77898670837be15b61","session_id":"sess-11111111111111111111111111111111","command_id":"cmd-22222222222222222222222222222222","phase":"complete","command_state":"succeeded","exit_code":0,"final_event_sequence":4,"output_complete":true,"output_truncated":false,"teardown_state":"closed"}}`)}
+	got, err := decodeObservedJobResponse(good, jobID)
+	if err != nil || got.JobID != jobID || !probeOutcomeAccepted(outcome{Phase: got.Phase, CommandState: got.CommandState,
+		ExitCode: got.ExitCode, FinalEventSequence: got.FinalEventSequence, OutputComplete: got.OutputComplete,
+		OutputTruncated: got.OutputTruncated, TeardownState: got.TeardownState}) {
+		t.Fatalf("valid exact status response was rejected: %+v, %v", got, err)
+	}
+	if _, err := decodeObservedJobResponse(response{status: http.StatusNotFound, body: []byte(`{"code":"job_not_found"}`)}, jobID); err == nil ||
+		!strings.Contains(err.Error(), "HTTP 404") || !strings.Contains(err.Error(), "job_not_found") {
+		t.Fatalf("missing job did not return bounded status classification: %v", err)
+	}
+	if _, err := decodeObservedJobResponse(response{status: http.StatusServiceUnavailable, body: []byte(`{"code":"maintenance_admission_closed"}`)}, jobID); err == nil ||
+		!strings.Contains(err.Error(), "HTTP 503") || !strings.Contains(err.Error(), "maintenance_admission_closed") {
+		t.Fatalf("closed maintenance status route lost its bounded response classification: %v", err)
+	}
+	if _, err := decodeObservedJobResponse(response{status: http.StatusOK, body: []byte(`{"resource":{"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)}, jobID); err == nil {
+		t.Fatal("status result from a different job was accepted")
 	}
 }

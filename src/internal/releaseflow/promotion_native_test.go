@@ -1,6 +1,7 @@
 package releaseflow
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -171,6 +172,7 @@ func TestExistingPromotionProbeScopeNeverReplaysConsumedCapability(t *testing.T)
 	}
 	ready := base
 	ready.State = "ready"
+	ready.CreatedAt = now.Add(-time.Minute).Format(time.RFC3339Nano)
 	ready.ExpiresAt = now.Add(time.Minute).Format(time.RFC3339Nano)
 	if _, err := classify(ready); err == nil {
 		t.Fatal("active unused capability was allowed to be replaced")
@@ -188,6 +190,7 @@ func TestExistingPromotionProbeScopeNeverReplaysConsumedCapability(t *testing.T)
 	accepted := reserved
 	accepted.State = "accepted"
 	accepted.JobID = "job-705974bc8f474d77898670837be15b61"
+	accepted.CreatedAt = now.Add(-time.Minute).Format(time.RFC3339Nano)
 	if action, err := classify(accepted); err != nil || action != "observe" {
 		t.Fatalf("accepted scope disposition=%q err=%v", action, err)
 	}
@@ -195,6 +198,143 @@ func TestExistingPromotionProbeScopeNeverReplaysConsumedCapability(t *testing.T)
 	if _, err := classify(accepted); err == nil {
 		t.Fatal("accepted scope with controller drift was allowed to be observed")
 	}
+}
+
+func TestRecoverAcceptedProbeFromExactControllerDecodeFailureWithoutReplay(t *testing.T) {
+	op, scope := acceptedProbeRecoveryFixture(t)
+	var calls [][]string
+	backend := NativePromotionBackend{laneCommandRunner: func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		if host != "linux-host" {
+			t.Fatalf("scope observation used unexpected host %q", host)
+		}
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) < 2 || args[0] != "catalog-probe-prepare" || args[len(args)-1] != "--observe-existing" {
+			t.Fatalf("unexpected host-side command; consumed capability must only be observed: %v", args)
+		}
+		return json.Marshal(scope)
+	}}
+	got, err := backend.runProbe(context.Background(), op, "linux-host", "direct-mtls", "runner-controller-dev-linux-host", "/unused/config", "")
+	if err != nil {
+		t.Fatalf("accepted probe outcome recovery failed: %v", err)
+	}
+	if len(calls) != 1 || got.JobID != scope.JobID || got.FinalEventSequence != nil || got.AcceptedAt != "" ||
+		got.AcceptanceEvidence == nil || got.AcceptanceEvidence.ControllerFailureEventSequence != op.Events[len(op.Events)-1].Sequence ||
+		got.AcceptanceEvidence.ControllerFailureEventSHA256 != op.Events[len(op.Events)-1].SHA256 || !promotionProbeOutcomeAccepted(got) {
+		t.Fatalf("recovered outcome omitted bounded proof or claimed unavailable fields: calls=%v outcome=%+v", calls, got)
+	}
+}
+
+func TestRecoverAcceptedProbeRejectsInconsistentEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Operation, *promotionProbeScopeObservation)
+	}{
+		{name: "invalid job identity", mutate: func(_ *Operation, scope *promotionProbeScopeObservation) {
+			scope.JobID = "not-a-job-id"
+		}},
+		{name: "configuration drift", mutate: func(_ *Operation, scope *promotionProbeScopeObservation) { scope.ConfigurationSHA256 = stringsOf("d") }},
+		{name: "operation mismatch", mutate: func(_ *Operation, scope *promotionProbeScopeObservation) { scope.OperationID = strings.Repeat("e", 32) }},
+		{name: "scope created after failure", mutate: func(_ *Operation, scope *promotionProbeScopeObservation) { scope.CreatedAt = "2026-10-24T21:05:41Z" }},
+		{name: "event after expiry", mutate: func(op *Operation, _ *promotionProbeScopeObservation) {
+			at := time.Date(2026, 10, 24, 21, 8, 0, 0, time.UTC)
+			op.Events = nil
+			if err := AppendEvent(op, "acceptance", "", false, "failed", map[string]string{"error": op.LastError}, at); err != nil {
+				panic(err)
+			}
+		}},
+		{name: "newer operation event", mutate: func(op *Operation, _ *promotionProbeScopeObservation) {
+			if err := AppendEvent(op, "status", "", false, "observed", map[string]string{"state": "blocked"}, time.Date(2026, 10, 24, 21, 6, 0, 0, time.UTC)); err != nil {
+				panic(err)
+			}
+		}},
+		{name: "different last error", mutate: func(op *Operation, _ *promotionProbeScopeObservation) { op.LastError = "unrelated failure" }},
+		{name: "mismatched event evidence", mutate: func(op *Operation, _ *promotionProbeScopeObservation) {
+			op.Events = nil
+			if err := AppendEvent(op, "acceptance", "", false, "failed", map[string]string{"error": "unrelated failure"}, time.Date(2026, 10, 24, 21, 5, 40, 0, time.UTC)); err != nil {
+				panic(err)
+			}
+		}},
+		{name: "event chain tampering", mutate: func(op *Operation, _ *promotionProbeScopeObservation) {
+			op.Events[len(op.Events)-1].SHA256 = stringsOf("f")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			op, scope := acceptedProbeRecoveryFixture(t)
+			tc.mutate(&op, &scope)
+			if _, ok := recoverAcceptedProbeFromOperation(op, scope, "linux-host", "direct-mtls", "runner-controller-dev-linux-host"); ok {
+				t.Fatal("inconsistent accepted-scope evidence recovered as a pass")
+			}
+		})
+	}
+}
+
+func TestPromotionProbeAcceptanceRequiresSequenceOrExactRecoveryProof(t *testing.T) {
+	zero := 0
+	seq := int64(5)
+	base := promotionProbeOutcome{Phase: "complete", CommandState: "succeeded", ExitCode: &zero, OutputComplete: true, TeardownState: "closed"}
+	if promotionProbeOutcomeAccepted(base) {
+		t.Fatal("ordinary result without a final event sequence passed")
+	}
+	base.FinalEventSequence = &seq
+	if !promotionProbeOutcomeAccepted(base) {
+		t.Fatal("complete ordinary result with a positive final sequence failed")
+	}
+	base.FinalEventSequence = nil
+	base.Transport, base.HostID, base.OperationID = "direct-mtls", "linux-host", strings.Repeat("a", 32)
+	base.JobID, base.ObservedExisting = "job-705974bc8f474d77898670837be15b61", true
+	base.ConfigurationSHA, base.RequestSHA256, base.RequestedTimeout = stringsOf("b"), stringsOf("c"), 5
+	base.AcceptanceEvidence = &promotionProbeAcceptanceEvidence{Method: acceptedProbeRecoveryMethod, HelperExitCode: 0,
+		HelperContract: acceptedProbeHelperContract, ControllerFailureEventSequence: 1,
+		ControllerFailureEventSHA256: stringsOf("a"), ControllerFailureEventAtUTC: "2026-10-24T21:05:40.97741Z",
+		ScopeCreatedAt: "2026-10-24T21:05:35.923209659Z", ScopeExpiresAt: "2026-10-24T21:07:35.404263511Z",
+		HelperVerifiedPositiveFinalSequence: true}
+	if !promotionProbeOutcomeAccepted(base) {
+		t.Fatal("bounded exit-zero recovery proof did not pass")
+	}
+	base.AcceptanceEvidence.HelperExitCode = 1
+	if promotionProbeOutcomeAccepted(base) {
+		t.Fatal("nonzero helper exit was accepted by recovery proof")
+	}
+	base.AcceptanceEvidence.HelperExitCode = 0
+	base.AcceptanceEvidence.ScopeCreatedAt = "2026-10-24T21:07:36Z"
+	if promotionProbeOutcomeAccepted(base) {
+		t.Fatal("recovery proof with event outside scope lifetime was accepted")
+	}
+}
+
+func acceptedProbeRecoveryFixture(t *testing.T) (Operation, promotionProbeScopeObservation) {
+	t.Helper()
+	const operationID = "dea80fa695a606e64985f0b2b53ebeb4"
+	createdAt := time.Date(2026, 10, 24, 21, 5, 35, 923209659, time.UTC)
+	expiresAt := time.Date(2026, 10, 24, 21, 7, 35, 404263511, time.UTC)
+	eventAt := time.Date(2026, 10, 24, 21, 5, 40, 977410000, time.UTC)
+	op, err := NewOperation(operationID, "dev", "all", testRelease(), "catalog-functional-v1", "", createdAt.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	op.Stage = StageBlocked
+	for _, host := range HostOrder {
+		configuration := stringsOf("b")
+		if host != "linux-host" {
+			configuration = digest([]byte("config-" + host))
+		}
+		op.PlanSnapshot.HostBaselines = append(op.PlanSnapshot.HostBaselines, HostObservation{HostID: host, Lane: "dev", ConfigurationSHA: configuration})
+	}
+	wantError := "linux-host direct-mtls functional probe: " + acceptedProbeDecodeFailure
+	op.LastError = wantError
+	if err := AppendEvent(&op, "acceptance", "", false, "failed", map[string]string{"error": wantError}, eventAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateOperation(op); err != nil {
+		t.Fatalf("fixture operation invalid: %v", err)
+	}
+	scope := promotionProbeScopeObservation{HostID: "linux-host", Lane: "dev", Transport: laneinstall.CatalogProbeDirectMTLS,
+		OperationID: operationID, ControllerType: "direct_mtls", ControllerID: "runner-controller-dev-linux-host", Environment: "linux-host-dev",
+		ConfigurationSHA256: stringsOf("b"), IdempotencyKey: "catalog-probe-" + operationID + "-linux-host",
+		RequestSHA256: stringsOf("c"), CreatedAt: createdAt.Format(time.RFC3339Nano), ExpiresAt: expiresAt.Format(time.RFC3339Nano),
+		State: "accepted", JobID: "job-705974bc8f474d77898670837be15b61"}
+	return op, scope
 }
 
 func TestPeerLaneDigestIgnoresSharedFilesystemHeadroom(t *testing.T) {

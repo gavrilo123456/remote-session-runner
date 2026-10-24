@@ -1059,6 +1059,7 @@ type catalogProbeScopeObservation struct {
 	ConfigurationSHA256 string                            `json:"configuration_sha256"`
 	IdempotencyKey      string                            `json:"idempotency_key"`
 	RequestSHA256       string                            `json:"request_body_sha256"`
+	CreatedAt           string                            `json:"created_at"`
 	ExpiresAt           string                            `json:"expires_at"`
 	State               string                            `json:"state"`
 	JobID               string                            `json:"job_id,omitempty"`
@@ -1152,7 +1153,7 @@ func observeCatalogProbeScope(plan laneinstall.Plan, operationID string, transpo
 	return catalogProbeScopeObservation{HostID: scope.HostID, Lane: scope.Lane, Transport: scope.Transport, OperationID: scope.OperationID,
 		ControllerType: scope.ControllerType, ControllerID: scope.ControllerID, Environment: scope.Environment,
 		ConfigurationSHA256: scope.ConfigurationSHA, IdempotencyKey: scope.IdempotencyKey, RequestSHA256: scope.RequestBodySHA256,
-		ExpiresAt: scope.ExpiresAt, State: scope.State, JobID: scope.JobID, IntentID: scope.IntentID}, nil
+		CreatedAt: scope.CreatedAt, ExpiresAt: scope.ExpiresAt, State: scope.State, JobID: scope.JobID, IntentID: scope.IntentID}, nil
 }
 
 func validProbeScopeDigest(value string) bool {
