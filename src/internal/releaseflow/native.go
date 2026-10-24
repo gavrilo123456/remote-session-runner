@@ -181,7 +181,7 @@ func (b *NativeBuildBackend) BuildNative(ctx context.Context, host string, sourc
 			return BuildArtifact{}, err
 		}
 		artifact := describeBundle(host, output, bundle)
-		settings, err := hostBuildSettings(host, profile.GoBinary, bundle.Manifest.GOOS, bundle.Manifest.GOARCH)
+		settings, err := hostBuildSettings(host, profile.GoBinary, bundle.Manifest.GOOS, bundle.Manifest.GOARCH, bundle.Manifest.SourceRevision)
 		if err != nil {
 			return BuildArtifact{}, err
 		}

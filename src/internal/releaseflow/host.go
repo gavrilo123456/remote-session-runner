@@ -244,7 +244,7 @@ func RunHostBuild(ctx context.Context, req HostBuildRequest) (HostBuildResult, e
 		return HostBuildResult{}, e
 	}
 	artifact := describeBundle(req.HostID, output, bundle)
-	settings, err := hostBuildSettings(req.HostID, req.GoBinary, bundle.Manifest.GOOS, bundle.Manifest.GOARCH)
+	settings, err := hostBuildSettings(req.HostID, req.GoBinary, bundle.Manifest.GOOS, bundle.Manifest.GOARCH, bundle.Manifest.SourceRevision)
 	if err != nil {
 		return HostBuildResult{}, err
 	}
@@ -347,7 +347,10 @@ func checkToolchain(path string) error {
 	return nil
 }
 
-func hostBuildSettings(host, goBinary, goos, goarch string) (HostBuildSettings, error) {
+func hostBuildSettings(host, goBinary, goos, goarch, sourceRevision string) (HostBuildSettings, error) {
+	if !shaPattern.MatchString(sourceRevision) {
+		return HostBuildSettings{}, ErrInvalidInput
+	}
 	info, err := os.Lstat(goBinary)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return HostBuildSettings{}, ErrInvalidInput
@@ -362,7 +365,15 @@ func hostBuildSettings(host, goBinary, goos, goarch string) (HostBuildSettings, 
 		return HostBuildSettings{}, err
 	}
 	return HostBuildSettings{HostID: host, ToolchainBinarySHA: hex.EncodeToString(h.Sum(nil)), GOOS: goos, GOARCH: goarch,
-		CGOEnabled: true, Flags: []string{"-trimpath", "-buildvcs=false"}}, nil
+		CGOEnabled: goos == "darwin", Flags: hostBuildFlags(sourceRevision)}, nil
+}
+
+// hostBuildFlags records the build arguments used by
+// laneinstall.BuildSimpleBundleAtFrozenRevision, including the revision
+// injected into every candidate binary. Keep this controller-side provenance
+// aligned with that native builder.
+func hostBuildFlags(sourceRevision string) []string {
+	return []string{"-trimpath", "-buildvcs=false", "-ldflags", "-X remote-session-runner/src/internal/buildinfo.SourceRevision=" + sourceRevision}
 }
 func gitSSHCommand(identity, knownHosts string) string {
 	return "ssh -i " + identity + " -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + knownHosts

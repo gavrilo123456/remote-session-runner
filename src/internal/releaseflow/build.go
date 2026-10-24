@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"sort"
 	"time"
+
+	"remote-session-runner/src/internal/laneinstall"
 )
 
 type BuildRequest struct {
@@ -264,11 +266,13 @@ func Build(ctx context.Context, s *Store, resolver GitResolver, backend BuildBac
 }
 
 func validHostBuildSettings(s HostBuildSettings, host string, bundle Bundle) bool {
-	if s.HostID != host || s.GOOS != bundle.GOOS || s.GOARCH != bundle.GOARCH || !s.CGOEnabled ||
+	if s.HostID != host || s.GOOS != bundle.GOOS || s.GOARCH != bundle.GOARCH ||
+		!laneinstall.CatalogHostMatchesPlatform(host, bundle.GOOS, bundle.GOARCH) ||
+		s.CGOEnabled != (bundle.GOOS == "darwin") ||
 		!digestPattern.MatchString(s.ToolchainBinarySHA) || len(s.Flags) == 0 {
 		return false
 	}
-	want := []string{"-trimpath", "-buildvcs=false"}
+	want := hostBuildFlags(bundle.SourceRevision)
 	if len(s.Flags) != len(want) {
 		return false
 	}

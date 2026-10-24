@@ -34,7 +34,8 @@ func (f *fakeBuildBackend) BuildNative(_ context.Context, host string, source So
 		goos, goarch = "darwin", "arm64"
 	}
 	bundle := Bundle{HostID: host, GOOS: goos, GOARCH: goarch, Toolchain: "go1.27.1", SourceRevision: source.Commit, DatabaseSchemaMax: 40, Components: testComponents(host), SHA256: digest(data), ManifestSHA: digest([]byte("manifest:" + host)), Bytes: int64(len(data))}
-	return BuildArtifact{Path: path, Bundle: bundle, Settings: HostBuildSettings{HostID: host, ToolchainBinarySHA: digest([]byte("go1.27.1")), GOOS: goos, GOARCH: goarch, CGOEnabled: true, Flags: []string{"-trimpath", "-buildvcs=false"}}}, nil
+	settings := HostBuildSettings{HostID: host, ToolchainBinarySHA: digest([]byte("go1.27.1")), GOOS: goos, GOARCH: goarch, CGOEnabled: goos == "darwin", Flags: hostBuildFlags(source.Commit)}
+	return BuildArtifact{Path: path, Bundle: bundle, Settings: settings}, nil
 }
 func (f *fakeBuildBackend) VerifyArtifact(_ context.Context, _ string, path, want string) error {
 	data, err := os.ReadFile(path)

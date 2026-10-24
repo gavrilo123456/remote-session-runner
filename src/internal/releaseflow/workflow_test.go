@@ -128,7 +128,7 @@ func testProvenanceBytes(release Release) []byte {
 	for _, host := range HostOrderByName {
 		b := release.Bundles[host]
 		hosts = append(hosts, b)
-		settings = append(settings, HostBuildSettings{HostID: host, ToolchainBinarySHA: digest([]byte("toolchain:" + host)), GOOS: b.GOOS, GOARCH: b.GOARCH, CGOEnabled: true, Flags: []string{"-trimpath", "-buildvcs=false"}})
+		settings = append(settings, HostBuildSettings{HostID: host, ToolchainBinarySHA: digest([]byte("toolchain:" + host)), GOOS: b.GOOS, GOARCH: b.GOARCH, CGOEnabled: b.GOOS == "darwin", Flags: hostBuildFlags(b.SourceRevision)})
 	}
 	p := Provenance{FormatVersion: 1, BuildID: strings.Repeat("c", 32), ReleaseID: release.ID, ReleaseSHA256: release.Digest, Source: release.Source,
 		Toolchain: release.Toolchain, ControllerRevision: strings.Repeat("d", 40), Hosts: hosts, BuildSettings: settings}
