@@ -232,16 +232,8 @@ func RunHostBuild(ctx context.Context, req HostBuildRequest) (HostBuildResult, e
 	if err := ensureArtifactDirectory(filepath.Dir(output)); err != nil {
 		return HostBuildResult{}, err
 	}
-	if existing, e := laneinstall.LoadSimpleBundleDirectory(output); e == nil {
-		if existing.Manifest.BundleSHA256 != bundle.Manifest.BundleSHA256 {
-			return HostBuildResult{}, ErrReleaseMismatch
-		}
-	} else if errors.Is(e, os.ErrNotExist) {
-		if err := laneinstall.WriteSimpleBundleDirectory(output, bundle); err != nil {
-			return HostBuildResult{}, err
-		}
-	} else {
-		return HostBuildResult{}, e
+	if err := writeOrVerifyBuildBundle(output, bundle); err != nil {
+		return HostBuildResult{}, err
 	}
 	artifact := describeBundle(req.HostID, output, bundle)
 	settings, err := hostBuildSettings(req.HostID, req.GoBinary, bundle.Manifest.GOOS, bundle.Manifest.GOARCH, bundle.Manifest.SourceRevision)

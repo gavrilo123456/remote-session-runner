@@ -187,15 +187,7 @@ func (b *NativeBuildBackend) BuildNative(ctx context.Context, host string, sourc
 		if err := ensureArtifactDirectory(filepath.Dir(output)); err != nil {
 			return BuildArtifact{}, err
 		}
-		if existing, err := laneinstall.LoadSimpleBundleDirectory(output); err == nil {
-			if existing.Manifest.BundleSHA256 != bundle.Manifest.BundleSHA256 {
-				return BuildArtifact{}, ErrReleaseMismatch
-			}
-		} else if errors.Is(err, os.ErrNotExist) {
-			if err := laneinstall.WriteSimpleBundleDirectory(output, bundle); err != nil {
-				return BuildArtifact{}, err
-			}
-		} else {
+		if err := writeOrVerifyBuildBundle(output, bundle); err != nil {
 			return BuildArtifact{}, err
 		}
 		artifact := describeBundle(host, output, bundle)
@@ -427,6 +419,27 @@ func ensureArtifactDirectory(path string) error {
 	}
 	return os.Chmod(path, 0o700)
 }
+
+// writeOrVerifyBuildBundle creates a missing immutable build artifact, or
+// verifies that a retained artifact at the same build ID is byte-identical.
+// LoadSimpleBundleDirectory intentionally reports a missing directory as an
+// invalid bundle, so check existence before asking it to validate stored data.
+func writeOrVerifyBuildBundle(path string, bundle laneinstall.SimpleBundle) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return laneinstall.WriteSimpleBundleDirectory(path, bundle)
+	} else if err != nil {
+		return err
+	}
+	existing, err := laneinstall.LoadSimpleBundleDirectory(path)
+	if err != nil {
+		return err
+	}
+	if existing.Manifest.BundleSHA256 != bundle.Manifest.BundleSHA256 {
+		return ErrReleaseMismatch
+	}
+	return nil
+}
+
 func describeBundle(host, path string, bundle laneinstall.SimpleBundle) BuildArtifact {
 	manifest, _ := json.Marshal(bundle.Manifest)
 	total := int64(0)
