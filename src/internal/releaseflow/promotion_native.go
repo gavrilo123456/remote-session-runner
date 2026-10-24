@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"remote-session-runner/src/internal/config"
@@ -86,12 +87,14 @@ type promotionPreparedProbe struct {
 	Lane                string          `json:"lane"`
 	Transport           string          `json:"transport"`
 	OperationID         string          `json:"operation_id"`
+	ControllerType      string          `json:"controller_type"`
 	ControllerID        string          `json:"controller_id"`
 	Environment         string          `json:"environment"`
 	ConfigurationSHA256 string          `json:"configuration_sha256"`
 	IdempotencyKey      string          `json:"idempotency_key"`
 	RequestSHA256       string          `json:"request_body_sha256"`
 	RequestBody         json.RawMessage `json:"request_body"`
+	ExpiresAt           string          `json:"expires_at"`
 	Token               string          `json:"one_time_token"`
 }
 
@@ -1029,8 +1032,7 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 		return promotionProbeOutcome{}, err
 	}
 	var prepared promotionPreparedProbe
-	if decodeStrictJSON(preparedBytes, &prepared) != nil || prepared.HostID != host || prepared.Lane != op.Lane || prepared.OperationID != op.CohortOperationID ||
-		prepared.Transport != transport || prepared.ControllerID != controller || !digestPattern.MatchString(prepared.ConfigurationSHA256) || prepared.Token == "" {
+	if decodeStrictJSON(preparedBytes, &prepared) != nil || validatePreparedPromotionProbe(prepared, host, op.Lane, transport, op.CohortOperationID, controller) != nil {
 		return promotionProbeOutcome{}, ErrOperationCorrupted
 	}
 	if err := validatePromotionProbeRequest(prepared); err != nil {
@@ -1072,6 +1074,29 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 	outcome.RequestSHA256 = prepared.RequestSHA256
 	outcome.RequestedTimeout = 5
 	return outcome, nil
+}
+
+func validatePreparedPromotionProbe(prepared promotionPreparedProbe, host, lane, transport, operationID, controllerID string) error {
+	_, expiryErr := time.Parse(time.RFC3339Nano, prepared.ExpiresAt)
+	if prepared.HostID != host || prepared.Lane != lane || prepared.Transport != transport ||
+		prepared.OperationID != operationID || prepared.ControllerType != expectedProbeControllerType(transport) ||
+		prepared.ControllerID != controllerID || !digestPattern.MatchString(prepared.ConfigurationSHA256) || prepared.Token == "" || expiryErr != nil {
+		return ErrOperationCorrupted
+	}
+	return nil
+}
+
+func expectedProbeControllerType(transport string) string {
+	switch transport {
+	case "direct-mtls":
+		return "direct_mtls"
+	case "queued-ssh":
+		return "queued_mac"
+	case "mac-local":
+		return "local_user"
+	default:
+		return ""
+	}
 }
 
 func validatePromotionProbeRequest(prepared promotionPreparedProbe) error {

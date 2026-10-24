@@ -201,3 +201,43 @@ func TestPromotionProbeRequestMustRemainFixedAndFiveSecondBounded(t *testing.T) 
 		})
 	}
 }
+
+func TestPromotionPreparedProbeAcceptsAndValidatesPublicCommandControllerType(t *testing.T) {
+	// Keep this wire fixture independent of promotionPreparedProbe so strict
+	// decoding catches drift from runner-lane catalog-probe-prepare output.
+	raw, err := json.Marshal(struct {
+		HostID              string          `json:"host_id"`
+		Lane                string          `json:"lane"`
+		Transport           string          `json:"transport"`
+		OperationID         string          `json:"operation_id"`
+		ControllerType      string          `json:"controller_type"`
+		ControllerID        string          `json:"controller_id"`
+		Environment         string          `json:"environment"`
+		ConfigurationSHA256 string          `json:"configuration_sha256"`
+		IdempotencyKey      string          `json:"idempotency_key"`
+		RequestSHA256       string          `json:"request_body_sha256"`
+		RequestBody         json.RawMessage `json:"request_body"`
+		ExpiresAt           string          `json:"expires_at"`
+		Token               string          `json:"one_time_token"`
+	}{
+		HostID: "linux-host", Lane: "dev", Transport: "direct-mtls", OperationID: strings.Repeat("a", 32),
+		ControllerType: "direct_mtls", ControllerID: "tomasz.walczuk", Environment: "linux-host-dev",
+		ConfigurationSHA256: stringsOf("b"), IdempotencyKey: "catalog-probe-test", RequestSHA256: stringsOf("c"),
+		RequestBody: []byte(`{"script":"printf 'catalog release maintenance probe\\n'"}`),
+		ExpiresAt:   "2026-10-24T20:00:00Z", Token: "one-time-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prepared promotionPreparedProbe
+	if err := decodeStrictJSON(raw, &prepared); err != nil {
+		t.Fatalf("decode public catalog-probe-prepare result: %v", err)
+	}
+	if err := validatePreparedPromotionProbe(prepared, "linux-host", "dev", "direct-mtls", strings.Repeat("a", 32), "tomasz.walczuk"); err != nil {
+		t.Fatalf("valid direct-mTLS probe identity rejected: %v", err)
+	}
+	prepared.ControllerType = "queued_mac"
+	if err := validatePreparedPromotionProbe(prepared, "linux-host", "dev", "direct-mtls", strings.Repeat("a", 32), "tomasz.walczuk"); err == nil {
+		t.Fatal("controller type inconsistent with direct-mTLS transport accepted")
+	}
+}
