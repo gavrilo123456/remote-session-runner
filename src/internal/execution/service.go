@@ -238,6 +238,9 @@ type RuntimeOwnershipAuditor interface {
 type RuntimeCommandRequest struct {
 	Session store.SessionRecord
 	Command store.CommandRecord
+	// OneOff is derived from the durable job binding, never from a caller's
+	// claim or script. Its script may exit without terminating a managed shell.
+	OneOff bool
 }
 
 // RuntimeCommandResult is the fake/target runtime's captured result. Output
@@ -740,6 +743,15 @@ func (s *Service) ExecuteClaimedCommand(ctx context.Context, claim store.Command
 		return s.finishCommandFailure(ctx, currentSession, command, ErrCommandTransport, "command_transport_failed")
 	}
 	request := RuntimeCommandRequest{Session: currentSession, Command: command}
+	job, jobErr := s.store.GetJobByCommandID(ctx, command.CommandID)
+	if jobErr == nil {
+		if job.CommandID != command.CommandID || job.SessionID != command.SessionID {
+			return SubmitCommandResult{Command: command}, fmt.Errorf("%w: one-off command session differs", ErrCommandNotReady)
+		}
+		request.OneOff = true
+	} else if !errors.Is(jobErr, store.ErrJobNotFound) {
+		return SubmitCommandResult{Command: command}, jobErr
+	}
 	var streamed atomic.Bool
 	var runtimeResult RuntimeCommandResult
 	var runtimeErr error

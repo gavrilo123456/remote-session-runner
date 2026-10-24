@@ -173,7 +173,11 @@ func (r *MacSessionRuntime) ExecuteCommandStream(ctx context.Context, request ex
 	if err != nil {
 		return execution.RuntimeCommandResult{}, err
 	}
-	result, err := shell.RunScriptWithOutput(ctx, string(request.Command.CommandID), request.Command.ScriptBytes, func(chunk hostruntime.OutputChunk) error {
+	runScript := shell.RunScriptWithOutput
+	if request.OneOff {
+		runScript = shell.RunOneOffScriptWithOutput
+	}
+	result, err := runScript(ctx, string(request.Command.CommandID), request.Command.ScriptBytes, func(chunk hostruntime.OutputChunk) error {
 		if onOutput == nil {
 			return nil
 		}

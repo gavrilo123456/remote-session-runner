@@ -625,10 +625,21 @@ An ordinary child failure in a mailbox script that enables `set -e` or
 `set -euo pipefail` is a normal terminal `command_failed` result: its actual
 nonzero exit code and complete pre-failure output can be projected and ACKed.
 State made before the failure remains in a persistent session, while later
-script statements do not run. This is different from an explicit `exit`,
-`exec`, reserved control-file-descriptor damage, or an unconfirmed output
-boundary. Those invalidate the persistent execution boundary and remain
-conservatively `lost` or incomplete; do not ACK them as complete output.
+script statements do not run. In persistent-session `exec`, an explicit
+`exit`, `exec`, reserved control-file-descriptor damage, or an unconfirmed
+output boundary still invalidates the execution boundary and remains
+conservatively `lost` or incomplete; do not treat that output as complete.
+
+**Source candidate, pending release acceptance:**
+[BUG-026](../050-bugs/026-mac-one-off-run-loses-explicit-preflight-failure.md)
+isolates the script of a one-off `run` request in a child Bash subshell.
+Explicit `exit` or `exec` can then return the child's status with complete
+output only after the parent control and output-EOF boundaries are proven.
+The job's closed teardown additionally requires confirmed normal cleanup.
+Actual parent-shell death or output uncertainty remains `lost`;
+persistent-session `exec` is unchanged. Check the selected lane's accepted
+release before relying on this behavior. The change does not replay old
+requests, revise historical lost results, or change ACK rules.
 
 After the advertised event prefix is read, `WriteAcknowledgment` writes the
 exact `request_id`, `response_revision`, and available event cursor in the

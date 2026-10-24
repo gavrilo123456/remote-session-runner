@@ -65,10 +65,19 @@ never supply only one.
 An ordinary child failure under `set -e` or `set -euo pipefail` now becomes a
 complete terminal `failed` command with its real nonzero exit code. Output and
 state produced before that failure are retained; statements after the failing
-boundary do not run. An explicit `exit`, `exec`, reserved control-file-
-descriptor damage, or an unconfirmed output boundary still yields the
-conservative `lost`/incomplete outcome. Do not use those shell-termination
-forms when a normal failed result is required.
+boundary do not run. In persistent-session `exec`, an explicit `exit`, `exec`,
+reserved control-file-descriptor damage, or an unconfirmed output boundary
+still yields the conservative `lost`/incomplete outcome.
+
+**Source candidate, pending release acceptance:**
+[BUG-026](../050-bugs/026-mac-one-off-run-loses-explicit-preflight-failure.md)
+runs a one-off `run` script in a child Bash subshell, so an explicit `exit`
+or `exec` can return its status without terminating the parent session shell.
+A complete result still requires the parent control and output-EOF proofs;
+closed teardown additionally requires confirmed cleanup. Parent-shell death
+or uncertain output remains `lost`, and persistent-session `exec` is
+unchanged. Verify acceptance for the installed target before relying on this
+new one-off behavior; existing results are not reclassified or replayed.
 
 Context names are not wire values. On the current Mac configuration,
 `mac-local` maps to the explicit pair `mac-dev` and

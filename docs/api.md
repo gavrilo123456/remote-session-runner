@@ -207,12 +207,23 @@ gapped range returns `410 event_history_unavailable` with
   events, cancellation, and close.
 - Direct mTLS and the Mac local/queued route are separate trust boundaries.
 
-The persistent-shell completion contract applies through every ingress. A
-normal `set -e` or `set -euo pipefail` child failure returns a terminal
+The completion contract applies through every ingress. A normal `set -e`
+or `set -euo pipefail` child failure returns a terminal
 `failed` command with its actual nonzero exit status and complete pre-failure
-output. An explicit `exit`, `exec`, reserved control-file-descriptor damage,
-or an unconfirmed output boundary remains `lost`/incomplete and must not be
-represented as a normal complete result.
+output. For persistent-session command submission, an explicit `exit`, `exec`,
+reserved control-file-descriptor damage, or an unconfirmed output boundary
+remains `lost`/incomplete and must not be represented as a normal complete
+result.
+
+**Source candidate, pending release acceptance:**
+[BUG-026](../050-bugs/026-mac-one-off-run-loses-explicit-preflight-failure.md)
+executes a one-off `POST /v1/jobs` script in a child Bash subshell. Its explicit
+`exit` or `exec` returns the child status through the parent completion
+protocol. Complete output still requires the parent control and output-EOF
+boundaries; closed job teardown requires confirmed cleanup. Parent-shell
+death or output uncertainty remains `lost`; persistent-session commands are
+unchanged. This source contract does not establish deployment or acceptance
+on any installed lane.
 
 For user-facing flows, use the [CLI guide](user-guide.md). For owner-only
 filesystem automation, use the native [mailbox guide](mailbox.md). Current

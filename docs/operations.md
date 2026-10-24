@@ -17,6 +17,18 @@ normal terminal `failed` outcome with the real exit code and complete output
 boundary. It does not prove a result for an earlier Logger workflow, and it
 does not pass a new host gate. See [current-host evidence](current-host-evidence.md#deployed-bug-015-strict-shell-correction).
 
+**Source candidate, pending release acceptance:**
+[BUG-026](../050-bugs/026-mac-one-off-run-loses-explicit-preflight-failure.md)
+runs a one-off `run` script in a child Bash subshell. An explicit `exit` or
+`exec` then returns the child's status through the parent completion protocol;
+complete output still requires parent control and output-EOF proof, and
+closed teardown requires confirmed normal cleanup. Actual parent-shell death
+or uncertain output remains `lost`. Persistent-session `exec` retains its
+existing loss semantics. This source change is not evidence of an installed
+upgrade: verify the selected lane's accepted release. Never replay or
+reclassify a historical lost request because newer code handles that script
+differently.
+
 | Capability | Current state | What to verify before use |
 | --- | --- | --- |
 | Mac local execution | Route is health-addressable when both Mac LaunchAgents are healthy | Both private readiness endpoints, installed revision, and a current authority-capacity check; only then a safe local command. Health alone does not prove retained capacity is free. |
@@ -592,7 +604,7 @@ below.
 | New host has no route | Its P157 record and per-host service/materials | Keep it `NOT RUN`; accepted `linux-host`, `sandbox-host`, and `factory-sandbox` evidence does not transfer. |
 | Command output incomplete | Cursor, `output_complete`, `output_truncated`, `output_unavailable_reason` | Save the available prefix and do not call it complete. |
 | Ordinary script failure under `set -e` or `set -euo pipefail` | Terminal response/event, actual nonzero exit code, complete output flags | Treat this as a normal `failed` command. Preserve the output, correct the script or input, and use a new request only when a new operation is appropriate. |
-| `lost` after a strict-shell script | Whether the script used explicit `exit`, `exec`, reserved control-file-descriptor changes, or crossed an unconfirmed output boundary | Do not infer a normal command result or complete output. Preserve IDs and use the host-specific recovery/investigation boundary. |
+| `lost` after a strict-shell script | Installed release, one-off `run` versus persistent-session `exec`, explicit `exit`/`exec`, reserved control-file-descriptor changes, and output-boundary evidence | Do not infer a normal command result or complete output. BUG-026's source candidate isolates one-off scripts; it does not change persistent `exec`, prove installed acceptance, or repair old outcomes. Preserve IDs and use the host-specific recovery/investigation boundary. |
 
 ## Recovery boundaries
 

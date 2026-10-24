@@ -18,12 +18,22 @@ captured output. Statements after the failed command do not run, while state
 created before it remains available to the next `exec` in that session. This
 applies to `run` as well, although its ephemeral session is then closed.
 
-Do not confuse that normal failure with a runtime boundary. An explicit `exit`,
-`exec`, reserved control-file-descriptor damage, or an unconfirmed output
-boundary can kill or invalidate the persistent Bash and is reported
-conservatively as `lost`; its output cannot be claimed complete. See
+For persistent-session `exec`, an explicit `exit`, `exec`, reserved
+control-file-descriptor damage, or an unconfirmed output boundary can kill or
+invalidate the persistent Bash and is reported conservatively as `lost`; its
+output cannot be claimed complete. See
 [BUG-015](../050-bugs/015-sandbox-remote-terminal-lost-before-gitea-monitor.md)
 for the deployed strict-shell correction and its scoped evidence.
+
+**Source candidate, pending release acceptance:**
+[BUG-026](../050-bugs/026-mac-one-off-run-loses-explicit-preflight-failure.md)
+isolates a one-off `run` script in a child Bash subshell. An explicit `exit`
+or `exec` then ends that child and returns its status, while the parent emits
+the completion signal. Output is complete only after the parent control and
+output-EOF boundaries are proven; the job's teardown is closed only after
+normal cleanup is confirmed. Actual parent-shell death or uncertain output
+still produces `lost`. Persistent-session `exec` is unchanged. Do not assume
+an installed lane has this behavior until its release acceptance is recorded.
 
 The CLI selects an ingress endpoint and target profile. It does **not** select
 a file inbox; mailbox roots and their default/override policy belong to the

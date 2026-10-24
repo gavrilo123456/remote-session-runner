@@ -382,6 +382,18 @@ func (s *PersistentShell) RunScript(ctx context.Context, commandID string, scrip
 // output chunk. Callbacks run from the stdout/stderr drainers while the script
 // is active; callers must not retain or mutate the supplied byte slice.
 func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID string, script []byte, onOutput func(OutputChunk) error) (result PersistentShellResult, runErr error) {
+	return s.runScriptWithOutput(ctx, commandID, script, onOutput, false)
+}
+
+// RunOneOffScriptWithOutput uses the same owned process group, control frames
+// and output barrier as RunScriptWithOutput, but sources the script in a child
+// Bash subshell. An explicit exit ends that child, so the parent can still
+// report its status. No shell state needs to survive a one-off job.
+func (s *PersistentShell) RunOneOffScriptWithOutput(ctx context.Context, commandID string, script []byte, onOutput func(OutputChunk) error) (PersistentShellResult, error) {
+	return s.runScriptWithOutput(ctx, commandID, script, onOutput, true)
+}
+
+func (s *PersistentShell) runScriptWithOutput(ctx context.Context, commandID string, script []byte, onOutput func(OutputChunk) error, oneOff bool) (result PersistentShellResult, runErr error) {
 	if s == nil {
 		return PersistentShellResult{}, ErrPersistentShellClosed
 	}
@@ -469,9 +481,9 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	if err != nil {
 		return PersistentShellResult{}, err
 	}
-	// User scripts are sourced into the existing Bash so state survives across
-	// commands. A script may deliberately enable errexit, though. Without a
-	// boundary here, a normal nonzero child status (for example curl --fail)
+	// Managed-session scripts are sourced into the existing Bash so state
+	// survives across commands. A script may deliberately enable errexit.
+	// Without a boundary here, a nonzero child status (for example curl --fail)
 	// makes that long-lived Bash exit before it can write the completion frame.
 	//
 	// The short-lived helper function keeps sourcing semantics while its ERR
@@ -482,27 +494,43 @@ func (s *PersistentShell) RunScriptWithOutput(ctx context.Context, commandID str
 	// persistent Bash and remains a lost runtime boundary.
 	wrapper := startedWire + "\n" +
 		"runner_interrupt=0\n" +
-		"trap 'runner_interrupt=1' INT\n" +
-		"runner_errexit_status=\n" +
-		"runner_previous_err_trap=\"$(trap -p ERR)\"\n" +
-		"runner_run_sourced_script() {\n" +
-		"trap 'runner_trap_status=$?; case $- in *e*) runner_errexit_status=$runner_trap_status; return 0 ;; esac; :' ERR\n" +
-		"runner_guard_err_trap=\"$(trap -p ERR)\"\n" +
-		"source " + shellQuote(scriptPath) + " >" + shellQuote(stdoutPath) + " 2>" + shellQuote(stderrPath) + "\n" +
-		"return $?\n" +
-		"}\n" +
-		"runner_run_sourced_script\n" +
-		"runner_status=$?\n" +
-		"runner_current_err_trap=\"$(trap -p ERR)\"\n" +
-		"if [ \"$runner_current_err_trap\" = \"$runner_guard_err_trap\" ]; then\n" +
-		"trap - ERR\n" +
-		"if [ -n \"$runner_previous_err_trap\" ]; then eval \"$runner_previous_err_trap\"; fi\n" +
-		"fi\n" +
-		"if [ -n \"$runner_errexit_status\" ]; then runner_status=$runner_errexit_status; fi\n" +
-		"unset -f runner_run_sourced_script\n" +
-		"unset runner_trap_status runner_errexit_status runner_previous_err_trap runner_guard_err_trap runner_current_err_trap\n" +
-		"trap - INT\n" +
-		"\n" +
+		"trap 'runner_interrupt=1' INT\n"
+	if oneOff {
+		// Keep the parent outside errexit, without an `if`/`||` condition that
+		// would also disable errexit inside the user script. The child must not
+		// inherit the managed-shell ERR workaround below: ordinary strict-shell
+		// failures should stop this disposable child, just like explicit exit.
+		// Only the parent retains the reserved control descriptors; descendants
+		// still belong to its owned process group and the existing teardown.
+		wrapper += "set +e\n" +
+			"(\ntrap - ERR\n" +
+			fmt.Sprintf("exec %d<&- %d>&-\n", ReservedControlReadFD, ReservedControlWriteFD) +
+			"source " + shellQuote(scriptPath) + "\n" +
+			") >" + shellQuote(stdoutPath) + " 2>" + shellQuote(stderrPath) + "\n" +
+			"runner_status=$?\n" +
+			"trap - INT\n"
+	} else {
+		wrapper += "runner_errexit_status=\n" +
+			"runner_previous_err_trap=\"$(trap -p ERR)\"\n" +
+			"runner_run_sourced_script() {\n" +
+			"trap 'runner_trap_status=$?; case $- in *e*) runner_errexit_status=$runner_trap_status; return 0 ;; esac; :' ERR\n" +
+			"runner_guard_err_trap=\"$(trap -p ERR)\"\n" +
+			"source " + shellQuote(scriptPath) + " >" + shellQuote(stdoutPath) + " 2>" + shellQuote(stderrPath) + "\n" +
+			"return $?\n" +
+			"}\n" +
+			"runner_run_sourced_script\n" +
+			"runner_status=$?\n" +
+			"runner_current_err_trap=\"$(trap -p ERR)\"\n" +
+			"if [ \"$runner_current_err_trap\" = \"$runner_guard_err_trap\" ]; then\n" +
+			"trap - ERR\n" +
+			"if [ -n \"$runner_previous_err_trap\" ]; then eval \"$runner_previous_err_trap\"; fi\n" +
+			"fi\n" +
+			"if [ -n \"$runner_errexit_status\" ]; then runner_status=$runner_errexit_status; fi\n" +
+			"unset -f runner_run_sourced_script\n" +
+			"unset runner_trap_status runner_errexit_status runner_previous_err_trap runner_guard_err_trap runner_current_err_trap\n" +
+			"trap - INT\n"
+	}
+	wrapper += "\n" +
 		"if [ \"$runner_status\" -gt 127 ]; then runner_status=$((runner_status-256)); fi\n" +
 		"case \"$runner_status\" in -*) ;; *) ;; esac\n"
 	// The completion frame is emitted by a small fixed shell helper below. The

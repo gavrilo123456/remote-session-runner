@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `NEW` — triage whether this is an implementation defect or a documented one-off command contract that needs a safer supported path |
+| Status | `FIXED — PENDING VERIFICATION` — one-off child-shell source correction; installed release acceptance remains pending |
 | Severity | High — a bounded preflight failure became `lost`/incomplete and may retain Mac execution capacity |
 | Priority | High |
 | Reported | 2026-10-24 |
@@ -106,16 +106,16 @@ not evaluated by this execution.
 
 ## Contract overlap and triage question
 
-The current Runner documentation explicitly says that an explicit shell
+The Runner documentation at the incident's original contract boundary says that an explicit shell
 `exit` can invalidate the persistent Bash and be reported as `lost`/incomplete,
 even for `run` with an ephemeral session. See the [CLI result contract](../docs/user-guide.md#strict-shell-result-semantics),
 [API contract](../docs/api.md), and [operations guidance](../docs/operations.md).
-The observed classification is therefore consistent with the published
-contract. The candidate defect is the operational boundary: a simple script
+The observed classification was therefore consistent with that published
+contract. The defect is the one-off operational boundary: a simple script
 validation failure in a one-off `run` can destroy the normal command result
-and leave teardown/capacity uncertain. Triage should decide whether this is
-expected behavior requiring a safer supported invocation pattern or an API /
-implementation gap for one-off runs.
+and leave teardown/capacity uncertain. The source correction below gives
+one-off runs their own script boundary while preserving persistent-session
+semantics.
 
 Do not weaken truthful loss handling. If the shell/control boundary or child
 termination cannot be proved, retain `lost`/incomplete and the applicable
@@ -149,9 +149,8 @@ replay or ACK it as a substitute for exact cleanup evidence.
 2. Trace the exact Mac-local `run` path from explicit shell exit through
    control-frame capture, stdout/stderr draining, child/process-group wait,
    ephemeral close, terminal projection, and reservation release/retention.
-3. Establish exact #349 process ownership, stop/teardown state, and capacity
-   disposition using the supported maintainer procedure. Do not infer these
-   from the terminal response or from #348's recovery.
+3. Preserve the completed exact #349 recovery and ACK disposition below; do
+   not repeat recovery or infer it from #348's separate maintenance.
 4. On an isolated disposable fixture, compare a normal strict-shell failure
    (`false` under `set -e`) with explicit `exit 1`, separately for ephemeral
    `run` and persistent `exec`. Record whether lost output is genuinely
@@ -187,3 +186,42 @@ maintainer confirms the prior runtime cleanup and capacity disposition.
 
 - 2026-10-24 — Registered from the preserved #349 failure. No correction,
   installed-build identification, cleanup, ACK, or QAS acceptance is claimed.
+
+## Current #349 disposition
+
+The later [handoff closeout](/private/tmp/rsr-qas-prd-return-review-20261023/final-postflight-20261024/handoff-closeout.json)
+records the exact #349 pair above as recovered, with its command slot and
+session reservation released at `2026-10-23T21:30:39.660215Z`. It also records
+all 81 prior terminal responses acknowledged, including #349. Its original
+lost result, absent exit code, incomplete output and seven-event history remain
+preserved, without replay. The unresolved statements above describe the
+original archived observation; they are not a current cleanup instruction.
+
+## Root cause and source correction
+
+BUG-015 corrected ordinary `errexit` failure in a sourced persistent Bash,
+and deliberately retained explicit `exit`/`exec` as lost boundaries. One-off
+jobs reused that same parent-shell sourcing path even though they do not need
+state to survive for another command. An explicit `exit` therefore prevented
+the parent from writing its completion frame. The original installed build
+remains unknown; current source and disposable fixtures establish this shared
+mechanism, rather than proving a regression in a particular installed build.
+
+The correction identifies a one-off command from its authoritative stored
+job/command/session binding. Mac and Linux adapters then use the shared
+one-off path, which sources the unchanged materialized script in a Bash
+subshell within the existing owned process group. Reserved control descriptors
+are closed in the child. Its exit or `exec` status returns to the parent,
+which emits the normal completion frame and waits for both output FIFOs.
+Normal session cleanup must still prove teardown before releasing its
+reservation. There is no script rewriting, schema change, retry or replay.
+
+Persistent-session commands keep their existing stateful sourcing and lost
+semantics. Actual parent death, unconfirmed output, output-persistence failure
+and unconfirmed cleanup keep their existing conservative outcomes. The
+candidate does not change historical results or automatically recover work.
+
+Source verification and delivery are recorded in
+[BUG-026 implementation evidence](../040-implementation-evidence/BUG-026.md).
+Installed Dev/QAS/PRD acceptance and the fresh QAS mailbox/ACK gate remain
+pending; no installed service or mailbox is changed by the source correction.
