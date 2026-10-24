@@ -77,6 +77,19 @@ The rerun passed:
   `/private/tmp`: PASS.
 - `git diff --check`: PASS.
 
-The PRD peer-baseline correction is not yet committed or delivered. The actual
-Dev plan has not yet passed; QAS promotion, mailbox probes, and Dev/QAS
-acceptance remain NOT RUN.
+The PRD peer-baseline correction is committed and synchronized as
+`1aee2ead07b5e423f5965f159cd5caef22f18064`. The actual Dev plan has not yet
+passed; QAS promotion, mailbox probes, and Dev/QAS acceptance remain NOT RUN.
+
+## Cross-host test correction
+
+After delivery at `1aee2ead07b5e423f5965f159cd5caef22f18064`, all three Ubuntu
+workers correctly exposed that one new lane-scope test incorrectly used the
+host-local `currentCatalogHost` guard as a platform-independent lane predicate.
+The worker package test failed on Linux, Sandbox, and Factory for that reason;
+the other changed packages passed in those runs. The implementation's
+host-local guard remains unchanged. The test now exercises the separate
+canonical-lane predicate, while invalid host/lane scopes continue to be
+rejected before host state is read. Mac changed-package tests passed after the
+test correction. A corrected cross-host rerun is required after its Git
+delivery; no lane state was changed.

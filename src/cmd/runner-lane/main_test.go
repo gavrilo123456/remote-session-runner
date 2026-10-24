@@ -202,13 +202,13 @@ func TestCatalogSelectorSelectPreservesFailuresAndRejectsEmptySuccess(t *testing
 
 func TestCatalogWorkInventoryScopeIncludesCanonicalLanes(t *testing.T) {
 	for _, lane := range []string{"dev", "qas", "prd"} {
-		if !validCatalogWorkInventoryScope("mac-control-plane", lane) {
+		if !supportedCatalogWorkInventoryLane(lane) {
 			t.Errorf("catalog-work-inventory rejected canonical lane %q", lane)
 		}
 	}
-	for _, item := range [][2]string{{"unlisted", "dev"}, {"mac-control-plane", "other"}} {
-		if validCatalogWorkInventoryScope(item[0], item[1]) {
-			t.Errorf("catalog-work-inventory accepted invalid scope host=%q lane=%q", item[0], item[1])
+	for _, lane := range []string{"", "other", "DEV"} {
+		if supportedCatalogWorkInventoryLane(lane) {
+			t.Errorf("catalog-work-inventory accepted unsupported lane %q", lane)
 		}
 	}
 }

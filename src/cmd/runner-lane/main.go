@@ -1476,7 +1476,11 @@ func runCatalogWorkInventory(ctx context.Context, args []string, stdout, stderr 
 }
 
 func validCatalogWorkInventoryScope(host, lane string) bool {
-	return currentCatalogHost(host) && (lane == "dev" || lane == "qas" || lane == "prd")
+	return currentCatalogHost(host) && supportedCatalogWorkInventoryLane(lane)
+}
+
+func supportedCatalogWorkInventoryLane(lane string) bool {
+	return lane == "dev" || lane == "qas" || lane == "prd"
 }
 
 func runCatalogPreSwitchCheck(ctx context.Context, args []string, stdout, stderr io.Writer) error {
