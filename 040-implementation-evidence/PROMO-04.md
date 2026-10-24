@@ -10,7 +10,9 @@
   approval, incompatible schema/controller/rollback evidence, publisher/work
   conflicts, and invalid branch ancestry. Planner and guard tests are included
   in the public subprocess suite.
-- No real promotion plan was run against host configuration; the default
-  owner-only host profile is absent. No service or lane was touched.
+- No real promotion plan was run against host configuration at the PROMO-04
+  checkpoint; the default owner-only host profile had not yet been created.
+  The later build-only task created and validated that profile. No service or
+  lane was touched by either activity.
 
 Test and delivery details: [PROMO-07](PROMO-07.md).

@@ -2,19 +2,18 @@
 
 **Status:** PROMO-01 through PROMO-07 source implementation, fixture
 qualification, full native source gates on all four platforms, and Git
-delivery completed on 2026-10-24. Per-unit results are in
+delivery completed on 2026-10-24. One non-activating release was subsequently
+built, sealed, and published to all four host catalogs; see
+[`PROMO-BUILD-43A4.md`](../../040-implementation-evidence/PROMO-BUILD-43A4.md).
+Per-unit results are in
 [`PROMO-01.md`](../../040-implementation-evidence/PROMO-01.md) through
 [`PROMO-07.md`](../../040-implementation-evidence/PROMO-07.md).
 
-PROMO-08 remains separately instructed and NOT RUN. No release was built or
-published, no lane was promoted, and no service was deployed or restarted in
-this assignment. The full source suite plus vet/build/smoke passed on all four
-native platforms, but no `native-full-v1` receipt files were created because
-no non-plan build was started. The actual four-host build/publication is also
-held: the owner-only host profile is absent, and Sandbox had 364,351,488 bytes
-free on its full root filesystem while retaining 843,551,092 bytes of existing
-release catalogs. No old release or cache was removed to create room. These
-remaining build prerequisites are recorded in PROMO-03 and PROMO-07.
+PROMO-08 remains separately instructed and NOT RUN. The release build did not
+promote a lane or deploy/restart a service. Its four `native-full-v1` receipts,
+owner-only host profile, budget, build ID, source/controller identities,
+publication hashes, and final Sandbox capacity are recorded in the build
+evidence. No old release, cache, backup, or retained data was removed.
 
 ## 1. Outcome in simple words
 

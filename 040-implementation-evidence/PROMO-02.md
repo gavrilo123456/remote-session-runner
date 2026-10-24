@@ -12,6 +12,8 @@
   setup was changed to `git init` followed by `git checkout -b` in
   `43a4e675ccccb89e1ea1c333e975ea028c9600fa`; the Linux source tests passed
   after that correction.
-- No real source branch was advanced by the tests and no release was built.
+- No real source branch was advanced by the PROMO-02 fixture tests. The later
+  non-activating build from this pinned source is recorded in
+  [PROMO-BUILD-43A4](PROMO-BUILD-43A4.md).
 
 Test and delivery details: [PROMO-07](PROMO-07.md).
