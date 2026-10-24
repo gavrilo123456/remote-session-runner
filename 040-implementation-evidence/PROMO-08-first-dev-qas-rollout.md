@@ -307,8 +307,30 @@ drives the public cohort command sequence, verifies all four synchronized
 receipts and transition order, and retries without duplicating verification.
 
 Mac Go 1.27.1 gates for this controller correction: `make test`, `make vet`,
-`make build`, `make smoke`, and `git diff --check` PASS. Git delivery and the
-three worker validations are pending. The sealed service candidate
-`rr-20261024-43a4e675` and all four bundle hashes remain unchanged. Dev
-functional acceptance, QAS promotion/acceptance, and filesystem-mailbox
-acceptance remain NOT RUN.
+`make build`, `make smoke`, and `git diff --check` PASS. Commit
+`82ad19e1f3b9e45dfe08b17f41ba03abb88c06a1` was pushed to primary Gitea; the
+automatic GitHub `dev` mirror matched exactly. Linux, Sandbox and Factory were
+clean on `dev` at `f6e444c` before pulling and each fast-forwarded to
+`82ad19e`. At that revision each worker passed
+`go test ./src/internal/releaseflow -count=1`, vet of
+`./src/internal/releaseflow ./src/cmd/promote-to ./src/cmd/runner-release`,
+`make build`, `TMPDIR=/tmp make smoke`, and `git diff --check`.
+
+The corrected Mac controller tools built from `82ad19e` have SHA-256
+`0c235af1a288b2bc8c7999451201fc37de31a36365687dd1d87c619bf6aad235`
+(`promote-to`) and
+`3dd407e38e374d952f730cd2991207c04b6122306fc432a7ab63e6afabf16622`
+(`runner-release`). No service bundle was rebuilt. The sealed service
+candidate `rr-20261024-43a4e675` and all four bundle hashes remain unchanged.
+
+After source validation, read-only checks on all four Dev instances confirmed
+the exact operation hold `dea80fa695a606e64985f0b2b53ebeb4`, the same
+`switching` receipt with ten transitions, the candidate selector and bundle,
+schema 40, unchanged configuration hashes, active services and empty work
+inventories. All active-command, active-session, queued, running, resumable and
+recovery counts were zero. The exact Linux direct-mTLS probe scope file was
+absent. Sandbox had 859,456 KiB free before worker validation; no cleanup was
+performed. The operation remains blocked pending its corrected acceptance
+retry. Dev functional acceptance is NOT RUN; QAS promotion/acceptance and
+filesystem-mailbox acceptance are NOT RUN. No QAS or PRD configuration,
+service, selector, database, or mailbox state was changed.
