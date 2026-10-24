@@ -1438,12 +1438,27 @@ func runCatalogWorkInventory(ctx context.Context, args []string, stdout, stderr 
 	flags := flag.NewFlagSet("runner-lane catalog-work-inventory", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	host := flags.String("host", "", "canonical identity of this existing host")
-	lane := flags.String("lane", "", "dev or qas")
+	lane := flags.String("lane", "", "dev, qas, or prd")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas") {
-		return errors.New("usage: runner-lane catalog-work-inventory --host HOST --lane dev|qas")
+	if flags.NArg() != 0 || !validCatalogWorkInventoryScope(*host, *lane) {
+		return errors.New("usage: runner-lane catalog-work-inventory --host HOST --lane dev|qas|prd")
+	}
+	if *lane == "prd" {
+		plan, err := laneinstall.BuildPRDUpgradePlan(*host)
+		if err != nil {
+			return err
+		}
+		controller, err := laneinstall.NewPRDServiceController()
+		if err != nil {
+			return err
+		}
+		inventory, err := laneinstall.ReadCatalogPRDWorkInventory(ctx, plan, controller)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, inventory)
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
 	if err != nil {
@@ -1458,6 +1473,10 @@ func runCatalogWorkInventory(ctx context.Context, args []string, stdout, stderr 
 		return err
 	}
 	return writeJSON(stdout, inventory)
+}
+
+func validCatalogWorkInventoryScope(host, lane string) bool {
+	return currentCatalogHost(host) && (lane == "dev" || lane == "qas" || lane == "prd")
 }
 
 func runCatalogPreSwitchCheck(ctx context.Context, args []string, stdout, stderr io.Writer) error {

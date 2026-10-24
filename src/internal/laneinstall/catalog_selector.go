@@ -210,6 +210,29 @@ func ReadCatalogWorkInventory(ctx context.Context, plan Plan, service SimpleServ
 	if _, err := loadSimpleLaneAuthority(plan); err != nil {
 		return CatalogWorkInventoryReport{}, err
 	}
+	return readCatalogWorkInventory(ctx, plan, func(ctx context.Context, _ Plan) (bool, error) {
+		return service.Status(ctx, plan)
+	})
+}
+
+// ReadCatalogPRDWorkInventory returns the same read-only inventory for a
+// catalog-managed unsuffixed PRD lane. It validates the legacy-compatible PRD
+// configuration and uses the PRD-only status probe; it does not invoke the
+// legacy installer/preflight path or open the database for migration.
+func ReadCatalogPRDWorkInventory(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe) (CatalogWorkInventoryReport, error) {
+	if validatePRDPlan(plan) != nil || service == nil || validatePRDConfig(plan) != nil {
+		return CatalogWorkInventoryReport{}, ErrPRDUpgradeGuard
+	}
+	catalogPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
+	return readCatalogWorkInventory(ctx, catalogPlan, func(ctx context.Context, _ Plan) (bool, error) {
+		return service.Status(ctx, plan)
+	})
+}
+
+func readCatalogWorkInventory(ctx context.Context, plan Plan, serviceStatus func(context.Context, Plan) (bool, error)) (CatalogWorkInventoryReport, error) {
+	if validateCatalogPlan(plan) != nil || serviceStatus == nil {
+		return CatalogWorkInventoryReport{}, ErrSimpleLanePreflight
+	}
 	root, err := DefaultCatalogRootForPlan(plan)
 	if err != nil {
 		return CatalogWorkInventoryReport{}, err
@@ -226,7 +249,7 @@ func ReadCatalogWorkInventory(ctx context.Context, plan Plan, service SimpleServ
 	if err != nil {
 		return CatalogWorkInventoryReport{}, err
 	}
-	active, err := service.Status(ctx, plan)
+	active, err := serviceStatus(ctx, plan)
 	if err != nil {
 		return CatalogWorkInventoryReport{}, err
 	}

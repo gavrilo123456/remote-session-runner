@@ -1031,23 +1031,7 @@ func (b *NativePromotionBackend) readLaneSnapshot(ctx context.Context, host, lan
 	if err != nil || decodeStrictJSON(statusBytes, &snapshot.Selector) != nil {
 		return snapshot, errors.Join(ErrOperationCorrupted, err)
 	}
-	if lane == "prd" {
-		out, err := b.runLane(ctx, host, []string{"prd-preflight", "--host", host}, nil)
-		if err != nil {
-			return snapshot, err
-		}
-		var prd laneinstall.PRDPreflight
-		if decodeStrictJSON(out, &prd) != nil || prd.HostID != host {
-			return snapshot, ErrOperationCorrupted
-		}
-		snapshot.Active, snapshot.Config, snapshot.Schema, snapshot.Work = prd.ServiceActive, prd.ConfigSHA256, prd.SchemaVersion, prd.Work
-		snapshot.Empty = prd.Work.Empty()
-		if err := b.readPromotionCapacity(ctx, host, lane, &snapshot); err != nil {
-			return snapshot, err
-		}
-		return snapshot, nil
-	}
-	out, err := b.runLane(ctx, host, []string{"catalog-work-inventory", "--host", host, "--lane", lane}, nil)
+	out, err := b.runLane(ctx, host, promotionWorkInventoryArgs(host, lane), nil)
 	if err != nil {
 		return snapshot, err
 	}
@@ -1061,6 +1045,10 @@ func (b *NativePromotionBackend) readLaneSnapshot(ctx context.Context, host, lan
 		return snapshot, err
 	}
 	return snapshot, nil
+}
+
+func promotionWorkInventoryArgs(host, lane string) []string {
+	return []string{"catalog-work-inventory", "--host", host, "--lane", lane}
 }
 
 func (b *NativePromotionBackend) currentHost(ctx context.Context, host, lane string) (laneinstall.CatalogSelectorStatus, promotionLaneSnapshot, error) {

@@ -39,7 +39,44 @@ hold/operation consistency, and receipt identity before accepting it.
 - Mac Go 1.27.1 `go build -o /private/tmp/promote-to-controller ./src/cmd/promote-to`: PASS.
 - `git diff --check`: PASS.
 
-The corrected controller has not yet been committed or delivered to the
-workers. Live promotion remains NOT RUN. The prior completed Dev receipt is
-still holding admissions and must be handled only by supported workflow
-controls after the corrected read-only plan exposes its state.
+The discovery-envelope correction is committed and delivered to all three
+workers as `bec5b3b44a5a73658236c72f8f2045a09a939b95`. Live promotion remains
+NOT RUN. The prior completed Dev receipt is still holding admissions and must
+be handled only by supported workflow controls after the corrected read-only
+plan exposes its state.
+
+## PRD peer-baseline correction
+
+After the discovery decoder correction, the read-only Dev plan advanced and
+then failed at `linux-host peer lane prd isolation baseline` because
+`readLaneSnapshot` called the legacy `prd-preflight` command. That path
+deliberately rejects catalog-managed PRD with `legacy PRD installer cannot
+modify a catalog-managed service`.
+
+The controller now obtains PRD peer state through the read-only
+`catalog-work-inventory --lane prd` path. That path validates the canonical
+PRD namespace/configuration, reads the selected catalog identity and schema,
+uses the PRD-only status probe, and opens the database with the existing
+read-only restart-preflight connection. It does not use the legacy installer,
+change configuration, stop PRD, or migrate the database. Dev/QAS mutation
+guards remain unchanged.
+
+A local Mac invocation of this read-only command succeeded. It observed the
+unsuffixed PRD service active, schema 40, selected release
+`cat-20261023-c01e633`, and two active command slots/reservations. This is
+retained production work; PRD remains outside this deployment and untouched.
+
+The first focused source run passed `laneinstall` and `releaseflow` but exposed
+a test setup mistake: the CLI's current-host guard correctly rejects a
+non-local host on Mac. The test was corrected to use the local canonical host.
+The rerun passed:
+
+- Mac Go 1.27.1 `go test ./src/internal/laneinstall ./src/cmd/runner-lane ./src/internal/releaseflow -count=1`: PASS.
+- Mac Go 1.27.1 `go vet ./src/internal/laneinstall ./src/cmd/runner-lane ./src/internal/releaseflow ./src/cmd/promote-to ./src/cmd/runner-release`: PASS.
+- Mac Go 1.27.1 builds of `src/cmd/runner-lane` and `src/cmd/promote-to` to
+  `/private/tmp`: PASS.
+- `git diff --check`: PASS.
+
+The PRD peer-baseline correction is not yet committed or delivered. The actual
+Dev plan has not yet passed; QAS promotion, mailbox probes, and Dev/QAS
+acceptance remain NOT RUN.

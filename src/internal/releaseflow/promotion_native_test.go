@@ -60,6 +60,16 @@ func TestPromotionCapacityKeepsOperatingBufferAndPRDReserveSeparate(t *testing.T
 	}
 }
 
+func TestPromotionPeerInventoryUsesCatalogReadOnlyCommandForEveryLane(t *testing.T) {
+	for _, lane := range LaneOrder {
+		args := promotionWorkInventoryArgs("linux-host", lane)
+		if len(args) != 5 || args[0] != "catalog-work-inventory" || args[1] != "--host" || args[2] != "linux-host" ||
+			args[3] != "--lane" || args[4] != lane {
+			t.Errorf("lane %s work-inventory invocation = %v", lane, args)
+		}
+	}
+}
+
 func TestDecodePromotionAdmissionMatchesCatalogCohortDiscoverEnvelope(t *testing.T) {
 	const operationID = "c02b2c01b3504c067de9d3b77605b87e"
 	tests := []struct {
