@@ -1,10 +1,20 @@
 # Build and promotion commands — implementation plan
 
-**Status:** implementation and source qualification in progress, 2026-10-24.
-PROMO-01 through PROMO-06 source work is implemented; PROMO-07 source/public-
-command and native-host qualification plus Git delivery remain in progress.
-PROMO-08 is separately instructed and NOT RUN. No live deployment or service
-restart is part of this assignment.
+**Status:** PROMO-01 through PROMO-07 source implementation, fixture
+qualification, full native source gates on all four platforms, and Git
+delivery completed on 2026-10-24. Per-unit results are in
+[`PROMO-01.md`](../../040-implementation-evidence/PROMO-01.md) through
+[`PROMO-07.md`](../../040-implementation-evidence/PROMO-07.md).
+
+PROMO-08 remains separately instructed and NOT RUN. No release was built or
+published, no lane was promoted, and no service was deployed or restarted in
+this assignment. The full source suite plus vet/build/smoke passed on all four
+native platforms, but no `native-full-v1` receipt files were created because
+no non-plan build was started. The actual four-host build/publication is also
+held: the owner-only host profile is absent, and Sandbox had 364,351,488 bytes
+free on its full root filesystem while retaining 843,551,092 bytes of existing
+release catalogs. No old release or cache was removed to create room. These
+remaining build prerequisites are recorded in PROMO-03 and PROMO-07.
 
 ## 1. Outcome in simple words
 
