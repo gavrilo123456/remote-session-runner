@@ -16,6 +16,8 @@ owner-only host profile is
 canonical host ID to its repository, Go 1.27.1 binary, runtime root, SSH
 identity and verified known-hosts file. PRD profiles also name the reviewed
 legacy rollback compatibility input. Never commit that file or its credentials.
+SSH private-key files may use mode `0400` or `0600`; group/world-readable or
+writable keys are rejected, and existing key permissions should be preserved.
 
 ## Freeze and publish once
 

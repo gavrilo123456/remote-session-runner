@@ -86,7 +86,7 @@ func LoadHostConfiguration(path string) (HostConfiguration, error) {
 			if p.Target != "" || p.IdentityFile != "" || p.KnownHostsFile != "" {
 				return cfg, ErrInvalidInput
 			}
-			if err := ownerFile(p.GitIdentityFile, 0o600); err != nil {
+			if err := ownerPrivateKeyFile(p.GitIdentityFile); err != nil {
 				return cfg, fmt.Errorf("%s Git identity file: %w", host, err)
 			}
 			if err := ownerFile(p.GitKnownHostsFile, 0); err != nil {
@@ -96,7 +96,7 @@ func LoadHostConfiguration(path string) (HostConfiguration, error) {
 			if !safeTargetPattern.MatchString(p.Target) || strings.HasPrefix(p.Target, "-") || !absoluteClean(p.IdentityFile) || !absoluteClean(p.KnownHostsFile) {
 				return cfg, ErrInvalidInput
 			}
-			if err := ownerFile(p.IdentityFile, 0o600); err != nil {
+			if err := ownerPrivateKeyFile(p.IdentityFile); err != nil {
 				return cfg, fmt.Errorf("%s SSH identity file: %w", host, err)
 			}
 			if err := ownerFile(p.KnownHostsFile, 0); err != nil {
@@ -132,6 +132,24 @@ func ownerFile(path string, required os.FileMode) error {
 	}
 	return nil
 }
+
+// ownerPrivateKeyFile accepts the two common owner-only private-key modes.
+// Existing verified keys may be read-only (0400) or owner-readable/writable
+// (0600); group/world access is never permitted.
+func ownerPrivateKeyFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return ErrOperationCorrupted
+	}
+	if mode := info.Mode().Perm(); mode != 0o400 && mode != 0o600 {
+		return ErrOperationCorrupted
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Getuid() {
+		return ErrOperationCorrupted
+	}
+	return nil
+}
+
 func absoluteClean(p string) bool { return filepath.IsAbs(p) && filepath.Clean(p) == p }
 
 // NativeBuildBackend builds Mac bundles locally and the three Linux bundles
