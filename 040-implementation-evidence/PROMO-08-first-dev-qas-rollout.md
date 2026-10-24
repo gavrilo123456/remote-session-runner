@@ -382,7 +382,7 @@ not yet been recovered into the durable promotion acceptance record; Dev
 acceptance, BUG-026 live exit-1 acceptance, QAS acceptance, and filesystem-
 mailbox acceptance remain NOT RUN.
 
-## Accepted Linux probe evidence recovery and current source gates
+## Linux probe evidence recovery implementation and source gates
 
 The Linux direct-mTLS helper did complete successfully. The retained Dev
 operation `dea80fa695a606e64985f0b2b53ebeb4` has a hash-chained final event
@@ -420,17 +420,35 @@ operation event, event-chain tampering, and the normal-versus-recovered
 acceptance rules. The diagnostic status reader now reports bounded HTTP and
 response-code details.
 
-Mac Go 1.27.1 gates for the recovery/diagnostic source change: `make test`,
-`make vet`, `make build`, `make smoke`, and `git diff --check` PASS. The
-focused `releaseflow`, `catalog-probe-once`, and `runner-lane` test packages
-also PASS. Linux and Factory checks for this exact source revision and
-Sandbox fast-forward/test are pending. A fresh Sandbox `df -PB1 /` returned
-327,888,896 bytes available, 172,111,104 bytes below the 500,000,000-byte
-operating floor. An earlier sample during this turn was 1,124,872,192 bytes;
-the lower fresh reading governs. No Sandbox files were changed or cleaned.
+Source gates for controller revision
+`6b3ed49a90356c52b881192fcfa7e426ce30561a` (Go 1.27.1) are now recorded on
+the required machines. Mac `make test`, `make vet`, `make build`, `make smoke`,
+the focused `releaseflow`, `catalog-probe-once`, and `runner-lane` packages,
+and `git diff --check` passed. On `linux-host`, those three changed-package
+tests and native `make vet`, `make build`, `make smoke`, and `git diff --check`
+passed; its earlier interrupted full-suite attempts remain NOT PASS and are
+not relabeled. On `factory-sandbox`, the full Linux/AMD64 `make test` suite,
+`make vet`, `make build`, `make smoke`, and `git diff --check` passed. On
+`sandbox-host`, Go reported Linux/arm64; its full `make test` suite, `make
+vet`, `make build`, `make smoke`, and `git diff --check` passed. Sandbox free
+space was 1,536,241,664 bytes immediately before the suite and 1,436,053,504
+bytes after it, above the 500,000,000-byte operating floor. All three
+Ubuntu checkouts were clean at this exact commit before the runs.
 
-No complete Dev acceptance is recorded yet. The remaining Dev checks, including
-the other direct/queued transports, Mac-local route, limits, capacity,
-lifecycle, isolation, BUG-026 exit-1 and dedicated filesystem-mailbox scope,
-remain NOT RUN. QAS promotion and acceptance remain NOT RUN. No QAS/PRD
-services, selectors, configurations, databases, or mailbox paths were changed.
+The earlier Sandbox 327,888,896-byte reading remains a historical failed
+capacity check, not a current gate result; no cache, retained data, or project
+file was deleted. The configured Mac module cache later failed `go mod verify`
+because 12 extracted module directories were incomplete. Their contents were
+preserved; the attempted move for cache repair was denied. Read-only command
+inspection and status were then run with the existing verified user module
+cache and the required shared build cache. This cache issue does not change the
+passing Mac source-gate record, but should be repaired or explicitly resolved
+before relying on that configured module cache again.
+
+The Dev operation remains held at its recorded failed acceptance event 25;
+the correction has not yet been exercised by a live resume. No complete Dev
+acceptance is recorded. Other direct/queued transports, Mac-local route,
+limits, capacity, lifecycle, isolation, BUG-026 exit-1, and dedicated
+filesystem-mailbox acceptance remain NOT RUN. QAS promotion and acceptance
+remain NOT RUN. No QAS/PRD services, selectors, configurations, databases, or
+mailbox paths were changed in these source-check runs.
