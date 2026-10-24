@@ -445,10 +445,53 @@ cache and the required shared build cache. This cache issue does not change the
 passing Mac source-gate record, but should be repaired or explicitly resolved
 before relying on that configured module cache again.
 
-The Dev operation remains held at its recorded failed acceptance event 25;
-the correction has not yet been exercised by a live resume. No complete Dev
-acceptance is recorded. Other direct/queued transports, Mac-local route,
-limits, capacity, lifecycle, isolation, BUG-026 exit-1, and dedicated
+## Resumed-operation recovery correction
+
+After source gates and evidence delivery at `6b3ed49`, the supported Dev
+resume was retried for operation
+`dea80fa695a606e64985f0b2b53ebeb4`. The first invocation stopped before
+workflow execution because the sandbox denied creating the coordinator
+`dev.lock`; it recorded no operation event. The authorized retry reached the
+public command but failed status-only observation of the already accepted
+Linux job. It did not create another probe scope or replay the command. The
+operation remains held, with its original event 25 and this exact event 26:
+
+- UTC `2026-10-24T22:23:01.362164Z`
+- SHA-256 `ca2f018046faeadc1fa12725f1b6ea3369f78f285a6917d13fc7b6083c818b36`
+- Error: `linux-host direct-mtls functional probe: existing accepted probe could not be safely observed (exit=exit status 1): release workflow record is invalid or corrupted`
+
+The defect is in the controller recovery matcher. A supported retry changes a
+blocked operation back to `Prepared` and clears `LastError` before calling
+`AcceptCohort`; the matcher incorrectly required `Blocked`, the original
+failure in `LastError`, and the helper-error event to be the latest event. It
+therefore fell through to status observation instead of recovering from the
+preserved helper-exit event 25. The next controller correction accepts only a
+unique exact hash-chained helper-error event whose scope, job, host, lane,
+transport, controller, configuration, request and event time still match. It
+also permits only the exact later failed status-only observations of that same
+scope, while rejecting unrelated or successful later events. The probe helper
+remains observation-only; no accepted command is replayed.
+
+The new regression reproduces resume at `Prepared` after a failed status-only
+observation, verifies recovery is tied to event 25 rather than event 26, and
+asserts the only host call is `--observe-existing`. Negative tests reject
+unrelated later failures and later success. The focused `releaseflow` package
+passes on Mac Go 1.27.1. The full Mac suite initially failed only because the
+restricted execution sandbox denied the test's `/bin/ps` call for its own
+fixture child. The rerun with process-inspection access passed `make test`,
+`make vet`, `make build`, `make smoke`, and `git diff --check`; the harmless
+Darwin linker warning about duplicate `-lproc` remains. For these Mac commands,
+the required shared GOCACHE was used. The configured shared GOMODCACHE had
+incomplete extracted modules; `go mod verify` flagged those directories and
+cache repair was denied. The existing user Go module cache supplied the
+already verified dependencies for the passing gates and controller run.
+
+This controller-only correction does not change the sealed release
+`rr-20261024-43a4e675` or any host service bundle. Factory/Sandbox full-suite
+and Linux focused/native results above apply to `6b3ed49`, not this new source
+change; current-correction host checks remain pending Git delivery. The Dev
+operation is not accepted yet. The other direct/queued transports, Mac-local
+route, limits, capacity, lifecycle, isolation, BUG-026 exit-1, and dedicated
 filesystem-mailbox acceptance remain NOT RUN. QAS promotion and acceptance
-remain NOT RUN. No QAS/PRD services, selectors, configurations, databases, or
-mailbox paths were changed in these source-check runs.
+remain NOT RUN. QAS/PRD services, selectors, configurations, databases, and
+mailbox paths remain unchanged.

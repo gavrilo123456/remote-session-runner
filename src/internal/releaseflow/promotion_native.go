@@ -1186,27 +1186,64 @@ const (
 // catalog-probe-once's exit-zero contract. A controller event records that the
 // helper itself exited successfully, but its JSON was rejected by the older
 // controller decoder. The exact accepted scope binds the job and request; the
-// event must fall inside that scope's creation/expiry interval. This path is
-// read-only and deliberately leaves the numeric terminal sequence and helper
-// output unavailable rather than inventing them.
+// event must fall inside that scope's creation/expiry interval. A later failed
+// status-only observation of this same accepted scope does not erase that
+// immutable proof. This path is read-only and deliberately leaves the numeric
+// terminal sequence and helper output unavailable rather than inventing them.
 func recoverAcceptedProbeFromOperation(op Operation, existing promotionProbeScopeObservation,
 	host, transport, controller string) (promotionProbeOutcome, bool) {
-	if ValidateOperation(op) != nil || op.Stage != StageBlocked || op.CohortOperationID == "" ||
+	if ValidateOperation(op) != nil || op.CohortOperationID == "" ||
 		op.OperationID != op.CohortOperationID || len(op.Events) == 0 {
 		return promotionProbeOutcome{}, false
 	}
+	switch op.Stage {
+	case StageBlocked, StagePrepared, StageVerifying:
+	default:
+		return promotionProbeOutcome{}, false
+	}
 	wantError := host + " " + transport + " functional probe: " + acceptedProbeDecodeFailure
-	if op.LastError != wantError {
+	if op.Stage == StageBlocked && op.LastError == "" || op.Stage != StageBlocked && op.LastError != "" {
 		return promotionProbeOutcome{}, false
 	}
-	event := op.Events[len(op.Events)-1]
-	if event.Sequence != len(op.Events) || event.Action != "acceptance" || event.HostID != "" || event.Intent || event.Outcome != "failed" {
+	originalIndex := -1
+	for index, candidate := range op.Events {
+		if candidate.Action != "acceptance" || candidate.HostID != "" || candidate.Intent || candidate.Outcome != "failed" {
+			continue
+		}
+		var evidence struct {
+			Error string `json:"error"`
+		}
+		if decodeStrictJSON(candidate.Evidence, &evidence) == nil && evidence.Error == wantError {
+			if originalIndex >= 0 {
+				return promotionProbeOutcome{}, false
+			}
+			originalIndex = index
+		}
+	}
+	if originalIndex < 0 {
 		return promotionProbeOutcome{}, false
 	}
-	var eventEvidence struct {
-		Error string `json:"error"`
+	for _, later := range op.Events[originalIndex+1:] {
+		if later.Action != "acceptance" || later.HostID != "" || later.Intent || later.Outcome != "failed" {
+			return promotionProbeOutcome{}, false
+		}
+		var laterEvidence struct {
+			Error string `json:"error"`
+		}
+		if decodeStrictJSON(later.Evidence, &laterEvidence) != nil || !acceptedProbeObserveFailure(laterEvidence.Error, host, transport) {
+			return promotionProbeOutcome{}, false
+		}
 	}
-	if decodeStrictJSON(event.Evidence, &eventEvidence) != nil || eventEvidence.Error != wantError {
+	if op.Stage == StageBlocked {
+		var latestEvidence struct {
+			Error string `json:"error"`
+		}
+		if decodeStrictJSON(op.Events[len(op.Events)-1].Evidence, &latestEvidence) != nil || latestEvidence.Error != op.LastError {
+			return promotionProbeOutcome{}, false
+		}
+	}
+	event := op.Events[originalIndex]
+	if event.Sequence != originalIndex+1 {
 		return promotionProbeOutcome{}, false
 	}
 	eventAt, eventErr := time.Parse(time.RFC3339Nano, event.AtUTC)
@@ -1235,6 +1272,13 @@ func recoverAcceptedProbeFromOperation(op Operation, existing promotionProbeScop
 			HelperVerifiedPositiveFinalSequence: true,
 		},
 	}, true
+}
+
+func acceptedProbeObserveFailure(errorText, host, transport string) bool {
+	prefix := host + " " + transport + " functional probe: existing accepted probe could not be safely observed (exit="
+	suffix := "): " + ErrOperationCorrupted.Error()
+	return strings.HasPrefix(errorText, prefix) && strings.HasSuffix(errorText, suffix) &&
+		len(errorText) > len(prefix)+len(suffix)
 }
 
 func promotionBaselineConfigurationSHA(op Operation, host string) (string, bool) {

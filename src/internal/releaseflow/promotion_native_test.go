@@ -224,6 +224,42 @@ func TestRecoverAcceptedProbeFromExactControllerDecodeFailureWithoutReplay(t *te
 	}
 }
 
+func TestRecoverAcceptedProbeAfterSafeObservationFailureDuringWorkflowResume(t *testing.T) {
+	op, scope := acceptedProbeRecoveryFixture(t)
+	const observationError = "linux-host direct-mtls functional probe: existing accepted probe could not be safely observed (exit=exit status 1): release workflow record is invalid or corrupted"
+	if err := AppendEvent(&op, "acceptance", "", false, "failed", map[string]string{"error": observationError},
+		time.Date(2026, 10, 24, 22, 23, 1, 362164000, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	// Promote resets a blocked operation to Prepared before AcceptCohort retries.
+	// Recovery must use the original hash-chained helper-exit event, not assume
+	// it remains the latest event or that the workflow stage is still Blocked.
+	op.Stage = StagePrepared
+	op.LastError = ""
+
+	var calls [][]string
+	backend := NativePromotionBackend{laneCommandRunner: func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		if host != "linux-host" {
+			t.Fatalf("scope observation used unexpected host %q", host)
+		}
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) < 2 || args[0] != "catalog-probe-prepare" || args[len(args)-1] != "--observe-existing" {
+			t.Fatalf("unexpected host-side command; accepted capability must only be observed: %v", args)
+		}
+		return json.Marshal(scope)
+	}}
+	got, err := backend.runProbe(context.Background(), op, "linux-host", "direct-mtls", "runner-controller-dev-linux-host", "/unused/config", "")
+	if err != nil {
+		t.Fatalf("accepted probe recovery after status-only failure failed: %v", err)
+	}
+	original := op.Events[0]
+	if len(calls) != 1 || got.JobID != scope.JobID || got.FinalEventSequence != nil || got.AcceptedAt != "" ||
+		got.AcceptanceEvidence == nil || got.AcceptanceEvidence.ControllerFailureEventSequence != original.Sequence ||
+		got.AcceptanceEvidence.ControllerFailureEventSHA256 != original.SHA256 || !promotionProbeOutcomeAccepted(got) {
+		t.Fatalf("recovery did not bind to the original helper-exit proof without replay: calls=%v outcome=%+v", calls, got)
+	}
+}
+
 func TestRecoverAcceptedProbeRejectsInconsistentEvidence(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -244,6 +280,16 @@ func TestRecoverAcceptedProbeRejectsInconsistentEvidence(t *testing.T) {
 		}},
 		{name: "newer operation event", mutate: func(op *Operation, _ *promotionProbeScopeObservation) {
 			if err := AppendEvent(op, "status", "", false, "observed", map[string]string{"state": "blocked"}, time.Date(2026, 10, 24, 21, 6, 0, 0, time.UTC)); err != nil {
+				panic(err)
+			}
+		}},
+		{name: "unrelated later acceptance failure", mutate: func(op *Operation, _ *promotionProbeScopeObservation) {
+			if err := AppendEvent(op, "acceptance", "", false, "failed", map[string]string{"error": "sandbox-host queued-ssh functional probe: unrelated failure"}, time.Date(2026, 10, 24, 21, 6, 0, 0, time.UTC)); err != nil {
+				panic(err)
+			}
+		}},
+		{name: "later successful acceptance", mutate: func(op *Operation, _ *promotionProbeScopeObservation) {
+			if err := AppendEvent(op, "acceptance", "", false, "passed", map[string]string{"profile": "catalog-functional-v1"}, time.Date(2026, 10, 24, 21, 6, 0, 0, time.UTC)); err != nil {
 				panic(err)
 			}
 		}},
