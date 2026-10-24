@@ -141,7 +141,7 @@ func buildSourceFixture(t *testing.T, root string) (GitResolver, string) {
 	work := filepath.Join(root, "source-work")
 	primary := filepath.Join(root, "source-primary.git")
 	mirror := filepath.Join(root, "source-mirror.git")
-	runGitTest(t, "init", "-b", "dev", work)
+	initGitTestBranch(t, work, "dev")
 	runGitTest(t, "-C", work, "config", "user.name", "Build fixture")
 	runGitTest(t, "-C", work, "config", "user.email", "build@example.invalid")
 	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("fixture"), 0o600); err != nil {

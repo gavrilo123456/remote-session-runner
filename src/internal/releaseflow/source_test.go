@@ -15,7 +15,7 @@ func TestGitResolverRequiresMatchingPublishedHistoryAndPreservesCheckout(t *test
 	work := filepath.Join(root, "work")
 	primary := filepath.Join(root, "primary.git")
 	mirror := filepath.Join(root, "mirror.git")
-	runGitTest(t, "init", "-b", "dev", work)
+	initGitTestBranch(t, work, "dev")
 	runGitTest(t, "-C", work, "config", "user.name", "Fixture")
 	runGitTest(t, "-C", work, "config", "user.email", "fixture@example.invalid")
 	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("first\n"), 0o600); err != nil {
@@ -72,7 +72,7 @@ func TestGitResolverRejectsBranchMovementDuringSourceFreeze(t *testing.T) {
 	work := filepath.Join(root, "work")
 	primary := filepath.Join(root, "primary.git")
 	mirror := filepath.Join(root, "mirror.git")
-	runGitTest(t, "init", "-b", "dev", work)
+	initGitTestBranch(t, work, "dev")
 	runGitTest(t, "-C", work, "config", "user.name", "Fixture")
 	runGitTest(t, "-C", work, "config", "user.email", "fixture@example.invalid")
 	if err := os.WriteFile(filepath.Join(work, "a.txt"), []byte("base\n"), 0o600); err != nil {
@@ -108,7 +108,7 @@ func TestGitResolverRejectsMirrorLagAndCommitOutsideBranch(t *testing.T) {
 	work := filepath.Join(root, "work")
 	primary := filepath.Join(root, "primary.git")
 	mirror := filepath.Join(root, "mirror.git")
-	runGitTest(t, "init", "-b", "dev", work)
+	initGitTestBranch(t, work, "dev")
 	runGitTest(t, "-C", work, "config", "user.name", "Fixture")
 	runGitTest(t, "-C", work, "config", "user.email", "fixture@example.invalid")
 	if err := os.WriteFile(filepath.Join(work, "a.txt"), []byte("a"), 0o600); err != nil {
@@ -165,4 +165,12 @@ func runGitTest(t *testing.T, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return string(out)
+}
+
+// Keep disposable Git fixtures compatible with the oldest supported Git on
+// the Ubuntu workers: `git init -b` is not available there.
+func initGitTestBranch(t *testing.T, path, branch string) {
+	t.Helper()
+	runGitTest(t, "init", path)
+	runGitTest(t, "-C", path, "checkout", "-b", branch)
 }

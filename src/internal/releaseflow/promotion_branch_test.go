@@ -86,7 +86,7 @@ func newBranchMarkerFixture(t *testing.T, mirrorHook bool) branchMarkerFixture {
 	t.Helper()
 	root := t.TempDir()
 	fixture := branchMarkerFixture{work: filepath.Join(root, "work"), primary: filepath.Join(root, "primary.git"), mirror: filepath.Join(root, "mirror.git")}
-	runGitTest(t, "init", "-b", "dev", fixture.work)
+	initGitTestBranch(t, fixture.work, "dev")
 	runGitTest(t, "-C", fixture.work, "config", "user.name", "Promotion fixture")
 	runGitTest(t, "-C", fixture.work, "config", "user.email", "promotion@example.invalid")
 	if err := os.WriteFile(filepath.Join(fixture.work, "base.txt"), []byte("base\n"), 0o600); err != nil {
