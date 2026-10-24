@@ -110,6 +110,10 @@ also recorded the existing operations root at `42,275,277` bytes and the
 release catalog at `885,807,496` bytes. No catalogs, caches, backups, journals
 or retained data were deleted.
 
+After the documentation delivery and worker fast-forwards, a final Sandbox
+check reported `1,312,641,024` bytes free on `/dev/sda1`, still `370,740,355`
+bytes above the same build-space reserve.
+
 ## Build invocation and published bundles
 
 The immutable initial invocation captured the source and allocated the build
