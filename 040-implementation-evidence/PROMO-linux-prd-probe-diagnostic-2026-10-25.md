@@ -60,6 +60,13 @@ database. The observation found:
 These records are incomplete execution evidence. They do not prove that the
 probe succeeded or that execution never began. No capacity was released.
 
+A fresh read-only observation at `2026-10-25T18:27:44.306061315Z` found the
+same job/session states, no command row, event or command slot, and the same
+unreleased session reservation. The PRD service remained active and the
+operation's admission hold remained in place. The diagnostic binary was
+streamed to `/tmp`, run once, and removed; no source files were copied to the
+Ubuntu checkout.
+
 ## Source correction and validation
 
 The existing `catalog-probe-once` observer correction now resolves one unique
