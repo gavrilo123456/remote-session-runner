@@ -505,3 +505,112 @@ lifecycle, isolation, BUG-026 exit-1, and dedicated filesystem-mailbox
 acceptance remain NOT RUN. QAS promotion and acceptance remain NOT RUN. QAS/PRD
 services, selectors, configurations, databases, and mailbox paths remain
 unchanged.
+
+## Current walkthrough checkpoint — 2026-10-25 00:02 UTC
+
+This checkpoint supersedes the earlier NOT RUN statements above for the Dev
+operation. It does not change the separately pending QAS pause/drain gate.
+
+The sealed candidate is `rr-20261024-43a4e675`, digest
+`093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69`, source
+`43a4e675ccccb89e1ea1c333e975ea028c9600fa`, Go 1.27.1. Per-host bundle
+SHA-256 values remain unchanged:
+
+| Host | Bundle SHA-256 |
+|---|---|
+| `linux-host` | `f3628574b1ffd50e0e0f11790039f8b404701de475a34770b7b64b63d9f56c37` |
+| `sandbox-host` | `3da6a23a44ef96bbd8681bc7f8504e6ec114fa9d5049336240b80085e543f0d9` |
+| `factory-sandbox` | `206a1b7e010aadf64139f81b26077716be7a5090de4c4e19e318c975f3309e29` |
+| `mac-control-plane` | `a67cec224af031d269132d4c09dc22909d76bd1395e61e76fc828c5895ec6062` |
+
+Dev operation `dea80fa695a606e64985f0b2b53ebeb4` is complete. Its
+hash-chained event 27 records `cohort-accepted`, outcome `passed`, at
+`2026-10-24T22:43:54.467199Z`; the acceptance evidence SHA-256 is
+`cf414c289550f07f7b1836cacedc4c8979248b77143c137e5231cd1a7adaac39`. The
+`catalog-functional-v1` gates all passed: capacity, direct-mTLS, isolation,
+lifecycle, limits, Mac-local, queued-SSH, and teardown. The sealed release
+metadata and all four bundle hashes match the acceptance event. The earlier
+failed probe/controller events remain in the receipt history.
+
+BUG-026 and route-specific Dev checks:
+
+- A preliminary direct run using the stale environment name `mac-dev` was
+  rejected as `environment_not_configured`; it is retained as a failed
+  attempt, not acceptance. The configured Dev mapping is
+  `mac-workstation-dev` → `local/mac-workstation`.
+- The exact exit-1 probe produced
+  `BUG026_EXPLICIT_EXIT1_DIAGNOSTIC`; job
+  `job-e39bf19bc056ce08ba3cea4bd84fcffe`, session
+  `sess-15b4f5afcfef6fb563de1c5544b13311`, command
+  `cmd-0e31e8692c08730a331bd29be5f846aa`. The terminal command result was
+  `failed`, exit code 1, complete and untruncated output, complete event
+  history through sequence 4, and confirmed closed/runtime-closed teardown.
+- A successful Mac-local command emitted `PROMO_DEV_MAC_LOCAL_SUCCESS`; job
+  `job-6cde3330aa1f16c01301f25bfaa6b6a7`, session
+  `sess-7cf1ee999d6ad19b7d859c5a976fda8e`, command
+  `cmd-200c311f77a5d2f3f85c48c3e7c0a8a6`. It exited 0 with complete,
+  untruncated output, event history through sequence 4, and confirmed teardown.
+- Dedicated Dev filesystem-mailbox request
+  `req-promo-dev-local-mailbox-20261025-01` completed as job
+  `job-0fc1b28eb00fb8c45046fd73188f041d`, command
+  `cmd-7576e71b42cbb5a4057c55a30f0aedcd`; its response revision 4 had four
+  available events through cursor 4 and emitted `PROMO_DEV_MAILBOX_OK`. The
+  exact response was ACKed through the native marker-last publisher; the
+  lifecycle read returned `terminal_acknowledged`, and post-run work inventory
+  was empty. No historical mailbox content or other ACK was changed.
+
+The first supported Mac Dev stop reported completion while an orphaned
+`runner-local` still owned the Dev `local-api.sock`. Read-only process and
+`lsof` evidence bound PID 53881 to the Dev `current/bin/runner-local`, Dev
+configuration and Dev service root; PID 53850 was its expected
+`runner-log-capture` parent. Under the already authorized Dev maintenance,
+the verified wrapper received SIGTERM; the listener disappeared and supported
+start/status/readiness then passed. This was a controller defect, not a
+service-bundle defect.
+
+Controller correction commit `1b81c7b340ff29b5b2178fe7eef320a883b2ed7c`
+adds a Mac stop path that runs the existing stopped-work proof before
+inspection, identifies only the exact lane socket/process/executable/config
+and expected log-capture parent, signals the wrapper gracefully, waits for
+wrapper and child exit plus socket release, and repeats the quiescence proof.
+It refuses an unexpected binary, wrapper, multiple listener, or nonempty-work
+proof. Regressions cover a valid orphan, wrong executable, wrong wrapper,
+failed work proof, and the distinct `local.log`/`locald.log` paths. It changes
+no Runner service bundle, selector, configuration, database, or release.
+
+Source delivery for `1b81c7b340ff29b5b2178fe7eef320a883b2ed7c`:
+
+- Mac Go 1.27.1 `make test vet build smoke`: **PASS** on the committed source;
+  `git diff --check`: **PASS**. The first restricted full-suite attempt was
+  blocked only because the existing Darwin process-lifecycle test could not
+  invoke `/bin/ps` for its test-owned child; the complete suite passed when
+  that read-only host inspection was permitted. The harmless duplicate
+  `-lproc` linker warning remains.
+- `linux-host`, `sandbox-host`, and `factory-sandbox` were clean at predecessor
+  `459014e3b5b66ba002661866a56b9f35990cb57c`, fast-forwarded from GitHub
+  `origin/dev`, and verified clean at the exact new commit. Each passed
+  `go test -count=1 ./src/internal/laneinstall`, native `make vet build
+  smoke`, and `git diff --check`. Sandbox ran on Linux/ARM64; Linux and Factory
+  ran on Linux/AMD64.
+- Mac pushed `dev` to primary Gitea and verified `origin/dev` by
+  `ls-remote`; the automatic GitHub mirror resolves to the exact same SHA.
+  The push succeeded, though the sandbox denied updating Mac's local
+  remote-tracking ref. Remote primary and mirror verification and all worker
+  HEADs are exact.
+
+Fresh QAS plan-only observations after source delivery show all four QAS
+selectors still on `cat-20261021-b84caf0`, all four selected-lane services
+running, and a common empty-work inventory hash
+`92103a248a6dc1bd114512bc8b084280e339ff6972656bb42c4224f77a121f8b`.
+Backups and selector journals are not yet verified; no QAS mutation occurred.
+The plan confirms QAS common effects include an all-four-host selected-lane
+admission/dispatch fence, inventory/config/schema capture, backups, then
+Linux → Sandbox → Factory → Mac switching. QAS publishers/clients have not
+been confirmed paused and drained, so QAS deployment and acceptance remain
+NOT RUN. PRD remains outside this rollout.
+
+After worker gates, a direct verified-SSH Sandbox `/dev/sda1` read measured
+`1,768,181,760` bytes available (`df -B1`). This exceeds the 500,000,000-byte
+operating buffer by `1,268,181,760` bytes; the QAS backup allowance still
+needs a fresh operation-specific measurement before backup or selector
+writes. No caches, retained work, backups, mailboxes, or files were deleted.
