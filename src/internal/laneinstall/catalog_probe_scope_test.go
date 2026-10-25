@@ -410,20 +410,12 @@ func TestCatalogProbeRetryArchivePreservesOriginalScopeAndRefusesReplacement(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	paths.scopeRoot, err = filepath.EvalSymlinks(paths.scopeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	scope, err := readCatalogProbeScope(fixture.guard.scopePath(paths.scopeRoot))
 	if err != nil {
-		t.Fatal(err)
-	}
-	scopeRoot, err := os.MkdirTemp("/private/tmp", "catalog-probe-scope-archive-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(scopeRoot) })
-	if err := os.Chmod(scopeRoot, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	paths.scopeRoot = scopeRoot
-	if err := writeCatalogProbeScope(fixture.guard.scopePath(paths.scopeRoot), paths.scopeRoot, scope); err != nil {
 		t.Fatal(err)
 	}
 	activePath := fixture.guard.scopePath(paths.scopeRoot)
