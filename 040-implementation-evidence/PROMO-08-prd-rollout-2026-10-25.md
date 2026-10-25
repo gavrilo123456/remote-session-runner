@@ -407,8 +407,16 @@ This controller-only correction does not rebuild or alter the sealed service
 release or its per-host bundle bytes.
 
 Mac Go 1.27.1 source gates for the correction: focused regression PASS,
-`make test` PASS, `make vet` PASS, `make build` PASS, and `make smoke` PASS.
-The worker-native checks and full Git delivery are pending in this checkpoint.
+`make test` PASS, `make vet` PASS, `make build` PASS, `make smoke` PASS, and
+`git diff --check` PASS. The correction is committed as
+`38a362de035e02683bd1e930cb1a720d8c01aafe`; primary Gitea and the exact
+automatic GitHub mirror both resolve to this SHA. All three clean Ubuntu
+`dev` checkouts were fast-forwarded to the same SHA. On Linux/AMD64,
+Sandbox/Linux/ARM64, and Factory/Linux/AMD64 with Go 1.27.1, each passed
+`go test ./src/internal/releaseflow -count=1`,
+`go vet ./src/internal/releaseflow`, and
+`go build ./src/cmd/runner-lane ./src/cmd/promote-to ./src/cmd/runner-release`.
+The evidence-only follow-up commit still needs delivery to all three workers.
 
 The supported four-hour renewal is owner-only at
 `/private/tmp/runner-release-prd-approval-rr-20261024-43a4e675-20261025-renewal-1217Z.json`,
