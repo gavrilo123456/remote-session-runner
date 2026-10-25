@@ -145,6 +145,16 @@ owner control. Acceptance checks direct mTLS, queued SSH, Mac-local execution,
 exit/event/output/teardown, limits, capacity and peer-lane identities. A missing
 gate leaves the cohort held and is not a pass.
 
+PRD's initial host preflight is online: it takes the consistent database
+backup while the selected service remains active, under the catalog publication
+lock. It must not acquire the lane lifecycle lock, which the running service
+holds for its lifetime. The preflight compares service state, empty-work
+inventory, selector, configuration and schema before and after the backup. The
+later synchronized cohort fence acquires both catalog and lifecycle locks,
+revalidates the evidence, and only then stops the selected service. A lifecycle
+lock conflict during online preflight is a controller defect to fix; do not
+work around it by stopping PRD before its admission hold.
+
 ## Inspect, resume, or recover
 
 ```sh

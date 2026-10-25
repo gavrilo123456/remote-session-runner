@@ -123,6 +123,45 @@ func TestPRDCatalogHostPreflightRejectsOperatingBufferAsSelectorReserveBeforeBac
 	}
 }
 
+func TestPRDCatalogOnlinePreflightDoesNotContendWithRunningServiceLock(t *testing.T) {
+	tempBase, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(tempBase, "prd-online-preflight-lock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	plan := simpleTestPlanAt(t, root)
+	plan.Lane = config.ReleaseLanePRD
+	plan.Namespace.Lane = config.ReleaseLanePRD
+	if err := os.MkdirAll(filepath.Dir(plan.Namespace.LifecycleLock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A running PRD service holds this lock for its lifetime. Online preflight
+	// must remain possible while the service is active; the later cohort fence
+	// is responsible for acquiring the lifecycle lock before it stops the host.
+	serviceFD, err := acquireSimpleLaneLock(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releasePRDUpgradeLock(serviceFD)
+
+	catalogRoot := filepath.Join(root, "runner-releases")
+	if err := os.Mkdir(catalogRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	preflightFD, err := acquirePRDCatalogOnlinePreflightLock(catalogRoot)
+	if err != nil {
+		t.Fatalf("online preflight was blocked by the running service lifecycle lock: %v", err)
+	}
+	releaseCatalogRootPublicationLock(preflightFD)
+}
+
 func TestPRDCatalogArtifactGroupOwnershipIsCheckedOnlyWhenDeclared(t *testing.T) {
 	if !catalogArtifactGroupMatches("", 2002, 1001) {
 		t.Fatal("an unspecified artifact group rejected an otherwise owner-verified group")

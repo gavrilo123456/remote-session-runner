@@ -122,16 +122,18 @@ func readPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 	if err != nil {
 		return CatalogCohortHostPreflightReport{}, err
 	}
-	catalogFD, err := acquireCatalogRootPublicationLock(root)
+	catalogFD, err := acquirePRDCatalogOnlinePreflightLock(root)
 	if err != nil {
 		return CatalogCohortHostPreflightReport{}, err
 	}
 	defer releaseCatalogRootPublicationLock(catalogFD)
-	laneFD, err := acquirePRDUpgradeLock(plan)
-	if err != nil {
-		return CatalogCohortHostPreflightReport{}, err
-	}
-	defer releasePRDUpgradeLock(laneFD)
+	// This is an online, read-only preflight. The running PRD service owns the
+	// lane lifecycle lock for its lifetime, so acquiring it here would make the
+	// documented online backup impossible while the service is active. The
+	// catalog publication lock serializes catalog operations; fresh service,
+	// work, selector, configuration, schema, and backup proofs are checked
+	// before and after the online snapshot. The later held-cohort fence acquires
+	// the lifecycle lock before stopping or changing the selected service.
 	active, err := service.Status(ctx, plan)
 	if err != nil {
 		return CatalogCohortHostPreflightReport{}, err
@@ -212,6 +214,13 @@ func readPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 		},
 		WorkInventory: after.work,
 	}, nil
+}
+
+// acquirePRDCatalogOnlinePreflightLock serializes the online PRD snapshot with
+// catalog publication without contending with the active service's lifecycle
+// lock. Stop/switch operations use the full catalog-plus-lifecycle lock pair.
+func acquirePRDCatalogOnlinePreflightLock(catalogRoot string) (int, error) {
+	return acquireCatalogRootPublicationLock(catalogRoot)
 }
 
 func validatePRDCatalogReplacementBaseline(layout catalogSelectorLayout, predecessor CatalogCohortReceipt,
