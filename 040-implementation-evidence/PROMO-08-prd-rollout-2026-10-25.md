@@ -157,3 +157,47 @@ holds, the ordered four-host candidate switch, complete functional acceptance
 including BUG-026 and the dedicated test-mailbox check, and PRD postflight.
 QAS services, configuration, mailboxes, and acceptance remain unchanged. No
 project mailbox request or ACK has been published during this operation.
+
+## Promotion attempt and preflight-lock correction
+
+The first live resume used durable promotion operation
+`9e8f32790a8beeb08dd4451c7f606b67`. It stopped during `prepare-cohort` at the
+first Linux host preflight, before writing a cohort receipt/hold or switching
+any selector. The exact error was `selected lane lifecycle lock is held`.
+The operation record is blocked at `prepare-cohort`; all host selector intent,
+switched, verified, and rollback flags remain false. Mac PRD remained stopped
+after exact-pair recovery, and its admission hold was false. No selector,
+configuration, database, or mailbox path changed as a result of this failed
+attempt.
+
+The cause is a lock-domain mismatch: an online, read-only PRD preflight tried
+to acquire the same lifecycle lock held for the lifetime of the running PRD
+service. That lock belongs to the later held-cohort stop/switch transaction.
+The preflight now uses the catalog publication lock only, verifies service,
+empty-work, selector, configuration, and schema identities before and after
+the consistent online backup, and leaves lifecycle-lock acquisition to the
+ordered cohort fence. This does not stop or weaken the service/work/backup
+guards.
+
+Regression `TestPRDCatalogOnlinePreflightDoesNotContendWithRunningServiceLock`
+holds the selected lane lifecycle lock as a running service would, then
+requires the production online-preflight lock path to succeed. The selector
+reserve guard and this focused regression passed with Mac Go 1.27.1.
+
+Mac Go 1.27.1 source gates after the correction:
+
+- `make test`: PASS (`./...`, including `laneinstall`).
+- `make vet`: PASS.
+- `make build`: PASS.
+- `make smoke`: PASS.
+- `gofmt -d` on the two changed Go files and `git diff --check`: PASS.
+
+Source/documentation commit `8401e84705b7fec54db37ad89ce5957280b5b7e8`
+contains the lock correction and operator guidance. Primary Gitea and the
+automatic GitHub mirror both resolve `refs/heads/dev` to that exact SHA. The
+initial `git push` reported a local remote-tracking-ref write denial after the
+server accepted the push; both remote refs were queried directly and verified
+at the exact commit. Native worker checks and final evidence delivery remain
+pending. After required synchronization, operation
+`9e8f32790a8beeb08dd4451c7f606b67` must be freshly inspected and resumed with
+`--resume`; the failed attempt remains in its history.
