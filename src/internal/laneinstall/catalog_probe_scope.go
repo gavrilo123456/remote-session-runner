@@ -703,8 +703,8 @@ func verifyTerminalReleasedProbeForRetry(databasePath, jobID string, scope catal
 			return errors.Join(ErrCatalogProbeAdmission, err)
 		}
 	}
-	var reason string
-	if err := tx.QueryRowContext(ctx, `SELECT reason FROM exec_session_lifecycle WHERE session_id = ? ORDER BY lifecycle_sequence DESC LIMIT 1`, sessionID).Scan(&reason); err != nil || reason != store.CatalogProbeOwnerAbandonedReason {
+	lifecycle, err := readProbeRecoveryLifecycle(ctx, tx, sessionID)
+	if err != nil || !validProbeRecoveryLifecycle(lifecycle) {
 		return errors.Join(ErrCatalogProbeAdmission, err)
 	}
 	inventory, err := readPRDWorkInventoryTx(ctx, tx)
@@ -712,6 +712,66 @@ func verifyTerminalReleasedProbeForRetry(databasePath, jobID string, scope catal
 		return errors.Join(ErrCatalogProbeAdmission, err)
 	}
 	return tx.Commit()
+}
+
+type probeRecoveryLifecycleEntry struct {
+	sequence      int
+	previousState sql.NullString
+	newState      string
+	reason        string
+	occurredAt    string
+}
+
+func readProbeRecoveryLifecycle(ctx context.Context, tx *sql.Tx, sessionID string) ([]probeRecoveryLifecycleEntry, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT lifecycle_sequence, previous_state, new_state, reason, occurred_at FROM exec_session_lifecycle WHERE session_id = ? ORDER BY lifecycle_sequence`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var history []probeRecoveryLifecycleEntry
+	for rows.Next() {
+		var entry probeRecoveryLifecycleEntry
+		if err := rows.Scan(&entry.sequence, &entry.previousState, &entry.newState, &entry.reason, &entry.occurredAt); err != nil {
+			return nil, err
+		}
+		history = append(history, entry)
+	}
+	return history, rows.Err()
+}
+
+// validProbeRecoveryLifecycle accepts only the exact lost histories produced
+// by the supported probe disposition or by Runner's existing cleanup-failure
+// path. The latter is already terminal and truthful; the later guarded
+// capacity recovery releases its reservation without rewriting that history.
+func validProbeRecoveryLifecycle(history []probeRecoveryLifecycleEntry) bool {
+	if len(history) != 2 && len(history) != 3 {
+		return false
+	}
+	if history[0].sequence != 1 || history[0].previousState.Valid || history[0].newState != "creating" || history[0].reason != "session_created" {
+		return false
+	}
+	previousAt, err := time.Parse(time.RFC3339Nano, history[0].occurredAt)
+	if err != nil {
+		return false
+	}
+	for index, entry := range history[1:] {
+		if entry.sequence != index+2 || !entry.previousState.Valid {
+			return false
+		}
+		at, err := time.Parse(time.RFC3339Nano, entry.occurredAt)
+		if err != nil || at.Before(previousAt) {
+			return false
+		}
+		previousAt = at
+	}
+	if len(history) == 2 {
+		last := history[1]
+		return last.previousState.String == "creating" && last.newState == "lost" &&
+			last.reason == store.CatalogProbeOwnerAbandonedReason
+	}
+	return history[1].previousState.String == "creating" && history[1].newState == "closing" &&
+		history[1].reason == "close_requested" && history[2].previousState.String == "closing" &&
+		history[2].newState == "lost" && history[2].reason == "runtime_cleanup_unconfirmed"
 }
 
 func archiveCatalogProbeScope(scopeRoot, operationID, hostID string, transport CatalogProbeTransport, scope catalogProbeScope) error {

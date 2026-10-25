@@ -3,6 +3,7 @@ package laneinstall
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/store"
 )
 
 func writeLegacyProbeConfig(t *testing.T, environmentNames ...string) config.Config {
@@ -452,6 +454,91 @@ func TestCatalogProbeRetryArchivePreservesOriginalScopeAndRefusesReplacement(t *
 	after, err := os.ReadFile(archivePath)
 	if err != nil || !bytes.Equal(after, archived) {
 		t.Fatalf("original history changed after conflicting archive attempt: err=%v", err)
+	}
+}
+
+func TestValidProbeRecoveryLifecycleAcceptsOnlySupportedLostHistories(t *testing.T) {
+	base := []probeRecoveryLifecycleEntry{
+		{sequence: 1, newState: "creating", reason: "session_created", occurredAt: "2026-10-25T15:23:28.591879873Z"},
+	}
+	tests := []struct {
+		name    string
+		history []probeRecoveryLifecycleEntry
+		want    bool
+	}{
+		{
+			name: "owner-authorized indeterminate disposition",
+			history: append(append([]probeRecoveryLifecycleEntry(nil), base...), probeRecoveryLifecycleEntry{
+				sequence: 2, previousState: sql.NullString{String: "creating", Valid: true}, newState: "lost",
+				reason: store.CatalogProbeOwnerAbandonedReason, occurredAt: "2026-10-25T15:24:00Z",
+			}),
+			want: true,
+		},
+		{
+			name: "existing runtime cleanup failure retained through capacity recovery",
+			history: append(append(append([]probeRecoveryLifecycleEntry(nil), base...), probeRecoveryLifecycleEntry{
+				sequence: 2, previousState: sql.NullString{String: "creating", Valid: true}, newState: "closing",
+				reason: "close_requested", occurredAt: "2026-10-25T20:08:29.307376133Z",
+			}), probeRecoveryLifecycleEntry{
+				sequence: 3, previousState: sql.NullString{String: "closing", Valid: true}, newState: "lost",
+				reason: "runtime_cleanup_unconfirmed", occurredAt: "2026-10-25T20:08:29.31632059Z",
+			}),
+			want: true,
+		},
+		{
+			name: "unrelated lost reason",
+			history: append(append([]probeRecoveryLifecycleEntry(nil), base...), probeRecoveryLifecycleEntry{
+				sequence: 2, previousState: sql.NullString{String: "creating", Valid: true}, newState: "lost",
+				reason: "unrelated", occurredAt: "2026-10-25T15:24:00Z",
+			}),
+			want: false,
+		},
+		{
+			name: "nonconsecutive sequence",
+			history: append(append([]probeRecoveryLifecycleEntry(nil), base...), probeRecoveryLifecycleEntry{
+				sequence: 9, previousState: sql.NullString{String: "creating", Valid: true}, newState: "lost",
+				reason: store.CatalogProbeOwnerAbandonedReason, occurredAt: "2026-10-25T15:24:00Z",
+			}),
+			want: false,
+		},
+		{
+			name: "unexpected extra transition",
+			history: append(append(append(append([]probeRecoveryLifecycleEntry(nil), base...), probeRecoveryLifecycleEntry{
+				sequence: 2, previousState: sql.NullString{String: "creating", Valid: true}, newState: "closing",
+				reason: "close_requested", occurredAt: "2026-10-25T20:08:29.307376133Z",
+			}), probeRecoveryLifecycleEntry{
+				sequence: 3, previousState: sql.NullString{String: "closing", Valid: true}, newState: "lost",
+				reason: "runtime_cleanup_unconfirmed", occurredAt: "2026-10-25T20:08:29.31632059Z",
+			}), probeRecoveryLifecycleEntry{
+				sequence: 4, previousState: sql.NullString{String: "lost", Valid: true}, newState: "creating",
+				reason: "replayed", occurredAt: "2026-10-25T20:08:30Z",
+			}),
+			want: false,
+		},
+		{
+			name: "malformed timestamp",
+			history: append(append([]probeRecoveryLifecycleEntry(nil), base...), probeRecoveryLifecycleEntry{
+				sequence: 2, previousState: sql.NullString{String: "creating", Valid: true}, newState: "lost",
+				reason: store.CatalogProbeOwnerAbandonedReason, occurredAt: "not-a-timestamp",
+			}),
+			want: false,
+		},
+		{
+			name: "reversed timestamps",
+			history: []probeRecoveryLifecycleEntry{
+				{sequence: 1, newState: "creating", reason: "session_created", occurredAt: "2026-10-25T20:08:29.31632059Z"},
+				{sequence: 2, previousState: sql.NullString{String: "creating", Valid: true}, newState: "lost",
+					reason: store.CatalogProbeOwnerAbandonedReason, occurredAt: "2026-10-25T15:24:00Z"},
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validProbeRecoveryLifecycle(tt.history); got != tt.want {
+				t.Fatalf("validProbeRecoveryLifecycle()=%v, want %v; history=%+v", got, tt.want, tt.history)
+			}
+		})
 	}
 }
 
