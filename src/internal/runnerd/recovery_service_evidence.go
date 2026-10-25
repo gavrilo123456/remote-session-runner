@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,6 +33,8 @@ const maxStableProcScans = 4
 const (
 	maxPrivilegedProcLinkReads = 256
 	maxPrivilegedProcLinkBytes = 4096
+	maxPrivilegedProcFDBytes   = 4096
+	maxPrivilegedProcFDEntries = 256
 	maxPrivilegedProcErrBytes  = 1024
 	privilegedProcLinkTimeout  = 2 * time.Second
 	processProofTimeout        = 30 * time.Second
@@ -49,12 +52,13 @@ type runnerdProcFS struct {
 	readFile           func(string) ([]byte, error)
 	readlink           func(string) (string, error)
 	privilegedReadlink func(context.Context, string, runnerdProcIdentity, string) (string, error)
+	privilegedReadFDs  func(context.Context, string, runnerdProcIdentity, string) ([]string, error)
 }
 
 func realRunnerdProcFS() runnerdProcFS {
 	return runnerdProcFS{
 		readDir: os.ReadDir, readFile: os.ReadFile, readlink: os.Readlink,
-		privilegedReadlink: runnerdPrivilegedProcReadlink,
+		privilegedReadlink: runnerdPrivilegedProcReadlink, privilegedReadFDs: runnerdPrivilegedProcFDNames,
 	}
 }
 
@@ -431,6 +435,85 @@ func (reader *runnerdProcLinkReader) readlink(identity runnerdProcIdentity, path
 	return target, nil
 }
 
+func (reader *runnerdProcLinkReader) readFDNames(identity runnerdProcIdentity, path string) ([]string, error) {
+	entries, err := reader.procFS.readDir(path)
+	if err == nil {
+		return validateRunnerdProcFDNames(entryNames(entries))
+	}
+	if !runnerdPermissionDenied(err) {
+		return nil, err
+	}
+	if reader.procFS.privilegedReadFDs == nil {
+		return nil, errors.New("privileged proc descriptor enumeration is unavailable")
+	}
+	if reader.reads >= reader.maxReads {
+		return nil, errors.New("privileged proc inspection exceeded its bounded read count")
+	}
+	if err := validateRunnerdProcFDDirectoryPath(reader.procRoot, identity, path); err != nil {
+		return nil, err
+	}
+	if err := reader.ctx.Err(); err != nil {
+		return nil, errors.New("process inventory exceeded its bounded inspection time")
+	}
+	if err := runnerdVerifyProcessIncarnation(reader.procFS, reader.procRoot, identity); err != nil {
+		return nil, err
+	}
+	reader.reads++
+	names, err := reader.procFS.privilegedReadFDs(reader.ctx, reader.procRoot, identity, path)
+	if err != nil {
+		return nil, fmt.Errorf("privileged proc descriptor enumeration failed for PID %d: %w", identity.PID, err)
+	}
+	if err := runnerdVerifyProcessIncarnation(reader.procFS, reader.procRoot, identity); err != nil {
+		return nil, err
+	}
+	return validateRunnerdProcFDNames(names)
+}
+
+func entryNames(entries []os.DirEntry) []string {
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+func validateRunnerdProcFDDirectoryPath(procRoot string, identity runnerdProcIdentity, path string) error {
+	if identity.PID <= 0 || identity.StartTime == 0 {
+		return errors.New("privileged proc descriptor inspection requires a complete PID/start-time identity")
+	}
+	processRoot := filepath.Join(procRoot, strconv.Itoa(identity.PID))
+	relative, err := filepath.Rel(processRoot, filepath.Clean(path))
+	if err != nil || relative != "fd" {
+		return errors.New("privileged proc descriptor path is outside the inspected process")
+	}
+	return nil
+}
+
+func validateRunnerdProcFDNames(names []string) ([]string, error) {
+	if len(names) > maxPrivilegedProcFDEntries {
+		return nil, errors.New("proc descriptor inventory exceeded its bounded entry count")
+	}
+	validated := make([]string, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for index, name := range names {
+		if name == "" {
+			return nil, errors.New("proc descriptor inventory contains an empty entry")
+		}
+		if _, err := strconv.ParseUint(name, 10, 64); err != nil {
+			return nil, errors.New("proc descriptor inventory contains a malformed entry")
+		}
+		if _, exists := seen[name]; exists {
+			return nil, errors.New("proc descriptor inventory contains a duplicate entry")
+		}
+		seen[name] = struct{}{}
+		validated[index] = name
+	}
+	// find(1) and ReadDir have different ordering guarantees. Sorting makes the
+	// before/after comparison a stable check for descriptor churn.
+	sort.Strings(validated)
+	return validated, nil
+}
+
 func runnerdPermissionDenied(err error) bool {
 	return errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM)
 }
@@ -492,6 +575,42 @@ func runnerdPrivilegedProcReadlink(ctx context.Context, procRoot string, identit
 	return target, nil
 }
 
+func runnerdPrivilegedProcFDNames(ctx context.Context, procRoot string, identity runnerdProcIdentity, path string) ([]string, error) {
+	if filepath.Clean(procRoot) != "/proc" {
+		return nil, errors.New("privileged proc metadata is restricted to the live /proc filesystem")
+	}
+	if err := validateRunnerdProcFDDirectoryPath(procRoot, identity, path); err != nil {
+		return nil, err
+	}
+	if err := verifyRunnerdReadOnlyUtility("/usr/bin/sudo", true); err != nil {
+		return nil, err
+	}
+	if err := verifyRunnerdReadOnlyUtility("/usr/bin/find", false); err != nil {
+		return nil, err
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, privilegedProcLinkTimeout)
+	defer cancel()
+	// The path was constructed from a validated numeric PID and is exactly its
+	// /proc/<pid>/fd directory. find lists symlink names only; it does not follow
+	// links or read descriptor contents, environment, or memory.
+	command := exec.CommandContext(commandCtx, "/usr/bin/sudo", "-n", "--", "/usr/bin/find", path,
+		"-mindepth", "1", "-maxdepth", "1", "-type", "l", "-printf", "%f\\n")
+	var stdout, stderr runnerdBoundedBuffer
+	stdout.limit = maxPrivilegedProcFDBytes + 1
+	stderr.limit = maxPrivilegedProcErrBytes
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		if commandCtx.Err() != nil {
+			return nil, errors.New("privileged proc descriptor enumeration timed out")
+		}
+		return nil, errors.New("sudo -n find could not enumerate proc descriptor metadata")
+	}
+	if stdout.overflow || stderr.overflow {
+		return nil, errors.New("privileged proc descriptor output exceeded its bound")
+	}
+	return parseRunnerdProcFDOutput(stdout.Bytes())
+}
+
 type runnerdBoundedBuffer struct {
 	bytes.Buffer
 	limit    int
@@ -515,6 +634,20 @@ func parseRunnerdReadlinkOutput(output []byte) (string, error) {
 		return "", errors.New("privileged proc link inspection returned malformed or truncated metadata")
 	}
 	return string(target), nil
+}
+
+func parseRunnerdProcFDOutput(output []byte) ([]string, error) {
+	if len(output) > maxPrivilegedProcFDBytes {
+		return nil, errors.New("privileged proc descriptor output exceeded its bound")
+	}
+	if len(output) == 0 {
+		return []string{}, nil
+	}
+	if output[len(output)-1] != '\n' || bytes.IndexByte(output, '\x00') >= 0 || bytes.IndexByte(output, '\r') >= 0 {
+		return nil, errors.New("privileged proc descriptor output is malformed or truncated")
+	}
+	lines := strings.Split(string(output[:len(output)-1]), "\n")
+	return validateRunnerdProcFDNames(lines)
 }
 
 func verifyRunnerdReadOnlyUtility(path string, requireSetuid bool) error {
@@ -624,8 +757,11 @@ func runnerdInspectProcessTable(procFS runnerdProcFS, linkReader *runnerdProcLin
 			}
 		}
 		fdRoot := filepath.Join(processRoot, "fd")
-		fds, err := procFS.readDir(fdRoot)
+		fds, err := linkReader.readFDNames(identity, fdRoot)
 		if err != nil {
+			if errors.Is(err, errRunnerdProcChurn) {
+				return nil, errRunnerdProcChurn
+			}
 			gone, verifyErr := runnerdHandleMissingProcEvidence(procFS, procRoot, identity, err, "descriptor directory")
 			if verifyErr != nil || gone {
 				if gone {
@@ -639,8 +775,11 @@ func runnerdInspectProcessTable(procFS runnerdProcFS, linkReader *runnerdProcLin
 			if err := linkReader.ctx.Err(); err != nil {
 				return nil, errors.New("process inventory exceeded its bounded inspection time")
 			}
-			target, readErr := linkReader.readlink(identity, filepath.Join(fdRoot, fd.Name()))
+			target, readErr := linkReader.readlink(identity, filepath.Join(fdRoot, fd))
 			if readErr != nil {
+				if errors.Is(readErr, errRunnerdProcChurn) {
+					return nil, errRunnerdProcChurn
+				}
 				gone, verifyErr := runnerdHandleMissingProcEvidence(procFS, procRoot, identity, readErr, "descriptor")
 				if verifyErr != nil || gone {
 					if gone {
@@ -648,17 +787,46 @@ func runnerdInspectProcessTable(procFS runnerdProcFS, linkReader *runnerdProcLin
 					}
 					return nil, verifyErr
 				}
-				return nil, fmt.Errorf("PID %d descriptor %s is not inspectable: %w", pid, fd.Name(), readErr)
+				return nil, fmt.Errorf("PID %d descriptor %s is not inspectable: %w", pid, fd, readErr)
 			}
 			if runnerdPathReferencesPaths(runnerdCleanProcLink(target), paths) {
 				return nil, fmt.Errorf("same-account process PID %d holds a descriptor under the selected PRD paths", pid)
 			}
+		}
+		fdsAfter, err := linkReader.readFDNames(identity, fdRoot)
+		if err != nil {
+			if errors.Is(err, errRunnerdProcChurn) {
+				return nil, errRunnerdProcChurn
+			}
+			gone, verifyErr := runnerdHandleMissingProcEvidence(procFS, procRoot, identity, err, "descriptor directory")
+			if verifyErr != nil || gone {
+				if gone {
+					return nil, errRunnerdProcChurn
+				}
+				return nil, verifyErr
+			}
+			return nil, fmt.Errorf("PID %d descriptors are not inspectable: %w", pid, err)
+		}
+		if !sameRunnerdProcFDNames(fds, fdsAfter) {
+			return nil, errRunnerdProcChurn
 		}
 		if err := runnerdVerifyProcessIncarnation(procFS, procRoot, identity); err != nil {
 			return nil, err
 		}
 	}
 	return relevant, nil
+}
+
+func sameRunnerdProcFDNames(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func readRunnerdProcIdentityWith(procFS runnerdProcFS, procRoot string, pid int) (runnerdProcIdentity, []int, int, error) {
