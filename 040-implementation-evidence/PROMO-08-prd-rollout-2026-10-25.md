@@ -1,0 +1,114 @@
+# PROMO-08 PRD rollout — recovery prerequisite checkpoint
+
+**Date:** 2026-10-25 (Europe/Warsaw)
+**Status:** source correction qualified on Mac; controller delivery and live PRD work pending. No PRD mutation has started in this checkpoint.
+
+## Frozen service release and lane boundary
+
+- Release: `rr-20261024-43a4e675`
+- Release digest: `093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69`
+- Source: `43a4e675ccccb89e1ea1c333e975ea028c9600fa`
+- Prior selected PRD release on Mac: `cat-20261023-c01e633`
+- Prior Mac PRD release digest: `7a9f705484906c7889c4776da0ef64769662fd0c5360e4d3767ca8021a5c4c81`
+- Prior Mac PRD bundle digest: `a338761463afe7dbe8f558f7166dd10f0d3890a0e9e151c1d906e955221067ee`
+- Candidate Mac bundle digest: `a67cec224af031d269132d4c09dc22909d76bd1395e61e76fc828c5895ec6062`
+
+The promotion plan reported Dev and QAS acceptance receipts PASS for this
+release. No service release was rebuilt. QAS, its services, project routing,
+and the existing ACK history were not changed.
+
+## Read-only PRD baseline
+
+The fresh Mac observation at `2026-10-25T07:38:07.771549Z` found:
+
+- Unsuffixed Mac PRD service active; selected catalog release remains
+  `cat-20261023-c01e633`; schema 40; configuration SHA-256
+  `65840e66837dedfa17f5c32568d191a0bbfd6098bcc108d7ba4066f44fb95711`.
+- Work inventory: 0 active sessions, 2 active command slots, 2 active session
+  reservations, 0 queued/running commands, 0 resumable jobs, and 0 pending
+  recovery finalizations.
+- The two unclean pairs are exactly:
+  - `sess-ffb87107f3da8f30ed367f84278077c2` /
+    `cmd-566790e99056c15121251abc4418b600`
+  - `sess-6799666c9b518fc5c566f237aeafdc07` /
+    `cmd-eff5d10413111b20d4a91de197447ce7`
+- Both command/session results are already terminal `lost`; output remains
+  incomplete and the terminal event histories remain retained. Their stop
+  and capacity-release proofs are missing. No queued or resumable work was
+  observed. The four unrelated historical `sandbox-dev` uncertain local
+  intents remain untouched and are not part of this PRD recovery scope.
+- Mac available bytes were `131003314176`; the observer's measured backup,
+  selector, and operating-buffer requirement was `969207915` bytes.
+
+The read-only `promote-to prd all --release rr-20261024-43a4e675 --plan --json`
+reported no effects. Its empty-work preflight correctly blocked on the two
+retained pairs; no service, backup, hold, selector, mailbox, or database was
+changed.
+
+## Toolkit defect and correction
+
+The supported `catalog-prd-recover` command accepted exact lost pairs only
+when the PRD selector was `unselected`. The Mac is already catalog-managed
+and selects `cat-20261023-c01e633`, so its exact-pair recovery path was
+unusable even with the owner-authorized lost-pair set. Bypassing the guard or
+clearing the selector would be unsafe and was not done.
+
+The controller correction adds an optional complete selected-predecessor
+binding: release ID, release-manifest SHA-256, and selected host-bundle
+SHA-256. Selected recovery now requires all three values and a validated
+catalog selector whose target and identity match exactly. The postflight
+requires that same selector identity to remain unchanged. Omitting all three
+continues to support only an unselected legacy selector. The report now
+identifies the selector and records that the sealed recovery command's
+runtime-ownership checks passed. The sealed recovery executable still has to
+prove stopped services, exact lost-pair ownership, complete work inventory,
+backup integrity, unchanged schema/configuration, and empty-work postflight.
+
+This is a controller-only correction. It does not change the sealed service
+candidate, PRD database/schema/configuration, selected release, or any work
+record. The runbook now documents exact selected-predecessor recovery before
+the ordinary all-host zero-work promotion preflight.
+
+## Source validation on Mac
+
+Toolchain: Go 1.27.1, `darwin/arm64`, using the configured shared Go caches.
+
+- Focused `go test ./src/internal/laneinstall ./src/cmd/runner-lane -run
+  'TestCatalogPRDRecovery|TestCatalogPublicCommandSequenceSubprocess' -count=1`:
+  PASS.
+- New `TestCatalogPRDRecoverySelectedPredecessorPublicCommandSubprocess`:
+  PASS, including mismatched-predecessor refusal without state change and
+  successful recovery preserving the selected release, original lost result,
+  terminal-event history, and held ACK fixture.
+- First full `make test` attempt: NOT PASS because the sandbox denied the
+  existing test-owned `/bin/ps` child in
+  `TestBUG020MacShellExitWithInheritedControlWriterSettlesOnce`
+  (`fork/exec /bin/ps: operation not permitted`). No product-code failure was
+  reported by that run.
+- Full `make test` rerun with permission for that existing test-owned process
+  inspection: PASS.
+- `make vet`: PASS.
+- `make build`: PASS.
+- `make smoke`: PASS.
+- `git diff --check`: PASS before the final focused regression rerun.
+
+These are source/controller checks only. They are not live PRD recovery,
+installation, readiness, route, lifecycle, capacity, or functional acceptance.
+
+## Delivery and live-operation status
+
+Controller correction revision, Gitea push, GitHub mirror SHA, Ubuntu
+fast-forward pulls, and native Ubuntu controller tests are pending this
+checkpoint. After delivery, refresh PRD work/ownership/capacity evidence, make
+and verify a fresh consistent backup, stop only Mac PRD through the supported
+service control, and invoke exact-pair recovery using the sealed release's
+host-native component bound to the exact selected predecessor above. The
+recovery must leave PRD stopped and preserve the selector. Then collect fresh
+four-host preflights and continue the normal release-bound PRD approval,
+cohort hold, ordered switch, and complete functional acceptance.
+
+No PRD approval file has been generated yet; the release-bound approval must
+bind fresh predecessor hashes, the measured backup/recovery package, host set,
+release digest, and a valid window. No PRD service was stopped, backed up,
+recovered, restarted, or switched in this checkpoint. No mailbox request or
+ACK was published.

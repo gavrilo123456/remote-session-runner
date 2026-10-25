@@ -27,12 +27,15 @@ var (
 // release and a fresh, consistent pre-recovery backup. LostPairs must be the
 // complete retained lost-pair set for this host.
 type CatalogPRDRecoveryRequest struct {
-	ReleaseID                 string
-	ExpectedReleaseSHA256     string
-	ExpectedBundleSHA256      string
-	BackupDirectory           string
-	ExpectedBackupManifestSHA string
-	LostPairs                 []string
+	ReleaseID                     string
+	ExpectedReleaseSHA256         string
+	ExpectedBundleSHA256          string
+	ExpectedSelectedReleaseID     string
+	ExpectedSelectedReleaseSHA256 string
+	ExpectedSelectedBundleSHA256  string
+	BackupDirectory               string
+	ExpectedBackupManifestSHA     string
+	LostPairs                     []string
 }
 
 // CatalogPRDRecoveryReport is bounded evidence for an offline recovery. It
@@ -52,8 +55,15 @@ type CatalogPRDRecoveryReport struct {
 	WorkAfter                 CatalogWorkInventory `json:"work_after"`
 	RecoveredLostPairs        int                  `json:"recovered_lost_pairs"`
 	RecoveryOutputSHA256      string               `json:"recovery_output_sha256"`
+	SelectorKind              string               `json:"selector_kind"`
+	SelectorTarget            string               `json:"selector_target,omitempty"`
+	SelectorReleaseID         string               `json:"selector_release_id,omitempty"`
+	SelectorReleaseSHA256     string               `json:"selector_release_sha256,omitempty"`
+	SelectorBundleSHA256      string               `json:"selector_bundle_sha256,omitempty"`
+	RuntimeOwnershipVerified  bool                 `json:"runtime_ownership_verified"`
 	ServiceRemainsStopped     bool                 `json:"service_remains_stopped"`
 	SelectorRemainsUnselected bool                 `json:"selector_remains_unselected"`
+	SelectorRemainsUnchanged  bool                 `json:"selector_remains_unchanged"`
 }
 
 // CatalogPRDRecoveryExecutor runs only the recovery executable selected from
@@ -82,6 +92,9 @@ func RecoverCatalogPRDLostPairs(ctx context.Context, plan PRDUpgradePlan, servic
 		!prdDigestPattern.MatchString(request.ExpectedBackupManifestSHA) ||
 		filepath.Clean(request.BackupDirectory) != request.BackupDirectory || !filepath.IsAbs(request.BackupDirectory) {
 		return CatalogPRDRecoveryReport{}, ErrCatalogPRDRecovery
+	}
+	if err := ValidateCatalogPRDRecoverySelectedRelease(request); err != nil {
+		return CatalogPRDRecoveryReport{}, err
 	}
 	if executor == nil {
 		executor = execCatalogPRDRecoveryExecutor{}
@@ -145,8 +158,8 @@ func RecoverCatalogPRDLostPairs(ctx context.Context, plan PRDUpgradePlan, servic
 	if err := validatePRDConfig(plan); err != nil {
 		return CatalogPRDRecoveryReport{}, errors.Join(ErrCatalogPRDRecovery, err)
 	}
-	legacySelector, err := InspectCatalogSelectorForPlan(catalogPlan, root)
-	if err != nil || legacySelector.Kind != "unselected" || legacySelector.Target != "" {
+	selectorBefore, err := InspectCatalogSelectorForPlan(catalogPlan, root)
+	if err != nil || !catalogPRDRecoverySelectorMatches(selectorBefore, plan.HostID, root, request) {
 		return CatalogPRDRecoveryReport{}, errors.Join(ErrCatalogPRDRecovery, err)
 	}
 	configSHA, err := hashPRDRegularFile(plan.Namespace.ConfigFile)
@@ -209,7 +222,8 @@ func RecoverCatalogPRDLostPairs(ctx context.Context, plan PRDUpgradePlan, servic
 		return CatalogPRDRecoveryReport{}, errors.Join(ErrCatalogPRDRecovery, activeErr)
 	}
 	selectorAfter, selectorErr := InspectCatalogSelectorForPlan(catalogPlan, root)
-	if selectorErr != nil || selectorAfter.Kind != "unselected" || selectorAfter.Target != "" {
+	if selectorErr != nil || !catalogPRDRecoverySelectorMatches(selectorAfter, plan.HostID, root, request) ||
+		!sameCatalogPRDRecoverySelector(selectorBefore, selectorAfter) {
 		return CatalogPRDRecoveryReport{}, errors.Join(ErrCatalogPRDRecovery, selectorErr)
 	}
 	configSHAAfter, configErr := hashPRDRegularFile(plan.Namespace.ConfigFile)
@@ -239,8 +253,63 @@ func RecoverCatalogPRDLostPairs(ctx context.Context, plan PRDUpgradePlan, servic
 		BackupDirectory: request.BackupDirectory, BackupManifestSHA256: request.ExpectedBackupManifestSHA,
 		SchemaBefore: schemaBefore, SchemaAfter: schemaAfter, WorkBefore: workBefore, WorkAfter: workAfter,
 		RecoveredLostPairs: recovered, RecoveryOutputSHA256: hex.EncodeToString(outputHash[:]),
-		ServiceRemainsStopped: true, SelectorRemainsUnselected: true,
+		SelectorKind: selectorAfter.Kind, SelectorTarget: selectorAfter.Target,
+		SelectorRemainsUnselected: selectorAfter.Kind == "unselected", SelectorRemainsUnchanged: true,
+		RuntimeOwnershipVerified: true, ServiceRemainsStopped: true,
+		SelectorReleaseID:     selectorReleaseIdentity(selectorAfter).ReleaseID,
+		SelectorReleaseSHA256: selectorReleaseIdentity(selectorAfter).ReleaseSHA256,
+		SelectorBundleSHA256:  selectorReleaseIdentity(selectorAfter).BundleSHA256,
 	}, nil
+}
+
+// ValidateCatalogPRDRecoverySelectedRelease validates the optional exact
+// predecessor identity. Empty inputs are valid only for legacy unselected
+// selectors; catalog-selected PRD recovery must bind all three identities.
+func ValidateCatalogPRDRecoverySelectedRelease(request CatalogPRDRecoveryRequest) error {
+	values := []string{request.ExpectedSelectedReleaseID, request.ExpectedSelectedReleaseSHA256, request.ExpectedSelectedBundleSHA256}
+	provided := 0
+	for _, value := range values {
+		if value != "" {
+			provided++
+		}
+	}
+	if provided == 0 {
+		return nil // Explicit legacy recovery remains limited to an unselected selector.
+	}
+	if provided != len(values) || !validCatalogReleaseID(request.ExpectedSelectedReleaseID) ||
+		!prdDigestPattern.MatchString(request.ExpectedSelectedReleaseSHA256) ||
+		!prdDigestPattern.MatchString(request.ExpectedSelectedBundleSHA256) {
+		return ErrCatalogPRDRecovery
+	}
+	return nil
+}
+
+func catalogPRDRecoverySelectorMatches(selector CatalogSelectorStatus, hostID, catalogRoot string, request CatalogPRDRecoveryRequest) bool {
+	if request.ExpectedSelectedReleaseID == "" {
+		return selector.Kind == "unselected" && selector.Target == "" && selector.Release == nil
+	}
+	if selector.Kind != "catalog" || selector.Release == nil ||
+		selector.Target != filepath.Join(catalogRoot, request.ExpectedSelectedReleaseID, hostID) {
+		return false
+	}
+	identity := selector.Release.Identity
+	return identity.HostID == hostID && identity.ReleaseID == request.ExpectedSelectedReleaseID &&
+		identity.ReleaseSHA256 == request.ExpectedSelectedReleaseSHA256 &&
+		identity.BundleSHA256 == request.ExpectedSelectedBundleSHA256
+}
+
+func selectorReleaseIdentity(selector CatalogSelectorStatus) CatalogReleaseIdentity {
+	if selector.Release == nil {
+		return CatalogReleaseIdentity{}
+	}
+	return selector.Release.Identity
+}
+
+func sameCatalogPRDRecoverySelector(left, right CatalogSelectorStatus) bool {
+	if left.HostID != right.HostID || left.Lane != right.Lane || left.Kind != right.Kind || left.Target != right.Target {
+		return false
+	}
+	return selectorReleaseIdentity(left) == selectorReleaseIdentity(right)
 }
 
 func catalogPRDRecoverySchemaIsCurrent(schema, readMin, readMax, target int) bool {

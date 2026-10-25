@@ -80,13 +80,16 @@ type catalogSelectorCommand struct {
 }
 
 type catalogPRDRecoveryCommand struct {
-	HostID                    string
-	ReleaseID                 string
-	ExpectedReleaseSHA256     string
-	ExpectedBundleSHA256      string
-	BackupDirectory           string
-	ExpectedBackupManifestSHA string
-	LostPairs                 []string
+	HostID                        string
+	ReleaseID                     string
+	ExpectedReleaseSHA256         string
+	ExpectedBundleSHA256          string
+	ExpectedSelectedReleaseID     string
+	ExpectedSelectedReleaseSHA256 string
+	ExpectedSelectedBundleSHA256  string
+	BackupDirectory               string
+	ExpectedBackupManifestSHA     string
+	LostPairs                     []string
 }
 
 func main() {
@@ -1393,6 +1396,9 @@ func runCatalogPRDRecover(ctx context.Context, args []string, stdout, stderr io.
 	releaseID := flags.String("release-id", "", "Dev-accepted sealed catalog release ID")
 	releaseSHA := flags.String("release-sha256", "", "exact sealed release manifest SHA-256")
 	bundleSHA := flags.String("bundle-sha256", "", "exact host bundle SHA-256")
+	selectedReleaseID := flags.String("expected-selected-release-id", "", "exact current selected catalog release ID; omit only for an unselected legacy selector")
+	selectedReleaseSHA := flags.String("expected-selected-release-sha256", "", "exact current selected catalog release manifest SHA-256")
+	selectedBundleSHA := flags.String("expected-selected-bundle-sha256", "", "exact current selected host bundle SHA-256")
 	backupDir := flags.String("backup-dir", "", "fresh consistent pre-recovery backup directory")
 	backupSHA := flags.String("backup-manifest-sha256", "", "exact backup manifest SHA-256")
 	var lostPairs repeatedStringFlag
@@ -1403,17 +1409,26 @@ func runCatalogPRDRecover(ctx context.Context, args []string, stdout, stderr io.
 	_, knownHost := laneinstall.CatalogPRDRecoveryCommandComponent(*host)
 	if flags.NArg() != 0 || *releaseID == "" || *releaseSHA == "" || *bundleSHA == "" ||
 		*backupDir == "" || *backupSHA == "" || len(lostPairs) == 0 || !knownHost {
-		return errors.New("usage: runner-lane catalog-prd-recover --host HOST --release-id RELEASE --release-sha256 SHA256 --bundle-sha256 SHA256 --backup-dir DIR --backup-manifest-sha256 SHA256 --lost-pair SESSION_ID:COMMAND_ID [...]")
+		return errors.New("usage: runner-lane catalog-prd-recover --host HOST --release-id RELEASE --release-sha256 SHA256 --bundle-sha256 SHA256 [--expected-selected-release-id ID --expected-selected-release-sha256 SHA256 --expected-selected-bundle-sha256 SHA256] --backup-dir DIR --backup-manifest-sha256 SHA256 --lost-pair SESSION_ID:COMMAND_ID [...]")
 	}
 	request := laneinstall.CatalogPRDRecoveryRequest{
 		ReleaseID: *releaseID, ExpectedReleaseSHA256: *releaseSHA, ExpectedBundleSHA256: *bundleSHA,
-		BackupDirectory: *backupDir, ExpectedBackupManifestSHA: *backupSHA, LostPairs: append([]string(nil), lostPairs...),
+		ExpectedSelectedReleaseID: *selectedReleaseID, ExpectedSelectedReleaseSHA256: *selectedReleaseSHA,
+		ExpectedSelectedBundleSHA256: *selectedBundleSHA,
+		BackupDirectory:              *backupDir, ExpectedBackupManifestSHA: *backupSHA, LostPairs: append([]string(nil), lostPairs...),
+	}
+	if err := laneinstall.ValidateCatalogPRDRecoverySelectedRelease(request); err != nil {
+		return err
 	}
 	if catalogCommandSubprocessFixtureBackendForTests != nil {
 		return catalogCommandSubprocessFixtureBackendForTests.RunPRDRecovery(ctx, catalogPRDRecoveryCommand{
 			HostID: *host, ReleaseID: request.ReleaseID, ExpectedReleaseSHA256: request.ExpectedReleaseSHA256,
-			ExpectedBundleSHA256: request.ExpectedBundleSHA256, BackupDirectory: request.BackupDirectory,
-			ExpectedBackupManifestSHA: request.ExpectedBackupManifestSHA, LostPairs: request.LostPairs,
+			ExpectedBundleSHA256:          request.ExpectedBundleSHA256,
+			ExpectedSelectedReleaseID:     request.ExpectedSelectedReleaseID,
+			ExpectedSelectedReleaseSHA256: request.ExpectedSelectedReleaseSHA256,
+			ExpectedSelectedBundleSHA256:  request.ExpectedSelectedBundleSHA256,
+			BackupDirectory:               request.BackupDirectory,
+			ExpectedBackupManifestSHA:     request.ExpectedBackupManifestSHA, LostPairs: request.LostPairs,
 		}, stdout, stderr)
 	}
 	if !currentCatalogHost(*host) {

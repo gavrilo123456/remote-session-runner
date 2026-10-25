@@ -158,6 +158,55 @@ reverse selector journals; it does not restore an older database. If runtime
 acceptance passed but branch synchronization failed, retry only
 `runner-release branch-sync`; do not redeploy or roll back a healthy cohort.
 
+### Exact retained-lost recovery before PRD promotion
+
+If a fresh PRD inventory contains only an exact set of terminal-lost command
+pairs, recover those pairs before the zero-work promotion preflight. This is
+not a force switch. Confirm the selected-lane publishers are paused and no
+new work is being accepted; preserve the complete inventory and command/event
+history. Every live command slot and session reservation must correspond to
+one supplied pair, with no active session, queued/running command, resumable
+job, or pending recovery finalization. Do not include uncertain intents or
+other lanes.
+
+For an already catalog-selected PRD service, bind recovery to the exact
+selected predecessor identity. Create a fresh consistent backup first, then
+use the supported lane service stop and the candidate's sealed recovery
+component. The service must remain stopped; the selector and database schema
+must remain unchanged. The candidate recovery component verifies runtime
+ownership and releases only the listed lost pairs while preserving their lost
+results and events. It neither installs nor selects a service binary, starts
+services, replays scripts, or restores a database.
+
+```sh
+# Mac — current synchronized controller checkout; exact selected Mac PRD identity
+go run ./src/cmd/runner-lane catalog-prd-backup \
+  --host mac-control-plane --release-id <accepted-release-id>
+go run ./src/cmd/runner-lane prd-stop --host mac-control-plane
+go run ./src/cmd/runner-lane catalog-prd-recover \
+  --host mac-control-plane \
+  --release-id <accepted-release-id> \
+  --release-sha256 <accepted-release-digest> \
+  --bundle-sha256 <sealed-mac-bundle-digest> \
+  --expected-selected-release-id <currently-selected-release-id> \
+  --expected-selected-release-sha256 <currently-selected-release-digest> \
+  --expected-selected-bundle-sha256 <currently-selected-mac-bundle-digest> \
+  --backup-dir <backup-directory> \
+  --backup-manifest-sha256 <backup-manifest-digest> \
+  --lost-pair 'sess-EXACT-LOST-1:cmd-EXACT-LOST-1' \
+  --lost-pair 'sess-EXACT-LOST-2:cmd-EXACT-LOST-2'
+```
+
+For an intentionally unselected legacy selector, omit all three
+`--expected-selected-*` flags; the recovery command continues to require the
+selector to remain unselected. Partial identity arguments, selector drift,
+changed backup targets, schema drift, extra work, a live service, or failed
+runtime ownership checks refuse recovery. If the command fails or its result
+is interrupted, keep the service stopped and inspect the fresh inventory,
+selector, backup, and recovery markers before any retry. Once recovery is
+verified, collect new all-host preflights and proceed through the normal
+release-bound PRD approval, hold, switch, and acceptance sequence.
+
 ## Current scope and further reading
 
 PROMO-01 through PROMO-07 cover source implementation, fixture qualification,

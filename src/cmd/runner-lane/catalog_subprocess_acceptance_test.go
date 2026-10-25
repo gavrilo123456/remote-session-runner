@@ -135,6 +135,84 @@ func TestCatalogPublicCommandSequenceSubprocess(t *testing.T) {
 	}
 }
 
+func TestCatalogPRDRecoverySelectedPredecessorPublicCommandSubprocess(t *testing.T) {
+	root := t.TempDir()
+	prepareCatalogSubprocessFixture(t, root, "fixture-recovery-candidate", "recovery-candidate", nil)
+	hostID := "mac-control-plane"
+	previousID := "cat-fixture-prd-previous"
+	previousSHA := fixtureDigest("previous sealed catalog release")
+	previousBundleSHA := fixtureDigest("previous Mac bundle")
+	state := readCatalogFixtureHost(t, root, hostID)
+	state.SelectorTarget = "catalog/" + previousID + "/" + hostID
+	state.SelectedReleaseID = previousID
+	state.SelectedReleaseSHA = previousSHA
+	state.SelectedBundleSHA = previousBundleSHA
+	state.ServiceActive = false
+	state.AdmissionsClosed = true
+	state.RetainedLostPairs = []string{"sess-mac-one:cmd-mac-one", "sess-mac-two:cmd-mac-two"}
+	state.RetainedHistory = []string{"original-lost-result", "original-terminal-event", "held-ack-unchanged"}
+	if err := writeCatalogFixtureJSON(filepath.Join(root, "hosts", hostID, "host-state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=^TestCatalogPRDRecoverySelectedPredecessorPublicCommandSubprocessHelper$")
+	command.Env = append(os.Environ(), catalogSubprocessFixtureRootEnv+"="+root)
+	output, err := command.CombinedOutput()
+	if err != nil || !bytes.Contains(output, []byte("CATALOG_SELECTED_PRD_RECOVERY_OK")) {
+		t.Fatalf("selected-predecessor public recovery command failed: %v\n%s", err, output)
+	}
+	state = readCatalogFixtureHost(t, root, hostID)
+	if state.SelectorTarget != "catalog/"+previousID+"/"+hostID || state.SelectedReleaseID != previousID ||
+		state.SelectedReleaseSHA != previousSHA || state.SelectedBundleSHA != previousBundleSHA ||
+		len(state.RetainedLostPairs) != 0 || state.ReplayCount != 0 ||
+		strings.Join(state.RetainedHistory, ",") != "original-lost-result,original-terminal-event,held-ack-unchanged,recovery-release-proof" {
+		t.Fatalf("recovery did not preserve selected release and retained history: %+v", state)
+	}
+}
+
+// TestCatalogPRDRecoverySelectedPredecessorPublicCommandSubprocessHelper is
+// invoked only by the isolated parent fixture above.
+func TestCatalogPRDRecoverySelectedPredecessorPublicCommandSubprocessHelper(t *testing.T) {
+	root := os.Getenv(catalogSubprocessFixtureRootEnv)
+	if root == "" {
+		return
+	}
+	backend := &catalogSubprocessFixtureBackend{root: root}
+	catalogCommandSubprocessFixtureBackendForTests = backend
+	seed := readCatalogFixtureSeed(t, filepath.Join(root, "seeds", "fixture-recovery-candidate.json"))
+	state := readCatalogFixtureHost(t, root, "mac-control-plane")
+	var preflight laneinstall.CatalogCohortHostPreflightReport
+	readCatalogFixtureJSON(t, seed.PreflightPaths["mac-control-plane"], &preflight)
+	base := []string{"catalog-prd-recover", "--host", "mac-control-plane", "--release-id", seed.ReleaseID,
+		"--release-sha256", seed.ReleaseSHA, "--bundle-sha256", seed.TargetBundleSHA["mac-control-plane"],
+		"--expected-selected-release-id", state.SelectedReleaseID,
+		"--expected-selected-release-sha256", state.SelectedReleaseSHA,
+		"--expected-selected-bundle-sha256", state.SelectedBundleSHA,
+		"--backup-dir", preflight.Preflight.BackupDirectory,
+		"--backup-manifest-sha256", preflight.Preflight.BackupManifestSHA256}
+
+	var out, stderr bytes.Buffer
+	wrong := append([]string(nil), base...)
+	wrong[12] = fixtureDigest("different previous release")
+	wrong = append(wrong, "--lost-pair", state.RetainedLostPairs[0], "--lost-pair", state.RetainedLostPairs[1])
+	if status := run(wrong, &out, &stderr); status == 0 || !strings.Contains(stderr.String(), "fixture recovery pair set mismatch") {
+		t.Fatalf("mismatched selected predecessor status=%d stdout=%q stderr=%q", status, out.String(), stderr.String())
+	}
+	stateAfterReject := readCatalogFixtureHost(t, root, "mac-control-plane")
+	if !equalStrings(stateAfterReject.RetainedLostPairs, state.RetainedLostPairs) ||
+		strings.Join(stateAfterReject.RetainedHistory, ",") != strings.Join(state.RetainedHistory, ",") {
+		t.Fatal("mismatched predecessor attempt changed recovery state")
+	}
+	out.Reset()
+	stderr.Reset()
+	args := append([]string(nil), base...)
+	args = append(args, "--lost-pair", state.RetainedLostPairs[0], "--lost-pair", state.RetainedLostPairs[1])
+	if status := run(args, &out, &stderr); status != 0 {
+		t.Fatalf("selected-predecessor recovery status=%d stdout=%q stderr=%q", status, out.String(), stderr.String())
+	}
+	fmt.Fprintln(os.Stdout, "CATALOG_SELECTED_PRD_RECOVERY_OK")
+}
+
 // TestCatalogPublicCommandSequenceSubprocessHelper is entered only by the
 // subprocess parent above. The fixture root is consumed here, in test code;
 // the normal runner-lane executable does not read this environment variable.
@@ -517,6 +595,9 @@ type catalogSubprocessFixtureSeed struct {
 type catalogSubprocessFixtureHost struct {
 	HostID             string   `json:"host_id"`
 	SelectorTarget     string   `json:"selector_target"`
+	SelectedReleaseID  string   `json:"selected_release_id,omitempty"`
+	SelectedReleaseSHA string   `json:"selected_release_sha256,omitempty"`
+	SelectedBundleSHA  string   `json:"selected_bundle_sha256,omitempty"`
 	LegacyBundleSHA256 string   `json:"legacy_bundle_sha256"`
 	ServiceActive      bool     `json:"service_active"`
 	ConfigurationPath  string   `json:"configuration_path"`
@@ -565,7 +646,13 @@ func (b *catalogSubprocessFixtureBackend) RunPRDRecovery(ctx context.Context, co
 		return errors.New("fixture recovery identity mismatch")
 	}
 	state, err := b.readHost(command.HostID)
-	if err != nil || state.ServiceActive || !state.AdmissionsClosed || state.SelectorTarget != "" ||
+	selectorMatches := state.SelectorTarget == "" && command.ExpectedSelectedReleaseID == "" && command.ExpectedSelectedReleaseSHA256 == "" && command.ExpectedSelectedBundleSHA256 == ""
+	if command.ExpectedSelectedReleaseID != "" && command.ExpectedSelectedReleaseSHA256 != "" && command.ExpectedSelectedBundleSHA256 != "" {
+		selectorMatches = state.SelectorTarget == "catalog/"+command.ExpectedSelectedReleaseID+"/"+command.HostID &&
+			state.SelectedReleaseID == command.ExpectedSelectedReleaseID && state.SelectedReleaseSHA == command.ExpectedSelectedReleaseSHA256 &&
+			state.SelectedBundleSHA == command.ExpectedSelectedBundleSHA256
+	}
+	if err != nil || state.ServiceActive || !state.AdmissionsClosed || !selectorMatches ||
 		!equalStrings(state.RetainedLostPairs, command.LostPairs) {
 		return errors.New("fixture recovery pair set mismatch")
 	}
@@ -589,7 +676,8 @@ func (b *catalogSubprocessFixtureBackend) RunPRDRecovery(ctx context.Context, co
 		"host_id": command.HostID, "release_id": command.ReleaseID,
 		"release_sha256": command.ExpectedReleaseSHA256, "bundle_sha256": command.ExpectedBundleSHA256,
 		"recovered_lost_pairs": len(command.LostPairs), "service_remains_stopped": true,
-		"selector_remains_unselected": true, "replay_count": state.ReplayCount,
+		"selector_remains_unselected": command.ExpectedSelectedReleaseID == "",
+		"selector_remains_unchanged":  true, "replay_count": state.ReplayCount,
 	})
 }
 

@@ -2,7 +2,10 @@ package laneinstall
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+
+	"remote-session-runner/src/internal/config"
 )
 
 func TestCatalogPRDRecoveryCommandUsesOnlySealedHostComponentAndExactPairs(t *testing.T) {
@@ -76,6 +79,54 @@ func TestCatalogPRDRecoveryRequiresCurrentSchemaToAvoidMigration(t *testing.T) {
 		if catalogPRDRecoverySchemaIsCurrent(inputs[0], inputs[1], inputs[2], inputs[3]) {
 			t.Fatalf("inconsistent schema bounds were accepted: %v", inputs)
 		}
+	}
+}
+
+func TestCatalogPRDRecoveryRequiresExactSelectedCatalogPredecessor(t *testing.T) {
+	request := CatalogPRDRecoveryRequest{
+		ExpectedSelectedReleaseID:     "cat-20261023-c01e633",
+		ExpectedSelectedReleaseSHA256: strings.Repeat("a", 64),
+		ExpectedSelectedBundleSHA256:  strings.Repeat("b", 64),
+	}
+	if err := ValidateCatalogPRDRecoverySelectedRelease(request); err != nil {
+		t.Fatalf("complete selected-release identity rejected: %v", err)
+	}
+	selector := CatalogSelectorStatus{
+		HostID: "mac-control-plane", Lane: config.ReleaseLanePRD,
+		Kind: "catalog", Target: "/Users/tomasz.walczuk/projects-runtime/runner-releases/cat-20261023-c01e633/mac-control-plane",
+		Release: &CatalogReleaseStatus{Identity: CatalogReleaseIdentity{
+			ReleaseID: request.ExpectedSelectedReleaseID, ReleaseSHA256: request.ExpectedSelectedReleaseSHA256,
+			HostID: "mac-control-plane", BundleSHA256: request.ExpectedSelectedBundleSHA256,
+		}},
+	}
+	root := "/Users/tomasz.walczuk/projects-runtime/runner-releases"
+	if !catalogPRDRecoverySelectorMatches(selector, "mac-control-plane", root, request) {
+		t.Fatal("exact selected catalog predecessor was rejected")
+	}
+	changed := selector
+	changed.Target += ".other"
+	if catalogPRDRecoverySelectorMatches(changed, "mac-control-plane", root, request) {
+		t.Fatal("selector target drift was accepted")
+	}
+	changed = selector
+	changed.Release = &CatalogReleaseStatus{Identity: selector.Release.Identity}
+	changed.Release.Identity.BundleSHA256 = strings.Repeat("c", 64)
+	if catalogPRDRecoverySelectorMatches(changed, "mac-control-plane", root, request) {
+		t.Fatal("predecessor bundle drift was accepted")
+	}
+	for _, partial := range []CatalogPRDRecoveryRequest{
+		{ExpectedSelectedReleaseID: request.ExpectedSelectedReleaseID},
+		{ExpectedSelectedReleaseID: request.ExpectedSelectedReleaseID, ExpectedSelectedReleaseSHA256: request.ExpectedSelectedReleaseSHA256},
+		{ExpectedSelectedReleaseSHA256: request.ExpectedSelectedReleaseSHA256, ExpectedSelectedBundleSHA256: request.ExpectedSelectedBundleSHA256},
+	} {
+		if err := ValidateCatalogPRDRecoverySelectedRelease(partial); err == nil {
+			t.Fatalf("partial selected-release identity was accepted: %+v", partial)
+		}
+	}
+	unselected := CatalogSelectorStatus{HostID: "mac-control-plane", Lane: config.ReleaseLanePRD, Kind: "unselected"}
+	legacy := CatalogPRDRecoveryRequest{}
+	if !catalogPRDRecoverySelectorMatches(unselected, "mac-control-plane", root, legacy) {
+		t.Fatal("existing unselected legacy recovery path regressed")
 	}
 }
 
