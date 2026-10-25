@@ -1208,6 +1208,8 @@ func probeDispositionInventory(inventory laneinstall.CatalogWorkInventory) bool 
 	return inventory.ActiveSessions == 1 && inventory.ActiveCommandSlots == 0 && inventory.ActiveSessionReservations == 1 &&
 		inventory.QueuedCommands == 0 && inventory.RunningCommands == 0 && inventory.ResumableJobs == 1 && inventory.PendingRecoveryFinalizations == 0 ||
 		inventory.ActiveSessions == 0 && inventory.ActiveCommandSlots == 0 && inventory.ActiveSessionReservations == 1 &&
+			inventory.QueuedCommands == 0 && inventory.RunningCommands == 0 && inventory.ResumableJobs == 1 && inventory.PendingRecoveryFinalizations == 0 ||
+		inventory.ActiveSessions == 0 && inventory.ActiveCommandSlots == 0 && inventory.ActiveSessionReservations == 1 &&
 			inventory.QueuedCommands == 0 && inventory.RunningCommands == 0 && inventory.ResumableJobs == 0 && inventory.PendingRecoveryFinalizations == 0
 }
 

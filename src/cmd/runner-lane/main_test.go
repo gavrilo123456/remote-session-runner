@@ -72,6 +72,73 @@ func TestPRDMaintenanceCommandsRejectNoncanonicalHostBeforeOperating(t *testing.
 	}
 }
 
+func TestProbeDispositionInventoryAcceptsOnlyExactSingleProbeStates(t *testing.T) {
+	tests := []struct {
+		name      string
+		inventory laneinstall.CatalogWorkInventory
+		want      bool
+	}{
+		{
+			name: "accepted probe before service stop",
+			inventory: laneinstall.CatalogWorkInventory{
+				ActiveSessions: 1, ActiveSessionReservations: 1, ResumableJobs: 1,
+			},
+			want: true,
+		},
+		{
+			name: "creating probe after service stop",
+			inventory: laneinstall.CatalogWorkInventory{
+				ActiveSessionReservations: 1, ResumableJobs: 1,
+			},
+			want: true,
+		},
+		{
+			name: "lost probe awaiting supported cleanup",
+			inventory: laneinstall.CatalogWorkInventory{
+				ActiveSessionReservations: 1, ResumableJobs: 0,
+			},
+			want: true,
+		},
+		{
+			name: "unrelated resumable work",
+			inventory: laneinstall.CatalogWorkInventory{
+				ActiveSessionReservations: 1, ResumableJobs: 2,
+			},
+		},
+		{
+			name: "command slot remains",
+			inventory: laneinstall.CatalogWorkInventory{
+				ActiveSessionReservations: 1, ResumableJobs: 1, ActiveCommandSlots: 1,
+			},
+		},
+		{
+			name: "queued work remains",
+			inventory: laneinstall.CatalogWorkInventory{
+				ActiveSessionReservations: 1, ResumableJobs: 1, QueuedCommands: 1,
+			},
+		},
+		{
+			name: "multiple reservations remain",
+			inventory: laneinstall.CatalogWorkInventory{
+				ActiveSessionReservations: 2, ResumableJobs: 1,
+			},
+		},
+		{
+			name: "recovery finalization remains",
+			inventory: laneinstall.CatalogWorkInventory{
+				ActiveSessionReservations: 1, ResumableJobs: 1, PendingRecoveryFinalizations: 1,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := probeDispositionInventory(test.inventory); got != test.want {
+				t.Fatalf("probeDispositionInventory(%+v) = %v, want %v", test.inventory, got, test.want)
+			}
+		})
+	}
+}
+
 func TestCatalogHostPreflightRejectsInvalidScopeAndMissingCapacityBeforeOperating(t *testing.T) {
 	for _, args := range [][]string{
 		{"--host", "unlisted", "--lane", "dev", "--release-id", "cat-20261019-f0e2843", "--required-free-bytes", "1"},
