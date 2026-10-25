@@ -235,7 +235,7 @@ func (f *switchReceiptFixture) run(_ context.Context, host string, args []string
 			return json.Marshal(promotionReceiptView{Present: true, Receipt: f.receipts[host]})
 		case "discover":
 			receipt := f.receipts[host]
-			return json.Marshal(promotionAdmissionView{HostID: host, Lane: config.ReleaseLaneDev,
+			return json.Marshal(promotionAdmissionView{HostID: host, Lane: config.ReleaseLane(f.op.Lane),
 				AdmissionHeld: true, OperationID: receipt.OperationID, Receipt: &receipt})
 		case "preflight":
 			receipt := f.receipts[host]
@@ -288,7 +288,7 @@ func (f *switchReceiptFixture) run(_ context.Context, host string, args []string
 	}
 	switch command {
 	case "catalog-work-inventory":
-		report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLaneDev,
+		report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLane(f.op.Lane),
 			ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ServiceActive: state.active,
 			SelectorTarget: state.target, BundleSHA256: state.bundle, ConfigurationSHA256: state.config,
 			DatabaseSchema: state.schema, WorkInventory: state.work, WorkInventoryEmpty: state.work.Empty()}
@@ -300,7 +300,7 @@ func (f *switchReceiptFixture) run(_ context.Context, host string, args []string
 		} else {
 			releaseID, releaseSHA, bundleSHA = "cat-20261023-c01e633", strings.Repeat("9", 64), state.bundle
 		}
-		status := laneinstall.CatalogSelectorStatus{HostID: host, Lane: config.ReleaseLaneDev, Target: state.target, Kind: "catalog",
+		status := laneinstall.CatalogSelectorStatus{HostID: host, Lane: config.ReleaseLane(f.op.Lane), Target: state.target, Kind: "catalog",
 			Release: &laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{
 				ReleaseID: releaseID, ReleaseSHA256: releaseSHA, HostID: host, BundleSHA256: bundleSHA}}}
 		return json.Marshal(status)
@@ -315,6 +315,10 @@ func (f *switchReceiptFixture) run(_ context.Context, host string, args []string
 		f.states[host] = state
 		return []byte("stopped\\n"), nil
 	case "catalog-select":
+		hostIndex := hostIndex(host)
+		if hostIndex < 0 || value("--expected-target") != f.receipts[host].Hosts[hostIndex].PreviousTarget {
+			return nil, fmt.Errorf("catalog-select did not bind the exact predecessor target for %s", host)
+		}
 		f.commands = append(f.commands, "select:"+host)
 		f.selected[host] = true
 		receipt := f.receipts[host]
@@ -480,6 +484,84 @@ func TestSwitchHostSynchronizesSelectedReceiptBeforeStartingService(t *testing.T
 	}
 	if selectIndex < 0 || syncAfterSelect < selectIndex {
 		t.Fatalf("selected receipt was not synchronized after selector change: %v", fixture.commands)
+	}
+}
+
+func TestSwitchHostBindsExactPRDPredecessorTarget(t *testing.T) {
+	op := Operation{Lane: "prd", OperationID: strings.Repeat("7", 32), Stage: StageSwitching, Release: testRelease()}
+	op.CohortOperationID = strings.Repeat("8", 32)
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt := promotionTestCohortReceipt(t, now, op.CohortOperationID, "v2.0.0", nil, false)
+	receipt.Lane = config.ReleaseLanePRD
+	receipt.ReleaseID = op.Release.ID
+	receipt.ReleaseSHA256 = op.Release.Digest
+	receipt.SourceRevision = op.Release.Source.Commit
+	receipt.FenceProofs = []laneinstall.CatalogCohortFenceProof{{
+		Scope: "project-publishers:prd", Control: "fixture-prd-publisher-pause", Owner: "fixture-owner",
+		Paused: true, NoNewAccepted: true, EvidenceSHA256: strings.Repeat("7", 64),
+		VerifiedAt: now.Format(time.RFC3339Nano),
+	}}
+	states := make(map[string]receiptSyncHostState, len(HostOrder))
+	receipts := make(map[string]laneinstall.CatalogCohortReceipt, len(HostOrder))
+	selected := make(map[string]bool, len(HostOrder))
+	var err error
+	for index, host := range HostOrder {
+		plan, err := laneinstall.BuildCatalogPlan(host, config.ReleaseLanePRD)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, err := laneinstall.DefaultCatalogRootForPlan(plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		previousTarget := filepath.Join(root, "cat-20261023-c01e633", host)
+		receipt.Hosts[index].PreviousTarget = previousTarget
+		receipt.Hosts[index].PreviousReadSchemaMax = store.CurrentSchemaVersion
+		receipt.Hosts[index].Target = laneinstall.CatalogReleaseIdentity{ReleaseID: op.Release.ID,
+			ReleaseSHA256: op.Release.Digest, HostID: host, BundleSHA256: op.Release.Bundles[host].SHA256}
+		configSHA := strings.Repeat(fmt.Sprintf("%x", index+1), 64)
+		receipt.Hosts[index].ConfigurationSHA256 = configSHA
+		receipt.Hosts[index].WorkInventorySHA256 = (laneinstall.CatalogWorkInventory{}).SHA256()
+		receipt.Hosts[index].PreflightAt = now.Format(time.RFC3339Nano)
+		states[host] = receiptSyncHostState{target: previousTarget, bundle: receipt.Hosts[index].PreviousBundleSHA256,
+			config: configSHA, schema: store.CurrentSchemaVersion}
+	}
+	for _, host := range HostOrder {
+		hostIndex := hostIndex(host)
+		preflight := receipt.Hosts[hostIndex]
+		observedAt := time.Now().UTC()
+		receipt, err = laneinstall.AdvanceCatalogCohortHostFence(receipt, laneinstall.CatalogCohortHostFence{
+			HostID: host, ServiceStopped: true, ServiceWasActive: preflight.ServiceActiveAtPreflight,
+			WorkInventorySHA256: preflight.WorkInventorySHA256, ConfigurationSHA256: preflight.ConfigurationSHA256,
+			SelectorTarget: preflight.PreviousTarget, PreviousBundleSHA256: preflight.PreviousBundleSHA256,
+			DatabaseSchema: preflight.SchemaVersion, ObservedAt: observedAt.Format(time.RFC3339Nano),
+		}, observedAt)
+		if err != nil {
+			t.Fatalf("record PRD host fence for %s: %v", host, err)
+		}
+	}
+	receipt, err = laneinstall.AdvanceCatalogCohortReceipt(receipt, "hold", "", strings.Repeat("d", 64), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("record PRD cohort hold: %v", err)
+	}
+	for _, host := range HostOrder {
+		receipts[host] = receipt
+	}
+	if err := laneinstall.ValidateCatalogCohortReceipt(receipt); err != nil {
+		t.Fatalf("invalid PRD switch fixture receipt: %v", err)
+	}
+	fixture := &switchReceiptFixture{op: op, receipts: receipts, states: states, selected: selected}
+	backend := &NativePromotionBackend{laneCommandRunner: fixture.run,
+		capacityReader: func(_ context.Context, _ string, _ string, snapshot *promotionLaneSnapshot) error {
+			snapshot.AvailableBytes, snapshot.RequiredBytes = 2_000_000_000, 500_000_000
+			return nil
+		}}
+	observation, err := backend.SwitchHost(context.Background(), op, "linux-host")
+	if err != nil {
+		t.Fatalf("switch PRD selector with exact predecessor binding: %v; commands=%v", err, fixture.commands)
+	}
+	if !observation.JournalVerified || observation.SelectedReleaseID != op.Release.ID {
+		t.Fatalf("expected verified PRD selector switch while held: %+v", observation)
 	}
 }
 

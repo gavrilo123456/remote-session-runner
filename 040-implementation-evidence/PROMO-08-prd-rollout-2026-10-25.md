@@ -380,3 +380,40 @@ SHA with a clean worktree. On all three workers, Go 1.27.1 passed the focused
 prepare-only/resume subprocess regression, `go vet ./src/internal/releaseflow`,
 and `go build ./src/cmd/runner-lane ./src/cmd/promote-to ./src/cmd/runner-release`.
 The service release and its four sealed bundles remain unchanged.
+
+## PRD expected-predecessor selector correction
+
+The active PRD promotion is operation
+`63471d41af07b7afaf577d6a0989cc03` for sealed release
+`rr-20261024-43a4e675` (digest
+`093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69`). The
+owner renewed this PRD-only operation window for four hours, 2026-10-25
+12:17–16:17 UTC. Dev, QAS, their services, and mailbox routing remain
+unchanged.
+
+The operation was held before any selector changed. Its first Linux switch
+attempt failed closed because the controller omitted `--expected-target` for
+PRD, while the guarded host selector requires an exact predecessor target.
+The operation is now blocked before switch; Linux still selects
+`cat-20261023-c01e633`, its service is stopped, its work inventory is empty,
+and the exact operation admission hold is present. No selector, database,
+configuration, or mailbox state changed in the failed attempt.
+
+The controller now passes the host's fresh synchronized `PreviousTarget` as
+`catalog-select --expected-target` for every lane. The fixture asserts this
+exact value; `TestSwitchHostBindsExactPRDPredecessorTarget` exercises the PRD
+switch path and passes. Existing Dev selector-switch coverage also passes.
+This controller-only correction does not rebuild or alter the sealed service
+release or its per-host bundle bytes.
+
+Mac Go 1.27.1 source gates for the correction: focused regression PASS,
+`make test` PASS, `make vet` PASS, `make build` PASS, and `make smoke` PASS.
+The worker-native checks and full Git delivery are pending in this checkpoint.
+
+The supported four-hour renewal is owner-only at
+`/private/tmp/runner-release-prd-approval-rr-20261024-43a4e675-20261025-renewal-1217Z.json`,
+mode `0600`, SHA-256
+`e2336597129ff09a8681d04720f74434d2e0434ce6e29dde46b0b7af0432c53f`. The
+same durable operation must be resumed after delivery and fresh host checks;
+no new operation, candidate build, selector rollback, or database restore is
+authorized or needed for this correction.

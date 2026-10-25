@@ -836,10 +836,8 @@ func (b *NativePromotionBackend) SwitchHost(ctx context.Context, op Operation, h
 		return HostObservation{}, errors.Join(fmt.Errorf("%s fresh two-minute selector preflight state or operating capacity check failed", host), err)
 	}
 	args := []string{"catalog-select", "--host", host, "--lane", op.Lane, "--release-id", op.Release.ID,
-		"--cohort-operation-id", op.CohortOperationID, "--evidence-sha256", preflightSHA}
-	if op.Lane != "prd" {
-		args = append(args, "--expected-target", preflight.PreviousTarget)
-	}
+		"--expected-target", preflight.PreviousTarget, "--cohort-operation-id", op.CohortOperationID,
+		"--evidence-sha256", preflightSHA}
 	out, err := b.runLane(ctx, host, args, nil)
 	if err != nil {
 		return HostObservation{}, err

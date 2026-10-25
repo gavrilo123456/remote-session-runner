@@ -83,6 +83,11 @@ synchronizes one cohort receipt. Only the next selector step is limited to the
 named host. The documented switch order is Linux → Sandbox → Factory → Mac;
 peer lanes remain unchanged.
 
+Every selector change, including PRD, passes the exact `PreviousTarget` from
+the synchronized host preflight to `catalog-select --expected-target`. The
+host command compares it with the fresh local selector and refuses a mismatch;
+the coordinator must not omit this compare-and-switch guard for any lane.
+
 ```sh
 # Mac — the JSON plan lists all four affected service groups and lane effects
 promote-to dev linux-host --release <immutable-release-id> --plan --json
