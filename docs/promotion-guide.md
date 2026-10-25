@@ -145,6 +145,32 @@ owner control. Acceptance checks direct mTLS, queued SSH, Mac-local execution,
 exit/event/output/teardown, limits, capacity and peer-lane identities. A missing
 gate leaves the cohort held and is not a pass.
 
+For a deliberate checkpoint between common preparation and the first selector
+change, `--prepare-only` creates the durable operation, performs fresh
+four-host preflights/backups, synchronizes the receipt, applies the selected
+lane fences and leaves the cohort hold active. It returns only while the
+operation is still `prepared`; it refuses to masquerade as a checkpoint after
+any selector intent or switch. Inspect and synchronize any eligible historical
+receipt with the supported `catalog-cohort` supersession commands before
+resuming the same operation:
+
+```sh
+# Mac — selected lane only; the operation remains held and no selector changes
+promote-to prd all --release <immutable-release-id> --operation-id <new-op-id> \
+  --approval-file <reviewed-owner-approval.json> --publisher-owner <owner> \
+  --publisher-control <pause-control> --publishers-paused --no-new-accepted \
+  --prepare-only --json
+runner-release status --lane prd --operation <new-op-id> --json
+promote-to prd all --release <immutable-release-id> --resume <new-op-id> \
+  --approval-file <reviewed-owner-approval.json> --publisher-owner <owner> \
+  --publisher-control <pause-control> --publishers-paused --no-new-accepted --json
+```
+
+The hold is an operational fence, not a completed deployment. Preserve it if
+the command is interrupted; use the recorded operation and supported receipt
+reconciliation/supersession path. Never edit or backdate receipt evidence to
+make a stale prepared operation pass.
+
 PRD's initial host preflight is online: it takes the consistent database
 backup while the selected service remains active, under the catalog publication
 lock. It must not acquire the lane lifecycle lock, which the running service

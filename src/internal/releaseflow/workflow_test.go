@@ -316,6 +316,44 @@ func TestPromoteNamedHostsCommonPreparationAndResume(t *testing.T) {
 	}
 }
 
+func TestPromotePrepareOnlyLeavesHeldPreSwitchCheckpointAndResumeSwitches(t *testing.T) {
+	store := testStore(t)
+	release := testRelease()
+	saveTestRelease(t, store, release)
+	backend := &fakeBackend{selected: map[string]bool{}}
+	operationID := strings.Repeat("a", 32)
+	now := func() time.Time { return time.Date(2026, 10, 25, 11, 0, 0, 0, time.UTC) }
+
+	prepared, err := Promote(context.Background(), store, backend, PromoteRequest{
+		Lane: "dev", Target: "all", ReleaseID: release.ID, OperationID: operationID,
+		Profile: "profile-v1", PrepareOnly: true,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Outcome != "prepared_hold_active" || prepared.Operation.Stage != StagePrepared ||
+		prepared.Operation.CohortOperationID != operationID || backend.prepareCalls != 1 ||
+		len(backend.switchCalls) != 0 || backend.acceptCalls != 0 || backend.releaseCalls != 0 {
+		t.Fatalf("prepare-only did not stop at the held pre-switch checkpoint: result=%+v backend=%+v", prepared, backend)
+	}
+	for _, host := range HostOrder {
+		if backend.selected[host] {
+			t.Fatalf("prepare-only switched %s", host)
+		}
+	}
+
+	resumed, err := Promote(context.Background(), store, backend, PromoteRequest{
+		Lane: "dev", Target: "all", ResumeID: operationID, Profile: "profile-v1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Outcome != "completed" || resumed.Operation.Stage != StageComplete || backend.prepareCalls != 1 ||
+		len(backend.switchCalls) != len(HostOrder) || backend.acceptCalls != 1 || backend.releaseCalls != 1 {
+		t.Fatalf("resume did not continue the same prepared operation: result=%+v backend=%+v", resumed, backend)
+	}
+}
+
 func TestPromoteRejectsOutOfOrderNamedHost(t *testing.T) {
 	store := testStore(t)
 	r := testRelease()

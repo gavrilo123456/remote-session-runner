@@ -154,15 +154,16 @@ func RunBuildCLI(args []string, stdout, stderr io.Writer) int {
 
 func RunPromoteCLI(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
-		fmt.Fprintln(stdout, "Usage: promote-to dev|qas|prd HOST|all --release ID [--plan] [--resume OP-ID] [--approval-file FILE] [--json]")
+		fmt.Fprintln(stdout, "Usage: promote-to dev|qas|prd HOST|all --release ID [--plan | --prepare-only] [--resume OP-ID] [--approval-file FILE] [--json]")
 		fmt.Fprintln(stdout, "A named host advances only that next selector step; initial common preparation holds, drains, observes, and backs up all four hosts in that lane.")
 		fmt.Fprintln(stdout, "Switch order: linux-host → sandbox-host → factory-sandbox → mac-control-plane. Promotion never rebuilds a sealed release.")
 		fmt.Fprintln(stdout, "QAS requires Dev acceptance for the same release digest and bundle hashes. PRD requires QAS acceptance and a current owner approval bound to the plan.")
 		fmt.Fprintln(stdout, "--plan is read-only. Execution requires explicit publisher owner/control and paused/no-new-accepted confirmations.")
+		fmt.Fprintln(stdout, "--prepare-only performs common preparation and leaves the synchronized cohort hold active without switching selectors; resume the same operation after supported receipt reconciliation.")
 		return 0
 	}
 	if len(args) < 2 {
-		fmt.Fprintln(stderr, "usage: promote-to dev|qas|prd HOST|all --release ID [--plan] [--resume OP-ID] [--approval-file FILE] [--json]")
+		fmt.Fprintln(stderr, "usage: promote-to dev|qas|prd HOST|all --release ID [--plan | --prepare-only] [--resume OP-ID] [--approval-file FILE] [--json]")
 		return 2
 	}
 	lane, target := args[0], args[1]
@@ -178,6 +179,7 @@ func RunPromoteCLI(args []string, stdout, stderr io.Writer) int {
 	noNewAccepted := flags.Bool("no-new-accepted", false, "confirm no new work is accepted by the selected lane")
 	operatingBuffer := flags.Uint64("operating-buffer-bytes", defaultPromotionOperatingBuffer, "required post-backup free-space buffer; PRD also preserves the 64 MiB selector reserve")
 	planOnly := flags.Bool("plan", false, "read-only promotion plan")
+	prepareOnly := flags.Bool("prepare-only", false, "prepare and hold the full cohort, then stop before selector changes")
 	profile := flags.String("profile", "catalog-functional-v1", "release-bound acceptance profile")
 	opID := flags.String("operation-id", "", "optional new operation ID")
 	storeRoot := flags.String("store-root", "", "workflow record root")
@@ -187,6 +189,10 @@ func RunPromoteCLI(args []string, stdout, stderr io.Writer) int {
 	}
 	if flags.NArg() != 0 || !contains(LaneOrder, lane) || (target != "all" && !contains(HostOrder, target)) {
 		fmt.Fprintln(stderr, "invalid lane or host; valid lanes dev|qas|prd and hosts linux-host|sandbox-host|factory-sandbox|mac-control-plane|all")
+		return 2
+	}
+	if *planOnly && *prepareOnly {
+		fmt.Fprintln(stderr, "--plan and --prepare-only are mutually exclusive")
 		return 2
 	}
 	if *storeRoot == "" {
@@ -307,7 +313,7 @@ func RunPromoteCLI(args []string, stdout, stderr io.Writer) int {
 		}
 		*opID = id
 	}
-	result, err := Promote(context.Background(), store, backend, PromoteRequest{Lane: lane, Target: target, ReleaseID: *releaseID, ResumeID: *resume, Approval: approvalSHA, Profile: *profile, OperationID: *opID}, time.Now)
+	result, err := Promote(context.Background(), store, backend, PromoteRequest{Lane: lane, Target: target, ReleaseID: *releaseID, ResumeID: *resume, Approval: approvalSHA, PrepareOnly: *prepareOnly, Profile: *profile, OperationID: *opID}, time.Now)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

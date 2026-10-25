@@ -337,3 +337,37 @@ After Git delivery and native worker validation, resume the same durable PRD
 operation; refresh any evidence that has expired through supported operation
 controls before its next write. No Dev/QAS service or configuration change is
 part of this correction.
+
+## Fresh prepared-receipt checkpoint correction
+
+At 2026-10-25 11:08 UTC, resuming operation
+`9e8f32790a8beeb08dd4451c7f606b67` failed in `prepare-cohort` with
+`invalid or inconsistent catalog selector operation`. The synchronized
+receipt remained `prepared`; no selector transition or admission hold was
+created. Its original preflight timestamps had aged beyond the 60-minute
+evidence limit. Reusing it, refreshing its timestamps, or weakening
+`cohortEvidenceFresh` would violate the receipt contract.
+
+The exact authorized lost pairs were rechecked on Mac at 2026-10-25
+11:33:31.837259 UTC. Both commands already had durable `lost` results,
+`stop_confirmed_at=2026-10-25T08:03:36.035275Z` and matching
+`released_at=2026-10-25T08:03:36.035275Z`; neither had an active owner or
+reservation. PRD LaunchAgents were absent, PRD services were stopped, and
+the observed `runner-local*` PIDs belonged only to Dev/QAS paths. No recovery
+was repeated and no database or work history was changed.
+
+The public promotion command now has a `--prepare-only` checkpoint. It runs
+the ordinary fresh preflight, backup, whole-cohort receipt synchronization,
+host-fence and hold path, then returns only if the durable operation is still
+`prepared`. It refuses this mode after any selector intent/switch and does
+not alter freshness limits. The same durable operation can then be resumed
+after supported reconciliation of an eligible stale, unswitched receipt.
+Regression coverage exercises the subprocess public command, verifies that
+no selectors switch at the checkpoint, and resumes that same operation to
+completion. Mac Go 1.27.1 gates passed: `make test`, `make vet`, `make build`,
+`make smoke`, and `git diff --check`. The focused package tests also passed
+with `-run 'TestPromotePrepareOnly|TestPublicPromotePrepareOnly|TestPromotionCLIHelper' -count=1`.
+The only test output warning was the existing duplicate `-lproc` linker
+warning on macOS; there were no test failures. Git delivery and worker-native
+controller checks are recorded after the commit below. No selector has been
+changed by this correction.

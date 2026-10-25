@@ -175,6 +175,44 @@ func TestPublicPromoteSubprocessInterruptionRetryAndRollback(t *testing.T) {
 	}
 }
 
+func TestPublicPromotePrepareOnlyThenResumeUsesSameOperation(t *testing.T) {
+	store := testStore(t)
+	release := saveCLIRelease(t, store)
+	statePath := filepath.Join(t.TempDir(), "backend-state.json")
+	opID := strings.Repeat("d", 32)
+	writePromotionCLIState(t, statePath, promotionCLIBackendState{Selected: map[string]bool{}})
+	args := cliPromotionArgs("dev", "all", release.ID, opID, store.Root)
+	args = append(args, "--prepare-only")
+	output, err := runPromotionCLIChild(t, statePath, append([]string{"promote-to"}, args...)...)
+	if err != nil || !strings.Contains(output, `"outcome":"prepared_hold_active"`) {
+		t.Fatalf("public prepare-only command failed: err=%v output=%s", err, output)
+	}
+	op, err := store.LoadOperation("dev", opID)
+	if err != nil || op.Stage != StagePrepared || op.CohortOperationID != opID {
+		t.Fatalf("prepare-only operation is not durably prepared: op=%+v err=%v", op, err)
+	}
+	stateBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state promotionCLIBackendState
+	if json.Unmarshal(stateBytes, &state) != nil || len(state.Selected) != 0 {
+		t.Fatalf("prepare-only command switched a selector: %s", stateBytes)
+	}
+
+	resumeArgs := []string{"promote-to", "dev", "all", "--release", release.ID, "--resume", opID,
+		"--profile", "profile-v1", "--store-root", store.Root, "--publisher-owner", "fixture-owner",
+		"--publisher-control", "fixture-pause-control", "--publishers-paused", "--no-new-accepted", "--json"}
+	output, err = runPromotionCLIChild(t, statePath, resumeArgs...)
+	if err != nil {
+		t.Fatalf("public resume after prepare-only failed: %v: %s", err, output)
+	}
+	op, err = store.LoadOperation("dev", opID)
+	if err != nil || op.Stage != StageComplete {
+		t.Fatalf("public resume did not complete the same operation: stage=%s err=%v output=%s", op.Stage, err, output)
+	}
+}
+
 func TestPublicPromoteSubprocessRetriesPartialPreparation(t *testing.T) {
 	store := testStore(t)
 	release := saveCLIRelease(t, store)

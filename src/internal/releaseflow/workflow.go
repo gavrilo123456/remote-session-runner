@@ -93,6 +93,7 @@ type PromoteRequest struct {
 	ResumeID    string
 	Approval    string
 	PlanOnly    bool
+	PrepareOnly bool
 	Profile     string
 	OperationID string
 }
@@ -266,6 +267,21 @@ func Promote(ctx context.Context, store *Store, backend Backend, req PromoteRequ
 				return err
 			}
 		}
+		if req.PrepareOnly {
+			if op.Stage != StagePlanned && op.Stage != StagePreparing && op.Stage != StagePrepared && op.Stage != StageBlocked {
+				return fmt.Errorf("prepare-only cannot be used after selector work has started: %w", ErrOperationCorrupted)
+			}
+			for _, progress := range op.Hosts {
+				if progress.SwitchIntent || progress.Switched || progress.Verified {
+					return fmt.Errorf("prepare-only cannot be used after selector work has started: %w", ErrOperationCorrupted)
+				}
+			}
+			for _, event := range op.Events {
+				if event.Action == "switch-host" || event.Action == "host-verified" || event.Action == "verify-switch" {
+					return fmt.Errorf("prepare-only cannot be used after selector work has started: %w", ErrOperationCorrupted)
+				}
+			}
+		}
 		if op.Stage == StageComplete || op.Stage == StageBranchSyncPending {
 			return finishBranchSync(ctx, store, backend, &op, plan, &result, now)
 		}
@@ -323,6 +339,14 @@ func Promote(ctx context.Context, store *Store, backend Backend, req PromoteRequ
 			if err := store.SaveOperation(op); err != nil {
 				return err
 			}
+		}
+		if req.PrepareOnly {
+			if op.Stage != StagePrepared || op.CohortOperationID == "" {
+				return fmt.Errorf("prepare-only is available only at the held, pre-switch checkpoint: %w", ErrOperationCorrupted)
+			}
+			result = PromoteResult{Operation: op, Plan: plan, Outcome: "prepared_hold_active",
+				Next: "inspect the synchronized cohort hold, complete any supported receipt supersession, then resume this operation"}
+			return nil
 		}
 		if op.Stage != StagePrepared && op.Stage != StageSwitching && op.Stage != StageVerifying {
 			return ErrOperationCorrupted
