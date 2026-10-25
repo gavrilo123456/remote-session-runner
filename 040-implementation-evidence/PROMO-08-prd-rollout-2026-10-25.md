@@ -474,6 +474,62 @@ inventories empty, configuration/schema identities unchanged, and each had
 bundle is the candidate bundle; Sandbox, Factory and Mac retain their recorded
 `cat-20261023-c01e633` selectors pending their ordered switch.
 
+## PRD resumed-approval binding correction
+
+After Linux had switched and the Sandbox selector correctly refused an expired
+two-minute preflight, a fresh read-only plan showed Linux's current selected
+bundle as `f3628574b1ffd50e0e0f11790039f8b404701de475a34770b7b64b63d9f56c37`.
+The operation's owner approval is correctly bound to the original Linux
+predecessor `9a98537d38c98bcd9e9834ceb6ad23544dc85e8f038aed74f123bad1491df9cb`
+and original backup/recovery digest
+`9c26a73de8e564873ad38e380b523f6290d8fd9cd32e3f24231bf54d99dd27da`.
+The fresh plan's backup/recovery digest had changed to
+`f9a4f73a1e9212e50b0a77c18020bbe432fd98e1f432fa62b3549b863402254e` because a
+host in this same operation had already switched. The old CLI compared renewed
+owner approval against that dynamic plan and rejected the authorized resume
+with `PRD approval predecessor or backup/recovery package does not match the
+read-only host plan`. No selector or service changed from this refusal.
+
+The scoped correction at source commit
+`c968bbaec1e1e3e0a8d5ef95751723358d70a00f` compares a resumed approval with the
+operation's immutable `plan_snapshot`. The current plan continues to supply
+fresh host capacity, admission, configuration, work and selector checks.
+When a current valid approval differs from the original approval hash, the
+operation appends an `approval-renewed` event containing both hashes and the
+original plan digest before resumed effects, then stores the current hash so
+supported recovery continues to use the renewed approval. A public-command
+subprocess regression proves successful renewal after a partial Linux switch;
+a second regression proves a changed predecessor is rejected without changing
+the operation. Focused releaseflow tests pass.
+
+The correction is controller-only; release `rr-20261024-43a4e675`, digest
+`093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69`, and all
+four sealed bundle hashes remain unchanged. Mac Go 1.27.1 gates at this source
+content: focused subprocess regressions, `make test`, `make vet`, `make build`,
+`make smoke`, gofmt, and `git diff --check` PASS (2026-10-25 13:49:17–13:50:21
+UTC).
+
+| Host | Platform | Commands | Result | UTC interval |
+| --- | --- | --- | --- | --- |
+| `factory-sandbox` | Linux/amd64 | `make test`, `make vet`, `make build`, `make smoke` | PASS all | 2026-10-25 13:52:29–13:53:58 |
+| `sandbox-host` | Linux/arm64 | `make test`, `make vet`, `make build`, `make smoke` | PASS all | 2026-10-25 13:52:28–13:53:39 |
+| `linux-host` | Linux/amd64 | `go test ./src/internal/releaseflow -count=1`; `go test ./src/internal/execution -run '^TestP025' -count=1`; `go test ./src/internal/localapi -run '^TestP101' -count=1`; `make vet`, `make build`, `make smoke` | PASS all | 2026-10-25 13:52:28–14:01:28 |
+
+The worker logs remain at `/tmp/rsr-prd-approval-c968bba-factory.HWo4CG`,
+`/tmp/rsr-prd-approval-c968bba-sandbox.v2MjPU`, and
+`/tmp/rsr-prd-approval-c968bba-linux.T4PZb8`. Mac commit `c968bba` was pushed
+to primary Gitea, verified at the exact GitHub mirror SHA, and fast-forwarded
+to all three clean worker checkouts before these gates.
+
+The renewed owner approval file used for resumption is mode `0600` and SHA-256
+`e2336597129ff09a8681d04720f74434d2e0434ce6e29dde46b0b7af0432c53f`; the
+operation's recorded original approval SHA remains preserved in its event
+history when the renewed SHA is applied. Four-hour continuation renewal
+`e72297a67f5f4237b37b2decd4943480` remains synchronized on the four hosts,
+with digest `c942f09fd751ab4857452e4e11d83f0749868a00ffb0eefdc24e094c37ccfc64`
+and expiry `2026-10-25T17:14:07.524031Z`. Fresh live preflights are required
+again immediately before the next Sandbox selector write.
+
 The native worker gates for the timing correction were completed at source
 `001d0aa6c2ef93635cd91bbf789386c082eae5cb`, Go 1.27.1, with each worker
 checkout clean on `dev` at that exact SHA. Mac gates had already passed at the
