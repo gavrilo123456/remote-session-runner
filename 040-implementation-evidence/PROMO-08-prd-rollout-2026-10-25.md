@@ -271,3 +271,22 @@ three workers and natively validated there before resuming the existing PRD
 operation. Preserve that operation and Mac's prepared receipt; do not create a
 new operation or rerun the already-completed backup/preflight phase unless a
 fresh guard proves its evidence expired or inconsistent.
+
+The controller correction was delivered at source commit
+`c9eb21862fa34ed027a7993e60607617344359c0`. Primary Gitea and the verified
+GitHub mirror both resolve `dev` to this exact SHA. All three Ubuntu checkouts
+were clean at `d7dd362ee0ac25c26f47ce0bc81a75e0bcbc3d02`, then fast-forwarded
+from the mirror to `c9eb21862fa34ed027a7993e60607617344359c0` using their
+explicit GitHub identity and verified host keys. With Go 1.27.1 each host
+passed the focused synchronization regression, releaseflow vet, and native
+promotion-command build:
+
+```sh
+GOTOOLCHAIN=local "$GO" test ./src/internal/releaseflow -run 'TestSyncReceipt|TestSyncPreparedPRDReceipt' -count=1
+GOTOOLCHAIN=local "$GO" vet ./src/internal/releaseflow
+GOTOOLCHAIN=local "$GO" build ./src/cmd/runner-lane ./src/cmd/promote-to ./src/cmd/runner-release
+```
+
+Results by host: Linux `linux/amd64` PASS; Sandbox `linux/arm64` PASS; Factory
+`linux/amd64` PASS. The operation remains blocked at `prepare-cohort` with
+the prepared receipt on Mac only until resumed by the corrected controller.
