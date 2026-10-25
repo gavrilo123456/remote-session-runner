@@ -9,15 +9,88 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/store"
 )
+
+type prdFenceOrderService struct {
+	active bool
+	lockFD int
+	events []string
+}
+
+func (s *prdFenceOrderService) Status(_ context.Context, _ PRDUpgradePlan) (bool, error) {
+	if s.active {
+		s.events = append(s.events, "status-active")
+	} else {
+		s.events = append(s.events, "status-stopped")
+	}
+	return s.active, nil
+}
+
+func (s *prdFenceOrderService) Stop(_ context.Context, _ PRDUpgradePlan) error {
+	s.events = append(s.events, "stop")
+	if !s.active || s.lockFD < 0 {
+		return ErrPRDUpgradeGuard
+	}
+	if err := unix.Flock(s.lockFD, unix.LOCK_UN); err != nil {
+		return err
+	}
+	if err := unix.Close(s.lockFD); err != nil {
+		return err
+	}
+	s.lockFD = -1
+	s.active = false
+	return nil
+}
+
+func TestPRDCohortFenceStopsServiceBeforeAcquiringLifecycleLock(t *testing.T) {
+	root := simpleTestTempDir(t)
+	lockDirectory := filepath.Join(root, "private-lane")
+	if err := os.Mkdir(lockDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPRDUpgradePlan("linux-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Namespace.LifecycleLock = filepath.Join(lockDirectory, "prd-lifecycle.lock")
+	daemonLockFD, err := unix.Open(plan.Namespace.LifecycleLock, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Flock(daemonLockFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = unix.Close(daemonLockFD)
+		t.Fatal(err)
+	}
+	service := &prdFenceOrderService{active: true, lockFD: daemonLockFD}
+	if _, err := acquirePRDUpgradeLock(plan); !errors.Is(err, ErrSimpleLaneLockHeld) {
+		t.Fatalf("running PRD lifecycle lock was not held before stop: %v", err)
+	}
+	lockFD, err := stopPRDServiceAndAcquireFenceLock(context.Background(), plan, true, service, func(plan PRDUpgradePlan) (int, error) {
+		service.events = append(service.events, "acquire-lock")
+		return acquirePRDUpgradeLock(plan)
+	})
+	if err != nil {
+		t.Fatalf("stop selected service and acquire its released lifecycle lock: %v", err)
+	}
+	defer releasePRDUpgradeLock(lockFD)
+	want := []string{"status-active", "stop", "status-stopped", "acquire-lock", "status-stopped"}
+	if !reflect.DeepEqual(service.events, want) {
+		t.Fatalf("fence lock lifecycle order=%v, want %v", service.events, want)
+	}
+	if service.active {
+		t.Fatal("service remained active while the fence lifecycle lock was held")
+	}
+}
 
 func TestPRDLegacyBundleDigestBindsHostAndEveryInstalledFile(t *testing.T) {
 	preflight := PRDPreflight{HostID: "linux-host", BinarySHA256: map[string]string{

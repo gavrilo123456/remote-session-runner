@@ -290,3 +290,50 @@ GOTOOLCHAIN=local "$GO" build ./src/cmd/runner-lane ./src/cmd/promote-to ./src/c
 Results by host: Linux `linux/amd64` PASS; Sandbox `linux/arm64` PASS; Factory
 `linux/amd64` PASS. The operation remains blocked at `prepare-cohort` with
 the prepared receipt on Mac only until resumed by the corrected controller.
+
+## Lifecycle-fence ordering correction
+
+The first resume after the prepared-receipt synchronization correction
+advanced past `prepare-cohort` and blocked at the Linux PRD fence with
+`selected lane lifecycle lock is held` (`2026-10-25T09:30:30.637321Z`). This
+was a second lock-order defect: an active PRD service owns the lane lifecycle
+flock for its lifetime, while the cohort fence attempted to acquire that flock
+before asking the selected service to stop. No selector intent or switch was
+recorded by this attempt.
+
+Fresh read-only checks after the block found the same `prepared` receipt for
+operation `9e8f32790a8beeb08dd4451c7f606b67` on all four hosts and no admission
+hold on any host. Linux, Sandbox, and Factory PRD services were active; Mac PRD
+remained stopped following the separately authorized exact-pair recovery. All
+four work inventories were empty, schema was 40, configuration identities
+matched the prepared receipt, and selectors remained on
+`cat-20261023-c01e633`. Existing consistent backups were preserved. The older
+checkpoint's statement that only Mac had the prepared receipt is historical;
+the later four-host inspection supersedes it without changing that history.
+
+The controller now validates the online service/work/configuration/schema and
+backup evidence first, stops only the selected unsuffixed PRD service, then
+acquires the lifecycle lock and rechecks that the service is still stopped.
+It records a fence only after the post-stop database, inventory, selector,
+configuration, schema, and bundle evidence still match. A service restart in
+the stop-to-lock interval causes a fail-closed result. No manual lock release,
+forced fence, or receipt edit is used. The regression models the running
+service's lifetime flock and requires the exact order: active status, stop,
+stopped status, lock acquisition, stopped status.
+
+Mac source gates with Go 1.27.1 (`darwin/arm64`, configured shared caches):
+
+- `make test`: PASS, including `src/internal/laneinstall` and the new lock-order
+  regression.
+- `make vet`: PASS.
+- `make build`: PASS.
+- `make smoke`: PASS.
+- `git diff --check`: PASS.
+
+These source gates do not by themselves resume the live operation. The
+correction is controller-only; sealed service release
+`rr-20261024-43a4e675`, its digest and native bundle hashes remain unchanged.
+After Git delivery and native worker validation, resume the same durable PRD
+operation; refresh any evidence that has expired through supported operation
+controls before its next write. No Dev/QAS service or configuration change is
+part of this correction.

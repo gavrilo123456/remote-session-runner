@@ -150,10 +150,12 @@ backup while the selected service remains active, under the catalog publication
 lock. It must not acquire the lane lifecycle lock, which the running service
 holds for its lifetime. The preflight compares service state, empty-work
 inventory, selector, configuration and schema before and after the backup. The
-later synchronized cohort fence acquires both catalog and lifecycle locks,
-revalidates the evidence, and only then stops the selected service. A lifecycle
-lock conflict during online preflight is a controller defect to fix; do not
-work around it by stopping PRD before its admission hold.
+later synchronized cohort fence rechecks the empty-work and identity evidence,
+stops only the selected unsuffixed service, then acquires its lifecycle lock
+and repeats the proof. PRD holds that lock for the service lifetime, so trying
+to acquire it before stopping the service is a controller defect. If the
+service restarts between stop and lock acquisition, the lock/status checks fail
+closed; do not force the fence or change service configuration to bypass it.
 
 For a new PRD cohort, synchronize the prepared receipt before fencing any
 host. Host-local receipt synchronization validates the captured service

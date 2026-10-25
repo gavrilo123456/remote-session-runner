@@ -257,6 +257,11 @@ func FenceCatalogPRDReplacementHost(ctx context.Context, plan PRDUpgradePlan, se
 	return fenceCatalogPRDHost(ctx, plan, service, receipt, predecessorOperationID)
 }
 
+type catalogPRDCohortFenceService interface {
+	Status(context.Context, PRDUpgradePlan) (bool, error)
+	Stop(context.Context, PRDUpgradePlan) error
+}
+
 func fenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDServiceController,
 	receipt CatalogCohortReceipt, predecessorOperationID string) (CatalogCohortHostFence, error) {
 	if validatePRDPlan(plan) != nil || service == nil || ValidateCatalogCohortReceipt(receipt) != nil ||
@@ -297,11 +302,6 @@ func fenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDS
 		return CatalogCohortHostFence{}, err
 	}
 	defer releaseCatalogRootPublicationLock(catalogFD)
-	laneFD, err := acquirePRDUpgradeLock(plan)
-	if err != nil {
-		return CatalogCohortHostFence{}, err
-	}
-	defer releasePRDUpgradeLock(laneFD)
 	active, err := service.Status(ctx, plan)
 	if err != nil || !validPRDCohortFenceServiceState(host.ServiceActiveAtPreflight, active) {
 		return CatalogCohortHostFence{}, errors.Join(ErrPRDUpgradeGuard, err)
@@ -325,15 +325,15 @@ func fenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDS
 	if err := validatePRDPreflightBackup(ctx, plan, host); err != nil {
 		return CatalogCohortHostFence{}, err
 	}
-	if active {
-		if err := service.Stop(ctx, plan); err != nil {
-			return CatalogCohortHostFence{}, fmt.Errorf("stop selected unsuffixed PRD service for initial cohort fence: %w", err)
-		}
+	// PRD keeps the selected lifecycle flock for the service lifetime. Check
+	// and validate its online state first, stop only this lane, then acquire the
+	// flock and recheck status. A restart in that gap prevents the fence from
+	// being recorded instead of letting an active service race maintenance.
+	laneFD, err := stopPRDServiceAndAcquireFenceLock(ctx, plan, host.ServiceActiveAtPreflight, service, acquirePRDUpgradeLock)
+	if err != nil {
+		return CatalogCohortHostFence{}, err
 	}
-	activeAfter, err := service.Status(ctx, plan)
-	if err != nil || activeAfter {
-		return CatalogCohortHostFence{}, errors.Join(ErrPRDUpgradeGuard, err)
-	}
+	defer releasePRDUpgradeLock(laneFD)
 	post, err := readPRDCatalogProof(ctx, plan, layout)
 	if err != nil || !post.work.Empty() || post.workSHA256 != host.WorkInventorySHA256 || post.schema != host.SchemaVersion ||
 		post.configurationSHA256 != host.ConfigurationSHA256 || post.selectorTarget != host.PreviousTarget ||
@@ -353,6 +353,36 @@ func validPRDCohortFenceServiceState(activeAtPreflight, currentlyActive bool) bo
 	// retryable. The subsequent proof still requires the exact empty inventory,
 	// configuration, selector, binary identity, and backup captured earlier.
 	return !currentlyActive || activeAtPreflight
+}
+
+func stopPRDServiceAndAcquireFenceLock(ctx context.Context, plan PRDUpgradePlan, activeAtPreflight bool,
+	service catalogPRDCohortFenceService, acquire func(PRDUpgradePlan) (int, error)) (int, error) {
+	if service == nil || acquire == nil {
+		return -1, ErrPRDUpgradeGuard
+	}
+	active, err := service.Status(ctx, plan)
+	if err != nil || !validPRDCohortFenceServiceState(activeAtPreflight, active) {
+		return -1, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	if active {
+		if err := service.Stop(ctx, plan); err != nil {
+			return -1, fmt.Errorf("stop selected unsuffixed PRD service for initial cohort fence: %w", err)
+		}
+	}
+	activeAfterStop, err := service.Status(ctx, plan)
+	if err != nil || activeAfterStop {
+		return -1, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	laneFD, err := acquire(plan)
+	if err != nil {
+		return -1, err
+	}
+	activeWithLock, err := service.Status(ctx, plan)
+	if err != nil || activeWithLock {
+		releasePRDUpgradeLock(laneFD)
+		return -1, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	return laneFD, nil
 }
 
 func validatePRDPreflightBackup(ctx context.Context, plan PRDUpgradePlan, preflight CatalogCohortHostPreflight) error {
