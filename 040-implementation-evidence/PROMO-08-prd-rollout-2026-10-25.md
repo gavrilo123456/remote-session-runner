@@ -371,3 +371,12 @@ The only test output warning was the existing duplicate `-lproc` linker
 warning on macOS; there were no test failures. Git delivery and worker-native
 controller checks are recorded after the commit below. No selector has been
 changed by this correction.
+
+Controller correction source commit `0b1bd1735def0fccd64f8699d672fd38b0e08099`
+was pushed to primary Gitea and independently verified at the same SHA on the
+automatic GitHub `dev` mirror. Linux-host, Sandbox-host, and Factory-sandbox
+were clean on `dev` before their fast-forwards and each now resolves to that
+SHA with a clean worktree. On all three workers, Go 1.27.1 passed the focused
+prepare-only/resume subprocess regression, `go vet ./src/internal/releaseflow`,
+and `go build ./src/cmd/runner-lane ./src/cmd/promote-to ./src/cmd/runner-release`.
+The service release and its four sealed bundles remain unchanged.
