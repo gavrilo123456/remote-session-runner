@@ -472,3 +472,71 @@ fresh PRD hold, selector/config/schema, systemd, exact-pair, inventory,
 backup-hash, and capacity check. This batch correction has passed source and
 native Linux validation, but recovery and all PRD acceptance gates are still
 pending; no acceptance is claimed from the tests or binary build.
+
+## Exact-pair recovery and resumed PRD acceptance checkpoint
+
+The follow-on process-proof correction and recovery have now completed. Source
+commit `54c1cd5f59bc8f6676037af23cbf6d5e195cf85e`, delivery commit
+`5f421071ddea7094b655f28ca539759356895e51`, and the supported lost-session
+recovery are recorded above. The original Linux probe remains truthfully lost
+with unknown execution outcome; its commandless history was preserved and
+only its exact reservation was released. No replay or success claim occurred.
+
+The later retry of PRD operation `63471d41af07b7afaf577d6a0989cc03` used the
+current controller at `adc30d4bd835821ba0832aec14f43e1ef8cfc98b`, approval
+SHA-256
+`d1cfc6711c75039554e48cbe91bfbb3c678ffc391716f0cb062a69edc4d0f4cb`, and
+the unchanged sealed release `rr-20261024-43a4e675` (digest
+`093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69`). The
+operation record is blocked at acceptance event 21 (`2026-10-25T23:19:26Z`);
+its last error is:
+
+```text
+factory-sandbox direct-mtls functional probe: catalog-probe-once result_decode=empty stdout; helper_stderr="unrecognized helper stderr; content omitted"; helper_exit_code=1: release workflow record is invalid or corrupted
+```
+
+The exact result-decoding category is `empty stdout`, exit code 1. The
+controller's allowlist did not retain the helper's unrecognized stderr text.
+The supported read-only `catalog-probe-prepare --observe-existing` query on
+Factory then showed the exact operation/host/PRD/direct-mTLS scope in state
+`ready`, with no job or intent ID. Therefore that probe was not accepted and
+must not be replayed. Its recorded scope used environment
+`factory-sandbox-dev`, Factory PRD configuration SHA-256
+`271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699`, and
+idempotency key `catalog-probe-63471d41af07b7afaf577d6a0989cc03-factory-sandbox`.
+
+The failure was isolated to Factory's external direct-mTLS route, not the
+privileged `/proc` recovery reader or result decoding. A read-only
+`catalog-probe-once --mode fence-direct` returned
+`direct fence readiness failed: HTTP 0`. A normal verified HTTPS GET to
+`https://145.241.255.66:8443/health/ready` failed with curl exit 7,
+`Couldn't connect to server`; no `-k` or insecure TLS option was used. Factory
+reported `runnerd.service` active with zero restarts and `runnerd` listening
+on its private address `10.0.0.30:8443` (the PRD endpoint), alongside the
+expected Dev/QAS listeners on 8444/8445. A temporary SSH-forwarded diagnostic
+GET to that same private listener completed TLS 1.3 certificate/hostname
+verification with the configured CA and client certificate and returned HTTP
+200. This tunnel check is diagnostic only and is not direct-route acceptance.
+
+Factory's existing host input rules allow TCP 8443 only from
+`31.61.247.138` and `81.95.203.65`, followed by a host-prohibited reject for
+other new inbound traffic. The Mac's current direct, no-proxy egress was
+measured separately and is not in that allowlist; its exact address is kept
+out of this mirrored repository evidence. This identifies the immediate
+blocker as the Factory host ingress allowlist; no host or provider firewall
+rule was changed. The required owner/operator action is to authorize adding
+the current Mac egress address as a source for TCP 8443 on Factory only,
+preserving the existing entries and all Dev/QAS rules. If that source address
+changes, refresh it before applying the rule.
+
+All four PRD selectors still identify the sealed release and the operation's
+admission hold remains closed. PRD services were running for the acceptance
+attempt; QAS, Dev, mailbox routing, service configuration, installed bytes,
+databases, and selectors were not changed by this failed retry. PRD functional
+acceptance, BUG-026 exit-1 acceptance, the dedicated mailbox test, and
+admission release remain **NOT PASS / NOT RUN**. After the exact ingress rule
+is approved and applied, refresh operation/host state, let the expired unused
+Factory scope be replaced through the supported controller, and resume this
+same operation with the still-valid release-bound approval and a fresh
+acceptance scope. Do not replay the prior Factory scope or use an SSH tunnel as
+a substitute for direct-mTLS acceptance.
