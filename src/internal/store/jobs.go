@@ -512,7 +512,9 @@ func (s *AuthorityStore) MarkCreatingDirectProbeLost(ctx context.Context, jobID 
 			if err := connection.QueryRowContext(ctx, `
 SELECT reason, new_state FROM exec_session_lifecycle
 WHERE session_id = ? ORDER BY lifecycle_sequence DESC LIMIT 1
-	`, string(validatedSessionID)).Scan(&lifecycleReason, &lifecycleState); err != nil || lifecycleReason != reason || lifecycleState != string(domain.SessionStateLost) {
+	`, string(validatedSessionID)).Scan(&lifecycleReason, &lifecycleState); err != nil ||
+				(lifecycleReason != reason && !(lifecycleReason == audit.ReasonRuntimeCleanupUnconfirmed && directProbeStoppedLossHistory(ctx, connection, validatedSessionID))) ||
+				lifecycleState != string(domain.SessionStateLost) {
 				return struct {
 					job     JobRecord
 					session SessionRecord
@@ -522,6 +524,70 @@ WHERE session_id = ? ORDER BY lifecycle_sequence DESC LIMIT 1
 				job     JobRecord
 				session SessionRecord
 			}{job, session}, nil
+		}
+		if job.Phase == JobPhaseCreatingSession && session.State == domain.SessionStateLost &&
+			directProbeStoppedLossHistory(ctx, connection, validatedSessionID) {
+			reservation, err := readReservationOnConnection(ctx, connection, validatedSessionID)
+			if err != nil || reservation.CleanupConfirmedAt != nil || reservation.ReleasedAt != nil {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, ErrProbeDispositionNotEligible
+			}
+			var jobCount, commandCount, eventCount, slotCount int
+			if err := connection.QueryRowContext(ctx, "SELECT COUNT(*) FROM exec_jobs WHERE session_id = ?", string(validatedSessionID)).Scan(&jobCount); err != nil || jobCount != 1 {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, ErrProbeDispositionNotEligible
+			}
+			if err := connection.QueryRowContext(ctx, "SELECT COUNT(*) FROM exec_commands WHERE session_id = ?", string(validatedSessionID)).Scan(&commandCount); err != nil || commandCount != 0 {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, ErrProbeDispositionNotEligible
+			}
+			if err := connection.QueryRowContext(ctx, "SELECT COUNT(*) FROM exec_command_events WHERE command_id = ?", string(validatedCommandID)).Scan(&eventCount); err != nil || eventCount != 0 {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, ErrProbeDispositionNotEligible
+			}
+			if err := connection.QueryRowContext(ctx, "SELECT COUNT(*) FROM exec_command_slots WHERE command_id = ?", string(validatedCommandID)).Scan(&slotCount); err != nil || slotCount != 0 {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, ErrProbeDispositionNotEligible
+			}
+			updated, err := connection.ExecContext(ctx, `
+UPDATE exec_jobs SET phase = ?, updated_at = ?
+WHERE job_id = ? AND session_id = ? AND command_id = ? AND phase = ?
+`, string(JobPhaseLost), formatStoredTime(s.now().UTC()), string(validatedJobID), string(validatedSessionID),
+				string(validatedCommandID), string(JobPhaseCreatingSession))
+			if err != nil {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, fmt.Errorf("reconcile exact probe job after stopped-session loss: %w", err)
+			}
+			changed, err := updated.RowsAffected()
+			if err != nil || changed != 1 {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, ErrProbeDispositionNotEligible
+			}
+			updatedJob, err := readJobOnConnection(ctx, connection, validatedJobID)
+			if err != nil {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, err
+			}
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{updatedJob, session}, nil
 		}
 		if job.Phase != JobPhaseCreatingSession || session.State != domain.SessionStateCreating {
 			return struct {
@@ -608,6 +674,43 @@ WHERE job_id = ? AND session_id = ? AND command_id = ? AND phase = ?
 		}{updatedJob, updatedSession}, nil
 	})
 	return result.job, result.session, err
+}
+
+// directProbeStoppedLossHistory recognizes only the shutdown path that leaves
+// this exact pre-start probe session lost while its job checkpoint is still
+// creating_session. It is read-only; callers reconcile the job in the same
+// immediate transaction after validating the exact probe and reservation.
+func directProbeStoppedLossHistory(ctx context.Context, connection *sql.Conn, sessionID domain.SessionID) bool {
+	rows, err := connection.QueryContext(ctx, `
+SELECT lifecycle_sequence, previous_state, new_state, reason
+FROM exec_session_lifecycle WHERE session_id = ? ORDER BY lifecycle_sequence DESC LIMIT 2
+`, string(sessionID))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	type lifecycle struct {
+		sequence int64
+		previous sql.NullString
+		state    string
+		reason   string
+	}
+	var entries []lifecycle
+	for rows.Next() {
+		var item lifecycle
+		if err := rows.Scan(&item.sequence, &item.previous, &item.state, &item.reason); err != nil {
+			return false
+		}
+		entries = append(entries, item)
+	}
+	if rows.Err() != nil || len(entries) != 2 {
+		return false
+	}
+	lost, closing := entries[0], entries[1]
+	return lost.sequence == closing.sequence+1 && lost.previous.Valid && lost.previous.String == string(domain.SessionStateClosing) &&
+		lost.state == string(domain.SessionStateLost) && lost.reason == audit.ReasonRuntimeCleanupUnconfirmed &&
+		closing.state == string(domain.SessionStateClosing) && closing.previous.Valid && closing.previous.String == string(domain.SessionStateCreating) &&
+		closing.reason == "close_requested"
 }
 
 func validateJobAcceptance(input JobAcceptance) (JobAcceptance, error) {

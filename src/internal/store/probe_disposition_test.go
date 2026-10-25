@@ -55,6 +55,78 @@ func TestMarkCreatingDirectProbeLostPreservesUnknownOutcomeAndCapacity(t *testin
 	}
 }
 
+func TestMarkCreatingDirectProbeLostReconcilesServiceStopLifecycle(t *testing.T) {
+	ctx := context.Background()
+	authority := pCommandlessLostRecoveryStore(t)
+	jobID := domain.JobID("job-7fae7172e801f2e22e7d6fce6014403d")
+	sessionID := domain.SessionID("sess-548ea3986a2b736f9643b2b402188830")
+	commandID := domain.CommandID("cmd-7dc98e864e7abd3a9c2596c3c4fe9399")
+	key := "catalog-probe-63471d41af07b7afaf577d6a0989cc03-linux-host"
+	seedCreatingDirectProbe(t, authority, jobID, sessionID, commandID, key, catalogMaintenanceProbeScript)
+	if _, err := authority.TransitionSession(ctx, sessionID, domain.SessionStateClosing, "close_requested"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.TransitionSession(ctx, sessionID, domain.SessionStateLost, audit.ReasonRuntimeCleanupUnconfirmed); err != nil {
+		t.Fatal(err)
+	}
+
+	job, session, err := authority.MarkCreatingDirectProbeLost(ctx, jobID, sessionID, commandID, key,
+		"linux-dev", "tomasz.walczuk", CatalogProbeOwnerAbandonedReason)
+	if err != nil || job.Phase != JobPhaseLost || session.State != domain.SessionStateLost {
+		t.Fatalf("reconcile stopped probe job=%+v session=%+v err=%v", job, session, err)
+	}
+	if job.CommandState != nil || job.ExitCode != nil || job.FinalEventSequence != nil || job.OutputComplete || job.OutputTruncated ||
+		job.OutputUnavailableReason != "" || job.TeardownState != JobTeardownPending || job.TeardownReason != "" {
+		t.Fatalf("reconciliation fabricated command outcome or cleanup: %+v", job)
+	}
+	lifecycle, err := authority.ListSessionLifecycle(ctx, sessionID)
+	if err != nil || len(lifecycle) != 3 || lifecycle[1].Reason != "close_requested" ||
+		lifecycle[2].Reason != audit.ReasonRuntimeCleanupUnconfirmed || lifecycle[2].NewState != domain.SessionStateLost {
+		t.Fatalf("existing stop history changed: lifecycle=%+v err=%v", lifecycle, err)
+	}
+	reservation, err := authority.GetSessionReservation(ctx, sessionID)
+	if err != nil || reservation.CleanupConfirmedAt != nil || reservation.ReleasedAt != nil {
+		t.Fatalf("reconciliation released capacity before runtime proof: reservation=%+v err=%v", reservation, err)
+	}
+	if commands, err := authority.ListSessionCommands(ctx, sessionID); err != nil || len(commands) != 0 {
+		t.Fatalf("reconciliation created or found commands: commands=%+v err=%v", commands, err)
+	}
+
+	job, session, err = authority.MarkCreatingDirectProbeLost(ctx, jobID, sessionID, commandID, key,
+		"linux-dev", "tomasz.walczuk", CatalogProbeOwnerAbandonedReason)
+	if err != nil || job.Phase != JobPhaseLost || session.State != domain.SessionStateLost {
+		t.Fatalf("retry was not idempotent: job=%+v session=%+v err=%v", job, session, err)
+	}
+	lifecycle, err = authority.ListSessionLifecycle(ctx, sessionID)
+	if err != nil || len(lifecycle) != 3 {
+		t.Fatalf("retry changed preserved lifecycle: lifecycle=%+v err=%v", lifecycle, err)
+	}
+}
+
+func TestMarkCreatingDirectProbeLostRejectsUnrelatedStoppedLossHistory(t *testing.T) {
+	ctx := context.Background()
+	authority := pCommandlessLostRecoveryStore(t)
+	jobID := domain.JobID("job-7fae7172e801f2e22e7d6fce6014403d")
+	sessionID := domain.SessionID("sess-548ea3986a2b736f9643b2b402188830")
+	commandID := domain.CommandID("cmd-7dc98e864e7abd3a9c2596c3c4fe9399")
+	key := "catalog-probe-63471d41af07b7afaf577d6a0989cc03-linux-host"
+	seedCreatingDirectProbe(t, authority, jobID, sessionID, commandID, key, catalogMaintenanceProbeScript)
+	if _, err := authority.TransitionSession(ctx, sessionID, domain.SessionStateClosing, "close_requested"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.TransitionSession(ctx, sessionID, domain.SessionStateLost, "unrelated_loss_reason"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := authority.MarkCreatingDirectProbeLost(ctx, jobID, sessionID, commandID, key,
+		"linux-dev", "tomasz.walczuk", CatalogProbeOwnerAbandonedReason); !errors.Is(err, ErrProbeDispositionNotEligible) {
+		t.Fatalf("unrelated loss history error=%v, want %v", err, ErrProbeDispositionNotEligible)
+	}
+	job, err := authority.GetJob(ctx, jobID)
+	if err != nil || job.Phase != JobPhaseCreatingSession {
+		t.Fatalf("rejected reconciliation changed job=%+v err=%v", job, err)
+	}
+}
+
 func TestMarkCreatingDirectProbeLostRejectsMismatchedEvidence(t *testing.T) {
 	tests := []struct {
 		name   string
