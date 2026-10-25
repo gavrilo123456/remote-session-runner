@@ -216,3 +216,58 @@ all three reached the exact mirror SHA. These checks did not alter services
 or the sealed release. A subsequent evidence-only commit will be
 fast-forwarded to the workers; these code results remain tied to source commit
 `8401e84705b7fec54db37ad89ce5957280b5b7e8`.
+
+## Prepared-receipt synchronization correction
+
+The first resume after the preflight-lock fix reached the next prerequisite
+and stopped at `prepare-cohort`, before an admission hold or selector change.
+At `2026-10-25T08:52:57Z`, the toolkit reported:
+
+`linux-host active service has no matching selected-lane admission hold: a selected-lane cohort admission hold already exists`
+
+This message did not describe a pre-existing host hold. Read-only
+`catalog-cohort discover` on Linux, Sandbox, Factory, and Mac reported no
+admission hold. Receipt inspection found operation
+`9e8f32790a8beeb08dd4451c7f606b67` only on Mac, at `prepared`; the three worker
+copies were absent. No selector intent/switch was recorded. Mac PRD remained
+stopped from the separately authorized exact-pair recovery; other PRD
+services were not stopped by this failed attempt.
+
+The cause was controller sequencing. `PrepareCohort` creates and synchronizes
+the initial prepared receipt before it records per-host fences. The generic
+receipt-sync wrapper tried to stop every active peer first, but its stop guard
+correctly requires the matching admission hold, which cannot exist until after
+the prepared receipt has been synchronized and the ordered fences complete.
+The correction allows only a `prd` receipt at `prepared` to be synchronized
+without the wrapper stop step. The supported host-local sync still validates
+the captured service-active state, empty inventory, selector, configuration,
+schema, and consistent backup. Fence and later receipt-sync paths retain their
+existing stopped/empty and matching-operation guards. No receipt, selector,
+service, database, configuration, mailbox path, or sealed bundle was edited by
+the correction.
+
+Regression `TestSyncPreparedPRDReceiptBeforeFencingActivePeers` proves the
+prepared receipt synchronizes to all four hosts while the three workers remain
+active and Mac remains stopped. Existing regressions continue to prove that a
+held Dev receipt is preceded by guarded stops and that retained work blocks
+all stops/synchronization. Focused tests passed:
+
+`go test ./src/internal/releaseflow -run 'TestSyncReceipt|TestSyncPreparedPRDReceipt' -count=1`
+
+Mac Go 1.27.1 full source gates after this correction all passed:
+
+- `make test` — PASS (`./...`; the existing macOS linker emitted duplicate
+  `-lproc` warnings for two packages, with no test failures).
+- `make vet` — PASS.
+- `make build` — PASS.
+- `make smoke` — PASS.
+- `gofmt` and `git diff --check` — PASS.
+
+The correction is controller-only. It does not alter release
+`rr-20261024-43a4e675`, digest
+`093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69`, its
+per-host bundles, or prior Dev/QAS acceptance. It must be delivered to all
+three workers and natively validated there before resuming the existing PRD
+operation. Preserve that operation and Mac's prepared receipt; do not create a
+new operation or rerun the already-completed backup/preflight phase unless a
+fresh guard proves its evidence expired or inconsistent.

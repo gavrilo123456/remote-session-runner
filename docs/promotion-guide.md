@@ -155,6 +155,16 @@ revalidates the evidence, and only then stops the selected service. A lifecycle
 lock conflict during online preflight is a controller defect to fix; do not
 work around it by stopping PRD before its admission hold.
 
+For a new PRD cohort, synchronize the prepared receipt before fencing any
+host. Host-local receipt synchronization validates the captured service
+state, empty inventory, selector, configuration, schema, and backup identity;
+an unfenced host must still match its recorded active-at-preflight state. The
+controller must not stop active peers merely to publish this initial prepared
+receipt. It then fences and stops hosts in the documented order, synchronizing
+each transition under the normal stopped/empty checks. Publish the held receipt
+only after all selected PRD services are stopped. Later receipt synchronization
+retains the stopped/empty guard.
+
 ## Inspect, resume, or recover
 
 ```sh

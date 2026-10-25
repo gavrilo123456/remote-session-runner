@@ -25,6 +25,7 @@ type receiptSyncHostState struct {
 }
 
 type receiptSyncFixture struct {
+	lane     string
 	receipt  laneinstall.CatalogCohortReceipt
 	states   map[string]receiptSyncHostState
 	commands []string
@@ -45,16 +46,16 @@ func (f *receiptSyncFixture) run(_ context.Context, host string, args []string, 
 	state := f.states[host]
 	switch args[0] {
 	case "catalog-work-inventory":
-		if value("--host") != host || value("--lane") != "dev" {
+		if value("--host") != host || value("--lane") != f.lane {
 			return nil, ErrInvalidInput
 		}
-		report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLaneDev,
+		report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLane(f.lane),
 			ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ServiceActive: state.active,
 			SelectorTarget: state.target, BundleSHA256: state.bundle, ConfigurationSHA256: state.config,
 			DatabaseSchema: state.schema, WorkInventory: state.work, WorkInventoryEmpty: state.work.Empty()}
 		return json.Marshal(report)
 	case "stop":
-		if value("--host") != host || value("--lane") != "dev" {
+		if value("--host") != host || value("--lane") != f.lane {
 			return nil, ErrInvalidInput
 		}
 		f.commands = append(f.commands, "stop:"+host)
@@ -62,13 +63,13 @@ func (f *receiptSyncFixture) run(_ context.Context, host string, args []string, 
 		f.states[host] = state
 		return []byte("stopped\n"), nil
 	case "catalog-cohort":
-		if value("--host") != host || value("--lane") != "dev" {
+		if value("--host") != host || value("--lane") != f.lane {
 			return nil, ErrInvalidInput
 		}
 		switch value("--action") {
 		case "discover":
 			held := f.receipt.Stage != laneinstall.CatalogCohortReleased
-			view := promotionAdmissionView{HostID: host, Lane: config.ReleaseLaneDev, AdmissionHeld: held}
+			view := promotionAdmissionView{HostID: host, Lane: config.ReleaseLane(f.lane), AdmissionHeld: held}
 			if held {
 				view.OperationID = f.receipt.OperationID
 				receipt := f.receipt
@@ -82,14 +83,14 @@ func (f *receiptSyncFixture) run(_ context.Context, host string, args []string, 
 			if value("--receipt-file") != "@promo-stdin@" || len(stdin) == 0 || stdin[len(stdin)-1] != '\n' {
 				return nil, ErrInvalidInput
 			}
-			for _, hostState := range f.states {
-				if hostState.active {
-					return nil, errors.New("receipt was synchronized while a selected lane service remained active")
-				}
-			}
 			var receipt laneinstall.CatalogCohortReceipt
 			if json.Unmarshal(stdin, &receipt) != nil || receipt.OperationID != f.receipt.OperationID {
 				return nil, ErrInvalidInput
+			}
+			for _, hostState := range f.states {
+				if hostState.active && !(f.lane == string(config.ReleaseLanePRD) && receipt.Stage == laneinstall.CatalogCohortPrepared) {
+					return nil, errors.New("receipt was synchronized while a selected lane service remained active")
+				}
 			}
 			f.commands = append(f.commands, "sync:"+host)
 			f.receipt = receipt
@@ -103,9 +104,14 @@ func (f *receiptSyncFixture) run(_ context.Context, host string, args []string, 
 }
 
 func newReceiptSyncFixture(t *testing.T, activeHost string, nonEmptyHost string) *receiptSyncFixture {
+	return newReceiptSyncFixtureForLane(t, "dev", activeHost, nonEmptyHost)
+}
+
+func newReceiptSyncFixtureForLane(t *testing.T, lane string, activeHost string, nonEmptyHost string) *receiptSyncFixture {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
-	receipt := promotionTestCohortReceipt(t, now, strings.Repeat("8", 32), "v2.0.0", nil, true)
+	held := lane != string(config.ReleaseLanePRD)
+	receipt := promotionTestCohortReceipt(t, now, strings.Repeat("8", 32), "v2.0.0", nil, held)
 	emptyWorkSHA := (laneinstall.CatalogWorkInventory{}).SHA256()
 	states := make(map[string]receiptSyncHostState, len(HostOrder))
 	for index, host := range HostOrder {
@@ -114,12 +120,14 @@ func newReceiptSyncFixture(t *testing.T, activeHost string, nonEmptyHost string)
 		receipt.Hosts[index].WorkInventorySHA256 = emptyWorkSHA
 		state := receiptSyncHostState{active: host == activeHost, target: receipt.Hosts[index].PreviousTarget,
 			bundle: receipt.Hosts[index].PreviousBundleSHA256, config: configSHA, schema: store.CurrentSchemaVersion}
+		receipt.Hosts[index].ServiceActiveAtPreflight = host == activeHost
 		if host == nonEmptyHost {
 			state.work.ActiveSessions = 1
 		}
 		states[host] = state
 	}
-	return &receiptSyncFixture{receipt: receipt, states: states}
+	receipt.Lane = config.ReleaseLane(lane)
+	return &receiptSyncFixture{lane: lane, receipt: receipt, states: states}
 }
 
 func TestSyncReceiptStopsHeldEmptyLaneBeforePublishingReceipt(t *testing.T) {
@@ -160,6 +168,39 @@ func TestSyncReceiptRefusesWorkBeforeStoppingAnyLane(t *testing.T) {
 	for _, command := range fixture.commands {
 		if strings.HasPrefix(command, "stop:") || strings.HasPrefix(command, "sync:") {
 			t.Fatalf("mutation occurred before all-host empty-work checks: %v", fixture.commands)
+		}
+	}
+}
+
+func TestSyncPreparedPRDReceiptBeforeFencingActivePeers(t *testing.T) {
+	fixture := newReceiptSyncFixtureForLane(t, string(config.ReleaseLanePRD), "linux-host", "")
+	// Mac was already stopped for the exact-pair recovery; the three workers
+	// remain active until their individual admission fences are recorded.
+	for index, host := range HostOrder {
+		state := fixture.states[host]
+		state.active = host != "mac-control-plane"
+		fixture.states[host] = state
+		fixture.receipt.Hosts[index].ServiceActiveAtPreflight = state.active
+	}
+	backend := &NativePromotionBackend{laneCommandRunner: fixture.run}
+
+	if err := backend.syncReceiptFrom(context.Background(), "mac-control-plane", "prd", fixture.receipt.OperationID); err != nil {
+		t.Fatalf("synchronize prepared PRD receipt before fencing: %v", err)
+	}
+	if len(fixture.commands) != len(HostOrder) {
+		t.Fatalf("prepared receipt sync should publish once to each host without stopping peers: %v", fixture.commands)
+	}
+	for index, host := range HostOrder {
+		if fixture.commands[index] != "sync:"+host {
+			t.Fatalf("unexpected command order, want sync-only cohort publication: %v", fixture.commands)
+		}
+	}
+	for host, state := range fixture.states {
+		if host == "mac-control-plane" && state.active {
+			t.Fatal("Mac unexpectedly restarted during prepared receipt synchronization")
+		}
+		if host != "mac-control-plane" && !state.active {
+			t.Fatalf("%s was stopped before its initial admission fence", host)
 		}
 	}
 }

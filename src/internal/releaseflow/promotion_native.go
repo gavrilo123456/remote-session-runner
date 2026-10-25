@@ -1855,8 +1855,16 @@ func (b *NativePromotionBackend) syncReceiptFrom(ctx context.Context, source, la
 			needsReconciliation = true
 		}
 	}
-	if err := b.stopCohortForReceiptSync(ctx, lane, view.Receipt); err != nil {
-		return err
+	// A freshly prepared PRD receipt must be distributed before the per-host
+	// admission fences can be recorded. The host-local sync command validates
+	// the captured empty-work, configuration, schema, selector, and
+	// ServiceActiveAtPreflight identities, so synchronization itself does not
+	// need to stop those still-active peers. Once fencing starts, retain the
+	// stopped/empty guard for every subsequent synchronization.
+	if !(lane == string(config.ReleaseLanePRD) && view.Receipt.Stage == laneinstall.CatalogCohortPrepared) {
+		if err := b.stopCohortForReceiptSync(ctx, lane, view.Receipt); err != nil {
+			return err
+		}
 	}
 	if needsReconciliation {
 		if len(histories) < 2 {
