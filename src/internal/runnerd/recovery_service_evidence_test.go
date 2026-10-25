@@ -419,8 +419,8 @@ func TestRunnerdProcScanUsesBoundedPrivilegedReadlinkForPermissionDeniedMetadata
 	if err := runnerdProcessesReferencePathsWith(fs, procRoot, 1001, []string{"/home/ubuntu/prd"}, nil); err != nil {
 		t.Fatalf("permission-denied proc metadata was not recovered through bounded privileged readlink: %v", err)
 	}
-	if reads == 0 || reads > maxPrivilegedProcLinkReads {
-		t.Fatalf("privileged read count=%d, want 1..%d", reads, maxPrivilegedProcLinkReads)
+	if reads == 0 || reads > maxPrivilegedProcReads {
+		t.Fatalf("privileged read count=%d, want 1..%d", reads, maxPrivilegedProcReads)
 	}
 	if err := validateRunnerdProcLinkPath(procRoot, runnerdProcIdentity{PID: 987, StartTime: 987}, filepath.Join(processRoot, "cmdline")); err == nil {
 		t.Fatal("privileged metadata reader accepted a non-link proc path")
@@ -465,7 +465,7 @@ func TestRunnerdProcScanUsesBoundedPrivilegedDescriptorEnumeration(t *testing.T)
 		return base.readDir(path)
 	}
 	reads := 0
-	fs.privilegedReadFDs = func(ctx context.Context, root string, identity runnerdProcIdentity, path string) ([]string, error) {
+	fs.privilegedReadFDMetadata = func(ctx context.Context, root string, identity runnerdProcIdentity, path string) ([]runnerdProcFDMetadata, error) {
 		reads++
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -474,13 +474,54 @@ func TestRunnerdProcScanUsesBoundedPrivilegedDescriptorEnumeration(t *testing.T)
 			t.Fatalf("privileged descriptor listing was not bound to the inspected process: root=%q identity=%+v path=%q", root, identity, path)
 		}
 		entries, err := base.readDir(path)
-		return entryNames(entries), err
+		if err != nil {
+			return nil, err
+		}
+		metadata := make([]runnerdProcFDMetadata, 0, len(entries))
+		for _, entry := range entries {
+			target, readErr := base.readlink(filepath.Join(path, entry.Name()))
+			if readErr != nil {
+				return nil, readErr
+			}
+			metadata = append(metadata, runnerdProcFDMetadata{Name: entry.Name(), Target: target})
+		}
+		return metadata, nil
 	}
 	if err := runnerdProcessesReferencePathsWith(fs, procRoot, 1001, []string{"/home/ubuntu/prd"}, nil); err != nil {
 		t.Fatalf("permission-denied descriptor directory was not inspected through bounded privileged metadata: %v", err)
 	}
 	if reads != 4 { // before/after each of the two stable process-table scans
 		t.Fatalf("privileged descriptor directory reads=%d, want 4", reads)
+	}
+}
+
+func TestRunnerdProcScanUsesPrivilegedDescriptorMetadataWhenLinkIsDenied(t *testing.T) {
+	procRoot := t.TempDir()
+	processRoot := processFixture(t, procRoot, 987, 1001, "idle")
+	if err := os.Symlink("/tmp/fixture-7", filepath.Join(processRoot, "fd", "7")); err != nil {
+		t.Fatal(err)
+	}
+	base := realRunnerdProcFS()
+	fs := base
+	fs.readlink = func(path string) (string, error) {
+		if filepath.Base(path) == "7" {
+			return "", syscall.EACCES
+		}
+		return base.readlink(path)
+	}
+	reads := 0
+	fs.privilegedReadFDMetadata = func(ctx context.Context, root string, identity runnerdProcIdentity, path string) ([]runnerdProcFDMetadata, error) {
+		reads++
+		if root != procRoot || identity != (runnerdProcIdentity{PID: 987, StartTime: 987}) || filepath.Clean(path) != filepath.Join(processRoot, "fd") {
+			t.Fatalf("privileged descriptor metadata was not bound to the inspected process: root=%q identity=%+v path=%q", root, identity, path)
+		}
+		return []runnerdProcFDMetadata{{Name: "7", Target: "/tmp/fixture-7"}}, ctx.Err()
+	}
+	if err := runnerdProcessesReferencePathsWith(fs, procRoot, 1001, []string{"/home/ubuntu/prd"}, nil); err != nil {
+		t.Fatalf("permission-denied descriptor target was not inspected through bounded privileged metadata: %v", err)
+	}
+	if reads != 4 {
+		t.Fatalf("privileged descriptor metadata reads=%d, want 4", reads)
 	}
 }
 
@@ -498,8 +539,8 @@ func TestRunnerdProcScanAppliesPRDPathChecksToPrivilegedDescriptorTargets(t *tes
 		}
 		return base.readDir(path)
 	}
-	fs.privilegedReadFDs = func(context.Context, string, runnerdProcIdentity, string) ([]string, error) {
-		return []string{"7"}, nil
+	fs.privilegedReadFDMetadata = func(context.Context, string, runnerdProcIdentity, string) ([]runnerdProcFDMetadata, error) {
+		return []runnerdProcFDMetadata{{Name: "7", Target: "/home/ubuntu/.local/share/remote-session-runner/state/remote.db"}}, nil
 	}
 	err := runnerdProcessesReferencePathsWith(fs, procRoot, 1001, []string{"/home/ubuntu/.local/share/remote-session-runner"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "holds a descriptor under the selected PRD paths") {
@@ -524,12 +565,12 @@ func TestRunnerdProcScanRejectsChangingDescriptorInventory(t *testing.T) {
 		return base.readDir(path)
 	}
 	reads := 0
-	fs.privilegedReadFDs = func(context.Context, string, runnerdProcIdentity, string) ([]string, error) {
+	fs.privilegedReadFDMetadata = func(context.Context, string, runnerdProcIdentity, string) ([]runnerdProcFDMetadata, error) {
 		reads++
 		if reads%2 == 1 {
-			return []string{"3"}, nil
+			return []runnerdProcFDMetadata{{Name: "3", Target: "/tmp/fixture-3"}}, nil
 		}
-		return []string{"4"}, nil
+		return []runnerdProcFDMetadata{{Name: "4", Target: "/tmp/fixture-4"}}, nil
 	}
 	err := runnerdProcessesReferencePathsWith(fs, procRoot, 1001, []string{"/home/ubuntu/prd"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "kept changing") {
@@ -545,26 +586,26 @@ func TestRunnerdProcFDMetadataRejectsUnavailableMalformedAndReusedIdentity(t *te
 		{
 			name: "unavailable privilege",
 			setup: func(_ *testing.T, fs *runnerdProcFS, _ string) {
-				fs.privilegedReadFDs = nil
+				fs.privilegedReadFDMetadata = nil
 			},
 		},
 		{
 			name: "malformed names",
 			setup: func(_ *testing.T, fs *runnerdProcFS, _ string) {
-				fs.privilegedReadFDs = func(context.Context, string, runnerdProcIdentity, string) ([]string, error) {
-					return []string{"3", "not-a-descriptor"}, nil
+				fs.privilegedReadFDMetadata = func(context.Context, string, runnerdProcIdentity, string) ([]runnerdProcFDMetadata, error) {
+					return []runnerdProcFDMetadata{{Name: "3", Target: "/tmp/3"}, {Name: "not-a-descriptor", Target: "/tmp/no"}}, nil
 				}
 			},
 		},
 		{
 			name: "truncated inventory",
 			setup: func(_ *testing.T, fs *runnerdProcFS, _ string) {
-				names := make([]string, maxPrivilegedProcFDEntries+1)
-				for i := range names {
-					names[i] = strconv.Itoa(i)
+				metadata := make([]runnerdProcFDMetadata, maxPrivilegedProcFDEntries+1)
+				for i := range metadata {
+					metadata[i] = runnerdProcFDMetadata{Name: strconv.Itoa(i), Target: "/tmp/fixture"}
 				}
-				fs.privilegedReadFDs = func(context.Context, string, runnerdProcIdentity, string) ([]string, error) {
-					return names, nil
+				fs.privilegedReadFDMetadata = func(context.Context, string, runnerdProcIdentity, string) ([]runnerdProcFDMetadata, error) {
+					return metadata, nil
 				}
 			},
 		},
@@ -572,12 +613,12 @@ func TestRunnerdProcFDMetadataRejectsUnavailableMalformedAndReusedIdentity(t *te
 			name: "PID reuse during listing",
 			setup: func(t *testing.T, fs *runnerdProcFS, processRoot string) {
 				startTime := uint64(987)
-				fs.privilegedReadFDs = func(context.Context, string, runnerdProcIdentity, string) ([]string, error) {
+				fs.privilegedReadFDMetadata = func(context.Context, string, runnerdProcIdentity, string) ([]runnerdProcFDMetadata, error) {
 					startTime++
 					if err := os.WriteFile(filepath.Join(processRoot, "stat"), fixtureProcStat(987, 1, startTime), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					return []string{}, nil
+					return []runnerdProcFDMetadata{}, nil
 				}
 			},
 		},
@@ -605,11 +646,11 @@ func TestRunnerdProcFDMetadataRejectsUnavailableMalformedAndReusedIdentity(t *te
 	}
 	for _, output := range [][]byte{
 		[]byte("3"),
-		[]byte("3\nnot-a-descriptor\n"),
-		[]byte("3\n3\n"),
-		bytes.Repeat([]byte("1\n"), maxPrivilegedProcFDEntries+1),
+		[]byte("3\x00"),
+		[]byte("3\x00/tmp/3\x004\x00/tmp/4"),
+		bytes.Repeat([]byte("1\x00/tmp/1\x00"), maxPrivilegedProcFDEntries+1),
 	} {
-		if _, err := parseRunnerdProcFDOutput(output); err == nil {
+		if _, err := parseRunnerdProcFDMetadata(output); err == nil {
 			t.Fatalf("malformed or truncated descriptor listing %q was accepted", output)
 		}
 	}
@@ -717,16 +758,16 @@ func TestRunnerdPrivilegedProcFDListingUsesExistingSudoForMetadataOnly(t *testin
 		t.Fatalf("inspect test process identity: %v", err)
 	}
 	path := filepath.Join("/proc", strconv.Itoa(identity.PID), "fd")
-	got, err := runnerdPrivilegedProcFDNames(context.Background(), "/proc", identity, path)
+	got, err := runnerdPrivilegedProcFDMetadata(context.Background(), "/proc", identity, path)
 	if err != nil {
 		t.Fatalf("fixed sudo -n find descriptor metadata check: %v", err)
 	}
 	if len(got) == 0 || len(got) > maxPrivilegedProcFDEntries {
 		t.Fatalf("privileged descriptor names=%v, want a bounded nonempty inventory", got)
 	}
-	for _, name := range got {
-		if _, err := strconv.ParseUint(name, 10, 64); err != nil {
-			t.Fatalf("privileged descriptor listing included nonnumeric name %q", name)
+	for _, entry := range got {
+		if _, err := strconv.ParseUint(entry.Name, 10, 64); err != nil || entry.Target == "" {
+			t.Fatalf("privileged descriptor listing included malformed metadata %+v", entry)
 		}
 	}
 }
