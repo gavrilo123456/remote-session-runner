@@ -336,3 +336,31 @@ darwin/arm64 `go test ./src/internal/runnerd -count=1`, `go vet
 fixed-command `sudo -n readlink` integration test is skipped on macOS; it will
 run in native Linux validation after delivery. No recovery, service, selector,
 database, mailbox, or ACK action was performed by this source correction.
+
+## Privileged proc-link correction delivery and Linux validation
+
+The denied-link metadata correction and regressions were delivered in source
+commit `c8f7f15c570658b660cf43b95c00f918bcaf2c01` on `dev`. Gitea
+`origin/dev` and the automatic GitHub `github/dev` mirror both resolve to that
+exact SHA. The clean `linux-host`, `sandbox-host`, and `factory-sandbox`
+checkouts fast-forwarded from `3b260af107858320ee9074261e6d83ba1fd5cf09` to
+`c8f7f15c570658b660cf43b95c00f918bcaf2c01` before native validation.
+
+On `linux-host`, Go 1.27.1 linux/amd64:
+
+| Check | Result |
+|---|---|
+| `go test ./src/internal/runnerd -count=1` | PASS in 34.722s; includes the fixed-command `sudo -n readlink` test under `ubuntu` |
+| `go vet ./src/internal/runnerd` | PASS |
+| `go build -trimpath -buildvcs=false -o /tmp/runnerd-recovery-c8f7f15 ./src/cmd/runnerd` | PASS; SHA-256 `91d5b29d1e57f80f07926b4e0d9c9c229ae3be9de7240f21b870d0f905d610cc`, ELF x86-64, owner `ubuntu`, mode `0700` |
+
+The native build is offline recovery tooling only; the installed sealed PRD
+service bytes and release are unchanged. All three Ubuntu checkouts are at the
+same source SHA. The QAS/Dev selectors and services were not changed.
+
+The code and source-test delivery is complete. Recovery still requires the
+immediate fresh preflight to prove the same PRD hold, exact reservation
+binding, service/systemd state, config/schema, backup/work inventory, and
+capacity. If any current fact differs or the new bounded scan finds a PRD
+reference or uninspectable process, do not release capacity or retry the
+probe.
