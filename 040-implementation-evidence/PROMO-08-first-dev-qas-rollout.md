@@ -697,6 +697,12 @@ was ACKed marker-last. The owner-only lifecycle route then reported
 `terminal_acknowledged` and `acknowledged: true`. The response and event prefix
 were inspected before ACK; the post-test QAS work inventory is empty.
 
+The first sandboxed attempt to invoke the native publisher failed opening the
+mailbox ingress lock with `operation not permitted`. It failed before creating
+the request pair; a read-only check confirmed this fresh ID had no inbox,
+outbox, event, ACK, or diagnostic artifacts. The same one-time request was
+then published and settled once through the supported native publisher.
+
 ### Fresh cohort and peer-lane postflight
 
 A read-only supported QAS plan after both checks reported all four selectors
@@ -720,6 +726,8 @@ acceptance record.
 The read-only peer-lane check showed all four PRD selectors still on
 `cat-20261023-c01e633`, all three PRD worker services and Mac PRD components
 active/ready, and no PRD configuration or mailbox ownership change was made.
+The current read-only plan's per-host Dev/PRD peer-lane evidence digests exactly
+match the digests captured in the QAS operation's pre-switch plan snapshot.
 Mac PRD health at observation time also showed two active session slots, two
 active command slots, and four uncertain remote intents per router. This was
 observed and left untouched; it is not QAS work and does not establish empty
