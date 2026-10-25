@@ -429,3 +429,46 @@ schema-40 online backup remains SHA-256
 had previously passed compatible SQLite integrity validation. The new
 recovery binary has not yet been applied; this exact pair remains unresolved,
 and PRD functional acceptance/BUG-026 remain NOT RUN.
+
+## Bounded descriptor-target batching correction
+
+The retry with `runnerd-recovery-9885260` again failed closed before the
+recovery transaction. It reached PID `4075711`, descriptor `9`, and exhausted
+the existing 256 privileged-metadata-call limit because the scanner invoked
+`readlink` separately for every descriptor across its two stable snapshots.
+The host had 13 `ubuntu` processes at the count check. No database recovery or
+reservation change occurred.
+
+Source commit `54c1cd5f59bc8f6676037af23cbf6d5e195cf85e` batches only the
+descriptor metadata fallback: fixed `/usr/bin/find` emits each descriptor's
+numeric name and symlink target as NUL-delimited metadata in one `sudo -n`
+invocation per inventory snapshot. It does not follow links or read file
+contents, environment, or memory. The same 256 total privileged-operation
+limit remains; each command retains the two-second bound, output/entry caps,
+and the whole scan retains its 30-second bound. PID/start-time is checked on
+both sides of each privileged call. The scanner compares full name/target
+inventories before and after path checks and refuses malformed metadata,
+changed identity, changed descriptors, PRD path references, or incomplete
+privilege. When directory enumeration is allowed but a descriptor link itself
+is denied, the same bounded batch fallback handles that case.
+
+Mac Go 1.27.1 `go test ./src/internal/runnerd -count=1`, `go vet
+./src/internal/runnerd`, formatting, and `git diff --check` passed. The source
+commit was pushed to Gitea; the GitHub mirror resolved to the exact
+`54c1cd5f59bc8f6676037af23cbf6d5e195cf85e`. All three clean Ubuntu worker
+checkouts fast-forwarded to that commit before native checks.
+
+On `linux-host`, Go 1.27.1 linux/amd64 `go test ./src/internal/runnerd
+-count=1` passed in 30.079s, including real `sudo -n find` target output and
+the full process-proof regressions. `go vet ./src/internal/runnerd` and the
+native recovery-only build passed. `/tmp/runnerd-recovery-54c1cd5` is ELF
+x86-64, mode `0700`, owner `ubuntu:ubuntu`, size 21,188,300 bytes, SHA-256
+`d3024a06d2252d3283e3a38e941f40425e9b3ca6d9fc1a9adf44b947cc2b9275`.
+Sealed service binaries and selectors remain unchanged.
+
+The operation remains held at Linux with the exact commandless lost session
+and one reservation. The next recovery attempt still requires an immediate
+fresh PRD hold, selector/config/schema, systemd, exact-pair, inventory,
+backup-hash, and capacity check. This batch correction has passed source and
+native Linux validation, but recovery and all PRD acceptance gates are still
+pending; no acceptance is claimed from the tests or binary build.
