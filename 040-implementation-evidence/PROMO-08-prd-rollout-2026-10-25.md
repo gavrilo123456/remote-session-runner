@@ -473,3 +473,25 @@ inventories empty, configuration/schema identities unchanged, and each had
 1,733,619,712; Factory 33,315,766,272; Mac 130,259,525,632. Linux's selected
 bundle is the candidate bundle; Sandbox, Factory and Mac retain their recorded
 `cat-20261023-c01e633` selectors pending their ordered switch.
+
+The native worker gates for the timing correction were completed at source
+`001d0aa6c2ef93635cd91bbf789386c082eae5cb`, Go 1.27.1, with each worker
+checkout clean on `dev` at that exact SHA. Mac gates had already passed at the
+same source content: focused regression, `make test`, `make vet`, `make build`,
+and `make smoke`.
+
+| Host | Platform | Commands | Result | UTC interval |
+| --- | --- | --- | --- | --- |
+| `factory-sandbox` | Linux/amd64 | `make test`, `make vet`, `make build`, `make smoke` | PASS all | 2026-10-25 13:27:46–13:32:16 |
+| `sandbox-host` | Linux/arm64 | `make test`, `make vet`, `make build`, `make smoke` | PASS all | 2026-10-25 13:27:45–13:34:29 |
+| `linux-host` | Linux/amd64 | `go test ./src/internal/releaseflow -count=1`; `go test ./src/internal/execution -run '^TestP025' -count=1`; `go test ./src/internal/localapi -run '^TestP101' -count=1`; `make vet`, `make build`, `make smoke` | PASS all | 2026-10-25 13:27:46–13:32:22 |
+
+The complete logs remain in task-owned `/tmp` directories on their respective
+workers: `/tmp/rsr-prd-timing-factory.VUXLKC`,
+`/tmp/rsr-prd-timing-sandbox.grfKlT`, and
+`/tmp/rsr-prd-timing-linux.vqHT94`. Factory supplied the authorized full
+Linux/amd64 source suite; Linux retained the focused/native checks, rather
+than rerunning its CPU-starved full suite. No service or selector changed
+during source validation. The corrected controller was delivered on the
+primary Gitea and the exact automatic GitHub mirror at `001d0aa`; worker
+checkouts were clean at that SHA before tests.
