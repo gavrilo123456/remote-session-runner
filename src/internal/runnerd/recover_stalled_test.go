@@ -60,7 +60,7 @@ func TestParseCompletedTeardownRecoveryPairsAndAllowsMixedSelection(t *testing.T
 	}
 	var stdout, stderr bytes.Buffer
 	exit := Run([]string{"recover-stalled", "--config", "/fixture/linux.yaml", "--apply", "--lost-pair", first, "--teardown-pair", second}, &stdout, &stderr)
-	if exit != 1 || !strings.Contains(stderr.String(), "load config") {
+	if exit != 1 || !strings.Contains(stderr.String(), "read config identity") {
 		t.Fatalf("mixed selection was rejected before config load: exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
 	}
 }

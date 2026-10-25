@@ -180,3 +180,53 @@ Mac Go 1.27.1 darwin/arm64 checks for this correction:
 Git delivery and required worker checks for this controller correction are
 pending. Live recovery and PRD functional acceptance have not run under the
 new authorization.
+
+## Bounded failed-unit recovery correction — source validation
+
+The operator correction now limits the failed-unit/empty-cgroup fallback to
+the one explicitly selected Linux PRD `--lost-session` input for this probe.
+It rejects any job, pair, teardown, additional session, different config,
+account, service root, service unit, or unit owner. Before recovery it binds
+the stored job, planned command, session, reservation, request idempotency key,
+direct-mTLS controller/ingress, route, fixed harmless script, commandless lost
+state, and original lifecycle sequence to the recorded probe identities. It
+also rejects unrelated live work and unrelated pending finalizations.
+
+The existing lifecycle lock remains held continuously from stopped-state proof
+through recovery, finalization, postflight and database close. The fallback
+requires a valid failed-unit snapshot (`runnerd.service`, `ubuntu`, failed
+substate, zero MainPID/ControlPID, empty ControlGroup, parsed exit timestamp,
+and no pending unit jobs). It checks systemd state and jobs both before and
+after each process scan, and repeats the complete guard immediately before the
+recovery call. The loaded Linux PRD configuration is fingerprinted and must
+remain unchanged.
+
+The bounded `/proc` scan binds each inspected process to PID and kernel start
+time, checks cgroup membership including nested descendants, and examines
+same-account command lines, resolved cwd/executable paths, descriptors, and
+the exact configured service/workspace/database/config paths. SQLite WAL,
+SHM, and journal sidecars are included. A missing proc entry is accepted only
+after confirming that the original PID incarnation disappeared; a missing
+cmdline/cwd/exe/fd while the PID incarnation remains live, permission failure,
+PID reuse during inspection, or unresolved process churn fails closed. Only
+the exact verified recovery process is exempted; its binary must be outside
+the installed PRD service tree. Dev/QAS roots do not match PRD path checks.
+
+The existing empty-generation runtime-marker proof, atomic commandless
+recovery transaction, crash finalization, and idempotent retry remain in use.
+The correction does not migrate schema 40, alter or rebuild sealed service
+release `rr-20261024-43a4e675`, or change installed service bytes.
+
+Mac Go 1.27.1 darwin/arm64 validation for the operator correction:
+
+| Check | Result |
+|---|---|
+| `go test ./src/internal/runnerd ./src/internal/execution ./src/internal/store -count=1` | PASS |
+| `go vet ./src/internal/runnerd ./src/internal/execution ./src/internal/store` | PASS |
+| `go build -trimpath -buildvcs=false -o <private-temp> ./src/cmd/runnerd` | PASS; SHA-256 `0d25f0b8b51f523758aa1ec205cfbdf7bed28c7e728d582470afd9ab8eba59f8`; temporary binary removed after exit |
+| Focused recovery/process regressions | PASS, including PID reuse/disappearance, missing-but-live process evidence, denied proc reads/links, nested cgroups, peer-lane paths, config drift, pending/concurrent startup, exact probe tuple, and held/finalized retry states |
+
+Earlier fixture defects were corrected: process fixtures now use distinct PIDs,
+cwd/fd fixtures do not recreate existing entries, and a missing file on a still
+live PID is explicitly rejected. Linux-native tests/build and Git delivery for
+this correction are pending. No live recovery has run with this code yet.
