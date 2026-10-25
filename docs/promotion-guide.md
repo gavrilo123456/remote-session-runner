@@ -87,6 +87,12 @@ Every selector change, including PRD, passes the exact `PreviousTarget` from
 the synchronized host preflight to `catalog-select --expected-target`. The
 host command compares it with the fresh local selector and refuses a mismatch;
 the coordinator must not omit this compare-and-switch guard for any lane.
+After the preflight transition is synchronized, the selected host's guarded
+selector command performs the final two-minute local work, selector,
+configuration, schema, backup, and capacity checks under its maintenance
+locks. Keep other controller RPCs out of that interval; receipt copies may be
+read, written, and verified concurrently across independent hosts, but selector
+changes remain serial in the documented host order.
 
 ```sh
 # Mac — the JSON plan lists all four affected service groups and lane effects

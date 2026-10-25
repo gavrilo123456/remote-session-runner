@@ -425,3 +425,51 @@ mode `0600`, SHA-256
 same durable operation must be resumed after delivery and fresh host checks;
 no new operation, candidate build, selector rollback, or database restore is
 authorized or needed for this correction.
+
+## PRD preflight-window timing correction
+
+The first corrected retry passed Linux and stopped at Sandbox before changing
+its selector. The synchronized Sandbox preflight transition was recorded at
+`2026-10-25T13:01:50.706619678Z`; the guarded selector command returned
+`invalid or inconsistent catalog selector operation` at
+`2026-10-25T13:04:23.395177Z`, 152.7 seconds later. This exceeded the existing
+two-minute preflight-to-switch limit. A fresh read-only inspection confirmed
+Sandbox still selected `cat-20261023-c01e633`, had no selector journal for
+operation `63471d41af07b7afaf577d6a0989cc03`, remained stopped with empty work,
+and held the exact operation admission fence. Linux remains switched and
+verified on the candidate; Factory and Mac selectors did not change.
+
+The additional time was spent on serial all-host receipt reads, selected-lane
+work checks, receipt writes and verification, followed by a redundant selected
+host snapshot in the coordinator. The correction keeps the receipt transition
+and selector order, but runs independent per-host receipt reads/writes,
+verification, and stopped/empty observations concurrently. Service stops and
+selector changes remain ordered. The coordinator uses the verified synchronized
+receipt returned by the sync path and immediately calls `catalog-select`; that
+host command obtains a fresh local proof and repeats the exact selector,
+configuration, schema, work, backup and capacity guards under its maintenance
+locks. The two-minute local proof and receipt transition checks are unchanged.
+
+Regressions prove the PRD selector receives the exact predecessor, the switch
+path does not insert another coordinator state read between synchronized
+preflight and selector selection, and production host tasks run concurrently
+while fixture execution stays deterministic. Focused releaseflow tests PASS.
+Mac Go 1.27.1 gates after this correction: `make test` PASS, `make vet` PASS,
+`make build` PASS, `make smoke` PASS, and `git diff --check` PASS. The existing
+duplicate `-lproc` linker warning remains informational. Native worker checks
+and delivery are pending before retrying operation `63471…`.
+
+The separate supported cohort-continuation renewal is now synchronized and
+verified on all four hosts. Renewal ID `e72297a67f5f4237b37b2decd4943480`,
+digest `c942f09fd751ab4857452e4e11d83f0749868a00ffb0eefdc24e094c37ccfc64`,
+verified `2026-10-25T13:14:07.524031Z`, expires
+`2026-10-25T17:14:07.524031Z`. It is bound to the unchanged receipt prefix of
+9 transitions, SHA-256
+`07f695a27f1bf7671fa6228bb77bb53da6304f4b6d5fe50316a3022190c6019c`, and does
+not edit receipt timestamps. Every host verified the same renewal digest and
+current admission hold. At observation, all four services were stopped, work
+inventories empty, configuration/schema identities unchanged, and each had
+567,108,864 bytes required. Available bytes were Linux 14,992,551,936; Sandbox
+1,733,619,712; Factory 33,315,766,272; Mac 130,259,525,632. Linux's selected
+bundle is the candidate bundle; Sandbox, Factory and Mac retain their recorded
+`cat-20261023-c01e633` selectors pending their ordered switch.

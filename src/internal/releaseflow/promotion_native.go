@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -816,25 +817,23 @@ func (b *NativePromotionBackend) SwitchHost(ctx context.Context, op Operation, h
 		"--action", "preflight", "--operation-id", op.CohortOperationID, "--subject-host", host}, nil); err != nil {
 		return HostObservation{}, err
 	}
-	if err := b.syncReceiptFrom(ctx, host, op.Lane, op.CohortOperationID); err != nil {
+	receipt, err := b.syncReceiptFromAndReturn(ctx, host, op.Lane, op.CohortOperationID)
+	if err != nil {
 		return HostObservation{}, err
 	}
-	view, err = b.readReceipt(ctx, host, op.Lane, op.CohortOperationID)
-	if err != nil || !view.Present {
-		return HostObservation{}, errors.Join(ErrOperationCorrupted, err)
-	}
-	preflightSHA := lastTransitionEvidence(view.Receipt, "preflight", host)
+	preflightSHA := lastTransitionEvidence(receipt, "preflight", host)
 	if !digestPattern.MatchString(preflightSHA) {
 		return HostObservation{}, ErrOperationCorrupted
 	}
-	preflight := view.Receipt.Hosts[hostIndex(host)]
-	current, snapshot, err := b.currentHost(ctx, host, op.Lane)
-	if err != nil || snapshot.Active || !snapshot.Empty || selectedBundleSHA(current) != preflight.PreviousBundleSHA256 ||
-		current.Target != preflight.PreviousTarget || snapshot.Config != preflight.ConfigurationSHA256 ||
-		snapshot.Schema != preflight.SchemaVersion || snapshot.Work.SHA256() != preflight.WorkInventorySHA256 ||
-		snapshot.AvailableBytes < promotionRequiredCapacity(op.Lane, b.OperatingBuffer) {
-		return HostObservation{}, errors.Join(fmt.Errorf("%s fresh two-minute selector preflight state or operating capacity check failed", host), err)
+	index := hostIndex(host)
+	if index < 0 {
+		return HostObservation{}, ErrOperationCorrupted
 	}
+	preflight := receipt.Hosts[index]
+	// catalog-select repeats the work, selector, configuration, schema,
+	// backup, and capacity checks locally under the host's maintenance locks.
+	// Avoid another coordinator RPC sequence after the synchronized fresh
+	// preflight transition, so slower hosts retain the full two-minute window.
 	args := []string{"catalog-select", "--host", host, "--lane", op.Lane, "--release-id", op.Release.ID,
 		"--expected-target", preflight.PreviousTarget, "--cohort-operation-id", op.CohortOperationID,
 		"--evidence-sha256", preflightSHA}
@@ -1834,17 +1833,39 @@ func (b *NativePromotionBackend) readReceipt(ctx context.Context, host, lane, id
 }
 
 func (b *NativePromotionBackend) syncReceiptFrom(ctx context.Context, source, lane, id string) error {
+	_, err := b.syncReceiptFromAndReturn(ctx, source, lane, id)
+	return err
+}
+
+func (b *NativePromotionBackend) syncReceiptFromAndReturn(ctx context.Context, source, lane, id string) (laneinstall.CatalogCohortReceipt, error) {
 	view, err := b.readReceipt(ctx, source, lane, id)
 	if err != nil || !view.Present {
-		return errors.Join(ErrOperationCorrupted, err)
+		return laneinstall.CatalogCohortReceipt{}, errors.Join(ErrOperationCorrupted, err)
 	}
 	needsReconciliation := false
 	histories := make([]laneinstall.CatalogCohortReceipt, 0, len(HostOrder))
-	for _, host := range HostOrder {
-		copyView, err := b.readReceipt(ctx, host, lane, id)
-		if err != nil {
-			return fmt.Errorf("inspect %s receipt before synchronization: %w", host, err)
+	sourceIndex := hostIndex(source)
+	if sourceIndex < 0 {
+		return laneinstall.CatalogCohortReceipt{}, ErrInvalidInput
+	}
+	copyViews := make([]promotionReceiptView, len(HostOrder))
+	copyViews[sourceIndex] = view
+	readErrors := b.runHostTasks(ctx, func(index int, host string) error {
+		if host == source {
+			return nil
 		}
+		copyView, readErr := b.readReceipt(ctx, host, lane, id)
+		if readErr != nil {
+			return fmt.Errorf("inspect %s receipt before synchronization: %w", host, readErr)
+		}
+		copyViews[index] = copyView
+		return nil
+	})
+	for index, readErr := range readErrors {
+		if readErr != nil {
+			return laneinstall.CatalogCohortReceipt{}, readErr
+		}
+		copyView := copyViews[index]
 		if !copyView.Present {
 			continue
 		}
@@ -1861,25 +1882,25 @@ func (b *NativePromotionBackend) syncReceiptFrom(ctx context.Context, source, la
 	// stopped/empty guard for every subsequent synchronization.
 	if !(lane == string(config.ReleaseLanePRD) && view.Receipt.Stage == laneinstall.CatalogCohortPrepared) {
 		if err := b.stopCohortForReceiptSync(ctx, lane, view.Receipt); err != nil {
-			return err
+			return laneinstall.CatalogCohortReceipt{}, err
 		}
 	}
 	if needsReconciliation {
 		if len(histories) < 2 {
-			return ErrOperationCorrupted
+			return laneinstall.CatalogCohortReceipt{}, ErrOperationCorrupted
 		}
 		files := make([]string, 0, len(histories))
 		for _, history := range histories {
 			data, err := json.MarshalIndent(history, "", "  ")
 			if err != nil {
-				return err
+				return laneinstall.CatalogCohortReceipt{}, err
 			}
 			path, remove, err := writePrivateTemp(append(data, '\n'))
 			if err != nil {
 				for _, oldPath := range files {
 					_ = os.Remove(oldPath)
 				}
-				return err
+				return laneinstall.CatalogCohortReceipt{}, err
 			}
 			files = append(files, path)
 			_ = remove // files are removed together after the public reconciliation call
@@ -1894,36 +1915,72 @@ func (b *NativePromotionBackend) syncReceiptFrom(ctx context.Context, source, la
 			args = append(args, "--history-file", path)
 		}
 		if _, err := b.runLane(ctx, "mac-control-plane", args, nil); err != nil {
-			return fmt.Errorf("supported receipt-history reconciliation: %w", err)
+			return laneinstall.CatalogCohortReceipt{}, fmt.Errorf("supported receipt-history reconciliation: %w", err)
 		}
 		view, err = b.readReceipt(ctx, "mac-control-plane", lane, id)
 		if err != nil || !view.Present {
-			return errors.Join(ErrOperationCorrupted, err)
+			return laneinstall.CatalogCohortReceipt{}, errors.Join(ErrOperationCorrupted, err)
 		}
 		for _, host := range HostOrder {
 			copyView, inspectErr := b.readReceipt(ctx, host, lane, id)
 			if inspectErr != nil || copyView.Present && !laneinstall.CatalogCohortReceiptCanAdvance(copyView.Receipt, view.Receipt) {
-				return errors.Join(fmt.Errorf("reconciled receipt does not safely extend %s history", host), inspectErr)
+				return laneinstall.CatalogCohortReceipt{}, errors.Join(fmt.Errorf("reconciled receipt does not safely extend %s history", host), inspectErr)
 			}
 		}
 	}
 	data, err := json.MarshalIndent(view.Receipt, "", "  ")
 	if err != nil {
-		return err
+		return laneinstall.CatalogCohortReceipt{}, err
 	}
 	data = append(data, '\n')
-	for _, host := range HostOrder {
-		if _, err := b.runLane(ctx, host, []string{"catalog-cohort", "--host", host, "--lane", lane, "--action", "sync", "--receipt-file", "@promo-stdin@"}, data); err != nil {
-			return fmt.Errorf("synchronize %s receipt to %s: %w", id, host, err)
+	syncErrors := b.runHostTasks(ctx, func(_ int, host string) error {
+		if _, syncErr := b.runLane(ctx, host, []string{"catalog-cohort", "--host", host, "--lane", lane, "--action", "sync", "--receipt-file", "@promo-stdin@"}, data); syncErr != nil {
+			return fmt.Errorf("synchronize %s receipt to %s: %w", id, host, syncErr)
+		}
+		return nil
+	})
+	for _, syncErr := range syncErrors {
+		if syncErr != nil {
+			return laneinstall.CatalogCohortReceipt{}, syncErr
 		}
 	}
-	for _, host := range HostOrder {
-		copyView, err := b.readReceipt(ctx, host, lane, id)
-		if err != nil || !copyView.Present || !reflectReceiptEqual(copyView.Receipt, view.Receipt) {
-			return errors.Join(fmt.Errorf("receipt synchronization verification failed on %s", host), err)
+	verifyErrors := b.runHostTasks(ctx, func(index int, host string) error {
+		copyView, readErr := b.readReceipt(ctx, host, lane, id)
+		if readErr != nil || !copyView.Present || !reflectReceiptEqual(copyView.Receipt, view.Receipt) {
+			return errors.Join(fmt.Errorf("receipt synchronization verification failed on %s", host), readErr)
+		}
+		return nil
+	})
+	for _, verifyErr := range verifyErrors {
+		if verifyErr != nil {
+			return laneinstall.CatalogCohortReceipt{}, verifyErr
 		}
 	}
-	return nil
+	return view.Receipt, nil
+}
+
+// runHostTasks keeps fixture-backed tests deterministic while production
+// performs independent per-host receipt reads and writes concurrently. Every
+// task is joined before returning so a partial sync remains visible to the
+// existing supported reconciliation path.
+func (b *NativePromotionBackend) runHostTasks(ctx context.Context, task func(index int, host string) error) []error {
+	errorsByHost := make([]error, len(HostOrder))
+	if b.laneCommandRunner != nil {
+		for index, host := range HostOrder {
+			errorsByHost[index] = task(index, host)
+		}
+		return errorsByHost
+	}
+	var group sync.WaitGroup
+	for index, host := range HostOrder {
+		group.Add(1)
+		go func(index int, host string) {
+			defer group.Done()
+			errorsByHost[index] = task(index, host)
+		}(index, host)
+	}
+	group.Wait()
+	return errorsByHost
 }
 
 // stopCohortForReceiptSync preserves the host-native stopped/empty guard used
@@ -1939,8 +1996,8 @@ func (b *NativePromotionBackend) stopCohortForReceiptSync(ctx context.Context, l
 	type hostView struct {
 		report laneinstall.CatalogWorkInventoryReport
 	}
-	views := make(map[string]hostView, len(HostOrder))
-	for index, host := range HostOrder {
+	views := make([]hostView, len(HostOrder))
+	preflightErrors := b.runHostTasks(ctx, func(index int, host string) error {
 		out, err := b.runLane(ctx, host, promotionWorkInventoryArgs(host, lane), nil)
 		if err != nil {
 			return fmt.Errorf("read %s before receipt synchronization: %w", host, err)
@@ -1973,10 +2030,16 @@ func (b *NativePromotionBackend) stopCohortForReceiptSync(ctx context.Context, l
 				return fmt.Errorf("%s active service has no matching selected-lane admission hold: %w", host, ErrAdmissionHeld)
 			}
 		}
-		views[host] = hostView{report: report}
+		views[index] = hostView{report: report}
+		return nil
+	})
+	for _, preflightErr := range preflightErrors {
+		if preflightErr != nil {
+			return preflightErr
+		}
 	}
-	for _, host := range HostOrder {
-		before := views[host].report
+	for index, host := range HostOrder {
+		before := views[index].report
 		if !before.ServiceActive {
 			continue
 		}
@@ -1984,10 +2047,10 @@ func (b *NativePromotionBackend) stopCohortForReceiptSync(ctx context.Context, l
 			return fmt.Errorf("stop %s before receipt synchronization: %w", host, err)
 		}
 	}
-	for _, host := range HostOrder {
-		before := views[host].report
+	postStopErrors := b.runHostTasks(ctx, func(index int, host string) error {
+		before := views[index].report
 		if !before.ServiceActive {
-			continue
+			return nil
 		}
 		out, err := b.runLane(ctx, host, promotionWorkInventoryArgs(host, lane), nil)
 		if err != nil {
@@ -1999,6 +2062,12 @@ func (b *NativePromotionBackend) stopCohortForReceiptSync(ctx context.Context, l
 			after.SelectorTarget != before.SelectorTarget || after.BundleSHA256 != before.BundleSHA256 ||
 			after.ConfigurationSHA256 != before.ConfigurationSHA256 || after.DatabaseSchema != before.DatabaseSchema {
 			return fmt.Errorf("%s selected lane did not remain empty and identity-stable after stop: %w", host, laneinstall.ErrSimpleLaneNotQuiescent)
+		}
+		return nil
+	})
+	for _, postStopErr := range postStopErrors {
+		if postStopErr != nil {
+			return postStopErr
 		}
 	}
 	return nil

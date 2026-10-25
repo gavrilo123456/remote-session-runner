@@ -563,6 +563,61 @@ func TestSwitchHostBindsExactPRDPredecessorTarget(t *testing.T) {
 	if !observation.JournalVerified || observation.SelectedReleaseID != op.Release.ID {
 		t.Fatalf("expected verified PRD selector switch while held: %+v", observation)
 	}
+	preflightIndex, selectIndex := -1, -1
+	for index, command := range fixture.commands {
+		if command == "cohort:linux-host:preflight" {
+			preflightIndex = index
+		}
+		if command == "select:linux-host" && selectIndex < 0 {
+			selectIndex = index
+		}
+	}
+	if preflightIndex < 0 || selectIndex <= preflightIndex {
+		t.Fatalf("expected a synchronized preflight before selector mutation: %v", fixture.commands)
+	}
+	for _, command := range fixture.commands[preflightIndex+1 : selectIndex] {
+		if command == "catalog-status" {
+			t.Fatalf("redundant coordinator state read consumed the per-host preflight window: %v", fixture.commands)
+		}
+	}
+}
+
+func TestRunHostTasksExecutesIndependentHostsConcurrently(t *testing.T) {
+	backend := &NativePromotionBackend{}
+	started := make(chan string, len(HostOrder))
+	release := make(chan struct{})
+	done := make(chan []error, 1)
+	go func() {
+		done <- backend.runHostTasks(context.Background(), func(_ int, host string) error {
+			started <- host
+			<-release
+			return nil
+		})
+	}()
+	seen := make(map[string]bool, len(HostOrder))
+	for range HostOrder {
+		select {
+		case host := <-started:
+			if seen[host] {
+				close(release)
+				t.Fatalf("host task started more than once: %s", host)
+			}
+			seen[host] = true
+		case <-time.After(2 * time.Second):
+			close(release)
+			<-done
+			t.Fatal("independent host tasks did not all start before any was released")
+		}
+	}
+	close(release)
+	for _, err := range <-done {
+		if err != nil {
+			t.Fatalf("host task returned an error: %v", err)
+		}
+	}
+	if len(seen) != len(HostOrder) {
+		t.Fatalf("expected one task for each host, got %v", seen)
+	}
 }
 
 func interruptedActiveSwitchFixture(t *testing.T, nonEmptyHost string) (*switchReceiptFixture, *NativePromotionBackend, Operation) {
