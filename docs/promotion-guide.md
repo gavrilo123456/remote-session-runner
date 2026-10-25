@@ -121,6 +121,13 @@ promote-to prd all --release <immutable-release-id> \
   --approval-file <reviewed-owner-approval.json> --plan --json
 ```
 
+The release-bound approval digest covers the release identity, predecessor
+selectors and bundle hashes, configuration/schema/work-inventory identities,
+backup and rollback procedures, and the required capacity policy. It excludes
+the exact free-byte count because that value changes during normal operation;
+the read-only plan and every fresh preflight still measure and enforce actual
+headroom immediately before writes.
+
 If every host reports the same held `complete` receipt from an earlier
 promotion, a new operation may replace that hold only after the coordinator
 validates the receipt history and rechecks each selected release/bundle,

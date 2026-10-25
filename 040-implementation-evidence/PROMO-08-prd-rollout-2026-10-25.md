@@ -69,6 +69,20 @@ candidate, PRD database/schema/configuration, selected release, or any work
 record. The runbook now documents exact selected-predecessor recovery before
 the ordinary all-host zero-work promotion preflight.
 
+The first post-recovery approval validation then exposed a separate toolkit
+defect: `BackupRecoveryPackageSHA` included each host's exact free-byte count.
+Free space changed between plan and approval validation even though release,
+predecessor, configuration, schema, and work identities stayed the same, so
+the approval was rejected. No cohort hold or selector change had started.
+The corrected digest binds the release and predecessor identities,
+configuration/schema/work-inventory evidence, compatibility evidence,
+backup/rollback procedures, and operating-buffer/selector-reserve policy. It
+does not bind volatile free-byte counts. Every fresh plan and host preflight
+continues to measure real capacity and refuses writes below the full
+500,000,000-byte operating buffer plus the 64 MiB selector reserve. A
+regression proves capacity fluctuations alone do not invalidate approval,
+while configuration, work, predecessor, or capacity-policy drift does.
+
 ## Source validation on Mac
 
 Toolchain: Go 1.27.1, `darwin/arm64`, using the configured shared Go caches.
@@ -91,24 +105,50 @@ Toolchain: Go 1.27.1, `darwin/arm64`, using the configured shared Go caches.
 - `make build`: PASS.
 - `make smoke`: PASS.
 - `git diff --check`: PASS before the final focused regression rerun.
+- Promotion-approval digest regression: PASS on Mac with Go 1.27.1.
+- Full `make test` after the approval-digest correction: PASS.
+- `make vet`, `make build`, and `make smoke` after the approval-digest
+  correction: PASS.
 
 These are source/controller checks only. They are not live PRD recovery,
 installation, readiness, route, lifecycle, capacity, or functional acceptance.
 
 ## Delivery and live-operation status
 
-Controller correction revision, Gitea push, GitHub mirror SHA, Ubuntu
-fast-forward pulls, and native Ubuntu controller tests are pending this
-checkpoint. After delivery, refresh PRD work/ownership/capacity evidence, make
-and verify a fresh consistent backup, stop only Mac PRD through the supported
-service control, and invoke exact-pair recovery using the sealed release's
-host-native component bound to the exact selected predecessor above. The
-recovery must leave PRD stopped and preserve the selector. Then collect fresh
-four-host preflights and continue the normal release-bound PRD approval,
-cohort hold, ordered switch, and complete functional acceptance.
+The selected-predecessor recovery correction was committed as `8aaf551`,
+pushed to primary Gitea, verified at the exact GitHub mirror SHA, and
+fast-forwarded to all three clean Ubuntu `dev` checkouts. Focused recovery
+controller tests passed natively on Linux/AMD64, Sandbox/Linux/ARM64, and
+Factory/Linux/AMD64 at that revision. This second approval-digest correction
+is currently on Mac after its full source gates; its commit, mirror delivery,
+and native host checks remain pending.
 
-No PRD approval file has been generated yet; the release-bound approval must
-bind fresh predecessor hashes, the measured backup/recovery package, host set,
-release digest, and a valid window. No PRD service was stopped, backed up,
-recovered, restarted, or switched in this checkpoint. No mailbox request or
-ACK was published.
+Live exact-pair recovery completed on Mac PRD under the accepted sealed
+candidate's `runner-locald` component. A consistent backup was created at
+`/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/backups/prd-catalog-20261025T075948.255233000Z`
+with manifest SHA-256 `e98b292c9e7b4d3ce2b6895452c2ce3d8c72703472ff8ea8a231fa128b0b05b6`.
+Before recovery, owner-only runtime ownership records matched the two exact
+lost sessions; after supported PRD stop, neither recorded PID nor process
+group was present. Recovery released exactly two lost pairs, kept both original
+lost results and terminal events, kept held ACK state unchanged, left schema
+40 unchanged, preserved selector `cat-20261023-c01e633` and its exact digest,
+and left Mac PRD stopped. Postflight work inventory is empty. Recovery output
+SHA-256: `19685e51534ea6c91af5812e696e4c30681034cdc507287afcf6fdcb15ba2019`.
+
+The refreshed all-host read-only plan after recovery found empty PRD work
+inventories and sufficient capacity on all four hosts. Free/required bytes
+were Linux `15,274,192,896 / 567,108,864`, Sandbox
+`2,323,369,984 / 567,108,864`, Factory
+`33,574,936,576 / 567,108,864`, and Mac
+`129,334,272,000 / 567,108,864`. Linux, Sandbox, and Factory services remain
+in their previous state; only Mac PRD is stopped. Their selectors remain on
+`cat-20261023-c01e633`. No candidate selector has been activated in PRD yet.
+
+After the approval-digest correction is delivered to the workers, refresh the
+plan, create a private release-bound approval, and run the toolkit promotion
+under the owner's stopped-submissions confirmation. The remaining gates are
+fresh per-host backups/preflights, synchronized admission holds, the ordered
+four-host candidate switch, complete functional acceptance including BUG-026
+and the dedicated test-mailbox check, and PRD postflight. QAS services,
+configuration, mailboxes, and acceptance remain unchanged. No project mailbox
+request or ACK has been published during this operation.

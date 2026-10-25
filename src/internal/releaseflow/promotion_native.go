@@ -167,6 +167,42 @@ type promotionLaneSnapshot struct {
 	RequiredBytes  uint64                            `json:"required_bytes"`
 }
 
+type prdBackupRecoveryHostEvidence struct {
+	HostID                    string `json:"host_id"`
+	SelectedReleaseID         string `json:"selected_release_id"`
+	SelectedBundleSHA256      string `json:"selected_bundle_sha256"`
+	PreviousSelectorOperation string `json:"previous_selector_operation_id,omitempty"`
+	ConfigurationSHA256       string `json:"configuration_sha256"`
+	SchemaVersion             int    `json:"schema_version"`
+	WorkInventorySHA256       string `json:"work_inventory_sha256"`
+	WorkInventoryEmpty        bool   `json:"work_inventory_empty"`
+	LegacyCompatibilitySHA256 string `json:"legacy_compatibility_sha256,omitempty"`
+}
+
+func prdBackupRecoveryPackageDigest(release Release, baselines []HostObservation, operatingBuffer uint64) string {
+	if operatingBuffer == 0 {
+		operatingBuffer = defaultPromotionOperatingBuffer
+	}
+	hosts := make([]prdBackupRecoveryHostEvidence, 0, len(baselines))
+	for _, baseline := range baselines {
+		hosts = append(hosts, prdBackupRecoveryHostEvidence{
+			HostID: baseline.HostID, SelectedReleaseID: baseline.SelectedReleaseID,
+			SelectedBundleSHA256: baseline.SelectedBundleSHA, PreviousSelectorOperation: baseline.PreviousSelectorOperation,
+			ConfigurationSHA256: baseline.ConfigurationSHA, SchemaVersion: baseline.SchemaVersion,
+			WorkInventorySHA256: baseline.WorkInventorySHA, WorkInventoryEmpty: baseline.WorkInventoryEmpty,
+			LegacyCompatibilitySHA256: baseline.CompatibilitySHA,
+		})
+	}
+	return hashJSON(map[string]any{
+		"format": "runner-release-prd-backup-recovery-v2", "release_id": release.ID, "release_sha256": release.Digest,
+		"hosts": hosts, "host_set": HostOrder,
+		"backup":                 "consistent-online-backup-verified-before-switch; required-space-rechecked-after-backup",
+		"rollback":               "reverse-selector-journals; preserve databases and accepted work; never auto-restore database",
+		"operating_buffer_bytes": operatingBuffer, "selector_reserve_bytes": prdSelectorReserve,
+		"required_free_bytes": promotionRequiredCapacity("prd", operatingBuffer),
+	})
+}
+
 func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release Release, approvalSHA string) (PromotionPlan, error) {
 	plan, err := BuildPlan(lane, "all", release)
 	if err != nil || b == nil || !contains(LaneOrder, lane) {
@@ -244,13 +280,7 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 		return PromotionPlan{}, ErrApprovalRequired
 	}
 	if lane == "prd" {
-		plan.BackupRecoveryPackageSHA = hashJSON(map[string]any{
-			"format": "runner-release-prd-backup-recovery-v2", "release_id": release.ID, "release_sha256": release.Digest,
-			"hosts": plan.HostBaselines, "host_set": HostOrder,
-			"backup":                 "consistent-online-backup-verified-before-switch; required-space-rechecked-after-backup",
-			"rollback":               "reverse-selector-journals; preserve databases and accepted work; never auto-restore database",
-			"operating_buffer_bytes": b.OperatingBuffer, "selector_reserve_bytes": prdSelectorReserve,
-		})
+		plan.BackupRecoveryPackageSHA = prdBackupRecoveryPackageDigest(release, plan.HostBaselines, b.OperatingBuffer)
 	}
 	return plan, nil
 }

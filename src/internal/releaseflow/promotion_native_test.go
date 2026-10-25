@@ -148,6 +148,44 @@ func TestPromotionCapacityKeepsOperatingBufferAndPRDReserveSeparate(t *testing.T
 	}
 }
 
+func TestPRDApprovalPackageDigestIgnoresOnlyVolatileFreeSpace(t *testing.T) {
+	release := testRelease()
+	baselines := make([]HostObservation, len(HostOrder))
+	for index, host := range HostOrder {
+		baselines[index] = HostObservation{
+			HostID: host, Lane: "prd", SelectedReleaseID: "cat-prior", SelectedBundleSHA: stringsOf("a"),
+			ConfigurationSHA: stringsOf("b"), SchemaVersion: 40, WorkInventorySHA: stringsOf("c"),
+			WorkInventoryEmpty: true, AvailableBytes: 2_000_000_000, RequiredBytes: 567_108_864,
+		}
+	}
+	baselineDigest := prdBackupRecoveryPackageDigest(release, baselines, defaultPromotionOperatingBuffer)
+	changedCapacity := append([]HostObservation(nil), baselines...)
+	for index := range changedCapacity {
+		changedCapacity[index].AvailableBytes -= 100_000_000
+	}
+	if got := prdBackupRecoveryPackageDigest(release, changedCapacity, defaultPromotionOperatingBuffer); got != baselineDigest {
+		t.Fatal("ordinary free-space changes invalidated the release-bound approval package")
+	}
+	changedConfig := append([]HostObservation(nil), baselines...)
+	changedConfig[0].ConfigurationSHA = stringsOf("d")
+	if got := prdBackupRecoveryPackageDigest(release, changedConfig, defaultPromotionOperatingBuffer); got == baselineDigest {
+		t.Fatal("configuration drift did not change the approval package digest")
+	}
+	changedWork := append([]HostObservation(nil), baselines...)
+	changedWork[0].WorkInventorySHA = stringsOf("e")
+	if got := prdBackupRecoveryPackageDigest(release, changedWork, defaultPromotionOperatingBuffer); got == baselineDigest {
+		t.Fatal("work-inventory drift did not change the approval package digest")
+	}
+	changedPredecessor := append([]HostObservation(nil), baselines...)
+	changedPredecessor[0].SelectedBundleSHA = stringsOf("f")
+	if got := prdBackupRecoveryPackageDigest(release, changedPredecessor, defaultPromotionOperatingBuffer); got == baselineDigest {
+		t.Fatal("predecessor bundle drift did not change the approval package digest")
+	}
+	if got := prdBackupRecoveryPackageDigest(release, baselines, defaultPromotionOperatingBuffer+1); got == baselineDigest {
+		t.Fatal("operating-buffer policy change did not change the approval package digest")
+	}
+}
+
 func TestPromotionPeerInventoryUsesCatalogReadOnlyCommandForEveryLane(t *testing.T) {
 	for _, lane := range LaneOrder {
 		args := promotionWorkInventoryArgs("linux-host", lane)
