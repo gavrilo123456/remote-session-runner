@@ -119,9 +119,15 @@ The selected-predecessor recovery correction was committed as `8aaf551`,
 pushed to primary Gitea, verified at the exact GitHub mirror SHA, and
 fast-forwarded to all three clean Ubuntu `dev` checkouts. Focused recovery
 controller tests passed natively on Linux/AMD64, Sandbox/Linux/ARM64, and
-Factory/Linux/AMD64 at that revision. This second approval-digest correction
-is currently on Mac after its full source gates; its commit, mirror delivery,
-and native host checks remain pending.
+Factory/Linux/AMD64 at that revision.
+
+The approval-digest correction was committed as `303a0ea0e22d4fbccb278d1aae8410887fb27319`.
+Primary Gitea `origin/dev` and verified GitHub mirror `github/dev` both point
+to this exact SHA. Linux, Sandbox, and Factory clean `dev` checkouts were
+fast-forwarded and verified at this SHA. Native Go 1.27.1 regression
+`go test ./src/internal/releaseflow -run=TestPRDApprovalPackageDigestIgnoresOnlyVolatileFreeSpace -count=1`
+passed on Linux/AMD64, Sandbox/Linux/ARM64, and Factory/Linux/AMD64. The Mac
+full source gates (test, vet, build, smoke) also pass at this revision.
 
 Live exact-pair recovery completed on Mac PRD under the accepted sealed
 candidate's `runner-locald` component. A consistent backup was created at
@@ -144,11 +150,10 @@ were Linux `15,274,192,896 / 567,108,864`, Sandbox
 in their previous state; only Mac PRD is stopped. Their selectors remain on
 `cat-20261023-c01e633`. No candidate selector has been activated in PRD yet.
 
-After the approval-digest correction is delivered to the workers, refresh the
-plan, create a private release-bound approval, and run the toolkit promotion
-under the owner's stopped-submissions confirmation. The remaining gates are
-fresh per-host backups/preflights, synchronized admission holds, the ordered
-four-host candidate switch, complete functional acceptance including BUG-026
-and the dedicated test-mailbox check, and PRD postflight. QAS services,
-configuration, mailboxes, and acceptance remain unchanged. No project mailbox
-request or ACK has been published during this operation.
+Next refresh the plan, create a private release-bound approval, and run the
+toolkit promotion under the owner's stopped-submissions confirmation. The
+remaining gates are fresh per-host backups/preflights, synchronized admission
+holds, the ordered four-host candidate switch, complete functional acceptance
+including BUG-026 and the dedicated test-mailbox check, and PRD postflight.
+QAS services, configuration, mailboxes, and acceptance remain unchanged. No
+project mailbox request or ACK has been published during this operation.
