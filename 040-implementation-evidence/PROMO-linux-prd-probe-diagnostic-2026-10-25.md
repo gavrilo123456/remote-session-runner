@@ -364,3 +364,68 @@ binding, service/systemd state, config/schema, backup/work inventory, and
 capacity. If any current fact differs or the new bounded scan finds a PRD
 reference or uninspectable process, do not release capacity or retry the
 probe.
+
+## Privileged descriptor-directory enumeration correction
+
+The first attempt with `runnerd-recovery-c8f7f15` was retried only after the
+new readlink correction passed native Linux validation. It advanced past
+`cwd` and `exe`, then refused before recovery because `ubuntu` could not
+enumerate `/proc/2002/fd`:
+
+```text
+runnerd recover-stalled: runnerd failed-unit PRD process proof failed: PID 2002 descriptors are not inspectable: open /proc/2002/fd: permission denied
+```
+
+The attempt did not open or change the authority database; the exact
+reservation remained held. Read-only checking confirmed the existing
+`sudo -n` route can execute `/usr/bin/find` for a single exact descriptor
+directory and returned descriptor names with exit 0. No process was stopped,
+and no permissions, sudoers, ptrace settings, service configuration, or
+installed service bytes were changed.
+
+Source commit `9885260e8d6f5a2b65262a4aaee8d9f2949eca10` adds a fallback only
+when ordinary `/proc/<pid>/fd` enumeration returns `EACCES`/`EPERM`. It uses
+the fixed root-owned `/usr/bin/find` with `sudo -n`, an explicit argument
+vector, and the validated `/proc/<pid>/fd` path. It lists numeric symlink
+names only; each target is still read through the existing metadata-only
+readlink path and checked against the same PRD paths. The reader checks the
+PID/start-time before and after privileged enumeration, bounds time, output,
+entries and total privileged reads, and compares descriptor inventories
+before and after target inspection. Malformed output, PID reuse, incomplete
+privilege, a PRD reference, or unresolved descriptor churn fails closed.
+
+Regression coverage includes successful privileged enumeration, PRD-path
+detection through a descriptor, unavailable privilege, malformed/oversized
+output, PID reuse, and changing descriptor inventories. The existing
+lifecycle lock, systemd rechecks, exact-session binding, runtime-marker and
+generation checks, schema-40 preservation, and atomic recovery/finalization
+are unchanged.
+
+Mac Go 1.27.1 `go test ./src/internal/runnerd -count=1`, `go vet
+./src/internal/runnerd`, formatting, and `git diff --check` passed. Commit
+`9885260e8d6f5a2b65262a4aaee8d9f2949eca10` was pushed to Gitea; the GitHub
+mirror resolved to the exact same SHA. All three clean Ubuntu worker
+checkouts fast-forwarded to that SHA before Linux validation.
+
+On `linux-host`, Go 1.27.1 linux/amd64 `go test ./src/internal/runnerd
+-count=1` passed in 28.998s. This included the real fixed-command
+`sudo -n find` integration test under `ubuntu`. `go vet
+./src/internal/runnerd` and the native recovery-only build passed. The binary
+`/tmp/runnerd-recovery-9885260` is ELF x86-64 with SHA-256
+`08a163c9f853b4b251ce75529152f409f79d5b7d63b93548d1f9141b6007c5dd`.
+The existing `/tmp/runnerd-recovery-c8f7f15` remains unchanged.
+
+After this source validation, a fresh read-only disposition check again bound
+the sole reservation to operation `63471d41af07b7afaf577d6a0989cc03`, job
+`job-7fae7172e801f2e22e7d6fce6014403d`, session
+`sess-548ea3986a2b736f9643b2b402188830`, command
+`cmd-7dc98e864e7abd3a9c2596c3c4fe9399`, and classified it
+`indeterminate_owner_abandoned_outcome_unknown`. `runnerd.service` remained
+failed/stopped with `MainPID=0`, `ControlPID=0`, empty `ControlGroup`, and no
+pending systemd job; the exact cohort hold remained present. At the last
+pre-recovery capacity read, `/` had 15,322,918,912 bytes free. The preserved
+schema-40 online backup remains SHA-256
+`a99167226c6732726069c5893c208780d0bef57189f752c80af8790f60a177b1` and
+had previously passed compatible SQLite integrity validation. The new
+recovery binary has not yet been applied; this exact pair remains unresolved,
+and PRD functional acceptance/BUG-026 remain NOT RUN.
