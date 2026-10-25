@@ -138,7 +138,8 @@ func requireRunnerdServiceStoppedForRecoveryWith(systemdValue func(string) (stri
 	if before.ActiveState != "failed" || before.SubState != "failed" || before.ControlGroup != "" {
 		return requireRunnerdServiceStoppedWith(systemdValue, os.ReadFile)
 	}
-	if before.ID != "runnerd.service" || before.User != linuxPRDServiceAccount || before.MainPID != "0" || before.ControlPID != "0" || !runnerdHasRecordedExitTimestamp(before.ExitTimestamp) {
+	if before.ID != "runnerd.service" || before.User != linuxPRDServiceAccount || before.MainPID != "0" || before.ControlPID != "0" ||
+		!runnerdHasRecordedExit(before.ExitTimestamp, before.ExitCode, before.ExitStatus) {
 		return errors.New("failed runnerd.service lacks the exact stopped-unit evidence required for the PRD recovery fallback")
 	}
 	if err := requireNoRunnerdStartJobs(listJobs); err != nil {
@@ -163,9 +164,17 @@ func requireRunnerdServiceStoppedForRecoveryWith(systemdValue func(string) (stri
 	return nil
 }
 
-func runnerdHasRecordedExitTimestamp(value string) bool {
-	_, err := time.Parse("Mon 2006-01-02 15:04:05 MST", strings.TrimSpace(value))
-	return err == nil
+func runnerdHasRecordedExit(timestamp, code, status string) bool {
+	if _, err := time.Parse("Mon 2006-01-02 15:04:05 MST", strings.TrimSpace(timestamp)); err != nil {
+		return false
+	}
+	// systemd encodes CLD_EXITED as 1. Require a recorded nonzero process exit
+	// status so a timestamp alone cannot stand in for proof of the failed unit.
+	if strings.TrimSpace(code) != "1" {
+		return false
+	}
+	exitStatus, err := strconv.Atoi(strings.TrimSpace(status))
+	return err == nil && exitStatus > 0 && exitStatus <= 255
 }
 
 type runnerdRecoveryUnitSnapshot struct {
@@ -177,6 +186,8 @@ type runnerdRecoveryUnitSnapshot struct {
 	ControlPID    string
 	ControlGroup  string
 	ExitTimestamp string
+	ExitCode      string
+	ExitStatus    string
 }
 
 func readRunnerdRecoveryUnitSnapshot(systemdValue func(string) (string, error)) (runnerdRecoveryUnitSnapshot, error) {
@@ -191,6 +202,8 @@ func readRunnerdRecoveryUnitSnapshot(systemdValue func(string) (string, error)) 
 		{"ControlPID"},
 		{"ControlGroup"},
 		{"ExecMainExitTimestamp"},
+		{"ExecMainCode"},
+		{"ExecMainStatus"},
 	}
 	values := make([]string, len(properties))
 	for index, property := range properties {
@@ -202,7 +215,7 @@ func readRunnerdRecoveryUnitSnapshot(systemdValue func(string) (string, error)) 
 	}
 	return runnerdRecoveryUnitSnapshot{
 		ID: values[0], User: values[1], ActiveState: values[2], SubState: values[3], MainPID: values[4],
-		ControlPID: values[5], ControlGroup: values[6], ExitTimestamp: values[7],
+		ControlPID: values[5], ControlGroup: values[6], ExitTimestamp: values[7], ExitCode: values[8], ExitStatus: values[9],
 	}, nil
 }
 

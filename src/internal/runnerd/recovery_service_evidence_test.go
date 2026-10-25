@@ -69,6 +69,11 @@ func TestRequireRunnerdFailedUnitRecoveryRejectsUnverifiableUnit(t *testing.T) {
 		{"control process remains", func(v map[string]string) { v["ControlPID"] = "123" }},
 		{"exit time missing", func(v map[string]string) { v["ExecMainExitTimestamp"] = "" }},
 		{"exit time malformed", func(v map[string]string) { v["ExecMainExitTimestamp"] = "n/a" }},
+		{"exit code missing", func(v map[string]string) { v["ExecMainCode"] = "" }},
+		{"non-exit termination", func(v map[string]string) { v["ExecMainCode"] = "2" }},
+		{"exit status missing", func(v map[string]string) { v["ExecMainStatus"] = "" }},
+		{"zero exit status", func(v map[string]string) { v["ExecMainStatus"] = "0" }},
+		{"malformed exit status", func(v map[string]string) { v["ExecMainStatus"] = "unknown" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -482,6 +487,7 @@ func failedRunnerdUnitValues() map[string]string {
 	return map[string]string{
 		"Id": "runnerd.service", "User": linuxPRDServiceAccount, "ActiveState": "failed", "SubState": "failed",
 		"MainPID": "0", "ControlPID": "0", "ControlGroup": "", "ExecMainExitTimestamp": "Sun 2026-10-25 20:08:29 UTC",
+		"ExecMainCode": "1", "ExecMainStatus": "1",
 	}
 }
 
