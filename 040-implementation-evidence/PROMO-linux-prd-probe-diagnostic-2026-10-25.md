@@ -228,5 +228,78 @@ Mac Go 1.27.1 darwin/arm64 validation for the operator correction:
 
 Earlier fixture defects were corrected: process fixtures now use distinct PIDs,
 cwd/fd fixtures do not recreate existing entries, and a missing file on a still
-live PID is explicitly rejected. Linux-native tests/build and Git delivery for
-this correction are pending. No live recovery has run with this code yet.
+live PID is explicitly rejected. The pending Linux validation and recovery
+status recorded at this earlier checkpoint is superseded by the final section
+below.
+
+## Final exit-status binding, native validation, and guarded recovery attempt
+
+The failed-unit proof now captures and compares `ExecMainCode` and
+`ExecMainStatus` with the timestamp and other systemd properties. It accepts
+only a recorded normal nonzero exit (`CLD_EXITED`, systemd code `1`, status
+1–255); missing, malformed, zero, or signal-termination evidence refuses
+recovery. Regressions cover each of those cases. The correction is committed
+as `354249fc1355c469d047c91f6b2ccc963ec07c05`, delivered to Gitea and verified
+at the exact automatic GitHub mirror SHA. Linux-host, Sandbox-host and
+Factory-sandbox were clean on `dev` and fast-forwarded to this commit.
+
+Validation at this source:
+
+| Machine | Commands | Result |
+| --- | --- | --- |
+| Mac, Go 1.27.1 darwin/arm64 | `go test ./src/internal/runnerd ./src/internal/execution ./src/internal/store -count=1`; `go vet` on the same packages; `gofmt`; `git diff --check` | PASS |
+| linux-host, Go 1.27.1 linux/amd64 | `go test ./src/internal/runnerd ./src/internal/execution ./src/internal/store -count=1`; `go vet` on the same packages; native `runnerd` build | PASS; package times 70.775s, 98.056s, 114.708s |
+
+The offline recovery executable built from this source is
+`/tmp/runnerd-recovery-354249f`, SHA-256
+`bc58ebc2511e94e8b2d818dfd5dcf2a693b37ce1ca13be86aa97b48a0a7fd1dc`,
+linux/amd64, owner `ubuntu`, mode `0700`, outside the installed service tree.
+Installed PRD release `rr-20261024-43a4e675` and its `runnerd` SHA-256
+`1b30a2ded29fa15ee0821a1c5e23168627b164177624647587d8bbb4987234c0` remain
+unchanged.
+
+The renewed four-hour PRD window is recorded as
+`2026-10-25T21:30:14Z` through `2026-10-26T01:30:14Z`. Its release-bound
+approval file is owner-only mode `0600` at
+`/private/tmp/runner-release-prd-approval-rr-20261024-43a4e675-20261025-renewal-2130Z.json`,
+SHA-256 `d1cfc6711c75039554e48cbe91bfbb3c678ffc391716f0cb062a69edc4d0f4cb`.
+It has not yet been applied to the promotion operation through `promote-to`;
+the operation's last recorded approval event is unchanged.
+
+Fresh preflight on Linux confirmed the exact held operation
+`63471d41af07b7afaf577d6a0989cc03`, release/digest above, config SHA-256
+`c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f`, schema
+40, selector target `rr-20261024-43a4e675/linux-host`, failed
+`runnerd.service`, `MainPID=0`, `ControlPID=0`, empty `ControlGroup`, recorded
+`ExecMainCode=1`/`ExecMainStatus=1`, and no pending systemd job. The last
+synchronized cohort receipt records schema 40; the failed process-proof guard
+returns before opening the database, so this attempt did not freshly read its
+schema. The public cohort discovery command reported the exact operation hold.
+
+The authorized command
+`/tmp/runnerd-recovery-354249f recover-stalled --config /home/ubuntu/.local/share/remote-session-runner/config/linux.yaml --apply --lost-session sess-548ea3986a2b736f9643b2b402188830`
+refused before opening the authority database or changing a reservation:
+
+```text
+runnerd recover-stalled: runnerd failed-unit PRD process proof failed: PID 2002 cwd is not inspectable: readlink /proc/2002/cwd: permission denied
+```
+
+Read-only follow-up at `2026-10-25T21:41:47Z` found the same PID incarnation
+still live (kernel start-time ticks `9218`; process start
+`Wed Oct 14 18:32:13 2026`), owned by UID/EUID 1001, named `(sd-pam)`,
+parented by the `systemd --user` manager, and in
+`user@1001.service/init.scope`, outside `runnerd.service`. Its `cwd` and `exe`
+links and descriptor directory are inaccessible to `ubuntu`. The scanner is
+required to reject such denied evidence while that PID incarnation remains
+live; it was not exempted or killed. The lock was released on command exit; the
+exact reservation and incomplete operation remain unresolved/held. No retry,
+new probe, service restart, selector change, mailbox publication, or ACK was
+performed. PRD functional acceptance and BUG-026 verification remain NOT RUN.
+
+**Blocking owner/operator action:** make the inaccessible `sd-pam` PID 2002
+and any similarly uninspectable same-account process incarnations exit through
+their owning session/systemd-user lifecycle, without killing unrelated
+processes or weakening the scanner. Then repeat the exact fresh stopped-state,
+hold, work and process checks and retry only the same authorized lost-session
+recovery command using the preserved binary. If the process cannot safely be
+ended, the exact-pair recovery remains blocked.
