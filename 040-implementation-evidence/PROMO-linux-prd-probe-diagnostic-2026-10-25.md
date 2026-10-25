@@ -303,3 +303,36 @@ processes or weakening the scanner. Then repeat the exact fresh stopped-state,
 hold, work and process checks and retry only the same authorized lost-session
 recovery command using the preserved binary. If the process cannot safely be
 ended, the exact-pair recovery remains blocked.
+
+## Read-only privileged proc-link inspection correction
+
+The owner rejected stopping `sd-pam` or the Ubuntu user manager to obtain
+metadata; this supersedes the preceding request to make those processes exit.
+The process proof now falls back only when an ordinary `readlink`
+of `/proc/<pid>/cwd`, `/proc/<pid>/exe`, or `/proc/<pid>/fd/<number>` returns
+`EACCES`/`EPERM`. The fallback executes the fixed root-owned
+`/usr/bin/sudo -n -- /usr/bin/readlink -- <exact-proc-link>` argument vector;
+it invokes no shell and reads no descriptor contents, environment, or memory.
+The recovery process and database operations remain unprivileged as `ubuntu`.
+
+Before and after each privileged read the scanner rechecks the exact PID and
+kernel start-time identity. It rejects paths outside those three proc-link
+forms, unsafe fixed utility ownership/modes, unavailable noninteractive
+privilege, command failure, timeout, output overflow, malformed output, PID
+reuse, and process churn. The whole scan is limited to 30 seconds and 256
+privileged link reads; each command is limited to two seconds and bounded
+stdout/stderr. The resulting target goes through the same PRD-path checks as
+an ordinary proc read. There is no process-name exemption or reliance on a
+saved planner snapshot. Existing systemd rechecks, lifecycle lock, exact probe
+binding, runtime marker/generation proof, schema 40 and atomic recovery and
+finalization are unchanged.
+
+Focused regressions cover successful fallback, detection of a PRD path from
+privileged metadata, unavailable privilege, malformed/truncated output, and
+PID reuse during a read. Existing denied-metadata, peer-lane, cgroup, live
+missing-file and process-churn tests remain in place. Mac Go 1.27.1
+darwin/arm64 `go test ./src/internal/runnerd -count=1`, `go vet
+./src/internal/runnerd`, formatting, and `git diff --check` pass. The actual
+fixed-command `sudo -n readlink` integration test is skipped on macOS; it will
+run in native Linux validation after delivery. No recovery, service, selector,
+database, mailbox, or ACK action was performed by this source correction.

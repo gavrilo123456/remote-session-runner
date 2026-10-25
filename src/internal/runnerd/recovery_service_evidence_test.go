@@ -1,12 +1,17 @@
 package runnerd
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -379,15 +384,160 @@ func TestRunnerdProcScanFailsClosedOnDeniedInspection(t *testing.T) {
 			}
 			fs.readlink = func(path string) (string, error) {
 				if filepath.Base(path) == denied || denied == "fd-link" && filepath.Base(path) == "7" {
-					return "", os.ErrPermission
+					return "", syscall.EACCES
 				}
 				return base.readlink(path)
 			}
+			fs.privilegedReadlink = nil
 			err := runnerdProcessesReferencePathsWith(fs, procRoot, 1001, []string{"/home/ubuntu/prd"}, nil)
-			if err == nil || !strings.Contains(err.Error(), "permission denied") {
-				t.Fatalf("denied proc inspection error=%v, want fail-closed permission result", err)
+			if err == nil {
+				t.Fatal("denied proc inspection was accepted without privileged metadata access")
 			}
 		})
+	}
+}
+
+func TestRunnerdProcScanUsesBoundedPrivilegedReadlinkForPermissionDeniedMetadata(t *testing.T) {
+	procRoot := t.TempDir()
+	processRoot := processFixture(t, procRoot, 987, 1001, "idle")
+	base := realRunnerdProcFS()
+	fs := base
+	fs.readlink = func(path string) (string, error) {
+		return "", syscall.EACCES
+	}
+	reads := 0
+	fs.privilegedReadlink = func(ctx context.Context, root string, identity runnerdProcIdentity, path string) (string, error) {
+		reads++
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if root != procRoot || identity != (runnerdProcIdentity{PID: 987, StartTime: 987}) {
+			t.Fatalf("privileged readlink was not bound to the inspected process: root=%q identity=%+v", root, identity)
+		}
+		return base.readlink(path)
+	}
+	if err := runnerdProcessesReferencePathsWith(fs, procRoot, 1001, []string{"/home/ubuntu/prd"}, nil); err != nil {
+		t.Fatalf("permission-denied proc metadata was not recovered through bounded privileged readlink: %v", err)
+	}
+	if reads == 0 || reads > maxPrivilegedProcLinkReads {
+		t.Fatalf("privileged read count=%d, want 1..%d", reads, maxPrivilegedProcLinkReads)
+	}
+	if err := validateRunnerdProcLinkPath(procRoot, runnerdProcIdentity{PID: 987, StartTime: 987}, filepath.Join(processRoot, "cmdline")); err == nil {
+		t.Fatal("privileged metadata reader accepted a non-link proc path")
+	}
+}
+
+func TestRunnerdProcScanAppliesPRDPathChecksToPrivilegedMetadata(t *testing.T) {
+	procRoot := t.TempDir()
+	processRoot := processFixture(t, procRoot, 987, 1001, "idle")
+	base := realRunnerdProcFS()
+	fs := base
+	fs.readlink = func(string) (string, error) { return "", syscall.EPERM }
+	fs.privilegedReadlink = func(_ context.Context, _ string, _ runnerdProcIdentity, path string) (string, error) {
+		if filepath.Base(path) == "cwd" {
+			return "/home/ubuntu/.local/share/remote-session-runner/workspaces/retained", nil
+		}
+		return base.readlink(path)
+	}
+	err := runnerdProcessesReferencePathsWith(fs, procRoot, 1001, []string{"/home/ubuntu/.local/share/remote-session-runner"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "working directory under the selected PRD paths") {
+		t.Fatalf("privileged PRD path reference error=%v, want refusal", err)
+	}
+	if _, err := os.Lstat(filepath.Join(processRoot, "cwd")); err != nil {
+		t.Fatalf("fixture cwd unexpectedly changed: %v", err)
+	}
+}
+
+func TestRunnerdProcScanRejectsUnavailablePrivilegeAndMalformedOutput(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		output string
+	}{
+		{name: "unavailable privilege"},
+		{name: "truncated output", output: strings.Repeat("x", maxPrivilegedProcLinkBytes+1)},
+		{name: "multiple lines", output: "/tmp\nextra"},
+		{name: "empty metadata", output: ""},
+		{name: "embedded nul", output: "/tmp\x00suffix"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			procRoot := t.TempDir()
+			processFixture(t, procRoot, 987, 1001, "idle")
+			base := realRunnerdProcFS()
+			fs := base
+			fs.readlink = func(string) (string, error) { return "", syscall.EACCES }
+			if test.name != "unavailable privilege" {
+				fs.privilegedReadlink = func(context.Context, string, runnerdProcIdentity, string) (string, error) {
+					return test.output, nil
+				}
+			} else {
+				fs.privilegedReadlink = nil
+			}
+			err := runnerdProcessesReferencePathsWith(fs, procRoot, 1001, []string{"/home/ubuntu/prd"}, nil)
+			if err == nil {
+				t.Fatal("incomplete or unavailable privileged metadata was accepted")
+			}
+		})
+	}
+}
+
+func TestParseRunnerdReadlinkOutputRejectsMalformedAndTruncatedOutput(t *testing.T) {
+	for _, output := range [][]byte{
+		nil,
+		[]byte("/tmp"),
+		[]byte("\n"),
+		[]byte("/tmp\nextra\n"),
+		append(bytes.Repeat([]byte("x"), maxPrivilegedProcLinkBytes+1), '\n'),
+	} {
+		if _, err := parseRunnerdReadlinkOutput(output); err == nil {
+			t.Fatalf("malformed readlink output %q was accepted", output)
+		}
+	}
+	if got, err := parseRunnerdReadlinkOutput([]byte("/tmp/target\n")); err != nil || got != "/tmp/target" {
+		t.Fatalf("valid readlink output got=%q err=%v", got, err)
+	}
+}
+
+func TestRunnerdPrivilegedProcLinkRejectsPIDReuse(t *testing.T) {
+	procRoot := t.TempDir()
+	processRoot := processFixture(t, procRoot, 987, 1001, "idle")
+	base := realRunnerdProcFS()
+	fs := base
+	fs.readlink = func(string) (string, error) { return "", syscall.EACCES }
+	fs.privilegedReadlink = func(context.Context, string, runnerdProcIdentity, string) (string, error) {
+		if err := os.WriteFile(filepath.Join(processRoot, "stat"), fixtureProcStat(987, 1, 988), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return "/tmp", nil
+	}
+	reader := runnerdProcLinkReader{procFS: fs, procRoot: procRoot, ctx: context.Background(), maxReads: 1}
+	_, err := reader.readlink(runnerdProcIdentity{PID: 987, StartTime: 987}, filepath.Join(processRoot, "cwd"))
+	if !errors.Is(err, errRunnerdProcChurn) {
+		t.Fatalf("PID reuse during privileged link read error=%v, want process churn", err)
+	}
+}
+
+func TestRunnerdPrivilegedProcReadlinkUsesExistingSudoForMetadataOnly(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
+		t.Skip("requires the Linux service account and its existing noninteractive read-only sudo access")
+	}
+	identity, uids, _, err := readRunnerdProcIdentityWith(realRunnerdProcFS(), "/proc", os.Getpid())
+	if err != nil {
+		t.Fatalf("inspect test process identity: %v", err)
+	}
+	if !containsInt(uids, os.Getuid()) {
+		t.Fatal("test process UID was not present in its proc status")
+	}
+	path := filepath.Join("/proc", strconv.Itoa(identity.PID), "exe")
+	want, err := os.Readlink(path)
+	if err != nil {
+		t.Fatalf("read test executable metadata without elevation: %v", err)
+	}
+	got, err := runnerdPrivilegedProcReadlink(context.Background(), "/proc", identity, path)
+	if err != nil {
+		t.Fatalf("fixed sudo -n readlink metadata check: %v", err)
+	}
+	if got != want {
+		t.Fatalf("privileged metadata target=%q, want same PID's target %q", got, want)
 	}
 }
 

@@ -1,6 +1,8 @@
 package runnerd
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"remote-session-runner/src/internal/config"
@@ -26,6 +29,14 @@ const (
 
 const maxStableProcScans = 4
 
+const (
+	maxPrivilegedProcLinkReads = 256
+	maxPrivilegedProcLinkBytes = 4096
+	maxPrivilegedProcErrBytes  = 1024
+	privilegedProcLinkTimeout  = 2 * time.Second
+	processProofTimeout        = 30 * time.Second
+)
+
 var errRunnerdProcChurn = errors.New("process identity changed during /proc inspection")
 
 type runnerdProcIdentity struct {
@@ -34,13 +45,17 @@ type runnerdProcIdentity struct {
 }
 
 type runnerdProcFS struct {
-	readDir  func(string) ([]os.DirEntry, error)
-	readFile func(string) ([]byte, error)
-	readlink func(string) (string, error)
+	readDir            func(string) ([]os.DirEntry, error)
+	readFile           func(string) ([]byte, error)
+	readlink           func(string) (string, error)
+	privilegedReadlink func(context.Context, string, runnerdProcIdentity, string) (string, error)
 }
 
 func realRunnerdProcFS() runnerdProcFS {
-	return runnerdProcFS{readDir: os.ReadDir, readFile: os.ReadFile, readlink: os.Readlink}
+	return runnerdProcFS{
+		readDir: os.ReadDir, readFile: os.ReadFile, readlink: os.Readlink,
+		privilegedReadlink: runnerdPrivilegedProcReadlink,
+	}
 }
 
 // requireRunnerdServiceStoppedForRecovery handles only the one authorized
@@ -346,15 +361,21 @@ func runnerdProcessesReferencePathsWith(procFS runnerdProcFS, procRoot string, s
 	if procFS.readDir == nil || procFS.readFile == nil || procFS.readlink == nil {
 		return errors.New("process inspection interface is incomplete")
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), processProofTimeout)
+	defer cancel()
+	linkReader := runnerdProcLinkReader{procFS: procFS, procRoot: procRoot, ctx: ctx, maxReads: maxPrivilegedProcLinkReads}
 	for attempt := 0; attempt < maxStableProcScans; attempt++ {
-		before, err := runnerdInspectProcessTable(procFS, procRoot, serviceUID, paths, exempt)
+		if err := ctx.Err(); err != nil {
+			return errors.New("process inventory exceeded its bounded inspection time")
+		}
+		before, err := runnerdInspectProcessTable(procFS, &linkReader, procRoot, serviceUID, paths, exempt)
 		if errors.Is(err, errRunnerdProcChurn) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		after, err := runnerdInspectProcessTable(procFS, procRoot, serviceUID, paths, exempt)
+		after, err := runnerdInspectProcessTable(procFS, &linkReader, procRoot, serviceUID, paths, exempt)
 		if errors.Is(err, errRunnerdProcChurn) {
 			continue
 		}
@@ -368,13 +389,157 @@ func runnerdProcessesReferencePathsWith(procFS runnerdProcFS, procRoot string, s
 	return errors.New("same-account process inventory kept changing during bounded inspection")
 }
 
-func runnerdInspectProcessTable(procFS runnerdProcFS, procRoot string, serviceUID int, paths []string, exempt map[runnerdProcIdentity]struct{}) (map[runnerdProcIdentity]struct{}, error) {
+type runnerdProcLinkReader struct {
+	procFS   runnerdProcFS
+	procRoot string
+	ctx      context.Context
+	reads    int
+	maxReads int
+}
+
+func (reader *runnerdProcLinkReader) readlink(identity runnerdProcIdentity, path string) (string, error) {
+	target, err := reader.procFS.readlink(path)
+	if err == nil || !runnerdPermissionDenied(err) {
+		return target, err
+	}
+	if reader.procFS.privilegedReadlink == nil {
+		return "", errors.New("privileged proc link inspection is unavailable")
+	}
+	if reader.reads >= reader.maxReads {
+		return "", errors.New("privileged proc link inspection exceeded its bounded read count")
+	}
+	if err := validateRunnerdProcLinkPath(reader.procRoot, identity, path); err != nil {
+		return "", err
+	}
+	if err := reader.ctx.Err(); err != nil {
+		return "", errors.New("process inventory exceeded its bounded inspection time")
+	}
+	if err := runnerdVerifyProcessIncarnation(reader.procFS, reader.procRoot, identity); err != nil {
+		return "", err
+	}
+	reader.reads++
+	target, err = reader.procFS.privilegedReadlink(reader.ctx, reader.procRoot, identity, path)
+	if err != nil {
+		return "", fmt.Errorf("privileged proc link inspection failed for PID %d: %w", identity.PID, err)
+	}
+	if err := runnerdVerifyProcessIncarnation(reader.procFS, reader.procRoot, identity); err != nil {
+		return "", err
+	}
+	if target == "" || len(target) > maxPrivilegedProcLinkBytes || strings.ContainsAny(target, "\x00\r\n") {
+		return "", errors.New("privileged proc link inspection returned malformed or truncated metadata")
+	}
+	return target, nil
+}
+
+func runnerdPermissionDenied(err error) bool {
+	return errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM)
+}
+
+func validateRunnerdProcLinkPath(procRoot string, identity runnerdProcIdentity, path string) error {
+	if identity.PID <= 0 || identity.StartTime == 0 {
+		return errors.New("privileged proc link inspection requires a complete PID/start-time identity")
+	}
+	processRoot := filepath.Join(procRoot, strconv.Itoa(identity.PID))
+	relative, err := filepath.Rel(processRoot, filepath.Clean(path))
+	if err != nil {
+		return errors.New("privileged proc link path is outside the inspected process")
+	}
+	if relative == "cwd" || relative == "exe" {
+		return nil
+	}
+	parts := strings.Split(relative, string(os.PathSeparator))
+	if len(parts) == 2 && parts[0] == "fd" {
+		if _, err := strconv.ParseUint(parts[1], 10, 64); err == nil {
+			return nil
+		}
+	}
+	return errors.New("privileged proc link path is outside the allowed cwd, executable, or descriptor metadata")
+}
+
+func runnerdPrivilegedProcReadlink(ctx context.Context, procRoot string, identity runnerdProcIdentity, path string) (string, error) {
+	if filepath.Clean(procRoot) != "/proc" {
+		return "", errors.New("privileged proc metadata is restricted to the live /proc filesystem")
+	}
+	if err := validateRunnerdProcLinkPath(procRoot, identity, path); err != nil {
+		return "", err
+	}
+	if err := verifyRunnerdReadOnlyUtility("/usr/bin/sudo", true); err != nil {
+		return "", err
+	}
+	if err := verifyRunnerdReadOnlyUtility("/usr/bin/readlink", false); err != nil {
+		return "", err
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, privilegedProcLinkTimeout)
+	defer cancel()
+	command := exec.CommandContext(commandCtx, "/usr/bin/sudo", "-n", "--", "/usr/bin/readlink", "--", path)
+	var stdout, stderr runnerdBoundedBuffer
+	stdout.limit = maxPrivilegedProcLinkBytes + 1
+	stderr.limit = maxPrivilegedProcErrBytes
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		if commandCtx.Err() != nil {
+			return "", errors.New("privileged proc metadata command timed out")
+		}
+		return "", errors.New("sudo -n readlink could not inspect proc metadata")
+	}
+	if stdout.overflow || stderr.overflow {
+		return "", errors.New("privileged proc metadata command output exceeded its bound")
+	}
+	target, err := parseRunnerdReadlinkOutput(stdout.Bytes())
+	if err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+type runnerdBoundedBuffer struct {
+	bytes.Buffer
+	limit    int
+	overflow bool
+}
+
+func (buffer *runnerdBoundedBuffer) Write(value []byte) (int, error) {
+	if buffer.Len()+len(value) > buffer.limit {
+		buffer.overflow = true
+		return 0, errors.New("bounded process metadata output exceeded")
+	}
+	return buffer.Buffer.Write(value)
+}
+
+func parseRunnerdReadlinkOutput(output []byte) (string, error) {
+	if len(output) < 2 || len(output) > maxPrivilegedProcLinkBytes+1 || output[len(output)-1] != '\n' {
+		return "", errors.New("privileged proc link inspection returned malformed or truncated metadata")
+	}
+	target := output[:len(output)-1]
+	if len(target) == 0 || bytes.IndexAny(target, "\x00\r\n") >= 0 {
+		return "", errors.New("privileged proc link inspection returned malformed or truncated metadata")
+	}
+	return string(target), nil
+}
+
+func verifyRunnerdReadOnlyUtility(path string, requireSetuid bool) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return errors.New("required fixed privileged metadata utility is unavailable")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 ||
+		(requireSetuid && info.Mode()&os.ModeSetuid == 0) {
+		return errors.New("fixed privileged metadata utility ownership or mode is unsafe")
+	}
+	return nil
+}
+
+func runnerdInspectProcessTable(procFS runnerdProcFS, linkReader *runnerdProcLinkReader, procRoot string, serviceUID int, paths []string, exempt map[runnerdProcIdentity]struct{}) (map[runnerdProcIdentity]struct{}, error) {
 	entries, err := procFS.readDir(procRoot)
 	if err != nil {
 		return nil, fmt.Errorf("read process inventory: %w", err)
 	}
 	relevant := make(map[runnerdProcIdentity]struct{})
 	for _, entry := range entries {
+		if err := linkReader.ctx.Err(); err != nil {
+			return nil, errors.New("process inventory exceeded its bounded inspection time")
+		}
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 || !entry.IsDir() {
 			continue
@@ -443,7 +608,7 @@ func runnerdInspectProcessTable(procFS runnerdProcFS, procRoot string, serviceUI
 			{"cwd", "has a working directory under the selected PRD paths"},
 			{"exe", "executes from the selected PRD paths"},
 		} {
-			target, readErr := procFS.readlink(filepath.Join(processRoot, item.name))
+			target, readErr := linkReader.readlink(identity, filepath.Join(processRoot, item.name))
 			if readErr != nil {
 				gone, verifyErr := runnerdHandleMissingProcEvidence(procFS, procRoot, identity, readErr, item.name)
 				if verifyErr != nil || gone {
@@ -471,7 +636,10 @@ func runnerdInspectProcessTable(procFS runnerdProcFS, procRoot string, serviceUI
 			return nil, fmt.Errorf("PID %d descriptors are not inspectable: %w", pid, err)
 		}
 		for _, fd := range fds {
-			target, readErr := procFS.readlink(filepath.Join(fdRoot, fd.Name()))
+			if err := linkReader.ctx.Err(); err != nil {
+				return nil, errors.New("process inventory exceeded its bounded inspection time")
+			}
+			target, readErr := linkReader.readlink(identity, filepath.Join(fdRoot, fd.Name()))
 			if readErr != nil {
 				gone, verifyErr := runnerdHandleMissingProcEvidence(procFS, procRoot, identity, readErr, "descriptor")
 				if verifyErr != nil || gone {
