@@ -7,9 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/domain"
 )
 
 func TestCompactPreparedRequestBodyRestoresPreparedDigest(t *testing.T) {
@@ -95,3 +100,132 @@ func TestDecodeObservedJobResponseRequiresExactTerminalResourceIdentity(t *testi
 		t.Fatal("status result from a different job was accepted")
 	}
 }
+
+func TestObservedWorkerControllerBindingSupportsLegacyAndKeepsV3Strict(t *testing.T) {
+	tests := []struct {
+		name       string
+		version    int
+		transport  string
+		directID   string
+		controller string
+		want       bool
+	}{
+		{"V1 direct uses authenticated Mac identity", 1, "direct-mtls", "", "tomasz.walczuk", true},
+		{"V2 direct uses authenticated Mac identity", 2, "direct-mtls", "", "tomasz.walczuk", true},
+		{"legacy direct rejects another identity", 2, "direct-mtls", "", "other-controller", false},
+		{"V3 direct requires explicit endpoint identity", 3, "direct-mtls", "tomasz.walczuk", "tomasz.walczuk", true},
+		{"V3 direct rejects missing endpoint identity", 3, "direct-mtls", "", "tomasz.walczuk", false},
+		{"V3 direct rejects mismatch", 3, "direct-mtls", "configured-controller", "tomasz.walczuk", false},
+		{"legacy queued uses authenticated Mac identity", 2, "queued-ssh", "", "tomasz.walczuk", true},
+		{"V3 queued uses authenticated Mac identity", 3, "queued-ssh", "", "tomasz.walczuk", true},
+		{"queued rejects another identity", 3, "queued-ssh", "", "other-controller", false},
+		{"unknown transport rejected", 2, "other", "", "tomasz.walczuk", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := observedWorkerControllerMatches(test.version, test.transport, test.directID, test.controller); got != test.want {
+				t.Fatalf("observedWorkerControllerMatches(%d, %q, %q, %q) = %v, want %v", test.version,
+					test.transport, test.directID, test.controller, got, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveObservedMacRemoteEnvironmentUsesUniqueLegacyPolicy(t *testing.T) {
+	load := func(t *testing.T, contents string) config.Config {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "mac.yaml")
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := config.LoadFile(path)
+		if err != nil {
+			t.Fatalf("load Mac route fixture: %v", err)
+		}
+		return loaded
+	}
+	loaded := load(t, observedMacRemoteV2Fixture)
+	for _, transport := range []struct {
+		name       string
+		kind       domain.ControllerType
+		controller string
+	}{
+		{"direct-mtls", domain.ControllerTypeDirectMTLS, config.MacAccount},
+		{"queued-ssh", domain.ControllerTypeQueuedMac, config.MacAccount},
+	} {
+		name, err := resolveObservedMacRemoteEnvironment(loaded, "linux-host", "prd", transport.name, transport.kind, transport.controller)
+		if err != nil || name != "linux-dev" {
+			t.Fatalf("legacy %s environment = %q, err=%v; want unique linux-dev", transport.name, name, err)
+		}
+	}
+	if _, err := resolveObservedMacRemoteEnvironment(loaded, "linux-host", "prd", "direct-mtls", domain.ControllerTypeDirectMTLS, "other-controller"); err == nil {
+		t.Fatal("legacy route accepted a controller not allowed by its policy")
+	}
+	ambiguous := strings.Replace(observedMacRemoteV2Fixture, "execution_contexts:\n", "  linux-legacy:\n    base_system: Ubuntu 20.04.6 LTS\n    host_class: Ubuntu Linux host\n    effective_account: ubuntu\n    allowed_targets: [{kind: remote, profile: linux-host}]\n    allowed_source_modes: [empty]\n    allowed_repository_aliases: []\n    allowed_controllers: [{type: direct_mtls, id: tomasz.walczuk}]\nexecution_contexts:\n", 1)
+	if _, err := resolveObservedMacRemoteEnvironment(load(t, ambiguous), "linux-host", "prd", "direct-mtls", domain.ControllerTypeDirectMTLS, config.MacAccount); err == nil {
+		t.Fatal("ambiguous legacy route policy was accepted")
+	}
+}
+
+func TestObservedMacEnvironmentNameKeepsV3LaneRestriction(t *testing.T) {
+	if !observedMacEnvironmentNameAllowed(config.VersionV2, "legacy-linux-policy", "linux-host", "prd") {
+		t.Fatal("legacy policy name was rejected")
+	}
+	if !observedMacEnvironmentNameAllowed(config.VersionV3, "linux-host-prd", "linux-host", "prd") {
+		t.Fatal("correct V3 lane environment was rejected")
+	}
+	if observedMacEnvironmentNameAllowed(config.VersionV3, "linux-host-dev", "linux-host", "prd") ||
+		observedMacEnvironmentNameAllowed(config.VersionV3, "another-linux-host-prd", "linux-host", "prd") {
+		t.Fatal("V3 environment outside the requested host/lane was allowed")
+	}
+}
+
+const observedMacRemoteV2Fixture = `version: 2
+mac:
+  account: tomasz.walczuk
+  service_root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner"
+  api_socket: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/local-api.sock"
+  locald_socket: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/run/locald.sock"
+  sqlite: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/state/local.db"
+  workspaces: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/workspaces"
+  script_temp_root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/tmp/scripts"
+  backups: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/backups"
+environment_registry:
+  mac-dev:
+    base_system: macOS
+    host_class: macOS workstation
+    effective_account: tomasz.walczuk
+    allowed_targets: [{kind: local, profile: mac-workstation}]
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers: [{type: local_user, id: tomasz.walczuk}]
+  linux-dev:
+    base_system: Ubuntu 20.04.6 LTS
+    host_class: Ubuntu Linux host
+    effective_account: ubuntu
+    allowed_targets: [{kind: remote, profile: linux-host}]
+    allowed_source_modes: [empty]
+    allowed_repository_aliases: []
+    allowed_controllers:
+      - {type: queued_mac, id: tomasz.walczuk}
+      - {type: direct_mtls, id: tomasz.walczuk}
+execution_contexts:
+  mac-local:
+    environment: mac-dev
+    execution_target: {kind: local, profile: mac-workstation}
+remote_hosts:
+  linux-host:
+    account: ubuntu
+    direct_endpoint:
+      name: linux-direct
+      url: https://129.151.232.40:8443
+      server_ca: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem"
+      client_certificate: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.pem"
+      client_private_key: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.key"
+mailboxes:
+  default:
+    root: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailbox"
+    repository_aliases: [remote-session-runner]
+    default_execution: mac-local
+    allowed_execution: [mac-local]
+`

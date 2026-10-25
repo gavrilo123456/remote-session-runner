@@ -206,14 +206,86 @@ func observeExisting(ctx context.Context, configPath, socketPath string, p prepa
 		return errors.New("worker accepted probe has a Mac host identity")
 	}
 	remote, ok := loaded.RemoteHost(p.HostID)
-	if !ok || remote.DirectEndpoint == nil || remote.DirectEndpoint.ControllerID == "" {
+	if !ok || remote.DirectEndpoint == nil {
 		return errors.New("configured worker status route is unavailable")
 	}
-	if transport == laneinstall.CatalogProbeDirectMTLS && p.ControllerID != remote.DirectEndpoint.ControllerID ||
-		transport == laneinstall.CatalogProbeQueuedSSH && p.ControllerID != config.MacAccount {
-		return errors.New("accepted probe controller binding changed")
+	environment, err := resolveObservedMacRemoteEnvironment(loaded, p.HostID, p.Lane, p.Transport, p.ControllerType, p.ControllerID)
+	if err != nil || environment != p.Environment ||
+		!observedWorkerControllerMatches(loaded.SchemaVersion(), p.Transport, remote.DirectEndpoint.ControllerID, p.ControllerID) {
+		return errors.New("accepted probe Mac route policy or controller binding changed")
 	}
 	return observeExistingDirect(ctx, loaded, remote.DirectEndpoint, p)
+}
+
+// resolveObservedMacRemoteEnvironment confirms that the Mac controller config
+// has one policy for the worker target, empty source, authenticated controller,
+// and fixed five-second maintenance request. The probe scope's configuration
+// digest remains the worker's loaded config digest; the Mac config is a
+// separate authenticated route configuration and must not be compared with it.
+func resolveObservedMacRemoteEnvironment(loaded config.Config, host, lane, transport string,
+	controllerType domain.ControllerType, controllerID string) (string, error) {
+	if loaded.Kind() != config.HostKindMac || string(loaded.ReleaseLane()) != lane ||
+		(loaded.SchemaVersion() != config.VersionV1 && loaded.SchemaVersion() != config.VersionV2 && loaded.SchemaVersion() != config.VersionV3) {
+		return "", errors.New("unsupported Mac status-route configuration")
+	}
+	probeTransport := laneinstall.CatalogProbeTransport(transport)
+	if probeTransport != laneinstall.CatalogProbeDirectMTLS && probeTransport != laneinstall.CatalogProbeQueuedSSH {
+		return "", errors.New("unsupported worker status transport")
+	}
+	target, err := domain.NewExecutionTarget(domain.TargetKindRemote, host)
+	if err != nil {
+		return "", errors.New("invalid worker status target")
+	}
+	controller, err := domain.NewControllerIdentity(controllerType, domain.ControllerID(controllerID))
+	if err != nil {
+		return "", errors.New("invalid worker status controller")
+	}
+	request := domain.SessionPolicyRequest{Target: target, Source: domain.NewEmptySource(), Controller: controller,
+		Limits: domain.RequestedLimits{CommandTimeout: 5 * time.Second}}
+	matches := make([]string, 0, 1)
+	for _, name := range loaded.EnvironmentNames() {
+		if !observedMacEnvironmentNameAllowed(loaded.SchemaVersion(), name, host, lane) {
+			continue
+		}
+		registered, ok := loaded.Environment(name)
+		if !ok {
+			continue
+		}
+		if _, policyErr := registered.Policy().ValidateSessionPolicy(request); policyErr == nil {
+			matches = append(matches, name)
+		}
+	}
+	if len(matches) != 1 {
+		return "", errors.New("worker status environment policy is missing or ambiguous")
+	}
+	return matches[0], nil
+}
+
+func observedMacEnvironmentNameAllowed(schemaVersion int, name, host, lane string) bool {
+	if schemaVersion == config.VersionV1 || schemaVersion == config.VersionV2 {
+		return true
+	}
+	return schemaVersion == config.VersionV3 && name == host+"-"+lane
+}
+
+// observedWorkerControllerMatches mirrors the configured probe binding for a
+// worker status read. Legacy V1/V2 direct endpoints authenticate the Mac
+// account through the configured client certificate and express that identity
+// in the environment policy; V3 requires its explicit endpoint ControllerID.
+// Queued status reads always bind to the authenticated Mac account.
+func observedWorkerControllerMatches(schemaVersion int, transport, directEndpointControllerID, controllerID string) bool {
+	switch transport {
+	case "direct-mtls":
+		if schemaVersion == config.VersionV1 || schemaVersion == config.VersionV2 {
+			return controllerID == config.MacAccount
+		}
+		return schemaVersion == config.VersionV3 && directEndpointControllerID != "" && controllerID == directEndpointControllerID
+	case "queued-ssh":
+		return (schemaVersion == config.VersionV1 || schemaVersion == config.VersionV2 || schemaVersion == config.VersionV3) &&
+			controllerID == config.MacAccount
+	default:
+		return false
+	}
 }
 
 func observeExistingDirect(ctx context.Context, loaded config.Config, endpoint *config.DirectEndpointProfile, p prepared) error {

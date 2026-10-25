@@ -319,6 +319,34 @@ func TestPromotionProbeOutcomeDecodesCompletePublicHelperResult(t *testing.T) {
 	}
 }
 
+func TestPromotionProbeObservationDiagnosticsAreExactBoundedAndSanitized(t *testing.T) {
+	if _, got := decodePromotionProbeOutcome(nil, false, "linux-host", "operation", "direct-mtls", "job-12345678901234567890123456789012", true); got != "empty stdout" {
+		t.Fatalf("empty helper result decode error=%q, want exact empty stdout classification", got)
+	}
+	if _, got := decodePromotionProbeOutcome([]byte(`{"resource":`), false, "linux-host", "operation", "direct-mtls", "", false); got != "stdout is not valid JSON" {
+		t.Fatalf("invalid helper result decode error=%q", got)
+	}
+	if _, got := decodePromotionProbeOutcome([]byte(`{}`), true, "linux-host", "operation", "direct-mtls", "", false); got != "stdout exceeded 8 MiB bound" {
+		t.Fatalf("truncated helper result decode error=%q", got)
+	}
+
+	stderr := []byte("accepted probe status read returned HTTP 503 (response_code maintenance_admission_closed)\nexit status 1\n")
+	if got, want := sanitizedProbeHelperStderr(stderr, false), "accepted probe status read returned HTTP 503 (response_code maintenance_admission_closed)"; got != want {
+		t.Fatalf("sanitized helper stderr=%q, want %q", got, want)
+	}
+	if got := sanitizedProbeHelperStderr([]byte("token=do-not-disclose\n"), false); got != "unrecognized helper stderr; content omitted" {
+		t.Fatalf("unrecognized helper stderr was not suppressed: %q", got)
+	}
+	if got := sanitizedProbeHelperStderr(stderr, true); got != "stderr exceeded 4 KiB bound; content omitted" {
+		t.Fatalf("truncated helper stderr was not bounded: %q", got)
+	}
+
+	bounded := &boundedProcessOutput{limit: 4}
+	if n, err := bounded.Write([]byte("0123456789")); err != nil || n != 10 || bounded.String() != "0123" || !bounded.truncated {
+		t.Fatalf("bounded subprocess capture n=%d err=%v bytes=%q truncated=%v", n, err, bounded.String(), bounded.truncated)
+	}
+}
+
 func TestExistingPromotionProbeScopeNeverReplaysConsumedCapability(t *testing.T) {
 	now := time.Date(2026, 10, 24, 21, 0, 0, 0, time.UTC)
 	base := promotionProbeScopeObservation{
@@ -420,6 +448,27 @@ func TestRecoverAcceptedProbeAfterSafeObservationFailureDuringWorkflowResume(t *
 		got.AcceptanceEvidence == nil || got.AcceptanceEvidence.ControllerFailureEventSequence != original.Sequence ||
 		got.AcceptanceEvidence.ControllerFailureEventSHA256 != original.SHA256 || !promotionProbeOutcomeAccepted(got) {
 		t.Fatalf("recovery did not bind to the original helper-exit proof without replay: calls=%v outcome=%+v", calls, got)
+	}
+}
+
+func TestAcceptedProbeObserveFailureRecognizesBoundedDiagnosticOnly(t *testing.T) {
+	good := "linux-host direct-mtls functional probe: existing accepted probe observation result_decode=empty stdout; " +
+		"helper_stderr=accepted probe status read returned HTTP 503 (response_code maintenance_admission_closed); " +
+		"helper_exit_code=1: " + ErrOperationCorrupted.Error()
+	if !acceptedProbeObserveFailure(good, "linux-host", "direct-mtls") {
+		t.Fatal("bounded read-only status failure was not recognized")
+	}
+	unsafe := strings.Replace(good, "maintenance_admission_closed", "secret-token", 1)
+	if acceptedProbeObserveFailure(unsafe, "linux-host", "direct-mtls") {
+		t.Fatal("unrecognized helper stderr was accepted as a safe observation failure")
+	}
+	unknownDecode := strings.Replace(good, "empty stdout", "arbitrary decode failure", 1)
+	if acceptedProbeObserveFailure(unknownDecode, "linux-host", "direct-mtls") {
+		t.Fatal("unknown result decode category was accepted")
+	}
+	wrongExit := strings.Replace(good, "helper_exit_code=1", "helper_exit_code=failed", 1)
+	if acceptedProbeObserveFailure(wrongExit, "linux-host", "direct-mtls") {
+		t.Fatal("non-numeric helper exit code was accepted")
 	}
 }
 

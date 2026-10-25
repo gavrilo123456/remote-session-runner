@@ -23,6 +23,8 @@ import (
 const (
 	defaultPromotionOperatingBuffer = uint64(500_000_000)
 	prdSelectorReserve              = uint64(67_108_864)
+	maxPromotionProbeOutputBytes    = 8 << 20
+	maxPromotionProbeStderrBytes    = 4 << 10
 )
 
 func promotionRequiredCapacity(lane string, operatingBuffer uint64) uint64 {
@@ -1196,18 +1198,19 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 	cmd := exec.CommandContext(ctx, profile.GoBinary, args...)
 	cmd.Dir = b.Repository
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &boundedProcessOutput{limit: maxPromotionProbeOutputBytes}
+	stderr := &boundedProcessOutput{limit: maxPromotionProbeStderrBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	probeErr := cmd.Run()
-	var outcome promotionProbeOutcome
-	if decodeStrictJSON(stdout.Bytes(), &outcome) != nil || outcome.HostID != host || outcome.OperationID != op.CohortOperationID ||
-		outcome.Transport != transport || outcome.AcceptanceEvidence != nil {
-		return promotionProbeOutcome{}, fmt.Errorf("catalog-probe-once did not emit a valid bounded outcome (exit=%v): %w", probeErr, ErrOperationCorrupted)
+	outcome, decodeFailure := decodePromotionProbeOutcome(stdout.Bytes(), stdout.truncated, host, op.CohortOperationID, transport, "", false)
+	if decodeFailure != "" {
+		return promotionProbeOutcome{}, fmt.Errorf("catalog-probe-once result_decode=%s; helper_stderr=%q; helper_exit_code=%s: %w",
+			decodeFailure, sanitizedProbeHelperStderr(stderr.Bytes(), stderr.truncated), probeExitCode(probeErr), ErrOperationCorrupted)
 	}
 	if probeErr != nil {
-		return outcome, fmt.Errorf("catalog-probe-once failed: %w", probeErr)
+		return outcome, fmt.Errorf("catalog-probe-once failed; helper_stderr=%q; helper_exit_code=%s: %w",
+			sanitizedProbeHelperStderr(stderr.Bytes(), stderr.truncated), probeExitCode(probeErr), probeErr)
 	}
 	outcome.ConfigurationSHA = prepared.ConfigurationSHA256
 	outcome.RequestSHA256 = prepared.RequestSHA256
@@ -1232,21 +1235,167 @@ func (b *NativePromotionBackend) observeAcceptedProbe(ctx context.Context, op Op
 	cmd := exec.CommandContext(ctx, profile.GoBinary, args...)
 	cmd.Dir = b.Repository
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	stdout := &boundedProcessOutput{limit: maxPromotionProbeOutputBytes}
+	stderr := &boundedProcessOutput{limit: maxPromotionProbeStderrBytes}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	observeErr := cmd.Run()
-	var outcome promotionProbeOutcome
-	if decodeStrictJSON(stdout.Bytes(), &outcome) != nil || outcome.HostID != host || outcome.OperationID != op.CohortOperationID ||
-		outcome.Transport != transport || outcome.JobID != observation.JobID || !outcome.ObservedExisting || outcome.AcceptanceEvidence != nil {
-		return promotionProbeOutcome{}, fmt.Errorf("existing accepted probe could not be safely observed (exit=%v): %w", observeErr, ErrOperationCorrupted)
+	outcome, decodeFailure := decodePromotionProbeOutcome(stdout.Bytes(), stdout.truncated, host, op.CohortOperationID,
+		transport, observation.JobID, true)
+	if decodeFailure != "" {
+		return promotionProbeOutcome{}, fmt.Errorf("existing accepted probe observation result_decode=%s; helper_stderr=%s; helper_exit_code=%s: %w",
+			decodeFailure, sanitizedProbeHelperStderr(stderr.Bytes(), stderr.truncated), probeExitCode(observeErr), ErrOperationCorrupted)
 	}
 	if observeErr != nil {
-		return outcome, fmt.Errorf("existing accepted probe did not pass bounded status observation: %w", observeErr)
+		return outcome, fmt.Errorf("existing accepted probe did not pass bounded status observation; helper_stderr=%q; helper_exit_code=%s: %w",
+			sanitizedProbeHelperStderr(stderr.Bytes(), stderr.truncated), probeExitCode(observeErr), observeErr)
 	}
 	outcome.ConfigurationSHA = observation.ConfigurationSHA256
 	outcome.RequestSHA256 = observation.RequestSHA256
 	outcome.RequestedTimeout = 5
 	return outcome, nil
+}
+
+// boundedProcessOutput keeps subprocess diagnostics and result decoding within
+// fixed memory bounds. It reports the original byte count to the child while
+// recording whether any output was omitted locally.
+type boundedProcessOutput struct {
+	bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *boundedProcessOutput) Write(value []byte) (int, error) {
+	if b.limit < 0 {
+		return 0, errors.New("negative subprocess output limit")
+	}
+	remaining := b.limit - b.Len()
+	if remaining > len(value) {
+		remaining = len(value)
+	}
+	if remaining > 0 {
+		if _, err := b.Buffer.Write(value[:remaining]); err != nil {
+			return 0, err
+		}
+	}
+	if remaining < len(value) {
+		b.truncated = true
+	}
+	return len(value), nil
+}
+
+func decodePromotionProbeOutcome(data []byte, truncated bool, host, operationID, transport, jobID string, observed bool) (promotionProbeOutcome, string) {
+	if truncated || len(data) > maxPromotionProbeOutputBytes {
+		return promotionProbeOutcome{}, "stdout exceeded 8 MiB bound"
+	}
+	if len(data) == 0 {
+		return promotionProbeOutcome{}, "empty stdout"
+	}
+	if !json.Valid(data) {
+		return promotionProbeOutcome{}, "stdout is not valid JSON"
+	}
+	var outcome promotionProbeOutcome
+	if decodeStrictJSON(data, &outcome) != nil {
+		return promotionProbeOutcome{}, "stdout failed strict outcome decoding"
+	}
+	if outcome.HostID != host || outcome.OperationID != operationID || outcome.Transport != transport || outcome.AcceptanceEvidence != nil ||
+		(jobID != "" && outcome.JobID != jobID) || (observed && !outcome.ObservedExisting) || (!observed && outcome.ObservedExisting) {
+		return promotionProbeOutcome{}, "outcome identity or observation contract mismatch"
+	}
+	return outcome, ""
+}
+
+func sanitizedProbeHelperStderr(data []byte, truncated bool) string {
+	if truncated || len(data) > maxPromotionProbeStderrBytes {
+		return "stderr exceeded 4 KiB bound; content omitted"
+	}
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return "empty stderr"
+	}
+	lines := strings.Split(string(data), "\n")
+	diagnostic := ""
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || safeGoRunExitLine(line) {
+			continue
+		}
+		if !safeProbeHelperDiagnosticLine(line) || diagnostic != "" {
+			return "unrecognized helper stderr; content omitted"
+		}
+		diagnostic = line
+	}
+	if diagnostic == "" {
+		return "empty helper diagnostic"
+	}
+	return diagnostic
+}
+
+func safeGoRunExitLine(line string) bool {
+	const prefix = "exit status "
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	value := strings.TrimPrefix(line, prefix)
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func safeProbeHelperDiagnosticLine(line string) bool {
+	fixed := []string{
+		"accepted probe status transport read failed",
+		"accepted probe status response violated the job schema",
+		"accepted probe status response job identity did not match its scope",
+		"accepted probe did not reach a terminal state within the bound",
+		"accepted Mac-local probe status transport read failed",
+		"accepted Mac-local probe did not reach a terminal state within the bound",
+	}
+	for _, allowed := range fixed {
+		if line == allowed {
+			return true
+		}
+	}
+	const prefix = "accepted probe status read returned HTTP "
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(line, prefix)
+	status, codePart, ok := strings.Cut(rest, " (response_code ")
+	if !ok || len(status) != 3 || !strings.HasSuffix(codePart, ")") {
+		return false
+	}
+	for _, char := range status {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	code := strings.TrimSuffix(codePart, ")")
+	if code == "" || len(code) > 80 {
+		return false
+	}
+	for _, char := range code {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func probeExitCode(err error) string {
+	if err == nil {
+		return "0"
+	}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		return fmt.Sprintf("%d", exitError.ExitCode())
+	}
+	return "unknown"
 }
 
 func validProbeJobIdentity(value string) bool {
@@ -1352,10 +1501,61 @@ func recoverAcceptedProbeFromOperation(op Operation, existing promotionProbeScop
 }
 
 func acceptedProbeObserveFailure(errorText, host, transport string) bool {
-	prefix := host + " " + transport + " functional probe: existing accepted probe could not be safely observed (exit="
-	suffix := "): " + ErrOperationCorrupted.Error()
-	return strings.HasPrefix(errorText, prefix) && strings.HasSuffix(errorText, suffix) &&
-		len(errorText) > len(prefix)+len(suffix)
+	legacyPrefix := host + " " + transport + " functional probe: existing accepted probe could not be safely observed (exit="
+	legacySuffix := "): " + ErrOperationCorrupted.Error()
+	if strings.HasPrefix(errorText, legacyPrefix) && strings.HasSuffix(errorText, legacySuffix) {
+		return len(errorText) > len(legacyPrefix)+len(legacySuffix)
+	}
+	prefix := host + " " + transport + " functional probe: existing accepted probe observation result_decode="
+	suffix := ": " + ErrOperationCorrupted.Error()
+	if !strings.HasPrefix(errorText, prefix) || !strings.HasSuffix(errorText, suffix) {
+		return false
+	}
+	payload := strings.TrimSuffix(strings.TrimPrefix(errorText, prefix), suffix)
+	decodeFailure, rest, ok := strings.Cut(payload, "; helper_stderr=")
+	if !ok || !knownProbeResultDecodeFailure(decodeFailure) {
+		return false
+	}
+	stderr, exitPart, ok := strings.Cut(rest, "; helper_exit_code=")
+	if !ok || !safeAcceptedProbeDiagnostic(stderr) {
+		return false
+	}
+	return validProbeExitCode(exitPart)
+}
+
+func knownProbeResultDecodeFailure(value string) bool {
+	switch value {
+	case "empty stdout", "stdout exceeded 8 MiB bound", "stdout is not valid JSON",
+		"stdout failed strict outcome decoding", "outcome identity or observation contract mismatch":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeAcceptedProbeDiagnostic(value string) bool {
+	switch value {
+	case "empty stderr", "empty helper diagnostic", "stderr exceeded 4 KiB bound; content omitted",
+		"unrecognized helper stderr; content omitted":
+		return true
+	default:
+		return safeProbeHelperDiagnosticLine(value)
+	}
+}
+
+func validProbeExitCode(value string) bool {
+	if value == "unknown" {
+		return true
+	}
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func promotionBaselineConfigurationSHA(op Operation, host string) (string, bool) {
