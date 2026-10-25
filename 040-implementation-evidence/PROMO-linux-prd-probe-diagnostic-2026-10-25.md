@@ -84,8 +84,25 @@ On the Mac with Go 1.27.1 darwin/arm64:
 | `go build -trimpath -buildvcs=false ./src/cmd/catalog-probe-once` | PASS |
 
 These are controller/helper source checks, not live PRD functional acceptance.
-The changes have not yet completed the required Git delivery and worker
-fast-forward sequence.
+
+## Git delivery and worker checks
+
+The source correction was committed on `dev` as `d3aca0212d667adf6239ba2dad92ece8ea019526`.
+The primary Gitea `origin/dev` and automatic GitHub `github/dev` mirror both
+resolved to that exact SHA. The three clean Ubuntu `dev` checkouts fast-forwarded
+from `12ce5f0bad02f94256fc072a6bf7387300766794` to the same commit before
+validation.
+
+| Host | Toolchain/platform | Test | Vet | Native controller/helper build |
+|---|---|---|---|---|
+| `linux-host` | Go 1.27.1, linux/amd64 | PASS, focused packages | PASS | PASS; SHA-256 `ad76a1c2a350485ba3acad805558ed12f17f6cfe243bd7c2b58abf16ab73f213` / `648359c393d5b01f008d4ea590c888f9b94344fb47da4861d64a4907af4a3667` |
+| `sandbox-host` | Go 1.27.1, linux/arm64 | PASS, focused packages | PASS | PASS; SHA-256 `7713734f1bf229fd9eeb78d11f22e1f50b7a23631ea935620e4f0cc7aed2d6f1` / `60a52c5581825dd909fa14e68c614c853dde08f17c37af46bf60032b617de085` |
+| `factory-sandbox` | Go 1.27.1, linux/amd64 | PASS, focused packages | PASS | PASS; SHA-256 `d984027d0eb27442f6e1dad8409fe651d554787970293e3b0319c2d99001a12d` / `cc02ebdfd6e3d9ead72625fcacdff2386ea31075866f70973fd617c5899350cf` |
+
+Each test ran `go test ./src/internal/releaseflow ./src/cmd/catalog-probe-once -count=1`;
+build outputs were task-owned `/tmp` files removed after their processes exited.
+These checks validate the synchronized controller and observer source. No
+Runner service bundle was rebuilt or installed by this correction.
 
 ## Remaining gate
 
