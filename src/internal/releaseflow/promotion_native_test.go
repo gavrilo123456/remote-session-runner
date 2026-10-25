@@ -12,9 +12,47 @@ import (
 	"time"
 
 	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/store"
 )
+
+func TestPromotionProbeControllerIDSupportsLegacyAndKeepsV3Strict(t *testing.T) {
+	legacy := config.RemoteHostProfile{
+		QueuedBridge:   &config.QueuedBridgeProfile{Host: "129.151.232.40", Port: 22},
+		DirectEndpoint: &config.DirectEndpointProfile{Name: "linux-poc", Endpoint: "https://129.151.232.40:8443"},
+	}
+	for _, schema := range []int{config.VersionV1, config.VersionV2} {
+		got, err := promotionProbeControllerID(schema, legacy, "direct-mtls")
+		if err != nil || got != config.MacAccount {
+			t.Errorf("legacy schema %d direct-mTLS controller=%q, err=%v", schema, got, err)
+		}
+	}
+	got, err := promotionProbeControllerID(config.VersionV2, legacy, "queued-ssh")
+	if err != nil || got != config.MacAccount {
+		t.Fatalf("legacy queued-SSH controller=%q, err=%v", got, err)
+	}
+
+	v3 := legacy
+	v3.DirectEndpoint = &config.DirectEndpointProfile{
+		Name: "linux-prd", Endpoint: "https://129.151.232.40:8443",
+		ControllerType: string(domain.ControllerTypeDirectMTLS), ControllerID: "runner-controller-prd-linux-host",
+	}
+	got, err = promotionProbeControllerID(config.VersionV3, v3, "direct-mtls")
+	if err != nil || got != v3.DirectEndpoint.ControllerID {
+		t.Fatalf("V3 explicit direct-mTLS controller=%q, err=%v", got, err)
+	}
+	v3.DirectEndpoint.ControllerID = ""
+	if _, err := promotionProbeControllerID(config.VersionV3, v3, "direct-mtls"); err == nil {
+		t.Fatal("V3 direct-mTLS controller fell back to the legacy Mac account")
+	}
+	if _, err := promotionProbeControllerID(config.VersionV2, config.RemoteHostProfile{QueuedBridge: legacy.QueuedBridge}, "direct-mtls"); err == nil {
+		t.Fatal("legacy direct-mTLS controller was accepted without its configured endpoint")
+	}
+	if _, err := promotionProbeControllerID(config.VersionV2, config.RemoteHostProfile{DirectEndpoint: legacy.DirectEndpoint}, "queued-ssh"); err == nil {
+		t.Fatal("queued-SSH controller was accepted without its configured bridge")
+	}
+}
 
 func TestStartReleasedCohortRestartsActiveServicesAfterAcceptance(t *testing.T) {
 	release := testRelease()

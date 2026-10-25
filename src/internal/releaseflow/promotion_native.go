@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/laneinstall"
 )
 
@@ -1000,13 +1001,13 @@ func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation)
 	results := make([]promotionProbeOutcome, 0, 7)
 	for _, host := range HostOrder[:3] {
 		remote, ok := loaded.RemoteHost(host)
-		if !ok || remote.DirectEndpoint == nil || remote.DirectEndpoint.ControllerID == "" {
+		if !ok {
 			return Acceptance{}, fmt.Errorf("%s configured direct-mTLS controller binding is unavailable", host)
 		}
 		for _, transport := range []string{"direct-mtls", "queued-ssh"} {
-			controller := remote.DirectEndpoint.ControllerID
-			if transport == "queued-ssh" {
-				controller = config.MacAccount
+			controller, controllerErr := promotionProbeControllerID(loaded.SchemaVersion(), remote, transport)
+			if controllerErr != nil {
+				return Acceptance{}, fmt.Errorf("%s configured %s controller binding is unavailable: %w", host, transport, controllerErr)
 			}
 			outcome, err := b.runProbe(ctx, op, host, transport, controller, macPlan.Namespace.ConfigFile, "")
 			if err != nil {
@@ -1047,6 +1048,39 @@ func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation)
 	return Acceptance{Profile: op.Profile, ReleaseID: op.Release.ID, ReleaseSHA256: op.Release.Digest, BundleHashes: hashes,
 		Passed: true, Gates: map[string]string{"direct-mtls": "passed", "queued-ssh": "passed", "mac-local": "passed", "limits": "passed",
 			"capacity": "passed", "lifecycle": "passed", "teardown": "passed", "isolation": "passed"}, EvidenceSHA: hashJSON(gateEvidence)}, nil
+}
+
+// promotionProbeControllerID resolves the identity used by the configured
+// Mac route. Legacy V1/V2 mTLS profiles bind the authenticated certificate to
+// the Mac account through their validated environment policy, so they do not
+// carry a per-endpoint controller_id. V3 profiles carry that identity
+// explicitly and must never fall back to the legacy rule.
+func promotionProbeControllerID(schemaVersion int, remote config.RemoteHostProfile, transport string) (string, error) {
+	switch transport {
+	case "queued-ssh":
+		if remote.QueuedBridge == nil || remote.QueuedBridge.Host == "" || remote.QueuedBridge.Port <= 0 {
+			return "", ErrInvalidInput
+		}
+		return config.MacAccount, nil
+	case "direct-mtls":
+		endpoint := remote.DirectEndpoint
+		if endpoint == nil || strings.TrimSpace(endpoint.Name) == "" || strings.TrimSpace(endpoint.Endpoint) == "" {
+			return "", ErrInvalidInput
+		}
+		switch schemaVersion {
+		case config.VersionV1, config.VersionV2:
+			return config.MacAccount, nil
+		case config.VersionV3:
+			if endpoint.ControllerType != string(domain.ControllerTypeDirectMTLS) || strings.TrimSpace(endpoint.ControllerID) == "" {
+				return "", ErrInvalidInput
+			}
+			return endpoint.ControllerID, nil
+		default:
+			return "", ErrInvalidInput
+		}
+	default:
+		return "", ErrInvalidInput
+	}
 }
 
 // ensureCohortVerifying performs the receipt transitions required before
