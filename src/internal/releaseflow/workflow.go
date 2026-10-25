@@ -242,6 +242,23 @@ func Promote(ctx context.Context, store *Store, backend Backend, req PromoteRequ
 		}
 	}
 	return result, store.WithLaneLock(req.Lane, func() error {
+		if req.ResumeID != "" && req.Lane == "prd" && req.Approval != "" && req.Approval != op.ApprovalSHA {
+			if op.PlanSnapshot == nil || !digestPattern.MatchString(op.ApprovalSHA) || !digestPattern.MatchString(req.Approval) {
+				return ErrApprovalRequired
+			}
+			renewal := map[string]string{
+				"previous_approval_sha256": op.ApprovalSHA,
+				"current_approval_sha256":  req.Approval,
+				"plan_snapshot_sha256":     hashJSON(*op.PlanSnapshot),
+			}
+			if err := AppendEvent(&op, "approval-renewed", "", false, "applied", renewal, now()); err != nil {
+				return err
+			}
+			op.ApprovalSHA = req.Approval
+			if err := store.SaveOperation(op); err != nil {
+				return err
+			}
+		}
 		if req.ResumeID == "" {
 			if req.OperationID == "" {
 				return ErrInvalidInput

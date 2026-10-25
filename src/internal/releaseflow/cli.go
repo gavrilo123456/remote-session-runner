@@ -202,6 +202,7 @@ func RunPromoteCLI(args []string, stdout, stderr io.Writer) int {
 		*hostsFile = defaultHostConfigPath()
 	}
 	var err error
+	var resumedOp Operation
 	store := &Store{Root: *storeRoot}
 	if !*planOnly {
 		store, err = NewStore(*storeRoot)
@@ -211,12 +212,12 @@ func RunPromoteCLI(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if *resume != "" {
-		op, err := store.LoadOperation(lane, *resume)
+		resumedOp, err = store.LoadOperation(lane, *resume)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		releaseIDValue := op.Release.ID
+		releaseIDValue := resumedOp.Release.ID
 		*releaseID = releaseIDValue
 	}
 	if !releasePattern.MatchString(*releaseID) {
@@ -288,8 +289,21 @@ func RunPromoteCLI(args []string, stdout, stderr io.Writer) int {
 	}
 	plan.Target = target
 	if lane == "prd" && approvalSHA != "" {
-		if !sameStringMap(approval.PredecessorBundleSHA256, plan.PredecessorBundleSHA256) || approval.BackupRecoveryPackageSHA256 != plan.BackupRecoveryPackageSHA {
-			fmt.Fprintln(stderr, "PRD approval predecessor or backup/recovery package does not match the read-only host plan")
+		approvalPlan := plan
+		if *resume != "" {
+			if resumedOp.Lane != "prd" || resumedOp.OperationID != *resume || resumedOp.PlanSnapshot == nil ||
+				resumedOp.Release.ID != release.ID || resumedOp.Release.Digest != release.Digest {
+				fmt.Fprintln(stderr, "PRD resumed operation has no valid persisted approval plan")
+				return 3
+			}
+			// A resumed rollout's authorization remains bound to its original
+			// four-host baseline. The fresh plan above still drives current
+			// capacity, hold, configuration, work, and selector safety checks;
+			// already-switched hosts must not rewrite the approval baseline.
+			approvalPlan = *resumedOp.PlanSnapshot
+		}
+		if !sameStringMap(approval.PredecessorBundleSHA256, approvalPlan.PredecessorBundleSHA256) || approval.BackupRecoveryPackageSHA256 != approvalPlan.BackupRecoveryPackageSHA {
+			fmt.Fprintln(stderr, "PRD approval predecessor or backup/recovery package does not match the operation's authorized plan")
 			return 3
 		}
 	}

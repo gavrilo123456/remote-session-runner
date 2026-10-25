@@ -1,6 +1,7 @@
 package releaseflow
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -18,6 +19,28 @@ type promotionCLIBackendState struct {
 	FailSwitchAfterEffect  string            `json:"fail_switch_after_effect"`
 	FailBranch             bool              `json:"fail_branch"`
 	ExistingHolds          map[string]string `json:"existing_holds,omitempty"`
+	PlanPredecessors       map[string]string `json:"plan_predecessors,omitempty"`
+	PlanBackupDigest       string            `json:"plan_backup_digest,omitempty"`
+}
+
+type promotionCLIPlanOverrideBackend struct {
+	*fakeBackend
+	predecessors map[string]string
+	backupDigest string
+}
+
+func (b *promotionCLIPlanOverrideBackend) Plan(ctx context.Context, lane string, release Release, approval string) (PromotionPlan, error) {
+	plan, err := b.fakeBackend.Plan(ctx, lane, release, approval)
+	if err != nil {
+		return plan, err
+	}
+	if b.predecessors != nil {
+		plan.PredecessorBundleSHA256 = b.predecessors
+	}
+	if b.backupDigest != "" {
+		plan.BackupRecoveryPackageSHA = b.backupDigest
+	}
+	return plan, nil
 }
 
 // TestPromotionCLIHelper is the subprocess entry point for public-command
@@ -39,7 +62,11 @@ func TestPromotionCLIHelper(t *testing.T) {
 	backend := &fakeBackend{selected: state.Selected, prepared: state.Prepared,
 		failPrepareAfterEffect: state.FailPrepareAfterEffect, failSwitchAfterEffect: state.FailSwitchAfterEffect,
 		failBranch: state.FailBranch, existingHolds: state.ExistingHolds}
-	promotionBackendForTests = backend
+	var promotionBackend Backend = backend
+	if state.PlanPredecessors != nil || state.PlanBackupDigest != "" {
+		promotionBackend = &promotionCLIPlanOverrideBackend{fakeBackend: backend, predecessors: state.PlanPredecessors, backupDigest: state.PlanBackupDigest}
+	}
+	promotionBackendForTests = promotionBackend
 	separator := -1
 	for i, arg := range os.Args {
 		if arg == "--" {
@@ -67,6 +94,75 @@ func TestPromotionCLIHelper(t *testing.T) {
 		os.Exit(92)
 	}
 	os.Exit(code)
+}
+
+func preparePRDResumeCLI(t *testing.T, store *Store, release Release, opID string, renewalApproval bool) (Operation, Approval, string, string, promotionCLIBackendState) {
+	t.Helper()
+	plan, err := BuildPlan("prd", "all", release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.PredecessorBundleSHA256 = make(map[string]string, len(HostOrder))
+	for _, host := range HostOrder {
+		plan.PredecessorBundleSHA256[host] = digest([]byte("original predecessor:" + host))
+	}
+	plan.BackupRecoveryPackageSHA = digest([]byte("original backup package"))
+	oldApprovalSHA := digest([]byte("original approval"))
+	op, err := NewOperation(opID, "prd", "all", release, "profile-v1", oldApprovalSHA, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	op.CohortOperationID = opID
+	op.PlanSnapshot = &plan
+	op.Stage = StageBlocked
+	op.LastError = "Sandbox switch failed after freshness guard"
+	op.Hosts[0].SwitchIntent = true
+	op.Hosts[0].Switched = true
+	op.Hosts[0].Verified = true
+	op.Hosts[0].SelectorOperation = "linux-selector-operation"
+	op.Hosts[0].ObservedBundleSHA = release.Bundles["linux-host"].SHA256
+	if err := AppendEvent(&op, "operation-created", "", false, "recorded", map[string]any{"plan": plan}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendEvent(&op, "host-verified", "linux-host", false, "verified", map[string]string{"bundle": release.Bundles["linux-host"].SHA256}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendEvent(&op, "switch-host", "sandbox-host", true, "intent", nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendEvent(&op, "switch-host", "sandbox-host", false, "failed", map[string]string{"reason": "preflight expired"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveOperation(op); err != nil {
+		t.Fatal(err)
+	}
+	predecessors := make(map[string]string, len(plan.PredecessorBundleSHA256))
+	for host, hash := range plan.PredecessorBundleSHA256 {
+		predecessors[host] = hash
+	}
+	if renewalApproval {
+		predecessors["linux-host"] = release.Bundles["linux-host"].SHA256
+	}
+	currentBackupDigest := digest([]byte("fresh plan package after Linux switch"))
+	approval := Approval{FormatVersion: 1, ReleaseID: release.ID, ReleaseSHA256: release.Digest,
+		HostSet: append([]string(nil), HostOrder...), WindowStart: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+		WindowEnd: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), Owner: "owner", Scope: "fixture renewal",
+		PredecessorBundleSHA256: plan.PredecessorBundleSHA256, BackupRecoveryPackageSHA256: plan.BackupRecoveryPackageSHA}
+	approvalPath := filepath.Join(t.TempDir(), "renewed-approval.json")
+	encoded, err := json.Marshal(approval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(approvalPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	holds := make(map[string]string, len(HostOrder))
+	for _, host := range HostOrder {
+		holds[host] = op.CohortOperationID
+	}
+	state := promotionCLIBackendState{Selected: map[string]bool{"linux-host": true}, ExistingHolds: holds,
+		PlanPredecessors: predecessors, PlanBackupDigest: currentBackupDigest}
+	return op, approval, approvalPath, oldApprovalSHA, state
 }
 
 func TestBuildCLIHelper(t *testing.T) {
@@ -305,6 +401,85 @@ func TestPublicPromotionCLIRejectsExpiredPRDApproval(t *testing.T) {
 	}
 	if entries, readErr := os.ReadDir(filepath.Join(store.Root, "operations", "prd")); readErr == nil && len(entries) != 0 {
 		t.Fatalf("expired approval created a deployment operation: %v", entries)
+	}
+}
+
+func TestPublicPRDResumeUsesPersistedApprovalBaselineAfterPartialSwitch(t *testing.T) {
+	store := testStore(t)
+	release := saveCLIRelease(t, store)
+	saveTestAcceptance(t, store, "qas", release, time.Now())
+	opID := strings.Repeat("e", 32)
+	op, approval, approvalPath, oldApprovalSHA, state := preparePRDResumeCLI(t, store, release, opID, true)
+	statePath := filepath.Join(t.TempDir(), "backend-state.json")
+	writePromotionCLIState(t, statePath, state)
+	args := []string{"promote-to", "prd", "all", "--release", release.ID, "--resume", opID, "--approval-file", approvalPath,
+		"--profile", "profile-v1", "--store-root", store.Root, "--publisher-owner", "owner", "--publisher-control", "fixture pause",
+		"--publishers-paused", "--no-new-accepted", "--json"}
+	output, err := runPromotionCLIChild(t, statePath, args...)
+	if err != nil {
+		t.Fatalf("resumed PRD command rejected the persisted approval baseline after Linux switched: %v: %s", err, output)
+	}
+	op, err = store.LoadOperation("prd", opID)
+	if err != nil || op.Stage != StageComplete {
+		t.Fatalf("resumed PRD operation did not complete: stage=%s err=%v output=%s", op.Stage, err, output)
+	}
+	_, renewedSHA, err := readApprovalFile(approvalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.ApprovalSHA != renewedSHA || op.ApprovalSHA == oldApprovalSHA {
+		t.Fatalf("renewed approval was not durably applied: current=%s renewed=%s original=%s", op.ApprovalSHA, renewedSHA, oldApprovalSHA)
+	}
+	found := false
+	for _, event := range op.Events {
+		if event.Action != "approval-renewed" {
+			continue
+		}
+		var evidence map[string]string
+		if err := json.Unmarshal(event.Evidence, &evidence); err != nil {
+			t.Fatal(err)
+		}
+		if event.Outcome == "applied" && evidence["previous_approval_sha256"] == oldApprovalSHA &&
+			evidence["current_approval_sha256"] == renewedSHA && evidence["plan_snapshot_sha256"] == hashJSON(*op.PlanSnapshot) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("renewal event did not preserve both approval identities and original plan binding: %+v", op.Events)
+	}
+	if !sameStringMap(approval.PredecessorBundleSHA256, op.PlanSnapshot.PredecessorBundleSHA256) ||
+		approval.BackupRecoveryPackageSHA256 != op.PlanSnapshot.BackupRecoveryPackageSHA {
+		t.Fatal("fixture approval did not remain bound to the operation's original plan snapshot")
+	}
+}
+
+func TestPublicPRDResumeRejectsApprovalOutsidePersistedBaseline(t *testing.T) {
+	store := testStore(t)
+	release := saveCLIRelease(t, store)
+	saveTestAcceptance(t, store, "qas", release, time.Now())
+	opID := strings.Repeat("f", 32)
+	op, approval, approvalPath, oldApprovalSHA, state := preparePRDResumeCLI(t, store, release, opID, true)
+	approval.PredecessorBundleSHA256["sandbox-host"] = digest([]byte("unapproved predecessor"))
+	encoded, err := json.Marshal(approval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(approvalPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "backend-state.json")
+	writePromotionCLIState(t, statePath, state)
+	args := []string{"promote-to", "prd", "all", "--release", release.ID, "--resume", opID, "--approval-file", approvalPath,
+		"--profile", "profile-v1", "--store-root", store.Root, "--publisher-owner", "owner", "--publisher-control", "fixture pause",
+		"--publishers-paused", "--no-new-accepted", "--json"}
+	output, err := runPromotionCLIChild(t, statePath, args...)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 3 || !strings.Contains(output, "does not match the operation's authorized plan") {
+		t.Fatalf("resumed PRD command did not reject an approval with a changed predecessor: err=%v output=%s", err, output)
+	}
+	loaded, err := store.LoadOperation("prd", opID)
+	if err != nil || loaded.Stage != StageBlocked || loaded.ApprovalSHA != oldApprovalSHA || len(loaded.Events) != len(op.Events) {
+		t.Fatalf("rejected approval caused operation effects: stage=%s approval=%s events=%d err=%v", loaded.Stage, loaded.ApprovalSHA, len(loaded.Events), err)
 	}
 }
 

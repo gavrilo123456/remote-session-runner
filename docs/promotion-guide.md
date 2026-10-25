@@ -224,6 +224,16 @@ reverse selector journals; it does not restore an older database. If runtime
 acceptance passed but branch synchronization failed, retry only
 `runner-release branch-sync`; do not redeploy or roll back a healthy cohort.
 
+For a resumed PRD operation, the current owner approval must still match the
+release and the original predecessor/backup package recorded in that
+operation's `plan_snapshot`. The newly generated read-only plan remains the
+source for current capacity, admission, configuration, work and selector
+checks; selectors already changed by this operation do not rewrite the
+approval baseline. A valid renewed approval is recorded as an
+`approval-renewed` operation event with both approval hashes and the original
+plan digest before the resumed effects proceed. An approval with a changed
+release, predecessor or backup package is rejected.
+
 ### Exact retained-lost recovery before PRD promotion
 
 If a fresh PRD inventory contains only an exact set of terminal-lost command
