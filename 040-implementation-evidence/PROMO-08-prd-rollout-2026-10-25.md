@@ -197,7 +197,22 @@ contains the lock correction and operator guidance. Primary Gitea and the
 automatic GitHub mirror both resolve `refs/heads/dev` to that exact SHA. The
 initial `git push` reported a local remote-tracking-ref write denial after the
 server accepted the push; both remote refs were queried directly and verified
-at the exact commit. Native worker checks and final evidence delivery remain
-pending. After required synchronization, operation
+at the exact commit. After required synchronization, operation
 `9e8f32790a8beeb08dd4451c7f606b67` must be freshly inspected and resumed with
 `--resume`; the failed attempt remains in its history.
+
+Native validation ran on clean `dev` checkouts synchronized to mirror SHA
+`ae59bf5608e2603e75cffa3522b64409c4ce4827` using each host's pinned Go 1.27.1
+toolchain: Linux/AMD64 on `linux-host`, Linux/ARM64 on `sandbox-host`, and
+Linux/AMD64 on `factory-sandbox`. On all three workers, each of the
+following passed:
+
+- `go test ./src/internal/laneinstall -count=1`.
+- `go vet ./src/internal/laneinstall ./src/internal/releaseflow`.
+- `go build ./src/cmd/runner-lane ./src/cmd/promote-to ./src/cmd/runner-release`.
+
+Each worker was on branch `dev` with a clean worktree before the fast-forward;
+all three reached the exact mirror SHA. These checks did not alter services
+or the sealed release. A subsequent evidence-only commit will be
+fast-forwarded to the workers; these code results remain tied to source commit
+`8401e84705b7fec54db37ad89ce5957280b5b7e8`.
