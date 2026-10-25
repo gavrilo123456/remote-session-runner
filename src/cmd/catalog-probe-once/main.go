@@ -68,6 +68,7 @@ type outcome struct {
 	BridgeResponseType  string `json:"bridge_response_type,omitempty"`
 	ReadinessHTTPStatus int    `json:"readiness_http_status"`
 	ObservedExisting    bool   `json:"observed_existing,omitempty"`
+	IdempotencyKey      string `json:"idempotency_key,omitempty"`
 }
 
 type jobFields struct {
@@ -330,7 +331,7 @@ func observeExistingDirect(ctx context.Context, loaded config.Config, endpoint *
 	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, JobID: final.JobID,
 		SessionID: final.SessionID, CommandID: final.CommandID, Phase: finalPhase(final), CommandState: final.CommandState,
 		ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete,
-		OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, ObservedExisting: true})
+		OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, ObservedExisting: true, IdempotencyKey: p.IdempotencyKey})
 }
 
 func observeExistingLocal(ctx context.Context, socketPath string, p prepared) error {
@@ -364,7 +365,7 @@ func observeExistingLocal(ctx context.Context, socketPath string, p prepared) er
 	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, JobID: final.JobID,
 		SessionID: final.SessionID, CommandID: final.CommandID, Phase: finalPhase(final), CommandState: final.CommandState,
 		ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete,
-		OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, ObservedExisting: true})
+		OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, ObservedExisting: true, IdempotencyKey: p.IdempotencyKey})
 }
 
 func decodeObservedJobResponse(read response, expectedJobID string) (jobFields, error) {
@@ -585,7 +586,7 @@ func direct(ctx context.Context, configPath string, p prepared) error {
 	if !terminal(final) {
 		return errors.New("direct probe did not reach a terminal state within the bound")
 	}
-	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: acceptance.JobID, SessionID: acceptance.SessionID, CommandID: acceptance.CommandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, HTTPStatus: accepted.status, ReadinessHTTPStatus: ready.status})
+	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: acceptance.JobID, SessionID: acceptance.SessionID, CommandID: acceptance.CommandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, HTTPStatus: accepted.status, ReadinessHTTPStatus: ready.status, IdempotencyKey: p.IdempotencyKey})
 }
 
 func configuredTLSConfig(loaded config.Config, endpoint *config.DirectEndpointProfile, caPEM, clientCertPEM, clientKeyPEM []byte) (*tls.Config, error) {
@@ -779,7 +780,7 @@ func queued(ctx context.Context, configPath string, p prepared) error {
 	if !terminal(final) {
 		return errors.New("queued probe did not reach a terminal state within the bound")
 	}
-	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: jobID, SessionID: sessionID, CommandID: commandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, BridgeResponseType: accepted.ResponseType})
+	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: jobID, SessionID: sessionID, CommandID: commandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, BridgeResponseType: accepted.ResponseType, IdempotencyKey: p.IdempotencyKey})
 }
 
 func local(ctx context.Context, socketPath string, p prepared) error {
@@ -827,7 +828,7 @@ func local(ctx context.Context, socketPath string, p prepared) error {
 	if !terminal(final) {
 		return errors.New("Mac-local probe did not reach a terminal state within the bound")
 	}
-	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: acceptance.JobID, SessionID: acceptance.SessionID, CommandID: acceptance.CommandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, HTTPStatus: accepted.status, ReadinessHTTPStatus: ready.status})
+	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: acceptance.JobID, SessionID: acceptance.SessionID, CommandID: acceptance.CommandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, HTTPStatus: accepted.status, ReadinessHTTPStatus: ready.status, IdempotencyKey: p.IdempotencyKey})
 }
 
 type response struct {

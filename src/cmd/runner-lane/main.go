@@ -29,6 +29,7 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/laneinstall"
+	"remote-session-runner/src/internal/store"
 )
 
 const maxLaneConfigBytes = 1 << 20
@@ -166,6 +167,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogPRDRecover(ctx, args[1:], stdout, stderr)
 	case "catalog-probe-prepare":
 		err = runCatalogProbePrepare(args[1:], stdout, stderr)
+	case "catalog-probe-disposition":
+		err = runCatalogProbeDisposition(ctx, args[1:], stdout, stderr)
 	case "catalog-select", "catalog-reconcile", "catalog-rollback":
 		err = runCatalogSelectorMaintenance(ctx, args[0], args[1:], stdout, stderr)
 	default:
@@ -974,6 +977,7 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	transport := flags.String("transport", string(laneinstall.CatalogProbeDirectMTLS), "direct-mtls, queued-ssh, or mac-local")
 	operationID := flags.String("operation-id", "", "held cohort operation identity")
 	controllerID := flags.String("controller-id", "", "existing authenticated controller identity")
+	retryAfterJobID := flags.String("retry-after-job-id", "", "exact prior lost probe job; permits only the one guarded Linux PRD direct-mTLS retry")
 	ttlSeconds := flags.Int("ttl-seconds", 120, "one-time probe token lifetime from 1 to 600 seconds")
 	observeExisting := flags.Bool("observe-existing", false, "read the exact existing probe scope without minting a capability")
 	if err := flags.Parse(args); err != nil {
@@ -981,8 +985,8 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	}
 	if flags.NArg() != 0 || !currentCatalogHost(*host) ||
 		(*lane != "dev" && *lane != "qas" && *lane != "prd") || !validCLIProbeOperationID(*operationID) ||
-		*controllerID == "" || *ttlSeconds < 1 || *ttlSeconds > 600 {
-		return errors.New("usage: runner-lane catalog-probe-prepare --host HOST --lane dev|qas|prd --transport direct-mtls|queued-ssh|mac-local --operation-id ID --controller-id ID [--ttl-seconds 1..600]")
+		*controllerID == "" || *ttlSeconds < 1 || *ttlSeconds > 600 || (*retryAfterJobID != "" && !validCLIProbeJobID(*retryAfterJobID)) {
+		return errors.New("usage: runner-lane catalog-probe-prepare --host HOST --lane dev|qas|prd --transport direct-mtls|queued-ssh|mac-local --operation-id ID --controller-id ID [--retry-after-job-id JOB] [--ttl-seconds 1..600]")
 	}
 	probeTransport := laneinstall.CatalogProbeTransport(*transport)
 	var controllerType domain.ControllerType
@@ -1012,6 +1016,13 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	if probeTransport != laneinstall.CatalogProbeDirectMTLS {
 		idempotencyKey += "-" + string(probeTransport)
 	}
+	if *retryAfterJobID != "" {
+		if *host != "linux-host" || *lane != "prd" || probeTransport != laneinstall.CatalogProbeDirectMTLS || controllerType != domain.ControllerTypeDirectMTLS ||
+			*operationID != "63471d41af07b7afaf577d6a0989cc03" || *retryAfterJobID != "job-7fae7172e801f2e22e7d6fce6014403d" {
+			return errors.New("the one-time retry is limited to the exact Linux PRD probe for operation 63471d41af07b7afaf577d6a0989cc03")
+		}
+		idempotencyKey += "-retry-1"
+	}
 	requestBody, err := laneinstall.CatalogMaintenanceProbeRequestBodyForBinding(plan, probeTransport, binding)
 	if err != nil {
 		return err
@@ -1019,14 +1030,20 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	digest := sha256.Sum256(requestBody)
 	if *observeExisting {
 		observation, err := observeCatalogProbeScope(plan, *operationID, probeTransport, controllerType, *controllerID,
-			binding.Environment, binding.ConfigurationSHA, idempotencyKey, hex.EncodeToString(digest[:]))
+			binding.Environment, binding.ConfigurationSHA, strings.TrimSuffix(idempotencyKey, "-retry-1"), hex.EncodeToString(digest[:]))
 		if err != nil {
 			return err
 		}
 		return writeJSON(stdout, observation)
 	}
 	expiresAt := time.Now().UTC().Add(time.Duration(*ttlSeconds) * time.Second)
-	token, err := laneinstall.PrepareCatalogMaintenanceProbeForTransportWithConfig(plan, *operationID, probeTransport, controllerType, *controllerID, idempotencyKey, requestBody, expiresAt, loaded)
+	var token string
+	if *retryAfterJobID != "" {
+		token, err = laneinstall.PrepareCatalogMaintenanceProbeRetryForTransportWithConfig(plan, *operationID, probeTransport,
+			controllerType, *controllerID, *retryAfterJobID, requestBody, expiresAt, loaded)
+	} else {
+		token, err = laneinstall.PrepareCatalogMaintenanceProbeForTransportWithConfig(plan, *operationID, probeTransport, controllerType, *controllerID, idempotencyKey, requestBody, expiresAt, loaded)
+	}
 	if err != nil {
 		return err
 	}
@@ -1049,6 +1066,153 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 		IntentID            string                            `json:"intent_id,omitempty"`
 	}{*host, *lane, probeTransport, *operationID, controllerType, *controllerID, binding.Environment, binding.ConfigurationSHA,
 		idempotencyKey, hex.EncodeToString(digest[:]), requestBody, expiresAt.Format(time.RFC3339Nano), token, "ready", "", ""})
+}
+
+func runCatalogProbeDisposition(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-probe-disposition", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical existing host identity")
+	operationID := flags.String("operation-id", "", "exact held PRD cohort operation")
+	releaseID := flags.String("release-id", "", "exact selected sealed PRD release")
+	releaseSHA := flags.String("release-sha256", "", "exact sealed release digest")
+	jobIDText := flags.String("job-id", "", "exact accepted probe job")
+	sessionIDText := flags.String("session-id", "", "exact accepted probe session")
+	commandIDText := flags.String("command-id", "", "exact accepted probe command identity")
+	controllerID := flags.String("controller-id", "", "exact authenticated direct-mTLS controller identity")
+	apply := flags.Bool("apply", false, "record the narrowly scoped indeterminate/lost disposition")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *host != "linux-host" || *operationID != "63471d41af07b7afaf577d6a0989cc03" ||
+		*releaseID != "rr-20261024-43a4e675" || *releaseSHA != "093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69" ||
+		*jobIDText != "job-7fae7172e801f2e22e7d6fce6014403d" || *sessionIDText != "sess-548ea3986a2b736f9643b2b402188830" ||
+		*commandIDText != "cmd-7dc98e864e7abd3a9c2596c3c4fe9399" || *controllerID != "tomasz.walczuk" {
+		return errors.New("usage: runner-lane catalog-probe-disposition --host linux-host --operation-id 63471d41af07b7afaf577d6a0989cc03 --release-id rr-20261024-43a4e675 --release-sha256 093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69 --job-id job-7fae7172e801f2e22e7d6fce6014403d --session-id sess-548ea3986a2b736f9643b2b402188830 --command-id cmd-7dc98e864e7abd3a9c2596c3c4fe9399 --controller-id tomasz.walczuk [--apply]")
+	}
+	jobID, err := domain.NewJobID(*jobIDText)
+	if err != nil {
+		return errors.New("probe job identity is invalid")
+	}
+	sessionID, err := domain.NewSessionID(*sessionIDText)
+	if err != nil {
+		return errors.New("probe session identity is invalid")
+	}
+	commandID, err := domain.NewCommandID(*commandIDText)
+	if err != nil {
+		return errors.New("probe command identity is invalid")
+	}
+	prdPlan, err := laneinstall.BuildPRDUpgradePlan(*host)
+	if err != nil {
+		return err
+	}
+	service, err := laneinstall.NewPRDServiceController()
+	if err != nil {
+		return err
+	}
+	releaseLocks, err := laneinstall.AcquireCatalogPRDProbeDispositionLocks(ctx, prdPlan, service, *operationID)
+	if err != nil {
+		return errors.Join(errors.New("exact PRD service must be stopped and its catalog/lifecycle locks available before probe disposition"), err)
+	}
+	defer releaseLocks()
+	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLanePRD)
+	if err != nil {
+		return err
+	}
+	if err := laneinstall.CatalogCohortAdmissionHoldMatches(plan, *operationID); err != nil {
+		return errors.Join(errors.New("exact PRD cohort admission hold is not present"), err)
+	}
+	receipt, err := laneinstall.ReadCatalogCohortReceipt(plan, *operationID)
+	if err != nil || receipt.Stage != laneinstall.CatalogCohortVerifying || receipt.ReleaseID != *releaseID || receipt.ReleaseSHA256 != *releaseSHA {
+		return errors.Join(errors.New("PRD cohort receipt does not match the held verifying release"), err)
+	}
+	var hostEvidence *laneinstall.CatalogCohortHostPreflight
+	for index := range receipt.Hosts {
+		if receipt.Hosts[index].HostID == *host {
+			hostEvidence = &receipt.Hosts[index]
+			break
+		}
+	}
+	if hostEvidence == nil || hostEvidence.Target.ReleaseID != *releaseID || hostEvidence.Target.ReleaseSHA256 != *releaseSHA {
+		return errors.New("Linux PRD receipt release identity does not match the requested operation")
+	}
+	catalogRoot, err := laneinstall.DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		return err
+	}
+	selected, err := laneinstall.InspectCatalogRelease(catalogRoot, *host, *releaseID)
+	if err != nil || selected.Identity.ReleaseSHA256 != *releaseSHA || selected.Identity.BundleSHA256 != hostEvidence.Target.BundleSHA256 {
+		return errors.Join(errors.New("selected Linux PRD release bytes do not match the receipt"), err)
+	}
+	loaded, err := config.LoadFile(prdPlan.Namespace.ConfigFile)
+	if err != nil || loaded.SourceSHA256() != hostEvidence.ConfigurationSHA256 {
+		return errors.Join(errors.New("Linux PRD configuration does not match cohort evidence"), err)
+	}
+	report, err := laneinstall.ReadCatalogPRDWorkInventory(ctx, prdPlan, service)
+	if err != nil || report.ServiceActive || report.BundleSHA256 != hostEvidence.Target.BundleSHA256 || report.ConfigurationSHA256 != hostEvidence.ConfigurationSHA256 ||
+		report.DatabaseSchema != hostEvidence.SchemaVersion ||
+		!probeDispositionInventory(report.WorkInventory) {
+		return errors.Join(errors.New("Linux PRD work inventory or selected runtime identity is not the exact retained probe"), err)
+	}
+	binding, err := laneinstall.ResolveCatalogMaintenanceProbeBinding(loaded, plan, laneinstall.CatalogProbeDirectMTLS,
+		domain.ControllerTypeDirectMTLS, *controllerID)
+	if err != nil {
+		return errors.New("Linux PRD direct-mTLS configuration binding is unavailable")
+	}
+	body, err := laneinstall.CatalogMaintenanceProbeRequestBodyForBinding(plan, laneinstall.CatalogProbeDirectMTLS, binding)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(body)
+	key := "catalog-probe-" + *operationID + "-" + *host
+	scope, err := observeCatalogProbeScope(plan, *operationID, laneinstall.CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS,
+		*controllerID, binding.Environment, binding.ConfigurationSHA, key, hex.EncodeToString(digest[:]))
+	if err != nil || scope.State != "accepted" || scope.JobID != *jobIDText {
+		return errors.Join(errors.New("accepted probe scope does not bind the exact retained job"), err)
+	}
+	markerDigest := sha256.Sum256([]byte(*sessionIDText))
+	markerPath := filepath.Join(prdPlan.Namespace.Workspaces, ".runner-runtime-ownership", hex.EncodeToString(markerDigest[:])+".json")
+	if _, err := os.Lstat(markerPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return errors.New("exact retained session still has a runtime ownership marker or the marker path is unreadable")
+	}
+	result := struct {
+		HostID        string                           `json:"host_id"`
+		OperationID   string                           `json:"operation_id"`
+		JobID         string                           `json:"job_id"`
+		SessionID     string                           `json:"session_id"`
+		CommandID     string                           `json:"command_id"`
+		Disposition   string                           `json:"disposition"`
+		Work          laneinstall.CatalogWorkInventory `json:"work_inventory_before"`
+		ServiceActive bool                             `json:"service_active"`
+	}{*host, *operationID, *jobIDText, *sessionIDText, *commandIDText, "indeterminate_owner_abandoned_outcome_unknown", report.WorkInventory, false}
+	if !*apply {
+		return writeJSON(stdout, result)
+	}
+	database, err := store.OpenExistingCurrent(ctx, prdPlan.Namespace.Database)
+	if err != nil {
+		return errors.New("existing PRD authority could not be opened for guarded disposition")
+	}
+	defer database.Close()
+	authority, err := store.NewAuthorityStore(database)
+	if err != nil {
+		return errors.New("existing PRD authority store could not be validated")
+	}
+	if _, _, err := authority.MarkCreatingDirectProbeLost(ctx, jobID, sessionID, commandID, key,
+		binding.Environment, *controllerID, store.CatalogProbeOwnerAbandonedReason); err != nil {
+		return errors.Join(errors.New("exact probe indeterminate disposition was refused"), err)
+	}
+	result.Disposition = "indeterminate_owner_abandoned_outcome_unknown_recorded_capacity_held"
+	return writeJSON(stdout, result)
+}
+
+func probeDispositionInventory(inventory laneinstall.CatalogWorkInventory) bool {
+	return inventory.ActiveSessions == 1 && inventory.ActiveCommandSlots == 0 && inventory.ActiveSessionReservations == 1 &&
+		inventory.QueuedCommands == 0 && inventory.RunningCommands == 0 && inventory.ResumableJobs == 1 && inventory.PendingRecoveryFinalizations == 0 ||
+		inventory.ActiveSessions == 0 && inventory.ActiveCommandSlots == 0 && inventory.ActiveSessionReservations == 1 &&
+			inventory.QueuedCommands == 0 && inventory.RunningCommands == 0 && inventory.ResumableJobs == 0 && inventory.PendingRecoveryFinalizations == 0
+}
+
+func validCLIProbeJobID(value string) bool {
+	return strings.HasPrefix(value, "job-") && len(value) == 36 && strings.Trim(value[4:], "0123456789abcdef") == ""
 }
 
 type catalogProbeScopeObservation struct {
@@ -1141,10 +1305,13 @@ func observeCatalogProbeScope(plan laneinstall.Plan, operationID string, transpo
 		return catalogProbeScopeObservation{}, errors.New("catalog probe scope JSON is invalid")
 	}
 	canonical, err := json.MarshalIndent(scope, "", "  ")
+	probeKeyMatches := scope.IdempotencyKey == idempotencyKey ||
+		(plan.HostID == "linux-host" && plan.Lane == config.ReleaseLanePRD && transport == laneinstall.CatalogProbeDirectMTLS &&
+			operationID == "63471d41af07b7afaf577d6a0989cc03" && scope.IdempotencyKey == idempotencyKey+"-retry-1")
 	if err != nil || !bytes.Equal(data, append(canonical, '\n')) || scope.FormatVersion != 3 ||
 		scope.OperationID != operationID || scope.HostID != plan.HostID || scope.Lane != string(plan.Lane) || scope.Transport != transport ||
 		scope.ControllerType != controllerType || scope.ControllerID != controllerID || scope.Environment != environment ||
-		scope.ConfigurationSHA != configurationSHA || scope.IdempotencyKey != idempotencyKey || scope.RequestBodySHA256 != requestSHA ||
+		scope.ConfigurationSHA != configurationSHA || !probeKeyMatches || scope.RequestBodySHA256 != requestSHA ||
 		!validProbeScopeDigest(scope.TokenSHA256) || !validProbeScopeTime(scope.CreatedAt, scope.ExpiresAt) ||
 		(scope.State != "ready" && scope.State != "reserved" && scope.State != "accepted") ||
 		(scope.State == "ready" && (scope.JobID != "" || scope.IntentID != "")) ||

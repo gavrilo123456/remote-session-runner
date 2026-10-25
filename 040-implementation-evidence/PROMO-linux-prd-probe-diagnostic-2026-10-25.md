@@ -120,3 +120,63 @@ releasing capacity, opening admissions, or creating another probe. Continue
 only with a current approved PRD window and a fresh, supported disposition of
 the exact incomplete job. Preserve the operation, accepted scope, database,
 history, and current admission hold in the meantime.
+
+## Follow-on authorization and bounded Linux recovery correction
+
+The owner subsequently authorized a new four-hour PRD window beginning with
+fresh operational preflight, supported non-success disposition of only the
+exact Linux direct-mTLS probe above, one fresh retry after supported recovery,
+and completion of this same operation. This later authorization supersedes
+the expired-window statement above; the new start/end are recorded only when
+the fresh preflight begins. Dev, QAS, and project mailbox routing remain out
+of scope.
+
+The last captured execution stage remains `creating_session` / session state
+`creating`. The direct ingress log says `outcome=allowed`; no command row, event,
+slot, runtime generation, or terminal output exists. The recorded 503 is a
+separate expired-capability status-read failure. The old installed code did
+not persist a later runtime/OS error, so the underlying cause is **not yet
+identified**. No success is inferred, and the old request is not replayed.
+
+The controller-side correction is limited to the exact operation
+`63471d41af07b7afaf577d6a0989cc03` and job
+`job-7fae7172e801f2e22e7d6fce6014403d`:
+
+- `runner-lane catalog-probe-disposition` requires the selected PRD release,
+  exact operation hold, stopped Linux PRD service, matching sealed bundle,
+  configuration/schema/work evidence, accepted direct-mTLS scope and absent
+  runtime-owner marker. It records the job/session as lost with the explicit
+  reason `catalog_probe_owner_abandoned_outcome_unknown`, leaves command
+  outcome/output unknown, appends lifecycle history, and keeps the reservation
+  held.
+- The existing `runnerd recover-stalled --lost-session` path remains the only
+  capacity-release step. It must independently prove the runtime boundary,
+  no unexpected retained work and successful finalization. It does not read or
+  replay the script.
+- A fresh capability is allowed only after the exact pair is lost and the
+  reservation has both supported cleanup and release timestamps, no command,
+  event or slot exists, and a consistent read snapshot proves zero remaining
+  work. The original accepted scope is preserved byte-for-byte in a private
+  history file; the fresh scope stays in the existing v3 format and receives
+  the single `-retry-1` identity.
+- Promotion observes the existing capability first. It selects this one-time
+  retry only for this exact Linux PRD operation/job after the original scope
+  expired; an unexpired accepted scope remains observation-only. It verifies
+  the returned helper idempotency key matches the newly prepared capability.
+
+These changes are controller/operator code only; no Runner service bundle,
+database schema, or sealed release bytes changed.
+
+Mac Go 1.27.1 darwin/arm64 checks for this correction:
+
+| Check | Result |
+|---|---|
+| `go test ./src/internal/store ./src/internal/laneinstall ./src/cmd/runner-lane ./src/cmd/catalog-probe-once ./src/internal/releaseflow -count=1` | PASS |
+| `go vet ./src/internal/store ./src/internal/laneinstall ./src/cmd/runner-lane ./src/cmd/catalog-probe-once ./src/internal/releaseflow` | PASS |
+| Native `runner-lane` build (`-trimpath -buildvcs=false`) | PASS; SHA-256 `0ad30ae58130461f5d915dd3cc314530e021ebaceb6a0909cd142a9d0fbf87f0` |
+| Native `catalog-probe-once` build (`-trimpath -buildvcs=false`) | PASS; SHA-256 `65182bc34f8f7fcb17e4b4ec4dc8993db1fc641abbfb51e84809a49556ce45f8` |
+| Native `runner-release` build (`-trimpath -buildvcs=false`) | PASS; SHA-256 `364fbc594695933fb94ec95535ef204146ee40842d73c7521d248d2c82ecb185` |
+
+Git delivery and required worker checks for this controller correction are
+pending. Live recovery and PRD functional acceptance have not run under the
+new authorization.

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,6 +389,53 @@ func TestExistingPromotionProbeScopeNeverReplaysConsumedCapability(t *testing.T)
 	accepted.ControllerID = "other-controller"
 	if _, err := classify(accepted); err == nil {
 		t.Fatal("accepted scope with controller drift was allowed to be observed")
+	}
+}
+
+func TestExactPRDDirectProbeGetsOnlyOneRetryAfterSupportedLostDisposition(t *testing.T) {
+	now := time.Now().UTC()
+	base := promotionProbeScopeObservation{
+		HostID: "linux-host", Lane: "prd", Transport: "direct-mtls", OperationID: "63471d41af07b7afaf577d6a0989cc03",
+		ControllerType: "direct_mtls", ControllerID: "tomasz.walczuk", Environment: "linux-dev",
+		ConfigurationSHA256: strings.Repeat("a", 64), IdempotencyKey: "catalog-probe-63471d41af07b7afaf577d6a0989cc03-linux-host",
+		RequestSHA256: strings.Repeat("b", 64), CreatedAt: now.Add(-3 * time.Minute).Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(-time.Minute).Format(time.RFC3339Nano), State: "accepted", JobID: "job-7fae7172e801f2e22e7d6fce6014403d",
+	}
+	if got, err := existingProbeDisposition(base, "linux-host", "prd", "direct-mtls", base.OperationID, base.ControllerID, now); err != nil || got != "retry" {
+		t.Fatalf("exact retained base scope disposition=%q err=%v, want one guarded retry", got, err)
+	}
+	unexpired := base
+	unexpired.CreatedAt = now.Add(-30 * time.Second).Format(time.RFC3339Nano)
+	unexpired.ExpiresAt = now.Add(90 * time.Second).Format(time.RFC3339Nano)
+	if got, err := existingProbeDisposition(unexpired, "linux-host", "prd", "direct-mtls", base.OperationID, base.ControllerID, now); err != nil || got != "observe" {
+		t.Fatalf("unexpired exact accepted scope disposition=%q err=%v, want read-only observe", got, err)
+	}
+
+	wrongJob := base
+	wrongJob.JobID = "job-00000000000000000000000000000000"
+	if _, err := existingProbeDisposition(wrongJob, "linux-host", "prd", "direct-mtls", base.OperationID, base.ControllerID, now); !errors.Is(err, ErrOperationCorrupted) {
+		t.Fatalf("unexpected retained job was not rejected: %v", err)
+	}
+
+	retry := base
+	retry.IdempotencyKey += "-retry-1"
+	retry.JobID = "job-11111111111111111111111111111111"
+	if got, err := existingProbeDisposition(retry, "linux-host", "prd", "direct-mtls", base.OperationID, base.ControllerID, now); err != nil || got != "observe" {
+		t.Fatalf("accepted one-time retry disposition=%q err=%v, want observe only", got, err)
+	}
+
+	readyRetry := retry
+	readyRetry.State = "ready"
+	readyRetry.JobID = ""
+	readyRetry.CreatedAt = now.Add(-3 * time.Minute).Format(time.RFC3339Nano)
+	readyRetry.ExpiresAt = now.Add(-time.Minute).Format(time.RFC3339Nano)
+	if got, err := existingProbeDisposition(readyRetry, "linux-host", "prd", "direct-mtls", base.OperationID, base.ControllerID, now); err != nil || got != "retry" {
+		t.Fatalf("expired unused retry scope disposition=%q err=%v, want guarded token renewal", got, err)
+	}
+
+	readyRetry.IdempotencyKey += "-again"
+	if _, err := existingProbeDisposition(readyRetry, "linux-host", "prd", "direct-mtls", base.OperationID, base.ControllerID, now); !errors.Is(err, ErrOperationCorrupted) {
+		t.Fatalf("second retry identity was accepted: %v", err)
 	}
 }
 

@@ -2,8 +2,10 @@ package laneinstall
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +21,7 @@ import (
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/store"
 )
 
 const catalogProbeScopeFormat = 3
@@ -548,6 +551,245 @@ func PrepareCatalogMaintenanceProbeForTransportWithConfig(plan Plan, operationID
 		return "", err
 	}
 	return token, nil
+}
+
+// PrepareCatalogMaintenanceProbeRetryForTransportWithConfig creates the sole
+// fresh capability after the exact first Linux/PRD direct-mTLS probe has a
+// supported lost disposition and its reservation has been safely released.
+// The original v3 scope is archived byte-for-byte; the active file remains v3
+// so already sealed service binaries can validate it without a schema change.
+func PrepareCatalogMaintenanceProbeRetryForTransportWithConfig(plan Plan, operationID string, transport CatalogProbeTransport,
+	controllerType domain.ControllerType, controllerID, priorJobID string, requestBody []byte, expiresAt time.Time,
+	loaded config.Config) (string, error) {
+	if plan.HostID != "linux-host" || plan.Lane != config.ReleaseLanePRD || transport != CatalogProbeDirectMTLS ||
+		controllerType != domain.ControllerTypeDirectMTLS || operationID != "63471d41af07b7afaf577d6a0989cc03" ||
+		priorJobID != "job-7fae7172e801f2e22e7d6fce6014403d" || !validCatalogOperationID(operationID) || !validProbeJobID(priorJobID) {
+		return "", ErrCatalogProbeAdmission
+	}
+	binding, err := ResolveCatalogMaintenanceProbeBinding(loaded, plan, transport, controllerType, controllerID)
+	if err != nil {
+		return "", ErrCatalogProbeAdmission
+	}
+	wantBody, err := CatalogMaintenanceProbeRequestBodyForBinding(plan, transport, binding)
+	if err != nil || !bytes.Equal(requestBody, wantBody) {
+		return "", ErrCatalogProbeAdmission
+	}
+	if expiresAt.IsZero() || time.Until(expiresAt) <= 0 || time.Until(expiresAt) > 10*time.Minute {
+		return "", ErrCatalogProbeAdmission
+	}
+	guard, err := NewCatalogMaintenanceProbeGuardForTransportWithConfig(plan, operationID, transport, loaded)
+	if err != nil || guard.validateCurrentCohortForProbe() != nil {
+		return "", ErrCatalogProbeAdmission
+	}
+	paths, err := guard.paths()
+	if err != nil {
+		return "", ErrCatalogProbeAdmission
+	}
+	lock, err := acquireCohortReceiptLock(paths.scopeRoot)
+	if err != nil {
+		return "", ErrCatalogProbeAdmission
+	}
+	defer releaseCatalogRootPublicationLock(lock)
+	activePath := guard.scopePath(paths.scopeRoot)
+	previous, err := readCatalogProbeScope(activePath)
+	if err != nil || previous.OperationID != operationID || previous.HostID != plan.HostID || previous.Lane != plan.Lane ||
+		previous.Transport != transport || previous.ControllerType != controllerType || previous.ControllerID != controllerID ||
+		previous.ConfigurationSHA != binding.ConfigurationSHA || previous.Environment != binding.Environment ||
+		previous.RequestBodySHA256 != sha256HexString(requestBody) || previous.IntentID != "" ||
+		(previous.State != "accepted" && previous.State != "ready") {
+		return "", ErrCatalogProbeAdmission
+	}
+	baseKey := catalogProbeIdempotencyKey(operationID, plan.HostID, transport)
+	retryKey := baseKey + "-retry-1"
+	if previous.IdempotencyKey != baseKey && previous.IdempotencyKey != retryKey {
+		return "", ErrCatalogProbeAdmission
+	}
+	if previous.State == "accepted" && (previous.IdempotencyKey != baseKey || previous.JobID != priorJobID) {
+		return "", ErrCatalogProbeAdmission
+	}
+	if previous.State == "ready" {
+		expires, parseErr := time.Parse(time.RFC3339Nano, previous.ExpiresAt)
+		if parseErr != nil || previous.JobID != "" || time.Now().UTC().Before(expires) || previous.IdempotencyKey != retryKey {
+			return "", ErrCatalogProbeAdmission
+		}
+	}
+	if err := verifyTerminalReleasedProbeForRetry(plan.Namespace.Database, priorJobID, previous, controllerID, binding.Environment); err != nil {
+		return "", errors.Join(ErrCatalogProbeAdmission, err)
+	}
+	if previous.IdempotencyKey == baseKey {
+		if err := archiveCatalogProbeScope(paths.scopeRoot, operationID, plan.HostID, transport, previous); err != nil {
+			return "", ErrCatalogProbeAdmission
+		}
+	} else if err := verifyArchivedCatalogProbeScope(paths.scopeRoot, operationID, plan.HostID, transport,
+		controllerType, controllerID, priorJobID, binding, sha256HexString(requestBody)); err != nil {
+		return "", ErrCatalogProbeAdmission
+	}
+	now := time.Now().UTC()
+	if !expiresAt.After(now) || expiresAt.Sub(now) > 10*time.Minute {
+		return "", ErrCatalogProbeAdmission
+	}
+	var tokenBytes [32]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(tokenBytes[:])
+	tokenDigest := sha256.Sum256([]byte(token))
+	bodyDigest := sha256.Sum256(requestBody)
+	next := catalogProbeScope{
+		FormatVersion: catalogProbeScopeFormat, OperationID: operationID, HostID: plan.HostID, Lane: plan.Lane,
+		Transport: transport, ControllerType: controllerType, ControllerID: controllerID,
+		Environment: binding.Environment, ConfigurationSHA: binding.ConfigurationSHA,
+		CreatedAt: now.Format(time.RFC3339Nano), ExpiresAt: expiresAt.UTC().Format(time.RFC3339Nano),
+		TokenSHA256: hex.EncodeToString(tokenDigest[:]), IdempotencyKey: retryKey,
+		RequestBodySHA256: hex.EncodeToString(bodyDigest[:]), State: "ready",
+	}
+	if err := writeCatalogProbeScope(activePath, paths.scopeRoot, next); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func verifyTerminalReleasedProbeForRetry(databasePath, jobID string, scope catalogProbeScope, controllerID, environment string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	database, err := store.OpenExistingRestartPreflightReadOnly(ctx, databasePath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	tx, err := database.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var phase, sessionID, commandID, idempotencyKey, jobEnvironment, controllerType, controller, targetKind, targetProfile, sourceMode, script string
+	var commandState, outputUnavailable, teardownReason sql.NullString
+	var exitCode, finalSequence sql.NullInt64
+	var outputTruncated, outputComplete int
+	var teardownState string
+	if err := tx.QueryRowContext(ctx, `SELECT phase, session_id, command_id, idempotency_key, environment, controller_type, controller_id, target_kind, target_profile, source_mode, script_bytes, command_state, exit_code, final_event_sequence, output_truncated, output_complete, output_unavailable_reason, teardown_state, teardown_reason FROM exec_jobs WHERE job_id = ?`, jobID).
+		Scan(&phase, &sessionID, &commandID, &idempotencyKey, &jobEnvironment, &controllerType, &controller, &targetKind, &targetProfile, &sourceMode, &script,
+			&commandState, &exitCode, &finalSequence, &outputTruncated, &outputComplete, &outputUnavailable, &teardownState, &teardownReason); err != nil {
+		return err
+	}
+	var sessionState, sessionEnvironment, sessionControllerType, sessionController, runtimeGeneration, sessionTargetKind, sessionTargetProfile, sessionSourceMode string
+	if err := tx.QueryRowContext(ctx, `SELECT state, environment, controller_type, controller_id, runtime_generation, target_kind, target_profile, source_mode FROM exec_sessions WHERE session_id = ?`, sessionID).
+		Scan(&sessionState, &sessionEnvironment, &sessionControllerType, &sessionController, &runtimeGeneration, &sessionTargetKind, &sessionTargetProfile, &sessionSourceMode); err != nil {
+		return err
+	}
+	baseKey := catalogProbeIdempotencyKey(scope.OperationID, scope.HostID, scope.Transport)
+	if phase != "lost" || sessionState != "lost" || idempotencyKey != baseKey ||
+		jobEnvironment != environment || sessionEnvironment != environment || controllerType != string(domain.ControllerTypeDirectMTLS) ||
+		sessionControllerType != string(domain.ControllerTypeDirectMTLS) || controller != controllerID || sessionController != controllerID ||
+		targetKind != string(domain.TargetKindRemote) || targetProfile != "linux-host" || sourceMode != string(domain.SourceModeEmpty) ||
+		sessionTargetKind != string(domain.TargetKindRemote) || sessionTargetProfile != "linux-host" || sessionSourceMode != string(domain.SourceModeEmpty) ||
+		script != "printf 'catalog release maintenance probe\\n'" || runtimeGeneration != "" || commandState.Valid || exitCode.Valid ||
+		finalSequence.Valid || outputTruncated != 0 || outputComplete != 0 || outputUnavailable.Valid && outputUnavailable.String != "" ||
+		teardownState != "pending" || teardownReason.Valid && teardownReason.String != "" {
+		return ErrCatalogProbeAdmission
+	}
+	var cleanup, released sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT cleanup_confirmed_at, released_at FROM exec_capacity_reservations WHERE session_id = ?`, sessionID).
+		Scan(&cleanup, &released); err != nil || !cleanup.Valid || !released.Valid {
+		return errors.Join(ErrCatalogProbeAdmission, err)
+	}
+	for _, query := range []string{
+		`SELECT COUNT(*) FROM exec_commands WHERE command_id = ?`,
+		`SELECT COUNT(*) FROM exec_command_events WHERE command_id = ?`,
+		`SELECT COUNT(*) FROM exec_command_slots WHERE command_id = ?`,
+	} {
+		var count int
+		if err := tx.QueryRowContext(ctx, query, commandID).Scan(&count); err != nil || count != 0 {
+			return errors.Join(ErrCatalogProbeAdmission, err)
+		}
+	}
+	var reason string
+	if err := tx.QueryRowContext(ctx, `SELECT reason FROM exec_session_lifecycle WHERE session_id = ? ORDER BY lifecycle_sequence DESC LIMIT 1`, sessionID).Scan(&reason); err != nil || reason != store.CatalogProbeOwnerAbandonedReason {
+		return errors.Join(ErrCatalogProbeAdmission, err)
+	}
+	inventory, err := readPRDWorkInventoryTx(ctx, tx)
+	if err != nil || !inventory.Empty() {
+		return errors.Join(ErrCatalogProbeAdmission, err)
+	}
+	return tx.Commit()
+}
+
+func archiveCatalogProbeScope(scopeRoot, operationID, hostID string, transport CatalogProbeTransport, scope catalogProbeScope) error {
+	historyRoot := filepath.Join(scopeRoot, "history")
+	if err := ensureCatalogPrivateDirectory(historyRoot); err != nil {
+		return err
+	}
+	name := operationID + "-" + hostID + "-" + string(transport) + "-attempt-1.scope.json"
+	path := filepath.Join(historyRoot, name)
+	canonical, err := json.MarshalIndent(scope, "", "  ")
+	if err != nil {
+		return err
+	}
+	canonical = append(canonical, '\n')
+	if info, statErr := os.Lstat(path); statErr == nil {
+		var stat unix.Stat_t
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > 1<<16 ||
+			unix.Lstat(path, &stat) != nil || stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 {
+			return ErrCatalogProbeAdmission
+		}
+		current, readErr := os.ReadFile(path)
+		if readErr != nil || !bytes.Equal(current, canonical) {
+			return ErrCatalogProbeAdmission
+		}
+		return nil
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	temporary, err := os.CreateTemp(historyRoot, ".probe-history-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(canonical); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(temporaryPath, path); err != nil {
+		return err
+	}
+	return syncSimpleDirectory(historyRoot)
+}
+
+func verifyArchivedCatalogProbeScope(scopeRoot, operationID, hostID string, transport CatalogProbeTransport,
+	controllerType domain.ControllerType, controllerID, priorJobID string, binding CatalogMaintenanceProbeBinding, requestSHA string) error {
+	historyRoot := filepath.Join(scopeRoot, "history")
+	if validateExistingPrivateDirectory(historyRoot) != nil {
+		return ErrCatalogProbeAdmission
+	}
+	name := operationID + "-" + hostID + "-" + string(transport) + "-attempt-1.scope.json"
+	path := filepath.Join(historyRoot, name)
+	info, err := os.Lstat(path)
+	var stat unix.Stat_t
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > 1<<16 ||
+		unix.Lstat(path, &stat) != nil || stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 {
+		return ErrCatalogProbeAdmission
+	}
+	archived, err := readCatalogProbeScope(path)
+	if err != nil || archived.OperationID != operationID || archived.HostID != hostID || archived.Lane != config.ReleaseLanePRD ||
+		archived.Transport != transport || archived.ControllerType != controllerType || archived.ControllerID != controllerID ||
+		archived.Environment != binding.Environment || archived.ConfigurationSHA != binding.ConfigurationSHA ||
+		archived.IdempotencyKey != catalogProbeIdempotencyKey(operationID, hostID, transport) || archived.RequestBodySHA256 != requestSHA ||
+		archived.State != "accepted" || archived.JobID != priorJobID || archived.IntentID != "" {
+		return ErrCatalogProbeAdmission
+	}
+	return nil
 }
 
 // writeOrReplaceExpiredUnusedProbeScope is called while the cohort scope lock

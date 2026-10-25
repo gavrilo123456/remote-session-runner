@@ -497,6 +497,50 @@ func BeginCatalogPRDMaintenance(ctx context.Context, plan PRDUpgradePlan, servic
 	return maintenance, nil
 }
 
+// AcquireCatalogPRDProbeDispositionLocks serializes the one supported,
+// operation-specific disposition of an accepted Linux PRD maintenance probe.
+// The caller must perform its exact scope, inventory, config, runtime-marker,
+// and database checks while the returned locks remain held. It never stops or
+// starts services and does not release execution capacity.
+func AcquireCatalogPRDProbeDispositionLocks(ctx context.Context, plan PRDUpgradePlan, service *PRDServiceController,
+	cohortOperationID string) (func(), error) {
+	if ctx == nil || validatePRDPlan(plan) != nil || plan.HostID != "linux-host" || service == nil ||
+		cohortOperationID != "63471d41af07b7afaf577d6a0989cc03" {
+		return nil, ErrCatalogPRDRecovery
+	}
+	catalogPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
+	if err := CatalogCohortAdmissionHoldMatches(catalogPlan, cohortOperationID); err != nil {
+		return nil, errors.Join(ErrCatalogPRDRecovery, err)
+	}
+	root, err := DefaultCatalogRootForPlan(catalogPlan)
+	if err != nil {
+		return nil, errors.Join(ErrCatalogPRDRecovery, err)
+	}
+	catalogFD, err := acquireCatalogRootPublicationLock(root)
+	if err != nil {
+		return nil, err
+	}
+	laneFD, err := acquirePRDUpgradeLock(plan)
+	if err != nil {
+		releaseCatalogRootPublicationLock(catalogFD)
+		return nil, err
+	}
+	closeLocks := func() {
+		releasePRDUpgradeLock(laneFD)
+		releaseCatalogRootPublicationLock(catalogFD)
+	}
+	active, err := service.Status(ctx, plan)
+	if err != nil || active {
+		closeLocks()
+		return nil, errors.Join(ErrCatalogPRDRecovery, err)
+	}
+	if err := CatalogCohortAdmissionHoldMatches(catalogPlan, cohortOperationID); err != nil {
+		closeLocks()
+		return nil, errors.Join(ErrCatalogPRDRecovery, err)
+	}
+	return closeLocks, nil
+}
+
 // Backup captures the exact host-local PRD binaries, launch/bridge artifacts,
 // configuration, secrets, and a consistent online SQLite backup. It is bound
 // to the target release bundle digest but does not change any live state.

@@ -156,6 +156,7 @@ type promotionProbeOutcome struct {
 	ObservedExisting    bool                              `json:"observed_existing,omitempty"`
 	ConfigurationSHA    string                            `json:"configuration_sha256"`
 	RequestSHA256       string                            `json:"request_body_sha256"`
+	IdempotencyKey      string                            `json:"idempotency_key,omitempty"`
 	RequestedTimeout    int                               `json:"requested_timeout_seconds"`
 	AcceptanceEvidence  *promotionProbeAcceptanceEvidence `json:"acceptance_evidence,omitempty"`
 }
@@ -1167,12 +1168,18 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 		}
 		return b.observeAcceptedProbe(ctx, op, host, transport, configPath, socket, observationBytes, existing)
 	}
+	retryAfterJobID := ""
+	if disposition == "retry" {
+		retryAfterJobID = "job-7fae7172e801f2e22e7d6fce6014403d"
+		preparedArgs = append(preparedArgs, "--retry-after-job-id", retryAfterJobID)
+	}
 	preparedBytes, err := b.runLane(ctx, host, preparedArgs, nil)
 	if err != nil {
 		return promotionProbeOutcome{}, err
 	}
 	var prepared promotionPreparedProbe
-	if decodeStrictJSON(preparedBytes, &prepared) != nil || validatePreparedPromotionProbe(prepared, host, op.Lane, transport, op.CohortOperationID, controller) != nil {
+	if decodeStrictJSON(preparedBytes, &prepared) != nil || validatePreparedPromotionProbe(prepared, host, op.Lane, transport, op.CohortOperationID, controller) != nil ||
+		(retryAfterJobID != "" && prepared.IdempotencyKey != "catalog-probe-"+op.CohortOperationID+"-"+host+"-retry-1") {
 		return promotionProbeOutcome{}, ErrOperationCorrupted
 	}
 	if err := validatePromotionProbeRequest(prepared); err != nil {
@@ -1207,6 +1214,9 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 	if decodeFailure != "" {
 		return promotionProbeOutcome{}, fmt.Errorf("catalog-probe-once result_decode=%s; helper_stderr=%q; helper_exit_code=%s: %w",
 			decodeFailure, sanitizedProbeHelperStderr(stderr.Bytes(), stderr.truncated), probeExitCode(probeErr), ErrOperationCorrupted)
+	}
+	if outcome.IdempotencyKey != prepared.IdempotencyKey {
+		return promotionProbeOutcome{}, errors.New("catalog-probe-once returned a different idempotency identity than its prepared scope")
 	}
 	if probeErr != nil {
 		return outcome, fmt.Errorf("catalog-probe-once failed; helper_stderr=%q; helper_exit_code=%s: %w",
@@ -1599,9 +1609,12 @@ func existingProbeDisposition(existing promotionProbeScopeObservation, host, lan
 	if transport != "direct-mtls" {
 		expectedKey += "-" + transport
 	}
+	retryKey := expectedKey + "-retry-1"
+	probeKeyMatches := existing.IdempotencyKey == expectedKey ||
+		(host == "linux-host" && lane == "prd" && transport == "direct-mtls" && operationID == "63471d41af07b7afaf577d6a0989cc03" && existing.IdempotencyKey == retryKey)
 	if existing.HostID != host || existing.Lane != lane || string(existing.Transport) != transport || existing.OperationID != operationID ||
 		existing.ControllerType != expectedProbeControllerType(transport) || existing.ControllerID != controller || existing.Environment == "" ||
-		!digestPattern.MatchString(existing.ConfigurationSHA256) || !digestPattern.MatchString(existing.RequestSHA256) || existing.IdempotencyKey != expectedKey {
+		!digestPattern.MatchString(existing.ConfigurationSHA256) || !digestPattern.MatchString(existing.RequestSHA256) || !probeKeyMatches {
 		return "", ErrOperationCorrupted
 	}
 	switch existing.State {
@@ -1619,6 +1632,10 @@ func existingProbeDisposition(existing promotionProbeScopeObservation, host, lan
 		if expires.After(now) {
 			return "", errors.New("unused maintenance probe capability remains live; refusing to replace or replay it")
 		}
+		if existing.IdempotencyKey == retryKey && host == "linux-host" && lane == "prd" && transport == "direct-mtls" &&
+			operationID == "63471d41af07b7afaf577d6a0989cc03" {
+			return "retry", nil
+		}
 		return "prepare", nil
 	case "reserved":
 		return "", errors.New("maintenance probe scope is reserved without a safely observable accepted result; refusing replay")
@@ -1630,6 +1647,16 @@ func existingProbeDisposition(existing promotionProbeScopeObservation, host, lan
 		expires, expiresErr := time.Parse(time.RFC3339Nano, existing.ExpiresAt)
 		if createdErr != nil || expiresErr != nil || !expires.After(created) || expires.Sub(created) > 10*time.Minute {
 			return "", ErrOperationCorrupted
+		}
+		if existing.IdempotencyKey == expectedKey && host == "linux-host" && lane == "prd" && transport == "direct-mtls" &&
+			operationID == "63471d41af07b7afaf577d6a0989cc03" {
+			if existing.JobID != "job-7fae7172e801f2e22e7d6fce6014403d" {
+				return "", ErrOperationCorrupted
+			}
+			if expires.After(now) {
+				return "observe", nil
+			}
+			return "retry", nil
 		}
 		return "observe", nil
 	default:

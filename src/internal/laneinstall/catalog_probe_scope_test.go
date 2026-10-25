@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -401,6 +402,65 @@ func newCatalogProbeFixture(t *testing.T) catalogProbeFixture {
 		t.Fatal(err)
 	}
 	return catalogProbeFixture{guard: guard, operation: receipt.OperationID, controller: controller, key: key, token: token, body: body, now: now}
+}
+
+func TestCatalogProbeRetryArchivePreservesOriginalScopeAndRefusesReplacement(t *testing.T) {
+	fixture := newCatalogProbeFixture(t)
+	paths, err := fixture.guard.paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := readCatalogProbeScope(fixture.guard.scopePath(paths.scopeRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeRoot, err := os.MkdirTemp("/private/tmp", "catalog-probe-scope-archive-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scopeRoot) })
+	if err := os.Chmod(scopeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	paths.scopeRoot = scopeRoot
+	if err := writeCatalogProbeScope(fixture.guard.scopePath(paths.scopeRoot), paths.scopeRoot, scope); err != nil {
+		t.Fatal(err)
+	}
+	activePath := fixture.guard.scopePath(paths.scopeRoot)
+	scope, err = readCatalogProbeScope(activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope.State = "accepted"
+	scope.JobID = "job-7fae7172e801f2e22e7d6fce6014403d"
+	if err := writeCatalogProbeScope(activePath, paths.scopeRoot, scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := archiveCatalogProbeScope(paths.scopeRoot, fixture.operation, "linux-host", CatalogProbeDirectMTLS, scope); err != nil {
+		t.Fatalf("archive original one-use scope: %v", err)
+	}
+	archivePath := filepath.Join(paths.scopeRoot, "history", fixture.operation+"-linux-host-direct-mtls-attempt-1.scope.json")
+	archived, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.MarshalIndent(scope, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(archived, append(canonical, '\n')) {
+		t.Fatal("archived probe scope differs from the original canonical bytes")
+	}
+
+	changed := scope
+	changed.JobID = "job-11111111111111111111111111111111"
+	if err := archiveCatalogProbeScope(paths.scopeRoot, fixture.operation, "linux-host", CatalogProbeDirectMTLS, changed); !errors.Is(err, ErrCatalogProbeAdmission) {
+		t.Fatalf("archive replacement error=%v, want refusal", err)
+	}
+	after, err := os.ReadFile(archivePath)
+	if err != nil || !bytes.Equal(after, archived) {
+		t.Fatalf("original history changed after conflicting archive attempt: err=%v", err)
+	}
 }
 
 func TestCatalogMaintenanceProbeRenewsOnlyExpiredUnusedExactScope(t *testing.T) {

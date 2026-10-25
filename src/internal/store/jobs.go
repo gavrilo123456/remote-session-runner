@@ -16,11 +16,20 @@ import (
 )
 
 var (
-	ErrInvalidJob        = errors.New("invalid job")
-	ErrJobNotFound       = errors.New("job not found")
-	ErrJobExists         = errors.New("job already exists")
-	ErrJobPhaseConflict  = errors.New("job phase conflict")
-	ErrJobPayloadCorrupt = errors.New("job payload is corrupt")
+	ErrInvalidJob                  = errors.New("invalid job")
+	ErrJobNotFound                 = errors.New("job not found")
+	ErrJobExists                   = errors.New("job already exists")
+	ErrJobPhaseConflict            = errors.New("job phase conflict")
+	ErrJobPayloadCorrupt           = errors.New("job payload is corrupt")
+	ErrProbeDispositionNotEligible = errors.New("creating direct-mTLS probe is not eligible for lost disposition")
+)
+
+const (
+	// CatalogProbeOwnerAbandonedReason is the sole lifecycle reason accepted by
+	// the narrow operator disposition for an accepted, pre-command maintenance
+	// probe whose execution outcome cannot be established.
+	CatalogProbeOwnerAbandonedReason = "catalog_probe_owner_abandoned_outcome_unknown"
+	catalogMaintenanceProbeScript    = "printf 'catalog release maintenance probe\\n'"
 )
 
 const (
@@ -425,6 +434,180 @@ func (s *AuthorityStore) CheckpointJob(ctx context.Context, id domain.JobID, che
 		}
 		return readJobOnConnection(ctx, connection, validatedID)
 	})
+}
+
+// MarkCreatingDirectProbeLost atomically records a non-success, indeterminate
+// disposition for one accepted Linux direct-mTLS maintenance probe. It does
+// not release capacity or claim that the script ran. The caller must separately
+// prove the exact operation/scope, stopped service, and absent runtime owner;
+// the existing offline recover-stalled path remains responsible for runtime
+// cleanup proof and capacity release.
+func (s *AuthorityStore) MarkCreatingDirectProbeLost(ctx context.Context, jobID domain.JobID, sessionID domain.SessionID,
+	commandID domain.CommandID, expectedIdempotencyKey, expectedEnvironment, expectedControllerID, reason string) (JobRecord, SessionRecord, error) {
+	validatedJobID, err := domain.NewJobID(string(jobID))
+	if err != nil {
+		return JobRecord{}, SessionRecord{}, fmt.Errorf("%w: job ID", ErrProbeDispositionNotEligible)
+	}
+	validatedSessionID, err := domain.NewSessionID(string(sessionID))
+	if err != nil {
+		return JobRecord{}, SessionRecord{}, fmt.Errorf("%w: session ID", ErrProbeDispositionNotEligible)
+	}
+	validatedCommandID, err := domain.NewCommandID(string(commandID))
+	if err != nil || expectedIdempotencyKey == "" || expectedEnvironment == "" || expectedControllerID == "" || reason != CatalogProbeOwnerAbandonedReason {
+		return JobRecord{}, SessionRecord{}, ErrProbeDispositionNotEligible
+	}
+	result, err := withImmediateTransaction(ctx, s, func(ctx context.Context, connection *sql.Conn) (struct {
+		job     JobRecord
+		session SessionRecord
+	}, error) {
+		job, err := readJobOnConnection(ctx, connection, validatedJobID)
+		if err != nil {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, err
+		}
+		session, err := readSessionOnConnection(ctx, connection, validatedSessionID)
+		if err != nil {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, err
+		}
+		if job.SessionID != validatedSessionID || job.CommandID != validatedCommandID || job.IdempotencyKey != expectedIdempotencyKey ||
+			job.Ingress != audit.IngressDirectMTLS || job.Controller.Type() != domain.ControllerTypeDirectMTLS ||
+			string(job.Controller.ID()) != expectedControllerID || job.Environment != expectedEnvironment ||
+			job.Target.Kind() != domain.TargetKindRemote || job.Target.Profile() != "linux-host" || job.Source.Mode() != domain.SourceModeEmpty ||
+			string(job.ScriptBytes) != catalogMaintenanceProbeScript || job.CommandState != nil || job.ExitCode != nil || job.FinalEventSequence != nil ||
+			job.OutputComplete || job.OutputTruncated || job.OutputUnavailableReason != "" || job.TeardownState != JobTeardownPending || job.TeardownReason != "" ||
+			session.Target != job.Target || session.Controller != job.Controller || session.Environment != job.Environment ||
+			session.Source.Mode() != domain.SourceModeEmpty || session.RuntimeGeneration != "" {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, ErrProbeDispositionNotEligible
+		}
+		if job.Phase == JobPhaseLost && session.State == domain.SessionStateLost {
+			reservation, err := readReservationOnConnection(ctx, connection, validatedSessionID)
+			if err != nil || reservation.CleanupConfirmedAt != nil || reservation.ReleasedAt != nil {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, ErrProbeDispositionNotEligible
+			}
+			for _, query := range []string{
+				"SELECT COUNT(*) FROM exec_commands WHERE command_id = ?",
+				"SELECT COUNT(*) FROM exec_command_events WHERE command_id = ?",
+				"SELECT COUNT(*) FROM exec_command_slots WHERE command_id = ?",
+			} {
+				var count int
+				if err := connection.QueryRowContext(ctx, query, string(validatedCommandID)).Scan(&count); err != nil || count != 0 {
+					return struct {
+						job     JobRecord
+						session SessionRecord
+					}{}, ErrProbeDispositionNotEligible
+				}
+			}
+			var lifecycleReason, lifecycleState string
+			if err := connection.QueryRowContext(ctx, `
+SELECT reason, new_state FROM exec_session_lifecycle
+WHERE session_id = ? ORDER BY lifecycle_sequence DESC LIMIT 1
+	`, string(validatedSessionID)).Scan(&lifecycleReason, &lifecycleState); err != nil || lifecycleReason != reason || lifecycleState != string(domain.SessionStateLost) {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, ErrProbeDispositionNotEligible
+			}
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{job, session}, nil
+		}
+		if job.Phase != JobPhaseCreatingSession || session.State != domain.SessionStateCreating {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, ErrProbeDispositionNotEligible
+		}
+		reservation, err := readReservationOnConnection(ctx, connection, validatedSessionID)
+		if err != nil || reservation.CleanupConfirmedAt != nil || reservation.ReleasedAt != nil {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, ErrProbeDispositionNotEligible
+		}
+		for _, query := range []string{
+			"SELECT COUNT(*) FROM exec_commands WHERE command_id = ?",
+			"SELECT COUNT(*) FROM exec_command_events WHERE command_id = ?",
+			"SELECT COUNT(*) FROM exec_command_slots WHERE command_id = ?",
+		} {
+			var count int
+			if err := connection.QueryRowContext(ctx, query, string(validatedCommandID)).Scan(&count); err != nil || count != 0 {
+				return struct {
+					job     JobRecord
+					session SessionRecord
+				}{}, ErrProbeDispositionNotEligible
+			}
+		}
+		var lifecycleSequence int64
+		var latestState string
+		if err := connection.QueryRowContext(ctx, `
+SELECT lifecycle_sequence, new_state FROM exec_session_lifecycle
+WHERE session_id = ? ORDER BY lifecycle_sequence DESC LIMIT 1
+`, string(validatedSessionID)).Scan(&lifecycleSequence, &latestState); err != nil || latestState != string(domain.SessionStateCreating) {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, ErrProbeDispositionNotEligible
+		}
+		now := s.now().UTC()
+		if _, err := connection.ExecContext(ctx, `
+UPDATE exec_sessions SET state = ?, updated_at = ?
+WHERE session_id = ? AND state = ? AND runtime_generation = ''
+`, string(domain.SessionStateLost), formatStoredTime(now), string(validatedSessionID), string(domain.SessionStateCreating)); err != nil {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, fmt.Errorf("record indeterminate probe session disposition: %w", err)
+		}
+		if _, err := connection.ExecContext(ctx, `
+INSERT INTO exec_session_lifecycle (session_id, lifecycle_sequence, previous_state, new_state, reason, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, string(validatedSessionID), lifecycleSequence+1, string(domain.SessionStateCreating), string(domain.SessionStateLost), reason, formatStoredTime(now)); err != nil {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, fmt.Errorf("append indeterminate probe session history: %w", err)
+		}
+		if _, err := connection.ExecContext(ctx, `
+UPDATE exec_jobs SET phase = ?, updated_at = ?
+WHERE job_id = ? AND session_id = ? AND command_id = ? AND phase = ?
+`, string(JobPhaseLost), formatStoredTime(now), string(validatedJobID), string(validatedSessionID), string(validatedCommandID), string(JobPhaseCreatingSession)); err != nil {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, fmt.Errorf("record indeterminate probe job disposition: %w", err)
+		}
+		updatedJob, err := readJobOnConnection(ctx, connection, validatedJobID)
+		if err != nil {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, err
+		}
+		updatedSession, err := readSessionOnConnection(ctx, connection, validatedSessionID)
+		if err != nil {
+			return struct {
+				job     JobRecord
+				session SessionRecord
+			}{}, err
+		}
+		return struct {
+			job     JobRecord
+			session SessionRecord
+		}{updatedJob, updatedSession}, nil
+	})
+	return result.job, result.session, err
 }
 
 func validateJobAcceptance(input JobAcceptance) (JobAcceptance, error) {
