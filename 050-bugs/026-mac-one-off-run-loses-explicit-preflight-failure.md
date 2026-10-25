@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — one-off child-shell source correction; installed release acceptance remains pending |
+| Status | `FIXED — DEV/QAS VERIFIED; PRD ACCEPTANCE NOT RUN` — one-off child-shell correction passed installed Dev and QAS acceptance |
 | Severity | High — a bounded preflight failure became `lost`/incomplete and may retain Mac execution capacity |
 | Priority | High |
 | Reported | 2026-10-24 |
@@ -193,6 +193,12 @@ maintainer confirms the prior runtime cleanup and capacity disposition.
   QAS acceptance remains pending. Newer
   handoff evidence confirms #349's already-completed recovery and ACK;
   its original lost result is preserved.
+- 2026-10-25 — The Dev-accepted release `rr-20261024-43a4e675` passed the
+  installed QAS explicit-`exit 1` Mac-local probe: failed/exit 1, complete
+  diagnostic output, event cursor 4, and closed teardown. A separate dedicated
+  QAS filesystem-mailbox request completed and its exact response was ACKed;
+  lifecycle status confirmed `terminal_acknowledged`. See the
+  [PROMO-08 rollout evidence](../040-implementation-evidence/PROMO-08-first-dev-qas-rollout.md).
 
 ## Current #349 disposition
 
@@ -230,5 +236,6 @@ candidate does not change historical results or automatically recover work.
 
 Source verification and delivery are recorded in
 [BUG-026 implementation evidence](../040-implementation-evidence/BUG-026.md).
-Installed Dev/QAS/PRD acceptance and the fresh QAS mailbox/ACK gate remain
-pending; no installed service or mailbox is changed by the source correction.
+Installed Dev and QAS acceptance passed on `rr-20261024-43a4e675`, including
+the fresh explicit-exit result and dedicated QAS mailbox/ACK gate. PRD was not
+deployed or tested by this rollout and remains outside its scope.

@@ -614,3 +614,117 @@ After worker gates, a direct verified-SSH Sandbox `/dev/sda1` read measured
 operating buffer by `1,268,181,760` bytes; the QAS backup allowance still
 needs a fresh operation-specific measurement before backup or selector
 writes. No caches, retained work, backups, mailboxes, or files were deleted.
+
+## QAS deployment and installed acceptance — 2026-10-25
+
+This current closeout supersedes the earlier QAS pending/NOT RUN checkpoint
+statements above; those earlier statements describe the pre-deployment state.
+
+The owner confirmed QAS clients were not in use and their clients were working
+through PRD. The supported QAS promotion applied its selected-lane maintenance
+hold, collected fresh work/capacity/configuration/schema evidence, verified
+backups, and switched the complete cohort in the documented order. The owner
+confirmation and supported hold are the pause basis; no pause was inferred
+from directory counts. PRD was not held, restarted, reconfigured, or routed
+through QAS.
+
+The promoted release is the same sealed Dev-accepted candidate:
+
+| Field | Value |
+|---|---|
+| Release | `rr-20261024-43a4e675` |
+| Release digest | `093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69` |
+| Source revision | `43a4e675ccccb89e1ea1c333e975ea028c9600fa` |
+| QAS operation | `12f901fcfdf216d633938653ad4a7871` |
+| Dev operation | `dea80fa695a606e64985f0b2b53ebeb4` |
+| QAS branch synchronization | Complete |
+
+| Host | Sealed bundle SHA-256 |
+|---|---|
+| `linux-host` | `f3628574b1ffd50e0e0f11790039f8b404701de475a34770b7b64b63d9f56c37` |
+| `sandbox-host` | `3da6a23a44ef96bbd8681bc7f8504e6ec114fa9d5049336240b80085e543f0d9` |
+| `factory-sandbox` | `206a1b7e010aadf64139f81b26077716be7a5090de4c4e19e318c975f3309e29` |
+| `mac-control-plane` | `a67cec224af031d269132d4c09dc22909d76bd1395e61e76fc828c5895ec6062` |
+
+Dev acceptance passed all `catalog-functional-v1` gates: capacity,
+direct-mTLS, isolation, lifecycle, limits, Mac-local, queued-SSH, and teardown.
+Its evidence SHA-256 is
+`cf414c289550f07f7b1836cacedc4c8979248b77143c137e5231cd1a7adaac39`. QAS
+acceptance passed the same eight gates on the identical release and bundle
+hashes; its evidence SHA-256 is
+`fcd7c6a515416904a53088f2f96f138bc1a8fccbe0a1d302c3455c35819b0f30`. Both
+acceptance records are release-bound. Earlier failed controller and probe
+attempts remain preserved in their operation histories and are not counted as
+passing gates.
+
+### Installed QAS BUG-026 explicit-exit probe
+
+The selected Mac QAS CLI reported build revision
+`43a4e675ccccb89e1ea1c333e975ea028c9600fa` and SHA-256
+`60590a88ea32a42176302380b81ee8aa632896ed0d0a0819fe1ee0ff1f60c258`. Its QAS
+configuration hash was the promotion-time
+`e00766f638ceb1f6102989ac1b2325128fda54daf6cabe63e87fd8beeb74c89a`. A fresh
+Mac-local one-off run used environment `mac-workstation-qas`, target
+`local/mac-workstation`, and idempotency key
+`promo-qas-bug026-exit1-20261025-01` with this harmless script:
+
+```sh
+printf 'BUG026_QAS_EXPLICIT_EXIT1_DIAGNOSTIC\n'; exit 1
+```
+
+Runner returned exit 1 as expected. The terminal result was command `failed`,
+exit code 1, complete and untruncated output containing the exact diagnostic,
+final event sequence/cursor 4, and teardown `closed` with reason
+`runtime_closed`. The event stream included the ordinary `command_failed`
+terminal event. Job `job-9933c0c2bb10e54cfbee673ea8e07b06`, session
+`sess-3b0a8f6d6f9c79b505d85e2827d174e3`, and command
+`cmd-60ed16ef0b3eca01c227c736df0ad6c4` identify this execution. Captured CLI
+output SHA-256: `8ec868080acf5d4ce2a823599061e3837325e534532930c60ffd8b0791301a59`.
+
+### Dedicated QAS filesystem-mailbox acceptance
+
+One new exchange was published only to QAS service-root inbox `default`; no
+project mailbox path, PRD mailbox, historical request, or unrelated ACK was
+touched. Request `req-promo-qas-local-mailbox-20261025-01` used idempotency key
+`promo-qas-mailbox-local-20261025-01`, environment `mac-workstation-qas`, and
+target `local/mac-workstation`. It emitted `PROMO_QAS_MAILBOX_OK` and completed
+as job `job-a3d3fac9413b78a9b706ed64ef7b33cd`, session
+`sess-7d48581c04aed79ea877f79cf2f98ee2`, command
+`cmd-52a42daa9402cadf65d6c32ba3eeaea1`. The terminal response was revision 2,
+with four available events through cursor 4; state `succeeded`, exit 0,
+complete/untruncated output, and closed teardown. Its exact response/cursor
+was ACKed marker-last. The owner-only lifecycle route then reported
+`terminal_acknowledged` and `acknowledged: true`. The response and event prefix
+were inspected before ACK; the post-test QAS work inventory is empty.
+
+### Fresh cohort and peer-lane postflight
+
+A read-only supported QAS plan after both checks reported all four selectors
+on this release, schema 40, empty work inventory hash
+`92103a248a6dc1bd114512bc8b084280e339ff6972656bb42c4224f77a121f8b`, and
+500,000,000-byte required headroom. Fresh available bytes were 15,234,449,408
+on Linux, 2,402,414,592 on Sandbox, 33,628,258,304 on Factory, and
+131,203,510,272 on Mac. Its outcome was `planned_no_effects`.
+
+All three worker QAS services were `active`; their Unix-socket health
+responses reported `live`/`ready`, build revision `43a4e675…`, and zero active
+session, active command, queued command, and queued intent counts. QAS Mac
+ingress and local executor were also `live`/`ready` at 2026-10-25 07:07 UTC,
+with zero active capacity, mailbox backlog, storage errors, and cleanup
+failures. Mac QAS storage and cleanup counters were zero before and after the
+two fresh tests (delta zero); worker health observations also reported zero
+storage errors and cleanup failures. Readiness and route acceptance are
+separate claims; direct-mTLS and queued-SSH passed in the release-bound QAS
+acceptance record.
+
+The read-only peer-lane check showed all four PRD selectors still on
+`cat-20261023-c01e633`, all three PRD worker services and Mac PRD components
+active/ready, and no PRD configuration or mailbox ownership change was made.
+Mac PRD health at observation time also showed two active session slots, two
+active command slots, and four uncertain remote intents per router. This was
+observed and left untouched; it is not QAS work and does not establish empty
+PRD capacity.
+
+Dev and QAS acceptance are complete for this release. PRD deployment and
+acceptance were not authorized in this walkthrough and remain **NOT RUN**.
+QAS mailbox assignment is unchanged; external project clients remain on PRD.
