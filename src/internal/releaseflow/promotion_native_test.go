@@ -447,7 +447,7 @@ func TestRecoverAcceptedProbeFromExactControllerDecodeFailureWithoutReplay(t *te
 			t.Fatalf("scope observation used unexpected host %q", host)
 		}
 		calls = append(calls, append([]string(nil), args...))
-		if len(args) < 2 || args[0] != "catalog-probe-prepare" || args[len(args)-1] != "--observe-existing" {
+		if len(args) < 2 || args[0] != "catalog-probe-prepare" || !contains(args, "--observe-existing") || !contains(args, "--include-terminal-result") {
 			t.Fatalf("unexpected host-side command; consumed capability must only be observed: %v", args)
 		}
 		return json.Marshal(scope)
@@ -482,7 +482,7 @@ func TestRecoverAcceptedProbeAfterSafeObservationFailureDuringWorkflowResume(t *
 			t.Fatalf("scope observation used unexpected host %q", host)
 		}
 		calls = append(calls, append([]string(nil), args...))
-		if len(args) < 2 || args[0] != "catalog-probe-prepare" || args[len(args)-1] != "--observe-existing" {
+		if len(args) < 2 || args[0] != "catalog-probe-prepare" || !contains(args, "--observe-existing") || !contains(args, "--include-terminal-result") {
 			t.Fatalf("unexpected host-side command; accepted capability must only be observed: %v", args)
 		}
 		return json.Marshal(scope)
@@ -497,6 +497,63 @@ func TestRecoverAcceptedProbeAfterSafeObservationFailureDuringWorkflowResume(t *
 		got.AcceptanceEvidence.ControllerFailureEventSHA256 != original.SHA256 || !promotionProbeOutcomeAccepted(got) {
 		t.Fatalf("recovery did not bind to the original helper-exit proof without replay: calls=%v outcome=%+v", calls, got)
 	}
+}
+
+func TestAcceptedProbeUsesVerifiedHostReadOnlyResultWhenHTTPStatusIsUnavailable(t *testing.T) {
+	op, scope := acceptedProbeRecoveryFixture(t)
+	zero := 0
+	seq := int64(4)
+	result := laneinstall.CatalogProbeTerminalResult{
+		ObservedAtUTC: time.Date(2026, 10, 26, 7, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+		HostID:        "linux-host", Lane: "dev", Transport: laneinstall.CatalogProbeDirectMTLS, OperationID: scope.OperationID,
+		ControllerType: "direct_mtls", ControllerID: scope.ControllerID, Environment: scope.Environment,
+		ConfigurationSHA256: scope.ConfigurationSHA256, IdempotencyKey: scope.IdempotencyKey, RequestSHA256: scope.RequestSHA256,
+		JobID: scope.JobID, SessionID: "sess-11111111111111111111111111111111", CommandID: "cmd-22222222222222222222222222222222",
+		JobCreatedAtUTC: scope.CreatedAt, SchemaVersion: store.CurrentSchemaVersion, Phase: "complete", CommandState: "succeeded",
+		SessionState: "closed", ExitCode: &zero, FinalEventSequence: &seq, OutputBytes: int64(len("catalog release maintenance probe\n")),
+		OutputSHA256: digest([]byte("catalog release maintenance probe\n")), OutputComplete: true, TeardownState: "closed",
+		TeardownReason: "runtime_closed", EventTypes: []string{"command_queued", "command_started", "stdout", "command_succeeded"},
+		EventChainSHA256: stringsOf("d"), CommandStopConfirmed: true, CommandSlotReleased: true,
+		SessionCleanupConfirmed: true, SessionReservationReleased: true, WorkInventory: laneinstall.CatalogWorkInventory{},
+		Terminal: true, Accepted: true,
+	}
+	result.EvidenceSHA256 = digest(mustJSON(t, result))
+	scope.TerminalResult = &result
+	var calls [][]string
+	backend := NativePromotionBackend{laneCommandRunner: func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		if host != "linux-host" {
+			t.Fatalf("scope observation used unexpected host %q", host)
+		}
+		calls = append(calls, append([]string(nil), args...))
+		return json.Marshal(scope)
+	}}
+	got, err := backend.runProbe(context.Background(), op, "linux-host", "direct-mtls", scope.ControllerID, "/unused/config", "")
+	if err != nil {
+		t.Fatalf("verified host result was not accepted: %v", err)
+	}
+	if len(calls) != 1 || got.JobID != scope.JobID || got.FinalEventSequence == nil || *got.FinalEventSequence != 4 ||
+		got.AcceptanceEvidence == nil || got.AcceptanceEvidence.HostReadOnlyResult == nil ||
+		got.AcceptanceEvidence.Method != "host-local-read-only-sqlite-result" || !promotionProbeOutcomeAccepted(got) {
+		t.Fatalf("host result proof was not retained or an HTTP/replay path ran: calls=%v outcome=%+v", calls, got)
+	}
+
+	result.OutputSHA256 = stringsOf("e")
+	result.EvidenceSHA256 = ""
+	result.EvidenceSHA256 = digest(mustJSON(t, result))
+	scope.TerminalResult = &result
+	backend.laneCommandRunner = func(_ context.Context, _ string, _ []string, _ []byte) ([]byte, error) { return json.Marshal(scope) }
+	if _, err := backend.runProbe(context.Background(), op, "linux-host", "direct-mtls", scope.ControllerID, "/unused/config", ""); err == nil {
+		t.Fatal("mismatched durable output was accepted")
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func TestAcceptedProbeObserveFailureRecognizesBoundedDiagnosticOnly(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/laneinstall"
+	"remote-session-runner/src/internal/store"
 )
 
 const (
@@ -106,33 +107,35 @@ type promotionPreparedProbe struct {
 }
 
 type promotionProbeScopeObservation struct {
-	HostID              string                            `json:"host_id"`
-	Lane                string                            `json:"lane"`
-	Transport           laneinstall.CatalogProbeTransport `json:"transport"`
-	OperationID         string                            `json:"operation_id"`
-	ControllerType      string                            `json:"controller_type"`
-	ControllerID        string                            `json:"controller_id"`
-	Environment         string                            `json:"environment"`
-	ConfigurationSHA256 string                            `json:"configuration_sha256"`
-	IdempotencyKey      string                            `json:"idempotency_key"`
-	RequestSHA256       string                            `json:"request_body_sha256"`
-	CreatedAt           string                            `json:"created_at"`
-	ExpiresAt           string                            `json:"expires_at"`
-	State               string                            `json:"state"`
-	JobID               string                            `json:"job_id,omitempty"`
-	IntentID            string                            `json:"intent_id,omitempty"`
+	HostID              string                                  `json:"host_id"`
+	Lane                string                                  `json:"lane"`
+	Transport           laneinstall.CatalogProbeTransport       `json:"transport"`
+	OperationID         string                                  `json:"operation_id"`
+	ControllerType      string                                  `json:"controller_type"`
+	ControllerID        string                                  `json:"controller_id"`
+	Environment         string                                  `json:"environment"`
+	ConfigurationSHA256 string                                  `json:"configuration_sha256"`
+	IdempotencyKey      string                                  `json:"idempotency_key"`
+	RequestSHA256       string                                  `json:"request_body_sha256"`
+	CreatedAt           string                                  `json:"created_at"`
+	ExpiresAt           string                                  `json:"expires_at"`
+	State               string                                  `json:"state"`
+	JobID               string                                  `json:"job_id,omitempty"`
+	IntentID            string                                  `json:"intent_id,omitempty"`
+	TerminalResult      *laneinstall.CatalogProbeTerminalResult `json:"terminal_result,omitempty"`
 }
 
 type promotionProbeAcceptanceEvidence struct {
-	Method                              string `json:"method"`
-	HelperExitCode                      int    `json:"helper_exit_code"`
-	HelperContract                      string `json:"helper_contract"`
-	ControllerFailureEventSequence      int    `json:"controller_failure_event_sequence"`
-	ControllerFailureEventSHA256        string `json:"controller_failure_event_sha256"`
-	ControllerFailureEventAtUTC         string `json:"controller_failure_event_at_utc"`
-	ScopeCreatedAt                      string `json:"scope_created_at"`
-	ScopeExpiresAt                      string `json:"scope_expires_at"`
-	HelperVerifiedPositiveFinalSequence bool   `json:"helper_verified_positive_final_sequence"`
+	Method                              string                                  `json:"method"`
+	HelperExitCode                      int                                     `json:"helper_exit_code"`
+	HelperContract                      string                                  `json:"helper_contract"`
+	ControllerFailureEventSequence      int                                     `json:"controller_failure_event_sequence"`
+	ControllerFailureEventSHA256        string                                  `json:"controller_failure_event_sha256"`
+	ControllerFailureEventAtUTC         string                                  `json:"controller_failure_event_at_utc"`
+	ScopeCreatedAt                      string                                  `json:"scope_created_at"`
+	ScopeExpiresAt                      string                                  `json:"scope_expires_at"`
+	HelperVerifiedPositiveFinalSequence bool                                    `json:"helper_verified_positive_final_sequence"`
+	HostReadOnlyResult                  *laneinstall.CatalogProbeTerminalResult `json:"host_read_only_result,omitempty"`
 }
 
 type promotionProbeOutcome struct {
@@ -1146,6 +1149,9 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 	preparedArgs := []string{"catalog-probe-prepare", "--host", host, "--lane", op.Lane, "--transport", transport,
 		"--operation-id", op.CohortOperationID, "--controller-id", controller, "--ttl-seconds", "120"}
 	observeArgs := append(append([]string(nil), preparedArgs...), "--observe-existing")
+	if transport != "mac-local" {
+		observeArgs = append(observeArgs, "--include-terminal-result")
+	}
 	observedBytes, err := b.runLane(ctx, host, observeArgs, nil)
 	if err != nil {
 		return promotionProbeOutcome{}, err
@@ -1159,6 +1165,13 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 		return promotionProbeOutcome{}, err
 	}
 	if disposition == "observe" {
+		if existing.TerminalResult != nil && existing.TerminalResult.Terminal {
+			outcome, err := acceptedProbeFromHostReadOnlyResult(op, existing, *existing.TerminalResult, host, transport, controller)
+			if err != nil {
+				return outcome, err
+			}
+			return outcome, nil
+		}
 		if recovered, ok := recoverAcceptedProbeFromOperation(op, existing, host, transport, controller); ok {
 			return recovered, nil
 		}
@@ -1226,6 +1239,56 @@ func (b *NativePromotionBackend) runProbe(ctx context.Context, op Operation, hos
 	outcome.RequestSHA256 = prepared.RequestSHA256
 	outcome.RequestedTimeout = 5
 	return outcome, nil
+}
+
+func acceptedProbeFromHostReadOnlyResult(op Operation, scope promotionProbeScopeObservation, result laneinstall.CatalogProbeTerminalResult,
+	host, transport, controller string) (promotionProbeOutcome, error) {
+	outcome := promotionProbeOutcome{
+		Transport: transport, HostID: host, OperationID: op.CohortOperationID, AcceptedAt: result.JobCreatedAtUTC,
+		JobID: result.JobID, SessionID: result.SessionID, CommandID: result.CommandID, Phase: result.Phase,
+		CommandState: result.CommandState, ExitCode: result.ExitCode, FinalEventSequence: result.FinalEventSequence,
+		OutputComplete: result.OutputComplete, OutputTruncated: result.OutputTruncated, TeardownState: result.TeardownState,
+		ObservedExisting: true, ConfigurationSHA: result.ConfigurationSHA256, RequestSHA256: result.RequestSHA256,
+		IdempotencyKey: result.IdempotencyKey, RequestedTimeout: 5,
+		AcceptanceEvidence: &promotionProbeAcceptanceEvidence{Method: "host-local-read-only-sqlite-result",
+			ScopeCreatedAt: scope.CreatedAt, ScopeExpiresAt: scope.ExpiresAt, HostReadOnlyResult: &result},
+	}
+	baselineConfig, baselineFound := promotionBaselineConfigurationSHA(op, host)
+	created, createdErr := time.Parse(time.RFC3339Nano, scope.CreatedAt)
+	expires, expiresErr := time.Parse(time.RFC3339Nano, scope.ExpiresAt)
+	acceptedAt, acceptedErr := time.Parse(time.RFC3339Nano, result.JobCreatedAtUTC)
+	if ValidateOperation(op) != nil || op.CohortOperationID == "" || op.OperationID != op.CohortOperationID ||
+		!result.Terminal || !result.Accepted || !baselineFound || result.HostID != host || result.Lane != op.Lane ||
+		string(result.Transport) != transport || result.OperationID != op.CohortOperationID || result.ControllerID != controller ||
+		result.ConfigurationSHA256 != scope.ConfigurationSHA256 || result.ConfigurationSHA256 != baselineConfig ||
+		result.IdempotencyKey != scope.IdempotencyKey || result.RequestSHA256 != scope.RequestSHA256 || result.JobID != scope.JobID ||
+		result.SchemaVersion != store.CurrentSchemaVersion || result.EvidenceSHA256 == "" || !validCatalogProbeTerminalResultDigest(result) ||
+		createdErr != nil || expiresErr != nil || acceptedErr != nil || !expires.After(created) ||
+		acceptedAt.Before(created) || !acceptedAt.Before(expires) || result.ExitCode == nil || *result.ExitCode != 0 ||
+		!promotionProbeOutcomeAccepted(outcome) || result.OutputBytes != int64(len("catalog release maintenance probe\n")) ||
+		result.OutputSHA256 != digest([]byte("catalog release maintenance probe\n")) ||
+		!result.CommandStopConfirmed || !result.CommandSlotReleased || !result.SessionCleanupConfirmed ||
+		!result.SessionReservationReleased || !result.WorkInventory.Empty() || len(result.EventTypes) < 4 ||
+		result.EventTypes[0] != "command_queued" || result.EventTypes[1] != "command_started" ||
+		result.EventTypes[len(result.EventTypes)-1] != "command_succeeded" || result.EventChainSHA256 == "" {
+		return outcome, errors.New("host-local read-only probe result did not match the accepted scope and complete success guards")
+	}
+	for _, eventType := range result.EventTypes[2 : len(result.EventTypes)-1] {
+		if eventType != "stdout" {
+			return outcome, errors.New("host-local read-only probe event sequence is outside the fixed successful shape")
+		}
+	}
+	return outcome, nil
+}
+
+func validCatalogProbeTerminalResultDigest(result laneinstall.CatalogProbeTerminalResult) bool {
+	want := result.EvidenceSHA256
+	result.EvidenceSHA256 = ""
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return false
+	}
+	return want == digest(encoded)
 }
 
 func (b *NativePromotionBackend) observeAcceptedProbe(ctx context.Context, op Operation, host, transport, configPath, socket string,
@@ -1590,6 +1653,9 @@ func promotionProbeOutcomeAccepted(result promotionProbeOutcome) bool {
 		return result.FinalEventSequence != nil && *result.FinalEventSequence > 0
 	}
 	proof := result.AcceptanceEvidence
+	if proof.Method == "host-local-read-only-sqlite-result" {
+		return promotionHostReadOnlyResultMatchesOutcome(result, proof)
+	}
 	eventAt, eventErr := time.Parse(time.RFC3339Nano, proof.ControllerFailureEventAtUTC)
 	created, createdErr := time.Parse(time.RFC3339Nano, proof.ScopeCreatedAt)
 	expires, expiresErr := time.Parse(time.RFC3339Nano, proof.ScopeExpiresAt)
@@ -1598,10 +1664,59 @@ func promotionProbeOutcomeAccepted(result promotionProbeOutcome) bool {
 		validProbeJobIdentity(result.JobID) &&
 		digestPattern.MatchString(result.ConfigurationSHA) && digestPattern.MatchString(result.RequestSHA256) && result.RequestedTimeout == 5 &&
 		proof.Method == acceptedProbeRecoveryMethod && proof.HelperExitCode == 0 &&
+		proof.HostReadOnlyResult == nil &&
 		proof.HelperContract == acceptedProbeHelperContract && proof.ControllerFailureEventSequence > 0 &&
 		digestPattern.MatchString(proof.ControllerFailureEventSHA256) && proof.HelperVerifiedPositiveFinalSequence &&
 		eventErr == nil && createdErr == nil && expiresErr == nil && !eventAt.Before(created) && eventAt.Before(expires) &&
 		expires.After(created) && expires.Sub(created) <= 10*time.Minute
+}
+
+func promotionHostReadOnlyResultMatchesOutcome(outcome promotionProbeOutcome, proof *promotionProbeAcceptanceEvidence) bool {
+	if proof == nil || proof.Method != "host-local-read-only-sqlite-result" || proof.HostReadOnlyResult == nil ||
+		proof.HelperExitCode != 0 || proof.HelperContract != "" || proof.ControllerFailureEventSequence != 0 ||
+		proof.ControllerFailureEventSHA256 != "" || proof.ControllerFailureEventAtUTC != "" || proof.HelperVerifiedPositiveFinalSequence {
+		return false
+	}
+	r := proof.HostReadOnlyResult
+	if r == nil || r.FinalEventSequence == nil || r.ExitCode == nil {
+		return false
+	}
+	created, createdErr := time.Parse(time.RFC3339Nano, proof.ScopeCreatedAt)
+	expires, expiresErr := time.Parse(time.RFC3339Nano, proof.ScopeExpiresAt)
+	jobCreated, jobCreatedErr := time.Parse(time.RFC3339Nano, r.JobCreatedAtUTC)
+	return r.Terminal && r.Accepted && r.EvidenceSHA256 != "" && validCatalogProbeTerminalResultDigest(*r) &&
+		createdErr == nil && expiresErr == nil && jobCreatedErr == nil && expires.After(created) &&
+		expires.Sub(created) <= 10*time.Minute && !jobCreated.Before(created) && jobCreated.Before(expires) &&
+		outcome.AcceptedAt == r.JobCreatedAtUTC && outcome.ObservedExisting && outcome.FinalEventSequence != nil &&
+		*r.FinalEventSequence > 0 && outcome.Transport == string(r.Transport) && outcome.HostID == r.HostID &&
+		outcome.OperationID == r.OperationID && outcome.JobID == r.JobID && outcome.SessionID == r.SessionID &&
+		outcome.CommandID == r.CommandID && outcome.Phase == r.Phase && outcome.CommandState == r.CommandState &&
+		outcome.ExitCode != nil && r.ExitCode != nil && *outcome.ExitCode == *r.ExitCode &&
+		*outcome.FinalEventSequence == *r.FinalEventSequence && outcome.OutputComplete == r.OutputComplete &&
+		outcome.OutputTruncated == r.OutputTruncated && outcome.TeardownState == r.TeardownState &&
+		outcome.ConfigurationSHA == r.ConfigurationSHA256 && outcome.RequestSHA256 == r.RequestSHA256 &&
+		outcome.IdempotencyKey == r.IdempotencyKey && outcome.RequestedTimeout == 5 &&
+		r.SchemaVersion == store.CurrentSchemaVersion && r.OutputComplete && !r.OutputTruncated &&
+		r.OutputBytes == int64(len("catalog release maintenance probe\n")) &&
+		r.OutputSHA256 == digest([]byte("catalog release maintenance probe\n")) &&
+		r.CommandStopConfirmed && r.CommandSlotReleased && r.SessionCleanupConfirmed && r.SessionReservationReleased &&
+		r.WorkInventory.Empty() && len(r.EventTypes) >= 4 && r.EventTypes[0] == "command_queued" &&
+		r.EventTypes[1] == "command_started" && r.EventTypes[len(r.EventTypes)-1] == "command_succeeded" &&
+		digestPattern.MatchString(r.EventChainSHA256) && *r.ExitCode == 0 &&
+		fixedProbeEventShape(r.EventTypes)
+}
+
+func fixedProbeEventShape(eventTypes []string) bool {
+	if len(eventTypes) < 4 || eventTypes[0] != "command_queued" || eventTypes[1] != "command_started" ||
+		eventTypes[len(eventTypes)-1] != "command_succeeded" {
+		return false
+	}
+	for _, eventType := range eventTypes[2 : len(eventTypes)-1] {
+		if eventType != "stdout" {
+			return false
+		}
+	}
+	return true
 }
 
 func existingProbeDisposition(existing promotionProbeScopeObservation, host, lane, transport, operationID, controller string, now time.Time) (string, error) {

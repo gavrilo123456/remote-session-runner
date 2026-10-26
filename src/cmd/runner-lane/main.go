@@ -980,6 +980,7 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	retryAfterJobID := flags.String("retry-after-job-id", "", "exact prior lost probe job; permits only the one guarded Linux PRD direct-mTLS retry")
 	ttlSeconds := flags.Int("ttl-seconds", 120, "one-time probe token lifetime from 1 to 600 seconds")
 	observeExisting := flags.Bool("observe-existing", false, "read the exact existing probe scope without minting a capability")
+	includeTerminalResult := flags.Bool("include-terminal-result", false, "include bounded read-only terminal evidence for the accepted scope")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -987,6 +988,9 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 		(*lane != "dev" && *lane != "qas" && *lane != "prd") || !validCLIProbeOperationID(*operationID) ||
 		*controllerID == "" || *ttlSeconds < 1 || *ttlSeconds > 600 || (*retryAfterJobID != "" && !validCLIProbeJobID(*retryAfterJobID)) {
 		return errors.New("usage: runner-lane catalog-probe-prepare --host HOST --lane dev|qas|prd --transport direct-mtls|queued-ssh|mac-local --operation-id ID --controller-id ID [--retry-after-job-id JOB] [--ttl-seconds 1..600]")
+	}
+	if *includeTerminalResult && (!*observeExisting || *transport == string(laneinstall.CatalogProbeMacLocal)) {
+		return errors.New("terminal-result observation requires an existing worker probe scope")
 	}
 	probeTransport := laneinstall.CatalogProbeTransport(*transport)
 	var controllerType domain.ControllerType
@@ -1030,7 +1034,7 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	digest := sha256.Sum256(requestBody)
 	if *observeExisting {
 		observation, err := observeCatalogProbeScope(plan, *operationID, probeTransport, controllerType, *controllerID,
-			binding.Environment, binding.ConfigurationSHA, strings.TrimSuffix(idempotencyKey, "-retry-1"), hex.EncodeToString(digest[:]))
+			binding.Environment, binding.ConfigurationSHA, strings.TrimSuffix(idempotencyKey, "-retry-1"), hex.EncodeToString(digest[:]), *includeTerminalResult)
 		if err != nil {
 			return err
 		}
@@ -1165,7 +1169,7 @@ func runCatalogProbeDisposition(ctx context.Context, args []string, stdout, stde
 	digest := sha256.Sum256(body)
 	key := "catalog-probe-" + *operationID + "-" + *host
 	scope, err := observeCatalogProbeScope(plan, *operationID, laneinstall.CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS,
-		*controllerID, binding.Environment, binding.ConfigurationSHA, key, hex.EncodeToString(digest[:]))
+		*controllerID, binding.Environment, binding.ConfigurationSHA, key, hex.EncodeToString(digest[:]), false)
 	if err != nil || scope.State != "accepted" || scope.JobID != *jobIDText {
 		return errors.Join(errors.New("accepted probe scope does not bind the exact retained job"), err)
 	}
@@ -1218,21 +1222,22 @@ func validCLIProbeJobID(value string) bool {
 }
 
 type catalogProbeScopeObservation struct {
-	HostID              string                            `json:"host_id"`
-	Lane                string                            `json:"lane"`
-	Transport           laneinstall.CatalogProbeTransport `json:"transport"`
-	OperationID         string                            `json:"operation_id"`
-	ControllerType      domain.ControllerType             `json:"controller_type"`
-	ControllerID        string                            `json:"controller_id"`
-	Environment         string                            `json:"environment"`
-	ConfigurationSHA256 string                            `json:"configuration_sha256"`
-	IdempotencyKey      string                            `json:"idempotency_key"`
-	RequestSHA256       string                            `json:"request_body_sha256"`
-	CreatedAt           string                            `json:"created_at"`
-	ExpiresAt           string                            `json:"expires_at"`
-	State               string                            `json:"state"`
-	JobID               string                            `json:"job_id,omitempty"`
-	IntentID            string                            `json:"intent_id,omitempty"`
+	HostID              string                                  `json:"host_id"`
+	Lane                string                                  `json:"lane"`
+	Transport           laneinstall.CatalogProbeTransport       `json:"transport"`
+	OperationID         string                                  `json:"operation_id"`
+	ControllerType      domain.ControllerType                   `json:"controller_type"`
+	ControllerID        string                                  `json:"controller_id"`
+	Environment         string                                  `json:"environment"`
+	ConfigurationSHA256 string                                  `json:"configuration_sha256"`
+	IdempotencyKey      string                                  `json:"idempotency_key"`
+	RequestSHA256       string                                  `json:"request_body_sha256"`
+	CreatedAt           string                                  `json:"created_at"`
+	ExpiresAt           string                                  `json:"expires_at"`
+	State               string                                  `json:"state"`
+	JobID               string                                  `json:"job_id,omitempty"`
+	IntentID            string                                  `json:"intent_id,omitempty"`
+	TerminalResult      *laneinstall.CatalogProbeTerminalResult `json:"terminal_result,omitempty"`
 }
 
 type catalogProbeScopeRecord struct {
@@ -1260,7 +1265,8 @@ type catalogProbeScopeRecord struct {
 // validates the complete immutable binding before returning job identity and
 // never emits the token digest or changes scope state.
 func observeCatalogProbeScope(plan laneinstall.Plan, operationID string, transport laneinstall.CatalogProbeTransport,
-	controllerType domain.ControllerType, controllerID, environment, configurationSHA, idempotencyKey, requestSHA string) (catalogProbeScopeObservation, error) {
+	controllerType domain.ControllerType, controllerID, environment, configurationSHA, idempotencyKey, requestSHA string,
+	includeTerminalResult bool) (catalogProbeScopeObservation, error) {
 	if len(operationID) != 32 || strings.Trim(operationID, "0123456789abcdef") != "" ||
 		!validCatalogProbeHostID(plan.HostID) || (plan.Lane != config.ReleaseLaneDev && plan.Lane != config.ReleaseLaneQAS && plan.Lane != config.ReleaseLanePRD) ||
 		transport == "" || environment == "" || len(configurationSHA) != 64 || len(requestSHA) != 64 || idempotencyKey == "" {
@@ -1322,10 +1328,26 @@ func observeCatalogProbeScope(plan laneinstall.Plan, operationID string, transpo
 		(scope.IntentID != "" && (transport != laneinstall.CatalogProbeMacLocal || scope.State != "reserved" && scope.State != "accepted")) {
 		return catalogProbeScopeObservation{}, errors.New("catalog probe scope does not match the requested immutable binding")
 	}
-	return catalogProbeScopeObservation{HostID: scope.HostID, Lane: scope.Lane, Transport: scope.Transport, OperationID: scope.OperationID,
+	result := catalogProbeScopeObservation{HostID: scope.HostID, Lane: scope.Lane, Transport: scope.Transport, OperationID: scope.OperationID,
 		ControllerType: scope.ControllerType, ControllerID: scope.ControllerID, Environment: scope.Environment,
 		ConfigurationSHA256: scope.ConfigurationSHA, IdempotencyKey: scope.IdempotencyKey, RequestSHA256: scope.RequestBodySHA256,
-		CreatedAt: scope.CreatedAt, ExpiresAt: scope.ExpiresAt, State: scope.State, JobID: scope.JobID, IntentID: scope.IntentID}, nil
+		CreatedAt: scope.CreatedAt, ExpiresAt: scope.ExpiresAt, State: scope.State, JobID: scope.JobID, IntentID: scope.IntentID}
+	if includeTerminalResult && scope.State == "accepted" {
+		if scope.IntentID != "" || scope.JobID == "" {
+			return catalogProbeScopeObservation{}, errors.New("accepted probe result scope has an unsupported identity")
+		}
+		terminal, observeErr := laneinstall.ReadCatalogProbeTerminalResult(context.Background(), plan.Namespace.Database, laneinstall.CatalogProbeResultBinding{
+			HostID: scope.HostID, Lane: config.ReleaseLane(scope.Lane), Transport: scope.Transport, OperationID: scope.OperationID,
+			ControllerType: scope.ControllerType, ControllerID: scope.ControllerID, Environment: scope.Environment,
+			ConfigurationSHA256: scope.ConfigurationSHA, IdempotencyKey: scope.IdempotencyKey,
+			RequestSHA256: scope.RequestBodySHA256, ScopeCreatedAt: scope.CreatedAt, ScopeExpiresAt: scope.ExpiresAt, JobID: scope.JobID,
+		})
+		if observeErr != nil {
+			return catalogProbeScopeObservation{}, observeErr
+		}
+		result.TerminalResult = &terminal
+	}
+	return result, nil
 }
 
 func validProbeScopeDigest(value string) bool {

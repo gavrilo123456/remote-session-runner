@@ -139,6 +139,18 @@ func TestProbeDispositionInventoryAcceptsOnlyExactSingleProbeStates(t *testing.T
 	}
 }
 
+func TestProbeTerminalResultFlagRequiresAnExistingWorkerObservation(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := runCatalogProbePrepare([]string{
+		"--host", "mac-control-plane", "--lane", "prd", "--transport", "mac-local",
+		"--operation-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--controller-id", config.MacAccount,
+		"--include-terminal-result",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "terminal-result observation requires an existing worker probe scope") {
+		t.Fatalf("unscoped terminal result request error=%v, want fail-closed validation", err)
+	}
+}
+
 func TestCatalogHostPreflightRejectsInvalidScopeAndMissingCapacityBeforeOperating(t *testing.T) {
 	for _, args := range [][]string{
 		{"--host", "unlisted", "--lane", "dev", "--release-id", "cat-20261019-f0e2843", "--required-free-bytes", "1"},

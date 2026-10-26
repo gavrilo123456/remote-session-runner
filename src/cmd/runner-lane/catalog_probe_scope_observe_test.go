@@ -49,7 +49,7 @@ func TestObserveCatalogProbeScopeReturnsOnlyExactAcceptedBinding(t *testing.T) {
 	}
 	writeScope(scope)
 	got, err := observeCatalogProbeScope(plan, opID, laneinstall.CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS,
-		"tomasz.walczuk", "linux-dev", configSH, scope.IdempotencyKey, bodySH)
+		"tomasz.walczuk", "linux-dev", configSH, scope.IdempotencyKey, bodySH, false)
 	if err != nil {
 		t.Fatalf("observe exact accepted scope: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestObserveCatalogProbeScopeReturnsOnlyExactAcceptedBinding(t *testing.T) {
 	}
 
 	if _, err := observeCatalogProbeScope(plan, opID, laneinstall.CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS,
-		"tomasz.walczuk", "linux-dev", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", scope.IdempotencyKey, bodySH); err == nil {
+		"tomasz.walczuk", "linux-dev", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", scope.IdempotencyKey, bodySH, false); err == nil {
 		t.Fatal("scope with configuration drift was accepted")
 	}
 
@@ -73,7 +73,7 @@ func TestObserveCatalogProbeScopeReturnsOnlyExactAcceptedBinding(t *testing.T) {
 	retryScope.IdempotencyKey += "-retry-1"
 	writeScope(retryScope)
 	got, err = observeCatalogProbeScope(plan, opID, laneinstall.CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS,
-		"tomasz.walczuk", "linux-dev", configSH, scope.IdempotencyKey, bodySH)
+		"tomasz.walczuk", "linux-dev", configSH, scope.IdempotencyKey, bodySH, false)
 	if err != nil || got.IdempotencyKey != retryScope.IdempotencyKey {
 		t.Fatalf("one-time exact retry scope observation=%+v err=%v", got, err)
 	}
@@ -90,14 +90,14 @@ func TestObserveCatalogProbeScopeReturnsOnlyExactAcceptedBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := observeCatalogProbeScope(plan, otherOperation, laneinstall.CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS,
-		"tomasz.walczuk", "linux-dev", configSH, "catalog-probe-"+otherOperation+"-linux-host", bodySH); err == nil {
+		"tomasz.walczuk", "linux-dev", configSH, "catalog-probe-"+otherOperation+"-linux-host", bodySH, false); err == nil {
 		t.Fatal("one-time retry suffix was accepted for another operation")
 	}
 	mutated := scope
 	mutated.JobID = "job-not-a-valid-identity"
 	writeScope(mutated)
 	if _, err := observeCatalogProbeScope(plan, opID, laneinstall.CatalogProbeDirectMTLS, domain.ControllerTypeDirectMTLS,
-		"tomasz.walczuk", "linux-dev", configSH, scope.IdempotencyKey, bodySH); err == nil {
+		"tomasz.walczuk", "linux-dev", configSH, scope.IdempotencyKey, bodySH, false); err == nil {
 		t.Fatal("scope with changed job identity was accepted")
 	}
 }
@@ -110,7 +110,7 @@ func TestObserveCatalogProbeScopeReportsAbsentWithoutCreatingState(t *testing.T)
 		domain.ControllerTypeDirectMTLS, "tomasz.walczuk", "linux-dev",
 		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		"catalog-probe-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-linux-host",
-		"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+		"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", false)
 	if err != nil || got.State != "absent" {
 		t.Fatalf("absent scope observation=%+v err=%v", got, err)
 	}
