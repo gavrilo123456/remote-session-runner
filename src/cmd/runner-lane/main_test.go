@@ -143,7 +143,7 @@ func TestProbeTerminalResultFlagRequiresAnExistingWorkerObservation(t *testing.T
 	var stdout, stderr bytes.Buffer
 	err := runCatalogProbePrepare([]string{
 		"--host", "mac-control-plane", "--lane", "prd", "--transport", "mac-local",
-		"--operation-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--controller-id", config.MacAccount,
+		"--operation-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--controller-id", "catalog-probe-test-controller",
 		"--include-terminal-result",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "terminal-result observation requires an existing worker probe scope") {
