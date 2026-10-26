@@ -984,13 +984,13 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if *includeTerminalResult && (!*observeExisting || *transport == string(laneinstall.CatalogProbeMacLocal)) {
+		return errors.New("terminal-result observation requires an existing worker probe scope")
+	}
 	if flags.NArg() != 0 || !currentCatalogHost(*host) ||
 		(*lane != "dev" && *lane != "qas" && *lane != "prd") || !validCLIProbeOperationID(*operationID) ||
 		*controllerID == "" || *ttlSeconds < 1 || *ttlSeconds > 600 || (*retryAfterJobID != "" && !validCLIProbeJobID(*retryAfterJobID)) {
 		return errors.New("usage: runner-lane catalog-probe-prepare --host HOST --lane dev|qas|prd --transport direct-mtls|queued-ssh|mac-local --operation-id ID --controller-id ID [--retry-after-job-id JOB] [--ttl-seconds 1..600]")
-	}
-	if *includeTerminalResult && (!*observeExisting || *transport == string(laneinstall.CatalogProbeMacLocal)) {
-		return errors.New("terminal-result observation requires an existing worker probe scope")
 	}
 	probeTransport := laneinstall.CatalogProbeTransport(*transport)
 	var controllerType domain.ControllerType
