@@ -1,7 +1,11 @@
-# PROMO-08 PRD rollout — recovery prerequisite checkpoint
+# PROMO-08 PRD rollout — recovery prerequisite checkpoint (historical)
 
 **Date:** 2026-10-25 (Europe/Warsaw)
 **Status:** source correction qualified on Mac; controller delivery and live PRD work pending. No PRD mutation has started in this checkpoint.
+
+This heading and status describe only the 2026-10-25 checkpoint. The final
+deployment and acceptance outcome is recorded in the 2026-10-26 closeout at
+the end of this file; earlier `NOT RUN` statements remain historical.
 
 ## Frozen service release and lane boundary
 
@@ -551,3 +555,152 @@ than rerunning its CPU-starved full suite. No service or selector changed
 during source validation. The corrected controller was delivered on the
 primary Gitea and the exact automatic GitHub mirror at `001d0aa`; worker
 checkouts were clean at that SHA before tests.
+
+## PRD deployment and functional acceptance closeout — 2026-10-26
+
+Owner authorization established a fresh four-hour PRD continuation window
+from `2026-10-26T06:35:32Z` through `2026-10-26T10:35:32Z`. The release-bound
+approval SHA-256 was
+`e96d2168d1d56cdfbf6ae89bfd72f56be67a4102c424842efe392c7b1d8ed1f5`. PRD
+clients and submissions remained owner-confirmed paused. No Runner mailbox
+request or ACK was published by the promotion controller.
+
+The accepted release is unchanged:
+
+| Field | Value |
+|---|---|
+| Release | `rr-20261024-43a4e675` |
+| Release digest | `093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69` |
+| Source revision | `43a4e675ccccb89e1ea1c333e975ea028c9600fa` |
+| PRD operation | `63471d41af07b7afaf577d6a0989cc03` |
+| PRD acceptance | PASS, `catalog-functional-v1`, accepted `2026-10-26T07:58:36.740665Z` |
+| Acceptance evidence SHA-256 | `19823891f5021aa8f276c42a222e72d5c81345c76c20f9c25bd6d4e9b3020e1c` |
+| Toolkit branch sync | Complete; primary Gitea `refs/heads/prd` and automatic GitHub mirror both resolve to `43a4e675ccccb89e1ea1c333e975ea028c9600fa` |
+
+The release-bound acceptance receipt passed `capacity`, `direct-mtls`,
+`isolation`, `lifecycle`, `limits`, `mac-local`, `queued-ssh`, and `teardown`.
+`runner-release status` reports the same operation `complete` and
+`branch_sync=complete`. The branch-sync retry found no pending synchronization;
+the durable operation and exact primary/mirror refs confirmed completion, so
+no redeployment or selector change was attempted.
+
+All four selected PRD bundles match the sealed release:
+
+| Host | Bundle SHA-256 | Config SHA-256 | Schema | Fresh available bytes / required bytes |
+|---|---|---|---:|---:|
+| `linux-host` | `f3628574b1ffd50e0e0f11790039f8b404701de475a34770b7b64b63d9f56c37` | `c85442c4ed3ad5bf1062da82bfda4ba6eff1b7677180df9ca518fc4509faaf4f` | 40 | `15,058,149,376 / 567,108,864` |
+| `sandbox-host` | `3da6a23a44ef96bbd8681bc7f8504e6ec114fa9d5049336240b80085e543f0d9` | `50f704f1b692048a149c366d0e20be2448ee8236a8cdaefcee39b2a6449e5d9a` | 40 | `1,962,356,736 / 567,108,864` |
+| `factory-sandbox` | `206a1b7e010aadf64139f81b26077716be7a5090de4c4e19e318c975f3309e29` | `271994e4a31d04625335bb8d890c5df8ba63585a07c8da7749d4518e926ba699` | 40 | `34,081,615,872 / 567,108,864` |
+| `mac-control-plane` | `a67cec224af031d269132d4c09dc22909d76bd1395e61e76fc828c5895ec6062` | `65840e66837dedfa17f5c32568d191a0bbfd6098bcc108d7ba4066f44fb95711` | 40 | `121,209,966,592 / 567,108,864` |
+
+The fresh all-host read-only plan returned `planned_no_effects`, all four PRD
+services active, the same empty-work-inventory SHA
+`92103a248a6dc1bd114512bc8b084280e339ff6972656bb42c4224f77a121f8b`, and no
+admission hold. The three configured direct-mTLS worker readiness endpoints
+returned `ready` at `2026-10-26T08:15:25Z`; each reported zero active slots,
+queued work, storage errors, and cleanup failures. Mac PRD ingress returned
+`ready`, revision `43a4e675`, zero active slots and mailbox backlog, and zero
+storage/cleanup errors. Direct mTLS and queued SSH are also covered by the
+release-bound eight-gate acceptance receipt.
+
+### PRD BUG-026 explicit-exit result
+
+The active Mac PRD CLI was verified at the sealed release path; its SHA-256
+was `60590a88ea32a42176302380b81ee8aa632896ed0d0a0819fe1ee0ff1f60c258`, and
+the exact loaded Mac config SHA-256 remained
+`65840e66837dedfa17f5c32568d191a0bbfd6098bcc108d7ba4066f44fb95711`. The
+owner-approved legacy environment name `mac-dev` resolved through the PRD
+Mac-local API to `local/mac-workstation`; no environment alias or config
+change was added.
+
+A single fresh one-off request used idempotency key
+`promo-prd-bug026-exit1-20261026-01` and script
+`printf 'BUG026_PRD_EXPLICIT_EXIT1_DIAGNOSTIC\n'; exit 1`. Runner returned
+exit status 1 and the authority recorded:
+
+| Field | Result |
+|---|---|
+| Job / session / command | `job-92dbbf7af467f92c2a77b034890d508b` / `sess-f23dc34f086550a1362ebb435732c8a8` / `cmd-b9bae1de253c554f73f09f9386d80f17` |
+| Command state / exit | `failed` / 1 |
+| Output | exact diagnostic plus newline, 37 bytes, complete and not truncated |
+| Terminal event | `command_failed`, final sequence 4 |
+| Teardown | `closed`, `runtime_closed` |
+| Capacity | command stop/release confirmed; session cleanup and reservation release confirmed |
+
+The captured stdout and stderr SHA-256 values are
+`f1b8c644962f62fc3bd3fdec29676209f651217b4a7433024eab6b616dcec58f` and
+`fa3d8f6db91cae3954d118950bbdbe15cef578c42536adf3592f705c1a46c477`; the
+private capture directory is
+`/private/tmp/rsr-prd-bug026-20261026.TgbCQ5`. A subsequent read-only schema-40
+observation confirmed the exact command/event identities, release timestamps,
+closed session, released slot and released reservation, with no active PRD
+work. The four pre-existing uncertain `sandbox-dev` intents in the Mac local
+database remained unchanged; they are historical remote-transport uncertainty,
+not active PRD sessions or commands, and were not replayed or otherwise
+modified.
+
+### Dedicated PRD filesystem-mailbox result
+
+The test used only the configured PRD service-root inbox `default`; no project
+mailbox path or historical ACK was touched. The fresh request ID was
+`req-promo-prd-local-mailbox-20261026-01`, idempotency key
+`promo-prd-local-mailbox-20261026-01`, and request SHA-256
+`668f8cf6228953340fc94a30850e9abdf021d3cbe216d1e6a9099a75c1087921`. It used
+the owner-approved existing environment name `mac-dev` and target
+`local/mac-workstation`; the fixed harmless script emitted
+`PROMO_PRD_MAILBOX_OK`.
+
+The terminal response was `complete`, revision 3, command `succeeded`, exit
+0, complete/untruncated output, final event sequence and available cursor 4,
+and teardown `closed`. Job/session/command IDs were
+`job-119239709bb6e2c239159d3968170369`,
+`sess-f2a66716332e819c5771f1969734ca61`, and
+`cmd-730d8ce966b1a6a226a8fa2d80093977`. The exact response and event file
+SHA-256 values were `4293e9580ddb2ef11ba6ecb71af7cf026999c1114e451596a32693111f8c1dfe`
+and `bb8cfbd704d0e12ac2467ff34e8655b5ed1d776f6725ec8563abf20caacaad62`.
+The native marker-last publisher ACKed exactly response revision 3/cursor 4.
+The owner-only lifecycle route subsequently reported
+`terminal_acknowledged`, `acknowledged=true`; Runner had consumed the ACK pair,
+so no ACK file remains. Post-test Mac work inventory was empty. Mailbox
+backlog, storage-error, and cleanup-failure counts remained zero. The four
+old uncertain `sandbox-dev` intents remain preserved and are outside this
+test exchange.
+
+### Probe diagnosis and network correction
+
+The earlier Linux direct-mTLS helper's empty output/result-decoding failure
+did not mean the accepted command failed. The released operation's admission
+scope had expired/was closed, so status observation returned HTTP 503; a
+read-only observer at source controller `2b21afd3c7176b9e3084b395e1aecb2e7d1cc1bb`
+was used against the exact existing job without resubmission. It confirmed
+job `job-d2c85d259d07b6a5d3c2055f87e34bc8`, session
+`sess-3694dae3424bd512712fa8315ecb29e6`, command
+`cmd-11dd68d9804172dc3c74d8cf630e9edc` had already succeeded, exit 0,
+complete output, event cursor 4, closed teardown, and released capacity. The
+four-host acceptance later passed using a fresh supported scope. The old
+failed observations remain in operation history; no command was replayed.
+
+Factory initially rejected direct mTLS at `145.241.255.66:8443`: its INPUT
+rules rejected the Mac's configured egress `83.24.253.62`. With owner approval,
+the existing persistent firewall procedure added only that source to Factory
+TCP 8443; existing rules and Dev/QAS rules were preserved. The configured
+trusted TLS client then received HTTP 200/readiness `ready`. No insecure TLS
+option was used.
+
+Source correction commits for the bounded read-only observer and CLI scope
+validation are `25df67393ada594daafef422dc5a393b382bc9a2`,
+`61e546844b2e41f595b55e8c7efce6f216831b37`,
+`6197183402e2146a782cec524121d639ca04fc13`, and
+`2b21afd3c7176b9e3084b395e1aecb2e7d1cc1bb`. Mac focused tests, vet, build,
+and smoke passed; Linux-host native focused tests, vet, build, and smoke
+passed at the exact delivered controller revision. The Mac full suite remains
+NOT PASS because an existing Darwin process-inspection fixture was denied
+`/bin/ps` in the environment. The sealed release bundles were not rebuilt or
+changed for these controller-only corrections.
+
+**Resumption state:** PRD release, eight-gate cohort acceptance, BUG-026
+explicit-exit acceptance, and the exact dedicated test-mailbox exchange all
+passed. External clients remain stopped; this closeout authorizes the owner
+to resume PRD project activity. Normal-load observation is pending owner
+resumption. Dev/QAS services, selectors, configurations, databases, and
+mailbox assignments were not changed by this PRD closeout.
