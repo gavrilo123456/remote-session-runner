@@ -1258,8 +1258,12 @@ func acceptedProbeFromHostReadOnlyResult(op Operation, scope promotionProbeScope
 	expires, expiresErr := time.Parse(time.RFC3339Nano, scope.ExpiresAt)
 	acceptedAt, acceptedErr := time.Parse(time.RFC3339Nano, result.JobCreatedAtUTC)
 	if ValidateOperation(op) != nil || op.CohortOperationID == "" || op.OperationID != op.CohortOperationID ||
+		scope.HostID != host || scope.Lane != op.Lane || string(scope.Transport) != transport ||
+		scope.OperationID != op.CohortOperationID || scope.ControllerType != expectedProbeControllerType(transport) ||
+		scope.ControllerID != controller || scope.Environment == "" || scope.State != "accepted" ||
 		!result.Terminal || !result.Accepted || !baselineFound || result.HostID != host || result.Lane != op.Lane ||
 		string(result.Transport) != transport || result.OperationID != op.CohortOperationID || result.ControllerID != controller ||
+		result.ControllerType != scope.ControllerType || result.Environment != scope.Environment ||
 		result.ConfigurationSHA256 != scope.ConfigurationSHA256 || result.ConfigurationSHA256 != baselineConfig ||
 		result.IdempotencyKey != scope.IdempotencyKey || result.RequestSHA256 != scope.RequestSHA256 || result.JobID != scope.JobID ||
 		result.SchemaVersion != store.CurrentSchemaVersion || result.EvidenceSHA256 == "" || !validCatalogProbeTerminalResultDigest(result) ||
@@ -1268,7 +1272,8 @@ func acceptedProbeFromHostReadOnlyResult(op Operation, scope promotionProbeScope
 		!promotionProbeOutcomeAccepted(outcome) || result.OutputBytes != int64(len("catalog release maintenance probe\n")) ||
 		result.OutputSHA256 != digest([]byte("catalog release maintenance probe\n")) ||
 		!result.CommandStopConfirmed || !result.CommandSlotReleased || !result.SessionCleanupConfirmed ||
-		!result.SessionReservationReleased || !result.WorkInventory.Empty() || len(result.EventTypes) < 4 ||
+		!result.SessionReservationReleased || result.SessionState != "closed" || result.OutputUnavailableReason != "" ||
+		result.TeardownReason != "runtime_closed" || !result.WorkInventory.Empty() || len(result.EventTypes) < 4 ||
 		result.EventTypes[0] != "command_queued" || result.EventTypes[1] != "command_started" ||
 		result.EventTypes[len(result.EventTypes)-1] != "command_succeeded" || result.EventChainSHA256 == "" {
 		return outcome, errors.New("host-local read-only probe result did not match the accepted scope and complete success guards")
@@ -1473,6 +1478,12 @@ func probeExitCode(err error) string {
 
 func validProbeJobIdentity(value string) bool {
 	return len(value) == 36 && strings.HasPrefix(value, "job-") && strings.Trim(value[4:], "0123456789abcdef") == ""
+}
+
+func validProbeResourceIdentity(sessionID, commandID string) bool {
+	_, sessionErr := domain.NewSessionID(sessionID)
+	_, commandErr := domain.NewCommandID(commandID)
+	return sessionErr == nil && commandErr == nil
 }
 
 const (
@@ -1687,6 +1698,9 @@ func promotionHostReadOnlyResultMatchesOutcome(outcome promotionProbeOutcome, pr
 	return r.Terminal && r.Accepted && r.EvidenceSHA256 != "" && validCatalogProbeTerminalResultDigest(*r) &&
 		createdErr == nil && expiresErr == nil && jobCreatedErr == nil && expires.After(created) &&
 		expires.Sub(created) <= 10*time.Minute && !jobCreated.Before(created) && jobCreated.Before(expires) &&
+		contains(HostOrder, r.HostID) && operationPattern.MatchString(r.OperationID) && expectedProbeControllerType(string(r.Transport)) == r.ControllerType &&
+		r.ControllerID != "" && r.Environment != "" && digestPattern.MatchString(r.ConfigurationSHA256) && digestPattern.MatchString(r.RequestSHA256) &&
+		validProbeJobIdentity(r.JobID) && validProbeResourceIdentity(r.SessionID, r.CommandID) &&
 		outcome.AcceptedAt == r.JobCreatedAtUTC && outcome.ObservedExisting && outcome.FinalEventSequence != nil &&
 		*r.FinalEventSequence > 0 && outcome.Transport == string(r.Transport) && outcome.HostID == r.HostID &&
 		outcome.OperationID == r.OperationID && outcome.JobID == r.JobID && outcome.SessionID == r.SessionID &&
@@ -1697,6 +1711,7 @@ func promotionHostReadOnlyResultMatchesOutcome(outcome promotionProbeOutcome, pr
 		outcome.ConfigurationSHA == r.ConfigurationSHA256 && outcome.RequestSHA256 == r.RequestSHA256 &&
 		outcome.IdempotencyKey == r.IdempotencyKey && outcome.RequestedTimeout == 5 &&
 		r.SchemaVersion == store.CurrentSchemaVersion && r.OutputComplete && !r.OutputTruncated &&
+		r.SessionState == "closed" && r.OutputUnavailableReason == "" && r.TeardownReason == "runtime_closed" &&
 		r.OutputBytes == int64(len("catalog release maintenance probe\n")) &&
 		r.OutputSHA256 == digest([]byte("catalog release maintenance probe\n")) &&
 		r.CommandStopConfirmed && r.CommandSlotReleased && r.SessionCleanupConfirmed && r.SessionReservationReleased &&
