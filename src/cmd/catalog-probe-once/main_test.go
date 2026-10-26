@@ -101,6 +101,49 @@ func TestDecodeObservedJobResponseRequiresExactTerminalResourceIdentity(t *testi
 	}
 }
 
+func TestValidObservedProbeIdentityAllowsOnlyExactLinuxPRDDirectRetryKey(t *testing.T) {
+	const operationID = "63471d41af07b7afaf577d6a0989cc03"
+	body := []byte(`{"environment":"linux-dev","timeout_seconds":5}`)
+	baseKey := "catalog-probe-" + operationID + "-linux-host"
+	base := prepared{HostID: "linux-host", Lane: "prd", Transport: "direct-mtls", OperationID: operationID,
+		IdempotencyKey: baseKey, RequestSHA256: sha256Hex(body), JobID: "job-d2c85d259d07b6a5d3c2055f87e34bc8"}
+	if !validObservedProbeIdentity(base, baseKey, body) {
+		t.Fatal("base accepted probe identity was rejected")
+	}
+
+	retry := base
+	retry.IdempotencyKey = baseKey + "-retry-1"
+	if !validObservedProbeIdentity(retry, baseKey, body) {
+		t.Fatal("exact Linux PRD direct-mTLS retry identity was rejected for read-only observation")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*prepared)
+	}{
+		{"another host", func(value *prepared) { value.HostID = "factory-sandbox" }},
+		{"another lane", func(value *prepared) { value.Lane = "qas" }},
+		{"another transport", func(value *prepared) { value.Transport = "queued-ssh" }},
+		{"another operation", func(value *prepared) { value.OperationID = "63471d41af07b7afaf577d6a0989cc04" }},
+		{"second retry suffix", func(value *prepared) { value.IdempotencyKey += "-again" }},
+		{"request digest mismatch", func(value *prepared) { value.RequestSHA256 = strings.Repeat("0", 64) }},
+		{"invalid job identity", func(value *prepared) { value.JobID = "job-invalid" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := retry
+			test.mutate(&value)
+			expectedKey := "catalog-probe-" + value.OperationID + "-" + value.HostID
+			if value.Transport != "direct-mtls" {
+				expectedKey += "-" + value.Transport
+			}
+			if validObservedProbeIdentity(value, expectedKey, body) {
+				t.Fatal("out-of-scope observed probe identity was accepted")
+			}
+		})
+	}
+}
+
 func TestObservedWorkerControllerBindingSupportsLegacyAndKeepsV3Strict(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -194,7 +194,7 @@ func observeExisting(ctx context.Context, configPath, socketPath string, p prepa
 		expectedKey += "-" + string(transport)
 	}
 	requestBody, err := laneinstall.CatalogMaintenanceProbeRequestBodyForBinding(plan, transport, binding)
-	if err != nil || expectedKey != p.IdempotencyKey || sha256Hex(requestBody) != p.RequestSHA256 || !validProbeJobID(p.JobID) {
+	if err != nil || !validObservedProbeIdentity(p, expectedKey, requestBody) {
 		return errors.New("accepted probe request identity is invalid")
 	}
 	if transport == laneinstall.CatalogProbeMacLocal {
@@ -216,6 +216,19 @@ func observeExisting(ctx context.Context, configPath, socketPath string, p prepa
 		return errors.New("accepted probe Mac route policy or controller binding changed")
 	}
 	return observeExistingDirect(ctx, loaded, remote.DirectEndpoint, p)
+}
+
+// validObservedProbeIdentity accepts the normal operation key and the one
+// explicitly authorized Linux PRD direct-mTLS retry key. This helper is used
+// only by the read-only observer; it never enables request submission or
+// changes the retry/admission rules.
+func validObservedProbeIdentity(p prepared, expectedKey string, requestBody []byte) bool {
+	keyMatches := p.IdempotencyKey == expectedKey
+	if !keyMatches && p.HostID == "linux-host" && p.Lane == "prd" && p.Transport == "direct-mtls" &&
+		p.OperationID == "63471d41af07b7afaf577d6a0989cc03" {
+		keyMatches = p.IdempotencyKey == expectedKey+"-retry-1"
+	}
+	return keyMatches && sha256Hex(requestBody) == p.RequestSHA256 && validProbeJobID(p.JobID)
 }
 
 // resolveObservedMacRemoteEnvironment confirms that the Mac controller config
