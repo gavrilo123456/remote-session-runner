@@ -1,5 +1,8 @@
 Continue replacing the old Linux worker, then deploy BUG-027 through Dev → QAS using the promotion toolkit. Stop after QAS acceptance; PRD deployment is outside this task.
 
+Context refresh — required:
+After completing each numbered point (1–6), reopen and read `/Users/tomasz.walczuk/projects/remote-session-runner/060-messages/990-message.md` in full into your context before starting the next point. Also reread it after context compaction or resuming an interrupted session. Retain completed work and current state from the execution evidence; rereading these instructions must not reset progress or repeat completed operations.
+
 Current checkpoint:
 - Mac checkout is clean on dev at 4fdb45ec1c221bc16a6941f4c05aee42a8fca498.
 - BUG-027 is implemented, but its new release has not been built or deployed.
