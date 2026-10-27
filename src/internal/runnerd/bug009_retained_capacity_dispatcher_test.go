@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"remote-session-runner/src/internal/domain"
@@ -106,6 +107,12 @@ func TestBUG009DispatcherRetriesAfterRestartWithoutDuplicatingQueuedCommand(t *t
 }
 
 func TestBUG009DispatcherRetriesAfterThrottleWithoutRestart(t *testing.T) {
+	// Keep observation and fixture reads before the configured retry deadline,
+	// even when real CPU scheduling or SQLite I/O takes longer than 100ms.
+	synctest.Test(t, bug009DispatcherRetriesAfterThrottleWithoutRestart)
+}
+
+func bug009DispatcherRetriesAfterThrottleWithoutRestart(t *testing.T) {
 	runtime, service, authority, _ := b008NewDispatcherRecoveryService(t, false)
 	controller := p107DirectController(t, "tomasz.walczuk")
 	lostPairs := b008SeedFourLostPairs(t, service, authority, controller, "same-process-retry")
@@ -117,7 +124,10 @@ func TestBUG009DispatcherRetriesAfterThrottleWithoutRestart(t *testing.T) {
 	t.Cleanup(func() { bug007StopDispatcher(t, dispatcher) })
 
 	bug009WaitForLostRecoveryCalls(t, runtime, 1)
+	// Settle the initial failed proof before observing the throttled ticks.
+	synctest.Wait()
 	time.Sleep(4 * interval)
+	synctest.Wait()
 	if got := runtime.lostRecoveryCalls.Load(); got != 1 {
 		t.Fatalf("lost-runtime proofs before retry interval=%d, want 1", got)
 	}
