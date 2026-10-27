@@ -296,6 +296,9 @@ func ValidateOperation(op Operation) error {
 		len(op.PlanSnapshot.AffectedHosts) != len(HostOrder)) {
 		return ErrOperationCorrupted
 	}
+	if _, err := promotionPeerEvidenceProfile(op.PlanSnapshot); err != nil {
+		return err
+	}
 	if op.CohortOperationID != "" && !operationPattern.MatchString(op.CohortOperationID) {
 		return ErrInvalidInput
 	}

@@ -714,6 +714,234 @@ func TestPeerLaneDigestIgnoresSharedFilesystemHeadroom(t *testing.T) {
 	}
 }
 
+func TestPeerLaneStableIdentityAllowsWorkProgressAndRejectsIdentityDrift(t *testing.T) {
+	baseline := promotionLaneSnapshot{
+		Selector: laneinstall.CatalogSelectorStatus{HostID: "linux-host", Lane: config.ReleaseLanePRD,
+			Target: "/catalog/prd/current", Kind: "catalog"},
+		Active: true, Config: "configuration", Schema: 40, Empty: true,
+		AvailableBytes: 2_000_000_000, RequiredBytes: 500_000_000,
+	}
+	want, err := promotionPeerSnapshotDigestForProfile(baseline, peerLaneStableIdentityV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func(*promotionLaneSnapshot){
+		"sessions":        func(s *promotionLaneSnapshot) { s.Work.ActiveSessions++ },
+		"command slots":   func(s *promotionLaneSnapshot) { s.Work.ActiveCommandSlots++ },
+		"reservations":    func(s *promotionLaneSnapshot) { s.Work.ActiveSessionReservations++ },
+		"queued":          func(s *promotionLaneSnapshot) { s.Work.QueuedCommands++ },
+		"running":         func(s *promotionLaneSnapshot) { s.Work.RunningCommands++ },
+		"resumable":       func(s *promotionLaneSnapshot) { s.Work.ResumableJobs++ },
+		"finalizations":   func(s *promotionLaneSnapshot) { s.Work.PendingRecoveryFinalizations++ },
+		"empty":           func(s *promotionLaneSnapshot) { s.Empty = false },
+		"free capacity":   func(s *promotionLaneSnapshot) { s.AvailableBytes-- },
+		"capacity budget": func(s *promotionLaneSnapshot) { s.RequiredBytes++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := baseline
+			change(&changed)
+			got, err := promotionPeerSnapshotDigestForProfile(changed, peerLaneStableIdentityV1)
+			if err != nil || got != want {
+				t.Fatalf("ordinary peer work/capacity movement changed isolation identity: %v", err)
+			}
+		})
+	}
+	for name, change := range map[string]func(*promotionLaneSnapshot){
+		"configuration": func(s *promotionLaneSnapshot) { s.Config = "changed" },
+		"schema":        func(s *promotionLaneSnapshot) { s.Schema++ },
+		"service":       func(s *promotionLaneSnapshot) { s.Active = false },
+		"host":          func(s *promotionLaneSnapshot) { s.Selector.HostID = "sandbox-host" },
+		"lane":          func(s *promotionLaneSnapshot) { s.Selector.Lane = config.ReleaseLaneQAS },
+		"target":        func(s *promotionLaneSnapshot) { s.Selector.Target += "-changed" },
+		"kind":          func(s *promotionLaneSnapshot) { s.Selector.Kind = "legacy" },
+		"bundle": func(s *promotionLaneSnapshot) {
+			s.Selector.Bundle.SourceRevision = strings.Repeat("b", 40)
+		},
+		"release": func(s *promotionLaneSnapshot) {
+			s.Selector.Release = &laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{ReleaseID: "changed"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := baseline
+			change(&changed)
+			got, err := promotionPeerSnapshotDigestForProfile(changed, peerLaneStableIdentityV1)
+			if err != nil || got == want {
+				t.Fatalf("peer installation/configuration drift was omitted from isolation evidence: %v", err)
+			}
+		})
+	}
+}
+
+func TestPeerLaneLegacyProfilePreservesDigestAndCanonicalOperation(t *testing.T) {
+	snapshot := promotionLaneSnapshot{Config: "configuration", Schema: 40, Empty: true,
+		AvailableBytes: 1_000_000_000, RequiredBytes: 500_000_000}
+	legacy := snapshot
+	legacy.AvailableBytes, legacy.RequiredBytes = 0, 0
+	want := hashJSON(legacy)
+	got, err := promotionPeerSnapshotDigestForProfile(snapshot, "")
+	if err != nil || got != want {
+		t.Fatalf("blank profile changed preserved legacy digest: got %s, want %s, err %v", got, want, err)
+	}
+	snapshot.Work.RunningCommands++
+	snapshot.Empty = false
+	if got, err := promotionPeerSnapshotDigestForProfile(snapshot, ""); err != nil || got == want {
+		t.Fatalf("blank profile silently adopted new work semantics: %v", err)
+	}
+
+	store := testStore(t)
+	op, err := NewOperation(strings.Repeat("e", 32), "dev", "all", testRelease(), "catalog-functional-v1", "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	op.PlanSnapshot.PeerLaneEvidence = map[string]map[string]string{"linux-host": {"prd": want}}
+	if err := AppendEvent(&op, "operation-created", "", false, "recorded", map[string]any{"plan": op.PlanSnapshot}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveOperation(op); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Root, "operations", "dev", op.OperationID+".json")
+	before, err := os.ReadFile(path)
+	if err != nil || strings.Contains(string(before), "peer_lane_evidence_profile") {
+		t.Fatalf("legacy operation emitted the optional profile field: %v", err)
+	}
+	reloaded, err := store.LoadOperation("dev", op.OperationID)
+	if err != nil || reloaded.PlanSnapshot.PeerLaneEvidenceProfile != "" || reloaded.PlanSnapshot.PeerLaneEvidence["linux-host"]["prd"] != want {
+		t.Fatalf("legacy operation was reprofiled or rebased on load: %v", err)
+	}
+	if err := store.SaveOperation(reloaded); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("legacy canonical operation/event bytes changed on round trip: %v", err)
+	}
+
+	reloaded.PlanSnapshot.PeerLaneEvidenceProfile = "unknown-future-profile"
+	if err := store.SaveOperation(reloaded); err == nil {
+		t.Fatal("unknown peer profile was persisted as a valid operation")
+	}
+	after, err = os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatal("rejected unknown profile changed the preserved operation")
+	}
+}
+
+func TestUnknownPeerLaneProfileRefusesBeforeNativeCalls(t *testing.T) {
+	backend := NativePromotionBackend{laneCommandRunner: func(context.Context, string, []string, []byte) ([]byte, error) {
+		t.Fatal("unknown peer profile reached a native host command")
+		return nil, ErrInvalidInput
+	}}
+	op := Operation{Lane: "dev", PlanSnapshot: &PromotionPlan{PeerLaneEvidenceProfile: "unknown"}}
+	ctx := context.Background()
+	if _, err := promotionPeerSnapshotDigestForProfile(promotionLaneSnapshot{}, "unknown"); err == nil {
+		t.Fatal("unknown digest profile accepted")
+	}
+	if _, err := backend.PrepareCohort(ctx, op); err == nil {
+		t.Fatal("unknown preparation profile accepted")
+	}
+	if _, err := backend.AcceptCohort(ctx, op); err == nil {
+		t.Fatal("unknown acceptance profile accepted")
+	}
+	if _, err := backend.ReleaseCohort(ctx, op); err == nil {
+		t.Fatal("unknown release profile accepted")
+	}
+	if err := backend.startReleasedCohort(ctx, op); err == nil {
+		t.Fatal("unknown released-start profile accepted")
+	}
+	if _, err := backend.readPeerEvidence(ctx, "dev", "unknown"); err == nil {
+		t.Fatal("unknown observation profile accepted")
+	}
+}
+
+func TestNativePreparationUsesStoredPeerProfileAndRefusesReadFailure(t *testing.T) {
+	for _, profile := range []string{peerLaneStableIdentityV1, ""} {
+		for _, failRead := range []bool{false, true} {
+			name := profile
+			if name == "" {
+				name = "legacy"
+			}
+			if failRead {
+				name += "/read-failure"
+			}
+			t.Run(name, func(t *testing.T) {
+				release := testRelease()
+				changed, reachedPreflight := false, false
+				preflightStop := errors.New("fixture stopped at first backup boundary")
+				readFailure := errors.New("fixture peer read failed")
+				backend := NativePromotionBackend{PublishersPaused: true, NoNewAccepted: true,
+					PublisherOwner: "owner", PublisherControl: "unused selected lane"}
+				backend.capacityReader = func(_ context.Context, _, _ string, s *promotionLaneSnapshot) error {
+					s.AvailableBytes, s.RequiredBytes = 1_000_000_000, 500_000_000
+					return nil
+				}
+				backend.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+					value := func(flag string) string {
+						for i := 0; i+1 < len(args); i++ {
+							if args[i] == flag {
+								return args[i+1]
+							}
+						}
+						return ""
+					}
+					lane := config.ReleaseLane(value("--lane"))
+					switch args[0] {
+					case "catalog-inspect":
+						return json.Marshal(laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{
+							ReleaseID: release.ID, ReleaseSHA256: release.Digest, BundleSHA256: release.Bundles[host].SHA256}})
+					case "catalog-status":
+						return json.Marshal(laneinstall.CatalogSelectorStatus{HostID: host, Lane: lane, Kind: "legacy"})
+					case "catalog-work-inventory":
+						if changed && lane == config.ReleaseLanePRD && failRead {
+							return nil, readFailure
+						}
+						work := laneinstall.CatalogWorkInventory{}
+						if changed && lane == config.ReleaseLanePRD {
+							work.ActiveSessions, work.RunningCommands = 1, 1
+						}
+						return json.Marshal(laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: lane,
+							ServiceActive: true, ConfigurationSHA256: stringsOf("a"), DatabaseSchema: 40,
+							WorkInventory: work, WorkInventoryEmpty: work.Empty()})
+					case "catalog-cohort":
+						if value("--action") == "inspect" {
+							return json.Marshal(promotionReceiptView{})
+						}
+						return json.Marshal(promotionAdmissionView{HostID: host, Lane: lane})
+					case "catalog-host-preflight":
+						reachedPreflight = true
+						return nil, preflightStop
+					default:
+						t.Fatalf("unexpected native command: %v", args)
+						return nil, ErrInvalidInput
+					}
+				}
+				plan, err := backend.Plan(context.Background(), "dev", release, "")
+				if err != nil || plan.PeerLaneEvidenceProfile != peerLaneStableIdentityV1 {
+					t.Fatalf("new native plan did not select stable peer identity: %v", err)
+				}
+				if profile == "" {
+					// Construct preserved evidence using the historical digest rule.
+					plan.PeerLaneEvidenceProfile = ""
+					plan.PeerLaneEvidence, err = backend.readPeerEvidence(context.Background(), "dev", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				changed = true
+				_, err = backend.PrepareCohort(context.Background(), Operation{OperationID: strings.Repeat("e", 32),
+					CohortOperationID: strings.Repeat("e", 32), Lane: "dev", Release: release, PlanSnapshot: &plan})
+				if profile == peerLaneStableIdentityV1 && !failRead {
+					if !errors.Is(err, preflightStop) || !reachedPreflight {
+						t.Fatalf("peer work progress prevented common preparation: %v", err)
+					}
+				} else if err == nil || reachedPreflight || failRead && !errors.Is(err, readFailure) {
+					t.Fatalf("legacy work drift or a failed peer read reached backup: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestPromotionProbeRequestMustRemainFixedAndFiveSecondBounded(t *testing.T) {
 	cases := []struct {
 		name      string

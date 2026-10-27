@@ -25,6 +25,7 @@ type PromotionPlan struct {
 	ExpectedBranchMarkerExists bool                         `json:"expected_branch_marker_exists"`
 	HostBaselines              []HostObservation            `json:"host_baselines,omitempty"`
 	PeerLaneEvidence           map[string]map[string]string `json:"peer_lane_evidence,omitempty"`
+	PeerLaneEvidenceProfile    string                       `json:"peer_lane_evidence_profile,omitempty"`
 	ExistingHolds              map[string]string            `json:"existing_admission_holds,omitempty"`
 	PredecessorBundleSHA256    map[string]string            `json:"predecessor_bundle_sha256,omitempty"`
 	BackupRecoveryPackageSHA   string                       `json:"backup_recovery_package_sha256,omitempty"`

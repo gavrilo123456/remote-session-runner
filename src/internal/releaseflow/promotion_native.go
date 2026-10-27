@@ -26,6 +26,7 @@ const (
 	prdSelectorReserve              = uint64(67_108_864)
 	maxPromotionProbeOutputBytes    = 8 << 20
 	maxPromotionProbeStderrBytes    = 4 << 10
+	peerLaneStableIdentityV1        = "stable-identity-v1"
 )
 
 func promotionRequiredCapacity(lane string, operatingBuffer uint64) uint64 {
@@ -42,6 +43,30 @@ func promotionPeerSnapshotDigest(snapshot promotionLaneSnapshot) string {
 	// Filesystem headroom is a cohort precondition, not peer-lane identity.
 	snapshot.AvailableBytes, snapshot.RequiredBytes = 0, 0
 	return hashJSON(snapshot)
+}
+
+// Blank profiles retain the exact digest semantics of preserved operations.
+// New operations distinguish peer installation identity from ordinary work;
+// selected-lane work and capacity guards remain independent and unchanged.
+func promotionPeerEvidenceProfile(plan *PromotionPlan) (string, error) {
+	if plan == nil || plan.PeerLaneEvidenceProfile == "" {
+		return "", nil
+	}
+	if plan.PeerLaneEvidenceProfile != peerLaneStableIdentityV1 {
+		return "", fmt.Errorf("unknown peer-lane evidence profile: %w", ErrOperationCorrupted)
+	}
+	return plan.PeerLaneEvidenceProfile, nil
+}
+
+func promotionPeerSnapshotDigestForProfile(snapshot promotionLaneSnapshot, profile string) (string, error) {
+	if _, err := promotionPeerEvidenceProfile(&PromotionPlan{PeerLaneEvidenceProfile: profile}); err != nil {
+		return "", err
+	}
+	if profile == peerLaneStableIdentityV1 {
+		snapshot.Work = laneinstall.CatalogWorkInventory{}
+		snapshot.Empty = false
+	}
+	return promotionPeerSnapshotDigest(snapshot), nil
 }
 
 // legacyCompatibilityInputSHA binds an initial legacy-PRD rollback proof to
@@ -225,6 +250,7 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 		"peer lanes remain selected and configured as observed in this plan")
 	plan.HostBaselines = make([]HostObservation, 0, len(HostOrder))
 	plan.PeerLaneEvidence = make(map[string]map[string]string, len(HostOrder))
+	plan.PeerLaneEvidenceProfile = peerLaneStableIdentityV1
 	plan.ExistingHolds = make(map[string]string, len(HostOrder))
 	plan.PredecessorBundleSHA256 = make(map[string]string, len(HostOrder))
 	for _, host := range HostOrder {
@@ -266,7 +292,10 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 			if snapshotErr != nil {
 				return PromotionPlan{}, fmt.Errorf("%s peer lane %s isolation baseline: %w", host, other, snapshotErr)
 			}
-			peer[other] = promotionPeerSnapshotDigest(snapshot)
+			peer[other], err = promotionPeerSnapshotDigestForProfile(snapshot, plan.PeerLaneEvidenceProfile)
+			if err != nil {
+				return PromotionPlan{}, err
+			}
 		}
 		plan.PeerLaneEvidence[host] = peer
 	}
@@ -333,6 +362,10 @@ func (b *NativePromotionBackend) ValidateExistingCohortHold(ctx context.Context,
 }
 
 func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation) (any, error) {
+	peerProfile, err := promotionPeerEvidenceProfile(op.PlanSnapshot)
+	if err != nil {
+		return nil, err
+	}
 	if !b.PublishersPaused || !b.NoNewAccepted || strings.TrimSpace(b.PublisherOwner) == "" || strings.TrimSpace(b.PublisherControl) == "" {
 		return nil, errors.New("execution requires explicit owner, publisher control, paused confirmation, and no-new-accepted confirmation")
 	}
@@ -384,8 +417,9 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 				continue
 			}
 			peerSnapshot, peerErr := b.readLaneSnapshot(ctx, host, peer)
-			if peerErr != nil || op.PlanSnapshot.PeerLaneEvidence[host][peer] != promotionPeerSnapshotDigest(peerSnapshot) {
-				return nil, errors.Join(fmt.Errorf("%s peer lane %s changed before common preparation", host, peer), peerErr)
+			peerDigest, digestErr := promotionPeerSnapshotDigestForProfile(peerSnapshot, peerProfile)
+			if peerErr != nil || digestErr != nil || op.PlanSnapshot.PeerLaneEvidence[host][peer] != peerDigest {
+				return nil, errors.Join(fmt.Errorf("%s peer lane %s changed before common preparation", host, peer), peerErr, digestErr)
 			}
 		}
 	}
@@ -923,6 +957,10 @@ func (b *NativePromotionBackend) startHostUnderHold(ctx context.Context, op Oper
 // exact selector, active service, empty inventory, and capacity before the
 // promotion can report completion.
 func (b *NativePromotionBackend) startReleasedCohort(ctx context.Context, op Operation) error {
+	peerProfile, err := promotionPeerEvidenceProfile(op.PlanSnapshot)
+	if err != nil {
+		return err
+	}
 	view, err := b.readReceipt(ctx, "mac-control-plane", op.Lane, op.CohortOperationID)
 	if err != nil || !view.Present || view.Receipt.Stage != laneinstall.CatalogCohortReleased {
 		return errors.Join(ErrOperationCorrupted, err)
@@ -970,7 +1008,7 @@ func (b *NativePromotionBackend) startReleasedCohort(ctx context.Context, op Ope
 		}
 	}
 	if op.PlanSnapshot != nil {
-		peerEvidence, err := b.readPeerEvidence(ctx, op.Lane)
+		peerEvidence, err := b.readPeerEvidence(ctx, op.Lane, peerProfile)
 		if err != nil || !equalNestedStringMaps(peerEvidence, op.PlanSnapshot.PeerLaneEvidence) {
 			return errors.Join(errors.New("peer-lane isolation changed during selected-lane restart"), err)
 		}
@@ -979,6 +1017,10 @@ func (b *NativePromotionBackend) startReleasedCohort(ctx context.Context, op Ope
 }
 
 func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation) (Acceptance, error) {
+	peerProfile, err := promotionPeerEvidenceProfile(op.PlanSnapshot)
+	if err != nil {
+		return Acceptance{}, err
+	}
 	macPlan, err := laneinstall.BuildCatalogPlan("mac-control-plane", config.ReleaseLane(op.Lane))
 	if err != nil {
 		return Acceptance{}, err
@@ -1027,7 +1069,7 @@ func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation)
 		return Acceptance{}, fmt.Errorf("Mac-local functional probe: %w", err)
 	}
 	results = append(results, local)
-	peerEvidence, err := b.readPeerEvidence(ctx, op.Lane)
+	peerEvidence, err := b.readPeerEvidence(ctx, op.Lane, peerProfile)
 	if err != nil {
 		return Acceptance{}, err
 	}
@@ -1865,6 +1907,9 @@ func validatePromotionProbeRequest(prepared promotionPreparedProbe) error {
 }
 
 func (b *NativePromotionBackend) ReleaseCohort(ctx context.Context, op Operation) (any, error) {
+	if _, err := promotionPeerEvidenceProfile(op.PlanSnapshot); err != nil {
+		return nil, err
+	}
 	view, err := b.readReceipt(ctx, "mac-control-plane", op.Lane, op.CohortOperationID)
 	if err != nil || !view.Present {
 		return nil, errors.Join(ErrOperationCorrupted, err)
@@ -2488,7 +2533,10 @@ func (b *NativePromotionBackend) findSelectorOperations(ctx context.Context, hos
 	return operations, nil
 }
 
-func (b *NativePromotionBackend) readPeerEvidence(ctx context.Context, lane string) (map[string]map[string]string, error) {
+func (b *NativePromotionBackend) readPeerEvidence(ctx context.Context, lane, profile string) (map[string]map[string]string, error) {
+	if _, err := promotionPeerEvidenceProfile(&PromotionPlan{PeerLaneEvidenceProfile: profile}); err != nil {
+		return nil, err
+	}
 	result := make(map[string]map[string]string, len(HostOrder))
 	for _, host := range HostOrder {
 		result[host] = make(map[string]string, len(LaneOrder)-1)
@@ -2500,7 +2548,10 @@ func (b *NativePromotionBackend) readPeerEvidence(ctx context.Context, lane stri
 			if err != nil {
 				return nil, err
 			}
-			result[host][peer] = promotionPeerSnapshotDigest(snapshot)
+			result[host][peer], err = promotionPeerSnapshotDigestForProfile(snapshot, profile)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	return result, nil
