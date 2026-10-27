@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` — supported metadata export and fixture verification |
+| Status | `IN PROGRESS` — source fix delivered; Dev deployment blocked by Linux's full-suite timeout |
 | Severity | High — blocks safe recovery and replacement work after a retained-lost result |
 | Priority | High |
 | Reported | 2026-10-27 |
@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner |
 | Affected component/path | Mac owner-only diagnostics, retained-work inventory, and offline recovery preflight |
 | Affected revision | Observed live build `43a4e675ccccb89e1ea1c333e975ea028c9600fa`; inspected checkout `75a714e8d482930ad2c56ba4baca0d15b3fff24c` |
-| Fixed revision | Candidate implementation; source and native/live verification are recorded in [BUG-027 evidence](../040-implementation-evidence/BUG-027.md) |
-| Verification | Implementation and qualification in progress; #514 recovery is outside this correction |
+| Fixed revision | Source `f0f604db7629dc50096cd32963ae373c11a0e341`; no new release sealed or activated |
+| Verification | Mac, Sandbox and Factory full source gates PASS; Linux full-suite NOT PASS; Dev promotion NOT RUN. See [BUG-027 evidence](../040-implementation-evidence/BUG-027.md). #514 recovery remains separate. |
 | Related records | [BUG-014](014-idle-mac-retained-lost-capacity-recovery.md), [BUG-011](011-mac-local-executor-lost-command-slots-block-local-execution.md), [BUG-010](010-mailbox-stale-ready-markers-request-lifecycle.md) |
 
 ## Reported behavior
@@ -189,13 +189,22 @@ incomplete or incompatible authorities fail without publishing partial rows.
 The aggregate inventory command remains compatible.
 
 Qualification and the exact supported diagnostic artifact are recorded in
-[BUG-027 evidence](../040-implementation-evidence/BUG-027.md). No recovery,
-ACK of #514, replacement request, service change, or safe-to-resume clearance
-is part of this correction. The reason #514 lost its runtime boundary remains
-a separate investigation.
+[BUG-027 evidence](../040-implementation-evidence/BUG-027.md). The owner assigned
+Dev-only deployment and confirmed Dev is unused. That deployment has not run:
+the owner requested Linux's own full suite, and its dispatcher package hit the
+standard ten-minute package timeout under severe CPU starvation. Factory's
+passing result has not been substituted for Linux's result.
+
+The qualified `runner-lane` diagnostic is a separate operator executable, not
+a component of the service bundles. Its read-only Mac Dev precheck succeeded
+against the existing selected release; that does not establish installation or
+acceptance of a new Dev service release. No lane service, selector, mailbox
+ownership, request or ACK has changed. Recovery of #514 and the cause of its
+lost runtime boundary remain separate work.
 
 ## History
 
 | Date | Change |
 | --- | --- |
 | 2026-10-27 | Registered the diagnostic/recovery inventory gap using #514 evidence and source/runbook review; status `NEW`. |
+| 2026-10-27 | Delivered source fix `f0f604db`; Mac/Sandbox/Factory full source gates passed. Linux's own full-suite attempt timed out in dispatcher; remaining work was interrupted after this definite failure. Dev-only deployment remains NOT RUN; no Linux passing receipt, new sealed release or lane activation exists. |
