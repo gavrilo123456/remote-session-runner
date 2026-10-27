@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"remote-session-runner/src/internal/audit"
@@ -621,6 +622,12 @@ func TestBUG007DispatcherTerminalizesPreSessionPolicyDenial(t *testing.T) {
 // unrelated dispatcher wakes. Once the next bounded tick sees the resolver
 // recover, the original accepted job completes without resubmission.
 func TestBUG007DispatcherDefersRetryablePreSessionFailureUntilRecoveryTick(t *testing.T) {
+	// Keep the 75ms observation strictly before the configured 200ms recovery tick,
+	// even when the host cannot schedule the test goroutine promptly.
+	synctest.Test(t, bug007DispatcherDefersRetryablePreSessionFailureUntilRecoveryTick)
+}
+
+func bug007DispatcherDefersRetryablePreSessionFailureUntilRecoveryTick(t *testing.T) {
 	runtimeAdapter := &p108Runtime{generation: "bug007-dispatcher-transient-resolver"}
 	resolver := &bug007TransientResolver{delegate: bug007DirectLinuxRegistry(t)}
 	service, authority := newP046ServiceWithResolver(t, runtimeAdapter, resolver)
@@ -641,6 +648,8 @@ func TestBUG007DispatcherDefersRetryablePreSessionFailureUntilRecoveryTick(t *te
 	p107Decode(t, response, &accepted)
 	dispatcher.Start(t.Context())
 	bug007WaitForResolverCalls(t, &resolver.calls, 1)
+	// Let the first failed pass record its deferral before unrelated wakes.
+	synctest.Wait()
 	// A completed job wake, an ingress wake, or an explicit caller wake must
 	// not retry this known-transient resolver outage before the bounded tick.
 	// The per-job deferral is what prevents the scheduler from spinning while
@@ -648,7 +657,9 @@ func TestBUG007DispatcherDefersRetryablePreSessionFailureUntilRecoveryTick(t *te
 	dispatcher.Wake()
 	dispatcher.Wake()
 	dispatcher.Wake()
+	synctest.Wait()
 	time.Sleep(75 * time.Millisecond)
+	synctest.Wait()
 	if got := resolver.calls.Load(); got != 1 {
 		t.Fatalf("retryable resolver calls before recovery tick=%d, want 1", got)
 	}
