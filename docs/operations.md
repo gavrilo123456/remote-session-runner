@@ -629,6 +629,58 @@ Mac executor can release proven capacity and start the original queued identity;
 that requires explicit approval after a fresh read-only preflight records the
 affected state and expected effect.
 
+### Read-only retained-work inventory before Mac recovery
+
+Use the supported detailed inventory command on the **Mac**, as the account
+that owns the selected lane:
+
+```sh
+# Mac — qualified runner-lane diagnostic executable, selected PRD authority
+runner-lane catalog-work-inventory --host mac-control-plane --lane prd --details
+```
+
+Choose `--lane dev` or `--lane qas` to inspect that lane instead. The command
+does not require an idle database or a service stop. It reads the selected
+authority across all mailboxes in one SQLite read transaction, including
+retained pairs, commandless and completed-command holds, unreleased session
+reservations and command slots, active/queued work, resumable jobs, and pending
+recovery finalizations. Local and remote delivery intents are reported
+separately from execution state. Scripts, command output, credential material,
+and environment values are excluded.
+
+Use output only when the command exits zero and `inventory_complete` is true.
+The report binds the read cut to the exact host/lane, private database identity,
+configuration digest, selected service artifact and schema, diagnostic-tool
+revision, and observation interval. The selected artifact revision identifies
+the catalog selection; it is not an independent attestation of a running PID.
+Configuration, selector or database replacement during the read, an unsupported
+schema, missing required tables, a query failure, or the row/output limit makes
+the export fail rather than claim an empty or complete inventory. There is no
+pagination that could silently omit work.
+
+The detailed command requires an existing private WAL/SHM pair. If those
+read-coordination files are unavailable it refuses before opening SQLite,
+rather than create them. Ordinary SQLite reader coordination may update SHM
+lock bookkeeping; application data, WAL contents, schema and runtime artifacts
+are not changed by the diagnostic.
+
+The initial detailed-export compatibility contract is **schema 40** with its
+verified migration history and required table shapes. Use a qualified native
+`runner-lane` containing BUG-027; the older installed command's aggregate
+counts are not a substitute. A diagnostic-only executable may be installed in
+an owner-private directory outside the release catalog after fixture and native
+qualification. Record its full source revision, binary SHA-256 and supported
+schema alongside the report. This does not replace service binaries or promote
+a release. See [BUG-027 verification](../040-implementation-evidence/BUG-027.md)
+for the qualified artifact and live read-only result.
+
+Even a complete report returns `safe_to_resume=not_established` and
+`recovery_authorized=false`. It is an inventory for planning; it does not prove
+runtime cleanup, release capacity, ACK responses, replay work, authorize
+recovery, or clear clients to resume. Preserve the report privately and pass
+the exact identities to the separately approved recovery procedure, which
+revalidates its own fresh process, ownership and work guards.
+
 ### Explicit Mac offline recovery for a fully idle retained-lost set
 
 Use this procedure only when a fresh inventory proves that **no work must

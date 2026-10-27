@@ -1795,11 +1795,12 @@ func runCatalogWorkInventory(ctx context.Context, args []string, stdout, stderr 
 	flags.SetOutput(stderr)
 	host := flags.String("host", "", "canonical identity of this existing host")
 	lane := flags.String("lane", "", "dev, qas, or prd")
+	details := flags.Bool("details", false, "owner-only, complete metadata inventory for recovery planning; never authorizes recovery")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || !validCatalogWorkInventoryScope(*host, *lane) {
-		return errors.New("usage: runner-lane catalog-work-inventory --host HOST --lane dev|qas|prd")
+		return errors.New("usage: runner-lane catalog-work-inventory --host HOST --lane dev|qas|prd [--details]")
 	}
 	if *lane == "prd" {
 		plan, err := laneinstall.BuildPRDUpgradePlan(*host)
@@ -1809,6 +1810,10 @@ func runCatalogWorkInventory(ctx context.Context, args []string, stdout, stderr 
 		controller, err := laneinstall.NewPRDServiceController()
 		if err != nil {
 			return err
+		}
+		if *details {
+			inventory, readErr := laneinstall.ReadCatalogPRDRetainedWorkInventory(ctx, plan, controller, 0)
+			return writeRetainedWorkInventory(stdout, inventory, readErr)
 		}
 		inventory, err := laneinstall.ReadCatalogPRDWorkInventory(ctx, plan, controller)
 		if err != nil {
@@ -1824,9 +1829,30 @@ func runCatalogWorkInventory(ctx context.Context, args []string, stdout, stderr 
 	if err != nil {
 		return err
 	}
+	if *details {
+		inventory, readErr := laneinstall.ReadCatalogRetainedWorkInventory(ctx, plan, controller, 0)
+		return writeRetainedWorkInventory(stdout, inventory, readErr)
+	}
 	inventory, err := laneinstall.ReadCatalogWorkInventory(ctx, plan, controller)
 	if err != nil {
 		return err
+	}
+	return writeJSON(stdout, inventory)
+}
+
+func writeRetainedWorkInventory(stdout io.Writer, inventory laneinstall.CatalogRetainedWorkInventoryReport, readErr error) error {
+	if readErr != nil || !inventory.InventoryComplete || !inventory.WorkInventory.Complete ||
+		inventory.RecoveryAuthorized || inventory.SafeToResume != "not_established" {
+		// Never publish rows from an incomplete export. Even a caller that only
+		// reads stdout must see that this observation is not usable for recovery.
+		if err := writeJSON(stdout, map[string]any{
+			"format_version": 1, "inventory_complete": false,
+			"safe_to_resume": "not_established", "recovery_authorized": false,
+			"error": "retained_work_inventory_unavailable",
+		}); err != nil {
+			return err
+		}
+		return errors.New("retained-work inventory is incomplete or unavailable; no recovery is authorized")
 	}
 	return writeJSON(stdout, inventory)
 }
