@@ -264,15 +264,15 @@ if [ "$actual" != "$fingerprint" ]; then
   exit 1
 fi
 sshdir=/home/ubuntu/.ssh
+sudo test ! -L "$sshdir"
 if sudo test -e "$sshdir"; then
   sudo test -d "$sshdir"
-  sudo test ! -L "$sshdir"
 else
   sudo install -d -o ubuntu -g ubuntu -m 0700 "$sshdir"
 fi
+sudo test ! -L "$file"
 if sudo test -e "$file"; then
   sudo test -f "$file"
-  sudo test ! -L "$file"
   if sudo ssh-keygen -lf "$file" -E sha256 | awk -v fp="$fingerprint" '$2 == fp {found=1} END {exit found ? 0 : 1}'; then
     echo 'This fingerprint is already present; inspect its authorized_keys options and do not append a duplicate.' >&2
     exit 1
@@ -282,6 +282,12 @@ if sudo test -e "$file"; then
   sudo cp -a -- "$file" "$backup"
 else
   sudo install -o ubuntu -g ubuntu -m 0600 /dev/null "$file"
+fi
+if sudo test -s "$file"; then
+  last_byte=$(sudo tail -c 1 "$file" | od -An -t x1 | tr -d '[:space:]')
+  if [ "$last_byte" != 0a ]; then
+    printf '\n' | sudo tee -a "$file" >/dev/null
+  fi
 fi
 printf '%s\n' "$key" | sudo tee -a "$file" >/dev/null
 ```
@@ -328,8 +334,10 @@ returned the expected full fingerprint
 `SHA256:ocEk05Q1tTyNNyIKFc9G/s63510slZ05jGLWd1qBktg`. The provider-console
 procedure above now checks the pasted key before any write, rejects duplicate
 key fingerprints, and preserves a metadata-bearing copy of an existing
-`authorized_keys` before append. No provider-console action or old-host
-authorization change has occurred.
+`authorized_keys` before append. It also rejects symlink paths and ensures a
+pre-existing file ends on a line boundary before appending. Both documented
+shell snippets pass `bash -n`; neither was executed. No provider-console
+action or old-host authorization change has occurred.
 
 ### PRD bootstrap/import work remaining
 
