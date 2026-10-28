@@ -350,10 +350,34 @@ func TestPromotionProbeObservationDiagnosticsAreExactBoundedAndSanitized(t *test
 			t.Errorf("safe queued diagnostic %q sanitized to %q, want %q", tc.input, got, tc.want)
 		}
 	}
+	for _, fixed := range []string{
+		"prepared capability is unavailable",
+		"prepared capability is invalid",
+		"prepared capability transport mismatch",
+		"prepared request body digest is invalid",
+		"prepared capability request does not match its bound host, lane, or environment",
+		"Mac lane config could not be validated",
+		"configured queued route is unavailable",
+		"configured pinned SSH bridge identity failed validation",
+		"could not allocate one-off probe identity",
+		"queued probe body is invalid",
+		"queued probe body could not be prepared",
+		"queued controller identity is invalid",
+		"queued probe acknowledgement identities did not match",
+		"queued probe status response violated the job schema",
+		"queued probe did not reach a terminal state within the bound",
+	} {
+		input := fixed + "\nexit status 1\n"
+		if got := sanitizedProbeHelperStderr([]byte(input), false); got != fixed {
+			t.Errorf("fixed helper diagnostic %q sanitized to %q", fixed, got)
+		}
+	}
 	for _, rejected := range []string{
 		"queued probe call bridge rejected code=token=secret",
 		"queued probe call bridge transport failed phase=unknown",
 		"queued probe call bridge rejected code=maintenance_admission_closed extra",
+		"queued probe acknowledgement identities did not match token=secret",
+		"queued probe body is invalid: script=private",
 	} {
 		if got := sanitizedProbeHelperStderr([]byte(rejected+"\n"), false); got != "unrecognized helper stderr; content omitted" {
 			t.Errorf("unsafe queued diagnostic %q was not suppressed: %q", rejected, got)
