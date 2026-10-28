@@ -699,3 +699,34 @@ to an absent/stopped state. Then obtain the current release-bound PRD
 approval, recheck all host inventories and capacity, and only afterward use
 the toolkit for PRD mutation and the eight-gate acceptance. Mailbox
 acceptance remains `NOT RUN`.
+
+### 2026-10-28 21:48 UTC — absent-namespace capacity observation
+
+After delivery of `ef37b5bb6727e7cbe666791b2cf5de0e7c67e358`, the read-only
+PRD plan passed replacement namespace absence and failed at capacity because
+the backup directory correctly does not exist yet. The correction keeps the
+fixed canonical backup path in the report, but for the exact absent
+replacement Linux PRD namespace measures the existing `/home/ubuntu/.local/share`
+filesystem parent and binds that measurement to the repeated absence evidence
+digest. It does not create the PRD root or backup directory. Existing lanes
+still measure their actual backup roots.
+
+Mac Go 1.27.1 checks for this controller correction passed:
+
+- `go test ./src/internal/releaseflow ./src/internal/laneinstall ./src/internal/config`
+- `go vet ./src/internal/releaseflow ./src/internal/laneinstall ./src/internal/config`
+- `make build smoke`
+- `git diff --check`
+
+The capacity regression accepts only the exact parent path with the same
+replacement-absence digest and rejects an unbound path or digest. The route
+config builder and fixed-identity TLS CSR/signing helpers are also fixture
+tested; they produce bytes only and do not install or activate files. No
+service bundle is changed by these controller-only changes.
+
+The remaining blocker is now beyond read-only planning: the repository still
+has no supported PRD first-install operation that writes the validated config,
+fresh database, trust identity, service artifacts, and catalog selector as a
+single recoverable, admission-held sequence. The PRD plan is not an execution
+or acceptance result. No PRD files, services, admissions, or selectors were
+changed, and release-bound approval has not been prepared or approved.

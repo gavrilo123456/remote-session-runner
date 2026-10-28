@@ -3,6 +3,7 @@ package releaseflow
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"remote-session-runner/src/internal/config"
@@ -50,6 +51,18 @@ func applyPromotionCapacityReport(report HostCapacityReport, host, lane, control
 	if err != nil || snapshot == nil || !shaPattern.MatchString(controller) || report.HostID != host || report.Lane != lane ||
 		report.ControllerRevision != controller || report.BackupPath != plan.Namespace.Backups {
 		return fmt.Errorf("%s %s capacity identity mismatch: %w", host, lane, ErrOperationCorrupted)
+	}
+	measuredPath := report.MeasuredPath
+	if measuredPath == "" { // Accept the original report format for existing operation records.
+		measuredPath = report.BackupPath
+	}
+	if snapshot.NamespaceAbsence != nil {
+		if host != "linux-host" || lane != "prd" || measuredPath != filepath.Dir(plan.Namespace.ServiceRoot) ||
+			report.NamespaceAbsenceEvidenceSHA256 != snapshot.NamespaceAbsence.EvidenceSHA256 {
+			return fmt.Errorf("%s replacement PRD capacity is not bound to the selected namespace absence: %w", host, ErrOperationCorrupted)
+		}
+	} else if measuredPath != plan.Namespace.Backups || report.NamespaceAbsenceEvidenceSHA256 != "" {
+		return fmt.Errorf("%s %s capacity measured outside the existing backup root without absence evidence: %w", host, lane, ErrOperationCorrupted)
 	}
 	observed, err := time.Parse(time.RFC3339Nano, report.ObservedAtUTC)
 	if err != nil || observed.IsZero() || observed.Before(now.Add(-2*time.Minute)) || observed.After(now.Add(2*time.Minute)) {

@@ -17,12 +17,14 @@ import (
 // HostCapacityReport binds a host-local, read-only filesystem observation to
 // the fixed lane backup path and the exact controller that measured it.
 type HostCapacityReport struct {
-	HostID             string `json:"host_id"`
-	Lane               string `json:"lane"`
-	BackupPath         string `json:"backup_path"`
-	ControllerRevision string `json:"controller_revision"`
-	ObservedAtUTC      string `json:"observed_at_utc"`
-	AvailableBytes     uint64 `json:"available_bytes"`
+	HostID                         string `json:"host_id"`
+	Lane                           string `json:"lane"`
+	BackupPath                     string `json:"backup_path"`
+	MeasuredPath                   string `json:"measured_path"`
+	NamespaceAbsenceEvidenceSHA256 string `json:"namespace_absence_evidence_sha256,omitempty"`
+	ControllerRevision             string `json:"controller_revision"`
+	ObservedAtUTC                  string `json:"observed_at_utc"`
+	AvailableBytes                 uint64 `json:"available_bytes"`
 }
 
 // RunHostCapacity executes on the host being measured. It accepts no
@@ -45,13 +47,24 @@ func RunHostCapacity(ctx context.Context, host, lane, repository, controllerRevi
 	if err != nil {
 		return HostCapacityReport{}, err
 	}
-	available, err := measureHostBackupCapacity(plan.Namespace.Backups)
+	measuredPath := plan.Namespace.Backups
+	absenceDigest := ""
+	if host == "linux-host" && lane == "prd" {
+		absence, absenceErr := laneinstall.ReadCatalogPeerNamespaceAbsence(ctx, host, config.ReleaseLanePRD,
+			config.ReleaseLanePRD, laneinstall.NewCatalogPRDAbsenceProbe())
+		if absenceErr == nil {
+			measuredPath = filepath.Dir(plan.Namespace.ServiceRoot)
+			absenceDigest = absence.EvidenceSHA256
+		}
+	}
+	available, err := measureHostBackupCapacity(measuredPath)
 	if err != nil {
 		return HostCapacityReport{}, err
 	}
 	return HostCapacityReport{
-		HostID: host, Lane: lane, BackupPath: plan.Namespace.Backups,
-		ControllerRevision: controllerRevision, ObservedAtUTC: time.Now().UTC().Format(time.RFC3339Nano),
+		HostID: host, Lane: lane, BackupPath: plan.Namespace.Backups, MeasuredPath: measuredPath,
+		NamespaceAbsenceEvidenceSHA256: absenceDigest,
+		ControllerRevision:             controllerRevision, ObservedAtUTC: time.Now().UTC().Format(time.RFC3339Nano),
 		AvailableBytes: available,
 	}, nil
 }

@@ -119,3 +119,44 @@ func TestPromotionCapacityDoesNotPromoteInsufficientSpaceToVerified(t *testing.T
 		t.Fatalf("insufficient host capacity lost: %+v", snapshot)
 	}
 }
+
+func TestReplacementPRDCapacityMustBindNamespaceAbsenceAndExistingParent(t *testing.T) {
+	plan, err := laneinstall.BuildCatalogPlan("linux-host", config.ReleaseLanePRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absence := testPRDAbsenceReport(t)
+	absence.SelectedLane = config.ReleaseLanePRD
+	absence.EvidenceSHA256 = absenceReportDigest(absence)
+	if err := laneinstall.ValidateCatalogNamespaceAbsenceReport(absence, "linux-host", config.ReleaseLanePRD,
+		config.ReleaseLanePRD); err != nil {
+		t.Fatalf("test absence report invalid: %v", err)
+	}
+	snapshot := promotionLaneSnapshot{NamespaceAbsence: &absence}
+	report := capacityReportForTest(t, "linux-host", "prd", 2_000_000_000)
+	report.MeasuredPath = filepath.Dir(plan.Namespace.ServiceRoot)
+	report.NamespaceAbsenceEvidenceSHA256 = absence.EvidenceSHA256
+	if err := applyPromotionCapacityReport(report, "linux-host", "prd", report.ControllerRevision, 0, time.Now(), &snapshot); err != nil {
+		t.Fatalf("properly bound replacement PRD parent capacity was rejected: %v", err)
+	}
+	if snapshot.AvailableBytes != report.AvailableBytes || snapshot.RequiredBytes != promotionRequiredCapacity("prd", 0) {
+		t.Fatalf("replacement capacity was not recorded: %+v", snapshot)
+	}
+
+	for _, edit := range []func(*HostCapacityReport){
+		func(candidate *HostCapacityReport) { candidate.MeasuredPath = candidate.BackupPath },
+		func(candidate *HostCapacityReport) {
+			candidate.NamespaceAbsenceEvidenceSHA256 = strings.Repeat("b", 64)
+		},
+	} {
+		candidate := report
+		edit(&candidate)
+		before := snapshot
+		if err := applyPromotionCapacityReport(candidate, "linux-host", "prd", report.ControllerRevision, 0, time.Now(), &snapshot); err == nil {
+			t.Fatalf("unbound replacement capacity accepted: %+v", candidate)
+		}
+		if snapshot.AvailableBytes != before.AvailableBytes || snapshot.RequiredBytes != before.RequiredBytes {
+			t.Fatal("rejected replacement capacity changed the verified baseline")
+		}
+	}
+}
