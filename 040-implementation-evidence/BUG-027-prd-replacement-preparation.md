@@ -752,3 +752,42 @@ No live host or service state changed. The next read-only plan attempt must
 wait for this controller commit to reach all three clean worker checkouts.
 The end-to-end PRD first-install operation remains absent and blocks any
 cohort preparation, backup, selector change, service start, or acceptance.
+
+### 2026-10-28 21:57 UTC — owner pause reconfirmed; fresh PRD plan
+
+The owner confirmed that Dev, QAS, and PRD are paused. This records the
+client/publisher pause assertion only. It does not prove service stop state,
+catalog admission holds, zero accepted work, or that no publisher is
+configured.
+
+After controller delivery at `0d3792d1d58097ea4e1ede41db546ff56168e9e6`, the
+read-only command
+`promote-to prd all --release rr-a38cb0057e-877d49e3 --plan --json` completed
+with `planned_no_effects`. It collected a fresh Linux absence report at
+`2026-10-28T21:57:04.515018796Z`; the replacement namespace remains absent,
+the service unit is not found, the direct listener is absent, the process scan
+is complete with zero unexpected Runner processes, and its work inventory is
+empty. Measured free space is 40,426,082,304 bytes against the plan's
+567,108,864-byte minimum.
+
+The same plan reports current PRD work inventories empty on all four hosts.
+Sandbox and Factory PRD services are active; Mac PRD is stopped. No selected
+host reports a backup or maintenance hold yet, and `can_switch` is false on
+all four hosts. Current measured space is 1,631,944,704 bytes on Sandbox,
+34,868,895,744 on Factory, and 112,964,091,904 on Mac, each above the
+567,108,864-byte preflight minimum. Capacity must be measured again after any
+backup and immediately before writes.
+
+The plan binds release `rr-a38cb0057e-877d49e3`, digest
+`ce7350c7f338f1679b5f67ae9c7531acbe80174894a4946aa6eee87366f14b74`, and
+backup/recovery package digest
+`457b24fa236dfae29c298b954c398d21d0c9f49b2e730cd2679e0e2572de73f0`. The
+release remains Dev/QAS accepted for all eight gates with unchanged bundle
+hashes; this plan is neither PRD acceptance nor a live PRD operation.
+
+No service, selector, configuration, database, admission, backup, mailbox,
+request, or ACK was changed. Remaining gates before PRD mutation are the
+supported first-install/bootstrap and paired route/trust transition for
+replacement Linux, the current release-bound owner approval and operational
+window, followed by fresh backups, holds, stop/process proofs, and all eight
+PRD acceptance gates. Clients remain paused.
