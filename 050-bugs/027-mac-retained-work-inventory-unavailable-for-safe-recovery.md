@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` — source fix delivered; Dev deployment blocked by Linux's full-suite timeout |
+| Status | `RESOLVED FOR DEV/QAS` — installed diagnostic verified; PRD deployment and #514 recovery remain outside this assignment |
 | Severity | High — blocks safe recovery and replacement work after a retained-lost result |
 | Priority | High |
 | Reported | 2026-10-27 |
@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner |
 | Affected component/path | Mac owner-only diagnostics, retained-work inventory, and offline recovery preflight |
 | Affected revision | Observed live build `43a4e675ccccb89e1ea1c333e975ea028c9600fa`; inspected checkout `75a714e8d482930ad2c56ba4baca0d15b3fff24c` |
-| Fixed revision | Source `f0f604db7629dc50096cd32963ae373c11a0e341`; no new release sealed or activated |
-| Verification | Mac, Sandbox and Factory full source gates PASS; Linux full-suite NOT PASS; Dev promotion NOT RUN. See [BUG-027 evidence](../040-implementation-evidence/BUG-027.md). #514 recovery remains separate. |
+| Fixed revision | Diagnostic source fix `f0f604db7629dc50096cd32963ae373c11a0e341` is included in accepted service release `rr-1e6c47721d-f83e3be7`; separate Mac diagnostic build `883e2af0373b7de94f172df31909434f9a23c38d` |
+| Verification | Dev and QAS accepted the same sealed release; the separately installed Mac diagnostic returned complete, authority-bound Dev and QAS inventories. PRD and #514 recovery were not changed. See [BUG-027 evidence](../040-implementation-evidence/BUG-027.md). |
 | Related records | [BUG-014](014-idle-mac-retained-lost-capacity-recovery.md), [BUG-011](011-mac-local-executor-lost-command-slots-block-local-execution.md), [BUG-010](010-mailbox-stale-ready-markers-request-lifecycle.md) |
 
 ## Reported behavior
@@ -189,18 +189,17 @@ incomplete or incompatible authorities fail without publishing partial rows.
 The aggregate inventory command remains compatible.
 
 Qualification and the exact supported diagnostic artifact are recorded in
-[BUG-027 evidence](../040-implementation-evidence/BUG-027.md). The owner assigned
-Dev-only deployment and confirmed Dev is unused. That deployment has not run:
-the owner requested Linux's own full suite, and its dispatcher package hit the
-standard ten-minute package timeout under severe CPU starvation. Factory's
-passing result has not been substituted for Linux's result.
+[BUG-027 evidence](../040-implementation-evidence/BUG-027.md). At the initial
+2026-10-27 checkpoint, the owner had assigned Dev-only deployment, Linux's
+full-suite attempt had timed out, and no Dev release had been activated. That
+checkpoint is historical; the 2026-10-28 addendum records the later accepted
+Dev and QAS rollout.
 
 The qualified `runner-lane` diagnostic is a separate operator executable, not
-a component of the service bundles. Its read-only Mac Dev precheck succeeded
-against the existing selected release; that does not establish installation or
-acceptance of a new Dev service release. No lane service, selector, mailbox
-ownership, request or ACK has changed. Recovery of #514 and the cause of its
-lost runtime boundary remain separate work.
+a component of the service bundles. It is installed in the Mac Dev and QAS
+tool directories and verified against both selected Mac authorities. PRD was
+not deployed or rerouted. Recovery of #514 and the cause of its lost runtime
+boundary remain separate work.
 
 ## History
 
@@ -208,3 +207,4 @@ lost runtime boundary remain separate work.
 | --- | --- |
 | 2026-10-27 | Registered the diagnostic/recovery inventory gap using #514 evidence and source/runbook review; status `NEW`. |
 | 2026-10-27 | Delivered source fix `f0f604db`; Mac/Sandbox/Factory full source gates passed. Linux's own full-suite attempt timed out in dispatcher; remaining work was interrupted after this definite failure. Dev-only deployment remains NOT RUN; no Linux passing receipt, new sealed release or lane activation exists. |
+| 2026-10-28 | Deployed and accepted sealed release `rr-1e6c47721d-f83e3be7` in Dev and QAS; installed the separate Mac diagnostic and verified complete Dev/QAS inventory reads. PRD and #514 recovery remain untouched. |
