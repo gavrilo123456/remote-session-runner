@@ -483,6 +483,12 @@ func TestContinuationObservationAcceptsSwitchedServiceArtifactsWhilePreservingBa
 	if err := os.WriteFile(backupPath, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(backupPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	digest, err := fileSHA256(target)
 	if err != nil {
 		t.Fatal(err)

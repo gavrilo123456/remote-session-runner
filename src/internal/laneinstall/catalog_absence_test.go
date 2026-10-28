@@ -320,11 +320,10 @@ func TestReadProcessStartTimeBindsPIDIncarnation(t *testing.T) {
 
 func catalogAbsenceFixturePlan(t *testing.T) (PRDUpgradePlan, string) {
 	t.Helper()
-	parent, err := os.MkdirTemp("/private/tmp", "catalog-absence-")
+	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(parent) })
 	root := filepath.Join(parent, "runner-prd")
 	namespace := config.LaneNamespace{Host: config.HostKindLinux, Lane: config.ReleaseLanePRD, Account: "test-operator",
 		ServiceRoot: root, ConfigFile: filepath.Join(root, "config", "linux.yaml"), Database: filepath.Join(root, "state", "local.db"), Binaries: filepath.Join(root, "bin"),
@@ -340,11 +339,10 @@ func catalogAbsenceFixtureSimpleNamespace(t *testing.T, lane config.ReleaseLane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent, err := os.MkdirTemp("/private/tmp", "catalog-simple-absence-")
+	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(parent) })
 	root := filepath.Join(parent, "runnerd-"+string(lane))
 	namespace := plan.Namespace
 	namespace.ServiceRoot = root

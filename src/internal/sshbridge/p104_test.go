@@ -53,6 +53,12 @@ func TestP104LoadKeyControllerMapRequiresOwnerOnlyStrictFile(t *testing.T) {
 	if err := os.WriteFile(worldReadable, []byte(valid), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// WriteFile's mode is filtered by the process umask. Make the intended
+	// unsafe mode explicit so this security regression is deterministic on
+	// hosts that run tests with a restrictive umask.
+	if err := os.Chmod(worldReadable, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := LoadKeyControllerMap(worldReadable); err == nil {
 		t.Fatal("group-readable controller map was accepted")
 	}

@@ -528,7 +528,13 @@ func TestPRDMacLegacyRollbackKeepsDisabledQASHandoffConfigAndStoppedService(t *t
 		if err := os.WriteFile(target, definition.catalog, 0o644); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.Chmod(target, 0o644); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(backupPath, definition.original, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(backupPath, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		manifest.Files = append(manifest.Files, PRDBackupFile{
