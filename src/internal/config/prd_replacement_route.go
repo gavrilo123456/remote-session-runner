@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"reflect"
 )
 
@@ -75,6 +76,73 @@ func ValidatePRDReplacementLinuxRoute(currentMac, candidateMac, currentLinux, ca
 	linuxExpected.Linux.DirectPublicEndpoint = newURL
 	if !reflect.DeepEqual(linuxExpected, linuxAfter) {
 		return fmt.Errorf("%w: unrelated Linux configuration field changed", ErrInvalidLaneProfiles)
+	}
+	return nil
+}
+
+// ValidateFreshPRDReplacementLinuxRoute validates the narrow Mac PRD route
+// change used when linux-host is a genuinely fresh replacement. It deliberately
+// does not require or infer any configuration from the retired worker. The Mac
+// document may change only the paired linux-host endpoint and queued SSH host;
+// the fresh Linux document must use the canonical replacement namespace and
+// addresses. Certificate and SSH key material are verified by the installing
+// command, not inferred from configuration text.
+func ValidateFreshPRDReplacementLinuxRoute(currentMac, candidateMac, candidateLinux []byte) error {
+	if !isV2HostConfiguration(currentMac, HostKindMac) || !isV2HostConfiguration(candidateMac, HostKindMac) ||
+		!isV2HostConfiguration(candidateLinux, HostKindLinux) {
+		return fmt.Errorf("%w: expected V2 PRD Mac and fresh Linux documents", ErrInvalidLaneProfiles)
+	}
+	macBefore, err := decodeFileDocument(currentMac)
+	if err != nil || macBefore.RemoteHosts == nil {
+		return fmt.Errorf("%w: invalid current Mac route document", ErrInvalidLaneProfiles)
+	}
+	macAfter, err := decodeFileDocument(candidateMac)
+	if err != nil || macAfter.RemoteHosts == nil {
+		return fmt.Errorf("%w: invalid candidate Mac route document", ErrInvalidLaneProfiles)
+	}
+	linuxAfter, err := parse(candidateLinux)
+	if err != nil || linuxAfter.SchemaVersion() != VersionV2 || linuxAfter.Kind() != HostKindLinux ||
+		linuxAfter.ReleaseLane() != ReleaseLanePRD {
+		return fmt.Errorf("%w: invalid fresh replacement Linux configuration", ErrInvalidLaneProfiles)
+	}
+	linuxDocument, err := decodeFileDocument(candidateLinux)
+	if err != nil || linuxDocument.Linux == nil {
+		return fmt.Errorf("%w: invalid fresh replacement Linux document", ErrInvalidLaneProfiles)
+	}
+	linux, ok := linuxAfter.LinuxSettings()
+	if !ok || linux.Account != LinuxAccount || linux.ServiceRoot != LinuxServiceRoot ||
+		linux.Database != filepath.Join(LinuxServiceRoot, "state", "remote.db") ||
+		linux.PrivateSocket != filepath.Join(LinuxServiceRoot, "run", "runnerd.sock") ||
+		linux.Workspaces != filepath.Join(LinuxServiceRoot, "workspaces") ||
+		linux.ScriptTempRoot != filepath.Join(LinuxServiceRoot, "tmp", "scripts") ||
+		linux.Backups != filepath.Join(LinuxServiceRoot, "backups") ||
+		linux.DirectHTTPSBind != PRDReplacementLinuxPrivateIP+":8443" ||
+		linux.DirectPublicEndpoint != "https://"+SimpleReplacementLinuxPublicIP+":8443" ||
+		linux.ServerCertificate != filepath.Join(LinuxServiceRoot, "secrets", "server.pem") ||
+		linux.ClientCA != filepath.Join(LinuxServiceRoot, "secrets", "client-ca.pem") ||
+		linux.ClientPrincipalMap != filepath.Join(LinuxServiceRoot, "config", "client-principals.yaml") ||
+		linux.TLSMinVersion != "1.3" || linux.RuntimeAdapter != "linux-host-process" ||
+		linuxDocument.Linux.RemoteTargetProfile != "linux-host" {
+		return fmt.Errorf("%w: fresh Linux configuration does not match the fixed replacement PRD namespace", ErrInvalidLaneProfiles)
+	}
+
+	oldURL := "https://" + prdReplacementLinuxOldPublicIP + ":8443"
+	newURL := "https://" + SimpleReplacementLinuxPublicIP + ":8443"
+	oldRoute, oldOK := macBefore.RemoteHosts["linux-host"]
+	newRoute, newOK := macAfter.RemoteHosts["linux-host"]
+	if !oldOK || !newOK || oldRoute.Account != LinuxAccount || oldRoute.QueuedBridge == nil ||
+		oldRoute.DirectEndpoint == nil || newRoute.QueuedBridge == nil || newRoute.DirectEndpoint == nil ||
+		oldRoute.QueuedBridge.Host != prdReplacementLinuxOldPublicIP || oldRoute.QueuedBridge.Port != 22 ||
+		oldRoute.DirectEndpoint.URL != oldURL || newRoute.QueuedBridge.Host != SimpleReplacementLinuxPublicIP ||
+		newRoute.QueuedBridge.Port != 22 || newRoute.DirectEndpoint.URL != newURL {
+		return fmt.Errorf("%w: Mac route does not match the fresh replacement address transition", ErrInvalidLaneProfiles)
+	}
+	macExpected := macBefore
+	macExpected.RemoteHosts = cloneRemoteHostDocuments(macBefore.RemoteHosts)
+	macExpected.RemoteHosts["linux-host"].QueuedBridge.Host = SimpleReplacementLinuxPublicIP
+	macExpected.RemoteHosts["linux-host"].DirectEndpoint.URL = newURL
+	if !reflect.DeepEqual(macExpected, macAfter) {
+		return fmt.Errorf("%w: unrelated Mac configuration field changed", ErrInvalidLaneProfiles)
 	}
 	return nil
 }

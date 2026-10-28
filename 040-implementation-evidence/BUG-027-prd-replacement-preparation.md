@@ -339,6 +339,15 @@ pre-existing file ends on a line boundary before appending. Both documented
 shell snippets pass `bash -n`; neither was executed. No provider-console
 action or old-host authorization change has occurred.
 
+### Historical checkpoint superseded by the 2026-10-28 owner decision
+
+The following bootstrap/import notes and next steps record the earlier
+assumption that the retired Linux worker's source data was needed. The owner
+later retired `129.151.232.40` from all lanes and authorized a fresh PRD
+namespace on replacement `79.72.94.59`; no old-host SSH, data import, or old
+work transfer is required. These notes remain historical and are not current
+gates.
+
 ### PRD bootstrap/import work remaining
 
 The Linux source-gate and disposable public-command suite are now complete
@@ -403,3 +412,57 @@ still says `safe_to_resume=not_established` and
 5. Prepare release-bound PRD approval, backup/rollback and recovery only
    after the old-host and bootstrap gates pass. No PRD deployment, mailbox
    reroute, recovery, request, or ACK has occurred.
+
+### 2026-10-28 — owner pause confirmation and fresh PRD checkpoint
+
+At 18:47:33 UTC, Tomasz Walczuk confirmed that Dev, QAS and PRD clients and
+publishers are paused and remain inactive until he explicitly resumes them.
+This is owner-confirmed pause evidence, supplemented by the fresh inventories
+below; it is not evidence that no publishers are configured. All services
+remain active, and no lane admission holds had been applied at this checkpoint.
+
+Fresh `catalog-work-inventory` observations at 18:52:21–18:52:46 UTC used the
+clean controller revision `864697eda8685d50ca4a700153eb40b9248122fc` on Mac
+and clean worker checkouts at that same revision. Every Dev and QAS inventory
+on all four machines was empty. Sandbox and Factory PRD inventories were
+empty. Mac PRD retained exactly one active command slot and one active
+session reservation, with no active session, queued/running command, resumable
+job, or pending recovery finalization. This is the already-recorded #514 pair;
+its lost result, incomplete output and unconfirmed teardown are unchanged.
+
+Replacement Linux PRD was freshly confirmed absent at
+`2026-10-28T18:54:45.125341893Z`, evidence SHA-256
+`b148a0a9ee71fe0d277049f2e2b399837b3dc780cbe3889fe9917c56ee14cc56`. The
+service unit is not found, no listener or unexpected Runner process exists,
+and the config, database, selector journals, cohort receipts, backups and
+lifecycle lock are absent. Replacement Dev/QAS remain installed and unchanged.
+The fresh PRD admission discovery showed no current cohort hold on Mac,
+Sandbox or Factory; Linux PRD has no namespace from which a PRD receipt could
+be read.
+
+`promote-to prd all --release rr-a38cb0057e-877d49e3 --plan --json` remains
+blocked at the replacement host: the existing `catalog-status --host
+linux-host --lane prd` command rejects the absent PRD configuration. The
+current PRD route and host-configuration validators are in progress; the
+fresh-install bootstrap and supported paired Mac route/SSH-pin transition
+are not yet implemented or live. No PRD service was stopped, no admission
+hold was written, and no configuration, selector, database or mailbox path
+was changed.
+
+Release `rr-a38cb0057e-877d49e3` remains sealed and unchanged (digest
+`ce7350c7f338f1679b5f67ae9c7531acbe80174894a4946aa6eee87366f14b74`). Its
+Dev acceptance `74dffd3837e1e8f4f7183306bec7fa40` and QAS acceptance
+`ff2f40e39ff26b5bcab74e259fd4323a` both remain PASS for the same four bundle
+hashes. The uncommitted configuration-level fresh-route validator currently
+passes its focused test and `go vet ./src/internal/config`; this is source
+validation only, not bootstrap or PRD acceptance.
+
+The exact #514 recovery remains separately unauthorized. A supported retry
+requires a new complete inventory, fresh consistent backup, stopped-service
+and process-ownership proof, then the sealed host bundle's `catalog-prd-recover`
+with `--lost-pair sess-dc857a66bccb38298a6b0b26485588c5:cmd-2872a83c6411e7838bad02ca687fbfbd`.
+The tool preserves its lost result and history, does not replay or ACK, and
+must release only this pair's reservation. Any additional work, selector,
+configuration, schema, backup, process or runtime mismatch must halt. The
+owner has been asked for this exact recovery decision; the pause confirmation
+above does not authorize it.

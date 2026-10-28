@@ -45,6 +45,33 @@ func TestValidatePRDReplacementLinuxRouteRejectsUnpairedOrUnrelatedChanges(t *te
 	}
 }
 
+func TestValidateFreshPRDReplacementLinuxRouteDoesNotRequireRetiredWorkerConfig(t *testing.T) {
+	macBefore, macAfter, _, linuxAfter := prdReplacementRouteFixtures()
+	if err := ValidateFreshPRDReplacementLinuxRoute(macBefore, macAfter, linuxAfter); err != nil {
+		t.Fatalf("valid fresh replacement route rejected without a retired-host config: %v", err)
+	}
+	tests := []struct {
+		name  string
+		mac   []byte
+		linux []byte
+	}{
+		{name: "old Mac route retained", mac: macBefore, linux: linuxAfter},
+		{name: "Mac mailbox changed", mac: []byte(strings.Replace(string(macAfter), "/mailboxes/analytics", "/mailboxes/changed", 1)), linux: linuxAfter},
+		{name: "Mac route changed to another host", mac: []byte(strings.Replace(string(macAfter), "79.72.94.59:8443", "79.72.94.60:8443", 1)), linux: linuxAfter},
+		{name: "Linux service root changed", mac: macAfter, linux: []byte(strings.Replace(string(linuxAfter), "/remote-session-runner/state/remote.db", "/other/state/remote.db", 1))},
+		{name: "Linux bind changed", mac: macAfter, linux: []byte(strings.Replace(string(linuxAfter), "10.0.0.228:8443", "10.0.0.229:8443", 1))},
+		{name: "Linux target profile changed", mac: macAfter, linux: []byte(strings.Replace(string(linuxAfter), "profile: linux-host", "profile: sandbox-host", 1))},
+		{name: "Linux V3 document", mac: macAfter, linux: []byte(strings.Replace(string(linuxAfter), "version: 2", "version: 3", 1))},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := ValidateFreshPRDReplacementLinuxRoute(macBefore, test.mac, test.linux); err == nil {
+				t.Fatal("fresh replacement route accepted an unrelated or invalid change")
+			}
+		})
+	}
+}
+
 func prdReplacementRouteFixtures() (macBefore, macAfter, linuxBefore, linuxAfter []byte) {
 	macBefore = []byte(macV2ConfigFixture)
 	macAfterText := strings.Replace(string(macV2ConfigFixture), "host: 129.151.232.40", "host: 79.72.94.59", 1)
