@@ -137,7 +137,7 @@ Native source gates for `a38cb0057ed2c4ee7782473b8131ac95af4deab4` completed:
 | Mac (`darwin/arm64`, Go 1.27.1) | Full `make test`, vet, build and smoke passed on the final post-commit run. An earlier sandbox-restricted attempt failed and remains **NOT PASS**; its capture is preserved separately. |
 | Sandbox (`linux/arm64`, Go 1.27.1) | Full `make test`, vet, build and smoke passed. |
 | Factory (`linux/amd64`, Go 1.27.1) | Full `make test`, vet, build and smoke passed. |
-| Replacement Linux (`linux/amd64`, Go 1.27.1) | Focused changed-package tests, P025/P101 regressions, vet, build and smoke passed. The full Linux suite was not run under the owner's Factory substitution and remains **NOT PASS** on Linux. |
+| Replacement Linux (`linux/amd64`, Go 1.27.1) | At that earlier checkpoint, focused changed-package tests, P025/P101 regressions, vet, build and smoke passed; the full Linux suite was **NOT PASS**. See the 2026-10-28 native full-suite rerun below. |
 
 Private captures and source receipts remain outside Git in
 `/private/tmp/bug027-prd-source-evidence-20261028/`. The four-host release
@@ -361,6 +361,17 @@ unrecorded; QAS acceptance is consequently also unrecorded. The prior owner
 confirmation said all PRD clients were stopped but did not identify a Dev
 publisher pause/control. No Dev or QAS service operation has begun on the
 strength of that statement.
+
+The evidence/helper update was delivered in `76b2021909fcc6a541289092e58e16f8810e6c59`
+and `ca659b3f11b8920f0451b7c0ef7d8ee1891f8723`. Both primary Gitea
+`origin/dev` and the automatic GitHub `github/dev` mirror resolve to
+`ca659b3f11b8920f0451b7c0ef7d8ee1891f8723`. The Mac checkout and clean
+Ubuntu checkouts on replacement Linux (`79.72.94.59`), Sandbox
+(`132.226.205.205`), and Factory (`145.241.255.66`) were fast-forwarded and
+verified at that exact commit. The first primary push succeeded remotely but
+its local tracking-ref write was sandbox-denied; both remote refs were verified
+at `76b2021`, then the tracking ref was corrected with a narrow authorized
+Git ref update. The follow-up push and all final refs then completed normally.
 
 ### #514 proposal — unchanged and not authorized for execution
 
