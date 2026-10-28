@@ -443,19 +443,19 @@ be read.
 `promote-to prd all --release rr-a38cb0057e-877d49e3 --plan --json` remains
 blocked at the replacement host: the existing `catalog-status --host
 linux-host --lane prd` command rejects the absent PRD configuration. The
-current PRD route and host-configuration validators are in progress; the
-fresh-install bootstrap and supported paired Mac route/SSH-pin transition
-are not yet implemented or live. No PRD service was stopped, no admission
-hold was written, and no configuration, selector, database or mailbox path
-was changed.
+configuration-level fresh-route validator has since been delivered at
+`3c58f18e65e1e1b3b021a61cd2bfbcc5fb7f41f1`; the fresh-install bootstrap and
+supported paired Mac route/SSH-pin transition are not yet implemented or
+live. No PRD service was stopped, no admission hold was written, and no
+configuration, selector, database or mailbox path was changed.
 
 Release `rr-a38cb0057e-877d49e3` remains sealed and unchanged (digest
 `ce7350c7f338f1679b5f67ae9c7531acbe80174894a4946aa6eee87366f14b74`). Its
 Dev acceptance `74dffd3837e1e8f4f7183306bec7fa40` and QAS acceptance
 `ff2f40e39ff26b5bcab74e259fd4323a` both remain PASS for the same four bundle
-hashes. The uncommitted configuration-level fresh-route validator currently
-passes its focused test and `go vet ./src/internal/config`; this is source
-validation only, not bootstrap or PRD acceptance.
+hashes. The delivered configuration-level fresh-route validator passed
+focused tests and `go vet ./src/internal/config`; this is source validation
+only, not bootstrap or PRD acceptance.
 
 The exact #514 recovery remains separately unauthorized. A supported retry
 requires a new complete inventory, fresh consistent backup, stopped-service
@@ -466,3 +466,20 @@ must release only this pair's reservation. Any additional work, selector,
 configuration, schema, backup, process or runtime mismatch must halt. The
 owner has been asked for this exact recovery decision; the pause confirmation
 above does not authorize it.
+
+### 2026-10-28 — owner pause reaffirmed and route-validator delivery
+
+At 19:05 UTC, the owner reiterated that Dev, QAS, and PRD clients and
+publishers are paused. This supplements the earlier owner/control/effective-
+time record; it remains a publisher-state confirmation, not proof that
+services are stopped, admissions are fenced, or no publishers are configured.
+The 18:52 UTC inventory and replacement namespace evidence remain the latest
+measured runtime observations; they were not refreshed by this message.
+
+The V2 fresh-route configuration validator and its focused regressions were
+delivered at `3c58f18e65e1e1b3b021a61cd2bfbcc5fb7f41f1` through primary Gitea,
+exact GitHub mirror verification, and clean fast-forward validation on
+replacement Linux, Sandbox, and Factory. Those checks do not implement the
+replacement PRD namespace bootstrap, issue/install TLS or SSH identities, or
+perform the paired Mac route transition. No service/runtime mutation followed
+the commit.
