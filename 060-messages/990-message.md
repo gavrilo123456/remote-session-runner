@@ -1,3 +1,5 @@
+Historical Dev/QAS assignment: the latest owner decision in `060-messages/989-message.md` retires `129.151.232.40` from Dev, QAS and PRD. Earlier instructions below to preserve that endpoint as an active PRD binding are superseded. Keep completed work as history; use `989-message.md` for the current PRD assignment.
+
 Continue replacing the old Linux worker, then deploy BUG-027 through Dev → QAS using the promotion toolkit. Stop after QAS acceptance; PRD deployment is outside this task.
 
 Context refresh — required:

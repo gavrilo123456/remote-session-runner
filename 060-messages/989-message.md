@@ -3,6 +3,14 @@ I have stopped all PRD clients and publishers. Proceed with deploying BUG-027 to
 Context refresh — required:
 After completing each numbered point (1–6), reopen and read `/Users/tomasz.walczuk/projects/remote-session-runner/060-messages/989-message.md` in full into your context before starting the next point. Also reread it after context compaction or resuming an interrupted session. Retain completed work and current state from the execution evidence; rereading these instructions must not reset progress or repeat completed operations.
 
+Latest owner decision — old Linux worker retired from all lanes:
+- `129.151.232.40` is no longer required for Dev, QAS or PRD. Use replacement `linux-host` at `79.72.94.59`, private address `10.0.0.228`.
+- Do not require restoration of old-host SSH, old-host inventory/backups, workspace transfer or a cross-host data importer before proceeding. The owner authorizes a fresh PRD installation on the replacement, without importing the old Linux database, workspaces, reservations or receipts. Existing replacement Dev/QAS state must be preserved.
+- Preserve existing historical records and any available backups. Record old Linux work as not migrated, with its outcome/cleanup unknown where unproved. Do not replay old requests, claim cleanup or success, or transfer old reservations into fresh capacity. This instruction does not authorize deleting or otherwise modifying the old server.
+- Remove the retired endpoint from effective active Dev/QAS/PRD routes, operator host profiles and fallback paths through supported, backed-up transitions. Historical references may remain in evidence and backups. Do not globally replace historical addresses in source or erase their provenance.
+- Rollback must keep the retired endpoint disabled. For the fresh replacement PRD namespace, prove its absent predecessor and support rollback to absence or a stopped/held state while preserving new evidence. Restoring an older Mac configuration must not silently reactivate the retired route.
+- #514 belongs to Mac PRD and remains a separate exact retained-work gate. Retiring the Linux worker does not authorize recovery, capacity release, replay or ACK for #514.
+
 Current checkpoint:
 - BUG-027 and the replacement Linux worker have completed Dev → QAS qualification and deployment.
 - Accepted release: `rr-1e6c47721d-f83e3be7`.
@@ -13,6 +21,7 @@ Current checkpoint:
 - QAS acceptance: `a353cb72e3f72df38cb3e64e74349841`; deployment and branch synchronization are complete.
 - No PRD deployment, service change or mailbox reroute occurred during that Dev/QAS assignment.
 - The owner now reports all PRD clients and publishers stopped. Fresh inventories and operational checks are still required.
+- The release above is the last accepted Dev/QAS reference. A later route-changing candidate, `rr-a38cb0057e-877d49e3` at source `a38cb0057ed2c4ee7782473b8131ac95af4deab4`, has been reported as sealed. Verify its current qualification and acceptance records; the earlier Dev/QAS acceptances do not qualify changed service bytes.
 
 Replacement worker:
 - SSH alias: `remote-session-runner`.
@@ -35,14 +44,14 @@ Read the current closeout and promotion procedures:
 2. Complete supported PRD replacement-worker preparation
 Use `linux-host` at `79.72.94.59`, private address `10.0.0.228`.
 
-Current replacement-address support and first-install handling are limited to Dev/QAS. PRD still expects the retired Linux addresses and an existing PRD installation. Resolve those dependencies through a supported, tested PRD bootstrap and route/configuration transition.
+Verify the current replacement-address correction and finish the supported, tested fresh PRD bootstrap and route/configuration transition. An address correction or existing-host adoption fixture alone does not prove first installation on the replacement. Do not design a state-preserving import from the retired worker as a prerequisite; no old Linux data migration is requested.
 
 This authorizes the necessary PRD preparation and minimal Linux route, TLS, SSH-pin and host-profile changes. Preserve existing project mailbox paths and ownership.
 
-Do not bypass guards or assume the old worker’s data and retained work were transferred. If service-code changes are necessary, create a successor release and accept its identical bytes through Dev then QAS before PRD. Keep the existing release unchanged. A controller-only correction may reuse the accepted service bundles only when their runtime/configuration compatibility is proved.
+Do not bypass guards or fabricate a predecessor. Bind fresh Linux PRD preparation to verified namespace absence on the replacement, with fresh configuration, database, workspaces and TLS/SSH identities. If service-code changes are necessary, create a successor release and accept its identical bytes through Dev then QAS before PRD. Keep existing sealed releases unchanged. A controller-only correction may reuse accepted service bundles only when their runtime/configuration compatibility is proved.
 
 3. Prepare the actual PRD deployment
-Collect fresh work inventories, verify the submission pause, measure capacity, and create consistent configuration/database and launcher backups. Validate rollback against the exact installed predecessors.
+Collect fresh work inventories on the current Mac, Sandbox and Factory PRD authorities, verify the replacement Linux PRD namespace's actual state, confirm the submission pause and measure capacity. Create consistent configuration/database and launcher backups for current installations and record the replacement's fresh-install predecessor explicitly. Validate rollback for those actual baselines, keeping the retired route disabled; unavailable old-Linux backups are not a prerequisite.
 
 Prepare the toolkit’s current release-bound approval package covering the actual release, replacement topology, backups, recovery inputs and bounded maintenance window. Follow the required owner approval mechanism before live mutation; a renewed evidence window does not silently extend the owner-approved window.
 
@@ -65,6 +74,6 @@ Release maintenance holds only after successful acceptance. Leave external clien
 6. Close out
 Update BUG-027, deployment evidence and the promotion records with actual release hashes, operation IDs, acceptance results and remaining observations.
 
-Update this file’s current checkpoint to reflect actual progress and retain its context-refresh instruction. Keep the completed Dev/QAS history in `990-message.md` as historical context; use this file as the current PRD assignment.
+Update this file’s current checkpoint to reflect actual progress and retain its context-refresh instruction. Record the owner's all-lane retirement decision and supersede old-host SSH/import blockers in current preparation evidence without rewriting historical observations. Keep the completed Dev/QAS history in `990-message.md` as historical context; use this file as the current PRD assignment.
 
 Report clearly whether PRD is deployed, functionally accepted, open for admission and ready for client resumption. Do not equate readiness alone with completed acceptance or normal-load observation.
