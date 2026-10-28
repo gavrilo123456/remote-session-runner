@@ -228,16 +228,29 @@ bootstrap implementation or PASS claim is recorded.
 
 ### Old-host SSH restoration action
 
-On the Mac, print only the public half of the configured identity:
+On the Mac, derive the public half in a pipeline and verify its full SHA-256
+fingerprint before copying the one-line public key to the provider console.
+The private key is never printed or sent:
 
 ```sh
-# Mac — copy the single output line to the provider console
-/usr/bin/ssh-keygen -y -f /Users/tomasz.walczuk/.ssh/remote-session-runner
+# Mac — verify first; only then print the public-key line for the console
+set -eu
+pub=$(/usr/bin/ssh-keygen -y -f /Users/tomasz.walczuk/.ssh/remote-session-runner)
+fingerprint='SHA256:ocEk05Q1tTyNNyIKFc9G/s63510slZ05jGLWd1qBktg'
+actual=$(printf '%s\n' "$pub" | /usr/bin/ssh-keygen -lf - -E sha256 | /usr/bin/awk 'NR == 1 {print $2}')
+test "$actual" = "$fingerprint"
+printf '%s\n' "$pub"
 ```
 
+The expected complete fingerprint is
+`SHA256:ocEk05Q1tTyNNyIKFc9G/s63510slZ05jGLWd1qBktg`. Copy the public-key
+line from the first command only after its fingerprint matches exactly.
+
 At the old instance provider console, append that exact line for `ubuntu`;
-preserve all existing authorized keys and host-key files. Replace the
-placeholder with the line printed on the Mac:
+preserve all existing authorized keys and host-key files. The console helper
+verifies the pasted key's fingerprint before touching `authorized_keys`, and
+backs up an existing regular file with metadata before appending. Replace the
+placeholder with the single line printed on the Mac:
 
 ```sh
 # Old PRD Linux provider console — root or authorized sudo shell
@@ -245,26 +258,101 @@ set -eu
 key='<PASTE-EXACT-PUBLIC-KEY-LINE>'
 fingerprint='SHA256:ocEk05Q1tTyNNyIKFc9G/s63510slZ05jGLWd1qBktg'
 file=/home/ubuntu/.ssh/authorized_keys
-sudo install -d -o ubuntu -g ubuntu -m 0700 /home/ubuntu/.ssh
+actual=$(printf '%s\n' "$key" | ssh-keygen -lf /dev/stdin -E sha256 | awk 'NR == 1 {print $2}')
+if [ "$actual" != "$fingerprint" ]; then
+  echo 'Pasted public key does not match the full expected fingerprint.' >&2
+  exit 1
+fi
+sshdir=/home/ubuntu/.ssh
+if sudo test -e "$sshdir"; then
+  sudo test -d "$sshdir"
+  sudo test ! -L "$sshdir"
+else
+  sudo install -d -o ubuntu -g ubuntu -m 0700 "$sshdir"
+fi
 if sudo test -e "$file"; then
   sudo test -f "$file"
   sudo test ! -L "$file"
+  if sudo ssh-keygen -lf "$file" -E sha256 | awk -v fp="$fingerprint" '$2 == fp {found=1} END {exit found ? 0 : 1}'; then
+    echo 'This fingerprint is already present; inspect its authorized_keys options and do not append a duplicate.' >&2
+    exit 1
+  fi
+  backup="${file}.pre-bug027-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  sudo test ! -e "$backup"
+  sudo cp -a -- "$file" "$backup"
 else
   sudo install -o ubuntu -g ubuntu -m 0600 /dev/null "$file"
-fi
-sudo chown ubuntu:ubuntu "$file"
-sudo chmod 0600 "$file"
-if sudo ssh-keygen -lf "$file" -E sha256 | awk -v fp="$fingerprint" '$2 == fp {found=1} END {exit found ? 0 : 1}'; then
-  echo 'This fingerprint is already present; inspect its authorized_keys options and do not append a duplicate.' >&2
-  exit 1
 fi
 printf '%s\n' "$key" | sudo tee -a "$file" >/dev/null
 ```
 
-Do not overwrite `authorized_keys`, remove an existing key, change server
-host-key files, or repoint the working replacement alias. After the provider
-change, verify the old host against its existing pins and retry a bounded
-noninteractive SSH metadata command.
+For an existing file, the helper leaves its ownership and mode unchanged and
+stores a metadata-preserving backup beside it before append. If the fingerprint
+is already present, stop and inspect the existing authorized-key options; do
+not append a duplicate. Do not overwrite `authorized_keys`, remove an existing
+key, change server host-key files, or repoint the working replacement alias.
+After the provider change, verify the old host against its existing pins and
+retry a bounded noninteractive SSH metadata command.
+
+### 2026-10-28 — replacement Linux full source gates and SSH helper
+
+The BUG-027 handoff in `060-messages/990-message.md` explicitly requires
+Linux's own full tests, vet, build and smoke and says Factory substitution was
+declined. The later `AGENTS.md` Factory substitution is explicitly scoped to
+CAT-06; it does not amend this BUG-027 requirement. No later BUG-027-specific
+approval replacing Linux's full suite was found. Therefore the suite was run
+on replacement `linux-host` (`79.72.94.59`), using the exact verified `dev`
+checkout at `f692e98bc6f2652c9c40992ce260fc0d3286764b`, a clean worktree, and
+the pinned Go 1.27.1 Linux/AMD64 toolchain. That commit has no `src/` or
+`Makefile` diff from the sealed source commit
+`a38cb0057ed2c4ee7782473b8131ac95af4deab4`.
+
+| Gate | Command / settings | Result |
+| --- | --- | --- |
+| Full suite | `GOTOOLCHAIN=local make test`; `GOMAXPROCS=2`, `GOFLAGS=-p=1` | **PASS**, exit 0; 317.41 seconds real. |
+| Vet, build, smoke | `GOTOOLCHAIN=local make vet build smoke`; same settings | **PASS**, exit 0; 52.46 seconds real. The final capacity query ran after the gates. |
+
+Captured output is outside Git in
+`/private/tmp/bug027-prd-source-evidence-20261028/`:
+
+- Full suite SHA-256:
+  `2e06e2f2f309cd0f4a526f70be84660e743ed97fa4097b57ff1b66ccfe3c882c`.
+- Vet/build/smoke SHA-256:
+  `2a247e183a6d76c518e96bf4c1777a07da5da202bfda4b571e31421052a845ee`.
+- Post-gate `/` free bytes: `40,606,142,464`.
+
+The prior interrupted Linux suite remains **NOT PASS** in its original
+evidence. This successful rerun does not erase or relabel that history. The
+Mac key's public half was freshly fingerprinted through a pipeline; it
+returned the expected full fingerprint
+`SHA256:ocEk05Q1tTyNNyIKFc9G/s63510slZ05jGLWd1qBktg`. The provider-console
+procedure above now checks the pasted key before any write, rejects duplicate
+key fingerprints, and preserves a metadata-bearing copy of an existing
+`authorized_keys` before append. No provider-console action or old-host
+authorization change has occurred.
+
+### PRD bootstrap/import work remaining
+
+The Linux source-gate and disposable public-command suite are now complete
+for the current source snapshot. Existing fixtures cover PRD cohort adoption,
+interrupted switching, receipt reconciliation, rollback, replacement-address
+validation, and complete-absence refusal. They do not prove a state-preserving
+import from the retired PRD worker. The source-specific import contract still
+depends on facts that only the old host can provide: its exact installed
+binary and service hashes, configuration and schema, complete retained-work
+inventory, workspace contents and file types, and TLS/SSH identities.
+Without those facts, a fixture can test a guessed package shape but cannot
+prove that the package preserves the real PRD state or that the installed
+predecessor can use the replacement route. Keep the old namespace and #514
+untouched. Once old-host read access returns, capture those facts and backups,
+then bind the supported export/import fixture to the actual source manifest
+before implementing or activating the corresponding importer.
+
+Dev acceptance for the current route-changing service candidate remains
+unrecorded; QAS acceptance is consequently also unrecorded. The prior owner
+confirmation said all PRD clients were stopped but did not identify a Dev
+publisher pause/control. No Dev or QAS service operation has begun on the
+strength of that statement.
 
 ### #514 proposal — unchanged and not authorized for execution
 
