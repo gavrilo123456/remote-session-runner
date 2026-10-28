@@ -120,3 +120,179 @@ defer cutover. Do not infer success or replay the command.
    bytes in Dev → QAS.
 5. Prepare fresh PRD approval, backup/rollback inputs, and exact #514 recovery
    disposition before using the promotion toolkit.
+
+## 2026-10-28 — replacement PRD engineering checkpoint
+
+### Source delivery and sealed candidate
+
+The replacement-address correction is delivered at
+`a38cb0057ed2c4ee7782473b8131ac95af4deab4`; primary Gitea and the automatic
+GitHub mirror both report that exact `dev` SHA. The Mac worktree is at that
+commit. The previously accepted `rr-1e6c47721d-f83e3be7` remains unchanged.
+
+Native source gates for `a38cb0057ed2c4ee7782473b8131ac95af4deab4` completed:
+
+| Host | Result |
+| --- | --- |
+| Mac (`darwin/arm64`, Go 1.27.1) | Full `make test`, vet, build and smoke passed on the final post-commit run. An earlier sandbox-restricted attempt failed and remains **NOT PASS**; its capture is preserved separately. |
+| Sandbox (`linux/arm64`, Go 1.27.1) | Full `make test`, vet, build and smoke passed. |
+| Factory (`linux/amd64`, Go 1.27.1) | Full `make test`, vet, build and smoke passed. |
+| Replacement Linux (`linux/amd64`, Go 1.27.1) | Focused changed-package tests, P025/P101 regressions, vet, build and smoke passed. The full Linux suite was not run under the owner's Factory substitution and remains **NOT PASS** on Linux. |
+
+Private captures and source receipts remain outside Git in
+`/private/tmp/bug027-prd-source-evidence-20261028/`. The four-host release
+build is `772fbc26a2470590b58d4d4a91685d20`; it is sealed, all four bundles
+are published, and its status is ready without activation:
+
+- Release `rr-a38cb0057e-877d49e3`, digest
+  `ce7350c7f338f1679b5f67ae9c7531acbe80174894a4946aa6eee87366f14b74`.
+- Provenance SHA-256:
+  `74e0bdec901f8959d5ac6a0c7ed548b0051d2b784951b7183e6454cb37144d76`.
+- `linux-host`: `043d74e48724c0f14090c667b648bc94c08e30a0f73f4726d54962bda7697dfa`.
+- `sandbox-host`: `7be317e4ad63d1890b8e39123264eec6dbfa85b98a988c7e1f792030d618008b`.
+- `factory-sandbox`: `d0b7f9864ad923188dac12d86149e15a293cf544e356942c45ccdc9d14a7e8ee`.
+- `mac-control-plane`: `16971e20e9b8179c581aa68a5169a4530dd706134a6cfc52ad8bc1f5bc8e1d99`.
+
+Build provenance records Linux CGO disabled, Mac CGO enabled, and the full
+source-revision linker argument for each platform. `runner-release status`
+returns no Dev or QAS acceptance record for this release. No selector or
+service changed. Since `a38cb...` changes startup code, these bundles still
+require Dev then QAS acceptance before PRD use.
+
+The public-command fixture sequence passed for legacy PRD adoption,
+completion, interrupted switching/reconciliation, and reverse rollback.
+Focused replacement-route and config-validation tests also passed. Those
+fixtures cover an existing PRD namespace and the paired address validator;
+they do **not** exercise first installation of an absent PRD namespace on the
+replacement worker.
+
+### Old host and replacement observations
+
+An explicit-key SSH attempt to old PRD Linux `ubuntu@129.151.232.40` returned
+`Permission denied (publickey)`. The Mac key fingerprint is
+`SHA256:ocEk05Q1tTyNNyIKFc9G/s63510slZ05jGLWd1qBktg` (RSA 4096). It has not
+been installed or changed by this checkpoint. This access failure does not
+establish that the old service is stopped, fenced, empty, backed up, or free
+of retained work.
+
+SSH to replacement `ubuntu@79.72.94.59` succeeded. The read-only host check
+found `runnerd.service` not found/inactive, zero MainPID and ControlPID, and
+no PRD configuration, database, `current` selector, selector-operation
+directory, cohort-receipt directory, or PRD backup directory. The service
+root itself exists for the replacement's non-PRD setup. The earlier complete
+namespace-absence observation classified its permitted toolchain-only state;
+that is not an installed or usable PRD baseline. The direct spot query found
+no PRD 8443 listener. A complete process and unit scan remains required
+immediately before any later write.
+
+The read-only command
+`promote-to prd all --release rr-a38cb0057e-877d49e3 --hosts-file <prepared-profile> --plan --json`
+did not produce a plan. It failed on replacement Linux when the existing
+`catalog-status --host linux-host --lane prd` command could not establish the
+PRD identity without its absent PRD config. No preflight, backup, hold,
+receipt, service, or selector was changed.
+
+### Bootstrap and route/trust boundary
+
+The current `catalog-prd-backup` command creates a consistent host-local
+backup for an already configured PRD. It includes an online SQLite snapshot,
+binary/configuration/secret files, and the systemd artifact. It is not a
+cross-host importer or initial namespace installer; it does not snapshot the
+workspace tree. `PRDServiceController.Status` also refuses a missing systemd
+unit, while standard PRD preflight expects a valid config and existing
+database. No current command can safely prepare the replacement namespace
+from the old host's state.
+
+The intended paired V2 address change is exact: Mac's `linux-host` queued
+host and direct URL become `79.72.94.59` and
+`https://79.72.94.59:8443`; Linux's direct bind and public URL become
+`10.0.0.228:8443` and `https://79.72.94.59:8443`. Service/database paths,
+mailbox identities, credential references, trust paths, policy, and other
+fields stay fixed. The replacement server certificate must chain to the
+currently trusted PRD CA and contain the exact replacement IP SAN. The
+replacement SSH host key must use its independently verified pin. No
+certificate, config, `known_hosts` entry, or service file changed here. The
+existing route-rebind commands are Dev/QAS V3-only and are not a PRD route
+transition.
+
+Before importing anything, old-host access is required to measure the actual
+source schema, config/secrets, service artifacts, workspace contents,
+selector, work inventory, and ownership. A supported bootstrap must use a
+verified consistent online backup, preserve history and workspace data,
+validate the new TLS/SSH identities, initialize only the proved-absent
+replacement namespace, leave it stopped, and verify imported schema/data
+without starting a worker or migrating the source. It must record
+interruption/resume/rollback and never delete source state or expose copied
+secrets. Those actual source facts are unavailable while SSH is rejected; no
+bootstrap implementation or PASS claim is recorded.
+
+### Old-host SSH restoration action
+
+On the Mac, print only the public half of the configured identity:
+
+```sh
+# Mac — copy the single output line to the provider console
+/usr/bin/ssh-keygen -y -f /Users/tomasz.walczuk/.ssh/remote-session-runner
+```
+
+At the old instance provider console, append that exact line for `ubuntu`;
+preserve all existing authorized keys and host-key files. Replace the
+placeholder with the line printed on the Mac:
+
+```sh
+# Old PRD Linux provider console — root or authorized sudo shell
+set -eu
+key='<PASTE-EXACT-PUBLIC-KEY-LINE>'
+fingerprint='SHA256:ocEk05Q1tTyNNyIKFc9G/s63510slZ05jGLWd1qBktg'
+file=/home/ubuntu/.ssh/authorized_keys
+sudo install -d -o ubuntu -g ubuntu -m 0700 /home/ubuntu/.ssh
+if sudo test -e "$file"; then
+  sudo test -f "$file"
+  sudo test ! -L "$file"
+else
+  sudo install -o ubuntu -g ubuntu -m 0600 /dev/null "$file"
+fi
+sudo chown ubuntu:ubuntu "$file"
+sudo chmod 0600 "$file"
+if sudo ssh-keygen -lf "$file" -E sha256 | awk -v fp="$fingerprint" '$2 == fp {found=1} END {exit found ? 0 : 1}'; then
+  echo 'This fingerprint is already present; inspect its authorized_keys options and do not append a duplicate.' >&2
+  exit 1
+fi
+printf '%s\n' "$key" | sudo tee -a "$file" >/dev/null
+```
+
+Do not overwrite `authorized_keys`, remove an existing key, change server
+host-key files, or repoint the working replacement alias. After the provider
+change, verify the old host against its existing pins and retry a bounded
+noninteractive SSH metadata command.
+
+### #514 proposal — unchanged and not authorized for execution
+
+The exact recorded identities remain session
+`sess-dc857a66bccb38298a6b0b26485588c5`, command
+`cmd-2872a83c6411e7838bad02ca687fbfbd`, job
+`job-55049ec48ecff3747d09f97d96a18783`. Its result is lost, with incomplete
+output and unconfirmed teardown. Do not recover it, release capacity, replay
+work, or publish an ACK in this checkpoint. Before any exact-pair owner
+decision, refresh the complete Mac PRD inventory, prove authority and runtime
+ownership/stop state, and take a fresh consistent backup. Current evidence
+still says `safe_to_resume=not_established` and
+`recovery_authorized=false`.
+
+### Next operations
+
+1. Restore old-host SSH using the provider-console procedure above. Until
+   then, the old host's admission, service, database, retained work and
+   backup state remain **unknown**, not empty or stopped.
+2. Capture the old host's fresh inventory and consistent backups, then
+   resolve only work required by the supported guards.
+3. Implement and fixture-test the missing operator-only PRD replacement
+   bootstrap and PRD-specific route/trust activation against the actual
+   source format. Keep the old host state and sealed
+   `rr-a38cb0057e-877d49e3` unchanged.
+4. Obtain Dev publisher pause/no-new-work control before qualifying this
+   service-code candidate in Dev; pause and drain QAS separately before its
+   acceptance. Do not use those qualifications as PRD work/backup evidence.
+5. Prepare release-bound PRD approval, backup/rollback and recovery only
+   after the old-host and bootstrap gates pass. No PRD deployment, mailbox
+   reroute, recovery, request, or ACK has occurred.
