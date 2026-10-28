@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -856,8 +857,16 @@ func CatalogPlanFromConfiguration(configuration config.Config) (Plan, bool, erro
 }
 
 func configuredPRDHostID(configuration config.Config) (string, error) {
+	current, err := user.Current()
+	if err != nil {
+		return "", ErrInvalidCatalogRelease
+	}
+	return configuredPRDHostIDForConfiguration(configuration, runtime.GOOS, runtime.GOARCH, current.Username, replacementLinuxLocalIPv4())
+}
+
+func configuredPRDHostIDForConfiguration(configuration config.Config, goos, goarch, account string, localIPv4 []string) (string, error) {
 	if _, ok := configuration.MacSettings(); ok && configuration.Kind() == config.HostKindMac {
-		if !CatalogHostMatchesPlatform("mac-control-plane", runtime.GOOS, runtime.GOARCH) {
+		if !CatalogHostMatchesPlatform("mac-control-plane", goos, goarch) || account != config.MacAccount {
 			return "", ErrInvalidCatalogRelease
 		}
 		return "mac-control-plane", nil
@@ -866,24 +875,7 @@ func configuredPRDHostID(configuration config.Config) (string, error) {
 	if !ok || configuration.Kind() != config.HostKindLinux {
 		return "", ErrInvalidCatalogRelease
 	}
-	matched := ""
-	for _, hostID := range []string{"linux-host", "sandbox-host", "factory-sandbox"} {
-		plan, err := BuildPRDUpgradePlan(hostID)
-		if err != nil {
-			continue
-		}
-		if settings.ServiceRoot == plan.Namespace.ServiceRoot && settings.Database == plan.Namespace.Database &&
-			settings.DirectHTTPSBind == plan.Namespace.DirectHTTPSBind && settings.DirectPublicEndpoint == plan.Namespace.DirectEndpointURL {
-			if matched != "" {
-				return "", ErrInvalidCatalogRelease
-			}
-			matched = hostID
-		}
-	}
-	if matched == "" || !CatalogHostMatchesPlatform(matched, runtime.GOOS, runtime.GOARCH) {
-		return "", ErrInvalidCatalogRelease
-	}
-	return matched, nil
+	return configuredPRDHostIDForLinux(settings, goos, goarch, account, localIPv4)
 }
 
 func validateCatalogExecutablePath(selectedPath, executablePath string) error {

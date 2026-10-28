@@ -672,8 +672,7 @@ func validatePRDConfig(plan PRDUpgradePlan) error {
 		return nil
 	}
 	settings, ok := loaded.LinuxSettings()
-	if !ok || settings.ServiceRoot != plan.Namespace.ServiceRoot || settings.Database != plan.Namespace.Database || settings.Account != plan.Namespace.Account ||
-		settings.DirectHTTPSBind != plan.Namespace.DirectHTTPSBind || settings.DirectPublicEndpoint != plan.Namespace.DirectEndpointURL {
+	if !ok || !prdLinuxRouteMatchesPlan(plan, settings, replacementLinuxLocalIdentityMatches()) {
 		return ErrPRDUpgradeGuard
 	}
 	return nil

@@ -28,7 +28,7 @@ const ReplacementLinuxSSH = "ubuntu@79.72.94.59"
 
 // ReplacementLinuxPrivateIP binds local first-install commands to the already
 // verified replacement instance, not another Ubuntu host with the same user.
-const ReplacementLinuxPrivateIP = "10.0.0.228"
+const ReplacementLinuxPrivateIP = config.PRDReplacementLinuxPrivateIP
 
 // CatalogNamespaceAbsenceReport records a complete, read-only observation
 // that a narrowly eligible replacement Linux peer lane has no runtime

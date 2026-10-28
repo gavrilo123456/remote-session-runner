@@ -1981,11 +1981,12 @@ func currentCatalogHost(hostID string) bool {
 }
 
 // currentCatalogHostForLane normally requires the existing unsuffixed PRD
-// identity, as all current catalog hosts do. The sole exception is the
-// verified replacement Linux worker before PRD exists: for Dev/QAS commands
-// it requires a fresh complete PRD-absence observation and the exact
-// configuration for the selected V3 lane. It never interprets absent PRD as
-// a healthy or usable PRD service.
+// identity, as all current catalog hosts do. The verified replacement Linux
+// worker resolves to that identity only when its PRD V2 configuration uses
+// the exact replacement route and its local platform/account/private address
+// match. Before that PRD configuration exists, Dev/QAS commands use the
+// separate complete PRD-absence observation and exact selected V3 config;
+// absence is never treated as a healthy or usable PRD service.
 func currentCatalogHostForLane(hostID, lane string) bool {
 	if lane != "dev" && lane != "qas" && lane != "prd" {
 		return false

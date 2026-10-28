@@ -27,6 +27,10 @@ const (
 	ReleaseLanePRD ReleaseLane = "prd"
 )
 
+// PRDReplacementLinuxPrivateIP is the verified private address of the
+// replacement worker. Its public route is SimpleReplacementLinuxPublicIP.
+const PRDReplacementLinuxPrivateIP = "10.0.0.228"
+
 var ErrInvalidLaneIdentity = errors.New("invalid V3 lane identity or namespace")
 
 // LaneNamespace contains the fixed paths and service/network names derived
