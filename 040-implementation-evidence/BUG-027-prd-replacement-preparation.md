@@ -730,3 +730,25 @@ fresh database, trust identity, service artifacts, and catalog selector as a
 single recoverable, admission-held sequence. The PRD plan is not an execution
 or acceptance result. No PRD files, services, admissions, or selectors were
 changed, and release-bound approval has not been prepared or approved.
+
+### 2026-10-28 21:51 UTC — absent-namespace admission check correction
+
+The delivered read-only PRD plan passed replacement absence and capacity,
+then failed because `catalog-cohort discover` cannot run without a PRD
+configuration on the replacement. The planner now treats admission as empty
+only after a fresh second absence report validates the exact selected PRD
+namespace, including the absent receipt root, and matches the original
+evidence digest. Partial or changed namespace evidence remains a hard failure;
+the planner does not infer empty admission from a command error.
+
+Mac Go 1.27.1 checks passed:
+
+- `go test ./src/internal/releaseflow ./src/internal/laneinstall ./src/internal/config`
+- `go vet ./src/internal/releaseflow ./src/internal/laneinstall ./src/internal/config`
+- `make build smoke`
+- `git diff --check`
+
+No live host or service state changed. The next read-only plan attempt must
+wait for this controller commit to reach all three clean worker checkouts.
+The end-to-end PRD first-install operation remains absent and blocks any
+cohort preparation, backup, selector change, service start, or acceptance.

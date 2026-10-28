@@ -973,6 +973,37 @@ func TestReadLaneSnapshotAcceptsOnlyProvenSelectedReplacementPRDAbsence(t *testi
 	}
 }
 
+func TestAbsentSelectedPRDAdmissionRequiresFreshReceiptRootAbsence(t *testing.T) {
+	expected := testPRDAbsenceReport(t)
+	expected.SelectedLane = config.ReleaseLanePRD
+	expected.EvidenceSHA256 = absenceReportDigest(expected)
+	mode := "absent"
+	backend := NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{
+		"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true},
+	}}}
+	backend.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		if host != "linux-host" || len(args) != 7 || args[0] != "catalog-namespace-absence" ||
+			args[1] != "--host" || args[2] != "linux-host" || args[3] != "--peer-lane" || args[4] != "prd" ||
+			args[5] != "--selected-lane" || args[6] != "prd" {
+			t.Fatalf("unexpected absence-only admission check command: host=%s args=%v", host, args)
+		}
+		if mode == "partial" {
+			return nil, errors.New("receipt root became present during recheck")
+		}
+		fresh := expected
+		fresh.ObservedAtUTC = "2026-10-28T21:00:00Z"
+		fresh.EvidenceSHA256 = absenceReportDigest(fresh)
+		return json.Marshal(fresh)
+	}
+	if err := backend.verifySelectedNamespaceAbsentNoAdmission(context.Background(), "linux-host", "prd", expected); err != nil {
+		t.Fatalf("fresh complete absence did not establish an empty admission store: %v", err)
+	}
+	mode = "partial"
+	if err := backend.verifySelectedNamespaceAbsentNoAdmission(context.Background(), "linux-host", "prd", expected); err == nil {
+		t.Fatal("partial selected PRD namespace was treated as having no admission hold")
+	}
+}
+
 func TestAbsentQASPeerEvidenceIsNarrowAndRevalidated(t *testing.T) {
 	report := testQASAbsenceReport(t)
 	backend := NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{

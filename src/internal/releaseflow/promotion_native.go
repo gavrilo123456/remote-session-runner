@@ -308,12 +308,18 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 		}
 		plan.HostBaselines = append(plan.HostBaselines, baseline)
 		plan.PredecessorBundleSHA256[host] = baseline.SelectedBundleSHA
-		admission, err := b.readAdmission(ctx, host, lane)
-		if err != nil {
-			return PromotionPlan{}, fmt.Errorf("%s %s admission receipt inspection: %w", host, lane, err)
-		}
-		if admission.AdmissionHeld {
-			plan.ExistingHolds[host] = admission.OperationID
+		if selected.NamespaceAbsence != nil {
+			if err := b.verifySelectedNamespaceAbsentNoAdmission(ctx, host, lane, *selected.NamespaceAbsence); err != nil {
+				return PromotionPlan{}, fmt.Errorf("%s %s absent namespace admission check: %w", host, lane, err)
+			}
+		} else {
+			admission, err := b.readAdmission(ctx, host, lane)
+			if err != nil {
+				return PromotionPlan{}, fmt.Errorf("%s %s admission receipt inspection: %w", host, lane, err)
+			}
+			if admission.AdmissionHeld {
+				plan.ExistingHolds[host] = admission.OperationID
+			}
 		}
 		peer := make(map[string]string, len(LaneOrder)-1)
 		for _, other := range LaneOrder {
@@ -2754,6 +2760,19 @@ func (b *NativePromotionBackend) readCatalogNamespaceAbsence(ctx context.Context
 		return laneinstall.CatalogNamespaceAbsenceReport{}, ErrOperationCorrupted
 	}
 	return report, nil
+}
+
+func (b *NativePromotionBackend) verifySelectedNamespaceAbsentNoAdmission(ctx context.Context, host, lane string,
+	expected laneinstall.CatalogNamespaceAbsenceReport) error {
+	if lane != "prd" || !promotionMayUseAbsentPeer(b.Config, host, lane, lane) ||
+		laneinstall.ValidateCatalogNamespaceAbsenceReport(expected, host, config.ReleaseLane(lane), config.ReleaseLane(lane)) != nil {
+		return ErrOperationCorrupted
+	}
+	fresh, err := b.readCatalogNamespaceAbsence(ctx, host, lane, lane)
+	if err != nil || fresh.EvidenceSHA256 != expected.EvidenceSHA256 {
+		return errors.Join(fmt.Errorf("selected namespace absence or receipt-root evidence changed: %w", ErrOperationCorrupted), err)
+	}
+	return nil
 }
 
 func (b *NativePromotionBackend) readBranchMarker(ctx context.Context, lane string) (string, bool, error) {
