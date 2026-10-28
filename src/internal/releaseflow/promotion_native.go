@@ -1499,6 +1499,9 @@ func safeGoRunExitLine(line string) bool {
 }
 
 func safeProbeHelperDiagnosticLine(line string) bool {
+	if safeQueuedProbeBridgeDiagnostic(line) {
+		return true
+	}
 	fixed := []string{
 		"accepted probe status transport read failed",
 		"accepted probe status response violated the job schema",
@@ -2722,6 +2725,35 @@ func validPreflightBackupReference(preflight laneinstall.CatalogCohortHostPrefli
 func receiptHasSwitch(receipt laneinstall.CatalogCohortReceipt, host string) bool {
 	for _, transition := range receipt.Transitions {
 		if (transition.Action == "switch" || transition.Action == "switch-reconciled") && transition.HostID == host {
+			return true
+		}
+	}
+	return false
+}
+
+func safeQueuedProbeBridgeDiagnostic(line string) bool {
+	for _, stage := range []string{"preflight", "call", "status"} {
+		prefix := "queued probe " + stage + " bridge "
+		if line == prefix+"transport failed" || line == prefix+"returned a malformed error response" ||
+			line == prefix+"returned an unexpected response type" {
+			return true
+		}
+		for _, phase := range []string{"before_send", "after_send"} {
+			if line == prefix+"transport failed phase="+phase {
+				return true
+			}
+		}
+		const codePrefix = "rejected code="
+		if strings.HasPrefix(line, prefix+codePrefix) {
+			code := strings.TrimPrefix(line, prefix+codePrefix)
+			if code == "" || len(code) > 64 {
+				return false
+			}
+			for _, char := range code {
+				if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+					return false
+				}
+			}
 			return true
 		}
 	}

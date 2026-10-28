@@ -15,6 +15,8 @@ import (
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
+	"remote-session-runner/src/internal/sshbridge"
+	"remote-session-runner/src/internal/sshclient"
 )
 
 func TestCompactPreparedRequestBodyRestoresPreparedDigest(t *testing.T) {
@@ -77,6 +79,48 @@ func TestProbeOutcomePrintsEvidenceAndFailsAcceptanceWhenAnyGateFails(t *testing
 			}
 		})
 	}
+}
+
+func TestQueuedBridgeFailureReportsOnlySafeCodeOrSendPhase(t *testing.T) {
+	t.Run("protocol error code", func(t *testing.T) {
+		reply := sshbridge.ReplyFrame{ResponseType: "error", Payload: json.RawMessage(`{"code":"maintenance_admission_closed","message":"private payload omitted"}`)}
+		err := queuedBridgeFailure("call", reply, nil)
+		if got, want := err.Error(), "queued probe call bridge rejected code=maintenance_admission_closed"; got != want {
+			t.Fatalf("queued bridge diagnostic=%q, want %q", got, want)
+		}
+		if strings.Contains(err.Error(), "private payload") {
+			t.Fatalf("queued bridge diagnostic exposed an unrestricted message: %q", err)
+		}
+	})
+	t.Run("unsafe or malformed error code", func(t *testing.T) {
+		for _, payload := range []json.RawMessage{
+			json.RawMessage(`{"code":"token=secret","message":"do not disclose"}`),
+			json.RawMessage(`not-json`),
+		} {
+			err := queuedBridgeFailure("call", sshbridge.ReplyFrame{ResponseType: "error", Payload: payload}, nil)
+			if err == nil || err.Error() != "queued probe call bridge returned a malformed error response" ||
+				strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "disclose") {
+				t.Fatalf("unsafe bridge error was not reduced to a fixed diagnostic: %v", err)
+			}
+		}
+	})
+	t.Run("send phases", func(t *testing.T) {
+		for _, phase := range []sshclient.TransportPhase{sshclient.PhaseBeforeSend, sshclient.PhaseAfterSend} {
+			err := queuedBridgeFailure("call", sshbridge.ReplyFrame{}, &sshclient.TransportError{Phase: phase, Err: errors.New("private transport detail")})
+			want := "queued probe call bridge transport failed phase=" + string(phase)
+			if err == nil || err.Error() != want || strings.Contains(err.Error(), "private transport detail") {
+				t.Fatalf("transport diagnostic=%v, want %q without raw error", err, want)
+			}
+		}
+	})
+	t.Run("reject malformed stage and response type", func(t *testing.T) {
+		if err := queuedBridgeFailure("unknown", sshbridge.ReplyFrame{}, nil); err == nil || err.Error() != "queued probe bridge failed at an invalid stage" {
+			t.Fatalf("invalid stage diagnostic=%v", err)
+		}
+		if err := queuedBridgeFailure("status", sshbridge.ReplyFrame{ResponseType: "event"}, nil); err == nil || err.Error() != "queued probe status bridge returned an unexpected response type" {
+			t.Fatalf("unexpected response diagnostic=%v", err)
+		}
+	})
 }
 
 func TestDecodeObservedJobResponseRequiresExactTerminalResourceIdentity(t *testing.T) {

@@ -735,7 +735,7 @@ func queued(ctx context.Context, configPath string, p prepared) error {
 	}
 	if reply, callErr := client.Call(ctx, sshbridge.RequestFrame{ProtocolVersion: sshbridge.ProtocolVersion, RequestID: "catalog-probe-ping-" + p.HostID,
 		Operation: sshbridge.OperationPing, Payload: json.RawMessage(`{}`)}); callErr != nil || reply.ResponseType != "result" {
-		return errors.New("pinned queued SSH bridge preflight failed")
+		return queuedBridgeFailure("preflight", reply, callErr)
 	}
 	jobID, err := randomID("job")
 	if err != nil {
@@ -770,7 +770,7 @@ func queued(ctx context.Context, configPath string, p prepared) error {
 		MaintenanceProbeToken: p.Token, Payload: body}
 	accepted, err := client.Call(ctx, run)
 	if err != nil || accepted.ResponseType != "result" {
-		return errors.New("queued probe call failed before a verifiable acceptance")
+		return queuedBridgeFailure("call", accepted, err)
 	}
 	var acceptFields jobFields
 	if json.Unmarshal(accepted.Payload, &acceptFields) != nil || acceptFields.JobID != jobID || acceptFields.SessionID != sessionID || acceptFields.CommandID != commandID {
@@ -783,7 +783,10 @@ func queued(ctx context.Context, configPath string, p prepared) error {
 		read, readErr := client.Call(ctx, sshbridge.RequestFrame{ProtocolVersion: sshbridge.ProtocolVersion, RequestID: requestID + "-status",
 			Operation: sshbridge.OperationGetJob, MaintenanceProbeToken: p.Token, Payload: payload})
 		if readErr != nil || read.ResponseType != "result" || parseJob(read.Payload, &final) != nil {
-			return errors.New("queued probe status read failed")
+			if readErr != nil || read.ResponseType != "result" {
+				return queuedBridgeFailure("status", read, readErr)
+			}
+			return errors.New("queued probe status response violated the job schema")
 		}
 		if terminal(final) {
 			break
@@ -794,6 +797,54 @@ func queued(ctx context.Context, configPath string, p prepared) error {
 		return errors.New("queued probe did not reach a terminal state within the bound")
 	}
 	return printProbeOutcome(outcome{Transport: p.Transport, HostID: p.HostID, OperationID: p.OperationID, AcceptedAt: time.Now().UTC().Format(time.RFC3339Nano), JobID: jobID, SessionID: sessionID, CommandID: commandID, Phase: finalPhase(final), CommandState: final.CommandState, ExitCode: final.ExitCode, FinalEventSequence: final.FinalEventSequence, OutputComplete: final.OutputComplete, OutputTruncated: final.OutputTruncated, TeardownState: final.TeardownState, BridgeResponseType: accepted.ResponseType, IdempotencyKey: p.IdempotencyKey})
+}
+
+// queuedBridgeFailure reports only the protocol's bounded error code or the
+// SSH client's send phase. It deliberately omits the remote message, payload,
+// request body, and all key material so a failed maintenance probe can be
+// diagnosed without turning helper stderr into an unrestricted log channel.
+func queuedBridgeFailure(stage string, reply sshbridge.ReplyFrame, callErr error) error {
+	var prefix string
+	switch stage {
+	case "preflight":
+		prefix = "queued probe preflight bridge"
+	case "call":
+		prefix = "queued probe call bridge"
+	case "status":
+		prefix = "queued probe status bridge"
+	default:
+		return errors.New("queued probe bridge failed at an invalid stage")
+	}
+	if callErr != nil {
+		var transportErr *sshclient.TransportError
+		if errors.As(callErr, &transportErr) {
+			switch transportErr.Phase {
+			case sshclient.PhaseBeforeSend, sshclient.PhaseAfterSend:
+				return fmt.Errorf("%s transport failed phase=%s", prefix, transportErr.Phase)
+			}
+		}
+		return fmt.Errorf("%s transport failed", prefix)
+	}
+	if reply.ResponseType == "error" {
+		var payload sshbridge.ErrorPayload
+		if json.Unmarshal(reply.Payload, &payload) != nil || !safeBridgeErrorCode(payload.Code) {
+			return fmt.Errorf("%s returned a malformed error response", prefix)
+		}
+		return fmt.Errorf("%s rejected code=%s", prefix, payload.Code)
+	}
+	return fmt.Errorf("%s returned an unexpected response type", prefix)
+}
+
+func safeBridgeErrorCode(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func local(ctx context.Context, socketPath string, p prepared) error {

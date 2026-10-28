@@ -338,6 +338,27 @@ func TestPromotionProbeObservationDiagnosticsAreExactBoundedAndSanitized(t *test
 	if got := sanitizedProbeHelperStderr([]byte("token=do-not-disclose\n"), false); got != "unrecognized helper stderr; content omitted" {
 		t.Fatalf("unrecognized helper stderr was not suppressed: %q", got)
 	}
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{"queued probe call bridge rejected code=maintenance_admission_closed\nexit status 1\n", "queued probe call bridge rejected code=maintenance_admission_closed"},
+		{"queued probe call bridge transport failed phase=after_send\nexit status 1\n", "queued probe call bridge transport failed phase=after_send"},
+		{"queued probe status bridge returned an unexpected response type\nexit status 1\n", "queued probe status bridge returned an unexpected response type"},
+	} {
+		if got := sanitizedProbeHelperStderr([]byte(tc.input), false); got != tc.want {
+			t.Errorf("safe queued diagnostic %q sanitized to %q, want %q", tc.input, got, tc.want)
+		}
+	}
+	for _, rejected := range []string{
+		"queued probe call bridge rejected code=token=secret",
+		"queued probe call bridge transport failed phase=unknown",
+		"queued probe call bridge rejected code=maintenance_admission_closed extra",
+	} {
+		if got := sanitizedProbeHelperStderr([]byte(rejected+"\n"), false); got != "unrecognized helper stderr; content omitted" {
+			t.Errorf("unsafe queued diagnostic %q was not suppressed: %q", rejected, got)
+		}
+	}
 	if got := sanitizedProbeHelperStderr(stderr, true); got != "stderr exceeded 4 KiB bound; content omitted" {
 		t.Fatalf("truncated helper stderr was not bounded: %q", got)
 	}
