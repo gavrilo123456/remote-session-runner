@@ -2151,20 +2151,7 @@ func verifyLocalCatalogCohortRollbackTarget(plan laneinstall.Plan, receipt lanei
 		if host.HostID != plan.HostID {
 			continue
 		}
-		matched := false
-		var selectedID, selectedSHA string
-		if status.Release != nil {
-			selectedID = status.Release.Identity.ReleaseID
-			selectedSHA = status.Release.Identity.BundleSHA256
-		} else {
-			selectedSHA = status.Bundle.BundleSHA256
-		}
-		if strings.HasPrefix(host.PreviousTarget, "releases/") {
-			matched = selectedID == filepath.Base(filepath.Dir(host.PreviousTarget))
-		} else if filepath.IsAbs(host.PreviousTarget) {
-			matched = status.Kind == "legacy" && status.Bundle.BundleSHA256 == host.PreviousBundleSHA256
-		}
-		if !matched || selectedSHA != host.PreviousBundleSHA256 {
+		if !catalogCohortRollbackSelectorMatches(plan, host, status, root) {
 			return errors.New("local selected release does not match the recorded rollback predecessor")
 		}
 		active, activeErr := catalogCohortLocalServiceActive(context.Background(), plan)
@@ -2197,6 +2184,36 @@ func verifyLocalCatalogCohortRollbackTarget(plan laneinstall.Plan, receipt lanei
 		return nil
 	}
 	return errors.New("local host is absent from rollback cohort receipt")
+}
+
+// catalogCohortRollbackSelectorMatches binds the inspected, validated selector
+// to the exact predecessor captured in the cohort receipt. Legacy bundle
+// selectors are relative releases/<digest> paths; catalog selectors are
+// absolute <catalog-root>/<release-id>/<host> paths. Both must match the
+// recorded target and bundle, and catalog selections must also match the
+// sealed release identity.
+func catalogCohortRollbackSelectorMatches(plan laneinstall.Plan, host laneinstall.CatalogCohortHostPreflight,
+	status laneinstall.CatalogSelectorStatus, catalogRoot string) bool {
+	if host.HostID != plan.HostID || status.HostID != plan.HostID || status.Lane != plan.Lane ||
+		host.PreviousTarget == "" || status.Target != host.PreviousTarget {
+		return false
+	}
+	switch status.Kind {
+	case "legacy":
+		return status.Release == nil && strings.HasPrefix(host.PreviousTarget, "releases/") &&
+			status.Bundle.HostID == plan.HostID && status.Bundle.BundleSHA256 == host.PreviousBundleSHA256
+	case "catalog":
+		if status.Release == nil {
+			return false
+		}
+		identity := status.Release.Identity
+		return filepath.IsAbs(host.PreviousTarget) && filepath.Clean(host.PreviousTarget) == host.PreviousTarget &&
+			host.PreviousTarget == filepath.Join(catalogRoot, identity.ReleaseID, plan.HostID) &&
+			identity.HostID == plan.HostID && identity.BundleSHA256 == host.PreviousBundleSHA256 &&
+			status.Bundle.BundleSHA256 == host.PreviousBundleSHA256
+	default:
+		return false
+	}
 }
 
 func localCatalogRoot(hostID string) (string, error) {

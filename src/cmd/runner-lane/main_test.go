@@ -54,6 +54,77 @@ func TestRunPlanRejectsPRDAndUnknownHost(t *testing.T) {
 	}
 }
 
+func TestCatalogCohortRollbackSelectorMatchesRecordedPredecessor(t *testing.T) {
+	plan := laneinstall.Plan{HostID: "linux-host", Lane: config.ReleaseLaneDev}
+	root := "/home/ubuntu/projects-runtime/runner-releases"
+	legacyDigest := strings.Repeat("a", 64)
+	catalogDigest := strings.Repeat("b", 64)
+	legacyTarget := "releases/" + legacyDigest
+	catalogTarget := filepath.Join(root, "rr-previous", plan.HostID)
+
+	tests := []struct {
+		name   string
+		host   laneinstall.CatalogCohortHostPreflight
+		status laneinstall.CatalogSelectorStatus
+		want   bool
+	}{
+		{
+			name: "exact relative legacy predecessor",
+			host: laneinstall.CatalogCohortHostPreflight{HostID: plan.HostID, PreviousTarget: legacyTarget, PreviousBundleSHA256: legacyDigest},
+			status: laneinstall.CatalogSelectorStatus{HostID: plan.HostID, Lane: plan.Lane, Target: legacyTarget, Kind: "legacy",
+				Bundle: laneinstall.SimpleBundleManifest{HostID: plan.HostID, BundleSHA256: legacyDigest}},
+			want: true,
+		},
+		{
+			name: "exact absolute catalog predecessor",
+			host: laneinstall.CatalogCohortHostPreflight{HostID: plan.HostID, PreviousTarget: catalogTarget, PreviousBundleSHA256: catalogDigest},
+			status: laneinstall.CatalogSelectorStatus{HostID: plan.HostID, Lane: plan.Lane, Target: catalogTarget, Kind: "catalog",
+				Bundle: laneinstall.SimpleBundleManifest{HostID: plan.HostID, BundleSHA256: catalogDigest},
+				Release: &laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{
+					ReleaseID: "rr-previous", HostID: plan.HostID, BundleSHA256: catalogDigest,
+				}}},
+			want: true,
+		},
+		{
+			name: "catalog target differs from receipt",
+			host: laneinstall.CatalogCohortHostPreflight{HostID: plan.HostID, PreviousTarget: filepath.Join(root, "rr-other", plan.HostID), PreviousBundleSHA256: catalogDigest},
+			status: laneinstall.CatalogSelectorStatus{HostID: plan.HostID, Lane: plan.Lane, Target: catalogTarget, Kind: "catalog",
+				Bundle: laneinstall.SimpleBundleManifest{HostID: plan.HostID, BundleSHA256: catalogDigest},
+				Release: &laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{
+					ReleaseID: "rr-previous", HostID: plan.HostID, BundleSHA256: catalogDigest,
+				}}},
+		},
+		{
+			name: "catalog release belongs to another host",
+			host: laneinstall.CatalogCohortHostPreflight{HostID: plan.HostID, PreviousTarget: catalogTarget, PreviousBundleSHA256: catalogDigest},
+			status: laneinstall.CatalogSelectorStatus{HostID: plan.HostID, Lane: plan.Lane, Target: catalogTarget, Kind: "catalog",
+				Bundle: laneinstall.SimpleBundleManifest{HostID: plan.HostID, BundleSHA256: catalogDigest},
+				Release: &laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{
+					ReleaseID: "rr-previous", HostID: "sandbox-host", BundleSHA256: catalogDigest,
+				}}},
+		},
+		{
+			name: "legacy bundle digest differs",
+			host: laneinstall.CatalogCohortHostPreflight{HostID: plan.HostID, PreviousTarget: legacyTarget, PreviousBundleSHA256: legacyDigest},
+			status: laneinstall.CatalogSelectorStatus{HostID: plan.HostID, Lane: plan.Lane, Target: legacyTarget, Kind: "legacy",
+				Bundle: laneinstall.SimpleBundleManifest{HostID: plan.HostID, BundleSHA256: catalogDigest}},
+		},
+		{
+			name:   "unselected target",
+			host:   laneinstall.CatalogCohortHostPreflight{HostID: plan.HostID, PreviousTarget: catalogTarget, PreviousBundleSHA256: catalogDigest},
+			status: laneinstall.CatalogSelectorStatus{HostID: plan.HostID, Lane: plan.Lane, Kind: "unselected"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := catalogCohortRollbackSelectorMatches(plan, tc.host, tc.status, root); got != tc.want {
+				t.Fatalf("rollback selector match = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCatalogNamespaceAbsenceBootstrapIdentityIsNarrow(t *testing.T) {
 	for _, tc := range []struct {
 		name, host, goos, goarch, account string
