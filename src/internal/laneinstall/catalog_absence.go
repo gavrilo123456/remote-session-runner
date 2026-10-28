@@ -233,11 +233,11 @@ func observeCatalogNamespaceAbsence(ctx context.Context, hostID string, peerLane
 	return report, nil
 }
 
-// CatalogNamespaceAbsenceScopeAllowed enumerates the only absent-peer cases
-// used by first-install promotion: PRD for Dev/QAS and QAS for Dev.
+// CatalogNamespaceAbsenceScopeAllowed enumerates the fixed replacement-host
+// absence observations used by promotion planning and first-install checks.
 func CatalogNamespaceAbsenceScopeAllowed(hostID string, peerLane, selectedLane config.ReleaseLane) bool {
 	return hostID == "linux-host" && ((peerLane == config.ReleaseLanePRD &&
-		(selectedLane == config.ReleaseLaneDev || selectedLane == config.ReleaseLaneQAS)) ||
+		(selectedLane == config.ReleaseLaneDev || selectedLane == config.ReleaseLaneQAS || selectedLane == config.ReleaseLanePRD)) ||
 		(peerLane == config.ReleaseLaneQAS && selectedLane == config.ReleaseLaneDev))
 }
 

@@ -217,14 +217,15 @@ type promotionProbeOutcome struct {
 }
 
 type promotionLaneSnapshot struct {
-	Selector       laneinstall.CatalogSelectorStatus `json:"selector"`
-	Active         bool                              `json:"service_active"`
-	Config         string                            `json:"configuration_sha256"`
-	Schema         int                               `json:"schema_version"`
-	Work           laneinstall.CatalogWorkInventory  `json:"work_inventory"`
-	Empty          bool                              `json:"work_inventory_empty"`
-	AvailableBytes uint64                            `json:"available_bytes"`
-	RequiredBytes  uint64                            `json:"required_bytes"`
+	Selector         laneinstall.CatalogSelectorStatus          `json:"selector"`
+	NamespaceAbsence *laneinstall.CatalogNamespaceAbsenceReport `json:"namespace_absence,omitempty"`
+	Active           bool                                       `json:"service_active"`
+	Config           string                                     `json:"configuration_sha256"`
+	Schema           int                                        `json:"schema_version"`
+	Work             laneinstall.CatalogWorkInventory           `json:"work_inventory"`
+	Empty            bool                                       `json:"work_inventory_empty"`
+	AvailableBytes   uint64                                     `json:"available_bytes"`
+	RequiredBytes    uint64                                     `json:"required_bytes"`
 }
 
 type prdBackupRecoveryHostEvidence struct {
@@ -285,7 +286,7 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 		if err := b.inspectPublished(ctx, host, release); err != nil {
 			return PromotionPlan{}, fmt.Errorf("%s sealed release inspection: %w", host, err)
 		}
-		selected, err := b.readLaneSnapshot(ctx, host, lane)
+		selected, err := b.readLaneSnapshotForPlan(ctx, host, lane)
 		if err != nil {
 			return PromotionPlan{}, fmt.Errorf("%s %s read-only baseline: %w", host, lane, err)
 		}
@@ -294,9 +295,12 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 			WorkInventorySHA: selected.Work.SHA256(), WorkInventoryEmpty: selected.Empty,
 			ConfigurationSHA: selected.Config, SchemaVersion: selected.Schema,
 			PreviousReleaseID: selectedReleaseID(selected.Selector), PreviousBundleSHA: selectedBundleSHA(selected.Selector)}
+		if selected.NamespaceAbsence != nil {
+			baseline.SelectedNamespaceAbsence = selected.NamespaceAbsence
+		}
 		baseline.AvailableBytes, baseline.RequiredBytes = selected.AvailableBytes, selected.RequiredBytes
 		baseline.CapacityVerified = selected.AvailableBytes >= selected.RequiredBytes
-		if lane == "prd" && baseline.PreviousReleaseID == "" {
+		if lane == "prd" && baseline.PreviousReleaseID == "" && baseline.SelectedNamespaceAbsence == nil {
 			baseline.CompatibilitySHA, err = legacyCompatibilityInputSHA(b.Config.Hosts[host])
 			if err != nil {
 				return PromotionPlan{}, fmt.Errorf("%s legacy rollback compatibility input: %w", host, err)
@@ -2301,24 +2305,50 @@ func (b *NativePromotionBackend) runLane(ctx context.Context, host string, args 
 }
 
 func (b *NativePromotionBackend) readLaneSnapshot(ctx context.Context, host, lane string) (promotionLaneSnapshot, error) {
+	return b.readLaneSnapshotWithSelectedAbsence(ctx, host, lane, false)
+}
+
+func (b *NativePromotionBackend) readLaneSnapshotForPlan(ctx context.Context, host, lane string) (promotionLaneSnapshot, error) {
+	return b.readLaneSnapshotWithSelectedAbsence(ctx, host, lane, lane == "prd")
+}
+
+func (b *NativePromotionBackend) readLaneSnapshotWithSelectedAbsence(ctx context.Context, host, lane string,
+	allowSelectedPRDAbsence bool) (promotionLaneSnapshot, error) {
 	var snapshot promotionLaneSnapshot
 	if !contains(HostOrder, host) || !contains(LaneOrder, lane) {
 		return snapshot, ErrInvalidInput
 	}
 	statusBytes, err := b.runLane(ctx, host, []string{"catalog-status", "--host", host, "--lane", lane}, nil)
-	if err != nil || decodeStrictJSON(statusBytes, &snapshot.Selector) != nil {
-		return snapshot, errors.Join(ErrOperationCorrupted, err)
-	}
-	out, err := b.runLane(ctx, host, promotionWorkInventoryArgs(host, lane), nil)
 	if err != nil {
-		return snapshot, err
-	}
-	var inventory laneinstall.CatalogWorkInventoryReport
-	if decodeStrictJSON(out, &inventory) != nil || inventory.HostID != host || string(inventory.Lane) != lane {
+		// The replacement Linux PRD lane is the only selected-lane snapshot
+		// that may be absent. A command failure alone never proves absence:
+		// require the independent host-local observer to prove the complete
+		// canonical PRD namespace, unit, listener, process, and artifacts are
+		// absent, and bind that report into the plan.
+		if !allowSelectedPRDAbsence || lane != "prd" || !promotionMayUseAbsentPeer(b.Config, host, lane, lane) {
+			return snapshot, errors.Join(ErrOperationCorrupted, err)
+		}
+		report, absenceErr := b.readCatalogNamespaceAbsence(ctx, host, lane, lane)
+		if absenceErr != nil {
+			return snapshot, errors.Join(fmt.Errorf("%s selected %s namespace absence is unproven", host, lane), err, absenceErr)
+		}
+		snapshot.NamespaceAbsence = &report
+		snapshot.Empty = true
+	} else if decodeStrictJSON(statusBytes, &snapshot.Selector) != nil {
 		return snapshot, ErrOperationCorrupted
 	}
-	snapshot.Active, snapshot.Config, snapshot.Schema, snapshot.Work, snapshot.Empty = inventory.ServiceActive, inventory.ConfigurationSHA256,
-		inventory.DatabaseSchema, inventory.WorkInventory, inventory.WorkInventoryEmpty
+	if snapshot.NamespaceAbsence == nil {
+		out, err := b.runLane(ctx, host, promotionWorkInventoryArgs(host, lane), nil)
+		if err != nil {
+			return snapshot, err
+		}
+		var inventory laneinstall.CatalogWorkInventoryReport
+		if decodeStrictJSON(out, &inventory) != nil || inventory.HostID != host || string(inventory.Lane) != lane {
+			return snapshot, ErrOperationCorrupted
+		}
+		snapshot.Active, snapshot.Config, snapshot.Schema, snapshot.Work, snapshot.Empty = inventory.ServiceActive, inventory.ConfigurationSHA256,
+			inventory.DatabaseSchema, inventory.WorkInventory, inventory.WorkInventoryEmpty
+	}
 	if err := b.readPromotionCapacity(ctx, host, lane, &snapshot); err != nil {
 		return snapshot, err
 	}
@@ -2673,6 +2703,9 @@ func (b *NativePromotionBackend) readPeerEvidenceWithAbsence(ctx context.Context
 
 func (b *NativePromotionBackend) readPeerSnapshotEvidence(ctx context.Context, host, peer, selectedLane, profile string,
 	expected map[string]laneinstall.CatalogNamespaceAbsenceReport, allowNewAbsence bool) (string, *laneinstall.CatalogNamespaceAbsenceReport, error) {
+	if peer == selectedLane {
+		return "", nil, ErrOperationCorrupted
+	}
 	if report, ok := expected[peer]; ok {
 		if !promotionMayUseAbsentPeer(b.Config, host, peer, selectedLane) {
 			return "", nil, ErrOperationCorrupted

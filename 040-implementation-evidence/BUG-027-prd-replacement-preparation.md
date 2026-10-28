@@ -602,3 +602,100 @@ replacement Linux, verify candidate acceptance for any service-byte change,
 prepare the release-bound PRD approval and backups, deploy through the
 promotion toolkit, and pass all eight PRD acceptance gates before reopening
 admissions or clients.
+
+### 2026-10-28 20:39 UTC — accepted release and pause refreshed
+
+The owner confirmed that Dev, QAS, and PRD clients/publishers are paused. This
+is recorded as an owner confirmation only; it does not prove service state,
+admission fences, or that no publishers are configured.
+
+Read-only `runner-release status` on Mac Go 1.27.1 reconfirmed sealed release
+`rr-1e6c47721d-f83e3be7`, source
+`1e6c47721d98ba5af01145ff2e2ed44eb8639030`, digest
+`c21b2e07763d05b5ffa77b26c0fc30ef0918135c995248df8d7374eb9adc9acd`, and
+matching captured primary/mirror refs. The current route-changing candidate
+`rr-a38cb0057e-877d49e3` remains sealed at digest
+`ce7350c7f338f1679b5f67ae9c7531acbe80174894a4946aa6eee87366f14b74`.
+Its Dev acceptance `74dffd3837e1e8f4f7183306bec7fa40` and QAS acceptance
+`ff2f40e39ff26b5bcab74e259fd4323a` each report PASS for all eight gates and
+bind the same four bundle hashes. The sealed bytes remain unchanged.
+
+The current closeout, retained-work issue, promotion guide, and operations
+runbook were read. No live PRD operation, admission hold, route/configuration
+change, service action, mailbox publication, or ACK publication was performed
+for this checkpoint.
+
+### 2026-10-28 20:59 UTC — owner confirms all-lane client pause
+
+The owner confirmed that Dev, QAS, and PRD are paused. Treat this as the
+current owner confirmation for client/publisher activity only. It does not
+establish current service stop state, catalog admission holds, empty work, or
+that no publishers are configured. Fresh host and work observations remain
+required immediately before each dependent operation. QAS state and all
+mailbox ownership remain unchanged.
+
+### 2026-10-28 21:22 UTC — current release acceptance rechecked
+
+Using the pinned Go 1.27.1 toolchain and the local promotion store, read-only
+`runner-release status` reconfirmed both the historical release named in the
+989 starting point and the route-changing candidate currently required for
+the replacement route:
+
+- Historical `rr-1e6c47721d-f83e3be7`, digest
+  `c21b2e07763d05b5ffa77b26c0fc30ef0918135c995248df8d7374eb9adc9acd`: Dev
+  operation `db7efa3c78056440d580f8671f9c18fc` and QAS operation
+  `a353cb72e3f72df38cb3e64e74349841` each report all eight gates passed.
+- Current route candidate `rr-a38cb0057e-877d49e3`, digest
+  `ce7350c7f338f1679b5f67ae9c7531acbe80174894a4946aa6eee87366f14b74`:
+  Dev operation `74dffd3837e1e8f4f7183306bec7fa40` and QAS operation
+  `ff2f40e39ff26b5bcab74e259fd4323a` each report all eight gates passed and
+  bind the same four per-host bundle hashes recorded above.
+
+The current candidate remains sealed and unchanged. These are source/release
+acceptance records, not current PRD installation or acceptance evidence. No
+PRD service, selector, configuration, admission, mailbox, or retained-work
+state was changed during this read-only verification. The owner's latest
+confirmation says Dev, QAS, and PRD clients/publishers remain paused; live
+service state, admissions, and inventories still require fresh observation.
+
+### 2026-10-28 21:43 UTC — selected replacement absence planning correction
+
+The owner again confirmed Dev, QAS, and PRD are paused. Record that as the
+client/publisher pause only; no inference is made about services, admission
+holds, or installed publishers.
+
+Controller work now lets the read-only PRD planner record the replacement
+Linux namespace as absent only after the exact host-local absence observer
+passes. It does not synthesize a selector, configuration, schema, database,
+or backup identity. The absent-selected-lane path is limited to planning;
+ordinary snapshots and peer-lane rechecks still reject it. The first-install
+operation itself is not implemented by this change.
+
+Focused checks passed on the Mac with Go 1.27.1:
+
+- `go test ./src/internal/releaseflow ./src/internal/laneinstall ./src/internal/config`
+- `go vet ./src/internal/releaseflow ./src/internal/laneinstall ./src/internal/config`
+- `make build smoke`
+- `git diff --check`
+
+The new unit regression confirms that selected PRD absence is represented
+only for the verified replacement Linux profile and only through the
+explicit absence report. An initial test run exposed that the peer-lane
+recheck helper could enter that selected-absence path; the guard was narrowed
+to reject `peer == selectedLane`, and the complete focused package suite then
+passed. No live state was changed.
+
+Before these changes reach the replacement checkout, its current
+`catalog-namespace-absence` command rejects selected-PRD scope, so the
+read-only `promote-to prd all --plan` attempt exited nonzero at that explicit
+guard. This is a source-delivery prerequisite, not evidence that the
+replacement namespace is partially installed. No release was activated and
+no PRD hold, backup, selector, configuration, or service was changed.
+
+Remaining bootstrap work is still required: a tested supported first install
+must create the replacement's PRD configuration, fresh authority database,
+TLS identity, catalog selection, and stopped service artifacts with rollback
+to an absent/stopped state. Then obtain the current release-bound PRD
+approval, recheck all host inventories and capacity, and only afterward use
+the toolkit for PRD mutation and the eight-gate acceptance. Mailbox
+acceptance remains `NOT RUN`.

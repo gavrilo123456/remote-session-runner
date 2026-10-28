@@ -397,7 +397,7 @@ func runCatalogNamespaceAbsence(ctx context.Context, args []string, stdout, stde
 	peer, selected := config.ReleaseLane(*peerLane), config.ReleaseLane(*selectedLane)
 	if flags.NArg() != 0 || !currentCatalogNamespaceAbsenceHost(*host) ||
 		!laneinstall.CatalogNamespaceAbsenceScopeAllowed(*host, peer, selected) {
-		return errors.New("usage: runner-lane catalog-namespace-absence --host linux-host --peer-lane qas|prd --selected-lane dev|qas")
+		return errors.New("usage: runner-lane catalog-namespace-absence --host linux-host --peer-lane prd --selected-lane dev|qas|prd, or --peer-lane qas --selected-lane dev")
 	}
 	report, err := laneinstall.ReadCatalogPeerNamespaceAbsence(ctx, *host, peer, selected, laneinstall.NewCatalogPRDAbsenceProbe())
 	if err != nil {

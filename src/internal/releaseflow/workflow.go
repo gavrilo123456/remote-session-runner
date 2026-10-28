@@ -37,6 +37,7 @@ type PromotionPlan struct {
 type HostObservation struct {
 	HostID                    string `json:"host_id"`
 	Lane                      string `json:"lane"`
+	SelectedNamespaceAbsence  *laneinstall.CatalogNamespaceAbsenceReport `json:"selected_namespace_absence,omitempty"`
 	SelectedReleaseID         string `json:"selected_release_id"`
 	SelectedBundleSHA         string `json:"selected_bundle_sha256"`
 	SelectorOperation         string `json:"selector_operation_id,omitempty"`

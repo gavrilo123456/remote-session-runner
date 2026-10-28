@@ -925,6 +925,54 @@ func TestNativePlanRecordsCompleteReplacementPRDAbsence(t *testing.T) {
 	}
 }
 
+func TestReadLaneSnapshotAcceptsOnlyProvenSelectedReplacementPRDAbsence(t *testing.T) {
+	report := testPRDAbsenceReport(t)
+	report.SelectedLane = config.ReleaseLanePRD
+	report.EvidenceSHA256 = absenceReportDigest(report)
+	backend := NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{
+		"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true},
+	}}}
+	backend.capacityReader = func(_ context.Context, host, lane string, snapshot *promotionLaneSnapshot) error {
+		if host != "linux-host" || lane != "prd" {
+			return ErrInvalidInput
+		}
+		snapshot.AvailableBytes, snapshot.RequiredBytes = 2_000_000_000, promotionRequiredCapacity("prd", defaultPromotionOperatingBuffer)
+		return nil
+	}
+	backend.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		if host != "linux-host" {
+			t.Fatalf("selected-absence observation reached unexpected host %q", host)
+		}
+		switch args[0] {
+		case "catalog-status":
+			return nil, errors.New("selected PRD namespace is not installed")
+		case "catalog-namespace-absence":
+			if len(args) != 7 || args[1] != "--host" || args[2] != "linux-host" || args[3] != "--peer-lane" ||
+				args[4] != "prd" || args[5] != "--selected-lane" || args[6] != "prd" {
+				t.Fatalf("absence report was not bound to selected PRD: %v", args)
+			}
+			return json.Marshal(report)
+		default:
+			t.Fatalf("unexpected command after selected PRD absence: %v", args)
+			return nil, ErrInvalidInput
+		}
+	}
+	snapshot, err := backend.readLaneSnapshotForPlan(context.Background(), "linux-host", "prd")
+	if err != nil {
+		t.Fatalf("complete selected PRD absence rejected: %v", err)
+	}
+	if snapshot.NamespaceAbsence == nil || snapshot.NamespaceAbsence.EvidenceSHA256 != report.EvidenceSHA256 || !snapshot.Empty ||
+		snapshot.Active || snapshot.Config != "" || snapshot.Schema != 0 || snapshot.AvailableBytes != 2_000_000_000 ||
+		snapshot.RequiredBytes != promotionRequiredCapacity("prd", defaultPromotionOperatingBuffer) {
+		t.Fatalf("selected PRD absence was not represented without inventing namespace state: %+v", snapshot)
+	}
+
+	backend.Config.Hosts["linux-host"] = HostProfile{HostID: "linux-host", Target: replacementLinuxTarget}
+	if _, err := backend.readLaneSnapshotForPlan(context.Background(), "linux-host", "prd"); err == nil {
+		t.Fatal("selected PRD absence accepted without the replacement-only host-profile capability")
+	}
+}
+
 func TestAbsentQASPeerEvidenceIsNarrowAndRevalidated(t *testing.T) {
 	report := testQASAbsenceReport(t)
 	backend := NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{
