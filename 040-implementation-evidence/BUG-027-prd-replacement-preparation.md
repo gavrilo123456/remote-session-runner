@@ -497,7 +497,7 @@ approval, and PRD deployment are still incomplete. No service, config, route,
 selector, certificate, key, database, mailbox path, reservation or ACK was
 changed. #514 remains the exact separately unauthorized Mac PRD retained pair.
 
-### 2026-10-28 — owner pause reaffirmed and route-validator delivery
+### Earlier 2026-10-28 checkpoint (19:05 UTC) — owner pause reaffirmed and route-validator delivery
 
 At 19:05 UTC, the owner reiterated that Dev, QAS, and PRD clients and
 publishers are paused. This supplements the earlier owner/control/effective-
@@ -513,3 +513,92 @@ replacement Linux, Sandbox, and Factory. Those checks do not implement the
 replacement PRD namespace bootstrap, issue/install TLS or SSH identities, or
 perform the paired Mac route transition. No service/runtime mutation followed
 the commit.
+
+### 2026-10-28 19:27 UTC — route-helper delivery
+
+The controller/configuration correction was delivered as Mac `dev` commit
+`99837926a8856f4ab4ef6ba46298619f3e8bc49d` to primary Gitea. The automatic
+GitHub `dev` mirror was verified at the exact same SHA. Replacement Linux,
+Sandbox and Factory worktrees were clean on `dev` at
+`31717a014db2bfefb07ac23d2e9db5aa53a05c4d` before pull; each fast-forwarded
+from GitHub and ended clean at `99837926a8856f4ab4ef6ba46298619f3e8bc49d`.
+
+Mac Go 1.27.1 `go test ./src/internal/config ./src/internal/laneinstall
+./src/cmd/runner-lane`, `go vet` for those packages, and `git diff --check`
+passed. No native Ubuntu validation or full service-bundle gate was run for
+this controller/configuration-only helper. It does not qualify a successor
+service release or prove live route identity.
+
+### 2026-10-28 19:41 UTC — exact #514 recovery completed
+
+The owner's later exact-pair recovery authorization supersedes the historical
+“not authorized” status above. The owner-confirmed Dev/QAS/PRD publisher pause
+remains in force; it was not used as proof that Mac PRD was stopped. A fresh
+pre-stop detailed Mac PRD inventory at `2026-10-28T19:29:19Z` (completed
+`19:29:20.364234Z`, SHA-256
+`f5f856897abe4d55bc06d8588f56aac16266fe3e90aef232b3228e0fc4d0aa16`)
+identified exactly the authorized lost pair:
+
+- Session `sess-dc857a66bccb38298a6b0b26485588c5`.
+- Command `cmd-2872a83c6411e7838bad02ca687fbfbd`.
+- Job `job-55049ec48ecff3747d09f97d96a18783`.
+
+It reported one live command slot and one live session reservation, no active
+session, queued/running command, resumable job, or pending recovery
+finalization. The command and session were already `lost`, and the output was
+incomplete. No other retained pair appeared in that inventory.
+
+The supported `runner-lane prd-stop --host mac-control-plane` completed. A
+fresh `prd-status` then returned `active=false`; the fresh selector still
+resolved to `rr-20261024-43a4e675` (release SHA-256
+`093bb383c57f1e99e79605d8bd2f28eb3938e318fd740c02939b8e55e5cb3f69`, Mac
+bundle SHA-256
+`a67cec224af031d269132d4c09dc22909d76bd1395e61e76fc828c5895ec6062`). A
+stopped-state attempt to use `catalog-work-inventory --details` returned
+`retained_work_inventory_unavailable`; no partial rows were accepted as
+evidence. The recovery command independently ran its exact sealed-bundle
+preflight under the Mac lifecycle lock, including LaunchAgent/socket stop
+checks, complete authority and exact-pair validation, runtime ownership audit,
+and guarded recovery/postflight.
+
+A new supported consistent backup was created while PRD remained stopped:
+
+- Directory: `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/backups/prd-catalog-20261028T194037.013280000Z`.
+- Manifest SHA-256: `310a4e07449454d7e79c92a0fb31e8715e3d47465e824dd45e60e2fddbdb6723`.
+- Database SHA-256: `5551b1ad34aa0c2170649ac4060e5cc2e24c2efd136fe2544c4bf71ed9352c78`.
+- Schema: 40; free bytes after backup: `109143687168`; required selector reserve: `67108864`.
+
+`catalog-prd-recover` passed for only the exact pair above, using the
+`runner-locald` recovery component from the unchanged selected release. Its
+report is preserved privately at
+`/private/tmp/rsr-bug027-prd-recovery-20261028T1932Z/recover-514-20261028T1940Z.json`
+(SHA-256
+`680755f93d4bddb542d63509163899b14d5b7b3e8914017da40aa18a8bf5e883`). It
+reports `recovered_lost_pairs=1`, schema 40 before and after, runtime ownership
+verified, service still stopped, selector unchanged, and zero active sessions,
+slots, reservations, queued/running commands, resumable jobs or pending
+finalizations afterward. The postflight work inventory is empty; historical
+local/remote intent records remain and are not treated as active capacity.
+
+A private read-only comparison against the just-created consistent backup
+confirms that the exact session, lost command, lost job, accepted local intent,
+and all 88 command events are unchanged. The command remains `lost`, exit code
+remains unknown, output remains incomplete, and final event sequence remains
+88. The event-stream digest is unchanged at
+`8b16b93b79f319493009528caeae3a6f162fdc18ca05ea5c0cec8a15aee6a373`. Only
+the selected command slot and session reservation changed: both now carry
+their supported stop/cleanup confirmation and release timestamp
+`2026-10-28T19:41:04.175242Z`. The comparison record is preserved privately at
+`/private/tmp/rsr-bug027-prd-recovery-20261028T1932Z/state-preservation-514.json`
+(SHA-256
+`a3112580a91abbca18e4d22298729f4b14b653c398fff00bd06d89cf317f9d51`). No
+script was replayed, no ACK was published, no database history was edited, and
+PRD was not restarted. This recovery does not constitute PRD deployment or
+acceptance.
+
+The remaining PRD replacement work is unchanged: implement and test the
+supported first-install/bootstrap and paired route/trust transition for
+replacement Linux, verify candidate acceptance for any service-byte change,
+prepare the release-bound PRD approval and backups, deploy through the
+promotion toolkit, and pass all eight PRD acceptance gates before reopening
+admissions or clients.
