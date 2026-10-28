@@ -464,8 +464,38 @@ with `--lost-pair sess-dc857a66bccb38298a6b0b26485588c5:cmd-2872a83c6411e7838bad
 The tool preserves its lost result and history, does not replay or ACK, and
 must release only this pair's reservation. Any additional work, selector,
 configuration, schema, backup, process or runtime mismatch must halt. The
-owner has been asked for this exact recovery decision; the pause confirmation
-above does not authorize it.
+exact lost-pair recovery decision is not granted by the pause confirmation and
+remains a separate owner decision if the pair blocks deployment.
+
+### 2026-10-28 19:24 UTC — all-lane pause reaffirmed and route candidate helper
+
+The owner reaffirmed that Dev, QAS and PRD clients and publishers are paused.
+This confirms the requested publisher pause; it does not establish that the
+services are stopped, that catalog admission holds are active, or that no
+publishers are configured. The latest measured inventory remains the
+19:17–19:19 UTC observation above. Refresh the complete inventories and
+operational guards immediately before any live write or restart.
+
+Added `BuildFreshPRDReplacementMacRoute`, an in-memory V2 configuration helper
+that changes only `remote_hosts.linux-host.queued_bridge.host` and
+`remote_hosts.linux-host.direct_endpoint.url`. It validates the exact retired
+route before building and validates the resulting V2 PRD document and full
+semantic diff. The helper edits only those two YAML scalar nodes; it does not
+write the configuration, change `known_hosts`, restart services, or certify
+the replacement SSH/TLS identities.
+
+The first focused regression exposed that marshaling the whole typed V2
+document materializes omitted zero-value structs and produces an invalid
+configuration. The helper was corrected to edit the validated YAML syntax
+tree, then parse and compare the complete typed document. Focused config tests
+and the affected `config`, `laneinstall`, and `runner-lane` test packages pass
+on Mac Go 1.27.1. This is controller/configuration source validation only.
+
+The supported replacement PRD bootstrap, host-local fresh config/identity
+installation, paired Mac configuration and SSH-pin transition, release-bound
+approval, and PRD deployment are still incomplete. No service, config, route,
+selector, certificate, key, database, mailbox path, reservation or ACK was
+changed. #514 remains the exact separately unauthorized Mac PRD retained pair.
 
 ### 2026-10-28 — owner pause reaffirmed and route-validator delivery
 

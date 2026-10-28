@@ -72,6 +72,43 @@ func TestValidateFreshPRDReplacementLinuxRouteDoesNotRequireRetiredWorkerConfig(
 	}
 }
 
+func TestBuildFreshPRDReplacementMacRouteChangesOnlyApprovedLinuxRoute(t *testing.T) {
+	macBefore, _, _, linuxAfter := prdReplacementRouteFixtures()
+	macAfter, err := BuildFreshPRDReplacementMacRoute(macBefore)
+	if err != nil {
+		t.Fatalf("build replacement Mac route: %v", err)
+	}
+	if err := ValidateFreshPRDReplacementLinuxRoute(macBefore, macAfter, linuxAfter); err != nil {
+		t.Fatalf("validate generated Mac route candidate: %v", err)
+	}
+	if _, err := ParseBytes(macAfter); err != nil {
+		t.Fatalf("generated Mac config must parse: %v", err)
+	}
+	if strings.Contains(string(macAfter), prdReplacementLinuxOldPublicIP) {
+		t.Fatal("generated Mac PRD route retained the retired linux-host address")
+	}
+}
+
+func TestBuildFreshPRDReplacementMacRouteRejectsDriftedOrNonV2Input(t *testing.T) {
+	macBefore, macAfter, _, _ := prdReplacementRouteFixtures()
+	tests := []struct {
+		name  string
+		input []byte
+	}{
+		{name: "already changed route", input: macAfter},
+		{name: "missing linux-host", input: []byte(strings.Replace(string(macBefore), "  linux-host:", "  retired-linux:", 1))},
+		{name: "V3 config", input: []byte(strings.Replace(string(macBefore), "version: 2", "version: 3", 1))},
+		{name: "malformed YAML", input: []byte("version: [")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := BuildFreshPRDReplacementMacRoute(test.input); err == nil {
+				t.Fatal("unexpected Mac route input was accepted")
+			}
+		})
+	}
+}
+
 func prdReplacementRouteFixtures() (macBefore, macAfter, linuxBefore, linuxAfter []byte) {
 	macBefore = []byte(macV2ConfigFixture)
 	macAfterText := strings.Replace(string(macV2ConfigFixture), "host: 129.151.232.40", "host: 79.72.94.59", 1)
