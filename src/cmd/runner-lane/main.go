@@ -163,6 +163,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogPreSwitchCheck(ctx, args[1:], stdout, stderr)
 	case "catalog-host-preflight":
 		err = runCatalogHostPreflight(ctx, args[1:], stdout, stderr)
+	case "catalog-rebind-linux-peer":
+		err = runCatalogRebindLinuxPeer(ctx, args[1:], stdout, stderr)
 	case "catalog-compatibility-check":
 		err = runCatalogCompatibilityCheck(ctx, args[1:], stdout, stderr)
 	case "catalog-prd-backup":
@@ -2204,6 +2206,73 @@ func localCatalogRoot(hostID string) (string, error) {
 		home = filepath.Join("/Users", config.MacAccount)
 	}
 	return filepath.Join(home, "projects-runtime", "runner-releases"), nil
+}
+
+func runCatalogRebindLinuxPeer(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-rebind-linux-peer", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "must be mac-control-plane")
+	lane := flags.String("lane", "", "dev or qas")
+	configPath := flags.String("config-file", "", "complete owner-only selected-lane Mac configuration")
+	peerConfigPath := flags.String("peer-config-file", "", "matching owner-only replacement Linux V3 configuration")
+	dispatcherPublicKeyPath := flags.String("dispatcher-public-key-file", "", "selected Mac lane dispatcher public key")
+	hostPublicKeyPath := flags.String("host-public-key-file", "", "replacement Linux SSH host public key")
+	expectedSHA := flags.String("expected-config-sha256", "", "exact currently installed configuration hash")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *host != "mac-control-plane" || (*lane != "dev" && *lane != "qas") || *configPath == "" ||
+		*peerConfigPath == "" || *dispatcherPublicKeyPath == "" || *hostPublicKeyPath == "" || *expectedSHA == "" {
+		return errors.New("usage: runner-lane catalog-rebind-linux-peer --host mac-control-plane --lane dev|qas --config-file CANDIDATE --peer-config-file LINUX-CONFIG --dispatcher-public-key-file FILE --host-public-key-file FILE --expected-config-sha256 SHA256")
+	}
+	plan, err := simplePlan(*host, *lane)
+	if err != nil || plan.Namespace.Host != config.HostKindMac {
+		return laneinstall.ErrSimpleLanePreflight
+	}
+	candidate, err := readPrivateConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	candidateConfig, err := config.LoadFile(*configPath)
+	if err != nil || candidateConfig.ReleaseLane() != plan.Lane || candidateConfig.Kind() != config.HostKindMac {
+		return errors.Join(config.ErrInvalidLaneProfiles, err)
+	}
+	peerConfig, err := config.LoadFile(*peerConfigPath)
+	if err != nil || peerConfig.ReleaseLane() != plan.Lane || peerConfig.Kind() != config.HostKindLinux {
+		return errors.Join(config.ErrInvalidLaneProfiles, err)
+	}
+	macProfiles, macOK := candidateConfig.LaneProfiles()
+	linuxProfiles, linuxOK := peerConfig.LaneProfiles()
+	if !macOK || !linuxOK || macProfiles.Lane() != plan.Lane || linuxProfiles.Lane() != plan.Lane || linuxProfiles.RemoteProfile() != "linux-host" {
+		return config.ErrInvalidLaneProfiles
+	}
+	dispatcherPublicKey, err := readPublicKey(*dispatcherPublicKeyPath)
+	if err != nil {
+		return err
+	}
+	hostPublicKey, err := readPublicKey(*hostPublicKeyPath)
+	if err != nil {
+		return err
+	}
+	queuedPlan, err := laneinstall.BuildSimpleQueuedSSHPlanFromV3Profiles("linux-host", plan.Lane,
+		dispatcherPublicKey, hostPublicKey, macProfiles, linuxProfiles)
+	if err != nil || queuedPlan.ValidateProfiles(macProfiles, linuxProfiles) != nil || queuedPlan.PublicHost != config.SimpleReplacementLinuxPublicIP || queuedPlan.Port != 22 {
+		return errors.Join(config.ErrInvalidLaneProfiles, err)
+	}
+	controller, err := laneinstall.NewSimpleServiceController()
+	if err != nil {
+		return err
+	}
+	maintenance, err := laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
+	if err != nil {
+		return err
+	}
+	defer maintenance.Close()
+	result, err := maintenance.RebindMacReplacementLinuxRoute(ctx, candidate, *expectedSHA, queuedPlan.MacArtifacts[0].Contents)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, result)
 }
 
 func runPlan(args []string, stdout, stderr io.Writer) error {

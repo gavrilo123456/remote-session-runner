@@ -62,6 +62,9 @@ type SimpleLaneBackupReceipt struct {
 
 func (r SimpleLaneBackupReceipt) Directory() string { return r.directory }
 
+// ManifestSHA256 is the digest of the immutable backup manifest.
+func (r SimpleLaneBackupReceipt) ManifestSHA256() string { return r.manifestHash }
+
 // SimpleLaneMaintenance holds the selected lane's existing lifecycle flock
 // from the stopped-service check through backup and bundle activation. Runner
 // startup uses the same lane lock, preventing an activation from racing a

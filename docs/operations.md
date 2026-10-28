@@ -629,6 +629,53 @@ Mac executor can release proven capacity and start the original queued identity;
 that requires explicit approval after a fresh read-only preflight records the
 affected state and expected effect.
 
+### Rebind a Mac Dev/QAS route to the replacement Linux worker
+
+`runner-lane catalog-rebind-linux-peer` is limited to the Mac control plane's
+Dev or QAS configuration and the verified replacement address. It accepts a
+complete owner-only V3 candidate file plus the matching Linux V3 peer config,
+the selected Mac dispatcher public key, and the replacement worker's SSH host
+public key. It validates the paired URLs, lane ports, controller and TLS pins,
+SSH fingerprints, and that only the
+`linux-host` queued address, direct URL, SSH host-key fingerprint, and direct
+server-certificate fingerprint changed. Lane policy, controller identity,
+mailbox roots, databases, sockets, workspaces, credentials paths, other peer
+routes, and PRD remain unchanged.
+
+The command takes the selected catalog and lifecycle locks, stops only that
+lane after proving its work inventory empty, creates a verified consistent
+configuration/database backup, rechecks selector/configuration/schema/work
+identities, preserves the original `known_hosts` file in that backup, and
+records a private rebind journal. It adds the new verified SSH host key before
+atomically replacing the config, preserving the old pin; an interruption can
+therefore leave an unused additive key but cannot activate a route without its
+pin. It leaves the selected service stopped for promotion. Do not use it for
+PRD, another peer, or a general configuration edit. The new host key and TLS
+certificate still need to pass strict SSH and TLS validation during live
+acceptance.
+
+```sh
+# Mac — tomasz.walczuk — use the exact current config hash and prepared owner-only candidate
+GO="/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/toolchains/go1.27.1/bin/go"
+GOCACHE=/private/tmp/remote-session-runner-gocache \
+GOMODCACHE=/private/tmp/remote-session-runner-gomodcache GOTOOLCHAIN=local \
+  "$GO" run ./src/cmd/runner-lane catalog-rebind-linux-peer \
+    --host mac-control-plane --lane dev \
+    --config-file /private/tmp/runner-lane-mac-dev-candidate.yaml \
+    --peer-config-file /private/tmp/runner-lane-linux-dev.yaml \
+    --dispatcher-public-key-file /private/tmp/runner-lane-dispatcher-dev.pub \
+    --host-public-key-file /private/tmp/runner-lane-linux-host-ed25519.pub \
+    --expected-config-sha256 '<current-dev-config-sha256>'
+```
+
+The peer configuration and public keys are read-only identity inputs. The
+dispatcher public key must match the existing lane private key; the worker
+host key must match both the peer config and the candidate Mac config. Run QAS
+only after Dev acceptance, with `--lane qas`, its own candidate/peer pair,
+keys, and freshly measured configuration hash. Preserve the JSON backup and
+rebind evidence, then verify the service remains stopped before beginning the
+selected-lane promotion.
+
 ### Read-only retained-work inventory before Mac recovery
 
 Use the supported detailed inventory command on the **Mac**, as the account

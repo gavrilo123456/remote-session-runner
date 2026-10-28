@@ -393,6 +393,19 @@ func LoadFile(path string) (Config, error) {
 	return parse(contents)
 }
 
+// ParseBytes validates one bounded configuration document already read by a
+// caller. It has the same schema and lane-policy checks as LoadFile; callers
+// that need owner/mode guarantees must establish those before passing bytes.
+func ParseBytes(contents []byte) (Config, error) {
+	if len(contents) == 0 {
+		return Config{}, ErrInvalidConfig
+	}
+	if len(contents) > MaxConfigBytes {
+		return Config{}, ErrConfigTooLarge
+	}
+	return parse(contents)
+}
+
 func validateConfigFileOwner(info os.FileInfo, expectedUID uint32) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || uint32(stat.Uid) != expectedUID {
@@ -577,25 +590,9 @@ func parseDuration(value string) (time.Duration, error) {
 }
 
 func parse(contents []byte) (Config, error) {
-	if len(contents) == 0 {
-		return Config{}, ErrInvalidConfig
-	}
-	if len(contents) > MaxConfigBytes {
-		return Config{}, ErrConfigTooLarge
-	}
-	if err := validateYAMLDocument(contents); err != nil {
-		return Config{}, ErrInvalidConfig
-	}
-	var document fileDocument
-	decoder := yaml.NewDecoder(bytes.NewReader(contents))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&document); err != nil {
-		// Parser errors may include scalar values. Keep them out of returned
-		// errors so an accidentally inlined secret cannot be copied to logs.
-		return Config{}, ErrInvalidConfig
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return Config{}, ErrInvalidConfig
+	document, err := decodeFileDocument(contents)
+	if err != nil {
+		return Config{}, err
 	}
 	config, err := validateDocument(document)
 	if err != nil {
@@ -603,6 +600,30 @@ func parse(contents []byte) (Config, error) {
 	}
 	config.sourceSHA256 = fmt.Sprintf("%x", sha256.Sum256(contents))
 	return config, nil
+}
+
+func decodeFileDocument(contents []byte) (fileDocument, error) {
+	if len(contents) == 0 {
+		return fileDocument{}, ErrInvalidConfig
+	}
+	if len(contents) > MaxConfigBytes {
+		return fileDocument{}, ErrConfigTooLarge
+	}
+	if err := validateYAMLDocument(contents); err != nil {
+		return fileDocument{}, ErrInvalidConfig
+	}
+	var document fileDocument
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&document); err != nil {
+		// Parser errors may include scalar values. Keep them out of returned
+		// errors so an accidentally inlined secret cannot be copied to logs.
+		return fileDocument{}, ErrInvalidConfig
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fileDocument{}, ErrInvalidConfig
+	}
+	return document, nil
 }
 
 func validateYAMLDocument(contents []byte) error {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -198,6 +199,106 @@ func TestSimpleV3ReplacementRouteUsesPairedExplicitAddresses(t *testing.T) {
 	if _, err := ValidateSimpleV3ProfileBindings(duplicate); !errors.Is(err, ErrInvalidLaneProfiles) {
 		t.Fatalf("duplicate worker routes were accepted: %v", err)
 	}
+}
+
+func TestValidateSimpleMacReplacementLinuxRouteAllowsOnlyTheSelectedPeerRoute(t *testing.T) {
+	for _, lane := range []ReleaseLane{ReleaseLaneDev, ReleaseLaneQAS} {
+		t.Run(string(lane), func(t *testing.T) {
+			beforeDocument := simpleRuntimeDocument(t, simpleRuntimeMacBindings(t, lane))
+			before, err := yaml.Marshal(beforeDocument)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidateDocument := cloneSimpleRuntimeDocument(t, beforeDocument)
+			index := macProfileIndex(candidateDocument.LaneProfiles.MacProfiles, "linux-host")
+			candidateDocument.LaneProfiles.MacProfiles[index].Queued.Host = SimpleReplacementLinuxPublicIP
+			candidateDocument.LaneProfiles.MacProfiles[index].Direct.URL = "https://" + SimpleReplacementLinuxPublicIP + ":" + itoa(mustSimpleNamespacePort(t, lane))
+			candidateDocument.LaneProfiles.MacProfiles[index].Queued.HostKeyFingerprint = "sha256:" + strings.Repeat("a", 64)
+			candidateDocument.LaneProfiles.MacProfiles[index].Direct.ExpectedServerCertificateFingerprint = "sha256:" + strings.Repeat("b", 64)
+			if candidateDocument.LaneProfiles.MacProfiles[index].Queued.HostKeyFingerprint == beforeDocument.LaneProfiles.MacProfiles[index].Queued.HostKeyFingerprint ||
+				candidateDocument.LaneProfiles.MacProfiles[index].Direct.ExpectedServerCertificateFingerprint == beforeDocument.LaneProfiles.MacProfiles[index].Direct.ExpectedServerCertificateFingerprint {
+				t.Fatal("test replacement pins must differ from fixture pins")
+			}
+			after, err := yaml.Marshal(candidateDocument)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateSimpleMacReplacementLinuxRoute(before, after, lane); err != nil {
+				t.Fatalf("valid replacement route rejected: %v", err)
+			}
+
+			cases := map[string]func(*fileDocument){
+				"mailbox root changed": func(document *fileDocument) {
+					mailbox := document.Mailboxes["default"]
+					mailbox.Root = "/tmp/other-mailbox"
+					document.Mailboxes["default"] = mailbox
+				},
+				"peer route changed": func(document *fileDocument) {
+					peer := macProfileIndex(document.LaneProfiles.MacProfiles, "sandbox-host")
+					document.LaneProfiles.MacProfiles[peer].Direct.URL = "https://198.51.100.4:8444"
+				},
+				"environment policy changed": func(document *fileDocument) {
+					for name, policy := range document.EnvironmentRegistry {
+						if len(policy.AllowedTargets) == 0 {
+							continue
+						}
+						policy.AllowedTargets[0].Profile = "unapproved-target"
+						document.EnvironmentRegistry[name] = policy
+						return
+					}
+					t.Fatal("fixture has no environment target to mutate")
+				},
+				"host key pin unchanged": func(document *fileDocument) {
+					document.LaneProfiles.MacProfiles[index].Queued.HostKeyFingerprint = beforeDocument.LaneProfiles.MacProfiles[index].Queued.HostKeyFingerprint
+				},
+				"TLS pin unchanged": func(document *fileDocument) {
+					document.LaneProfiles.MacProfiles[index].Direct.ExpectedServerCertificateFingerprint = beforeDocument.LaneProfiles.MacProfiles[index].Direct.ExpectedServerCertificateFingerprint
+				},
+				"wrong replacement address": func(document *fileDocument) {
+					document.LaneProfiles.MacProfiles[index].Queued.Host = "198.51.100.4"
+					document.LaneProfiles.MacProfiles[index].Direct.URL = "https://198.51.100.4:" + itoa(mustSimpleNamespacePort(t, lane))
+				},
+			}
+			for name, mutate := range cases {
+				t.Run(name, func(t *testing.T) {
+					bad := cloneSimpleRuntimeDocument(t, candidateDocument)
+					mutate(&bad)
+					contents, err := yaml.Marshal(bad)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := ValidateSimpleMacReplacementLinuxRoute(before, contents, lane); !errors.Is(err, ErrInvalidLaneProfiles) {
+						t.Fatalf("unsafe replacement accepted: %v", err)
+					}
+				})
+			}
+			if err := ValidateSimpleMacReplacementLinuxRoute(before, after, ReleaseLanePRD); !errors.Is(err, ErrInvalidLaneProfiles) {
+				t.Fatalf("PRD config update accepted: %v", err)
+			}
+		})
+	}
+}
+
+func cloneSimpleRuntimeDocument(t *testing.T, document fileDocument) fileDocument {
+	t.Helper()
+	contents, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clone fileDocument
+	if err := yaml.Unmarshal(contents, &clone); err != nil {
+		t.Fatal(err)
+	}
+	return clone
+}
+
+func mustSimpleNamespacePort(t *testing.T, lane ReleaseLane) int {
+	t.Helper()
+	namespace, err := DeriveSimpleLaneNamespace(HostKindLinux, lane, "linux-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return namespace.DirectPort
 }
 
 func TestSimpleV3RuntimeResolvesExplicitOptionalMacLocalTarget(t *testing.T) {
