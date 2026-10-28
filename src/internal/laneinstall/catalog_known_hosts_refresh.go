@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,7 +87,8 @@ func (m *CatalogLaneMaintenance) RefreshMacReplacementLinuxKnownHosts(
 		return CatalogKnownHostsRefreshResult{}, ErrSimpleLanePreflight
 	}
 	linuxPlan, err := BuildSimplePlan("linux-host", plan.Lane)
-	if err != nil || profile.Direct.URL != linuxPlan.Namespace.DirectEndpointURL ||
+	expectedDirectURL, routeOK := replacementLinuxDirectEndpointURL(linuxPlan)
+	if err != nil || !routeOK || profile.Direct.URL != expectedDirectURL ||
 		profile.Queued.KnownHostsFile != filepath.Join(plan.Namespace.ServiceRoot, "secrets", "profiles", "linux-host", "ssh", "known_hosts") {
 		return CatalogKnownHostsRefreshResult{}, ErrSimpleLanePreflight
 	}
@@ -190,6 +192,22 @@ func (m *CatalogLaneMaintenance) RefreshMacReplacementLinuxKnownHosts(
 		BackupManifestSHA256: manifestSHA, KnownHostsBackupPath: knownHostsBackupPath,
 		EvidencePath: evidencePath, EvidenceSHA256: digestBytes(evidenceBytes), WorkInventoryEmpty: true, ServiceStopped: true,
 	}, nil
+}
+
+// replacementLinuxDirectEndpointURL derives the replacement worker endpoint
+// from the canonical lane namespace. BuildSimplePlan intentionally retains the
+// retired host's historical URL, so comparing a replacement V3 route directly
+// with Namespace.DirectEndpointURL would reject the supported migration.
+func replacementLinuxDirectEndpointURL(plan Plan) (string, bool) {
+	if plan.HostID != "linux-host" || (plan.Lane != config.ReleaseLaneDev && plan.Lane != config.ReleaseLaneQAS) ||
+		plan.Namespace.Host != config.HostKindLinux || plan.Namespace.RemoteProfile != "linux-host" {
+		return "", false
+	}
+	canonical, err := config.DeriveSimpleLaneNamespace(config.HostKindLinux, plan.Lane, "linux-host")
+	if err != nil || canonical != plan.Namespace || (canonical.DirectPort != 8444 && canonical.DirectPort != 8445) {
+		return "", false
+	}
+	return "https://" + config.SimpleReplacementLinuxPublicIP + ":" + strconv.Itoa(canonical.DirectPort), true
 }
 
 // reduceReplacementKnownHosts returns the one exact current endpoint key while

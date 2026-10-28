@@ -39,6 +39,39 @@ func TestReduceReplacementKnownHostsProducesPinnedCurrentEntry(t *testing.T) {
 	}
 }
 
+func TestReplacementLinuxDirectEndpointUsesReplacementAddressAndCanonicalLanePort(t *testing.T) {
+	for _, tc := range []struct {
+		lane config.ReleaseLane
+		port string
+	}{{config.ReleaseLaneDev, "8444"}, {config.ReleaseLaneQAS, "8445"}} {
+		t.Run(string(tc.lane), func(t *testing.T) {
+			plan, err := BuildSimplePlan("linux-host", tc.lane)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := replacementLinuxDirectEndpointURL(plan)
+			want := "https://" + config.SimpleReplacementLinuxPublicIP + ":" + tc.port
+			if !ok || got != want {
+				t.Fatalf("replacement endpoint = %q, ok=%v; want %q", got, ok, want)
+			}
+			if got == plan.Namespace.DirectEndpointURL {
+				t.Fatalf("replacement endpoint unexpectedly retained retired URL %q", got)
+			}
+
+			bad := plan
+			bad.Namespace.DirectPort++
+			if _, ok := replacementLinuxDirectEndpointURL(bad); ok {
+				t.Fatal("noncanonical lane port was accepted")
+			}
+			bad = plan
+			bad.Lane = config.ReleaseLanePRD
+			if _, ok := replacementLinuxDirectEndpointURL(bad); ok {
+				t.Fatal("PRD plan was accepted by the Dev/QAS replacement helper")
+			}
+		})
+	}
+}
+
 func TestPreserveKnownHostsRefreshBackupRetainsExactPriorBytes(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {
