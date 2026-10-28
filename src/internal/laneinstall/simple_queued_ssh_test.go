@@ -1,13 +1,17 @@
 package laneinstall
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/domain"
 )
 
 func TestSimpleQueuedSSHUsesExistingPort22AndLaneBoundForcedCommand(t *testing.T) {
@@ -44,6 +48,161 @@ func TestSimpleQueuedSSHUsesExistingPort22AndLaneBoundForcedCommand(t *testing.T
 			}
 		}
 	}
+}
+
+func TestSimpleQueuedSSHUsesValidatedReplacementV3Address(t *testing.T) {
+	dispatcherKey := l202PublicKey("replacement-dispatcher")
+	hostKey := l202PublicKey("replacement-existing-host")
+	mac, linux := simpleQueuedReplacementProfiles(t, config.ReleaseLaneDev, dispatcherKey, hostKey)
+	plan, err := BuildSimpleQueuedSSHPlanFromV3Profiles(
+		"linux-host", config.ReleaseLaneDev, dispatcherKey, hostKey, mac, linux,
+	)
+	if err != nil {
+		t.Fatalf("build queued plan from explicit V3 route: %v", err)
+	}
+	if err := plan.ValidateProfiles(mac, linux); err != nil {
+		t.Fatalf("replacement route did not match the paired worker profile: %v", err)
+	}
+	if plan.PublicHost != "79.72.94.59" || !strings.HasPrefix(plan.MacArtifacts[0].Contents, "79.72.94.59 ssh-ed25519 ") {
+		t.Fatalf("known_hosts route did not follow the validated V3 profile: host=%q contents=%q", plan.PublicHost, plan.MacArtifacts[0].Contents)
+	}
+
+	legacy, err := BuildSimpleQueuedSSHPlan("linux-host", config.ReleaseLaneDev, l202PublicKey("legacy-dispatcher"), l202PublicKey("legacy-host"))
+	if err != nil || legacy.PublicHost != "129.151.232.40" {
+		t.Fatalf("legacy default route changed: plan=%+v err=%v", legacy, err)
+	}
+	if _, err := BuildSimpleQueuedSSHPlanFromV3Profiles(
+		"linux-host", config.ReleaseLanePRD, l202PublicKey("prd-dispatcher"),
+		l202PublicKey("prd-host"), mac, linux,
+	); err == nil {
+		t.Fatal("replacement Dev/QAS address was accepted for PRD")
+	}
+}
+
+func simpleQueuedReplacementProfiles(t *testing.T, lane config.ReleaseLane, dispatcherPublicKey, hostPublicKey string) (config.ValidatedV3Profiles, config.ValidatedV3Profiles) {
+	t.Helper()
+	dispatcher, err := parseEd25519PublicKey(dispatcherPublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostKey, err := parseEd25519PublicKey(hostPublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	macNS, err := config.DeriveSimpleLaneNamespace(config.HostKindMac, lane, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linuxNS, err := config.DeriveSimpleLaneNamespace(config.HostKindLinux, lane, "linux-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := make([]config.V3MacRemoteProfile, 0, 3)
+	allTargets := make([]config.V3TargetBinding, 0, 3)
+	allContexts := make([]config.V3ExecutionContextBinding, 0, 3)
+	controllers := []config.V3ControllerBinding{{Type: string(domain.ControllerTypeQueuedMac), ID: config.MacAccount}}
+	for _, host := range []string{"linux-host", "sandbox-host", "factory-sandbox"} {
+		ns, err := config.DeriveSimpleLaneNamespace(config.HostKindLinux, lane, host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		publicIP := map[string]string{"linux-host": "129.151.232.40", "sandbox-host": "132.226.205.205", "factory-sandbox": "145.241.255.66"}[host]
+		if host == "linux-host" && lane != config.ReleaseLanePRD {
+			publicIP = "79.72.94.59"
+		}
+		port := ns.DirectPort
+		fp := func(offset int) string {
+			sum := sha256.Sum256([]byte(string(lane) + "/" + host + "/" + fmt.Sprint(offset)))
+			return "sha256:" + hex.EncodeToString(sum[:])
+		}
+		hostFingerprint, dispatcherFingerprint := fp(0), fp(1)
+		if host == "linux-host" {
+			hostFingerprint = lowerHexFingerprint(hostKey.blob)
+			dispatcherFingerprint = lowerHexFingerprint(dispatcher.blob)
+		}
+		profile := config.V3MacRemoteProfile{
+			Profile: host,
+			Queued: config.V3MacQueuedCredentials{
+				Host: publicIP, Port: 22,
+				KnownHostsFile:     filepath.Join(macNS.ServiceRoot, "secrets", "profiles", host, "ssh", "known_hosts"),
+				HostKeyFingerprint: hostFingerprint, DispatcherPrivateKeyFile: filepath.Join(macNS.ServiceRoot, "secrets", "profiles", host, "ssh", "dispatcher_ed25519"),
+				DispatcherPublicKeyFingerprint: dispatcherFingerprint,
+			},
+			Direct: config.V3MacDirectCredentials{
+				Name: ns.DirectEndpointName, URL: "https://" + publicIP + ":" + fmt.Sprint(port),
+				ServerCAFile: filepath.Join(macNS.ServiceRoot, "secrets", "profiles", host, "tls", "server-ca.pem"), ServerCAFingerprint: fp(2),
+				ClientCertificateFile: filepath.Join(macNS.ServiceRoot, "secrets", "profiles", host, "tls", "client.pem"), ClientCertificateFingerprint: fp(3),
+				ClientPrivateKeyFile: filepath.Join(macNS.ServiceRoot, "secrets", "profiles", host, "tls", "client.key"), ClientSPKIFingerprint: fp(4),
+				ExpectedServerCertificateFingerprint: fp(5), ExpectedClientCAFingerprint: fp(6),
+				ClientURISAN:   "urn:remote-session-runner:lane:" + string(lane) + ":controller:" + host,
+				ServerURISAN:   "urn:remote-session-runner:lane:" + string(lane) + ":server:" + host,
+				ControllerType: string(domain.ControllerTypeDirectMTLS), ControllerID: "runner-controller-" + string(lane) + "-" + host,
+			},
+		}
+		profiles = append(profiles, profile)
+		target := config.V3TargetBinding{Kind: domain.TargetKindRemote, Profile: host}
+		allTargets = append(allTargets, target)
+		allContexts = append(allContexts, config.V3ExecutionContextBinding{Name: "ctx-" + host, Environment: "runner", Target: target})
+		controllers = append(controllers, config.V3ControllerBinding{Type: string(domain.ControllerTypeDirectMTLS), ID: profile.Direct.ControllerID})
+	}
+	macBindings := config.V3ProfileBindings{
+		Version: config.VersionV3, ReleaseLane: lane, Host: config.HostKindMac, MacProfiles: profiles,
+		Environments:      []config.V3EnvironmentBinding{{Name: "runner", EffectiveAccount: config.LinuxAccount, AllowedTargets: allTargets, AllowedControllers: controllers}},
+		ExecutionContexts: allContexts,
+	}
+	macProfiles, err := config.ValidateSimpleV3ProfileBindings(macBindings)
+	if err != nil {
+		t.Fatalf("validate Mac replacement profiles: %v", err)
+	}
+	macRoute, _ := macProfiles.MacProfile("linux-host")
+	linuxBindings := config.V3ProfileBindings{
+		Version: config.VersionV3, ReleaseLane: lane, Host: config.HostKindLinux, RemoteProfile: "linux-host",
+		LinuxProfile: &config.V3LinuxProfileBinding{
+			RemoteProfile: "linux-host",
+			Queued: config.V3LinuxQueuedCredentials{
+				Host: macRoute.Queued.Host, Port: 22, Bind: linuxNS.QueuedSSHBind,
+				HostKeyFile: linuxNS.SSHHostPublicKeyFile, HostKeyFingerprint: macRoute.Queued.HostKeyFingerprint,
+				AuthorizedKeyFingerprint: macRoute.Queued.DispatcherPublicKeyFingerprint, Socket: linuxNS.PrivateSocket,
+			},
+			Direct: config.V3LinuxDirectCredentials{
+				Name: macRoute.Direct.Name, URL: macRoute.Direct.URL, Bind: func() string {
+					ip := "10.0.0.200"
+					if lane != config.ReleaseLanePRD {
+						ip = "10.0.0.228"
+					}
+					return ip + ":" + fmt.Sprint(linuxNS.DirectPort)
+				}(),
+				ServerCertificateFile:           filepath.Join(linuxNS.ServiceRoot, "secrets", "profiles", "linux-host", "tls", "server.pem"),
+				ServerCertificateFingerprint:    macRoute.Direct.ExpectedServerCertificateFingerprint,
+				ServerPrivateKeyFile:            filepath.Join(linuxNS.ServiceRoot, "secrets", "profiles", "linux-host", "tls", "server.key"),
+				ServerSPKIFingerprint:           fpFor("server-spki"),
+				ClientCAFile:                    filepath.Join(linuxNS.ServiceRoot, "secrets", "profiles", "linux-host", "tls", "client-ca.pem"),
+				ClientCAFingerprint:             macRoute.Direct.ExpectedClientCAFingerprint,
+				ClientPrincipalMapFile:          filepath.Join(linuxNS.ServiceRoot, "config", "client-principals.yaml"),
+				AuthorizedClientFingerprint:     macRoute.Direct.ClientCertificateFingerprint,
+				AuthorizedClientSPKIFingerprint: macRoute.Direct.ClientSPKIFingerprint,
+				ClientURISAN:                    macRoute.Direct.ClientURISAN, ServerURISAN: macRoute.Direct.ServerURISAN,
+				ControllerType: macRoute.Direct.ControllerType, ControllerID: macRoute.Direct.ControllerID,
+			},
+		},
+		Environments: []config.V3EnvironmentBinding{{Name: "runner", EffectiveAccount: config.LinuxAccount,
+			AllowedTargets: []config.V3TargetBinding{{Kind: domain.TargetKindRemote, Profile: "linux-host"}},
+			AllowedControllers: []config.V3ControllerBinding{
+				{Type: string(domain.ControllerTypeQueuedMac), ID: config.MacAccount},
+				{Type: string(domain.ControllerTypeDirectMTLS), ID: macRoute.Direct.ControllerID},
+			}}},
+		ExecutionContexts: []config.V3ExecutionContextBinding{{Name: "ctx-linux-host", Environment: "runner", Target: config.V3TargetBinding{Kind: domain.TargetKindRemote, Profile: "linux-host"}}},
+	}
+	linuxProfiles, err := config.ValidateSimpleV3ProfileBindings(linuxBindings)
+	if err != nil {
+		t.Fatalf("validate Linux replacement profile: %v", err)
+	}
+	return macProfiles, linuxProfiles
+}
+
+func fpFor(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func TestSimpleQueuedAuthorizedKeyAppendPreservesAndBacksUpExistingEntries(t *testing.T) {

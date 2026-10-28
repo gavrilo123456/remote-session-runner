@@ -248,7 +248,7 @@ func validateV3LinuxRuntimeDocument(linux *linuxDocument, refs secretReferencesD
 	}
 	namespace, err := DeriveSimpleLaneNamespace(HostKindLinux, document.ReleaseLane, profile.RemoteProfile)
 	if err != nil || linux.Account != namespace.Account || linux.ServiceRoot != namespace.ServiceRoot || !validServiceRoot(linux.ServiceRoot) ||
-		linux.DirectHTTPSBind != namespace.DirectHTTPSBind || linux.DirectPublicEndpoint != namespace.DirectEndpointURL ||
+		linux.DirectHTTPSBind != profile.Direct.Bind || linux.DirectPublicEndpoint != profile.Direct.URL ||
 		linux.ServerCertificate != profile.Direct.ServerCertificateFile || linux.ClientCA != profile.Direct.ClientCAFile ||
 		linux.ClientPrincipalMap != profile.Direct.ClientPrincipalMapFile {
 		return ErrInvalidConfig

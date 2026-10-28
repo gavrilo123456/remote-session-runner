@@ -54,6 +54,56 @@ func TestRunPlanRejectsPRDAndUnknownHost(t *testing.T) {
 	}
 }
 
+func TestCatalogNamespaceAbsenceBootstrapIdentityIsNarrow(t *testing.T) {
+	for _, tc := range []struct {
+		name, host, goos, goarch, account string
+		want                              bool
+	}{
+		{name: "replacement Linux operator", host: "linux-host", goos: "linux", goarch: "amd64", account: config.LinuxAccount, want: true},
+		{name: "other host", host: "sandbox-host", goos: "linux", goarch: "amd64", account: config.LinuxAccount},
+		{name: "Mac platform", host: "linux-host", goos: "darwin", goarch: "arm64", account: config.LinuxAccount},
+		{name: "other Linux architecture", host: "linux-host", goos: "linux", goarch: "arm64", account: config.LinuxAccount},
+		{name: "wrong account", host: "linux-host", goos: "linux", goarch: "amd64", account: "nobody"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := catalogNamespaceAbsenceHostMatches(tc.host, tc.goos, tc.goarch, tc.account); got != tc.want {
+				t.Fatalf("bootstrap host match = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReplacementLinuxLocalIdentityRequiresVerifiedMachineAddress(t *testing.T) {
+	tests := []struct {
+		name      string
+		host      string
+		goos      string
+		goarch    string
+		account   string
+		addresses []string
+		want      bool
+	}{
+		{name: "replacement host", host: "linux-host", goos: "linux", goarch: "amd64", account: config.LinuxAccount,
+			addresses: []string{laneinstall.ReplacementLinuxPrivateIP}, want: true},
+		{name: "old Linux worker address", host: "linux-host", goos: "linux", goarch: "amd64", account: config.LinuxAccount,
+			addresses: []string{"10.0.0.12"}},
+		{name: "missing address", host: "linux-host", goos: "linux", goarch: "amd64", account: config.LinuxAccount},
+		{name: "wrong account", host: "linux-host", goos: "linux", goarch: "amd64", account: "root",
+			addresses: []string{laneinstall.ReplacementLinuxPrivateIP}},
+		{name: "wrong architecture", host: "linux-host", goos: "linux", goarch: "arm64", account: config.LinuxAccount,
+			addresses: []string{laneinstall.ReplacementLinuxPrivateIP}},
+		{name: "other canonical host", host: "sandbox-host", goos: "linux", goarch: "amd64", account: config.LinuxAccount,
+			addresses: []string{laneinstall.ReplacementLinuxPrivateIP}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := replacementLinuxLocalIdentityMatches(tc.host, tc.goos, tc.goarch, tc.account, tc.addresses); got != tc.want {
+				t.Fatalf("replacement identity match = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPRDMaintenanceCommandsRejectNoncanonicalHostBeforeOperating(t *testing.T) {
 	for _, args := range [][]string{
 		{"prd-preflight", "--host", "unlisted"},

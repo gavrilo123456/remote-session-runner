@@ -21,16 +21,17 @@ import (
 )
 
 type HostProfile struct {
-	HostID                  string `json:"host_id"`
-	Target                  string `json:"ssh_target,omitempty"`
-	IdentityFile            string `json:"identity_file,omitempty"`
-	KnownHostsFile          string `json:"known_hosts_file,omitempty"`
-	GitIdentityFile         string `json:"git_identity_file"`
-	GitKnownHostsFile       string `json:"git_known_hosts_file"`
-	Repository              string `json:"repository"`
-	GoBinary                string `json:"go_binary"`
-	RuntimeRoot             string `json:"runtime_root"`
-	LegacyCompatibilityFile string `json:"legacy_compatibility_file,omitempty"`
+	HostID                       string `json:"host_id"`
+	Target                       string `json:"ssh_target,omitempty"`
+	IdentityFile                 string `json:"identity_file,omitempty"`
+	KnownHostsFile               string `json:"known_hosts_file,omitempty"`
+	GitIdentityFile              string `json:"git_identity_file"`
+	GitKnownHostsFile            string `json:"git_known_hosts_file"`
+	Repository                   string `json:"repository"`
+	GoBinary                     string `json:"go_binary"`
+	RuntimeRoot                  string `json:"runtime_root"`
+	LegacyCompatibilityFile      string `json:"legacy_compatibility_file,omitempty"`
+	AllowFirstInstallPeerAbsence bool   `json:"allow_first_install_peer_absence,omitempty"`
 }
 
 type HostConfiguration struct {
@@ -39,6 +40,8 @@ type HostConfiguration struct {
 }
 
 var safeTargetPattern = regexp.MustCompile(`^[A-Za-z0-9_.@:-]{1,255}$`)
+
+const replacementLinuxTarget = laneinstall.ReplacementLinuxSSH
 
 func LoadHostConfiguration(path string) (HostConfiguration, error) {
 	var cfg HostConfiguration
@@ -81,6 +84,9 @@ func LoadHostConfiguration(path string) (HostConfiguration, error) {
 		}
 		if p.LegacyCompatibilityFile != "" && !absoluteClean(p.LegacyCompatibilityFile) {
 			return cfg, ErrInvalidInput
+		}
+		if p.AllowFirstInstallPeerAbsence && (host != "linux-host" || p.Target != replacementLinuxTarget) {
+			return cfg, fmt.Errorf("only the verified replacement linux-host target may authorize absent first-install peers: %w", ErrInvalidInput)
 		}
 		if host == "mac-control-plane" {
 			if p.Target != "" || p.IdentityFile != "" || p.KnownHostsFile != "" {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -289,7 +290,14 @@ func validMacProfileBindingWith(profileName string, lane ReleaseLane, got V3MacR
 		return false
 	}
 	profile := laneRemoteProfiles[got.Profile]
-	if !isPublicIP(got.Queued.Host) || got.Queued.Host != profile.publicIP || got.Queued.Port != namespace.QueuePort ||
+	expectedEndpoint := namespace.DirectEndpointURL
+	if namespace.QueuePort == 22 {
+		if !SimpleLanePublicRouteAddressAllowedForLane(got.Profile, lane, got.Queued.Host) {
+			return false
+		}
+		expectedEndpoint = "https://" + got.Queued.Host + ":" + itoa(namespace.DirectPort)
+	}
+	if !isPublicIP(got.Queued.Host) || (namespace.QueuePort != 22 && got.Queued.Host != profile.publicIP) || got.Queued.Port != namespace.QueuePort ||
 		got.Queued.KnownHostsFile != laneSecretPath(macNamespace.ServiceRoot, got.Profile, "ssh", "known_hosts") ||
 		!validFingerprint(got.Queued.HostKeyFingerprint) ||
 		got.Queued.DispatcherPrivateKeyFile != laneSecretPath(macNamespace.ServiceRoot, got.Profile, "ssh", "dispatcher_ed25519") ||
@@ -299,7 +307,7 @@ func validMacProfileBindingWith(profileName string, lane ReleaseLane, got V3MacR
 	expectedController := laneControllerID(lane, got.Profile)
 	expectedServerURI := laneServerURI(lane, got.Profile)
 	direct := got.Direct
-	return direct.Name == namespace.DirectEndpointName && direct.URL == namespace.DirectEndpointURL &&
+	return direct.Name == namespace.DirectEndpointName && direct.URL == expectedEndpoint &&
 		direct.ServerCAFile == laneSecretPath(macNamespace.ServiceRoot, got.Profile, "tls", "server-ca.pem") &&
 		validFingerprint(direct.ServerCAFingerprint) &&
 		direct.ClientCertificateFile == laneSecretPath(macNamespace.ServiceRoot, got.Profile, "tls", "client.pem") &&
@@ -329,14 +337,29 @@ func validLinuxProfileBindingWith(lane ReleaseLane, got V3LinuxProfileBinding, d
 		queueBind = namespace.QueuedSSHBind
 		hostKeyFile = namespace.SSHHostPublicKeyFile
 	}
-	if queue.Host != profile.publicIP || queue.Port != namespace.QueuePort || queue.Bind != queueBind ||
+	direct := got.Direct
+	expectedURL, expectedBind := namespace.DirectEndpointURL, namespace.DirectHTTPSBind
+	if namespace.QueuePort == 22 {
+		bindHost, bindPort, bindErr := net.SplitHostPort(direct.Bind)
+		urlValue, urlErr := url.Parse(direct.URL)
+		if bindErr != nil || urlErr != nil || urlValue.Scheme != "https" || urlValue.User != nil ||
+			urlValue.Opaque != "" || urlValue.Path != "" || urlValue.RawPath != "" ||
+			urlValue.RawQuery != "" || urlValue.ForceQuery || urlValue.Fragment != "" || urlValue.String() != direct.URL ||
+			!SimpleLaneRouteAddressAllowedForLane(got.RemoteProfile, lane, urlValue.Hostname(), bindHost) ||
+			bindPort != itoa(namespace.DirectPort) || urlValue.Port() != itoa(namespace.DirectPort) ||
+			urlValue.Hostname() != queue.Host {
+			return false
+		}
+		expectedURL, expectedBind = direct.URL, direct.Bind
+	}
+	if (namespace.QueuePort == 22 && !SimpleLanePublicRouteAddressAllowedForLane(got.RemoteProfile, lane, queue.Host)) ||
+		(namespace.QueuePort != 22 && queue.Host != profile.publicIP) || queue.Port != namespace.QueuePort || queue.Bind != queueBind ||
 		queue.HostKeyFile != hostKeyFile ||
 		!validFingerprint(queue.HostKeyFingerprint) || !validFingerprint(queue.AuthorizedKeyFingerprint) || queue.Socket != namespace.PrivateSocket {
 		return false
 	}
-	direct := got.Direct
 	controllerID := laneControllerID(lane, got.RemoteProfile)
-	return direct.Name == namespace.DirectEndpointName && direct.URL == namespace.DirectEndpointURL && direct.Bind == namespace.DirectHTTPSBind &&
+	return direct.Name == namespace.DirectEndpointName && direct.URL == expectedURL && direct.Bind == expectedBind &&
 		direct.ServerCertificateFile == laneSecretPath(namespace.ServiceRoot, got.RemoteProfile, "tls", "server.pem") &&
 		validFingerprint(direct.ServerCertificateFingerprint) &&
 		direct.ServerPrivateKeyFile == laneSecretPath(namespace.ServiceRoot, got.RemoteProfile, "tls", "server.key") &&
@@ -491,7 +514,8 @@ func validFingerprint(value string) bool { return sha256FingerprintPattern.Match
 
 func isPublicIP(value string) bool {
 	ip := net.ParseIP(value)
-	return ip != nil && ip.To4() != nil && ip.String() == value
+	return ip != nil && ip.To4() != nil && ip.String() == value && ip.IsGlobalUnicast() &&
+		!ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
 }
 
 func targetKey(target V3TargetBinding) string { return string(target.Kind) + "\x00" + target.Profile }
@@ -529,6 +553,7 @@ func ValidateV3MacLinuxProfilePair(mac, linux ValidatedV3Profiles, profile strin
 	queue := linux.bindings.LinuxProfile.Queued
 	direct := linux.bindings.LinuxProfile.Direct
 	if macProfile.Queued.Host != queue.Host || macProfile.Queued.Port != queue.Port ||
+		macProfile.Direct.Name != direct.Name || macProfile.Direct.URL != direct.URL ||
 		macProfile.Queued.HostKeyFingerprint != queue.HostKeyFingerprint ||
 		macProfile.Queued.DispatcherPublicKeyFingerprint != queue.AuthorizedKeyFingerprint ||
 		macProfile.Direct.ExpectedServerCertificateFingerprint != direct.ServerCertificateFingerprint ||
@@ -548,6 +573,18 @@ func ValidateV3MacLinuxProfilePair(mac, linux ValidatedV3Profiles, profile strin
 func ValidateV3MacProfileDistinctness(profiles ValidatedV3Profiles) error {
 	if profiles.bindings.Host != HostKindMac {
 		return ErrInvalidLaneProfiles
+	}
+	seenSSHHosts := make(map[string]struct{}, len(profiles.profiles))
+	seenDirectURLs := make(map[string]struct{}, len(profiles.profiles))
+	for _, profile := range profiles.profiles {
+		if _, duplicate := seenSSHHosts[profile.Queued.Host]; duplicate {
+			return ErrInvalidLaneProfiles
+		}
+		if _, duplicate := seenDirectURLs[profile.Direct.URL]; duplicate {
+			return ErrInvalidLaneProfiles
+		}
+		seenSSHHosts[profile.Queued.Host] = struct{}{}
+		seenDirectURLs[profile.Direct.URL] = struct{}{}
 	}
 	checks := []func(V3MacRemoteProfile) string{
 		func(p V3MacRemoteProfile) string { return p.Queued.HostKeyFingerprint },

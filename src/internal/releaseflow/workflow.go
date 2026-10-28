@@ -9,26 +9,29 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"remote-session-runner/src/internal/laneinstall"
 )
 
 type PromotionPlan struct {
-	Lane                       string                       `json:"lane"`
-	ReleaseID                  string                       `json:"release_id"`
-	ReleaseSHA256              string                       `json:"release_sha256"`
-	Target                     string                       `json:"target"`
-	AffectedHosts              []string                     `json:"affected_hosts"`
-	CommonEffects              []string                     `json:"common_effects"`
-	HostOrder                  []string                     `json:"host_switch_order"`
-	RequiredProof              []string                     `json:"required_proofs"`
-	Approval                   string                       `json:"approval"`
-	ExpectedBranchMarker       string                       `json:"expected_branch_marker,omitempty"`
-	ExpectedBranchMarkerExists bool                         `json:"expected_branch_marker_exists"`
-	HostBaselines              []HostObservation            `json:"host_baselines,omitempty"`
-	PeerLaneEvidence           map[string]map[string]string `json:"peer_lane_evidence,omitempty"`
-	PeerLaneEvidenceProfile    string                       `json:"peer_lane_evidence_profile,omitempty"`
-	ExistingHolds              map[string]string            `json:"existing_admission_holds,omitempty"`
-	PredecessorBundleSHA256    map[string]string            `json:"predecessor_bundle_sha256,omitempty"`
-	BackupRecoveryPackageSHA   string                       `json:"backup_recovery_package_sha256,omitempty"`
+	Lane                       string                                                          `json:"lane"`
+	ReleaseID                  string                                                          `json:"release_id"`
+	ReleaseSHA256              string                                                          `json:"release_sha256"`
+	Target                     string                                                          `json:"target"`
+	AffectedHosts              []string                                                        `json:"affected_hosts"`
+	CommonEffects              []string                                                        `json:"common_effects"`
+	HostOrder                  []string                                                        `json:"host_switch_order"`
+	RequiredProof              []string                                                        `json:"required_proofs"`
+	Approval                   string                                                          `json:"approval"`
+	ExpectedBranchMarker       string                                                          `json:"expected_branch_marker,omitempty"`
+	ExpectedBranchMarkerExists bool                                                            `json:"expected_branch_marker_exists"`
+	HostBaselines              []HostObservation                                               `json:"host_baselines,omitempty"`
+	PeerLaneEvidence           map[string]map[string]string                                    `json:"peer_lane_evidence,omitempty"`
+	PeerLaneEvidenceProfile    string                                                          `json:"peer_lane_evidence_profile,omitempty"`
+	PeerLaneAbsenceEvidence    map[string]map[string]laneinstall.CatalogNamespaceAbsenceReport `json:"peer_lane_absence_evidence,omitempty"`
+	ExistingHolds              map[string]string                                               `json:"existing_admission_holds,omitempty"`
+	PredecessorBundleSHA256    map[string]string                                               `json:"predecessor_bundle_sha256,omitempty"`
+	BackupRecoveryPackageSHA   string                                                          `json:"backup_recovery_package_sha256,omitempty"`
 }
 
 type HostObservation struct {

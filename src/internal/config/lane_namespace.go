@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -289,6 +290,50 @@ var laneRemoteProfiles = map[string]laneRemoteProfile{
 	"linux-host":      {endpointPrefix: "linux", publicIP: "129.151.232.40", privateIP: "10.0.0.200"},
 	"sandbox-host":    {endpointPrefix: "sandbox", publicIP: "132.226.205.205", privateIP: "10.0.0.14"},
 	"factory-sandbox": {endpointPrefix: "factory-sandbox", publicIP: "145.241.255.66", privateIP: "10.0.0.30"},
+}
+
+// SimpleLaneRouteAddressAllowed validates a public IPv4 endpoint and a
+// private IPv4 listener bind for a named worker identity. V3 takes these
+// values from its explicit lane_profiles document; TLS/SSH pins and the paired
+// Mac/Linux check authenticate the destination. V1/V2 defaults remain fixed.
+func SimpleLaneRouteAddressAllowed(profile, publicIP, privateIP string) bool {
+	_, ok := laneRemoteProfiles[profile]
+	return ok && isPublicIP(publicIP) && isPrivateIPv4(privateIP)
+}
+
+// SimpleLaneRouteAddressAllowedForLane keeps PRD on the exact legacy route;
+// Dev and QAS take their validated route addresses from V3 lane_profiles.
+func SimpleLaneRouteAddressAllowedForLane(profile string, lane ReleaseLane, publicIP, privateIP string) bool {
+	remote, ok := laneRemoteProfiles[profile]
+	if !ok || !SimpleLaneRouteAddressAllowed(profile, publicIP, privateIP) || !validReleaseLane(lane) {
+		return false
+	}
+	if lane == ReleaseLanePRD && (publicIP != remote.publicIP || privateIP != remote.privateIP) {
+		return false
+	}
+	return true
+}
+
+// SimpleLanePublicRouteAddressAllowed checks the Mac-side V3 public address.
+// The paired Linux config verifies the listener bind and matching endpoint.
+func SimpleLanePublicRouteAddressAllowed(profile, publicIP string) bool {
+	_, ok := laneRemoteProfiles[profile]
+	return ok && isPublicIP(publicIP)
+}
+
+// SimpleLanePublicRouteAddressAllowedForLane keeps PRD's public route on its
+// legacy address while accepting a valid explicit Dev/QAS V3 route.
+func SimpleLanePublicRouteAddressAllowedForLane(profile string, lane ReleaseLane, publicIP string) bool {
+	remote, ok := laneRemoteProfiles[profile]
+	if !ok || !SimpleLanePublicRouteAddressAllowed(profile, publicIP) || !validReleaseLane(lane) {
+		return false
+	}
+	return lane != ReleaseLanePRD || publicIP == remote.publicIP
+}
+
+func isPrivateIPv4(value string) bool {
+	ip := net.ParseIP(value)
+	return ip != nil && ip.To4() != nil && ip.String() == value && ip.IsPrivate()
 }
 
 func validReleaseLane(lane ReleaseLane) bool {

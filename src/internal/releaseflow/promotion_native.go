@@ -69,6 +69,33 @@ func promotionPeerSnapshotDigestForProfile(snapshot promotionLaneSnapshot, profi
 	return promotionPeerSnapshotDigest(snapshot), nil
 }
 
+func promotionPeerAbsenceDigest(report laneinstall.CatalogNamespaceAbsenceReport) string {
+	return digest([]byte("promotion-peer-namespace-absence-v1\x00" + report.EvidenceSHA256))
+}
+
+func validatePromotionPeerAbsenceEvidence(plan *PromotionPlan) error {
+	if plan == nil || len(plan.PeerLaneAbsenceEvidence) == 0 {
+		return nil
+	}
+	if plan.Lane == "prd" || plan.PeerLaneEvidenceProfile != peerLaneStableIdentityV1 {
+		return ErrOperationCorrupted
+	}
+	for host, lanes := range plan.PeerLaneAbsenceEvidence {
+		if host != "linux-host" || len(lanes) == 0 || len(lanes) > len(LaneOrder)-1 {
+			return ErrOperationCorrupted
+		}
+		for peer, report := range lanes {
+			peerLane, selectedLane := config.ReleaseLane(peer), config.ReleaseLane(plan.Lane)
+			if !laneinstall.CatalogNamespaceAbsenceScopeAllowed(host, peerLane, selectedLane) ||
+				laneinstall.ValidateCatalogNamespaceAbsenceReport(report, host, peerLane, selectedLane) != nil ||
+				plan.PeerLaneEvidence[host][peer] != promotionPeerAbsenceDigest(report) {
+				return ErrOperationCorrupted
+			}
+		}
+	}
+	return nil
+}
+
 // legacyCompatibilityInputSHA binds an initial legacy-PRD rollback proof to
 // the read-only plan. Catalog-managed PRD selectors carry rollback
 // compatibility in the sealed predecessor manifest and do not need this file.
@@ -250,6 +277,7 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 		"peer lanes remain selected and configured as observed in this plan")
 	plan.HostBaselines = make([]HostObservation, 0, len(HostOrder))
 	plan.PeerLaneEvidence = make(map[string]map[string]string, len(HostOrder))
+	plan.PeerLaneAbsenceEvidence = make(map[string]map[string]laneinstall.CatalogNamespaceAbsenceReport)
 	plan.PeerLaneEvidenceProfile = peerLaneStableIdentityV1
 	plan.ExistingHolds = make(map[string]string, len(HostOrder))
 	plan.PredecessorBundleSHA256 = make(map[string]string, len(HostOrder))
@@ -288,13 +316,18 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 			if other == lane {
 				continue
 			}
-			snapshot, snapshotErr := b.readLaneSnapshot(ctx, host, other)
-			if snapshotErr != nil {
-				return PromotionPlan{}, fmt.Errorf("%s peer lane %s isolation baseline: %w", host, other, snapshotErr)
-			}
-			peer[other], err = promotionPeerSnapshotDigestForProfile(snapshot, plan.PeerLaneEvidenceProfile)
+			var absence *laneinstall.CatalogNamespaceAbsenceReport
+			peer[other], absence, err = b.readPeerSnapshotEvidence(ctx, host, other, lane, plan.PeerLaneEvidenceProfile, nil, true)
 			if err != nil {
-				return PromotionPlan{}, err
+				return PromotionPlan{}, fmt.Errorf("%s peer lane %s isolation baseline: %w", host, other, err)
+			}
+			if absence != nil {
+				if plan.PeerLaneAbsenceEvidence[host] == nil {
+					plan.PeerLaneAbsenceEvidence[host] = make(map[string]laneinstall.CatalogNamespaceAbsenceReport)
+				}
+				plan.PeerLaneAbsenceEvidence[host][other] = *absence
+				plan.CommonEffects = append(plan.CommonEffects,
+					fmt.Sprintf("%s peer lane %s is not installed; preserve complete read-only namespace-absence evidence and require it to remain absent throughout this %s operation", host, other, lane))
 			}
 		}
 		plan.PeerLaneEvidence[host] = peer
@@ -416,10 +449,10 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 			if peer == op.Lane {
 				continue
 			}
-			peerSnapshot, peerErr := b.readLaneSnapshot(ctx, host, peer)
-			peerDigest, digestErr := promotionPeerSnapshotDigestForProfile(peerSnapshot, peerProfile)
-			if peerErr != nil || digestErr != nil || op.PlanSnapshot.PeerLaneEvidence[host][peer] != peerDigest {
-				return nil, errors.Join(fmt.Errorf("%s peer lane %s changed before common preparation", host, peer), peerErr, digestErr)
+			peerDigest, _, peerErr := b.readPeerSnapshotEvidence(ctx, host, peer, op.Lane, peerProfile,
+				op.PlanSnapshot.PeerLaneAbsenceEvidence[host], false)
+			if peerErr != nil || op.PlanSnapshot.PeerLaneEvidence[host][peer] != peerDigest {
+				return nil, errors.Join(fmt.Errorf("%s peer lane %s changed before common preparation", host, peer), peerErr)
 			}
 		}
 	}
@@ -957,8 +990,7 @@ func (b *NativePromotionBackend) startHostUnderHold(ctx context.Context, op Oper
 // exact selector, active service, empty inventory, and capacity before the
 // promotion can report completion.
 func (b *NativePromotionBackend) startReleasedCohort(ctx context.Context, op Operation) error {
-	peerProfile, err := promotionPeerEvidenceProfile(op.PlanSnapshot)
-	if err != nil {
+	if _, err := promotionPeerEvidenceProfile(op.PlanSnapshot); err != nil {
 		return err
 	}
 	view, err := b.readReceipt(ctx, "mac-control-plane", op.Lane, op.CohortOperationID)
@@ -1008,7 +1040,7 @@ func (b *NativePromotionBackend) startReleasedCohort(ctx context.Context, op Ope
 		}
 	}
 	if op.PlanSnapshot != nil {
-		peerEvidence, err := b.readPeerEvidence(ctx, op.Lane, peerProfile)
+		peerEvidence, err := b.readPeerEvidenceForPlan(ctx, *op.PlanSnapshot)
 		if err != nil || !equalNestedStringMaps(peerEvidence, op.PlanSnapshot.PeerLaneEvidence) {
 			return errors.Join(errors.New("peer-lane isolation changed during selected-lane restart"), err)
 		}
@@ -1017,8 +1049,7 @@ func (b *NativePromotionBackend) startReleasedCohort(ctx context.Context, op Ope
 }
 
 func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation) (Acceptance, error) {
-	peerProfile, err := promotionPeerEvidenceProfile(op.PlanSnapshot)
-	if err != nil {
+	if _, err := promotionPeerEvidenceProfile(op.PlanSnapshot); err != nil {
 		return Acceptance{}, err
 	}
 	macPlan, err := laneinstall.BuildCatalogPlan("mac-control-plane", config.ReleaseLane(op.Lane))
@@ -1069,7 +1100,7 @@ func (b *NativePromotionBackend) AcceptCohort(ctx context.Context, op Operation)
 		return Acceptance{}, fmt.Errorf("Mac-local functional probe: %w", err)
 	}
 	results = append(results, local)
-	peerEvidence, err := b.readPeerEvidence(ctx, op.Lane, peerProfile)
+	peerEvidence, err := b.readPeerEvidenceForPlan(ctx, *op.PlanSnapshot)
 	if err != nil {
 		return Acceptance{}, err
 	}
@@ -2534,6 +2565,18 @@ func (b *NativePromotionBackend) findSelectorOperations(ctx context.Context, hos
 }
 
 func (b *NativePromotionBackend) readPeerEvidence(ctx context.Context, lane, profile string) (map[string]map[string]string, error) {
+	return b.readPeerEvidenceWithAbsence(ctx, lane, profile, nil)
+}
+
+func (b *NativePromotionBackend) readPeerEvidenceForPlan(ctx context.Context, plan PromotionPlan) (map[string]map[string]string, error) {
+	if err := validatePromotionPeerAbsenceEvidence(&plan); err != nil {
+		return nil, err
+	}
+	return b.readPeerEvidenceWithAbsence(ctx, plan.Lane, plan.PeerLaneEvidenceProfile, plan.PeerLaneAbsenceEvidence)
+}
+
+func (b *NativePromotionBackend) readPeerEvidenceWithAbsence(ctx context.Context, lane, profile string,
+	expected map[string]map[string]laneinstall.CatalogNamespaceAbsenceReport) (map[string]map[string]string, error) {
 	if _, err := promotionPeerEvidenceProfile(&PromotionPlan{PeerLaneEvidenceProfile: profile}); err != nil {
 		return nil, err
 	}
@@ -2544,17 +2587,66 @@ func (b *NativePromotionBackend) readPeerEvidence(ctx context.Context, lane, pro
 			if peer == lane {
 				continue
 			}
-			snapshot, err := b.readLaneSnapshot(ctx, host, peer)
-			if err != nil {
-				return nil, err
-			}
-			result[host][peer], err = promotionPeerSnapshotDigestForProfile(snapshot, profile)
+			var err error
+			result[host][peer], _, err = b.readPeerSnapshotEvidence(ctx, host, peer, lane, profile, expected[host], false)
 			if err != nil {
 				return nil, err
 			}
 		}
 	}
 	return result, nil
+}
+
+func (b *NativePromotionBackend) readPeerSnapshotEvidence(ctx context.Context, host, peer, selectedLane, profile string,
+	expected map[string]laneinstall.CatalogNamespaceAbsenceReport, allowNewAbsence bool) (string, *laneinstall.CatalogNamespaceAbsenceReport, error) {
+	if report, ok := expected[peer]; ok {
+		if !promotionMayUseAbsentPeer(b.Config, host, peer, selectedLane) {
+			return "", nil, ErrOperationCorrupted
+		}
+		fresh, err := b.readCatalogNamespaceAbsence(ctx, host, peer, selectedLane)
+		if err != nil || fresh.EvidenceSHA256 != report.EvidenceSHA256 {
+			return "", nil, errors.Join(fmt.Errorf("%s absent %s namespace evidence changed", host, peer), err)
+		}
+		return promotionPeerAbsenceDigest(fresh), &fresh, nil
+	}
+	snapshot, err := b.readLaneSnapshot(ctx, host, peer)
+	if err == nil {
+		digestValue, digestErr := promotionPeerSnapshotDigestForProfile(snapshot, profile)
+		return digestValue, nil, digestErr
+	}
+	if !allowNewAbsence || !promotionMayUseAbsentPeer(b.Config, host, peer, selectedLane) {
+		return "", nil, err
+	}
+	report, absenceErr := b.readCatalogNamespaceAbsence(ctx, host, peer, selectedLane)
+	if absenceErr != nil {
+		return "", nil, errors.Join(err, absenceErr)
+	}
+	return promotionPeerAbsenceDigest(report), &report, nil
+}
+
+func promotionMayUseAbsentPeer(cfg HostConfiguration, host, peer, selectedLane string) bool {
+	if host != "linux-host" || !laneinstall.CatalogNamespaceAbsenceScopeAllowed(host, config.ReleaseLane(peer), config.ReleaseLane(selectedLane)) {
+		return false
+	}
+	profile, ok := cfg.Hosts[host]
+	return ok && profile.HostID == host && profile.Target == replacementLinuxTarget && profile.AllowFirstInstallPeerAbsence
+}
+
+func (b *NativePromotionBackend) readCatalogNamespaceAbsence(ctx context.Context, host, peerLane, selectedLane string) (laneinstall.CatalogNamespaceAbsenceReport, error) {
+	var report laneinstall.CatalogNamespaceAbsenceReport
+	peer, selected := config.ReleaseLane(peerLane), config.ReleaseLane(selectedLane)
+	if !laneinstall.CatalogNamespaceAbsenceScopeAllowed(host, peer, selected) {
+		return report, ErrInvalidInput
+	}
+	out, err := b.runLane(ctx, host, []string{"catalog-namespace-absence", "--host", host,
+		"--peer-lane", peerLane, "--selected-lane", selectedLane}, nil)
+	if err != nil {
+		return report, err
+	}
+	if decodeStrictJSON(out, &report) != nil || laneinstall.ValidateCatalogNamespaceAbsenceReport(report, host, peer, selected) != nil {
+		return laneinstall.CatalogNamespaceAbsenceReport{}, ErrOperationCorrupted
+	}
+	return report, nil
 }
 
 func (b *NativePromotionBackend) readBranchMarker(ctx context.Context, lane string) (string, bool, error) {

@@ -105,6 +105,101 @@ func TestSimpleV3RuntimeLoadsIndependentMacAndLinuxLaneProfiles(t *testing.T) {
 	}
 }
 
+func TestSimpleV3ReplacementRouteUsesPairedExplicitAddresses(t *testing.T) {
+	for _, lane := range []ReleaseLane{ReleaseLaneDev, ReleaseLaneQAS} {
+		t.Run(string(lane), func(t *testing.T) {
+			macBindings := simpleRuntimeMacBindings(t, lane)
+			ns, err := DeriveSimpleLaneNamespace(HostKindLinux, lane, "linux-host")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range macBindings.MacProfiles {
+				if macBindings.MacProfiles[i].Profile == "linux-host" {
+					macBindings.MacProfiles[i].Queued.Host = "79.72.94.59"
+					macBindings.MacProfiles[i].Direct.URL = "https://79.72.94.59:" + itoa(ns.DirectPort)
+				}
+			}
+			macProfiles, err := ValidateSimpleV3ProfileBindings(macBindings)
+			if err != nil {
+				t.Fatalf("replacement Mac route rejected: %v", err)
+			}
+
+			linuxBindings := simpleRuntimeLinuxBindings(t, lane, "linux-host", macProfiles)
+			linuxBindings.LinuxProfile.Queued.Host = "79.72.94.59"
+			linuxBindings.LinuxProfile.Direct.URL = "https://79.72.94.59:" + itoa(ns.DirectPort)
+			linuxBindings.LinuxProfile.Direct.Bind = "10.0.0.228:" + itoa(ns.DirectPort)
+			linuxProfiles, err := ValidateSimpleV3ProfileBindings(linuxBindings)
+			if err != nil {
+				t.Fatalf("replacement Linux route rejected: %v", err)
+			}
+			if err := ValidateV3MacLinuxProfilePair(macProfiles, linuxProfiles, "linux-host"); err != nil {
+				t.Fatalf("matching replacement routes/pins rejected: %v", err)
+			}
+			loaded := parseSimpleRuntimeFixture(t, simpleRuntimeDocument(t, linuxBindings))
+			settings, ok := loaded.LinuxSettings()
+			if !ok || settings.DirectPublicEndpoint != "https://79.72.94.59:"+itoa(ns.DirectPort) ||
+				settings.DirectHTTPSBind != "10.0.0.228:"+itoa(ns.DirectPort) {
+				t.Fatalf("loaded replacement route=%+v present=%t", settings, ok)
+			}
+
+			mismatched := cloneV3ProfileBindings(linuxBindings)
+			mismatched.LinuxProfile.Queued.Host = "129.151.232.40"
+			mismatched.LinuxProfile.Direct.URL = "https://129.151.232.40:" + itoa(ns.DirectPort)
+			mismatched.LinuxProfile.Direct.Bind = "10.0.0.200:" + itoa(ns.DirectPort)
+			mismatchProfiles, err := ValidateSimpleV3ProfileBindings(mismatched)
+			if err != nil {
+				t.Fatalf("individually supported legacy route should remain structurally valid: %v", err)
+			}
+			if err := ValidateV3MacLinuxProfilePair(macProfiles, mismatchProfiles, "linux-host"); !errors.Is(err, ErrInvalidLaneProfiles) {
+				t.Fatalf("mismatched Mac/worker URL accepted: %v", err)
+			}
+
+			invalid := cloneV3ProfileBindings(linuxBindings)
+			invalid.LinuxProfile.Direct.Bind = "79.72.94.59:" + itoa(ns.DirectPort)
+			if _, err := ValidateSimpleV3ProfileBindings(invalid); !errors.Is(err, ErrInvalidLaneProfiles) {
+				t.Fatalf("non-private listener bind accepted: %v", err)
+			}
+			for name, endpoint := range map[string]string{
+				"wrong lane port":       "https://79.72.94.59:" + itoa(ns.DirectPort+1),
+				"empty query delimiter": "https://79.72.94.59:" + itoa(ns.DirectPort) + "?",
+				"fragment delimiter":    "https://79.72.94.59:" + itoa(ns.DirectPort) + "#",
+				"noncanonical address":  "https://079.72.94.59:" + itoa(ns.DirectPort),
+			} {
+				t.Run(name, func(t *testing.T) {
+					bad := cloneV3ProfileBindings(linuxBindings)
+					bad.LinuxProfile.Direct.URL = endpoint
+					bad.LinuxProfile.Queued.Host = "79.72.94.59"
+					if _, err := ValidateSimpleV3ProfileBindings(bad); !errors.Is(err, ErrInvalidLaneProfiles) {
+						t.Fatalf("invalid direct endpoint %q accepted: %v", endpoint, err)
+					}
+				})
+			}
+		})
+	}
+
+	prd := simpleRuntimeMacBindings(t, ReleaseLanePRD)
+	for i := range prd.MacProfiles {
+		if prd.MacProfiles[i].Profile == "linux-host" {
+			prd.MacProfiles[i].Queued.Host = "79.72.94.59"
+			prd.MacProfiles[i].Direct.URL = "https://79.72.94.59:8443"
+		}
+	}
+	if _, err := ValidateSimpleV3ProfileBindings(prd); !errors.Is(err, ErrInvalidLaneProfiles) {
+		t.Fatalf("replacement route changed unsuffixed PRD: %v", err)
+	}
+
+	duplicate := simpleRuntimeMacBindings(t, ReleaseLaneDev)
+	for i := range duplicate.MacProfiles {
+		if duplicate.MacProfiles[i].Profile == "linux-host" || duplicate.MacProfiles[i].Profile == "sandbox-host" {
+			duplicate.MacProfiles[i].Queued.Host = "79.72.94.59"
+			duplicate.MacProfiles[i].Direct.URL = "https://79.72.94.59:8444"
+		}
+	}
+	if _, err := ValidateSimpleV3ProfileBindings(duplicate); !errors.Is(err, ErrInvalidLaneProfiles) {
+		t.Fatalf("duplicate worker routes were accepted: %v", err)
+	}
+}
+
 func TestSimpleV3RuntimeResolvesExplicitOptionalMacLocalTarget(t *testing.T) {
 	bindings := simpleRuntimeMacBindings(t, ReleaseLaneDev)
 	local := V3TargetBinding{Kind: domain.TargetKindLocal, Profile: "mac-workstation"}
@@ -293,7 +388,7 @@ func simpleRuntimeDocument(t *testing.T, bindings V3ProfileBindings) fileDocumen
 	document.Linux = &linuxDocument{
 		Account: LinuxAccount, ServiceRoot: ns.ServiceRoot, Database: ns.Database, PrivateSocket: ns.PrivateSocket,
 		Workspaces: ns.Workspaces, ScriptTempRoot: ns.ScriptTempRoot, Backups: ns.Backups,
-		DirectHTTPSBind: ns.DirectHTTPSBind, DirectPublicEndpoint: ns.DirectEndpointURL,
+		DirectHTTPSBind: profile.Direct.Bind, DirectPublicEndpoint: profile.Direct.URL,
 		ServerCertificate: profile.Direct.ServerCertificateFile, ClientCA: profile.Direct.ClientCAFile,
 		ClientPrincipalMap: profile.Direct.ClientPrincipalMapFile, TLSMinVersion: "1.3",
 		RuntimeAdapter: "linux-host-process", RemoteTargetProfile: profile.RemoteProfile,

@@ -38,6 +38,7 @@ type DirectTLSPlan struct {
 	ServerURISAN   string
 	ControllerID   string
 	ControllerType string
+	routeProof     [32]byte
 }
 
 // ReleaseTransportTLSPlan describes one Ubuntu management listener. The Mac
@@ -116,26 +117,55 @@ func BuildDirectTLSPlan(lane config.ReleaseLane, profile string) (DirectTLSPlan,
 	if err != nil {
 		return DirectTLSPlan{}, ErrInvalidLaneTLSMaterial
 	}
-	endpoint, err := url.Parse(namespace.DirectEndpointURL)
-	if err != nil || endpoint.Scheme != "https" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+	return buildDirectTLSPlanFromRoute(lane, profile, namespace.DirectEndpointURL, namespace.DirectHTTPSBind)
+}
+
+// BuildDirectTLSPlanFromProfiles carries the explicit V3 route selected by the
+// paired Mac and Linux configs into the certificate plan. The pair validator
+// binds the same URL, SSH host identity, controller pins, and lane SANs before
+// any TLS material can be issued for a non-default address.
+func BuildDirectTLSPlanFromProfiles(lane config.ReleaseLane, profile string, mac, linux config.ValidatedV3Profiles) (DirectTLSPlan, error) {
+	if mac.Lane() != lane || linux.Lane() != lane ||
+		config.ValidateV3MacLinuxProfilePair(mac, linux, profile) != nil {
+		return DirectTLSPlan{}, ErrInvalidLaneTLSMaterial
+	}
+	macProfile, ok := mac.MacProfile(profile)
+	linuxProfile, linuxOK := linux.LinuxProfileBinding()
+	if !ok || !linuxOK {
+		return DirectTLSPlan{}, ErrInvalidLaneTLSMaterial
+	}
+	return buildDirectTLSPlanFromRoute(lane, profile, macProfile.Direct.URL, linuxProfile.Direct.Bind)
+}
+
+func buildDirectTLSPlanFromRoute(lane config.ReleaseLane, profile, publicURL, bind string) (DirectTLSPlan, error) {
+	namespace, err := config.DeriveSimpleLaneNamespace(config.HostKindLinux, lane, profile)
+	if err != nil {
+		return DirectTLSPlan{}, ErrInvalidLaneTLSMaterial
+	}
+	endpoint, err := url.Parse(publicURL)
+	if err != nil || endpoint.Scheme != "https" || endpoint.User != nil || endpoint.Opaque != "" ||
+		endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" || endpoint.RawPath != "" || endpoint.String() != publicURL {
 		return DirectTLSPlan{}, ErrInvalidLaneTLSMaterial
 	}
 	publicIP := net.ParseIP(endpoint.Hostname())
-	if publicIP == nil || publicIP.To4() == nil || publicIP.String() != endpoint.Hostname() {
+	if publicIP == nil || publicIP.To4() == nil || publicIP.String() != endpoint.Hostname() ||
+		endpoint.Path != "" || endpoint.Port() != fmt.Sprint(namespace.DirectPort) {
 		return DirectTLSPlan{}, ErrInvalidLaneTLSMaterial
 	}
-	bindHost, bindPort, err := net.SplitHostPort(namespace.DirectHTTPSBind)
-	if err != nil || net.ParseIP(bindHost) == nil || bindPort != fmt.Sprint(namespace.DirectPort) {
+	bindHost, bindPort, err := net.SplitHostPort(bind)
+	if err != nil || !config.SimpleLaneRouteAddressAllowedForLane(profile, lane, publicIP.String(), bindHost) || bindPort != fmt.Sprint(namespace.DirectPort) {
 		return DirectTLSPlan{}, ErrInvalidLaneTLSMaterial
 	}
-	return DirectTLSPlan{
+	plan := DirectTLSPlan{
 		Lane: lane, Profile: profile, Name: namespace.DirectEndpointName,
-		PublicURL: namespace.DirectEndpointURL, PublicIP: publicIP.String(), Bind: namespace.DirectHTTPSBind,
+		PublicURL: publicURL, PublicIP: publicIP.String(), Bind: bind,
 		ClientURISAN:   laneTLSURI(lane, "controller", profile),
 		ServerURISAN:   laneTLSURI(lane, "server", profile),
 		ControllerID:   "runner-controller-" + string(lane) + "-" + profile,
 		ControllerType: "direct_mtls",
-	}, nil
+	}
+	plan.routeProof = directTLSPlanProof(plan)
+	return plan, nil
 }
 
 // BuildReleaseTransportTLSPlans returns the fixed :9443 management routes.
@@ -152,8 +182,7 @@ func BuildReleaseTransportTLSPlans() []ReleaseTransportTLSPlan {
 // identities, keypairs, safe fingerprints, and the one-entry principal map
 // for a fixed direct lane endpoint.
 func ValidateDirectTLSMaterial(plan DirectTLSPlan, fingerprints TLSFingerprints, material TLSMaterial) error {
-	canonical, err := BuildDirectTLSPlan(plan.Lane, plan.Profile)
-	if err != nil || canonical != plan || plan.Lane == config.ReleaseLanePRD || plan.ControllerType != "direct_mtls" {
+	if !validDirectTLSPlan(plan) || plan.Lane == config.ReleaseLanePRD || plan.ControllerType != "direct_mtls" {
 		return ErrInvalidLaneTLSMaterial
 	}
 	if err := validateMutualTLSMaterial(plan.PublicIP, plan.ClientURISAN, plan.ServerURISAN, fingerprints, material); err != nil {
@@ -414,11 +443,24 @@ func validateMutualTLSMaterial(publicIP, clientURI, serverURI string, fingerprin
 // BuildDirectTLSClientConfig creates a TLS 1.3 client configuration for the
 // canonical lane/profile route. It loads no files and opens no socket.
 func BuildDirectTLSClientConfig(plan DirectTLSPlan, fingerprints TLSFingerprints, material TLSMaterial) (*tls.Config, error) {
-	canonical, err := BuildDirectTLSPlan(plan.Lane, plan.Profile)
-	if err != nil || canonical != plan || plan.Lane == config.ReleaseLanePRD {
+	if !validDirectTLSPlan(plan) || plan.Lane == config.ReleaseLanePRD {
 		return nil, ErrInvalidLaneTLSMaterial
 	}
 	return buildMutualTLSClientConfig(plan.PublicIP, plan.ClientURISAN, plan.ServerURISAN, fingerprints, material)
+}
+
+func validDirectTLSPlan(plan DirectTLSPlan) bool {
+	if plan.routeProof == ([32]byte{}) || plan.routeProof != directTLSPlanProof(plan) {
+		return false
+	}
+	canonical, err := buildDirectTLSPlanFromRoute(plan.Lane, plan.Profile, plan.PublicURL, plan.Bind)
+	return err == nil && canonical == plan
+}
+
+func directTLSPlanProof(plan DirectTLSPlan) [32]byte {
+	return sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s",
+		plan.Lane, plan.Profile, plan.Name, plan.PublicURL, plan.PublicIP, plan.Bind,
+		plan.ClientURISAN, plan.ServerURISAN+"\x00"+plan.ControllerID+"\x00"+plan.ControllerType)))
 }
 
 // BuildReleaseTransportTLSClientConfig creates a TLS 1.3 client configuration

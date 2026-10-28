@@ -772,6 +772,275 @@ func TestPeerLaneStableIdentityAllowsWorkProgressAndRejectsIdentityDrift(t *test
 	}
 }
 
+func TestAbsentPRDPeerEvidenceIsNarrowAndRevalidated(t *testing.T) {
+	report := testPRDAbsenceReport(t)
+	backend := NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{
+		"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true},
+	}}}
+	mode := "absent"
+	backend.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		if host != "linux-host" {
+			t.Fatalf("absence path reached wrong host %q", host)
+		}
+		switch args[0] {
+		case "catalog-status":
+			return nil, errors.New("PRD namespace does not exist")
+		case "catalog-namespace-absence":
+			if mode != "absent" {
+				return nil, errors.New("partial PRD namespace")
+			}
+			fresh := report
+			fresh.ObservedAtUTC = "2026-10-28T10:00:00Z" // fresh observation, same stable absence facts
+			fresh.EvidenceSHA256 = absenceReportDigest(fresh)
+			return json.Marshal(fresh)
+		default:
+			t.Fatalf("unexpected command in absent-peer check: %v", args)
+			return nil, ErrInvalidInput
+		}
+	}
+	digestValue, recorded, err := backend.readPeerSnapshotEvidence(context.Background(), "linux-host", "prd", "dev",
+		peerLaneStableIdentityV1, nil, true)
+	if err != nil || recorded == nil || recorded.EvidenceSHA256 != report.EvidenceSHA256 || digestValue != promotionPeerAbsenceDigest(report) {
+		t.Fatalf("eligible absent PRD peer was not recorded: digest=%q report=%+v err=%v", digestValue, recorded, err)
+	}
+	digestValue, _, err = backend.readPeerSnapshotEvidence(context.Background(), "linux-host", "prd", "dev",
+		peerLaneStableIdentityV1, map[string]laneinstall.CatalogNamespaceAbsenceReport{"prd": report}, false)
+	if err != nil || digestValue != promotionPeerAbsenceDigest(report) {
+		t.Fatalf("same absent namespace did not revalidate: digest=%q err=%v", digestValue, err)
+	}
+	mode = "partial"
+	if _, _, err := backend.readPeerSnapshotEvidence(context.Background(), "linux-host", "prd", "dev",
+		peerLaneStableIdentityV1, map[string]laneinstall.CatalogNamespaceAbsenceReport{"prd": report}, false); err == nil {
+		t.Fatal("partial/unreadable namespace was treated as absent")
+	}
+}
+
+func TestNativePlanRecordsCompleteReplacementPRDAbsence(t *testing.T) {
+	release := testRelease()
+	prdReport := testPRDAbsenceReport(t)
+	qasReport := testQASAbsenceReport(t)
+	backend := NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{
+		"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true},
+	}}}
+	backend.capacityReader = func(_ context.Context, _, _ string, snapshot *promotionLaneSnapshot) error {
+		snapshot.AvailableBytes, snapshot.RequiredBytes = 2_000_000_000, defaultPromotionOperatingBuffer
+		return nil
+	}
+	backend.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		value := func(flag string) string {
+			for i := 0; i+1 < len(args); i++ {
+				if args[i] == flag {
+					return args[i+1]
+				}
+			}
+			return ""
+		}
+		lane := config.ReleaseLane(value("--lane"))
+		switch args[0] {
+		case "catalog-inspect":
+			return json.Marshal(laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{ReleaseID: release.ID,
+				ReleaseSHA256: release.Digest, BundleSHA256: release.Bundles[host].SHA256}})
+		case "catalog-status":
+			if host == "linux-host" && (lane == config.ReleaseLaneQAS || lane == config.ReleaseLanePRD) {
+				return nil, errors.New("peer service namespace is absent")
+			}
+			return json.Marshal(laneinstall.CatalogSelectorStatus{HostID: host, Lane: lane, Kind: "legacy"})
+		case "catalog-work-inventory":
+			return json.Marshal(laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: lane, ServiceActive: true,
+				ConfigurationSHA256: stringsOf("b"), DatabaseSchema: 40, WorkInventoryEmpty: true})
+		case "catalog-cohort":
+			return json.Marshal(promotionAdmissionView{HostID: host, Lane: lane})
+		case "catalog-namespace-absence":
+			switch value("--peer-lane") {
+			case "qas":
+				return json.Marshal(qasReport)
+			case "prd":
+				return json.Marshal(prdReport)
+			default:
+				return nil, errors.New("unexpected absent peer")
+			}
+		default:
+			t.Fatalf("unexpected command during read-only plan: %v", args)
+			return nil, ErrInvalidInput
+		}
+	}
+	plan, err := backend.Plan(context.Background(), "dev", release, "")
+	if err != nil {
+		t.Fatalf("read-only Dev plan rejected complete PRD absence: %v", err)
+	}
+	if len(plan.PeerLaneAbsenceEvidence) != 1 || len(plan.PeerLaneAbsenceEvidence["linux-host"]) != 2 ||
+		plan.PeerLaneAbsenceEvidence["linux-host"]["prd"].EvidenceSHA256 != prdReport.EvidenceSHA256 ||
+		plan.PeerLaneAbsenceEvidence["linux-host"]["qas"].EvidenceSHA256 != qasReport.EvidenceSHA256 ||
+		plan.PeerLaneEvidence["linux-host"]["prd"] != promotionPeerAbsenceDigest(prdReport) ||
+		plan.PeerLaneEvidence["linux-host"]["qas"] != promotionPeerAbsenceDigest(qasReport) {
+		t.Fatalf("absence evidence was not bound into plan: %+v", plan.PeerLaneAbsenceEvidence)
+	}
+	if err := validatePromotionPeerAbsenceEvidence(&plan); err != nil {
+		t.Fatalf("recorded peer absence evidence did not validate: %v", err)
+	}
+}
+
+func TestAbsentQASPeerEvidenceIsNarrowAndRevalidated(t *testing.T) {
+	report := testQASAbsenceReport(t)
+	backend := NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{
+		"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true},
+	}}}
+	mode := "absent"
+	backend.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		if host != "linux-host" {
+			t.Fatalf("absence path reached wrong host %q", host)
+		}
+		switch args[0] {
+		case "catalog-status":
+			return nil, errors.New("QAS namespace does not exist")
+		case "catalog-namespace-absence":
+			value := func(flag string) string {
+				for i := 0; i+1 < len(args); i++ {
+					if args[i] == flag {
+						return args[i+1]
+					}
+				}
+				return ""
+			}
+			if value("--peer-lane") != "qas" || value("--selected-lane") != "dev" {
+				t.Fatalf("wrong absence scope requested: %v", args)
+			}
+			if mode != "absent" {
+				return nil, errors.New("partial QAS namespace")
+			}
+			fresh := report
+			fresh.ObservedAtUTC = "2026-10-28T10:00:00Z"
+			fresh.EvidenceSHA256 = absenceReportDigest(fresh)
+			return json.Marshal(fresh)
+		default:
+			t.Fatalf("unexpected command in absent-QAS-peer check: %v", args)
+			return nil, ErrInvalidInput
+		}
+	}
+	digestValue, recorded, err := backend.readPeerSnapshotEvidence(context.Background(), "linux-host", "qas", "dev",
+		peerLaneStableIdentityV1, nil, true)
+	if err != nil || recorded == nil || recorded.EvidenceSHA256 != report.EvidenceSHA256 || digestValue != promotionPeerAbsenceDigest(report) {
+		t.Fatalf("eligible absent QAS peer was not recorded: digest=%q report=%+v err=%v", digestValue, recorded, err)
+	}
+	if _, _, err := backend.readPeerSnapshotEvidence(context.Background(), "linux-host", "qas", "qas", peerLaneStableIdentityV1, nil, true); err == nil {
+		t.Fatal("absent selected QAS lane was accepted")
+	}
+	mode = "partial"
+	if _, _, err := backend.readPeerSnapshotEvidence(context.Background(), "linux-host", "qas", "dev",
+		peerLaneStableIdentityV1, map[string]laneinstall.CatalogNamespaceAbsenceReport{"qas": report}, false); err == nil {
+		t.Fatal("partial/unreadable QAS namespace was treated as absent")
+	}
+}
+
+func TestAbsentPRDPeerFallbackCannotBroaden(t *testing.T) {
+	report := testPRDAbsenceReport(t)
+	cases := []struct {
+		name        string
+		profile     HostConfiguration
+		host        string
+		peer        string
+		selected    string
+		allowCreate bool
+	}{
+		{name: "profile not opted in", profile: HostConfiguration{Hosts: map[string]HostProfile{"linux-host": {HostID: "linux-host"}}}, host: "linux-host", peer: "prd", selected: "dev", allowCreate: true},
+		{name: "wrong host", profile: HostConfiguration{Hosts: map[string]HostProfile{"sandbox-host": {HostID: "sandbox-host", AllowFirstInstallPeerAbsence: true}}}, host: "sandbox-host", peer: "prd", selected: "dev", allowCreate: true},
+		{name: "invalid absent peer pairing", profile: HostConfiguration{Hosts: map[string]HostProfile{"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true}}}, host: "linux-host", peer: "qas", selected: "qas", allowCreate: true},
+		{name: "selected PRD", profile: HostConfiguration{Hosts: map[string]HostProfile{"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true}}}, host: "linux-host", peer: "prd", selected: "prd", allowCreate: true},
+		{name: "no bootstrap on recheck", profile: HostConfiguration{Hosts: map[string]HostProfile{"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true}}}, host: "linux-host", peer: "prd", selected: "dev", allowCreate: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			absenceCalled := false
+			backend := NativePromotionBackend{Config: tc.profile, laneCommandRunner: func(_ context.Context, _ string, args []string, _ []byte) ([]byte, error) {
+				if args[0] == "catalog-namespace-absence" {
+					absenceCalled = true
+					return json.Marshal(report)
+				}
+				return nil, errors.New("namespace unreadable")
+			}}
+			if _, _, err := backend.readPeerSnapshotEvidence(context.Background(), tc.host, tc.peer, tc.selected, peerLaneStableIdentityV1, nil, tc.allowCreate); err == nil {
+				t.Fatal("ineligible absent-peer fallback succeeded")
+			}
+			if absenceCalled {
+				t.Fatal("ineligible absent-peer fallback invoked the special observer")
+			}
+		})
+	}
+}
+
+func TestPromotionOperationBindsAbsentPeerEvidence(t *testing.T) {
+	report := testPRDAbsenceReport(t)
+	op, err := NewOperation(strings.Repeat("e", 32), "dev", "all", testRelease(), "catalog-functional-v1", "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	op.PlanSnapshot.PeerLaneEvidenceProfile = peerLaneStableIdentityV1
+	op.PlanSnapshot.PeerLaneEvidence = map[string]map[string]string{"linux-host": {"prd": promotionPeerAbsenceDigest(report)}}
+	op.PlanSnapshot.PeerLaneAbsenceEvidence = map[string]map[string]laneinstall.CatalogNamespaceAbsenceReport{"linux-host": {"prd": report}}
+	if err := ValidateOperation(op); err != nil {
+		t.Fatalf("well-bound absent-peer evidence rejected: %v", err)
+	}
+	op.PlanSnapshot.PeerLaneEvidence["linux-host"]["prd"] = stringsOf("f")
+	if err := ValidateOperation(op); !errors.Is(err, ErrOperationCorrupted) {
+		t.Fatalf("mismatched absence digest was not rejected: %v", err)
+	}
+	op.PlanSnapshot.PeerLaneEvidence["linux-host"]["prd"] = promotionPeerAbsenceDigest(report)
+	op.PlanSnapshot.Lane = "prd"
+	if err := ValidateOperation(op); !errors.Is(err, ErrOperationCorrupted) {
+		t.Fatalf("absence fallback was accepted for selected PRD operation: %v", err)
+	}
+}
+
+func testPRDAbsenceReport(t *testing.T) laneinstall.CatalogNamespaceAbsenceReport {
+	t.Helper()
+	plan, err := laneinstall.BuildCatalogPlan("linux-host", config.ReleaseLanePRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := plan.Namespace
+	report := laneinstall.CatalogNamespaceAbsenceReport{FormatVersion: 1, HostID: "linux-host", Lane: config.ReleaseLanePRD, SelectedLane: config.ReleaseLaneDev, State: "absent",
+		ServiceRoot: ns.ServiceRoot, ServiceRootState: "absent", ConfigurationPath: ns.ConfigFile, ConfigurationState: "absent",
+		DatabasePath: ns.Database, DatabaseState: "absent", SelectorJournalRoot: filepath.Join(ns.Staging, "catalog-operations"), SelectorJournalsState: "absent",
+		CohortReceiptRoot: filepath.Join(ns.Staging, "catalog-cohorts"), CohortReceiptsState: "absent", BackupRoot: ns.Backups, BackupState: "absent",
+		LifecycleLock: ns.LifecycleLock, LifecycleLockState: "absent", ServiceUnit: "runnerd.service", UnitLoadState: "not-found", UnitFileState: "not-found",
+		UnitActiveState: "inactive", UnitSubState: "dead", DirectListenerPort: ns.DirectPort, DirectListenerAbsent: true,
+		ProcessScanComplete: true, ObservedAtUTC: "2026-10-28T09:00:00Z"}
+	report.EvidenceSHA256 = absenceReportDigest(report)
+	if err := laneinstall.ValidateCatalogNamespaceAbsenceReport(report, "linux-host", config.ReleaseLanePRD, config.ReleaseLaneDev); err != nil {
+		t.Fatalf("test report invalid: %v", err)
+	}
+	return report
+}
+
+func testQASAbsenceReport(t *testing.T) laneinstall.CatalogNamespaceAbsenceReport {
+	t.Helper()
+	plan, err := laneinstall.BuildSimplePlan("linux-host", config.ReleaseLaneQAS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := plan.Namespace
+	report := laneinstall.CatalogNamespaceAbsenceReport{FormatVersion: 1, HostID: "linux-host", Lane: config.ReleaseLaneQAS, SelectedLane: config.ReleaseLaneDev, State: "absent",
+		ServiceRoot: ns.ServiceRoot, ServiceRootState: "absent", ConfigurationPath: ns.ConfigFile, ConfigurationState: "absent",
+		DatabasePath: ns.Database, DatabaseState: "absent", SelectorJournalRoot: filepath.Join(ns.Staging, "catalog-operations"), SelectorJournalsState: "absent",
+		CohortReceiptRoot: filepath.Join(ns.Staging, "catalog-cohorts"), CohortReceiptsState: "absent", BackupRoot: ns.Backups, BackupState: "absent",
+		LifecycleLock: ns.LifecycleLock, LifecycleLockState: "absent", ServiceUnit: ns.RunnerUnit, UnitLoadState: "not-found", UnitFileState: "not-found",
+		UnitActiveState: "inactive", UnitSubState: "dead", DirectListenerPort: ns.DirectPort, DirectListenerAbsent: true,
+		ProcessScanComplete: true, ObservedAtUTC: "2026-10-28T09:00:00Z"}
+	report.EvidenceSHA256 = absenceReportDigest(report)
+	if err := laneinstall.ValidateCatalogNamespaceAbsenceReport(report, "linux-host", config.ReleaseLaneQAS, config.ReleaseLaneDev); err != nil {
+		t.Fatalf("test QAS report invalid: %v", err)
+	}
+	return report
+}
+
+func absenceReportDigest(report laneinstall.CatalogNamespaceAbsenceReport) string {
+	report.ObservedAtUTC = ""
+	report.EvidenceSHA256 = ""
+	data, _ := json.Marshal(report)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func TestPeerLaneLegacyProfilePreservesDigestAndCanonicalOperation(t *testing.T) {
 	snapshot := promotionLaneSnapshot{Config: "configuration", Schema: 40, Empty: true,
 		AvailableBytes: 1_000_000_000, RequiredBytes: 500_000_000}

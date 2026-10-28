@@ -299,6 +299,9 @@ func ValidateOperation(op Operation) error {
 	if _, err := promotionPeerEvidenceProfile(op.PlanSnapshot); err != nil {
 		return err
 	}
+	if err := validatePromotionPeerAbsenceEvidence(op.PlanSnapshot); err != nil {
+		return err
+	}
 	if op.CohortOperationID != "" && !operationPattern.MatchString(op.CohortOperationID) {
 		return ErrInvalidInput
 	}

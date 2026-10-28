@@ -48,6 +48,39 @@ func BuildSimpleQueuedSSHPlan(hostID string, lane config.ReleaseLane, dispatcher
 	if err != nil || linuxPlan.Namespace.Host != config.HostKindLinux {
 		return SimpleQueuedSSHPlan{}, ErrInvalidHost
 	}
+	return buildSimpleQueuedSSHPlan(hostID, lane, dispatcherPublicKey, hostPublicKey, linuxPlan.Namespace.DirectEndpointURL)
+}
+
+// BuildSimpleQueuedSSHPlanFromV3Profiles binds known_hosts to the endpoint
+// explicitly selected by matching Mac and Linux V3 configs. Pair validation
+// requires the same URL, queue host, controller pins, TLS pins, and lane SANs;
+// no address can be introduced as a command-line override.
+func BuildSimpleQueuedSSHPlanFromV3Profiles(hostID string, lane config.ReleaseLane, dispatcherPublicKey, hostPublicKey string, mac, linux config.ValidatedV3Profiles) (SimpleQueuedSSHPlan, error) {
+	if mac.Lane() != lane || linux.Lane() != lane ||
+		config.ValidateV3MacLinuxProfilePair(mac, linux, hostID) != nil {
+		return SimpleQueuedSSHPlan{}, config.ErrInvalidLaneProfiles
+	}
+	profile, ok := mac.MacProfile(hostID)
+	linuxProfile, linuxOK := linux.LinuxProfileBinding()
+	if !ok || !linuxOK || linux.RemoteProfile() != hostID ||
+		profile.Queued.Host != linuxProfile.Queued.Host || profile.Direct.URL != linuxProfile.Direct.URL {
+		return SimpleQueuedSSHPlan{}, config.ErrInvalidLaneProfiles
+	}
+	publicURL := profile.Direct.URL
+	endpoint, err := url.Parse(publicURL)
+	if err != nil || endpoint.Scheme != "https" || endpoint.User != nil || endpoint.Path != "" ||
+		endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Port() == "" ||
+		!config.SimpleLanePublicRouteAddressAllowedForLane(hostID, lane, endpoint.Hostname()) {
+		return SimpleQueuedSSHPlan{}, config.ErrInvalidLaneProfiles
+	}
+	return buildSimpleQueuedSSHPlan(hostID, lane, dispatcherPublicKey, hostPublicKey, publicURL)
+}
+
+func buildSimpleQueuedSSHPlan(hostID string, lane config.ReleaseLane, dispatcherPublicKey, hostPublicKey, publicURL string) (SimpleQueuedSSHPlan, error) {
+	linuxPlan, err := BuildSimplePlan(hostID, lane)
+	if err != nil || linuxPlan.Namespace.Host != config.HostKindLinux {
+		return SimpleQueuedSSHPlan{}, ErrInvalidHost
+	}
 	dispatcher, err := parseEd25519PublicKey(dispatcherPublicKey)
 	if err != nil {
 		return SimpleQueuedSSHPlan{}, fmt.Errorf("dispatcher key: %w", err)
@@ -60,8 +93,11 @@ func BuildSimpleQueuedSSHPlan(hostID string, lane config.ReleaseLane, dispatcher
 	if err != nil {
 		return SimpleQueuedSSHPlan{}, err
 	}
-	endpoint, err := url.Parse(linuxPlan.Namespace.DirectEndpointURL)
-	if err != nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" || linuxPlan.Namespace.QueuePort != 22 || linuxPlan.Namespace.QueuedSSHUnit != "" {
+	endpoint, err := url.Parse(publicURL)
+	if err != nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" || endpoint.User != nil ||
+		endpoint.Path != "" || endpoint.RawQuery != "" || endpoint.Fragment != "" ||
+		!config.SimpleLanePublicRouteAddressAllowedForLane(hostID, lane, endpoint.Hostname()) ||
+		endpoint.Port() != fmt.Sprint(linuxPlan.Namespace.DirectPort) || linuxPlan.Namespace.QueuePort != 22 || linuxPlan.Namespace.QueuedSSHUnit != "" {
 		return SimpleQueuedSSHPlan{}, ErrInvalidSimpleBundle
 	}
 	wrapperPath := filepath.Join(linuxPlan.Namespace.Binaries, "runner-ssh-bridge-forced.sh")
@@ -107,6 +143,9 @@ func BuildSimpleQueuedSSHPlan(hostID string, lane config.ReleaseLane, dispatcher
 		plan.linuxArtifactsHash[index] = simpleArtifactHash(artifact)
 	}
 	plan.macArtifactHash = simpleArtifactHash(plan.MacArtifacts[0])
+	if !simpleQueuedSSHPlanValid(plan) {
+		return SimpleQueuedSSHPlan{}, ErrInvalidSimpleBundle
+	}
 	return plan, nil
 }
 
@@ -238,6 +277,10 @@ func simpleQueuedSSHPlanValid(plan SimpleQueuedSSHPlan) bool {
 		return false
 	}
 	if len(plan.LinuxArtifacts) != 3 || len(plan.MacArtifacts) != 1 {
+		return false
+	}
+	if !config.SimpleLanePublicRouteAddressAllowedForLane(plan.HostID, plan.Lane, plan.PublicHost) ||
+		!strings.HasPrefix(plan.MacArtifacts[0].Contents, plan.PublicHost+" ssh-ed25519 ") {
 		return false
 	}
 	for index, artifact := range plan.LinuxArtifacts {

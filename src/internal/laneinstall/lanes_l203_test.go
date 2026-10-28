@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/url"
@@ -101,6 +102,47 @@ func TestLanesL203EndpointMapsAndValidMaterial(t *testing.T) {
 	wrongManagementPlan.PublicIP = "127.0.0.1"
 	if _, err := BuildReleaseTransportTLSClientConfig(wrongManagementPlan, managementFingerprints, managementMaterial); !errors.Is(err, ErrInvalidLaneTLSMaterial) {
 		t.Fatalf("caller-selected management client route error=%v, want rejection", err)
+	}
+}
+
+func TestLanesL203ReplacementAddressPlanKeepsLegacyAndPRDRoutes(t *testing.T) {
+	namespace, err := config.DeriveSimpleLaneNamespace(config.HostKindLinux, config.ReleaseLaneDev, "linux-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := fmt.Sprint(namespace.DirectPort)
+	plan, err := buildDirectTLSPlanFromRoute(config.ReleaseLaneDev, "linux-host", "https://79.72.94.59:"+port, "10.0.0.228:"+port)
+	if err != nil || plan.PublicIP != "79.72.94.59" || plan.Bind != "10.0.0.228:"+port {
+		t.Fatalf("replacement direct route plan=%+v err=%v", plan, err)
+	}
+	macProfiles, linuxProfiles := simpleQueuedReplacementProfiles(
+		t, config.ReleaseLaneDev, l202PublicKey("replacement-dispatcher"), l202PublicKey("replacement-existing-host"),
+	)
+	fromProfiles, err := BuildDirectTLSPlanFromProfiles(config.ReleaseLaneDev, "linux-host", macProfiles, linuxProfiles)
+	if err != nil || fromProfiles != plan {
+		t.Fatalf("paired V3 route did not produce the replacement TLS plan: plan=%+v err=%v", fromProfiles, err)
+	}
+	bundle := l203DirectBundle(t, plan, nil, nil)
+	if err := ValidateDirectTLSMaterial(plan, bundle.Fingerprints, bundle.Material); err != nil {
+		t.Fatalf("replacement TLS certificate identities rejected: %v", err)
+	}
+	if _, err := BuildDirectTLSClientConfig(plan, bundle.Fingerprints, bundle.Material); err != nil {
+		t.Fatalf("replacement direct TLS client config rejected: %v", err)
+	}
+	changed := plan
+	changed.PublicURL = "https://203.0.113.9:" + port
+	if _, err := BuildDirectTLSClientConfig(changed, bundle.Fingerprints, bundle.Material); !errors.Is(err, ErrInvalidLaneTLSMaterial) {
+		t.Fatalf("mutated route bypassed the V3 selection proof: %v", err)
+	}
+	if _, err := buildDirectTLSPlanFromRoute(config.ReleaseLaneDev, "linux-host", "https://79.72.94.59:"+port, "79.72.94.59:"+port); err == nil {
+		t.Fatal("public address was accepted as a private listener bind")
+	}
+	prd, err := BuildDirectTLSPlan(config.ReleaseLanePRD, "linux-host")
+	if err != nil || prd.PublicIP != "129.151.232.40" || prd.Bind != "10.0.0.200:8443" {
+		t.Fatalf("legacy PRD direct route changed: plan=%+v err=%v", prd, err)
+	}
+	if _, err := buildDirectTLSPlanFromRoute(config.ReleaseLanePRD, "linux-host", "https://79.72.94.59:8443", "10.0.0.228:8443"); err == nil {
+		t.Fatal("replacement route was accepted for PRD")
 	}
 }
 

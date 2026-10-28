@@ -79,10 +79,11 @@ func simpleLoadedConfigMatches(plan Plan, loaded config.Config) bool {
 		return ok && mailbox.Root == plan.Namespace.MailboxRoot
 	}
 	settings, ok := loaded.LinuxSettings()
-	return ok && settings.Account == plan.Namespace.Account && settings.ServiceRoot == plan.Namespace.ServiceRoot &&
+	linuxProfile, hasLinuxProfile := profiles.LinuxProfileBinding()
+	return ok && hasLinuxProfile && settings.Account == plan.Namespace.Account && settings.ServiceRoot == plan.Namespace.ServiceRoot &&
 		settings.Database == plan.Namespace.Database && settings.PrivateSocket == plan.Namespace.PrivateSocket &&
 		settings.Workspaces == plan.Namespace.Workspaces && settings.ScriptTempRoot == plan.Namespace.ScriptTempRoot &&
-		settings.Backups == plan.Namespace.Backups && settings.DirectHTTPSBind == plan.Namespace.DirectHTTPSBind &&
-		settings.DirectPublicEndpoint == plan.Namespace.DirectEndpointURL && settings.RuntimeAdapter == "linux-host-process" &&
+		settings.Backups == plan.Namespace.Backups && settings.DirectHTTPSBind == linuxProfile.Direct.Bind &&
+		settings.DirectPublicEndpoint == linuxProfile.Direct.URL && settings.RuntimeAdapter == "linux-host-process" &&
 		settings.TLSMinVersion == "1.3"
 }

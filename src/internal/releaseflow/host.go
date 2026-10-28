@@ -53,7 +53,7 @@ type HostLaneRPCRequest struct {
 }
 
 var hostLaneCommands = map[string]bool{
-	"catalog-status": true, "catalog-inspect": true, "catalog-work-inventory": true,
+	"catalog-status": true, "catalog-namespace-absence": true, "catalog-inspect": true, "catalog-work-inventory": true,
 	"catalog-selector-find":  true,
 	"catalog-host-preflight": true, "catalog-cohort": true, "catalog-cohort-renewal": true,
 	"catalog-select": true, "catalog-reconcile": true, "catalog-rollback": true,

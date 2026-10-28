@@ -13,6 +13,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"os/user"
@@ -143,6 +145,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogInspect(args[1:], stdout, stderr)
 	case "catalog-status":
 		err = runCatalogStatus(args[1:], stdout, stderr)
+	case "catalog-namespace-absence":
+		err = runCatalogNamespaceAbsence(ctx, args[1:], stdout, stderr)
 	case "catalog-selector-find":
 		err = runCatalogSelectorFind(args[1:], stdout, stderr)
 	case "catalog-adopt":
@@ -191,7 +195,7 @@ func runCatalogSelectorFind(args []string, stdout, stderr io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas" && *lane != "prd") || !validCLIProbeOperationID(*cohortID) {
+	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, *lane) || (*lane != "dev" && *lane != "qas" && *lane != "prd") || !validCLIProbeOperationID(*cohortID) {
 		return errors.New("usage: runner-lane catalog-selector-find --host HOST --lane dev|qas|prd --cohort-operation-id ID")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
@@ -299,7 +303,7 @@ func runCatalogPublish(args []string, stdout, stderr io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *manifestPath == "" || *bundlePath == "" || !currentCatalogHost(*host) {
+	if flags.NArg() != 0 || *manifestPath == "" || *bundlePath == "" || !currentCatalogOperatorHost(*host) {
 		return errors.New("usage: runner-lane catalog-publish --host THIS-HOST --manifest-file RELEASE-JSON --bundle-dir LOCAL-BUNDLE")
 	}
 	manifestFile, err := filepath.Abs(*manifestPath)
@@ -337,7 +341,7 @@ func runCatalogInspect(args []string, stdout, stderr io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *releaseID == "" || !currentCatalogHost(*host) {
+	if flags.NArg() != 0 || *releaseID == "" || !currentCatalogOperatorHost(*host) {
 		return errors.New("usage: runner-lane catalog-inspect --host THIS-HOST --release-id ID")
 	}
 	root, err := localCatalogRoot(*host)
@@ -359,7 +363,7 @@ func runCatalogStatus(args []string, stdout, stderr io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) {
+	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, *lane) {
 		return errors.New("usage: runner-lane catalog-status --host THIS-HOST --lane dev|qas|prd")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
@@ -377,6 +381,27 @@ func runCatalogStatus(args []string, stdout, stderr io.Writer) error {
 	return writeJSON(stdout, status)
 }
 
+func runCatalogNamespaceAbsence(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-namespace-absence", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical replacement worker identity")
+	peerLane := flags.String("peer-lane", "", "absent peer lane: qas or prd")
+	selectedLane := flags.String("selected-lane", "", "selected promotion lane: dev or qas")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	peer, selected := config.ReleaseLane(*peerLane), config.ReleaseLane(*selectedLane)
+	if flags.NArg() != 0 || !currentCatalogNamespaceAbsenceHost(*host) ||
+		!laneinstall.CatalogNamespaceAbsenceScopeAllowed(*host, peer, selected) {
+		return errors.New("usage: runner-lane catalog-namespace-absence --host linux-host --peer-lane qas|prd --selected-lane dev|qas")
+	}
+	report, err := laneinstall.ReadCatalogPeerNamespaceAbsence(ctx, *host, peer, selected, laneinstall.NewCatalogPRDAbsenceProbe())
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, report)
+}
+
 func runCatalogAdopt(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("runner-lane catalog-adopt", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -386,7 +411,7 @@ func runCatalogAdopt(args []string, stdout, stderr io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *output == "" || !currentCatalogHost(*host) || !filepath.IsAbs(*output) || filepath.Clean(*output) != *output {
+	if flags.NArg() != 0 || *output == "" || !currentCatalogHostForLane(*host, *lane) || !filepath.IsAbs(*output) || filepath.Clean(*output) != *output {
 		return errors.New("usage: runner-lane catalog-adopt --host THIS-HOST --lane dev|qas --output-dir ABSOLUTE-OUTSIDE-LANE-AND-CATALOG")
 	}
 	plan, err := simplePlan(*host, *lane)
@@ -438,7 +463,7 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 			HistoryFiles: append([]string(nil), historyFiles...),
 		}, stdout, stderr)
 	}
-	if !currentCatalogHost(*host) {
+	if !currentCatalogHostForLane(*host, *lane) {
 		return errors.New("usage: runner-lane catalog-cohort --host THIS-HOST --lane dev|qas|prd --action ACTION [--operation-id ID] [--successor-operation-id ID] [--receipt-file FILE] [--subject-host HOST] [--evidence-sha256 SHA256]")
 	}
 	if *replacementPredecessor != "" && (*lane != "prd" || *action != "fence-host" || !validCLIProbeOperationID(*replacementPredecessor)) {
@@ -838,7 +863,7 @@ func runCatalogCohortRenewal(ctx context.Context, args []string, stdout, stderr 
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) || !validCLIProbeOperationID(*operationID) {
+	if flags.NArg() != 0 || !validCLIProbeOperationID(*operationID) {
 		return errors.New("usage: runner-lane catalog-cohort-renewal --host HOST --lane dev|qas|prd --action observe|issue|sync|verify --operation-id ID")
 	}
 	var lane config.ReleaseLane
@@ -851,6 +876,9 @@ func runCatalogCohortRenewal(ctx context.Context, args []string, stdout, stderr 
 		lane = config.ReleaseLanePRD
 	default:
 		return errors.New("--lane must be dev, qas, or prd")
+	}
+	if !currentCatalogHostForLane(*host, string(lane)) {
+		return errors.New("catalog cohort renewal host does not match the selected lane")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, lane)
 	if err != nil {
@@ -987,7 +1015,7 @@ func runCatalogProbePrepare(args []string, stdout, stderr io.Writer) error {
 	if *includeTerminalResult && (!*observeExisting || *transport == string(laneinstall.CatalogProbeMacLocal)) {
 		return errors.New("terminal-result observation requires an existing worker probe scope")
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) ||
+	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, *lane) ||
 		(*lane != "dev" && *lane != "qas" && *lane != "prd") || !validCLIProbeOperationID(*operationID) ||
 		*controllerID == "" || *ttlSeconds < 1 || *ttlSeconds > 600 || (*retryAfterJobID != "" && !validCLIProbeJobID(*retryAfterJobID)) {
 		return errors.New("usage: runner-lane catalog-probe-prepare --host HOST --lane dev|qas|prd --transport direct-mtls|queued-ssh|mac-local --operation-id ID --controller-id ID [--retry-after-job-id JOB] [--ttl-seconds 1..600]")
@@ -1404,7 +1432,7 @@ func runCatalogSelectorMaintenance(ctx context.Context, action string, args []st
 			SelectorOperation: *selectorOperationID, EvidenceSHA256: *evidenceSHA,
 		}, stdout, stderr)
 	}
-	if !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas" && *lane != "prd") {
+	if !currentCatalogHostForLane(*host, *lane) || (*lane != "dev" && *lane != "qas" && *lane != "prd") {
 		return errors.New("usage: runner-lane catalog-select|catalog-reconcile|catalog-rollback --host HOST --lane dev|qas|prd --cohort-operation-id ID [operation-specific flags]")
 	}
 	if action == "catalog-select" {
@@ -1704,7 +1732,7 @@ func runCatalogHostPreflight(ctx context.Context, args []string, stdout, stderr 
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas" && *lane != "prd") ||
+	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, *lane) || (*lane != "dev" && *lane != "qas" && *lane != "prd") ||
 		*releaseID == "" || *requiredBytes == 0 {
 		return errors.New("usage: runner-lane catalog-host-preflight --host HOST --lane dev|qas|prd --release-id RELEASE --required-free-bytes BYTES [--legacy-compatibility-file FILE] [--replacement-predecessor OPERATION]")
 	}
@@ -1858,7 +1886,7 @@ func writeRetainedWorkInventory(stdout io.Writer, inventory laneinstall.CatalogR
 }
 
 func validCatalogWorkInventoryScope(host, lane string) bool {
-	return currentCatalogHost(host) && supportedCatalogWorkInventoryLane(lane)
+	return supportedCatalogWorkInventoryLane(lane) && currentCatalogHostForLane(host, lane)
 }
 
 func supportedCatalogWorkInventoryLane(lane string) bool {
@@ -1874,7 +1902,7 @@ func runCatalogPreSwitchCheck(ctx context.Context, args []string, stdout, stderr
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHost(*host) || (*lane != "dev" && *lane != "qas") || !validCLIProbeOperationID(*operationID) {
+	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, *lane) || (*lane != "dev" && *lane != "qas") || !validCLIProbeOperationID(*operationID) {
 		return errors.New("usage: runner-lane catalog-pre-switch-check --host HOST --lane dev|qas --cohort-operation-id ID")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
@@ -1946,6 +1974,119 @@ func currentCatalogHost(hostID string) bool {
 	}
 	configured, _, err := laneinstall.CatalogPlanFromConfiguration(loaded)
 	return err == nil && configured.HostID == hostID && configured.Lane == config.ReleaseLanePRD
+}
+
+// currentCatalogHostForLane normally requires the existing unsuffixed PRD
+// identity, as all current catalog hosts do. The sole exception is the
+// verified replacement Linux worker before PRD exists: for Dev/QAS commands
+// it requires a fresh complete PRD-absence observation and the exact
+// configuration for the selected V3 lane. It never interprets absent PRD as
+// a healthy or usable PRD service.
+func currentCatalogHostForLane(hostID, lane string) bool {
+	if lane != "dev" && lane != "qas" && lane != "prd" {
+		return false
+	}
+	if currentCatalogHost(hostID) {
+		return true
+	}
+	if lane == "prd" || !replacementLinuxLocalIdentityMatches(hostID, runtime.GOOS, runtime.GOARCH, currentUsername(), localIPv4Addresses()) {
+		return false
+	}
+	selectedLane := config.ReleaseLane(lane)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := laneinstall.ReadCatalogPeerNamespaceAbsence(ctx, hostID, config.ReleaseLanePRD, selectedLane,
+		laneinstall.NewCatalogPRDAbsenceProbe()); err != nil {
+		return false
+	}
+	plan, err := laneinstall.BuildCatalogPlan(hostID, selectedLane)
+	if err != nil {
+		return false
+	}
+	loaded, err := config.LoadFile(plan.Namespace.ConfigFile)
+	if err != nil || loaded.SchemaVersion() != config.VersionV3 || loaded.ReleaseLane() != selectedLane || loaded.Kind() != plan.Namespace.Host {
+		return false
+	}
+	profiles, ok := loaded.LaneProfiles()
+	if !ok || profiles.Host() != plan.Namespace.Host || profiles.Lane() != selectedLane || profiles.RemoteProfile() != plan.Namespace.RemoteProfile {
+		return false
+	}
+	configured, selected, err := laneinstall.CatalogPlanFromConfiguration(loaded)
+	return err == nil && selected && configured.HostID == plan.HostID && configured.Lane == plan.Lane && configured.Namespace == plan.Namespace
+}
+
+// currentCatalogOperatorHost permits immutable catalog publication and
+// inspection on the replacement before its first service namespace exists.
+// The absence check is read-only and specifically refuses partial PRD state.
+func currentCatalogOperatorHost(hostID string) bool {
+	if currentCatalogHost(hostID) {
+		return true
+	}
+	if !replacementLinuxLocalIdentityMatches(hostID, runtime.GOOS, runtime.GOARCH, currentUsername(), localIPv4Addresses()) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, err := laneinstall.ReadCatalogPeerNamespaceAbsence(ctx, hostID, config.ReleaseLanePRD, config.ReleaseLaneDev,
+		laneinstall.NewCatalogPRDAbsenceProbe())
+	return err == nil
+}
+
+func currentUsername() string {
+	current, err := user.Current()
+	if err != nil {
+		return ""
+	}
+	return current.Username
+}
+
+func localIPv4Addresses() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var result []string
+	for _, iface := range interfaces {
+		ifaceAddresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range ifaceAddresses {
+			prefix, err := netip.ParsePrefix(address.String())
+			if err == nil && prefix.Addr().Is4() {
+				result = append(result, prefix.Addr().String())
+			}
+		}
+	}
+	return result
+}
+
+func replacementLinuxLocalIdentityMatches(hostID, goos, goarch, username string, addresses []string) bool {
+	if !catalogNamespaceAbsenceHostMatches(hostID, goos, goarch, username) {
+		return false
+	}
+	for _, address := range addresses {
+		if address == laneinstall.ReplacementLinuxPrivateIP {
+			return true
+		}
+	}
+	return false
+}
+
+// currentCatalogNamespaceAbsenceHost is the narrowly scoped bootstrap identity
+// for the read-only observer. It intentionally does not require the PRD
+// configuration to exist: proving its absence is the purpose of this command.
+func currentCatalogNamespaceAbsenceHost(hostID string) bool {
+	if hostID != "linux-host" || !laneinstall.CatalogHostMatchesPlatform(hostID, runtime.GOOS, runtime.GOARCH) {
+		return false
+	}
+	current, err := user.Current()
+	return err == nil && catalogNamespaceAbsenceHostMatches(hostID, runtime.GOOS, runtime.GOARCH, current.Username)
+}
+
+func catalogNamespaceAbsenceHostMatches(hostID, goos, goarch, username string) bool {
+	return hostID == "linux-host" && laneinstall.CatalogHostMatchesPlatform(hostID, goos, goarch) &&
+		username == config.LinuxAccount
 }
 
 func catalogCohortLocalServiceActive(ctx context.Context, plan laneinstall.Plan) (bool, error) {
@@ -2055,7 +2196,7 @@ func verifyLocalCatalogCohortRollbackTarget(plan laneinstall.Plan, receipt lanei
 }
 
 func localCatalogRoot(hostID string) (string, error) {
-	if !currentCatalogHost(hostID) {
+	if !currentCatalogOperatorHost(hostID) {
 		return "", errors.New("release catalog host does not match the current platform and account")
 	}
 	home := filepath.Join("/home", config.LinuxAccount)
@@ -2523,11 +2664,13 @@ func runBridgeInstall(args []string, stdout, stderr io.Writer) error {
 	localHost := flags.String("local-host-id", "", "identity of this host: mac-control-plane or the selected Linux worker")
 	dispatcherKeyPath := flags.String("dispatcher-public-key", "", "lane-specific Ed25519 dispatcher public key")
 	hostKeyPath := flags.String("host-public-key", "", "existing ssh-ed25519 host public key")
+	configPath := flags.String("config-file", "", "owner-only V3 config for this host")
+	peerConfigPath := flags.String("peer-config-file", "", "matching owner-only V3 config for the paired Mac or Linux host")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || *dispatcherKeyPath == "" || *hostKeyPath == "" {
-		return errors.New("usage: runner-lane bridge-install --host LINUX-PROFILE --lane dev|qas --local-host-id HOST --dispatcher-public-key FILE --host-public-key FILE")
+		return errors.New("usage: runner-lane bridge-install --host LINUX-PROFILE --lane dev|qas --local-host-id HOST --dispatcher-public-key FILE --host-public-key FILE [--config-file OWNER-ONLY-V3-CONFIG --peer-config-file MATCHING-V3-CONFIG]")
 	}
 	dispatcherKey, err := readPublicKey(*dispatcherKeyPath)
 	if err != nil {
@@ -2537,7 +2680,32 @@ func runBridgeInstall(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	plan, err := laneinstall.BuildSimpleQueuedSSHPlan(*host, config.ReleaseLane(*lane), dispatcherKey, hostKey)
+	var plan laneinstall.SimpleQueuedSSHPlan
+	if (*configPath == "") != (*peerConfigPath == "") {
+		return errors.New("both --config-file and --peer-config-file are required together")
+	}
+	if *configPath == "" {
+		plan, err = laneinstall.BuildSimpleQueuedSSHPlan(*host, config.ReleaseLane(*lane), dispatcherKey, hostKey)
+	} else {
+		localConfig, loadErr := config.LoadFile(*configPath)
+		if loadErr != nil {
+			return loadErr
+		}
+		peerConfig, loadErr := config.LoadFile(*peerConfigPath)
+		if loadErr != nil {
+			return loadErr
+		}
+		localProfiles, localOK := localConfig.LaneProfiles()
+		peerProfiles, peerOK := peerConfig.LaneProfiles()
+		if !localOK || !peerOK || localConfig.ReleaseLane() != config.ReleaseLane(*lane) || peerConfig.ReleaseLane() != config.ReleaseLane(*lane) {
+			return config.ErrInvalidLaneProfiles
+		}
+		macProfiles, linuxProfiles := localProfiles, peerProfiles
+		if localProfiles.Host() != config.HostKindMac {
+			macProfiles, linuxProfiles = peerProfiles, localProfiles
+		}
+		plan, err = laneinstall.BuildSimpleQueuedSSHPlanFromV3Profiles(*host, config.ReleaseLane(*lane), dispatcherKey, hostKey, macProfiles, linuxProfiles)
+	}
 	if err != nil {
 		return err
 	}
