@@ -165,6 +165,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogHostPreflight(ctx, args[1:], stdout, stderr)
 	case "catalog-rebind-linux-peer":
 		err = runCatalogRebindLinuxPeer(ctx, args[1:], stdout, stderr)
+	case "catalog-refresh-linux-known-hosts":
+		err = runCatalogRefreshLinuxKnownHosts(ctx, args[1:], stdout, stderr)
 	case "catalog-compatibility-check":
 		err = runCatalogCompatibilityCheck(ctx, args[1:], stdout, stderr)
 	case "catalog-prd-backup":
@@ -2269,6 +2271,40 @@ func runCatalogRebindLinuxPeer(ctx context.Context, args []string, stdout, stder
 	}
 	defer maintenance.Close()
 	result, err := maintenance.RebindMacReplacementLinuxRoute(ctx, candidate, *expectedSHA, queuedPlan.MacArtifacts[0].Contents)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, result)
+}
+
+func runCatalogRefreshLinuxKnownHosts(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-refresh-linux-known-hosts", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "must be mac-control-plane")
+	lane := flags.String("lane", "", "dev or qas")
+	configurationSHA := flags.String("expected-config-sha256", "", "exact selected-lane configuration hash")
+	knownHostsSHA := flags.String("expected-known-hosts-sha256", "", "exact current selected-profile known_hosts hash")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *host != "mac-control-plane" || (*lane != "dev" && *lane != "qas") ||
+		!validProbeScopeDigest(*configurationSHA) || !validProbeScopeDigest(*knownHostsSHA) {
+		return errors.New("usage: runner-lane catalog-refresh-linux-known-hosts --host mac-control-plane --lane dev|qas --expected-config-sha256 SHA256 --expected-known-hosts-sha256 SHA256")
+	}
+	plan, err := simplePlan(*host, *lane)
+	if err != nil || plan.Namespace.Host != config.HostKindMac {
+		return laneinstall.ErrSimpleLanePreflight
+	}
+	controller, err := laneinstall.NewSimpleServiceController()
+	if err != nil {
+		return err
+	}
+	maintenance, err := laneinstall.BeginCatalogLaneMaintenance(ctx, plan, controller)
+	if err != nil {
+		return err
+	}
+	defer maintenance.Close()
+	result, err := maintenance.RefreshMacReplacementLinuxKnownHosts(ctx, *configurationSHA, *knownHostsSHA)
 	if err != nil {
 		return err
 	}

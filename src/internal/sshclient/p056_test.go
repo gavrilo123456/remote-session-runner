@@ -110,6 +110,34 @@ func TestSimpleLaneSSHClientRequiresExactKnownHostFingerprint(t *testing.T) {
 	}
 }
 
+func TestPinnedSSHClientRejectsRetiredAndReplacementKeysInActiveFile(t *testing.T) {
+	config := p056Config(t, p056Script(t, "cat >/dev/null"))
+	config.Host = "79.72.94.59"
+	oldKey := []byte("retired-linux-host-ed25519-key")
+	newKey := []byte("replacement-linux-host-ed25519-key")
+	fingerprint := func(key []byte) string {
+		digest := sha256.Sum256(key)
+		return "sha256:" + hex.EncodeToString(digest[:])
+	}
+	config.HostKeyFingerprint = fingerprint(newKey)
+	entry := func(host string, key []byte) string {
+		return host + " ssh-ed25519 " + base64.StdEncoding.EncodeToString(key) + "\n"
+	}
+	if err := os.WriteFile(config.KnownHostsFile,
+		[]byte(entry("129.151.232.40", oldKey)+entry(config.Host, newKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(config); !errors.Is(err, ErrConfiguration) {
+		t.Fatalf("client accepted the retired-plus-replacement known-host file: %v", err)
+	}
+	if err := os.WriteFile(config.KnownHostsFile, []byte(entry(config.Host, newKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(config); err != nil {
+		t.Fatalf("client rejected the exact replacement-host pin: %v", err)
+	}
+}
+
 func TestP056TransportPhasesAndBridgeErrorsAreDistinct(t *testing.T) {
 	before, err := New(Config{
 		SSHPath:        filepath.Join(t.TempDir(), "missing-ssh"),

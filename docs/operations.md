@@ -647,12 +647,15 @@ lane after proving its work inventory empty, creates a verified consistent
 configuration/database backup, rechecks selector/configuration/schema/work
 identities, preserves the original `known_hosts` file in that backup, and
 records a private rebind journal. It adds the new verified SSH host key before
-atomically replacing the config, preserving the old pin; an interruption can
-therefore leave an unused additive key but cannot activate a route without its
-pin. It leaves the selected service stopped for promotion. Do not use it for
-PRD, another peer, or a general configuration edit. The new host key and TLS
-certificate still need to pass strict SSH and TLS validation during live
-acceptance.
+atomically replacing the config. The selected service stays stopped throughout
+the transition. Once the new route is active in the config, reduce the active
+`known_hosts` file to its one exact replacement-host pin with the guarded
+`catalog-refresh-linux-known-hosts` command below. The complete prior file,
+including the retired pin, remains in the consistent backup. This final step
+is required because the runtime SSH client accepts only an unambiguous pinned
+host-key file. Do not use these commands for PRD, another peer, or a general
+configuration edit. The new host key and TLS certificate still need to pass
+strict SSH and TLS validation during live acceptance.
 
 ```sh
 # Mac — tomasz.walczuk — use the exact current config hash and prepared owner-only candidate
@@ -666,6 +669,32 @@ GOMODCACHE=/private/tmp/remote-session-runner-gomodcache GOTOOLCHAIN=local \
     --dispatcher-public-key-file /private/tmp/runner-lane-dispatcher-dev.pub \
     --host-public-key-file /private/tmp/runner-lane-linux-host-ed25519.pub \
     --expected-config-sha256 '<current-dev-config-sha256>'
+```
+
+After the route rebind, inspect only the two digests, then run the selected-lane
+refresh while the service remains stopped. The command checks the exact V3
+route and fingerprint, takes a consistent configuration/database backup,
+preserves the complete prior `known_hosts` bytes beside that backup, and
+atomically installs only the verified replacement-host entry. The private
+completion receipt binds both hashes to the backup manifest. It does not
+change configuration, database, lane identity credentials, selector, or
+service binaries. After interruption, re-read both hashes and rerun with those
+fresh values; the exact replacement-only state is accepted idempotently.
+
+```sh
+# Mac — tomasz.walczuk — complete the selected Dev route transition
+LANE_ROOT="$HOME/Library/Application Support/RemoteSessionRunner-dev"
+CONFIG="$LANE_ROOT/config/mac.yaml"
+KNOWN="$LANE_ROOT/secrets/profiles/linux-host/ssh/known_hosts"
+CONFIG_SHA=$(/usr/bin/shasum -a 256 "$CONFIG" | /usr/bin/awk '{print $1}')
+KNOWN_SHA=$(/usr/bin/shasum -a 256 "$KNOWN" | /usr/bin/awk '{print $1}')
+GO="/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/toolchains/go1.27.1/bin/go"
+GOCACHE=/private/tmp/remote-session-runner-gocache \
+GOMODCACHE=/private/tmp/remote-session-runner-gomodcache GOTOOLCHAIN=local \
+  "$GO" run ./src/cmd/runner-lane catalog-refresh-linux-known-hosts \
+    --host mac-control-plane --lane dev \
+    --expected-config-sha256 "$CONFIG_SHA" \
+    --expected-known-hosts-sha256 "$KNOWN_SHA"
 ```
 
 The peer configuration and public keys are read-only identity inputs. The
