@@ -295,12 +295,40 @@ func catalogPRDFreshInstallObservationSHA256(report CatalogPRDFreshInstallObserv
 // PRDBootstrapRootModeCorrectionAuthorization is passed only by the verified
 // Mac controller after it validates the current operation's continuation.
 type PRDBootstrapRootModeCorrectionAuthorization struct {
-	OperationID        string `json:"operation_id"`
-	RequestSHA256      string `json:"request_sha256"`
-	ApprovalSHA256     string `json:"approval_sha256"`
-	ReleaseID          string `json:"release_id"`
-	ReleaseSHA256      string `json:"release_sha256"`
-	ContinuationSHA256 string `json:"continuation_sha256"`
+	OperationID            string `json:"operation_id"`
+	RequestSHA256          string `json:"request_sha256"`
+	BootstrapRequestSHA256 string `json:"bootstrap_request_sha256"`
+	ApprovalSHA256         string `json:"approval_sha256"`
+	ReleaseID              string `json:"release_id"`
+	ReleaseSHA256          string `json:"release_sha256"`
+	ContinuationSHA256     string `json:"continuation_sha256"`
+}
+
+// validateRootModeCorrectionBootstrapBinding keeps the owner-request digest
+// distinct from the canonical enriched request digest stored by Linux. The
+// Mac controller validates the former against the coordinator and passes the
+// latter from the exact payload sent to the bootstrap command.
+func validateRootModeCorrectionAuthorization(authorization PRDBootstrapRootModeCorrectionAuthorization) error {
+	if authorization.OperationID != prdBootstrapRootModeOperationID ||
+		!validBootstrapDigest(authorization.RequestSHA256) ||
+		!validBootstrapDigest(authorization.BootstrapRequestSHA256) ||
+		!validBootstrapDigest(authorization.ApprovalSHA256) ||
+		!validCatalogReleaseID(authorization.ReleaseID) || !validBootstrapDigest(authorization.ReleaseSHA256) ||
+		!validBootstrapDigest(authorization.ContinuationSHA256) {
+		return ErrCatalogOperationInvalid
+	}
+	return nil
+}
+
+func validateRootModeCorrectionBootstrapBinding(authorization PRDBootstrapRootModeCorrectionAuthorization,
+	journal PRDReplacementBootstrapJournal) error {
+	if validateRootModeCorrectionAuthorization(authorization) != nil ||
+		journal.OperationID != authorization.OperationID || journal.RequestSHA256 != authorization.BootstrapRequestSHA256 ||
+		journal.ApprovalSHA256 != authorization.ApprovalSHA256 || journal.Release.HostID != "linux-host" ||
+		journal.Release.ReleaseID != authorization.ReleaseID || journal.Release.ReleaseSHA256 != authorization.ReleaseSHA256 {
+		return ErrCatalogOperationInvalid
+	}
+	return nil
 }
 
 type PRDBootstrapRootModeCorrectionResult struct {
@@ -318,6 +346,7 @@ type prdBootstrapRootModeCorrectionRecord struct {
 	Stage                    string `json:"stage"`
 	OperationID              string `json:"operation_id"`
 	RequestSHA256            string `json:"request_sha256"`
+	BootstrapRequestSHA256   string `json:"bootstrap_request_sha256"`
 	ApprovalSHA256           string `json:"approval_sha256"`
 	ReleaseID                string `json:"release_id"`
 	ReleaseSHA256            string `json:"release_sha256"`
@@ -346,10 +375,7 @@ type prdBootstrapRootModeCorrectionRecord struct {
 func CorrectPRDReplacementBootstrapServiceRootMode(ctx context.Context,
 	authorization PRDBootstrapRootModeCorrectionAuthorization) (PRDBootstrapRootModeCorrectionResult, error) {
 	var result PRDBootstrapRootModeCorrectionResult
-	if authorization.OperationID != prdBootstrapRootModeOperationID || !validBootstrapDigest(authorization.RequestSHA256) ||
-		!validBootstrapDigest(authorization.ApprovalSHA256) || !validCatalogReleaseID(authorization.ReleaseID) ||
-		!validBootstrapDigest(authorization.ReleaseSHA256) || !validBootstrapDigest(authorization.ContinuationSHA256) ||
-		!replacementLinuxLocalIdentityMatches() {
+	if validateRootModeCorrectionAuthorization(authorization) != nil || !replacementLinuxLocalIdentityMatches() {
 		return result, ErrCatalogOperationInvalid
 	}
 	if ctx == nil {
@@ -375,10 +401,7 @@ func CorrectPRDReplacementBootstrapServiceRootMode(ctx context.Context,
 
 	journalPath := filepath.Join(root, authorization.OperationID+".json")
 	journal, exists, err := readBootstrapJournal(journalPath)
-	if err != nil || !exists || journal.OperationID != authorization.OperationID ||
-		journal.RequestSHA256 != authorization.RequestSHA256 || journal.ApprovalSHA256 != authorization.ApprovalSHA256 ||
-		journal.Release.HostID != "linux-host" || journal.Release.ReleaseID != authorization.ReleaseID ||
-		journal.Release.ReleaseSHA256 != authorization.ReleaseSHA256 ||
+	if err != nil || !exists || validateRootModeCorrectionBootstrapBinding(authorization, journal) != nil ||
 		!equalPRDStrings(journal.CompletedSteps, prdReplacementBootstrapSteps) {
 		return result, errors.Join(ErrCatalogOperationInvalid, err)
 	}
@@ -483,7 +506,8 @@ func rootModeCorrectionRecord(stage string, authorization PRDBootstrapRootModeCo
 	observation CatalogPRDFreshInstallObservation, recorded time.Time) prdBootstrapRootModeCorrectionRecord {
 	record := prdBootstrapRootModeCorrectionRecord{FormatVersion: 1, Stage: stage,
 		OperationID: authorization.OperationID, RequestSHA256: authorization.RequestSHA256,
-		ApprovalSHA256: authorization.ApprovalSHA256, ReleaseID: authorization.ReleaseID,
+		BootstrapRequestSHA256: authorization.BootstrapRequestSHA256,
+		ApprovalSHA256:         authorization.ApprovalSHA256, ReleaseID: authorization.ReleaseID,
 		ReleaseSHA256: authorization.ReleaseSHA256, ContinuationSHA256: authorization.ContinuationSHA256,
 		ServiceRoot: observation.ServiceRoot, RootDevice: observation.RootDevice, RootInode: observation.RootInode,
 		RootUID: observation.RootUID, RootGID: observation.RootGID, PreviousMode: prdBootstrapRootModeBefore,
@@ -507,6 +531,7 @@ func rootModeCorrectionRecordSHA256(record prdBootstrapRootModeCorrectionRecord)
 
 func samePRDBootstrapRootModeCorrectionBindings(a, b prdBootstrapRootModeCorrectionRecord) bool {
 	return a.FormatVersion == b.FormatVersion && a.OperationID == b.OperationID && a.RequestSHA256 == b.RequestSHA256 &&
+		a.BootstrapRequestSHA256 == b.BootstrapRequestSHA256 &&
 		a.ApprovalSHA256 == b.ApprovalSHA256 && a.ReleaseID == b.ReleaseID && a.ReleaseSHA256 == b.ReleaseSHA256 &&
 		a.ContinuationSHA256 == b.ContinuationSHA256 && a.ServiceRoot == b.ServiceRoot && a.RootDevice == b.RootDevice &&
 		a.RootInode == b.RootInode && a.RootUID == b.RootUID && a.RootGID == b.RootGID &&
@@ -538,7 +563,7 @@ func readPRDBootstrapRootModeCorrectionRecord(path string) (prdBootstrapRootMode
 	if decoder.Decode(&record) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
 		!bytes.Equal(data, append(mustJSONIndent(record), '\n')) || record.FormatVersion != 1 ||
 		(record.Stage != "intent" && record.Stage != "complete") || record.OperationID != prdBootstrapRootModeOperationID ||
-		!validBootstrapDigest(record.RequestSHA256) || !validBootstrapDigest(record.ApprovalSHA256) ||
+		!validBootstrapDigest(record.RequestSHA256) || !validBootstrapDigest(record.BootstrapRequestSHA256) ||
 		!validCatalogReleaseID(record.ReleaseID) || !validBootstrapDigest(record.ReleaseSHA256) ||
 		!validBootstrapDigest(record.ContinuationSHA256) || !validBootstrapDigest(record.FreshInstallEvidenceSHA) ||
 		!validBootstrapDigest(record.BootstrapJournalSHA256) || !validBootstrapDigest(record.NamespaceArtifactsSHA256) ||

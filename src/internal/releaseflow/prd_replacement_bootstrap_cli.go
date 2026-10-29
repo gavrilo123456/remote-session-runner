@@ -181,6 +181,7 @@ func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotion
 	if continuationRecordSHA != "" && request.OperationID == "02bfdc603d2ea3360ecd32501fe347d1" {
 		correctionArgs := []string{"catalog-prd-bootstrap-root-correct", "--host", "linux-host",
 			"--operation-id", request.OperationID, "--request-sha256", requestSHA,
+			"--bootstrap-request-sha256", digest(requestBytes),
 			"--approval-sha256", approvalSHA, "--release-id", release.ID,
 			"--release-sha256", release.Digest, "--continuation-sha256", continuationRecordSHA}
 		correctionBytes, correctionErr := native.runLane(ctx, "linux-host", correctionArgs, nil)

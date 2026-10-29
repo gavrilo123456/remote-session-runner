@@ -281,17 +281,27 @@ func TestExpiredBootstrapResumesSameOperationThroughMacRouteContinuation(t *test
 		t.Fatal(err)
 	}
 	continuationSHA := digest(continuationBytes)
+	bootstrapRequest := request
+	bootstrapRequest.ApprovalSHA256 = approvalSHA
+	bootstrapRequest.ServerCSR256 = digest(csr.RequestPEM)
+	bootstrapRequest.ServerCertificatePEM = append([]byte(nil), certificate...)
+	bootstrapRequest.ServerCAPEM = append([]byte(nil), ca...)
+	bootstrapRequestBytes, err := json.Marshal(bootstrapRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	native.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
 		if host != "linux-host" {
 			t.Fatalf("unexpected resume host: %s", host)
 		}
 		switch args[0] {
 		case "catalog-prd-bootstrap-root-correct":
-			if len(args) != 15 || args[1] != "--host" || args[2] != "linux-host" || args[3] != "--operation-id" ||
+			if len(args) != 17 || args[1] != "--host" || args[2] != "linux-host" || args[3] != "--operation-id" ||
 				args[4] != request.OperationID || args[5] != "--request-sha256" || args[6] != digest(requestBytes) ||
-				args[7] != "--approval-sha256" || args[8] != approvalSHA || args[9] != "--release-id" ||
-				args[10] != release.ID || args[11] != "--release-sha256" || args[12] != release.Digest ||
-				args[13] != "--continuation-sha256" || args[14] != continuationSHA {
+				args[7] != "--bootstrap-request-sha256" || args[8] != digest(bootstrapRequestBytes) ||
+				args[9] != "--approval-sha256" || args[10] != approvalSHA || args[11] != "--release-id" ||
+				args[12] != release.ID || args[13] != "--release-sha256" || args[14] != release.Digest ||
+				args[15] != "--continuation-sha256" || args[16] != continuationSHA {
 				t.Fatalf("root-mode correction lost its exact authorization bindings: %q", args)
 			}
 			return rootCorrection, nil

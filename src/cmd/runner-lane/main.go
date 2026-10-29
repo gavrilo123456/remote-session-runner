@@ -435,7 +435,8 @@ func runCatalogPRDBootstrapRootCorrect(args []string, stdout, stderr io.Writer) 
 	flags.SetOutput(stderr)
 	host := flags.String("host", "", "canonical replacement Linux worker identity")
 	operationID := flags.String("operation-id", "", "exact replacement bootstrap operation")
-	requestSHA := flags.String("request-sha256", "", "bound bootstrap request digest")
+	requestSHA := flags.String("request-sha256", "", "owner-only coordinator request digest")
+	bootstrapRequestSHA := flags.String("bootstrap-request-sha256", "", "digest of the enriched request recorded by the replacement host")
 	approvalSHA := flags.String("approval-sha256", "", "original release-bound approval digest")
 	releaseID := flags.String("release-id", "", "accepted immutable release identity")
 	releaseSHA := flags.String("release-sha256", "", "accepted release digest")
@@ -444,11 +445,12 @@ func runCatalogPRDBootstrapRootCorrect(args []string, stdout, stderr io.Writer) 
 		return err
 	}
 	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, "prd") || *host != "linux-host" {
-		return errors.New("usage: runner-lane catalog-prd-bootstrap-root-correct --host linux-host --operation-id OP --request-sha256 SHA --approval-sha256 SHA --release-id ID --release-sha256 SHA --continuation-sha256 SHA")
+		return errors.New("usage: runner-lane catalog-prd-bootstrap-root-correct --host linux-host --operation-id OP --request-sha256 SHA --bootstrap-request-sha256 SHA --approval-sha256 SHA --release-id ID --release-sha256 SHA --continuation-sha256 SHA")
 	}
 	result, err := laneinstall.CorrectPRDReplacementBootstrapServiceRootMode(context.Background(),
 		laneinstall.PRDBootstrapRootModeCorrectionAuthorization{OperationID: *operationID, RequestSHA256: *requestSHA,
-			ApprovalSHA256: *approvalSHA, ReleaseID: *releaseID, ReleaseSHA256: *releaseSHA, ContinuationSHA256: *continuationSHA})
+			BootstrapRequestSHA256: *bootstrapRequestSHA, ApprovalSHA256: *approvalSHA, ReleaseID: *releaseID,
+			ReleaseSHA256: *releaseSHA, ContinuationSHA256: *continuationSHA})
 	if err != nil {
 		return err
 	}

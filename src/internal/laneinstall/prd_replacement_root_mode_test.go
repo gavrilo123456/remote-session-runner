@@ -15,7 +15,8 @@ func TestBootstrapRootModeCorrectionRecordsAreAppendOnlyAndBound(t *testing.T) {
 	}
 	auth := PRDBootstrapRootModeCorrectionAuthorization{
 		OperationID: prdBootstrapRootModeOperationID, RequestSHA256: digestBytes([]byte("request")),
-		ApprovalSHA256: digestBytes([]byte("approval")), ReleaseID: "rr-example", ReleaseSHA256: digestBytes([]byte("release")),
+		BootstrapRequestSHA256: digestBytes([]byte("enriched bootstrap request")),
+		ApprovalSHA256:         digestBytes([]byte("approval")), ReleaseID: "rr-example", ReleaseSHA256: digestBytes([]byte("release")),
 		ContinuationSHA256: digestBytes([]byte("continuation")),
 	}
 	baseline := CatalogFreshInstallBaseline{OperationID: auth.OperationID,
@@ -53,6 +54,38 @@ func TestBootstrapRootModeCorrectionRecordsAreAppendOnlyAndBound(t *testing.T) {
 	loadedComplete.ContinuationSHA256 = digestBytes([]byte("different continuation"))
 	if samePRDBootstrapRootModeCorrectionBindings(loadedComplete, loadedIntent) {
 		t.Fatal("conflicting continuation matched the original root-correction operation")
+	}
+	loadedComplete = loadedIntent
+	loadedComplete.BootstrapRequestSHA256 = digestBytes([]byte("different enriched request"))
+	if samePRDBootstrapRootModeCorrectionBindings(loadedComplete, loadedIntent) {
+		t.Fatal("different Linux bootstrap request matched the original correction")
+	}
+}
+
+func TestRootModeCorrectionDistinguishesCoordinatorAndBootstrapRequestDigests(t *testing.T) {
+	ownerRequestSHA := digestBytes([]byte("owner-only request"))
+	enrichedRequestSHA := digestBytes([]byte("request with approval and server material"))
+	authorization := PRDBootstrapRootModeCorrectionAuthorization{
+		OperationID: prdBootstrapRootModeOperationID, RequestSHA256: ownerRequestSHA,
+		BootstrapRequestSHA256: enrichedRequestSHA, ApprovalSHA256: digestBytes([]byte("approval")),
+		ReleaseID: "rr-example", ReleaseSHA256: digestBytes([]byte("release")),
+		ContinuationSHA256: digestBytes([]byte("continuation")),
+	}
+	journal := PRDReplacementBootstrapJournal{OperationID: authorization.OperationID,
+		RequestSHA256: enrichedRequestSHA, ApprovalSHA256: authorization.ApprovalSHA256,
+		Release: CatalogReleaseIdentity{HostID: "linux-host", ReleaseID: authorization.ReleaseID,
+			ReleaseSHA256: authorization.ReleaseSHA256}}
+	if err := validateRootModeCorrectionBootstrapBinding(authorization, journal); err != nil {
+		t.Fatalf("distinct owner and enriched request hashes should bind successfully: %v", err)
+	}
+	journal.RequestSHA256 = ownerRequestSHA
+	if err := validateRootModeCorrectionBootstrapBinding(authorization, journal); err == nil {
+		t.Fatal("journal bound to the wrong request representation was accepted")
+	}
+	journal.RequestSHA256 = enrichedRequestSHA
+	journal.Release.ReleaseSHA256 = digestBytes([]byte("different release"))
+	if err := validateRootModeCorrectionBootstrapBinding(authorization, journal); err == nil {
+		t.Fatal("bootstrap journal for another release was accepted")
 	}
 }
 
