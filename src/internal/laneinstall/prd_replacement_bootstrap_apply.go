@@ -102,26 +102,28 @@ func runPRDReplacementBootstrapAtRoot(ctx context.Context, request PRDReplacemen
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if backend == nil || validatePRDReplacementBootstrapRequest(request) != nil || now.IsZero() ||
-		!filepath.IsAbs(journalRoot) || filepath.Clean(journalRoot) != journalRoot {
+	if backend == nil || now.IsZero() || !filepath.IsAbs(journalRoot) || filepath.Clean(journalRoot) != journalRoot {
 		return PRDReplacementBootstrapResult{}, ErrCatalogOperationInvalid
+	}
+	if err := validatePRDReplacementBootstrapRequest(request); err != nil {
+		return PRDReplacementBootstrapResult{}, fmt.Errorf("validate replacement PRD bootstrap request: %w", err)
 	}
 	requestSHA, err := prdReplacementBootstrapRequestSHA(request)
 	if err != nil {
-		return PRDReplacementBootstrapResult{}, err
+		return PRDReplacementBootstrapResult{}, fmt.Errorf("bind replacement PRD bootstrap request: %w", err)
 	}
 	if err := ensureBootstrapJournalRootAtRoot(journalRoot); err != nil {
-		return PRDReplacementBootstrapResult{}, err
+		return PRDReplacementBootstrapResult{}, fmt.Errorf("prepare replacement PRD bootstrap journal root: %w", err)
 	}
 	cohortLock, err := acquireBootstrapLock(filepath.Join(journalRoot, "linux-host-prd-bootstrap.lock"))
 	if err != nil {
-		return PRDReplacementBootstrapResult{}, err
+		return PRDReplacementBootstrapResult{}, fmt.Errorf("acquire replacement PRD bootstrap cohort lock: %w", err)
 	}
 	defer releaseBootstrapLock(cohortLock)
 	lockPath := filepath.Join(journalRoot, request.OperationID+".lock")
 	lock, err := acquireBootstrapLock(lockPath)
 	if err != nil {
-		return PRDReplacementBootstrapResult{}, err
+		return PRDReplacementBootstrapResult{}, fmt.Errorf("acquire replacement PRD bootstrap operation lock: %w", err)
 	}
 	defer releaseBootstrapLock(lock)
 
