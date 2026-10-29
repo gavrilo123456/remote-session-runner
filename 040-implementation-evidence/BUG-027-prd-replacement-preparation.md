@@ -1562,6 +1562,48 @@ resumption through the same Linux-ready operation into the Mac-route stage.
 Focused releaseflow tests and Mac `make test vet build smoke` passed with Go
 1.27.1; final full-gate log SHA-256:
 `ea65287e2539c38d6eba059ed8942a18c74c76dafcc06e7f9a07482809e379d0`.
-No continuation record or new window has been issued yet. Git delivery,
-native Linux validation, final controller build, fresh operational preflight,
-and live Mac-route completion remain pending.
+At that checkpoint, no continuation record or new window had been issued yet;
+Git delivery and native Linux validation were also pending. The following
+section records their subsequent completion.
+
+#### Native worker validation and delivery for continuation controller
+
+The continuation controller source and tests were committed on `dev` as
+`f88c8f5de5c9d344634dcf0bdad549f6a6aca73f`. Primary Gitea and the automatic
+GitHub mirror resolved to that exact commit. Replacement Linux and Factory
+were clean on `dev` at the prior `ff92f2e` revision and were fast-forwarded
+from the mirror to `f88c8f5`. Sandbox had no checkout at the prescribed path;
+the absent path was confirmed and a fresh `dev` checkout was created from the
+GitHub mirror, resolving directly to `f88c8f5`. No tracked source was copied
+to any worker.
+
+Using Go 1.27.1, each worker ran the exact source revision through
+`go test ./src/internal/releaseflow -count=1`,
+`go vet ./src/internal/releaseflow`,
+`go build -o ~/.cache/remote-session-runner/bug027-bootstrap-f88c8f5/runner-release ./src/cmd/runner-release`,
+then the built CLI's `--help` and `--version` smoke checks. All commands
+returned exit 0:
+
+- Replacement Linux `79.72.94.59`, linux/amd64: log SHA-256
+  `79faaae3ef11747f73018deb9ccd72485144edac0a2ad3819d9cfd9b7a3f883c`.
+- Sandbox `132.226.205.205`, linux/arm64: log SHA-256
+  `cf16a4bcacb0ae780fe6ba0c14ce8c3929ec0d39b1e1f4a730f5edda649885e0`.
+- Factory `145.241.255.66`, linux/amd64: log SHA-256
+  `4cdb0907bc15f1ef90d607be0cf87af761b8a30a1445dbcffffbd1bcae8eab29`.
+
+The Mac full gates (`make test vet build smoke`, Go 1.27.1) passed at the
+same source commit; log SHA-256
+`ea65287e2539c38d6eba059ed8942a18c74c76dafcc06e7f9a07482809e379d0`.
+These are controller/fixture checks and CLI smoke tests, not live lane
+acceptance. The built worker CLI reports `build_revision=unattested` because
+this validation build used no release linker provenance; it was not installed
+or used for a live mutation. The sealed service release remains unchanged.
+
+The exact source commit has now passed the required Mac and native worker
+checks and the primary/mirror/worker delivery sequence. Remaining before
+bootstrap continuation are: construct the operation-specific controller from
+this revision; verify the original approval/request and operation bindings;
+collect the fresh plan and capacity/work guards; issue and verify the
+append-only four-hour Mac-route continuation; apply the supported controller
+amendment and resume. No live continuation record or PRD service change has
+been performed in this validation stage.
