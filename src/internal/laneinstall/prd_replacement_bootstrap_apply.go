@@ -357,7 +357,7 @@ func writeBootstrapJournal(path string, journal PRDReplacementBootstrapJournal) 
 func ensureBootstrapJournalRootAtRoot(path string) error {
 	home, err := os.UserHomeDir()
 	if err != nil || !filepath.IsAbs(home) || filepath.Clean(home) != home {
-		return ErrCatalogOperationInvalid
+		return fmt.Errorf("replacement bootstrap home path is invalid: %w", ErrCatalogOperationInvalid)
 	}
 	anchor := home
 	if !pathContained(home, filepath.Dir(path)) {
@@ -366,25 +366,31 @@ func ensureBootstrapJournalRootAtRoot(path string) error {
 		anchor = filepath.Dir(path)
 	}
 	if err := ensureOwnerDirectoryChainFrom(anchor, filepath.Dir(path)); err != nil {
-		return err
+		return fmt.Errorf("replacement bootstrap journal parent is unsafe: %w", err)
 	}
 	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		return err
+		return errors.New("replacement bootstrap journal directory could not be created")
 	}
 	var info unix.Stat_t
-	if unix.Lstat(path, &info) != nil || info.Mode&unix.S_IFMT != unix.S_IFDIR || info.Uid != uint32(os.Getuid()) || info.Mode&0o777 != 0o700 {
-		return ErrCatalogOperationInvalid
+	if unix.Lstat(path, &info) != nil {
+		return fmt.Errorf("replacement bootstrap journal directory metadata is unavailable: %w", ErrCatalogOperationInvalid)
+	}
+	if info.Mode&unix.S_IFMT != unix.S_IFDIR || info.Uid != uint32(os.Getuid()) || info.Mode&0o777 != 0o700 {
+		return fmt.Errorf("replacement bootstrap journal directory has unexpected owner, type, or permissions: %w", ErrCatalogOperationInvalid)
 	}
 	return nil
 }
 
 func ensureOwnerDirectoryChainFrom(home, path string) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || !pathContained(home, path) {
-		return ErrCatalogOperationInvalid
+		return fmt.Errorf("owner directory-chain bounds are invalid: %w", ErrCatalogOperationInvalid)
 	}
 	var homeStat unix.Stat_t
-	if unix.Lstat(home, &homeStat) != nil || homeStat.Mode&unix.S_IFMT != unix.S_IFDIR || homeStat.Uid != uint32(os.Getuid()) {
-		return ErrCatalogOperationInvalid
+	if unix.Lstat(home, &homeStat) != nil {
+		return fmt.Errorf("owner directory-chain root metadata is unavailable: %w", ErrCatalogOperationInvalid)
+	}
+	if homeStat.Mode&unix.S_IFMT != unix.S_IFDIR || homeStat.Uid != uint32(os.Getuid()) {
+		return fmt.Errorf("owner directory-chain root is not a current-user directory: %w", ErrCatalogOperationInvalid)
 	}
 	current := home
 	relative, _ := filepath.Rel(home, path)
@@ -396,13 +402,19 @@ func ensureOwnerDirectoryChainFrom(home, path string) error {
 		info, err := os.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
 			if err := os.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-				return err
+				return errors.New("owner directory-chain component could not be created")
 			}
 			info, err = os.Lstat(current)
 		}
 		var stat unix.Stat_t
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || unix.Lstat(current, &stat) != nil || stat.Uid != uint32(os.Getuid()) || info.Mode().Perm()&0o022 != 0 {
-			return ErrCatalogOperationInvalid
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || unix.Lstat(current, &stat) != nil {
+			return fmt.Errorf("owner directory-chain component is not a real directory: %w", ErrCatalogOperationInvalid)
+		}
+		if stat.Uid != uint32(os.Getuid()) {
+			return fmt.Errorf("owner directory-chain component is owned by another user: %w", ErrCatalogOperationInvalid)
+		}
+		if info.Mode().Perm()&0o022 != 0 {
+			return fmt.Errorf("owner directory-chain component is group or world writable: %w", ErrCatalogOperationInvalid)
 		}
 	}
 	return nil
