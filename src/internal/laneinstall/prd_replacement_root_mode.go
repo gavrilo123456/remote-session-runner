@@ -36,6 +36,7 @@ type CatalogPRDFreshInstallObservation struct {
 	BootstrapReleaseSHA256    string                       `json:"bootstrap_release_sha256"`
 	BootstrapBundleSHA256     string                       `json:"bootstrap_bundle_sha256"`
 	BootstrapJournalSHA256    string                       `json:"bootstrap_journal_sha256"`
+	NamespaceArtifactsSHA256  string                       `json:"namespace_artifacts_sha256"`
 	ServiceRoot               string                       `json:"service_root"`
 	RootDevice                uint64                       `json:"root_device"`
 	RootInode                 uint64                       `json:"root_inode"`
@@ -68,7 +69,9 @@ func ValidateCatalogPRDFreshInstallObservation(report CatalogPRDFreshInstallObse
 		report.OperationID != operationID || operationID != prdBootstrapRootModeOperationID || !report.Present ||
 		report.Baseline == nil || !validCatalogReleaseID(report.BootstrapReleaseID) ||
 		!bundleDigestPattern.MatchString(report.BootstrapReleaseSHA256) || !bundleDigestPattern.MatchString(report.BootstrapBundleSHA256) ||
-		!bundleDigestPattern.MatchString(report.BootstrapJournalSHA256) || report.ServiceRoot != filepath.Join("/home", config.LinuxAccount, ".local", "share", "remote-session-runner") ||
+		!bundleDigestPattern.MatchString(report.BootstrapJournalSHA256) ||
+		!bundleDigestPattern.MatchString(report.NamespaceArtifactsSHA256) ||
+		report.ServiceRoot != filepath.Join("/home", config.LinuxAccount, ".local", "share", "remote-session-runner") ||
 		report.RootUID == 0 || report.RootGID == 0 || report.RootDevice == 0 || report.RootInode == 0 ||
 		(report.RootMode != prdBootstrapRootModeBefore && report.RootMode != prdBootstrapRootModeAfter) ||
 		!report.CurrentSelectorAbsent || report.UnitLoadState != "not-found" ||
@@ -127,9 +130,10 @@ func ReadCatalogPRDFreshInstallObservation(ctx context.Context, hostID, operatio
 	}
 	bootstrapPlan := PRDReplacementBootstrapPlan{OperationID: bootstrapJournalA.OperationID,
 		Absence: bootstrapJournalA.Absence, Namespace: plan.Namespace}
-	if validatePRDReplacementBootstrapDirectories(bootstrapPlan) != nil || bootstrapJournalA.DatabaseSchema <= 0 ||
+	namespaceArtifactsSHA, err := validatePRDReplacementBootstrapCompletedNamespace(bootstrapPlan, bootstrapJournalA)
+	if err != nil || bootstrapJournalA.DatabaseSchema <= 0 ||
 		!bundleDigestPattern.MatchString(bootstrapJournalA.WorkInventorySHA256) {
-		return report, ErrCatalogOperationInvalid
+		return report, errors.Join(ErrCatalogOperationInvalid, err)
 	}
 	catalogRoot, err := DefaultCatalogRootForPlan(Plan{HostID: hostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace})
 	if err != nil {
@@ -149,8 +153,12 @@ func ReadCatalogPRDFreshInstallObservation(ctx context.Context, hostID, operatio
 		return report, errors.Join(ErrPRDUpgradeGuard, err)
 	}
 	if baselineA.ConfigurationSHA256 != bootstrapJournalA.ConfigurationSHA256 || baselineA.DatabaseSchema != bootstrapJournalA.DatabaseSchema ||
-		baselineA.WorkInventorySHA256 != bootstrapJournalA.WorkInventorySHA256 {
+		baselineA.WorkInventorySHA256 != bootstrapJournalA.WorkInventorySHA256 ||
+		baselineA.Absence.EvidenceSHA256 != bootstrapJournalA.Absence.EvidenceSHA256 {
 		return report, ErrPRDUpgradeGuard
+	}
+	if err := validatePRDReplacementBootstrapConfiguration(plan.Namespace, bootstrapJournalA); err != nil {
+		return report, errors.Join(ErrCatalogOperationInvalid, err)
 	}
 	rootA, err := statFreshInstallServiceRoot(plan.Namespace.ServiceRoot)
 	if err != nil || (rootA.Mode != prdBootstrapRootModeBefore && rootA.Mode != prdBootstrapRootModeAfter) {
@@ -208,11 +216,16 @@ func ReadCatalogPRDFreshInstallObservation(ctx context.Context, hostID, operatio
 	if err := requireFreshInstallSelectorAbsent(plan.Namespace.ServiceRoot); err != nil {
 		return report, err
 	}
+	namespaceArtifactsSHAAfter, err := validatePRDReplacementBootstrapCompletedNamespace(bootstrapPlan, bootstrapJournalB)
+	if err != nil || namespaceArtifactsSHAAfter != namespaceArtifactsSHA {
+		return report, errors.Join(ErrCatalogOperationInvalid, err)
+	}
 	report = CatalogPRDFreshInstallObservation{
 		FormatVersion: 1, HostID: hostID, OperationID: operationID, Present: true, Baseline: &baselineB,
 		BootstrapReleaseID: bootstrapJournalA.Release.ReleaseID, BootstrapReleaseSHA256: bootstrapJournalA.Release.ReleaseSHA256,
 		BootstrapBundleSHA256: bootstrapJournalA.Release.BundleSHA256, BootstrapJournalSHA256: bootstrapJournalSHA,
-		ServiceRoot: plan.Namespace.ServiceRoot, RootDevice: rootB.Device, RootInode: rootB.Inode,
+		NamespaceArtifactsSHA256: namespaceArtifactsSHAAfter,
+		ServiceRoot:              plan.Namespace.ServiceRoot, RootDevice: rootB.Device, RootInode: rootB.Inode,
 		RootUID: rootB.UID, RootGID: rootB.GID, RootMode: rootB.Mode, CurrentSelectorAbsent: true,
 		UnitLoadState: unitB.LoadState, UnitFileState: unitB.FileState, UnitActiveState: unitB.ActiveState,
 		UnitSubState: unitB.SubState, UnitMainPID: unitB.MainPID, UnitControlPID: unitB.ControlPID,
@@ -301,29 +314,30 @@ type PRDBootstrapRootModeCorrectionResult struct {
 }
 
 type prdBootstrapRootModeCorrectionRecord struct {
-	FormatVersion           int    `json:"format_version"`
-	Stage                   string `json:"stage"`
-	OperationID             string `json:"operation_id"`
-	RequestSHA256           string `json:"request_sha256"`
-	ApprovalSHA256          string `json:"approval_sha256"`
-	ReleaseID               string `json:"release_id"`
-	ReleaseSHA256           string `json:"release_sha256"`
-	ContinuationSHA256      string `json:"continuation_sha256"`
-	ServiceRoot             string `json:"service_root"`
-	RootDevice              uint64 `json:"root_device"`
-	RootInode               uint64 `json:"root_inode"`
-	RootUID                 uint32 `json:"root_uid"`
-	RootGID                 uint32 `json:"root_gid"`
-	PreviousMode            uint32 `json:"previous_mode"`
-	TargetMode              uint32 `json:"target_mode"`
-	FreshInstallEvidenceSHA string `json:"fresh_install_evidence_sha256"`
-	BootstrapJournalSHA256  string `json:"bootstrap_journal_sha256"`
-	ConfigurationSHA256     string `json:"configuration_sha256"`
-	SchemaVersion           int    `json:"schema_version"`
-	WorkInventorySHA256     string `json:"work_inventory_sha256"`
-	IntentSHA256            string `json:"intent_sha256,omitempty"`
-	RecordedAtUTC           string `json:"recorded_at_utc"`
-	EvidenceSHA256          string `json:"evidence_sha256"`
+	FormatVersion            int    `json:"format_version"`
+	Stage                    string `json:"stage"`
+	OperationID              string `json:"operation_id"`
+	RequestSHA256            string `json:"request_sha256"`
+	ApprovalSHA256           string `json:"approval_sha256"`
+	ReleaseID                string `json:"release_id"`
+	ReleaseSHA256            string `json:"release_sha256"`
+	ContinuationSHA256       string `json:"continuation_sha256"`
+	ServiceRoot              string `json:"service_root"`
+	RootDevice               uint64 `json:"root_device"`
+	RootInode                uint64 `json:"root_inode"`
+	RootUID                  uint32 `json:"root_uid"`
+	RootGID                  uint32 `json:"root_gid"`
+	PreviousMode             uint32 `json:"previous_mode"`
+	TargetMode               uint32 `json:"target_mode"`
+	FreshInstallEvidenceSHA  string `json:"fresh_install_evidence_sha256"`
+	BootstrapJournalSHA256   string `json:"bootstrap_journal_sha256"`
+	NamespaceArtifactsSHA256 string `json:"namespace_artifacts_sha256"`
+	ConfigurationSHA256      string `json:"configuration_sha256"`
+	SchemaVersion            int    `json:"schema_version"`
+	WorkInventorySHA256      string `json:"work_inventory_sha256"`
+	IntentSHA256             string `json:"intent_sha256,omitempty"`
+	RecordedAtUTC            string `json:"recorded_at_utc"`
+	EvidenceSHA256           string `json:"evidence_sha256"`
 }
 
 // CorrectPRDReplacementBootstrapServiceRootMode performs the one operation-
@@ -378,9 +392,9 @@ func CorrectPRDReplacementBootstrapServiceRootMode(ctx context.Context,
 		return result, err
 	}
 	bootstrapPlan := PRDReplacementBootstrapPlan{OperationID: journal.OperationID, Absence: journal.Absence, Namespace: upgrade.Namespace}
-	if validatePRDReplacementBootstrapDirectories(bootstrapPlan) != nil || journal.DatabaseSchema <= 0 ||
+	if _, err := validatePRDReplacementBootstrapCompletedNamespace(bootstrapPlan, journal); err != nil || journal.DatabaseSchema <= 0 ||
 		!bundleDigestPattern.MatchString(journal.WorkInventorySHA256) {
-		return result, ErrCatalogOperationInvalid
+		return result, errors.Join(ErrCatalogOperationInvalid, err)
 	}
 	observation, err := ReadCatalogPRDFreshInstallObservation(ctx, "linux-host", authorization.OperationID)
 	if err != nil || observation.Baseline == nil || observation.BootstrapReleaseID != authorization.ReleaseID ||
@@ -474,8 +488,8 @@ func rootModeCorrectionRecord(stage string, authorization PRDBootstrapRootModeCo
 		ServiceRoot: observation.ServiceRoot, RootDevice: observation.RootDevice, RootInode: observation.RootInode,
 		RootUID: observation.RootUID, RootGID: observation.RootGID, PreviousMode: prdBootstrapRootModeBefore,
 		TargetMode: prdBootstrapRootModeAfter, FreshInstallEvidenceSHA: observation.Baseline.EvidenceSHA256,
-		BootstrapJournalSHA256: observation.BootstrapJournalSHA256,
-		ConfigurationSHA256:    observation.Baseline.ConfigurationSHA256, SchemaVersion: observation.Baseline.DatabaseSchema,
+		BootstrapJournalSHA256: observation.BootstrapJournalSHA256, NamespaceArtifactsSHA256: observation.NamespaceArtifactsSHA256,
+		ConfigurationSHA256: observation.Baseline.ConfigurationSHA256, SchemaVersion: observation.Baseline.DatabaseSchema,
 		WorkInventorySHA256: observation.Baseline.WorkInventorySHA256, RecordedAtUTC: recorded.UTC().Format(time.RFC3339Nano)}
 	record.EvidenceSHA256 = rootModeCorrectionRecordSHA256(record)
 	return record
@@ -498,6 +512,7 @@ func samePRDBootstrapRootModeCorrectionBindings(a, b prdBootstrapRootModeCorrect
 		a.RootInode == b.RootInode && a.RootUID == b.RootUID && a.RootGID == b.RootGID &&
 		a.PreviousMode == b.PreviousMode && a.TargetMode == b.TargetMode &&
 		a.FreshInstallEvidenceSHA == b.FreshInstallEvidenceSHA && a.BootstrapJournalSHA256 == b.BootstrapJournalSHA256 &&
+		a.NamespaceArtifactsSHA256 == b.NamespaceArtifactsSHA256 &&
 		a.ConfigurationSHA256 == b.ConfigurationSHA256 &&
 		a.SchemaVersion == b.SchemaVersion && a.WorkInventorySHA256 == b.WorkInventorySHA256
 }
@@ -526,7 +541,7 @@ func readPRDBootstrapRootModeCorrectionRecord(path string) (prdBootstrapRootMode
 		!validBootstrapDigest(record.RequestSHA256) || !validBootstrapDigest(record.ApprovalSHA256) ||
 		!validCatalogReleaseID(record.ReleaseID) || !validBootstrapDigest(record.ReleaseSHA256) ||
 		!validBootstrapDigest(record.ContinuationSHA256) || !validBootstrapDigest(record.FreshInstallEvidenceSHA) ||
-		!validBootstrapDigest(record.BootstrapJournalSHA256) ||
+		!validBootstrapDigest(record.BootstrapJournalSHA256) || !validBootstrapDigest(record.NamespaceArtifactsSHA256) ||
 		!validBootstrapDigest(record.ConfigurationSHA256) || !validBootstrapDigest(record.WorkInventorySHA256) ||
 		record.ServiceRoot != filepath.Join("/home", config.LinuxAccount, ".local", "share", "remote-session-runner") ||
 		record.RootUID != uint32(os.Getuid()) || record.RootGID != uint32(os.Getgid()) || record.RootDevice == 0 || record.RootInode == 0 ||

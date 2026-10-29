@@ -107,6 +107,7 @@ type MacSettings struct {
 type LinuxSettings struct {
 	Account              string
 	ServiceRoot          string
+	RemoteTargetProfile  string
 	Database             string
 	PrivateSocket        string
 	Workspaces           string
@@ -1057,6 +1058,7 @@ func linuxSettings(document *linuxDocument) LinuxSettings {
 	return LinuxSettings{
 		Account:              document.Account,
 		ServiceRoot:          document.ServiceRoot,
+		RemoteTargetProfile:  document.RemoteTargetProfile,
 		Database:             document.Database,
 		PrivateSocket:        document.PrivateSocket,
 		Workspaces:           document.Workspaces,

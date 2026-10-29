@@ -1068,7 +1068,8 @@ func TestReadLaneSnapshotUsesBoundedObserverForBootstrappedUnselectedPRD(t *test
 		Present: true, Baseline: &baseline, ServiceRoot: "/home/ubuntu/.local/share/remote-session-runner",
 		BootstrapReleaseID: "rr-observed", BootstrapReleaseSHA256: strings.Repeat("c", 64),
 		BootstrapBundleSHA256: strings.Repeat("d", 64), BootstrapJournalSHA256: strings.Repeat("e", 64),
-		RootDevice: 8, RootInode: 1001, RootUID: 1001, RootGID: 1001, RootMode: 0o775,
+		NamespaceArtifactsSHA256: strings.Repeat("f", 64),
+		RootDevice:               8, RootInode: 1001, RootUID: 1001, RootGID: 1001, RootMode: 0o775,
 		CurrentSelectorAbsent: true, UnitLoadState: "not-found", UnitFileState: "not-found", UnitActiveState: "inactive",
 		UnitSubState: "dead", ServiceStopped: true, ListenerPort: 8443, ListenerAbsent: true,
 		ProcessScanComplete: true, ObservedAtUTC: time.Now().UTC().Format(time.RFC3339Nano)}

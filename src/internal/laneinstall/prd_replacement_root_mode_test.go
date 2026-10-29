@@ -22,9 +22,10 @@ func TestBootstrapRootModeCorrectionRecordsAreAppendOnlyAndBound(t *testing.T) {
 		ConfigurationSHA256: digestBytes([]byte("config")), DatabaseSchema: 40,
 		WorkInventorySHA256: (CatalogWorkInventory{}).SHA256(), EvidenceSHA256: digestBytes([]byte("baseline"))}
 	observation := CatalogPRDFreshInstallObservation{Baseline: &baseline,
-		ServiceRoot:            filepath.Join("/home", "ubuntu", ".local", "share", "remote-session-runner"),
-		BootstrapJournalSHA256: digestBytes([]byte("bootstrap journal")),
-		RootDevice:             8, RootInode: 10, RootUID: uint32(os.Getuid()), RootGID: uint32(os.Getgid())}
+		ServiceRoot:              filepath.Join("/home", "ubuntu", ".local", "share", "remote-session-runner"),
+		BootstrapJournalSHA256:   digestBytes([]byte("bootstrap journal")),
+		NamespaceArtifactsSHA256: digestBytes([]byte("namespace artifacts")),
+		RootDevice:               8, RootInode: 10, RootUID: uint32(os.Getuid()), RootGID: uint32(os.Getgid())}
 	intent := rootModeCorrectionRecord("intent", auth, observation, time.Now().UTC())
 	intentPath := filepath.Join(root, "intent.json")
 	if err := writePRDBootstrapRootModeCorrectionRecord(intentPath, intent); err != nil {
