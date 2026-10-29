@@ -72,6 +72,14 @@ type prdReplacementMacRouteJournal struct {
 	UpdatedAtUTC                string `json:"updated_at_utc"`
 }
 
+type prdReplacementMacRoutePreflight struct {
+	ServiceActive bool
+	SchemaVersion int
+	ConfigSHA256  string
+	BundleSHA256  string
+	Work          PRDWorkInventory
+}
+
 // RunPRDReplacementMacRoute performs the supported, forward-only Mac half of
 // a fresh replacement bootstrap. It backs up and stops only Mac PRD, preserves
 // the database and mailbox paths, replaces trust before the route, and never
@@ -151,6 +159,23 @@ func RunPRDReplacementMacRoute(ctx context.Context, input PRDReplacementMacRoute
 		return PRDReplacementMacRouteResult{}, err
 	}
 	defer releaseBootstrapLock(lock)
+	catalogPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
+	catalogRoot, err := DefaultCatalogRootForPlan(catalogPlan)
+	if err != nil {
+		return PRDReplacementMacRouteResult{}, err
+	}
+	// Keep the catalog publication lock before stopping PRD and acquiring its
+	// lifecycle lock. This preserves the established catalog -> lane lock order
+	// while the route journal, backup, and configuration are reconciled.
+	catalogLockFD, err := acquirePRDCatalogOnlinePreflightLock(catalogRoot)
+	if err != nil {
+		return PRDReplacementMacRouteResult{}, err
+	}
+	defer releaseCatalogRootPublicationLock(catalogLockFD)
+	catalogLayout, err := catalogSelectorLayoutForPlan(catalogPlan, catalogRoot)
+	if err != nil {
+		return PRDReplacementMacRouteResult{}, err
+	}
 	journalPath := filepath.Join(journalRoot, input.OperationID+"-mac-route.json")
 	journal, exists, err := readPRDReplacementMacRouteJournal(journalPath)
 	if err != nil {
@@ -168,21 +193,17 @@ func RunPRDReplacementMacRoute(ctx context.Context, input PRDReplacementMacRoute
 		if !bytes.Equal(currentConfiguration, input.MacConfiguration) {
 			return PRDReplacementMacRouteResult{}, ErrCatalogOperationInvalid
 		}
-		preflight, preErr := ReadPRDPreflight(ctx, plan, service)
+		preflight, preErr := readPRDReplacementMacRouteCatalogPreflight(ctx, plan, service, catalogLayout)
 		if preErr != nil || !preflight.Work.Empty() || preflight.SchemaVersion <= 0 ||
-			preflight.ConfigSHA256 != digestBytes(currentConfiguration) || !bundleDigestPattern.MatchString(preflight.LegacyBundleSHA256) {
+			preflight.ConfigSHA256 != digestBytes(currentConfiguration) || !bundleDigestPattern.MatchString(preflight.BundleSHA256) {
 			return PRDReplacementMacRouteResult{}, errors.Join(ErrPRDUpgradeGuard, preErr)
-		}
-		active, statusErr := service.Status(ctx, plan)
-		if statusErr != nil {
-			return PRDReplacementMacRouteResult{}, statusErr
 		}
 		journal = prdReplacementMacRouteJournal{FormatVersion: 1, OperationID: input.OperationID,
 			RequestSHA256: requestSHA, Stage: "intent", PreviousConfigurationSHA256: digestBytes(currentConfiguration),
 			ConfigurationSHA256: configurationSHA, PreviousServerCASHA256: digestBytes(serverCA), ServerCASHA256: serverCASHA,
 			PreviousKnownHostsSHA256: digestBytes(knownHosts), KnownHostsSHA256: knownHostsSHA,
 			WorkInventorySHA256: preflight.Work.SHA256(), DatabaseSchema: preflight.SchemaVersion,
-			PreviousBundleSHA256: preflight.LegacyBundleSHA256, ServiceWasActive: active,
+			PreviousBundleSHA256: preflight.BundleSHA256, ServiceWasActive: preflight.ServiceActive,
 			CreatedAtUTC: now.UTC().Format(time.RFC3339Nano), UpdatedAtUTC: now.UTC().Format(time.RFC3339Nano)}
 		if err := writePRDReplacementMacRouteJournal(journalPath, journal, false); err != nil {
 			return PRDReplacementMacRouteResult{}, err
@@ -221,10 +242,11 @@ func RunPRDReplacementMacRoute(ctx context.Context, input PRDReplacementMacRoute
 	if err != nil || active {
 		return PRDReplacementMacRouteResult{}, errors.Join(ErrSimpleLaneNotQuiescent, err)
 	}
-	preflight, err := ReadPRDPreflight(ctx, plan, service)
+	preflight, err := readPRDReplacementMacRouteCatalogPreflight(ctx, plan, service, catalogLayout)
 	if err != nil || !preflight.Work.Empty() || preflight.SchemaVersion != journal.DatabaseSchema ||
 		preflight.Work.SHA256() != journal.WorkInventorySHA256 ||
-		(preflight.ConfigSHA256 != journal.PreviousConfigurationSHA256 && preflight.ConfigSHA256 != journal.ConfigurationSHA256) {
+		(preflight.ConfigSHA256 != journal.PreviousConfigurationSHA256 && preflight.ConfigSHA256 != journal.ConfigurationSHA256) ||
+		preflight.BundleSHA256 != journal.PreviousBundleSHA256 || preflight.ServiceActive {
 		return PRDReplacementMacRouteResult{}, errors.Join(ErrPRDUpgradeGuard, err)
 	}
 	manifest, err := loadPRDBackupManifest(plan, journal.BackupDirectory)
@@ -288,6 +310,69 @@ func RunPRDReplacementMacRoute(ctx context.Context, input PRDReplacementMacRoute
 		KnownHostsSHA256: journal.KnownHostsSHA256, WorkInventorySHA256: journal.WorkInventorySHA256,
 		DatabaseSchema: journal.DatabaseSchema, BackupDirectory: journal.BackupDirectory,
 		BackupManifestSHA256: journal.BackupManifestSHA256, JournalSHA256: digestBytes(journalBytes), ServiceStopped: true}, nil
+}
+
+// readPRDReplacementMacRouteCatalogPreflight is intentionally scoped to the
+// paired replacement route. The legacy PRD preflight refuses catalog-managed
+// services by design; route maintenance instead validates the currently
+// selected sealed PRD release, its schema contract, the exact configuration,
+// and one coherent empty-work snapshot under the catalog publication lock.
+// It performs no writes and does not weaken the legacy installer guard.
+func readPRDReplacementMacRouteCatalogPreflight(ctx context.Context, plan PRDUpgradePlan,
+	service PRDServiceProbe, layout catalogSelectorLayout) (prdReplacementMacRoutePreflight, error) {
+	if validatePRDPlan(plan) != nil || plan.HostID != "mac-control-plane" || service == nil ||
+		layout.hostID != plan.HostID || layout.lane != config.ReleaseLanePRD ||
+		layout.databasePath != plan.Namespace.Database || validateCatalogSelectorLayout(layout) != nil {
+		return prdReplacementMacRoutePreflight{}, ErrInvalidPRDUpgradePlan
+	}
+	catalogPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
+	expectedRoot, err := DefaultCatalogRootForPlan(catalogPlan)
+	if err != nil {
+		return prdReplacementMacRoutePreflight{}, err
+	}
+	expectedLayout, err := catalogSelectorLayoutForPlan(catalogPlan, expectedRoot)
+	if err != nil || layout != expectedLayout {
+		return prdReplacementMacRoutePreflight{}, ErrInvalidPRDUpgradePlan
+	}
+	if err := validatePRDConfig(plan); err != nil {
+		return prdReplacementMacRoutePreflight{}, err
+	}
+	activeBefore, err := service.Status(ctx, plan)
+	if err != nil {
+		return prdReplacementMacRoutePreflight{}, err
+	}
+	proof, err := readPRDCatalogProof(ctx, plan, layout)
+	if err != nil {
+		return prdReplacementMacRoutePreflight{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	selectorAfter, err := inspectCatalogSelector(layout)
+	if err != nil {
+		return prdReplacementMacRoutePreflight{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	preflight, err := validatePRDReplacementMacRouteCatalogProof(activeBefore, proof, selectorAfter)
+	if err != nil {
+		return prdReplacementMacRoutePreflight{}, err
+	}
+	activeAfter, err := service.Status(ctx, plan)
+	if err != nil || activeAfter != activeBefore {
+		return prdReplacementMacRoutePreflight{}, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	return preflight, nil
+}
+
+func validatePRDReplacementMacRouteCatalogProof(serviceActive bool, proof prdCatalogProof,
+	selector CatalogSelectorStatus) (prdReplacementMacRoutePreflight, error) {
+	// A non-empty target plus a catalog bundle digest identifies a validated
+	// catalog selector. Legacy/unselected proofs deliberately carry no bundle
+	// digest here and are rejected; callers must not infer catalog ownership
+	// from a path or from the mere existence of a release directory.
+	if selector.Kind != "catalog" || selector.Target == "" || selector.Target != proof.selectorTarget || selector.Release == nil ||
+		selector.Release.Identity.BundleSHA256 != proof.bundleSHA256 || proof.selectorTarget == "" || !bundleDigestPattern.MatchString(proof.bundleSHA256) ||
+		proof.schema <= 0 || proof.workSHA256 != proof.work.SHA256() || !proof.work.Empty() || proof.freshInstall != nil {
+		return prdReplacementMacRoutePreflight{}, ErrPRDUpgradeGuard
+	}
+	return prdReplacementMacRoutePreflight{ServiceActive: serviceActive, SchemaVersion: proof.schema,
+		ConfigSHA256: proof.configurationSHA256, BundleSHA256: proof.bundleSHA256, Work: proof.work}, nil
 }
 
 func validatePRDReplacementServerTrust(certificatePEM, caPEM []byte, now time.Time) error {

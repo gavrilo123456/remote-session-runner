@@ -4,8 +4,60 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestPRDReplacementMacRouteCatalogPreflightRequiresSelectedCompatibleEmptyCatalogState(t *testing.T) {
+	valid := prdCatalogProof{
+		selectorTarget:      "/Users/tomasz.walczuk/projects-runtime/runner-releases/cat-fixture/mac-control-plane",
+		bundleSHA256:        strings.Repeat("b", 64),
+		configurationSHA256: strings.Repeat("c", 64),
+		schema:              40,
+		work:                PRDWorkInventory{},
+	}
+	valid.workSHA256 = valid.work.SHA256()
+	selector := CatalogSelectorStatus{Kind: "catalog", Target: valid.selectorTarget,
+		Release: &CatalogReleaseStatus{Identity: CatalogReleaseIdentity{BundleSHA256: valid.bundleSHA256}}}
+
+	got, err := validatePRDReplacementMacRouteCatalogProof(true, valid, selector)
+	if err != nil || !got.ServiceActive || got.BundleSHA256 != valid.bundleSHA256 ||
+		got.ConfigSHA256 != valid.configurationSHA256 || got.SchemaVersion != 40 || !got.Work.Empty() {
+		t.Fatalf("valid selected catalog PRD proof rejected or lost bindings: %+v err=%v", got, err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*prdCatalogProof, *CatalogSelectorStatus)
+	}{
+		{name: "unselected", mutate: func(p *prdCatalogProof, _ *CatalogSelectorStatus) { p.selectorTarget = "" }},
+		{name: "legacy selector", mutate: func(_ *prdCatalogProof, s *CatalogSelectorStatus) { s.Kind = "legacy" }},
+		{name: "missing release details", mutate: func(_ *prdCatalogProof, s *CatalogSelectorStatus) { s.Release = nil }},
+		{name: "selector proof target mismatch", mutate: func(_ *prdCatalogProof, s *CatalogSelectorStatus) { s.Target += "-other" }},
+		{name: "selector bundle mismatch", mutate: func(_ *prdCatalogProof, s *CatalogSelectorStatus) {
+			s.Release.Identity.BundleSHA256 = strings.Repeat("e", 64)
+		}},
+		{name: "legacy bundle identity", mutate: func(p *prdCatalogProof, _ *CatalogSelectorStatus) { p.bundleSHA256 = "" }},
+		{name: "malformed catalog digest", mutate: func(p *prdCatalogProof, _ *CatalogSelectorStatus) { p.bundleSHA256 = "not-a-digest" }},
+		{name: "unknown schema", mutate: func(p *prdCatalogProof, _ *CatalogSelectorStatus) { p.schema = 0 }},
+		{name: "inconsistent work digest", mutate: func(p *prdCatalogProof, _ *CatalogSelectorStatus) { p.workSHA256 = strings.Repeat("d", 64) }},
+		{name: "nonempty work", mutate: func(p *prdCatalogProof, _ *CatalogSelectorStatus) {
+			p.work.ActiveSessions = 1
+			p.workSHA256 = p.work.SHA256()
+		}},
+		{name: "fresh-install marker on Mac", mutate: func(p *prdCatalogProof, _ *CatalogSelectorStatus) { p.freshInstall = &CatalogFreshInstallBaseline{} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			proof := valid
+			selected := selector
+			test.mutate(&proof, &selected)
+			if _, err := validatePRDReplacementMacRouteCatalogProof(false, proof, selected); err == nil {
+				t.Fatal("invalid catalog route proof was accepted")
+			}
+		})
+	}
+}
 
 func TestPRDReplacementMacRouteBackupValidationAllowsJournaledLiveChanges(t *testing.T) {
 	root := t.TempDir()
