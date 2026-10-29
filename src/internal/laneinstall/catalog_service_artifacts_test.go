@@ -36,6 +36,7 @@ func TestPRDCatalogServiceArtifactsSelectCatalogBinariesWithoutMovingState(t *te
 		}
 		plan, _ := BuildCatalogPlan(host, config.ReleaseLanePRD)
 		if artifacts[0].Kind != ArtifactEntrypoint || !strings.Contains(artifacts[0].Contents, "selected_host='"+host+"'") ||
+			artifacts[0].Owner != config.LinuxAccount || artifacts[0].Group != config.LinuxAccount ||
 			!strings.Contains(artifacts[0].Contents, "exec \"$service_root/current/bin/runnerd\"") ||
 			!strings.Contains(artifacts[0].Contents, "$service_root/config/linux.yaml") || strings.Contains(artifacts[0].Contents, "/projects-runtime/runner-releases/") {
 			t.Errorf("%s PRD entrypoint is not bound to the host catalog selector or moved config into the catalog", host)

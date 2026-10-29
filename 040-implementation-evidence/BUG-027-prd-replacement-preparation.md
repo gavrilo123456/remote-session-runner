@@ -791,3 +791,187 @@ supported first-install/bootstrap and paired route/trust transition for
 replacement Linux, the current release-bound owner approval and operational
 window, followed by fresh backups, holds, stop/process proofs, and all eight
 PRD acceptance gates. Clients remain paused.
+
+### 2026-10-29 06:56 UTC — checkpoint reconciliation
+
+Re-read `060-messages/989-message.md` in full before continuing. The existing
+sealed candidate `rr-a38cb0057e-877d49e3` remains unchanged at source
+`a38cb0057ed2c4ee7782473b8131ac95af4deab4`, release digest
+`ce7350c7f338f1679b5f67ae9c7531acbe80174894a4946aa6eee87366f14b74`.
+Its Dev operation `74dffd3837e1e8f4f7183306bec7fa40` and QAS operation
+`ff2f40e39ff26b5bcab74e259fd4323a` both record `passed=true`, the same four
+bundle hashes and all eight functional gates passed. These records are
+preserved; any source successor still needs its own Dev then QAS acceptance.
+
+A fresh detailed Mac PRD inventory completed at
+`2026-10-29T06:56:27.288544Z`, report SHA-256
+`97b15d37a97a7a7ef1d3a585593170fed9ca291917d1f337d47630dcd20ffdf0`.
+It is retained privately at
+`/private/tmp/bug027-prd-inventory.RnCShb/mac-prd.json`. It identifies the
+selected `rr-20261024-43a4e675` Mac artifact, schema 40, stopped service, and
+complete inventory. Sessions, commands, jobs, reservations, command slots,
+retained pairs, and recovery finalizations are empty. The report separately
+contains 1,440 local-intent and 9 remote-intent metadata rows; these are not
+execution-capacity records and were not modified.
+
+The exact #514 local intent remains in that metadata inventory. The Oct 28
+supported recovery evidence remains authoritative for its lost result and
+history: it records release of only the session reservation and command slot,
+with the lost result, incomplete output, all 88 events, and event-stream digest
+preserved. No second recovery was attempted. The Mac PRD service remains
+stopped; no PRD state changed during this checkpoint. The fresh detailed
+inventory is a Mac-only observation, not the all-host PRD preflight needed
+before deployment.
+
+### 2026-10-29 07:39 UTC — #514 inventory refreshed; no repeat recovery
+
+A fresh read-only detailed inventory was captured with the qualified native
+Mac diagnostic at
+`/private/tmp/bug027-prd-inventory-refresh-20261029.json` (SHA-256
+`14c1423e8bf8acf00ef08a83925197fbcc1d649a97abd57c3957b3591a296ee4`). The
+observation completed at `2026-10-29T07:39:20.546861Z`; the report is complete,
+schema 40, and bound to selected Mac artifact
+`rr-20261024-43a4e675` / bundle SHA-256
+`a67cec224af031d269132d4c09dc22909d76bd1395e61e76fc828c5895ec6062`. The
+service is stopped. Sessions, commands, jobs, session reservations, command
+slots, retained pairs, pending recovery finalizations, and mailbox bindings
+are all zero. The report still says `safe_to_resume=not_established` and
+`recovery_authorized=false`.
+
+The exact #514 session/command/job is absent from the active work and capacity
+collections. Its accepted local-intent metadata record remains present and
+unchanged; local/remote intent records are routing history, not retained
+execution capacity. The Oct 28 supported recovery evidence remains the
+authoritative record of the lost result and preserved event history. No
+recovery, ACK, replay, or other PRD mutation was repeated.
+
+### 2026-10-29 07:53 UTC — public replacement bootstrap source path
+
+The replacement bootstrap is now connected to the public `runner-release
+prd-replacement-bootstrap` coordinator command and the public
+`runner-lane catalog-prd-replacement-bootstrap` host command. The coordinator
+stores a mode-0600 operation record before the first remote CSR or namespace
+mutation. The replacement worker stores its own journal before creating the
+PRD namespace, and exact retries use that journal to resume directory,
+configuration, authorized-key, database, and fresh-baseline steps. Conflicting
+request bytes or partial state without the matching journal are rejected.
+The command verifies the pinned replacement SSH host key and immutable
+release/approval identities. The Mac route step is backed up and journaled;
+the command leaves replacement Linux PRD unselected and stopped for the normal
+promotion toolkit. Operator sequencing and rollback limitations are now in
+[`docs/operations.md`](../docs/operations.md#fresh-prd-bootstrap-on-the-replacement-linux-worker).
+
+The bootstrap operation is not a substitute for cohort backup: the later
+held `promote-to prd all` preparation must still back up the current Mac,
+Sandbox, and Factory authorities and recheck the replacement baseline. The
+retired Linux endpoint is not used, imported, or enabled by this flow.
+
+Focused regression results on Mac, Go 1.27.1, current uncommitted source:
+
+```text
+go test ./src/internal/releaseflow ./src/internal/laneinstall ./src/internal/config ./src/cmd/runner-lane -count=1
+releaseflow: PASS
+laneinstall: PASS
+config: PASS
+runner-lane: PASS
+```
+
+This run included public-command subprocess coverage, interruption/resume for
+each durable bootstrap step, exact/conflicting retries, authorized-key
+preservation, database staging/install retry, fresh-install receipt parsing
+and rollback, and strict fresh PRD entrypoint creation. One initial test run
+failed because three new fixture subcases used the `0755` `t.TempDir()` root;
+the installer correctly refused it. The fixture now creates a private `0700`
+child directory, and the complete affected-package rerun passed without
+weakening production checks. `git diff --check` also passed.
+
+The service-artifact owner/group mismatch is corrected at construction, and
+`TestFreshPRDEntrypointCreationUsesCanonicalOwnerBranch` invokes the actual
+fresh-user-artifact creation and verifier path. This is source-level evidence
+only. Full host source gates, Git delivery, a compatible successor release,
+Dev/QAS acceptance, live bootstrap, PRD installation, and all eight PRD gates
+remain pending. The current candidate is not sealed and no PRD mutation was
+made in this checkpoint.
+
+### Entrypoint owner/group creation regression
+
+`BuildPRDCatalogServiceArtifacts("linux-host")` now emits the canonical Linux
+account/group for the entrypoint, matching the strict fresh-creation
+validator. `TestFreshPRDEntrypointCreationUsesCanonicalOwnerBranch` validates
+the canonical artifact against the production allowlist, then invokes the
+actual file creation helper under the Mac test account with the equivalent
+current-user identity and confirms the production verifier accepts the
+result. The test ran as part of the passing `laneinstall` package suite above.
+This tests the real creation branch while preserving the production check for
+the deployed Linux owner/group; it is not live replacement-host installation
+evidence.
+
+### 2026-10-29 08:00 UTC — Mac full source gates
+
+On the canonical Mac checkout, the full source gates passed with the pinned Go
+1.27.1 toolchain, `GOTOOLCHAIN=local`, and the shared Makefile caches:
+
+| Gate | Result | Evidence note |
+| --- | --- | --- |
+| `make test` | PASS on host-level rerun | All repository packages completed successfully. |
+| `make vet` | PASS | No diagnostics. |
+| `make build` | PASS | All command packages built. |
+| `make smoke` | PASS | Every command built and passed `--help` / `--version`. |
+
+The first sandboxed `make test` attempt is preserved as **NOT PASS**: the
+unrelated Darwin regression
+`TestBUG020MacShellExitWithInheritedControlWriterSettlesOnce` was unable to
+run `/bin/ps` against its test-owned process (`operation not permitted`). The
+isolated `runnerlocald` rerun and the full `make test` rerun were then executed
+with native process inspection available and both passed. No test, assertion,
+product code, or machine-wide process policy was changed to obtain the pass.
+The linker emitted its existing duplicate `-lproc` warning; it did not fail
+the gates.
+
+These results apply to the current Mac working tree derived from base
+`30324a5af8bc735de4846bd246e0384236c5f498`; the source revision is not yet
+committed or frozen. Sandbox and Factory full gates, Linux's assigned focused
+and native checks, Git delivery, successor sealing, Dev/QAS acceptance, and
+all live PRD work remain outstanding.
+
+### 2026-10-29 08:07 UTC — exact systemd-unit creation retry
+
+The fresh replacement path now handles an interruption after the Linux PRD
+systemd unit has been linked but before its staged name is removed. An exact
+retry accepts only the canonical unit target with matching root ownership,
+0644 mode, and content digest; it removes only a matching hash-scoped staged
+file. Conflicting installed bytes remain untouched. The production installer
+routes a preexisting fresh-install unit through this guard instead of
+mistaking it for an absent predecessor.
+
+`TestFreshPRDSystemdUnitCreateScriptResumesAtomicInstallAndRejectsConflict`
+exercises the generated production script on Linux-shaped disposable paths,
+including interruption after link, an exact retry, a pre-link stage retry,
+and conflicting-unit rejection. `TestFreshPRDEntrypointCreationUsesCanonicalOwnerBranch`
+continues to exercise the actual fresh-user-file creation helper. The focused
+Mac rerun passed for `releaseflow`, `laneinstall`, `config`, and `runner-lane`
+with Go 1.27.1; the Linux-only systemd script test is skipped on Mac and still
+requires native Linux validation. These results are source tests only. No
+candidate was sealed and no live service, selector, configuration, database,
+mailbox, or admission state changed.
+
+### 2026-10-29 08:10 UTC — final Mac source gates after unit-retry change
+
+The new unit-creation test and installer retry branch changed source after
+the prior 08:00 full-suite record. The affected packages passed on the Mac
+with Go 1.27.1:
+
+```text
+go test ./src/internal/releaseflow ./src/internal/laneinstall ./src/internal/config ./src/cmd/runner-lane -count=1
+PASS (all four packages)
+```
+
+The latest full `make test` sandbox run remains **NOT PASS** for the same
+Darwin test-only `/bin/ps` permission restriction. The identical full suite
+then passed on the Mac with host-level process inspection. The latest
+`make vet`, `make build`, and `make smoke` also passed. `git diff --check`
+passed. The Linux-only unit-script test skips on Darwin, so it still needs a
+native Linux run. These checks are against the uncommitted tree based on
+`30324a5af8bc735de4846bd246e0384236c5f498`; the source is not yet frozen.
+No candidate was sealed and no service, selector, configuration, database,
+mailbox, or admission state changed.

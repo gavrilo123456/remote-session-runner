@@ -22,8 +22,91 @@ import (
 )
 
 const catalogSubprocessFixtureRootEnv = "RSR_CATALOG_SUBPROCESS_FIXTURE_ROOT"
+const catalogBootstrapFixtureRootEnv = "RSR_CATALOG_BOOTSTRAP_FIXTURE_ROOT"
+const catalogCSRFixtureRootEnv = "RSR_CATALOG_CSR_FIXTURE_ROOT"
 
 var catalogFixtureSwitchOrder = []string{"linux-host", "sandbox-host", "factory-sandbox", "mac-control-plane"}
+
+func TestCatalogPRDReplacementBootstrapCommandSubprocess(t *testing.T) {
+	root := t.TempDir()
+	request := laneinstall.PRDReplacementBootstrapRequest{OperationID: "0123456789abcdef0123456789abcdef",
+		TemplateHostID: "sandbox-host", ReleaseID: "rr-bootstrap-subprocess", ExpectedReleaseSHA256: strings.Repeat("a", 64),
+		ServerCSR256: strings.Repeat("2", 64), ApprovalSHA256: strings.Repeat("1", 64),
+		PublisherOwner: "fixture owner", PublisherControl: "fixture hold", PublishersPaused: true, NoNewAccepted: true}
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestPath := filepath.Join(root, "request.json")
+	if err := os.WriteFile(requestPath, requestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestCatalogPRDReplacementBootstrapCommandSubprocessHelper$")
+	command.Env = append(os.Environ(), catalogBootstrapFixtureRootEnv+"="+root, "RSR_CATALOG_BOOTSTRAP_REQUEST="+requestPath)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("public bootstrap command subprocess failed: %v\n%s", err, output)
+	}
+	if bytes.Contains(output, []byte("private-key")) || !bytes.Contains(output, []byte("PRD_BOOTSTRAP_SUBPROCESS_OK")) {
+		t.Fatalf("bootstrap subprocess leaked private data or omitted result marker: %s", output)
+	}
+	var recorded laneinstall.PRDReplacementBootstrapResult
+	readCatalogFixtureJSON(t, filepath.Join(root, "bootstrap-result.json"), &recorded)
+	if recorded.OperationID != request.OperationID || recorded.Release.ReleaseID != request.ReleaseID || recorded.Stage != "ready_for_catalog_promotion" {
+		t.Fatalf("fixture bootstrap result is incomplete: %+v", recorded)
+	}
+}
+
+func TestCatalogPRDReplacementBootstrapCommandSubprocessHelper(t *testing.T) {
+	root := os.Getenv(catalogBootstrapFixtureRootEnv)
+	if root == "" {
+		return
+	}
+	backend := &catalogSubprocessFixtureBackend{root: root}
+	catalogCommandSubprocessFixtureBackendForTests = backend
+	defer func() { catalogCommandSubprocessFixtureBackendForTests = nil }()
+	requestPath := os.Getenv("RSR_CATALOG_BOOTSTRAP_REQUEST")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"catalog-prd-replacement-bootstrap", "--request-file", requestPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("dispatch public bootstrap command: exit=%d stderr=%s", code, stderr.String())
+	}
+	t.Log("PRD_BOOTSTRAP_SUBPROCESS_OK")
+	_, _ = os.Stdout.Write([]byte("PRD_BOOTSTRAP_SUBPROCESS_OK\n"))
+	_, _ = os.Stdout.Write(stdout.Bytes())
+}
+
+func TestCatalogPRDReplacementServerCSRCommandSubprocess(t *testing.T) {
+	root := t.TempDir()
+	command := exec.Command(os.Args[0], "-test.run=^TestCatalogPRDReplacementServerCSRCommandSubprocessHelper$")
+	command.Env = append(os.Environ(), catalogCSRFixtureRootEnv+"="+root)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("public replacement CSR command subprocess failed: %v\n%s", err, output)
+	}
+	if !bytes.Contains(output, []byte("BEGIN CERTIFICATE REQUEST")) || bytes.Contains(output, []byte("PRIVATE KEY")) {
+		t.Fatalf("CSR command failed to return public CSR or exposed private key material: %s", output)
+	}
+}
+
+func TestCatalogPRDReplacementServerCSRCommandSubprocessHelper(t *testing.T) {
+	root := os.Getenv(catalogCSRFixtureRootEnv)
+	if root == "" {
+		return
+	}
+	catalogCommandSubprocessFixtureBackendForTests = &catalogSubprocessFixtureBackend{root: root}
+	defer func() { catalogCommandSubprocessFixtureBackendForTests = nil }()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"catalog-prd-replacement-csr", "--operation-id", "0123456789abcdef0123456789abcdef"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("dispatch public replacement CSR command: exit=%d stderr=%s", code, stderr.String())
+	}
+	var report laneinstall.PRDReplacementServerCSRReport
+	if json.Unmarshal(stdout.Bytes(), &report) != nil || report.OperationID != "0123456789abcdef0123456789abcdef" ||
+		!fixtureValidDigest(report.RequestSHA) || !bytes.Contains(report.RequestPEM, []byte("CERTIFICATE REQUEST")) {
+		t.Fatalf("public CSR command returned invalid report: %s", stdout.String())
+	}
+	_, _ = os.Stdout.Write([]byte("PRD_REPLACEMENT_CSR_OK\n"))
+	_, _ = os.Stdout.Write(report.RequestPEM)
+}
 
 // TestCatalogPublicCommandSequenceSubprocess invokes the actual runner-lane
 // public dispatcher in a child test process. The child installs a package
@@ -631,6 +714,39 @@ type fixtureSelectorJournal struct {
 }
 
 type catalogSubprocessFixtureBackend struct{ root string }
+
+func (b *catalogSubprocessFixtureBackend) RunPRDReplacementBootstrap(_ context.Context,
+	request laneinstall.PRDReplacementBootstrapRequest, stdout, stderr io.Writer) error {
+	if request.OperationID == "" || request.ReleaseID == "" || !fixtureValidDigest(request.ServerCSR256) ||
+		!fixtureValidDigest(request.ApprovalSHA256) || request.PublisherOwner == "" || request.PublisherControl == "" ||
+		!request.PublishersPaused || !request.NoNewAccepted {
+		return laneinstall.ErrCatalogOperationInvalid
+	}
+	result := laneinstall.PRDReplacementBootstrapResult{OperationID: request.OperationID, Stage: "ready_for_catalog_promotion",
+		Release: laneinstall.CatalogReleaseIdentity{ReleaseID: request.ReleaseID, ReleaseSHA256: request.ExpectedReleaseSHA256,
+			HostID: "linux-host", BundleSHA256: strings.Repeat("b", 64)},
+		ConfigurationSHA256: strings.Repeat("c", 64), MacCandidateSHA256: strings.Repeat("d", 64),
+		DatabaseSchema: store.CurrentSchemaVersion, WorkInventorySHA256: (laneinstall.CatalogWorkInventory{}).SHA256(),
+		JournalSHA256: strings.Repeat("e", 64)}
+	if err := writeCatalogFixtureJSON(filepath.Join(b.root, "bootstrap-result.json"), result); err != nil {
+		return err
+	}
+	return json.NewEncoder(stdout).Encode(result)
+}
+
+func (b *catalogSubprocessFixtureBackend) RunPRDReplacementServerCSR(operationID string, stdout, _ io.Writer) error {
+	if !validCLIProbeOperationID(operationID) {
+		return laneinstall.ErrCatalogOperationInvalid
+	}
+	request, err := laneinstall.GeneratePRDReplacementServerCSR()
+	if err != nil {
+		return err
+	}
+	requestDigest := sha256.Sum256(request.RequestPEM)
+	report := laneinstall.PRDReplacementServerCSRReport{OperationID: operationID, RequestPEM: request.RequestPEM,
+		RequestSHA: hex.EncodeToString(requestDigest[:])}
+	return json.NewEncoder(stdout).Encode(report)
+}
 
 func (b *catalogSubprocessFixtureBackend) RunPRDRecovery(ctx context.Context, command catalogPRDRecoveryCommand, stdout, stderr io.Writer) error {
 	if ctx == nil || !containsCatalogFixtureHost(command.HostID) || command.ReleaseID == "" ||

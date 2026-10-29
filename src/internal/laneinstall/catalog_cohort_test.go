@@ -1,6 +1,7 @@
 package laneinstall
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -142,6 +143,220 @@ func TestCatalogPRDCohortRequiresExactLegacyIdentityAndReadCompatibility(t *test
 	if err := ValidateCatalogCohortReceipt(unsafe); err == nil {
 		t.Fatal("PRD cohort accepted incomplete rollback semantic-test evidence")
 	}
+}
+
+func TestCatalogPRDCohortAcceptsOnlyExplicitFreshReplacementBaseline(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	manifest, reports := catalogCohortCreationFixture(t, now)
+	for index := range reports {
+		host := &reports[index].Preflight
+		host.ServiceActiveAtPreflight = false
+		if host.HostID != "linux-host" {
+			host.PreviousTarget = "legacy-bin:" + host.PreviousBundleSHA256
+			host.LegacyRollback = validLegacyRollbackEvidence(host.PreviousBundleSHA256, host.ConfigurationSHA256, host.SchemaVersion, now)
+			host.PreviousReadSchemaMax = host.LegacyRollback.ReadSchemaMax
+			continue
+		}
+		host.PreviousTarget = ""
+		host.PreviousBundleSHA256 = ""
+		host.PreviousReadSchemaMax = 0
+		host.LegacyRollback = nil
+		absence := validFreshPRDAbsenceForTest(t, now.Add(-30*time.Second))
+		baseline, err := NewCatalogFreshInstallBaseline("0123456789abcdef0123456789abcdef", absence,
+			host.ConfigurationSHA256, host.SchemaVersion, CatalogWorkInventory{}, now.Add(-15*time.Second))
+		if err != nil {
+			t.Fatalf("create explicit replacement baseline: %v", err)
+		}
+		host.FreshInstall = &baseline
+	}
+	receipt, err := NewCatalogCohortReceipt(config.ReleaseLanePRD, manifest, reports,
+		CatalogCohortPublisherPause{Owner: "owner", Control: "owner confirmed all PRD publishers paused", Paused: true, NoNewAccepted: true}, now)
+	if err != nil {
+		t.Fatalf("create PRD cohort with a real fresh-install baseline: %v", err)
+	}
+	if err := ValidateCatalogCohortReceipt(receipt); err != nil {
+		t.Fatalf("validate PRD fresh-install cohort: %v", err)
+	}
+	index := cohortHostIndex(receipt, "linux-host")
+	if index < 0 || receipt.Hosts[index].FreshInstall == nil || receipt.Hosts[index].PreviousBundleSHA256 != "" ||
+		receipt.Hosts[index].LegacyRollback != nil {
+		t.Fatalf("fresh baseline was converted into a synthetic legacy predecessor: %+v", receipt.Hosts[index])
+	}
+
+	mutated := receipt
+	mutated.Hosts = append([]CatalogCohortHostPreflight(nil), receipt.Hosts...)
+	bad := *mutated.Hosts[index].FreshInstall
+	bad.Absence.SelectedLane = config.ReleaseLanePRD
+	mutated.Hosts[index].FreshInstall = &bad
+	if err := ValidateCatalogCohortReceipt(mutated); err == nil {
+		t.Fatal("fresh-install receipt accepted a changed absence scope")
+	}
+	mutated = receipt
+	mutated.Hosts = append([]CatalogCohortHostPreflight(nil), receipt.Hosts...)
+	mutated.Hosts[index].FreshInstall = nil
+	if err := ValidateCatalogCohortReceipt(mutated); err == nil {
+		t.Fatal("fresh-install receipt accepted without its baseline evidence")
+	}
+}
+
+func TestFreshInstallReceiptRequiresSuccessorRuntimeAndRollsBackToAbsentHeldNamespace(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	manifest, reports := catalogCohortCreationFixture(t, now)
+	for index := range reports {
+		host := &reports[index].Preflight
+		host.ServiceActiveAtPreflight = false
+		if host.HostID != "linux-host" {
+			host.PreviousTarget = "legacy-bin:" + host.PreviousBundleSHA256
+			host.LegacyRollback = validLegacyRollbackEvidence(host.PreviousBundleSHA256, host.ConfigurationSHA256, host.SchemaVersion, now)
+			host.PreviousReadSchemaMax = host.LegacyRollback.ReadSchemaMax
+			continue
+		}
+		host.PreviousTarget, host.PreviousBundleSHA256, host.PreviousReadSchemaMax = "", "", 0
+		host.LegacyRollback = nil
+		absence := validFreshPRDAbsenceForTest(t, now.Add(-30*time.Second))
+		baseline, err := NewCatalogFreshInstallBaseline("0123456789abcdef0123456789abcdef", absence,
+			host.ConfigurationSHA256, host.SchemaVersion, CatalogWorkInventory{}, now.Add(-15*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		host.FreshInstall = &baseline
+	}
+	receipt, err := NewCatalogCohortReceipt(config.ReleaseLanePRD, manifest, reports,
+		CatalogCohortPublisherPause{Owner: "owner", Control: "test pause", Paused: true, NoNewAccepted: true}, now)
+	if err != nil {
+		t.Fatalf("create fresh-install receipt: %v", err)
+	}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Hosts []json.RawMessage `json:"hosts"`
+	}
+	if err := json.Unmarshal(encoded, &envelope); err != nil || len(envelope.Hosts) != len(catalogCohortSwitchOrder) {
+		t.Fatalf("read host evidence from fresh receipt: hosts=%d err=%v", len(envelope.Hosts), err)
+	}
+	// This mirrors the strict host-preflight shape from the last accepted
+	// pre-fresh-install runtime. Its DisallowUnknownFields parser cannot sync a
+	// receipt that carries fresh_install_baseline.
+	type preFreshInstallHost struct {
+		HostID                   string                              `json:"host_id"`
+		ServiceActiveAtPreflight bool                                `json:"service_active_at_preflight"`
+		PreviousTarget           string                              `json:"previous_target,omitempty"`
+		PreviousBundleSHA256     string                              `json:"previous_bundle_sha256,omitempty"`
+		PreviousReadSchemaMax    int                                 `json:"previous_read_schema_max,omitempty"`
+		LegacyRollback           *CatalogLegacyRollbackCompatibility `json:"legacy_rollback_compatibility,omitempty"`
+		Target                   CatalogReleaseIdentity              `json:"target_release_identity"`
+		ConfigurationSHA256      string                              `json:"configuration_sha256"`
+		SchemaVersion            int                                 `json:"schema_version"`
+		WorkInventorySHA256      string                              `json:"work_inventory_sha256"`
+		WorkInventoryEmpty       bool                                `json:"work_inventory_empty"`
+		PreflightAt              string                              `json:"preflight_at"`
+		BackupDirectory          string                              `json:"backup_directory"`
+		BackupManifestSHA256     string                              `json:"backup_manifest_sha256"`
+		AvailableBytes           uint64                              `json:"available_bytes"`
+		RequiredBytes            uint64                              `json:"required_bytes"`
+	}
+	var legacy preFreshInstallHost
+	legacyDecoder := json.NewDecoder(bytes.NewReader(envelope.Hosts[0]))
+	legacyDecoder.DisallowUnknownFields()
+	if err := legacyDecoder.Decode(&legacy); err == nil {
+		t.Fatal("predecessor runtime unexpectedly accepted fresh_install_baseline during receipt synchronization")
+	}
+	var current CatalogCohortHostPreflight
+	if err := json.Unmarshal(envelope.Hosts[0], &current); err != nil || current.FreshInstall == nil {
+		t.Fatalf("successor runtime did not decode fresh-install evidence: baseline=%v err=%v", current.FreshInstall, err)
+	}
+
+	for index, hostID := range catalogCohortSwitchOrder {
+		host := receipt.Hosts[index]
+		freshSHA := ""
+		if host.FreshInstall != nil {
+			freshSHA = host.FreshInstall.EvidenceSHA256
+		}
+		fence := CatalogCohortHostFence{HostID: hostID, ServiceWasActive: host.ServiceActiveAtPreflight,
+			ServiceStopped: true, WorkInventorySHA256: host.WorkInventorySHA256, ConfigurationSHA256: host.ConfigurationSHA256,
+			SelectorTarget: host.PreviousTarget, PreviousBundleSHA256: host.PreviousBundleSHA256,
+			FreshInstallEvidenceSHA256: freshSHA, DatabaseSchema: host.SchemaVersion,
+			ObservedAt: now.Add(time.Duration(index) * time.Second).Format(time.RFC3339Nano)}
+		receipt, err = AdvanceCatalogCohortHostFence(receipt, fence, now.Add(time.Duration(index+1)*time.Second))
+		if err != nil {
+			t.Fatalf("record host fence %s: %v", hostID, err)
+		}
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "hold", "", strings.Repeat("a", 64), now.Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("hold fresh-install cohort: %v", err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "preflight", "linux-host", strings.Repeat("b", 64), now.Add(6*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "switch", "linux-host", strings.Repeat("c", 64), now.Add(7*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "block", "", strings.Repeat("d", 64), now.Add(8*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "rollback-start", "", strings.Repeat("e", 64), now.Add(9*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildCatalogPlan("linux-host", config.ReleaseLanePRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := DefaultCatalogRootForPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := catalogSelectorLayoutForPlan(plan, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := receipt.Hosts[0]
+	operation := CatalogSelectorOperation{FormatVersion: catalogOperationFormatVersion,
+		OperationID: "fedcfedcfedcfedcfedcfedcfedcfedc", CohortOperationID: receipt.OperationID,
+		HostID: "linux-host", Lane: config.ReleaseLanePRD, Release: host.Target,
+		PreviousTarget: "", NextTarget: filepath.Join(layout.catalogRoot, receipt.ReleaseID, "linux-host"),
+		ConfigurationSHA256: host.ConfigurationSHA256, DatabaseSchemaAtSwitch: host.SchemaVersion,
+		BackupDirectory: host.BackupDirectory, BackupManifestSHA256: host.BackupManifestSHA256,
+		Stage: catalogOperationComplete, CreatedUTC: now.Add(7 * time.Second).Format(time.RFC3339Nano)}
+	if err := validateCatalogCohortHostMayRollback(receipt, layout, operation, operation.NextTarget); err != nil {
+		t.Fatalf("fresh replacement selector is not safely rollbackable to absence: %v", err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "rollback-host", "linux-host", strings.Repeat("f", 64), now.Add(10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = AdvanceCatalogCohortReceipt(receipt, "rollback-complete", "", strings.Repeat("1", 64), now.Add(11*time.Second))
+	if err != nil || receipt.Stage != CatalogCohortRolledBack || !catalogCohortStageHoldsAdmissions(receipt.Stage) {
+		t.Fatalf("rollback did not preserve the held, unselected fresh-install disposition: stage=%s err=%v", receipt.Stage, err)
+	}
+}
+
+func validFreshPRDAbsenceForTest(t *testing.T, observedAt time.Time) CatalogNamespaceAbsenceReport {
+	t.Helper()
+	plan, err := BuildCatalogPlan("linux-host", config.ReleaseLanePRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namespace := plan.Namespace
+	report := CatalogNamespaceAbsenceReport{
+		FormatVersion: 1, HostID: "linux-host", Lane: config.ReleaseLanePRD, SelectedLane: config.ReleaseLaneDev,
+		State: "absent", ServiceRoot: namespace.ServiceRoot, ServiceRootState: "absent",
+		ConfigurationPath: namespace.ConfigFile, ConfigurationState: "absent", DatabasePath: namespace.Database, DatabaseState: "absent",
+		SelectorJournalRoot: filepath.Join(namespace.Staging, "catalog-operations"), SelectorJournalsState: "absent",
+		CohortReceiptRoot: filepath.Join(namespace.Staging, "catalog-cohorts"), CohortReceiptsState: "absent",
+		BackupRoot: namespace.Backups, BackupState: "absent", LifecycleLock: namespace.LifecycleLock, LifecycleLockState: "absent",
+		ServiceUnit: namespace.RunnerUnit, UnitLoadState: "not-found", UnitFileState: "not-found", UnitActiveState: "inactive", UnitSubState: "dead",
+		DirectListenerPort: namespace.DirectPort, DirectListenerAbsent: true, ProcessScanComplete: true,
+		ObservedAtUTC: observedAt.UTC().Format(time.RFC3339Nano),
+	}
+	report.EvidenceSHA256 = catalogNamespaceAbsenceEvidenceSHA256(report)
+	return report
 }
 
 func TestCatalogPRDCohortPreparedFenceThenHoldRequiresEveryStoppedHostInOrder(t *testing.T) {

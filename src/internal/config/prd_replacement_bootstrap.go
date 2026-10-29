@@ -10,6 +10,43 @@ import (
 
 const replacementLinuxBaseSystem = "Ubuntu 26.04"
 
+// PRDReplacementMacLegacyIdentity contains only path and route metadata from
+// the existing V2 Mac PRD configuration. It is used to validate that bootstrap
+// inputs are read from the configured legacy identities before the supported
+// route transition changes the Linux endpoint.
+type PRDReplacementMacLegacyIdentity struct {
+	ServerCAPath          string
+	ClientCertificatePath string
+	ClientPrivateKeyPath  string
+	DispatcherKeyPath     string
+	KnownHostsPath        string
+}
+
+// InspectPRDReplacementMacLegacyIdentity accepts only the existing V2 PRD
+// Mac-to-retired-Linux route and returns the configured secret paths. It does
+// not read or expose credential bytes.
+func InspectPRDReplacementMacLegacyIdentity(contents []byte) (PRDReplacementMacLegacyIdentity, error) {
+	var result PRDReplacementMacLegacyIdentity
+	loaded, err := ParseBytes(contents)
+	if err != nil || loaded.Kind() != HostKindMac || loaded.SchemaVersion() != VersionV2 || loaded.ReleaseLane() != ReleaseLanePRD {
+		return result, ErrInvalidLaneProfiles
+	}
+	host, ok := loaded.RemoteHost("linux-host")
+	if !ok || host.Account != LinuxAccount || host.QueuedBridge == nil || host.DirectEndpoint == nil ||
+		host.QueuedBridge.Host != prdReplacementLinuxOldPublicIP || host.QueuedBridge.Port != 22 ||
+		host.DirectEndpoint.TargetProfile != "linux-host" ||
+		host.DirectEndpoint.Endpoint != "https://"+prdReplacementLinuxOldPublicIP+":8443" ||
+		host.DirectEndpoint.ClientCertificate == "" || host.DirectEndpoint.ClientPrivateKeyFile == "" ||
+		host.DirectEndpoint.ServerCA == "" || host.QueuedBridge.PrivateKeyFile == "" || host.QueuedBridge.KnownHostsFile == "" {
+		return result, ErrInvalidLaneProfiles
+	}
+	return PRDReplacementMacLegacyIdentity{
+		ServerCAPath: host.DirectEndpoint.ServerCA, ClientCertificatePath: host.DirectEndpoint.ClientCertificate,
+		ClientPrivateKeyPath: host.DirectEndpoint.ClientPrivateKeyFile, DispatcherKeyPath: host.QueuedBridge.PrivateKeyFile,
+		KnownHostsPath: host.QueuedBridge.KnownHostsFile,
+	}, nil
+}
+
 // BuildFreshPRDReplacementConfigPair creates the two reviewed V2 route
 // documents needed when linux-host has no PRD installation. The Mac keeps its
 // mailbox roots, credentials, policies, and every non-Linux route; the Linux
@@ -122,6 +159,24 @@ func BuildFreshPRDReplacementLinuxConfig(template []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: generated replacement Linux route is invalid", ErrInvalidLaneProfiles)
 	}
 	return candidate, nil
+}
+
+// PRDReplacementLinuxTemplateHost returns the one existing worker profile
+// from which a legacy PRD Linux template is derived. It validates the fixed
+// route and V2 host identity rather than searching arbitrary YAML text.
+func PRDReplacementLinuxTemplateHost(template []byte) (string, error) {
+	if !isV2HostConfiguration(template, HostKindLinux) {
+		return "", fmt.Errorf("%w: expected an existing Linux V2 PRD template", ErrInvalidLaneProfiles)
+	}
+	document, err := decodeFileDocument(template)
+	if err != nil || document.Linux == nil {
+		return "", fmt.Errorf("%w: invalid Linux PRD template", ErrInvalidLaneProfiles)
+	}
+	route, ok := lookupPRDReplacementTemplateRoute(document.Linux.RemoteTargetProfile)
+	if !ok || document.Linux.DirectHTTPSBind != route.bind || document.Linux.DirectPublicEndpoint != route.endpoint {
+		return "", fmt.Errorf("%w: Linux PRD template is not a verified existing worker route", ErrInvalidLaneProfiles)
+	}
+	return document.Linux.RemoteTargetProfile, nil
 }
 
 func replacementLinuxControllersValid(controllers []controllerDocument) bool {

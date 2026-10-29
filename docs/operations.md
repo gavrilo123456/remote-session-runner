@@ -102,6 +102,81 @@ completed retained-capacity recovery. Check the running revision and the
 selected authority's live status before drawing a conclusion about the Mac or
 either Ubuntu host.
 
+## Fresh PRD bootstrap on the replacement Linux worker
+
+This procedure is only for the owner-approved replacement `linux-host` at
+`79.72.94.59` (`10.0.0.228`). The retired `129.151.232.40` endpoint is not a
+fallback and must remain disabled. The procedure creates a fresh Linux PRD
+namespace without importing its database, workspaces, reservations, or
+receipts. It preserves the replacement's Dev and QAS namespaces and leaves
+the new PRD service unselected and stopped until the normal promotion
+transaction.
+
+The fresh-install baseline is part of the synchronized PRD receipt. Older
+sealed service runtimes reject that receipt field, so a controller-only update
+or the previously accepted `rr-a38cb0057e-877d49e3` is insufficient for this
+path. Build a successor with the receipt reader, test it, and accept its
+identical per-host bundles in Dev and then QAS before using it here. Do not
+rewrite an existing sealed release.
+
+Before bootstrap, confirm that the release has passed Dev and QAS acceptance,
+the current release-bound PRD approval is valid, the owner-confirmed publisher
+pause remains in force, and fresh read-only plans show the replacement PRD
+namespace absent. Keep the owner-only request and approval files outside Git;
+the request contains public identity/configuration material and must be mode
+`0600`. The command also verifies the pinned SSH host key and checks its
+durable coordinator journal. It binds the replacement's fresh-absence proof,
+and the Mac route step takes and verifies a consistent Mac PRD backup before
+changing that route. The subsequent held `promote-to prd all` preparation
+backs up the existing PRD authorities and rechecks the replacement baseline.
+Do not manually create namespace files or selectors.
+
+```sh
+# Mac — from the canonical checkout, with the pinned Go 1.27.1 toolchain
+runner-release status --release <accepted-successor-release-id> --json
+promote-to prd all --release <accepted-successor-release-id> \
+  --approval-file <current-owner-approval.json> --plan --json
+runner-release prd-replacement-bootstrap \
+  --request-file <owner-only-bootstrap-request.json> \
+  --approval-file <current-owner-approval.json> \
+  --publisher-owner <confirmed-pause-owner> \
+  --publisher-control <specific-publisher-pause-control> \
+  --publishers-paused --no-new-accepted --json
+```
+
+The bootstrap command writes its operation journal before the first remote
+CSR/key or namespace mutation and records only input/evidence hashes and stage
+identities. On interruption, inspect that journal and the host-local journal;
+resume only with the exact same request, release, approval, host profile,
+publisher evidence and operation ID. A partial namespace without the matching
+journal is a conflict, not an absent installation. Exact retries resume
+idempotent directory, configuration, authorized-key, database and baseline
+steps; conflicting bytes or intervening changes fail closed. The configured
+authorized-key file is backed up in the journal and unrelated key lines are
+preserved. The database is created from the current schema in a private staging
+file, then installed without overwriting a conflicting path. Creation of the
+Linux systemd unit also uses a fixed target and content hash. If interrupted
+after the no-overwrite link, an exact retry verifies ownership, mode, and bytes
+before removing only the matching staged hardlink. A conflicting unit is left
+untouched and stops the operation.
+
+After bootstrap reports `ready_for_catalog_promotion`, collect a new PRD plan.
+Bootstrap changes the Mac route/configuration and establishes the replacement
+baseline, so do not reuse the pre-bootstrap approval or preflight. Review a
+new release-bound approval tied to the fresh configuration, backups, schema,
+work inventories and rollback disposition. Then use the normal `promote-to
+prd all` prepare/resume path. The replacement host's rollback target is
+absence: it must remain stopped, held and unselected. Never restore an older
+database automatically, and never let rollback reactivate the retired IP.
+
+Source fixtures exercise interruption and exact retry across every bootstrap
+step, conflicting configuration/key/database state, receipt synchronization
+with predecessor runtimes that reject the new field, successor receipt
+validation, and rollback to the unselected fresh-install baseline. These are
+source checks only. Live bootstrap, service acceptance, mailbox acceptance,
+and client resumption each require their own recorded result; mailbox
+acceptance is `NOT RUN` when no dedicated test exchange is authorized.
+
 ## Fast health checks
 
 ### Mac — `tomasz.walczuk`

@@ -29,7 +29,8 @@ func BuildPRDCatalogServiceArtifacts(hostID string) ([]Artifact, error) {
 		}, nil
 	}
 	return []Artifact{
-		{Kind: ArtifactEntrypoint, InstallPath: ns.RunnerEntrypoint, Mode: 0o700, Contents: renderSimpleLinuxEntrypoint(ns, hostID)},
+		{Kind: ArtifactEntrypoint, InstallPath: ns.RunnerEntrypoint, Mode: 0o700, Owner: ns.Account, Group: ns.Account,
+			Contents: renderSimpleLinuxEntrypoint(ns, hostID)},
 		{Kind: ArtifactSystemdUnit, InstallPath: filepath.Join("/etc/systemd/system", ns.RunnerUnit), Mode: 0o644, Owner: "root", Group: "root", Contents: renderSimpleSystemdService(ns)},
 		{Kind: ArtifactSSHWrapper, InstallPath: filepath.Join(ns.Binaries, "runner-ssh-bridge-forced.sh"), Mode: 0o700, Owner: ns.Account, Group: ns.Account,
 			Contents: renderPRDCatalogQueuedSSHWrapper(ns, hostID)},

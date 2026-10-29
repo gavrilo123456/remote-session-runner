@@ -57,6 +57,7 @@ type CatalogCohortHostPreflight struct {
 	PreviousBundleSHA256     string                              `json:"previous_bundle_sha256,omitempty"`
 	PreviousReadSchemaMax    int                                 `json:"previous_read_schema_max,omitempty"`
 	LegacyRollback           *CatalogLegacyRollbackCompatibility `json:"legacy_rollback_compatibility,omitempty"`
+	FreshInstall             *CatalogFreshInstallBaseline        `json:"fresh_install_baseline,omitempty"`
 	Target                   CatalogReleaseIdentity              `json:"target_release_identity"`
 	ConfigurationSHA256      string                              `json:"configuration_sha256"`
 	SchemaVersion            int                                 `json:"schema_version"`
@@ -67,6 +68,31 @@ type CatalogCohortHostPreflight struct {
 	BackupManifestSHA256     string                              `json:"backup_manifest_sha256"`
 	AvailableBytes           uint64                              `json:"available_bytes"`
 	RequiredBytes            uint64                              `json:"required_bytes"`
+}
+
+// CatalogFreshInstallBaseline proves that a replacement worker's PRD
+// namespace was absent before its first catalog installation. It deliberately
+// carries no synthetic previous bundle or schema-compatibility claim; rollback
+// for this baseline is to an unselected, stopped and held namespace.
+type CatalogFreshInstallBaseline struct {
+	FormatVersion       int                           `json:"format_version"`
+	OperationID         string                        `json:"operation_id"`
+	Absence             CatalogNamespaceAbsenceReport `json:"absence_evidence"`
+	ConfigurationSHA256 string                        `json:"configuration_sha256"`
+	DatabaseSchema      int                           `json:"database_schema"`
+	WorkInventorySHA256 string                        `json:"work_inventory_sha256"`
+	PreparedAtUTC       string                        `json:"prepared_at_utc"`
+	EvidenceSHA256      string                        `json:"evidence_sha256"`
+}
+
+// CatalogFreshInstallBaselineReport is a read-only, absence-aware view of a
+// prepared replacement PRD namespace. Present=false is returned only when the
+// canonical baseline file is absent; malformed evidence or a changed database
+// is an error, never an implicit legacy or fresh-install classification.
+type CatalogFreshInstallBaselineReport struct {
+	HostID   string                       `json:"host_id"`
+	Present  bool                         `json:"present"`
+	Baseline *CatalogFreshInstallBaseline `json:"baseline,omitempty"`
 }
 
 // CatalogLegacyRollbackCompatibility binds rollback claims for an unselected
@@ -109,15 +135,16 @@ func ValidateCatalogLegacyRollbackCompatibility(evidence CatalogLegacyRollbackCo
 }
 
 type CatalogCohortHostFence struct {
-	HostID               string `json:"host_id"`
-	ServiceWasActive     bool   `json:"service_was_active"`
-	ServiceStopped       bool   `json:"service_stopped"`
-	WorkInventorySHA256  string `json:"work_inventory_sha256"`
-	ConfigurationSHA256  string `json:"configuration_sha256"`
-	SelectorTarget       string `json:"selector_target,omitempty"`
-	PreviousBundleSHA256 string `json:"previous_bundle_sha256"`
-	DatabaseSchema       int    `json:"database_schema"`
-	ObservedAt           string `json:"observed_at"`
+	HostID                     string `json:"host_id"`
+	ServiceWasActive           bool   `json:"service_was_active"`
+	ServiceStopped             bool   `json:"service_stopped"`
+	WorkInventorySHA256        string `json:"work_inventory_sha256"`
+	ConfigurationSHA256        string `json:"configuration_sha256"`
+	SelectorTarget             string `json:"selector_target,omitempty"`
+	PreviousBundleSHA256       string `json:"previous_bundle_sha256"`
+	FreshInstallEvidenceSHA256 string `json:"fresh_install_evidence_sha256,omitempty"`
+	DatabaseSchema             int    `json:"database_schema"`
+	ObservedAt                 string `json:"observed_at"`
 }
 
 // CatalogCohortRollbackFence is a fresh, host-local proof that a previously
@@ -316,15 +343,22 @@ func NewCatalogCohortReceiptWithOperationID(lane config.ReleaseLane, manifest Ca
 		}
 		if lane == config.ReleaseLanePRD {
 			if preflight.PreviousTarget == "" || strings.HasPrefix(preflight.PreviousTarget, "legacy-bin:") {
-				if preflight.LegacyRollback == nil || ValidateCatalogLegacyRollbackCompatibility(*preflight.LegacyRollback,
+				if preflight.FreshInstall != nil {
+					if preflight.PreviousTarget != "" || preflight.PreviousBundleSHA256 != "" || preflight.PreviousReadSchemaMax != 0 ||
+						preflight.LegacyRollback != nil || validateCatalogFreshInstallBaseline(*preflight.FreshInstall, preflight) != nil {
+						return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+					}
+				} else if preflight.LegacyRollback == nil || ValidateCatalogLegacyRollbackCompatibility(*preflight.LegacyRollback,
 					preflight.PreviousBundleSHA256, preflight.ConfigurationSHA256, preflight.SchemaVersion) != nil ||
 					preflight.PreviousReadSchemaMax != preflight.LegacyRollback.ReadSchemaMax {
 					return CatalogCohortReceipt{}, ErrCatalogRollbackUnsafe
 				}
 			} else if preflight.LegacyRollback != nil {
 				return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+			} else if preflight.FreshInstall != nil {
+				return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 			}
-		} else if preflight.ServiceActiveAtPreflight || preflight.LegacyRollback != nil {
+		} else if preflight.ServiceActiveAtPreflight || preflight.LegacyRollback != nil || preflight.FreshInstall != nil {
 			return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 		}
 		byHost[preflight.HostID] = report
@@ -959,7 +993,7 @@ func validCatalogCohortHostFence(receipt CatalogCohortReceipt, event CatalogCoho
 		event.HostFence.HostID != event.HostID || !event.HostFence.ServiceStopped ||
 		!bundleDigestPattern.MatchString(event.HostFence.WorkInventorySHA256) ||
 		!bundleDigestPattern.MatchString(event.HostFence.ConfigurationSHA256) ||
-		!bundleDigestPattern.MatchString(event.HostFence.PreviousBundleSHA256) || event.HostFence.DatabaseSchema <= 0 ||
+		(event.HostFence.PreviousBundleSHA256 != "" && !bundleDigestPattern.MatchString(event.HostFence.PreviousBundleSHA256)) || event.HostFence.DatabaseSchema <= 0 ||
 		!validCohortTimestamp(event.HostFence.ObservedAt) {
 		return false
 	}
@@ -971,6 +1005,10 @@ func validCatalogCohortHostFence(receipt CatalogCohortReceipt, event CatalogCoho
 	observedAt, err := time.Parse(time.RFC3339Nano, event.HostFence.ObservedAt)
 	encoded, encodeErr := json.Marshal(*event.HostFence)
 	digest := sha256.Sum256(encoded)
+	freshInstallSHA := ""
+	if host.FreshInstall != nil {
+		freshInstallSHA = host.FreshInstall.EvidenceSHA256
+	}
 	return err == nil && encodeErr == nil && event.EvidenceSHA256 == hex.EncodeToString(digest[:]) &&
 		!observedAt.After(eventAt) && eventAt.Sub(observedAt) <= 2*time.Minute &&
 		event.HostFence.ServiceWasActive == host.ServiceActiveAtPreflight &&
@@ -978,12 +1016,17 @@ func validCatalogCohortHostFence(receipt CatalogCohortReceipt, event CatalogCoho
 		event.HostFence.ConfigurationSHA256 == host.ConfigurationSHA256 &&
 		event.HostFence.SelectorTarget == host.PreviousTarget &&
 		event.HostFence.PreviousBundleSHA256 == host.PreviousBundleSHA256 &&
+		event.HostFence.FreshInstallEvidenceSHA256 == freshInstallSHA &&
 		event.HostFence.DatabaseSchema == host.SchemaVersion
 }
 
 func validPreviousCatalogIdentity(host CatalogCohortHostPreflight, lane config.ReleaseLane) bool {
 	if host.PreviousTarget == "" {
 		if lane == config.ReleaseLanePRD {
+			if host.FreshInstall != nil {
+				return host.HostID == "linux-host" && host.PreviousBundleSHA256 == "" && host.PreviousReadSchemaMax == 0 &&
+					host.LegacyRollback == nil && validateCatalogFreshInstallBaseline(*host.FreshInstall, host) == nil
+			}
 			return bundleDigestPattern.MatchString(host.PreviousBundleSHA256) && host.PreviousReadSchemaMax > 0 &&
 				host.LegacyRollback != nil && ValidateCatalogLegacyRollbackCompatibility(*host.LegacyRollback, host.PreviousBundleSHA256,
 				host.ConfigurationSHA256, host.SchemaVersion) == nil && host.PreviousReadSchemaMax == host.LegacyRollback.ReadSchemaMax
@@ -1014,6 +1057,87 @@ func validPreviousCatalogIdentity(host CatalogCohortHostPreflight, lane config.R
 			(lane != config.ReleaseLanePRD || host.PreviousReadSchemaMax > 0 && host.LegacyRollback == nil)
 	}
 	return false
+}
+
+func validateCatalogFreshInstallBaseline(evidence CatalogFreshInstallBaseline, host CatalogCohortHostPreflight) error {
+	if host.HostID != "linux-host" || evidence.FormatVersion != 1 || !validCatalogOperationID(evidence.OperationID) ||
+		!bundleDigestPattern.MatchString(evidence.ConfigurationSHA256) || evidence.ConfigurationSHA256 != host.ConfigurationSHA256 ||
+		evidence.DatabaseSchema <= 0 || evidence.DatabaseSchema != host.SchemaVersion ||
+		!bundleDigestPattern.MatchString(evidence.WorkInventorySHA256) || evidence.WorkInventorySHA256 != host.WorkInventorySHA256 || !host.WorkInventoryEmpty ||
+		!validCohortTimestamp(evidence.PreparedAtUTC) || !bundleDigestPattern.MatchString(evidence.EvidenceSHA256) {
+		return ErrCatalogOperationInvalid
+	}
+	plan, err := BuildCatalogPlan("linux-host", config.ReleaseLanePRD)
+	if err != nil || evidence.Absence.HostID != "linux-host" || evidence.Absence.Lane != config.ReleaseLanePRD ||
+		evidence.Absence.State != "absent" || validateCatalogNamespaceAbsenceReportForNamespace(evidence.Absence,
+		"linux-host", config.ReleaseLanePRD, evidence.Absence.SelectedLane, plan.Namespace) != nil {
+		return ErrCatalogOperationInvalid
+	}
+	absentAt, absentErr := time.Parse(time.RFC3339Nano, evidence.Absence.ObservedAtUTC)
+	preparedAt, preparedErr := time.Parse(time.RFC3339Nano, evidence.PreparedAtUTC)
+	if absentErr != nil || preparedErr != nil || preparedAt.Before(absentAt) || preparedAt.Sub(absentAt) > 2*time.Minute {
+		return ErrCatalogOperationInvalid
+	}
+	encoded, err := json.Marshal(struct {
+		FormatVersion       int                           `json:"format_version"`
+		OperationID         string                        `json:"operation_id"`
+		Absence             CatalogNamespaceAbsenceReport `json:"absence_evidence"`
+		ConfigurationSHA256 string                        `json:"configuration_sha256"`
+		DatabaseSchema      int                           `json:"database_schema"`
+		WorkInventorySHA256 string                        `json:"work_inventory_sha256"`
+		PreparedAtUTC       string                        `json:"prepared_at_utc"`
+	}{evidence.FormatVersion, evidence.OperationID, evidence.Absence, evidence.ConfigurationSHA256,
+		evidence.DatabaseSchema, evidence.WorkInventorySHA256, evidence.PreparedAtUTC})
+	if err != nil {
+		return ErrCatalogOperationInvalid
+	}
+	digest := sha256.Sum256(encoded)
+	if evidence.EvidenceSHA256 != hex.EncodeToString(digest[:]) {
+		return ErrCatalogOperationInvalid
+	}
+	return nil
+}
+
+// ValidateCatalogFreshInstallBaseline verifies the canonical replacement
+// identity and evidence digest for controller-side plan validation.
+func ValidateCatalogFreshInstallBaseline(evidence CatalogFreshInstallBaseline) error {
+	host := CatalogCohortHostPreflight{HostID: "linux-host", ConfigurationSHA256: evidence.ConfigurationSHA256,
+		SchemaVersion: evidence.DatabaseSchema, WorkInventorySHA256: evidence.WorkInventorySHA256, WorkInventoryEmpty: true}
+	return validateCatalogFreshInstallBaseline(evidence, host)
+}
+
+// NewCatalogFreshInstallBaseline seals the verified namespace-absence report
+// with the first configuration, schema and empty-work snapshot. Callers must
+// obtain the absence report from the fixed read-only host observer; this
+// constructor validates the complete report before producing its digest.
+func NewCatalogFreshInstallBaseline(operationID string, absence CatalogNamespaceAbsenceReport,
+	configurationSHA256 string, databaseSchema int, work CatalogWorkInventory, preparedAt time.Time) (CatalogFreshInstallBaseline, error) {
+	baseline := CatalogFreshInstallBaseline{
+		FormatVersion: 1, OperationID: operationID, Absence: absence,
+		ConfigurationSHA256: configurationSHA256, DatabaseSchema: databaseSchema,
+		WorkInventorySHA256: work.SHA256(), PreparedAtUTC: preparedAt.UTC().Format(time.RFC3339Nano),
+	}
+	host := CatalogCohortHostPreflight{HostID: "linux-host", ConfigurationSHA256: configurationSHA256,
+		SchemaVersion: databaseSchema, WorkInventorySHA256: baseline.WorkInventorySHA256, WorkInventoryEmpty: work.Empty()}
+	encoded, err := json.Marshal(struct {
+		FormatVersion       int                           `json:"format_version"`
+		OperationID         string                        `json:"operation_id"`
+		Absence             CatalogNamespaceAbsenceReport `json:"absence_evidence"`
+		ConfigurationSHA256 string                        `json:"configuration_sha256"`
+		DatabaseSchema      int                           `json:"database_schema"`
+		WorkInventorySHA256 string                        `json:"work_inventory_sha256"`
+		PreparedAtUTC       string                        `json:"prepared_at_utc"`
+	}{baseline.FormatVersion, baseline.OperationID, baseline.Absence, baseline.ConfigurationSHA256,
+		baseline.DatabaseSchema, baseline.WorkInventorySHA256, baseline.PreparedAtUTC})
+	if err != nil {
+		return CatalogFreshInstallBaseline{}, ErrCatalogOperationInvalid
+	}
+	digest := sha256.Sum256(encoded)
+	baseline.EvidenceSHA256 = hex.EncodeToString(digest[:])
+	if err := validateCatalogFreshInstallBaseline(baseline, host); err != nil {
+		return CatalogFreshInstallBaseline{}, err
+	}
+	return baseline, nil
 }
 
 func cohortEvidenceFresh(receipt CatalogCohortReceipt, nowValue string) bool {

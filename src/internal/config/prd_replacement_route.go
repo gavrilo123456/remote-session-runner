@@ -13,6 +13,11 @@ const (
 	prdReplacementLinuxOldPrivateIP = "10.0.0.200"
 )
 
+// PRDReplacementRetiredLinuxPublicIP is retained only for the explicitly
+// paired fresh replacement transition and its historical evidence. Active
+// configurations and profiles must use the replacement address.
+const PRDReplacementRetiredLinuxPublicIP = prdReplacementLinuxOldPublicIP
+
 // ValidatePRDReplacementLinuxRoute validates a V2 PRD route transition for
 // the existing linux-host identity. The only permitted configuration edits
 // are the paired direct endpoint and queued SSH address on Mac, and the

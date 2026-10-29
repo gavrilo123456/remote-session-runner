@@ -139,6 +139,28 @@ the exact free-byte count because that value changes during normal operation;
 the read-only plan and every fresh preflight still measure and enforce actual
 headroom immediately before writes.
 
+### Fresh PRD namespace on a replacement worker
+
+When the approved PRD topology includes a replacement `linux-host` with no
+previous PRD namespace, first run the supported
+[`fresh PRD bootstrap`](operations.md#fresh-prd-bootstrap-on-the-replacement-linux-worker).
+It requires the exact release's Dev and QAS acceptance, a release-bound PRD
+approval, a verified replacement SSH host-key pin, fresh namespace-absence
+evidence and the owner-confirmed publisher pause. The command journals the
+operation before mutation, creates only the replacement PRD namespace and
+paired Mac trust/route update, and does not select or start the service. It
+preserves replacement Dev/QAS.
+
+The first-install baseline is carried in the cohort receipt. A service runtime
+that predates this field cannot synchronize that receipt, so use a successor
+whose exact bundles have passed Dev and QAS. After bootstrap changes the Mac
+route/configuration and establishes the replacement baseline, collect a new
+PRD plan and approval for the actual post-bootstrap configuration and
+rollback package; then continue through the standard held preparation and
+promotion sequence. Rollback of the fresh Linux predecessor is to an
+unselected, stopped, admission-held namespace, not restoration of an older
+database or reactivation of the retired host.
+
 If every host reports the same held `complete` receipt from an earlier
 promotion, a new operation may replace that hold only after the coordinator
 validates the receipt history and rechecks each selected release/bundle,

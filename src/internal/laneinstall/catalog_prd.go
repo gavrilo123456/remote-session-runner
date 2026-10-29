@@ -5,12 +5,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -45,6 +48,7 @@ type prdCatalogProof struct {
 	selectorTarget      string
 	bundleSHA256        string
 	legacyBundleSHA256  string
+	freshInstall        *CatalogFreshInstallBaseline
 	readSchemaMax       int
 	work                PRDWorkInventory
 	workSHA256          string
@@ -163,7 +167,12 @@ func readPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 	}
 	previousReadSchemaMax := before.readSchemaMax
 	var compatibility *CatalogLegacyRollbackCompatibility
-	if before.selectorTarget == "" {
+	if before.freshInstall != nil {
+		if legacyCompatibility != nil {
+			return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
+		}
+		previousReadSchemaMax = 0
+	} else if before.selectorTarget == "" {
 		if legacyCompatibility == nil || ValidateCatalogLegacyRollbackCompatibility(*legacyCompatibility,
 			before.legacyBundleSHA256, before.configurationSHA256, before.schema) != nil {
 			return CatalogCohortHostPreflightReport{}, ErrCatalogRollbackUnsafe
@@ -186,7 +195,8 @@ func readPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 	after, err := readPRDCatalogProof(ctx, plan, layout)
 	if err != nil || !after.work.Empty() || after.workSHA256 != before.workSHA256 || after.schema != before.schema ||
 		after.configurationSHA256 != before.configurationSHA256 || after.selectorTarget != before.selectorTarget ||
-		after.bundleSHA256 != before.bundleSHA256 || after.legacyBundleSHA256 != before.legacyBundleSHA256 {
+		after.bundleSHA256 != before.bundleSHA256 || after.legacyBundleSHA256 != before.legacyBundleSHA256 ||
+		freshInstallEvidenceSHA(after.freshInstall) != freshInstallEvidenceSHA(before.freshInstall) {
 		return CatalogCohortHostPreflightReport{}, errors.Join(ErrPRDUpgradeGuard, err)
 	}
 	activeAfter, err := service.Status(ctx, plan)
@@ -207,7 +217,7 @@ func readPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 		Preflight: CatalogCohortHostPreflight{
 			HostID: plan.HostID, ServiceActiveAtPreflight: active, PreviousTarget: after.selectorTarget,
 			PreviousBundleSHA256: after.previousBundleSHA256(), PreviousReadSchemaMax: previousReadSchemaMax,
-			LegacyRollback: compatibility, Target: target.Identity, ConfigurationSHA256: after.configurationSHA256,
+			LegacyRollback: compatibility, FreshInstall: after.freshInstall, Target: target.Identity, ConfigurationSHA256: after.configurationSHA256,
 			SchemaVersion: after.schema, WorkInventorySHA256: after.workSHA256, WorkInventoryEmpty: after.work.Empty(),
 			PreflightAt: time.Now().UTC().Format(time.RFC3339Nano), BackupDirectory: backup.Directory,
 			BackupManifestSHA256: backupManifestSHA256(backup.Directory), AvailableBytes: available, RequiredBytes: requiredBytes,
@@ -322,6 +332,9 @@ func fenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDS
 			return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
 		}
 	}
+	if host.FreshInstall != nil && (proof.freshInstall == nil || proof.freshInstall.EvidenceSHA256 != host.FreshInstall.EvidenceSHA256) {
+		return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
+	}
 	if err := validatePRDPreflightBackup(ctx, plan, host); err != nil {
 		return CatalogCohortHostFence{}, err
 	}
@@ -337,13 +350,14 @@ func fenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDS
 	post, err := readPRDCatalogProof(ctx, plan, layout)
 	if err != nil || !post.work.Empty() || post.workSHA256 != host.WorkInventorySHA256 || post.schema != host.SchemaVersion ||
 		post.configurationSHA256 != host.ConfigurationSHA256 || post.selectorTarget != host.PreviousTarget ||
-		post.previousBundleSHA256() != host.PreviousBundleSHA256 {
+		post.previousBundleSHA256() != host.PreviousBundleSHA256 ||
+		freshInstallEvidenceSHA(post.freshInstall) != freshInstallEvidenceSHA(host.FreshInstall) {
 		return CatalogCohortHostFence{}, errors.Join(ErrPRDUpgradeGuard, err)
 	}
 	return CatalogCohortHostFence{
 		HostID: plan.HostID, ServiceWasActive: host.ServiceActiveAtPreflight, ServiceStopped: true, WorkInventorySHA256: post.workSHA256,
 		ConfigurationSHA256: post.configurationSHA256, SelectorTarget: post.selectorTarget,
-		PreviousBundleSHA256: post.previousBundleSHA256(), DatabaseSchema: post.schema,
+		PreviousBundleSHA256: post.previousBundleSHA256(), FreshInstallEvidenceSHA256: freshInstallEvidenceSHA(post.freshInstall), DatabaseSchema: post.schema,
 		ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}, nil
 }
@@ -625,7 +639,7 @@ func (m *CatalogPRDMaintenance) CohortHostPreflight(ctx context.Context, expecte
 		Preflight: CatalogCohortHostPreflight{
 			HostID: expected.HostID, ServiceActiveAtPreflight: expected.ServiceActiveAtPreflight,
 			PreviousTarget: expected.PreviousTarget, PreviousBundleSHA256: expected.PreviousBundleSHA256,
-			PreviousReadSchemaMax: expected.PreviousReadSchemaMax, LegacyRollback: expected.LegacyRollback,
+			PreviousReadSchemaMax: expected.PreviousReadSchemaMax, LegacyRollback: expected.LegacyRollback, FreshInstall: expected.FreshInstall,
 			Target: expected.Target, ConfigurationSHA256: proof.configurationSHA256, SchemaVersion: proof.schema,
 			WorkInventorySHA256: proof.workSHA256, WorkInventoryEmpty: proof.work.Empty(),
 			PreflightAt: time.Now().UTC().Format(time.RFC3339Nano), BackupDirectory: m.backup.Directory,
@@ -675,7 +689,11 @@ func (m *CatalogPRDMaintenance) Select(ctx context.Context, releaseID, expectedT
 	}
 	index := cohortHostIndex(receipt, m.plan.HostID)
 	previousMaxMatches := index >= 0 && receipt.Hosts[index].PreviousReadSchemaMax == m.proof.readSchemaMax
-	if index >= 0 && m.proof.selectorTarget == "" {
+	if index >= 0 && receipt.Hosts[index].FreshInstall != nil {
+		previousMaxMatches = m.proof.freshInstall != nil &&
+			receipt.Hosts[index].FreshInstall.EvidenceSHA256 == m.proof.freshInstall.EvidenceSHA256 &&
+			receipt.Hosts[index].PreviousReadSchemaMax == 0 && receipt.Hosts[index].PreviousBundleSHA256 == ""
+	} else if index >= 0 && m.proof.selectorTarget == "" {
 		previousMaxMatches = receipt.Hosts[index].PreviousReadSchemaMax >= m.proof.schema
 	}
 	if index < 0 || receipt.Hosts[index].PreviousBundleSHA256 != m.proof.previousBundleSHA256() || !previousMaxMatches || receipt.Hosts[index].WorkInventorySHA256 != m.proof.workSHA256 ||
@@ -722,8 +740,23 @@ func (m *CatalogPRDMaintenance) Reconcile(ctx context.Context, operationID strin
 	if err != nil || (actual.Target != operation.PreviousTarget && actual.Target != operation.NextTarget) {
 		return CatalogSelectorOperation{}, ErrCatalogSelectorConflict
 	}
+	cohortPlan := Plan{HostID: m.plan.HostID, Lane: config.ReleaseLanePRD, Namespace: m.plan.Namespace}
+	cohortReceipt, err := ReadCatalogCohortReceipt(cohortPlan, operation.CohortOperationID)
+	if err != nil {
+		return CatalogSelectorOperation{}, err
+	}
+	cohortHost := cohortHostIndex(cohortReceipt, m.plan.HostID)
+	freshPredecessor := cohortHost >= 0 && cohortReceipt.Hosts[cohortHost].FreshInstall != nil
 	if operation.Stage == catalogOperationRollbackPrepare && operation.PreviousTarget == "" {
-		if err := restorePRDLegacyServiceArtifacts(ctx, m.plan, m.service, manifest); err != nil {
+		if freshPredecessor {
+			baseline, valid, baselineErr := currentFreshInstallBaseline(m.plan)
+			if baselineErr != nil || !valid || baseline.EvidenceSHA256 != cohortReceipt.Hosts[cohortHost].FreshInstall.EvidenceSHA256 {
+				return operation, errors.Join(ErrCatalogRollbackUnsafe, baselineErr)
+			}
+			// A fresh replacement has no previous launcher to restore. Keep the
+			// installed configuration and history, but leave the selector absent
+			// and the service stopped under the cohort's rollback hold.
+		} else if err := restorePRDLegacyServiceArtifacts(ctx, m.plan, m.service, manifest); err != nil {
 			return operation, err
 		}
 	} else if operation.Stage == catalogOperationPrepared || operation.Stage == catalogOperationSwitched || operation.Stage == catalogOperationComplete {
@@ -787,6 +820,25 @@ func (m *CatalogPRDMaintenance) Rollback(ctx context.Context, operationID string
 		return rolledBack, nil
 	}
 	index := cohortHostIndex(receipt, m.plan.HostID)
+	if index >= 0 && receipt.Hosts[index].FreshInstall != nil {
+		baseline, valid, baselineErr := currentFreshInstallBaseline(m.plan)
+		if baselineErr != nil || !valid || baseline.EvidenceSHA256 != receipt.Hosts[index].FreshInstall.EvidenceSHA256 ||
+			operation.PreviousTarget != "" || receipt.Hosts[index].PreviousBundleSHA256 != "" || receipt.Hosts[index].LegacyRollback != nil {
+			return CatalogSelectorOperation{}, errors.Join(ErrCatalogRollbackUnsafe, baselineErr)
+		}
+		rolledBack, err := rollbackPRDCatalogSelectorToLegacy(m.layout, operation, m.proof.schema, backupRef, func() error {
+			// Fresh-install rollback deliberately leaves artifacts, config, and
+			// database in place for evidence/retry. It never restores old state.
+			return nil
+		})
+		if err != nil {
+			return rolledBack, err
+		}
+		if err := recordCatalogCohortRollback(cohortPlan, rolledBack); err != nil {
+			return rolledBack, err
+		}
+		return rolledBack, nil
+	}
 	legacy, err := readPRDLegacyInventory(m.plan)
 	if err != nil {
 		return CatalogSelectorOperation{}, err
@@ -825,7 +877,8 @@ func (m *CatalogPRDMaintenance) recheck(ctx context.Context) error {
 		return err
 	}
 	if !proof.work.Empty() || proof.schema != m.proof.schema || proof.configurationSHA256 != m.proof.configurationSHA256 ||
-		proof.selectorTarget != m.proof.selectorTarget || proof.bundleSHA256 != m.proof.bundleSHA256 || proof.legacyBundleSHA256 != m.proof.legacyBundleSHA256 {
+		proof.selectorTarget != m.proof.selectorTarget || proof.bundleSHA256 != m.proof.bundleSHA256 || proof.legacyBundleSHA256 != m.proof.legacyBundleSHA256 ||
+		freshInstallEvidenceSHA(proof.freshInstall) != freshInstallEvidenceSHA(m.proof.freshInstall) {
 		return ErrPRDUpgradeGuard
 	}
 	m.proof = proof
@@ -882,9 +935,23 @@ func readPRDCatalogProof(ctx context.Context, plan PRDUpgradePlan, layout catalo
 		if err != nil {
 			return prdCatalogProof{}, err
 		}
-		proof.legacyBundleSHA256, err = PRDLegacyBundleDigest(preflight)
-		if err != nil {
-			return prdCatalogProof{}, err
+		baseline, isFreshInstall, baselineErr := freshInstallBaselineForProof(plan, proof)
+		if baselineErr != nil {
+			return prdCatalogProof{}, errors.Join(ErrPRDUpgradeGuard, baselineErr)
+		}
+		if isFreshInstall {
+			if validateFreshPRDStagedArtifactInventory(plan.HostID, preflight.BinarySHA256) != nil ||
+				validateFreshPRDStagedArtifactsOnDisk(plan) != nil {
+				return prdCatalogProof{}, ErrPRDUpgradeGuard
+			}
+			proof.freshInstall = &baseline
+		} else if len(preflight.MissingComponents) != 0 {
+			return prdCatalogProof{}, ErrPRDUpgradeGuard
+		} else {
+			proof.legacyBundleSHA256, err = PRDLegacyBundleDigest(preflight)
+			if err != nil {
+				return prdCatalogProof{}, err
+			}
 		}
 		proof.readSchemaMax = 0 // Set only from tested cohort evidence.
 	} else {
@@ -900,6 +967,84 @@ func readPRDCatalogProof(ctx context.Context, plan PRDUpgradePlan, layout catalo
 	// atomic-file and journal headroom here.
 	proof.requiredBytes = prdCatalogSelectorHeadroom
 	return proof, nil
+}
+
+func freshInstallBaselineForProof(plan PRDUpgradePlan, proof prdCatalogProof) (CatalogFreshInstallBaseline, bool, error) {
+	if validatePRDPlan(plan) != nil {
+		return CatalogFreshInstallBaseline{}, false, ErrCatalogOperationInvalid
+	}
+	if plan.HostID != "linux-host" {
+		return CatalogFreshInstallBaseline{}, false, nil
+	}
+	if _, err := os.Lstat(catalogFreshInstallBaselinePath(plan)); errors.Is(err, os.ErrNotExist) {
+		return CatalogFreshInstallBaseline{}, false, nil
+	} else if err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	evidence, err := readCatalogFreshInstallBaseline(plan)
+	if err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	host := CatalogCohortHostPreflight{HostID: plan.HostID, ConfigurationSHA256: proof.configurationSHA256,
+		SchemaVersion: proof.schema, WorkInventorySHA256: proof.workSHA256, WorkInventoryEmpty: proof.work.Empty()}
+	if err := validateCatalogFreshInstallBaseline(evidence, host); err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	return evidence, true, nil
+}
+
+// validateFreshPRDStagedArtifacts permits only the exact launcher files that
+// the catalog selector transaction may have created before an interrupted
+// first switch. The immutable service bundle itself lives in the release
+// catalog and is not accepted from the legacy bin directory.
+func validateFreshPRDStagedArtifactInventory(hostID string, observed map[string]string) error {
+	if hostID != "linux-host" {
+		return ErrPRDUpgradeGuard
+	}
+	artifacts, err := BuildPRDCatalogServiceArtifacts(hostID)
+	if err != nil {
+		return err
+	}
+	expected := make(map[string]string, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Kind == ArtifactEntrypoint || artifact.Kind == ArtifactSSHWrapper {
+			expected[filepath.Base(artifact.InstallPath)] = sha256HexString([]byte(artifact.Contents))
+		}
+	}
+	if len(observed) > len(expected) {
+		return ErrPRDUpgradeGuard
+	}
+	for name, digest := range observed {
+		if want, ok := expected[name]; !ok || digest != want {
+			return ErrPRDUpgradeGuard
+		}
+	}
+	return nil
+}
+
+func validateFreshPRDStagedArtifactsOnDisk(plan PRDUpgradePlan) error {
+	if plan.HostID != "linux-host" || validatePRDPlan(plan) != nil {
+		return ErrPRDUpgradeGuard
+	}
+	artifacts, err := BuildPRDCatalogServiceArtifacts(plan.HostID)
+	if err != nil {
+		return err
+	}
+	for _, artifact := range artifacts {
+		if _, statErr := os.Lstat(artifact.InstallPath); errors.Is(statErr, os.ErrNotExist) {
+			continue
+		} else if statErr != nil || verifyPRDCatalogArtifact(artifact) != nil {
+			return ErrPRDUpgradeGuard
+		}
+	}
+	return nil
+}
+
+func freshInstallEvidenceSHA(evidence *CatalogFreshInstallBaseline) string {
+	if evidence == nil {
+		return ""
+	}
+	return evidence.EvidenceSHA256
 }
 
 func readPRDLegacyInventory(plan PRDUpgradePlan) (PRDPreflight, error) {
@@ -934,6 +1079,142 @@ func (p prdCatalogProof) previousBundleSHA256() string {
 	return p.bundleSHA256
 }
 
+const catalogFreshInstallBaselineFile = "catalog-prd-fresh-install.json"
+
+func catalogFreshInstallBaselinePath(plan PRDUpgradePlan) string {
+	return filepath.Join(plan.Namespace.Staging, catalogFreshInstallBaselineFile)
+}
+
+func readCatalogFreshInstallBaseline(plan PRDUpgradePlan) (CatalogFreshInstallBaseline, error) {
+	if plan.HostID != "linux-host" || validatePRDPlan(plan) != nil {
+		return CatalogFreshInstallBaseline{}, ErrCatalogOperationInvalid
+	}
+	path := catalogFreshInstallBaselinePath(plan)
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 ||
+		info.Size() <= 0 || info.Size() > 1<<20 {
+		return CatalogFreshInstallBaseline{}, ErrCatalogOperationInvalid
+	}
+	var stat unix.Stat_t
+	if unix.Lstat(path, &stat) != nil || stat.Uid != uint32(os.Getuid()) || !catalogFileHasSingleLinkFromStat(stat) {
+		return CatalogFreshInstallBaseline{}, ErrCatalogOperationInvalid
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CatalogFreshInstallBaseline{}, ErrCatalogOperationInvalid
+	}
+	var evidence CatalogFreshInstallBaseline
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&evidence); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return CatalogFreshInstallBaseline{}, ErrCatalogOperationInvalid
+	}
+	if err := validateCatalogFreshInstallBaseline(evidence, CatalogCohortHostPreflight{
+		HostID: "linux-host", ConfigurationSHA256: evidence.ConfigurationSHA256, SchemaVersion: evidence.DatabaseSchema,
+		WorkInventorySHA256: evidence.WorkInventorySHA256, WorkInventoryEmpty: true,
+	}); err != nil {
+		return CatalogFreshInstallBaseline{}, err
+	}
+	canonical, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil || !bytes.Equal(data, append(canonical, '\n')) {
+		return CatalogFreshInstallBaseline{}, ErrCatalogOperationInvalid
+	}
+	return evidence, nil
+}
+
+// currentFreshInstallBaseline binds the durable absence observation to the
+// current replacement config, schema, and one coherent empty-work read. It is
+// intentionally read-only and never creates or migrates the database.
+func currentFreshInstallBaseline(plan PRDUpgradePlan) (CatalogFreshInstallBaseline, bool, error) {
+	if plan.HostID != "linux-host" || validatePRDPlan(plan) != nil {
+		return CatalogFreshInstallBaseline{}, false, ErrCatalogOperationInvalid
+	}
+	path := catalogFreshInstallBaselinePath(plan)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return CatalogFreshInstallBaseline{}, false, nil
+	} else if err != nil {
+		return CatalogFreshInstallBaseline{}, false, ErrCatalogOperationInvalid
+	}
+	evidence, err := readCatalogFreshInstallBaseline(plan)
+	if err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	configurationSHA256, err := hashPRDRegularFile(plan.Namespace.ConfigFile)
+	if err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	database, err := store.OpenExistingRestartPreflightReadOnly(ctx, plan.Namespace.Database)
+	if err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	schema, work, inventoryErr := readPRDWorkSnapshot(ctx, database)
+	closeErr := database.Close()
+	if err := errors.Join(inventoryErr, closeErr); err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	host := CatalogCohortHostPreflight{HostID: plan.HostID, ConfigurationSHA256: configurationSHA256,
+		SchemaVersion: schema, WorkInventorySHA256: work.SHA256(), WorkInventoryEmpty: work.Empty()}
+	if err := validateCatalogFreshInstallBaseline(evidence, host); err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	return evidence, true, nil
+}
+
+// ReadCatalogFreshInstallBaseline reports the verified first-install
+// predecessor for the only supported replacement worker. It is read-only and
+// does not create a namespace, open a database for migration, or infer
+// freshness from an unselected selector alone.
+func ReadCatalogFreshInstallBaseline(hostID string) (CatalogFreshInstallBaselineReport, error) {
+	if hostID != "linux-host" {
+		return CatalogFreshInstallBaselineReport{}, ErrCatalogOperationInvalid
+	}
+	plan, err := BuildPRDUpgradePlan(hostID)
+	if err != nil {
+		return CatalogFreshInstallBaselineReport{}, err
+	}
+	evidence, present, err := currentFreshInstallBaseline(plan)
+	if err != nil {
+		return CatalogFreshInstallBaselineReport{}, err
+	}
+	report := CatalogFreshInstallBaselineReport{HostID: hostID, Present: present}
+	if present {
+		report.Baseline = &evidence
+	}
+	return report, nil
+}
+
+func writeCatalogFreshInstallBaseline(plan PRDUpgradePlan, evidence CatalogFreshInstallBaseline) error {
+	if plan.HostID != "linux-host" || validatePRDPlan(plan) != nil ||
+		validateCatalogFreshInstallBaseline(evidence, CatalogCohortHostPreflight{HostID: "linux-host",
+			ConfigurationSHA256: evidence.ConfigurationSHA256, SchemaVersion: evidence.DatabaseSchema,
+			WorkInventorySHA256: evidence.WorkInventorySHA256, WorkInventoryEmpty: true}) != nil {
+		return ErrCatalogOperationInvalid
+	}
+	if err := ensurePRDPrivateDirectory(plan.Namespace.Staging); err != nil {
+		return err
+	}
+	path := catalogFreshInstallBaselinePath(plan)
+	encoded, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	if existing, readErr := os.ReadFile(path); readErr == nil {
+		if bytes.Equal(existing, encoded) {
+			return nil
+		}
+		return ErrCatalogOperationInvalid
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	}
+	if err := writePrivateSynced(path, encoded, 0o600); err != nil {
+		return err
+	}
+	return syncDirectory(plan.Namespace.Staging)
+}
+
 func prdCatalogProofFresh(proof prdCatalogProof) bool {
 	return !proof.observedAt.IsZero() && time.Since(proof.observedAt) >= 0 && time.Since(proof.observedAt) <= prdCatalogProofMaxAge &&
 		proof.schema > 0 && bundleDigestPattern.MatchString(proof.configurationSHA256) && bundleDigestPattern.MatchString(proof.workSHA256) &&
@@ -945,17 +1226,36 @@ func installPRDCatalogServiceArtifacts(ctx context.Context, plan PRDUpgradePlan,
 	if validatePRDPlan(plan) != nil || service == nil || backup.HostID != plan.HostID {
 		return ErrPRDUpgradeGuard
 	}
+	freshInstall := false
+	var err error
+	if plan.HostID == "linux-host" {
+		_, freshInstall, err = currentFreshInstallBaseline(plan)
+		if err != nil {
+			return err
+		}
+	}
 	artifacts, err := BuildPRDCatalogServiceArtifacts(plan.HostID)
 	if err != nil {
 		return err
 	}
 	for _, artifact := range artifacts {
 		if verifyPRDCatalogArtifact(artifact) == nil {
+			if freshInstall && artifact.Kind == ArtifactSystemdUnit {
+				if err := createFreshPRDCatalogArtifact(ctx, plan, service, artifact); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		original, ok := findPRDBackupFile(backup, artifact.InstallPath)
 		if !ok {
-			return ErrPRDUpgradeGuard
+			if !freshInstall {
+				return ErrPRDUpgradeGuard
+			}
+			if err := createFreshPRDCatalogArtifact(ctx, plan, service, artifact); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := replacePRDCatalogArtifact(ctx, service, artifact, original.SHA256, original.Mode); err != nil {
 			return err
@@ -965,6 +1265,110 @@ func installPRDCatalogServiceArtifacts(ctx context.Context, plan PRDUpgradePlan,
 		return service.base.reloadSystemd(ctx)
 	}
 	return nil
+}
+
+func createFreshPRDCatalogArtifact(ctx context.Context, plan PRDUpgradePlan, service *PRDServiceController, artifact Artifact) error {
+	if plan.HostID != "linux-host" || service == nil || !freshPRDCatalogArtifactAllowed(plan, artifact) {
+		return ErrPRDUpgradeGuard
+	}
+	if _, fresh, err := currentFreshInstallBaseline(plan); err != nil || !fresh {
+		return errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	if _, err := os.Lstat(artifact.InstallPath); err == nil {
+		if artifact.Owner != "root" || verifyPRDCatalogArtifact(artifact) != nil {
+			return ErrSimpleArtifactConflict
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if artifact.Owner == "root" {
+		if err := ensurePRDPrivateDirectory(plan.Namespace.Staging); err != nil {
+			return err
+		}
+		staged, err := os.CreateTemp(plan.Namespace.Staging, "runner-prd-catalog-unit-*")
+		if err != nil {
+			return err
+		}
+		stagedPath := staged.Name()
+		defer os.Remove(stagedPath)
+		if err := staged.Chmod(0o600); err != nil {
+			_ = staged.Close()
+			return err
+		}
+		if _, err := staged.WriteString(artifact.Contents); err != nil {
+			_ = staged.Close()
+			return err
+		}
+		if err := staged.Sync(); err != nil {
+			_ = staged.Close()
+			return err
+		}
+		if err := staged.Close(); err != nil {
+			return err
+		}
+		newSHA := sha256HexString([]byte(artifact.Contents))
+		result, err := service.base.runner.Run(ctx, "/usr/bin/sudo", "-n", "/bin/sh", "-c",
+			atomicPRDSystemdCreateScript, "runner-lane", artifact.InstallPath, stagedPath, newSHA)
+		if err != nil {
+			return err
+		}
+		if result.ExitCode != 0 {
+			return fmt.Errorf("create exact fresh PRD systemd unit failed (exit %d)", result.ExitCode)
+		}
+	} else {
+		if err := createFreshPRDCatalogUserArtifact(artifact); err != nil {
+			return err
+		}
+	}
+	if err := verifyPRDCatalogArtifact(artifact); err != nil {
+		return errors.Join(ErrSimpleArtifactConflict, err)
+	}
+	return nil
+}
+
+// createFreshPRDCatalogUserArtifact is the shared owner-managed creation path
+// used for the replacement entrypoint and forced-command wrapper. Keeping the
+// ownership and parent checks here lets native Linux tests exercise the exact
+// write branch with a disposable directory; the public caller still validates
+// the artifact against the canonical PRD namespace before reaching it.
+func createFreshPRDCatalogUserArtifact(artifact Artifact) error {
+	current, err := user.Current()
+	group, groupErr := user.LookupGroupId(strconv.Itoa(os.Getgid()))
+	if err != nil || groupErr != nil || artifact.Owner != current.Username || artifact.Group != group.Name {
+		return ErrSimpleArtifactConflict
+	}
+	parent := filepath.Dir(artifact.InstallPath)
+	var parentInfo unix.Stat_t
+	if unix.Lstat(parent, &parentInfo) != nil || parentInfo.Mode&unix.S_IFMT != unix.S_IFDIR ||
+		parentInfo.Uid != uint32(os.Getuid()) || parentInfo.Gid != uint32(os.Getgid()) || parentInfo.Mode&0o777 != 0o700 {
+		return ErrSimpleArtifactConflict
+	}
+	if err := writePrivateSynced(artifact.InstallPath, []byte(artifact.Contents), os.FileMode(artifact.Mode)); err != nil {
+		return err
+	}
+	if err := syncDirectory(parent); err != nil {
+		return err
+	}
+	return verifyPRDCatalogArtifact(artifact)
+}
+
+func freshPRDCatalogArtifactAllowed(plan PRDUpgradePlan, artifact Artifact) bool {
+	if plan.HostID != "linux-host" {
+		return false
+	}
+	switch artifact.Kind {
+	case ArtifactEntrypoint:
+		return artifact.InstallPath == plan.Namespace.RunnerEntrypoint && artifact.Mode == 0o700 &&
+			artifact.Owner == config.LinuxAccount && artifact.Group == config.LinuxAccount
+	case ArtifactSSHWrapper:
+		return artifact.InstallPath == filepath.Join(plan.Namespace.Binaries, "runner-ssh-bridge-forced.sh") &&
+			artifact.Mode == 0o700 && artifact.Owner == config.LinuxAccount && artifact.Group == config.LinuxAccount
+	case ArtifactSystemdUnit:
+		return artifact.InstallPath == filepath.Join("/etc/systemd/system", plan.Namespace.RunnerUnit) &&
+			artifact.Mode == 0o644 && artifact.Owner == "root" && artifact.Group == "root"
+	default:
+		return false
+	}
 }
 
 func restorePRDLegacyServiceArtifacts(ctx context.Context, plan PRDUpgradePlan, service *PRDServiceController, backup PRDBackupManifest) error {
@@ -1210,6 +1614,57 @@ if [ "$current" != "$new_sha" ]; then
 	sync -f "$directory"
 fi
 `
+
+const atomicPRDSystemdCreateScriptTemplate = `set -eu
+target=$1
+source=$2
+new_sha=$3
+directory=${target%/*}
+[ "$target" = @TARGET@ ] && [ "$directory" = @DIRECTORY@ ] || exit 74
+[ -f "$source" ] && [ ! -L "$source" ] && [ "$(stat -c '%U:%a' "$source")" = @SOURCE_OWNER@:600 ] || exit 74
+[ "$(sha256sum -- "$source" | cut -d ' ' -f 1)" = "$new_sha" ] || exit 74
+if [ -e "$target" ] || [ -L "$target" ]; then
+	[ -f "$target" ] && [ ! -L "$target" ] && [ "$(stat -c '%U:%a' "$target")" = @TARGET_OWNER@:644 ] &&
+		[ "$(sha256sum -- "$target" | cut -d ' ' -f 1)" = "$new_sha" ] || exit 73
+	for stale in "$directory"/.runner-prd-catalog-unit-"$new_sha".*; do
+		[ -e "$stale" ] || continue
+		if [ -f "$stale" ] && [ ! -L "$stale" ] && [ "$(stat -c '%U:%a' "$stale")" = @TARGET_OWNER@:644 ] &&
+			[ "$(sha256sum -- "$stale" | cut -d ' ' -f 1)" = "$new_sha" ]; then
+			rm -f -- "$stale"
+		fi
+	done
+	sync -f "$directory"
+	exit 0
+fi
+for stale in "$directory"/.runner-prd-catalog-unit-"$new_sha".*; do
+	[ -e "$stale" ] || continue
+	if [ -f "$stale" ] && [ ! -L "$stale" ] && [ "$(stat -c '%U:%a' "$stale")" = @TARGET_OWNER@:644 ] &&
+		[ "$(sha256sum -- "$stale" | cut -d ' ' -f 1)" = "$new_sha" ]; then
+		rm -f -- "$stale"
+	fi
+done
+temporary=$(mktemp "$directory/.runner-prd-catalog-unit-$new_sha.XXXXXX")
+trap 'rm -f "$temporary"' EXIT HUP INT TERM
+install -o @TARGET_OWNER@ -g @TARGET_GROUP@ -m 0644 -- "$source" "$temporary"
+[ "$(sha256sum -- "$temporary" | cut -d ' ' -f 1)" = "$new_sha" ] || exit 74
+ln -- "$temporary" "$target"
+rm -f -- "$temporary"
+sync -f "$directory"
+`
+
+var atomicPRDSystemdCreateScript = renderAtomicPRDSystemdCreateScript(
+	"/etc/systemd/system/runnerd.service", "ubuntu", "root", "root")
+
+func renderAtomicPRDSystemdCreateScript(targetPath, sourceOwner, targetOwner, targetGroup string) string {
+	directory := filepath.Dir(targetPath)
+	return strings.NewReplacer(
+		"@TARGET@", shellQuote(targetPath),
+		"@DIRECTORY@", shellQuote(directory),
+		"@SOURCE_OWNER@", shellQuote(sourceOwner),
+		"@TARGET_OWNER@", shellQuote(targetOwner),
+		"@TARGET_GROUP@", shellQuote(targetGroup),
+	).Replace(atomicPRDSystemdCreateScriptTemplate)
+}
 
 func rollbackPRDCatalogSelectorToLegacy(layout catalogSelectorLayout, operation CatalogSelectorOperation, schema int, backup catalogBackupReference, restore func() error) (CatalogSelectorOperation, error) {
 	if validateCatalogTransitionLayout(layout) != nil || layout.lane != config.ReleaseLanePRD || operation.PreviousTarget != "" ||

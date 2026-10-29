@@ -1,7 +1,12 @@
 package releaseflow
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
@@ -10,7 +15,258 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"remote-session-runner/src/internal/config"
+	"remote-session-runner/src/internal/laneinstall"
 )
+
+func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t *testing.T) {
+	workflowStore, err := NewStore(filepath.Join(t.TempDir(), "workflow"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prdReplacementBootstrapCoordinatorJournalPath(workflowStore.Root, "0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatalf("prepare owner-only coordinator journal path: %v", err)
+	}
+	release := testRelease()
+	saveTestRelease(t, workflowStore, release)
+	now := time.Now().UTC()
+	saveTestAcceptance(t, workflowStore, "dev", release, now)
+	saveTestAcceptance(t, workflowStore, "qas", release, now)
+	predecessors := make(map[string]string, len(HostOrder))
+	for _, host := range HostOrder {
+		predecessors[host] = digest([]byte("previous:" + host))
+	}
+	absence := testPRDAbsenceReport(t)
+	absence.SelectedLane = config.ReleaseLanePRD
+	absence.ObservedAtUTC = now.Format(time.RFC3339Nano)
+	absence.EvidenceSHA256 = absenceReportDigest(absence)
+	predecessors["linux-host"] = promotionPRDAbsencePredecessorSHA(absence)
+	plan, err := BuildPlan("prd", "all", release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.PredecessorBundleSHA256 = predecessors
+	plan.BackupRecoveryPackageSHA = digest([]byte("current prd backup package"))
+	for _, host := range HostOrder {
+		baseline := HostObservation{HostID: host, Lane: "prd", ServiceStopped: true,
+			WorkInventoryEmpty: true, WorkInventorySHA: digest([]byte("empty:" + host)),
+			CapacityVerified: true, AvailableBytes: 1_000_000_000, RequiredBytes: promotionRequiredCapacity("prd", defaultPromotionOperatingBuffer)}
+		if host == "linux-host" {
+			baseline.SelectedNamespaceAbsence = &absence
+		} else {
+			baseline.ConfigurationSHA, baseline.SchemaVersion = digest([]byte("config:"+host)), 40
+		}
+		plan.HostBaselines = append(plan.HostBaselines, baseline)
+	}
+	approval := Approval{FormatVersion: 1, ReleaseID: release.ID, ReleaseSHA256: release.Digest,
+		HostSet: append([]string(nil), HostOrder...), WindowStart: now.Add(-time.Minute).Format(time.RFC3339),
+		WindowEnd: now.Add(time.Hour).Format(time.RFC3339), Owner: "Tomasz Walczuk", Scope: "replacement PRD bootstrap and cohort",
+		PredecessorBundleSHA256: predecessors, BackupRecoveryPackageSHA256: plan.BackupRecoveryPackageSHA}
+	approvalBytes, err := json.MarshalIndent(approval, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalPath := filepath.Join(t.TempDir(), "prd-approval.json")
+	approvalFileBytes := append(append([]byte(nil), approvalBytes...), '\n')
+	if err := os.WriteFile(approvalPath, approvalFileBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := laneinstall.PRDReplacementBootstrapRequest{
+		OperationID: "0123456789abcdef0123456789abcdef", TemplateHostID: "sandbox-host",
+		ReleaseID: release.ID, ExpectedReleaseSHA256: release.Digest,
+		SSHHostPublicKey: releaseflowTestPublicKey("replacement-bootstrap-host"),
+	}
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestPath := filepath.Join(t.TempDir(), "bootstrap.json")
+	if err := os.WriteFile(requestPath, requestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	csrCalled := false
+	csrCalls := 0
+	bootstrapCalls := 0
+	csr, err := laneinstall.GeneratePRDReplacementServerCSR()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCertificate := []byte("public replacement server certificate")
+	serverCA := []byte("public replacement server CA")
+	expectedApprovalSHA := digest(approvalFileBytes)
+	hostFiles := t.TempDir()
+	identityFile := filepath.Join(hostFiles, "linux.key")
+	knownHostsFile := filepath.Join(hostFiles, "known_hosts")
+	if err := os.WriteFile(identityFile, []byte("fixture private identity"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(knownHostsFile, []byte("79.72.94.59 "+request.SSHHostPublicKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profile := HostProfile{HostID: "linux-host", Target: replacementLinuxTarget, IdentityFile: identityFile,
+		KnownHostsFile: knownHostsFile, AllowFirstInstallPeerAbsence: true}
+	backend := &NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{"linux-host": profile}},
+		ControllerRevision: strings.Repeat("a", 40),
+		laneCommandRunner: func(_ context.Context, host string, args []string, stdin []byte) ([]byte, error) {
+			if len(args) == 3 && args[0] == "catalog-prd-replacement-csr" && args[1] == "--operation-id" &&
+				args[2] == request.OperationID && host == "linux-host" && len(stdin) == 0 {
+				journalPath, pathErr := prdReplacementBootstrapCoordinatorJournalPath(workflowStore.Root, request.OperationID)
+				journal, exists, journalErr := readPRDReplacementBootstrapCoordinatorJournal(journalPath)
+				expectedStages := 1
+				if csrCalls > 0 {
+					expectedStages = len(prdReplacementBootstrapStages)
+				}
+				if pathErr != nil || journalErr != nil || !exists || len(journal.CompletedStages) != expectedStages {
+					t.Fatalf("coordinator intent was not durable before remote CSR creation: exists=%t completed=%v errors=%v/%v", exists, journal.CompletedStages, pathErr, journalErr)
+				}
+				csrCalled = true
+				csrCalls++
+				encoded, _ := json.Marshal(laneinstall.PRDReplacementServerCSRReport{OperationID: request.OperationID,
+					RequestPEM: csr.RequestPEM, RequestSHA: digest(csr.RequestPEM)})
+				return encoded, nil
+			}
+			bootstrapCalls++
+			called = true
+			var forwarded laneinstall.PRDReplacementBootstrapRequest
+			if json.Unmarshal(stdin, &forwarded) != nil || host != "linux-host" || len(args) != 2 ||
+				args[0] != "catalog-prd-replacement-bootstrap" || args[1] != "--request-stdin" ||
+				forwarded.OperationID != request.OperationID || forwarded.ReleaseID != request.ReleaseID ||
+				forwarded.ExpectedReleaseSHA256 != request.ExpectedReleaseSHA256 ||
+				forwarded.SSHHostPublicKey != request.SSHHostPublicKey ||
+				forwarded.ServerCSR256 != digest(csr.RequestPEM) ||
+				!bytes.Equal(forwarded.ServerCertificatePEM, serverCertificate) || !bytes.Equal(forwarded.ServerCAPEM, serverCA) ||
+				forwarded.ApprovalSHA256 != expectedApprovalSHA || forwarded.PublisherOwner != "Tomasz Walczuk" ||
+				forwarded.PublisherControl != "clients-held" || !forwarded.PublishersPaused || !forwarded.NoNewAccepted {
+				t.Fatalf("bootstrap RPC scope/control payload mismatch: host=%q args=%q bytes=%d", host, args, len(stdin))
+			}
+			result, _ := json.Marshal(laneinstall.PRDReplacementBootstrapResult{
+				OperationID: request.OperationID, Stage: "linux_namespace_ready",
+				Release:            laneinstall.CatalogReleaseIdentity{ReleaseID: request.ReleaseID, ReleaseSHA256: request.ExpectedReleaseSHA256, HostID: "linux-host", BundleSHA256: release.Bundles["linux-host"].SHA256},
+				MacCandidateSHA256: digest([]byte("mac candidate")), JournalSHA256: strings.Repeat("b", 64),
+			})
+			return result, nil
+		}}
+	previous := promotionBackendForTests
+	previousPlan := prdBootstrapPlanForTests
+	previousKeys := prdBootstrapHostKeysForTests
+	previousMacRoute := prdBootstrapMacRouteForTests
+	previousCSR := prdBootstrapCSRForTests
+	previousMaterial := prdBootstrapServerMaterialForTests
+	promotionBackendForTests = backend
+	planCalls := 0
+	prdBootstrapPlanForTests = func(_ context.Context, _ *NativePromotionBackend, got Release, _ string) (PromotionPlan, error) {
+		planCalls++
+		if got.ID != release.ID {
+			t.Fatalf("bootstrap planned a different release %s", got.ID)
+		}
+		return plan, nil
+	}
+	prdBootstrapHostKeysForTests = func(host, path string) ([]byte, error) {
+		if host != "79.72.94.59" || path != profile.KnownHostsFile {
+			t.Fatalf("known_hosts lookup was not bound to configured replacement: host=%q path=%q", host, path)
+		}
+		return []byte(host + " " + request.SSHHostPublicKey + "\n"), nil
+	}
+	prdBootstrapCSRForTests = nil
+	prdBootstrapServerMaterialForTests = func(operationID string, requestPEM []byte, _ time.Time) (laneinstall.PRDReplacementServerMaterialReport, error) {
+		if operationID != request.OperationID || !bytes.Equal(requestPEM, csr.RequestPEM) {
+			t.Fatal("server certificate issuance was not bound to the operation CSR")
+		}
+		return laneinstall.PRDReplacementServerMaterialReport{OperationID: operationID, RequestSHA256: digest(requestPEM),
+			CertificatePEM: serverCertificate, CertificateSHA: digest(serverCertificate), CAPEM: serverCA, CASHA: digest(serverCA)}, nil
+	}
+	macRouteCalled := false
+	prdBootstrapMacRouteForTests = func(_ context.Context, input laneinstall.PRDReplacementMacRouteInput, _ time.Time) (laneinstall.PRDReplacementMacRouteResult, error) {
+		macRouteCalled = true
+		if input.OperationID != request.OperationID || input.ReleaseID != release.ID ||
+			!bytes.Equal(input.ServerCertificatePEM, serverCertificate) || !bytes.Equal(input.ServerCAPEM, serverCA) {
+			t.Fatal("Mac route did not receive the exact public certificate material")
+		}
+		return laneinstall.PRDReplacementMacRouteResult{OperationID: request.OperationID, Stage: "complete",
+			ConfigurationSHA256: digest([]byte("mac candidate")), JournalSHA256: strings.Repeat("c", 64),
+			BackupManifestSHA256: strings.Repeat("d", 64), WorkInventorySHA256: strings.Repeat("e", 64), ServiceStopped: true}, nil
+	}
+	t.Cleanup(func() {
+		promotionBackendForTests, prdBootstrapPlanForTests = previous, previousPlan
+		prdBootstrapHostKeysForTests, prdBootstrapMacRouteForTests = previousKeys, previousMacRoute
+		prdBootstrapCSRForTests, prdBootstrapServerMaterialForTests = previousCSR, previousMaterial
+	})
+	var stdout, stderr strings.Builder
+	code := RunAdminCLI([]string{"prd-replacement-bootstrap", "--request-file", requestPath, "--approval-file", approvalPath,
+		"--publisher-owner", "Tomasz Walczuk", "--publisher-control", "clients-held", "--publishers-paused", "--no-new-accepted",
+		"--store-root", workflowStore.Root, "--json"}, &stdout, &stderr)
+	if code != 0 || !called || !csrCalled || !macRouteCalled {
+		t.Fatalf("public bootstrap command failed: code=%d csr=%t bootstrap=%t mac=%t stderr=%s", code, csrCalled, called, macRouteCalled, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "private-key-stays-on-linux") || strings.Contains(stderr.String(), "private-key-stays-on-linux") {
+		t.Fatal("bootstrap command exposed a private-key marker in output")
+	}
+	var result laneinstall.PRDReplacementBootstrapResult
+	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil || result.Stage != "ready_for_catalog_promotion" || result.MacRoute == nil {
+		t.Fatalf("bootstrap result=%q err=%v", stdout.String(), err)
+	}
+	if bootstrapCalls != 1 || planCalls != 1 {
+		t.Fatalf("first invocation counts: bootstrap=%d plan=%d", bootstrapCalls, planCalls)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI([]string{"prd-replacement-bootstrap", "--request-file", requestPath, "--approval-file", approvalPath,
+		"--publisher-owner", "Tomasz Walczuk", "--publisher-control", "clients-held", "--publishers-paused", "--no-new-accepted",
+		"--store-root", workflowStore.Root, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exact retry failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if bootstrapCalls != 2 || planCalls != 1 {
+		t.Fatalf("resume repeated planning or skipped idempotent completion: bootstrap=%d plan=%d", bootstrapCalls, planCalls)
+	}
+	var durable PRDReplacementBootstrapCoordinatorJournal
+	if err := readStrictJSON(filepath.Join(workflowStore.Root, "operations", "prd-replacement-bootstrap", request.OperationID+".json"), &durable); err != nil ||
+		validatePRDReplacementBootstrapCoordinatorJournal(durable) != nil || len(durable.CompletedStages) != len(prdReplacementBootstrapStages) {
+		t.Fatalf("coordinator journal did not reach complete stage: journal=%+v err=%v", durable, err)
+	}
+	request.TemplateHostID = "factory-sandbox"
+	conflictingBytes, err := json.Marshal(request)
+	if err != nil || os.WriteFile(requestPath, conflictingBytes, 0o600) != nil {
+		t.Fatal("write conflicting retry input")
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI([]string{"prd-replacement-bootstrap", "--request-file", requestPath, "--approval-file", approvalPath,
+		"--publisher-owner", "Tomasz Walczuk", "--publisher-control", "clients-held", "--publishers-paused", "--no-new-accepted",
+		"--store-root", workflowStore.Root, "--json"}, &stdout, &stderr); code == 0 {
+		t.Fatal("conflicting retry input was accepted")
+	}
+	if bootstrapCalls != 2 || planCalls != 1 {
+		t.Fatal("conflicting retry reached mutation or replanning")
+	}
+}
+
+func TestReplacementHostKeyPinRequiresOneExactEd25519Key(t *testing.T) {
+	wanted := releaseflowTestPublicKey("replacement-bootstrap-host")
+	if !replacementHostKeyPinned(wanted, []byte("79.72.94.59 "+wanted+"\n")) {
+		t.Fatal("exact pinned replacement host key was rejected")
+	}
+	if replacementHostKeyPinned(wanted, []byte("79.72.94.59 ssh-ed25519 AQID\n")) {
+		t.Fatal("malformed or mismatched host key was accepted")
+	}
+	other := releaseflowTestPublicKey("other-host-key")
+	if replacementHostKeyPinned(wanted, []byte("79.72.94.59 "+wanted+"\n79.72.94.59 "+other+"\n")) {
+		t.Fatal("ambiguous known_hosts keys were accepted")
+	}
+}
+
+func releaseflowTestPublicKey(identity string) string {
+	seed := sha256.Sum256([]byte(identity))
+	private := ed25519.NewKeyFromSeed(seed[:])
+	public := private.Public().(ed25519.PublicKey)
+	var blob bytes.Buffer
+	_ = binary.Write(&blob, binary.BigEndian, uint32(len("ssh-ed25519")))
+	blob.WriteString("ssh-ed25519")
+	_ = binary.Write(&blob, binary.BigEndian, uint32(len(public)))
+	blob.Write(public)
+	return "ssh-ed25519 " + base64.StdEncoding.EncodeToString(blob.Bytes()) + " fixture"
+}
 
 type promotionCLIBackendState struct {
 	Selected               map[string]bool   `json:"selected"`

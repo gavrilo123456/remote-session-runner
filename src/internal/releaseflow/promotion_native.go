@@ -73,6 +73,23 @@ func promotionPeerAbsenceDigest(report laneinstall.CatalogNamespaceAbsenceReport
 	return digest([]byte("promotion-peer-namespace-absence-v1\x00" + report.EvidenceSHA256))
 }
 
+func promotionPRDAbsencePredecessorSHA(report laneinstall.CatalogNamespaceAbsenceReport) string {
+	if report.HostID != "linux-host" || report.Lane != config.ReleaseLanePRD || report.SelectedLane != config.ReleaseLanePRD ||
+		laneinstall.ValidateCatalogNamespaceAbsenceReport(report, "linux-host", config.ReleaseLanePRD, config.ReleaseLanePRD) != nil {
+		return ""
+	}
+	return digest([]byte("runner-release-prd-absent-predecessor-v1\x00" + report.EvidenceSHA256))
+}
+
+func promotionPRDFreshInstallPredecessorSHA(baseline laneinstall.CatalogFreshInstallBaseline) string {
+	if baseline.OperationID == "" || baseline.Absence.HostID != "linux-host" || baseline.Absence.Lane != config.ReleaseLanePRD ||
+		baseline.Absence.SelectedLane != config.ReleaseLanePRD || !digestPattern.MatchString(baseline.EvidenceSHA256) ||
+		!digestPattern.MatchString(baseline.Absence.EvidenceSHA256) {
+		return ""
+	}
+	return digest([]byte("runner-release-prd-fresh-install-predecessor-v1\x00" + baseline.EvidenceSHA256))
+}
+
 func validatePromotionPeerAbsenceEvidence(plan *PromotionPlan) error {
 	if plan == nil || len(plan.PeerLaneAbsenceEvidence) == 0 {
 		return nil
@@ -219,6 +236,7 @@ type promotionProbeOutcome struct {
 type promotionLaneSnapshot struct {
 	Selector         laneinstall.CatalogSelectorStatus          `json:"selector"`
 	NamespaceAbsence *laneinstall.CatalogNamespaceAbsenceReport `json:"namespace_absence,omitempty"`
+	FreshInstall     *laneinstall.CatalogFreshInstallBaseline   `json:"fresh_install_baseline,omitempty"`
 	Active           bool                                       `json:"service_active"`
 	Config           string                                     `json:"configuration_sha256"`
 	Schema           int                                        `json:"schema_version"`
@@ -229,15 +247,18 @@ type promotionLaneSnapshot struct {
 }
 
 type prdBackupRecoveryHostEvidence struct {
-	HostID                    string `json:"host_id"`
-	SelectedReleaseID         string `json:"selected_release_id"`
-	SelectedBundleSHA256      string `json:"selected_bundle_sha256"`
-	PreviousSelectorOperation string `json:"previous_selector_operation_id,omitempty"`
-	ConfigurationSHA256       string `json:"configuration_sha256"`
-	SchemaVersion             int    `json:"schema_version"`
-	WorkInventorySHA256       string `json:"work_inventory_sha256"`
-	WorkInventoryEmpty        bool   `json:"work_inventory_empty"`
-	LegacyCompatibilitySHA256 string `json:"legacy_compatibility_sha256,omitempty"`
+	HostID                     string `json:"host_id"`
+	SelectedReleaseID          string `json:"selected_release_id"`
+	SelectedBundleSHA256       string `json:"selected_bundle_sha256"`
+	NamespaceAbsenceSHA256     string `json:"namespace_absence_evidence_sha256,omitempty"`
+	FreshInstallEvidenceSHA256 string `json:"fresh_install_evidence_sha256,omitempty"`
+	FreshInstallAbsenceSHA256  string `json:"fresh_install_absence_evidence_sha256,omitempty"`
+	PreviousSelectorOperation  string `json:"previous_selector_operation_id,omitempty"`
+	ConfigurationSHA256        string `json:"configuration_sha256"`
+	SchemaVersion              int    `json:"schema_version"`
+	WorkInventorySHA256        string `json:"work_inventory_sha256"`
+	WorkInventoryEmpty         bool   `json:"work_inventory_empty"`
+	LegacyCompatibilitySHA256  string `json:"legacy_compatibility_sha256,omitempty"`
 }
 
 func prdBackupRecoveryPackageDigest(release Release, baselines []HostObservation, operatingBuffer uint64) string {
@@ -248,8 +269,12 @@ func prdBackupRecoveryPackageDigest(release Release, baselines []HostObservation
 	for _, baseline := range baselines {
 		hosts = append(hosts, prdBackupRecoveryHostEvidence{
 			HostID: baseline.HostID, SelectedReleaseID: baseline.SelectedReleaseID,
-			SelectedBundleSHA256: baseline.SelectedBundleSHA, PreviousSelectorOperation: baseline.PreviousSelectorOperation,
-			ConfigurationSHA256: baseline.ConfigurationSHA, SchemaVersion: baseline.SchemaVersion,
+			SelectedBundleSHA256:       baseline.SelectedBundleSHA,
+			NamespaceAbsenceSHA256:     baseline.NamespaceAbsenceSHA256,
+			FreshInstallEvidenceSHA256: baseline.FreshInstallEvidenceSHA256,
+			FreshInstallAbsenceSHA256:  baseline.FreshInstallAbsenceSHA256,
+			PreviousSelectorOperation:  baseline.PreviousSelectorOperation,
+			ConfigurationSHA256:        baseline.ConfigurationSHA, SchemaVersion: baseline.SchemaVersion,
 			WorkInventorySHA256: baseline.WorkInventorySHA, WorkInventoryEmpty: baseline.WorkInventoryEmpty,
 			LegacyCompatibilitySHA256: baseline.CompatibilitySHA,
 		})
@@ -297,17 +322,26 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 			PreviousReleaseID: selectedReleaseID(selected.Selector), PreviousBundleSHA: selectedBundleSHA(selected.Selector)}
 		if selected.NamespaceAbsence != nil {
 			baseline.SelectedNamespaceAbsence = selected.NamespaceAbsence
+			baseline.NamespaceAbsenceSHA256 = selected.NamespaceAbsence.EvidenceSHA256
+		}
+		if selected.FreshInstall != nil {
+			baseline.FreshInstallEvidenceSHA256 = selected.FreshInstall.EvidenceSHA256
+			baseline.FreshInstallAbsenceSHA256 = selected.FreshInstall.Absence.EvidenceSHA256
 		}
 		baseline.AvailableBytes, baseline.RequiredBytes = selected.AvailableBytes, selected.RequiredBytes
 		baseline.CapacityVerified = selected.AvailableBytes >= selected.RequiredBytes
-		if lane == "prd" && baseline.PreviousReleaseID == "" && baseline.SelectedNamespaceAbsence == nil {
+		if lane == "prd" && baseline.PreviousReleaseID == "" && baseline.SelectedNamespaceAbsence == nil && selected.FreshInstall == nil {
 			baseline.CompatibilitySHA, err = legacyCompatibilityInputSHA(b.Config.Hosts[host])
 			if err != nil {
 				return PromotionPlan{}, fmt.Errorf("%s legacy rollback compatibility input: %w", host, err)
 			}
 		}
 		plan.HostBaselines = append(plan.HostBaselines, baseline)
-		plan.PredecessorBundleSHA256[host] = baseline.SelectedBundleSHA
+		predecessor, predecessorErr := promotionSelectedPredecessorIdentity(lane, selected)
+		if predecessorErr != nil {
+			return PromotionPlan{}, fmt.Errorf("%s predecessor identity is incomplete: %w", host, predecessorErr)
+		}
+		plan.PredecessorBundleSHA256[host] = predecessor
 		if selected.NamespaceAbsence != nil {
 			if err := b.verifySelectedNamespaceAbsentNoAdmission(ctx, host, lane, *selected.NamespaceAbsence); err != nil {
 				return PromotionPlan{}, fmt.Errorf("%s %s absent namespace admission check: %w", host, lane, err)
@@ -363,6 +397,30 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 		plan.BackupRecoveryPackageSHA = prdBackupRecoveryPackageDigest(release, plan.HostBaselines, b.OperatingBuffer)
 	}
 	return plan, nil
+}
+
+func promotionSelectedPredecessorIdentity(lane string, snapshot promotionLaneSnapshot) (string, error) {
+	if lane == "prd" && snapshot.NamespaceAbsence != nil {
+		value := promotionPRDAbsencePredecessorSHA(*snapshot.NamespaceAbsence)
+		if digestPattern.MatchString(value) {
+			return value, nil
+		}
+		return "", ErrOperationCorrupted
+	}
+	if lane == "prd" && snapshot.FreshInstall != nil {
+		if laneinstall.ValidateCatalogFreshInstallBaseline(*snapshot.FreshInstall) != nil {
+			return "", ErrOperationCorrupted
+		}
+		value := promotionPRDFreshInstallPredecessorSHA(*snapshot.FreshInstall)
+		if digestPattern.MatchString(value) {
+			return value, nil
+		}
+		return "", ErrOperationCorrupted
+	}
+	if digestPattern.MatchString(selectedBundleSHA(snapshot.Selector)) {
+		return selectedBundleSHA(snapshot.Selector), nil
+	}
+	return "", ErrOperationCorrupted
 }
 
 // ValidateExistingCohortHold allows replacement only for one synchronized,
@@ -769,6 +827,10 @@ func requiresLegacyRollbackEvidence(op Operation, host string) bool {
 	}
 	for _, baseline := range op.PlanSnapshot.HostBaselines {
 		if baseline.HostID == host {
+			if baseline.SelectedNamespaceAbsence != nil ||
+				baseline.FreshInstallEvidenceSHA256 != "" || baseline.FreshInstallAbsenceSHA256 != "" {
+				return false
+			}
 			return baseline.PreviousReleaseID == ""
 		}
 	}
@@ -2354,6 +2416,23 @@ func (b *NativePromotionBackend) readLaneSnapshotWithSelectedAbsence(ctx context
 		}
 		snapshot.Active, snapshot.Config, snapshot.Schema, snapshot.Work, snapshot.Empty = inventory.ServiceActive, inventory.ConfigurationSHA256,
 			inventory.DatabaseSchema, inventory.WorkInventory, inventory.WorkInventoryEmpty
+		if lane == "prd" && host == "linux-host" && snapshot.Selector.Kind == "unselected" {
+			baselineBytes, baselineErr := b.runLane(ctx, host, []string{"catalog-prd-fresh-install-baseline", "--host", host}, nil)
+			if baselineErr != nil {
+				return snapshot, baselineErr
+			}
+			var report laneinstall.CatalogFreshInstallBaselineReport
+			if decodeStrictJSON(baselineBytes, &report) != nil || report.HostID != host || report.Present != (report.Baseline != nil) {
+				return snapshot, ErrOperationCorrupted
+			}
+			if report.Present {
+				if laneinstall.ValidateCatalogFreshInstallBaseline(*report.Baseline) != nil ||
+					report.Baseline.Absence.SelectedLane != config.ReleaseLanePRD {
+					return snapshot, ErrOperationCorrupted
+				}
+				snapshot.FreshInstall = report.Baseline
+			}
+		}
 	}
 	if err := b.readPromotionCapacity(ctx, host, lane, &snapshot); err != nil {
 		return snapshot, err

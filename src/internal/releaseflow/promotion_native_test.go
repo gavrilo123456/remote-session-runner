@@ -151,6 +151,17 @@ func TestInitialPRDPlanRequiresExactLegacyCompatibilityInput(t *testing.T) {
 	if requiresLegacyRollbackEvidence(Operation{Lane: "prd", PlanSnapshot: &PromotionPlan{HostBaselines: []HostObservation{{HostID: "linux-host", PreviousReleaseID: "cat-existing"}}}}, "linux-host") {
 		t.Fatal("catalog-managed predecessor incorrectly required legacy adoption evidence")
 	}
+	absence := testPRDAbsenceReport(t)
+	if requiresLegacyRollbackEvidence(Operation{Lane: "prd", PlanSnapshot: &PromotionPlan{HostBaselines: []HostObservation{{
+		HostID: "linux-host", SelectedNamespaceAbsence: &absence,
+	}}}}, "linux-host") {
+		t.Fatal("verified absent replacement namespace incorrectly required legacy compatibility")
+	}
+	if requiresLegacyRollbackEvidence(Operation{Lane: "prd", PlanSnapshot: &PromotionPlan{HostBaselines: []HostObservation{{
+		HostID: "linux-host", FreshInstallEvidenceSHA256: stringsOf("d"), FreshInstallAbsenceSHA256: stringsOf("e"),
+	}}}}, "linux-host") {
+		t.Fatal("prepared fresh replacement namespace incorrectly required legacy compatibility")
+	}
 
 	path := filepath.Join(t.TempDir(), "legacy-compatibility.json")
 	evidence := laneinstall.CatalogLegacyRollbackCompatibility{
@@ -889,7 +900,10 @@ func TestNativePlanRecordsCompleteReplacementPRDAbsence(t *testing.T) {
 			if host == "linux-host" && (lane == config.ReleaseLaneQAS || lane == config.ReleaseLanePRD) {
 				return nil, errors.New("peer service namespace is absent")
 			}
-			return json.Marshal(laneinstall.CatalogSelectorStatus{HostID: host, Lane: lane, Kind: "legacy"})
+			legacyBundle := stringsOf("a")
+			return json.Marshal(laneinstall.CatalogSelectorStatus{HostID: host, Lane: lane, Kind: "legacy",
+				Target: "releases/" + legacyBundle,
+				Bundle: laneinstall.SimpleBundleManifest{HostID: host, BundleSHA256: legacyBundle}})
 		case "catalog-work-inventory":
 			return json.Marshal(laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: lane, ServiceActive: true,
 				ConfigurationSHA256: stringsOf("b"), DatabaseSchema: 40, WorkInventoryEmpty: true})
@@ -966,10 +980,74 @@ func TestReadLaneSnapshotAcceptsOnlyProvenSelectedReplacementPRDAbsence(t *testi
 		snapshot.RequiredBytes != promotionRequiredCapacity("prd", defaultPromotionOperatingBuffer) {
 		t.Fatalf("selected PRD absence was not represented without inventing namespace state: %+v", snapshot)
 	}
+	predecessor, err := promotionSelectedPredecessorIdentity("prd", snapshot)
+	if err != nil || !digestPattern.MatchString(predecessor) || predecessor == "" {
+		t.Fatalf("verified absence did not produce an approval-safe predecessor identity: %q err=%v", predecessor, err)
+	}
 
 	backend.Config.Hosts["linux-host"] = HostProfile{HostID: "linux-host", Target: replacementLinuxTarget}
 	if _, err := backend.readLaneSnapshotForPlan(context.Background(), "linux-host", "prd"); err == nil {
 		t.Fatal("selected PRD absence accepted without the replacement-only host-profile capability")
+	}
+}
+
+func TestReadLaneSnapshotRecognizesPreparedFreshReplacementBaseline(t *testing.T) {
+	absence := testPRDAbsenceReport(t)
+	absence.SelectedLane = config.ReleaseLanePRD
+	absence.ObservedAtUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	absence.EvidenceSHA256 = absenceReportDigest(absence)
+	work := laneinstall.CatalogWorkInventory{}
+	baseline, err := laneinstall.NewCatalogFreshInstallBaseline("0123456789abcdef0123456789abcdef", absence,
+		strings.Repeat("a", 64), 40, work, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := laneinstall.ValidateCatalogFreshInstallBaseline(baseline); err != nil {
+		t.Fatalf("fixture fresh baseline did not validate: %v", err)
+	}
+	backend := NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{
+		"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true},
+	}}}
+	backend.capacityReader = func(_ context.Context, host, lane string, snapshot *promotionLaneSnapshot) error {
+		if host != "linux-host" || lane != "prd" {
+			return ErrInvalidInput
+		}
+		snapshot.AvailableBytes, snapshot.RequiredBytes = 2_000_000_000, promotionRequiredCapacity("prd", defaultPromotionOperatingBuffer)
+		return nil
+	}
+	backend.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		if host != "linux-host" {
+			t.Fatalf("fresh baseline read reached unexpected host %q", host)
+		}
+		switch args[0] {
+		case "catalog-status":
+			return json.Marshal(laneinstall.CatalogSelectorStatus{HostID: "linux-host", Lane: config.ReleaseLanePRD, Kind: "unselected"})
+		case "catalog-work-inventory":
+			return json.Marshal(laneinstall.CatalogWorkInventoryReport{HostID: "linux-host", Lane: config.ReleaseLanePRD,
+				ConfigurationSHA256: strings.Repeat("a", 64), DatabaseSchema: 40, WorkInventory: work, WorkInventoryEmpty: true})
+		case "catalog-prd-fresh-install-baseline":
+			return json.Marshal(laneinstall.CatalogFreshInstallBaselineReport{HostID: "linux-host", Present: true, Baseline: &baseline})
+		default:
+			t.Fatalf("unexpected fresh baseline observation command: %v", args)
+			return nil, ErrInvalidInput
+		}
+	}
+	snapshot, err := backend.readLaneSnapshotForPlan(context.Background(), "linux-host", "prd")
+	if err != nil {
+		t.Fatalf("prepared fresh namespace was not recognized: %v", err)
+	}
+	if snapshot.NamespaceAbsence != nil || snapshot.FreshInstall == nil || snapshot.FreshInstall.EvidenceSHA256 != baseline.EvidenceSHA256 ||
+		snapshot.Config != baseline.ConfigurationSHA256 || snapshot.Schema != baseline.DatabaseSchema || !snapshot.Empty {
+		t.Fatalf("prepared baseline identity was not returned coherently: %+v", snapshot)
+	}
+	predecessor, err := promotionSelectedPredecessorIdentity("prd", snapshot)
+	if err != nil || !digestPattern.MatchString(predecessor) || predecessor == baseline.Absence.EvidenceSHA256 {
+		t.Fatalf("prepared baseline did not produce a distinct approval predecessor identity: %q err=%v", predecessor, err)
+	}
+	corrupt := *snapshot.FreshInstall
+	corrupt.ConfigurationSHA256 = strings.Repeat("b", 64)
+	if _, err := promotionSelectedPredecessorIdentity("prd", promotionLaneSnapshot{FreshInstall: &corrupt}); err == nil {
+		t.Fatal("corrupt fresh-install baseline was accepted into the plan predecessor")
 	}
 }
 
@@ -1283,7 +1361,10 @@ func TestNativePreparationUsesStoredPeerProfileAndRefusesReadFailure(t *testing.
 						return json.Marshal(laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{
 							ReleaseID: release.ID, ReleaseSHA256: release.Digest, BundleSHA256: release.Bundles[host].SHA256}})
 					case "catalog-status":
-						return json.Marshal(laneinstall.CatalogSelectorStatus{HostID: host, Lane: lane, Kind: "legacy"})
+						legacyBundle := stringsOf("a")
+						return json.Marshal(laneinstall.CatalogSelectorStatus{HostID: host, Lane: lane, Kind: "legacy",
+							Target: "releases/" + legacyBundle,
+							Bundle: laneinstall.SimpleBundleManifest{HostID: host, BundleSHA256: legacyBundle}})
 					case "catalog-work-inventory":
 						if changed && lane == config.ReleaseLanePRD && failRead {
 							return nil, readFailure

@@ -116,6 +116,176 @@ func TestPRDLegacyBundleDigestBindsHostAndEveryInstalledFile(t *testing.T) {
 	}
 }
 
+func TestFreshPRDStagedArtifactsAllowOnlyExactCatalogLaunchFiles(t *testing.T) {
+	artifacts, err := BuildPRDCatalogServiceArtifacts("linux-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exact = make(map[string]string)
+	for _, artifact := range artifacts {
+		if artifact.Kind == ArtifactEntrypoint || artifact.Kind == ArtifactSSHWrapper {
+			exact[filepath.Base(artifact.InstallPath)] = sha256HexString([]byte(artifact.Contents))
+		}
+	}
+	for name, observed := range map[string]map[string]string{
+		"initial empty bin":           {},
+		"entrypoint installed":        {filepath.Base(artifacts[0].InstallPath): exact[filepath.Base(artifacts[0].InstallPath)]},
+		"both launch files installed": exact,
+	} {
+		if err := validateFreshPRDStagedArtifactInventory("linux-host", observed); err != nil {
+			t.Errorf("%s rejected: %v", name, err)
+		}
+	}
+	for name, observed := range map[string]map[string]string{
+		"wrong host":        exact,
+		"changed artifact":  {filepath.Base(artifacts[0].InstallPath): strings.Repeat("a", 64)},
+		"unexpected binary": {"runnerd": strings.Repeat("b", 64)},
+	} {
+		host := "linux-host"
+		if name == "wrong host" {
+			host = "sandbox-host"
+		}
+		if err := validateFreshPRDStagedArtifactInventory(host, observed); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+func TestFreshPRDEntrypointCreationUsesCanonicalOwnerBranch(t *testing.T) {
+	artifacts, err := BuildPRDCatalogServiceArtifacts("linux-host")
+	if err != nil || len(artifacts) != 3 {
+		t.Fatalf("build canonical Linux PRD artifacts: count=%d err=%v", len(artifacts), err)
+	}
+	plan, err := BuildPRDUpgradePlan("linux-host")
+	if err != nil || !freshPRDCatalogArtifactAllowed(plan, artifacts[0]) {
+		t.Fatalf("canonical entrypoint is not admitted by the fresh-creation path: artifact=%+v err=%v", artifacts[0], err)
+	}
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := user.LookupGroupId(strconv.Itoa(os.Getgid()))
+	if err != nil {
+		t.Fatalf("current owner group unavailable: group=%v err=%v", group, err)
+	}
+	root := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entrypoint := artifacts[0]
+	entrypoint.InstallPath = filepath.Join(root, "runner-entrypoint.sh")
+	// BuildPRDCatalogServiceArtifacts must name the deployed Linux identity;
+	// the same creation helper is then exercised with the current test account
+	// so this branch runs on the Mac as well as on native Ubuntu workers.
+	entrypoint.Owner, entrypoint.Group = current.Username, group.Name
+	if err := createFreshPRDCatalogUserArtifact(entrypoint); err != nil {
+		t.Fatalf("create exact owner-managed fresh entrypoint: %v", err)
+	}
+	if err := verifyPRDCatalogArtifact(entrypoint); err != nil {
+		t.Fatalf("created entrypoint failed the production verifier: %v", err)
+	}
+}
+
+func TestFreshPRDSystemdUnitCreateScriptResumesAtomicInstallAndRejectsConflict(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the production systemd helper uses Linux stat, install, and sync utilities")
+	}
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := user.LookupGroupId(strconv.Itoa(os.Getgid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "systemd")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "runnerd.service")
+	source := filepath.Join(root, "staged-unit")
+	contents := []byte("[Service]\nExecStart=/fixture/runnerd\n")
+	sha := sha256HexString(contents)
+	if err := os.WriteFile(source, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := renderAtomicPRDSystemdCreateScript(target, current.Username, current.Username, group.Name)
+	run := func() error {
+		t.Helper()
+		command := exec.Command("/bin/sh", "-c", script, "runner-lane", target, source, sha)
+		if output, err := command.CombinedOutput(); err != nil {
+			return fmt.Errorf("atomic unit script: %w: %s", err, output)
+		}
+		return nil
+	}
+	unitSHA := func(path string) string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read unit fixture %s: %v", path, err)
+		}
+		return sha256HexString(data)
+	}
+
+	t.Run("resume interruption after no-overwrite link", func(t *testing.T) {
+		interruptedTemp := filepath.Join(root, ".runner-prd-catalog-unit-"+sha+".interrupted")
+		if err := os.WriteFile(interruptedTemp, contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(interruptedTemp, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := run(); err != nil {
+			t.Fatalf("exact interrupted unit retry: %v", err)
+		}
+		if unitSHA(target) != sha {
+			t.Fatal("retry changed the installed unit bytes")
+		}
+		if _, err := os.Lstat(interruptedTemp); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("matching interrupted hardlink was not finalized: %v", err)
+		}
+		if err := run(); err != nil {
+			t.Fatalf("idempotent installed-unit retry: %v", err)
+		}
+	})
+
+	t.Run("reject conflicting unit without overwrite", func(t *testing.T) {
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		conflict := []byte("[Service]\nExecStart=/unexpected/runnerd\n")
+		if err := os.WriteFile(target, conflict, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		before := unitSHA(target)
+		if err := run(); err == nil {
+			t.Fatal("unit creation accepted a conflicting installed file")
+		}
+		if unitSHA(target) != before {
+			t.Fatal("conflicting unit was overwritten")
+		}
+	})
+
+	t.Run("clean exact pre-link stage and install", func(t *testing.T) {
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		staleStage := filepath.Join(root, ".runner-prd-catalog-unit-"+sha+".prelink")
+		if err := os.WriteFile(staleStage, contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := run(); err != nil {
+			t.Fatalf("retry after a staged pre-link interruption: %v", err)
+		}
+		if unitSHA(target) != sha {
+			t.Fatal("retry did not install the exact unit bytes")
+		}
+		if _, err := os.Lstat(staleStage); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("matching stale unit stage was not cleaned: %v", err)
+		}
+	})
+}
+
 func TestCatalogLegacyCompatibilityInputIsCanonicalOwnerOnlyAndHashBound(t *testing.T) {
 	root := catalogPRDArtifactFixtureDir(t)
 	path := filepath.Join(root, "legacy-compatibility.json")

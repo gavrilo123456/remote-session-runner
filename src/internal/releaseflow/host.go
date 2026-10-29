@@ -41,8 +41,8 @@ type HostBuildResult struct {
 }
 
 // HostLaneRPCRequest runs a fixed, guarded runner-lane public command from the
-// pinned controller checkout. Stdin is material for an existing receipt file,
-// never a script or arbitrary shell command.
+// pinned controller checkout. Stdin is only data for a named, typed public
+// command input; it is never a script or arbitrary shell command.
 type HostLaneRPCRequest struct {
 	HostID             string   `json:"host_id"`
 	Repository         string   `json:"repository"`
@@ -58,8 +58,10 @@ var hostLaneCommands = map[string]bool{
 	"catalog-host-preflight": true, "catalog-cohort": true, "catalog-cohort-renewal": true,
 	"catalog-select": true, "catalog-reconcile": true, "catalog-rollback": true,
 	"catalog-probe-prepare": true, "catalog-compatibility-check": true,
-	"catalog-prd-backup": true, "catalog-prd-recover": true, "prd-preflight": true,
-	"prd-status": true, "prd-start": true, "prd-stop": true,
+	"catalog-prd-backup": true, "catalog-prd-recover": true, "catalog-prd-replacement-bootstrap": true,
+	"catalog-prd-replacement-csr": true, "catalog-prd-fresh-install-baseline": true,
+	"prd-preflight": true,
+	"prd-status":    true, "prd-start": true, "prd-stop": true,
 	"status": true, "start": true, "stop": true,
 }
 
@@ -89,6 +91,15 @@ func RunHostLaneRPC(ctx context.Context, req HostLaneRPCRequest) ([]byte, error)
 		if strings.ContainsRune(arg, '\x00') || len(arg) > 4096 {
 			return nil, ErrInvalidInput
 		}
+	}
+	requestStdin := false
+	for _, arg := range req.Arguments {
+		if arg == "--request-stdin" {
+			requestStdin = true
+		}
+	}
+	if requestStdin && (req.Arguments[0] != "catalog-prd-replacement-bootstrap" || len(req.Stdin) == 0) {
+		return nil, ErrInvalidInput
 	}
 	if !laneinstall.CatalogHostMatchesPlatform(req.HostID, runtime.GOOS, runtime.GOARCH) {
 		return nil, ErrInvalidInput
@@ -120,6 +131,9 @@ func RunHostLaneRPC(ctx context.Context, req HostLaneRPCRequest) ([]byte, error)
 	cmd := exec.CommandContext(ctx, req.GoBinary, append([]string{"run", "./src/cmd/runner-lane"}, args...)...)
 	cmd.Dir = req.Repository
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	if requestStdin {
+		cmd.Stdin = bytes.NewReader(req.Stdin)
+	}
 	var output limitedBuffer
 	output.max = 4 << 20
 	cmd.Stdout = &output

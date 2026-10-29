@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -109,6 +110,44 @@ func SignPRDReplacementServerCSR(requestPEM, caCertificatePEM, caPrivateKeyPEM [
 	return encoded, hex.EncodeToString(digest[:]), nil
 }
 
+// ValidatePRDReplacementServerMaterial verifies a transferred server
+// certificate, its host-generated private key, and the public trust root used
+// by Mac PRD. The CA private key is deliberately not needed on the worker.
+// This validates material only; it does not write files or contact a service.
+func ValidatePRDReplacementServerMaterial(certificatePEM, privateKeyPEM, caCertificatePEM []byte, now time.Time) error {
+	certificateBlock, certificateRest := pem.Decode(certificatePEM)
+	if certificateBlock == nil || certificateBlock.Type != "CERTIFICATE" || len(bytesTrimSpace(certificateRest)) != 0 {
+		return errors.New("replacement server certificate must be one PEM certificate")
+	}
+	privateKeyBlock, privateKeyRest := pem.Decode(privateKeyPEM)
+	if privateKeyBlock == nil || len(bytesTrimSpace(privateKeyRest)) != 0 {
+		return errors.New("replacement server private key must be one PEM private key")
+	}
+	switch privateKeyBlock.Type {
+	case "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY":
+	default:
+		return errors.New("replacement server private key has an unsupported PEM type")
+	}
+	pair, err := tls.X509KeyPair(certificatePEM, privateKeyPEM)
+	if err != nil || len(pair.Certificate) != 1 {
+		return errors.New("replacement server certificate and private key do not form one exact pair")
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return errors.New("replacement server certificate is invalid")
+	}
+	rootBlock, rest := pem.Decode(caCertificatePEM)
+	if rootBlock == nil || rootBlock.Type != "CERTIFICATE" || len(bytesTrimSpace(rest)) != 0 {
+		return errors.New("replacement public trust root must be one PEM certificate")
+	}
+	root, err := x509.ParseCertificate(rootBlock.Bytes)
+	if err != nil || !root.IsCA || !root.BasicConstraintsValid || root.KeyUsage&x509.KeyUsageCertSign == 0 ||
+		root.CheckSignatureFrom(root) != nil || now.Before(root.NotBefore) || !now.Before(root.NotAfter) {
+		return errors.New("replacement public trust root is not a current self-signed CA")
+	}
+	return validatePRDReplacementServerCertificate(leaf, root, now)
+}
+
 type parsedPRDReplacementRoot struct {
 	certificate *x509.Certificate
 	signer      crypto.Signer
@@ -134,9 +173,17 @@ func parsePRDReplacementRoot(certificatePEM, privateKeyPEM []byte, now time.Time
 		return parsedPRDReplacementRoot{}, errors.New("replacement trust root must be one PEM certificate")
 	}
 	certificate, err := x509.ParseCertificate(certBlock.Bytes)
-	if err != nil || !certificate.IsCA || !certificate.BasicConstraintsValid || certificate.KeyUsage&x509.KeyUsageCertSign == 0 ||
-		certificate.CheckSignatureFrom(certificate) != nil || now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
-		return parsedPRDReplacementRoot{}, errors.New("replacement trust root is not a current self-signed CA")
+	if err != nil {
+		return parsedPRDReplacementRoot{}, errors.New("replacement trust root certificate is invalid")
+	}
+	if !certificate.IsCA || !certificate.BasicConstraintsValid || certificate.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return parsedPRDReplacementRoot{}, errors.New("replacement trust root is not a CA with certificate-signing usage")
+	}
+	if err := certificate.CheckSignatureFrom(certificate); err != nil {
+		return parsedPRDReplacementRoot{}, fmt.Errorf("replacement trust root is not self-signed: %w", err)
+	}
+	if now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
+		return parsedPRDReplacementRoot{}, errors.New("replacement trust root is outside its validity period")
 	}
 	keyBlock, keyRest := pem.Decode(privateKeyPEM)
 	if keyBlock == nil || len(bytesTrimSpace(keyRest)) != 0 {

@@ -89,6 +89,42 @@ func TestBuildFreshPRDReplacementMacRouteChangesOnlyApprovedLinuxRoute(t *testin
 	}
 }
 
+func TestInspectPRDReplacementMacLegacyIdentityUsesConfiguredV2Paths(t *testing.T) {
+	identity, err := InspectPRDReplacementMacLegacyIdentity([]byte(macV2ConfigFixture))
+	if err != nil {
+		t.Fatalf("inspect existing Mac V2 identity: %v", err)
+	}
+	want := PRDReplacementMacLegacyIdentity{
+		ServerCAPath:          "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/poc-ca.pem",
+		ClientCertificatePath: "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.pem",
+		ClientPrivateKeyPath:  "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.key",
+		DispatcherKeyPath:     "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/dispatcher_ed25519",
+		KnownHostsPath:        "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/ssh_known_hosts",
+	}
+	if identity != want {
+		t.Fatalf("legacy Mac identity = %+v, want %+v", identity, want)
+	}
+}
+
+func TestInspectPRDReplacementMacLegacyIdentityRejectsDrift(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"direct endpoint changed", strings.Replace(macV2ConfigFixture, "https://129.151.232.40:8443", "https://79.72.94.59:8443", 1)},
+		{"queued address changed", strings.Replace(macV2ConfigFixture, "host: 129.151.232.40", "host: 79.72.94.59", 1)},
+		{"client key path outside secrets", strings.Replace(macV2ConfigFixture, "client_private_key: \"/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.key\"", "client_private_key: /tmp/other.key", 1)},
+		{"not V2", strings.Replace(macV2ConfigFixture, "version: 2", "version: 3", 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := InspectPRDReplacementMacLegacyIdentity([]byte(test.data)); err == nil {
+				t.Fatal("drifted Mac identity was accepted")
+			}
+		})
+	}
+}
+
 func TestBuildFreshPRDReplacementMacRouteRejectsDriftedOrNonV2Input(t *testing.T) {
 	macBefore, macAfter, _, _ := prdReplacementRouteFixtures()
 	tests := []struct {

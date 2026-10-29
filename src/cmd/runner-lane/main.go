@@ -147,6 +147,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogStatus(args[1:], stdout, stderr)
 	case "catalog-namespace-absence":
 		err = runCatalogNamespaceAbsence(ctx, args[1:], stdout, stderr)
+	case "catalog-prd-replacement-bootstrap":
+		err = runCatalogPRDReplacementBootstrap(ctx, args[1:], stdout, stderr)
+	case "catalog-prd-replacement-csr":
+		err = runCatalogPRDReplacementServerCSR(args[1:], stdout, stderr)
+	case "catalog-prd-fresh-install-baseline":
+		err = runCatalogPRDFreshInstallBaseline(args[1:], stdout, stderr)
 	case "catalog-selector-find":
 		err = runCatalogSelectorFind(args[1:], stdout, stderr)
 	case "catalog-adopt":
@@ -385,6 +391,23 @@ func runCatalogStatus(args []string, stdout, stderr io.Writer) error {
 	return writeJSON(stdout, status)
 }
 
+func runCatalogPRDFreshInstallBaseline(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-prd-fresh-install-baseline", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical replacement Linux worker identity")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, "prd") || *host != "linux-host" {
+		return errors.New("usage: runner-lane catalog-prd-fresh-install-baseline --host linux-host")
+	}
+	report, err := laneinstall.ReadCatalogFreshInstallBaseline(*host)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, report)
+}
+
 func runCatalogNamespaceAbsence(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("runner-lane catalog-namespace-absence", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -404,6 +427,95 @@ func runCatalogNamespaceAbsence(ctx context.Context, args []string, stdout, stde
 		return err
 	}
 	return writeJSON(stdout, report)
+}
+
+func runCatalogPRDReplacementBootstrap(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-prd-replacement-bootstrap", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	requestFile := flags.String("request-file", "", "owner-only private bootstrap request file")
+	requestStdin := flags.Bool("request-stdin", false, "read private bootstrap request from the authenticated host-RPC stdin")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || (*requestFile == "") == !*requestStdin {
+		return errors.New("usage: runner-lane catalog-prd-replacement-bootstrap (--request-file OWNER-ONLY-JSON | --request-stdin)")
+	}
+	var requestBytes []byte
+	if *requestStdin {
+		limited, err := io.ReadAll(io.LimitReader(os.Stdin, (4<<20)+1))
+		if err != nil || len(limited) == 0 || len(limited) > 4<<20 {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		requestBytes = limited
+	} else {
+		requestBytes = readOwnerOnlyBootstrapRequest(*requestFile)
+		if len(requestBytes) == 0 {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+	}
+	var request laneinstall.PRDReplacementBootstrapRequest
+	decoder := json.NewDecoder(bytes.NewReader(requestBytes))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF || !validCLIProbeOperationID(request.OperationID) {
+		return laneinstall.ErrCatalogOperationInvalid
+	}
+	if catalogCommandSubprocessFixtureBackendForTests != nil {
+		backend, ok := catalogCommandSubprocessFixtureBackendForTests.(interface {
+			RunPRDReplacementBootstrap(context.Context, laneinstall.PRDReplacementBootstrapRequest, io.Writer, io.Writer) error
+		})
+		if !ok {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		return backend.RunPRDReplacementBootstrap(ctx, request, stdout, stderr)
+	}
+	result, err := laneinstall.RunPRDReplacementBootstrap(ctx, request, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, result)
+}
+
+func runCatalogPRDReplacementServerCSR(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-prd-replacement-csr", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	operationID := flags.String("operation-id", "", "existing PRD replacement bootstrap operation ID")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !validCLIProbeOperationID(*operationID) {
+		return errors.New("usage: runner-lane catalog-prd-replacement-csr --operation-id 32-HEX-OPERATION-ID")
+	}
+	if catalogCommandSubprocessFixtureBackendForTests != nil {
+		backend, ok := catalogCommandSubprocessFixtureBackendForTests.(interface {
+			RunPRDReplacementServerCSR(string, io.Writer, io.Writer) error
+		})
+		if !ok {
+			return laneinstall.ErrCatalogOperationInvalid
+		}
+		return backend.RunPRDReplacementServerCSR(*operationID, stdout, stderr)
+	}
+	report, err := laneinstall.PreparePRDReplacementServerCSR(*operationID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, report)
+}
+
+func readOwnerOnlyBootstrapRequest(path string) []byte {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil
+	}
+	info, err := os.Lstat(path)
+	var stat unix.Stat_t
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 ||
+		info.Size() <= 0 || info.Size() > 4<<20 || unix.Lstat(path, &stat) != nil || stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 func runCatalogAdopt(args []string, stdout, stderr io.Writer) error {

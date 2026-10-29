@@ -1,8 +1,12 @@
 package releaseflow
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,13 +17,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+
+	"remote-session-runner/src/internal/laneinstall"
 )
 
 // Test-only seams are package variables, never CLI flags or environment
 // switches. Production build tools always use the validated native backend.
 var buildBackendForTests BuildBackend
 var promotionBackendForTests Backend
+var prdBootstrapPlanForTests func(context.Context, *NativePromotionBackend, Release, string) (PromotionPlan, error)
+var prdBootstrapHostKeysForTests func(string, string) ([]byte, error)
+var prdBootstrapMacRouteForTests func(context.Context, laneinstall.PRDReplacementMacRouteInput, time.Time) (laneinstall.PRDReplacementMacRouteResult, error)
+var prdBootstrapCSRForTests func(context.Context, *NativePromotionBackend, string) (laneinstall.PRDReplacementServerCSRReport, error)
+var prdBootstrapServerMaterialForTests func(string, []byte, time.Time) (laneinstall.PRDReplacementServerMaterialReport, error)
 
 type buildCLIEnvironment struct {
 	Repository         string
@@ -353,6 +365,8 @@ func RunAdminCLI(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "prd-replacement-bootstrap":
+		return runPRDReplacementBootstrapCLI(args[1:], stdout, stderr)
 	case "status":
 		flags := flag.NewFlagSet("runner-release status", flag.ContinueOnError)
 		flags.SetOutput(stderr)
@@ -417,13 +431,233 @@ func RunAdminCLI(args []string, stdout, stderr io.Writer) int {
 	case "rollback":
 		return runRollbackCLI(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
-		fmt.Fprintln(stdout, "Usage:\n  runner-release status --build ID | --release ID | --acceptance-lane LANE --release ID | --lane LANE --operation ID [--json]\n  runner-release branch-sync --lane qas|prd --operation ID [--json]\n  runner-release rollback --lane LANE --operation ID [--approval-file FILE] --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--json]")
+		fmt.Fprintln(stdout, "Usage:\n  runner-release status --build ID | --release ID | --acceptance-lane LANE --release ID | --lane LANE --operation ID [--json]\n  runner-release prd-replacement-bootstrap --request-file OWNER-ONLY-JSON --approval-file FILE --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--hosts-file FILE] [--store-root DIR] [--json]\n  runner-release branch-sync --lane qas|prd --operation ID [--json]\n  runner-release rollback --lane LANE --operation ID [--approval-file FILE] --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--json]")
+		fmt.Fprintln(stdout, "PRD replacement bootstrap requires Dev and QAS acceptance plus the current approval for the exact read-only PRD plan. It obtains a host-generated CSR over the pinned host RPC, signs it with an operation-specific owner-only Mac CA key, prepares the fresh Linux namespace, then updates Mac trust and route under a journaled, backed-up Mac PRD stop; it does not select or start a service.")
 		fmt.Fprintln(stdout, "Branch-sync retries only the qas/prd source marker after runtime acceptance; it never redeploys. Rollback uses guarded reverse selector journals and does not restore databases by default.")
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown runner-release command %q\n", args[0])
 		return 2
 	}
+}
+
+func runPRDReplacementBootstrapCLI(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("runner-release prd-replacement-bootstrap", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	requestFile := flags.String("request-file", "", "owner-only private bootstrap request JSON")
+	approvalFile := flags.String("approval-file", "", "release-bound PRD owner approval for the current read-only plan")
+	hostsFile := flags.String("hosts-file", "", "owner-only host control configuration")
+	storeRoot := flags.String("store-root", "", "existing release workflow root")
+	publisherOwner := flags.String("publisher-owner", "", "owner of the PRD publisher pause")
+	publisherControl := flags.String("publisher-control", "", "specific control keeping PRD publishers paused")
+	publishersPaused := flags.Bool("publishers-paused", false, "confirm PRD publishers are paused")
+	noNewAccepted := flags.Bool("no-new-accepted", false, "confirm PRD accepted-work count is unchanged")
+	jsonOutput := flags.Bool("json", false, "emit sanitized JSON result")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 || *requestFile == "" || *approvalFile == "" || strings.TrimSpace(*publisherOwner) == "" ||
+		strings.TrimSpace(*publisherControl) == "" || !*publishersPaused || !*noNewAccepted {
+		fmt.Fprintln(stderr, "usage: runner-release prd-replacement-bootstrap --request-file OWNER-ONLY-JSON --approval-file FILE --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--hosts-file FILE] [--store-root DIR] [--json]")
+		return 2
+	}
+	if *hostsFile == "" {
+		*hostsFile = defaultHostConfigPath()
+	}
+	if *storeRoot == "" {
+		*storeRoot = defaultStorePath()
+	}
+	requestBytes, err := readPrivateBootstrapRequest(*requestFile)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	var request laneinstall.PRDReplacementBootstrapRequest
+	decoder := json.NewDecoder(bytes.NewReader(requestBytes))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		!operationPattern.MatchString(request.OperationID) || !releasePattern.MatchString(request.ReleaseID) ||
+		!digestPattern.MatchString(request.ExpectedReleaseSHA256) {
+		fmt.Fprintln(stderr, ErrInvalidInput)
+		return 2
+	}
+	originalRequestSHA := digest(requestBytes)
+	workflowStore, err := NewStore(*storeRoot)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	release, err := workflowStore.LoadRelease(request.ReleaseID)
+	if err != nil || release.Digest != request.ExpectedReleaseSHA256 {
+		fmt.Fprintln(stderr, ErrReleaseMismatch)
+		return 1
+	}
+	devAcceptance, err := workflowStore.LoadAcceptance("dev", release.ID)
+	if err != nil || !acceptanceMatchesRelease(devAcceptance, "dev", release) {
+		fmt.Fprintln(stderr, "replacement PRD bootstrap requires passed Dev acceptance for the exact release")
+		return 3
+	}
+	qasAcceptance, err := workflowStore.LoadAcceptance("qas", release.ID)
+	if err != nil || !acceptanceMatchesRelease(qasAcceptance, "qas", release) || qasAcceptance.Profile != devAcceptance.Profile {
+		fmt.Fprintln(stderr, "replacement PRD bootstrap requires passed QAS acceptance matching Dev for the exact release")
+		return 3
+	}
+	approval, approvalSHA, err := readApprovalFile(*approvalFile)
+	if err != nil || ValidateApproval(approval, release, time.Now()) != nil {
+		fmt.Fprintln(stderr, ErrApprovalRequired)
+		return 3
+	}
+	backend := promotionBackendForTests
+	if backend == nil {
+		native, err := loadNativePromotionBackend(*hostsFile, *storeRoot, "", "", false, false, defaultPromotionOperatingBuffer)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		backend = native
+	}
+	native, ok := backend.(*NativePromotionBackend)
+	if !ok || native == nil {
+		fmt.Fprintln(stderr, ErrInvalidInput)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	request.PublisherOwner = strings.TrimSpace(*publisherOwner)
+	request.PublisherControl = strings.TrimSpace(*publisherControl)
+	request.PublishersPaused = *publishersPaused
+	request.NoNewAccepted = *noNewAccepted
+	var result laneinstall.PRDReplacementBootstrapResult
+	err = workflowStore.WithLaneLock("prd", func() error {
+		var operationErr error
+		result, operationErr = executePRDReplacementBootstrap(ctx, native, workflowStore, release, approval,
+			approvalSHA, originalRequestSHA, request)
+		return operationErr
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return writeCLIResult(stdout, stderr, result, *jsonOutput)
+}
+
+func obtainPRDReplacementServerCSR(ctx context.Context, native *NativePromotionBackend, operationID string) (laneinstall.PRDReplacementServerCSRReport, error) {
+	if native == nil || !operationPattern.MatchString(operationID) {
+		return laneinstall.PRDReplacementServerCSRReport{}, ErrInvalidInput
+	}
+	if prdBootstrapCSRForTests != nil {
+		return prdBootstrapCSRForTests(ctx, native, operationID)
+	}
+	output, err := native.runLane(ctx, "linux-host", []string{"catalog-prd-replacement-csr", "--operation-id", operationID}, nil)
+	if err != nil {
+		return laneinstall.PRDReplacementServerCSRReport{}, err
+	}
+	var report laneinstall.PRDReplacementServerCSRReport
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&report) != nil || decoder.Decode(&struct{}{}) != io.EOF || report.OperationID != operationID ||
+		len(report.RequestPEM) == 0 || len(report.RequestPEM) > 16*1024 || digest(report.RequestPEM) != report.RequestSHA {
+		return laneinstall.PRDReplacementServerCSRReport{}, ErrOperationCorrupted
+	}
+	return report, nil
+}
+
+func acceptanceMatchesRelease(acceptance AcceptanceRecord, lane string, release Release) bool {
+	if !validAcceptanceRecord(acceptance) || acceptance.Lane != lane || acceptance.ReleaseID != release.ID ||
+		acceptance.ReleaseSHA256 != release.Digest || len(acceptance.BundleHashes) != len(HostOrder) {
+		return false
+	}
+	for _, host := range HostOrder {
+		if acceptance.BundleHashes[host] != release.Bundles[host].SHA256 {
+			return false
+		}
+	}
+	return true
+}
+
+func lookupPinnedReplacementHostKeys(host, knownHostsFile string) ([]byte, error) {
+	if host != strings.TrimPrefix(replacementLinuxTarget, "ubuntu@") || !absoluteClean(knownHostsFile) {
+		return nil, ErrInvalidInput
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/usr/bin/ssh-keygen", "-F", host, "-f", knownHostsFile)
+	output, err := command.Output()
+	if err != nil || len(output) > 64<<10 {
+		return nil, ErrOperationCorrupted
+	}
+	return output, nil
+}
+
+func replacementHostKeyPinned(requestKey string, knownHostsOutput []byte) bool {
+	wanted, ok := canonicalEd25519HostKey(requestKey)
+	if !ok || len(knownHostsOutput) == 0 || len(knownHostsOutput) > 64<<10 {
+		return false
+	}
+	keys := make(map[string]struct{})
+	for _, line := range strings.Split(string(knownHostsOutput), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		index := 1
+		if strings.HasPrefix(fields[0], "@") {
+			index++
+		}
+		if len(fields) <= index+1 || fields[index] != "ssh-ed25519" {
+			continue
+		}
+		canonical, valid := canonicalEd25519HostKey(strings.Join(fields[index:index+2], " "))
+		if valid {
+			keys[canonical] = struct{}{}
+		}
+	}
+	if len(keys) != 1 {
+		return false
+	}
+	_, exists := keys[wanted]
+	return exists
+}
+
+func canonicalEd25519HostKey(value string) (string, bool) {
+	fields := strings.Fields(value)
+	if len(fields) < 2 || fields[0] != "ssh-ed25519" {
+		return "", false
+	}
+	blob, err := base64.StdEncoding.DecodeString(fields[1])
+	if err != nil {
+		return "", false
+	}
+	reader := bytes.NewReader(blob)
+	var algorithmLength uint32
+	var keyLength uint32
+	if binary.Read(reader, binary.BigEndian, &algorithmLength) != nil || algorithmLength != uint32(len("ssh-ed25519")) {
+		return "", false
+	}
+	algorithm := make([]byte, algorithmLength)
+	if _, err := io.ReadFull(reader, algorithm); err != nil || string(algorithm) != "ssh-ed25519" ||
+		binary.Read(reader, binary.BigEndian, &keyLength) != nil || keyLength != ed25519.PublicKeySize {
+		return "", false
+	}
+	key := make([]byte, keyLength)
+	if _, err := io.ReadFull(reader, key); err != nil || reader.Len() != 0 {
+		return "", false
+	}
+	return fields[0] + " " + base64.StdEncoding.EncodeToString(blob), true
+}
+
+func readPrivateBootstrapRequest(path string) ([]byte, error) {
+	if !absoluteClean(path) {
+		return nil, ErrInvalidInput
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > 4<<20 {
+		return nil, ErrOperationCorrupted
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || int(stat.Uid) != os.Getuid() || stat.Nlink != 1 {
+		return nil, ErrOperationCorrupted
+	}
+	return os.ReadFile(path)
 }
 
 func runBranchSyncCLI(args []string, stdout, stderr io.Writer) int {

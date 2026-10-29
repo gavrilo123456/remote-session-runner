@@ -52,9 +52,54 @@ func (c *PRDServiceController) Status(ctx context.Context, plan PRDUpgradePlan) 
 		return false, nil
 	}
 	if result.ExitCode == 4 {
+		if fresh, freshErr := freshReplacementPRDServiceAbsent(ctx, plan); freshErr == nil && fresh {
+			return false, nil
+		}
 		return false, fmt.Errorf("canonical unsuffixed PRD unit is missing")
 	}
 	return false, fmt.Errorf("canonical PRD service status failed (exit %d)", result.ExitCode)
+}
+
+// freshReplacementPRDServiceAbsent recognizes the one supported first-install
+// state in which linux-host's PRD namespace and unit are deliberately being
+// prepared before catalog selection. The durable fresh-install baseline,
+// current empty inventory, exact replacement machine identity, absent unit,
+// absent listener, and complete process scan must all agree.
+func freshReplacementPRDServiceAbsent(ctx context.Context, plan PRDUpgradePlan) (bool, error) {
+	if plan.HostID != "linux-host" || !replacementLinuxLocalIdentityMatches() {
+		return false, ErrInvalidPRDUpgradePlan
+	}
+	_, valid, err := currentFreshInstallBaseline(plan)
+	if err != nil || !valid {
+		return false, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	root, err := DefaultCatalogRootForPlan(Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace})
+	if err != nil {
+		return false, err
+	}
+	layout, err := catalogSelectorLayoutForPlan(Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}, root)
+	if err != nil {
+		return false, err
+	}
+	selector, err := inspectCatalogSelector(layout)
+	if err != nil || selector.Target != "" {
+		return false, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	probe := NewCatalogPRDAbsenceProbe()
+	unit, err := probe.UnitState(ctx, plan.Namespace.RunnerUnit)
+	if err != nil || unit.LoadState != "not-found" || unit.ActiveState != "inactive" || unit.SubState != "dead" ||
+		unit.MainPID != 0 || unit.ControlPID != 0 || unit.ControlGroup != "" || unit.FragmentPath != "" {
+		return false, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	listener, err := probe.HasTCPListener(ctx, plan.Namespace.DirectPort)
+	if err != nil || listener {
+		return false, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	process, err := probe.HasUnexpectedRunnerProcess(ctx, plan.Namespace.RunnerUnit)
+	if err != nil || process {
+		return false, errors.Join(ErrPRDUpgradeGuard, err)
+	}
+	return true, nil
 }
 
 func (c *PRDServiceController) Stop(ctx context.Context, plan PRDUpgradePlan) error {

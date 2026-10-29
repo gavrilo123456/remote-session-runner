@@ -244,6 +244,19 @@ func createPRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string,
 	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil {
 		return PRDBackupReceipt{}, fmt.Errorf("read PRD schema before backup: %w", err)
 	}
+	freshInstall := false
+	if plan.HostID == "linux-host" {
+		baseline, valid, baselineErr := currentFreshInstallBaseline(plan)
+		if baselineErr != nil {
+			return PRDBackupReceipt{}, baselineErr
+		}
+		if valid {
+			freshInstall = baseline.DatabaseSchema == schema
+			if !freshInstall {
+				return PRDBackupReceipt{}, ErrPRDUpgradeGuard
+			}
+		}
+	}
 	if err := ensurePRDBackupCapacity(plan, plan.Namespace.Database); err != nil {
 		return PRDBackupReceipt{}, err
 	}
@@ -283,6 +296,14 @@ func createPRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string,
 		manifest.Files = append(manifest.Files, files...)
 	}
 	for _, servicePath := range prdServiceArtifactPaths(plan) {
+		if freshInstall && servicePath == filepath.Join("/etc/systemd/system", plan.Namespace.RunnerUnit) {
+			if _, err := os.Lstat(servicePath); errors.Is(err, os.ErrNotExist) {
+				// A fresh replacement has no predecessor service unit. The
+				// absence receipt is the rollback baseline; do not invent or
+				// back up a file that was not installed.
+				continue
+			}
+		}
 		backupRelative := filepath.Join("service", filepath.Base(servicePath))
 		file, copyErr := snapshotFile(servicePath, backupRelative, directory)
 		if copyErr != nil {
@@ -794,8 +815,19 @@ func estimatePRDFileBackupBytes(plan PRDUpgradePlan) (uint64, error) {
 			return 0, fmt.Errorf("estimate existing PRD backup payload: %w", err)
 		}
 	}
+	freshInstall := false
+	var err error
+	if plan.HostID == "linux-host" {
+		_, freshInstall, err = currentFreshInstallBaseline(plan)
+		if err != nil {
+			return 0, err
+		}
+	}
 	for _, path := range prdServiceArtifactPaths(plan) {
 		info, err := os.Lstat(path)
+		if freshInstall && path == filepath.Join("/etc/systemd/system", plan.Namespace.RunnerUnit) && errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			return 0, fmt.Errorf("%w: PRD service definition is unavailable for backup", ErrPRDUpgradeGuard)
 		}
