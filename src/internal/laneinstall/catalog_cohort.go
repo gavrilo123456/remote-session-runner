@@ -22,6 +22,7 @@ import (
 
 const catalogCohortFormatVersion = 1
 const catalogCohortEvidenceMaxAge = 60 * time.Minute
+const catalogFreshInstallBaselineMaxPreparationInterval = 4 * time.Hour
 
 var catalogCohortSwitchOrder = []string{"linux-host", "sandbox-host", "factory-sandbox", "mac-control-plane"}
 
@@ -1075,7 +1076,8 @@ func validateCatalogFreshInstallBaseline(evidence CatalogFreshInstallBaseline, h
 	}
 	absentAt, absentErr := time.Parse(time.RFC3339Nano, evidence.Absence.ObservedAtUTC)
 	preparedAt, preparedErr := time.Parse(time.RFC3339Nano, evidence.PreparedAtUTC)
-	if absentErr != nil || preparedErr != nil || preparedAt.Before(absentAt) || preparedAt.Sub(absentAt) > 2*time.Minute {
+	if absentErr != nil || preparedErr != nil || preparedAt.Before(absentAt) ||
+		preparedAt.Sub(absentAt) > catalogFreshInstallBaselineMaxPreparationInterval {
 		return ErrCatalogOperationInvalid
 	}
 	encoded, err := json.Marshal(struct {

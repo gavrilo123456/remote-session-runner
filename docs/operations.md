@@ -162,6 +162,13 @@ after the no-overwrite link, an exact retry verifies ownership, mode, and bytes
 before removing only the matching staged hardlink. A conflicting unit is left
 untouched and stops the operation.
 
+The fresh-install baseline retains the original namespace-absence timestamp
+and records the real later preparation time. Its bounded preparation interval
+is at most four hours; this accommodates the multi-step first install but does
+not extend the release-bound owner approval. The public bootstrap command must
+still pass the current approval and publisher checks, and the normal cohort
+switch retains its separate fresh per-host preflight requirement.
+
 On this replacement, the existing service root is also the parent of the
 verified Go toolchain. The absence report records that exact `toolchain-only`
 state. Bootstrap preserves the shared root's existing owner, group and safe

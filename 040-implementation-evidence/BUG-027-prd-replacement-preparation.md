@@ -1341,3 +1341,56 @@ warnings remain warnings only. Git delivery and native replacement-Linux
 validation of this latest source are pending. The sealed service release is
 unchanged; no database, selector, service, route, or mailbox state has been
 mutated by this source correction.
+
+### 2026-10-29 14:11 UTC — fresh-install baseline timing bound
+
+The same bootstrap retry advanced through `database` and installed the
+operation's schema-40 empty PRD database, then stopped at `fresh_baseline`
+with `invalid or inconsistent catalog selector operation`. The public
+operation journal records the new durable prefix through `database` and its
+exact staging/live database digest. The host journal confirms the database
+has the expected owner, `0600` mode, one link, size `577536`, and SHA-256
+`6011bdbaa8c7d82ca41d77e8e0ecf38cce75e7abfa50bf168dfa78e1f13653df`; the
+staging name was removed after atomic installation. The baseline marker is
+absent. The PRD service remains not-found/inactive with zero main/control PID
+and an empty cgroup. No service or selector has been created or started.
+
+The exact failure is the baseline validator's two-minute
+`PreparedAtUTC - Absence.ObservedAtUTC` limit. The preserved original absence
+was observed at `2026-10-29T12:23:37.211452131Z`; the failed bootstrap step
+updated its host journal at `2026-10-29T14:10:17.564249602Z`, an elapsed
+`6400.352797` seconds. The absence timestamp cannot be refreshed after the
+namespace has been created, and the preparation timestamp must represent the
+actual baseline preparation time. This was caused by the interrupted
+multi-step first install and the earlier source-guard fixes, not by a failed
+process lock or database state error. The DB read/schema/work checks reached
+the baseline constructor; no failure there is reported.
+
+The pending controller correction sets a four-hour maximum interval for
+baseline preparation, preserves both actual timestamps, and rejects evidence
+older than that bound. This allows the currently owner-approved bounded
+bootstrap to finish without backdating or fabricating absence; the public
+coordinator still validates the independent release-bound approval and its
+expiry, and catalog cohort switches retain their fresh per-host checks. New
+regressions cover preparation after three hours, exact timestamp preservation,
+and rejection just beyond four hours. Focused Mac tests pass. Full Mac/native
+Linux gates, Git delivery, controller amendment, and bootstrap resume remain
+pending. The sealed service release and all peer lanes are unchanged.
+
+### 2026-10-29 14:18 UTC — final Mac baseline-window gates
+
+The regression now covers the exact four-hour boundary as well as a three-hour
+preparation and rejection one nanosecond beyond the maximum. The focused
+`laneinstall` test passed. The first full Mac `make test vet build smoke` run
+is preserved as **NOT PASS**: an existing `runner-locald` test attempted to
+execute `/bin/ps`, which the restricted sandbox denied with `operation not
+permitted`. No assertion or Runner behavior failed. The same full gates were
+rerun with the host permission required by that existing subprocess test and
+passed with exit `0`; log:
+`/private/tmp/bug027-baseline-window-mac-boundary.log`, SHA-256
+`3376fa866d390e793a3f4f81dc4960a79a68a464dcc97a8da702651ef2ccfff8`.
+`gofmt` and `git diff --check` also passed. Native replacement-Linux
+validation, Git delivery of this correction, the supported controller
+amendment and bootstrap resume remain pending. The four-hour bound changes
+only fresh-install baseline preparation evidence; release approval expiry and
+per-host switch freshness remain separately enforced.

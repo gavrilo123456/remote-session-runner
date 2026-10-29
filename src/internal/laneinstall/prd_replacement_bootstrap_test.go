@@ -362,6 +362,38 @@ func TestPRDReplacementBootstrapBaselineRetryRequiresSameIdentity(t *testing.T) 
 	}
 }
 
+func TestPRDReplacementFreshInstallBaselineAllowsBoundedBootstrapAndRejectsExpiry(t *testing.T) {
+	input := prdReplacementBootstrapFixture(t)
+	preparedAt := time.Date(2026, 10, 29, 14, 10, 0, 0, time.UTC)
+	absence := input.Absence
+	absence.ObservedAtUTC = preparedAt.Add(-3 * time.Hour).Format(time.RFC3339Nano)
+	absence.EvidenceSHA256 = catalogNamespaceAbsenceEvidenceSHA256(absence)
+	baseline, err := NewCatalogFreshInstallBaseline(input.OperationID, absence,
+		digestBytes(input.TemplateConfiguration), 40, CatalogWorkInventory{}, preparedAt)
+	if err != nil {
+		t.Fatalf("valid bounded bootstrap preparation was rejected: %v", err)
+	}
+	if baseline.PreparedAtUTC != preparedAt.Format(time.RFC3339Nano) || baseline.Absence.ObservedAtUTC != absence.ObservedAtUTC {
+		t.Fatal("baseline changed the observed absence time or backdated preparation")
+	}
+
+	exactBoundary := absence
+	exactBoundary.ObservedAtUTC = preparedAt.Add(-catalogFreshInstallBaselineMaxPreparationInterval).Format(time.RFC3339Nano)
+	exactBoundary.EvidenceSHA256 = catalogNamespaceAbsenceEvidenceSHA256(exactBoundary)
+	if _, err := NewCatalogFreshInstallBaseline(input.OperationID, exactBoundary,
+		digestBytes(input.TemplateConfiguration), 40, CatalogWorkInventory{}, preparedAt); err != nil {
+		t.Fatalf("baseline rejected at the exact preparation boundary: %v", err)
+	}
+
+	expired := exactBoundary
+	expired.ObservedAtUTC = preparedAt.Add(-catalogFreshInstallBaselineMaxPreparationInterval - time.Nanosecond).Format(time.RFC3339Nano)
+	expired.EvidenceSHA256 = catalogNamespaceAbsenceEvidenceSHA256(expired)
+	if _, err := NewCatalogFreshInstallBaseline(input.OperationID, expired,
+		digestBytes(input.TemplateConfiguration), 40, CatalogWorkInventory{}, preparedAt); err == nil {
+		t.Fatal("baseline accepted absence evidence beyond the bounded preparation interval")
+	}
+}
+
 func TestBootstrapJournalFixtureRootUsesPrivateTempParent(t *testing.T) {
 	parent := t.TempDir()
 	if err := os.Chmod(parent, 0o700); err != nil {
