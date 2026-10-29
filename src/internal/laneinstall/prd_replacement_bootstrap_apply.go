@@ -359,10 +359,20 @@ func ensureBootstrapJournalRootAtRoot(path string) error {
 	if err != nil || !filepath.IsAbs(home) || filepath.Clean(home) != home {
 		return fmt.Errorf("replacement bootstrap home path is invalid: %w", ErrCatalogOperationInvalid)
 	}
+	productionRoot, err := PRDReplacementBootstrapJournalRoot()
+	if err != nil {
+		return fmt.Errorf("replacement bootstrap journal root is invalid: %w", ErrCatalogOperationInvalid)
+	}
 	anchor := home
-	if !pathContained(home, filepath.Dir(path)) {
-		// This unexported branch is used only by package fixtures. The public
-		// command always supplies PRDReplacementBootstrapJournalRoot under home.
+	if path != productionRoot {
+		// This unexported branch is used only by package fixtures. Production
+		// callers use the exact canonical path and validate every home ancestor.
+		// Fixtures remain confined to the platform temp root and validate their
+		// private owner-controlled parent, even when TMPDIR itself is under home.
+		tempRoot := filepath.Clean(os.TempDir())
+		if !filepath.IsAbs(tempRoot) || !pathContained(tempRoot, path) {
+			return fmt.Errorf("noncanonical bootstrap journal root is outside the test temp root: %w", ErrCatalogOperationInvalid)
+		}
 		anchor = filepath.Dir(path)
 	}
 	if err := ensureOwnerDirectoryChainFrom(anchor, filepath.Dir(path)); err != nil {

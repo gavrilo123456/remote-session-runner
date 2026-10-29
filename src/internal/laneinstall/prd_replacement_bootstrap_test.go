@@ -160,6 +160,17 @@ func TestPRDReplacementBootstrapBaselineRetryRequiresSameIdentity(t *testing.T) 
 	}
 }
 
+func TestBootstrapJournalFixtureRootUsesPrivateTempParent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "bootstrap-ops")
+	if err := ensureBootstrapJournalRootAtRoot(root); err != nil {
+		t.Fatalf("create private temp-root journal fixture: %v", err)
+	}
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("journal fixture root is not a private directory: info=%v err=%v", info, err)
+	}
+}
+
 func (b *prdBootstrapFixtureBackend) VerifyComplete(_ context.Context, _ PRDReplacementBootstrapPlan,
 	journal *PRDReplacementBootstrapJournal) error {
 	b.mu.Lock()
