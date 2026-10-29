@@ -402,6 +402,12 @@ func ensureOwnerDirectoryChainFrom(home, path string) error {
 	if homeStat.Mode&unix.S_IFMT != unix.S_IFDIR || homeStat.Uid != uint32(os.Getuid()) {
 		return fmt.Errorf("owner directory-chain root is not a current-user directory: %w", ErrCatalogOperationInvalid)
 	}
+	if filepath.Clean(home) == filepath.Clean(path) {
+		if homeStat.Mode&0o022 != 0 {
+			return fmt.Errorf("owner directory-chain root has unsafe permissions (%04o): %w", homeStat.Mode&0o777, ErrCatalogOperationInvalid)
+		}
+		return nil
+	}
 	current := home
 	relative, _ := filepath.Rel(home, path)
 	for _, part := range strings.Split(relative, string(filepath.Separator)) {
