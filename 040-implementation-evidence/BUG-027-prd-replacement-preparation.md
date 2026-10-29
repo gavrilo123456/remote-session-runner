@@ -1,8 +1,10 @@
 # BUG-027 PRD replacement preparation checkpoint
 
-**Status:** preparation only; no PRD deployment, service change, selector
-change, configuration activation, mailbox mutation, request publication, ACK,
-or recovery has occurred.
+**Current status:** PRD replacement preparation is in progress. The fresh
+PRD namespace on replacement Linux has been prepared and remains stopped and
+unselected. The Mac route stage has not completed; no four-host PRD cohort has
+been deployed and no mailbox ownership or contents have changed. The newest
+dated checkpoint below supersedes older host-access and readiness statements.
 
 ## Existing accepted release
 
@@ -56,7 +58,12 @@ At the current Mac source worktree:
 Native Ubuntu checks, Git delivery, release sealing, Dev/QAS acceptance of the
 successor, and all live PRD work remain pending.
 
-## Old PRD host access and prepared profile
+## Historical old-host access observation — superseded by owner decision
+
+The owner retired `129.151.232.40` from every lane. No SSH restoration,
+inventory, backup, workspace migration, or importer is required for the
+current assignment. Preserve available old-host history as not migrated and
+unknown where evidence is absent; do not reactivate that endpoint.
 
 The old PRD Linux endpoint remains `129.151.232.40`; a fresh explicit-key SSH
 attempt returned:
@@ -83,7 +90,7 @@ authorizations were not changed. The Mac known-hosts file already contains
 verified replacement-host entries; the current replacement endpoint must
 still be freshly verified as part of the later operational preflight.
 
-## #514 recovery proposal — not executed
+## Historical #514 recovery proposal — completed under exact owner approval
 
 Exact recorded identities:
 
@@ -91,20 +98,13 @@ Exact recorded identities:
 - Command: `cmd-2872a83c6411e7838bad02ca687fbfbd`
 - Job: `job-55049ec48ecff3747d09f97d96a18783`
 
-The preserved result is `lost`, with incomplete output and unconfirmed
-teardown. The held reservation/slot and history remain intact. The prior
-read-only report did not establish `safe_to_resume` and set
-`recovery_authorized=false`. No recovery or capacity release is authorized by
-this preparation checkpoint.
+The exact pair was subsequently recovered through the supported guarded path
+on 2026-10-28. Its `lost` result and history were preserved and only its
+reservation/slot was released. Do not repeat this recovery. Refresh inventory
+before later PRD work and keep its disposition distinct from any other pair.
+This closeout does not authorize replay or a second capacity release.
 
-Before proposing the supported exact-pair recovery for execution, refresh the
-complete Mac PRD inventory, prove exact authority and runtime ownership,
-confirm process exit/cleanup under the supported recovery guard, and take a
-fresh consistent backup. The required owner decision is whether to authorize
-that exact lost-pair disposition after those checks, or retain the hold and
-defer cutover. Do not infer success or replay the command.
-
-## Remaining gates
+## Historical gates before the owner retired the old host — superseded
 
 1. Restore explicit SSH access to old host `129.151.232.40` without replacing
    its host keys or removing existing authorized keys.
@@ -120,6 +120,10 @@ defer cutover. Do not infer success or replay the command.
    bytes in Dev → QAS.
 5. Prepare fresh PRD approval, backup/rollback inputs, and exact #514 recovery
    disposition before using the promotion toolkit.
+
+These old-host restoration and import gates are no longer active. Current
+gates and the actual replacement state are recorded in the latest dated
+checkpoint below.
 
 ## 2026-10-28 — replacement PRD engineering checkpoint
 
@@ -1415,3 +1419,107 @@ SHA-256 `18c9eaf5e091471a87871697e06cb44e29a97893911a03136b6186bb6860772a`.
 Git delivery and native replacement-Linux validation for this latest
 controller correction are pending. The sealed service release remains
 unchanged.
+
+### 2026-10-29 15:15 UTC — catalog-aware route preflight and controller resume
+
+The owner retired Linux `129.151.232.40` from all lanes and authorized a fresh
+PRD namespace on replacement `79.72.94.59` / `10.0.0.228`. Do not restore
+old-host SSH, inventory it, import its database/workspaces, or move its old
+reservations. Historical old-host work remains not migrated and unknown
+where unproved. The owner confirmed Dev, QAS, and PRD clients/publishers are
+paused; that is an owner confirmation supplemented by current inventories,
+not proof that publishers are unconfigured.
+
+#### Exact operation and diagnosis
+
+Bootstrap operation `02bfdc603d2ea3360ecd32501fe347d1` remains bound to
+release `rr-309de02fca-ddc84f50`, digest
+`4d650244e8dd9f08390cdb1619399ba40eb948f4db1adcc14f24ad6ff0bcf651`. Its
+coordinator journal is at `linux_namespace_ready`, with Linux journal SHA-256
+`8aeeb589a4bf0b6b1fefc0f47566ee38db504f67487f049149b8685a8e9cd9bf`; no Mac
+route journal is recorded. Mac route activation has not completed. The
+replacement Linux namespace is stopped and unselected. No PRD cohort switch,
+mailbox mutation, request publication, ACK, or repeat of #514 recovery
+occurred in this checkpoint.
+
+The stored `host_control_sha256`
+`c4c7aed5b9fefe6270a8804e5b99ad77c7e1c6193cfaacb2910bda915cf8db0f`
+reconstructs exactly with original controller
+`309de02fca7bc8dcd608834df76e831a96d413d7`. Recomputing with delivered
+controller `3e0e9ad536b20fd6dc8b49afcef099663f1eef01` gives
+`26d4fbcc48d103b471a06b25b59d3f33f93edb0255706e4b0da907440c95f4c9`.
+The failing binding is `host_control_sha256`; it is a controller provenance
+mismatch, not evidence of an OS `flock` failure. The earlier Mac route attempt
+was rejected because it used the legacy `ReadPRDPreflight` path against a
+catalog-managed selector. No diagnostic reported `acquire prd lane lock`, and
+no lock holder was inspected or removed.
+
+#### Bounded correction
+
+Commit `89c31f7772f8817dce9ee5dcff209e837cc7b27f` makes the Mac route
+preflight catalog-aware. It validates the selected catalog release, exact
+configuration/schema/work digests, stopped service, and route proof under the
+catalog lock before the PRD lifecycle lock. It preserves the legacy installer
+guard and fails closed on an unselected/mismatched selector.
+
+Commit `ed4a4b679082836e7a2b5e6d1a0d8271b46b59aa` adds an append-only
+controller amendment checkpoint for this exact bootstrap operation. It allows
+the existing server-material checkpoint, or the exact `linux_namespace_ready`
+checkpoint only when its Linux journal digest is valid and the Mac route
+journal is absent. It rejects later/partial Mac route state. Existing request,
+release, original approval, host profile, SSH identity, host-key trust,
+predecessor, CSR, certificate and CA bindings remain enforced; no coordinator
+receipt is rewritten. Commit `6731abda9c49e11167a14590ffd8db38f0eb68b3`
+adds public-CLI regression coverage for creation, exact retry, and changed SSH
+identity rejection at that Linux-ready checkpoint. These are controller and
+operator-path changes; sealed service release bytes remain unchanged.
+
+#### Source validation and delivery
+
+All logs below are task-owned files outside Git. The pinned Go version is
+1.27.1. Full suites at `89c31f7` passed on replacement Linux (linux/amd64,
+log SHA-256 `f55f3cc18076e9fdc56207b8b6a05449669399171a85c7a2605b1338254fa2ef`),
+Factory (linux/amd64, `50a05123362a34b172bd324862a1b329463bef1ad74ddbf8fc06c2260ea1b5e9`),
+and Sandbox (linux/arm64,
+`1ba1e47f023d3d63dc1590e366fb0dbc16f053c8c32828a12231688e89e9153d`). Each
+was `make test vet build smoke`, exit 0. These full runs include the
+catalog-aware route source; they predate only the controller-checkpoint
+change.
+
+At `ed4a4b6`, `go test ./src/internal/releaseflow -count=1` and `make vet
+build smoke` passed on replacement Linux
+(`f350de1905eef94d1796d6a7988e58fbb3089db9726c4c8084f8f9664e8504d0`), Factory
+(`060e3d79242f1d28900193f54edfc5f951932af6649fa8b1ae110f12d49442d0`), and
+Sandbox (`cf2d14aaf86f45a7ee28305412af5a622f733490c222aea4d855484aec96ba79`).
+After the test-only `6731abd` commit, the complete releaseflow package passed
+on all three workers: Linux
+(`252f353a53443e33819822479da7623a704c90b555244f569c7c07df6b8a2f6a`), Factory
+(`7a9bba98a19597cf30372da80caef2adb48ac041f7aa406e1e74f055a74dffb0`), and
+Sandbox (`8f289ff16e364c7715f95105fec3129d97d1bcb39cac0792ef016b7a2d9a022e`).
+The final Mac `make test vet build smoke` passed at `6731abd`, log SHA-256
+`286be31a8ba9967f5fff90e430570f17aa233af5f4f3690897b9d82bdf9871b7`.
+Sandbox's measured free space was 396,705,792 bytes before its changed-package
+checks and 376,492,032 bytes afterward; no cache or retained data was deleted.
+
+Gitea primary and automatic GitHub mirror both resolve to
+`6731abda9c49e11167a14590ffd8db38f0eb68b3`. Replacement Linux, Sandbox, and
+Factory checkouts are clean `dev` fast-forwards at that exact SHA. The
+`rr-309de02fca-ddc84f50` acceptance records remain passed: Dev operation
+`c7fd67f8abc7dc59625885d4f2cb0fdf`, evidence SHA
+`6eea5c809bfc1df577de2a48d5907a237cddfb8cfa95464fc32c616d03bb4062`; QAS
+operation `0869ab572185a699fd35e0e46206f425`, evidence SHA
+`9a325b594922f90028fde6f1f27d181957ba713664a6ce1f67ef6d01e9e290e2`. Both
+records show all eight acceptance gates passed for the same bundle hashes.
+
+#### Current operational boundary
+
+The bootstrap approval's four-hour window ended at `2026-10-29T15:01:27Z`.
+No live action was performed after expiry. The controller-update CLI validates
+the original release-bound approval and the coordinator binds its exact
+approval hash, so that expired file cannot authorize the next mutation or be
+replaced by editing the coordinator. Before resuming the same bootstrap
+operation, obtain a valid operation-specific continuation through a supported
+append-only approval mechanism. After Mac route completion, create a fresh
+PRD plan and approval tied to the changed configuration, backups, rollback,
+and work inventories. PRD is not deployed, accepted, or open for client
+resumption.
