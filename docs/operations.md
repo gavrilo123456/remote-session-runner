@@ -228,11 +228,22 @@ runner-release prd-bootstrap-controller-update \
   --publishers-paused --no-new-accepted --json
 ```
 
-After it records the amendment, rerun the original
-`prd-replacement-bootstrap` command with those exact same inputs. A lock
-acquisition failure is reported as `acquire prd lane lock`; a coordinator
-identity mismatch reports the mismatched field names. Do not remove the lane
-lock or modify either durable record to work around a failure.
+The amendment is accepted at either the exact `server_material_ready`
+checkpoint, before the replacement namespace is created, or at the exact
+`linux_namespace_ready` checkpoint when the coordinator contains the Linux
+namespace journal hash and no Mac route journal. It is rejected once Mac route
+work has started. The latter checkpoint exists so a corrected controller can
+resume the same interrupted operation after Linux preparation without
+discarding its journal or creating another namespace. The amendment binds the
+same request, release, approval, host profile, SSH identity, host-key trust,
+predecessor bundles, CSR, certificate and CA material, and the exact
+coordinator state. It does not mutate the replacement host. After recording
+the amendment, rerun the original `prd-replacement-bootstrap` command with
+those exact same inputs; the replacement bootstrap must validate its own
+recorded namespace before Mac route work can continue. A lock acquisition
+failure is reported as `acquire prd lane lock`; a coordinator identity
+mismatch reports the mismatched field names. Do not remove the lane lock or
+modify either durable record to work around a failure.
 
 After bootstrap reports `ready_for_catalog_promotion`, collect a new PRD plan.
 Bootstrap changes the Mac route/configuration and establishes the replacement

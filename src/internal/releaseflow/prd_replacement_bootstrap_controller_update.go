@@ -247,9 +247,8 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 		approval, publisherOwner, publisherControl); len(fields) != 0 {
 		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: coordinator fields differ: %s", strings.Join(fields, ", "))
 	}
-	if !sameStrings(journal.CompletedStages, prdReplacementBootstrapStages[:3]) || journal.CSRRequestSHA256 == "" ||
-		journal.ServerCertSHA256 == "" || journal.ServerCASHA256 == "" || !shaPattern.MatchString(native.ControllerRevision) {
-		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment requires the exact server_material_ready checkpoint and no later stage")
+	if !prdReplacementBootstrapControllerUpdateCheckpointAllowed(journal) || !shaPattern.MatchString(native.ControllerRevision) {
+		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment requires server_material_ready or the exact linux_namespace_ready checkpoint with no Mac route journal")
 	}
 	chain, found, err := readPRDReplacementBootstrapControllerUpdateChain(path, journal)
 	if err != nil {
@@ -316,6 +315,17 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 		return PRDReplacementBootstrapControllerUpdate{}, err
 	}
 	return record, nil
+}
+
+func prdReplacementBootstrapControllerUpdateCheckpointAllowed(journal PRDReplacementBootstrapCoordinatorJournal) bool {
+	if journal.CSRRequestSHA256 == "" || journal.ServerCertSHA256 == "" || journal.ServerCASHA256 == "" {
+		return false
+	}
+	if sameStrings(journal.CompletedStages, prdReplacementBootstrapStages[:3]) {
+		return journal.LinuxJournalSHA256 == "" && journal.MacJournalSHA256 == ""
+	}
+	return sameStrings(journal.CompletedStages, prdReplacementBootstrapStages[:4]) &&
+		digestPattern.MatchString(journal.LinuxJournalSHA256) && journal.MacJournalSHA256 == ""
 }
 
 func samePRDReplacementBootstrapControllerUpdate(a, b PRDReplacementBootstrapControllerUpdate) bool {
