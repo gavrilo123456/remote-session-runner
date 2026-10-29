@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,6 +66,21 @@ func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotion
 			approvalSHA, request.PublisherOwner, request.PublisherControl, native.ControllerRevision, hostControlSHA, time.Now().UTC()); err != nil {
 			return laneinstall.PRDReplacementBootstrapResult{}, fmt.Errorf("validate bootstrap continuation: %w", err)
 		}
+	}
+	continuationRecordSHA := ""
+	if continuationFile != "" {
+		continuationPath, pathErr := prdReplacementBootstrapContinuationPath(workflowStore.Root, request.OperationID)
+		if pathErr != nil || continuationFile != continuationPath {
+			return laneinstall.PRDReplacementBootstrapResult{}, errors.Join(ErrApprovalRequired, pathErr)
+		}
+		continuation, found, readErr := readPRDReplacementBootstrapContinuation(continuationPath)
+		continuationBytes, bytesErr := os.ReadFile(continuationPath)
+		if readErr != nil || bytesErr != nil || !found ||
+			validatePRDReplacementBootstrapContinuation(continuation, journal, request, requestSHA, release, approval,
+				approvalSHA, request.PublisherOwner, request.PublisherControl, native.ControllerRevision, hostControlSHA, time.Now().UTC()) != nil {
+			return laneinstall.PRDReplacementBootstrapResult{}, errors.Join(ErrApprovalRequired, readErr, bytesErr)
+		}
+		continuationRecordSHA = digest(continuationBytes)
 	}
 	var plan PromotionPlan
 	if exists {
@@ -161,6 +177,23 @@ func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotion
 	if err != nil {
 		return laneinstall.PRDReplacementBootstrapResult{}, err
 	}
+	rootModeCorrectionSHA := ""
+	if continuationRecordSHA != "" && request.OperationID == "02bfdc603d2ea3360ecd32501fe347d1" {
+		correctionArgs := []string{"catalog-prd-bootstrap-root-correct", "--host", "linux-host",
+			"--operation-id", request.OperationID, "--request-sha256", requestSHA,
+			"--approval-sha256", approvalSHA, "--release-id", release.ID,
+			"--release-sha256", release.Digest, "--continuation-sha256", continuationRecordSHA}
+		correctionBytes, correctionErr := native.runLane(ctx, "linux-host", correctionArgs, nil)
+		var correction laneinstall.PRDBootstrapRootModeCorrectionResult
+		if correctionErr != nil || decodeStrictJSON(correctionBytes, &correction) != nil ||
+			correction.OperationID != request.OperationID || correction.ServiceRoot != filepath.Join("/home", "ubuntu", ".local", "share", "remote-session-runner") ||
+			correction.PreviousMode != 0o775 || correction.CurrentMode != 0o700 ||
+			!digestPattern.MatchString(correction.IntentSHA256) || !digestPattern.MatchString(correction.CompletionSHA256) ||
+			!digestPattern.MatchString(correction.ObservationSHA256) {
+			return laneinstall.PRDReplacementBootstrapResult{}, errors.Join(errors.New("replacement PRD private service-root correction failed"), correctionErr)
+		}
+		rootModeCorrectionSHA = correction.CompletionSHA256
+	}
 	out, err := native.runLane(ctx, "linux-host", []string{"catalog-prd-replacement-bootstrap", "--request-stdin"}, requestBytes)
 	if err != nil {
 		return laneinstall.PRDReplacementBootstrapResult{}, errors.Join(errors.New("replacement PRD bootstrap did not complete"), err)
@@ -184,6 +217,7 @@ func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotion
 	}); err != nil {
 		return laneinstall.PRDReplacementBootstrapResult{}, err
 	}
+	result.RootModeCorrectionSHA256 = rootModeCorrectionSHA
 
 	macInput := laneinstall.PRDReplacementMacRouteInput{OperationID: request.OperationID,
 		MacConfiguration: request.MacConfiguration, ReleaseID: request.ReleaseID,

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"remote-session-runner/src/internal/config"
 )
 
@@ -484,6 +485,16 @@ func TestRunPRDReplacementBootstrapResumesInterruptedPublicSteps(t *testing.T) {
 				!journal.PublishersPaused || !journal.NoNewAccepted {
 				t.Fatalf("durable journal did not bind approval and publisher pause: exists=%v journal=%+v err=%v", exists, journal, err)
 			}
+			journalPath := filepath.Join(root, request.OperationID+".json")
+			beforeRetry, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retry, err := runPRDReplacementBootstrapAtRoot(context.Background(), request, root, backend, now.Add(2*time.Second))
+			afterRetry, readErr := os.ReadFile(journalPath)
+			if err != nil || readErr != nil || retry.JournalSHA256 != result.JournalSHA256 || !bytes.Equal(beforeRetry, afterRetry) {
+				t.Fatalf("completed exact retry rewrote the bootstrap journal: result=%+v err=%v read_error=%v", retry, err, readErr)
+			}
 		})
 	}
 }
@@ -888,6 +899,68 @@ func prdReplacementBootstrapRequest(input PRDReplacementBootstrapInput) PRDRepla
 		ServerCAPEM: append([]byte(nil), input.ServerCAPEM...), ClientCertificatePEM: append([]byte(nil), input.ClientCertificatePEM...),
 		ClientCAPEM: append([]byte(nil), input.ClientCAPEM...), ClientPrincipalMap: append([]byte(nil), input.ClientPrincipalMap...),
 		DispatcherPublicKey: input.DispatcherPublicKey, SSHHostPublicKey: input.SSHHostPublicKey}
+}
+
+func TestChmodFreshInstallRootPrivateBindsDirectoryIdentityAndMode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, prdBootstrapRootModeBefore); err != nil {
+		t.Fatal(err)
+	}
+	var stat unix.Stat_t
+	if err := unix.Lstat(root, &stat); err != nil {
+		t.Fatal(err)
+	}
+	expected := freshInstallRootStat{Device: uint64(stat.Dev), Inode: stat.Ino, UID: stat.Uid, GID: stat.Gid,
+		Mode: uint32(stat.Mode & 0o7777)}
+	if err := chmodFreshInstallRootPrivateAt(root, expected); err != nil {
+		t.Fatalf("correct the exact observed private-root mode: %v", err)
+	}
+	if err := unix.Lstat(root, &stat); err != nil || stat.Mode&0o7777 != prdBootstrapRootModeAfter ||
+		uint64(stat.Dev) != expected.Device || stat.Ino != expected.Inode {
+		t.Fatalf("root identity/mode after descriptor correction: stat=%+v err=%v", stat, err)
+	}
+	if err := chmodFreshInstallRootPrivateAt(root, expected); !errors.Is(err, ErrCatalogOperationInvalid) {
+		t.Fatalf("stale 0775 evidence was accepted after the mode changed: %v", err)
+	}
+
+	unsafe := t.TempDir()
+	if err := os.Chmod(unsafe, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var unsafeStat unix.Stat_t
+	if err := unix.Lstat(unsafe, &unsafeStat); err != nil {
+		t.Fatal(err)
+	}
+	unsafeExpected := freshInstallRootStat{Device: uint64(unsafeStat.Dev), Inode: unsafeStat.Ino,
+		UID: unsafeStat.Uid, GID: unsafeStat.Gid, Mode: uint32(unsafeStat.Mode & 0o7777)}
+	if err := chmodFreshInstallRootPrivateAt(unsafe, unsafeExpected); !errors.Is(err, ErrCatalogOperationInvalid) {
+		t.Fatalf("unrecorded root mode was accepted: %v", err)
+	}
+
+	parent := t.TempDir()
+	link := filepath.Join(parent, "root-link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := chmodFreshInstallRootPrivateAt(link, expected); !errors.Is(err, ErrCatalogOperationInvalid) {
+		t.Fatalf("symlink root was accepted: %v", err)
+	}
+
+	if err := os.Chmod(root, prdBootstrapRootModeBefore); err != nil {
+		t.Fatal(err)
+	}
+	var current unix.Stat_t
+	if err := unix.Lstat(root, &current); err != nil {
+		t.Fatal(err)
+	}
+	changedIdentity := freshInstallRootStat{Device: uint64(current.Dev), Inode: current.Ino + 1,
+		UID: current.Uid, GID: current.Gid, Mode: uint32(current.Mode & 0o7777)}
+	if err := chmodFreshInstallRootPrivateAt(root, changedIdentity); !errors.Is(err, ErrCatalogOperationInvalid) {
+		t.Fatalf("stale directory inode evidence was accepted: %v", err)
+	}
+	if err := unix.Lstat(root, &current); err != nil || current.Mode&0o7777 != prdBootstrapRootModeBefore {
+		t.Fatalf("rejected identity did not preserve root mode: stat=%+v err=%v", current, err)
+	}
 }
 
 func TestBuildPRDReplacementBootstrapPlanRejectsDriftedOrStaleInputs(t *testing.T) {

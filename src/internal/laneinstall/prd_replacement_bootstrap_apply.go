@@ -74,15 +74,16 @@ type PRDReplacementAuthorizedKeysRepair struct {
 }
 
 type PRDReplacementBootstrapResult struct {
-	OperationID         string                        `json:"operation_id"`
-	Stage               string                        `json:"stage"`
-	Release             CatalogReleaseIdentity        `json:"release"`
-	ConfigurationSHA256 string                        `json:"configuration_sha256"`
-	MacCandidateSHA256  string                        `json:"mac_candidate_sha256"`
-	DatabaseSchema      int                           `json:"database_schema"`
-	WorkInventorySHA256 string                        `json:"work_inventory_sha256"`
-	JournalSHA256       string                        `json:"journal_sha256"`
-	MacRoute            *PRDReplacementMacRouteResult `json:"mac_route,omitempty"`
+	OperationID              string                        `json:"operation_id"`
+	Stage                    string                        `json:"stage"`
+	Release                  CatalogReleaseIdentity        `json:"release"`
+	ConfigurationSHA256      string                        `json:"configuration_sha256"`
+	MacCandidateSHA256       string                        `json:"mac_candidate_sha256"`
+	DatabaseSchema           int                           `json:"database_schema"`
+	WorkInventorySHA256      string                        `json:"work_inventory_sha256"`
+	JournalSHA256            string                        `json:"journal_sha256"`
+	RootModeCorrectionSHA256 string                        `json:"root_mode_correction_sha256,omitempty"`
+	MacRoute                 *PRDReplacementMacRouteResult `json:"mac_route,omitempty"`
 }
 
 // prdReplacementBootstrapBackend separates durable progression from its
@@ -253,10 +254,10 @@ func runBootstrapSteps(ctx context.Context, journalPath string, journal PRDRepla
 	if err := backend.VerifyComplete(ctx, plan, &journal); err != nil {
 		return PRDReplacementBootstrapResult{}, err
 	}
-	journal.UpdatedAtUTC = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := writeBootstrapJournal(journalPath, journal); err != nil {
-		return PRDReplacementBootstrapResult{}, err
-	}
+	// A read-only exact retry of an already completed bootstrap must preserve
+	// the original durable journal bytes. Its hash is bound by the Mac
+	// coordinator; rewriting only UpdatedAtUTC would make a successful retry
+	// appear to conflict with that recorded stage.
 	journalBytes, err := os.ReadFile(journalPath)
 	if err != nil {
 		return PRDReplacementBootstrapResult{}, err

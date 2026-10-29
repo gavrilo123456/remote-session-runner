@@ -60,6 +60,7 @@ var hostLaneCommands = map[string]bool{
 	"catalog-probe-prepare": true, "catalog-compatibility-check": true,
 	"catalog-prd-backup": true, "catalog-prd-recover": true, "catalog-prd-replacement-bootstrap": true,
 	"catalog-prd-replacement-csr": true, "catalog-prd-fresh-install-baseline": true,
+	"catalog-prd-fresh-install-observe": true, "catalog-prd-bootstrap-root-correct": true,
 	"prd-preflight": true,
 	"prd-status":    true, "prd-start": true, "prd-stop": true,
 	"status": true, "start": true, "stop": true,

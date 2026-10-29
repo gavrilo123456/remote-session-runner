@@ -234,16 +234,17 @@ type promotionProbeOutcome struct {
 }
 
 type promotionLaneSnapshot struct {
-	Selector         laneinstall.CatalogSelectorStatus          `json:"selector"`
-	NamespaceAbsence *laneinstall.CatalogNamespaceAbsenceReport `json:"namespace_absence,omitempty"`
-	FreshInstall     *laneinstall.CatalogFreshInstallBaseline   `json:"fresh_install_baseline,omitempty"`
-	Active           bool                                       `json:"service_active"`
-	Config           string                                     `json:"configuration_sha256"`
-	Schema           int                                        `json:"schema_version"`
-	Work             laneinstall.CatalogWorkInventory           `json:"work_inventory"`
-	Empty            bool                                       `json:"work_inventory_empty"`
-	AvailableBytes   uint64                                     `json:"available_bytes"`
-	RequiredBytes    uint64                                     `json:"required_bytes"`
+	Selector                laneinstall.CatalogSelectorStatus              `json:"selector"`
+	NamespaceAbsence        *laneinstall.CatalogNamespaceAbsenceReport     `json:"namespace_absence,omitempty"`
+	FreshInstall            *laneinstall.CatalogFreshInstallBaseline       `json:"fresh_install_baseline,omitempty"`
+	FreshInstallObservation *laneinstall.CatalogPRDFreshInstallObservation `json:"fresh_install_observation,omitempty"`
+	Active                  bool                                           `json:"service_active"`
+	Config                  string                                         `json:"configuration_sha256"`
+	Schema                  int                                            `json:"schema_version"`
+	Work                    laneinstall.CatalogWorkInventory               `json:"work_inventory"`
+	Empty                   bool                                           `json:"work_inventory_empty"`
+	AvailableBytes          uint64                                         `json:"available_bytes"`
+	RequiredBytes           uint64                                         `json:"required_bytes"`
 }
 
 type prdBackupRecoveryHostEvidence struct {
@@ -328,6 +329,7 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 			baseline.FreshInstallEvidenceSHA256 = selected.FreshInstall.EvidenceSHA256
 			baseline.FreshInstallAbsenceSHA256 = selected.FreshInstall.Absence.EvidenceSHA256
 			baseline.FreshInstallOperationID = selected.FreshInstall.OperationID
+			bindFreshInstallBootstrapIdentity(&baseline, selected.FreshInstallObservation)
 		}
 		baseline.AvailableBytes, baseline.RequiredBytes = selected.AvailableBytes, selected.RequiredBytes
 		baseline.CapacityVerified = selected.AvailableBytes >= selected.RequiredBytes
@@ -398,6 +400,16 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 		plan.BackupRecoveryPackageSHA = prdBackupRecoveryPackageDigest(release, plan.HostBaselines, b.OperatingBuffer)
 	}
 	return plan, nil
+}
+
+func bindFreshInstallBootstrapIdentity(baseline *HostObservation, observation *laneinstall.CatalogPRDFreshInstallObservation) {
+	if baseline == nil || observation == nil {
+		return
+	}
+	baseline.FreshInstallBootstrapReleaseID = observation.BootstrapReleaseID
+	baseline.FreshInstallBootstrapReleaseSHA256 = observation.BootstrapReleaseSHA256
+	baseline.FreshInstallBootstrapBundleSHA256 = observation.BootstrapBundleSHA256
+	baseline.FreshInstallBootstrapJournalSHA256 = observation.BootstrapJournalSHA256
 }
 
 func promotionSelectedPredecessorIdentity(lane string, snapshot promotionLaneSnapshot) (string, error) {
@@ -2387,26 +2399,56 @@ func (b *NativePromotionBackend) readLaneSnapshotWithSelectedAbsence(ctx context
 	if !contains(HostOrder, host) || !contains(LaneOrder, lane) {
 		return snapshot, ErrInvalidInput
 	}
+	freshInstallObserved := false
 	statusBytes, err := b.runLane(ctx, host, []string{"catalog-status", "--host", host, "--lane", lane}, nil)
 	if err != nil {
-		// The replacement Linux PRD lane is the only selected-lane snapshot
-		// that may be absent. A command failure alone never proves absence:
-		// require the independent host-local observer to prove the complete
-		// canonical PRD namespace, unit, listener, process, and artifacts are
-		// absent, and bind that report into the plan.
-		if !allowSelectedPRDAbsence || lane != "prd" || !promotionMayUseAbsentPeer(b.Config, host, lane, lane) {
-			return snapshot, errors.Join(ErrOperationCorrupted, err)
+		// A completed replacement bootstrap is no longer an absent namespace.
+		// Before its narrowly scoped root-mode correction, strict selector
+		// inspection can fail on the service root's known 0775 mode. Accept only
+		// the operation-bound observer proving the fresh baseline, absent current
+		// selector, stopped service, no listener, and a stable complete process
+		// scan. If no prepared baseline exists, retain the existing full-absence
+		// observer used for the initial PRD plan.
+		if allowSelectedPRDAbsence && lane == "prd" && host == "linux-host" &&
+			promotionMayUseAbsentPeer(b.Config, host, lane, lane) {
+			observationBytes, observationErr := b.runLane(ctx, host, []string{"catalog-prd-fresh-install-observe",
+				"--host", host, "--operation-id", prdBootstrapContinuationOperation}, nil)
+			var observation laneinstall.CatalogPRDFreshInstallObservation
+			if observationErr == nil && decodeStrictJSON(observationBytes, &observation) == nil &&
+				laneinstall.ValidateCatalogPRDFreshInstallObservation(observation, host, prdBootstrapContinuationOperation) == nil &&
+				observation.Baseline != nil {
+				snapshot.Selector = laneinstall.CatalogSelectorStatus{HostID: host, Lane: config.ReleaseLanePRD, Kind: "unselected"}
+				snapshot.Active = false
+				snapshot.Config = observation.Baseline.ConfigurationSHA256
+				snapshot.Schema = observation.Baseline.DatabaseSchema
+				snapshot.Work = laneinstall.CatalogWorkInventory{}
+				snapshot.Empty = true
+				snapshot.FreshInstall = observation.Baseline
+				snapshot.FreshInstallObservation = &observation
+				freshInstallObserved = true
+			} else {
+				report, absenceErr := b.readCatalogNamespaceAbsence(ctx, host, lane, lane)
+				if absenceErr != nil {
+					return snapshot, errors.Join(fmt.Errorf("%s selected %s namespace absence or fresh-install state is unproven", host, lane), err, observationErr, absenceErr)
+				}
+				snapshot.NamespaceAbsence = &report
+				snapshot.Empty = true
+			}
+		} else {
+			if !allowSelectedPRDAbsence || lane != "prd" || !promotionMayUseAbsentPeer(b.Config, host, lane, lane) {
+				return snapshot, errors.Join(ErrOperationCorrupted, err)
+			}
+			report, absenceErr := b.readCatalogNamespaceAbsence(ctx, host, lane, lane)
+			if absenceErr != nil {
+				return snapshot, errors.Join(fmt.Errorf("%s selected %s namespace absence is unproven", host, lane), err, absenceErr)
+			}
+			snapshot.NamespaceAbsence = &report
+			snapshot.Empty = true
 		}
-		report, absenceErr := b.readCatalogNamespaceAbsence(ctx, host, lane, lane)
-		if absenceErr != nil {
-			return snapshot, errors.Join(fmt.Errorf("%s selected %s namespace absence is unproven", host, lane), err, absenceErr)
-		}
-		snapshot.NamespaceAbsence = &report
-		snapshot.Empty = true
 	} else if decodeStrictJSON(statusBytes, &snapshot.Selector) != nil {
 		return snapshot, ErrOperationCorrupted
 	}
-	if snapshot.NamespaceAbsence == nil {
+	if snapshot.NamespaceAbsence == nil && !freshInstallObserved {
 		out, err := b.runLane(ctx, host, promotionWorkInventoryArgs(host, lane), nil)
 		if err != nil {
 			return snapshot, err

@@ -153,6 +153,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogPRDReplacementServerCSR(args[1:], stdout, stderr)
 	case "catalog-prd-fresh-install-baseline":
 		err = runCatalogPRDFreshInstallBaseline(args[1:], stdout, stderr)
+	case "catalog-prd-fresh-install-observe":
+		err = runCatalogPRDFreshInstallObserve(ctx, args[1:], stdout, stderr)
+	case "catalog-prd-bootstrap-root-correct":
+		err = runCatalogPRDBootstrapRootCorrect(args[1:], stdout, stderr)
 	case "catalog-selector-find":
 		err = runCatalogSelectorFind(args[1:], stdout, stderr)
 	case "catalog-adopt":
@@ -406,6 +410,49 @@ func runCatalogPRDFreshInstallBaseline(args []string, stdout, stderr io.Writer) 
 		return err
 	}
 	return writeJSON(stdout, report)
+}
+
+func runCatalogPRDFreshInstallObserve(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-prd-fresh-install-observe", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical replacement Linux worker identity")
+	operationID := flags.String("operation-id", "", "exact replacement bootstrap operation")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, "prd") || *host != "linux-host" {
+		return errors.New("usage: runner-lane catalog-prd-fresh-install-observe --host linux-host --operation-id 02bfdc603d2ea3360ecd32501fe347d1")
+	}
+	report, err := laneinstall.ReadCatalogPRDFreshInstallObservation(ctx, *host, *operationID)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, report)
+}
+
+func runCatalogPRDBootstrapRootCorrect(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("runner-lane catalog-prd-bootstrap-root-correct", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	host := flags.String("host", "", "canonical replacement Linux worker identity")
+	operationID := flags.String("operation-id", "", "exact replacement bootstrap operation")
+	requestSHA := flags.String("request-sha256", "", "bound bootstrap request digest")
+	approvalSHA := flags.String("approval-sha256", "", "original release-bound approval digest")
+	releaseID := flags.String("release-id", "", "accepted immutable release identity")
+	releaseSHA := flags.String("release-sha256", "", "accepted release digest")
+	continuationSHA := flags.String("continuation-sha256", "", "verified operation-specific continuation digest")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, "prd") || *host != "linux-host" {
+		return errors.New("usage: runner-lane catalog-prd-bootstrap-root-correct --host linux-host --operation-id OP --request-sha256 SHA --approval-sha256 SHA --release-id ID --release-sha256 SHA --continuation-sha256 SHA")
+	}
+	result, err := laneinstall.CorrectPRDReplacementBootstrapServiceRootMode(context.Background(),
+		laneinstall.PRDBootstrapRootModeCorrectionAuthorization{OperationID: *operationID, RequestSHA256: *requestSHA,
+			ApprovalSHA256: *approvalSHA, ReleaseID: *releaseID, ReleaseSHA256: *releaseSHA, ContinuationSHA256: *continuationSHA})
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, result)
 }
 
 func runCatalogNamespaceAbsence(ctx context.Context, args []string, stdout, stderr io.Writer) error {

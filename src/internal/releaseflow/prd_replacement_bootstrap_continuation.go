@@ -137,6 +137,9 @@ func prdBootstrapContinuationPlanValid(plan PromotionPlan, releaseID, releaseSHA
 				!baseline.ServiceStopped || baseline.FreshInstallOperationID != prdBootstrapContinuationOperation ||
 				!digestPattern.MatchString(baseline.FreshInstallEvidenceSHA256) ||
 				!digestPattern.MatchString(baseline.FreshInstallAbsenceSHA256) ||
+				baseline.FreshInstallBootstrapReleaseID != releaseID || baseline.FreshInstallBootstrapReleaseSHA256 != releaseSHA ||
+				!digestPattern.MatchString(baseline.FreshInstallBootstrapBundleSHA256) ||
+				!digestPattern.MatchString(baseline.FreshInstallBootstrapJournalSHA256) ||
 				!digestPattern.MatchString(baseline.ConfigurationSHA) || baseline.SchemaVersion <= 0 {
 				return false
 			}
@@ -193,6 +196,10 @@ func createPRDReplacementBootstrapContinuation(native *NativePromotionBackend, s
 	}
 	if !prdBootstrapContinuationPlanValid(plan, release.ID, release.Digest, &approval) {
 		return PRDReplacementBootstrapContinuation{}, "", errors.New("fresh PRD route-continuation preflight failed a work, capacity, hold, selector, or replacement-namespace guard")
+	}
+	linuxBaseline := plan.HostBaselines[0]
+	if linuxBaseline.HostID != "linux-host" || linuxBaseline.FreshInstallBootstrapBundleSHA256 != release.Bundles["linux-host"].SHA256 {
+		return PRDReplacementBootstrapContinuation{}, "", errors.New("fresh-install observer is not bound to the approved Linux release bundle")
 	}
 	profile, ok := native.Config.Hosts["linux-host"]
 	if !ok || profile.HostID != "linux-host" || profile.Target != replacementLinuxTarget || !profile.AllowFirstInstallPeerAbsence {

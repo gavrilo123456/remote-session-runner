@@ -960,6 +960,8 @@ func TestReadLaneSnapshotAcceptsOnlyProvenSelectedReplacementPRDAbsence(t *testi
 		switch args[0] {
 		case "catalog-status":
 			return nil, errors.New("selected PRD namespace is not installed")
+		case "catalog-prd-fresh-install-observe":
+			return nil, errors.New("no prepared fresh-install baseline")
 		case "catalog-namespace-absence":
 			if len(args) != 7 || args[1] != "--host" || args[2] != "linux-host" || args[3] != "--peer-lane" ||
 				args[4] != "prd" || args[5] != "--selected-lane" || args[6] != "prd" {
@@ -1049,6 +1051,126 @@ func TestReadLaneSnapshotRecognizesPreparedFreshReplacementBaseline(t *testing.T
 	if _, err := promotionSelectedPredecessorIdentity("prd", promotionLaneSnapshot{FreshInstall: &corrupt}); err == nil {
 		t.Fatal("corrupt fresh-install baseline was accepted into the plan predecessor")
 	}
+}
+
+func TestReadLaneSnapshotUsesBoundedObserverForBootstrappedUnselectedPRD(t *testing.T) {
+	absence := testPRDAbsenceReport(t)
+	absence.SelectedLane = config.ReleaseLanePRD
+	absence.ObservedAtUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	absence.EvidenceSHA256 = absenceReportDigest(absence)
+	work := laneinstall.CatalogWorkInventory{}
+	const operationID = "02bfdc603d2ea3360ecd32501fe347d1"
+	baseline, err := laneinstall.NewCatalogFreshInstallBaseline(operationID, absence, strings.Repeat("a", 64), 40, work, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := laneinstall.CatalogPRDFreshInstallObservation{FormatVersion: 1, HostID: "linux-host", OperationID: operationID,
+		Present: true, Baseline: &baseline, ServiceRoot: "/home/ubuntu/.local/share/remote-session-runner",
+		BootstrapReleaseID: "rr-observed", BootstrapReleaseSHA256: strings.Repeat("c", 64),
+		BootstrapBundleSHA256: strings.Repeat("d", 64), BootstrapJournalSHA256: strings.Repeat("e", 64),
+		RootDevice: 8, RootInode: 1001, RootUID: 1001, RootGID: 1001, RootMode: 0o775,
+		CurrentSelectorAbsent: true, UnitLoadState: "not-found", UnitFileState: "not-found", UnitActiveState: "inactive",
+		UnitSubState: "dead", ServiceStopped: true, ListenerPort: 8443, ListenerAbsent: true,
+		ProcessScanComplete: true, ObservedAtUTC: time.Now().UTC().Format(time.RFC3339Nano)}
+	observed.EvidenceSHA256 = catalogFreshInstallObservationDigestForTest(observed)
+	if err := laneinstall.ValidateCatalogPRDFreshInstallObservation(observed, "linux-host", operationID); err != nil {
+		t.Fatalf("fixture fresh-install observation invalid: %v", err)
+	}
+
+	backend := NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{
+		"linux-host": {HostID: "linux-host", Target: replacementLinuxTarget, AllowFirstInstallPeerAbsence: true},
+	}}}
+	backend.capacityReader = func(_ context.Context, host, lane string, snapshot *promotionLaneSnapshot) error {
+		if host != "linux-host" || lane != "prd" {
+			return ErrInvalidInput
+		}
+		snapshot.AvailableBytes, snapshot.RequiredBytes = 2_000_000_000, promotionRequiredCapacity("prd", defaultPromotionOperatingBuffer)
+		return nil
+	}
+	backend.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+		if host != "linux-host" {
+			t.Fatalf("fresh-install observer reached unexpected host %q", host)
+		}
+		switch args[0] {
+		case "catalog-status":
+			return nil, errors.New("private service-root mode rejected by selector inspection")
+		case "catalog-prd-fresh-install-observe":
+			if len(args) != 5 || args[1] != "--host" || args[2] != "linux-host" || args[3] != "--operation-id" || args[4] != operationID {
+				t.Fatalf("fresh-install observer was not bound to the exact operation: %v", args)
+			}
+			return json.Marshal(observed)
+		default:
+			t.Fatalf("unexpected command after positive fresh-install observation: %v", args)
+			return nil, ErrInvalidInput
+		}
+	}
+	snapshot, err := backend.readLaneSnapshotForPlan(context.Background(), "linux-host", "prd")
+	if err != nil || snapshot.NamespaceAbsence != nil || snapshot.FreshInstall == nil ||
+		snapshot.FreshInstall.EvidenceSHA256 != baseline.EvidenceSHA256 || snapshot.Selector.Kind != "unselected" ||
+		snapshot.Active || !snapshot.Empty || snapshot.Config != baseline.ConfigurationSHA256 ||
+		snapshot.Schema != baseline.DatabaseSchema || snapshot.Work.SHA256() != baseline.WorkInventorySHA256 {
+		t.Fatalf("verified prepared namespace was not represented consistently: snapshot=%+v err=%v", snapshot, err)
+	}
+	if snapshot.FreshInstallObservation == nil || snapshot.FreshInstallObservation.BootstrapReleaseID != observed.BootstrapReleaseID ||
+		snapshot.FreshInstallObservation.BootstrapReleaseSHA256 != observed.BootstrapReleaseSHA256 ||
+		snapshot.FreshInstallObservation.BootstrapBundleSHA256 != observed.BootstrapBundleSHA256 ||
+		snapshot.FreshInstallObservation.BootstrapJournalSHA256 != observed.BootstrapJournalSHA256 {
+		t.Fatalf("fresh-install observer identity was not retained for plan binding: %+v", snapshot.FreshInstallObservation)
+	}
+
+	unsafe := observed
+	unsafe.RootMode = 0o777
+	unsafe.EvidenceSHA256 = catalogFreshInstallObservationDigestForTest(unsafe)
+	backend.laneCommandRunner = func(_ context.Context, _ string, args []string, _ []byte) ([]byte, error) {
+		switch args[0] {
+		case "catalog-status":
+			return nil, errors.New("selector inspection rejected")
+		case "catalog-prd-fresh-install-observe":
+			return json.Marshal(unsafe)
+		case "catalog-namespace-absence":
+			return nil, errors.New("prepared namespace is not absent")
+		default:
+			t.Fatalf("unexpected command for unsafe fresh-install observation: %v", args)
+			return nil, ErrInvalidInput
+		}
+	}
+	if _, err := backend.readLaneSnapshotForPlan(context.Background(), "linux-host", "prd"); err == nil {
+		t.Fatal("unsafe root permissions were accepted as a fresh unselected PRD namespace")
+	}
+}
+
+func TestFreshInstallBootstrapIdentityIsBoundIntoPlanWithoutChangingLegacyJSON(t *testing.T) {
+	observation := &laneinstall.CatalogPRDFreshInstallObservation{
+		BootstrapReleaseID: "rr-bootstrap", BootstrapReleaseSHA256: strings.Repeat("a", 64),
+		BootstrapBundleSHA256: strings.Repeat("b", 64), BootstrapJournalSHA256: strings.Repeat("c", 64),
+	}
+	baseline := HostObservation{HostID: "linux-host", Lane: "prd"}
+	bindFreshInstallBootstrapIdentity(&baseline, observation)
+	if baseline.FreshInstallBootstrapReleaseID != observation.BootstrapReleaseID ||
+		baseline.FreshInstallBootstrapReleaseSHA256 != observation.BootstrapReleaseSHA256 ||
+		baseline.FreshInstallBootstrapBundleSHA256 != observation.BootstrapBundleSHA256 ||
+		baseline.FreshInstallBootstrapJournalSHA256 != observation.BootstrapJournalSHA256 {
+		t.Fatalf("fresh-install bootstrap identity was not carried into the plan baseline: %+v", baseline)
+	}
+
+	legacyBytes, err := json.Marshal(HostObservation{HostID: "linux-host", Lane: "prd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"fresh_install_bootstrap_release_id", "fresh_install_bootstrap_release_sha256",
+		"fresh_install_bootstrap_bundle_sha256", "fresh_install_bootstrap_journal_sha256"} {
+		if strings.Contains(string(legacyBytes), field) {
+			t.Fatalf("empty new field %q changes canonical JSON for historical plan hashes: %s", field, legacyBytes)
+		}
+	}
+}
+
+func catalogFreshInstallObservationDigestForTest(report laneinstall.CatalogPRDFreshInstallObservation) string {
+	report.ObservedAtUTC = ""
+	report.EvidenceSHA256 = ""
+	data, _ := json.Marshal(report)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func TestAbsentSelectedPRDAdmissionRequiresFreshReceiptRootAbsence(t *testing.T) {

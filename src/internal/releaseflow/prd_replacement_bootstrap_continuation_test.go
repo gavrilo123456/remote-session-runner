@@ -272,11 +272,38 @@ func TestExpiredBootstrapResumesSameOperationThroughMacRouteContinuation(t *test
 		Release: laneinstall.CatalogReleaseIdentity{ReleaseID: release.ID, ReleaseSHA256: release.Digest, HostID: "linux-host",
 			BundleSHA256: release.Bundles["linux-host"].SHA256}, MacCandidateSHA256: digest([]byte("Mac route config")),
 		JournalSHA256: journal.LinuxJournalSHA256})
+	rootCorrection, _ := json.Marshal(laneinstall.PRDBootstrapRootModeCorrectionResult{OperationID: request.OperationID,
+		ServiceRoot:  filepath.Join("/home", "ubuntu", ".local", "share", "remote-session-runner"),
+		PreviousMode: 0o775, CurrentMode: 0o700, IntentSHA256: digest([]byte("intent")),
+		CompletionSHA256: digest([]byte("completion")), ObservationSHA256: digest([]byte("observation"))})
+	continuationBytes, err := os.ReadFile(continuationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuationSHA := digest(continuationBytes)
 	native.laneCommandRunner = func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
-		if host != "linux-host" || len(args) != 2 || args[0] != "catalog-prd-replacement-bootstrap" || args[1] != "--request-stdin" {
-			t.Fatalf("unexpected resume command: host=%s args=%q", host, args)
+		if host != "linux-host" {
+			t.Fatalf("unexpected resume host: %s", host)
 		}
-		return linuxResult, nil
+		switch args[0] {
+		case "catalog-prd-bootstrap-root-correct":
+			if len(args) != 15 || args[1] != "--host" || args[2] != "linux-host" || args[3] != "--operation-id" ||
+				args[4] != request.OperationID || args[5] != "--request-sha256" || args[6] != digest(requestBytes) ||
+				args[7] != "--approval-sha256" || args[8] != approvalSHA || args[9] != "--release-id" ||
+				args[10] != release.ID || args[11] != "--release-sha256" || args[12] != release.Digest ||
+				args[13] != "--continuation-sha256" || args[14] != continuationSHA {
+				t.Fatalf("root-mode correction lost its exact authorization bindings: %q", args)
+			}
+			return rootCorrection, nil
+		case "catalog-prd-replacement-bootstrap":
+			if len(args) != 2 || args[1] != "--request-stdin" {
+				t.Fatalf("unexpected bootstrap resume command: %q", args)
+			}
+			return linuxResult, nil
+		default:
+			t.Fatalf("unexpected resume command: %q", args)
+			return nil, ErrInvalidInput
+		}
 	}
 	result, err := executePRDReplacementBootstrap(context.Background(), native, store, release, approval, approvalSHA,
 		digest(requestBytes), request, continuationPath)
@@ -288,6 +315,9 @@ func TestExpiredBootstrapResumesSameOperationThroughMacRouteContinuation(t *test
 		!sameStrings(updated.CompletedStages, prdReplacementBootstrapStages) || updated.ApprovalSHA256 != approvalSHA ||
 		updated.LinuxJournalSHA256 != journal.LinuxJournalSHA256 || continuation.OriginalApprovalSHA256 != approvalSHA {
 		t.Fatalf("continued bootstrap did not finish while preserving original receipt identity: result=%+v journal=%+v found=%t err=%v", result, updated, found, err)
+	}
+	if result.RootModeCorrectionSHA256 != digest([]byte("completion")) {
+		t.Fatalf("root-mode correction evidence was not returned: %+v", result)
 	}
 }
 
@@ -318,6 +348,10 @@ func continuationTestPlan(release Release, approval Approval) PromotionPlan {
 			baseline.FreshInstallOperationID = prdBootstrapContinuationOperation
 			baseline.FreshInstallEvidenceSHA256 = digest([]byte("fresh install baseline"))
 			baseline.FreshInstallAbsenceSHA256 = digest([]byte("replacement namespace absence"))
+			baseline.FreshInstallBootstrapReleaseID = release.ID
+			baseline.FreshInstallBootstrapReleaseSHA256 = release.Digest
+			baseline.FreshInstallBootstrapBundleSHA256 = release.Bundles[host].SHA256
+			baseline.FreshInstallBootstrapJournalSHA256 = digest([]byte("bootstrap journal"))
 		} else {
 			baseline.SelectedReleaseID = "cat-20261029-abcdef0"
 			baseline.SelectedBundleSHA = approval.PredecessorBundleSHA256[host]
