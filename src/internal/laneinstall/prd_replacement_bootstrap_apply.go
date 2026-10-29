@@ -25,36 +25,52 @@ const prdReplacementBootstrapJournalVersion = 1
 
 var prdReplacementBootstrapSteps = []string{"directories", "configuration", "authorized_key", "database", "fresh_baseline"}
 
-// PRDReplacementBootstrapJournal is durable, non-secret evidence of one
-// replacement-host first installation. It deliberately contains hashes and
-// public absence evidence only; private key and certificate bytes are never
-// copied into it.
+// PRDReplacementBootstrapJournal is durable evidence of one replacement-host
+// first installation. Its owner-only authorized-key snapshot contains public
+// keys for exact rollback; private key and certificate bytes are never copied
+// into it.
 type PRDReplacementBootstrapJournal struct {
-	FormatVersion                int                           `json:"format_version"`
-	OperationID                  string                        `json:"operation_id"`
-	RequestSHA256                string                        `json:"request_sha256"`
-	InputSHA256                  string                        `json:"input_sha256"`
-	ApprovalSHA256               string                        `json:"approval_sha256"`
-	PublisherOwner               string                        `json:"publisher_owner"`
-	PublisherControl             string                        `json:"publisher_control"`
-	PublishersPaused             bool                          `json:"publishers_paused"`
-	NoNewAccepted                bool                          `json:"no_new_accepted"`
-	Release                      CatalogReleaseIdentity        `json:"release"`
-	Absence                      CatalogNamespaceAbsenceReport `json:"absence"`
-	ConfigurationSHA256          string                        `json:"configuration_sha256"`
-	MacCandidateSHA256           string                        `json:"mac_candidate_sha256"`
-	CreatedAtUTC                 string                        `json:"created_at_utc"`
-	UpdatedAtUTC                 string                        `json:"updated_at_utc"`
-	CompletedSteps               []string                      `json:"completed_steps"`
-	DatabaseSchema               int                           `json:"database_schema,omitempty"`
-	WorkInventorySHA256          string                        `json:"work_inventory_sha256,omitempty"`
-	AuthorizedKeysBefore         string                        `json:"authorized_keys_before_sha256,omitempty"`
-	AuthorizedKeysAfter          string                        `json:"authorized_keys_after_sha256,omitempty"`
-	AuthorizedKeysBeforeContents []byte                        `json:"authorized_keys_before_contents,omitempty"`
-	AuthorizedKeysExisted        bool                          `json:"authorized_keys_existed,omitempty"`
-	AuthorizedKeysMode           uint32                        `json:"authorized_keys_mode,omitempty"`
-	DatabaseStagingPath          string                        `json:"database_staging_path,omitempty"`
-	DatabaseSHA256               string                        `json:"database_sha256,omitempty"`
+	FormatVersion                int                                 `json:"format_version"`
+	OperationID                  string                              `json:"operation_id"`
+	RequestSHA256                string                              `json:"request_sha256"`
+	InputSHA256                  string                              `json:"input_sha256"`
+	ApprovalSHA256               string                              `json:"approval_sha256"`
+	PublisherOwner               string                              `json:"publisher_owner"`
+	PublisherControl             string                              `json:"publisher_control"`
+	PublishersPaused             bool                                `json:"publishers_paused"`
+	NoNewAccepted                bool                                `json:"no_new_accepted"`
+	Release                      CatalogReleaseIdentity              `json:"release"`
+	Absence                      CatalogNamespaceAbsenceReport       `json:"absence"`
+	ConfigurationSHA256          string                              `json:"configuration_sha256"`
+	MacCandidateSHA256           string                              `json:"mac_candidate_sha256"`
+	CreatedAtUTC                 string                              `json:"created_at_utc"`
+	UpdatedAtUTC                 string                              `json:"updated_at_utc"`
+	CompletedSteps               []string                            `json:"completed_steps"`
+	DatabaseSchema               int                                 `json:"database_schema,omitempty"`
+	WorkInventorySHA256          string                              `json:"work_inventory_sha256,omitempty"`
+	AuthorizedKeysBefore         string                              `json:"authorized_keys_before_sha256,omitempty"`
+	AuthorizedKeysAfter          string                              `json:"authorized_keys_after_sha256,omitempty"`
+	AuthorizedKeysBeforeContents []byte                              `json:"authorized_keys_before_contents,omitempty"`
+	AuthorizedKeysExisted        bool                                `json:"authorized_keys_existed,omitempty"`
+	AuthorizedKeysMode           uint32                              `json:"authorized_keys_mode,omitempty"`
+	AuthorizedKeysPath           string                              `json:"authorized_keys_path,omitempty"`
+	AuthorizedKeysRepair         *PRDReplacementAuthorizedKeysRepair `json:"authorized_keys_baseline_repair,omitempty"`
+	DatabaseStagingPath          string                              `json:"database_staging_path,omitempty"`
+	DatabaseSHA256               string                              `json:"database_sha256,omitempty"`
+}
+
+// PRDReplacementAuthorizedKeysRepair preserves the failed empty-path
+// baseline and the corrected canonical authority binding when resuming the
+// original bootstrap operation. It contains no key contents.
+type PRDReplacementAuthorizedKeysRepair struct {
+	FormatVersion         int    `json:"format_version"`
+	Reason                string `json:"reason"`
+	PreviousBeforeSHA256  string `json:"previous_before_sha256"`
+	PreviousAfterSHA256   string `json:"previous_after_sha256"`
+	CorrectedPath         string `json:"corrected_path"`
+	CorrectedBeforeSHA256 string `json:"corrected_before_sha256"`
+	CorrectedAfterSHA256  string `json:"corrected_after_sha256"`
+	RecordedAtUTC         string `json:"recorded_at_utc"`
 }
 
 type PRDReplacementBootstrapResult struct {
@@ -252,9 +268,61 @@ func runBootstrapSteps(ctx context.Context, journalPath string, journal PRDRepla
 }
 
 func bootstrapJournalMatchesPlan(journal PRDReplacementBootstrapJournal, plan PRDReplacementBootstrapPlan) bool {
-	return journal.FormatVersion == prdReplacementBootstrapJournalVersion && journal.InputSHA256 == plan.InputSHA256 &&
-		journal.Release == plan.Release && journal.Absence.EvidenceSHA256 == plan.AbsenceEvidenceSHA256 &&
-		journal.ConfigurationSHA256 == plan.ConfigurationSHA256 && journal.MacCandidateSHA256 == plan.MacCandidateSHA256
+	if journal.FormatVersion != prdReplacementBootstrapJournalVersion || journal.InputSHA256 != plan.InputSHA256 ||
+		journal.Release != plan.Release || journal.Absence.EvidenceSHA256 != plan.AbsenceEvidenceSHA256 ||
+		journal.ConfigurationSHA256 != plan.ConfigurationSHA256 || journal.MacCandidateSHA256 != plan.MacCandidateSHA256 {
+		return false
+	}
+	if !bootstrapAuthorizedKeysJournalMatchesPlan(journal, plan) {
+		return false
+	}
+	return true
+}
+
+func bootstrapAuthorizedKeysJournalMatchesPlan(journal PRDReplacementBootstrapJournal,
+	plan PRDReplacementBootstrapPlan) bool {
+	completed := false
+	for _, step := range journal.CompletedSteps {
+		if step == "authorized_key" {
+			completed = true
+		}
+	}
+	if journal.AuthorizedKeysPath == "" {
+		if completed || journal.AuthorizedKeysRepair != nil || journal.AuthorizedKeysExisted ||
+			journal.AuthorizedKeysMode != 0 && journal.AuthorizedKeysMode != 0o600 ||
+			len(journal.AuthorizedKeysBeforeContents) != 0 {
+			return false
+		}
+		if journal.AuthorizedKeysBefore == "" && journal.AuthorizedKeysAfter == "" {
+			return true
+		}
+		// The sole accepted legacy form is the failed empty-path snapshot from
+		// the incomplete authorized_key step. PrepareStep records a durable
+		// corrected-path baseline before any key-file write on exact resume.
+		return len(journal.CompletedSteps) == 2 && journal.CompletedSteps[0] == "directories" &&
+			journal.CompletedSteps[1] == "configuration" && journal.AuthorizedKeysBefore == digestBytes(nil) &&
+			journal.AuthorizedKeysAfter == digestBytes(bootstrapAuthorizedKeyAppend(nil, plan.AuthorizedKeyLine)) &&
+			(journal.AuthorizedKeysMode == 0 || journal.AuthorizedKeysMode == 0o600)
+	}
+	if journal.AuthorizedKeysPath != plan.Namespace.SSHAuthorityPath || !filepath.IsAbs(journal.AuthorizedKeysPath) ||
+		filepath.Clean(journal.AuthorizedKeysPath) != journal.AuthorizedKeysPath ||
+		!bundleDigestPattern.MatchString(journal.AuthorizedKeysBefore) || !bundleDigestPattern.MatchString(journal.AuthorizedKeysAfter) ||
+		digestBytes(journal.AuthorizedKeysBeforeContents) != journal.AuthorizedKeysBefore ||
+		journal.AuthorizedKeysAfter != digestBytes(bootstrapAuthorizedKeyAppend(journal.AuthorizedKeysBeforeContents, plan.AuthorizedKeyLine)) ||
+		journal.AuthorizedKeysMode > 0o777 || journal.AuthorizedKeysMode&0o022 != 0 || (!journal.AuthorizedKeysExisted &&
+		(journal.AuthorizedKeysBefore != digestBytes(nil) || len(journal.AuthorizedKeysBeforeContents) != 0 || journal.AuthorizedKeysMode != 0o600)) {
+		return false
+	}
+	if journal.AuthorizedKeysRepair == nil {
+		return true
+	}
+	repair := journal.AuthorizedKeysRepair
+	_, timeErr := time.Parse(time.RFC3339Nano, repair.RecordedAtUTC)
+	return repair.FormatVersion == 1 && repair.Reason == "legacy_empty_prd_authority_path" &&
+		repair.PreviousBeforeSHA256 == digestBytes(nil) &&
+		repair.PreviousAfterSHA256 == digestBytes(bootstrapAuthorizedKeyAppend(nil, plan.AuthorizedKeyLine)) &&
+		repair.CorrectedPath == journal.AuthorizedKeysPath && repair.CorrectedBeforeSHA256 == journal.AuthorizedKeysBefore &&
+		repair.CorrectedAfterSHA256 == journal.AuthorizedKeysAfter && timeErr == nil
 }
 
 func prdReplacementBootstrapRequestSHA(request PRDReplacementBootstrapRequest) (string, error) {
@@ -551,13 +619,32 @@ func (localPRDReplacementBootstrapBackend) PrepareStep(ctx context.Context, plan
 		}
 		return true, nil
 	}
-	if step != "authorized_key" || journal.AuthorizedKeysBefore != "" {
+	if step != "authorized_key" {
 		return false, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	path := plan.Namespace.SSHAuthorityPath
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return false, ErrCatalogOperationInvalid
+	}
+	if journal.AuthorizedKeysPath != "" {
+		if journal.AuthorizedKeysPath != path || journal.AuthorizedKeysBefore == "" {
+			return false, ErrCatalogOperationInvalid
+		}
+		return false, nil
+	}
+	if journal.AuthorizedKeysBefore != "" {
+		return repairLegacyEmptyAuthorizedKeysBaseline(path, plan.AuthorizedKeyLine, journal, time.Now().UTC())
+	}
+	if journal.AuthorizedKeysAfter != "" || len(journal.AuthorizedKeysBeforeContents) != 0 || journal.AuthorizedKeysExisted ||
+		journal.AuthorizedKeysMode != 0 || journal.AuthorizedKeysRepair != nil {
+		return false, ErrCatalogOperationInvalid
+	}
+	if err := validateAuthorizedKeysParent(path); err != nil {
+		return false, err
+	}
 	info, err := os.Lstat(path)
 	var before []byte
 	mode := os.FileMode(0o600)
@@ -587,7 +674,96 @@ func (localPRDReplacementBootstrapBackend) PrepareStep(ctx context.Context, plan
 	journal.AuthorizedKeysAfter = digestBytes(after)
 	journal.AuthorizedKeysBeforeContents = append([]byte(nil), before...)
 	journal.AuthorizedKeysExisted, journal.AuthorizedKeysMode = existed, uint32(mode)
+	journal.AuthorizedKeysPath = path
 	return true, nil
+}
+
+// repairLegacyEmptyAuthorizedKeysBaseline is a narrowly recognized resume
+// for the original bootstrap defect where the simple PRD namespace supplied
+// an empty SSH authority path. It rebases only the incomplete authorized-key
+// step, after directories and configuration are durable, and records both
+// the bad empty-path hashes and the corrected file baseline before ApplyStep
+// can mutate authorized_keys.
+func repairLegacyEmptyAuthorizedKeysBaseline(path, authorizedKeyLine string,
+	journal *PRDReplacementBootstrapJournal, now time.Time) (bool, error) {
+	line := strings.TrimSuffix(authorizedKeyLine, "\n")
+	if journal == nil || now.IsZero() || !filepath.IsAbs(path) || filepath.Clean(path) != path ||
+		path == string(filepath.Separator) || line == "" || strings.ContainsRune(line, '\n') ||
+		journal.AuthorizedKeysPath != "" || journal.AuthorizedKeysRepair != nil ||
+		len(journal.CompletedSteps) != 2 || journal.CompletedSteps[0] != "directories" || journal.CompletedSteps[1] != "configuration" ||
+		journal.AuthorizedKeysBefore != digestBytes(nil) || journal.AuthorizedKeysAfter != digestBytes(bootstrapAuthorizedKeyAppend(nil, authorizedKeyLine)) ||
+		len(journal.AuthorizedKeysBeforeContents) != 0 || journal.AuthorizedKeysExisted || journal.AuthorizedKeysMode != 0o600 {
+		return false, ErrCatalogOperationInvalid
+	}
+	if err := validateAuthorizedKeysParent(path); err != nil {
+		return false, err
+	}
+	info, err := os.Lstat(path)
+	var before []byte
+	mode := os.FileMode(0o600)
+	existed := err == nil
+	if existed {
+		var stat unix.Stat_t
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || unix.Lstat(path, &stat) != nil ||
+			stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 || info.Mode().Perm()&0o022 != 0 || info.Size() > 128<<10 {
+			return false, ErrCatalogOperationInvalid
+		}
+		mode = info.Mode().Perm()
+		before, err = os.ReadFile(path)
+		if err != nil {
+			return false, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	after := bootstrapAuthorizedKeyAppend(before, authorizedKeyLine)
+	if exactAuthorizedKeyLineCount(before, authorizedKeyLine) > 1 {
+		return false, ErrCatalogOperationInvalid
+	}
+	journal.AuthorizedKeysRepair = &PRDReplacementAuthorizedKeysRepair{
+		FormatVersion: 1, Reason: "legacy_empty_prd_authority_path",
+		PreviousBeforeSHA256: journal.AuthorizedKeysBefore, PreviousAfterSHA256: journal.AuthorizedKeysAfter,
+		CorrectedPath: path, CorrectedBeforeSHA256: digestBytes(before), CorrectedAfterSHA256: digestBytes(after),
+		RecordedAtUTC: now.UTC().Format(time.RFC3339Nano),
+	}
+	journal.AuthorizedKeysBefore = digestBytes(before)
+	journal.AuthorizedKeysAfter = digestBytes(after)
+	journal.AuthorizedKeysBeforeContents = append([]byte(nil), before...)
+	journal.AuthorizedKeysExisted, journal.AuthorizedKeysMode = existed, uint32(mode)
+	journal.AuthorizedKeysPath = path
+	return true, nil
+}
+
+func validateAuthorizedKeysParent(path string) error {
+	parent := filepath.Dir(path)
+	info, err := os.Lstat(parent)
+	var stat unix.Stat_t
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || unix.Lstat(parent, &stat) != nil ||
+		stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != uint32(os.Getuid()) || stat.Gid != uint32(os.Getgid()) || stat.Mode&0o777 != 0o700 {
+		return ErrCatalogOperationInvalid
+	}
+	return nil
+}
+
+func bootstrapAuthorizedKeyAppend(before []byte, authorizedKeyLine string) []byte {
+	after := append([]byte(nil), before...)
+	if exactAuthorizedKeyLineCount(after, authorizedKeyLine) != 0 {
+		return after
+	}
+	if len(after) > 0 && after[len(after)-1] != '\n' {
+		after = append(after, '\n')
+	}
+	return append(after, []byte(authorizedKeyLine)...)
+}
+
+func exactAuthorizedKeyLineCount(data []byte, authorizedKeyLine string) int {
+	count := 0
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if bytes.Equal(line, []byte(strings.TrimSuffix(authorizedKeyLine, "\n"))) {
+			count++
+		}
+	}
+	return count
 }
 
 func (localPRDReplacementBootstrapBackend) ApplyStep(ctx context.Context, plan PRDReplacementBootstrapPlan,
@@ -924,7 +1100,8 @@ func exactBootstrapFile(path, digest string, mode os.FileMode) bool {
 
 func installPRDReplacementAuthorizedKey(plan PRDReplacementBootstrapPlan, journal *PRDReplacementBootstrapJournal) error {
 	path := plan.Namespace.SSHAuthorityPath
-	if journal.AuthorizedKeysBefore == "" || digestBytes(journal.AuthorizedKeysBeforeContents) != journal.AuthorizedKeysBefore {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || journal.AuthorizedKeysPath != path ||
+		journal.AuthorizedKeysBefore == "" || digestBytes(journal.AuthorizedKeysBeforeContents) != journal.AuthorizedKeysBefore {
 		return ErrCatalogOperationInvalid
 	}
 	current, err := readAuthorizedKeysSafe(path, journal.AuthorizedKeysExisted, os.FileMode(journal.AuthorizedKeysMode))
@@ -955,13 +1132,10 @@ func installPRDReplacementAuthorizedKey(plan PRDReplacementBootstrapPlan, journa
 	if currentSHA != journal.AuthorizedKeysBefore {
 		return ErrSimpleArtifactConflict
 	}
-	after := append([]byte(nil), journal.AuthorizedKeysBeforeContents...)
-	if !bootstrapHasExactLine(after, []byte(plan.AuthorizedKeyLine)) {
-		if len(after) > 0 && after[len(after)-1] != '\n' {
-			after = append(after, '\n')
-		}
-		after = append(after, []byte(plan.AuthorizedKeyLine)...)
+	if exactAuthorizedKeyLineCount(journal.AuthorizedKeysBeforeContents, plan.AuthorizedKeyLine) > 1 {
+		return ErrCatalogOperationInvalid
 	}
+	after := bootstrapAuthorizedKeyAppend(journal.AuthorizedKeysBeforeContents, plan.AuthorizedKeyLine)
 	if digestBytes(after) != journal.AuthorizedKeysAfter {
 		return ErrCatalogOperationInvalid
 	}

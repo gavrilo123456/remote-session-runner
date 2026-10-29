@@ -1171,3 +1171,78 @@ not constitute live Dev/QAS acceptance, PRD bootstrap, service installation,
 mailbox acceptance, or client resumption. The latest Sandbox vet/build/smoke
 result remains NOT PASS because its guard protected the remaining disk
 headroom; the historical Linux full-suite interruption remains NOT PASS.
+
+### 2026-10-29 13:45 UTC — authorized-key path mismatch and exact retry correction
+
+The resumed public bootstrap for operation
+`02bfdc603d2ea3360ecd32501fe347d1` passed its `directories` and
+`configuration` steps, then stopped at `authorized_key` with:
+
+```text
+replacement PRD bootstrap step authorized_key: invalid or inconsistent catalog selector operation
+```
+
+The controller lock was not the cause. The coordinator journal remains at
+`server_material_ready` with SHA-256
+`897b56f554c3501e844f077ec6a0dd78cc566408029be1438c3c973af61a6c8d`. The
+delivered controller amendment sidecar remains intact at SHA-256
+`8a7b5360eca80392eae89f0dbc806b20900ba9226ab0f78a3d20e279ee15c3e8`. The
+host-local bootstrap journal SHA-256 after the failed step is
+`a7423a7274a7ff65a05ccae51d5c24a9953544f06222e6bee32f18207580739d`. It
+records only `directories` and `configuration` as completed. Its failed key
+baseline fields contain the empty-file hash
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, the
+expected-key-only hash `ae35339b698efa23bb78d9254acd3628a542b00a6404655177adfe467440a1d7`,
+and the default `0600` mode. The earlier correction had classified the new
+PRD authority path as absent because `DeriveSimpleLaneNamespace` left
+`SSHAuthorityPath` empty; the bootstrap step consequently attempted the empty
+path and failed its parent-directory guard.
+
+The read-only replacement-host verification after that failure measured:
+
+| Item | Observation |
+| --- | --- |
+| Prepared Linux PRD config | `/home/ubuntu/.local/share/remote-session-runner/config/linux.yaml`, SHA-256 `4499724aa7586332a82947c42aa32d7b6f73078eb3beea87c72410cb877de71d`, mode `0600`, owner `1001:1001` |
+| Existing account authorized-key file | `/home/ubuntu/.ssh/authorized_keys`, regular file, owner `1001:1001`, mode `0600`, one link, 1,288 bytes; observed SHA-256 `c68ae739690ddd32c7de24792ac6b3c8075a547fbdd5202ef83107523147cc8e` |
+| PRD database and selector | absent |
+| PRD systemd unit | `LoadState=not-found`, `ActiveState=inactive`, `MainPID=0`, `ControlPID=0`, empty control group |
+| Partial namespace | Only recorded private bootstrap directories/configuration plus the pre-existing toolchain root are present; no PRD service, database, selector, or unit was installed |
+
+The authorized-key hash above is the current post-failure observation; it is
+not represented as a separately captured pre-attempt hash. Source control-flow
+and the empty planned path show the failed operation did not reach a write to
+that file. No key lines, secrets, database rows, receipt files, or service
+state were printed or modified by this diagnosis.
+
+The narrow source correction makes the canonical Linux PRD namespace resolve
+its authority to `/home/ubuntu/.ssh/authorized_keys` while leaving Dev and QAS
+authorities unchanged. The bootstrap journal now binds the path. On an exact
+resume, it recognizes only the historical empty-path hash pair with exactly
+the completed `directories`, `configuration` prefix. Under the bootstrap
+lifecycle lock, it checks the canonical file and private `.ssh` directory,
+captures the actual current public-key bytes and mode into the owner-only
+journal, and records both the old and corrected hashes before the existing
+atomic append runs. It refuses other step prefixes, changed legacy hashes,
+unsafe or linked files, repeated duplicate PRD key lines, and concurrent key
+file changes. Existing keys and file mode are preserved. The sealed service
+release was not rebuilt or modified; the current V2 PRD runtime config and
+service identities remain unchanged.
+
+The new tests cover the actual `PrepareStep` repair branch, preservation of
+unrelated key lines, exact retry, conflicting changes, unsafe parent
+metadata, the canonical PRD path, and unchanged Dev/QAS namespace authorities.
+On the final Mac source tree, Go 1.27.1 results were:
+
+| Check | Result and capture |
+| --- | --- |
+| Focused config/bootstrap tests | PASS |
+| Full `make test` | PASS, exit `0`; log SHA-256 `472894d7df01ee78ce108a16bf0f0876d0ced2ee564908aa1017198caf0bc24d` |
+| `make vet build smoke` | PASS, exit `0`; log SHA-256 `14de3d4e49947769cd3a39a62d1b788ae0f8715feac160fd3cc9dae53177f21e` |
+| Formatting and `git diff --check` | PASS |
+
+An earlier sandboxed full-test attempt remains **NOT PASS** because the
+workspace restriction denied `/bin/ps`; the identical full suite passed with
+host-level test execution. Native Linux validation and Git delivery of this
+latest correction remain pending. No further bootstrap step, key-file write,
+database creation, selector change, service start, or Mac PRD route action has
+occurred after the diagnosed failure.

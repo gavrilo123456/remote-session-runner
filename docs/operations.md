@@ -173,21 +173,38 @@ directory tree stop the operation before further writes.
 
 For the one-time bootstrap operation
 `02bfdc603d2ea3360ecd32501fe347d1`, a controller-only delivery change may be
-resumed only from the exact `server_material_ready` checkpoint. First use the
-supported `prd-bootstrap-controller-update` command below with the same
-request, approval, host profile, publisher confirmation, pinned SSH identity,
-and operation ID. It reconstructs the original host-control digest using the
+resumed only while the coordinator remains at the exact
+`server_material_ready` checkpoint. First use the supported
+`prd-bootstrap-controller-update` command below with the same request,
+approval, host profile, publisher confirmation, pinned SSH identity, and
+operation ID. It reconstructs the original host-control digest using the
 prior controller revision pinned for this one-time operation, checks that the
 digest matches the coordinator journal, and atomically writes a separate
 owner-only amendment record. If another controller correction is needed
-before namespace creation, the supported command appends a new revision-named
-record linked to the latest amendment; prior records and the original journal
-remain unchanged. Resume validates the complete chain and unchanged
-non-controller inputs. Retries with the same inputs return the existing
-record; changed request, approval, host profile, SSH identity, trust, release,
-predecessor, or certificate bindings are rejected. It is not a general method
-to change bootstrap identity, and it cannot be used after namespace creation
-has started.
+before the coordinator advances, the supported command appends a new
+revision-named record linked to the latest amendment; prior records and the
+original journal remain unchanged. Resume validates the complete chain and
+unchanged non-controller inputs. Retries with the same inputs return the
+existing record; changed request, approval, host profile, SSH identity,
+trust, release, predecessor, or certificate bindings are rejected. This is
+not a general method to change bootstrap identity or amend an operation after
+the coordinator records `linux_namespace_ready`.
+
+A failed host-local step can leave its exact earlier bootstrap effects in
+place while the coordinator still records `server_material_ready`. Only the
+same operation's journaled retry is allowed to continue that state. For this
+operation, the old controller omitted the PRD `SSHAuthorityPath` from the
+simple Linux namespace; its failed authorized-key step therefore recorded an
+empty-path hash pair but did not append or replace a key. The corrected
+`runner-lane` retry recognizes only that incomplete `directories`,
+`configuration` prefix and those exact legacy hashes. It verifies the
+canonical `/home/ubuntu/.ssh/authorized_keys` path and its owner, parent,
+mode, link count, type, and bounded size; then it records the prior hashes and
+the actual current file baseline in the owner-only operation journal before
+the existing guarded append runs. Existing key lines and file mode are
+preserved. Any other step history, changed hash, unsafe path, or concurrent
+key-file change stops the retry. This exception does not permit manual edits
+to the journal or key file.
 
 ```sh
 # Mac — from the clean, delivered dev controller checkout

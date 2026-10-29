@@ -31,6 +31,7 @@ func TestBuildPRDReplacementBootstrapPlanBindsV2IdentityAndPairedRoutes(t *testi
 		t.Fatal("bootstrap plan lost an input or candidate digest binding")
 	}
 	if plan.DirectClientURISAN != prdReplacementLegacyDirectURI ||
+		plan.Namespace.SSHAuthorityPath != filepath.Join("/home", config.LinuxAccount, ".ssh", "authorized_keys") ||
 		plan.MacClientCertificatePath != "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.pem" ||
 		plan.MacClientPrivateKeyPath != "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/direct-client.key" ||
 		plan.MacDispatcherKeyPath != "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/dispatcher_ed25519" {
@@ -267,6 +268,18 @@ func (b *prdBootstrapFixtureBackend) BuildPlan(_ PRDReplacementBootstrapRequest,
 	plan.Absence = absence
 	plan.AbsenceEvidenceSHA256 = absence.EvidenceSHA256
 	return plan, nil
+}
+
+func (b *prdBootstrapFixtureBackend) PrepareStep(_ context.Context, plan PRDReplacementBootstrapPlan, step string,
+	journal *PRDReplacementBootstrapJournal) (bool, error) {
+	if step != "authorized_key" || journal.AuthorizedKeysBefore != "" {
+		return false, nil
+	}
+	journal.AuthorizedKeysPath = plan.Namespace.SSHAuthorityPath
+	journal.AuthorizedKeysBefore = digestBytes(nil)
+	journal.AuthorizedKeysAfter = digestBytes(bootstrapAuthorizedKeyAppend(nil, plan.AuthorizedKeyLine))
+	journal.AuthorizedKeysMode = 0o600
+	return true, nil
 }
 
 func (b *prdBootstrapFixtureBackend) ApplyStep(_ context.Context, _ PRDReplacementBootstrapPlan, step string,
@@ -617,6 +630,9 @@ func TestBootstrapAuthorizedKeyAppendPreservesUnrelatedKeysAndRetriesExactly(t *
 		t.Fatal(err)
 	}
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(root, "authorized_keys")
 	original := []byte("ssh-ed25519 AAAAunrelated-key-one fixture-one\nssh-ed25519 AAAAunrelated-key-two fixture-two\n")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
@@ -653,6 +669,104 @@ func TestBootstrapAuthorizedKeyAppendPreservesUnrelatedKeysAndRetriesExactly(t *
 	if err := backend.ApplyStep(context.Background(), plan, "authorized_key", journal); !errors.Is(err, ErrSimpleArtifactConflict) {
 		t.Fatalf("retry overwrote a concurrent key change: %v", err)
 	}
+}
+
+func TestBootstrapAuthorizedKeyResumeRepairsLegacyEmptyAuthorityBaseline(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "authorized_keys")
+	original := []byte("ssh-ed25519 AAAAexisting-unrelated-key fixture\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	line := "ssh-ed25519 AAAAprd-dispatcher fixture\n"
+	legacyAfter := bootstrapAuthorizedKeyAppend(nil, line)
+	journal := &PRDReplacementBootstrapJournal{
+		CompletedSteps:       []string{"directories", "configuration"},
+		AuthorizedKeysBefore: digestBytes(nil), AuthorizedKeysAfter: digestBytes(legacyAfter),
+		AuthorizedKeysMode: 0o600,
+	}
+	input := prdReplacementBootstrapFixture(t)
+	plan, err := BuildPRDReplacementBootstrapPlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Namespace.SSHAuthorityPath = path
+	plan.AuthorizedKeyLine = line
+	repairStart := time.Now().UTC()
+	changed, err := (localPRDReplacementBootstrapBackend{}).PrepareStep(context.Background(), plan, "authorized_key", journal)
+	repairEnd := time.Now().UTC()
+	if err != nil || !changed {
+		t.Fatalf("repair legacy empty-authority baseline: changed=%t err=%v", changed, err)
+	}
+	recordedAt, timestampErr := time.Parse(time.RFC3339Nano, journal.AuthorizedKeysRepair.RecordedAtUTC)
+	if journal.AuthorizedKeysPath != path || journal.AuthorizedKeysBefore != digestBytes(original) ||
+		journal.AuthorizedKeysAfter != digestBytes(bootstrapAuthorizedKeyAppend(original, line)) ||
+		!journal.AuthorizedKeysExisted || journal.AuthorizedKeysMode != 0o600 ||
+		journal.AuthorizedKeysRepair == nil || journal.AuthorizedKeysRepair.PreviousBeforeSHA256 != digestBytes(nil) ||
+		journal.AuthorizedKeysRepair.PreviousAfterSHA256 != digestBytes(legacyAfter) ||
+		journal.AuthorizedKeysRepair.CorrectedPath != path || timestampErr != nil || recordedAt.Before(repairStart) || recordedAt.After(repairEnd) {
+		t.Fatalf("corrected journal did not preserve old and new authority identities: %+v", journal)
+	}
+	beforeApply, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(beforeApply, original) {
+		t.Fatalf("baseline repair mutated authorized_keys before its durable apply: bytes_match=%t err=%v", bytes.Equal(beforeApply, original), err)
+	}
+	if !bootstrapAuthorizedKeysJournalMatchesPlan(*journal, plan) {
+		t.Fatal("corrected journal does not validate against its canonical plan")
+	}
+	if err := installPRDReplacementAuthorizedKey(plan, journal); err != nil {
+		t.Fatalf("apply corrected baseline: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	want := bootstrapAuthorizedKeyAppend(original, line)
+	if err != nil || !bytes.Equal(after, want) || exactAuthorizedKeyLineCount(after, line) != 1 {
+		t.Fatalf("corrected apply failed to preserve existing key and append once: match=%t err=%v", bytes.Equal(after, want), err)
+	}
+	if err := installPRDReplacementAuthorizedKey(plan, journal); err != nil {
+		t.Fatalf("idempotent retry of corrected apply: %v", err)
+	}
+}
+
+func TestBootstrapAuthorizedKeyLegacyBaselineRepairRejectsChangedJournalAndUnsafeParent(t *testing.T) {
+	line := "ssh-ed25519 AAAAprd-dispatcher fixture\n"
+	legacyAfter := bootstrapAuthorizedKeyAppend(nil, line)
+	newJournal := func() *PRDReplacementBootstrapJournal {
+		return &PRDReplacementBootstrapJournal{
+			CompletedSteps:       []string{"directories", "configuration"},
+			AuthorizedKeysBefore: digestBytes(nil), AuthorizedKeysAfter: digestBytes(legacyAfter),
+			AuthorizedKeysMode: 0o600,
+		}
+	}
+	t.Run("changed prior hashes", func(t *testing.T) {
+		root := t.TempDir()
+		journal := newJournal()
+		journal.AuthorizedKeysAfter = digestBytes([]byte("different"))
+		if changed, err := repairLegacyEmptyAuthorizedKeysBaseline(filepath.Join(root, "authorized_keys"), line, journal, time.Now().UTC()); err == nil || changed {
+			t.Fatalf("changed previous state accepted: changed=%t err=%v", changed, err)
+		}
+	})
+	t.Run("wrong step prefix", func(t *testing.T) {
+		root := t.TempDir()
+		journal := newJournal()
+		journal.CompletedSteps = []string{"directories", "authorized_key"}
+		if changed, err := repairLegacyEmptyAuthorizedKeysBaseline(filepath.Join(root, "authorized_keys"), line, journal, time.Now().UTC()); err == nil || changed {
+			t.Fatalf("unexpected completed-step history accepted: changed=%t err=%v", changed, err)
+		}
+	})
+	t.Run("unsafe parent", func(t *testing.T) {
+		parent := t.TempDir()
+		unsafe := filepath.Join(parent, "unsafe")
+		if err := os.Mkdir(unsafe, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		journal := newJournal()
+		if changed, err := repairLegacyEmptyAuthorizedKeysBaseline(filepath.Join(unsafe, "authorized_keys"), line, journal, time.Now().UTC()); err == nil || changed {
+			t.Fatalf("unsafe parent accepted: changed=%t err=%v", changed, err)
+		}
+	})
 }
 
 func TestPRDReplacementDatabaseStagesAtomicallyAndRetriesExactInstall(t *testing.T) {

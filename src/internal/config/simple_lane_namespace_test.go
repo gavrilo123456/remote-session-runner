@@ -46,9 +46,13 @@ func TestSimpleLaneNamespaceUsesOnlyExistingHostResources(t *testing.T) {
 					t.Fatal(err)
 				}
 				wantRoot := filepath.Join("/home", LinuxAccount, ".local", "share", "remote-session-runner"+tc.suffix)
+				wantSSHAuthority := ""
+				if tc.lane == ReleaseLanePRD {
+					wantSSHAuthority = filepath.Join("/home", LinuxAccount, ".ssh", "authorized_keys")
+				}
 				if linux.ServiceRoot != wantRoot || linux.RunnerUnit != tc.runnerUnit || linux.DirectPort != tc.directPort ||
 					linux.QueuePort != 22 || linux.QueuedSSHBind != "0.0.0.0:22" ||
-					linux.QueuedSSHUnit != "" || linux.RunnerSlice != "" || linux.SSHAuthorityPath != "" ||
+					linux.QueuedSSHUnit != "" || linux.RunnerSlice != "" || linux.SSHAuthorityPath != wantSSHAuthority ||
 					linux.SSHHostPublicKeyFile != "/etc/ssh/ssh_host_ed25519_key.pub" {
 					t.Fatalf("%s namespace=%+v", profile.name, linux)
 				}

@@ -259,6 +259,13 @@ func DeriveSimpleLaneNamespace(host HostKind, lane ReleaseLane, remoteProfile st
 		endpointName := profile.endpointPrefix + "-poc" + suffix
 		database := filepath.Join(root, "state", "remote.db")
 		runnerUnit := "runnerd" + suffix + ".service"
+		sshAuthority := ""
+		if lane == ReleaseLanePRD {
+			// The legacy unsuffixed queued bridge is authorized through the
+			// account's existing OpenSSH authority. Dev/QAS keep their isolated
+			// lane-specific authorities and must not inherit this path.
+			sshAuthority = filepath.Join("/home", LinuxAccount, ".ssh", "authorized_keys")
+		}
 		return LaneNamespace{
 			Lane: lane, Host: host, RemoteProfile: remoteProfile, Account: LinuxAccount,
 			ServiceRoot: root, ConfigFile: filepath.Join(root, "config", "linux.yaml"),
@@ -274,7 +281,7 @@ func DeriveSimpleLaneNamespace(host HostKind, lane ReleaseLane, remoteProfile st
 			RunnerUnit:      runnerUnit, RunnerEntrypoint: filepath.Join(binaryRoot, "runnerd-entrypoint.sh"),
 			JournalIdentifier: strings.TrimSuffix(runnerUnit, ".service"),
 			QueuedSSHJournal:  "sshd", SSHHostPublicKeyFile: "/etc/ssh/ssh_host_ed25519_key.pub",
-			QueuedSSHBind: "0.0.0.0:22", QueuePort: 22, DirectPort: directPort,
+			QueuedSSHBind: "0.0.0.0:22", QueuePort: 22, DirectPort: directPort, SSHAuthorityPath: sshAuthority,
 			DirectEndpointName: endpointName,
 			DirectEndpointURL:  "https://" + profile.publicIP + ":" + strconv.Itoa(directPort),
 			DirectHTTPSBind:    profile.privateIP + ":" + strconv.Itoa(directPort),
