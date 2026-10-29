@@ -1277,3 +1277,67 @@ The package results and final zero exit status were captured from the SSH run.
 This correction has not yet been used to resume bootstrap; no key file,
 database, selector, service, or route was changed after the diagnosed
 authorized-key failure.
+
+### 2026-10-29 14:01 UTC — database stage path guard
+
+The exact bootstrap retry then passed `authorized_key` and stopped at
+`prepare replacement PRD bootstrap step database` with
+`invalid or inconsistent catalog selector operation`. This is not a lock
+failure: the command had acquired the bootstrap locks and the key step was
+durably complete. The replacement journal records completed steps
+`directories`, `configuration`, and `authorized_key`; database staging path
+and database digest remain unset. The canonical live database, expected stage
+database, and database operation marker are all absent. `state/` and
+`staging/` contain no files. The service remains not-found/inactive with
+`MainPID=0`, `ControlPID=0`, and an empty control group.
+
+Source inspection identifies the failing condition precisely. The Linux PRD
+namespace places the live database at
+`/home/ubuntu/.local/share/remote-session-runner/state/remote.db`, but
+`prdReplacementDatabaseStagePath` placed its temporary database under the
+separate `staging/` directory. `preparePRDReplacementDatabaseAt` correctly
+requires the temporary DB and final DB to be in the same directory so the
+no-overwrite hard-link installation is atomic; its path validation therefore
+returned `ErrCatalogOperationInvalid` before creating the marker or database.
+
+The pending correction moves only the temporary SQLite DB to a unique sibling
+of `state/remote.db`; the operation marker remains in `staging/`. A regression
+asserts this relationship using the canonical replacement bootstrap plan,
+which failed against the old stage path. Existing database integrity, empty
+work, schema, ownership, mode, link-count, no-overwrite installation and
+retry checks remain unchanged. Source gates, Git delivery, and another exact
+bootstrap retry remain pending. No database or selector has been created and
+no service has been started.
+
+### 2026-10-29 14:05 UTC — same-filesystem database stage correction
+
+The derived canonical Linux PRD paths are `state/remote.db` for the live
+database and `staging/` for operation markers. The former database-stage
+helper placed `catalog-prd-bootstrap-<operation>.db` under `staging/`, while
+the database installer deliberately enforces a sibling stage path before it
+can create any marker or SQLite file. The public retry therefore stopped on
+that safe path guard. The fresh namespace remains stopped, held, and
+unselected; its `state/` and `staging/` directories are empty and the database
+and marker are absent. The durable bootstrap journal has completed only
+`directories`, `configuration`, and `authorized_key`, with no database hash
+or stage path recorded.
+
+`prdReplacementDatabaseStagePath` now derives the temporary database as a
+unique sibling of `Namespace.Database`; the operation marker remains under
+`Namespace.Staging`. This keeps the no-overwrite hard link on the database
+filesystem without weakening path validation or relocating the durable
+operation marker. The canonical-plan regression checks that the derived stage
+is beside the live DB and outside the marker directory; it fails with the old
+implementation. Existing atomic install, immutable hash, schema-40,
+zero-work, owner/mode/link-count, interruption, and exact-retry checks remain
+in force.
+
+On Mac, Go 1.27.1 full source checks for this correction passed: `make test
+vet build smoke`, exit `0`, log SHA-256
+`ec8505501ed64a16aadac0c77506eb13eaf7f05c21d99d3d350e5543c29b2fbb`.
+The focused plan/database regression also passed independently, as did
+`gofmt -d` and `git diff --check`. The existing duplicate `-lproc` linker
+warnings remain warnings only. Git delivery and native replacement-Linux
+validation of this latest source are pending. The sealed service release is
+unchanged; no database, selector, service, route, or mailbox state has been
+mutated by this source correction.

@@ -1296,7 +1296,11 @@ func preparePRDReplacementDatabaseAt(ctx context.Context, path, stagePath, marke
 }
 
 func prdReplacementDatabaseStagePath(plan PRDReplacementBootstrapPlan) string {
-	return filepath.Join(plan.Namespace.Staging, "catalog-prd-bootstrap-"+plan.OperationID+".db")
+	// The staged database is linked into the live name as the final atomic
+	// installation step, so keep the stage beside the live database. The
+	// operation marker remains in Namespace.Staging; that directory is a
+	// separate durable record area and can reside on another filesystem.
+	return filepath.Join(filepath.Dir(plan.Namespace.Database), "catalog-prd-bootstrap-"+plan.OperationID+".db")
 }
 
 func verifyPRDReplacementDatabaseFile(path, expectedSHA string, linkCount uint64) error {

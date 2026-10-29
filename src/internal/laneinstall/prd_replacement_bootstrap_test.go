@@ -37,6 +37,11 @@ func TestBuildPRDReplacementBootstrapPlanBindsV2IdentityAndPairedRoutes(t *testi
 		plan.MacDispatcherKeyPath != "/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/secrets/dispatcher_ed25519" {
 		t.Fatalf("bootstrap plan replaced or lost the configured legacy identity: %+v", plan)
 	}
+	databaseStage := prdReplacementDatabaseStagePath(plan)
+	if filepath.Dir(databaseStage) != filepath.Dir(plan.Namespace.Database) || filepath.Dir(databaseStage) == plan.Namespace.Staging {
+		t.Fatalf("bootstrap database stage must be a sibling of the live DB for no-overwrite hard-link installation: live=%q stage=%q marker_dir=%q",
+			plan.Namespace.Database, databaseStage, plan.Namespace.Staging)
+	}
 	if err := config.ValidateFreshPRDReplacementLinuxRoute(input.MacConfiguration, plan.MacConfiguration, plan.Configuration); err != nil {
 		t.Fatalf("bootstrap plan did not preserve the paired Mac/Linux route: %v", err)
 	}

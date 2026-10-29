@@ -154,7 +154,9 @@ idempotent directory, configuration, authorized-key, database and baseline
 steps; conflicting bytes or intervening changes fail closed. The configured
 authorized-key file is backed up in the journal and unrelated key lines are
 preserved. The database is created from the current schema in a private staging
-file, then installed without overwriting a conflicting path. Creation of the
+file beside its final `state/remote.db` path so the no-overwrite hard link
+stays on the same filesystem; its operation marker remains under `staging/`.
+It is then installed without overwriting a conflicting path. Creation of the
 Linux systemd unit also uses a fixed target and content hash. If interrupted
 after the no-overwrite link, an exact retry verifies ownership, mode, and bytes
 before removing only the matching staged hardlink. A conflicting unit is left
