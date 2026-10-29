@@ -152,11 +152,20 @@ func runPRDReplacementBootstrapAtRoot(ctx context.Context, request PRDReplacemen
 	if err != nil {
 		return PRDReplacementBootstrapResult{}, err
 	}
+	// The command's initial timestamp predates this read-only observation by
+	// construction. Anchor the durable operation to a fresh time after capture
+	// so an otherwise valid absence report is not rejected as being in the
+	// future. Keep a caller-supplied later time for deterministic callers, but
+	// fail closed below if the local clock moved behind the observation.
+	operationNow := time.Now().UTC()
+	if now.After(operationNow) {
+		operationNow = now.UTC()
+	}
 	observedAt, err := time.Parse(time.RFC3339Nano, absence.ObservedAtUTC)
-	if err != nil || now.Before(observedAt) || now.Sub(observedAt) > prdReplacementBootstrapEvidenceMaxAge || absence.State != "absent" {
+	if err != nil || operationNow.Before(observedAt) || operationNow.Sub(observedAt) > prdReplacementBootstrapEvidenceMaxAge || absence.State != "absent" {
 		return PRDReplacementBootstrapResult{}, ErrCatalogOperationInvalid
 	}
-	plan, err := backend.BuildPlan(request, absence, now)
+	plan, err := backend.BuildPlan(request, absence, operationNow)
 	if err != nil {
 		return PRDReplacementBootstrapResult{}, err
 	}
@@ -167,13 +176,13 @@ func runPRDReplacementBootstrapAtRoot(ctx context.Context, request PRDReplacemen
 		PublishersPaused: request.PublishersPaused, NoNewAccepted: request.NoNewAccepted,
 		Release: plan.Release, Absence: absence,
 		ConfigurationSHA256: plan.ConfigurationSHA256, MacCandidateSHA256: plan.MacCandidateSHA256,
-		CreatedAtUTC: now.UTC().Format(time.RFC3339Nano), UpdatedAtUTC: now.UTC().Format(time.RFC3339Nano),
+		CreatedAtUTC: operationNow.Format(time.RFC3339Nano), UpdatedAtUTC: operationNow.Format(time.RFC3339Nano),
 		CompletedSteps: []string{},
 	}
 	if err := writeBootstrapJournal(journalPath, journal); err != nil {
 		return PRDReplacementBootstrapResult{}, err
 	}
-	return runBootstrapSteps(ctx, journalPath, journal, plan, backend, now)
+	return runBootstrapSteps(ctx, journalPath, journal, plan, backend, operationNow)
 }
 
 func runBootstrapSteps(ctx context.Context, journalPath string, journal PRDReplacementBootstrapJournal,

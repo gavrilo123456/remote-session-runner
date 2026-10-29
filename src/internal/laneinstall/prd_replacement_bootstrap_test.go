@@ -58,27 +58,34 @@ func TestBuildPRDReplacementBootstrapPlanBindsV2IdentityAndPairedRoutes(t *testi
 }
 
 type prdBootstrapFixtureBackend struct {
-	mu            sync.Mutex
-	plan          PRDReplacementBootstrapPlan
-	absence       CatalogNamespaceAbsenceReport
-	completed     map[string]bool
-	interruptStep string
-	interrupted   bool
-	applyCounts   map[string]int
-	captures      int
-	operationLock bool
-	lockAcquires  int
+	mu                   sync.Mutex
+	plan                 PRDReplacementBootstrapPlan
+	absence              CatalogNamespaceAbsenceReport
+	completed            map[string]bool
+	interruptStep        string
+	interrupted          bool
+	applyCounts          map[string]int
+	captures             int
+	operationLock        bool
+	lockAcquires         int
+	captureAtCurrentTime bool
+	planTime             time.Time
 }
 
 func (b *prdBootstrapFixtureBackend) CaptureAbsence(context.Context) (CatalogNamespaceAbsenceReport, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.captures++
+	if b.captureAtCurrentTime {
+		b.absence.ObservedAtUTC = time.Now().UTC().Format(time.RFC3339Nano)
+		b.absence.EvidenceSHA256 = catalogNamespaceAbsenceEvidenceSHA256(b.absence)
+	}
 	return b.absence, nil
 }
 
 func (b *prdBootstrapFixtureBackend) BuildPlan(_ PRDReplacementBootstrapRequest, absence CatalogNamespaceAbsenceReport,
-	_ time.Time) (PRDReplacementBootstrapPlan, error) {
+	now time.Time) (PRDReplacementBootstrapPlan, error) {
+	b.planTime = now
 	plan := b.plan
 	plan.Absence = absence
 	plan.AbsenceEvidenceSHA256 = absence.EvidenceSHA256
@@ -251,6 +258,40 @@ func TestRunPRDReplacementBootstrapResumesInterruptedPublicSteps(t *testing.T) {
 				t.Fatalf("durable journal did not bind approval and publisher pause: exists=%v journal=%+v err=%v", exists, journal, err)
 			}
 		})
+	}
+}
+
+func TestRunPRDReplacementBootstrapTimestampsAfterAbsenceCapture(t *testing.T) {
+	input := prdReplacementBootstrapFixture(t)
+	request := prdReplacementBootstrapRequest(input)
+	plan, err := BuildPRDReplacementBootstrapPlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &prdBootstrapFixtureBackend{plan: plan, absence: input.Absence,
+		completed: make(map[string]bool), applyCounts: make(map[string]int), captureAtCurrentTime: true}
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatalf("make task-owned temp parent private: %v", err)
+	}
+	root := filepath.Join(parent, "bootstrap-ops")
+	// This is the command-entry time. CaptureAbsence returns an observation
+	// made later, which previously caused the first public bootstrap to fail
+	// before it could persist its journal.
+	startedAt := input.Now
+	result, err := runPRDReplacementBootstrapAtRoot(context.Background(), request, root, backend, startedAt)
+	if err != nil {
+		t.Fatalf("bootstrap rejected its freshly captured absence report: %v", err)
+	}
+	observedAt, err := time.Parse(time.RFC3339Nano, backend.absence.ObservedAtUTC)
+	if err != nil || backend.planTime.Before(observedAt) {
+		t.Fatalf("plan time %s precedes absence observation %s (parse error=%v)", backend.planTime, backend.absence.ObservedAtUTC, err)
+	}
+	journal, exists, err := readBootstrapJournal(filepath.Join(root, request.OperationID+".json"))
+	createdAt, parseErr := time.Parse(time.RFC3339Nano, journal.CreatedAtUTC)
+	if err != nil || parseErr != nil || !exists || createdAt.Before(observedAt) || result.Stage != "linux_namespace_ready" {
+		t.Fatalf("fresh absence was not durably bound to a successful bootstrap: exists=%t stage=%s journal=%+v err=%v parse=%v",
+			exists, result.Stage, journal, err, parseErr)
 	}
 }
 
