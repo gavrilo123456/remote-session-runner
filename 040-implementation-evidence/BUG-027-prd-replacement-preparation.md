@@ -1246,3 +1246,34 @@ host-level test execution. Native Linux validation and Git delivery of this
 latest correction remain pending. No further bootstrap step, key-file write,
 database creation, selector change, service start, or Mac PRD route action has
 occurred after the diagnosed failure.
+
+### 2026-10-29 13:57 UTC — source delivery and replacement-Linux validation
+
+The correction was committed on Mac `dev` as
+`1cb7da70a0a048b944d28b1f03cdb8bad2b8706e`. The primary Gitea
+`origin/dev` and automatic GitHub `github/dev` both resolved to that exact
+SHA. The clean `dev` checkouts on replacement Linux, Sandbox, and Factory
+were fast-forwarded from `371f4e0` to `1cb7da7`; all three report the exact
+commit and clean worktrees. The unrelated `src/cmd/catalog-holdcheck/`
+directory was left untouched.
+
+Replacement Linux is `79.72.94.59`, Ubuntu 26.04 x86_64, Go
+`go1.27.1 linux/amd64`; source checks ran from the synchronized checkout with
+the account's normal Go caches and task-owned temporary path
+`/home/ubuntu/.cache/remote-session-runner/bug027-authkey-validation-tmp`.
+Immediately before testing, the checkout was clean at the expected SHA and
+`/dev/sda1` had 39,682,097,152 bytes available. These source gates do not
+change installed services or the sealed release.
+
+| Check | Command/result |
+| --- | --- |
+| Changed config, bootstrap, and public-command packages | `go test ./src/internal/config ./src/internal/laneinstall ./src/cmd/runner-lane -count=1` — PASS |
+| P025 regressions | `go test ./src/internal/execution -run '^TestP025' -count=1` — PASS |
+| P101 regressions | `go test ./src/internal/localapi -run '^TestP101' -count=1` — PASS |
+| Native vet/build/smoke | `make vet build smoke` with `GOTOOLCHAIN=local` and the task-owned disk-backed `TMPDIR` — PASS, exit `0` |
+| `git diff --check`, clean branch/revision | PASS; `dev` at `1cb7da70a0a048b944d28b1f03cdb8bad2b8706e` |
+
+The package results and final zero exit status were captured from the SSH run.
+This correction has not yet been used to resume bootstrap; no key file,
+database, selector, service, or route was changed after the diagnosed
+authorized-key failure.
