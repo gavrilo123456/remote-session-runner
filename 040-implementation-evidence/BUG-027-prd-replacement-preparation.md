@@ -845,6 +845,31 @@ execution capacity. The Oct 28 supported recovery evidence remains the
 authoritative record of the lost result and preserved event history. No
 recovery, ACK, replay, or other PRD mutation was repeated.
 
+### 2026-10-29 08:31 UTC — resumed checkpoint and #514 refresh
+
+After rereading the full current assignment, the historical Dev/QAS result
+`rr-1e6c47721d-f83e3be7` remains accepted with operations
+`db7efa3c78056440d580f8671f9c18fc` and
+`a353cb72e3f72df38cb3e64e74349841`; those immutable outcomes are retained.
+The later sealed route candidate `rr-a38cb0057e-877d49e3` is a distinct
+candidate and any successor service bytes still require their own Dev then
+QAS acceptance. The Oct 28 exact-pair #514 recovery remains complete; no
+second recovery was attempted.
+
+A fresh detailed, read-only Mac PRD work inventory completed at
+`2026-10-29T08:31:17.181652Z`. The private JSON is at
+`/private/tmp/bug027-mac-prd-refresh-20261029.json`, SHA-256
+`bac3b39bf289b78ddb26fe15ed3b196675df0db2161a8362a4e57fe9c2cfe7c6`.
+It reports schema 40, service stopped, selected artifact
+`rr-20261024-43a4e675`, and zero sessions, commands, jobs, held reservations,
+held command slots, retained pairs, pending finalizations, or mailbox
+bindings. It still reports `safe_to_resume=not_established` and
+`recovery_authorized=false`. The diagnostic was run from the current source
+checkout (`go run`); its `diagnostic_build_revision` is `unattested`, so this
+is inventory evidence only, not a qualification of the diagnostic binary or
+proof of runtime cleanup. Historical intent rows and lost result evidence
+remain preserved.
+
 ### 2026-10-29 07:53 UTC — public replacement bootstrap source path
 
 The replacement bootstrap is now connected to the public `runner-release

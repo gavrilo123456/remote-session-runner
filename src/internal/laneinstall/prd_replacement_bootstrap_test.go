@@ -196,7 +196,10 @@ func TestRunPRDReplacementBootstrapResumesInterruptedPublicSteps(t *testing.T) {
 			}
 			result, err := runPRDReplacementBootstrapAtRoot(context.Background(), request, root, backend, now.Add(time.Second))
 			if err != nil {
-				t.Fatalf("resume exact operation: %v", err)
+				journal, exists, journalErr := readBootstrapJournal(filepath.Join(root, request.OperationID+".json"))
+				plan, planErr := backend.BuildPlan(request, journal.Absence, now)
+				t.Fatalf("resume exact operation: %v (journal exists=%t read_error=%v completed=%v plan_error=%v plan_matches=%t)",
+					err, exists, journalErr, journal.CompletedSteps, planErr, bootstrapJournalMatchesPlan(journal, plan))
 			}
 			if result.Stage != "linux_namespace_ready" || result.OperationID != request.OperationID || result.JournalSHA256 == "" {
 				t.Fatalf("bootstrap did not reach the resumable promotion checkpoint: %+v", result)
@@ -253,7 +256,13 @@ func TestRunPRDReplacementBootstrapSerializesConcurrentStarts(t *testing.T) {
 		_, runErr := runPRDReplacementBootstrapAtRoot(context.Background(), request, root, backend, input.Now)
 		first <- runErr
 	}()
-	<-backend.entered
+	select {
+	case <-backend.entered:
+	case err := <-first:
+		t.Fatalf("first bootstrap ended before entering the controlled step: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("first bootstrap did not enter the controlled step within 30 seconds")
+	}
 	if _, err := runPRDReplacementBootstrapAtRoot(context.Background(), request, root, backend, input.Now.Add(time.Second)); err == nil {
 		close(backend.release)
 		t.Fatal("a concurrent second bootstrap acquired the fixed replacement-host lock")
