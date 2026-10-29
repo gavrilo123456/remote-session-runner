@@ -193,6 +193,11 @@ func TestRunPRDReplacementBootstrapResumesInterruptedPublicSteps(t *testing.T) {
 			now := input.Now
 			if _, err := runPRDReplacementBootstrapAtRoot(context.Background(), request, root, backend, now); err == nil {
 				t.Fatal("expected the injected interruption")
+			} else if !strings.Contains(err.Error(), "fixture interruption after durable step effect") {
+				t.Fatalf("first attempt failed before the injected post-effect interruption: %v", err)
+			}
+			if _, exists, err := readBootstrapJournal(filepath.Join(root, request.OperationID+".json")); err != nil || !exists {
+				t.Fatalf("post-effect interruption did not preserve the durable journal: exists=%t err=%v", exists, err)
 			}
 			result, err := runPRDReplacementBootstrapAtRoot(context.Background(), request, root, backend, now.Add(time.Second))
 			if err != nil {
