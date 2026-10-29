@@ -369,8 +369,9 @@ func ensureBootstrapJournalRootAtRoot(path string) error {
 		// callers use the exact canonical path and validate every home ancestor.
 		// Fixtures remain confined to the platform temp root and validate their
 		// private owner-controlled parent, even when TMPDIR itself is under home.
-		tempRoot := filepath.Clean(os.TempDir())
-		if !filepath.IsAbs(tempRoot) || !pathContained(tempRoot, path) {
+		tempRoot, tempErr := filepath.EvalSymlinks(os.TempDir())
+		fixtureParent, parentErr := filepath.EvalSymlinks(filepath.Dir(path))
+		if tempErr != nil || parentErr != nil || !filepath.IsAbs(tempRoot) || !pathContained(tempRoot, fixtureParent) {
 			return fmt.Errorf("noncanonical bootstrap journal root is outside the test temp root: %w", ErrCatalogOperationInvalid)
 		}
 		anchor = filepath.Dir(path)

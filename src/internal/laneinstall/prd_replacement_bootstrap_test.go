@@ -161,7 +161,11 @@ func TestPRDReplacementBootstrapBaselineRetryRequiresSameIdentity(t *testing.T) 
 }
 
 func TestBootstrapJournalFixtureRootUsesPrivateTempParent(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "bootstrap-ops")
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatalf("make task-owned temp parent private: %v", err)
+	}
+	root := filepath.Join(parent, "bootstrap-ops")
 	if err := ensureBootstrapJournalRootAtRoot(root); err != nil {
 		t.Fatalf("create private temp-root journal fixture: %v", err)
 	}
@@ -200,7 +204,11 @@ func TestRunPRDReplacementBootstrapResumesInterruptedPublicSteps(t *testing.T) {
 			}
 			backend := &prdBootstrapFixtureBackend{plan: plan, absence: input.Absence,
 				completed: make(map[string]bool), interruptStep: interruptedStep, applyCounts: make(map[string]int)}
-			root := filepath.Join(t.TempDir(), "bootstrap-ops")
+			parent := t.TempDir()
+			if err := os.Chmod(parent, 0o700); err != nil {
+				t.Fatalf("make task-owned temp parent private: %v", err)
+			}
+			root := filepath.Join(parent, "bootstrap-ops")
 			now := input.Now
 			if _, err := runPRDReplacementBootstrapAtRoot(context.Background(), request, root, backend, now); err == nil {
 				t.Fatal("expected the injected interruption")
@@ -272,6 +280,9 @@ func TestRunPRDReplacementBootstrapSerializesConcurrentStarts(t *testing.T) {
 		absence: input.Absence, completed: make(map[string]bool), applyCounts: make(map[string]int)},
 		entered: make(chan struct{}), release: make(chan struct{})}
 	root := filepath.Join(t.TempDir(), "bootstrap-ops")
+	if err := os.Chmod(filepath.Dir(root), 0o700); err != nil {
+		t.Fatalf("make task-owned temp parent private: %v", err)
+	}
 	first := make(chan error, 1)
 	go func() {
 		_, runErr := runPRDReplacementBootstrapAtRoot(context.Background(), request, root, backend, input.Now)
