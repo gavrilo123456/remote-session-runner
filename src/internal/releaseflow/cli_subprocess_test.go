@@ -282,6 +282,33 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 || stdout.String() != secondUpdateOutput {
 		t.Fatalf("repeated successor amendment was not idempotent: code=%d stderr=%s", code, stderr.String())
 	}
+	chain, found, err := readPRDReplacementBootstrapControllerUpdateChain(journalPath, durable)
+	if err != nil || !found || len(chain) != 2 {
+		t.Fatalf("read existing controller amendment chain: found=%t entries=%d err=%v", found, len(chain), err)
+	}
+	for index := 0; len(chain) < prdBootstrapMaxControllerUpdates; index++ {
+		backend.ControllerRevision = strings.Repeat(string(rune('1'+index)), 40)
+		stdout.Reset()
+		stderr.Reset()
+		if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 {
+			t.Fatalf("append bounded controller amendment %d: code=%d stderr=%s", index+3, code, stderr.String())
+		}
+		chain, found, err = readPRDReplacementBootstrapControllerUpdateChain(journalPath, durable)
+		if err != nil || !found || len(chain) != index+3 {
+			t.Fatalf("controller amendment chain after append %d: found=%t entries=%d err=%v", index+3, found, len(chain), err)
+		}
+	}
+	backend.ControllerRevision = strings.Repeat("7", 40)
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "bounded limit") {
+		t.Fatalf("controller amendment beyond the bound was not refused: code=%d stderr=%s", code, stderr.String())
+	}
+	if _, exists, readErr := readPRDReplacementBootstrapControllerUpdate(
+		prdReplacementBootstrapControllerUpdateRevisionPath(journalPath, backend.ControllerRevision)); readErr != nil || exists {
+		t.Fatalf("over-limit controller amendment left a record: exists=%t err=%v", exists, readErr)
+	}
+	backend.ControllerRevision = chain[len(chain)-1].ControllerRevision
 	// Resume rejects drift in the SSH identity, original request, and approval
 	// bytes before making another remote call.
 	if err := os.WriteFile(identityFile, []byte("post-amendment identity drift"), 0o600); err != nil {

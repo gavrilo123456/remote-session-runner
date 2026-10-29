@@ -26,7 +26,7 @@ const (
 	prdBootstrapPreviousController        = "309de02fca7bc8dcd608834df76e831a96d413d7"
 	prdBootstrapControllerUpdateFile      = "controller-update.json"
 	prdBootstrapControllerUpdatePrefix    = "controller-update-"
-	prdBootstrapMaxControllerUpdates      = 4
+	prdBootstrapMaxControllerUpdates      = 8
 )
 
 const prdBootstrapControllerUpdateFormat = 1
@@ -281,6 +281,9 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 				return PRDReplacementBootstrapControllerUpdate{}, errors.New("controller amendment retry differs from the recorded controller or non-controller inputs")
 			}
 			return last, nil
+		}
+		if len(chain) >= prdBootstrapMaxControllerUpdates {
+			return PRDReplacementBootstrapControllerUpdate{}, errors.New("controller amendment history reached its bounded limit")
 		}
 	}
 	if currentHostSHA == previousHostSHA || native.ControllerRevision == previousRevision {

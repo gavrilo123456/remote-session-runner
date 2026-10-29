@@ -1394,3 +1394,24 @@ validation, Git delivery of this correction, the supported controller
 amendment and bootstrap resume remain pending. The four-hour bound changes
 only fresh-install baseline preparation evidence; release approval expiry and
 per-host switch freshness remain separately enforced.
+
+### 2026-10-29 14:31 UTC — controller-history bound correction
+
+The supported retry after the `9696f8f` amendment failed before the Linux
+bootstrap RPC with `read controller amendment history: release workflow
+record is invalid or corrupted`. Inspection found five individually valid,
+linked owner-only controller records for this operation: the original
+amendment and four append-only successors. Their release, coordinator
+bindings, SSH/trust inputs and non-controller digest match; the reader's
+hard-coded maximum of four records rejected the valid chain. This was not a
+flock failure, and no lock-holder inspection or lock modification was needed.
+
+The controller correction raises the operation-specific maximum to eight and
+rejects a further append before writing it. The regression appends through the
+bound, verifies the complete chain, and confirms that a ninth record is not
+created. Focused releaseflow test passed; full Mac `make test vet build smoke`
+passed with exit `0`, log `/private/tmp/bug027-controller-chain-mac.log`,
+SHA-256 `18c9eaf5e091471a87871697e06cb44e29a97893911a03136b6186bb6860772a`.
+Git delivery and native replacement-Linux validation for this latest
+controller correction are pending. The sealed service release remains
+unchanged.

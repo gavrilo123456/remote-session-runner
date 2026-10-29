@@ -192,7 +192,9 @@ digest matches the coordinator journal, and atomically writes a separate
 owner-only amendment record. If another controller correction is needed
 before the coordinator advances, the supported command appends a new
 revision-named record linked to the latest amendment; prior records and the
-original journal remain unchanged. Resume validates the complete chain and
+original journal remain unchanged. The chain permits up to eight controller
+revisions for this one operation and refuses an additional amendment before
+writing it. Resume validates the complete chain and
 unchanged non-controller inputs. Retries with the same inputs return the
 existing record; changed request, approval, host profile, SSH identity,
 trust, release, predecessor, or certificate bindings are rejected. This is
