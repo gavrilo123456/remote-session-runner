@@ -1035,6 +1035,33 @@ the sealed service release remains unchanged. Git delivery and native Linux
 validation of this correction remain pending. No live bootstrap retry or PRD
 mutation has been made in this checkpoint.
 
+### 2026-10-29 12:23 UTC — controller correction delivered and Linux-validated
+
+The controller correction and its tests were committed on Mac `dev` as
+`43bedc7dd0a08ac4775a218c9b5570c9d0423dd7`. Primary Gitea accepted that commit;
+the automatic GitHub `dev` mirror resolved to the exact same SHA. The clean
+Ubuntu `dev` worktrees for replacement `linux-host` (`79.72.94.59`),
+`sandbox-host`, and `factory-sandbox` each fast-forwarded from
+`3e0e9ad536b20fd6dc8b49afcef099663f1eef01` and verified clean at
+`43bedc7dd0a08ac4775a218c9b5570c9d0423dd7` before validation.
+
+On replacement `linux-host`, Go 1.27.1 reported `linux/amd64` with
+`GOTOOLCHAIN=local`. At the synchronized commit, native checks passed:
+
+```text
+go test ./src/internal/releaseflow ./src/cmd/runner-lane ./src/cmd/runner-release -count=1  PASS
+go vet  ./src/internal/releaseflow ./src/cmd/runner-lane ./src/cmd/runner-release       PASS
+build runner-release and runner-lane to ~/.cache/remote-session-runner/controller-update-43bedc7 PASS
+both binaries --help and --version smoke                                               PASS
+```
+
+The remote checkout remained clean and on `dev`. No service, selector,
+configuration, database, mailbox, or receipt was changed. The native check is
+controller tooling validation, not service release acceptance. The separate
+sealed service release `rr-309de02fca-ddc84f50` remains unchanged. The
+controller amendment has not yet been written, and the existing bootstrap
+operation has not yet resumed.
+
 ### 2026-10-29 08:10 UTC — final Mac source gates after unit-retry change
 
 The new unit-creation test and installer retry branch changed source after
