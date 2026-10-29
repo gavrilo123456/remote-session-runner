@@ -1139,3 +1139,35 @@ amendment-chain, and runner-lane subprocess tests passed. No service release was
 changed. This latest directory correction still requires Git delivery and
 native Linux validation before retrying the live bootstrap; no further PRD
 namespace write has yet been attempted.
+
+### 2026-10-29 13:17 UTC — directory correction source gates
+
+The source revision is `d9363e7f339a00407ccef698ff172b50a70ca6b3`; it is
+committed on Mac `dev`, pushed to primary Gitea, mirrored to the exact same
+GitHub SHA, and fast-forwarded to the three required Ubuntu `dev` checkouts.
+The sealed service release `rr-309de02fca-ddc84f50` and its digest
+`4d650244e8dd9f08390cdb1619399ba40eb948f4db1adcc14f24ad6ff0bcf651` are
+unchanged.
+
+Source gates on this revision:
+
+| Host | Result |
+| --- | --- |
+| Mac (`darwin/arm64`, Go 1.27.1) | Full `make test`, `make vet build smoke`, focused bootstrap/amendment tests, formatting, and `git diff --check`: PASS. The first full test attempt was NOT PASS because a stale dated certificate fixture expired and the sandbox denied `/bin/ps`; the fixture was corrected and the full run passed with host-level process inspection. |
+| Factory (`linux/amd64`, Go 1.27.1, CGO=1) | Serialized `go test -p=1 ./... -count=1`: PASS. `make vet build smoke`: PASS. Full-test log SHA-256 `6f98bdd88b5dd9b9ff112d0bc75cd7fc382bed405af31e2581c3c7d6cfe0e7ca`; vet/build/smoke log SHA-256 `a852bfb96177adebe19e5196a18ead37b16ed1feccdbb8d53049d59bb011e230`. `TMPDIR`, `GOTMPDIR`, and `SQLITE_TMPDIR` were `/tmp`; it was a 4 GiB tmpfs by explicit owner instruction. A post-run observation measured 3,365,302,272 bytes free in `/tmp`. |
+| Sandbox (`linux/arm64`, Go 1.27.1) | Serialized `go test -p=1 ./... -count=1`: PASS, log SHA-256 `d0a1e02e34fd9029aefc301fff03e439db845d644323e4315b56fbd21fe113f3`. A separate `make vet build smoke` attempt was intentionally stopped by the 600,000,000-byte safety guard during `go build` at 554,979,328 bytes free. That sequence is NOT PASS; no cleanup of caches or host data was attempted. Latest measured root free space is 554,565,632 bytes. |
+| Replacement Linux (`linux/amd64`, Go 1.27.1) | Focused `laneinstall`, `releaseflow`, and `runner-lane` tests: PASS; exact P025 and P101 regression filters: PASS; native vet, `runner-release`/`runner-lane` builds, and help/version smoke: PASS. These are focused native checks, not a full Linux suite. |
+
+Two overlapping Factory full-suite attempts shared one log and were terminated
+after that overlap was detected; both are **NOT PASS**. Their preserved
+interleaved log copy is outside Git at
+`~/.cache/remote-session-runner/bug027-prd-bootstrap-d9363e7/full-test-overlap-not-pass.log`,
+SHA-256 `c0cbf35df425f78635b26467cfe436906344b56e3e9039410176110599370e98`.
+The successful serialized Factory run uses a separate clean log and is the only
+Factory full-suite PASS claimed above.
+
+These checks qualify the directory/controller source correction only. They do
+not constitute live Dev/QAS acceptance, PRD bootstrap, service installation,
+mailbox acceptance, or client resumption. The latest Sandbox vet/build/smoke
+result remains NOT PASS because its guard protected the remaining disk
+headroom; the historical Linux full-suite interruption remains NOT PASS.
