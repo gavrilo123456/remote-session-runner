@@ -18,6 +18,9 @@ func TestControllerAmendmentCanResumeAfterLinuxNamespaceReady(t *testing.T) {
 	}
 	release := testRelease()
 	now := time.Now().UTC().Truncate(time.Second)
+	saveTestRelease(t, store, release)
+	saveTestAcceptance(t, store, "dev", release, now)
+	saveTestAcceptance(t, store, "qas", release, now)
 	predecessors := make(map[string]string, len(HostOrder))
 	for _, host := range HostOrder {
 		predecessors[host] = digest([]byte("predecessor:" + host))
@@ -67,7 +70,20 @@ func TestControllerAmendmentCanResumeAfterLinuxNamespaceReady(t *testing.T) {
 		HostSet: append([]string(nil), HostOrder...), WindowStart: now.Add(-time.Minute).Format(time.RFC3339),
 		WindowEnd: now.Add(time.Hour).Format(time.RFC3339), Owner: "Tomasz Walczuk", Scope: "replacement PRD bootstrap",
 		PredecessorBundleSHA256: predecessors, BackupRecoveryPackageSHA256: digest([]byte("backup package"))}
-	approvalSHA := digest([]byte("exact approval bytes"))
+	approvalBytes, err := json.MarshalIndent(approval, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalBytes = append(approvalBytes, '\n')
+	approvalPath := filepath.Join(t.TempDir(), "approval.json")
+	if err := os.WriteFile(approvalPath, approvalBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	approvalSHA := digest(approvalBytes)
+	requestPath := filepath.Join(t.TempDir(), "request.json")
+	if err := os.WriteFile(requestPath, requestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	journal := PRDReplacementBootstrapCoordinatorJournal{
 		FormatVersion: prdReplacementCoordinatorJournalVersion, OperationID: request.OperationID,
 		ReleaseID: release.ID, ReleaseSHA256: release.Digest, RequestSHA256: digest(requestBytes),
@@ -82,19 +98,30 @@ func TestControllerAmendmentCanResumeAfterLinuxNamespaceReady(t *testing.T) {
 	if err := writePRDReplacementBootstrapCoordinatorJournal(path, journal); err != nil {
 		t.Fatal(err)
 	}
-	update, err := createPRDReplacementBootstrapControllerUpdate(native, store, request, digest(requestBytes), release,
-		approval, approvalSHA, request.PublisherOwner, request.PublisherControl, now.Add(time.Second))
-	if err != nil {
-		t.Fatalf("amend controller at exact linux_namespace_ready checkpoint: %v", err)
+	previousBackend := promotionBackendForTests
+	promotionBackendForTests = native
+	t.Cleanup(func() { promotionBackendForTests = previousBackend })
+	updateArgs := []string{"prd-bootstrap-controller-update", "--operation", request.OperationID,
+		"--request-file", requestPath, "--approval-file", approvalPath, "--publisher-owner", request.PublisherOwner,
+		"--publisher-control", request.PublisherControl, "--publishers-paused", "--no-new-accepted",
+		"--store-root", store.Root, "--json"}
+	var stdout, stderr strings.Builder
+	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 {
+		t.Fatalf("public controller-update command rejected exact linux_namespace_ready checkpoint: code=%d stderr=%s", code, stderr.String())
+	}
+	var update PRDReplacementBootstrapControllerUpdate
+	if err := json.Unmarshal([]byte(stdout.String()), &update); err != nil {
+		t.Fatalf("decode public controller-update result: %v", err)
 	}
 	if update.PreviousControllerRevision != prdBootstrapPreviousController || update.PreviousHostControlSHA256 != previousHostSHA ||
 		update.ControllerRevision != native.ControllerRevision || update.CoordinatorBindingsSHA256 != prdReplacementBootstrapStableBindingsSHA(journal) {
 		t.Fatalf("amendment did not preserve exact predecessor/controller/coordinator bindings: %+v", update)
 	}
-	retry, err := createPRDReplacementBootstrapControllerUpdate(native, store, request, digest(requestBytes), release,
-		approval, approvalSHA, request.PublisherOwner, request.PublisherControl, now.Add(2*time.Second))
-	if err != nil || !samePRDReplacementBootstrapControllerUpdate(update, retry) {
-		t.Fatalf("interrupted amendment retry was not idempotent: update=%+v retry=%+v err=%v", update, retry, err)
+	firstOutput := stdout.String()
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 || stdout.String() != firstOutput {
+		t.Fatalf("interrupted public amendment retry was not idempotent: code=%d stderr=%s", code, stderr.String())
 	}
 	if _, found, err := readPRDReplacementBootstrapControllerUpdate(prdReplacementBootstrapControllerUpdatePath(path)); err != nil || !found {
 		t.Fatalf("read durable controller amendment: %v", err)
@@ -107,8 +134,9 @@ func TestControllerAmendmentCanResumeAfterLinuxNamespaceReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	native.ControllerRevision = strings.Repeat("c", 40)
-	if _, err := createPRDReplacementBootstrapControllerUpdate(native, store, request, digest(requestBytes), release,
-		approval, approvalSHA, request.PublisherOwner, request.PublisherControl, now.Add(3*time.Second)); err == nil {
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code == 0 {
 		t.Fatal("controller amendment accepted changed non-controller SSH identity")
 	}
 	chain, found, err := readPRDReplacementBootstrapControllerUpdateChain(path, journal)
