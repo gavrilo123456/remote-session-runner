@@ -370,6 +370,23 @@ func eventDigest(e Event) (string, error) {
 }
 
 func ValidateApproval(a Approval, r Release, now time.Time) error {
+	if err := ValidateApprovalScope(a, r); err != nil {
+		return err
+	}
+	start, err1 := time.Parse(time.RFC3339, a.WindowStart)
+	end, err2 := time.Parse(time.RFC3339, a.WindowEnd)
+	if err1 != nil || err2 != nil || !end.After(start) || now.Before(start) || !now.Before(end) {
+		return ErrApprovalRequired
+	}
+	return nil
+}
+
+// ValidateApprovalScope checks immutable approval bindings without deciding
+// whether the approval's original time window is currently active. The
+// operation-specific replacement-bootstrap continuation uses this only to
+// retain the original approval identity while separately validating its
+// bounded continuation record.
+func ValidateApprovalScope(a Approval, r Release) error {
 	if a.FormatVersion != 1 || a.ReleaseID != r.ID || a.ReleaseSHA256 != r.Digest ||
 		a.Owner == "" || a.Scope == "" || !sameStrings(a.HostSet, HostOrder) ||
 		len(a.PredecessorBundleSHA256) != len(HostOrder) || !digestPattern.MatchString(a.BackupRecoveryPackageSHA256) {
@@ -382,7 +399,7 @@ func ValidateApproval(a Approval, r Release, now time.Time) error {
 	}
 	start, err1 := time.Parse(time.RFC3339, a.WindowStart)
 	end, err2 := time.Parse(time.RFC3339, a.WindowEnd)
-	if err1 != nil || err2 != nil || !end.After(start) || now.Before(start) || !now.Before(end) {
+	if err1 != nil || err2 != nil || !end.After(start) {
 		return ErrApprovalRequired
 	}
 	return nil

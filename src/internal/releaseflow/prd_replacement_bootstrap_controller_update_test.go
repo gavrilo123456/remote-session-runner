@@ -67,8 +67,8 @@ func TestControllerAmendmentCanResumeAfterLinuxNamespaceReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	approval := Approval{FormatVersion: 1, ReleaseID: release.ID, ReleaseSHA256: release.Digest,
-		HostSet: append([]string(nil), HostOrder...), WindowStart: now.Add(-time.Minute).Format(time.RFC3339),
-		WindowEnd: now.Add(time.Hour).Format(time.RFC3339), Owner: "Tomasz Walczuk", Scope: "replacement PRD bootstrap",
+		HostSet: append([]string(nil), HostOrder...), WindowStart: now.Add(-2 * time.Hour).Format(time.RFC3339),
+		WindowEnd: now.Add(-time.Minute).Format(time.RFC3339), Owner: "Tomasz Walczuk", Scope: "replacement PRD bootstrap",
 		PredecessorBundleSHA256: predecessors, BackupRecoveryPackageSHA256: digest([]byte("backup package"))}
 	approvalBytes, err := json.MarshalIndent(approval, "", "  ")
 	if err != nil {
@@ -98,13 +98,25 @@ func TestControllerAmendmentCanResumeAfterLinuxNamespaceReady(t *testing.T) {
 	if err := writePRDReplacementBootstrapCoordinatorJournal(path, journal); err != nil {
 		t.Fatal(err)
 	}
+	continuationPlan := continuationTestPlan(release, approval)
+	request.PublisherOwner, request.PublisherControl = journal.PublisherOwner, journal.PublisherControl
+	request.PublishersPaused, request.NoNewAccepted = true, true
+	continuation, _, err := createPRDReplacementBootstrapContinuation(native, store, request, digest(requestBytes), release,
+		approval, approvalSHA, journal.PublisherOwner, journal.PublisherControl, continuationPlan, now)
+	if err != nil {
+		t.Fatalf("prepare expired-approval continuation fixture: %v", err)
+	}
+	continuationPath, err := prdReplacementBootstrapContinuationPath(store.Root, request.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	previousBackend := promotionBackendForTests
 	promotionBackendForTests = native
 	t.Cleanup(func() { promotionBackendForTests = previousBackend })
 	updateArgs := []string{"prd-bootstrap-controller-update", "--operation", request.OperationID,
 		"--request-file", requestPath, "--approval-file", approvalPath, "--publisher-owner", request.PublisherOwner,
 		"--publisher-control", request.PublisherControl, "--publishers-paused", "--no-new-accepted",
-		"--store-root", store.Root, "--json"}
+		"--continuation-file", continuationPath, "--store-root", store.Root, "--json"}
 	var stdout, stderr strings.Builder
 	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 {
 		t.Fatalf("public controller-update command rejected exact linux_namespace_ready checkpoint: code=%d stderr=%s", code, stderr.String())
@@ -116,6 +128,9 @@ func TestControllerAmendmentCanResumeAfterLinuxNamespaceReady(t *testing.T) {
 	if update.PreviousControllerRevision != prdBootstrapPreviousController || update.PreviousHostControlSHA256 != previousHostSHA ||
 		update.ControllerRevision != native.ControllerRevision || update.CoordinatorBindingsSHA256 != prdReplacementBootstrapStableBindingsSHA(journal) {
 		t.Fatalf("amendment did not preserve exact predecessor/controller/coordinator bindings: %+v", update)
+	}
+	if continuation.OriginalApprovalSHA256 != approvalSHA || continuation.CoordinatorBindingsSHA256 != update.CoordinatorBindingsSHA256 {
+		t.Fatalf("expired-approval continuation lost its original release-bound identity: %+v", continuation)
 	}
 	firstOutput := stdout.String()
 	stdout.Reset()

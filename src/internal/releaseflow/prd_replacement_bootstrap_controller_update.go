@@ -214,13 +214,13 @@ func prdReplacementBootstrapNonControllerInputsSHA(profile HostProfile, serverHo
 }
 
 func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBackend, store *Store, request laneinstall.PRDReplacementBootstrapRequest,
-	requestSHA string, release Release, approval Approval, approvalSHA, publisherOwner, publisherControl string, now time.Time) (PRDReplacementBootstrapControllerUpdate, error) {
+	requestSHA string, release Release, approval Approval, approvalSHA, publisherOwner, publisherControl, continuationFile string, now time.Time) (PRDReplacementBootstrapControllerUpdate, error) {
 	if native == nil || store == nil || request.OperationID != prdBootstrapControllerUpdateOperation ||
 		request.ReleaseID != release.ID || request.ExpectedReleaseSHA256 != release.Digest || requestSHA == "" ||
 		approvalSHA == "" || strings.TrimSpace(publisherOwner) == "" || strings.TrimSpace(publisherControl) == "" ||
 		!request.PublishersPaused || !request.NoNewAccepted || request.ApprovalSHA256 != "" || request.ServerCSR256 != "" ||
 		len(request.ServerCertificatePEM) != 0 || len(request.ServerCAPEM) != 0 || now.IsZero() ||
-		ValidateApproval(approval, release, now) != nil {
+		ValidateApprovalScope(approval, release) != nil {
 		return PRDReplacementBootstrapControllerUpdate{}, ErrInvalidInput
 	}
 	profile, ok := native.Config.Hosts["linux-host"]
@@ -242,6 +242,24 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 	journal, exists, err := readPRDReplacementBootstrapCoordinatorJournal(path)
 	if err != nil || !exists {
 		return PRDReplacementBootstrapControllerUpdate{}, errors.Join(ErrOperationCorrupted, err)
+	}
+	if ValidateApproval(approval, release, now) != nil {
+		continuationPath, pathErr := prdReplacementBootstrapContinuationPath(store.Root, request.OperationID)
+		if pathErr != nil || continuationFile != continuationPath {
+			return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("expired bootstrap approval requires the operation's supported continuation record: %w", ErrApprovalRequired)
+		}
+		continuation, found, readErr := readPRDReplacementBootstrapContinuation(continuationPath)
+		if readErr != nil || !found {
+			return PRDReplacementBootstrapControllerUpdate{}, errors.Join(ErrApprovalRequired, readErr)
+		}
+		currentHostControlSHA, hostErr := replacementBootstrapHostControlSHA(native, profile, request.SSHHostPublicKey, knownHostOutput)
+		if hostErr != nil {
+			return PRDReplacementBootstrapControllerUpdate{}, hostErr
+		}
+		if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, requestSHA, release, approval,
+			approvalSHA, publisherOwner, publisherControl, native.ControllerRevision, currentHostControlSHA, now.UTC()); err != nil {
+			return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("validate bootstrap continuation: %w", err)
+		}
 	}
 	if fields := bootstrapCoordinatorIdentityMismatches(journal, request, requestSHA, release, approvalSHA,
 		approval, publisherOwner, publisherControl); len(fields) != 0 {
@@ -407,6 +425,7 @@ func runPRDReplacementBootstrapControllerUpdateCLI(args []string, stdout, stderr
 	operationID := flags.String("operation", "", "the one authorized replacement bootstrap operation")
 	requestFile := flags.String("request-file", "", "owner-only original bootstrap request JSON")
 	approvalFile := flags.String("approval-file", "", "same release-bound PRD approval used to create the coordinator journal")
+	continuationFile := flags.String("continuation-file", "", "append-only one-time continuation for the exact expired bootstrap approval")
 	hostsFile := flags.String("hosts-file", "", "owner-only host control configuration")
 	storeRoot := flags.String("store-root", "", "existing release workflow root")
 	publisherOwner := flags.String("publisher-owner", "", "same confirmed PRD publisher-pause owner")
@@ -419,7 +438,7 @@ func runPRDReplacementBootstrapControllerUpdateCLI(args []string, stdout, stderr
 	}
 	if flags.NArg() != 0 || *operationID != prdBootstrapControllerUpdateOperation || *requestFile == "" || *approvalFile == "" ||
 		strings.TrimSpace(*publisherOwner) == "" || strings.TrimSpace(*publisherControl) == "" || !*publishersPaused || !*noNewAccepted {
-		fmt.Fprintln(stderr, "usage: runner-release prd-bootstrap-controller-update --operation 02bfdc603d2ea3360ecd32501fe347d1 --request-file OWNER-ONLY-JSON --approval-file FILE --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--hosts-file FILE] [--store-root DIR] [--json]")
+		fmt.Fprintln(stderr, "usage: runner-release prd-bootstrap-controller-update --operation 02bfdc603d2ea3360ecd32501fe347d1 --request-file OWNER-ONLY-JSON --approval-file FILE --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--continuation-file FILE] [--hosts-file FILE] [--store-root DIR] [--json]")
 		return 2
 	}
 	if *hostsFile == "" {
@@ -462,7 +481,7 @@ func runPRDReplacementBootstrapControllerUpdateCLI(args []string, stdout, stderr
 		return 3
 	}
 	approval, approvalSHA, err := readApprovalFile(*approvalFile)
-	if err != nil || ValidateApproval(approval, release, time.Now()) != nil {
+	if err != nil || ValidateApprovalScope(approval, release) != nil {
 		fmt.Fprintln(stderr, ErrApprovalRequired)
 		return 3
 	}
@@ -488,7 +507,7 @@ func runPRDReplacementBootstrapControllerUpdateCLI(args []string, stdout, stderr
 	err = store.WithLaneLock("prd", func() error {
 		var updateErr error
 		record, updateErr = createPRDReplacementBootstrapControllerUpdate(native, store, request, digest(requestBytes), release,
-			approval, approvalSHA, strings.TrimSpace(*publisherOwner), strings.TrimSpace(*publisherControl), time.Now().UTC())
+			approval, approvalSHA, strings.TrimSpace(*publisherOwner), strings.TrimSpace(*publisherControl), *continuationFile, time.Now().UTC())
 		if updateErr != nil {
 			return fmt.Errorf("record PRD bootstrap controller amendment: %w", updateErr)
 		}

@@ -327,6 +327,7 @@ func (b *NativePromotionBackend) Plan(ctx context.Context, lane string, release 
 		if selected.FreshInstall != nil {
 			baseline.FreshInstallEvidenceSHA256 = selected.FreshInstall.EvidenceSHA256
 			baseline.FreshInstallAbsenceSHA256 = selected.FreshInstall.Absence.EvidenceSHA256
+			baseline.FreshInstallOperationID = selected.FreshInstall.OperationID
 		}
 		baseline.AvailableBytes, baseline.RequiredBytes = selected.AvailableBytes, selected.RequiredBytes
 		baseline.CapacityVerified = selected.AvailableBytes >= selected.RequiredBytes

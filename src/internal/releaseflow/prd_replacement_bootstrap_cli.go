@@ -16,8 +16,8 @@ import (
 
 func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotionBackend, workflowStore *Store,
 	release Release, approval Approval, approvalSHA, requestSHA string,
-	request laneinstall.PRDReplacementBootstrapRequest) (laneinstall.PRDReplacementBootstrapResult, error) {
-	if native == nil || workflowStore == nil || ValidateApproval(approval, release, time.Now()) != nil ||
+	request laneinstall.PRDReplacementBootstrapRequest, continuationFile string) (laneinstall.PRDReplacementBootstrapResult, error) {
+	if native == nil || workflowStore == nil || ValidateApprovalScope(approval, release) != nil ||
 		request.OperationID == "" || request.ReleaseID != release.ID || request.ExpectedReleaseSHA256 != release.Digest ||
 		request.ApprovalSHA256 != "" || request.ServerCSR256 != "" || len(request.ServerCertificatePEM) != 0 ||
 		len(request.ServerCAPEM) != 0 || !request.PublishersPaused || !request.NoNewAccepted ||
@@ -48,6 +48,23 @@ func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotion
 	journal, exists, err := readPRDReplacementBootstrapCoordinatorJournal(path)
 	if err != nil {
 		return laneinstall.PRDReplacementBootstrapResult{}, err
+	}
+	if ValidateApproval(approval, release, time.Now()) != nil {
+		if !exists {
+			return laneinstall.PRDReplacementBootstrapResult{}, ErrApprovalRequired
+		}
+		continuationPath, pathErr := prdReplacementBootstrapContinuationPath(workflowStore.Root, request.OperationID)
+		if pathErr != nil || continuationFile != continuationPath {
+			return laneinstall.PRDReplacementBootstrapResult{}, fmt.Errorf("expired bootstrap approval requires the operation's supported continuation record: %w", ErrApprovalRequired)
+		}
+		continuation, found, readErr := readPRDReplacementBootstrapContinuation(continuationPath)
+		if readErr != nil || !found {
+			return laneinstall.PRDReplacementBootstrapResult{}, errors.Join(ErrApprovalRequired, readErr)
+		}
+		if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, requestSHA, release, approval,
+			approvalSHA, request.PublisherOwner, request.PublisherControl, native.ControllerRevision, hostControlSHA, time.Now().UTC()); err != nil {
+			return laneinstall.PRDReplacementBootstrapResult{}, fmt.Errorf("validate bootstrap continuation: %w", err)
+		}
 	}
 	var plan PromotionPlan
 	if exists {

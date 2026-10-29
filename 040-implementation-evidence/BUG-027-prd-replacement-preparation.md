@@ -1523,3 +1523,45 @@ append-only approval mechanism. After Mac route completion, create a fresh
 PRD plan and approval tied to the changed configuration, backups, rollback,
 and work inventories. PRD is not deployed, accepted, or open for client
 resumption.
+
+## 2026-10-29 — operation-specific bootstrap continuation implementation
+
+The owner approved one append-only four-hour continuation for the expired
+Mac-route stage of bootstrap operation
+`02bfdc603d2ea3360ecd32501fe347d1`. The original approval file and its SHA-256
+`e6cfd2a34957bda938056b6e32b0ee6cc8ac5d79b9ee289378d88dc4696d5ac9` remain
+unchanged. The continuation cannot authorize PRD cohort deployment; that stage
+still requires a fresh plan and release-bound approval after the Mac route
+changes configuration.
+
+The new public `runner-release prd-bootstrap-window-continue` command is
+limited to this operation and release. It captures a fresh read-only PRD plan,
+checks all four work inventories and capacity, requires the replacement Linux
+namespace to be stopped with the exact operation's fresh-install baseline,
+and checks the existing Mac/Sandbox/Factory selectors against the original
+predecessor hashes. It publishes one mode-`0600`, immutable continuation record
+containing the plan digest, original approval digest, request/release bindings,
+controller and SSH/trust identities, owner, exact route-only scope, and a
+four-hour window beginning after the preflight. It refuses an active original
+approval, a different operation, changed bindings, nonempty work, insufficient
+capacity, an existing hold, or a second/conflicting record. Bootstrap resume
+and controller amendment accept an expired original approval only when this
+exact record is current and valid; the journal's original approval SHA and
+history are not rewritten. Ordinary PRD promotion continues to require a
+currently valid release-bound approval.
+
+The controller plan now carries the fresh-install baseline's operation ID so
+the continuation proves that the unselected replacement namespace belongs to
+this bootstrap. The sealed service release `rr-309de02fca-ddc84f50` and all
+service bundle bytes remain unchanged.
+
+Regressions cover public-command authorization, exact immutable retry, failed
+preflight without record changes, expiry at the exclusive end, original
+approval preservation, controller amendment with the expired approval, and
+resumption through the same Linux-ready operation into the Mac-route stage.
+Focused releaseflow tests and Mac `make test vet build smoke` passed with Go
+1.27.1; final full-gate log SHA-256:
+`ea65287e2539c38d6eba059ed8942a18c74c76dafcc06e7f9a07482809e379d0`.
+No continuation record or new window has been issued yet. Git delivery,
+native Linux validation, final controller build, fresh operational preflight,
+and live Mac-route completion remain pending.

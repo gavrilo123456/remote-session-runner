@@ -41,6 +41,7 @@ type HostObservation struct {
 	NamespaceAbsenceSHA256     string                                     `json:"namespace_absence_evidence_sha256,omitempty"`
 	FreshInstallEvidenceSHA256 string                                     `json:"fresh_install_evidence_sha256,omitempty"`
 	FreshInstallAbsenceSHA256  string                                     `json:"fresh_install_absence_evidence_sha256,omitempty"`
+	FreshInstallOperationID    string                                     `json:"fresh_install_operation_id,omitempty"`
 	SelectedReleaseID          string                                     `json:"selected_release_id"`
 	SelectedBundleSHA          string                                     `json:"selected_bundle_sha256"`
 	SelectorOperation          string                                     `json:"selector_operation_id,omitempty"`
