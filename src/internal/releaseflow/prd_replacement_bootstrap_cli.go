@@ -50,6 +50,28 @@ func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotion
 	if err != nil {
 		return laneinstall.PRDReplacementBootstrapResult{}, err
 	}
+	if exists && continuationFile != "" {
+		renewalPath, pathErr := prdReplacementBootstrapWindowRenewalPath(workflowStore.Root, request.OperationID)
+		if pathErr != nil {
+			return laneinstall.PRDReplacementBootstrapResult{}, pathErr
+		}
+		renewal, renewalFound, renewalErr := readPRDReplacementBootstrapWindowRenewal(renewalPath)
+		if renewalErr != nil {
+			return laneinstall.PRDReplacementBootstrapResult{}, renewalErr
+		}
+		if renewalFound {
+			var freshPlan PromotionPlan
+			if prdBootstrapPlanForTests != nil {
+				freshPlan, err = prdBootstrapPlanForTests(ctx, native, release, approvalSHA)
+			} else {
+				freshPlan, err = native.Plan(ctx, "prd", release, approvalSHA)
+			}
+			if err != nil || !samePRDBootstrapRenewalPlanIdentity(renewal.PreflightPlan, freshPlan) {
+				return laneinstall.PRDReplacementBootstrapResult{}, errors.Join(
+					fmt.Errorf("fresh PRD bootstrap renewal preflight no longer matches work, capacity, selector, configuration, schema, or stopped-service evidence: %w", ErrApprovalRequired), err)
+			}
+		}
+	}
 	if ValidateApproval(approval, release, time.Now()) != nil {
 		if !exists {
 			return laneinstall.PRDReplacementBootstrapResult{}, ErrApprovalRequired
@@ -63,7 +85,7 @@ func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotion
 			return laneinstall.PRDReplacementBootstrapResult{}, errors.Join(ErrApprovalRequired, readErr)
 		}
 		if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, requestSHA, release, approval,
-			approvalSHA, request.PublisherOwner, request.PublisherControl, native.ControllerRevision, hostControlSHA, time.Now().UTC()); err != nil {
+			approvalSHA, request.PublisherOwner, request.PublisherControl, native.ControllerRevision, hostControlSHA, workflowStore.Root, time.Now().UTC()); err != nil {
 			return laneinstall.PRDReplacementBootstrapResult{}, fmt.Errorf("validate bootstrap continuation: %w", err)
 		}
 	}
@@ -77,7 +99,7 @@ func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotion
 		continuationBytes, bytesErr := os.ReadFile(continuationPath)
 		if readErr != nil || bytesErr != nil || !found ||
 			validatePRDReplacementBootstrapContinuation(continuation, journal, request, requestSHA, release, approval,
-				approvalSHA, request.PublisherOwner, request.PublisherControl, native.ControllerRevision, hostControlSHA, time.Now().UTC()) != nil {
+				approvalSHA, request.PublisherOwner, request.PublisherControl, native.ControllerRevision, hostControlSHA, workflowStore.Root, time.Now().UTC()) != nil {
 			return laneinstall.PRDReplacementBootstrapResult{}, errors.Join(ErrApprovalRequired, readErr, bytesErr)
 		}
 		continuationRecordSHA = digest(continuationBytes)

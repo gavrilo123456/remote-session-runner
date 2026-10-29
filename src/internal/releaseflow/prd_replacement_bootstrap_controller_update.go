@@ -243,37 +243,12 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 	if err != nil || !exists {
 		return PRDReplacementBootstrapControllerUpdate{}, errors.Join(ErrOperationCorrupted, err)
 	}
-	if ValidateApproval(approval, release, now) != nil {
-		continuationPath, pathErr := prdReplacementBootstrapContinuationPath(store.Root, request.OperationID)
-		if pathErr != nil || continuationFile != continuationPath {
-			return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("expired bootstrap approval requires the operation's supported continuation record: %w", ErrApprovalRequired)
-		}
-		continuation, found, readErr := readPRDReplacementBootstrapContinuation(continuationPath)
-		if readErr != nil || !found {
-			return PRDReplacementBootstrapControllerUpdate{}, errors.Join(ErrApprovalRequired, readErr)
-		}
-		currentHostControlSHA, hostErr := replacementBootstrapHostControlSHA(native, profile, request.SSHHostPublicKey, knownHostOutput)
-		if hostErr != nil {
-			return PRDReplacementBootstrapControllerUpdate{}, hostErr
-		}
-		if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, requestSHA, release, approval,
-			approvalSHA, publisherOwner, publisherControl, native.ControllerRevision, currentHostControlSHA, now.UTC()); err != nil {
-			return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("validate bootstrap continuation: %w", err)
-		}
-	}
-	if fields := bootstrapCoordinatorIdentityMismatches(journal, request, requestSHA, release, approvalSHA,
-		approval, publisherOwner, publisherControl); len(fields) != 0 {
-		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: coordinator fields differ: %s", strings.Join(fields, ", "))
-	}
-	if !prdReplacementBootstrapControllerUpdateCheckpointAllowed(journal) || !shaPattern.MatchString(native.ControllerRevision) {
-		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment requires server_material_ready or the exact linux_namespace_ready checkpoint with no Mac route journal")
-	}
-	chain, found, err := readPRDReplacementBootstrapControllerUpdateChain(path, journal)
+	chain, chainFound, err := readPRDReplacementBootstrapControllerUpdateChain(path, journal)
 	if err != nil {
 		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("read controller amendment history: %w", err)
 	}
 	previousRevision, previousHostControlSHA := prdBootstrapPreviousController, journal.HostControlSHA256
-	if found {
+	if chainFound {
 		last := chain[len(chain)-1]
 		previousRevision, previousHostControlSHA = last.ControllerRevision, last.HostControlSHA256
 	}
@@ -287,11 +262,36 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 	if err != nil {
 		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: current controller host-control identity is invalid")
 	}
+	if ValidateApproval(approval, release, now) != nil {
+		continuationPath, pathErr := prdReplacementBootstrapContinuationPath(store.Root, request.OperationID)
+		if pathErr != nil || continuationFile != continuationPath {
+			return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("expired bootstrap approval requires the operation's supported continuation record: %w", ErrApprovalRequired)
+		}
+		continuation, continuationFound, readErr := readPRDReplacementBootstrapContinuation(continuationPath)
+		if readErr != nil || !continuationFound {
+			return PRDReplacementBootstrapControllerUpdate{}, errors.Join(ErrApprovalRequired, readErr)
+		}
+		validationRevision, validationHostControlSHA := native.ControllerRevision, currentHostSHA
+		if chainFound {
+			validationRevision, validationHostControlSHA = previousRevision, previousHostControlSHA
+		}
+		if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, requestSHA, release, approval,
+			approvalSHA, publisherOwner, publisherControl, validationRevision, validationHostControlSHA, store.Root, now.UTC()); err != nil {
+			return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("validate bootstrap continuation: %w", err)
+		}
+	}
+	if fields := bootstrapCoordinatorIdentityMismatches(journal, request, requestSHA, release, approvalSHA,
+		approval, publisherOwner, publisherControl); len(fields) != 0 {
+		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: coordinator fields differ: %s", strings.Join(fields, ", "))
+	}
+	if !prdReplacementBootstrapControllerUpdateCheckpointAllowed(journal) || !shaPattern.MatchString(native.ControllerRevision) {
+		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment requires server_material_ready or the exact linux_namespace_ready checkpoint with no Mac route journal")
+	}
 	nonControllerSHA, err := prdReplacementBootstrapNonControllerInputsSHA(profile, request.SSHHostPublicKey, knownHostOutput)
 	if err != nil {
 		return PRDReplacementBootstrapControllerUpdate{}, err
 	}
-	if found {
+	if chainFound {
 		last := chain[len(chain)-1]
 		if native.ControllerRevision == last.ControllerRevision {
 			if currentHostSHA != last.HostControlSHA256 || nonControllerSHA != last.NonControllerInputsSHA256 {
@@ -315,7 +315,7 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 		RecordedAtUTC:             now.UTC().Format(time.RFC3339Nano),
 	}
 	updatePath := prdReplacementBootstrapControllerUpdatePath(path)
-	if found {
+	if chainFound {
 		updatePath = prdReplacementBootstrapControllerUpdateRevisionPath(path, native.ControllerRevision)
 	}
 	if previous, found, readErr := readPRDReplacementBootstrapControllerUpdate(updatePath); readErr != nil {

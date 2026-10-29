@@ -141,7 +141,7 @@ func TestPublicPRDBootstrapWindowContinuationIsBoundedAndImmutable(t *testing.T)
 	}
 	if err := validatePRDReplacementBootstrapContinuation(record, journal, request, digest(requestBytes), release,
 		approval, digest(approvalBytes), approval.Owner, journal.PublisherControl, native.ControllerRevision,
-		record.HostControlSHA256, end); err == nil {
+		record.HostControlSHA256, store.Root, end); err == nil {
 		t.Fatal("expired continuation remained valid at its exclusive end time")
 	}
 
@@ -161,6 +161,195 @@ func TestPublicPRDBootstrapWindowContinuationIsBoundedAndImmutable(t *testing.T)
 		t.Fatalf("failed preflight modified immutable continuation: err=%v", readErr)
 	}
 	_ = identityPath
+}
+
+func TestPublicPRDBootstrapWindowRenewalAppendsExactDeadlineWithoutRewritingHistory(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "workflow"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := testRelease()
+	release.ID = prdBootstrapWindowRenewalRelease
+	bundles := make([]Bundle, 0, len(HostOrder))
+	for _, host := range HostOrder {
+		bundles = append(bundles, release.Bundles[host])
+	}
+	release.Digest, err = CanonicalReleaseDigest(release.ID, release.Source.Commit, release.Toolchain, bundles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release.ProvenanceSHA = digest(testProvenanceBytes(release))
+	saveTestRelease(t, store, release)
+	base := time.Date(2026, 10, 29, 23, 20, 0, 0, time.UTC)
+	deadline, _ := time.Parse(time.RFC3339, prdBootstrapWindowRenewalDeadline)
+	renewalTime := deadline.Add(-30 * time.Minute)
+	saveTestAcceptance(t, store, "dev", release, base)
+	saveTestAcceptance(t, store, "qas", release, base)
+	approval := continuationTestApproval(release, base)
+	approvalBytes, err := json.MarshalIndent(approval, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalBytes = append(approvalBytes, '\n')
+	approvalPath := filepath.Join(t.TempDir(), "approval.json")
+	if err := os.WriteFile(approvalPath, approvalBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := laneinstall.PRDReplacementBootstrapRequest{OperationID: prdBootstrapContinuationOperation,
+		TemplateHostID: "sandbox-host", ReleaseID: release.ID, ExpectedReleaseSHA256: release.Digest,
+		SSHHostPublicKey: releaseflowTestPublicKey("replacement-window-renewal"), PublishersPaused: true, NoNewAccepted: true,
+		PublisherOwner: approval.Owner, PublisherControl: "owner-confirmed PRD clients paused"}
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestPath := filepath.Join(t.TempDir(), "request.json")
+	if err := os.WriteFile(requestPath, requestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profile, knownHost, _, knownHostsPath := continuationTestProfile(t, request)
+	native := &NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{"linux-host": profile}},
+		ControllerRevision: strings.Repeat("b", 40)}
+	previousBackend := promotionBackendForTests
+	previousPlan := prdBootstrapContinuationPlanForTests
+	previousKeys := prdBootstrapHostKeysForTests
+	previousClock := prdBootstrapWindowRenewalNowForTests
+	promotionBackendForTests = native
+	plan := continuationTestPlan(release, approval)
+	prdBootstrapContinuationPlanForTests = func(_ context.Context, got *NativePromotionBackend, gotRelease Release, approvalSHA string) (PromotionPlan, error) {
+		if got != native || gotRelease.ID != release.ID || approvalSHA != digest(approvalBytes) {
+			t.Fatalf("renewal preflight was not bound to the operation inputs")
+		}
+		return plan, nil
+	}
+	prdBootstrapHostKeysForTests = func(host, path string) ([]byte, error) {
+		if host != "79.72.94.59" || path != knownHostsPath {
+			t.Fatalf("renewal used unexpected host trust input")
+		}
+		return knownHost, nil
+	}
+	prdBootstrapWindowRenewalNowForTests = func() time.Time { return renewalTime }
+	t.Cleanup(func() {
+		promotionBackendForTests, prdBootstrapContinuationPlanForTests = previousBackend, previousPlan
+		prdBootstrapHostKeysForTests, prdBootstrapWindowRenewalNowForTests = previousKeys, previousClock
+	})
+	originalBackend := *native
+	originalBackend.ControllerRevision = prdBootstrapPreviousController
+	originalHostSHA, err := replacementBootstrapHostControlSHA(&originalBackend, profile, request.SSHHostPublicKey, knownHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalPath, err := prdReplacementBootstrapCoordinatorJournalPath(store.Root, request.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := continuationTestJournal(request, requestBytes, release, approval, approvalBytes, originalHostSHA, base)
+	if err := writePRDReplacementBootstrapCoordinatorJournal(journalPath, journal); err != nil {
+		t.Fatal(err)
+	}
+	prdBootstrapHostKeysForTests("79.72.94.59", profile.KnownHostsFile)
+	continuation, _, err := createPRDReplacementBootstrapContinuation(native, store, request, digest(requestBytes), release,
+		approval, digest(approvalBytes), approval.Owner, request.PublisherControl, plan, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuationPath, err := prdReplacementBootstrapContinuationPath(store.Root, request.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createPRDReplacementBootstrapControllerUpdate(native, store, request, digest(requestBytes), release,
+		approval, digest(approvalBytes), approval.Owner, request.PublisherControl, continuationPath, base.Add(time.Minute)); err != nil {
+		currentSHA, _ := replacementBootstrapHostControlSHA(native, profile, request.SSHHostPublicKey, knownHost)
+		t.Fatalf("prepare final controller binding before renewal: %v (continuation=%s/%s current=%s/%s)", err,
+			continuation.ControllerRevision, continuation.HostControlSHA256, native.ControllerRevision, currentSHA)
+	}
+	native.ControllerRevision = strings.Repeat("c", 40)
+	if _, err := createPRDReplacementBootstrapControllerUpdate(native, store, request, digest(requestBytes), release,
+		approval, digest(approvalBytes), approval.Owner, request.PublisherControl, continuationPath, base.Add(2*time.Minute)); err != nil {
+		t.Fatalf("append controller correction while preserving the earlier continuation binding: %v", err)
+	}
+	continuationBefore := mustRead(t, continuationPath)
+	approvalBefore := mustRead(t, approvalPath)
+	args := []string{"prd-bootstrap-window-renew", "--operation", request.OperationID, "--request-file", requestPath,
+		"--approval-file", approvalPath, "--publisher-owner", approval.Owner, "--publisher-control", request.PublisherControl,
+		"--publishers-paused", "--no-new-accepted", "--owner-authorized-deadline", prdBootstrapWindowRenewalDeadline,
+		"--store-root", store.Root, "--json"}
+	var stdout, stderr strings.Builder
+	if code := RunAdminCLI(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("public renewal command failed: code=%d stderr=%s", code, stderr.String())
+	}
+	firstOutput := stdout.String()
+	var result prdBootstrapWindowRenewalResult
+	if err := json.Unmarshal([]byte(firstOutput), &result); err != nil || result.OperationID != request.OperationID ||
+		result.ReleaseID != release.ID || result.RecordPath == continuationPath ||
+		result.PreviousDeadlineUTC != continuation.WindowEndUTC || result.AuthorizedDeadlineUTC != prdBootstrapWindowRenewalDeadline {
+		t.Fatalf("renewal result was not bound to the original operation: %+v err=%v", result, err)
+	}
+	renewal, found, err := readPRDReplacementBootstrapWindowRenewal(result.RecordPath)
+	if err != nil || !found || result.RecordSHA256 != digest(mustRead(t, result.RecordPath)) ||
+		renewal.ContinuationSHA256 != digest(continuationBefore) || renewal.ControllerRevision != native.ControllerRevision {
+		t.Fatalf("append-only renewal record was not verified: found=%t record=%+v err=%v", found, renewal, err)
+	}
+	info, err := os.Stat(result.RecordPath)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("renewal record is not owner-only: info=%v err=%v", info, err)
+	}
+	if !bytes.Equal(continuationBefore, mustRead(t, continuationPath)) || !bytes.Equal(approvalBefore, mustRead(t, approvalPath)) {
+		t.Fatal("renewal rewrote the original continuation or approval")
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(args, &stdout, &stderr); code != 0 || stdout.String() != firstOutput {
+		t.Fatalf("exact renewal retry changed the append-only record: code=%d stderr=%s", code, stderr.String())
+	}
+	if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, digest(requestBytes), release,
+		approval, digest(approvalBytes), approval.Owner, request.PublisherControl, native.ControllerRevision,
+		renewal.HostControlSHA256, store.Root, deadline.Add(-time.Second)); err != nil {
+		t.Fatalf("renewed continuation was not valid before the authorized deadline: %v", err)
+	}
+	if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, digest(requestBytes), release,
+		approval, digest(approvalBytes), approval.Owner, request.PublisherControl, native.ControllerRevision,
+		renewal.HostControlSHA256, store.Root, deadline); err == nil {
+		t.Fatal("renewal remained valid at its exclusive deadline")
+	}
+	changed := renewal
+	changed.AuthorizedDeadlineUTC = deadline.Add(time.Second).Format(time.RFC3339)
+	if validatePRDReplacementBootstrapWindowRenewalShape(changed) == nil {
+		t.Fatal("renewal accepted a deadline outside the exact owner authorization")
+	}
+	macRunning := plan
+	macRunning.HostBaselines = append([]HostObservation(nil), plan.HostBaselines...)
+	for index := range macRunning.HostBaselines {
+		if macRunning.HostBaselines[index].HostID == "mac-control-plane" {
+			macRunning.HostBaselines[index].ServiceStopped = false
+		}
+	}
+	if prdBootstrapContinuationPlanValid(macRunning, release.ID, release.Digest, &approval) {
+		t.Fatal("renewal preflight accepted a running Mac PRD service")
+	}
+	badPlan := plan
+	badPlan.HostBaselines = append([]HostObservation(nil), plan.HostBaselines...)
+	badPlan.HostBaselines[1].WorkInventoryEmpty = false
+	prdBootstrapContinuationPlanForTests = func(context.Context, *NativePromotionBackend, Release, string) (PromotionPlan, error) {
+		return badPlan, nil
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(args, &stdout, &stderr); code == 0 {
+		t.Fatal("idempotent renewal retry accepted a changed work inventory")
+	}
+	previousBootstrapPlan := prdBootstrapPlanForTests
+	t.Cleanup(func() { prdBootstrapPlanForTests = previousBootstrapPlan })
+	prdBootstrapPlanForTests = func(context.Context, *NativePromotionBackend, Release, string) (PromotionPlan, error) {
+		return badPlan, nil
+	}
+	if _, err := executePRDReplacementBootstrap(context.Background(), native, store, release, approval, digest(approvalBytes),
+		digest(requestBytes), request, continuationPath); err == nil {
+		t.Fatal("bootstrap resume accepted changed work after renewal without a fresh matching preflight")
+	}
+	if !bytes.Equal(continuationBefore, mustRead(t, continuationPath)) || !bytes.Equal(approvalBefore, mustRead(t, approvalPath)) {
+		t.Fatal("rejected changed-state retry modified approval or continuation history")
+	}
 }
 
 func TestExpiredBootstrapResumesSameOperationThroughMacRouteContinuation(t *testing.T) {
@@ -363,6 +552,9 @@ func continuationTestPlan(release Release, approval Approval) PromotionPlan {
 			baseline.FreshInstallBootstrapBundleSHA256 = release.Bundles[host].SHA256
 			baseline.FreshInstallBootstrapJournalSHA256 = digest([]byte("bootstrap journal"))
 		} else {
+			if host == "mac-control-plane" {
+				baseline.ServiceStopped = true
+			}
 			baseline.SelectedReleaseID = "cat-20261029-abcdef0"
 			baseline.SelectedBundleSHA = approval.PredecessorBundleSHA256[host]
 		}
