@@ -11,7 +11,11 @@ import (
 )
 
 func TestPRDReplacementServerCSRIsPrivateDurableAndIdempotent(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "operations")
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatalf("make task-owned temp parent private: %v", err)
+	}
+	root := filepath.Join(parent, "operations")
 	operationID := "0123456789abcdef0123456789abcdef"
 	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
 	first, err := preparePRDReplacementServerCSRAt(root, operationID, now)
@@ -47,7 +51,11 @@ func TestPRDReplacementServerCSRIsPrivateDurableAndIdempotent(t *testing.T) {
 }
 
 func TestPRDReplacementServerCSRRejectsPartialOperationDirectory(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "operations")
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatalf("make task-owned temp parent private: %v", err)
+	}
+	root := filepath.Join(parent, "operations")
 	operationID := "abcdefabcdefabcdefabcdefabcdefab"
 	partial := filepath.Join(root, "server-csr", operationID)
 	if err := os.MkdirAll(partial, 0o700); err != nil {

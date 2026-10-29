@@ -269,7 +269,16 @@ func TestLanesL306NativePeerEvidence(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Setenv("TMPDIR", "/private/tmp")
 	}
-	path := filepath.Join(t.TempDir(), "peer.sock")
+	// testing.TempDir adds the test name and a numbered child, which can push
+	// AF_UNIX socket paths past the platform limit on hosts using a task-owned
+	// temporary root. Create a short task-owned directory under the same temp
+	// root instead.
+	socketDir, err := os.MkdirTemp("", "l306-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	path := filepath.Join(socketDir, "peer.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
