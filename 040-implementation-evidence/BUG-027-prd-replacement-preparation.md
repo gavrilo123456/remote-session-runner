@@ -1082,3 +1082,60 @@ native Linux run. These checks are against the uncommitted tree based on
 `30324a5af8bc735de4846bd246e0384236c5f498`; the source is not yet frozen.
 No candidate was sealed and no service, selector, configuration, database,
 mailbox, or admission state changed.
+
+### 2026-10-29 12:41 UTC — bootstrap directory guard diagnosis and correction
+
+The first supported retry of operation
+`02bfdc603d2ea3360ecd32501fe347d1` reached the replacement host and failed at
+the `directories` step with the sanitized result:
+
+```text
+replacement PRD bootstrap step directories: invalid or inconsistent catalog selector operation
+```
+
+This was not a lane-lock acquisition failure. The current replacement-host
+checkout and pinned SSH connection were verified; the host's canonical PRD
+configuration, database, selector, and systemd unit remained absent. The
+bootstrap journal retained `completed_steps: []`, and the original CSR,
+certificate, CA, and coordinator journal hashes were unchanged. The fresh
+absence evidence had classified the existing runtime root as `toolchain-only`.
+The operation lock creates the expected `run/runnerd-lifecycle.lock` before
+the first apply step. On inspection, the shared root was owner/group
+`ubuntu:ubuntu`, mode `0775`, with the recorded Go toolchain and that lock
+directory. The directory installer had incorrectly sent this existing shared
+root through the helper for a newly created private directory, which requires
+`0700`.
+
+The correction preserves the existing shared root and its mode. It validates
+the absence receipt, the exact recorded Go toolchain and binary hash, the
+operation-owned lifecycle lock, and only the canonical empty or precisely
+partial bootstrap directory set. It rejects unknown root entries, changed
+toolchain bytes, unsafe root permissions, symlinks, changed ownership, and
+unexpected contents before further writes. Every new PRD directory remains
+owner-only `0700`; exact retries cover both a genuinely absent root created
+for its lock and a validated toolchain-only root. Tests also exercise a
+partially completed directory step without relaxing the production path
+guard.
+
+The controller amendment mechanism now preserves its first sidecar and can
+append a bounded chain of revision-named successor records. Each transition
+binds the preceding controller revision and host-control digest, the same
+non-controller identity inputs, and the unchanged coordinator bindings.
+Repeated transitions are idempotent; gaps, forks, mismatched inputs, and
+modified predecessor records are rejected. This is limited to the same
+`server_material_ready` bootstrap operation. It does not modify the original
+coordinator journal, CSR, server certificate, CA, or sealed service release.
+
+The first full Mac suite attempt after these source edits was **NOT PASS** for
+two separately diagnosed reasons: the existing legacy-client certificate
+fixture used a fixed `2026-10-28` issuance time and was expired against the
+validator's actual wall clock on `2026-10-29`; the sandbox also prevented the
+unrelated Darwin process-ownership test from executing `/bin/ps`. The fixture
+now uses a fresh test clock; this changes test data only. The full
+`make test` rerun with native process inspection passed across all packages
+with exit code `0`. `make vet build smoke` also completed with exit code `0` on
+the same Mac Go 1.27.1 toolchain. Focused directory, public-bootstrap,
+amendment-chain, and runner-lane subprocess tests passed. No service release was rebuilt or
+changed. This latest directory correction still requires Git delivery and
+native Linux validation before retrying the live bootstrap; no further PRD
+namespace write has yet been attempted.

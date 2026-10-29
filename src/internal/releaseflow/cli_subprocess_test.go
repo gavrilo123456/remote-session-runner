@@ -253,6 +253,35 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 || stdout.String() != firstUpdateOutput {
 		t.Fatalf("repeated amendment was not idempotent: code=%d stderr=%s", code, stderr.String())
 	}
+	firstRecordBytes, err := os.ReadFile(updatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.ControllerRevision = strings.Repeat("c", 40)
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 {
+		t.Fatalf("append successor controller amendment: code=%d stderr=%s", code, stderr.String())
+	}
+	var successor PRDReplacementBootstrapControllerUpdate
+	if err := json.Unmarshal([]byte(stdout.String()), &successor); err != nil ||
+		successor.PreviousControllerRevision != update.ControllerRevision ||
+		successor.PreviousHostControlSHA256 != update.HostControlSHA256 || successor.ControllerRevision != backend.ControllerRevision {
+		t.Fatalf("successor amendment does not continue the exact prior controller identity: record=%+v err=%v", successor, err)
+	}
+	if current, readErr := os.ReadFile(updatePath); readErr != nil || !bytes.Equal(current, firstRecordBytes) {
+		t.Fatalf("original controller amendment was modified: err=%v", readErr)
+	}
+	successorPath := prdReplacementBootstrapControllerUpdateRevisionPath(journalPath, backend.ControllerRevision)
+	if _, found, readErr := readPRDReplacementBootstrapControllerUpdate(successorPath); readErr != nil || !found {
+		t.Fatalf("successor amendment is not durably recorded: found=%t err=%v", found, readErr)
+	}
+	secondUpdateOutput := stdout.String()
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 || stdout.String() != secondUpdateOutput {
+		t.Fatalf("repeated successor amendment was not idempotent: code=%d stderr=%s", code, stderr.String())
+	}
 	// Resume rejects drift in the SSH identity, original request, and approval
 	// bytes before making another remote call.
 	if err := os.WriteFile(identityFile, []byte("post-amendment identity drift"), 0o600); err != nil {

@@ -664,7 +664,10 @@ func planToUpgradePlan(plan PRDReplacementBootstrapPlan) PRDUpgradePlan {
 }
 
 func createPRDReplacementBootstrapDirectories(plan PRDReplacementBootstrapPlan) error {
-	paths := []string{plan.Namespace.ServiceRoot, filepath.Join(plan.Namespace.ServiceRoot, "config"),
+	if err := validatePRDReplacementBootstrapDirectories(plan); err != nil {
+		return err
+	}
+	paths := []string{filepath.Join(plan.Namespace.ServiceRoot, "config"),
 		filepath.Join(plan.Namespace.ServiceRoot, "secrets"), filepath.Join(plan.Namespace.ServiceRoot, "state"),
 		filepath.Join(plan.Namespace.ServiceRoot, "run"), plan.Namespace.Workspaces,
 		filepath.Join(plan.Namespace.ServiceRoot, "tmp"), plan.Namespace.ScriptTempRoot,
@@ -673,6 +676,161 @@ func createPRDReplacementBootstrapDirectories(plan PRDReplacementBootstrapPlan) 
 		if err := ensureFreshBootstrapDirectory(path); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validatePRDReplacementBootstrapDirectories recognizes only the exact
+// lifecycle-lock directory created by the current bootstrap operation and the
+// previously observed toolchain-only root. The shared service root keeps its
+// existing owner/group/mode; all new PRD directories remain private 0700.
+func validatePRDReplacementBootstrapDirectories(plan PRDReplacementBootstrapPlan) error {
+	if validateCatalogNamespaceAbsenceReportForNamespace(plan.Absence, "linux-host", config.ReleaseLanePRD,
+		config.ReleaseLanePRD, plan.Namespace) != nil {
+		return ErrCatalogOperationInvalid
+	}
+	root := plan.Namespace.ServiceRoot
+	uid, gid := uint32(os.Getuid()), uint32(os.Getgid())
+	var rootStat unix.Stat_t
+	if unix.Lstat(root, &rootStat) != nil || rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || rootStat.Uid != uid || rootStat.Gid != gid {
+		return ErrCatalogOperationInvalid
+	}
+	switch plan.Absence.ServiceRootState {
+	case "absent":
+		if rootStat.Mode&0o777 != 0o700 || plan.Absence.ToolchainRoot != "" || plan.Absence.ToolchainState != "" ||
+			plan.Absence.ToolchainVersion != "" || plan.Absence.ToolchainBinarySHA256 != "" {
+			return ErrCatalogOperationInvalid
+		}
+	case "toolchain-only":
+		if !catalogOwnedDirectory(rootStat, uid) || plan.Absence.ToolchainRoot != filepath.Join(root, "toolchains") ||
+			plan.Absence.ToolchainState != "owner-toolchain-only" || plan.Absence.ToolchainVersion != "go1.27.1" {
+			return ErrCatalogOperationInvalid
+		}
+		observed, err := inspectCatalogToolchainRoot(plan.Absence.ToolchainRoot, uid)
+		if err != nil || observed.State != "toolchain-only" || observed.ToolchainState != plan.Absence.ToolchainState ||
+			observed.ToolchainVersion != plan.Absence.ToolchainVersion || observed.ToolchainBinarySHA256 != plan.Absence.ToolchainBinarySHA256 {
+			return errors.Join(ErrCatalogOperationInvalid, err)
+		}
+	default:
+		return ErrCatalogOperationInvalid
+	}
+
+	allowed := map[string]string{
+		"config":     filepath.Join(root, "config"),
+		"secrets":    filepath.Join(root, "secrets"),
+		"state":      filepath.Dir(plan.Namespace.Database),
+		"run":        filepath.Dir(plan.Namespace.LifecycleLock),
+		"workspaces": plan.Namespace.Workspaces,
+		"tmp":        filepath.Dir(plan.Namespace.ScriptTempRoot),
+		"backups":    plan.Namespace.Backups,
+		"logs":       plan.Namespace.Logs,
+		"bin":        plan.Namespace.Binaries,
+		"staging":    plan.Namespace.Staging,
+	}
+	for name, path := range allowed {
+		if filepath.Dir(path) != root || filepath.Base(path) != name {
+			return ErrCatalogOperationInvalid
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "toolchains" && plan.Absence.ServiceRootState == "toolchain-only" {
+			seen[name] = true
+			continue
+		}
+		if _, ok := allowed[name]; !ok || !entry.IsDir() {
+			return ErrCatalogOperationInvalid
+		}
+		path := filepath.Join(root, name)
+		var stat unix.Stat_t
+		if unix.Lstat(path, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR ||
+			stat.Uid != uid || stat.Gid != gid || stat.Mode&0o777 != 0o700 {
+			return ErrCatalogOperationInvalid
+		}
+		seen[name] = true
+	}
+	if !seen["run"] {
+		return ErrCatalogOperationInvalid
+	}
+	if (plan.Absence.ServiceRootState == "toolchain-only") != seen["toolchains"] {
+		return ErrCatalogOperationInvalid
+	}
+	for name := range seen {
+		switch name {
+		case "toolchains":
+			continue
+		case "run":
+			if err := validatePRDBootstrapLifecycleLockDirectory(plan.Namespace.LifecycleLock, uid, gid); err != nil {
+				return err
+			}
+		case "tmp":
+			if err := validateEmptyBootstrapDirectory(filepath.Join(root, "tmp"), uid, gid, "scripts"); err != nil {
+				return err
+			}
+			if _, err := os.Lstat(plan.Namespace.ScriptTempRoot); err == nil {
+				if err := validateEmptyBootstrapDirectory(plan.Namespace.ScriptTempRoot, uid, gid); err != nil {
+					return err
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		default:
+			if err := validateEmptyBootstrapDirectory(allowed[name], uid, gid); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateEmptyBootstrapDirectory(path string, uid, gid uint32, allowedChildren ...string) error {
+	info, err := os.Lstat(path)
+	var stat unix.Stat_t
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || unix.Lstat(path, &stat) != nil ||
+		stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != uid || stat.Gid != gid || stat.Mode&0o777 != 0o700 {
+		return ErrCatalogOperationInvalid
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	allowed := make(map[string]bool, len(allowedChildren))
+	for _, child := range allowedChildren {
+		allowed[child] = true
+	}
+	for _, entry := range entries {
+		if !allowed[entry.Name()] || !entry.IsDir() {
+			return ErrCatalogOperationInvalid
+		}
+	}
+	return nil
+}
+
+func validatePRDBootstrapLifecycleLockDirectory(lockPath string, uid, gid uint32) error {
+	directory := filepath.Dir(lockPath)
+	info, err := os.Lstat(directory)
+	var directoryStat unix.Stat_t
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || unix.Lstat(directory, &directoryStat) != nil ||
+		directoryStat.Mode&unix.S_IFMT != unix.S_IFDIR || directoryStat.Uid != uid || directoryStat.Gid != gid || directoryStat.Mode&0o777 != 0o700 {
+		return ErrCatalogOperationInvalid
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 1 || entries[0].Name() != filepath.Base(lockPath) || entries[0].IsDir() {
+		return errors.Join(ErrCatalogOperationInvalid, err)
+	}
+	info, err = os.Lstat(lockPath)
+	var stat unix.Stat_t
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || unix.Lstat(lockPath, &stat) != nil ||
+		stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Uid != uid || stat.Gid != gid || stat.Mode&0o777 != 0o600 || stat.Nlink != 1 || stat.Size != 0 {
+		return ErrCatalogOperationInvalid
 	}
 	return nil
 }

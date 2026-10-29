@@ -296,7 +296,11 @@ func inspectCatalogRuntimeRoot(plan PRDUpgradePlan, uid uint32) (catalogRuntimeR
 	if err != nil || len(entries) != 1 || entries[0].Name() != "toolchains" || !entries[0].IsDir() {
 		return observed, ErrCatalogOperationInvalid
 	}
-	toolchainRoot := filepath.Join(root, "toolchains")
+	return inspectCatalogToolchainRoot(filepath.Join(root, "toolchains"), uid)
+}
+
+func inspectCatalogToolchainRoot(toolchainRoot string, uid uint32) (catalogRuntimeRootObservation, error) {
+	var observed catalogRuntimeRootObservation
 	var toolchainStat unix.Stat_t
 	if unix.Lstat(toolchainRoot, &toolchainStat) != nil || toolchainStat.Mode&unix.S_IFMT != unix.S_IFDIR || !catalogOwnedDirectory(toolchainStat, uid) {
 		return observed, ErrCatalogOperationInvalid

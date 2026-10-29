@@ -160,6 +160,17 @@ after the no-overwrite link, an exact retry verifies ownership, mode, and bytes
 before removing only the matching staged hardlink. A conflicting unit is left
 untouched and stops the operation.
 
+On this replacement, the existing service root is also the parent of the
+verified Go toolchain. The absence report records that exact `toolchain-only`
+state. Bootstrap preserves the shared root's existing owner, group and safe
+permissions; it does not chmod the toolchain parent to the private mode used
+for a new lane directory. Its first locked attempt creates only the canonical
+`run/runnerd-lifecycle.lock` entry before the directory step. Retries accept
+only that lock, the recorded toolchain, and the exact empty bootstrap
+directories; new PRD directories remain owner-only `0700`. Unexpected entries,
+changed toolchain bytes, unsafe ownership, or an unrecognized partial
+directory tree stop the operation before further writes.
+
 For the one-time bootstrap operation
 `02bfdc603d2ea3360ecd32501fe347d1`, a controller-only delivery change may be
 resumed only from the exact `server_material_ready` checkpoint. First use the
@@ -168,9 +179,12 @@ request, approval, host profile, publisher confirmation, pinned SSH identity,
 and operation ID. It reconstructs the original host-control digest using the
 prior controller revision pinned for this one-time operation, checks that the
 digest matches the coordinator journal, and atomically writes a separate
-owner-only amendment record. It does not edit or replace the original journal,
-CSR, certificate, or CA material. Retries with the same inputs return the existing amendment;
-changed request, approval, host profile, SSH identity, trust, release,
+owner-only amendment record. If another controller correction is needed
+before namespace creation, the supported command appends a new revision-named
+record linked to the latest amendment; prior records and the original journal
+remain unchanged. Resume validates the complete chain and unchanged
+non-controller inputs. Retries with the same inputs return the existing
+record; changed request, approval, host profile, SSH identity, trust, release,
 predecessor, or certificate bindings are rejected. It is not a general method
 to change bootstrap identity, and it cannot be used after namespace creation
 has started.

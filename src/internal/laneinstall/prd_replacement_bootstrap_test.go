@@ -57,6 +57,183 @@ func TestBuildPRDReplacementBootstrapPlanBindsV2IdentityAndPairedRoutes(t *testi
 	}
 }
 
+func TestPRDReplacementBootstrapDirectoriesPreserveValidatedToolchainRoot(t *testing.T) {
+	makePlan := func(t *testing.T) PRDReplacementBootstrapPlan {
+		t.Helper()
+		input := prdReplacementBootstrapFixture(t)
+		plan, err := BuildPRDReplacementBootstrapPlan(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(t.TempDir(), "remote-session-runner")
+		if err := os.Mkdir(root, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(root, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		toolchain := filepath.Join(root, "toolchains", "go1.27.1")
+		if err := os.MkdirAll(filepath.Join(toolchain, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(toolchain, "VERSION"), []byte("go1.27.1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		goBinary := filepath.Join(toolchain, "bin", "go")
+		goBytes := []byte("#!/bin/sh\nexit 0\n")
+		if err := os.WriteFile(goBinary, goBytes, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(root, "run"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "run", "runnerd-lifecycle.lock"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		ns := plan.Namespace
+		ns.ServiceRoot = root
+		ns.ConfigFile = filepath.Join(root, "config", "linux.yaml")
+		ns.Database = filepath.Join(root, "state", "remote.db")
+		ns.DatabaseWAL, ns.DatabaseSHM = ns.Database+"-wal", ns.Database+"-shm"
+		ns.PrivateSocket = filepath.Join(root, "run", "runnerd.sock")
+		ns.Workspaces = filepath.Join(root, "workspaces")
+		ns.ScriptTempRoot = filepath.Join(root, "tmp", "scripts")
+		ns.Backups = filepath.Join(root, "backups")
+		ns.Logs = filepath.Join(root, "logs")
+		ns.Binaries = filepath.Join(root, "bin")
+		ns.Staging = filepath.Join(root, "staging")
+		ns.LifecycleLock = filepath.Join(root, "run", "runnerd-lifecycle.lock")
+		plan.Namespace = ns
+		toolchainDigest := digestBytes(goBytes)
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		plan.Absence = CatalogNamespaceAbsenceReport{
+			FormatVersion: 1, HostID: "linux-host", Lane: config.ReleaseLanePRD, SelectedLane: config.ReleaseLanePRD,
+			State: "absent", ServiceRoot: root, ServiceRootState: "toolchain-only",
+			ToolchainRoot: filepath.Join(root, "toolchains"), ToolchainState: "owner-toolchain-only",
+			ToolchainVersion: "go1.27.1", ToolchainBinarySHA256: toolchainDigest,
+			ConfigurationPath: ns.ConfigFile, ConfigurationState: "absent",
+			DatabasePath: ns.Database, DatabaseState: "absent",
+			SelectorJournalRoot: filepath.Join(ns.Staging, "catalog-operations"), SelectorJournalsState: "absent",
+			CohortReceiptRoot: filepath.Join(ns.Staging, "catalog-cohorts"), CohortReceiptsState: "absent",
+			BackupRoot: ns.Backups, BackupState: "absent", LifecycleLock: ns.LifecycleLock, LifecycleLockState: "absent",
+			ServiceUnit: ns.RunnerUnit, UnitLoadState: "not-found", UnitFileState: "not-found",
+			UnitActiveState: "inactive", UnitSubState: "dead", DirectListenerPort: ns.DirectPort,
+			DirectListenerAbsent: true, ProcessScanComplete: true, ObservedAtUTC: now,
+		}
+		plan.Absence.EvidenceSHA256 = catalogNamespaceAbsenceEvidenceSHA256(plan.Absence)
+		return plan
+	}
+
+	t.Run("create and retry with the operation lifecycle lock", func(t *testing.T) {
+		plan := makePlan(t)
+		root := plan.Namespace.ServiceRoot
+		if err := createPRDReplacementBootstrapDirectories(plan); err != nil {
+			t.Fatalf("create private PRD directories under the preserved shared root: %v", err)
+		}
+		if err := createPRDReplacementBootstrapDirectories(plan); err != nil {
+			t.Fatalf("exact directory retry failed: %v", err)
+		}
+		rootInfo, err := os.Lstat(root)
+		if err != nil {
+			t.Fatalf("stat shared service root: %v", err)
+		}
+		if rootInfo.Mode().Perm() != 0o775 {
+			t.Fatalf("shared service-root mode changed: mode=%v", rootInfo.Mode().Perm())
+		}
+		for _, path := range []string{filepath.Join(root, "config"), filepath.Join(root, "secrets"), filepath.Join(root, "state"),
+			filepath.Join(root, "workspaces"), filepath.Join(root, "tmp"), plan.Namespace.ScriptTempRoot, filepath.Join(root, "backups"),
+			filepath.Join(root, "logs"), filepath.Join(root, "bin"), filepath.Join(root, "staging")} {
+			info, statErr := os.Lstat(path)
+			if statErr != nil {
+				t.Fatalf("stat new bootstrap directory %s: %v", path, statErr)
+			}
+			if !info.IsDir() || info.Mode().Perm() != 0o700 {
+				t.Fatalf("new bootstrap directory is not private: %s mode=%v", path, info.Mode().Perm())
+			}
+		}
+	})
+
+	t.Run("create after an absent root was created only for its lifecycle lock", func(t *testing.T) {
+		plan := makePlan(t)
+		root := plan.Namespace.ServiceRoot
+		if err := os.RemoveAll(filepath.Join(root, "toolchains")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		plan.Absence.ServiceRootState = "absent"
+		plan.Absence.ToolchainRoot = ""
+		plan.Absence.ToolchainState = ""
+		plan.Absence.ToolchainVersion = ""
+		plan.Absence.ToolchainBinarySHA256 = ""
+		plan.Absence.EvidenceSHA256 = catalogNamespaceAbsenceEvidenceSHA256(plan.Absence)
+		if err := createPRDReplacementBootstrapDirectories(plan); err != nil {
+			t.Fatalf("bootstrap directories after operation-owned lock creation: %v", err)
+		}
+	})
+
+	t.Run("resume an interrupted directory step with exact partial directories", func(t *testing.T) {
+		plan := makePlan(t)
+		configDir := filepath.Join(plan.Namespace.ServiceRoot, "config")
+		if err := os.Mkdir(configDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := createPRDReplacementBootstrapDirectories(plan); err != nil {
+			t.Fatalf("resume exact partial directory creation: %v", err)
+		}
+	})
+
+	t.Run("reject unknown root entries before creating namespace", func(t *testing.T) {
+		plan := makePlan(t)
+		unexpected := filepath.Join(plan.Namespace.ServiceRoot, "unrelated")
+		if err := os.Mkdir(unexpected, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := createPRDReplacementBootstrapDirectories(plan); !errors.Is(err, ErrCatalogOperationInvalid) {
+			t.Fatalf("unknown service-root entry accepted: %v", err)
+		}
+		if _, err := os.Lstat(plan.Namespace.ConfigFile); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("conflicting root caused namespace mutation: %v", err)
+		}
+	})
+
+	t.Run("reject unexpected contents in a partially created directory", func(t *testing.T) {
+		plan := makePlan(t)
+		configDir := filepath.Join(plan.Namespace.ServiceRoot, "config")
+		if err := os.Mkdir(configDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(configDir, "unrelated"), []byte("preserve"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := createPRDReplacementBootstrapDirectories(plan); !errors.Is(err, ErrCatalogOperationInvalid) {
+			t.Fatalf("unexpected partial-directory contents accepted: %v", err)
+		}
+	})
+
+	t.Run("reject toolchain drift", func(t *testing.T) {
+		plan := makePlan(t)
+		if err := os.WriteFile(filepath.Join(plan.Namespace.ServiceRoot, "toolchains", "go1.27.1", "bin", "go"), []byte("changed"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := createPRDReplacementBootstrapDirectories(plan); !errors.Is(err, ErrCatalogOperationInvalid) {
+			t.Fatalf("changed toolchain accepted: %v", err)
+		}
+	})
+
+	t.Run("reject unsafe shared-root permissions", func(t *testing.T) {
+		plan := makePlan(t)
+		if err := os.Chmod(plan.Namespace.ServiceRoot, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := createPRDReplacementBootstrapDirectories(plan); !errors.Is(err, ErrCatalogOperationInvalid) {
+			t.Fatalf("world-writable shared root accepted: %v", err)
+		}
+	})
+}
+
 type prdBootstrapFixtureBackend struct {
 	mu                   sync.Mutex
 	plan                 PRDReplacementBootstrapPlan

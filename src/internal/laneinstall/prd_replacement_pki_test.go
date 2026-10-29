@@ -121,7 +121,9 @@ func TestSignPRDReplacementServerCSRRejectsWrongIdentityAndAuthority(t *testing.
 }
 
 func TestValidatePRDReplacementLegacyClientMaterial(t *testing.T) {
-	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	// This validator checks certificate validity against the actual wall clock;
+	// keep the valid fixture fresh so it does not expire after a calendar date.
+	now := time.Now().UTC()
 	caPEM, caKeyPEM := prdReplacementTestCA(t, now)
 	certificatePEM := prdReplacementLegacyClientCert(t, now, caPEM, caKeyPEM, prdReplacementLegacyDirectURI, x509.ExtKeyUsageClientAuth)
 	principalMap := []byte("version: 1\nprincipals:\n  - uri_san: " + prdReplacementLegacyDirectURI + "\n    controller_type: direct_mtls\n    controller_id: " + config.MacAccount + "\n")

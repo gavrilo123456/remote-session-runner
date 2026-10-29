@@ -17,13 +17,16 @@ import (
 	"remote-session-runner/src/internal/laneinstall"
 )
 
-// This one-time amendment is deliberately limited to the bootstrap operation
-// whose journal was created by the previous delivered controller. It does not
-// authorize changing service bytes or any other operation's identity.
+// Controller amendments are deliberately limited to the one bootstrap
+// operation whose journal was created by the previous delivered controller.
+// Successor revisions are append-only; they do not change service bytes or
+// other operation identities.
 const (
 	prdBootstrapControllerUpdateOperation = "02bfdc603d2ea3360ecd32501fe347d1"
 	prdBootstrapPreviousController        = "309de02fca7bc8dcd608834df76e831a96d413d7"
 	prdBootstrapControllerUpdateFile      = "controller-update.json"
+	prdBootstrapControllerUpdatePrefix    = "controller-update-"
+	prdBootstrapMaxControllerUpdates      = 4
 )
 
 const prdBootstrapControllerUpdateFormat = 1
@@ -45,6 +48,11 @@ type PRDReplacementBootstrapControllerUpdate struct {
 func prdReplacementBootstrapControllerUpdatePath(journalPath string) string {
 	operationID := strings.TrimSuffix(filepath.Base(journalPath), ".json")
 	return filepath.Join(filepath.Dir(journalPath), operationID+"."+prdBootstrapControllerUpdateFile)
+}
+
+func prdReplacementBootstrapControllerUpdateRevisionPath(journalPath, revision string) string {
+	operationID := strings.TrimSuffix(filepath.Base(journalPath), ".json")
+	return filepath.Join(filepath.Dir(journalPath), operationID+"."+prdBootstrapControllerUpdatePrefix+revision+".json")
 }
 
 func readPRDReplacementBootstrapControllerUpdate(path string) (PRDReplacementBootstrapControllerUpdate, bool, error) {
@@ -74,7 +82,7 @@ func readPRDReplacementBootstrapControllerUpdate(path string) (PRDReplacementBoo
 func validatePRDReplacementBootstrapControllerUpdate(record PRDReplacementBootstrapControllerUpdate) error {
 	if record.FormatVersion != prdBootstrapControllerUpdateFormat || record.OperationID != prdBootstrapControllerUpdateOperation ||
 		record.ReleaseID == "" || !releasePattern.MatchString(record.ReleaseID) || !digestPattern.MatchString(record.ReleaseSHA256) ||
-		record.PreviousControllerRevision != prdBootstrapPreviousController || !shaPattern.MatchString(record.PreviousControllerRevision) ||
+		!shaPattern.MatchString(record.PreviousControllerRevision) ||
 		!digestPattern.MatchString(record.PreviousHostControlSHA256) ||
 		!shaPattern.MatchString(record.ControllerRevision) || record.ControllerRevision == record.PreviousControllerRevision ||
 		!digestPattern.MatchString(record.HostControlSHA256) || record.HostControlSHA256 == record.PreviousHostControlSHA256 ||
@@ -83,6 +91,78 @@ func validatePRDReplacementBootstrapControllerUpdate(record PRDReplacementBootst
 		return ErrOperationCorrupted
 	}
 	return nil
+}
+
+// readPRDReplacementBootstrapControllerUpdateChain reads the original
+// operation amendment plus append-only successor records. The original file
+// remains immutable; each later controller revision gets its own file.
+func readPRDReplacementBootstrapControllerUpdateChain(journalPath string, journal PRDReplacementBootstrapCoordinatorJournal) ([]PRDReplacementBootstrapControllerUpdate, bool, error) {
+	firstPath := prdReplacementBootstrapControllerUpdatePath(journalPath)
+	first, found, err := readPRDReplacementBootstrapControllerUpdate(firstPath)
+	if err != nil {
+		return nil, false, err
+	}
+	operationID := strings.TrimSuffix(filepath.Base(journalPath), ".json")
+	entries, err := os.ReadDir(filepath.Dir(journalPath))
+	if err != nil {
+		return nil, false, err
+	}
+	updates := make([]PRDReplacementBootstrapControllerUpdate, 0, prdBootstrapMaxControllerUpdates)
+	if found {
+		updates = append(updates, first)
+	}
+	for _, entry := range entries {
+		prefix := operationID + "." + prdBootstrapControllerUpdatePrefix
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		revision := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), prefix), ".json")
+		if !shaPattern.MatchString(revision) || entry.IsDir() {
+			return nil, false, ErrOperationCorrupted
+		}
+		path := filepath.Join(filepath.Dir(journalPath), entry.Name())
+		update, exists, readErr := readPRDReplacementBootstrapControllerUpdate(path)
+		if readErr != nil || !exists || update.ControllerRevision != revision {
+			return nil, false, errors.Join(ErrOperationCorrupted, readErr)
+		}
+		updates = append(updates, update)
+	}
+	if len(updates) == 0 {
+		return nil, false, nil
+	}
+	if len(updates) > prdBootstrapMaxControllerUpdates || !found || first.PreviousControllerRevision != prdBootstrapPreviousController ||
+		first.PreviousHostControlSHA256 != journal.HostControlSHA256 {
+		return nil, false, ErrOperationCorrupted
+	}
+	ordered := make([]PRDReplacementBootstrapControllerUpdate, 0, len(updates))
+	used := make([]bool, len(updates))
+	currentRevision, currentHostSHA := prdBootstrapPreviousController, journal.HostControlSHA256
+	for len(ordered) < len(updates) {
+		match := -1
+		for index, update := range updates {
+			if !used[index] && update.PreviousControllerRevision == currentRevision && update.PreviousHostControlSHA256 == currentHostSHA {
+				if match != -1 {
+					return nil, false, ErrOperationCorrupted
+				}
+				match = index
+			}
+		}
+		if match == -1 {
+			return nil, false, ErrOperationCorrupted
+		}
+		update := updates[match]
+		if update.OperationID != journal.OperationID || update.ReleaseID != journal.ReleaseID || update.ReleaseSHA256 != journal.ReleaseSHA256 ||
+			update.CoordinatorBindingsSHA256 != prdReplacementBootstrapStableBindingsSHA(journal) {
+			return nil, false, ErrOperationCorrupted
+		}
+		if len(ordered) > 0 && update.NonControllerInputsSHA256 != ordered[0].NonControllerInputsSHA256 {
+			return nil, false, ErrOperationCorrupted
+		}
+		used[match] = true
+		ordered = append(ordered, update)
+		currentRevision, currentHostSHA = update.ControllerRevision, update.HostControlSHA256
+	}
+	return ordered, true, nil
 }
 
 func prdReplacementBootstrapStableBindingsSHA(journal PRDReplacementBootstrapCoordinatorJournal) string {
@@ -168,33 +248,56 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: coordinator fields differ: %s", strings.Join(fields, ", "))
 	}
 	if !sameStrings(journal.CompletedStages, prdReplacementBootstrapStages[:3]) || journal.CSRRequestSHA256 == "" ||
-		journal.ServerCertSHA256 == "" || journal.ServerCASHA256 == "" || native.ControllerRevision == prdBootstrapPreviousController ||
-		!shaPattern.MatchString(native.ControllerRevision) {
+		journal.ServerCertSHA256 == "" || journal.ServerCASHA256 == "" || !shaPattern.MatchString(native.ControllerRevision) {
 		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment requires the exact server_material_ready checkpoint and no later stage")
 	}
+	chain, found, err := readPRDReplacementBootstrapControllerUpdateChain(path, journal)
+	if err != nil {
+		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("read controller amendment history: %w", err)
+	}
+	previousRevision, previousHostControlSHA := prdBootstrapPreviousController, journal.HostControlSHA256
+	if found {
+		last := chain[len(chain)-1]
+		previousRevision, previousHostControlSHA = last.ControllerRevision, last.HostControlSHA256
+	}
 	previousBackend := *native
-	previousBackend.ControllerRevision = prdBootstrapPreviousController
+	previousBackend.ControllerRevision = previousRevision
 	previousHostSHA, err := replacementBootstrapHostControlSHA(&previousBackend, profile, request.SSHHostPublicKey, knownHostOutput)
-	if err != nil || previousHostSHA != journal.HostControlSHA256 {
-		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: reconstructed previous host_control_sha256 does not match coordinator journal")
+	if err != nil || previousHostSHA != previousHostControlSHA {
+		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: reconstructed previous host_control_sha256 does not match controller history")
 	}
 	currentHostSHA, err := replacementBootstrapHostControlSHA(native, profile, request.SSHHostPublicKey, knownHostOutput)
-	if err != nil || currentHostSHA == previousHostSHA {
+	if err != nil {
 		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: current controller host-control identity is invalid")
 	}
 	nonControllerSHA, err := prdReplacementBootstrapNonControllerInputsSHA(profile, request.SSHHostPublicKey, knownHostOutput)
 	if err != nil {
 		return PRDReplacementBootstrapControllerUpdate{}, err
 	}
+	if found {
+		last := chain[len(chain)-1]
+		if native.ControllerRevision == last.ControllerRevision {
+			if currentHostSHA != last.HostControlSHA256 || nonControllerSHA != last.NonControllerInputsSHA256 {
+				return PRDReplacementBootstrapControllerUpdate{}, errors.New("controller amendment retry differs from the recorded controller or non-controller inputs")
+			}
+			return last, nil
+		}
+	}
+	if currentHostSHA == previousHostSHA || native.ControllerRevision == previousRevision {
+		return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: current controller host-control identity is invalid")
+	}
 	record := PRDReplacementBootstrapControllerUpdate{
 		FormatVersion: prdBootstrapControllerUpdateFormat, OperationID: journal.OperationID, ReleaseID: journal.ReleaseID,
-		ReleaseSHA256: journal.ReleaseSHA256, PreviousControllerRevision: prdBootstrapPreviousController,
-		PreviousHostControlSHA256: journal.HostControlSHA256, ControllerRevision: native.ControllerRevision,
+		ReleaseSHA256: journal.ReleaseSHA256, PreviousControllerRevision: previousRevision,
+		PreviousHostControlSHA256: previousHostControlSHA, ControllerRevision: native.ControllerRevision,
 		HostControlSHA256: currentHostSHA, NonControllerInputsSHA256: nonControllerSHA,
 		CoordinatorBindingsSHA256: prdReplacementBootstrapStableBindingsSHA(journal),
 		RecordedAtUTC:             now.UTC().Format(time.RFC3339Nano),
 	}
 	updatePath := prdReplacementBootstrapControllerUpdatePath(path)
+	if found {
+		updatePath = prdReplacementBootstrapControllerUpdateRevisionPath(path, native.ControllerRevision)
+	}
 	if previous, found, readErr := readPRDReplacementBootstrapControllerUpdate(updatePath); readErr != nil {
 		return PRDReplacementBootstrapControllerUpdate{}, readErr
 	} else if found {
@@ -261,9 +364,9 @@ func validatePRDReplacementBootstrapControllerUpdateForResume(native *NativeProm
 	if err != nil {
 		return err
 	}
-	update, found, err := readPRDReplacementBootstrapControllerUpdate(prdReplacementBootstrapControllerUpdatePath(updatePath))
+	chain, found, err := readPRDReplacementBootstrapControllerUpdateChain(updatePath, journal)
 	if err != nil {
-		return fmt.Errorf("read controller amendment: %w", err)
+		return fmt.Errorf("read controller amendment history: %w", err)
 	}
 	if !found {
 		if journal.HostControlSHA256 != currentHostSHA {
@@ -271,11 +374,8 @@ func validatePRDReplacementBootstrapControllerUpdateForResume(native *NativeProm
 		}
 		return nil
 	}
-	if validatePRDReplacementBootstrapControllerUpdate(update) != nil || update.OperationID != journal.OperationID ||
-		update.ReleaseID != journal.ReleaseID || update.ReleaseSHA256 != journal.ReleaseSHA256 ||
-		update.PreviousHostControlSHA256 != journal.HostControlSHA256 ||
-		update.CoordinatorBindingsSHA256 != prdReplacementBootstrapStableBindingsSHA(journal) ||
-		update.ControllerRevision != native.ControllerRevision {
+	update := chain[len(chain)-1]
+	if update.ControllerRevision != native.ControllerRevision {
 		return fmt.Errorf("bootstrap resume controller amendment mismatch: operation, release, controller revision, or coordinator bindings")
 	}
 	nonControllerSHA, err := prdReplacementBootstrapNonControllerInputsSHA(profile, request.SSHHostPublicKey, knownHostOutput)
