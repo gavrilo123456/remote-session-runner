@@ -980,6 +980,61 @@ requires native Linux validation. These results are source tests only. No
 candidate was sealed and no live service, selector, configuration, database,
 mailbox, or admission state changed.
 
+### 2026-10-29 12:12 UTC — operation-specific controller amendment
+
+The read-only coordinator journal for operation
+`02bfdc603d2ea3360ecd32501fe347d1` remains at
+`prepared → server_csr_ready → server_material_ready`. It is bound to release
+`rr-309de02fca-ddc84f50` and digest
+`4d650244e8dd9f08390cdb1619399ba40eb948f4db1adcc14f24ad6ff0bcf651`.
+Its original `host_control_sha256` is
+`c4c7aed5b9fefe6270a8804e5b99ad77c7e1c6193cfaacb2910bda915cf8db0f`.
+The retained CSR, server-certificate, and CA hashes are unchanged; no Linux or
+Mac namespace journal has been recorded. The new controller-amendment sidecar
+was absent at this checkpoint.
+
+The original digest reconstructs exactly with controller revision
+`309de02fca7bc8dcd608834df76e831a96d413d7`; current delivered controller
+`3e0e9ad536b20fd6dc8b49afcef099663f1eef01` computes
+`26d4fbcc48d103b471a06b25b59d3f33f93edb0255706e4b0da907440c95f4c9` from the
+same profile, SSH identity, pinned host key and trust files. This establishes a
+controller provenance mismatch. The old CLI collapsed that mismatch into the
+same conflict text used for a busy lane lock. The prior default-sandbox attempt
+failed before lock acquisition because the protected runtime path could not be
+opened; the prior elevated attempt returned only the ambiguous conflict string.
+No root descriptor inspection is required unless the corrected command reports
+an actual `acquire prd lane lock` failure.
+
+The controller-only correction adds the one-time public command
+`prd-bootstrap-controller-update`, restricted to this operation and its exact
+`server_material_ready` stage. It recomputes the original digest, binds the
+existing request/release/approval/predecessor/CSR/certificate identities and
+current SSH profile/trust inputs, then atomically records old/new controller
+revision and host-control hashes in a separate owner-only sidecar. It leaves
+the original coordinator journal and sealed service release untouched. Exact
+amendment retries are idempotent; changed request, approval, key, trust, or
+profile inputs are rejected. Lock acquisition errors now name the acquisition
+stage; resume conflicts name the mismatched fields.
+
+Mac Go 1.27.1 checks used the shared
+`GOCACHE=/private/tmp/remote-session-runner-gocache` and
+`GOMODCACHE=/private/tmp/remote-session-runner-gomodcache`:
+
+| Check | Result |
+| --- | --- |
+| `go test ./src/internal/releaseflow ./src/cmd/runner-lane ./src/cmd/runner-release -count=1` | PASS |
+| `go vet ./src/internal/releaseflow ./src/cmd/runner-lane ./src/cmd/runner-release` | PASS |
+| Build `runner-release` and `runner-lane` to task-owned `/private/tmp` paths | PASS |
+| `gofmt -l` for modified Go files; `git diff --check` | PASS |
+
+One earlier chained attempt omitted the shared cache environment on its final
+build commands and was **NOT PASS** because the sandbox denied writes to the
+default Go caches. The same tests passed, and vet/build/format/diff checks then
+passed with the shared cache paths exported. This source is controller-only;
+the sealed service release remains unchanged. Git delivery and native Linux
+validation of this correction remain pending. No live bootstrap retry or PRD
+mutation has been made in this checkpoint.
+
 ### 2026-10-29 08:10 UTC — final Mac source gates after unit-retry change
 
 The new unit-creation test and installer retry branch changed source after

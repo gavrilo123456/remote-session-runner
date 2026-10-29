@@ -441,8 +441,9 @@ func TestConcurrentLaneOperationLockRefusesSecondCoordinator(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- store.WithLaneLock("qas", func() error { close(locked); <-release; return nil }) }()
 	<-locked
-	if err := store.WithLaneLock("qas", func() error { return nil }); !errors.Is(err, ErrOperationConflict) {
-		t.Fatalf("second coordinator error=%v", err)
+	if err := store.WithLaneLock("qas", func() error { return nil }); !errors.Is(err, ErrOperationConflict) ||
+		!strings.Contains(err.Error(), "acquire qas lane lock") {
+		t.Fatalf("second coordinator lock-stage error=%v", err)
 	}
 	close(release)
 	if err := <-done; err != nil {

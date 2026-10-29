@@ -90,7 +90,10 @@ func (s *Store) WithLaneLock(lane string, fn func() error) error {
 		return err
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return ErrOperationConflict
+		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+			return fmt.Errorf("acquire %s lane lock: %w (%v)", lane, ErrOperationConflict, err)
+		}
+		return fmt.Errorf("acquire %s lane lock: %w", lane, err)
 	}
 	defer unix.Flock(int(f.Fd()), unix.LOCK_UN)
 	return fn()

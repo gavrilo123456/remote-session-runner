@@ -160,6 +160,38 @@ after the no-overwrite link, an exact retry verifies ownership, mode, and bytes
 before removing only the matching staged hardlink. A conflicting unit is left
 untouched and stops the operation.
 
+For the one-time bootstrap operation
+`02bfdc603d2ea3360ecd32501fe347d1`, a controller-only delivery change may be
+resumed only from the exact `server_material_ready` checkpoint. First use the
+supported `prd-bootstrap-controller-update` command below with the same
+request, approval, host profile, publisher confirmation, pinned SSH identity,
+and operation ID. It reconstructs the original host-control digest using the
+prior controller revision pinned for this one-time operation, checks that the
+digest matches the coordinator journal, and atomically writes a separate
+owner-only amendment record. It does not edit or replace the original journal,
+CSR, certificate, or CA material. Retries with the same inputs return the existing amendment;
+changed request, approval, host profile, SSH identity, trust, release,
+predecessor, or certificate bindings are rejected. It is not a general method
+to change bootstrap identity, and it cannot be used after namespace creation
+has started.
+
+```sh
+# Mac — from the clean, delivered dev controller checkout
+runner-release prd-bootstrap-controller-update \
+  --operation 02bfdc603d2ea3360ecd32501fe347d1 \
+  --request-file <same-owner-only-bootstrap-request.json> \
+  --approval-file <same-current-owner-approval.json> \
+  --publisher-owner <same-confirmed-pause-owner> \
+  --publisher-control <same-specific-pause-control> \
+  --publishers-paused --no-new-accepted --json
+```
+
+After it records the amendment, rerun the original
+`prd-replacement-bootstrap` command with those exact same inputs. A lock
+acquisition failure is reported as `acquire prd lane lock`; a coordinator
+identity mismatch reports the mismatched field names. Do not remove the lane
+lock or modify either durable record to work around a failure.
+
 After bootstrap reports `ready_for_catalog_promotion`, collect a new PRD plan.
 Bootstrap changes the Mac route/configuration and establishes the replacement
 baseline, so do not reuse the pre-bootstrap approval or preflight. Review a

@@ -73,7 +73,7 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 		t.Fatal(err)
 	}
 	request := laneinstall.PRDReplacementBootstrapRequest{
-		OperationID: "0123456789abcdef0123456789abcdef", TemplateHostID: "sandbox-host",
+		OperationID: prdBootstrapControllerUpdateOperation, TemplateHostID: "sandbox-host",
 		ReleaseID: release.ID, ExpectedReleaseSHA256: release.Digest,
 		SSHHostPublicKey: releaseflowTestPublicKey("replacement-bootstrap-host"),
 	}
@@ -89,6 +89,7 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 	csrCalled := false
 	csrCalls := 0
 	bootstrapCalls := 0
+	interruptFirstBootstrap := true
 	csr, err := laneinstall.GeneratePRDReplacementServerCSR()
 	if err != nil {
 		t.Fatal(err)
@@ -108,14 +109,16 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 	profile := HostProfile{HostID: "linux-host", Target: replacementLinuxTarget, IdentityFile: identityFile,
 		KnownHostsFile: knownHostsFile, AllowFirstInstallPeerAbsence: true}
 	backend := &NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{"linux-host": profile}},
-		ControllerRevision: strings.Repeat("a", 40),
+		ControllerRevision: prdBootstrapPreviousController,
 		laneCommandRunner: func(_ context.Context, host string, args []string, stdin []byte) ([]byte, error) {
 			if len(args) == 3 && args[0] == "catalog-prd-replacement-csr" && args[1] == "--operation-id" &&
 				args[2] == request.OperationID && host == "linux-host" && len(stdin) == 0 {
 				journalPath, pathErr := prdReplacementBootstrapCoordinatorJournalPath(workflowStore.Root, request.OperationID)
 				journal, exists, journalErr := readPRDReplacementBootstrapCoordinatorJournal(journalPath)
 				expectedStages := 1
-				if csrCalls > 0 {
+				if csrCalls == 1 {
+					expectedStages = 3
+				} else if csrCalls > 1 {
 					expectedStages = len(prdReplacementBootstrapStages)
 				}
 				if pathErr != nil || journalErr != nil || !exists || len(journal.CompletedStages) != expectedStages {
@@ -140,6 +143,10 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 				forwarded.ApprovalSHA256 != expectedApprovalSHA || forwarded.PublisherOwner != "Tomasz Walczuk" ||
 				forwarded.PublisherControl != "clients-held" || !forwarded.PublishersPaused || !forwarded.NoNewAccepted {
 				t.Fatalf("bootstrap RPC scope/control payload mismatch: host=%q args=%q bytes=%d", host, args, len(stdin))
+			}
+			if interruptFirstBootstrap {
+				interruptFirstBootstrap = false
+				return nil, errors.New("simulated interruption after durable server material")
 			}
 			result, _ := json.Marshal(laneinstall.PRDReplacementBootstrapResult{
 				OperationID: request.OperationID, Stage: "linux_namespace_ready",
@@ -193,12 +200,101 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 		prdBootstrapHostKeysForTests, prdBootstrapMacRouteForTests = previousKeys, previousMacRoute
 		prdBootstrapCSRForTests, prdBootstrapServerMaterialForTests = previousCSR, previousMaterial
 	})
-	var stdout, stderr strings.Builder
-	code := RunAdminCLI([]string{"prd-replacement-bootstrap", "--request-file", requestPath, "--approval-file", approvalPath,
+	bootstrapArgs := []string{"prd-replacement-bootstrap", "--request-file", requestPath, "--approval-file", approvalPath,
 		"--publisher-owner", "Tomasz Walczuk", "--publisher-control", "clients-held", "--publishers-paused", "--no-new-accepted",
-		"--store-root", workflowStore.Root, "--json"}, &stdout, &stderr)
-	if code != 0 || !called || !csrCalled || !macRouteCalled {
-		t.Fatalf("public bootstrap command failed: code=%d csr=%t bootstrap=%t mac=%t stderr=%s", code, csrCalled, called, macRouteCalled, stderr.String())
+		"--store-root", workflowStore.Root, "--json"}
+	updateArgs := []string{"prd-bootstrap-controller-update", "--operation", request.OperationID, "--request-file", requestPath,
+		"--approval-file", approvalPath, "--publisher-owner", "Tomasz Walczuk", "--publisher-control", "clients-held",
+		"--publishers-paused", "--no-new-accepted", "--store-root", workflowStore.Root, "--json"}
+	var stdout, stderr strings.Builder
+	code := RunAdminCLI(bootstrapArgs, &stdout, &stderr)
+	if code == 0 || !called || !csrCalled || macRouteCalled || !strings.Contains(stderr.String(), "simulated interruption") {
+		t.Fatalf("bootstrap did not stop at the durable server-material boundary: code=%d csr=%t remote=%t mac=%t stderr=%s", code, csrCalled, called, macRouteCalled, stderr.String())
+	}
+	journalPath := filepath.Join(workflowStore.Root, "operations", "prd-replacement-bootstrap", request.OperationID+".json")
+	durable, exists, err := readPRDReplacementBootstrapCoordinatorJournal(journalPath)
+	if err != nil || !exists || !sameStrings(durable.CompletedStages, prdReplacementBootstrapStages[:3]) {
+		t.Fatalf("server-material checkpoint was not preserved: journal=%+v exists=%t err=%v", durable, exists, err)
+	}
+	backend.ControllerRevision = strings.Repeat("b", 40)
+	identityBytes, err := os.ReadFile(identityFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identityFile, []byte("changed non-controller SSH key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "reconstructed previous host_control_sha256") {
+		t.Fatalf("controller amendment accepted changed SSH identity: code=%d stderr=%s", code, stderr.String())
+	}
+	updatePath := prdReplacementBootstrapControllerUpdatePath(journalPath)
+	if _, found, readErr := readPRDReplacementBootstrapControllerUpdate(updatePath); readErr != nil || found {
+		t.Fatalf("failed amendment left a record: found=%t err=%v", found, readErr)
+	}
+	if err := os.WriteFile(identityFile, identityBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 {
+		t.Fatalf("supported controller amendment failed: code=%d stderr=%s", code, stderr.String())
+	}
+	firstUpdateOutput := stdout.String()
+	var update PRDReplacementBootstrapControllerUpdate
+	if err := json.Unmarshal([]byte(firstUpdateOutput), &update); err != nil || update.OperationID != request.OperationID ||
+		update.PreviousControllerRevision != prdBootstrapPreviousController || update.PreviousHostControlSHA256 != durable.HostControlSHA256 ||
+		update.ControllerRevision != backend.ControllerRevision || update.HostControlSHA256 == durable.HostControlSHA256 {
+		t.Fatalf("controller amendment record is incomplete: record=%+v err=%v", update, err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(updateArgs, &stdout, &stderr); code != 0 || stdout.String() != firstUpdateOutput {
+		t.Fatalf("repeated amendment was not idempotent: code=%d stderr=%s", code, stderr.String())
+	}
+	// Resume rejects drift in the SSH identity, original request, and approval
+	// bytes before making another remote call.
+	if err := os.WriteFile(identityFile, []byte("post-amendment identity drift"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(bootstrapArgs, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "host profile, SSH identity, or trust inputs") {
+		t.Fatalf("resume accepted SSH identity drift: code=%d stderr=%s", code, stderr.String())
+	}
+	if err := os.WriteFile(identityFile, identityBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conflictingRequest := request
+	conflictingRequest.TemplateHostID = "factory-sandbox"
+	conflictingBytes, err := json.Marshal(conflictingRequest)
+	if err != nil || os.WriteFile(requestPath, conflictingBytes, 0o600) != nil {
+		t.Fatal("write conflicting request")
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(bootstrapArgs, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "request_sha256") {
+		t.Fatalf("resume accepted request drift: code=%d stderr=%s", code, stderr.String())
+	}
+	if err := os.WriteFile(requestPath, requestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(approvalPath, append(append([]byte(nil), approvalFileBytes...), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(bootstrapArgs, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "approval_sha256") {
+		t.Fatalf("resume accepted approval-byte drift: code=%d stderr=%s", code, stderr.String())
+	}
+	if err := os.WriteFile(approvalPath, approvalFileBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(bootstrapArgs, &stdout, &stderr); code != 0 || !called || !csrCalled || !macRouteCalled {
+		t.Fatalf("amended bootstrap resume failed: code=%d csr=%t remote=%t mac=%t stderr=%s", code, csrCalled, called, macRouteCalled, stderr.String())
 	}
 	if strings.Contains(stdout.String(), "private-key-stays-on-linux") || strings.Contains(stderr.String(), "private-key-stays-on-linux") {
 		t.Fatal("bootstrap command exposed a private-key marker in output")
@@ -207,37 +303,36 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil || result.Stage != "ready_for_catalog_promotion" || result.MacRoute == nil {
 		t.Fatalf("bootstrap result=%q err=%v", stdout.String(), err)
 	}
-	if bootstrapCalls != 1 || planCalls != 1 {
-		t.Fatalf("first invocation counts: bootstrap=%d plan=%d", bootstrapCalls, planCalls)
+	if bootstrapCalls != 2 || planCalls != 1 {
+		t.Fatalf("resume counts: bootstrap=%d plan=%d", bootstrapCalls, planCalls)
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := RunAdminCLI([]string{"prd-replacement-bootstrap", "--request-file", requestPath, "--approval-file", approvalPath,
-		"--publisher-owner", "Tomasz Walczuk", "--publisher-control", "clients-held", "--publishers-paused", "--no-new-accepted",
-		"--store-root", workflowStore.Root, "--json"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exact retry failed: code=%d stderr=%s", code, stderr.String())
+	if code := RunAdminCLI(bootstrapArgs, &stdout, &stderr); code != 0 {
+		t.Fatalf("exact completion retry failed: code=%d stderr=%s", code, stderr.String())
 	}
-	if bootstrapCalls != 2 || planCalls != 1 {
-		t.Fatalf("resume repeated planning or skipped idempotent completion: bootstrap=%d plan=%d", bootstrapCalls, planCalls)
+	if bootstrapCalls != 3 || planCalls != 1 {
+		t.Fatalf("completion retry counts: bootstrap=%d plan=%d", bootstrapCalls, planCalls)
 	}
-	var durable PRDReplacementBootstrapCoordinatorJournal
-	if err := readStrictJSON(filepath.Join(workflowStore.Root, "operations", "prd-replacement-bootstrap", request.OperationID+".json"), &durable); err != nil ||
-		validatePRDReplacementBootstrapCoordinatorJournal(durable) != nil || len(durable.CompletedStages) != len(prdReplacementBootstrapStages) {
-		t.Fatalf("coordinator journal did not reach complete stage: journal=%+v err=%v", durable, err)
+	durable, exists, err = readPRDReplacementBootstrapCoordinatorJournal(journalPath)
+	if err != nil || !exists || validatePRDReplacementBootstrapCoordinatorJournal(durable) != nil || len(durable.CompletedStages) != len(prdReplacementBootstrapStages) {
+		t.Fatalf("coordinator journal did not reach complete stage: journal=%+v exists=%t err=%v", durable, exists, err)
 	}
-	request.TemplateHostID = "factory-sandbox"
-	conflictingBytes, err := json.Marshal(request)
+	if update.CoordinatorBindingsSHA256 != prdReplacementBootstrapStableBindingsSHA(durable) {
+		t.Fatal("controller amendment no longer binds to the completed coordinator journal")
+	}
+	conflictingRequest = request
+	conflictingRequest.TemplateHostID = "factory-sandbox"
+	conflictingBytes, err = json.Marshal(conflictingRequest)
 	if err != nil || os.WriteFile(requestPath, conflictingBytes, 0o600) != nil {
-		t.Fatal("write conflicting retry input")
+		t.Fatal("write conflicting completed retry")
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := RunAdminCLI([]string{"prd-replacement-bootstrap", "--request-file", requestPath, "--approval-file", approvalPath,
-		"--publisher-owner", "Tomasz Walczuk", "--publisher-control", "clients-held", "--publishers-paused", "--no-new-accepted",
-		"--store-root", workflowStore.Root, "--json"}, &stdout, &stderr); code == 0 {
-		t.Fatal("conflicting retry input was accepted")
+	if code := RunAdminCLI(bootstrapArgs, &stdout, &stderr); code == 0 {
+		t.Fatal("conflicting completed retry was accepted")
 	}
-	if bootstrapCalls != 2 || planCalls != 1 {
+	if bootstrapCalls != 3 || planCalls != 1 {
 		t.Fatal("conflicting retry reached mutation or replanning")
 	}
 }

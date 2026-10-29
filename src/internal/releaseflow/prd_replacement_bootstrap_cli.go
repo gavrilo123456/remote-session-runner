@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"remote-session-runner/src/internal/laneinstall"
@@ -50,11 +51,16 @@ func executePRDReplacementBootstrap(ctx context.Context, native *NativePromotion
 	}
 	var plan PromotionPlan
 	if exists {
-		if !samePRDReplacementBootstrapJournalIdentity(journal, request.OperationID, release.ID, release.Digest,
-			requestSHA, approvalSHA, journal.PlanSHA256, hostControlSHA, approval.BackupRecoveryPackageSHA256,
-			request.PublisherOwner, request.PublisherControl, approval.PredecessorBundleSHA256) ||
-			!sameStringMap(journal.PredecessorBundles, approval.PredecessorBundleSHA256) {
-			return laneinstall.PRDReplacementBootstrapResult{}, ErrOperationConflict
+		if fields := bootstrapCoordinatorIdentityMismatches(journal, request, requestSHA, release, approvalSHA,
+			approval, request.PublisherOwner, request.PublisherControl); len(fields) != 0 {
+			return laneinstall.PRDReplacementBootstrapResult{}, fmt.Errorf("bootstrap resume identity mismatch: %s", strings.Join(fields, ", "))
+		}
+		if !sameStringMap(journal.PredecessorBundles, approval.PredecessorBundleSHA256) {
+			return laneinstall.PRDReplacementBootstrapResult{}, fmt.Errorf("bootstrap resume identity mismatch: predecessor_bundle_sha256")
+		}
+		if err := validatePRDReplacementBootstrapControllerUpdateForResume(native, journal, workflowStore.Root, request, requestSHA,
+			release, approval, approvalSHA, request.PublisherOwner, request.PublisherControl, hostControlSHA, profile, knownHostOutput); err != nil {
+			return laneinstall.PRDReplacementBootstrapResult{}, err
 		}
 	} else {
 		if prdBootstrapPlanForTests != nil {

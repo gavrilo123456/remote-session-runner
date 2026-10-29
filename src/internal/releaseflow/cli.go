@@ -367,6 +367,8 @@ func RunAdminCLI(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "prd-replacement-bootstrap":
 		return runPRDReplacementBootstrapCLI(args[1:], stdout, stderr)
+	case "prd-bootstrap-controller-update":
+		return runPRDReplacementBootstrapControllerUpdateCLI(args[1:], stdout, stderr)
 	case "status":
 		flags := flag.NewFlagSet("runner-release status", flag.ContinueOnError)
 		flags.SetOutput(stderr)
@@ -431,7 +433,7 @@ func RunAdminCLI(args []string, stdout, stderr io.Writer) int {
 	case "rollback":
 		return runRollbackCLI(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
-		fmt.Fprintln(stdout, "Usage:\n  runner-release status --build ID | --release ID | --acceptance-lane LANE --release ID | --lane LANE --operation ID [--json]\n  runner-release prd-replacement-bootstrap --request-file OWNER-ONLY-JSON --approval-file FILE --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--hosts-file FILE] [--store-root DIR] [--json]\n  runner-release branch-sync --lane qas|prd --operation ID [--json]\n  runner-release rollback --lane LANE --operation ID [--approval-file FILE] --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--json]")
+		fmt.Fprintln(stdout, "Usage:\n  runner-release status --build ID | --release ID | --acceptance-lane LANE --release ID | --lane LANE --operation ID [--json]\n  runner-release prd-replacement-bootstrap --request-file OWNER-ONLY-JSON --approval-file FILE --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--hosts-file FILE] [--store-root DIR] [--json]\n  runner-release prd-bootstrap-controller-update --operation ID --request-file OWNER-ONLY-JSON --approval-file FILE --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--hosts-file FILE] [--store-root DIR] [--json]\n  runner-release branch-sync --lane qas|prd --operation ID [--json]\n  runner-release rollback --lane LANE --operation ID [--approval-file FILE] --publisher-owner OWNER --publisher-control CONTROL --publishers-paused --no-new-accepted [--json]")
 		fmt.Fprintln(stdout, "PRD replacement bootstrap requires Dev and QAS acceptance plus the current approval for the exact read-only PRD plan. It obtains a host-generated CSR over the pinned host RPC, signs it with an operation-specific owner-only Mac CA key, prepares the fresh Linux namespace, then updates Mac trust and route under a journaled, backed-up Mac PRD stop; it does not select or start a service.")
 		fmt.Fprintln(stdout, "Branch-sync retries only the qas/prd source marker after runtime acceptance; it never redeploys. Rollback uses guarded reverse selector journals and does not restore databases by default.")
 		return 0
@@ -532,7 +534,10 @@ func runPRDReplacementBootstrapCLI(args []string, stdout, stderr io.Writer) int 
 		var operationErr error
 		result, operationErr = executePRDReplacementBootstrap(ctx, native, workflowStore, release, approval,
 			approvalSHA, originalRequestSHA, request)
-		return operationErr
+		if operationErr != nil {
+			return fmt.Errorf("execute PRD replacement bootstrap: %w", operationErr)
+		}
+		return nil
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)

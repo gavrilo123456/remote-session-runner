@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"syscall"
 	"time"
@@ -158,15 +157,6 @@ func validatePRDReplacementBootstrapCoordinatorJournal(journal PRDReplacementBoo
 func validPRDReplacementBootstrapTimestamp(value string) bool {
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	return err == nil && !parsed.IsZero() && parsed.UTC().Format(time.RFC3339Nano) == value
-}
-
-func samePRDReplacementBootstrapJournalIdentity(journal PRDReplacementBootstrapCoordinatorJournal, operationID, releaseID,
-	releaseSHA, requestSHA, approvalSHA, planSHA, hostControlSHA, backupSHA, owner, control string, predecessor map[string]string) bool {
-	return journal.OperationID == operationID && journal.ReleaseID == releaseID && journal.ReleaseSHA256 == releaseSHA &&
-		journal.RequestSHA256 == requestSHA && journal.ApprovalSHA256 == approvalSHA && journal.PlanSHA256 == planSHA &&
-		journal.HostControlSHA256 == hostControlSHA &&
-		journal.BackupPackageSHA256 == backupSHA && journal.PublisherOwner == owner && journal.PublisherControl == control &&
-		reflect.DeepEqual(journal.PredecessorBundles, predecessor)
 }
 
 func appendPRDReplacementBootstrapStage(journal *PRDReplacementBootstrapCoordinatorJournal, stage string, now time.Time) error {
