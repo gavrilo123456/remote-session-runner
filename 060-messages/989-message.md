@@ -644,3 +644,43 @@ Next: preserve the failed/blocked operation and all backups. After Sandbox `/dev
 ## Documentation delivery — Sandbox capacity checkpoint
 
 This checkpoint was committed as `3c820d28007aafd5fc59b17c208b3f09e3c58f00` on Mac `dev`, pushed to primary Gitea, and verified at the same exact GitHub mirror `dev` SHA. The three Ubuntu worktrees were clean on `dev` at `356969668cfbe9c3ab6dc55c74756c53a8f00e44`; each completed the required explicit-identity `git pull --ff-only origin dev` and is clean at `3c820d28007aafd5fc59b17c208b3f09e3c58f00`. The initial push succeeded remotely but could not update Mac's local tracking ref inside the restricted `.git`; an authorized Gitea fetch then made Mac `HEAD` and `origin/dev` equal at `3c820d2`. This was a documentation-only delivery, so no tests were rerun. The source-gate results remain those already recorded above.
+
+## Latest checkpoint — PRD fresh-install predecessor supersession correction
+
+The correction is delivered as `fc47eed2e04563401180f35c0f07c7dbc5358d64`.
+It fixes supersession evidence for replacement Linux's explicit unselected
+fresh-install baseline. The regression
+`TestCatalogPRDFreshInstallRollbackSupersessionUsesAbsentBaseline` checks the
+matching baseline, empty selector identity, and rejection of changed/missing
+baseline evidence, selected runtime state, and a fabricated previous bundle.
+The change is controller/host tooling only; sealed release
+`rr-20261030-e3d3f5a` and its bundles remain unchanged.
+
+Go 1.27.1 source gates passed on Mac, Factory, Sandbox, and replacement Linux.
+Mac full test/vet/build/smoke passed after the initial restricted `/bin/ps`
+fixture failure (retained as NOT PASS). Factory Linux/AMD64 and Sandbox
+Linux/ARM64 full test/vet/build/smoke passed. Linux focused packages, P025,
+P101, native vet/build/smoke passed; earlier Linux full-suite interruptions
+remain NOT PASS. Exact log hashes and commands are in
+`040-implementation-evidence/BUG-027.md`. Gitea, GitHub mirror, Mac, and all
+three clean workers match `fc47eed`.
+
+A first read-only plan attempt failed because the child Go process could not
+write its default Mac caches; no host state changed. The shared-cache retry
+returned `planned_no_effects` at `2026-10-30T15:48:16Z`, plan SHA-256
+`6b192337b86806349e1f3e79658c08c571904acfdb5d8b7a84e97a469fd2b67b`.
+It observed all four PRD services stopped, schema 40, empty inventories, and
+the exact `38f966a32a0e4bb094dcbd37d994af0b` admission hold on every host.
+The same operation remains blocked before selector work; predecessor is
+`8474c9b8e550bec2a900dc954824e9df`. Existing backup manifest hashes were
+rechecked on all four hosts. Sandbox had 707,739,648 bytes in the plan and
+706,125,824 bytes in the direct follow-up, above the 567,108,864-byte
+post-backup floor; take no new backup without fresh capacity evidence.
+
+Next: deliver this evidence through Gitea, exact GitHub mirror verification,
+and clean worker fast-forwards. Then resume operation `38f966a…` with the
+corrected controller and `--prepare-only`; verify the predecessor is
+synchronized as superseded, successor as held, and exactly one hold remains
+on each host before any selector switch. Continue Linux → Sandbox → Factory
+→ Mac with fresh checks. Keep QAS/mailbox ownership unchanged, publish no
+mailbox requests or ACKs, preserve retained history, and keep clients paused.
