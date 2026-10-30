@@ -864,6 +864,55 @@ func configuredPRDHostID(configuration config.Config) (string, error) {
 	return configuredPRDHostIDForConfiguration(configuration, runtime.GOOS, runtime.GOARCH, current.Username, replacementLinuxLocalIPv4())
 }
 
+// CatalogPRDHostIDFromConfiguration resolves the canonical host identity
+// from an already validated PRD configuration without consulting selector or
+// admission-receipt state. Callers must validate that operational state
+// separately for the command they intend to run; host identity remains bound
+// to the platform, account, namespace paths, and fixed direct route.
+func CatalogPRDHostIDFromConfiguration(configuration config.Config, goos, goarch, account string, localIPv4 []string) (string, error) {
+	if profiles, configured := configuration.LaneProfiles(); configured {
+		if profiles.Lane() != config.ReleaseLanePRD {
+			return "", ErrInvalidCatalogRelease
+		}
+		hostID := ""
+		switch profiles.Host() {
+		case config.HostKindMac:
+			hostID = "mac-control-plane"
+		case config.HostKindLinux:
+			hostID = profiles.RemoteProfile()
+		default:
+			return "", ErrInvalidCatalogRelease
+		}
+		plan, err := BuildCatalogPlan(hostID, config.ReleaseLanePRD)
+		if err != nil || !CatalogHostMatchesPlatform(hostID, goos, goarch) || plan.Namespace.Host != profiles.Host() || plan.Namespace.RemoteProfile != profiles.RemoteProfile() {
+			return "", ErrInvalidCatalogRelease
+		}
+		return hostID, nil
+	}
+	if configuration.ReleaseLane() != config.ReleaseLanePRD {
+		return "", ErrInvalidCatalogRelease
+	}
+	hostID, err := configuredPRDHostIDForConfiguration(configuration, goos, goarch, account, localIPv4)
+	if err != nil {
+		return "", err
+	}
+	plan, err := BuildPRDUpgradePlan(hostID)
+	if err != nil {
+		return "", err
+	}
+	if settings, ok := configuration.MacSettings(); ok {
+		if hostID != "mac-control-plane" || settings.ServiceRoot != plan.Namespace.ServiceRoot {
+			return "", ErrInvalidCatalogRelease
+		}
+		return hostID, nil
+	}
+	settings, ok := configuration.LinuxSettings()
+	if !ok || settings.ServiceRoot != plan.Namespace.ServiceRoot || settings.Database != plan.Namespace.Database {
+		return "", ErrInvalidCatalogRelease
+	}
+	return hostID, nil
+}
+
 func configuredPRDHostIDForConfiguration(configuration config.Config, goos, goarch, account string, localIPv4 []string) (string, error) {
 	if _, ok := configuration.MacSettings(); ok && configuration.Kind() == config.HostKindMac {
 		if !CatalogHostMatchesPlatform("mac-control-plane", goos, goarch) || account != config.MacAccount {

@@ -2150,11 +2150,13 @@ func currentCatalogHostError(hostID string) error {
 	if err != nil {
 		return errors.New("canonical PRD configuration is unavailable or invalid")
 	}
-	configured, _, err := laneinstall.CatalogPlanFromConfiguration(loaded)
+	configuredHostID, err := laneinstall.CatalogPRDHostIDFromConfiguration(
+		loaded, runtime.GOOS, runtime.GOARCH, current.Username, localIPv4Addresses(),
+	)
 	if err != nil {
-		return errors.New("PRD configuration namespace, route, or path validation failed")
+		return errors.New("PRD configuration host, route, or path validation failed")
 	}
-	if configured.HostID != hostID || configured.Lane != config.ReleaseLanePRD {
+	if configuredHostID != hostID {
 		return errors.New("PRD configuration host or lane identity mismatch")
 	}
 	return nil

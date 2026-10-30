@@ -123,6 +123,12 @@ environment_registry:
 	if got, err := configuredPRDHostIDForConfiguration(loaded, "linux", "amd64", config.LinuxAccount, []string{"10.0.0.228"}); err != nil || got != "linux-host" {
 		t.Fatalf("replacement V2 config resolved host=%q err=%v", got, err)
 	}
+	if got, err := CatalogPRDHostIDFromConfiguration(loaded, "linux", "amd64", config.LinuxAccount, []string{"10.0.0.228"}); err != nil || got != "linux-host" {
+		t.Fatalf("stateless PRD host identity resolution returned host=%q err=%v", got, err)
+	}
+	if _, err := CatalogPRDHostIDFromConfiguration(loaded, "linux", "amd64", config.LinuxAccount, []string{"10.0.0.200"}); err == nil {
+		t.Fatal("stateless PRD host identity accepted the retired worker address")
+	}
 	if _, err := configuredPRDHostIDForConfiguration(loaded, "linux", "amd64", config.LinuxAccount, []string{"10.0.0.200"}); err == nil {
 		t.Fatal("replacement V2 config resolved on the retired worker address")
 	}
