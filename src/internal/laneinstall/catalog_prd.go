@@ -788,7 +788,8 @@ func (m *CatalogPRDMaintenance) Rollback(ctx context.Context, operationID string
 		return CatalogSelectorOperation{}, err
 	}
 	operation, err := readCatalogSelectorOperation(m.layout.operationRoot, operationID)
-	if err != nil || validateCatalogOperation(m.layout, operation) != nil || operation.CohortOperationID == "" || operation.Stage != catalogOperationComplete {
+	if err != nil || validateCatalogOperation(m.layout, operation) != nil || operation.CohortOperationID == "" ||
+		(operation.Stage != catalogOperationComplete && operation.Stage != catalogOperationRolledBack) {
 		return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
 	}
 	cohortPlan := Plan{HostID: m.plan.HostID, Lane: config.ReleaseLanePRD, Namespace: m.plan.Namespace}
@@ -797,7 +798,21 @@ func (m *CatalogPRDMaintenance) Rollback(ctx context.Context, operationID string
 		return CatalogSelectorOperation{}, err
 	}
 	current, err := inspectCatalogSelector(m.layout)
-	if err != nil || validateCatalogCohortHostMayRollback(receipt, m.layout, operation, current.Target) != nil {
+	if err != nil {
+		return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
+	}
+	if operation.Stage == catalogOperationRolledBack {
+		// A prior attempt may have atomically restored the selector and written
+		// its host rollback transition, then been interrupted while synchronizing
+		// the cohort receipt. Revalidate the exact journal, selector, and receipt
+		// evidence instead of attempting that selector mutation a second time.
+		if validatePRDCatalogRollbackRetryState(m.layout, receipt, operation, current, m.proof.schema,
+			m.proof.configurationSHA256) != nil {
+			return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
+		}
+		return operation, nil
+	}
+	if validateCatalogCohortHostMayRollback(receipt, m.layout, operation, current.Target) != nil {
 		return CatalogSelectorOperation{}, ErrCatalogRollbackUnsafe
 	}
 	if current.Target != operation.NextTarget {

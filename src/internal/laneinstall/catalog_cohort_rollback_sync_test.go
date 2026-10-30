@@ -2,6 +2,7 @@ package laneinstall
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -349,6 +350,25 @@ func TestPRDCohortRollbackReconciliationSynchronizesLegacySelectedState(t *testi
 			t.Fatalf("record PRD rollback %s: %v", hostID, err)
 		}
 		hosts[hostID] = fixture
+		status, statusErr := inspectCatalogSelector(fixture.selector.layout)
+		configurationSHA256, configErr := hashCatalogConfiguration(fixture.selector.layout.configFile)
+		if statusErr != nil || configErr != nil {
+			t.Fatalf("inspect completed PRD rollback %s: status=%v config=%v", hostID, statusErr, configErr)
+		}
+		if err := validatePRDCatalogRollbackRetryStateUsing(fixture.selector.layout, reconciled, operation, status,
+			store.CurrentSchemaVersion, configurationSHA256, func(_ catalogSelectorLayout, candidate CatalogSelectorOperation) error {
+				return validateCatalogOperationFields(candidate)
+			}); err != nil {
+			t.Fatalf("accept exact already-applied PRD rollback for safe retry %s: %v", hostID, err)
+		}
+		wrongSelector := status
+		wrongSelector.Target = operation.NextTarget
+		if err := validatePRDCatalogRollbackRetryStateUsing(fixture.selector.layout, reconciled, operation, wrongSelector,
+			store.CurrentSchemaVersion, configurationSHA256, func(_ catalogSelectorLayout, candidate CatalogSelectorOperation) error {
+				return validateCatalogOperationFields(candidate)
+			}); !errors.Is(err, ErrCatalogRollbackUnsafe) {
+			t.Fatalf("accept retry with a changed selector for %s: %v", hostID, err)
+		}
 		syncPRDCohortRollbackReceiptToAllHosts(t, hosts, reconciled)
 	}
 	reconciled, err = AdvanceCatalogCohortReceipt(reconciled, "rollback-complete", "", proof, now.Add(10*time.Second))

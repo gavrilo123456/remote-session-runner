@@ -21,6 +21,48 @@ import (
 	"remote-session-runner/src/internal/store"
 )
 
+func TestPRDCohortRollbackAcceptsMatchingFreshInstallBaselineWithoutLegacyArtifacts(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	configurationSHA := strings.Repeat("a", 64)
+	absence := validFreshPRDAbsenceForTest(t, now.Add(-time.Minute))
+	baseline, err := NewCatalogFreshInstallBaseline("0123456789abcdef0123456789abcdef", absence,
+		configurationSHA, 40, CatalogWorkInventory{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := CatalogCohortHostPreflight{HostID: "linux-host", FreshInstall: &baseline}
+	proof := prdCatalogProof{freshInstall: &baseline}
+	unselected := CatalogSelectorStatus{Kind: "unselected"}
+	plan := PRDUpgradePlan{HostID: "linux-host"}
+	if err := verifyPRDCatalogCohortRollbackArtifacts(plan, host, proof, unselected, PRDBackupManifest{}); err != nil {
+		t.Fatalf("accept rollback to the hash-matched, unselected fresh-install baseline without legacy service artifacts: %v", err)
+	}
+
+	mismatched := baseline
+	mismatched.EvidenceSHA256 = strings.Repeat("b", 64)
+	if err := verifyPRDCatalogCohortRollbackArtifacts(plan, host, prdCatalogProof{freshInstall: &mismatched}, unselected,
+		PRDBackupManifest{}); !errors.Is(err, ErrPRDUpgradeGuard) {
+		t.Fatalf("accept mismatched fresh-install baseline: %v", err)
+	}
+	if err := verifyPRDCatalogCohortRollbackArtifacts(plan, host, prdCatalogProof{}, unselected, PRDBackupManifest{}); !errors.Is(err, ErrPRDUpgradeGuard) {
+		t.Fatalf("accept rollback without current baseline proof: %v", err)
+	}
+	selected := CatalogSelectorStatus{Kind: "catalog", Target: "/catalog/other-release"}
+	if err := verifyPRDCatalogCohortRollbackArtifacts(plan, host, proof, selected, PRDBackupManifest{}); !errors.Is(err, ErrPRDUpgradeGuard) {
+		t.Fatalf("accept selected release as fresh-install rollback state: %v", err)
+	}
+	peerLane := host
+	peerLane.HostID = "sandbox-host"
+	if err := verifyPRDCatalogCohortRollbackArtifacts(PRDUpgradePlan{HostID: "sandbox-host"}, peerLane, proof, unselected,
+		PRDBackupManifest{}); !errors.Is(err, ErrPRDUpgradeGuard) {
+		t.Fatalf("accept fresh-install rollback evidence for a peer host: %v", err)
+	}
+	withoutFreshBaseline := CatalogCohortHostPreflight{HostID: "linux-host"}
+	if err := verifyPRDCatalogCohortRollbackArtifacts(plan, withoutFreshBaseline, proof, unselected, PRDBackupManifest{}); !errors.Is(err, ErrPRDUpgradeGuard) {
+		t.Fatalf("skip legacy-artifact verification without a fresh-install baseline: %v", err)
+	}
+}
+
 type prdFenceOrderService struct {
 	active bool
 	lockFD int

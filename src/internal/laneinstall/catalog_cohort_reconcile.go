@@ -433,7 +433,7 @@ func validatePRDCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, r
 			return err
 		}
 		if cohortHasRolledBackHost(receipt, plan.HostID) {
-			return verifyPRDLegacyServiceArtifactsFromBackup(prdPlan, manifest)
+			return verifyPRDCatalogCohortRollbackArtifacts(prdPlan, host, proof, status, manifest)
 		}
 		return verifyPRDCatalogServiceArtifacts(plan.HostID)
 	}
@@ -441,6 +441,33 @@ func validatePRDCatalogCohortHistoryLocalState(ctx context.Context, plan Plan, r
 		return ErrCatalogOperationInvalid
 	}
 	return verifyPRDBackupTargets(manifest, true)
+}
+
+// validatePRDFreshInstallRollbackEvidence proves rollback to the recorded
+// unselected replacement baseline. There are no predecessor service artifacts
+// to restore or compare for a fresh install; readPRDCatalogProof has already
+// revalidated the baseline against the current configuration, schema, and
+// empty-work inventory, while the caller validates the selector journal and
+// the consistent backup.
+func validatePRDFreshInstallRollbackEvidence(host CatalogCohortHostPreflight, proof prdCatalogProof,
+	status CatalogSelectorStatus) error {
+	if host.HostID != "linux-host" || host.FreshInstall == nil || proof.freshInstall == nil ||
+		host.FreshInstall.EvidenceSHA256 == "" || proof.freshInstall.EvidenceSHA256 != host.FreshInstall.EvidenceSHA256 ||
+		status.Kind != "unselected" || status.Target != "" {
+		return ErrPRDUpgradeGuard
+	}
+	return nil
+}
+
+func verifyPRDCatalogCohortRollbackArtifacts(plan PRDUpgradePlan, host CatalogCohortHostPreflight,
+	proof prdCatalogProof, status CatalogSelectorStatus, manifest PRDBackupManifest) error {
+	if plan.HostID != host.HostID {
+		return ErrPRDUpgradeGuard
+	}
+	if host.FreshInstall != nil {
+		return validatePRDFreshInstallRollbackEvidence(host, proof, status)
+	}
+	return verifyPRDLegacyServiceArtifactsFromBackup(plan, manifest)
 }
 
 // validatePRDCatalogCohortHostObservation compares stable local state with the
@@ -579,6 +606,26 @@ func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayou
 	status CatalogSelectorStatus, databaseSchema int, configurationSHA256 string, matching []CatalogSelectorOperation) error {
 	return validateCatalogCohortReconciledSelectorEvidenceUsing(layout, receipt, status, databaseSchema,
 		configurationSHA256, matching, validateCatalogOperation)
+}
+
+func validatePRDCatalogRollbackRetryState(layout catalogSelectorLayout, receipt CatalogCohortReceipt,
+	operation CatalogSelectorOperation, status CatalogSelectorStatus, databaseSchema int, configurationSHA256 string) error {
+	return validatePRDCatalogRollbackRetryStateUsing(layout, receipt, operation, status, databaseSchema,
+		configurationSHA256, validateCatalogOperation)
+}
+
+func validatePRDCatalogRollbackRetryStateUsing(layout catalogSelectorLayout, receipt CatalogCohortReceipt,
+	operation CatalogSelectorOperation, status CatalogSelectorStatus, databaseSchema int, configurationSHA256 string,
+	validateOperation func(catalogSelectorLayout, CatalogSelectorOperation) error) error {
+	if layout.lane != config.ReleaseLanePRD || operation.Stage != catalogOperationRolledBack ||
+		status.Target != operation.PreviousTarget || (receipt.Stage != CatalogCohortRollingBack && receipt.Stage != CatalogCohortRolledBack) {
+		return ErrCatalogRollbackUnsafe
+	}
+	if err := validateCatalogCohortReconciledSelectorEvidenceUsing(layout, receipt, status, databaseSchema,
+		configurationSHA256, []CatalogSelectorOperation{operation}, validateOperation); err != nil {
+		return errors.Join(ErrCatalogRollbackUnsafe, err)
+	}
+	return nil
 }
 
 // validateCatalogCohortReconciledSelectorEvidenceUsing shares the receipt,
