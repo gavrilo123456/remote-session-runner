@@ -65,9 +65,35 @@ Mac Go 1.27.1 darwin/arm64 validation passed on the final source patch:
 
 The checks use `GOTOOLCHAIN=local`, the shared Mac Go build cache and the
 already-existing `/Users/tomasz.walczuk/go/pkg/mod` module cache used by the
-preceding passing gates. No shared cache was cleared or copied. Native worker
-validation and primary/mirror delivery of this patch follow its source commit;
-their results will be recorded before a live operator is handed over.
+preceding passing gates. No shared cache was cleared or copied.
+
+The source correction and initial handoff/evidence were committed on Mac `dev`
+as `51bee111dbb78c4be4cd73228777cb2b1cab50ec`. Primary Gitea and the automatic
+GitHub mirror were both verified at that exact SHA before remote validation.
+All three workers began clean on `dev` at `4eeb9d0`, fast-forwarded from the
+mirror, and remained clean at the tested source commit.
+
+Each worker used its pinned Go 1.27.1 and normal Go caches, with one task-owned
+disk-backed temporary directory removed after all checks exited. Each passed:
+`go test ./src/internal/releaseflow -count=1`,
+`go vet ./src/internal/releaseflow`, native `runner-release` build with the
+source revision embedded, `--help`, `--version`, and `git diff --check`.
+These are complete changed-package and operator checks, not a claim that a new
+whole-repository suite or live lane acceptance was run for this correction.
+
+| Worker | Platform | Checks elapsed | Source-check log SHA-256 | Free bytes afterward |
+| --- | --- | ---: | --- | ---: |
+| Replacement Linux | linux/amd64 | 52.78 s | `e487d2c2ed15d2c58d95f886ed01274e1994f2642eb228111030bb54cb489114` | 38757711872 |
+| Sandbox | linux/arm64 | 57.36 s | `9ad3db3177f26c5358a32214cb104e5f0e186a4a4d90a754555645e5f3708c3d` | 1568571392 |
+| Factory | linux/amd64 | 57.43 s | `fb9919f049af2810fd01899ab6dcb33183821c8b5dc7af0ecad23be5f52da9db` | 34015375360 |
+
+On each worker the log is
+`/home/ubuntu/.cache/remote-session-runner/bug027-input-unblock-51bee111/source-checks.log`.
+Mac capture summaries are under
+`/private/tmp/rsr-bug027-maintainer-unblock-20261030/*-validation.json`.
+The final evidence-only checkpoint is delivered after these results, before
+building/freezing the live operator. No further controller amendment has been
+consumed by this source and documentation delivery.
 
 ## Operational boundary and next sequence
 
@@ -79,7 +105,15 @@ the original continuation remains
 `a3a601b3ea63738c98778d7fac6fb49187d0e04f6fc64fef6438c60a09c42f09`.
 
 Finish source/evidence delivery, then freeze the final controller HEAD through
-renewal and bootstrap completion. Use the durable original-input copies with
+renewal and bootstrap completion. The reviewed assistance helper is
+`/private/tmp/rsr-bug027-maintainer-unblock-20261030/resume-bootstrap.py`;
+its adjacent `controller-manifest.json` binds the final controller revision
+and the attested operator binary digest. It verifies a clean, unchanged Mac
+HEAD, operator/input hashes, modes, checkpoint and deadline before invoking
+the two supported public commands. The helper was syntax-checked, not executed;
+its underlying public-command behavior is covered by the package regressions.
+Do not execute it before final primary/mirror/worker synchronization and the
+attested operator manifest are complete. Use the durable original-input copies with
 `prd-bootstrap-window-renew` directly, followed by the same operation's
 `prd-replacement-bootstrap` and existing continuation file. The authorized end
 is `2026-10-30T10:00:00Z` (11:00 Warsaw), for bootstrap only. Fresh guards must
