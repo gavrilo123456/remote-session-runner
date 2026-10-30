@@ -308,11 +308,12 @@ renew the already-valid approval or repeat completed work.
 
 ## Latest checkpoint — source correction delivered and host gates complete
 
-The rolled-back-predecessor fix and regression are delivered at
-`77aded5d45c110fecd75e9b274fbb09fdc103b2a`. Gitea and its GitHub mirror both
-resolve to this exact SHA. All three Ubuntu `dev` checkouts were clean at
-`30539aa` before delivery and fast-forwarded cleanly to `77aded5` using the
-configured explicit SSH/Git identities.
+The rolled-back-predecessor fix and regression are delivered as source commit
+`77aded5d45c110fecd75e9b274fbb09fdc103b2a`. The completed native test matrix
+and checkpoint are recorded in evidence-only commit
+`4fe9cbd6c97cec670e21f799b953cbc2efce4e27`, which changes no source files.
+Gitea, its GitHub mirror, and all three clean Ubuntu `dev` checkouts now
+resolve to `4fe9cbd`, fast-forwarded with the configured explicit identities.
 
 At this source revision, Mac Go 1.27.1 full `make test`, `make vet`,
 `make build`, and `make smoke` pass. The full suite initially failed only
@@ -324,10 +325,11 @@ changed-package tests, exact P025 and P101 regressions, vet, build, and smoke
 pass; its full-suite interruptions remain NOT PASS under the approved Factory
 substitution. All worker checkouts remain clean at the delivered SHA.
 
-The corrected Mac `promote-to` and `runner-release` controllers were built
-from `77aded5` outside the sealed release catalog, reporting that revision;
-their hashes are recorded in the private task output. The first read-only
-plan attempt failed because the sandboxed child Go process could not access
+The corrected Mac `promote-to` and `runner-release` controllers were first
+built from `77aded5` outside the sealed release catalog. They must be rebuilt
+from final controller/evidence revision `4fe9cbd` before resuming the
+operation. The first read-only plan attempt failed because the sandboxed child
+Go process could not access
 the default Mac caches, and made no host changes. A rerun with shared Go
 caches passed at `2026-10-30T11:52:44Z`, outcome `planned_no_effects`, plan SHA
 `8e6a24614db01ef5067f00bf00238668a25f2a0159ec8e0d3372a3ec6ea9b65d`.
@@ -338,9 +340,8 @@ required; remeasure immediately before backup writes and enforce the same
 post-backup floor.
 
 The owner approval already ends at `2026-10-30T22:00:00Z` / 23:00 Warsaw, so
-the requested cutoff extension requires no new approval record. Next: finish
-the evidence-only Git delivery, rebuild the promotion controller with that
-final revision, then resume the same blocked operation
+the requested cutoff extension requires no new approval record. Next: rebuild
+the promotion controller from `4fe9cbd`, then resume the same blocked operation
 `01d9088c62e705632c9523346e14099d` using `--prepare-only` and the existing
 release-bound approval. Keep QAS, mailbox ownership, the sealed release,
 retained histories, and paused clients unchanged.
