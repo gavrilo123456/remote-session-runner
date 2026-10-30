@@ -199,6 +199,120 @@ func TestCatalogPRDCohortAcceptsOnlyExplicitFreshReplacementBaseline(t *testing.
 	}
 }
 
+func TestCatalogPRDFreshInstallRollbackSupersessionUsesAbsentBaseline(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	predecessor := catalogPRDSupersessionReceiptFixture(t, "cat-fixture-fresh-rollback", nil, now)
+	linuxIndex := cohortHostIndex(predecessor, "linux-host")
+	if linuxIndex < 0 {
+		t.Fatal("fresh-install predecessor fixture is missing linux-host")
+	}
+	linux := &predecessor.Hosts[linuxIndex]
+	linux.PreviousTarget, linux.PreviousBundleSHA256 = "", ""
+	linux.PreviousReadSchemaMax = 0
+	linux.LegacyRollback = nil
+	absence := validFreshPRDAbsenceForTest(t, now.Add(-30*time.Second))
+	baseline, err := NewCatalogFreshInstallBaseline("0123456789abcdef0123456789abcdef", absence,
+		linux.ConfigurationSHA256, linux.SchemaVersion, CatalogWorkInventory{}, now.Add(-15*time.Second))
+	if err != nil {
+		t.Fatalf("create fresh-install baseline: %v", err)
+	}
+	linux.FreshInstall = &baseline
+	predecessor = catalogPRDAdvanceToVerifying(t, predecessor, now)
+	proofDigest := strings.Repeat("d", 64)
+	predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "block", "", proofDigest, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("block predecessor for rollback: %v", err)
+	}
+	predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "rollback-start", "", proofDigest, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("start predecessor rollback: %v", err)
+	}
+	for index := len(catalogCohortSwitchOrder) - 1; index >= 0; index-- {
+		predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "rollback-host", catalogCohortSwitchOrder[index], proofDigest,
+			now.Add(time.Duration(3+len(catalogCohortSwitchOrder)-1-index)*time.Second))
+		if err != nil {
+			t.Fatalf("record predecessor rollback for %s: %v", catalogCohortSwitchOrder[index], err)
+		}
+	}
+	predecessor, err = AdvanceCatalogCohortReceipt(predecessor, "rollback-complete", "", proofDigest, now.Add(8*time.Second))
+	if err != nil || predecessor.Stage != CatalogCohortRolledBack {
+		t.Fatalf("complete predecessor rollback stage=%s err=%v", predecessor.Stage, err)
+	}
+	if err := ValidateCatalogCohortReceipt(predecessor); err != nil {
+		t.Fatalf("rolled-back fresh-install predecessor is invalid: %v", err)
+	}
+
+	successor := catalogPRDSupersessionReceiptFixture(t, "cat-fixture-fresh-successor", &predecessor, now)
+	for index := range successor.Hosts {
+		oldHost := predecessor.Hosts[index]
+		newHost := &successor.Hosts[index]
+		newHost.PreviousTarget = oldHost.PreviousTarget
+		newHost.PreviousBundleSHA256 = oldHost.PreviousBundleSHA256
+		newHost.PreviousReadSchemaMax = oldHost.PreviousReadSchemaMax
+		newHost.LegacyRollback = oldHost.LegacyRollback
+		newHost.FreshInstall = oldHost.FreshInstall
+		newHost.ConfigurationSHA256 = oldHost.ConfigurationSHA256
+		newHost.SchemaVersion = oldHost.SchemaVersion
+		newHost.WorkInventorySHA256 = oldHost.WorkInventorySHA256
+		newHost.WorkInventoryEmpty = true
+	}
+	successor = catalogPRDAdvanceToHeld(t, successor, now)
+	if err := ValidateCatalogCohortReceipt(successor); err != nil {
+		t.Fatalf("held successor with the exact fresh-install baseline is invalid: %v", err)
+	}
+
+	oldHost, successorHost := predecessor.Hosts[linuxIndex], successor.Hosts[linuxIndex]
+	proof := prdCatalogProof{schema: oldHost.SchemaVersion, configurationSHA256: oldHost.ConfigurationSHA256,
+		work: CatalogWorkInventory{}, workSHA256: oldHost.WorkInventorySHA256, freshInstall: oldHost.FreshInstall}
+	missingLegacy := PRDPreflight{HostID: "linux-host", BinarySHA256: map[string]string{}, MissingComponents: []string{"runnerd"}}
+	if _, err := PRDLegacyBundleDigest(missingLegacy); err == nil {
+		t.Fatal("fixture unexpectedly has a legacy binary inventory for the fresh-install baseline")
+	}
+	bundleSHA, err := prdSupersessionSelectorBundleSHA256(oldHost, successorHost,
+		CatalogSelectorStatus{Kind: "unselected"}, &proof, nil)
+	if err != nil || bundleSHA != "" {
+		t.Fatalf("exact fresh-install baseline should use an empty selector bundle identity: bundle=%q err=%v", bundleSHA, err)
+	}
+	observation := fixtureCohortSupersessionEvidence(predecessor, successor, linuxIndex, "rolled_back")
+	if !observationMatchesSuccessor(predecessor, successor, observation) {
+		t.Fatal("exact unselected fresh-install baseline did not match the held successor")
+	}
+	advanced, err := AdvanceCatalogCohortSupersedeHost(predecessor, successor, observation, now.Add(9*time.Second))
+	if err != nil || len(currentSupersededHosts(advanced.Transitions)) != 1 {
+		t.Fatalf("record guarded Linux supersession evidence: count=%d err=%v", len(currentSupersededHosts(advanced.Transitions)), err)
+	}
+
+	changedBaseline := successor
+	changedBaseline.Hosts = append([]CatalogCohortHostPreflight(nil), successor.Hosts...)
+	mutated := *successorHost.FreshInstall
+	mutated.OperationID = "fedcfedcfedcfedcfedcfedcfedcfedc"
+	changedBaseline.Hosts[linuxIndex].FreshInstall = &mutated
+	if observationMatchesSuccessor(predecessor, changedBaseline, observation) {
+		t.Fatal("successor with a different fresh-install baseline was accepted")
+	}
+	if _, err := prdSupersessionSelectorBundleSHA256(oldHost, changedBaseline.Hosts[linuxIndex],
+		CatalogSelectorStatus{Kind: "unselected"}, &proof, nil); err == nil {
+		t.Fatal("live proof accepted a successor bound to a different fresh-install baseline")
+	}
+	missingBaseline := successorHost
+	missingBaseline.FreshInstall = nil
+	if _, err := prdSupersessionSelectorBundleSHA256(oldHost, missingBaseline,
+		CatalogSelectorStatus{Kind: "unselected"}, &proof, nil); err == nil {
+		t.Fatal("live proof accepted a successor missing fresh-install evidence")
+	}
+	changedProof := proof
+	changedProof.selectorTarget = filepath.Join("/tmp", "unexpected-selected-release")
+	if _, err := prdSupersessionSelectorBundleSHA256(oldHost, successorHost,
+		CatalogSelectorStatus{Kind: "unselected"}, &changedProof, nil); err == nil {
+		t.Fatal("live proof accepted a selected runtime for an unselected fresh-install baseline")
+	}
+	changedObservation := observation
+	changedObservation.SelectorBundleSHA256 = strings.Repeat("f", 64)
+	if observationMatchesSuccessor(predecessor, successor, changedObservation) {
+		t.Fatal("fresh-install supersession accepted a fabricated prior bundle identity")
+	}
+}
+
 func TestFreshInstallReceiptRequiresSuccessorRuntimeAndRollsBackToAbsentHeldNamespace(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	manifest, reports := catalogCohortCreationFixture(t, now)
@@ -1452,10 +1566,14 @@ func catalogPRDAdvanceToHeld(t *testing.T, receipt CatalogCohortReceipt, now tim
 	var err error
 	for _, hostID := range catalogCohortSwitchOrder {
 		host := receipt.Hosts[cohortHostIndex(receipt, hostID)]
+		freshInstallSHA256 := ""
+		if host.FreshInstall != nil {
+			freshInstallSHA256 = host.FreshInstall.EvidenceSHA256
+		}
 		fence := CatalogCohortHostFence{HostID: hostID, ServiceWasActive: false, ServiceStopped: true,
 			WorkInventorySHA256: host.WorkInventorySHA256, ConfigurationSHA256: host.ConfigurationSHA256,
 			SelectorTarget: host.PreviousTarget, PreviousBundleSHA256: host.PreviousBundleSHA256,
-			DatabaseSchema: host.SchemaVersion, ObservedAt: now.Format(time.RFC3339Nano)}
+			FreshInstallEvidenceSHA256: freshInstallSHA256, DatabaseSchema: host.SchemaVersion, ObservedAt: now.Format(time.RFC3339Nano)}
 		receipt, err = AdvanceCatalogCohortHostFence(receipt, fence, now)
 		if err != nil {
 			t.Fatalf("record PRD host fence %s: %v", hostID, err)

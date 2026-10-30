@@ -808,19 +808,37 @@ func ObserveCatalogCohortSupersession(ctx context.Context, plan Plan, receipt, s
 	if oldHostIndex < 0 || !catalogCohortSupersessionSelectorMatches(layout, receipt, receipt.Hosts[oldHostIndex], status) {
 		return CatalogCohortSupersessionEvidence{}, ErrCatalogOperationInvalid
 	}
+	oldHost := receipt.Hosts[oldHostIndex]
+	successorHost := successor.Hosts[index]
 	selectorBundleSHA256 := catalogSelectorStatusBundleSHA256(status)
 	if plan.Lane == config.ReleaseLanePRD && status.Kind == "unselected" {
 		prdPlan, planErr := BuildPRDUpgradePlan(plan.HostID)
 		if planErr != nil {
 			return CatalogCohortSupersessionEvidence{}, ErrPRDUpgradeGuard
 		}
-		legacy, legacyErr := readPRDLegacyInventory(prdPlan)
-		if legacyErr != nil {
-			return CatalogCohortSupersessionEvidence{}, legacyErr
-		}
-		selectorBundleSHA256, err = PRDLegacyBundleDigest(legacy)
-		if err != nil {
-			return CatalogCohortSupersessionEvidence{}, err
+		if oldHost.FreshInstall != nil {
+			// A fresh replacement baseline has no previous PRD binary set. Re-read
+			// its schema-40 database, configuration, work inventory, unselected
+			// selector, and canonical fresh-install evidence through the existing
+			// read-only proof path. Do not reinterpret the intentionally absent
+			// legacy artifacts as an incomplete legacy installation.
+			proof, proofErr := readPRDCatalogProof(ctx, prdPlan, layout)
+			if proofErr != nil {
+				return CatalogCohortSupersessionEvidence{}, errors.Join(ErrPRDUpgradeGuard, proofErr)
+			}
+			selectorBundleSHA256, err = prdSupersessionSelectorBundleSHA256(oldHost, successorHost, status, &proof, nil)
+			if err != nil {
+				return CatalogCohortSupersessionEvidence{}, err
+			}
+		} else {
+			legacy, legacyErr := readPRDLegacyInventory(prdPlan)
+			if legacyErr != nil {
+				return CatalogCohortSupersessionEvidence{}, legacyErr
+			}
+			selectorBundleSHA256, err = prdSupersessionSelectorBundleSHA256(oldHost, successorHost, status, nil, &legacy)
+			if err != nil {
+				return CatalogCohortSupersessionEvidence{}, err
+			}
 		}
 	}
 	evidence := CatalogCohortSupersessionEvidence{
@@ -835,6 +853,50 @@ func ObserveCatalogCohortSupersession(ctx context.Context, plan Plan, receipt, s
 		return CatalogCohortSupersessionEvidence{}, ErrCatalogOperationInvalid
 	}
 	return evidence, nil
+}
+
+func validatePRDFreshInstallSupersessionBaseline(oldHost, successorHost CatalogCohortHostPreflight,
+	proof prdCatalogProof) error {
+	if oldHost.HostID != "linux-host" || successorHost.HostID != oldHost.HostID ||
+		oldHost.FreshInstall == nil || successorHost.FreshInstall == nil ||
+		!reflect.DeepEqual(oldHost.FreshInstall, successorHost.FreshInstall) ||
+		oldHost.PreviousTarget != "" || successorHost.PreviousTarget != "" ||
+		oldHost.PreviousBundleSHA256 != "" || successorHost.PreviousBundleSHA256 != "" ||
+		oldHost.PreviousReadSchemaMax != 0 || successorHost.PreviousReadSchemaMax != 0 ||
+		oldHost.LegacyRollback != nil || successorHost.LegacyRollback != nil ||
+		proof.selectorTarget != "" || proof.freshInstall == nil ||
+		!reflect.DeepEqual(proof.freshInstall, oldHost.FreshInstall) || proof.bundleSHA256 != "" || proof.legacyBundleSHA256 != "" ||
+		proof.schema != oldHost.SchemaVersion || proof.schema != successorHost.SchemaVersion ||
+		proof.configurationSHA256 != oldHost.ConfigurationSHA256 || proof.configurationSHA256 != successorHost.ConfigurationSHA256 ||
+		proof.workSHA256 != oldHost.WorkInventorySHA256 || proof.workSHA256 != successorHost.WorkInventorySHA256 ||
+		!proof.work.Empty() || !oldHost.WorkInventoryEmpty || !successorHost.WorkInventoryEmpty ||
+		validateCatalogFreshInstallBaseline(*oldHost.FreshInstall, oldHost) != nil ||
+		validateCatalogFreshInstallBaseline(*successorHost.FreshInstall, successorHost) != nil {
+		return ErrPRDUpgradeGuard
+	}
+	return nil
+}
+
+func prdSupersessionSelectorBundleSHA256(oldHost, successorHost CatalogCohortHostPreflight,
+	status CatalogSelectorStatus, freshProof *prdCatalogProof, legacyInventory *PRDPreflight) (string, error) {
+	if status.Kind != "unselected" || status.Target != "" {
+		return "", ErrCatalogOperationInvalid
+	}
+	if oldHost.FreshInstall != nil {
+		if freshProof == nil || legacyInventory != nil {
+			return "", ErrPRDUpgradeGuard
+		}
+		if err := validatePRDFreshInstallSupersessionBaseline(oldHost, successorHost, *freshProof); err != nil {
+			return "", err
+		}
+		// No selector bundle exists for the exact unselected fresh-install
+		// baseline. Its identity is carried by the matching baseline receipts.
+		return "", nil
+	}
+	if freshProof != nil || legacyInventory == nil {
+		return "", ErrPRDUpgradeGuard
+	}
+	return PRDLegacyBundleDigest(*legacyInventory)
 }
 
 func catalogCohortSupersessionSelectorMatches(layout catalogSelectorLayout, receipt CatalogCohortReceipt,
@@ -976,6 +1038,14 @@ func observationMatchesSuccessor(receipt, successor CatalogCohortReceipt, observ
 		return false
 	}
 	oldHost := receipt.Hosts[oldHostIndex]
+	if receipt.Lane == config.ReleaseLanePRD && oldHost.FreshInstall != nil &&
+		(newHost.FreshInstall == nil || !reflect.DeepEqual(oldHost.FreshInstall, newHost.FreshInstall) ||
+			oldHost.PreviousTarget != "" || newHost.PreviousTarget != "" ||
+			oldHost.PreviousBundleSHA256 != "" || newHost.PreviousBundleSHA256 != "" ||
+			oldHost.PreviousReadSchemaMax != 0 || newHost.PreviousReadSchemaMax != 0 ||
+			oldHost.LegacyRollback != nil || newHost.LegacyRollback != nil || observation.SelectorBundleSHA256 != "") {
+		return false
+	}
 	if receipt.Stage == CatalogCohortComplete || receipt.Stage == CatalogCohortVerifying {
 		if observation.SelectorOperations != "completed" || observation.SelectorBundleSHA256 != oldHost.Target.BundleSHA256 ||
 			newHost.PreviousBundleSHA256 != oldHost.Target.BundleSHA256 {
