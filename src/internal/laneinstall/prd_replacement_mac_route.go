@@ -172,6 +172,9 @@ func RunPRDReplacementMacRoute(ctx context.Context, input PRDReplacementMacRoute
 		return PRDReplacementMacRouteResult{}, err
 	}
 	defer releaseCatalogRootPublicationLock(catalogLockFD)
+	if err := validatePRDReplacementMacTrustPathAliases(input.MacConfiguration); err != nil {
+		return PRDReplacementMacRouteResult{}, err
+	}
 	catalogLayout, err := catalogSelectorLayoutForPlan(catalogPlan, catalogRoot)
 	if err != nil {
 		return PRDReplacementMacRouteResult{}, err
@@ -181,8 +184,25 @@ func RunPRDReplacementMacRoute(ctx context.Context, input PRDReplacementMacRoute
 	if err != nil {
 		return PRDReplacementMacRouteResult{}, err
 	}
+	var existingJournal *prdReplacementMacRouteJournal
+	var originalBackup *PRDBackupManifest
+	if exists {
+		existingJournal = &journal
+	}
+	if exists && journal.BackupDirectory != "" {
+		manifest, backupErr := loadPRDBackupManifest(plan, journal.BackupDirectory)
+		if backupErr != nil || backupManifestSHA256(journal.BackupDirectory) != journal.BackupManifestSHA256 {
+			return PRDReplacementMacRouteResult{}, errors.Join(ErrSimpleBackupRequired, backupErr)
+		}
+		originalBackup = &manifest
+	}
+	serverCACandidate, err := preparePRDReplacementMacRouteServerTrust(input.MacConfiguration,
+		serverCA, input.ServerCAPEM, existingJournal, originalBackup, now)
+	if err != nil {
+		return PRDReplacementMacRouteResult{}, err
+	}
 	configurationSHA := digestBytes(candidateConfiguration)
-	serverCASHA := digestBytes(input.ServerCAPEM)
+	serverCASHA := digestBytes(serverCACandidate)
 	knownHostsCandidate := []byte(queued.knownHostLine)
 	knownHostsSHA := digestBytes(knownHostsCandidate)
 	currentConfiguration, err := readOwnedSimpleConfig(plan.Namespace.ConfigFile)
@@ -260,6 +280,9 @@ func RunPRDReplacementMacRoute(ctx context.Context, input PRDReplacementMacRoute
 		verifyPRDBackupWorkSnapshot(ctx, plan, manifest, journal.WorkInventorySHA256, journal.DatabaseSchema) != nil {
 		return PRDReplacementMacRouteResult{}, errors.Join(ErrSimpleBackupRequired, err)
 	}
+	if err := validatePRDReplacementMacTrustPathAliases(input.MacConfiguration); err != nil {
+		return PRDReplacementMacRouteResult{}, err
+	}
 	if err := applyPRDReplacementMacRouteFile(identity.KnownHostsPath, journal.PreviousKnownHostsSHA256,
 		journal.KnownHostsSHA256, knownHostsCandidate, 64*1024); err != nil {
 		return PRDReplacementMacRouteResult{}, err
@@ -269,7 +292,7 @@ func RunPRDReplacementMacRoute(ctx context.Context, input PRDReplacementMacRoute
 		return PRDReplacementMacRouteResult{}, err
 	}
 	if err := applyPRDReplacementMacRouteFile(identity.ServerCAPath, journal.PreviousServerCASHA256,
-		journal.ServerCASHA256, input.ServerCAPEM, 1<<20); err != nil {
+		journal.ServerCASHA256, serverCACandidate, 1<<20); err != nil {
 		return PRDReplacementMacRouteResult{}, err
 	}
 	journal.Stage = "server_trust_updated"

@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `TRIAGED` — exact operational repair verified; preventive source correction remains open |
+| Status | `IN PROGRESS` — preventive source correction and regression qualification; Dev/QAS deployment pending; PRD unchanged |
 | Severity | High — breaks authenticated access to an unchanged peer worker |
 | Reported | 2026-10-30 |
 | Component | `src/internal/laneinstall/prd_replacement_mac_route.go` |
@@ -20,6 +20,12 @@ CA. Both worker chains and IP identities were verified. All worker routes
 subsequently passed authenticated TLS 1.3 readiness, and PRD functional
 acceptance completed. No leaf certificate, private key or host key changed.
 This is an operational mitigation, not a preventive source fix.
+
+The owner has now assigned the preventive correction and deployment through
+Dev then QAS only. Stop after QAS acceptance and report the immutable release
+ready for PRD; the owner will stop PRD clients before separately deploying it.
+Do not repeat live replacement bootstrap to test this defect. Implementation
+and rollout evidence is recorded in [BUG-028 evidence](../040-implementation-evidence/BUG-028.md).
 
 The corrective source work must detect shared trust paths before replacing
 them, preserve each peer's approved trust, and use either a distinct host CA

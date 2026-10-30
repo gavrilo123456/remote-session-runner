@@ -94,8 +94,12 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverCertificate := []byte("public replacement server certificate")
-	serverCA := []byte("public replacement server CA")
+	sharedTrust := newBUG028CLISharedTrust(t, now)
+	serverCA := sharedTrust.replacement
+	serverCertificate, _, err := laneinstall.SignPRDReplacementServerCSR(csr.RequestPEM, serverCA, sharedTrust.replacementKey, now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	expectedApprovalSHA := digest(approvalFileBytes)
 	hostFiles := t.TempDir()
 	identityFile := filepath.Join(hostFiles, "linux.key")
@@ -191,8 +195,13 @@ func TestPRDReplacementBootstrapCommandUsesPinnedLinuxHostRPCAndRedactsPayload(t
 			!bytes.Equal(input.ServerCertificatePEM, serverCertificate) || !bytes.Equal(input.ServerCAPEM, serverCA) {
 			t.Fatal("Mac route did not receive the exact public certificate material")
 		}
+		installedTrustSHA, err := sharedTrust.apply(input, now)
+		if err != nil {
+			return laneinstall.PRDReplacementMacRouteResult{}, err
+		}
 		return laneinstall.PRDReplacementMacRouteResult{OperationID: request.OperationID, Stage: "complete",
 			ConfigurationSHA256: digest([]byte("mac candidate")), JournalSHA256: strings.Repeat("c", 64),
+			ServerCASHA256:       installedTrustSHA,
 			BackupManifestSHA256: strings.Repeat("d", 64), WorkInventorySHA256: strings.Repeat("e", 64), ServiceStopped: true}, nil
 	}
 	t.Cleanup(func() {

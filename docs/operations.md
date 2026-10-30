@@ -131,6 +131,16 @@ changing that route. The subsequent held `promote-to prd all` preparation
 backs up the existing PRD authorities and rechecks the replacement baseline.
 Do not manually create namespace files or selectors.
 
+When another worker uses Linux's server-CA file, the Mac route step preserves
+the original validated CA bundle and adds the replacement CA once. Unshared
+CA files retain replacement-only rotation. The journal binds the installed
+bundle digest; retries reconstruct it from the verified original backup,
+not from a partially changed live file. A legacy journal that recorded a
+destructive shared-file overwrite is rejected without changing its history
+or the live repair. Preserve any separately approved trust amendment during
+later rollback planning; a historical single-CA backup must not silently
+discard the currently approved peer trust.
+
 ```sh
 # Mac — from the canonical checkout, with the pinned Go 1.27.1 toolchain
 runner-release status --release <accepted-successor-release-id> --json
