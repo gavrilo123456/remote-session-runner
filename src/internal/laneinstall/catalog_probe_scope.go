@@ -302,7 +302,8 @@ func catalogCohortAdmissionHeldAt(plan Plan, root string) (bool, string, error) 
 		for _, predecessor := range active {
 			for _, successor := range active {
 				if catalogCohortCompletedSupersessionHoldPair(plan, predecessor, successor, time.Now().UTC()) ||
-					catalogCohortReplacementHoldPair(predecessor, successor, time.Now().UTC()) {
+					catalogCohortReplacementHoldPair(predecessor, successor, time.Now().UTC()) ||
+					catalogCohortRolledBackReplacementHoldPair(predecessor, successor, time.Now().UTC()) {
 					return true, successor.OperationID, nil
 				}
 			}
