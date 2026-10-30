@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,6 +140,266 @@ func TestStartReleasedCohortRestartsActiveServicesAfterAcceptance(t *testing.T) 
 	if strings.Join(actions, ",") != strings.Join(want, ",") {
 		t.Fatalf("released cohort restart order = %v, want %v", actions, want)
 	}
+}
+
+func TestPRDFreshInstallRollbackCompletesHeldWithoutStartingOrOpening(t *testing.T) {
+	op, receipt := freshInstallRollbackFixture(t)
+	receipts := make(map[string]laneinstall.CatalogCohortReceipt, len(HostOrder))
+	for _, host := range HostOrder {
+		receipts[host] = receipt
+	}
+	var actions []string
+	backend := NativePromotionBackend{OperatingBuffer: defaultPromotionOperatingBuffer}
+	backend.capacityReader = func(_ context.Context, _ string, _ string, snapshot *promotionLaneSnapshot) error {
+		snapshot.AvailableBytes = 2_000_000_000
+		snapshot.RequiredBytes = promotionRequiredCapacity("prd", defaultPromotionOperatingBuffer)
+		return nil
+	}
+	backend.laneCommandRunner = func(_ context.Context, host string, args []string, stdin []byte) ([]byte, error) {
+		value := func(flag string) string {
+			for index := 0; index+1 < len(args); index++ {
+				if args[index] == flag {
+					return args[index+1]
+				}
+			}
+			return ""
+		}
+		switch args[0] {
+		case "catalog-cohort":
+			action := value("--action")
+			actions = append(actions, host+":"+action)
+			switch action {
+			case "inspect":
+				return json.Marshal(promotionReceiptView{Present: true, Receipt: receipts[host]})
+			case "discover":
+				hostReceipt := receipts[host]
+				return json.Marshal(promotionAdmissionView{HostID: host, Lane: config.ReleaseLanePRD,
+					AdmissionHeld: true, OperationID: op.CohortOperationID, Receipt: &hostReceipt})
+			case "rollback-complete":
+				updated, err := laneinstall.AdvanceCatalogCohortReceipt(receipts[host], "rollback-complete", "",
+					digest([]byte(op.OperationID+"|rollback-complete")), time.Now().UTC())
+				if err != nil {
+					return nil, err
+				}
+				receipts[host] = updated
+				return json.Marshal(map[string]any{"operation_id": op.CohortOperationID, "stage": updated.Stage})
+			case "sync":
+				var synced laneinstall.CatalogCohortReceipt
+				if value("--receipt-file") != "@promo-stdin@" || json.Unmarshal(stdin, &synced) != nil ||
+					synced.OperationID != op.CohortOperationID || synced.Stage != laneinstall.CatalogCohortRolledBack {
+					return nil, ErrOperationCorrupted
+				}
+				receipts[host] = synced
+				return json.Marshal(map[string]any{"operation_id": synced.OperationID, "stage": synced.Stage})
+			default:
+				return nil, fmt.Errorf("unexpected cohort action %q", action)
+			}
+		case "catalog-work-inventory":
+			index := hostIndex(host)
+			if index < 0 {
+				return nil, ErrInvalidInput
+			}
+			preflight := receipts[host].Hosts[index]
+			return json.Marshal(laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLanePRD,
+				ServiceActive: false, SelectorTarget: preflight.PreviousTarget, BundleSHA256: preflight.PreviousBundleSHA256,
+				ConfigurationSHA256: preflight.ConfigurationSHA256, DatabaseSchema: preflight.SchemaVersion,
+				WorkInventory: laneinstall.CatalogWorkInventory{}, WorkInventoryEmpty: true})
+		case "catalog-status":
+			index := hostIndex(host)
+			if index < 0 {
+				return nil, ErrInvalidInput
+			}
+			baseline := op.PlanSnapshot.HostBaselines[index]
+			status := laneinstall.CatalogSelectorStatus{HostID: host, Lane: config.ReleaseLanePRD, Kind: "catalog"}
+			if baseline.PreviousReleaseID == "" && baseline.PreviousBundleSHA == "" {
+				status.Kind = "unselected"
+			} else {
+				status.Release = &laneinstall.CatalogReleaseStatus{Identity: laneinstall.CatalogReleaseIdentity{
+					ReleaseID: baseline.PreviousReleaseID, ReleaseSHA256: stringsOf("8"), HostID: host,
+					BundleSHA256: baseline.PreviousBundleSHA}}
+			}
+			return json.Marshal(status)
+		case "catalog-prd-fresh-install-baseline":
+			index := hostIndex(host)
+			if host != "linux-host" || index < 0 || receipts[host].Hosts[index].FreshInstall == nil {
+				return nil, ErrOperationCorrupted
+			}
+			baseline := *receipts[host].Hosts[index].FreshInstall
+			return json.Marshal(laneinstall.CatalogFreshInstallBaselineReport{HostID: host, Present: true, Baseline: &baseline})
+		case "prd-start", "start":
+			return nil, errors.New("fresh-install rollback must not start a predecessor")
+		default:
+			return nil, fmt.Errorf("unexpected command %q", args[0])
+		}
+	}
+
+	result, err := backend.ReleaseCohort(context.Background(), op)
+	if err != nil {
+		t.Fatalf("fresh-install rollback finalization failed: %v", err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || !strings.Contains(string(encoded), `"admissions_held":true`) ||
+		!strings.Contains(string(encoded), `"receipt_stage":"rolled_back"`) {
+		t.Fatalf("fresh-install rollback did not report held closeout: %s err=%v", encoded, err)
+	}
+	for _, host := range HostOrder {
+		if receipts[host].Stage != laneinstall.CatalogCohortRolledBack || laneinstall.ValidateCatalogCohortReceipt(receipts[host]) != nil {
+			t.Fatalf("%s did not retain a valid rolled-back receipt: stage=%s", host, receipts[host].Stage)
+		}
+	}
+	for _, action := range actions {
+		if strings.HasSuffix(action, ":open") {
+			t.Fatalf("rollback opened admissions: %v", actions)
+		}
+	}
+}
+
+func TestRollbackUnselectedPredecessorRequiresCompleteBoundEvidence(t *testing.T) {
+	op, _ := freshInstallRollbackFixture(t)
+	needsHeld, err := rollbackHasUnselectedPredecessor(op)
+	if err != nil || !needsHeld {
+		t.Fatalf("valid fresh-install predecessor did not require a held rollback: held=%v err=%v", needsHeld, err)
+	}
+	ordinary := op
+	ordinaryPlan := *op.PlanSnapshot
+	ordinaryPlan.HostBaselines = append([]HostObservation(nil), op.PlanSnapshot.HostBaselines...)
+	ordinaryHosts := append([]HostProgress(nil), op.Hosts...)
+	ordinary.PlanSnapshot, ordinary.Hosts = &ordinaryPlan, ordinaryHosts
+	linux := &ordinaryPlan.HostBaselines[0]
+	linux.FreshInstallOperationID = ""
+	linux.FreshInstallEvidenceSHA256 = ""
+	linux.FreshInstallAbsenceSHA256 = ""
+	linux.FreshInstallBootstrapReleaseID = ""
+	linux.FreshInstallBootstrapReleaseSHA256 = ""
+	linux.FreshInstallBootstrapBundleSHA256 = ""
+	linux.FreshInstallBootstrapJournalSHA256 = ""
+	linux.PreviousReleaseID = "rr-prior-linux-host"
+	linux.PreviousBundleSHA = digest([]byte("prior-linux-host"))
+	linux.SelectedReleaseID, linux.SelectedBundleSHA = linux.PreviousReleaseID, linux.PreviousBundleSHA
+	ordinary.Hosts[0].PreviousReleaseID, ordinary.Hosts[0].PreviousBundleSHA256 = linux.PreviousReleaseID, linux.PreviousBundleSHA
+	if held, err := rollbackHasUnselectedPredecessor(ordinary); err != nil || held {
+		t.Fatalf("catalog predecessor did not retain the ordinary rollback release path: held=%v err=%v", held, err)
+	}
+	mutated := op
+	plan := *op.PlanSnapshot
+	plan.HostBaselines = append([]HostObservation(nil), op.PlanSnapshot.HostBaselines...)
+	mutated.PlanSnapshot = &plan
+	plan.HostBaselines[0].FreshInstallBootstrapJournalSHA256 = ""
+	if _, err := rollbackHasUnselectedPredecessor(mutated); err == nil {
+		t.Fatal("incomplete fresh-install provenance was accepted")
+	}
+}
+
+func freshInstallRollbackFixture(t *testing.T) (Operation, laneinstall.CatalogCohortReceipt) {
+	t.Helper()
+	now := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	release := testRelease()
+	release.ID = "rr-20261030-fresh-rollback-test"
+	release.Digest, _ = CanonicalReleaseDigest(release.ID, release.Source.CapturedTip, release.Toolchain,
+		[]Bundle{release.Bundles["linux-host"], release.Bundles["sandbox-host"], release.Bundles["factory-sandbox"], release.Bundles["mac-control-plane"]})
+	release.ProvenanceSHA = digest(testProvenanceBytes(release))
+	manifest := catalogManifest(release)
+	manifestBytes, err := laneinstall.CatalogReleaseManifestBytes(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestSHA := digest(manifestBytes)
+	emptyWork := laneinstall.CatalogWorkInventory{}
+	workSHA := emptyWork.SHA256()
+	absence := testPRDAbsenceReport(t)
+	absence.SelectedLane = config.ReleaseLanePRD
+	absence.ObservedAtUTC = now.Format(time.RFC3339Nano)
+	absence.EvidenceSHA256 = absenceReportDigest(absence)
+	freshBaseline, err := laneinstall.NewCatalogFreshInstallBaseline(strings.Repeat("a", 32), absence,
+		stringsOf("c"), 40, emptyWork, now)
+	if err != nil {
+		t.Fatalf("build fresh-install baseline: %v", err)
+	}
+	reports := make([]laneinstall.CatalogCohortHostPreflightReport, 0, len(HostOrder))
+	planBaselines := make([]HostObservation, 0, len(HostOrder))
+	progress := make([]HostProgress, 0, len(HostOrder))
+	for _, host := range HostOrder {
+		bundle := release.Bundles[host]
+		preflight := laneinstall.CatalogCohortHostPreflight{HostID: host, Target: laneinstall.CatalogReleaseIdentity{
+			ReleaseID: manifest.ReleaseID, ReleaseSHA256: manifestSHA, HostID: host, BundleSHA256: bundle.SHA256},
+			ConfigurationSHA256: stringsOf("c"), SchemaVersion: 40, WorkInventorySHA256: workSHA,
+			WorkInventoryEmpty: true, PreflightAt: now.Format(time.RFC3339Nano),
+			BackupDirectory: filepath.Join(t.TempDir(), host), BackupManifestSHA256: stringsOf("d"),
+			AvailableBytes: 2_000_000_000, RequiredBytes: promotionRequiredCapacity("prd", defaultPromotionOperatingBuffer)}
+		baseline := HostObservation{HostID: host, Lane: "prd", ServiceStopped: true, WorkInventorySHA: workSHA,
+			WorkInventoryEmpty: true, ConfigurationSHA: stringsOf("c"), SchemaVersion: 40,
+			CapacityVerified: true, AvailableBytes: preflight.AvailableBytes, RequiredBytes: preflight.RequiredBytes}
+		previousID, previousBundle := "", ""
+		if host == "linux-host" {
+			preflight.FreshInstall = &freshBaseline
+			baseline.FreshInstallOperationID = freshBaseline.OperationID
+			baseline.FreshInstallEvidenceSHA256 = freshBaseline.EvidenceSHA256
+			baseline.FreshInstallAbsenceSHA256 = freshBaseline.Absence.EvidenceSHA256
+			baseline.FreshInstallBootstrapReleaseID = "release-bootstrap"
+			baseline.FreshInstallBootstrapReleaseSHA256 = stringsOf("e")
+			baseline.FreshInstallBootstrapBundleSHA256 = stringsOf("f")
+			baseline.FreshInstallBootstrapJournalSHA256 = stringsOf("9")
+		} else {
+			previousID = "rr-prior-" + host
+			previousBundle = digest([]byte("prior-" + host))
+			preflight.PreviousTarget = "releases/" + previousBundle
+			preflight.PreviousBundleSHA256 = previousBundle
+			preflight.PreviousReadSchemaMax = 40
+			baseline.SelectedReleaseID, baseline.PreviousReleaseID = previousID, previousID
+			baseline.SelectedBundleSHA, baseline.PreviousBundleSHA = previousBundle, previousBundle
+		}
+		reports = append(reports, laneinstall.CatalogCohortHostPreflightReport{Preflight: preflight, WorkInventory: emptyWork})
+		planBaselines = append(planBaselines, baseline)
+		progress = append(progress, HostProgress{HostID: host, Switched: true, RolledBack: true,
+			SelectorOperation: strings.Repeat("1", 32), PreviousReleaseID: previousID, PreviousBundleSHA256: previousBundle})
+	}
+	operationID := strings.Repeat("b", 32)
+	receipt, err := laneinstall.NewCatalogCohortReceiptWithOperationID(config.ReleaseLanePRD, manifest, reports,
+		laneinstall.CatalogCohortPublisherPause{Owner: "fixture owner", Control: "fixture publisher pause", Paused: true, NoNewAccepted: true}, operationID, now)
+	if err != nil {
+		t.Fatalf("build rollback cohort receipt: %v", err)
+	}
+	for index, host := range HostOrder {
+		preflight := receipt.Hosts[index]
+		freshEvidence := ""
+		if preflight.FreshInstall != nil {
+			freshEvidence = preflight.FreshInstall.EvidenceSHA256
+		}
+		fence := laneinstall.CatalogCohortHostFence{HostID: host, ServiceWasActive: false, ServiceStopped: true,
+			WorkInventorySHA256: preflight.WorkInventorySHA256, ConfigurationSHA256: preflight.ConfigurationSHA256,
+			SelectorTarget: preflight.PreviousTarget, PreviousBundleSHA256: preflight.PreviousBundleSHA256,
+			FreshInstallEvidenceSHA256: freshEvidence, DatabaseSchema: preflight.SchemaVersion,
+			ObservedAt: now.Add(time.Duration(index+1) * time.Second).Format(time.RFC3339Nano)}
+		receipt, err = laneinstall.AdvanceCatalogCohortHostFence(receipt, fence, now.Add(time.Duration(index+1)*time.Second))
+		if err != nil {
+			t.Fatalf("build host fence for %s: %v", host, err)
+		}
+	}
+	proof := stringsOf("1")
+	advance := func(action, host string, offset int) {
+		t.Helper()
+		var advanceErr error
+		receipt, advanceErr = laneinstall.AdvanceCatalogCohortReceipt(receipt, action, host, proof, now.Add(time.Duration(offset)*time.Second))
+		if advanceErr != nil {
+			t.Fatalf("advance fixture receipt %s/%s: %v", action, host, advanceErr)
+		}
+	}
+	advance("hold", "", 5)
+	for index, host := range HostOrder {
+		advance("preflight", host, 6+index*2)
+		advance("switch", host, 7+index*2)
+	}
+	advance("block", "", 15)
+	advance("rollback-start", "", 16)
+	for index := len(HostOrder) - 1; index >= 0; index-- {
+		advance("rollback-host", HostOrder[index], 17+(len(HostOrder)-1-index))
+	}
+	if receipt.Stage != laneinstall.CatalogCohortRollingBack || laneinstall.ValidateCatalogCohortReceipt(receipt) != nil {
+		t.Fatalf("fixture is not valid in rolling-back stage: stage=%s", receipt.Stage)
+	}
+	op := Operation{OperationID: operationID, Lane: "prd", Stage: StageRollingBack, CohortOperationID: operationID,
+		Release: release, PlanSnapshot: &PromotionPlan{Lane: "prd", HostBaselines: planBaselines}, Hosts: progress}
+	return op, receipt
 }
 
 func TestInitialPRDPlanRequiresExactLegacyCompatibilityInput(t *testing.T) {

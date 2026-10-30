@@ -2117,8 +2117,16 @@ func (b *NativePromotionBackend) ReleaseCohort(ctx context.Context, op Operation
 			if err := b.syncReceiptFrom(ctx, "mac-control-plane", op.Lane, op.CohortOperationID); err != nil {
 				return nil, err
 			}
+		} else if view.Receipt.Stage == laneinstall.CatalogCohortRolledBack {
+			// A retry after the rollback receipt was written must still establish
+			// synchronized, stopped, empty state before reporting completion.
+			if err := b.syncReceiptFrom(ctx, "mac-control-plane", op.Lane, op.CohortOperationID); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, fmt.Errorf("rollback cannot finish from cohort stage %s: %w", view.Receipt.Stage, ErrOperationCorrupted)
 		}
-		return b.openAdmissions(ctx, op)
+		return b.finishRollback(ctx, op)
 	}
 	if view.Receipt.Stage == laneinstall.CatalogCohortHeld || view.Receipt.Stage == laneinstall.CatalogCohortSwitching {
 		if err := b.startHostUnderHold(ctx, op, "mac-control-plane"); err != nil {
@@ -2169,6 +2177,150 @@ func (b *NativePromotionBackend) ReleaseCohort(ctx context.Context, op Operation
 		}
 	}
 	return b.openAdmissions(ctx, op)
+}
+
+// finishRollback keeps a successfully rolled-back fresh/absent PRD namespace
+// stopped and held. Such a predecessor has no selected service to start, and
+// opening the receipt before discovering that fact would leave the cohort
+// partially admitted. Catalog-managed and verified legacy predecessors keep
+// the ordinary rollback release path.
+func (b *NativePromotionBackend) finishRollback(ctx context.Context, op Operation) (any, error) {
+	keepHeld, err := rollbackHasUnselectedPredecessor(op)
+	if err != nil {
+		return nil, err
+	}
+	if !keepHeld {
+		return b.openAdmissions(ctx, op)
+	}
+	if err := b.verifyRolledBackHeldCohort(ctx, op); err != nil {
+		return nil, err
+	}
+	return map[string]any{"cohort_operation_id": op.CohortOperationID, "receipt_stage": "rolled_back",
+		"admissions_held": true, "services_stopped": true, "synchronized_hosts": HostOrder}, nil
+}
+
+// rollbackHasUnselectedPredecessor returns true only for a PRD host whose
+// predecessor was explicitly proven absent or freshly bootstrapped. Partial
+// evidence is corruption, never a reason to choose the open-admissions path.
+func rollbackHasUnselectedPredecessor(op Operation) (bool, error) {
+	if op.Lane != "prd" {
+		return false, nil
+	}
+	if op.PlanSnapshot == nil || len(op.PlanSnapshot.HostBaselines) != len(HostOrder) || len(op.Hosts) != len(HostOrder) {
+		return false, ErrOperationCorrupted
+	}
+	needsHeld := false
+	for index, host := range HostOrder {
+		baseline := op.PlanSnapshot.HostBaselines[index]
+		hp := op.Hosts[index]
+		if baseline.HostID != host || baseline.Lane != op.Lane || hp.HostID != host ||
+			hp.PreviousReleaseID != baseline.PreviousReleaseID || hp.PreviousBundleSHA256 != baseline.PreviousBundleSHA {
+			return false, ErrOperationCorrupted
+		}
+		freshEvidencePresent := baseline.FreshInstallOperationID != "" || baseline.FreshInstallEvidenceSHA256 != "" ||
+			baseline.FreshInstallAbsenceSHA256 != "" || baseline.FreshInstallBootstrapReleaseID != "" ||
+			baseline.FreshInstallBootstrapReleaseSHA256 != "" || baseline.FreshInstallBootstrapBundleSHA256 != "" ||
+			baseline.FreshInstallBootstrapJournalSHA256 != ""
+		if freshEvidencePresent {
+			if baseline.PreviousReleaseID != "" || baseline.PreviousBundleSHA != "" || baseline.PreviousSelectorOperation != "" ||
+				baseline.SelectedReleaseID != "" || baseline.SelectedBundleSHA != "" || baseline.SelectedNamespaceAbsence != nil ||
+				baseline.NamespaceAbsenceSHA256 != "" || baseline.CompatibilitySHA != "" || !baseline.ServiceStopped ||
+				!baseline.WorkInventoryEmpty || !digestPattern.MatchString(baseline.WorkInventorySHA) ||
+				!digestPattern.MatchString(baseline.ConfigurationSHA) || baseline.SchemaVersion <= 0 ||
+				!operationPattern.MatchString(baseline.FreshInstallOperationID) ||
+				!digestPattern.MatchString(baseline.FreshInstallEvidenceSHA256) ||
+				!digestPattern.MatchString(baseline.FreshInstallAbsenceSHA256) ||
+				!releasePattern.MatchString(baseline.FreshInstallBootstrapReleaseID) ||
+				!digestPattern.MatchString(baseline.FreshInstallBootstrapReleaseSHA256) ||
+				!digestPattern.MatchString(baseline.FreshInstallBootstrapBundleSHA256) ||
+				!digestPattern.MatchString(baseline.FreshInstallBootstrapJournalSHA256) {
+				return false, fmt.Errorf("%s fresh-install predecessor evidence is incomplete or conflicts with the recorded selector: %w", host, ErrOperationCorrupted)
+			}
+			needsHeld = true
+			continue
+		}
+		if baseline.SelectedNamespaceAbsence != nil || baseline.NamespaceAbsenceSHA256 != "" {
+			report := baseline.SelectedNamespaceAbsence
+			if baseline.PreviousReleaseID != "" || baseline.PreviousBundleSHA != "" || baseline.PreviousSelectorOperation != "" ||
+				baseline.SelectedReleaseID != "" || baseline.SelectedBundleSHA != "" || report == nil ||
+				!digestPattern.MatchString(baseline.NamespaceAbsenceSHA256) ||
+				report.EvidenceSHA256 != baseline.NamespaceAbsenceSHA256 ||
+				laneinstall.ValidateCatalogNamespaceAbsenceReport(*report, host, config.ReleaseLanePRD, config.ReleaseLanePRD) != nil {
+				return false, fmt.Errorf("%s absent predecessor evidence is incomplete or conflicts with the recorded selector: %w", host, ErrOperationCorrupted)
+			}
+			needsHeld = true
+			continue
+		}
+		if baseline.PreviousReleaseID == "" && baseline.PreviousBundleSHA == "" {
+			return false, fmt.Errorf("%s unselected predecessor lacks bound absence evidence: %w", host, ErrOperationCorrupted)
+		}
+	}
+	return needsHeld, nil
+}
+
+// verifyRolledBackHeldCohort is the postflight for a rollback whose recorded
+// predecessor is intentionally unselected. It verifies the synchronized
+// receipt, exact hold, selector identity, unchanged configuration/schema/work
+// identity, stopped service, and fresh capacity on every host.
+func (b *NativePromotionBackend) verifyRolledBackHeldCohort(ctx context.Context, op Operation) error {
+	var canonical laneinstall.CatalogCohortReceipt
+	for _, host := range HostOrder {
+		view, err := b.readReceipt(ctx, host, op.Lane, op.CohortOperationID)
+		if err != nil || !view.Present {
+			return errors.Join(fmt.Errorf("%s rolled-back receipt is unavailable", host), err)
+		}
+		if canonical.OperationID == "" {
+			canonical = view.Receipt
+		} else if !reflectReceiptEqual(canonical, view.Receipt) {
+			return fmt.Errorf("%s rolled-back receipt differs from the synchronized cohort: %w", host, ErrOperationCorrupted)
+		}
+	}
+	if canonical.OperationID != op.CohortOperationID || canonical.Lane != config.ReleaseLanePRD ||
+		canonical.ReleaseID != op.Release.ID || canonical.Stage != laneinstall.CatalogCohortRolledBack ||
+		laneinstall.ValidateCatalogCohortReceipt(canonical) != nil {
+		return fmt.Errorf("rolled-back cohort receipt is not valid and synchronized: %w", ErrOperationCorrupted)
+	}
+	for index, host := range HostOrder {
+		baseline := op.PlanSnapshot.HostBaselines[index]
+		hp := op.Hosts[index]
+		if hp.Switched != receiptHasSwitch(canonical, host) || hp.RolledBack != receiptHasRollback(canonical, host) ||
+			hp.Switched && (!hp.RolledBack || hp.SelectorOperation == "") {
+			return fmt.Errorf("%s operation journal does not match the rollback receipt: %w", host, ErrOperationCorrupted)
+		}
+		preflight := canonical.Hosts[index]
+		if preflight.HostID != host || preflight.ConfigurationSHA256 != baseline.ConfigurationSHA ||
+			preflight.SchemaVersion != baseline.SchemaVersion || preflight.WorkInventorySHA256 != baseline.WorkInventorySHA ||
+			preflight.WorkInventoryEmpty != baseline.WorkInventoryEmpty {
+			return fmt.Errorf("%s rollback receipt conflicts with the operation baseline: %w", host, ErrOperationCorrupted)
+		}
+		if baseline.FreshInstallEvidenceSHA256 != "" &&
+			(preflight.FreshInstall == nil || preflight.FreshInstall.OperationID != baseline.FreshInstallOperationID ||
+				preflight.FreshInstall.EvidenceSHA256 != baseline.FreshInstallEvidenceSHA256 ||
+				preflight.FreshInstall.Absence.EvidenceSHA256 != baseline.FreshInstallAbsenceSHA256) {
+			return fmt.Errorf("%s receipt does not retain the exact fresh-install predecessor proof: %w", host, ErrOperationCorrupted)
+		}
+		admission, err := b.readAdmission(ctx, host, op.Lane)
+		if err != nil || !admission.AdmissionHeld || admission.OperationID != op.CohortOperationID {
+			return errors.Join(fmt.Errorf("%s rollback admission hold is not preserved", host), err)
+		}
+		status, snapshot, err := b.currentHost(ctx, host, op.Lane)
+		if err != nil {
+			return err
+		}
+		if baseline.PreviousReleaseID == "" && baseline.PreviousBundleSHA == "" {
+			if selectedReleaseID(status) != "" || selectedBundleSHA(status) != "" || status.Kind != "unselected" {
+				return fmt.Errorf("%s selector is not restored to the recorded unselected predecessor: %w", host, ErrOperationCorrupted)
+			}
+		} else if selectedReleaseID(status) != baseline.PreviousReleaseID || selectedBundleSHA(status) != baseline.PreviousBundleSHA {
+			return fmt.Errorf("%s selector differs from the recorded rollback predecessor: %w", host, ErrOperationCorrupted)
+		}
+		if snapshot.Active || !snapshot.Empty || snapshot.Work.SHA256() != baseline.WorkInventorySHA ||
+			snapshot.Config != baseline.ConfigurationSHA || snapshot.Schema != baseline.SchemaVersion ||
+			snapshot.AvailableBytes < promotionRequiredCapacity(op.Lane, b.OperatingBuffer) {
+			return fmt.Errorf("%s rollback service, work, configuration, schema, or capacity postflight failed: %w", host, ErrOperationCorrupted)
+		}
+	}
+	return nil
 }
 
 func (b *NativePromotionBackend) openAdmissions(ctx context.Context, op Operation) (any, error) {
@@ -2970,6 +3122,15 @@ func validPreflightBackupReference(preflight laneinstall.CatalogCohortHostPrefli
 func receiptHasSwitch(receipt laneinstall.CatalogCohortReceipt, host string) bool {
 	for _, transition := range receipt.Transitions {
 		if (transition.Action == "switch" || transition.Action == "switch-reconciled") && transition.HostID == host {
+			return true
+		}
+	}
+	return false
+}
+
+func receiptHasRollback(receipt laneinstall.CatalogCohortReceipt, host string) bool {
+	for _, transition := range receipt.Transitions {
+		if transition.Action == "rollback-host" && transition.HostID == host {
 			return true
 		}
 	}
