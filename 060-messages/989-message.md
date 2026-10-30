@@ -443,3 +443,28 @@ synchronized source, take a fresh no-effect plan and capacity check, then
 resume this same operation with `--prepare-only`. Do not repeat #514 recovery
 or change QAS, mailbox ownership, the sealed service release, or client pause
 state.
+
+## Latest checkpoint — Sandbox capacity blocked preparation
+
+Source/evidence delivery is complete through `e4445dbdac7271289071c954b185e1e5aa0cc122`.
+The corrected controller passes the source gate matrix at service-neutral
+source `751d1efdfc2beece7b178d227223ffe904c3b198`; the test-only portability
+change and all results are in `040-implementation-evidence/BUG-027.md`.
+
+The fresh plan passed with the same release digest and backup-package SHA.
+Resuming operation `01d9088c62e705632c9523346e14099d` created and verified a
+new supported Linux backup, then stopped on Sandbox's pre-backup capacity
+guard. The exact Linux backup path and manifest hash, Sandbox error and
+current byte shortfall are recorded in `040-implementation-evidence/BUG-027.md`.
+No new cohort receipt/hold, selector switch, or service restart occurred;
+the previous rollback-complete holds remain. Preserve the Linux backup and
+all receipt history.
+
+Sandbox currently needs at least 192,237,732 additional free bytes to meet the
+measured 937,992,356-byte requirement; add a 250 MB margin or free only
+confirmed expendable data. Keep shared caches, backups, databases, retained
+work and mailbox files. The same approval expires at `2026-10-30T22:00:00Z`
+(23:00 Warsaw), which already matches the requested cutoff. After capacity is
+restored, remeasure and resume the same operation with fresh checks; do not
+start over or repeat #514 recovery. Keep QAS/mailbox ownership unchanged,
+clients paused, and publish no mailbox requests or ACKs.
