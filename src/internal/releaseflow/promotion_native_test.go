@@ -143,7 +143,31 @@ func TestStartReleasedCohortRestartsActiveServicesAfterAcceptance(t *testing.T) 
 }
 
 func TestPRDFreshInstallRollbackCompletesHeldWithoutStartingOrOpening(t *testing.T) {
+	for _, testCase := range []struct {
+		name                    string
+		omitBootstrapProvenance bool
+	}{
+		{name: "complete current provenance"},
+		{name: "complete legacy snapshot digests", omitBootstrapProvenance: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			testPRDFreshInstallRollbackCompletesHeldWithoutStartingOrOpening(t, testCase.omitBootstrapProvenance)
+		})
+	}
+}
+
+func testPRDFreshInstallRollbackCompletesHeldWithoutStartingOrOpening(t *testing.T, omitBootstrapProvenance bool) {
 	op, receipt := freshInstallRollbackFixture(t)
+	if omitBootstrapProvenance {
+		plan := *op.PlanSnapshot
+		plan.HostBaselines = append([]HostObservation(nil), op.PlanSnapshot.HostBaselines...)
+		linux := &plan.HostBaselines[0]
+		linux.FreshInstallBootstrapReleaseID = ""
+		linux.FreshInstallBootstrapReleaseSHA256 = ""
+		linux.FreshInstallBootstrapBundleSHA256 = ""
+		linux.FreshInstallBootstrapJournalSHA256 = ""
+		op.PlanSnapshot = &plan
+	}
 	receipts := make(map[string]laneinstall.CatalogCohortReceipt, len(HostOrder))
 	for _, host := range HostOrder {
 		receipts[host] = receipt

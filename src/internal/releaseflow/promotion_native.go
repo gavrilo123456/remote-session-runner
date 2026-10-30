@@ -2222,6 +2222,26 @@ func rollbackHasUnselectedPredecessor(op Operation) (bool, error) {
 			baseline.FreshInstallBootstrapReleaseSHA256 != "" || baseline.FreshInstallBootstrapBundleSHA256 != "" ||
 			baseline.FreshInstallBootstrapJournalSHA256 != ""
 		if freshEvidencePresent {
+			bootstrapIdentityCount := 0
+			for _, value := range []string{baseline.FreshInstallBootstrapReleaseID, baseline.FreshInstallBootstrapReleaseSHA256,
+				baseline.FreshInstallBootstrapBundleSHA256, baseline.FreshInstallBootstrapJournalSHA256} {
+				if value != "" {
+					bootstrapIdentityCount++
+				}
+			}
+			// Older durable promotion snapshots bind the full fresh-install and
+			// namespace-absence evidence by digest but predate these four optional
+			// bootstrap provenance fields. Accept that complete legacy shape only
+			// when all four extension fields are absent; a partial extension is
+			// ambiguous and must fail closed. The postflight below re-reads and
+			// validates the exact host baseline and its digests.
+			bootstrapIdentityInvalid := bootstrapIdentityCount != 0 && bootstrapIdentityCount != 4
+			if bootstrapIdentityCount == 4 {
+				bootstrapIdentityInvalid = !releasePattern.MatchString(baseline.FreshInstallBootstrapReleaseID) ||
+					!digestPattern.MatchString(baseline.FreshInstallBootstrapReleaseSHA256) ||
+					!digestPattern.MatchString(baseline.FreshInstallBootstrapBundleSHA256) ||
+					!digestPattern.MatchString(baseline.FreshInstallBootstrapJournalSHA256)
+			}
 			if baseline.PreviousReleaseID != "" || baseline.PreviousBundleSHA != "" || baseline.PreviousSelectorOperation != "" ||
 				baseline.SelectedReleaseID != "" || baseline.SelectedBundleSHA != "" || baseline.SelectedNamespaceAbsence != nil ||
 				baseline.NamespaceAbsenceSHA256 != "" || baseline.CompatibilitySHA != "" || !baseline.ServiceStopped ||
@@ -2229,11 +2249,7 @@ func rollbackHasUnselectedPredecessor(op Operation) (bool, error) {
 				!digestPattern.MatchString(baseline.ConfigurationSHA) || baseline.SchemaVersion <= 0 ||
 				!operationPattern.MatchString(baseline.FreshInstallOperationID) ||
 				!digestPattern.MatchString(baseline.FreshInstallEvidenceSHA256) ||
-				!digestPattern.MatchString(baseline.FreshInstallAbsenceSHA256) ||
-				!releasePattern.MatchString(baseline.FreshInstallBootstrapReleaseID) ||
-				!digestPattern.MatchString(baseline.FreshInstallBootstrapReleaseSHA256) ||
-				!digestPattern.MatchString(baseline.FreshInstallBootstrapBundleSHA256) ||
-				!digestPattern.MatchString(baseline.FreshInstallBootstrapJournalSHA256) {
+				!digestPattern.MatchString(baseline.FreshInstallAbsenceSHA256) || bootstrapIdentityInvalid {
 				return false, fmt.Errorf("%s fresh-install predecessor evidence is incomplete or conflicts with the recorded selector: %w", host, ErrOperationCorrupted)
 			}
 			needsHeld = true
@@ -2306,6 +2322,15 @@ func (b *NativePromotionBackend) verifyRolledBackHeldCohort(ctx context.Context,
 		status, snapshot, err := b.currentHost(ctx, host, op.Lane)
 		if err != nil {
 			return err
+		}
+		if baseline.FreshInstallEvidenceSHA256 != "" {
+			fresh := snapshot.FreshInstall
+			if fresh == nil || laneinstall.ValidateCatalogFreshInstallBaseline(*fresh) != nil ||
+				fresh.OperationID != baseline.FreshInstallOperationID ||
+				fresh.EvidenceSHA256 != baseline.FreshInstallEvidenceSHA256 ||
+				fresh.Absence.EvidenceSHA256 != baseline.FreshInstallAbsenceSHA256 {
+				return fmt.Errorf("%s current fresh-install baseline differs from the recorded predecessor evidence: %w", host, ErrOperationCorrupted)
+			}
 		}
 		if baseline.PreviousReleaseID == "" && baseline.PreviousBundleSHA == "" {
 			if selectedReleaseID(status) != "" || selectedBundleSHA(status) != "" || status.Kind != "unselected" {
