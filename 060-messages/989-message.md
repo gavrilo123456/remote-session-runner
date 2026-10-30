@@ -186,3 +186,70 @@ prepare a fresh release-bound PRD plan and approval for the already Dev/QAS
 accepted successor `rr-20261030-e3d3f5a`; the `rr-309` approval/window does
 not authorize that successor. Keep clients paused, QAS and mailbox ownership
 unchanged, and publish no mailbox requests or ACKs.
+
+## Latest checkpoint — rollback closeout compatibility follow-up
+
+The post-`45df706` supported rollback retry verified the existing rollback
+journals and synchronized `rollback-complete`, then failed the final
+fresh-install predecessor check. The source correction in
+`45df7068429c687183e6ecf2f7418b51742945e4` now makes the final closeout
+compatible with the legacy Linux fresh-install snapshot: either all four
+optional bootstrap provenance fields must be present, or all four absent
+with valid core digests; partial provenance remains rejected. The final
+postflight re-reads and matches the current fresh-install baseline against
+the durable plan and synchronized receipt.
+
+Mac, Factory, Sandbox, and replacement-Linux required source gates passed at
+this exact source revision. The replacement Linux full-suite interruptions
+remain NOT PASS under the approved Factory-substitution assignment. Gitea,
+the verified GitHub mirror, and all three clean Ubuntu checkouts are at
+`45df7068429c687183e6ecf2f7418b51742945e4`. Corrected Mac controller
+executables are outside Git; sealed service bundles are unchanged. See
+`040-implementation-evidence/BUG-027.md` for individual platform settings and
+test-log hashes.
+
+No new PRD operation was attempted after this correction. The earlier
+10:09:48Z preflight is stale and cannot authorize a new write. Next: check the
+current owner-approved PRD window, run a fresh read-only four-host plan and
+capacity/work/identity check using the corrected controller, then retry the
+same supported rollback closeout for `8474c9b8e550bec2a900dc954824e9df`.
+Keep the cohort held/stopped and preserve the receipt history. Only after
+closeout succeeds should a separate plan and release-bound approval be
+prepared for the Dev/QAS-accepted successor `rr-20261030-e3d3f5a`. QAS and
+its mailbox ownership remain unchanged; clients remain paused; publish no
+mailbox requests or ACKs.
+
+## Latest checkpoint — legacy fresh-install rollback compatibility
+
+The first supported retry under the `rr-309` approval verified Linux's
+already-applied rollback journal and synchronized the cohort's
+`rollback-complete` receipt, then stopped at final validation with
+`linux-host fresh-install predecessor evidence is incomplete or conflicts
+with the recorded selector`. It did not open admissions or change a selector.
+The old operation snapshot has valid fresh-install and namespace-absence
+digests but predates four optional bootstrap-provenance fields. It recorded
+all four as absent. See `040-implementation-evidence/BUG-027.md` for the exact
+fields, previous attempt and synchronized source evidence.
+
+The compatibility correction is source commit
+`45df7068429c687183e6ecf2f7418b51742945e4`. It accepts only the complete
+legacy shape (all four optional fields absent) with the existing core digests
+valid, re-reads the host baseline and matches its operation/evidence/absence
+hashes, and continues to reject partial provenance. Public-path regression
+tests cover both complete current and legacy snapshots. Required Mac, Factory,
+Sandbox and Linux source checks passed at this exact revision. Linux's prior
+interrupted full-suite runs remain NOT PASS. Gitea, exact GitHub mirror, and
+all three clean workers are synchronized at `45df706`. Temporary corrected
+`runner-release`/`promote-to` executables were built from that revision.
+
+After the worker gates, Sandbox `/dev/sda1` reported 769,286,144 bytes free;
+the rollback minimum is 567,108,864 bytes. Recheck immediately before writing.
+The `rr-309` owner approval SHA remains
+`7a1c9290dd30e2c47395c8036f15709ecbba1fc42b5f6f598109bc421acbbd44`, bound
+to the existing plan/package, and expires at `2026-10-30T10:58:13Z`. Recheck
+current time and approval validity before any operation. Next, refresh the
+four-host read-only plan/state and invoke the supported rollback retry for
+`8474c9b8e550bec2a900dc954824e9df` with the corrected controller. Keep the
+cohort held and stopped. Then prepare a fresh, separately approved PRD plan for
+the Dev/QAS-accepted `rr-20261030-e3d3f5a`; do not reuse `rr-309` approval for
+that release. Preserve QAS/mailbox ownership and keep clients stopped.
