@@ -850,7 +850,13 @@ func (b *NativePromotionBackend) preflightReport(ctx context.Context, op Operati
 	}
 	if op.Lane == "prd" {
 		required = prdSelectorReserve
-		if requiresLegacyRollbackEvidence(op, host) {
+		if op.PreviousCohortOperationID != "" {
+			// The host preflight must validate the exact still-held predecessor
+			// receipt before accepting its rollback baseline. Without this binding,
+			// runner-lane takes the ordinary no-hold path and correctly rejects
+			// the existing admission hold as an inconsistent selector operation.
+			args = append(args, "--replacement-predecessor", op.PreviousCohortOperationID)
+		} else if requiresLegacyRollbackEvidence(op, host) {
 			compatibility := b.Config.Hosts[host].LegacyCompatibilityFile
 			if _, err := legacyCompatibilityInputSHA(b.Config.Hosts[host]); err != nil {
 				return laneinstall.CatalogCohortHostPreflightReport{}, fmt.Errorf("%s legacy rollback compatibility input: %w", host, err)

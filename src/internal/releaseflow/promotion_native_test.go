@@ -1912,3 +1912,54 @@ func TestPromotionPreparedProbeAcceptsAndValidatesPublicCommandControllerType(t 
 		t.Fatal("controller type inconsistent with direct-mTLS transport accepted")
 	}
 }
+
+func TestPRDHostPreflightBindsExactHeldPredecessor(t *testing.T) {
+	const predecessorOperationID = "8474c9b8e550bec2a900dc954824e9df"
+	t.Setenv("TMPDIR", "/private/tmp")
+	release := testRelease()
+	var observedHost string
+	var observedArgs []string
+	report := laneinstall.CatalogCohortHostPreflightReport{
+		Preflight: laneinstall.CatalogCohortHostPreflight{
+			HostID:             "linux-host",
+			Target:             laneinstall.CatalogReleaseIdentity{ReleaseID: release.ID, ReleaseSHA256: release.Digest},
+			RequiredBytes:      prdSelectorReserve,
+			WorkInventoryEmpty: true,
+		},
+	}
+	backend := NativePromotionBackend{
+		StoreRoot: t.TempDir(),
+		laneCommandRunner: func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+			observedHost = host
+			observedArgs = append([]string(nil), args...)
+			return json.Marshal(report)
+		},
+	}
+	op := Operation{
+		OperationID:               strings.Repeat("f", 32),
+		Lane:                      "prd",
+		Release:                   release,
+		PreviousCohortOperationID: predecessorOperationID,
+	}
+	if _, err := backend.preflightReport(context.Background(), op, "linux-host"); err != nil {
+		t.Fatalf("preflightReport failed: %v; args=%v report=%+v", err, observedArgs, report.Preflight)
+	}
+	if observedHost != "linux-host" || len(observedArgs) == 0 || observedArgs[0] != "catalog-host-preflight" {
+		t.Fatalf("unexpected host command: host=%q args=%v", observedHost, observedArgs)
+	}
+	foundPredecessor := false
+	for i := 0; i+1 < len(observedArgs); i++ {
+		if observedArgs[i] == "--replacement-predecessor" && observedArgs[i+1] == predecessorOperationID {
+			foundPredecessor = true
+			break
+		}
+	}
+	if !foundPredecessor {
+		t.Fatalf("exact held predecessor was not bound in host preflight: args=%v", observedArgs)
+	}
+	for _, arg := range observedArgs {
+		if arg == "--legacy-compatibility-file" {
+			t.Fatalf("replacement preflight must use the exact predecessor receipt, not separate legacy input: args=%v", observedArgs)
+		}
+	}
+}
