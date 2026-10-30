@@ -414,3 +414,32 @@ post-backup capacity (especially Sandbox), receipt synchronization and exact
 holds, then continue the same release in Linux → Sandbox → Factory → Mac order.
 Do not repeat #514 recovery. QAS services/mailbox ownership remain unchanged;
 clients stay paused; publish no mailbox requests or ACKs.
+
+## Latest checkpoint — preflight argument and portable regression delivered
+
+The source correction is delivered as `be034f57edeec98bae897126dfad166a9f241298`:
+PRD host preflight now receives the exact existing held predecessor ID. The
+initial cross-platform test run found that its new regression set Mac's
+`/private/tmp` path on Linux. The regression now applies that override only on
+Darwin, delivered as `751d1efdfc2beece7b178d227223ffe904c3b198`.
+
+At `751d1ef`, Mac full test/vet/build/smoke, Factory Linux/AMD64 full
+test/vet/build/smoke, Sandbox Linux/ARM64 full test/vet/build/smoke, and
+replacement Linux focused `laneinstall`/`releaseflow`/`runner-lane` tests,
+P025/P101 regressions, native vet/build/smoke all passed. Linux's earlier
+full-suite interruptions remain **NOT PASS**. Exact log hashes, Factory's
+initial portability failure, and Sandbox capacity before/after gates are in
+`040-implementation-evidence/BUG-027.md`. Gitea, the exact GitHub mirror, and
+all three clean workers match `751d1ef`.
+
+The operation remains `01d9088c62e705632c9523346e14099d`, blocked before
+backup or host mutation because its preflight omitted the exact
+`--replacement-predecessor 8474c9b8e550bec2a900dc954824e9df` argument. That
+controller defect is fixed; both failed attempt histories remain preserved.
+The approval expires at `2026-10-30T22:00:00Z` (23:00 Warsaw), already
+matching the owner's requested cutoff; no renewal record is needed. Next:
+complete evidence Git delivery, rebuild the controller from the final
+synchronized source, take a fresh no-effect plan and capacity check, then
+resume this same operation with `--prepare-only`. Do not repeat #514 recovery
+or change QAS, mailbox ownership, the sealed service release, or client pause
+state.
