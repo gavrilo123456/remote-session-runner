@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,17 +16,22 @@ import (
 )
 
 type cohortCommandFixture struct {
+	mu                sync.Mutex
 	receipts          map[string]map[string]laneinstall.CatalogCohortReceipt
 	commands          []string
 	interruptHostOnce string
+	heldReadFault     string
+	macHeldReads      int
 }
 
 func (f *cohortCommandFixture) run(_ context.Context, host string, args []string, stdin []byte) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if len(args) < 1 || len(args) < 2 {
 		return nil, ErrInvalidInput
 	}
 	if args[0] == "catalog-work-inventory" {
-		if len(args) != 5 || args[1] != "--host" || args[2] != host || args[3] != "--lane" || args[4] != "dev" {
+		if len(args) != 5 || args[1] != "--host" || args[2] != host || args[3] != "--lane" || (args[4] != "dev" && args[4] != "prd") {
 			return nil, ErrInvalidInput
 		}
 		var hostReceipt laneinstall.CatalogCohortReceipt
@@ -42,7 +48,7 @@ func (f *cohortCommandFixture) run(_ context.Context, host string, args []string
 			return nil, ErrInvalidInput
 		}
 		preflight := hostReceipt.Hosts[index]
-		report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLaneDev,
+		report := laneinstall.CatalogWorkInventoryReport{HostID: host, Lane: config.ReleaseLane(args[4]),
 			ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ServiceActive: false,
 			SelectorTarget: preflight.PreviousTarget, BundleSHA256: preflight.PreviousBundleSHA256,
 			ConfigurationSHA256: preflight.ConfigurationSHA256, DatabaseSchema: preflight.SchemaVersion,
@@ -63,12 +69,33 @@ func (f *cohortCommandFixture) run(_ context.Context, host string, args []string
 	lane, action := value("--lane"), value("--action")
 	id := value("--operation-id")
 	f.commands = append(f.commands, host+":"+action+":"+id+":"+value("--subject-host"))
-	if lane != "dev" {
+	if lane != "dev" && lane != "prd" {
 		return nil, ErrInvalidInput
 	}
 	switch action {
 	case "inspect":
 		receipt, ok := f.receipts[host][id]
+		allHeld := ok && receipt.Stage == laneinstall.CatalogCohortHeld
+		for _, peer := range HostOrder {
+			allHeld = allHeld && f.receipts[peer][id].Stage == laneinstall.CatalogCohortHeld
+		}
+		if host == "mac-control-plane" && allHeld && f.heldReadFault != "" {
+			f.macHeldReads++
+			// The first read verifies synchronization; the next is the canonical
+			// read consumed by preparation before predecessor supersession.
+			if f.macHeldReads == 2 {
+				switch f.heldReadFault {
+				case "missing":
+					ok = false
+				case "stale":
+					receipt.Stage = laneinstall.CatalogCohortPrepared
+				case "conflicting release":
+					receipt.ReleaseSHA256 = strings.Repeat("f", 64)
+				case "conflicting operation":
+					receipt.OperationID = strings.Repeat("f", 32)
+				}
+			}
+		}
 		data, err := json.Marshal(promotionReceiptView{Present: ok, Receipt: receipt})
 		return data, err
 	case "discover":
@@ -81,8 +108,35 @@ func (f *cohortCommandFixture) run(_ context.Context, host string, args []string
 				heldReceipt = &receiptCopy
 			}
 		}
-		data, err := json.Marshal(promotionAdmissionView{HostID: host, Lane: "dev", AdmissionHeld: held != "", OperationID: held, Receipt: heldReceipt})
+		data, err := json.Marshal(promotionAdmissionView{HostID: host, Lane: config.ReleaseLane(lane), AdmissionHeld: held != "", OperationID: held, Receipt: heldReceipt})
 		return data, err
+	case "fence-host":
+		receipt, ok := f.receipts[host][id]
+		if !ok || value("--subject-host") != host || value("--replacement-predecessor") == "" {
+			return nil, ErrOperationCorrupted
+		}
+		preflight := receipt.Hosts[hostIndex(host)]
+		fence := laneinstall.CatalogCohortHostFence{HostID: host, ServiceWasActive: preflight.ServiceActiveAtPreflight,
+			ServiceStopped: true, WorkInventorySHA256: preflight.WorkInventorySHA256, ConfigurationSHA256: preflight.ConfigurationSHA256,
+			SelectorTarget: preflight.PreviousTarget, PreviousBundleSHA256: preflight.PreviousBundleSHA256,
+			DatabaseSchema: preflight.SchemaVersion, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+		updated, err := laneinstall.AdvanceCatalogCohortHostFence(receipt, fence, time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		f.receipts[host][id] = updated
+		return json.Marshal(map[string]any{"operation_id": id, "stage": updated.Stage})
+	case "hold":
+		receipt, ok := f.receipts[host][id]
+		if !ok {
+			return nil, ErrOperationCorrupted
+		}
+		updated, err := laneinstall.AdvanceCatalogCohortReceipt(receipt, "hold", "", value("--evidence-sha256"), time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		f.receipts[host][id] = updated
+		return json.Marshal(map[string]any{"operation_id": id, "stage": updated.Stage})
 	case "sync":
 		if len(stdin) == 0 || stdin[len(stdin)-1] != '\n' {
 			return nil, errors.New("receipt sync input is not canonical JSON with a terminal newline")
@@ -368,6 +422,105 @@ func fixtureReceipts(predecessor, successor laneinstall.CatalogCohortReceipt) ma
 		}
 	}
 	return receipts
+}
+
+func TestNativePrepareCohortResumesPreparedPRDSuccessor(t *testing.T) {
+	for _, fault := range []string{"", "missing", "stale", "conflicting release", "conflicting operation"} {
+		name := fault
+		if name == "" {
+			name = "success"
+		}
+		t.Run(name, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Second)
+			predecessor := promotionTestCohortReceipt(t, now, strings.Repeat("1", 32), "v2.0.0", nil, false)
+			predecessor.Lane = config.ReleaseLanePRD
+			predecessor.FenceProofs = predecessor.FenceProofs[:1]
+			for index := range predecessor.Hosts {
+				predecessor.Hosts[index].PreviousReadSchemaMax = store.CurrentSchemaVersion
+			}
+			var err error
+			for _, host := range HostOrder {
+				p := predecessor.Hosts[hostIndex(host)]
+				predecessor, err = laneinstall.AdvanceCatalogCohortHostFence(predecessor, laneinstall.CatalogCohortHostFence{
+					HostID: host, ServiceStopped: true, WorkInventorySHA256: p.WorkInventorySHA256,
+					ConfigurationSHA256: p.ConfigurationSHA256, SelectorTarget: p.PreviousTarget,
+					PreviousBundleSHA256: p.PreviousBundleSHA256, DatabaseSchema: p.SchemaVersion, ObservedAt: now.Format(time.RFC3339Nano)}, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			proof := strings.Repeat("d", 64)
+			advance := func(action, host string) {
+				t.Helper()
+				predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, action, host, proof, now)
+				if err != nil {
+					t.Fatalf("predecessor %s: %v", action, err)
+				}
+			}
+			advance("hold", "")
+			for _, host := range HostOrder {
+				advance("preflight", host)
+				advance("switch", host)
+			}
+			advance("verify-start", "")
+			for _, host := range HostOrder {
+				advance("verify", host)
+			}
+			advance("complete", "")
+			successor := promotionTestCohortReceipt(t, now, strings.Repeat("b", 32), "v2.0.1", &predecessor, false)
+			successor.Lane = config.ReleaseLanePRD
+			successor.FenceProofs = successor.FenceProofs[:1]
+			for index := range successor.Hosts {
+				successor.Hosts[index].PreviousReadSchemaMax = store.CurrentSchemaVersion
+			}
+			if err := laneinstall.ValidateCatalogCohortReceipt(successor); err != nil {
+				t.Fatalf("prepared PRD successor invalid: %v", err)
+			}
+			fixture := &cohortCommandFixture{receipts: fixtureReceipts(predecessor, successor), heldReadFault: fault}
+			backend := &NativePromotionBackend{PublishersPaused: true, NoNewAccepted: true,
+				PublisherOwner: "owner", PublisherControl: "paused fixture publishers", laneCommandRunner: fixture.run}
+			op := Operation{OperationID: successor.OperationID, CohortOperationID: successor.OperationID,
+				PreviousCohortOperationID: predecessor.OperationID, Lane: "prd",
+				Release: Release{ID: successor.ReleaseID, Digest: successor.ReleaseSHA256}}
+			_, err = backend.PrepareCohort(context.Background(), op)
+			if fault != "" {
+				if !errors.Is(err, ErrOperationCorrupted) || fixture.macHeldReads != 2 {
+					t.Fatalf("canonical read fault %q was not rejected: reads=%d err=%v commands=%v",
+						fault, fixture.macHeldReads, err, fixture.commands)
+				}
+				for _, command := range fixture.commands {
+					if strings.Contains(command, ":supersede-host:") || strings.Contains(command, ":supersede:") {
+						t.Fatalf("unverified held receipt allowed predecessor mutation: %s", command)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("native preparation could not resume prepared PRD successor: %v; commands=%v", err, fixture.commands)
+			}
+			for _, host := range HostOrder {
+				if fixture.receipts[host][successor.OperationID].Stage != laneinstall.CatalogCohortHeld ||
+					fixture.receipts[host][predecessor.OperationID].Stage != laneinstall.CatalogCohortSuperseded {
+					t.Fatalf("%s did not retain held successor and superseded predecessor", host)
+				}
+				if !reflectReceiptEqual(fixture.receipts[host][successor.OperationID], fixture.receipts["mac-control-plane"][successor.OperationID]) {
+					t.Fatalf("%s held successor differs from the canonical synchronized receipt", host)
+				}
+			}
+			fenceCount := 0
+			for _, command := range fixture.commands {
+				if strings.Contains(command, ":fence-host:"+successor.OperationID+":") {
+					fenceCount++
+				}
+				if strings.Contains(command, ":switch:") || strings.Contains(command, ":open:") || strings.Contains(command, ":complete:") {
+					t.Fatalf("preparation advanced beyond held checkpoint: %s", command)
+				}
+			}
+			if fenceCount != len(HostOrder) {
+				t.Fatalf("prepared PRD successor recorded %d host fences, want %d", fenceCount, len(HostOrder))
+			}
+		})
+	}
 }
 
 func TestRolledBackFreshInstallPredecessorRequiresMatchingUnselectedBaseline(t *testing.T) {

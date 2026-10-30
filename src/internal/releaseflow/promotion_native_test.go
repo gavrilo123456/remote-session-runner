@@ -1983,7 +1983,7 @@ func TestPRDFenceBindsExactHeldPredecessor(t *testing.T) {
 	op := Operation{Lane: "prd", CohortOperationID: successorOperationID,
 		PreviousCohortOperationID: predecessorOperationID}
 	receipt := laneinstall.CatalogCohortReceipt{Stage: laneinstall.CatalogCohortPrepared}
-	err := backend.finishInitialFencesAndHold(context.Background(), op, receipt)
+	_, err := backend.finishInitialFencesAndHold(context.Background(), op, receipt)
 	if !errors.Is(err, stop) {
 		t.Fatalf("finishInitialFencesAndHold error=%v, want injected first-fence stop", err)
 	}

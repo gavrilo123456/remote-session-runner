@@ -530,10 +530,11 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 		if err := b.syncReceiptFrom(ctx, "mac-control-plane", op.Lane, op.CohortOperationID); err != nil {
 			return nil, err
 		}
-		if err := b.finishInitialFencesAndHold(ctx, op, existing.Receipt); err != nil {
+		heldReceipt, err := b.finishInitialFencesAndHold(ctx, op, existing.Receipt)
+		if err != nil {
 			return nil, err
 		}
-		if err := b.supersedeValidatedPredecessor(ctx, op, existing.Receipt); err != nil {
+		if err := b.supersedeValidatedPredecessor(ctx, op, heldReceipt); err != nil {
 			return nil, err
 		}
 		return map[string]any{"cohort_operation_id": op.CohortOperationID, "release_id": op.Release.ID, "resumed": true,
@@ -629,10 +630,11 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 	if err != nil || !view.Present {
 		return nil, errors.Join(ErrOperationCorrupted, err)
 	}
-	if err := b.finishInitialFencesAndHold(ctx, op, view.Receipt); err != nil {
+	heldReceipt, err := b.finishInitialFencesAndHold(ctx, op, view.Receipt)
+	if err != nil {
 		return nil, err
 	}
-	if err := b.supersedeValidatedPredecessor(ctx, op, view.Receipt); err != nil {
+	if err := b.supersedeValidatedPredecessor(ctx, op, heldReceipt); err != nil {
 		return nil, err
 	}
 	return map[string]any{"cohort_operation_id": op.CohortOperationID, "release_id": op.Release.ID,
@@ -798,7 +800,7 @@ func cohortHostHasSupersession(receipt laneinstall.CatalogCohortReceipt, host, s
 	return false
 }
 
-func (b *NativePromotionBackend) finishInitialFencesAndHold(ctx context.Context, op Operation, receipt laneinstall.CatalogCohortReceipt) error {
+func (b *NativePromotionBackend) finishInitialFencesAndHold(ctx context.Context, op Operation, receipt laneinstall.CatalogCohortReceipt) (laneinstall.CatalogCohortReceipt, error) {
 	if op.Lane == "prd" {
 		fenced := map[string]bool{}
 		for _, transition := range receipt.Transitions {
@@ -818,14 +820,14 @@ func (b *NativePromotionBackend) finishInitialFencesAndHold(ctx context.Context,
 				args = append(args, "--replacement-predecessor", op.PreviousCohortOperationID)
 			}
 			if _, err := b.runLane(ctx, host, args, nil); err != nil {
-				return fmt.Errorf("%s PRD fence: %w", host, err)
+				return laneinstall.CatalogCohortReceipt{}, fmt.Errorf("%s PRD fence: %w", host, err)
 			}
 			if err := b.syncReceiptFrom(ctx, host, op.Lane, op.CohortOperationID); err != nil {
-				return fmt.Errorf("%s fence receipt synchronization: %w", host, err)
+				return laneinstall.CatalogCohortReceipt{}, fmt.Errorf("%s fence receipt synchronization: %w", host, err)
 			}
 			view, err := b.readReceipt(ctx, "mac-control-plane", op.Lane, op.CohortOperationID)
 			if err != nil || !view.Present {
-				return errors.Join(ErrOperationCorrupted, err)
+				return laneinstall.CatalogCohortReceipt{}, errors.Join(ErrOperationCorrupted, err)
 			}
 			receipt = view.Receipt
 		}
@@ -833,17 +835,22 @@ func (b *NativePromotionBackend) finishInitialFencesAndHold(ctx context.Context,
 	if receipt.Stage == laneinstall.CatalogCohortPrepared {
 		evidence := digest([]byte(op.OperationID + "|" + op.Release.Digest + "|" + b.PublisherOwner + "|" + b.PublisherControl + "|paused|no-new-accepted"))
 		if _, err := b.runLane(ctx, "mac-control-plane", []string{"catalog-cohort", "--host", "mac-control-plane", "--lane", op.Lane, "--action", "hold", "--operation-id", op.CohortOperationID, "--evidence-sha256", evidence}, nil); err != nil {
-			return err
+			return laneinstall.CatalogCohortReceipt{}, err
 		}
 		if err := b.syncReceiptFrom(ctx, "mac-control-plane", op.Lane, op.CohortOperationID); err != nil {
-			return err
+			return laneinstall.CatalogCohortReceipt{}, err
 		}
 	}
 	view, err := b.readReceipt(ctx, "mac-control-plane", op.Lane, op.CohortOperationID)
-	if err != nil || !view.Present || view.Receipt.Stage != laneinstall.CatalogCohortHeld {
-		return errors.Join(ErrOperationCorrupted, err)
+	if err != nil || !view.Present || view.Receipt.Stage != laneinstall.CatalogCohortHeld ||
+		view.Receipt.ReleaseID != op.Release.ID || view.Receipt.ReleaseSHA256 != op.Release.Digest ||
+		laneinstall.ValidateCatalogCohortReceipt(view.Receipt) != nil || !laneinstall.CatalogCohortReceiptCanAdvance(receipt, view.Receipt) {
+		return laneinstall.CatalogCohortReceipt{}, errors.Join(ErrOperationCorrupted, err)
 	}
-	return nil
+	// Supersession must consume the canonical held receipt, not the caller's
+	// pre-fence prepared copy. The read above also rejects lost or rewritten
+	// history before any predecessor supersession can be recorded.
+	return view.Receipt, nil
 }
 
 func (b *NativePromotionBackend) preflightReport(ctx context.Context, op Operation, host string) (laneinstall.CatalogCohortHostPreflightReport, error) {
