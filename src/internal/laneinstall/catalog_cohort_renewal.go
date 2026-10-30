@@ -525,6 +525,10 @@ func validateCatalogCohortContinuationHostObservation(observation CatalogCohortC
 			return ErrCatalogOperationInvalid
 		}
 	} else {
+		if observation.SelectorBundleSHA256 == "" && (receipt.Lane != config.ReleaseLanePRD || host.HostID != "linux-host" ||
+			host.FreshInstall == nil || host.PreviousTarget != "" || host.PreviousBundleSHA256 != "" || !validPreviousCatalogIdentity(host, receipt.Lane)) {
+			return ErrCatalogOperationInvalid
+		}
 		status := CatalogSelectorStatus{
 			HostID: observation.HostID, Lane: observation.Lane, Kind: observation.SelectorKind, Target: observation.SelectorTarget,
 			Bundle: SimpleBundleManifest{BundleSHA256: observation.SelectorBundleSHA256},
@@ -546,7 +550,8 @@ func validateCatalogCohortContinuationHostObservationFields(observation CatalogC
 		!validCatalogReleaseID(observation.ReleaseID) || !bundleDigestPattern.MatchString(observation.ReleaseSHA256) ||
 		observation.BaseTransitionCount <= 0 || !bundleDigestPattern.MatchString(observation.BaseTransitionSHA256) ||
 		(observation.SelectorKind != "catalog" && observation.SelectorKind != "legacy" && observation.SelectorKind != "unselected") ||
-		!bundleDigestPattern.MatchString(observation.SelectorBundleSHA256) ||
+		(!bundleDigestPattern.MatchString(observation.SelectorBundleSHA256) &&
+			!(observation.SelectorKind == "unselected" && observation.SelectorBundleSHA256 == "")) ||
 		!bundleDigestPattern.MatchString(observation.ConfigurationSHA256) || observation.DatabaseSchema <= 0 ||
 		!bundleDigestPattern.MatchString(observation.WorkInventorySHA256) || !observation.WorkInventoryEmpty ||
 		!filepath.IsAbs(observation.BackupDirectory) || filepath.Clean(observation.BackupDirectory) != observation.BackupDirectory ||

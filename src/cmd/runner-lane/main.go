@@ -966,7 +966,7 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 		if observeErr != nil {
 			return observeErr
 		}
-		receipt, err = laneinstall.AdvanceCatalogCohortSupersedeHost(receipt, successor, observation, time.Now().UTC())
+		receipt, err = laneinstall.AdvanceCatalogCohortSupersedeHostWithContinuation(ctx, plan, receipt, successor, observation)
 	} else if *action == "supersession-restart" {
 		previousID := ""
 		for _, transition := range receipt.Transitions {

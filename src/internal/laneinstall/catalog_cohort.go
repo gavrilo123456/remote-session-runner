@@ -575,9 +575,36 @@ func AdvanceCatalogCohortRollbackFence(receipt CatalogCohortReceipt, evidence Ca
 // were fully rolled back, or completed on every host; any interrupted switch
 // remains under recovery.
 func AdvanceCatalogCohortSupersedeHost(receipt, successor CatalogCohortReceipt, observation CatalogCohortSupersessionEvidence, at time.Time) (CatalogCohortReceipt, error) {
+	return advanceCatalogCohortSupersedeHost(receipt, successor, observation, nil, at)
+}
+
+// AdvanceCatalogCohortSupersedeHostWithContinuation is the operational path
+// for an expired held successor. It verifies the existing, separately stored
+// continuation and current local state before advancing predecessor history.
+// The ordinary pure API above continues to require original fresh evidence.
+func AdvanceCatalogCohortSupersedeHostWithContinuation(ctx context.Context, plan Plan, receipt, successor CatalogCohortReceipt,
+	observation CatalogCohortSupersessionEvidence) (CatalogCohortReceipt, error) {
+	if validateCatalogPlan(plan) != nil || plan.Lane != successor.Lane || observation.HostID != plan.HostID {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
+	renewal, err := verifyCatalogCohortSupersessionWindow(ctx, plan, successor, time.Now().UTC())
+	if err != nil {
+		return CatalogCohortReceipt{}, err
+	}
+	// Verification can take time. Bind the appended transition to completion,
+	// and recheck expiry then rather than backdating it to invocation time.
+	return advanceCatalogCohortSupersedeHost(receipt, successor, observation, renewal, time.Now().UTC())
+}
+
+func advanceCatalogCohortSupersedeHost(receipt, successor CatalogCohortReceipt, observation CatalogCohortSupersessionEvidence,
+	renewal *CatalogCohortContinuationRenewal, at time.Time) (CatalogCohortReceipt, error) {
+	fresh := cohortEvidenceFresh(successor, at.UTC().Format(time.RFC3339Nano))
+	if !fresh && (renewal == nil || ValidateCatalogCohortContinuationRenewalForReceipt(*renewal, successor, at) != nil) {
+		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
+	}
 	if ValidateCatalogCohortReceipt(receipt) != nil || ValidateCatalogCohortReceipt(successor) != nil ||
 		receipt.OperationID == successor.OperationID || receipt.Lane != successor.Lane ||
-		successor.Stage != CatalogCohortHeld || !cohortEvidenceFresh(successor, at.UTC().Format(time.RFC3339Nano)) ||
+		successor.Stage != CatalogCohortHeld ||
 		!catalogCohortReceiptSupersessionEligible(receipt) || !observationMatchesSuccessor(receipt, successor, observation) {
 		return CatalogCohortReceipt{}, ErrCatalogOperationInvalid
 	}

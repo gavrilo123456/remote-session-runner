@@ -752,14 +752,17 @@ func catalogCohortReceiptHasHistoricalBranch(receipt CatalogCohortReceipt, trans
 // one never-switched, fully rolled-back, completed, or fully switched verifying attempt. It does not
 // mutate service, selector, or database state. Ambiguous selector journals,
 // an active service, or any retained/resumable work refuse the observation.
-// The successor must already be held with fresh four-host preflight and backup
-// evidence.
+// The successor must already be held with fresh four-host evidence or its
+// verified, separately stored bounded continuation. Local state and backup
+// checks remain mandatory in either path.
 func ObserveCatalogCohortSupersession(ctx context.Context, plan Plan, receipt, successor CatalogCohortReceipt) (CatalogCohortSupersessionEvidence, error) {
 	if validateCatalogPlan(plan) != nil || ValidateCatalogCohortReceipt(receipt) != nil || ValidateCatalogCohortReceipt(successor) != nil ||
 		receipt.Lane != plan.Lane || successor.Lane != plan.Lane || receipt.OperationID == successor.OperationID ||
-		!catalogCohortReceiptSupersessionEligible(receipt) || successor.Stage != CatalogCohortHeld ||
-		!cohortEvidenceFresh(successor, time.Now().UTC().Format(time.RFC3339Nano)) {
+		!catalogCohortReceiptSupersessionEligible(receipt) || successor.Stage != CatalogCohortHeld {
 		return CatalogCohortSupersessionEvidence{}, ErrCatalogOperationInvalid
+	}
+	if _, err := verifyCatalogCohortSupersessionWindow(ctx, plan, successor, time.Now().UTC()); err != nil {
+		return CatalogCohortSupersessionEvidence{}, err
 	}
 	index := cohortHostIndex(successor, plan.HostID)
 	if index < 0 || index != len(currentSupersededHosts(receipt.Transitions)) {

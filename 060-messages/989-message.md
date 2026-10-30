@@ -1,5 +1,28 @@
 I have stopped all PRD clients and publishers. Proceed with deploying BUG-027 to PRD using the promotion toolkit. This supersedes the previous “stop after QAS” scope.
 
+Owner priority — 2026-10-30, one promotion flow and working PRD now:
+- Use the same `promote-to` cohort stages as Dev/QAS: plan, pause/drain,
+  consistent backup and hold, ordered switch, start under hold, functional
+  acceptance, release and branch synchronization. Environment paths, service
+  adapters, credentials and PRD approval/prior-QAS policy are parameters;
+  they must not create a separate routine production deployment algorithm.
+- Replacement-host bootstrap is already complete. Resolve existing recovery
+  history once through supported commands, then enter the shared promotion
+  stages. Do not repeat bootstrap, #514 recovery, accepted Dev/QAS work, or
+  manufacture another service release for a promotion-tool correction.
+- Immediate priority is finishing operation `38f966a32a0e4bb094dcbd37d994af0b`
+  with unchanged accepted release `rr-20261030-e3d3f5a`. Correct the smallest
+  demonstrated tool defect, prove its full affected public path and continue;
+  a broader architectural refactor is not a prerequisite for restoring PRD.
+- Expired evidence must keep admissions closed while allowing supported fresh
+  observation and bounded renewal of that same operation. Renewal is not
+  permission to change identities, skip current work/backup/capacity checks,
+  rewrite receipts or extend the owner window. The current PRD approval ends
+  at 22:00 UTC / 23:00 Warsaw; clients remain owner-paused.
+- Keep all lane data/configuration isolated. Making PRD follow the same flow
+  does not authorize copying a Dev/QAS database, clearing PRD history,
+  discarding reservations or changing mailbox ownership.
+
 Context refresh — required:
 After completing each numbered point (1–6), reopen and read `/Users/tomasz.walczuk/projects/remote-session-runner/060-messages/989-message.md` in full into your context before starting the next point. Also reread it after context compaction or resuming an interrupted session. Retain completed work and current state from the execution evidence; rereading these instructions must not reset progress or repeat completed operations.
 

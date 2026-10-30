@@ -7,16 +7,16 @@ import (
 	"remote-session-runner/src/internal/config"
 )
 
-// A fully rolled-back predecessor and its fresh, fenced successor represent
+// A fully rolled-back predecessor and its fenced successor represent
 // one closed admission hold during supported supersession. This recognizes
 // the rollback baseline, including an unselected replacement namespace; it
-// neither authorizes work nor observes or changes any host state.
-func catalogCohortRolledBackReplacementHoldPair(predecessor, successor CatalogCohortReceipt, now time.Time) bool {
+// neither authorizes work nor observes or changes any host state. Expired
+// evidence keeps this hold closed; operational commands validate freshness.
+func catalogCohortRolledBackReplacementHoldPair(predecessor, successor CatalogCohortReceipt, _ time.Time) bool {
 	if ValidateCatalogCohortReceipt(predecessor) != nil || ValidateCatalogCohortReceipt(successor) != nil ||
 		predecessor.Lane != config.ReleaseLanePRD || successor.Lane != config.ReleaseLanePRD ||
 		predecessor.OperationID == successor.OperationID || predecessor.Stage != CatalogCohortRolledBack ||
 		successor.Stage != CatalogCohortHeld || !catalogCohortReceiptSupersessionEligible(predecessor) ||
-		!cohortEvidenceFresh(successor, now.UTC().Format(time.RFC3339Nano)) ||
 		(currentSupersessionSuccessor(predecessor.Transitions) != "" &&
 			currentSupersessionSuccessor(predecessor.Transitions) != successor.OperationID) {
 		return false

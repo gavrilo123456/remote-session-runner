@@ -109,8 +109,8 @@ func TestCatalogPRDRolledBackReplacementDiscoveryRejectsUnsafePairs(t *testing.T
 	other.OperationID = strings.Repeat("c", 32)
 	writeCohortReceiptFixture(t, root, other)
 	assertRollbackHoldDiscovery(t, root, successor.OperationID, false)
-	if catalogCohortRolledBackReplacementHoldPair(predecessor, successor, now.Add(catalogCohortEvidenceMaxAge+time.Second)) {
-		t.Fatal("expired successor was accepted")
+	if !catalogCohortRolledBackReplacementHoldPair(predecessor, successor, now.Add(catalogCohortEvidenceMaxAge+time.Second)) {
+		t.Fatal("expired evidence made the exact closed hold unrecognizable")
 	}
 	staleTime := now.Add(-catalogCohortEvidenceMaxAge - time.Second)
 	stalePredecessor, stalePrepared := rollbackHoldReceiptFixture(t, staleTime, false)
@@ -118,7 +118,11 @@ func TestCatalogPRDRolledBackReplacementDiscoveryRejectsUnsafePairs(t *testing.T
 	staleRoot := t.TempDir()
 	writeCohortReceiptFixture(t, staleRoot, stalePredecessor)
 	writeCohortReceiptFixture(t, staleRoot, staleSuccessor)
-	assertRollbackHoldDiscovery(t, staleRoot, staleSuccessor.OperationID, false)
+	assertRollbackHoldDiscovery(t, staleRoot, staleSuccessor.OperationID, true)
+	observation := fixtureCohortSupersessionEvidence(stalePredecessor, staleSuccessor, 0, "rolled_back")
+	if _, err := AdvanceCatalogCohortSupersedeHost(stalePredecessor, staleSuccessor, observation, now); err == nil {
+		t.Fatal("closed-hold discovery authorized supersession using expired evidence")
+	}
 	partial := cloneRollbackHoldReceipt(t, predecessor)
 	partial.Transitions = partial.Transitions[:len(partial.Transitions)-1]
 	partial.Stage = CatalogCohortRollingBack

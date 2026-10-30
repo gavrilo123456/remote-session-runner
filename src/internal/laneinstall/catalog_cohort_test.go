@@ -1474,8 +1474,8 @@ func TestCatalogPRDVerifyingReplacementKeepsOneEffectiveHoldAndRetainsHistory(t 
 			}
 		})
 	}
-	if catalogCohortReplacementHoldPair(predecessor, successor, now.Add(catalogCohortEvidenceMaxAge+time.Second)) {
-		t.Fatal("expired successor preflight was accepted")
+	if !catalogCohortReplacementHoldPair(predecessor, successor, now.Add(catalogCohortEvidenceMaxAge+time.Second)) {
+		t.Fatal("expired evidence made a structurally valid closed hold unrecognizable")
 	}
 
 	originalTransitions := append([]CatalogCohortTransition(nil), predecessor.Transitions...)

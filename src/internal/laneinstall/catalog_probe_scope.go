@@ -313,17 +313,18 @@ func catalogCohortAdmissionHeldAt(plan Plan, root string) (bool, string, error) 
 }
 
 // catalogCohortCompletedSupersessionHoldPair recognizes the brief, guarded
-// overlap between one completed predecessor hold and its fresh held
+// overlap between one completed predecessor hold and its held
 // successor. The predecessor continues to hold admissions until supported
 // per-host evidence has been synchronized and its supersede transition lands.
-func catalogCohortCompletedSupersessionHoldPair(plan Plan, predecessor, successor CatalogCohortReceipt, now time.Time) bool {
+// Expiry does not open or invalidate this closed hold. Commands authorizing
+// mutations must separately require fresh evidence or a verified continuation.
+func catalogCohortCompletedSupersessionHoldPair(plan Plan, predecessor, successor CatalogCohortReceipt, _ time.Time) bool {
 	if validateCatalogPlan(plan) != nil || ValidateCatalogCohortReceipt(predecessor) != nil ||
 		ValidateCatalogCohortReceipt(successor) != nil || predecessor.Lane != plan.Lane || successor.Lane != plan.Lane ||
 		predecessor.OperationID == successor.OperationID || predecessor.Stage != CatalogCohortComplete ||
 		successor.Stage != CatalogCohortHeld || predecessor.ReleaseID == successor.ReleaseID ||
 		predecessor.ReleaseSHA256 == successor.ReleaseSHA256 ||
-		!catalogCohortReceiptSupersessionEligible(predecessor) ||
-		!cohortEvidenceFresh(successor, now.UTC().Format(time.RFC3339Nano)) {
+		!catalogCohortReceiptSupersessionEligible(predecessor) {
 		return false
 	}
 	currentSuccessor := currentSupersessionSuccessor(predecessor.Transitions)
@@ -354,13 +355,12 @@ func catalogCohortCompletedSupersessionHoldPair(plan Plan, predecessor, successo
 	return true
 }
 
-func catalogCohortReplacementHoldPair(predecessor, successor CatalogCohortReceipt, now time.Time) bool {
+func catalogCohortReplacementHoldPair(predecessor, successor CatalogCohortReceipt, _ time.Time) bool {
 	if ValidateCatalogCohortReceipt(predecessor) != nil || ValidateCatalogCohortReceipt(successor) != nil ||
 		predecessor.Lane != config.ReleaseLanePRD || successor.Lane != config.ReleaseLanePRD ||
 		predecessor.OperationID == successor.OperationID || predecessor.ReleaseID == successor.ReleaseID ||
 		predecessor.ReleaseSHA256 == successor.ReleaseSHA256 || predecessor.Stage != CatalogCohortVerifying ||
 		successor.Stage != CatalogCohortHeld || !catalogCohortReceiptSupersessionEligible(predecessor) ||
-		!cohortEvidenceFresh(successor, now.Format(time.RFC3339Nano)) ||
 		(currentSupersessionSuccessor(predecessor.Transitions) != "" && currentSupersessionSuccessor(predecessor.Transitions) != successor.OperationID) {
 		return false
 	}
