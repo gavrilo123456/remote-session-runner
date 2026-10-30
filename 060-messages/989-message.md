@@ -219,6 +219,43 @@ prepared for the Dev/QAS-accepted successor `rr-20261030-e3d3f5a`. QAS and
 its mailbox ownership remain unchanged; clients remain paused; publish no
 mailbox requests or ACKs.
 
+## Latest checkpoint — rollback complete, successor PRD plan ready
+
+Supported rollback closeout succeeded for operation
+`8474c9b8e550bec2a900dc954824e9df` at `2026-10-30T10:34:49.763353Z`:
+`rollback_complete`. All four hosts are rolled back. The earlier failed
+events remain recorded. A fresh successor plan still reports the exact old
+operation hold on all four hosts, stopped PRD services, and empty inventories;
+no admission reopened and no service was started.
+
+The existing `rr-20261030-e3d3f5a` Dev and QAS acceptance receipts were
+verified: operation `b7a87e98f78c80c95cc47306851911ee` and
+`74518a25360a2364f37e83f52c88b83e`, respectively. Both bind digest
+`15de9ab8e33749e00b6c5121d691b23bfa79ead4ee64ea5b7b930611404f96df`; all
+eight gates passed in both lanes. QAS remains unchanged.
+
+Read-only PRD plan for this successor passed at `2026-10-30T10:35:43Z` with
+all four services stopped, empty-work SHA
+`92103a248a6dc1bd114512bc8b084280e339ff6972656bb42c4224f77a121f8b`,
+schema 40, matching current configurations, and the old operation's hold on
+all four hosts. Private plan:
+`/private/tmp/rsr-prd-promotion-review-20261030/fresh-e3-prd-plan-20261030T103543Z.json`,
+SHA `0cbda831287053e97b94aba7754a6f066b678aeadd3953ce546c124ab3cb81de`.
+Its backup/recovery package is
+`4b349106bbc6146a7d8127d9a2cd549d95689a1fa1d72bde82beb6499f6cb4b9`.
+Sandbox had 755,126,272 bytes available against the required
+567,108,864-byte post-backup floor; measure again before writing and use the
+post-backup report as the final capacity gate. No backup or new operation has
+been created yet.
+
+The owner extended the PRD maintenance cutoff to 23:00 Europe/Warsaw today
+(`2026-10-30T22:00:00Z`). Bind the new approval to e3 and this fresh plan;
+do not reuse the `rr-309` approval. Next: create the owner-only approval,
+prepare the new cohort with `--prepare-only`, verify fresh backup and capacity
+evidence, then continue the supported ordered switches and eight acceptance
+gates. Keep clients paused, QAS and all mailbox ownership unchanged; publish
+no mailbox requests or ACKs.
+
 ## Latest checkpoint — legacy fresh-install rollback compatibility
 
 The first supported retry under the `rr-309` approval verified Linux's
