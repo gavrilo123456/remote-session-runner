@@ -468,3 +468,12 @@ work and mailbox files. The same approval expires at `2026-10-30T22:00:00Z`
 restored, remeasure and resume the same operation with fresh checks; do not
 start over or repeat #514 recovery. Keep QAS/mailbox ownership unchanged,
 clients paused, and publish no mailbox requests or ACKs.
+
+The latest read-only plan from controller source `0950647` again found all
+four PRD services stopped, inventories empty, and the same predecessor holds
+and backup package. Its SHA-256 is
+`4f63304297427a0e3fcd27825c5f5c844c6ea34eeb8dc18ed2a023bfce2ab2fb`.
+Sandbox availability was `744,759,296` bytes, `193,233,060` below the measured
+pre-backup requirement. The Linux preflight report that a retry could replace
+has been preserved and hash-verified outside the operation store. The owner
+approval still runs to 23:00 Warsaw; no renewal is needed.
