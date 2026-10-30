@@ -437,9 +437,10 @@ func promotionSelectedPredecessorIdentity(lane string, snapshot promotionLaneSna
 }
 
 // ValidateExistingCohortHold allows replacement only for one synchronized,
-// completed receipt whose exact selected bundles, config/schema identities,
-// and empty work inventories still match the read-only plan. Interrupted or
-// ambiguous cohorts remain blocked for their dedicated recovery path.
+// complete or fully rolled-back receipt whose current selector state,
+// config/schema identities, and empty work inventories still match the
+// read-only plan. Interrupted or ambiguous cohorts remain blocked for their
+// dedicated recovery path.
 func (b *NativePromotionBackend) ValidateExistingCohortHold(ctx context.Context, plan PromotionPlan) error {
 	operationID, err := commonExistingCohortHold(plan.ExistingHolds)
 	if err != nil || operationID == "" {
@@ -449,16 +450,17 @@ func (b *NativePromotionBackend) ValidateExistingCohortHold(ctx context.Context,
 	for _, host := range HostOrder {
 		view, readErr := b.readReceipt(ctx, host, plan.Lane, operationID)
 		if readErr != nil || !view.Present {
-			return errors.Join(fmt.Errorf("%s completed predecessor receipt is unavailable", host), readErr)
+			return errors.Join(fmt.Errorf("%s held predecessor receipt is unavailable", host), readErr)
 		}
 		if canonical.OperationID == "" {
 			canonical = view.Receipt
 		} else if !reflectReceiptEqual(canonical, view.Receipt) {
-			return fmt.Errorf("completed predecessor receipt differs across hosts: %w", ErrOperationCorrupted)
+			return fmt.Errorf("held predecessor receipt differs across hosts: %w", ErrOperationCorrupted)
 		}
 	}
-	if canonical.Stage != laneinstall.CatalogCohortComplete || canonical.Lane != config.ReleaseLane(plan.Lane) {
-		return fmt.Errorf("held predecessor %s is not a completed cohort: %w", operationID, ErrAdmissionHeld)
+	if (canonical.Stage != laneinstall.CatalogCohortComplete && canonical.Stage != laneinstall.CatalogCohortRolledBack) ||
+		canonical.Lane != config.ReleaseLane(plan.Lane) {
+		return fmt.Errorf("held predecessor %s is neither complete nor fully rolled back: %w", operationID, ErrAdmissionHeld)
 	}
 	for index, host := range HostOrder {
 		if index >= len(canonical.Hosts) || index >= len(plan.HostBaselines) {
@@ -466,13 +468,51 @@ func (b *NativePromotionBackend) ValidateExistingCohortHold(ctx context.Context,
 		}
 		predecessor, baseline := canonical.Hosts[index], plan.HostBaselines[index]
 		if predecessor.HostID != host || baseline.HostID != host || baseline.Lane != plan.Lane ||
-			baseline.SelectedReleaseID != canonical.ReleaseID || baseline.SelectedBundleSHA != predecessor.Target.BundleSHA256 ||
 			baseline.ConfigurationSHA != predecessor.ConfigurationSHA256 || baseline.SchemaVersion != predecessor.SchemaVersion ||
-			!baseline.WorkInventoryEmpty {
-			return fmt.Errorf("%s no longer matches the completed predecessor receipt or has retained work: %w", host, ErrAdmissionHeld)
+			!baseline.WorkInventoryEmpty || !predecessorSelectorMatches(canonical.Stage, predecessor, baseline) {
+			return fmt.Errorf("%s no longer matches the held predecessor's selector, config/schema, or empty-work evidence: %w", host, ErrAdmissionHeld)
+		}
+		if canonical.Stage == laneinstall.CatalogCohortRolledBack &&
+			(!baseline.ServiceStopped || baseline.WorkInventorySHA != predecessor.WorkInventorySHA256) {
+			return fmt.Errorf("%s rolled-back predecessor is not still stopped with its recorded empty-work identity: %w", host, ErrAdmissionHeld)
 		}
 	}
 	return nil
+}
+
+// predecessorSelectorMatches binds a fresh plan to the exact state that the
+// predecessor should leave behind. A rolled-back catalog release must match
+// its recorded previous selector. A replacement host whose previous state was
+// a fresh-install namespace must remain unselected and retain that exact
+// baseline. Unsupported legacy path shapes fail closed.
+func predecessorSelectorMatches(stage laneinstall.CatalogCohortStage, predecessor laneinstall.CatalogCohortHostPreflight,
+	baseline HostObservation) bool {
+	switch stage {
+	case laneinstall.CatalogCohortComplete:
+		return baseline.SelectedReleaseID == predecessor.Target.ReleaseID &&
+			baseline.SelectedBundleSHA == predecessor.Target.BundleSHA256
+	case laneinstall.CatalogCohortRolledBack:
+		if predecessor.FreshInstall != nil {
+			return predecessor.PreviousTarget == "" && predecessor.PreviousBundleSHA256 == "" &&
+				baseline.SelectedReleaseID == "" && baseline.SelectedBundleSHA == "" &&
+				baseline.SelectedNamespaceAbsence == nil &&
+				baseline.FreshInstallEvidenceSHA256 == predecessor.FreshInstall.EvidenceSHA256 &&
+				baseline.FreshInstallAbsenceSHA256 == predecessor.FreshInstall.Absence.EvidenceSHA256 &&
+				baseline.FreshInstallOperationID == predecessor.FreshInstall.OperationID
+		}
+		if predecessor.LegacyRollback != nil || !filepath.IsAbs(predecessor.PreviousTarget) ||
+			filepath.Clean(predecessor.PreviousTarget) != predecessor.PreviousTarget ||
+			filepath.Base(predecessor.PreviousTarget) != predecessor.HostID ||
+			!releasePattern.MatchString(filepath.Base(filepath.Dir(predecessor.PreviousTarget))) ||
+			!digestPattern.MatchString(predecessor.PreviousBundleSHA256) {
+			return false
+		}
+		return baseline.SelectedReleaseID == filepath.Base(filepath.Dir(predecessor.PreviousTarget)) &&
+			baseline.SelectedBundleSHA == predecessor.PreviousBundleSHA256 &&
+			baseline.SelectedNamespaceAbsence == nil && baseline.FreshInstallEvidenceSHA256 == ""
+	default:
+		return false
+	}
 }
 
 func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation) (any, error) {
@@ -493,7 +533,7 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 		if err := b.finishInitialFencesAndHold(ctx, op, existing.Receipt); err != nil {
 			return nil, err
 		}
-		if err := b.supersedeCompletedPredecessor(ctx, op, existing.Receipt); err != nil {
+		if err := b.supersedeValidatedPredecessor(ctx, op, existing.Receipt); err != nil {
 			return nil, err
 		}
 		return map[string]any{"cohort_operation_id": op.CohortOperationID, "release_id": op.Release.ID, "resumed": true,
@@ -506,7 +546,7 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 	}
 	if op.PreviousCohortOperationID != "" {
 		if err := b.ValidateExistingCohortHold(ctx, *op.PlanSnapshot); err != nil {
-			return nil, fmt.Errorf("revalidate completed predecessor cohort %s before backup: %w", op.PreviousCohortOperationID, err)
+			return nil, fmt.Errorf("revalidate held predecessor cohort %s before backup: %w", op.PreviousCohortOperationID, err)
 		}
 	}
 	for index, host := range HostOrder {
@@ -592,7 +632,7 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 	if err := b.finishInitialFencesAndHold(ctx, op, view.Receipt); err != nil {
 		return nil, err
 	}
-	if err := b.supersedeCompletedPredecessor(ctx, op, view.Receipt); err != nil {
+	if err := b.supersedeValidatedPredecessor(ctx, op, view.Receipt); err != nil {
 		return nil, err
 	}
 	return map[string]any{"cohort_operation_id": op.CohortOperationID, "release_id": op.Release.ID,
@@ -600,7 +640,7 @@ func (b *NativePromotionBackend) PrepareCohort(ctx context.Context, op Operation
 		"affected_hosts": HostOrder, "host_preflights": reports}, nil
 }
 
-func (b *NativePromotionBackend) supersedeCompletedPredecessor(ctx context.Context, op Operation,
+func (b *NativePromotionBackend) supersedeValidatedPredecessor(ctx context.Context, op Operation,
 	successor laneinstall.CatalogCohortReceipt) error {
 	predecessorID := op.PreviousCohortOperationID
 	if predecessorID == "" {
@@ -611,15 +651,15 @@ func (b *NativePromotionBackend) supersedeCompletedPredecessor(ctx context.Conte
 	}
 	_, predecessor, err := b.synchronizeReceiptHead(ctx, op.Lane, predecessorID)
 	if err != nil {
-		return fmt.Errorf("synchronize completed predecessor history: %w", err)
+		return fmt.Errorf("synchronize held predecessor history: %w", err)
 	}
 	if predecessor.Stage == laneinstall.CatalogCohortSuperseded {
 		if cohortSupersessionSuccessor(predecessor) != successor.OperationID {
-			return fmt.Errorf("completed predecessor was superseded by a different operation: %w", ErrOperationCorrupted)
+			return fmt.Errorf("predecessor was superseded by a different operation: %w", ErrOperationCorrupted)
 		}
 		return b.verifySuccessorHold(ctx, op.Lane, successor.OperationID)
 	}
-	if predecessor.Stage != laneinstall.CatalogCohortComplete {
+	if predecessor.Stage != laneinstall.CatalogCohortComplete && predecessor.Stage != laneinstall.CatalogCohortRolledBack {
 		return fmt.Errorf("predecessor %s requires recovery before supersession: %w", predecessorID, ErrAdmissionHeld)
 	}
 	if current := cohortSupersessionSuccessor(predecessor); current != "" && current != successor.OperationID {
@@ -642,11 +682,11 @@ func (b *NativePromotionBackend) supersedeCompletedPredecessor(ctx context.Conte
 			return fmt.Errorf("record %s completed-predecessor observation: %w", host, err)
 		}
 		if _, _, err := b.synchronizeReceiptHead(ctx, op.Lane, predecessorID); err != nil {
-			return fmt.Errorf("synchronize %s completed-predecessor observation: %w", host, err)
+			return fmt.Errorf("synchronize %s predecessor observation: %w", host, err)
 		}
 	}
 	_, predecessor, err = b.synchronizeReceiptHead(ctx, op.Lane, predecessorID)
-	if err != nil || predecessor.Stage != laneinstall.CatalogCohortComplete {
+	if err != nil || predecessor.Stage != laneinstall.CatalogCohortComplete && predecessor.Stage != laneinstall.CatalogCohortRolledBack {
 		return errors.Join(ErrOperationCorrupted, err)
 	}
 	if cohortSupersessionSuccessor(predecessor) != successor.OperationID {
@@ -654,7 +694,7 @@ func (b *NativePromotionBackend) supersedeCompletedPredecessor(ctx context.Conte
 	}
 	for _, host := range HostOrder {
 		if !cohortHostHasSupersession(predecessor, host, successor.OperationID) {
-			return fmt.Errorf("%s completed-predecessor evidence is missing: %w", host, ErrOperationCorrupted)
+			return fmt.Errorf("%s predecessor evidence is missing: %w", host, ErrOperationCorrupted)
 		}
 	}
 	if _, err := b.runLane(ctx, "mac-control-plane", []string{"catalog-cohort", "--host", "mac-control-plane", "--lane", op.Lane,

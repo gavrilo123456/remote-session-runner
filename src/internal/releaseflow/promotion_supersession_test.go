@@ -108,10 +108,16 @@ func (f *cohortCommandFixture) run(_ context.Context, host string, args []string
 			}
 		}
 		hostReceipt := successor.Hosts[index]
+		selectorOperations := "completed"
+		selectorBundleSHA256 := predecessor.Hosts[index].Target.BundleSHA256
+		if predecessor.Stage == laneinstall.CatalogCohortRolledBack {
+			selectorOperations = "rolled_back"
+			selectorBundleSHA256 = predecessor.Hosts[index].PreviousBundleSHA256
+		}
 		observation := laneinstall.CatalogCohortSupersessionEvidence{
 			HostID: host, SuccessorOperationID: successorID,
 			ExpectedSelector: hostReceipt.PreviousTarget, ObservedSelector: hostReceipt.PreviousTarget,
-			SelectorBundleSHA256: predecessor.Hosts[index].Target.BundleSHA256, SelectorOperations: "completed",
+			SelectorBundleSHA256: selectorBundleSHA256, SelectorOperations: selectorOperations,
 			ServiceActive: false, WorkInventorySHA256: hostReceipt.WorkInventorySHA256, WorkInventoryEmpty: true,
 			ConfigurationSHA256: hostReceipt.ConfigurationSHA256, DatabaseSchema: hostReceipt.SchemaVersion,
 		}
@@ -186,7 +192,7 @@ func TestNativePromotionSupersessionResumesAfterLocalReceiptWriteBeforeSync(t *t
 		plan.ExistingHolds[host] = predecessor.OperationID
 		plan.HostBaselines = append(plan.HostBaselines, HostObservation{HostID: host, Lane: "dev",
 			SelectedReleaseID: predecessor.ReleaseID, SelectedBundleSHA: predecessor.Hosts[index].Target.BundleSHA256,
-			WorkInventorySHA: predecessor.Hosts[index].WorkInventorySHA256, WorkInventoryEmpty: true,
+			ServiceStopped: true, WorkInventorySHA: predecessor.Hosts[index].WorkInventorySHA256, WorkInventoryEmpty: true,
 			ConfigurationSHA: predecessor.Hosts[index].ConfigurationSHA256, SchemaVersion: predecessor.Hosts[index].SchemaVersion})
 	}
 	if err := backend.ValidateExistingCohortHold(context.Background(), plan); err != nil {
@@ -199,7 +205,7 @@ func TestNativePromotionSupersessionResumesAfterLocalReceiptWriteBeforeSync(t *t
 		t.Fatal("native predecessor validation accepted a changed selected bundle")
 	}
 	op := Operation{Lane: "dev", CohortOperationID: successor.OperationID, PreviousCohortOperationID: predecessor.OperationID}
-	if err := backend.supersedeCompletedPredecessor(context.Background(), op, successor); err == nil ||
+	if err := backend.supersedeValidatedPredecessor(context.Background(), op, successor); err == nil ||
 		!strings.Contains(err.Error(), "injected interruption") {
 		t.Fatalf("expected the injected after-write interruption, got %v", err)
 	}
@@ -207,7 +213,7 @@ func TestNativePromotionSupersessionResumesAfterLocalReceiptWriteBeforeSync(t *t
 		fixture.receipts["mac-control-plane"][predecessor.OperationID].Stage != laneinstall.CatalogCohortComplete {
 		t.Fatal("interrupted predecessor history was not preserved as a completed held receipt")
 	}
-	if err := backend.supersedeCompletedPredecessor(context.Background(), op, successor); err != nil {
+	if err := backend.supersedeValidatedPredecessor(context.Background(), op, successor); err != nil {
 		t.Fatalf("resume after receipt write interruption: %v", err)
 	}
 	for _, host := range HostOrder {
@@ -228,6 +234,162 @@ func TestNativePromotionSupersessionResumesAfterLocalReceiptWriteBeforeSync(t *t
 		if count != 1 {
 			t.Fatalf("host %s supersede-host ran %d times across retry, want exactly once", host, count)
 		}
+	}
+}
+
+func TestNativePromotionSupersedesFullyRolledBackPredecessor(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	predecessorID, successorID := strings.Repeat("1", 32), strings.Repeat("b", 32)
+	predecessor := promotionTestCohortReceipt(t, now, predecessorID, "v2.0.0", nil, false)
+	for index, host := range HostOrder {
+		plan, err := laneinstall.BuildCatalogPlan(host, config.ReleaseLaneDev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, err := laneinstall.DefaultCatalogRootForPlan(plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		predecessor.Hosts[index].PreviousTarget = filepath.Join(root, "v1.0.0", host)
+		predecessor.Hosts[index].PreviousBundleSHA256 = strings.Repeat("3", 64)
+	}
+	if err := laneinstall.ValidateCatalogCohortReceipt(predecessor); err != nil {
+		t.Fatalf("prepared predecessor fixture invalid: %v", err)
+	}
+	proof := strings.Repeat("d", 64)
+	var err error
+	predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, "hold", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range HostOrder {
+		predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, "preflight", host, proof, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, "switch", host, proof, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, "verify-start", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range HostOrder {
+		predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, "verify", host, proof, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, "block", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, "rollback-start", "", proof, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := len(HostOrder) - 1; index >= 0; index-- {
+		predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, "rollback-host", HostOrder[index], proof, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	predecessor, err = laneinstall.AdvanceCatalogCohortReceipt(predecessor, "rollback-complete", "", proof, now)
+	if err != nil || predecessor.Stage != laneinstall.CatalogCohortRolledBack {
+		t.Fatalf("predecessor rollback stage=%s err=%v", predecessor.Stage, err)
+	}
+
+	successor := promotionTestCohortReceipt(t, now, successorID, "v2.0.1", &predecessor, true)
+	for index := range successor.Hosts {
+		successor.Hosts[index].PreviousTarget = predecessor.Hosts[index].PreviousTarget
+		successor.Hosts[index].PreviousBundleSHA256 = predecessor.Hosts[index].PreviousBundleSHA256
+	}
+	if err := laneinstall.ValidateCatalogCohortReceipt(successor); err != nil {
+		t.Fatalf("held successor fixture invalid: %v", err)
+	}
+	plan := PromotionPlan{Lane: "dev", ExistingHolds: make(map[string]string)}
+	for index, host := range HostOrder {
+		baseline := predecessor.Hosts[index]
+		plan.ExistingHolds[host] = predecessor.OperationID
+		plan.HostBaselines = append(plan.HostBaselines, HostObservation{HostID: host, Lane: "dev",
+			SelectedReleaseID: filepath.Base(filepath.Dir(baseline.PreviousTarget)), SelectedBundleSHA: baseline.PreviousBundleSHA256,
+			ServiceStopped: true, WorkInventorySHA: baseline.WorkInventorySHA256, WorkInventoryEmpty: true,
+			ConfigurationSHA: baseline.ConfigurationSHA256, SchemaVersion: baseline.SchemaVersion})
+	}
+	fixture := &cohortCommandFixture{receipts: fixtureReceipts(predecessor, successor), interruptHostOnce: "linux-host"}
+	backend := &NativePromotionBackend{laneCommandRunner: fixture.run}
+	if err := backend.ValidateExistingCohortHold(context.Background(), plan); err != nil {
+		t.Fatalf("matching rolled-back hold did not pass fresh-state validation: %v", err)
+	}
+	for name, mutate := range map[string]func(*HostObservation){
+		"selector":        func(h *HostObservation) { h.SelectedBundleSHA = strings.Repeat("f", 64) },
+		"work identity":   func(h *HostObservation) { h.WorkInventorySHA = strings.Repeat("e", 64) },
+		"nonempty work":   func(h *HostObservation) { h.WorkInventoryEmpty = false },
+		"running service": func(h *HostObservation) { h.ServiceStopped = false },
+		"configuration":   func(h *HostObservation) { h.ConfigurationSHA = strings.Repeat("f", 64) },
+		"schema":          func(h *HostObservation) { h.SchemaVersion++ },
+	} {
+		changed := plan
+		changed.HostBaselines = append([]HostObservation(nil), plan.HostBaselines...)
+		mutate(&changed.HostBaselines[2])
+		if err := backend.ValidateExistingCohortHold(context.Background(), changed); err == nil {
+			t.Errorf("rolled-back hold accepted changed %s evidence", name)
+		}
+	}
+	op := Operation{Lane: "dev", CohortOperationID: successorID, PreviousCohortOperationID: predecessorID}
+	if err := backend.supersedeValidatedPredecessor(context.Background(), op, successor); err == nil ||
+		!strings.Contains(err.Error(), "injected interruption") {
+		t.Fatalf("expected an interruption after the first local supersession write, got %v", err)
+	}
+	if fixture.receipts["linux-host"][predecessorID].Stage != laneinstall.CatalogCohortRolledBack {
+		t.Fatal("local supersession discarded the rollback-complete predecessor stage")
+	}
+	if err := backend.supersedeValidatedPredecessor(context.Background(), op, successor); err != nil {
+		t.Fatalf("resume supersession after receipt sync interruption: %v", err)
+	}
+	for _, host := range HostOrder {
+		if fixture.receipts[host][predecessorID].Stage != laneinstall.CatalogCohortSuperseded {
+			t.Fatalf("rolled-back predecessor was not superseded on %s", host)
+		}
+		if fixture.receipts[host][successorID].Stage != laneinstall.CatalogCohortHeld {
+			t.Fatalf("successor hold was not preserved on %s", host)
+		}
+	}
+}
+
+func fixtureReceipts(predecessor, successor laneinstall.CatalogCohortReceipt) map[string]map[string]laneinstall.CatalogCohortReceipt {
+	receipts := make(map[string]map[string]laneinstall.CatalogCohortReceipt, len(HostOrder))
+	for _, host := range HostOrder {
+		receipts[host] = map[string]laneinstall.CatalogCohortReceipt{
+			predecessor.OperationID: predecessor,
+			successor.OperationID:   successor,
+		}
+	}
+	return receipts
+}
+
+func TestRolledBackFreshInstallPredecessorRequiresMatchingUnselectedBaseline(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	baseline := &laneinstall.CatalogFreshInstallBaseline{
+		OperationID: strings.Repeat("1", 32), EvidenceSHA256: digest,
+		Absence: laneinstall.CatalogNamespaceAbsenceReport{EvidenceSHA256: strings.Repeat("b", 64)},
+	}
+	predecessor := laneinstall.CatalogCohortHostPreflight{HostID: "linux-host", FreshInstall: baseline}
+	observed := HostObservation{HostID: "linux-host", FreshInstallEvidenceSHA256: baseline.EvidenceSHA256,
+		FreshInstallAbsenceSHA256: baseline.Absence.EvidenceSHA256, FreshInstallOperationID: baseline.OperationID}
+	if !predecessorSelectorMatches(laneinstall.CatalogCohortRolledBack, predecessor, observed) {
+		t.Fatal("matching unselected fresh-install baseline was rejected")
+	}
+	observed.SelectedReleaseID = "rr-unexpected"
+	if predecessorSelectorMatches(laneinstall.CatalogCohortRolledBack, predecessor, observed) {
+		t.Fatal("fresh-install rollback accepted an unexpected selected release")
+	}
+	observed.SelectedReleaseID = ""
+	observed.FreshInstallEvidenceSHA256 = strings.Repeat("c", 64)
+	if predecessorSelectorMatches(laneinstall.CatalogCohortRolledBack, predecessor, observed) {
+		t.Fatal("fresh-install rollback accepted changed absence-bound evidence")
 	}
 }
 

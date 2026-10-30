@@ -164,12 +164,17 @@ database or reactivation of the retired host.
 If every host reports the same held `complete` receipt from an earlier
 promotion, a new operation may replace that hold only after the coordinator
 validates the receipt history and rechecks each selected release/bundle,
-configuration, schema, stopped service, empty work inventory and backup. The
-new receipt is held across the cohort first. The old receipt remains an
-admission fence until each host records its supported supersession evidence
-and that history is synchronized. Partial, divergent, switched-but-incomplete,
-or otherwise unverified holds remain blocked for their dedicated recovery
-path. Never delete or edit the old receipt to make a new plan pass.
+configuration, schema, and empty work inventory. A fully `rollback_complete`
+cohort can also be superseded after fresh evidence proves every restored
+selector matches that receipt's recorded previous target and bundle, every
+service remains stopped, configuration/schema and empty-work identity still
+match, and a replacement worker's fresh-install baseline remains unselected
+and unchanged. The new receipt is held across the cohort first. The old
+receipt remains an admission fence until each host records its supported
+supersession evidence and that history is synchronized. Partial, divergent,
+switched-but-incomplete, or otherwise unverified holds remain blocked for
+their dedicated recovery path. Never delete or edit the old receipt to make a
+new plan pass.
 
 Execution additionally requires the named publisher owner/control and explicit
 pause/no-new-accepted assertions. The wrapper verifies those flags against live

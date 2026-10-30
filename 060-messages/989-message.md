@@ -290,3 +290,45 @@ four-host read-only plan/state and invoke the supported rollback retry for
 cohort held and stopped. Then prepare a fresh, separately approved PRD plan for
 the Dev/QAS-accepted `rr-20261030-e3d3f5a`; do not reuse `rr-309` approval for
 that release. Preserve QAS/mailbox ownership and keep clients stopped.
+
+## Latest checkpoint — rollback-complete predecessor supersession fix
+
+The owner-approved PRD window already ends at 23:00 Warsaw on 2026-10-30
+(`2026-10-30T22:00:00Z`); the requested extension does not require another
+window record. The first supported `--prepare-only` attempt for
+`rr-20261030-e3d3f5a` failed before creating an operation or changing host
+state. Exact error and captured stderr hash are recorded in
+`040-implementation-evidence/BUG-027.md`.
+
+Cause: the four-host predecessor operation
+`8474c9b8e550bec2a900dc954824e9df` is consistently `rollback_complete` and
+still holds admissions. The low-level receipt supports guarded supersession
+after a complete rollback, but the releaseflow controller only allowed a
+`complete` predecessor. This was not a live selector or receipt mismatch.
+
+The controller now permits superseding either a synchronized complete cohort
+or a fully rolled-back cohort, with different exact-state checks. Rollback
+supersession requires restored previous selectors/bundle identities, stopped
+services, unchanged configuration/schema and empty-work identity, plus exact
+unselected fresh-install evidence on replacement Linux. The successor hold is
+still established first; the old hold is retired only after supported
+per-host observations synchronize. Incomplete/divergent histories and changed
+or unsupported baselines still fail closed. Sealed release bytes are unchanged.
+
+New regressions cover full rollback, per-host supersession interruption/retry,
+preserved rollback history, changed selector/work/config/schema/service state,
+and the unselected fresh-install baseline. Mac Go 1.27.1 full `make test`,
+`make vet`, `make build`, `make smoke`, and focused releaseflow tests passed.
+The first sandboxed full-suite attempt is preserved as NOT PASS because its
+unrelated BUG-020 test could not execute its test-owned `/bin/ps` process;
+the full suite passed when rerun with normal host process permissions.
+
+Next: finish Git delivery for this controller correction, fast-forward and
+validate the three clean Ubuntu checkouts, then rebuild the controller from
+the delivered revision. Re-run a fresh PRD plan; if the approval-bound release,
+host set, predecessor bundle map and backup package remain identical, reuse the
+existing approval through its 22:00Z deadline. Run `--prepare-only`, verify
+post-backup capacity (especially Sandbox), receipt synchronization and exact
+holds, then continue the same release in Linux → Sandbox → Factory → Mac order.
+Do not repeat #514 recovery. QAS services/mailbox ownership remain unchanged;
+clients stay paused; publish no mailbox requests or ACKs.
