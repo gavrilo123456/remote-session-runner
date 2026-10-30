@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `RESOLVED FOR DEV/QAS` — installed diagnostic verified; PRD deployment and #514 recovery remain outside this assignment |
+| Status | `RESOLVED — DEV/QAS/PRD VERIFIED` — separately installed PRD diagnostic returned a complete inventory on 2026-10-30; recovery remains a separate guarded action |
 | Severity | High — blocks safe recovery and replacement work after a retained-lost result |
 | Priority | High |
 | Reported | 2026-10-27 |
@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner |
 | Affected component/path | Mac owner-only diagnostics, retained-work inventory, and offline recovery preflight |
 | Affected revision | Observed live build `43a4e675ccccb89e1ea1c333e975ea028c9600fa`; inspected checkout `75a714e8d482930ad2c56ba4baca0d15b3fff24c` |
-| Fixed revision | Diagnostic source fix `f0f604db7629dc50096cd32963ae373c11a0e341` is included in accepted service release `rr-1e6c47721d-f83e3be7`; separate Mac diagnostic build `883e2af0373b7de94f172df31909434f9a23c38d` |
-| Verification | Dev and QAS accepted the same sealed release; the separately installed Mac diagnostic returned complete, authority-bound Dev and QAS inventories. PRD and #514 recovery were not changed. See [BUG-027 evidence](../040-implementation-evidence/BUG-027.md). |
+| Fixed revision | Diagnostic source fix `f0f604db7629dc50096cd32963ae373c11a0e341`; current accepted PRD service release `rr-20261030-e3d3f5a`; separate qualified Mac diagnostic build `883e2af0373b7de94f172df31909434f9a23c38d` |
+| Verification | Dev/QAS and PRD accepted the same sealed successor. PRD operation `38f966a32a0e4bb094dcbd37d994af0b` completed; installed diagnostic returned a complete selected-PRD/schema-40 inventory. It still reports `safe_to_resume=not_established` and `recovery_authorized=false`; client resumption follows separate cohort acceptance. See [PRD closeout](../040-implementation-evidence/BUG-027-prd-closeout-2026-10-30.md) and [earlier evidence](../040-implementation-evidence/BUG-027.md). |
 | Related records | [BUG-014](014-idle-mac-retained-lost-capacity-recovery.md), [BUG-011](011-mac-local-executor-lost-command-slots-block-local-execution.md), [BUG-010](010-mailbox-stale-ready-markers-request-lifecycle.md) |
 
 ## Reported behavior

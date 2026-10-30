@@ -9,7 +9,13 @@ Per-unit results are in
 [`PROMO-01.md`](../../040-implementation-evidence/PROMO-01.md) through
 [`PROMO-07.md`](../../040-implementation-evidence/PROMO-07.md).
 
-PROMO-08 remains separately instructed and NOT RUN. The release build did not
+PROMO-08 has completed the separately authorized Dev/QAS/PRD walkthroughs.
+The latest PRD closeout is the accepted `rr-20261030-e3d3f5a` deployment,
+operation `38f966a32a0e4bb094dcbd37d994af0b`, with all eight gates passed,
+released admissions and completed PRD branch synchronization; see
+[`BUG-027-prd-closeout-2026-10-30.md`](../../040-implementation-evidence/BUG-027-prd-closeout-2026-10-30.md).
+Filesystem-mailbox acceptance for this rollout was NOT RUN; mailbox ownership
+was preserved. The original release build itself did not
 promote a lane or deploy/restart a service. Its four `native-full-v1` receipts,
 owner-only host profile, budget, build ID, source/controller identities,
 publication hashes, and final Sandbox capacity are recorded in the build

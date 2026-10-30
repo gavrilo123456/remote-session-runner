@@ -1,5 +1,33 @@
 I have stopped all PRD clients and publishers. Proceed with deploying BUG-027 to PRD using the promotion toolkit. This supersedes the previous “stop after QAS” scope.
 
+Current closeout — 2026-10-30, PRD is working:
+- This assignment is complete. Operation `38f966a32a0e4bb094dcbd37d994af0b`
+  is `complete`, with PRD branch synchronization `complete`. The unchanged
+  Dev/QAS-accepted release `rr-20261030-e3d3f5a` is active across Mac,
+  replacement Linux `79.72.94.59`, Sandbox and Factory. Schema is 40.
+- All eight functional acceptance gates passed. The identical four-host
+  receipt is `released` with 20 transitions, head
+  `4dc2e120e8716aa7439af8373dada0888522ecaf87d4df6ab0018185c5c28e33`.
+  Admissions are open; final canonical work inventories were empty.
+- After the final release restart, all three authenticated worker TLS routes
+  and both Mac components returned HTTP 200 ready on the expected source.
+  Storage and cleanup error counters were zero. The separately installed,
+  qualified BUG-027 diagnostic returned a complete selected-PRD inventory.
+- The owner explicitly approved the Mac-source-only Linux 8443 firewall rule
+  and restoration of the original Sandbox CA alongside the Linux CA. Both
+  fixes were backed up and verified. Keep the separate trust amendment when
+  planning later rollback; historical backups still bind the earlier CA bytes.
+- All eight mailbox roots remain assigned to PRD; QAS keeps its own internal
+  default root. No mailbox request or ACK was published. Retained history,
+  five uncertain remote intents and other accepted intent metadata were
+  preserved; #514 recovery was not repeated. The retired Linux endpoint was
+  not reactivated.
+- The owner may resume PRD mailbox clients. I left external clients stopped;
+  normal-load observation remains pending owner resumption. Do not repeat
+  bootstrap, this rollout or completed recovery to refresh context.
+- Detailed evidence: `040-implementation-evidence/BUG-027-prd-closeout-2026-10-30.md`.
+  Earlier checkpoints below are historical and do not reopen completed steps.
+
 Owner priority — 2026-10-30, one promotion flow and working PRD now:
 - Use the same `promote-to` cohort stages as Dev/QAS: plan, pause/drain,
   consistent backup and hold, ordered switch, start under hold, functional

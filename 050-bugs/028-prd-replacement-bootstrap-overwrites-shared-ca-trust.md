@@ -1,0 +1,38 @@
+# BUG-028 — Replacement bootstrap overwrites a CA file shared by another worker
+
+| Field | Value |
+| --- | --- |
+| Status | `TRIAGED` — exact operational repair verified; preventive source correction remains open |
+| Severity | High — breaks authenticated access to an unchanged peer worker |
+| Reported | 2026-10-30 |
+| Component | `src/internal/laneinstall/prd_replacement_mac_route.go` |
+| Evidence | [BUG-027 PRD closeout](../040-implementation-evidence/BUG-027-prd-closeout-2026-10-30.md) |
+
+Linux replacement bootstrap used the configured Linux `server_ca` pathname,
+which was also used by Sandbox. It replaced the original shared PoC CA with
+the new Linux-only CA. YAML hashes stayed unchanged, while Sandbox direct
+TLS failed with `unable to get local issuer certificate`.
+
+The original CA bytes were verified against the consistent pre-bootstrap
+backup and the completed bootstrap journal. The owner explicitly approved
+an additive bundle containing only that original CA and the current Linux
+CA. Both worker chains and IP identities were verified. All worker routes
+subsequently passed authenticated TLS 1.3 readiness, and PRD functional
+acceptance completed. No leaf certificate, private key or host key changed.
+This is an operational mitigation, not a preventive source fix.
+
+The corrective source work must detect shared trust paths before replacing
+them, preserve each peer's approved trust, and use either a distinct host CA
+path or a validated exact CA bundle. Changed configuration and trust must be
+backed up and bound to supported transition/recovery evidence. Do not restore
+the historical single-CA backup blindly: it would discard an approved CA.
+
+Add disposable fixtures for two workers sharing a trust path, unchanged peer
+validation after replacement, interruption/retry, and rollback that preserves
+the approved trust amendment. Use the recorded incident as reproduction
+evidence; do not repeat live bootstrap or replay project work.
+
+The missing Linux 8443 firewall rule and the helper's opaque dynamic-error
+diagnostic are separately recorded in the closeout. They are not evidence
+that the diagnostic-inventory fix itself failed. No broader repair campaign
+or service release is assigned by this record.
