@@ -522,3 +522,39 @@ temporary promotion controller from the delivered revision and resume this
 same PRD operation with fresh host checks. Keep QAS and its mailbox ownership
 unchanged, publish no mailbox requests or ACKs, and leave clients paused until
 all required PRD acceptance gates pass.
+
+## Latest checkpoint — source fix delivered; Sandbox SSH blocks resume
+
+Controller fix `348837efed78587b8a13da585fda4926107ecdf1` and its evidence
+checkpoint `d1ede7e6c2e16fc4f232d24224b25904cbf88c9b` are committed. Primary
+Gitea and the exact GitHub mirror both resolve `dev` to `d1ede7e`. Linux and
+Factory are clean at that SHA, and the focused Go 1.27.1 releaseflow
+regressions passed natively on both. Mac's full `make test vet build smoke`
+passed. Sandbox remains unvalidated at this source revision.
+
+Temporary controller binaries built from `d1ede7e` are outside the catalog:
+`promote-to` SHA-256
+`24d72fb81c32e42ece1fa0fd3ecd2b10f2d6c17ac02b51b62ddb042b2965b874` and
+`runner-release` SHA-256
+`5a9858efa7676ddae67b376aac4678a7d4deb927947494339cf672402434e050`.
+The sealed service release `rr-20261030-e3d3f5a` and its bundles are
+unchanged.
+
+Sandbox's last confirmed checkout is clean `dev` at `535015c`, with
+`980,684,800` bytes free. The required GitHub `--ff-only` pull to `d1ede7e`
+could not be confirmed because SSH timed out during banner exchange (exit
+255). The waiting SSH command was stopped after repeated banner timeouts; it
+did not reach the remote shell. Its key and known-host pin remain unchanged.
+Please restore SSH banner responsiveness on Sandbox while preserving the
+existing host key, then confirm a noninteractive `hostname` SSH command works.
+I’ll verify the old clean SHA, finish the pull, and confirm the exact new SHA.
+
+The same PRD operation `01d9088c62e705632c9523346e14099d` remains blocked at
+its fence correction; no selectors changed and no service restarted. The
+current `prepared` successor was independently inspected on Linux, Factory
+and Mac. Sandbox's prepared receipt/hold must be verified once SSH returns.
+Fresh backups and all retained receipt history remain in place. Then resume
+the same operation using the d1ede7e controller, freshly verify Sandbox
+capacity and work/receipt state, and continue under the existing approval
+through 22:00 UTC / 23:00 Warsaw. QAS and mailbox ownership remain untouched;
+publish no mailbox requests/ACKs and keep clients paused.
