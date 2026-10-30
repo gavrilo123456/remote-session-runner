@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `IN PROGRESS` — preventive source correction and regression qualification; Dev/QAS deployment pending; PRD unchanged |
+| Status | `FIXED — DEV/QAS VERIFIED; PRD PENDING` — release `rr-20261030-bug028-7043c51`; PRD unchanged |
 | Severity | High — breaks authenticated access to an unchanged peer worker |
 | Reported | 2026-10-30 |
 | Component | `src/internal/laneinstall/prd_replacement_mac_route.go` |
@@ -40,5 +40,11 @@ evidence; do not repeat live bootstrap or replay project work.
 
 The missing Linux 8443 firewall rule and the helper's opaque dynamic-error
 diagnostic are separately recorded in the closeout. They are not evidence
-that the diagnostic-inventory fix itself failed. No broader repair campaign
-or service release is assigned by this record.
+that the diagnostic-inventory fix itself failed. Those observations do not
+expand this assignment into a broader firewall or diagnostic repair campaign.
+
+## Preventive correction and rollout result
+
+Source `7043c5100adcc4b9da239074fff3d55addcf67fa` preserves validated shared CA trust, deduplicates the replacement root, rejects unsafe filesystem aliases and binds retry planning to the immutable original backup. Four-host native qualification and the disposable certificate/interruption regressions passed.
+
+Release `rr-20261030-bug028-7043c51` passed all eight cohort acceptance gates in Dev and then QAS with unchanged per-host bundle hashes. Both operations completed and their admissions are open; postflight readiness, empty inventories and zero sampled storage/cleanup errors passed. The live PRD two-CA repair and all eight project mailbox assignments remain unchanged. PRD promotion of this new release and filesystem-mailbox acceptance remain NOT RUN. See [BUG-028 closeout](../040-implementation-evidence/BUG-028.md) for the exact qualification, release, operations and postflight evidence.
