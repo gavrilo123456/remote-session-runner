@@ -215,6 +215,15 @@ func prdReplacementBootstrapNonControllerInputsSHA(profile HostProfile, serverHo
 
 func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBackend, store *Store, request laneinstall.PRDReplacementBootstrapRequest,
 	requestSHA string, release Release, approval Approval, approvalSHA, publisherOwner, publisherControl, continuationFile string, now time.Time) (PRDReplacementBootstrapControllerUpdate, error) {
+	return createPRDReplacementBootstrapControllerUpdateWithRenewal(native, store, request, requestSHA, release, approval,
+		approvalSHA, publisherOwner, publisherControl, continuationFile, now, nil)
+}
+
+// Only the owner-authorized window-renew path supplies renewal evidence. The
+// ordinary controller-update command must still enforce the current window.
+func createPRDReplacementBootstrapControllerUpdateWithRenewal(native *NativePromotionBackend, store *Store, request laneinstall.PRDReplacementBootstrapRequest,
+	requestSHA string, release Release, approval Approval, approvalSHA, publisherOwner, publisherControl, continuationFile string,
+	now time.Time, renewal *PRDReplacementBootstrapWindowRenewal) (PRDReplacementBootstrapControllerUpdate, error) {
 	if native == nil || store == nil || request.OperationID != prdBootstrapControllerUpdateOperation ||
 		request.ReleaseID != release.ID || request.ExpectedReleaseSHA256 != release.Digest || requestSHA == "" ||
 		approvalSHA == "" || strings.TrimSpace(publisherOwner) == "" || strings.TrimSpace(publisherControl) == "" ||
@@ -275,9 +284,28 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 		if chainFound {
 			validationRevision, validationHostControlSHA = previousRevision, previousHostControlSHA
 		}
-		if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, requestSHA, release, approval,
-			approvalSHA, publisherOwner, publisherControl, validationRevision, validationHostControlSHA, store.Root, now.UTC()); err != nil {
-			return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("validate bootstrap continuation: %w", err)
+		if renewal == nil {
+			if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, requestSHA, release, approval,
+				approvalSHA, publisherOwner, publisherControl, validationRevision, validationHostControlSHA, store.Root, now.UTC()); err != nil {
+				return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("validate bootstrap continuation: %w", err)
+			}
+		} else {
+			// Validate renewal authority against the last recorded controller before
+			// appending its successor. This avoids requiring the new controller
+			// amendment to exist before the expired window can be renewed.
+			deadline, deadlineErr := time.Parse(time.RFC3339, prdBootstrapWindowRenewalDeadline)
+			continuationBytes, bytesErr := os.ReadFile(continuationPath)
+			authority := *renewal
+			authority.ControllerRevision, authority.HostControlSHA256 = previousRevision, previousHostControlSHA
+			if deadlineErr != nil || bytesErr != nil || !now.UTC().Before(deadline) ||
+				renewal.ControllerRevision != native.ControllerRevision || renewal.HostControlSHA256 != currentHostSHA ||
+				validatePRDBootstrapControllerHistoryBinding(store.Root, journal, continuation.ControllerRevision,
+					continuation.HostControlSHA256, previousRevision, previousHostControlSHA) != nil ||
+				validatePRDReplacementBootstrapWindowRenewal(authority, continuation, continuationBytes, journal, request,
+					requestSHA, release, approval, approvalSHA, publisherOwner, store.Root, previousRevision,
+					previousHostControlSHA, renewal.PreflightPlan, now.UTC()) != nil {
+				return PRDReplacementBootstrapControllerUpdate{}, fmt.Errorf("controller amendment rejected: invalid owner-authorized window renewal: %w", ErrApprovalRequired)
+			}
 		}
 	}
 	if fields := bootstrapCoordinatorIdentityMismatches(journal, request, requestSHA, release, approvalSHA,
@@ -293,8 +321,11 @@ func createPRDReplacementBootstrapControllerUpdate(native *NativePromotionBacken
 	}
 	if chainFound {
 		last := chain[len(chain)-1]
+		if nonControllerSHA != last.NonControllerInputsSHA256 {
+			return PRDReplacementBootstrapControllerUpdate{}, errors.New("controller amendment differs from the recorded non-controller inputs")
+		}
 		if native.ControllerRevision == last.ControllerRevision {
-			if currentHostSHA != last.HostControlSHA256 || nonControllerSHA != last.NonControllerInputsSHA256 {
+			if currentHostSHA != last.HostControlSHA256 {
 				return PRDReplacementBootstrapControllerUpdate{}, errors.New("controller amendment retry differs from the recorded controller or non-controller inputs")
 			}
 			return last, nil

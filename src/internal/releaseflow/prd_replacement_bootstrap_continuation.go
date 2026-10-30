@@ -102,6 +102,7 @@ type prdBootstrapWindowRenewalResult struct {
 
 var prdBootstrapContinuationPlanForTests func(context.Context, *NativePromotionBackend, Release, string) (PromotionPlan, error)
 var prdBootstrapWindowRenewalNowForTests func() time.Time
+var prdBootstrapWindowRenewalAfterControllerForTests func() error
 
 func prdReplacementBootstrapContinuationPath(storeRoot, operationID string) (string, error) {
 	if operationID != prdBootstrapContinuationOperation {
@@ -595,10 +596,6 @@ func createPRDReplacementBootstrapWindowRenewal(native *NativePromotionBackend, 
 	if err != nil {
 		return PRDReplacementBootstrapWindowRenewal{}, "", err
 	}
-	if err := validatePRDReplacementBootstrapControllerUpdateForResume(native, journal, store.Root, request, requestSHA,
-		release, approval, approvalSHA, owner, control, hostControlSHA, profile, knownHostOutput); err != nil {
-		return PRDReplacementBootstrapWindowRenewal{}, "", err
-	}
 	recordPath, err := prdReplacementBootstrapWindowRenewalPath(store.Root, request.OperationID)
 	if err != nil {
 		return PRDReplacementBootstrapWindowRenewal{}, "", err
@@ -606,8 +603,10 @@ func createPRDReplacementBootstrapWindowRenewal(native *NativePromotionBackend, 
 	if existing, exists, readErr := readPRDReplacementBootstrapWindowRenewal(recordPath); readErr != nil {
 		return PRDReplacementBootstrapWindowRenewal{}, "", readErr
 	} else if exists {
-		if validatePRDReplacementBootstrapWindowRenewal(existing, continuation, continuationBytes, journal, request,
-			requestSHA, release, approval, approvalSHA, owner, store.Root, native.ControllerRevision, hostControlSHA, plan, now) != nil ||
+		if validatePRDReplacementBootstrapControllerUpdateForResume(native, journal, store.Root, request, requestSHA,
+			release, approval, approvalSHA, owner, control, hostControlSHA, profile, knownHostOutput) != nil ||
+			validatePRDReplacementBootstrapWindowRenewal(existing, continuation, continuationBytes, journal, request,
+				requestSHA, release, approval, approvalSHA, owner, store.Root, native.ControllerRevision, hostControlSHA, plan, now) != nil ||
 			existing.PreviousDeadlineUTC != continuation.WindowEndUTC {
 			return PRDReplacementBootstrapWindowRenewal{}, "", ErrOperationConflict
 		}
@@ -624,6 +623,18 @@ func createPRDReplacementBootstrapWindowRenewal(native *NativePromotionBackend, 
 		Scope: prdBootstrapWindowRenewalScope, OwnerAuthorized: true}
 	if validatePRDReplacementBootstrapWindowRenewalShape(record) != nil {
 		return PRDReplacementBootstrapWindowRenewal{}, "", ErrOperationCorrupted
+	}
+	if err := validatePRDReplacementBootstrapControllerUpdateForResume(native, journal, store.Root, request, requestSHA,
+		release, approval, approvalSHA, owner, control, hostControlSHA, profile, knownHostOutput); err != nil {
+		if _, updateErr := createPRDReplacementBootstrapControllerUpdateWithRenewal(native, store, request, requestSHA,
+			release, approval, approvalSHA, owner, control, continuationPath, now.UTC(), &record); updateErr != nil {
+			return PRDReplacementBootstrapWindowRenewal{}, "", fmt.Errorf("record renewal controller amendment: %w", updateErr)
+		}
+	}
+	if prdBootstrapWindowRenewalAfterControllerForTests != nil {
+		if err := prdBootstrapWindowRenewalAfterControllerForTests(); err != nil {
+			return PRDReplacementBootstrapWindowRenewal{}, "", err
+		}
 	}
 	if err := validatePRDReplacementBootstrapWindowRenewal(record, continuation, continuationBytes, journal, request,
 		requestSHA, release, approval, approvalSHA, owner, store.Root, native.ControllerRevision, hostControlSHA, plan, now); err != nil {

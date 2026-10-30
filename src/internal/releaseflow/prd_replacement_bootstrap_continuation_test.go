@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,13 +209,14 @@ func TestPublicPRDBootstrapWindowRenewalAppendsExactDeadlineWithoutRewritingHist
 	if err := os.WriteFile(requestPath, requestBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	profile, knownHost, _, knownHostsPath := continuationTestProfile(t, request)
+	profile, knownHost, identityPath, knownHostsPath := continuationTestProfile(t, request)
 	native := &NativePromotionBackend{Config: HostConfiguration{Hosts: map[string]HostProfile{"linux-host": profile}},
 		ControllerRevision: strings.Repeat("b", 40)}
 	previousBackend := promotionBackendForTests
 	previousPlan := prdBootstrapContinuationPlanForTests
 	previousKeys := prdBootstrapHostKeysForTests
 	previousClock := prdBootstrapWindowRenewalNowForTests
+	previousAfterController := prdBootstrapWindowRenewalAfterControllerForTests
 	promotionBackendForTests = native
 	plan := continuationTestPlan(release, approval)
 	prdBootstrapContinuationPlanForTests = func(_ context.Context, got *NativePromotionBackend, gotRelease Release, approvalSHA string) (PromotionPlan, error) {
@@ -232,6 +235,7 @@ func TestPublicPRDBootstrapWindowRenewalAppendsExactDeadlineWithoutRewritingHist
 	t.Cleanup(func() {
 		promotionBackendForTests, prdBootstrapContinuationPlanForTests = previousBackend, previousPlan
 		prdBootstrapHostKeysForTests, prdBootstrapWindowRenewalNowForTests = previousKeys, previousClock
+		prdBootstrapWindowRenewalAfterControllerForTests = previousAfterController
 	})
 	originalBackend := *native
 	originalBackend.ControllerRevision = prdBootstrapPreviousController
@@ -263,18 +267,77 @@ func TestPublicPRDBootstrapWindowRenewalAppendsExactDeadlineWithoutRewritingHist
 		t.Fatalf("prepare final controller binding before renewal: %v (continuation=%s/%s current=%s/%s)", err,
 			continuation.ControllerRevision, continuation.HostControlSHA256, native.ControllerRevision, currentSHA)
 	}
+	// Reproduce the live operation: seven delivered controllers were recorded
+	// inside the old window, which expired before the renewal controller arrived.
+	for index := 1; index < 7; index++ {
+		native.ControllerRevision = fmt.Sprintf("%040x", index)
+		if _, err := createPRDReplacementBootstrapControllerUpdate(native, store, request, digest(requestBytes), release,
+			approval, digest(approvalBytes), approval.Owner, request.PublisherControl, continuationPath, base.Add(time.Duration(index+1)*time.Minute)); err != nil {
+			t.Fatalf("prepare prior controller %d: %v", index, err)
+		}
+	}
 	native.ControllerRevision = strings.Repeat("c", 40)
 	if _, err := createPRDReplacementBootstrapControllerUpdate(native, store, request, digest(requestBytes), release,
-		approval, digest(approvalBytes), approval.Owner, request.PublisherControl, continuationPath, base.Add(2*time.Minute)); err != nil {
-		t.Fatalf("append controller correction while preserving the earlier continuation binding: %v", err)
+		approval, digest(approvalBytes), approval.Owner, request.PublisherControl, continuationPath, renewalTime); err == nil {
+		t.Fatal("ordinary controller-update bypassed the expired continuation")
 	}
 	continuationBefore := mustRead(t, continuationPath)
 	approvalBefore := mustRead(t, approvalPath)
+	requestBefore := mustRead(t, requestPath)
+	journalBefore := mustRead(t, journalPath)
 	args := []string{"prd-bootstrap-window-renew", "--operation", request.OperationID, "--request-file", requestPath,
 		"--approval-file", approvalPath, "--publisher-owner", approval.Owner, "--publisher-control", request.PublisherControl,
 		"--publishers-paused", "--no-new-accepted", "--owner-authorized-deadline", prdBootstrapWindowRenewalDeadline,
 		"--store-root", store.Root, "--json"}
 	var stdout, stderr strings.Builder
+	identityBefore := mustRead(t, identityPath)
+	if err := os.WriteFile(identityPath, append(append([]byte(nil), identityBefore...), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := RunAdminCLI(args, &stdout, &stderr); code == 0 {
+		t.Fatal("renewal amended a controller after SSH identity changed")
+	}
+	if err := os.WriteFile(identityPath, identityBefore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chain, found, err := readPRDReplacementBootstrapControllerUpdateChain(journalPath, journal)
+	if err != nil || !found || len(chain) != 7 {
+		t.Fatalf("rejected changed identity modified controller history: count=%d err=%v", len(chain), err)
+	}
+	changedProfile := profile
+	changedProfile.GitIdentityFile = filepath.Join(t.TempDir(), "different-git-identity")
+	native.Config.Hosts["linux-host"] = changedProfile
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(args, &stdout, &stderr); code == 0 {
+		t.Fatal("renewal amended a controller after a profile-only input changed")
+	}
+	native.Config.Hosts["linux-host"] = profile
+	chain, found, err = readPRDReplacementBootstrapControllerUpdateChain(journalPath, journal)
+	if err != nil || !found || len(chain) != 7 {
+		t.Fatalf("rejected changed profile modified controller history: count=%d err=%v", len(chain), err)
+	}
+	interrupted := errors.New("interrupted after controller amendment")
+	prdBootstrapWindowRenewalAfterControllerForTests = func() error { return interrupted }
+	stdout.Reset()
+	stderr.Reset()
+	if code := RunAdminCLI(args, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), interrupted.Error()) {
+		t.Fatalf("renewal did not reach injected post-amendment interruption: code=%d stderr=%s", code, stderr.String())
+	}
+	chain, found, err = readPRDReplacementBootstrapControllerUpdateChain(journalPath, journal)
+	if err != nil || !found || len(chain) != 8 || chain[7].ControllerRevision != native.ControllerRevision {
+		t.Fatalf("interrupted renewal did not preserve exactly one final controller amendment: count=%d err=%v", len(chain), err)
+	}
+	renewalPath, err := prdReplacementBootstrapWindowRenewalPath(store.Root, request.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(renewalPath); !os.IsNotExist(err) {
+		t.Fatalf("interrupted renewal wrote a renewal record: %v", err)
+	}
+	prdBootstrapWindowRenewalAfterControllerForTests = nil
+	stdout.Reset()
+	stderr.Reset()
 	if code := RunAdminCLI(args, &stdout, &stderr); code != 0 {
 		t.Fatalf("public renewal command failed: code=%d stderr=%s", code, stderr.String())
 	}
@@ -294,14 +357,22 @@ func TestPublicPRDBootstrapWindowRenewalAppendsExactDeadlineWithoutRewritingHist
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("renewal record is not owner-only: info=%v err=%v", info, err)
 	}
-	if !bytes.Equal(continuationBefore, mustRead(t, continuationPath)) || !bytes.Equal(approvalBefore, mustRead(t, approvalPath)) {
-		t.Fatal("renewal rewrote the original continuation or approval")
+	if !bytes.Equal(continuationBefore, mustRead(t, continuationPath)) || !bytes.Equal(approvalBefore, mustRead(t, approvalPath)) ||
+		!bytes.Equal(requestBefore, mustRead(t, requestPath)) || !bytes.Equal(journalBefore, mustRead(t, journalPath)) {
+		t.Fatal("renewal rewrote original inputs, continuation, or coordinator")
 	}
 	stdout.Reset()
 	stderr.Reset()
 	if code := RunAdminCLI(args, &stdout, &stderr); code != 0 || stdout.String() != firstOutput {
 		t.Fatalf("exact renewal retry changed the append-only record: code=%d stderr=%s", code, stderr.String())
 	}
+	native.ControllerRevision = strings.Repeat("d", 40)
+	if _, err := createPRDReplacementBootstrapControllerUpdate(native, store, request, digest(requestBytes), release,
+		approval, digest(approvalBytes), approval.Owner, request.PublisherControl, continuationPath, renewalTime); err == nil ||
+		!strings.Contains(err.Error(), "bounded limit") {
+		t.Fatalf("renewal bypassed the eight-controller history limit: %v", err)
+	}
+	native.ControllerRevision = strings.Repeat("c", 40)
 	if err := validatePRDReplacementBootstrapContinuation(continuation, journal, request, digest(requestBytes), release,
 		approval, digest(approvalBytes), approval.Owner, request.PublisherControl, native.ControllerRevision,
 		renewal.HostControlSHA256, store.Root, deadline.Add(-time.Second)); err != nil {
