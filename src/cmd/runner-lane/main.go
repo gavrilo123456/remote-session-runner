@@ -377,8 +377,11 @@ func runCatalogStatus(args []string, stdout, stderr io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || !currentCatalogHostForLane(*host, *lane) {
+	if flags.NArg() != 0 {
 		return errors.New("usage: runner-lane catalog-status --host THIS-HOST --lane dev|qas|prd")
+	}
+	if err := currentCatalogHostForLaneError(*host, *lane); err != nil {
+		return fmt.Errorf("catalog-status host identity rejected: %w", err)
 	}
 	plan, err := laneinstall.BuildCatalogPlan(*host, config.ReleaseLane(*lane))
 	if err != nil {
@@ -628,8 +631,8 @@ func runCatalogCohort(ctx context.Context, args []string, stdout, stderr io.Writ
 			HistoryFiles: append([]string(nil), historyFiles...),
 		}, stdout, stderr)
 	}
-	if !currentCatalogHostForLane(*host, *lane) {
-		return errors.New("usage: runner-lane catalog-cohort --host THIS-HOST --lane dev|qas|prd --action ACTION [--operation-id ID] [--successor-operation-id ID] [--receipt-file FILE] [--subject-host HOST] [--evidence-sha256 SHA256]")
+	if err := currentCatalogHostForLaneError(*host, *lane); err != nil {
+		return fmt.Errorf("catalog-cohort host identity rejected: %w", err)
 	}
 	if *replacementPredecessor != "" && (*lane != "prd" || *action != "fence-host" || !validCLIProbeOperationID(*replacementPredecessor)) {
 		return errors.New("--replacement-predecessor is valid only for a PRD fence-host action with an exact operation ID")
@@ -2118,27 +2121,43 @@ func countCatalogReceiptSwitches(receipt laneinstall.CatalogCohortReceipt) int {
 }
 
 func currentCatalogHost(hostID string) bool {
+	return currentCatalogHostError(hostID) == nil
+}
+
+// currentCatalogHostError reports only the failed identity-check category.
+// It deliberately omits configuration values, filesystem paths and wrapped
+// parser errors, which may contain private runtime details.
+func currentCatalogHostError(hostID string) error {
 	if !laneinstall.CatalogHostMatchesPlatform(hostID, runtime.GOOS, runtime.GOARCH) {
-		return false
+		return errors.New("canonical host platform identity mismatch")
 	}
 	account := config.LinuxAccount
 	if hostID == "mac-control-plane" {
 		account = config.MacAccount
 	}
 	current, err := user.Current()
-	if err != nil || current.Username != account {
-		return false
+	if err != nil {
+		return errors.New("current account identity is unavailable")
+	}
+	if current.Username != account {
+		return errors.New("canonical host account identity mismatch")
 	}
 	prd, err := laneinstall.BuildPRDUpgradePlan(hostID)
 	if err != nil {
-		return false
+		return errors.New("canonical PRD namespace derivation failed")
 	}
 	loaded, err := config.LoadFile(prd.Namespace.ConfigFile)
 	if err != nil {
-		return false
+		return errors.New("canonical PRD configuration is unavailable or invalid")
 	}
 	configured, _, err := laneinstall.CatalogPlanFromConfiguration(loaded)
-	return err == nil && configured.HostID == hostID && configured.Lane == config.ReleaseLanePRD
+	if err != nil {
+		return errors.New("PRD configuration namespace, route, or path validation failed")
+	}
+	if configured.HostID != hostID || configured.Lane != config.ReleaseLanePRD {
+		return errors.New("PRD configuration host or lane identity mismatch")
+	}
+	return nil
 }
 
 // currentCatalogHostForLane normally requires the existing unsuffixed PRD
@@ -2149,36 +2168,47 @@ func currentCatalogHost(hostID string) bool {
 // separate complete PRD-absence observation and exact selected V3 config;
 // absence is never treated as a healthy or usable PRD service.
 func currentCatalogHostForLane(hostID, lane string) bool {
+	return currentCatalogHostForLaneError(hostID, lane) == nil
+}
+
+// currentCatalogHostForLaneError keeps the existing fail-closed identity
+// checks and exposes only a sanitized reason category to supported operators.
+func currentCatalogHostForLaneError(hostID, lane string) error {
 	if lane != "dev" && lane != "qas" && lane != "prd" {
-		return false
+		return errors.New("selected lane identity is unsupported")
 	}
-	if currentCatalogHost(hostID) {
-		return true
+	if err := currentCatalogHostError(hostID); err == nil {
+		return nil
+	} else if lane == "prd" {
+		return fmt.Errorf("PRD host identity check failed: %w", err)
 	}
-	if lane == "prd" || !replacementLinuxLocalIdentityMatches(hostID, runtime.GOOS, runtime.GOARCH, currentUsername(), localIPv4Addresses()) {
-		return false
+	if !replacementLinuxLocalIdentityMatches(hostID, runtime.GOOS, runtime.GOARCH, currentUsername(), localIPv4Addresses()) {
+		return errors.New("PRD identity check failed and replacement Linux host, account, platform, or private-address binding does not match")
 	}
 	selectedLane := config.ReleaseLane(lane)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if _, err := laneinstall.ReadCatalogPeerNamespaceAbsence(ctx, hostID, config.ReleaseLanePRD, selectedLane,
 		laneinstall.NewCatalogPRDAbsenceProbe()); err != nil {
-		return false
+		return errors.New("scoped PRD namespace-absence verification failed")
 	}
 	plan, err := laneinstall.BuildCatalogPlan(hostID, selectedLane)
 	if err != nil {
-		return false
+		return errors.New("selected-lane namespace derivation failed")
 	}
 	loaded, err := config.LoadFile(plan.Namespace.ConfigFile)
 	if err != nil || loaded.SchemaVersion() != config.VersionV3 || loaded.ReleaseLane() != selectedLane || loaded.Kind() != plan.Namespace.Host {
-		return false
+		return errors.New("selected-lane configuration schema or identity mismatch")
 	}
 	profiles, ok := loaded.LaneProfiles()
 	if !ok || profiles.Host() != plan.Namespace.Host || profiles.Lane() != selectedLane || profiles.RemoteProfile() != plan.Namespace.RemoteProfile {
-		return false
+		return errors.New("selected-lane host, lane, or remote-profile binding mismatch")
 	}
 	configured, selected, err := laneinstall.CatalogPlanFromConfiguration(loaded)
-	return err == nil && selected && configured.HostID == plan.HostID && configured.Lane == plan.Lane && configured.Namespace == plan.Namespace
+	if err != nil || !selected || configured.HostID != plan.HostID || configured.Lane != plan.Lane || configured.Namespace != plan.Namespace {
+		return errors.New("selected-lane configuration does not resolve to its canonical namespace")
+	}
+	return nil
 }
 
 // currentCatalogOperatorHost permits immutable catalog publication and

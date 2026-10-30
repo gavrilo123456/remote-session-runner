@@ -488,18 +488,37 @@ func TestCatalogStatusRejectsWrongHostAndInvalidLaneBeforeReadingSelectors(t *te
 		t.Skip("catalog host mapping is defined for the supported Mac and Ubuntu platforms")
 	}
 
-	for _, args := range [][]string{
-		{"--host", wrongHost, "--lane", "dev"},
-		{"--host", currentHost, "--lane", "invalid"},
-		{"--host", currentHost, "--lane", "dev", "unexpected"},
+	for _, test := range []struct {
+		args      []string
+		wantError string
+	}{
+		{args: []string{"--host", wrongHost, "--lane", "dev"}, wantError: "host identity rejected:"},
+		{args: []string{"--host", currentHost, "--lane", "invalid"}, wantError: "selected lane identity is unsupported"},
+		{args: []string{"--host", currentHost, "--lane", "dev", "unexpected"}, wantError: "usage:"},
 	} {
 		var stdout, stderr bytes.Buffer
-		if err := runCatalogStatus(args, &stdout, &stderr); err == nil {
-			t.Errorf("catalog-status accepted unsafe arguments %v", args)
+		err := runCatalogStatus(test.args, &stdout, &stderr)
+		if err == nil {
+			t.Errorf("catalog-status accepted unsafe arguments %v", test.args)
+		} else if !strings.Contains(err.Error(), test.wantError) {
+			t.Errorf("catalog-status error = %q, want category %q", err, test.wantError)
 		}
 		if stdout.Len() != 0 {
-			t.Errorf("catalog-status emitted a status before rejecting %v: %s", args, stdout.String())
+			t.Errorf("catalog-status emitted a status before rejecting %v: %s", test.args, stdout.String())
 		}
+	}
+}
+
+func TestCatalogCohortReportsSanitizedHostGuardCategory(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := runCatalogCohort(context.Background(), []string{
+		"--host", "invalid-host-value", "--lane", "invalid-lane", "--action", "status",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "catalog-cohort host identity rejected: selected lane identity is unsupported") {
+		t.Fatalf("catalog-cohort guard error = %v, want sanitized unsupported-lane category", err)
+	}
+	if strings.Contains(err.Error(), "invalid-host-value") || strings.Contains(err.Error(), "invalid-lane") || stdout.Len() != 0 {
+		t.Fatalf("catalog-cohort exposed supplied identity data or wrote status: err=%q stdout=%q", err, stdout.String())
 	}
 }
 
