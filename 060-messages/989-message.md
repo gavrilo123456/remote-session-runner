@@ -477,3 +477,48 @@ Sandbox availability was `744,759,296` bytes, `193,233,060` below the measured
 pre-backup requirement. The Linux preflight report that a retry could replace
 has been preserved and hash-verified outside the operation store. The owner
 approval still runs to 23:00 Warsaw; no renewal is needed.
+
+## Latest checkpoint — controller fence argument correction
+
+The owner reported Sandbox space restored. A fresh check immediately before
+the same PRD `--prepare-only` retry found `1,191,292,928` bytes free, above the
+`937,992,356` pre-backup requirement. The user-authorized window already runs
+until 23:00 Warsaw / 22:00 UTC; no renewal was needed. Fresh preflight created
+and verified backups on Linux, Sandbox, Factory and Mac. The Sandbox
+post-backup report was `985,968,640` bytes, above the `567,108,864` required
+post-backup floor.
+
+The retry stopped at 13:25:19 UTC because the controller passed the exact
+predecessor to PRD host preflight but omitted it from the following Linux
+`catalog-cohort fence-host` command. The public host guard correctly returned
+`invalid or inconsistent catalog selector operation`. Operation
+`01d9088c62e705632c9523346e14099d` retains both capacity and fence failures in
+its event history. It remains blocked; every host's progress still says
+`switched=false`. No selectors changed and no Runner service restarted.
+
+Controller fix and regression are committed locally as
+`348837efed78587b8a13da585fda4926107ecdf1`. The test observes the actual
+initial-fence command and asserts the exact replacement-predecessor binding.
+Mac Go 1.27.1 full `make test vet build smoke` passed, as did the focused
+preflight/fence/supersession regressions. The sealed service release
+`rr-20261030-e3d3f5a` and its four bundle hashes are unchanged. Required
+delivery of this commit is next: push to Gitea, verify the same GitHub mirror
+SHA, and fast-forward the three clean worker checkouts.
+
+The operation has a synchronized `prepared` successor receipt with no fence
+transitions. Read-only inspect confirmed it on Linux, Factory and Mac. Sandbox
+SSH briefly closed; after SSH recovered, the agent's Go-based read-only
+inspection stalled and was stopped, without service or selector changes.
+The earlier controller receipt synchronization returned successfully before
+the Linux fence error, but Sandbox receipt state and its old admission hold
+must be verified on the next resume before advancing. Latest Sandbox free
+space after backups and diagnostics is `982,343,680` bytes, exceeding the
+`567,108,864` post-backup floor by `415,234,816` bytes.
+
+Fresh verified backup manifests from this attempt are recorded in
+`040-implementation-evidence/BUG-027.md`. Preserve them, the prior rollback
+receipt and all ACK/mailbox state. After Git delivery, rebuild only the
+temporary promotion controller from the delivered revision and resume this
+same PRD operation with fresh host checks. Keep QAS and its mailbox ownership
+unchanged, publish no mailbox requests or ACKs, and leave clients paused until
+all required PRD acceptance gates pass.
