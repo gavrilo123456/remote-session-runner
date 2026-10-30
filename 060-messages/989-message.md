@@ -122,3 +122,34 @@ Update BUG-027, deployment evidence and the promotion records with actual releas
 Update this file’s current checkpoint to reflect actual progress and retain its context-refresh instruction. Record the owner's all-lane retirement decision and supersede old-host SSH/import blockers in current preparation evidence without rewriting historical observations. Keep the completed Dev/QAS history in `990-message.md` as historical context; use this file as the current PRD assignment.
 
 Report clearly whether PRD is deployed, functionally accepted, open for admission and ready for client resumption. Do not equate readiness alone with completed acceptance or normal-load observation.
+
+## Latest checkpoint — 2026-10-30, after controller retry correction
+
+This checkpoint supersedes the stale instruction above to rerun the pinned
+bootstrap helper. The bootstrap operation
+`02bfdc603d2ea3360ecd32501fe347d1` already completed through
+`mac_route_complete`, as recorded earlier in this file. The requested helper
+was invoked; it stopped before mutation because its manifest pins controller
+`e26495ef34a7a14076f4fa36f33a3d0490a9fa9f` while the delivered checkout is
+now `272c3b5684bce5d1b565a79a1d233f9c931e1b21`. Its exact message was
+`Checkout changed after controller validation; stop before consuming the
+final amendment.` Do not rerun or rebuild that temporary bootstrap helper.
+
+The separate PRD promotion attempt for `rr-309de02fca-ddc84f50`, operation
+`8474c9b8e550bec2a900dc954824e9df`, remains blocked at Linux rollback receipt
+synchronization. Its three other host selectors were rolled back to
+`rr-20261024-43a4e675`; replacement Linux was rolled back to an unselected
+fresh-install namespace. The supported retry correction is source commit
+`272c3b5684bce5d1b565a79a1d233f9c931e1b21`. Mac, Factory, Sandbox and Linux
+source gates passed as recorded in `040-implementation-evidence/BUG-027.md`;
+the previous Linux full-suite interruptions remain NOT PASS.
+
+The sealed successor `rr-20261030-e3d3f5a` remains unchanged and has completed
+Dev acceptance (operation `b7a87e98f78c80c95cc47306851911ee`) and QAS
+acceptance (operation `74518a25360a2364f37e83f52c88b83e`). QAS and its mailbox
+ownership remain unchanged. No PRD rollback retry or new PRD plan has yet been
+run. Next: refresh the four-host PRD inventory and capacities, retry supported
+rollback/synchronization of `8474...` under its still-valid approval for
+`rr-309`, then create a fresh PRD plan and owner approval bound to `e3d3f5a`.
+The four-hour window supplied for `rr-309` must not be reused as the successor
+release approval. Keep clients paused; publish no mailbox requests or ACKs.
