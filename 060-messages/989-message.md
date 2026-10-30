@@ -558,3 +558,73 @@ the same operation using the d1ede7e controller, freshly verify Sandbox
 capacity and work/receipt state, and continue under the existing approval
 through 22:00 UTC / 23:00 Warsaw. QAS and mailbox ownership remain untouched;
 publish no mailbox requests/ACKs and keep clients paused.
+
+## Latest checkpoint — Sandbox restored; prepared-receipt retry corrections
+
+This supersedes the preceding Sandbox SSH blocker. Strict-key noninteractive
+SSH now succeeds. Sandbox was fast-forwarded from clean `535015c` through the
+verified Gitea/GitHub delivery path. Do not restore keys, change host pins,
+reboot or repeat the completed replacement bootstrap or #514 recovery.
+
+Two promotion-tool corrections are delivered on `dev`:
+
+- `5df0a211b4b765155ae4d504ee8a72d2577a3924`: after fencing and holding,
+  pass the validated canonical held receipt to predecessor supersession;
+  do not pass the original prepared copy.
+- `89711797bbed19fd8768e56846c5c2afc788d608`: actual admission discovery
+  recognizes the exact fully rolled-back predecessor and fresh held successor
+  as one **closed** hold, including replacement Linux's unselected baseline.
+  Unrelated holds, changed baselines, incomplete rollback and stale evidence
+  still fail.
+
+The final Mac and all three workers' full changed-package tests, vet, native
+controller builds and help/version smoke passed. At source-check completion,
+all three worker checkouts were clean at the exact delivered source `8971179`.
+This documentation checkpoint follows the same Git delivery path. Sandbox had 902,619,136
+bytes free afterward; remeasure against the next operation's actual budget.
+Full details and logs are in
+`040-implementation-evidence/BUG-027-prd-prepared-receipt-retry-2026-10-30.md`.
+Ready Mac temporary executables are
+`/private/tmp/rsr-prd-prepared-receipt-retry-20261030/promote-to-8971179` and
+`/private/tmp/rsr-prd-prepared-receipt-retry-20261030/runner-release-8971179`;
+both report the corrected source revision. Do not reuse older temporary
+controllers that lack either correction.
+
+Continue toward PRD completion in this order:
+
+1. Read this whole handoff and the new evidence; verify the clean, delivered
+   checkout on all four hosts. Build/use the attested temporary promotion
+   controller from that delivered checkout. Keep the accepted sealed service
+   release **`rr-20261030-e3d3f5a` unchanged**. These are tooling corrections;
+   do not rebuild bundles or repeat completed Dev/QAS acceptance.
+2. Refresh supported host inventory, capacity, receipt and stop checks. The
+   operation is still `01d9088c62e705632c9523346e14099d`, blocked before any
+   selector switch. Its successor receipt is prepared; predecessor
+   `8474c9b8e550bec2a900dc954824e9df` is fully rolled back. Confirm actual
+   host state before relying on that snapshot.
+3. The owner approval remains valid until **22:00 UTC / 23:00 Warsaw**.
+   The oldest saved host preflight is **13:24:34 UTC**, so the original
+   prepared evidence expires around **14:24:34 UTC**. While valid, resume
+   this same operation with `--prepare-only` and the existing approval/pause
+   controls. Do not confuse the owner window with evidence freshness.
+4. If the prepared evidence expires first, preserve the old receipt and use
+   a fresh supported preparation for the same release against the same
+   restored predecessor baseline. Recheck the actual backup/staging budget
+   and approval binding. Generic continuation does not renew a prepared
+   receipt; do not edit timestamps, delete history or force the guard.
+5. During preparation all PRD services must remain stopped. Use the updated
+   source RPC for fences, receipt synchronization and exact predecessor
+   supersession. **Before any selector switch or sealed daemon start**, verify
+   identical final predecessor `superseded` and successor `held` receipts on
+   all four hosts and exactly the successor admission hold. This ordering
+   lets the unchanged sealed daemons read their already-supported states.
+6. Continue the supported PRD switch and bounded functional acceptance, then
+   release admissions and complete branch synchronization only after every
+   required gate passes. Preserve QAS, mailbox ownership, uncertain history
+   and ACKs. Publish no mailbox requests or ACKs and keep clients paused until
+   the actual PRD closeout establishes readiness for resumption.
+
+After each point, and after compaction/resume, reread this handoff into
+context, record the actual checkpoint, and continue without repeating work
+already completed. Source validation is not PRD acceptance. This maintenance
+turn changed no runtime receipt, service, selector, database or mailbox.
