@@ -379,6 +379,59 @@ func TestPRDCohortRollbackReconciliationSynchronizesLegacySelectedState(t *testi
 	if !catalogCohortReceiptSupersessionEligible(reconciled) {
 		t.Fatal("fully rolled-back PRD receipt is not eligible for guarded supersession")
 	}
+	validateFixtureOperation := func(layout catalogSelectorLayout, operation CatalogSelectorOperation) error {
+		if validateCatalogOperationFields(operation) != nil || operation.Lane != config.ReleaseLanePRD || operation.HostID != layout.hostID {
+			return ErrCatalogOperationInvalid
+		}
+		return nil
+	}
+	for _, hostID := range catalogCohortSwitchOrder {
+		fixture := hosts[hostID]
+		index := cohortHostIndex(reconciled, hostID)
+		if index < 0 {
+			t.Fatalf("rolled-back receipt missing host %s", hostID)
+		}
+		host := reconciled.Hosts[index]
+		status, statusErr := inspectCatalogSelector(fixture.selector.layout)
+		if statusErr != nil {
+			t.Fatalf("inspect rolled-back selector %s: %v", hostID, statusErr)
+		}
+		baseline := prdCatalogProof{
+			schema: host.SchemaVersion, configurationSHA256: host.ConfigurationSHA256,
+			selectorTarget: status.Target, bundleSHA256: catalogSelectorStatusBundleSHA256(status),
+			work: CatalogWorkInventory{}, workSHA256: host.WorkInventorySHA256,
+		}
+		if status.Kind == "unselected" {
+			baseline.legacyBundleSHA256 = host.PreviousBundleSHA256
+			baseline.freshInstall = host.FreshInstall
+		}
+		if err := validatePRDCatalogReplacementBaselineUsing(fixture.selector.layout, reconciled, host,
+			baseline, status, validateFixtureOperation); err != nil {
+			t.Fatalf("accept synchronized rolled-back predecessor as replacement baseline on %s: %v", hostID, err)
+		}
+		// Exercise the supported receipt synchronization path with the stricter
+		// replacement-baseline validation. The receipt is already synchronized;
+		// this proves an exact retry remains safe before any successor switch.
+		if _, err := syncCatalogCohortReceiptAt(cohortFixtureReceiptRoot(fixture), reconciled, func() error {
+			if err := validatePRDCohortRollbackFixtureLocalState(fixture, reconciled); err != nil {
+				return err
+			}
+			current, err := inspectCatalogSelector(fixture.selector.layout)
+			if err != nil {
+				return err
+			}
+			return validatePRDCatalogReplacementBaselineUsing(fixture.selector.layout, reconciled, host,
+				baseline, current, validateFixtureOperation)
+		}); err != nil {
+			t.Fatalf("retry synchronization with rolled-back replacement baseline on %s: %v", hostID, err)
+		}
+		wrongSelector := status
+		wrongSelector.Target = filepath.Join(fixture.selector.layout.catalogRoot, reconciled.ReleaseID, hostID)
+		if err := validatePRDCatalogReplacementBaselineUsing(fixture.selector.layout, reconciled, host,
+			baseline, wrongSelector, validateFixtureOperation); !errors.Is(err, ErrCatalogOperationInvalid) {
+			t.Fatalf("accept changed selector for rolled-back predecessor on %s: %v", hostID, err)
+		}
+	}
 	rollbackInProgress, err := AdvanceCatalogCohortReceipt(blocked, "rollback-start", "", proof, now.Add(7*time.Second))
 	if err != nil {
 		t.Fatal(err)

@@ -85,9 +85,10 @@ func ReadPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 
 // ReadPRDCatalogReplacementHostPreflight captures the same consistent PRD
 // backup and work/configuration/schema proof as an ordinary preflight while
-// permitting only the exact fully switched verifying predecessor to remain
-// as the current admission hold. The predecessor's selected release must be
-// the current rollback baseline on this host.
+// permitting only the exact fully switched verifying predecessor, or a fully
+// rolled-back predecessor, to remain as the current admission hold. The
+// predecessor's durable selector journals must prove the host's current
+// rollback baseline.
 func ReadPRDCatalogReplacementHostPreflight(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe,
 	releaseID string, requiredBytes uint64, predecessorOperationID string) (CatalogCohortHostPreflightReport, error) {
 	if !validCatalogOperationID(predecessorOperationID) {
@@ -112,8 +113,7 @@ func readPRDCatalogCohortHostPreflight(ctx context.Context, plan PRDUpgradePlan,
 	} else {
 		var err error
 		predecessor, err = ReadCatalogCohortReceipt(cohortPlan, predecessorOperationID)
-		if err != nil || predecessor.Stage != CatalogCohortVerifying ||
-			!catalogCohortReceiptSupersessionEligible(predecessor) ||
+		if err != nil || !validPRDCatalogReplacementPredecessor(predecessor) ||
 			CatalogCohortAdmissionHoldMatches(cohortPlan, predecessorOperationID) != nil {
 			return CatalogCohortHostPreflightReport{}, ErrCatalogOperationInvalid
 		}
@@ -235,13 +235,58 @@ func acquirePRDCatalogOnlinePreflightLock(catalogRoot string) (int, error) {
 
 func validatePRDCatalogReplacementBaseline(layout catalogSelectorLayout, predecessor CatalogCohortReceipt,
 	oldHost CatalogCohortHostPreflight, proof prdCatalogProof) error {
-	if predecessor.Lane != config.ReleaseLanePRD || predecessor.Stage != CatalogCohortVerifying ||
-		!catalogCohortReceiptSupersessionEligible(predecessor) || !cohortHasSwitched(predecessor, layout.hostID) ||
-		oldHost.HostID != layout.hostID || proof.work.Empty() == false ||
+	status, err := inspectCatalogSelector(layout)
+	if err != nil {
+		return errors.Join(ErrCatalogOperationInvalid, err)
+	}
+	return validatePRDCatalogReplacementBaselineUsing(layout, predecessor, oldHost, proof, status, validateCatalogOperation)
+}
+
+func validPRDCatalogReplacementPredecessor(predecessor CatalogCohortReceipt) bool {
+	if predecessor.Lane != config.ReleaseLanePRD || !catalogCohortReceiptSupersessionEligible(predecessor) {
+		return false
+	}
+	return predecessor.Stage == CatalogCohortVerifying || predecessor.Stage == CatalogCohortRolledBack
+}
+
+func validatePRDCatalogReplacementBaselineUsing(layout catalogSelectorLayout, predecessor CatalogCohortReceipt,
+	oldHost CatalogCohortHostPreflight, proof prdCatalogProof, status CatalogSelectorStatus,
+	validateOperation func(catalogSelectorLayout, CatalogSelectorOperation) error) error {
+	if layout.lane != config.ReleaseLanePRD || !validPRDCatalogReplacementPredecessor(predecessor) ||
+		oldHost.HostID != layout.hostID || !oldHost.WorkInventoryEmpty || !proof.work.Empty() ||
 		proof.workSHA256 != oldHost.WorkInventorySHA256 || proof.schema != oldHost.SchemaVersion ||
-		proof.configurationSHA256 != oldHost.ConfigurationSHA256 ||
-		proof.selectorTarget != filepath.Join(layout.catalogRoot, predecessor.ReleaseID, layout.hostID) ||
-		proof.bundleSHA256 != oldHost.Target.BundleSHA256 {
+		proof.configurationSHA256 != oldHost.ConfigurationSHA256 || validateOperation == nil {
+		return ErrCatalogOperationInvalid
+	}
+	operations, err := catalogCohortLocalSelectorOperations(layout, predecessor.OperationID)
+	if err != nil {
+		return errors.Join(ErrCatalogOperationInvalid, err)
+	}
+	if err := validateCatalogCohortReconciledSelectorEvidenceUsing(layout, predecessor, status, proof.schema,
+		proof.configurationSHA256, operations, validateOperation); err != nil {
+		return errors.Join(ErrCatalogOperationInvalid, err)
+	}
+	switch predecessor.Stage {
+	case CatalogCohortVerifying:
+		if !cohortHasSwitched(predecessor, layout.hostID) ||
+			proof.selectorTarget != filepath.Join(layout.catalogRoot, predecessor.ReleaseID, layout.hostID) ||
+			proof.bundleSHA256 != oldHost.Target.BundleSHA256 {
+			return ErrCatalogOperationInvalid
+		}
+	case CatalogCohortRolledBack:
+		if proof.selectorTarget != oldHost.PreviousTarget ||
+			proof.previousBundleSHA256() != oldHost.PreviousBundleSHA256 ||
+			!catalogCohortPreviousSelectorMatches(config.ReleaseLanePRD, oldHost, status) {
+			return ErrCatalogOperationInvalid
+		}
+		if oldHost.FreshInstall != nil {
+			if validatePRDFreshInstallRollbackEvidence(oldHost, proof, status) != nil {
+				return ErrCatalogOperationInvalid
+			}
+		} else if proof.freshInstall != nil {
+			return ErrCatalogOperationInvalid
+		}
+	default:
 		return ErrCatalogOperationInvalid
 	}
 	return nil
@@ -257,8 +302,8 @@ func FenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDS
 }
 
 // FenceCatalogPRDReplacementHost records the already-stopped host fence for
-// a prepared successor while the exact verifying predecessor continues to
-// hold admissions. It does not stop or start a service.
+// a prepared successor while the exact verifying or rolled-back predecessor
+// continues to hold admissions. It does not stop or start a service.
 func FenceCatalogPRDReplacementHost(ctx context.Context, plan PRDUpgradePlan, service *PRDServiceController,
 	receipt CatalogCohortReceipt, predecessorOperationID string) (CatalogCohortHostFence, error) {
 	if !validCatalogOperationID(predecessorOperationID) {
@@ -288,8 +333,7 @@ func fenceCatalogPRDHost(ctx context.Context, plan PRDUpgradePlan, service *PRDS
 	} else {
 		var err error
 		predecessor, err = ReadCatalogCohortReceipt(cohortPlan, predecessorOperationID)
-		if err != nil || predecessor.Stage != CatalogCohortVerifying ||
-			!catalogCohortReceiptSupersessionEligible(predecessor) ||
+		if err != nil || !validPRDCatalogReplacementPredecessor(predecessor) ||
 			CatalogCohortAdmissionHoldMatches(cohortPlan, predecessorOperationID) != nil {
 			return CatalogCohortHostFence{}, ErrCatalogOperationInvalid
 		}

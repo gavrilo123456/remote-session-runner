@@ -263,6 +263,48 @@ already-applied rollback journal and synchronized the cohort's
 `rollback-complete` receipt, then stopped at final validation with
 `linux-host fresh-install predecessor evidence is incomplete or conflicts
 with the recorded selector`. It did not open admissions or change a selector.
+
+## Latest checkpoint — rolled-back-predecessor preflight correction
+
+The current release-bound owner approval for operation
+`01d9088c62e705632c9523346e14099d` ends at `2026-10-30T22:00:00Z`, which is
+23:00 Europe/Warsaw today. The owner's latest instruction does not require a
+renewal because that deadline already matches the requested cutoff.
+
+The current operation was created and durably blocked during Linux host
+preflight with `invalid or inconsistent catalog selector operation`. This
+revealed a second controller gap: host preflight/fencing accepted a fully
+switched `verifying` predecessor but rejected a fully synchronized
+`rolled_back` predecessor, even though the supported supersession state
+machine allows the latter. No backup or host mutation occurred during the
+failed attempt. Its history remains in the operation journal.
+
+The source correction accepts only a release-eligible PRD predecessor in
+`verifying` or `rolled_back` state with the exact matching hold. It validates
+host-local selector journals and binds either the verifying target bundle or
+the rollback target/bundle to the receipt; fresh-install evidence must still
+match the unselected replacement Linux baseline. A synchronized four-host
+fixture exercises rollback, retry/synchronization, and rejection of selector
+drift. The sealed release `rr-20261030-e3d3f5a` and its Dev/QAS acceptance
+remain unchanged.
+
+On Mac with Go 1.27.1, focused rollback/replacement tests, the complete
+`laneinstall` package, the `runner-lane` CLI package, full `make test`,
+`make vet`, `make build`, and `make smoke` pass. The first restricted full
+test attempt is retained as NOT PASS: the sandbox denied an unrelated
+test-owned `/bin/ps` subprocess; rerunning the same full suite with normal
+process permissions passed. See `040-implementation-evidence/BUG-027.md` for
+the details.
+
+Next: complete this source/evidence change through the required Git delivery,
+fast-forward the three clean Ubuntu checkouts, and run native Linux focused
+validation. Then rebuild only the promotion controller from the delivered
+source and resume operation `01d9088c62e705632c9523346e14099d` with fresh
+capacity/work/service/identity checks. Preserve operation
+`8474c9b8e550bec2a900dc954824e9df`, all held admissions, the sealed release,
+QAS, mailbox ownership, and clients-paused state. Continue the ordered PRD
+deployment and acceptance only when each supported guard passes; do not
+renew the already-valid approval or repeat completed work.
 The old operation snapshot has valid fresh-install and namespace-absence
 digests but predates four optional bootstrap-provenance fields. It recorded
 all four as absent. See `040-implementation-evidence/BUG-027.md` for the exact

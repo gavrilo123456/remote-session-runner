@@ -579,11 +579,19 @@ func validateCatalogCohortHistoryLocalSelectorState(layout catalogSelectorLayout
 	if ValidateCatalogCohortReceipt(receipt) != nil || receipt.Lane != layout.lane || cohortHostIndex(receipt, layout.hostID) < 0 {
 		return ErrCatalogOperationInvalid
 	}
+	matching, err := catalogCohortLocalSelectorOperations(layout, receipt.OperationID)
+	if err != nil {
+		return err
+	}
+	return validateCatalogCohortReconciledSelectorEvidence(layout, receipt, status, databaseSchema, configurationSHA256, matching)
+}
+
+func catalogCohortLocalSelectorOperations(layout catalogSelectorLayout, cohortOperationID string) ([]CatalogSelectorOperation, error) {
 	entries, err := os.ReadDir(layout.operationRoot)
 	if errors.Is(err, os.ErrNotExist) {
 		entries = nil
 	} else if err != nil {
-		return err
+		return nil, err
 	}
 	var matching []CatalogSelectorOperation
 	for _, entry := range entries {
@@ -593,13 +601,13 @@ func validateCatalogCohortHistoryLocalSelectorState(layout catalogSelectorLayout
 		operationID := entry.Name()[:len(entry.Name())-len(filepath.Ext(entry.Name()))]
 		operation, readErr := readCatalogSelectorOperation(layout.operationRoot, operationID)
 		if readErr != nil {
-			return ErrCatalogOperationInvalid
+			return nil, ErrCatalogOperationInvalid
 		}
-		if operation.CohortOperationID == receipt.OperationID {
+		if operation.CohortOperationID == cohortOperationID {
 			matching = append(matching, operation)
 		}
 	}
-	return validateCatalogCohortReconciledSelectorEvidence(layout, receipt, status, databaseSchema, configurationSHA256, matching)
+	return matching, nil
 }
 
 func validateCatalogCohortReconciledSelectorEvidence(layout catalogSelectorLayout, receipt CatalogCohortReceipt,
