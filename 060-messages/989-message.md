@@ -153,3 +153,36 @@ rollback/synchronization of `8474...` under its still-valid approval for
 `rr-309`, then create a fresh PRD plan and owner approval bound to `e3d3f5a`.
 The four-hour window supplied for `rr-309` must not be reused as the successor
 release approval. Keep clients paused; publish no mailbox requests or ACKs.
+
+## Latest checkpoint — held fresh-install rollback correction delivered
+
+The retry correction described above is now delivered as Mac `dev` commit
+`e8bec93dd049d1f1cfc8da28aeb55e20cba815b2`. It is controller-only; the sealed
+service releases and bundle bytes are unchanged. The correction prevents
+rollback closeout from opening admissions or attempting to start an unselected
+fresh-install predecessor. It preserves the hold and stopped services after
+verifying the synchronized rollback receipt, per-host selector/journal,
+configuration/schema, empty-work identity and capacity. Regression coverage
+uses the public backend path and rejects incomplete absence evidence.
+
+The source-gate matrix at this exact revision passed: Mac full test/vet/build/
+smoke; Factory Linux/AMD64 full test/vet/build/smoke; Sandbox Linux/ARM64 full
+test/vet/build/smoke; replacement Linux focused CAT-06 and changed packages,
+P025, P101, native vet/build/smoke. Linux's prior interrupted full-suite runs
+remain NOT PASS and were not repeated. Details, Go 1.27.1 platform settings,
+and captured log hashes are in `040-implementation-evidence/BUG-027.md`.
+Primary Gitea, verified GitHub mirror and all three clean worker checkouts
+were verified at `e8bec93`. The first remote command wrapper had an
+`ambiguous redirect` quoting error before starting tests; the corrected runs
+are the recorded gates.
+
+At the last read-only source-gate check Sandbox had 812,974,080 bytes free;
+its next write requires a fresh capacity measurement. No PRD operation was
+retried and no PRD state changed during source validation. Next: reread this
+file, recheck the current `rr-309` owner window and fresh four-host PRD state,
+then use the supported controller retry to synchronize rollback operation
+`8474c9b8e550bec2a900dc954824e9df` without releasing its holds. Afterward,
+prepare a fresh release-bound PRD plan and approval for the already Dev/QAS
+accepted successor `rr-20261030-e3d3f5a`; the `rr-309` approval/window does
+not authorize that successor. Keep clients paused, QAS and mailbox ownership
+unchanged, and publish no mailbox requests or ACKs.
