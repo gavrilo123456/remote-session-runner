@@ -305,6 +305,45 @@ capacity/work/service/identity checks. Preserve operation
 QAS, mailbox ownership, and clients-paused state. Continue the ordered PRD
 deployment and acceptance only when each supported guard passes; do not
 renew the already-valid approval or repeat completed work.
+
+## Latest checkpoint — source correction delivered and host gates complete
+
+The rolled-back-predecessor fix and regression are delivered at
+`77aded5d45c110fecd75e9b274fbb09fdc103b2a`. Gitea and its GitHub mirror both
+resolve to this exact SHA. All three Ubuntu `dev` checkouts were clean at
+`30539aa` before delivery and fast-forwarded cleanly to `77aded5` using the
+configured explicit SSH/Git identities.
+
+At this source revision, Mac Go 1.27.1 full `make test`, `make vet`,
+`make build`, and `make smoke` pass. The full suite initially failed only
+because the restricted sandbox denied the unrelated test's `/bin/ps` process
+check; the complete rerun with normal host process access passed. Factory
+(Linux/amd64) `make test`, `make vet`, `make build`, and `make smoke` pass.
+Sandbox (Linux/arm64) the same four gates pass. Linux-host (Linux/amd64)
+changed-package tests, exact P025 and P101 regressions, vet, build, and smoke
+pass; its full-suite interruptions remain NOT PASS under the approved Factory
+substitution. All worker checkouts remain clean at the delivered SHA.
+
+The corrected Mac `promote-to` and `runner-release` controllers were built
+from `77aded5` outside the sealed release catalog, reporting that revision;
+their hashes are recorded in the private task output. The first read-only
+plan attempt failed because the sandboxed child Go process could not access
+the default Mac caches, and made no host changes. A rerun with shared Go
+caches passed at `2026-10-30T11:52:44Z`, outcome `planned_no_effects`, plan SHA
+`8e6a24614db01ef5067f00bf00238668a25f2a0159ec8e0d3372a3ec6ea9b65d`.
+It confirms all four PRD services stopped, empty work at the matching
+inventory SHA, schema 40, unchanged configuration identities, and the exact
+existing predecessor hold. Sandbox had 804,691,968 bytes versus 567,108,864
+required; remeasure immediately before backup writes and enforce the same
+post-backup floor.
+
+The owner approval already ends at `2026-10-30T22:00:00Z` / 23:00 Warsaw, so
+the requested cutoff extension requires no new approval record. Next: finish
+the evidence-only Git delivery, rebuild the promotion controller with that
+final revision, then resume the same blocked operation
+`01d9088c62e705632c9523346e14099d` using `--prepare-only` and the existing
+release-bound approval. Keep QAS, mailbox ownership, the sealed release,
+retained histories, and paused clients unchanged.
 The old operation snapshot has valid fresh-install and namespace-absence
 digests but predates four optional bootstrap-provenance fields. It recorded
 all four as absent. See `040-implementation-evidence/BUG-027.md` for the exact
