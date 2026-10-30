@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1915,7 +1916,9 @@ func TestPromotionPreparedProbeAcceptsAndValidatesPublicCommandControllerType(t 
 
 func TestPRDHostPreflightBindsExactHeldPredecessor(t *testing.T) {
 	const predecessorOperationID = "8474c9b8e550bec2a900dc954824e9df"
-	t.Setenv("TMPDIR", "/private/tmp")
+	if runtime.GOOS == "darwin" {
+		t.Setenv("TMPDIR", "/private/tmp")
+	}
 	release := testRelease()
 	var observedHost string
 	var observedArgs []string
