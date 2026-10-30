@@ -684,3 +684,15 @@ synchronized as superseded, successor as held, and exactly one hold remains
 on each host before any selector switch. Continue Linux → Sandbox → Factory
 → Mac with fresh checks. Keep QAS/mailbox ownership unchanged, publish no
 mailbox requests or ACKs, preserve retained history, and keep clients paused.
+
+## Documentation delivery — fc47 source-gate checkpoint
+
+The evidence and handoff update was committed on Mac `dev` as
+`423816d64c1a6f9af5ecbb1611a37deb73c00485` and pushed to primary Gitea.
+The push succeeded; updating the local `origin/dev` tracking ref failed due
+workspace `.git` permissions, so the primary and GitHub mirror were verified
+independently with explicit identities using `git ls-remote`, both at the exact
+`423816d` SHA. Linux-host, Sandbox, and Factory were verified clean on `dev`
+at `fc47eed`, pulled `origin/dev` with `--ff-only`, and are clean at
+`423816d64c1a6f9af5ecbb1611a37deb73c00485`. This was documentation-only;
+no tests were rerun. The source gate results remain those recorded above.
