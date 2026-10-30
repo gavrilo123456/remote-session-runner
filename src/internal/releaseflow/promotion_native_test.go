@@ -1966,3 +1966,43 @@ func TestPRDHostPreflightBindsExactHeldPredecessor(t *testing.T) {
 		}
 	}
 }
+
+func TestPRDFenceBindsExactHeldPredecessor(t *testing.T) {
+	const predecessorOperationID = "8474c9b8e550bec2a900dc954824e9df"
+	const successorOperationID = "01d9088c62e705632c9523346e14099d"
+	stop := errors.New("stop after observing the first PRD fence")
+	var observedHost string
+	var observedArgs []string
+	backend := NativePromotionBackend{
+		laneCommandRunner: func(_ context.Context, host string, args []string, _ []byte) ([]byte, error) {
+			observedHost = host
+			observedArgs = append([]string(nil), args...)
+			return nil, stop
+		},
+	}
+	op := Operation{Lane: "prd", CohortOperationID: successorOperationID,
+		PreviousCohortOperationID: predecessorOperationID}
+	receipt := laneinstall.CatalogCohortReceipt{Stage: laneinstall.CatalogCohortPrepared}
+	err := backend.finishInitialFencesAndHold(context.Background(), op, receipt)
+	if !errors.Is(err, stop) {
+		t.Fatalf("finishInitialFencesAndHold error=%v, want injected first-fence stop", err)
+	}
+	if observedHost != HostOrder[0] || len(observedArgs) == 0 || observedArgs[0] != "catalog-cohort" {
+		t.Fatalf("unexpected first PRD fence command: host=%q args=%v", observedHost, observedArgs)
+	}
+	foundPredecessor := false
+	for index := 0; index+1 < len(observedArgs); index++ {
+		if observedArgs[index] == "--replacement-predecessor" && observedArgs[index+1] == predecessorOperationID {
+			foundPredecessor = true
+			break
+		}
+	}
+	if !foundPredecessor {
+		t.Fatalf("PRD fence omitted its exact held predecessor binding: args=%v", observedArgs)
+	}
+	for _, arg := range observedArgs {
+		if arg == "--legacy-compatibility-file" {
+			t.Fatalf("replacement PRD fence must use the exact predecessor receipt, args=%v", observedArgs)
+		}
+	}
+}

@@ -810,7 +810,14 @@ func (b *NativePromotionBackend) finishInitialFencesAndHold(ctx context.Context,
 			if fenced[host] {
 				continue
 			}
-			if _, err := b.runLane(ctx, host, []string{"catalog-cohort", "--host", host, "--lane", op.Lane, "--action", "fence-host", "--operation-id", op.CohortOperationID, "--subject-host", host}, nil); err != nil {
+			args := []string{"catalog-cohort", "--host", host, "--lane", op.Lane, "--action", "fence-host", "--operation-id", op.CohortOperationID, "--subject-host", host}
+			if op.PreviousCohortOperationID != "" {
+				// Replacing a synchronized PRD predecessor requires the same exact
+				// predecessor binding for both host preflight and the subsequent
+				// fence. The host CLI rejects an otherwise-valid fence that omits it.
+				args = append(args, "--replacement-predecessor", op.PreviousCohortOperationID)
+			}
+			if _, err := b.runLane(ctx, host, args, nil); err != nil {
 				return fmt.Errorf("%s PRD fence: %w", host, err)
 			}
 			if err := b.syncReceiptFrom(ctx, host, op.Lane, op.CohortOperationID); err != nil {
