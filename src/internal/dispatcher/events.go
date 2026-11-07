@@ -107,7 +107,7 @@ func (d *RemoteDriver) mirrorCommandEvents(ctx context.Context, validatedCommand
 	result := store.RemoteEventMirrorResult{CommandID: validatedCommand, LastSequence: after}
 	sawStreamEnd := false
 	sawTerminalEvent := false
-	streamErr := streamer.Stream(ctx, request, func(reply sshbridge.ReplyFrame) error {
+	streamErr := d.observeRemoteStream(ctx, streamer, request, func(readCtx context.Context, reply sshbridge.ReplyFrame) error {
 		if reply.ProtocolVersion != sshbridge.ProtocolVersion || reply.RequestID != request.RequestID {
 			return fmt.Errorf("%w: protocol or request identity mismatch", ErrRemoteEventStream)
 		}
@@ -123,7 +123,7 @@ func (d *RemoteDriver) mirrorCommandEvents(ctx context.Context, validatedCommand
 			if err != nil {
 				return err
 			}
-			mirrored, err := d.authority.MirrorRemoteEvents(ctx, []store.RemoteEventRecord{event})
+			mirrored, err := d.authority.MirrorRemoteEvents(readCtx, []store.RemoteEventRecord{event})
 			if err != nil {
 				return err
 			}
@@ -165,6 +165,9 @@ func (d *RemoteDriver) mirrorCommandEvents(ctx context.Context, validatedCommand
 		streamErr = fmt.Errorf("%w: stream ended without stream_end", ErrRemoteEventStream)
 	}
 	if streamErr != nil {
+		if parentErr := remoteObservationParentError(ctx); parentErr != nil {
+			return result, parentErr
+		}
 		// A failed mirror leaves the last remote snapshot usable but explicitly
 		// stale. Missing views are harmless because acceptance may have returned
 		// only an identity envelope in older bridge responses.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/sshbridge"
@@ -45,12 +46,18 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteRuns(ctx context.Context, limit in
 	if err != nil {
 		return err
 	}
+	deadline := time.Now().Add(d.observationBatchTimeout())
+	observationCtx := withRemoteObservationDeadline(ctx, deadline)
 	var result error
 	for _, intent := range intents {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(result, err)
 		}
-		if err := d.ReconcileAcceptedRun(ctx, intent.IntentID); err != nil {
+		if !time.Now().Before(deadline) {
+			break
+		}
+		d.runCursor = &store.RemoteIntentCursor{CreatedAt: intent.CreatedAt, IntentID: intent.IntentID}
+		if err := d.ReconcileAcceptedRun(observationCtx, intent.IntentID); err != nil {
 			result = errors.Join(result, remoteReconciliationIssueFor(intent, "run", err))
 		}
 	}
@@ -70,12 +77,18 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteSubmits(ctx context.Context, limit
 	if err != nil {
 		return err
 	}
+	deadline := time.Now().Add(d.observationBatchTimeout())
+	observationCtx := withRemoteObservationDeadline(ctx, deadline)
 	var result error
 	for _, intent := range intents {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(result, err)
 		}
-		if err := d.ReconcileAcceptedRemoteSubmit(ctx, intent.IntentID); err != nil {
+		if !time.Now().Before(deadline) {
+			break
+		}
+		d.submitCursor = &store.RemoteIntentCursor{CreatedAt: intent.CreatedAt, IntentID: intent.IntentID}
+		if err := d.ReconcileAcceptedRemoteSubmit(observationCtx, intent.IntentID); err != nil {
 			result = errors.Join(result, remoteReconciliationIssueFor(intent, "submit_command", err))
 		}
 	}
@@ -85,8 +98,8 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteSubmits(ctx context.Context, limit
 // nextAcceptedRemoteRunPage rotates a bounded recovery scan through the
 // durable ordering. Once it reaches the end it starts a new sweep, which also
 // picks up records inserted before the prior cursor while the scan was active.
-// The cursor advances to selected work even when a strict read finds it active
-// or fails, preventing a fixed prefix from starving a later terminal result.
+// The batch advances its cursor only to attempted work, including a failed
+// read. An unattempted page tail remains eligible after the time budget ends.
 func (d *RemoteDriver) nextAcceptedRemoteRunPage(ctx context.Context, limit int) ([]store.LocalIntentRecord, error) {
 	intents, err := d.authority.ListAcceptedRemoteRunIntentsAfter(ctx, limit, d.runCursor)
 	if err != nil {
@@ -98,10 +111,6 @@ func (d *RemoteDriver) nextAcceptedRemoteRunPage(ctx context.Context, limit int)
 		if err != nil {
 			return nil, err
 		}
-	}
-	if len(intents) > 0 {
-		last := intents[len(intents)-1]
-		d.runCursor = &store.RemoteIntentCursor{CreatedAt: last.CreatedAt, IntentID: last.IntentID}
 	}
 	return intents, nil
 }
@@ -120,10 +129,6 @@ func (d *RemoteDriver) nextAcceptedRemoteSubmitPage(ctx context.Context, limit i
 			return nil, err
 		}
 	}
-	if len(intents) > 0 {
-		last := intents[len(intents)-1]
-		d.submitCursor = &store.RemoteIntentCursor{CreatedAt: last.CreatedAt, IntentID: last.IntentID}
-	}
 	return intents, nil
 }
 
@@ -135,6 +140,7 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteSubmit(ctx context.Context, id dom
 	if !d.configured() {
 		return ErrRemoteDriverConfiguration
 	}
+	ctx = withRemoteObservationDeadline(ctx, time.Now().Add(d.observationTimeout()))
 	intent, err := d.authority.GetLocalIntent(ctx, id)
 	if err != nil {
 		return err
@@ -186,6 +192,7 @@ func (d *RemoteDriver) ReconcileAcceptedRun(ctx context.Context, id domain.Inten
 	if !d.configured() {
 		return ErrRemoteDriverConfiguration
 	}
+	ctx = withRemoteObservationDeadline(ctx, time.Now().Add(d.observationTimeout()))
 	intent, err := d.authority.GetLocalIntent(ctx, id)
 	if err != nil {
 		return err
@@ -206,6 +213,9 @@ func (d *RemoteDriver) ReconcileAcceptedRun(ctx context.Context, id domain.Inten
 	}
 	err = d.reconcileAcceptedRun(ctx, intent)
 	if err != nil {
+		if parentErr := remoteObservationParentError(ctx); parentErr != nil {
+			return parentErr
+		}
 		if remoteRunStatusFailure(err) {
 			marked, markErr := d.authority.MarkAcceptedRemoteRunStatusFailure(ctx, intent.IntentID, store.RemoteStatusFailureCodeUnavailable)
 			if markErr != nil {
@@ -298,7 +308,8 @@ func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.Lo
 // evidence that cannot establish a truthful terminal result. Local storage,
 // configuration, and cancellation errors remain ordinary retry failures.
 func remoteRunStatusFailure(err error) bool {
-	return errors.Is(err, ErrRemoteResponse) ||
+	return errors.Is(err, ErrRemoteObservationTimeout) ||
+		errors.Is(err, ErrRemoteResponse) ||
 		errors.Is(err, ErrRemoteEventCallerUnavailable) ||
 		errors.Is(err, ErrRemoteEventStream) ||
 		errors.Is(err, ErrRemoteEventHistoryUnavailable) ||
@@ -371,9 +382,9 @@ func (d *RemoteDriver) readRemoteProjectionObject(ctx context.Context, intent st
 	if err != nil {
 		return nil, err
 	}
-	reply, err := caller.Call(ctx, request)
+	reply, err := d.observeRemoteCall(ctx, caller, request)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s state read: %v", ErrRemoteResponse, resource, err)
+		return nil, fmt.Errorf("%w: %s state read: %w", ErrRemoteResponse, resource, err)
 	}
 	if reply.ProtocolVersion != sshbridge.ProtocolVersion || reply.RequestID != request.RequestID {
 		return nil, fmt.Errorf("%w: %s state read identity mismatch", ErrRemoteResponse, resource)

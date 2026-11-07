@@ -62,6 +62,7 @@ type RemoteDriver struct {
 	reconcileMu   sync.Mutex
 	runCursor     *store.RemoteIntentCursor
 	submitCursor  *store.RemoteIntentCursor
+	observations  RemoteObservationOptions
 }
 
 // NewRemoteDriver constructs a lease-owning remote driver.
@@ -71,12 +72,12 @@ func NewRemoteDriver(authority *store.AuthorityStore, caller RemoteCaller, owner
 
 // NewRemoteDriverWithClock is the deterministic-clock constructor used by
 // uncertainty deadline tests and controlled recovery harnesses.
-func NewRemoteDriverWithClock(authority *store.AuthorityStore, caller RemoteCaller, owner string, leaseDuration time.Duration, now func() time.Time) (*RemoteDriver, error) {
+func NewRemoteDriverWithClock(authority *store.AuthorityStore, caller RemoteCaller, owner string, leaseDuration time.Duration, now func() time.Time, observations ...RemoteObservationOptions) (*RemoteDriver, error) {
 	resolver, err := NewRemoteCallerResolver(map[string]RemoteCaller{"linux-host": caller})
 	if err != nil {
 		return nil, err
 	}
-	return NewRemoteDriverWithResolverAndClock(authority, resolver, owner, leaseDuration, now)
+	return NewRemoteDriverWithResolverAndClock(authority, resolver, owner, leaseDuration, now, observations...)
 }
 
 // NewRemoteDriverWithResolver constructs a remote driver whose every bridge
@@ -87,11 +88,15 @@ func NewRemoteDriverWithResolver(authority *store.AuthorityStore, resolver Remot
 
 // NewRemoteDriverWithResolverAndClock is the deterministic constructor for
 // profile-aware routing tests and controlled recovery harnesses.
-func NewRemoteDriverWithResolverAndClock(authority *store.AuthorityStore, resolver RemoteCallerResolver, owner string, leaseDuration time.Duration, now func() time.Time) (*RemoteDriver, error) {
+func NewRemoteDriverWithResolverAndClock(authority *store.AuthorityStore, resolver RemoteCallerResolver, owner string, leaseDuration time.Duration, now func() time.Time, observations ...RemoteObservationOptions) (*RemoteDriver, error) {
 	if authority == nil || resolver == nil || owner == "" || len(owner) > 256 || strings.IndexByte(owner, 0) >= 0 || leaseDuration <= 0 || now == nil {
 		return nil, ErrRemoteDriverConfiguration
 	}
-	return &RemoteDriver{authority: authority, resolver: resolver, owner: owner, leaseDuration: leaseDuration, now: now, sessionStates: make(map[remoteSessionKey]domain.SessionState)}, nil
+	limits, err := remoteObservationOptions(observations)
+	if err != nil {
+		return nil, err
+	}
+	return &RemoteDriver{authority: authority, resolver: resolver, owner: owner, leaseDuration: leaseDuration, now: now, sessionStates: make(map[remoteSessionKey]domain.SessionState), observations: limits}, nil
 }
 
 type remoteSessionKey struct {
@@ -148,7 +153,7 @@ func (d *RemoteDriver) ProbeProfile(ctx context.Context, profile string) error {
 		ctx = context.Background()
 	}
 	requestID := fmt.Sprintf("router-health-%s-%d", profile, remoteProbeSequence.Add(1))
-	reply, err := caller.Call(ctx, sshbridge.RequestFrame{
+	reply, err := d.observeRemoteCall(ctx, caller, sshbridge.RequestFrame{
 		ProtocolVersion: sshbridge.ProtocolVersion,
 		RequestID:       requestID,
 		Operation:       sshbridge.OperationPing,
@@ -249,7 +254,7 @@ func (d *RemoteDriver) ReconcileIntent(ctx context.Context, id domain.IntentID) 
 	if routeErr != nil {
 		return intent, sshbridge.ReplyFrame{}, routeErr
 	}
-	reply, callErr := caller.Call(ctx, frame)
+	reply, callErr := d.observeRemoteCall(ctx, caller, frame)
 	if callErr != nil {
 		return intent, sshbridge.ReplyFrame{}, fmt.Errorf("%w: read transport: %v", ErrRemoteNotReconciled, callErr)
 	}
@@ -450,7 +455,7 @@ func (d *RemoteDriver) refreshRemoteSessionState(ctx context.Context, create sto
 	if routeErr != nil {
 		return "", routeErr
 	}
-	reply, callErr := caller.Call(ctx, frame)
+	reply, callErr := d.observeRemoteCall(ctx, caller, frame)
 	if callErr != nil {
 		return "", callErr
 	}

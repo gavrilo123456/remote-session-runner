@@ -301,7 +301,10 @@ func (c *Client) exchange(ctx context.Context, request sshbridge.RequestFrame, s
 		return err
 	}
 	cmd := exec.CommandContext(ctx, c.config.SSHPath, c.commandArguments()...)
-	cmd.Stderr = io.Discard
+	// A nil Stderr sends the child directly to the OS null device. io.Discard
+	// would instead create a copier pipe that Wait could retain indefinitely
+	// when a descendant keeps the stderr descriptor open after SSH exits.
+	cmd.Stderr = nil
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return &TransportError{Phase: PhaseBeforeSend, Err: err}
@@ -311,17 +314,36 @@ func (c *Client) exchange(ctx context.Context, request sshbridge.RequestFrame, s
 		_ = stdin.Close()
 		return &TransportError{Phase: PhaseBeforeSend, Err: err}
 	}
+	defer stdin.Close()
+	defer stdout.Close()
 	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
 		return &TransportError{Phase: PhaseBeforeSend, Err: err}
 	}
+	// CommandContext kills the SSH process, but that alone does not unblock
+	// pipe I/O when another process inherited a pipe descriptor. Close both
+	// parent pipe ends on caller cancellation so request writes and reply/EOF
+	// reads all honor the same context. Deadlines remain the caller's choice;
+	// this transport must not impose a short deadline on execution mutations.
+	cancelDone := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() {
+		defer close(cancelDone)
+		_ = stdin.Close()
+		_ = stdout.Close()
+	})
+	defer func() {
+		if !stopCancel() {
+			<-cancelDone
+		}
+	}()
 
 	sent := false
 	finish := func(phase TransportPhase, cause error) error {
 		if cause == nil {
 			return nil
 		}
-		return &TransportError{Phase: phase, Err: cause}
+		// Pipe closure and a killed process are consequences of cancellation;
+		// keep its cause available to callers through errors.Is as well.
+		return &TransportError{Phase: phase, Err: errors.Join(cause, ctx.Err())}
 	}
 	n, writeErr := stdin.Write(frame)
 	if n > 0 {
@@ -383,6 +405,9 @@ func (c *Client) exchange(ctx context.Context, request sshbridge.RequestFrame, s
 	waitErr := cmd.Wait()
 	if waitErr != nil {
 		return finish(PhaseAfterSend, waitErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return finish(PhaseAfterSend, err)
 	}
 	if replyCount == 0 {
 		return finish(PhaseAfterSend, ErrNoReply)

@@ -63,7 +63,7 @@ func remoteReconciliationFailureClass(err error) string {
 		return "remote_event_cursor_invalid"
 	case errors.Is(err, ErrRemoteTerminalUnconfirmed):
 		return "remote_terminal_unconfirmed"
-	case errors.Is(err, ErrRemoteResponse), errors.Is(err, ErrRemoteEventStream):
+	case errors.Is(err, ErrRemoteResponse), errors.Is(err, ErrRemoteEventStream), errors.Is(err, ErrRemoteObservationTimeout):
 		return "remote_status_unavailable"
 	case errors.Is(err, store.ErrRemoteProjectionInvalid), errors.Is(err, store.ErrRemoteProjectionConflict):
 		return "remote_projection_invalid"

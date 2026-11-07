@@ -40,9 +40,9 @@ func (d *RemoteDriver) RefreshSessionProjection(ctx context.Context, sessionID d
 	if err != nil {
 		return store.RemoteSessionProjection{}, err
 	}
-	reply, err := caller.Call(ctx, request)
+	reply, err := d.observeRemoteCall(ctx, caller, request)
 	if err != nil {
-		return store.RemoteSessionProjection{}, fmt.Errorf("%w: session state read: %v", ErrRemoteResponse, err)
+		return store.RemoteSessionProjection{}, fmt.Errorf("%w: session state read: %w", ErrRemoteResponse, err)
 	}
 	state, err := validateRemoteSessionReadReply(intent, request, reply)
 	if err != nil {
