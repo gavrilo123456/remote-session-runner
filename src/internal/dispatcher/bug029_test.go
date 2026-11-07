@@ -84,7 +84,7 @@ func TestBUG029BatchDeadlinePreservesUnattemptedTail(t *testing.T) {
 			name = "submits"
 		}
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			authority := p068Authority(t)
 			bug029AcceptIntent(t, authority, "page-first", submit)
@@ -102,12 +102,18 @@ func TestBUG029BatchDeadlinePreservesUnattemptedTail(t *testing.T) {
 			first, later := ordered[0], ordered[1]
 			inner := newP149PagedRunCaller(ordered, later)
 			blockedCalls := 0
+			var attemptedResources []string
 			caller := bug029Caller{
 				call: func(readCtx context.Context, frame sshbridge.RequestFrame) (sshbridge.ReplyFrame, error) {
 					var payload map[string]string
 					if err := json.Unmarshal(frame.Payload, &payload); err != nil {
 						return sshbridge.ReplyFrame{}, err
 					}
+					resource := payload["job_id"]
+					if resource == "" {
+						resource = payload["command_id"]
+					}
+					attemptedResources = append(attemptedResources, resource)
 					if payload["job_id"] == string(first.JobID) && first.JobID != "" || payload["command_id"] == string(first.CommandID) {
 						blockedCalls++
 						<-readCtx.Done()
@@ -117,16 +123,42 @@ func TestBUG029BatchDeadlinePreservesUnattemptedTail(t *testing.T) {
 				},
 				stream: inner.Stream,
 			}
-			driver := bug029Driver(t, authority, caller)
+			// The healthy tail includes real SQLite projection/event/proof writes.
+			// Use the shipped budgets rather than requiring that work to finish
+			// inside the 100ms used by the single-stalled-read fixtures.
+			driver, err := NewRemoteDriver(authority, caller, "router-bug029-batch", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
 			reconcile := driver.ReconcileAcceptedRemoteRuns
 			if submit {
 				reconcile = driver.ReconcileAcceptedRemoteSubmits
 			}
 			if err := reconcile(ctx, 64); !errors.Is(err, ErrRemoteObservationTimeout) || ctx.Err() != nil {
-				t.Fatalf("first batch error=%v parent=%v", err, ctx.Err())
+				t.Fatalf("first batch error=%v observation_timeout=%t parent=%v issues=%+v", err, errors.Is(err, ErrRemoteObservationTimeout), ctx.Err(), RemoteReconciliationIssues(err))
 			}
-			if err := reconcile(ctx, 64); err != nil {
-				t.Fatalf("unattempted tail was not reached next: %v", err)
+			firstResource, laterResource := string(first.JobID), string(later.JobID)
+			cursor := driver.runCursor
+			if submit {
+				firstResource, laterResource = string(first.CommandID), string(later.CommandID)
+				cursor = driver.submitCursor
+			}
+			if len(attemptedResources) != 1 || attemptedResources[0] != firstResource || cursor == nil || cursor.IntentID != first.IntentID {
+				t.Fatalf("expired batch advanced beyond attempted prefix: resources=%v cursor=%+v", attemptedResources, cursor)
+			}
+			tailErr := reconcile(ctx, 64)
+			if len(attemptedResources) < 2 || attemptedResources[1] != laterResource {
+				t.Fatalf("next batch did not start at the unattempted tail: resources=%v err=%v", attemptedResources, tailErr)
+			}
+			if tailErr != nil {
+				t.Fatalf("attempted tail did not reconcile: %v observation_timeout=%t parent=%v jobs=%v commands=%v streams=%d issues=%+v", tailErr, errors.Is(tailErr, ErrRemoteObservationTimeout), ctx.Err(), inner.getJobCalls, inner.getCommandCalls, inner.streamCalls, RemoteReconciliationIssues(tailErr))
+			}
+			cursor = driver.runCursor
+			if submit {
+				cursor = driver.submitCursor
+			}
+			if cursor == nil || cursor.IntentID != later.IntentID {
+				t.Fatalf("successful tail did not retain its attempted cursor: %+v", cursor)
 			}
 			if blockedCalls != 1 || inner.mutationCalls != 0 {
 				t.Fatalf("retried the blocked prefix or replayed work: blocked=%d mutations=%d", blockedCalls, inner.mutationCalls)
