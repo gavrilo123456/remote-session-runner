@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — source correction implemented; native qualification and deployment incomplete |
+| Status | `FIXED — PENDING VERIFICATION` — source and four-host native verification complete; installed-lane acceptance pending |
 | Severity | High |
 | Priority | P1 — prevents result delivery and independent mailbox intake |
 | Reported | 2026-11-07 |
@@ -12,7 +12,8 @@
 | Affected component | Mac `runner-local` cycle, accepted remote reconciliation, and SSH reply/EOF handling |
 | Affected revision | Installed Mac ingress `e3d3f5a133e58c97040920162a221504610b9e1b`; inspected checkout `6211a93112ba0ac65463ffdb9a89472b9b175322` has identical relevant source paths |
 | Fixed revision | `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` — source correction; installed E3 services unchanged |
-| Verification | Mac focused/race checks and corrected full test/vet/build/smoke gates passed. Sandbox and Factory native test/vet/build/smoke gates passed at the same source commit; Linux qualification is blocked on its Git route. Installed-lane acceptance remains NOT RUN. See [BUG-029 evidence](../040-implementation-evidence/BUG-029.md). |
+| Regression fixture correction | `126320552acf0a2609d7d75c09016b867b1dbd13` — test-only budget and diagnostic correction; production code unchanged |
+| Verification | Full test/vet/build/smoke passed on Mac, Linux, Sandbox and Factory for corrected source `1263205`; Mac affected race and latency controls passed. The first Linux fixture failure remains NOT PASS. Deployment and installed-lane acceptance remain NOT RUN. See [BUG-029 evidence](../040-implementation-evidence/BUG-029.md). |
 
 ## Reported behavior
 
@@ -172,11 +173,19 @@ as NOT PASS: the capture wrapper applied umask `077`, so an unrelated bootstrap
 fixture's intended `0755` unsafe parent became `0700`. The wrapper was
 corrected to child umask `022` without changing that fixture or production
 bootstrap source. The corrected full Mac test/vet/build/smoke retry passed.
-Sandbox and Factory also passed all four native source gates at the same
-source revision. Linux source delivery and qualification remain blocked on
-an approved Git route; installed-lane acceptance remains NOT RUN. The
-old-source negative control reproduced the inherited
-output-pipe failure with the new regression fixture.
+Sandbox and Factory also passed all four initial native source gates. The
+owner approved a BUG-029-only HTTPS Git route for Linux. Its first full suite
+failed the new batch-tail fixture, which required complete database-backed
+reconciliation within an artificial 100 ms budget. A controlled latency
+fixture reproduced that timing assumption; the original Linux error hid its
+cause and is retained as NOT PASS. Test-only correction `1263205` uses the
+shipped 15-second budgets, strengthens transport-order/cursor diagnostics and
+retains strict terminal/no-replay checks. Mac full/race and the delayed-read
+control passed; corrected full test/vet/build/smoke qualification then passed
+independently on all three workers at `1263205`. No production Go code changed
+in this fixture correction. Release construction, deployment and installed-lane
+acceptance remain NOT RUN. The original old-source transport control also reproduced the
+inherited output-pipe failure with the new regression fixture.
 
 Do not reproduce this by dispatching protected project work or by generally
 signalling live SSH children. The one-off operational intervention above is
@@ -189,3 +198,4 @@ until the required source, delivery and installed-lane evidence is complete.
 | --- | --- |
 | 2026-11-07 | Isolated the unbounded observer mechanism and restored the two exact original requests without replay, replacement or ACK. Registered the preventive defect; no source fix or deployment was performed. |
 | 2026-11-07 | Implemented bounded observer I/O and cancellation, cursor progress and disposable regressions in `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4`. Mac focused/race and corrected full test/vet/build/smoke gates passed; Sandbox and Factory native source gates passed. Linux Git delivery/qualification and deployment remain separately gated. |
+| 2026-11-08 (Warsaw) | Owner approved the existing HTTPS Git mirror route for BUG-029 Linux delivery, retaining TLS and exact-SHA/clean-dev/fast-forward checks. Preserved the first Linux fixture failure and delivered test-only correction `1263205`; all four hosts passed full native gates, and Mac race/latency checks passed. No release bundle, deployment or mailbox mutation. |
