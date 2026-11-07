@@ -4,15 +4,15 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `TRIAGED` — operational processing restored; preventive source fix not implemented |
+| Status | `FIXED — PENDING VERIFICATION` — source correction implemented; native qualification and deployment incomplete |
 | Severity | High |
 | Priority | P1 — prevents result delivery and independent mailbox intake |
 | Reported | 2026-11-07 |
 | Owner | Remote Session Runner maintainer |
 | Affected component | Mac `runner-local` cycle, accepted remote reconciliation, and SSH reply/EOF handling |
 | Affected revision | Installed Mac ingress `e3d3f5a133e58c97040920162a221504610b9e1b`; inspected checkout `6211a93112ba0ac65463ffdb9a89472b9b175322` has identical relevant source paths |
-| Fixed revision | None |
-| Verification | Exact original requests reached terminal results after one guarded observer interruption; a preventive correction and its regression tests remain NOT RUN |
+| Fixed revision | `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` — source correction; installed E3 services unchanged |
+| Verification | Mac focused/race checks and corrected full test/vet/build/smoke gates passed. Sandbox and Factory native test/vet/build/smoke gates passed at the same source commit; Linux qualification is blocked on its Git route. Installed-lane acceptance remains NOT RUN. See [BUG-029 evidence](../040-implementation-evidence/BUG-029.md). |
 
 ## Reported behavior
 
@@ -128,33 +128,64 @@ concerns commandless failed preparation and unconfirmed teardown;
 different persistent-shell control-descriptor read. None records this exact
 SSH observer mechanism as fixed.
 
-## Required correction and verification
+## Source correction and verification checkpoint
 
-Add a finite, cancellable boundary for read-only status/event observations,
-including reply/EOF and transport-exit waits. Preserve strict identity,
-terminal-event and teardown checks. A read timeout is an observation failure,
-not evidence of command failure or permission to resend a mutation. Keep
-mutation delivery and its uncertainty rules separate; do not apply an
-unqualified short timeout or automatic replay to execution calls.
+The source correction is committed as
+`14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` and verified at the same primary
+Gitea and GitHub mirror SHA; the installed E3 services remain unchanged.
+[BUG-029 evidence](../040-implementation-evidence/BUG-029.md) records
+the current results and remaining gates.
 
-Use disposable fixtures to prove:
+Accepted run and submit observations now have a default 15-second aggregate
+I/O budget per intent. Run and submit reconciliation each also have an
+independent 15-second batch I/O budget. Only allowlisted read-only calls and
+event streams derive actual deadline contexts. The aggregate deadline is
+carried as metadata so that failure and stale-projection bookkeeping can
+still use the live caller context after transport expiry. Parent cancellation
+retains precedence over an observer timeout.
 
-1. A read-only SSH helper that emits no reply cannot block the mailbox cycle
-   indefinitely.
-2. A helper that emits a valid reply but never closes stdout/SSH still reaches
-   the finite failure boundary.
-3. A later independent ready pair is imported and reconciled despite the
-   stalled observation; original identities and attempt counts are preserved.
-4. Subsequent qualified reads recover retained terminal events and teardown
-   without another mutation, fabricated result, or nonterminal ACK.
+Batch cursors advance to the last attempted intent, preserving an unattempted
+page tail for the next cycle. Stream event persistence uses its read context.
+SSH cancellation closes both parent pipe ends, reaps the direct child, and
+joins the cancellation callback; stderr goes directly to the null device so
+an inherited descriptor cannot retain an internal copy goroutine in `Wait`.
+Reply identity, EOF/exit, event-boundary and teardown proof remain required.
+
+Mutation delivery and execution limits are unchanged. An observer timeout
+records unavailable status or a stale projection while preserving the
+accepted request and its identities. It cannot create a failed execution,
+terminal proof, replay, replacement request, or ACK.
+
+Disposable regressions cover:
+
+1. No reply, a valid reply without EOF, inherited output pipes, blocked stdin,
+   and process wait after EOF, including child reaping and cancellation cause.
+2. Run and submit batch expiry, cursor progress through the unattempted tail,
+   durable status diagnostics, stale projections, and parent cancellation.
+3. Later original ready-pair intake while a status/event observation stalls,
+   including supported direct-workspace `0644` input.
+4. Recovery of the original retained terminal events and teardown after a
+   qualified read, with unchanged identities and one mutation per request.
+
+Mac focused and race checks passed. The first full Mac `make test` is retained
+as NOT PASS: the capture wrapper applied umask `077`, so an unrelated bootstrap
+fixture's intended `0755` unsafe parent became `0700`. The wrapper was
+corrected to child umask `022` without changing that fixture or production
+bootstrap source. The corrected full Mac test/vet/build/smoke retry passed.
+Sandbox and Factory also passed all four native source gates at the same
+source revision. Linux source delivery and qualification remain blocked on
+an approved Git route; installed-lane acceptance remains NOT RUN. The
+old-source negative control reproduced the inherited
+output-pipe failure with the new regression fixture.
 
 Do not reproduce this by dispatching protected project work or by generally
 signalling live SSH children. The one-off operational intervention above is
-not a new public recovery command. Keep this bug `TRIAGED` until a source
-correction and its required verification are delivered.
+not a new public recovery command. Keep this bug `FIXED — PENDING VERIFICATION`
+until the required source, delivery and installed-lane evidence is complete.
 
 ## History
 
 | Date | Change |
 | --- | --- |
 | 2026-11-07 | Isolated the unbounded observer mechanism and restored the two exact original requests without replay, replacement or ACK. Registered the preventive defect; no source fix or deployment was performed. |
+| 2026-11-07 | Implemented bounded observer I/O and cancellation, cursor progress and disposable regressions in `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4`. Mac focused/race and corrected full test/vet/build/smoke gates passed; Sandbox and Factory native source gates passed. Linux Git delivery/qualification and deployment remain separately gated. |

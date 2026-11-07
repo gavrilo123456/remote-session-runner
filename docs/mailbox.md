@@ -668,6 +668,18 @@ job, cancel work, release capacity, or replay the mutation. A later qualified
 read may restore an active projection. Runner publishes a terminal response
 only when identity, target, teardown, and the retained event boundary agree.
 
+Releases containing the [BUG-029 correction](../050-bugs/029-unbounded-ssh-observer-blocks-mailbox-processing.md)
+bound an accepted remote run or submit observation to a default 15-second
+aggregate I/O budget. Run and submit reconciliation also have independent
+15-second rotating batch I/O budgets, so a stalled observer releases the loop
+and an unattempted page tail remains eligible next time. A timeout preserves
+the accepted identity, records unavailable status or a stale projection, and
+allows local bookkeeping to finish. It does not cancel the remote command,
+resend execution, invent a terminal result, or publish an ACK. A later
+qualified read can restore the existing result. Check the selected lane's
+release before relying on this behavior; the BUG-029 source checkpoint has
+not changed the installed E3 services.
+
 If strict remote reads are malformed, contradictory, or unavailable after an
 accepted one-off run, Runner records the first failure and continues only
 read-only reconciliation for 24 hours. A later coherent nonterminal status
