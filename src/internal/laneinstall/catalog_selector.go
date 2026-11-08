@@ -678,6 +678,13 @@ func FindCatalogSelectorOperationsForPlan(plan Plan, cohortOperationID string) (
 	if err != nil {
 		return nil, err
 	}
+	return findCatalogSelectorOperationsAt(layout, cohortOperationID)
+}
+
+func findCatalogSelectorOperationsAt(layout catalogSelectorLayout, cohortOperationID string) ([]CatalogSelectorOperation, error) {
+	if validateCatalogSelectorLayout(layout) != nil || !validCatalogOperationID(cohortOperationID) {
+		return nil, ErrCatalogOperationInvalid
+	}
 	entries, err := os.ReadDir(layout.operationRoot)
 	if errors.Is(err, os.ErrNotExist) {
 		return []CatalogSelectorOperation{}, nil
@@ -696,10 +703,16 @@ func FindCatalogSelectorOperationsForPlan(plan Plan, cohortOperationID string) (
 		}
 		id := strings.TrimSuffix(entry.Name(), ".json")
 		operation, readErr := readCatalogSelectorOperation(layout.operationRoot, id)
-		if readErr != nil || validateCatalogOperation(layout, operation) != nil {
+		if readErr != nil || validateCatalogOperationMetadata(layout, operation) != nil {
 			return nil, ErrCatalogOperationInvalid
 		}
 		if operation.CohortOperationID == cohortOperationID {
+			// Historical journals remain protected evidence even after their
+			// archived bundles are no longer available. Only the requested
+			// cohort may be reconciled, so require its live artifacts here.
+			if validateCatalogOperation(layout, operation) != nil {
+				return nil, ErrCatalogOperationInvalid
+			}
 			operations = append(operations, operation)
 		}
 	}
@@ -1518,9 +1531,42 @@ func readCatalogSelectorOperation(root, operationID string) (CatalogSelectorOper
 	return operation, nil
 }
 
-func validateCatalogOperation(layout catalogSelectorLayout, operation CatalogSelectorOperation) error {
+// validateCatalogOperationMetadata checks a journal's host/lane identity and
+// lexical paths without opening any referenced release or backup. Discovery
+// applies this to every journal before filtering by the requested cohort.
+func validateCatalogOperationMetadata(layout catalogSelectorLayout, operation CatalogSelectorOperation) error {
 	if validateCatalogOperationFields(operation) != nil || operation.HostID != layout.hostID || operation.Lane != layout.lane ||
 		operation.NextTarget != filepath.Join(layout.catalogRoot, operation.Release.ReleaseID, layout.hostID) {
+		return ErrCatalogOperationInvalid
+	}
+	if target := operation.PreviousTarget; target != "" {
+		if filepath.IsAbs(target) {
+			releaseID := filepath.Base(filepath.Dir(target))
+			if !validCatalogReleaseID(releaseID) || target != filepath.Join(layout.catalogRoot, releaseID, layout.hostID) {
+				return ErrCatalogOperationInvalid
+			}
+		} else if filepath.Dir(target) != "releases" || !bundleDigestPattern.MatchString(filepath.Base(target)) {
+			return ErrCatalogOperationInvalid
+		}
+	}
+	for _, directory := range []string{operation.BackupDirectory, operation.RollbackBackupDirectory} {
+		if directory == "" {
+			continue
+		}
+		name := filepath.Base(directory)
+		validName := strings.HasPrefix(name, ".simple-backup-")
+		if layout.lane == config.ReleaseLanePRD {
+			validName = strings.HasPrefix(name, "prd-upgrade-") || strings.HasPrefix(name, "prd-catalog-")
+		}
+		if filepath.Dir(directory) != layout.backupRoot || !validName {
+			return ErrCatalogOperationInvalid
+		}
+	}
+	return nil
+}
+
+func validateCatalogOperation(layout catalogSelectorLayout, operation CatalogSelectorOperation) error {
+	if validateCatalogOperationMetadata(layout, operation) != nil {
 		return ErrCatalogOperationInvalid
 	}
 	if operation.PreviousTarget != "" {

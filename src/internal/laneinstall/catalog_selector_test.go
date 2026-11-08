@@ -470,3 +470,213 @@ func TestCatalogLegacyAdoptionCopiesVerifiedSelectedBundleWithoutLinksOrSwitchin
 		t.Fatalf("catalog-selected lane was accepted as a legacy source: %v", err)
 	}
 }
+
+func fixtureCatalogCohortSwitch(t *testing.T, fixture catalogSelectorFixture, releaseID, previousTarget, cohortID string) CatalogSelectorOperation {
+	t.Helper()
+	backup := fixtureCatalogBackup(t, fixture.layout, previousTarget, store.CurrentSchemaVersion)
+	backup.CohortOperationID = cohortID
+	backup.CohortEvidenceSHA256 = strings.Repeat("e", 64)
+	operation, err := selectCatalogReleaseAt(fixture.layout, releaseID, previousTarget, store.CurrentSchemaVersion, backup, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return operation
+}
+
+func TestCatalogSelectorDiscoveryIgnoresRetiredUnrelatedPayloads(t *testing.T) {
+	fixture := newCatalogSelectorFixture(t)
+	oldCohort, currentCohort := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	old := fixtureCatalogCohortSwitch(t, fixture, fixture.firstRelease, fixture.legacyTarget, oldCohort)
+	rollbackBackup := fixtureCatalogBackup(t, fixture.layout, old.NextTarget, store.CurrentSchemaVersion)
+	old, err := rollbackCatalogSelectorAt(fixture.layout, old.OperationID, store.CurrentSchemaVersion, rollbackBackup, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := fixtureCatalogCohortSwitch(t, fixture, fixture.secondRelease, fixture.legacyTarget, currentCohort)
+	oldPath := filepath.Join(fixture.layout.operationRoot, old.OperationID+".json")
+	oldBytes, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Retire only the old rollout's disposable payloads. Its canonical journal
+	// remains present, while the current rollout retains its own full backup.
+	retired := filepath.Join(fixture.catalogRoot, fixture.firstRelease)
+	if err := filepath.Walk(retired, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return os.Chmod(path, 0o700)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{retired, old.BackupDirectory, old.RollbackBackupDirectory} {
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	operations, err := findCatalogSelectorOperationsAt(fixture.layout, currentCohort)
+	if err != nil || len(operations) != 1 || operations[0].OperationID != current.OperationID {
+		t.Fatalf("unrelated retired history blocked discovery: operations=%+v err=%v", operations, err)
+	}
+	if after, err := os.ReadFile(oldPath); err != nil || string(after) != string(oldBytes) {
+		t.Fatalf("discovery changed preserved historical bytes: err=%v", err)
+	}
+	if selected, err := os.Readlink(filepath.Join(fixture.layout.serviceRoot, "current")); err != nil || selected != current.NextTarget {
+		t.Fatalf("discovery changed the selector: target=%q err=%v", selected, err)
+	}
+
+	// A cohort binding never exempts a matching journal from physical checks.
+	// Retagging this incomplete history cannot make it an accepted operation.
+	old.CohortOperationID = currentCohort
+	if err := writeCatalogSelectorOperation(fixture.layout.operationRoot, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findCatalogSelectorOperationsAt(fixture.layout, currentCohort); !errors.Is(err, ErrCatalogOperationInvalid) {
+		t.Fatalf("matching journal with missing release/backup was accepted: %v", err)
+	}
+}
+
+func TestCatalogSelectorDiscoveryScopesMissingPredecessorToItsCohort(t *testing.T) {
+	fixture := newCatalogSelectorFixture(t)
+	oldCohort, currentCohort := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	old := fixtureCatalogCohortSwitch(t, fixture, fixture.firstRelease, fixture.legacyTarget, oldCohort)
+	current := fixtureCatalogCohortSwitch(t, fixture, fixture.secondRelease, old.NextTarget, currentCohort)
+	if err := os.RemoveAll(filepath.Join(fixture.layout.serviceRoot, fixture.legacyTarget)); err != nil {
+		t.Fatal(err)
+	}
+	operations, err := findCatalogSelectorOperationsAt(fixture.layout, currentCohort)
+	if err != nil || len(operations) != 1 || operations[0].OperationID != current.OperationID {
+		t.Fatalf("unrelated missing predecessor blocked discovery: operations=%+v err=%v", operations, err)
+	}
+	if _, err := findCatalogSelectorOperationsAt(fixture.layout, oldCohort); !errors.Is(err, ErrCatalogOperationInvalid) {
+		t.Fatalf("matching journal with missing predecessor was accepted: %v", err)
+	}
+}
+
+func TestCatalogSelectorDiscoveryRejectsUnsafeUnrelatedJournals(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, catalogSelectorFixture, *CatalogSelectorOperation, string)
+	}{
+		{"wrong_lane", func(t *testing.T, fixture catalogSelectorFixture, operation *CatalogSelectorOperation, path string) {
+			operation.Lane = config.ReleaseLaneQAS
+		}},
+		{"next_target_identity_mismatch", func(t *testing.T, fixture catalogSelectorFixture, operation *CatalogSelectorOperation, path string) {
+			operation.NextTarget = filepath.Join(fixture.catalogRoot, fixture.secondRelease, fixture.layout.hostID)
+		}},
+		{"escaping_previous_target", func(t *testing.T, fixture catalogSelectorFixture, operation *CatalogSelectorOperation, path string) {
+			operation.PreviousTarget = filepath.Join("..", "foreign-lane", "releases", strings.Repeat("a", 64))
+		}},
+		{"foreign_backup_root", func(t *testing.T, fixture catalogSelectorFixture, operation *CatalogSelectorOperation, path string) {
+			operation.BackupDirectory = filepath.Join(t.TempDir(), ".simple-backup-"+strings.Repeat("a", 32))
+		}},
+		{"unknown_json_field", func(t *testing.T, fixture catalogSelectorFixture, operation *CatalogSelectorOperation, path string) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data = []byte(strings.TrimSuffix(string(data), "}\n") + ",\n  \"unknown_field\": true\n}\n")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"noncanonical_json", func(t *testing.T, fixture catalogSelectorFixture, operation *CatalogSelectorOperation, path string) {
+			file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.WriteString(" "); err != nil {
+				_ = file.Close()
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"public_mode", func(t *testing.T, fixture catalogSelectorFixture, operation *CatalogSelectorOperation, path string) {
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"symlink", func(t *testing.T, fixture catalogSelectorFixture, operation *CatalogSelectorOperation, path string) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "preserved.json")
+			if err := os.WriteFile(target, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"hardlink", func(t *testing.T, fixture catalogSelectorFixture, operation *CatalogSelectorOperation, path string) {
+			if err := os.Link(path, filepath.Join(t.TempDir(), "second-link.json")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCatalogSelectorFixture(t)
+			currentCohort := strings.Repeat("2", 32)
+			current := fixtureCatalogCohortSwitch(t, fixture, fixture.firstRelease, fixture.legacyTarget, currentCohort)
+			old := current
+			old.OperationID = strings.Repeat("1", 32)
+			old.CohortOperationID = strings.Repeat("3", 32)
+			if err := writeCatalogSelectorOperation(fixture.layout.operationRoot, old); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(fixture.layout.operationRoot, old.OperationID+".json")
+			test.mutate(t, fixture, &old, path)
+			if test.name == "wrong_lane" || test.name == "next_target_identity_mismatch" || test.name == "escaping_previous_target" || test.name == "foreign_backup_root" {
+				if err := writeCatalogSelectorOperation(fixture.layout.operationRoot, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := findCatalogSelectorOperationsAt(fixture.layout, currentCohort); !errors.Is(err, ErrCatalogOperationInvalid) {
+				t.Fatalf("unsafe unrelated journal was ignored: %v", err)
+			}
+		})
+	}
+}
+
+func TestCatalogSelectorDiscoveryPreservesMatchingJournalAmbiguity(t *testing.T) {
+	fixture := newCatalogSelectorFixture(t)
+	cohort := strings.Repeat("2", 32)
+	first := fixtureCatalogCohortSwitch(t, fixture, fixture.firstRelease, fixture.legacyTarget, cohort)
+	second := fixtureCatalogCohortSwitch(t, fixture, fixture.secondRelease, first.NextTarget, cohort)
+	operations, err := findCatalogSelectorOperationsAt(fixture.layout, cohort)
+	if err != nil || len(operations) != 2 || operations[0].OperationID != first.OperationID || operations[1].OperationID != second.OperationID {
+		t.Fatalf("discovery concealed ambiguous matching journals: operations=%+v err=%v", operations, err)
+	}
+}
+
+func TestCatalogSelectorDiscoveryRequiresBackupOnlyForMatchingCohort(t *testing.T) {
+	fixture := newCatalogSelectorFixture(t)
+	cohort := strings.Repeat("2", 32)
+	operation := fixtureCatalogCohortSwitch(t, fixture, fixture.firstRelease, fixture.legacyTarget, cohort)
+	if err := os.RemoveAll(operation.BackupDirectory); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{operation.PreviousTarget, operation.NextTarget} {
+		if _, err := resolveCatalogSelectorTarget(fixture.layout, target); err != nil {
+			t.Fatalf("release payload unexpectedly unavailable: target=%q err=%v", target, err)
+		}
+	}
+	operations, err := findCatalogSelectorOperationsAt(fixture.layout, strings.Repeat("3", 32))
+	if err != nil || len(operations) != 0 {
+		t.Fatalf("unrelated missing backup blocked discovery: operations=%+v err=%v", operations, err)
+	}
+	if _, err := findCatalogSelectorOperationsAt(fixture.layout, cohort); !errors.Is(err, ErrCatalogOperationInvalid) {
+		t.Fatalf("matching journal with missing backup was accepted: %v", err)
+	}
+}
