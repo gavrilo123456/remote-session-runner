@@ -4,16 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — DEV/QAS VERIFIED; PRD PENDING` — same release installed and accepted on all four hosts in each lane |
+| Status | `FIXED — DEV/QAS/PRD VERIFIED` — same sealed release accepted on all four hosts in every lane; normal-load observation not claimed |
 | Severity | High |
 | Priority | P1 — prevents result delivery and independent mailbox intake |
 | Reported | 2026-11-07 |
 | Owner | Remote Session Runner maintainer |
 | Affected component | Mac `runner-local` cycle, accepted remote reconciliation, and SSH reply/EOF handling |
-| Affected revision | Installed Mac ingress `e3d3f5a133e58c97040920162a221504610b9e1b`; inspected checkout `6211a93112ba0ac65463ffdb9a89472b9b175322` has identical relevant source paths |
-| Fixed revision | `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` — source correction; Dev/QAS release `rr-20261108-bug029-1263205` contains the corrected source and fixture revision |
+| Affected revision | Incident Mac ingress `e3d3f5a133e58c97040920162a221504610b9e1b`; inspected incident checkout `6211a93112ba0ac65463ffdb9a89472b9b175322` had identical relevant source paths |
+| Fixed revision | `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` — production correction; frozen source `1263205`, release `rr-20261108-bug029-1263205` installed and accepted in Dev/QAS/PRD |
 | Regression fixture correction | `126320552acf0a2609d7d75c09016b867b1dbd13` — test-only budget and diagnostic correction; production code unchanged |
-| Verification | Four-host full source gates and Mac affected race/latency controls passed. Dev and QAS each passed all eight functional gates and postflight; admissions are open. QAS source synchronization is complete on Gitea and GitHub at `1263205`. Earlier failed attempts remain recorded. PRD deployment and filesystem-mailbox acceptance are NOT RUN. See [Dev evidence](../040-implementation-evidence/BUG-029-dev-deployment-2026-11-08.md) and [QAS evidence](../040-implementation-evidence/BUG-029-qas-deployment-2026-11-08.md). |
+| Verification | Four-host source gates and Mac race/latency controls passed; original failures remain recorded. Dev, QAS and PRD each passed all eight gates and postflight. PRD operation `b874bf695e2411a0711832324b269fa2` is complete with source marker `1263205` on Gitea/GitHub. Exact approved Sandbox recovery preserved lost history. Filesystem-mailbox acceptance NOT RUN; clients were left stopped. See [Dev](../040-implementation-evidence/BUG-029-dev-deployment-2026-11-08.md), [QAS](../040-implementation-evidence/BUG-029-qas-deployment-2026-11-08.md) and [PRD evidence](../040-implementation-evidence/BUG-029-prd-deployment-2026-11-08.md). |
 
 ## Reported behavior
 
@@ -133,7 +133,8 @@ SSH observer mechanism as fixed.
 
 The source correction is committed as
 `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` and verified at the same primary
-Gitea and GitHub mirror SHA; the installed E3 services remain unchanged.
+Gitea and GitHub mirror SHA. At that source-only checkpoint, installed E3
+services were unchanged; the later deployment closeouts below record activation.
 [BUG-029 evidence](../040-implementation-evidence/BUG-029.md) records
 the current results and remaining gates.
 
@@ -189,8 +190,8 @@ control also reproduced the inherited output-pipe failure with the new fixture.
 
 Do not reproduce this by dispatching protected project work or by generally
 signalling live SSH children. The one-off operational intervention above is
-not a new public recovery command. Dev/QAS verification does not establish that
-the historical PRD incident has received the preventive runtime correction.
+not a new public recovery command. The later separate PRD closeout below
+records installation and acceptance of the preventive runtime correction.
 
 ## Dev deployment — 2026-11-08
 
@@ -224,6 +225,22 @@ identities. PRD was not upgraded or rerouted; no historical request, ACK or CI
 dispatch was replayed. Filesystem-mailbox acceptance remains NOT RUN. See the
 [QAS closeout](../040-implementation-evidence/BUG-029-qas-deployment-2026-11-08.md).
 
+## PRD deployment — 2026-11-08
+
+The owner stopped PRD clients and approved exact guarded Sandbox closeout.
+Selected E3 recovery released only the authorized lost pair/session capacity;
+independent backup comparison proved the original lost history preserved.
+The initial Mac launchctl status attempt and first Linux direct-probe resume
+remain NOT PASS. Network access recovered without firewall changes; supported
+evidence renewal and resume 02 reused operation `b874bf695e2411a0711832324b269fa2` and
+verified-host flags without selector replay or further recovery.
+All eight PRD gates then passed at `2026-11-08T11:38:36.678079Z`;
+the cohort is released and postflight verified ready services, schema 40, empty
+active-work inventories, unchanged configuration and preserved Dev/QAS identities.
+PRD source markers match `1263205` on Gitea and GitHub. Clients were left stopped;
+filesystem-mailbox acceptance remains NOT RUN. Exact identities and bounds are in
+[the PRD closeout](../040-implementation-evidence/BUG-029-prd-deployment-2026-11-08.md).
+
 ## History
 
 | Date | Change |
@@ -233,3 +250,4 @@ dispatch was replayed. Filesystem-mailbox acceptance remains NOT RUN. See the
 | 2026-11-08 (Warsaw) | Owner approved the existing HTTPS Git mirror route for BUG-029 Linux delivery, retaining TLS and exact-SHA/clean-dev/fast-forward checks. Preserved the first Linux fixture failure and delivered test-only correction `1263205`; all four hosts passed full native gates, and Mac race/latency checks passed. No release bundle, deployment or mailbox mutation. |
 | 2026-11-08 | Sealed `rr-20261108-bug029-1263205` and completed four-host Dev promotion with eight functional gates and passing postflight. QAS/PRD runtime identities and mailbox routing remain unchanged; no mailbox publication or historical replay. |
 | 2026-11-08 | Promoted the same sealed release to all four QAS hosts; eight gates and postflight passed. Source marker synchronization completed through the supported Git-only retry. Dev/PRD runtime identities remain unchanged; no mailbox publication or historical replay. |
+| 2026-11-08 | Promoted unchanged `rr-20261108-bug029-1263205` to all four PRD hosts after exact owner-approved Sandbox recovery. All eight gates, released receipt, postflight and source-marker synchronization passed. Dev/QAS, configurations and mailbox routing preserved; no replay/ACK or client resumption. |
