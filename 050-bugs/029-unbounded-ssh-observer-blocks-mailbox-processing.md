@@ -4,16 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — source and four-host native verification complete; installed-lane acceptance pending |
+| Status | `FIXED — DEV VERIFIED; QAS/PRD PENDING` — installed and accepted on all four Dev hosts |
 | Severity | High |
 | Priority | P1 — prevents result delivery and independent mailbox intake |
 | Reported | 2026-11-07 |
 | Owner | Remote Session Runner maintainer |
 | Affected component | Mac `runner-local` cycle, accepted remote reconciliation, and SSH reply/EOF handling |
 | Affected revision | Installed Mac ingress `e3d3f5a133e58c97040920162a221504610b9e1b`; inspected checkout `6211a93112ba0ac65463ffdb9a89472b9b175322` has identical relevant source paths |
-| Fixed revision | `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` — source correction; installed E3 services unchanged |
+| Fixed revision | `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` — source correction; Dev release `rr-20261108-bug029-1263205` contains the corrected source and fixture revision |
 | Regression fixture correction | `126320552acf0a2609d7d75c09016b867b1dbd13` — test-only budget and diagnostic correction; production code unchanged |
-| Verification | Full test/vet/build/smoke passed on Mac, Linux, Sandbox and Factory for corrected source `1263205`; Mac affected race and latency controls passed. The first Linux fixture failure remains NOT PASS. Deployment and installed-lane acceptance remain NOT RUN. See [BUG-029 evidence](../040-implementation-evidence/BUG-029.md). |
+| Verification | Four-host full source gates and Mac affected race/latency controls passed. Dev operation `9dd615f3f0ee4e54b02a8dc1863a3c3d` completed with all eight functional gates, released admissions and passing postflight. Earlier failed attempts remain recorded. QAS/PRD deployment and filesystem-mailbox acceptance are NOT RUN. See [Dev deployment evidence](../040-implementation-evidence/BUG-029-dev-deployment-2026-11-08.md). |
 
 ## Reported behavior
 
@@ -183,14 +183,30 @@ shipped 15-second budgets, strengthens transport-order/cursor diagnostics and
 retains strict terminal/no-replay checks. Mac full/race and the delayed-read
 control passed; corrected full test/vet/build/smoke qualification then passed
 independently on all three workers at `1263205`. No production Go code changed
-in this fixture correction. Release construction, deployment and installed-lane
-acceptance remain NOT RUN. The original old-source transport control also reproduced the
-inherited output-pipe failure with the new regression fixture.
+in this fixture correction. At that source-only checkpoint, release construction
+and installed-lane acceptance were NOT RUN. The original old-source transport
+control also reproduced the inherited output-pipe failure with the new fixture.
 
 Do not reproduce this by dispatching protected project work or by generally
 signalling live SSH children. The one-off operational intervention above is
-not a new public recovery command. Keep this bug `FIXED — PENDING VERIFICATION`
-until the required source, delivery and installed-lane evidence is complete.
+not a new public recovery command. Dev verification does not establish that the
+historical PRD incident has received the preventive runtime correction.
+
+## Dev deployment — 2026-11-08
+
+The owner confirmed Dev was unused. The toolkit sealed the four native bundles
+as `rr-20261108-bug029-1263205`, then completed the same guarded Dev operation
+across Mac, Linux, Sandbox and Factory. All eight functional gates passed;
+post-restart readiness, empty active-work inventories, schema 40, open admissions
+and unchanged peer-lane identities were verified. The candidate was not rebuilt
+after sealing. A separately tested operator correction for
+[BUG-030](030-selector-discovery-requires-unrelated-historical-artifacts.md)
+allowed preserved historical journals to remain intact during this rollout.
+
+QAS and PRD were not promoted or rerouted. No filesystem-mailbox request or ACK
+was published, and no historical request or CI dispatch was replayed. Further
+promotion awaits a separate owner instruction. Full identities, results and
+boundaries are in the [deployment evidence](../040-implementation-evidence/BUG-029-dev-deployment-2026-11-08.md).
 
 ## History
 
@@ -199,3 +215,4 @@ until the required source, delivery and installed-lane evidence is complete.
 | 2026-11-07 | Isolated the unbounded observer mechanism and restored the two exact original requests without replay, replacement or ACK. Registered the preventive defect; no source fix or deployment was performed. |
 | 2026-11-07 | Implemented bounded observer I/O and cancellation, cursor progress and disposable regressions in `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4`. Mac focused/race and corrected full test/vet/build/smoke gates passed; Sandbox and Factory native source gates passed. Linux Git delivery/qualification and deployment remain separately gated. |
 | 2026-11-08 (Warsaw) | Owner approved the existing HTTPS Git mirror route for BUG-029 Linux delivery, retaining TLS and exact-SHA/clean-dev/fast-forward checks. Preserved the first Linux fixture failure and delivered test-only correction `1263205`; all four hosts passed full native gates, and Mac race/latency checks passed. No release bundle, deployment or mailbox mutation. |
+| 2026-11-08 | Sealed `rr-20261108-bug029-1263205` and completed four-host Dev promotion with eight functional gates and passing postflight. QAS/PRD runtime identities and mailbox routing remain unchanged; no mailbox publication or historical replay. |
