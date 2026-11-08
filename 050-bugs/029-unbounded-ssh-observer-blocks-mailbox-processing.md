@@ -4,16 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — DEV VERIFIED; QAS/PRD PENDING` — installed and accepted on all four Dev hosts |
+| Status | `FIXED — DEV/QAS VERIFIED; PRD PENDING` — same release installed and accepted on all four hosts in each lane |
 | Severity | High |
 | Priority | P1 — prevents result delivery and independent mailbox intake |
 | Reported | 2026-11-07 |
 | Owner | Remote Session Runner maintainer |
 | Affected component | Mac `runner-local` cycle, accepted remote reconciliation, and SSH reply/EOF handling |
 | Affected revision | Installed Mac ingress `e3d3f5a133e58c97040920162a221504610b9e1b`; inspected checkout `6211a93112ba0ac65463ffdb9a89472b9b175322` has identical relevant source paths |
-| Fixed revision | `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` — source correction; Dev release `rr-20261108-bug029-1263205` contains the corrected source and fixture revision |
+| Fixed revision | `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4` — source correction; Dev/QAS release `rr-20261108-bug029-1263205` contains the corrected source and fixture revision |
 | Regression fixture correction | `126320552acf0a2609d7d75c09016b867b1dbd13` — test-only budget and diagnostic correction; production code unchanged |
-| Verification | Four-host full source gates and Mac affected race/latency controls passed. Dev operation `9dd615f3f0ee4e54b02a8dc1863a3c3d` completed with all eight functional gates, released admissions and passing postflight. Earlier failed attempts remain recorded. QAS/PRD deployment and filesystem-mailbox acceptance are NOT RUN. See [Dev deployment evidence](../040-implementation-evidence/BUG-029-dev-deployment-2026-11-08.md). |
+| Verification | Four-host full source gates and Mac affected race/latency controls passed. Dev and QAS each passed all eight functional gates and postflight; admissions are open. QAS source synchronization is complete on Gitea and GitHub at `1263205`. Earlier failed attempts remain recorded. PRD deployment and filesystem-mailbox acceptance are NOT RUN. See [Dev evidence](../040-implementation-evidence/BUG-029-dev-deployment-2026-11-08.md) and [QAS evidence](../040-implementation-evidence/BUG-029-qas-deployment-2026-11-08.md). |
 
 ## Reported behavior
 
@@ -189,8 +189,8 @@ control also reproduced the inherited output-pipe failure with the new fixture.
 
 Do not reproduce this by dispatching protected project work or by generally
 signalling live SSH children. The one-off operational intervention above is
-not a new public recovery command. Dev verification does not establish that the
-historical PRD incident has received the preventive runtime correction.
+not a new public recovery command. Dev/QAS verification does not establish that
+the historical PRD incident has received the preventive runtime correction.
 
 ## Dev deployment — 2026-11-08
 
@@ -203,10 +203,26 @@ after sealing. A separately tested operator correction for
 [BUG-030](030-selector-discovery-requires-unrelated-historical-artifacts.md)
 allowed preserved historical journals to remain intact during this rollout.
 
-QAS and PRD were not promoted or rerouted. No filesystem-mailbox request or ACK
-was published, and no historical request or CI dispatch was replayed. Further
-promotion awaits a separate owner instruction. Full identities, results and
+That Dev phase did not promote or reroute QAS/PRD. No filesystem-mailbox request
+or ACK was published, and no historical request or CI dispatch was replayed.
+Full identities, results and
 boundaries are in the [deployment evidence](../040-implementation-evidence/BUG-029-dev-deployment-2026-11-08.md).
+
+## QAS deployment — 2026-11-08
+
+The owner confirmed QAS was unused and authorized its deployment. Operation
+`68696a13af8cec48369c2ed88bd376d0` promoted the unchanged Dev-accepted release
+through the toolkit, with fresh QAS backups and guarded Linux → Sandbox →
+Factory → Mac switching. All eight QAS functional gates passed. A supported
+branch-sync-only retry completed automatic mirror synchronization; it did not
+repeat deployment or probes. QAS source markers now match the sealed service
+source `126320552acf0a2609d7d75c09016b867b1dbd13` on primary Gitea and GitHub.
+
+Postflight verified ready services, schema 40, empty active-work inventories,
+open admissions, unchanged QAS configuration and unchanged Dev/PRD runtime
+identities. PRD was not upgraded or rerouted; no historical request, ACK or CI
+dispatch was replayed. Filesystem-mailbox acceptance remains NOT RUN. See the
+[QAS closeout](../040-implementation-evidence/BUG-029-qas-deployment-2026-11-08.md).
 
 ## History
 
@@ -216,3 +232,4 @@ boundaries are in the [deployment evidence](../040-implementation-evidence/BUG-0
 | 2026-11-07 | Implemented bounded observer I/O and cancellation, cursor progress and disposable regressions in `14aadaa4e4c9d6e126f6fab1a71561245a2b0be4`. Mac focused/race and corrected full test/vet/build/smoke gates passed; Sandbox and Factory native source gates passed. Linux Git delivery/qualification and deployment remain separately gated. |
 | 2026-11-08 (Warsaw) | Owner approved the existing HTTPS Git mirror route for BUG-029 Linux delivery, retaining TLS and exact-SHA/clean-dev/fast-forward checks. Preserved the first Linux fixture failure and delivered test-only correction `1263205`; all four hosts passed full native gates, and Mac race/latency checks passed. No release bundle, deployment or mailbox mutation. |
 | 2026-11-08 | Sealed `rr-20261108-bug029-1263205` and completed four-host Dev promotion with eight functional gates and passing postflight. QAS/PRD runtime identities and mailbox routing remain unchanged; no mailbox publication or historical replay. |
+| 2026-11-08 | Promoted the same sealed release to all four QAS hosts; eight gates and postflight passed. Source marker synchronization completed through the supported Git-only retry. Dev/PRD runtime identities remain unchanged; no mailbox publication or historical replay. |
