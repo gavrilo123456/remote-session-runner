@@ -1033,6 +1033,63 @@ installer restarts the candidate services. Held original ACKs retain their
 separate evidence-based disposition; this command does not authorize speculative
 ACKs or deletion.
 
+### Catalog-selected Mac completed-command teardown recovery
+
+When PRD has a catalog selector, the legacy LaunchAgent installer refuses it.
+Use a qualified `runner-lane` with `catalog-prd-recover --teardown-pair` support
+instead. This operator command executes the **already selected sealed Mac
+`runner-locald`**, without rebuilding, installing or selecting service bytes.
+The underlying executor retains the completed-command eligibility and exact
+ownership/cleanup guards described above.
+
+Before maintenance, establish the affected Mac authority's publisher pause and
+capture its complete detailed inventory. The policy name `mac-dev` alone does
+not establish the owning Runner lane; bind the exact exchange and selected
+configuration. The complete retained completed-teardown set must be explicitly
+selected, with no active, queued, resumable or unrelated retained work. Preserve
+the original result, complete events, ACK state and peer-lane identities.
+
+On **Mac `mac-control-plane`, as `tomasz.walczuk` / UID 502**, use the supported
+commands in this order, supplying independently verified current identities:
+
+```sh
+# These variables identify the current selected sealed release, not a rebuild.
+runner-lane catalog-work-inventory --host mac-control-plane --lane prd --details
+runner-lane catalog-prd-backup --host mac-control-plane --release-id "$release_id"
+# Record the returned fresh backup directory and manifest digest.
+runner-lane prd-stop --host mac-control-plane
+runner-lane catalog-prd-recover --host mac-control-plane \
+  --release-id "$release_id" --release-sha256 "$release_sha256" \
+  --bundle-sha256 "$mac_bundle_sha256" \
+  --expected-selected-release-id "$release_id" \
+  --expected-selected-release-sha256 "$release_sha256" \
+  --expected-selected-bundle-sha256 "$mac_bundle_sha256" \
+  --backup-dir "$backup_directory" --backup-manifest-sha256 "$backup_sha256" \
+  --teardown-pair 'sess-EXACT-LOST-TEARDOWN:cmd-EXACT-COMPLETED'
+```
+
+Repeat `--teardown-pair` only for the complete approved set. This selection is
+Mac-only and cannot combine with `--lost-pair`. A selected-release mismatch,
+active service, invalid/stale backup, schema change, cohort hold, uncertain
+ownership or incomplete inventory refuses recovery. Do not invoke the sealed
+executor directly or bypass a refusal. A refusal after stop leaves the service
+stopped for a supported disposition; preserve the backup and evidence.
+
+This catalog wrapper supports an unreleased exact set only. If execution is
+interrupted after capacity release and a completed-teardown finalization is
+pending, its conservative preflight refuses a retry. Preserve that durable
+proof and obtain a supported finalization disposition; do not remove markers,
+release capacity again, or treat an interrupted invocation as success.
+
+After success, require the report to identify `completed_teardown_pairs`, the
+exact recovered count, unchanged selector/configuration/schema/release and a
+still-stopped service. Verify a complete zero-work/capacity/finalization
+inventory before `runner-lane prd-start --host mac-control-plane`. Then verify
+selected-byte readiness and the original failed/succeeded result and ACK state
+through read-only status. This recovery does not publish a new request or ACK,
+replay work, or release any Factory reservation. It establishes Runner's
+supported cleanup boundary; it does not grant separate Factory eligibility.
+
 ### Linux-only queue-preserving online retained-capacity recovery
 
 This procedure is only for the selected Ubuntu `runnerd` authority and its

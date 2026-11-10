@@ -93,6 +93,7 @@ type catalogPRDRecoveryCommand struct {
 	BackupDirectory               string
 	ExpectedBackupManifestSHA     string
 	LostPairs                     []string
+	TeardownPairs                 []string
 }
 
 func main() {
@@ -1788,21 +1789,26 @@ func runCatalogPRDRecover(ctx context.Context, args []string, stdout, stderr io.
 	selectedBundleSHA := flags.String("expected-selected-bundle-sha256", "", "exact current selected host bundle SHA-256")
 	backupDir := flags.String("backup-dir", "", "fresh consistent pre-recovery backup directory")
 	backupSHA := flags.String("backup-manifest-sha256", "", "exact backup manifest SHA-256")
-	var lostPairs repeatedStringFlag
+	var lostPairs, teardownPairs repeatedStringFlag
 	flags.Var(&lostPairs, "lost-pair", "exact terminal-lost SESSION_ID:COMMAND_ID pair; repeat for the complete host set")
+	flags.Var(&teardownPairs, "teardown-pair", "Mac-only completed-command/lost-teardown SESSION_ID:COMMAND_ID pair; exclusive of lost-pair")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	_, knownHost := laneinstall.CatalogPRDRecoveryCommandComponent(*host)
 	if flags.NArg() != 0 || *releaseID == "" || *releaseSHA == "" || *bundleSHA == "" ||
-		*backupDir == "" || *backupSHA == "" || len(lostPairs) == 0 || !knownHost {
-		return errors.New("usage: runner-lane catalog-prd-recover --host HOST --release-id RELEASE --release-sha256 SHA256 --bundle-sha256 SHA256 [--expected-selected-release-id ID --expected-selected-release-sha256 SHA256 --expected-selected-bundle-sha256 SHA256] --backup-dir DIR --backup-manifest-sha256 SHA256 --lost-pair SESSION_ID:COMMAND_ID [...]")
+		*backupDir == "" || *backupSHA == "" || !knownHost {
+		return errors.New("usage: runner-lane catalog-prd-recover --host HOST --release-id RELEASE --release-sha256 SHA256 --bundle-sha256 SHA256 [--expected-selected-release-id ID --expected-selected-release-sha256 SHA256 --expected-selected-bundle-sha256 SHA256] --backup-dir DIR --backup-manifest-sha256 SHA256 (--lost-pair SESSION_ID:COMMAND_ID [...] | --teardown-pair SESSION_ID:COMMAND_ID [...])")
 	}
 	request := laneinstall.CatalogPRDRecoveryRequest{
 		ReleaseID: *releaseID, ExpectedReleaseSHA256: *releaseSHA, ExpectedBundleSHA256: *bundleSHA,
 		ExpectedSelectedReleaseID: *selectedReleaseID, ExpectedSelectedReleaseSHA256: *selectedReleaseSHA,
 		ExpectedSelectedBundleSHA256: *selectedBundleSHA,
 		BackupDirectory:              *backupDir, ExpectedBackupManifestSHA: *backupSHA, LostPairs: append([]string(nil), lostPairs...),
+		TeardownPairs: append([]string(nil), teardownPairs...),
+	}
+	if err := laneinstall.ValidateCatalogPRDRecoverySelection(*host, request); err != nil {
+		return err
 	}
 	if err := laneinstall.ValidateCatalogPRDRecoverySelectedRelease(request); err != nil {
 		return err
@@ -1815,7 +1821,7 @@ func runCatalogPRDRecover(ctx context.Context, args []string, stdout, stderr io.
 			ExpectedSelectedReleaseSHA256: request.ExpectedSelectedReleaseSHA256,
 			ExpectedSelectedBundleSHA256:  request.ExpectedSelectedBundleSHA256,
 			BackupDirectory:               request.BackupDirectory,
-			ExpectedBackupManifestSHA:     request.ExpectedBackupManifestSHA, LostPairs: request.LostPairs,
+			ExpectedBackupManifestSHA:     request.ExpectedBackupManifestSHA, LostPairs: request.LostPairs, TeardownPairs: request.TeardownPairs,
 		}, stdout, stderr)
 	}
 	if !currentCatalogHost(*host) {

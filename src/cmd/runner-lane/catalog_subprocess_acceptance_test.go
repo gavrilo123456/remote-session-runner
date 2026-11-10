@@ -676,22 +676,27 @@ type catalogSubprocessFixtureSeed struct {
 }
 
 type catalogSubprocessFixtureHost struct {
-	HostID             string   `json:"host_id"`
-	SelectorTarget     string   `json:"selector_target"`
-	SelectedReleaseID  string   `json:"selected_release_id,omitempty"`
-	SelectedReleaseSHA string   `json:"selected_release_sha256,omitempty"`
-	SelectedBundleSHA  string   `json:"selected_bundle_sha256,omitempty"`
-	LegacyBundleSHA256 string   `json:"legacy_bundle_sha256"`
-	ServiceActive      bool     `json:"service_active"`
-	ConfigurationPath  string   `json:"configuration_path"`
-	ConfigurationSHA   string   `json:"configuration_sha256"`
-	DatabasePath       string   `json:"database_path"`
-	DatabaseSHA256     string   `json:"database_sha256"`
-	SchemaVersion      int      `json:"schema_version"`
-	AdmissionsClosed   bool     `json:"admissions_closed,omitempty"`
-	RetainedLostPairs  []string `json:"retained_lost_pairs,omitempty"`
-	RetainedHistory    []string `json:"retained_history,omitempty"`
-	ReplayCount        int      `json:"replay_count,omitempty"`
+	HostID                  string   `json:"host_id"`
+	SelectorTarget          string   `json:"selector_target"`
+	SelectedReleaseID       string   `json:"selected_release_id,omitempty"`
+	SelectedReleaseSHA      string   `json:"selected_release_sha256,omitempty"`
+	SelectedBundleSHA       string   `json:"selected_bundle_sha256,omitempty"`
+	LegacyBundleSHA256      string   `json:"legacy_bundle_sha256"`
+	ServiceActive           bool     `json:"service_active"`
+	ConfigurationPath       string   `json:"configuration_path"`
+	ConfigurationSHA        string   `json:"configuration_sha256"`
+	DatabasePath            string   `json:"database_path"`
+	DatabaseSHA256          string   `json:"database_sha256"`
+	SchemaVersion           int      `json:"schema_version"`
+	AdmissionsClosed        bool     `json:"admissions_closed,omitempty"`
+	RetainedLostPairs       []string `json:"retained_lost_pairs,omitempty"`
+	RetainedTeardownPairs   []string `json:"retained_teardown_pairs,omitempty"`
+	TerminalCommandState    string   `json:"terminal_command_state,omitempty"`
+	TerminalCommandExitCode int      `json:"terminal_command_exit_code,omitempty"`
+	TerminalEventCursor     int      `json:"terminal_event_cursor,omitempty"`
+	TeardownSessionHolds    int      `json:"teardown_session_holds,omitempty"`
+	RetainedHistory         []string `json:"retained_history,omitempty"`
+	ReplayCount             int      `json:"replay_count,omitempty"`
 }
 
 type catalogSubprocessFixtureBackup struct {
@@ -751,8 +756,15 @@ func (b *catalogSubprocessFixtureBackend) RunPRDReplacementServerCSR(operationID
 func (b *catalogSubprocessFixtureBackend) RunPRDRecovery(ctx context.Context, command catalogPRDRecoveryCommand, stdout, stderr io.Writer) error {
 	if ctx == nil || !containsCatalogFixtureHost(command.HostID) || command.ReleaseID == "" ||
 		!fixtureValidDigest(command.ExpectedReleaseSHA256) || !fixtureValidDigest(command.ExpectedBundleSHA256) ||
-		!fixtureValidDigest(command.ExpectedBackupManifestSHA) || len(command.LostPairs) == 0 {
+		!fixtureValidDigest(command.ExpectedBackupManifestSHA) {
 		return laneinstall.ErrCatalogPRDRecovery
+	}
+	if err := laneinstall.ValidateCatalogPRDRecoverySelection(command.HostID, laneinstall.CatalogPRDRecoveryRequest{
+		ReleaseID: command.ReleaseID, ExpectedReleaseSHA256: command.ExpectedReleaseSHA256, ExpectedBundleSHA256: command.ExpectedBundleSHA256,
+		ExpectedSelectedReleaseID: command.ExpectedSelectedReleaseID, ExpectedSelectedReleaseSHA256: command.ExpectedSelectedReleaseSHA256,
+		ExpectedSelectedBundleSHA256: command.ExpectedSelectedBundleSHA256, LostPairs: command.LostPairs, TeardownPairs: command.TeardownPairs,
+	}); err != nil {
+		return err
 	}
 	var seed catalogSubprocessFixtureSeed
 	if err := readCatalogFixtureJSON(nil, filepath.Join(b.root, "seeds", command.ReleaseID+".json"), &seed); err != nil {
@@ -768,8 +780,19 @@ func (b *catalogSubprocessFixtureBackend) RunPRDRecovery(ctx context.Context, co
 			state.SelectedReleaseID == command.ExpectedSelectedReleaseID && state.SelectedReleaseSHA == command.ExpectedSelectedReleaseSHA256 &&
 			state.SelectedBundleSHA == command.ExpectedSelectedBundleSHA256
 	}
+	pairs, retained := command.LostPairs, state.RetainedLostPairs
+	teardownMode := len(command.TeardownPairs) != 0
+	if teardownMode {
+		pairs, retained = command.TeardownPairs, state.RetainedTeardownPairs
+		if len(state.RetainedLostPairs) != 0 || state.TerminalCommandState != "failed" ||
+			state.TerminalCommandExitCode == 0 || state.TerminalEventCursor == 0 || state.TeardownSessionHolds != len(pairs) {
+			return errors.New("fixture completed teardown state mismatch")
+		}
+	} else if len(state.RetainedTeardownPairs) != 0 {
+		return errors.New("fixture unselected teardown state")
+	}
 	if err != nil || state.ServiceActive || !state.AdmissionsClosed || !selectorMatches ||
-		!equalStrings(state.RetainedLostPairs, command.LostPairs) {
+		!equalStrings(retained, pairs) {
 		return errors.New("fixture recovery pair set mismatch")
 	}
 	var preflight laneinstall.CatalogCohortHostPreflightReport
@@ -783,7 +806,12 @@ func (b *catalogSubprocessFixtureBackend) RunPRDRecovery(ctx context.Context, co
 	if readErr != nil || !catalogFixtureDatabaseIsValid(state.DatabasePath) || hex.EncodeToString(databaseHash[:]) != state.DatabaseSHA256 {
 		return errors.New("fixture recovery database invalid")
 	}
-	state.RetainedLostPairs = nil
+	if teardownMode {
+		state.RetainedTeardownPairs = nil
+		state.TeardownSessionHolds = 0
+	} else {
+		state.RetainedLostPairs = nil
+	}
 	state.RetainedHistory = append(state.RetainedHistory, "recovery-release-proof")
 	if err := b.writeHost(state); err != nil {
 		return err
@@ -791,7 +819,7 @@ func (b *catalogSubprocessFixtureBackend) RunPRDRecovery(ctx context.Context, co
 	return writeJSON(stdout, map[string]any{
 		"host_id": command.HostID, "release_id": command.ReleaseID,
 		"release_sha256": command.ExpectedReleaseSHA256, "bundle_sha256": command.ExpectedBundleSHA256,
-		"recovered_lost_pairs": len(command.LostPairs), "service_remains_stopped": true,
+		"recovered_lost_pairs": len(command.LostPairs), "recovered_teardown_pairs": len(command.TeardownPairs), "service_remains_stopped": true,
 		"selector_remains_unselected": command.ExpectedSelectedReleaseID == "",
 		"selector_remains_unchanged":  true, "replay_count": state.ReplayCount,
 	})

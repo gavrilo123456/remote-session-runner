@@ -21,11 +21,12 @@ var (
 	ErrCatalogPRDRecovery     = errors.New("sealed-candidate PRD retained-work recovery refused")
 	prdRecoveryPairIDPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,127}$`)
 	prdRecoverySummaryPattern = regexp.MustCompile(`recovered_lost_pairs=([0-9]+) already_recovered_lost_pairs=([0-9]+)`)
+	prdTeardownSummaryPattern = regexp.MustCompile(`(?m)^runner-locald recover-stalled: recovered_teardown_pairs=([0-9]+) already_recovered_teardown_pairs=([0-9]+)\r?$`)
 )
 
 // CatalogPRDRecoveryRequest binds one guarded offline recovery to a sealed
-// release and a fresh, consistent pre-recovery backup. LostPairs must be the
-// complete retained lost-pair set for this host.
+// release and a fresh, consistent pre-recovery backup. Exactly one of LostPairs
+// or TeardownPairs must select the complete retained set for this host.
 type CatalogPRDRecoveryRequest struct {
 	ReleaseID                     string
 	ExpectedReleaseSHA256         string
@@ -36,6 +37,7 @@ type CatalogPRDRecoveryRequest struct {
 	BackupDirectory               string
 	ExpectedBackupManifestSHA     string
 	LostPairs                     []string
+	TeardownPairs                 []string
 }
 
 // CatalogPRDRecoveryReport is bounded evidence for an offline recovery. It
@@ -54,6 +56,8 @@ type CatalogPRDRecoveryReport struct {
 	WorkBefore                CatalogWorkInventory `json:"work_before"`
 	WorkAfter                 CatalogWorkInventory `json:"work_after"`
 	RecoveredLostPairs        int                  `json:"recovered_lost_pairs"`
+	RecoveryMode              string               `json:"recovery_mode"`
+	RecoveredTeardownPairs    int                  `json:"recovered_teardown_pairs,omitempty"`
 	RecoveryOutputSHA256      string               `json:"recovery_output_sha256"`
 	SelectorKind              string               `json:"selector_kind"`
 	SelectorTarget            string               `json:"selector_target,omitempty"`
@@ -96,10 +100,14 @@ func RecoverCatalogPRDLostPairs(ctx context.Context, plan PRDUpgradePlan, servic
 	if err := ValidateCatalogPRDRecoverySelectedRelease(request); err != nil {
 		return CatalogPRDRecoveryReport{}, err
 	}
+	if err := ValidateCatalogPRDRecoverySelection(plan.HostID, request); err != nil {
+		return CatalogPRDRecoveryReport{}, err
+	}
 	if executor == nil {
 		executor = execCatalogPRDRecoveryExecutor{}
 	}
-	pairs, err := validatePRDRecoveryLostPairs(request.LostPairs)
+	mode, values := catalogPRDRecoverySelection(request)
+	pairs, err := validatePRDRecoveryLostPairs(values)
 	if err != nil {
 		return CatalogPRDRecoveryReport{}, err
 	}
@@ -191,8 +199,7 @@ func RecoverCatalogPRDLostPairs(ctx context.Context, plan PRDUpgradePlan, servic
 	if err := errors.Join(snapshotErr, closeErr); err != nil || schemaBefore != backup.SchemaVersion ||
 		!catalogPRDRecoverySchemaIsCurrent(schemaBefore, status.Database.ReadSchemaMin,
 			status.Database.ReadSchemaMax, bundle.Manifest.DatabaseSchemaMax) ||
-		!workBefore.InstallableForGuardedRecovery() || workBefore.PendingRecoveryFinalizations != 0 ||
-		workBefore.ActiveCommandSlots != int64(len(pairs)) || workBefore.ActiveSessionReservations != int64(len(pairs)) {
+		!catalogPRDRecoveryWorkMatches(workBefore, mode, len(pairs)) {
 		return CatalogPRDRecoveryReport{}, errors.Join(ErrCatalogPRDRecovery, err)
 	}
 	available, selectorReserve, err := ReadPRDCatalogSelectorCapacity(plan)
@@ -204,7 +211,7 @@ func RecoverCatalogPRDLostPairs(ctx context.Context, plan PRDUpgradePlan, servic
 		return CatalogPRDRecoveryReport{}, ErrCatalogPRDRecovery
 	}
 
-	args, err := buildCatalogPRDRecoveryCommand(plan.HostID, plan.Namespace.ConfigFile, pairs)
+	args, err := buildCatalogPRDRecoverySelectionCommand(plan.HostID, plan.Namespace.ConfigFile, request)
 	if err != nil {
 		return CatalogPRDRecoveryReport{}, err
 	}
@@ -212,7 +219,7 @@ func RecoverCatalogPRDLostPairs(ctx context.Context, plan PRDUpgradePlan, servic
 	if runErr != nil {
 		return CatalogPRDRecoveryReport{}, ErrCatalogPRDRecovery
 	}
-	recovered, err := parsePRDRecoverySummary(output, len(pairs))
+	recovered, err := parseCatalogPRDRecoverySummary(output, mode, len(pairs))
 	if err != nil {
 		return CatalogPRDRecoveryReport{}, errors.Join(ErrCatalogPRDRecovery, err)
 	}
@@ -247,13 +254,18 @@ func RecoverCatalogPRDLostPairs(ctx context.Context, plan PRDUpgradePlan, servic
 		return CatalogPRDRecoveryReport{}, errors.Join(ErrCatalogPRDRecovery, err)
 	}
 	outputHash := sha256.Sum256(output)
+	lostCount, teardownCount := recovered, 0
+	if mode == "completed_teardown_pairs" {
+		lostCount, teardownCount = 0, recovered
+	}
 	return CatalogPRDRecoveryReport{
 		HostID: plan.HostID, ReleaseID: status.Identity.ReleaseID, ReleaseSHA256: status.Identity.ReleaseSHA256,
 		BundleSHA256: status.Identity.BundleSHA256, RecoveryComponent: component,
 		BackupDirectory: request.BackupDirectory, BackupManifestSHA256: request.ExpectedBackupManifestSHA,
 		SchemaBefore: schemaBefore, SchemaAfter: schemaAfter, WorkBefore: workBefore, WorkAfter: workAfter,
-		RecoveredLostPairs: recovered, RecoveryOutputSHA256: hex.EncodeToString(outputHash[:]),
-		SelectorKind: selectorAfter.Kind, SelectorTarget: selectorAfter.Target,
+		RecoveredLostPairs: lostCount, RecoveryMode: mode, RecoveredTeardownPairs: teardownCount,
+		RecoveryOutputSHA256: hex.EncodeToString(outputHash[:]),
+		SelectorKind:         selectorAfter.Kind, SelectorTarget: selectorAfter.Target,
 		SelectorRemainsUnselected: selectorAfter.Kind == "unselected", SelectorRemainsUnchanged: true,
 		RuntimeOwnershipVerified: true, ServiceRemainsStopped: true,
 		SelectorReleaseID:     selectorReleaseIdentity(selectorAfter).ReleaseID,
@@ -316,6 +328,51 @@ func catalogPRDRecoverySchemaIsCurrent(schema, readMin, readMax, target int) boo
 	return schema > 0 && readMin > 0 && readMax >= readMin && schema == readMax && schema == target
 }
 
+// ValidateCatalogPRDRecoverySelection distinguishes truthful terminal-lost
+// commands from completed commands whose teardown alone was lost. A mixed set
+// is deliberately not supported by this catalog boundary. The sealed Mac
+// executor independently validates the exact completed result and owner set.
+func ValidateCatalogPRDRecoverySelection(hostID string, request CatalogPRDRecoveryRequest) error {
+	if _, ok := CatalogPRDRecoveryCommandComponent(hostID); !ok ||
+		(len(request.LostPairs) == 0) == (len(request.TeardownPairs) == 0) {
+		return ErrCatalogPRDRecovery
+	}
+	if len(request.TeardownPairs) != 0 {
+		if hostID != "mac-control-plane" || request.ExpectedSelectedReleaseID == "" ||
+			request.ExpectedSelectedReleaseID != request.ReleaseID ||
+			request.ExpectedSelectedReleaseSHA256 != request.ExpectedReleaseSHA256 ||
+			request.ExpectedSelectedBundleSHA256 != request.ExpectedBundleSHA256 ||
+			ValidateCatalogPRDRecoverySelectedRelease(request) != nil {
+			return ErrCatalogPRDRecovery
+		}
+	}
+	_, values := catalogPRDRecoverySelection(request)
+	_, err := validatePRDRecoveryLostPairs(values)
+	return err
+}
+
+func catalogPRDRecoverySelection(request CatalogPRDRecoveryRequest) (string, []string) {
+	if len(request.TeardownPairs) != 0 {
+		return "completed_teardown_pairs", request.TeardownPairs
+	}
+	return "lost_pairs", request.LostPairs
+}
+
+func catalogPRDRecoveryWorkMatches(work CatalogWorkInventory, mode string, expected int) bool {
+	if expected <= 0 || !work.InstallableForGuardedRecovery() || work.PendingRecoveryFinalizations != 0 ||
+		work.ActiveSessionReservations != int64(expected) {
+		return false
+	}
+	switch mode {
+	case "lost_pairs":
+		return work.ActiveCommandSlots == int64(expected)
+	case "completed_teardown_pairs":
+		return work.ActiveCommandSlots == 0
+	default:
+		return false
+	}
+}
+
 func validatePRDRecoveryLostPairs(values []string) ([]string, error) {
 	if len(values) == 0 {
 		return nil, ErrCatalogPRDRecovery
@@ -362,6 +419,26 @@ func parsePRDRecoverySummary(output []byte, expected int) (recovered int, err er
 	return recovered, nil
 }
 
+func parseCatalogPRDRecoverySummary(output []byte, mode string, expected int) (int, error) {
+	switch mode {
+	case "lost_pairs":
+		return parsePRDRecoverySummary(output, expected)
+	case "completed_teardown_pairs":
+		matches := prdTeardownSummaryPattern.FindAllSubmatch(output, -1)
+		if len(matches) != 1 || expected <= 0 {
+			return 0, ErrCatalogPRDRecovery
+		}
+		recovered, recoverErr := strconv.Atoi(string(matches[0][1]))
+		already, alreadyErr := strconv.Atoi(string(matches[0][2]))
+		if recoverErr != nil || alreadyErr != nil || recovered != expected || already != 0 {
+			return 0, ErrCatalogPRDRecovery
+		}
+		return recovered, nil
+	default:
+		return 0, ErrCatalogPRDRecovery
+	}
+}
+
 // CatalogPRDRecoveryCommandComponent returns the only allowed recovery
 // executable for a canonical host. It exists so command tests assert the
 // platform split without creating a production-path fixture override.
@@ -377,19 +454,24 @@ func CatalogPRDRecoveryCommandComponent(hostID string) (string, bool) {
 }
 
 func buildCatalogPRDRecoveryCommand(hostID, configPath string, pairs []string) ([]string, error) {
+	return buildCatalogPRDRecoverySelectionCommand(hostID, configPath, CatalogPRDRecoveryRequest{LostPairs: pairs})
+}
+
+func buildCatalogPRDRecoverySelectionCommand(hostID, configPath string, request CatalogPRDRecoveryRequest) ([]string, error) {
 	if !filepath.IsAbs(configPath) || filepath.Clean(configPath) != configPath {
 		return nil, ErrCatalogPRDRecovery
 	}
-	validated, err := validatePRDRecoveryLostPairs(pairs)
-	if err != nil {
+	if err := ValidateCatalogPRDRecoverySelection(hostID, request); err != nil {
 		return nil, err
 	}
-	if _, ok := CatalogPRDRecoveryCommandComponent(hostID); !ok {
-		return nil, ErrCatalogPRDRecovery
+	mode, values := catalogPRDRecoverySelection(request)
+	flag := "--lost-pair"
+	if mode == "completed_teardown_pairs" {
+		flag = "--teardown-pair"
 	}
 	args := []string{"recover-stalled", "--config", configPath, "--apply"}
-	for _, pair := range validated {
-		args = append(args, "--lost-pair", pair)
+	for _, pair := range values {
+		args = append(args, flag, pair)
 	}
 	return args, nil
 }
