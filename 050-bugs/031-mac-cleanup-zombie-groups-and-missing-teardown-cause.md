@@ -2,12 +2,27 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — DEV VERIFIED; QAS/PRD PENDING` — four-host Dev cohort acceptance passed; Mac installed failed-exit2 cleanup regression passed |
+| Status | `FIXED — DEV/QAS VERIFIED; PRD PENDING` — four-host Dev and QAS cohort acceptance passed; Mac installed failed-exit2 cleanup regressions passed |
 | Severity | High — completed work can retain session capacity and block subsequent qualification |
 | Reported | 2026-11-11 |
 | Components | `runtime/mac.go`, `runtime/ownership.go`, `execution/service.go`, `queueworker/worker.go` |
 | Affected service source | `126320552acf0a2609d7d75c09016b867b1dbd13`, release `rr-20261108-bug029-1263205` |
-| Evidence | [Dev deployment closeout](../040-implementation-evidence/BUG-031-dev-deployment-2026-11-11.md); [BUG-031 implementation and verification](../040-implementation-evidence/BUG-031.md); [R102 recovery and recurrence investigation](../040-implementation-evidence/R102-completed-teardown-recovery-and-recurrence-2026-11-11.md) |
+| Evidence | [QAS deployment closeout](../040-implementation-evidence/BUG-031-qas-deployment-2026-11-11.md); [Dev deployment closeout](../040-implementation-evidence/BUG-031-dev-deployment-2026-11-11.md); [BUG-031 implementation and verification](../040-implementation-evidence/BUG-031.md); [R102 recovery and recurrence investigation](../040-implementation-evidence/R102-completed-teardown-recovery-and-recurrence-2026-11-11.md) |
+
+## QAS deployment — 2026-11-11
+
+The unchanged Dev-accepted release `rr-20261111-bug031-0b7c031` is installed
+and ready on all four QAS hosts. Operation `afc7d251ca624ee48afd9e7396186df5`
+completed with all eight acceptance gates passed, identical released receipts
+and completed QAS branch synchronization. A single ordinary Mac QAS exit-2
+regression preserved the failed result, complete output and cursor4, closed
+teardown and released capacity. Four-host postflight found schema40, empty
+execution/capacity inventories and unchanged configurations; strict worker TLS
+readiness passed. Dev and PRD identities and mailbox routing were preserved.
+[Exact QAS evidence](../040-implementation-evidence/BUG-031-qas-deployment-2026-11-11.md).
+
+PRD deployment remains pending. Filesystem-mailbox and live injected-zombie
+acceptance remain NOT RUN. No historical work was replayed, recovered or ACKed.
 
 ## Dev deployment — 2026-11-11
 
@@ -19,8 +34,9 @@ returned cursor4, closed teardown and released capacity; error counters stayed
 zero. Final inventories are empty, schema40 and configuration identities
 unchanged. [Exact deployment and postflight evidence](../040-implementation-evidence/BUG-031-dev-deployment-2026-11-11.md).
 
-QAS and PRD retain their prior release and mailbox assignments. Filesystem-
-mailbox acceptance and live injected-zombie acceptance are NOT RUN. Native
+At this Dev checkpoint, QAS and PRD retained their prior release and mailbox
+assignments. Filesystem-mailbox acceptance and live injected-zombie acceptance
+are NOT RUN. Native
 disposable fixtures supply the zombie-specific proof. No historical
 qualification, ACK, R100/R102 recovery or Factory hold was changed.
 
@@ -52,7 +68,8 @@ diagnostic and passing single full retry are preserved in the evidence, with
 the original failure still NOT PASS and its cause unestablished. At that
 source-only checkpoint no sealed release or installed service was changed;
 installed-lane acceptance had not run. The later Dev deployment is recorded
-above; QAS/PRD remain pending. R100/R102 recovery was not repeated, and their original physical
+above; the subsequent QAS rollout is recorded separately, and PRD remains
+pending. R100/R102 recovery was not repeated, and their original physical
 trigger remains UNKNOWN.
 
 ## Problem and confirmed causes
