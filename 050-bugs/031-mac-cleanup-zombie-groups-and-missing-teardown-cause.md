@@ -2,12 +2,27 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — SOURCE VERIFIED; DEPLOYMENT PENDING` — latest native source gates passed on all four hosts; not deployed |
+| Status | `FIXED — DEV VERIFIED; QAS/PRD PENDING` — four-host Dev cohort acceptance passed; Mac installed failed-exit2 cleanup regression passed |
 | Severity | High — completed work can retain session capacity and block subsequent qualification |
 | Reported | 2026-11-11 |
 | Components | `runtime/mac.go`, `runtime/ownership.go`, `execution/service.go`, `queueworker/worker.go` |
 | Affected service source | `126320552acf0a2609d7d75c09016b867b1dbd13`, release `rr-20261108-bug029-1263205` |
-| Evidence | [BUG-031 implementation and verification](../040-implementation-evidence/BUG-031.md); [R102 recovery and recurrence investigation](../040-implementation-evidence/R102-completed-teardown-recovery-and-recurrence-2026-11-11.md) |
+| Evidence | [Dev deployment closeout](../040-implementation-evidence/BUG-031-dev-deployment-2026-11-11.md); [BUG-031 implementation and verification](../040-implementation-evidence/BUG-031.md); [R102 recovery and recurrence investigation](../040-implementation-evidence/R102-completed-teardown-recovery-and-recurrence-2026-11-11.md) |
+
+## Dev deployment — 2026-11-11
+
+Release `rr-20261111-bug031-0b7c031` is installed and ready on all four Dev
+hosts. Operation `aaef98e9a1974c1ba0de0b5f8ea8dde7` completed with all eight
+acceptance gates passed and identical released cohort receipts. The ordinary
+Mac Dev exit-2 regression preserved the failed result and complete output,
+returned cursor4, closed teardown and released capacity; error counters stayed
+zero. Final inventories are empty, schema40 and configuration identities
+unchanged. [Exact deployment and postflight evidence](../040-implementation-evidence/BUG-031-dev-deployment-2026-11-11.md).
+
+QAS and PRD retain their prior release and mailbox assignments. Filesystem-
+mailbox acceptance and live injected-zombie acceptance are NOT RUN. Native
+disposable fixtures supply the zombie-specific proof. No historical
+qualification, ACK, R100/R102 recovery or Factory hold was changed.
 
 ## Source correction — 2026-11-11
 
@@ -34,9 +49,10 @@ Mac native regressions and targeted race tests passed. The latest full
 test/vet/build/smoke sequence passed on each of the four hosts. Factory's first
 full run failed in a separate release-authority concurrency fixture; its
 diagnostic and passing single full retry are preserved in the evidence, with
-the original failure still NOT PASS and its cause unestablished. No sealed
-release or installed service was changed. Dev/QAS/PRD acceptance for this
-correction is NOT RUN. R100/R102 recovery was not repeated, and their original physical
+the original failure still NOT PASS and its cause unestablished. At that
+source-only checkpoint no sealed release or installed service was changed;
+installed-lane acceptance had not run. The later Dev deployment is recorded
+above; QAS/PRD remain pending. R100/R102 recovery was not repeated, and their original physical
 trigger remains UNKNOWN.
 
 ## Problem and confirmed causes
