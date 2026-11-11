@@ -2,12 +2,34 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — DEV/QAS VERIFIED; PRD PENDING` — four-host Dev and QAS cohort acceptance passed; Mac installed failed-exit2 cleanup regressions passed |
+| Status | `FIXED — DEV/QAS/PRD VERIFIED` — four-host acceptance and Mac installed failed-exit2 cleanup regressions passed in all three lanes |
 | Severity | High — completed work can retain session capacity and block subsequent qualification |
 | Reported | 2026-11-11 |
 | Components | `runtime/mac.go`, `runtime/ownership.go`, `execution/service.go`, `queueworker/worker.go` |
 | Affected service source | `126320552acf0a2609d7d75c09016b867b1dbd13`, release `rr-20261108-bug029-1263205` |
-| Evidence | [QAS deployment closeout](../040-implementation-evidence/BUG-031-qas-deployment-2026-11-11.md); [Dev deployment closeout](../040-implementation-evidence/BUG-031-dev-deployment-2026-11-11.md); [BUG-031 implementation and verification](../040-implementation-evidence/BUG-031.md); [R102 recovery and recurrence investigation](../040-implementation-evidence/R102-completed-teardown-recovery-and-recurrence-2026-11-11.md) |
+| Evidence | [PRD deployment closeout](../040-implementation-evidence/BUG-031-prd-deployment-2026-11-11.md); [QAS deployment closeout](../040-implementation-evidence/BUG-031-qas-deployment-2026-11-11.md); [Dev deployment closeout](../040-implementation-evidence/BUG-031-dev-deployment-2026-11-11.md); [BUG-031 implementation and verification](../040-implementation-evidence/BUG-031.md); [R102 recovery and recurrence investigation](../040-implementation-evidence/R102-completed-teardown-recovery-and-recurrence-2026-11-11.md) |
+
+## PRD deployment — 2026-11-11
+
+The same Dev/QAS-accepted release `rr-20261111-bug031-0b7c031` is installed
+and ready on all four PRD hosts. Operation `1027f246e02f4739819e5d6df88eebf7`
+completed with all eight acceptance gates passed, identical released receipts
+with 20 transitions, and completed PRD branch synchronization. The initial
+acceptance attempt failed on a read-only Sandbox SSH ping before any job
+submission; the supported resume observed prior accepted results and preserved
+the verified selectors. That initial failed attempt remains NOT PASS.
+
+The ordinary Mac PRD exit-2 regression preserved the failed result and complete
+output, returned cursor4, closed teardown and released capacity. Four-host
+postflight confirmed schema40, zero restart counters, complete detailed
+inventories and unchanged configurations. Sandbox's earlier detailed export
+failure remains recorded without an established cause; no permission repair
+was performed. Strict worker TLS readiness passed; Dev/QAS identities and
+mailbox routing were preserved. [Exact PRD evidence](../040-implementation-evidence/BUG-031-prd-deployment-2026-11-11.md).
+
+Filesystem-mailbox acceptance, live injected-zombie acceptance and normal
+project-load observation remain NOT RUN. No historical work was replayed,
+recovered or ACKed, and Factory's separate holds were not changed.
 
 ## QAS deployment — 2026-11-11
 
@@ -21,8 +43,9 @@ execution/capacity inventories and unchanged configurations; strict worker TLS
 readiness passed. Dev and PRD identities and mailbox routing were preserved.
 [Exact QAS evidence](../040-implementation-evidence/BUG-031-qas-deployment-2026-11-11.md).
 
-PRD deployment remains pending. Filesystem-mailbox and live injected-zombie
-acceptance remain NOT RUN. No historical work was replayed, recovered or ACKed.
+At this QAS checkpoint, PRD deployment remained pending. Filesystem-mailbox
+and live injected-zombie acceptance remain NOT RUN. No historical work was
+replayed, recovered or ACKed.
 
 ## Dev deployment — 2026-11-11
 
@@ -68,8 +91,8 @@ diagnostic and passing single full retry are preserved in the evidence, with
 the original failure still NOT PASS and its cause unestablished. At that
 source-only checkpoint no sealed release or installed service was changed;
 installed-lane acceptance had not run. The later Dev deployment is recorded
-above; the subsequent QAS rollout is recorded separately, and PRD remains
-pending. R100/R102 recovery was not repeated, and their original physical
+above; the subsequent QAS and PRD rollouts are recorded separately.
+R100/R102 recovery was not repeated, and their original physical
 trigger remains UNKNOWN.
 
 ## Problem and confirmed causes
