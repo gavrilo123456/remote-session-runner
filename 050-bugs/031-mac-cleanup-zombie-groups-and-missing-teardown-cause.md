@@ -2,12 +2,42 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `TRIAGED` — native adapter reproduction passed; preventive correction not implemented/deployed |
+| Status | `FIXED — SOURCE VERIFIED; DEPLOYMENT PENDING` — latest native source gates passed on all four hosts; not deployed |
 | Severity | High — completed work can retain session capacity and block subsequent qualification |
 | Reported | 2026-11-11 |
 | Components | `runtime/mac.go`, `runtime/ownership.go`, `execution/service.go`, `queueworker/worker.go` |
 | Affected service source | `126320552acf0a2609d7d75c09016b867b1dbd13`, release `rr-20261108-bug029-1263205` |
-| Evidence | [R102 recovery and recurrence investigation](../040-implementation-evidence/R102-completed-teardown-recovery-and-recurrence-2026-11-11.md) |
+| Evidence | [BUG-031 implementation and verification](../040-implementation-evidence/BUG-031.md); [R102 recovery and recurrence investigation](../040-implementation-evidence/R102-completed-teardown-recovery-and-recurrence-2026-11-11.md) |
+
+## Source correction — 2026-11-11
+
+Commit `0b7c031d7025b79e712bc52e73367a41bdefcf4e` corrects normal post-reap
+Mac cleanup and retains sanitized failure diagnostics through terminal jobs.
+The source is delivered through primary Gitea and its exact GitHub mirror;
+all three Ubuntu checkouts have fast-forwarded to it.
+
+Native inspection now positively distinguishes zombies from live processes.
+It verifies UID, group and process start identity across bounded repeated
+snapshots. A verified zombie-only or empty group can finish cleanup; runnable,
+mixed, foreign, changing, denied or incomplete evidence still refuses it. The
+500ms grace is unchanged. Neither EPERM nor ESRCH alone proves absence, and
+existing LOST-recovery inspection and signalling rules are unchanged.
+
+Cleanup causes remain wrapped through execution. The terminal-job path emits
+one warning with validated stage/category, UTC observation/deadline, exact
+Runner identity bindings and bounded process metadata. It excludes raw errors,
+scripts, arguments, paths, environment and command output. Invalid diagnostic
+metadata produces an explicit unavailable category. Metadata is evidence,
+never authority to signal processes or release capacity.
+
+Mac native regressions and targeted race tests passed. The latest full
+test/vet/build/smoke sequence passed on each of the four hosts. Factory's first
+full run failed in a separate release-authority concurrency fixture; its
+diagnostic and passing single full retry are preserved in the evidence, with
+the original failure still NOT PASS and its cause unestablished. No sealed
+release or installed service was changed. Dev/QAS/PRD acceptance for this
+correction is NOT RUN. R100/R102 recovery was not repeated, and their original physical
+trigger remains UNKNOWN.
 
 ## Problem and confirmed causes
 
