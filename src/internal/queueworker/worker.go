@@ -554,9 +554,14 @@ func (d *Worker) resumeStoredJobNow(id domain.JobID) {
 }
 
 func (d *Worker) resumeStoredJob(id domain.JobID) bool {
-	if _, err := d.service.ResumeStoredJob(context.Background(), id); err != nil {
+	if result, err := d.service.ResumeStoredJob(context.Background(), id); err != nil {
 		if job, readErr := d.authority.GetJob(context.Background(), id); readErr == nil {
-			logMacLocalStartupFailure(d.logger, job, err)
+			// Teardown may already have recorded a terminal lost job. Preserve its
+			// bounded diagnostic before the terminal early return; do not send a
+			// cleanup error through the separate startup error-text diagnostic.
+			if !logMacLocalCompletedTeardownFailure(d.logger, job, result.Session, err) {
+				logMacLocalStartupFailure(d.logger, job, err)
+			}
 			if terminalJobPhase(job.Phase) {
 				d.clearDeferredStoredJob(id)
 				return false

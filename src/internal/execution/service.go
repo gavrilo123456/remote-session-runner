@@ -1908,7 +1908,10 @@ func (s *Service) markClosingLost(ctx context.Context, session store.SessionReco
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
-	return CloseSessionResult{Session: lost}, fmt.Errorf("%w: %v", ErrStopUnconfirmed, cause)
+	// Keep the typed runtime cause for bounded cleanup diagnostics. The
+	// terminal session/result remains unchanged; callers must never derive a
+	// success or a capacity release from this error chain.
+	return CloseSessionResult{Session: lost}, fmt.Errorf("%w: %w", ErrStopUnconfirmed, cause)
 }
 
 func (s *Service) appendStopOutput(ctx context.Context, commandID domain.CommandID, stopped RuntimeCommandStopResult) error {

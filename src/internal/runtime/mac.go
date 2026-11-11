@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"remote-session-runner/src/internal/domain"
 )
 
 var (
@@ -415,32 +417,51 @@ func (a *MacProcessAdapter) Cleanup(sessionID string) error {
 }
 
 // CleanupContext closes the owned shell, then allows a bounded interval for
-// its process group to disappear. Command output EOF does not prove that a
+// its process group to become non-runnable. Command output EOF does not prove that a
 // redirected descendant has already exited. The post-reap observation sends no
 // signal; an unconfirmed observation retains the ownership marker and workspace.
-func (a *MacProcessAdapter) CleanupContext(ctx context.Context, sessionID string) error {
+func (a *MacProcessAdapter) CleanupContext(ctx context.Context, sessionID string) (cleanupErr error) {
 	if a == nil {
 		return ErrMacRuntimeSession
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	started := time.Now()
+	diagnostic := domain.RuntimeCleanupDiagnostic{OwnerUID: os.Getuid()}
+	stage, code := "context", "cancelled"
+	defer func() {
+		if cleanupErr == nil {
+			return
+		}
+		var carrier domain.RuntimeCleanupDiagnosticCarrier
+		if !errors.As(cleanupErr, &carrier) {
+			cleanupErr = macCleanupFailure(diagnostic, stage, code, started, cleanupErr)
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	stage, code = "session_state", "session_missing"
 	a.mu.Lock()
 	shell := a.sessions[sessionID]
 	prepared := a.prepared[sessionID]
 	identity, hasIdentity := a.identities[sessionID]
 	a.mu.Unlock()
+	if hasIdentity {
+		diagnostic.RootPID, diagnostic.ProcessGroupID = identity.PID, identity.ProcessGroupID
+		diagnostic.RootStartIdentity = identity.ProcessStartIdentity
+	}
 	if prepared.SessionID == "" {
 		return ErrMacRuntimeSession
 	}
+	stage, code = "ownership", "ownership_invalid"
 	owner, ownerErr := readRuntimeOwnership(a.options.WorkspaceRoot, sessionID)
 	if ownerErr != nil && !errors.Is(ownerErr, os.ErrNotExist) {
 		return ownerErr
 	}
 	if shell == nil && ownerErr == nil {
+		diagnostic.RootPID, diagnostic.ProcessGroupID, diagnostic.RootStartIdentity = owner.PID, owner.ProcessGroupID, owner.ProcessStartIdentity
 		result, err := a.ReconcileSession(ctx, sessionID, owner.Generation, 500*time.Millisecond)
 		if err != nil {
 			return err
@@ -453,6 +474,7 @@ func (a *MacProcessAdapter) CleanupContext(ctx context.Context, sessionID string
 
 	processGroupID := 0
 	if ownerErr == nil {
+		diagnostic.RootPID, diagnostic.ProcessGroupID, diagnostic.RootStartIdentity = owner.PID, owner.ProcessGroupID, owner.ProcessStartIdentity
 		if owner.Generation != prepared.Generation || owner.Workspace != prepared.Workspace || owner.OwnedWorkspace != prepared.OwnedWorkspace || owner.Username != a.account.Username || owner.UID != os.Getuid() {
 			return fmt.Errorf("%w: persisted ownership does not match prepared Mac session", ErrRuntimeOwnershipRecord)
 		}
@@ -466,6 +488,7 @@ func (a *MacProcessAdapter) CleanupContext(ctx context.Context, sessionID string
 			return ErrMacRuntimeSession
 		}
 		pid := shell.cmd.Process.Pid
+		diagnostic.RootPID = pid
 		if processGroupID == 0 {
 			var err error
 			processGroupID, err = syscall.Getpgid(pid)
@@ -474,27 +497,34 @@ func (a *MacProcessAdapter) CleanupContext(ctx context.Context, sessionID string
 			}
 		}
 		if processGroupID != pid {
+			code = "root_identity_mismatch"
 			return fmt.Errorf("%w: Bash process group does not match its PID", ErrRuntimeOwnershipRecord)
 		}
+		diagnostic.ProcessGroupID = processGroupID
+		stage, code = "root_wait", "root_wait_failed"
 		waitErr := shell.Close()
-		if err := waitMacCleanupGroupGone(ctx, processGroupID, 500*time.Millisecond, processGroupExists); err != nil {
-			return err
-		}
 		if waitErr != nil {
 			var exitErr *exec.ExitError
 			if !errors.As(waitErr, &exitErr) {
 				return waitErr
 			}
 		}
+		proofOwner := RuntimeOwnershipRecord{PID: pid, ProcessGroupID: processGroupID, UID: os.Getuid(), ProcessStartIdentity: diagnostic.RootStartIdentity}
+		if err := waitMacCleanupGroupQuiescent(ctx, proofOwner, 500*time.Millisecond, inspectMacCleanupGroupMembers); err != nil {
+			return err
+		}
 	}
+	stage, code = "context", "cancelled"
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if prepared.OwnedWorkspace {
+		stage, code = "workspace_cleanup", "workspace_cleanup_failed"
 		if err := os.RemoveAll(prepared.Workspace); err != nil {
 			return err
 		}
 	}
+	stage, code = "ownership_finalization", "owner_marker_cleanup_failed"
 	if err := removeRuntimeOwnership(a.options.WorkspaceRoot, sessionID); err != nil {
 		return err
 	}
