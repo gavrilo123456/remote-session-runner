@@ -48,6 +48,12 @@ A previous owner-route get_session lookup returned `resource_not_found: local in
 
 Source inspection reproduced a cleanup observation race: a redirected descendant can briefly remain after Bash reap and complete command output. Cleanup now permits a bounded 500 ms observation period. A persistent group, inspection error or cancellation still retains evidence/capacity. This source regression does not prove the historical incident had that cause.
 
+Later R100/R102 completed-command teardown incidents are investigated in
+[BUG-031](031-mac-cleanup-zombie-groups-and-missing-teardown-cause.md): a native
+Mac zombie-only group false-retention mechanism and missing cleanup-cause
+telemetry are reproduced. Their exact historical trigger remains unknown.
+This does not change the original BUG-024 disposition or its accepted gates.
+
 ## Fix and verification
 
 Registration did not attempt recovery. Repair and acceptance are tracked in
