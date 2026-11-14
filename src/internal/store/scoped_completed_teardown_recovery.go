@@ -329,11 +329,11 @@ func scopedCompletedTeardownMetadataDigest(ctx context.Context, conn *sql.Conn, 
 		{"lane_reservations", `SELECT lane,reservation_id,category,reserved_bytes,created_at FROM lane_capacity_reservations ORDER BY lane,reservation_id,category`, nil},
 	}
 	hash := sha256.New()
-	encoder := json.NewEncoder(&scopedMetadataDigestWriter{Hash: hash, remaining: 64 << 20})
+	encoder := json.NewEncoder(&scopedMetadataDigestWriter{Hash: hash, remaining: scopedMetadataMaxBytes})
 	if err := encoder.Encode([]string{"scoped-completed-teardown-metadata-v1", string(pair.SessionID), string(pair.CommandID)}); err != nil {
 		return "", err
 	}
-	remainingRows := 250000
+	remainingRows := scopedMetadataMaxRows
 	for _, query := range queries {
 		if err := encoder.Encode(query.name); err != nil {
 			return "", err
@@ -391,7 +391,14 @@ func scopedCompletedTeardownMetadataDigest(ctx context.Context, conn *sql.Conn, 
 
 // Keep the planned metadata read/release bounded even when callers omit a
 // deadline. This does not extend the operator's separate authorization window.
-const scopedCompletedTeardownTimeout = 30 * time.Second
+const (
+	scopedCompletedTeardownTimeout = 30 * time.Second
+	// The current paused authority has 366,192 historical metadata rows and
+	// about 97 MB in this projection. Hash it as a bounded stream; do not load
+	// stored scripts/output or discard history to fit a small fixture budget.
+	scopedMetadataMaxRows  = 1_000_000
+	scopedMetadataMaxBytes = 256 << 20
+)
 
 type scopedMetadataDigestWriter struct {
 	hash.Hash

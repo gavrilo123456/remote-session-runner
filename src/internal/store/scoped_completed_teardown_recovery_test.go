@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,30 @@ import (
 
 	"remote-session-runner/src/internal/domain"
 )
+
+func TestScopedCompletedTeardownMetadataBudgetStreamsMeasuredHistoryAndRefusesOverflow(t *testing.T) {
+	const measuredRows, measuredBytes = 366192, 97167100
+	if scopedMetadataMaxRows < measuredRows || scopedMetadataMaxRows > 1_000_000 || scopedMetadataMaxBytes < measuredBytes || scopedMetadataMaxBytes > 256<<20 {
+		t.Fatal("metadata stream must fit the measured authority and remain bounded")
+	}
+	w := &scopedMetadataDigestWriter{Hash: sha256.New(), remaining: scopedMetadataMaxBytes}
+	chunk := bytes.Repeat([]byte("x"), 4096)
+	for remaining := measuredBytes; remaining > 0; {
+		size := min(remaining, len(chunk))
+		if _, err := w.Write(chunk[:size]); err != nil {
+			t.Fatalf("measured metadata refused: %v", err)
+		}
+		remaining -= size
+	}
+	if w.remaining != scopedMetadataMaxBytes-measuredBytes {
+		t.Fatal("metadata stream budget was not accounted exactly")
+	}
+	w.remaining = 1
+	before := append([]byte(nil), w.Sum(nil)...)
+	if _, err := w.Write([]byte("xx")); !errors.Is(err, ErrRetainedWorkInventoryLimit) || w.remaining != 1 || !bytes.Equal(w.Sum(nil), before) {
+		t.Fatal("over-budget input changed the hash or lost its safe limit error")
+	}
+}
 
 type scopedTeardownFixture struct {
 	authority *AuthorityStore

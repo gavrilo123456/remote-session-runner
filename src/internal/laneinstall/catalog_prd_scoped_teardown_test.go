@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -21,6 +22,19 @@ import (
 	hostruntime "remote-session-runner/src/internal/runtime"
 	"remote-session-runner/src/internal/store"
 )
+
+func TestScopedTeardownFailureReportsSafeLimitWithoutLeakingCause(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		cause := fmt.Errorf("private SQL and /private/owner/path: %w", store.ErrRetainedWorkInventoryLimit)
+		err := scopedTeardownFailure("inventory", cause, apply)
+		if !errors.Is(err, ErrCatalogPRDScopedTeardown) || !errors.Is(err, store.ErrRetainedWorkInventoryLimit) ||
+			!strings.Contains(err.Error(), "failure_stage=inventory failure_category=inventory_limit") ||
+			strings.Contains(err.Error(), "private SQL") || strings.Contains(err.Error(), "/private/owner") ||
+			strings.Contains(err.Error(), "recovery incomplete") != apply {
+			t.Fatalf("unsafe or ambiguous boundary error: %v", err)
+		}
+	}
+}
 
 func validScopedTeardownRequest() CatalogPRDScopedTeardownRequest {
 	return CatalogPRDScopedTeardownRequest{ReleaseID: "rr-20261111-bug031-0b7c031", ExpectedReleaseSHA256: strings.Repeat("a", 64),

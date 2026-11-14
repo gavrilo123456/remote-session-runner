@@ -113,3 +113,32 @@ source checkpoint. No source result is a live recovery result.
 The access-authorized full Mac runnerlocald package rerun passed in 8.338 s.
 Its log is `scoped-runnerlocald-mac-tests-authorized.jsonl` in the private
 R168 evidence directory; the denied attempts remain recorded as NOT PASS.
+
+## Measured history budget correction
+
+The first live **read-only** scoped plan at 19:57 UTC refused at inventory,
+without changing authority data. A supported consistent catalog backup was
+created at 19:58 UTC; its manifest is
+`7eb74bfb20f044abd6c3fdb219f46e1c43e3140cc0ba6b70eef2961814f00344`.
+Metadata-only immutable reads of that backup confirmed zero active/queued/
+resumable work or pending finalizations, exact target eligibility, and the
+existing nine retained pairs. They did not load scripts or output payloads.
+
+The complete preservation projection contains 366,192 historical metadata
+rows, approximately 97,167,100 canonical bytes. That exceeds both the initial
+250,000-row and 64 MiB fixture-sized stream budgets. No history was removed.
+The streaming budget is now bounded to 1,000,000 rows / 256 MiB; a read-only
+plan has a 30-second deadline and apply a 120-second total deadline for its
+repeated transactional fingerprints. Individual store reads retain 30-second
+bounds. These are operator read bounds, not new authorization windows.
+Target/peer eligibility, stopped-service, archive, exit-proof and atomic
+mutation guards are unchanged. Refusals now include a safe fixed
+`failure_category=inventory_limit` while preserving error identities and
+suppressing private cause text.
+
+Mac measured-budget/overflow, scoped store, operator/archive/composition and
+public-command regressions passed: store 4.550 s, laneinstall 5.522 s,
+runner-lane 2.811 s. Vet passed. Required native validation of this narrow
+follow-up is recorded below separately from full-package results at 03c942c.
+The supported backup and forensic copy reads are preparation, not teardown
+recovery, release of capacity or route clearance.

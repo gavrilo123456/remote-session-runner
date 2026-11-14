@@ -23,6 +23,37 @@ import (
 
 var ErrCatalogPRDScopedTeardown = errors.New("qualified operator scoped completed-teardown recovery refused")
 
+type scopedTeardownBoundaryError struct {
+	stage, category string
+	apply           bool
+	cause           error
+}
+
+func (e *scopedTeardownBoundaryError) Error() string {
+	message := fmt.Sprintf("%s: failure_stage=%s failure_category=%s", ErrCatalogPRDScopedTeardown, e.stage, e.category)
+	if e.apply {
+		message += "; recovery incomplete; inspect exact target state"
+	}
+	return message
+}
+
+func (e *scopedTeardownBoundaryError) Unwrap() []error {
+	return []error{ErrCatalogPRDScopedTeardown, e.cause}
+}
+
+func scopedTeardownFailure(stage string, cause error, apply bool) error {
+	category := "guard_refused"
+	switch {
+	case errors.Is(cause, store.ErrRetainedWorkInventoryLimit):
+		category = "inventory_limit"
+	case errors.Is(cause, context.DeadlineExceeded):
+		category = "deadline_exceeded"
+	case errors.Is(cause, context.Canceled):
+		category = "cancelled"
+	}
+	return &scopedTeardownBoundaryError{stage: stage, category: category, apply: apply, cause: cause}
+}
+
 // CatalogPRDScopedTeardownRequest selects one completed command, never a lost
 // command or an implicit set. Apply binds the read-only plan's preservation
 // digests and a separately verified fresh catalog backup.
@@ -205,7 +236,7 @@ func readScopedStorePlan(ctx context.Context, database *sql.DB, pair store.Compl
 	}
 	plan, err := authority.ReadScopedCompletedTeardownRecoveryPlan(ctx, pair)
 	if err != nil {
-		return nil, store.ScopedCompletedTeardownRecoveryPlan{}, CatalogWorkInventory{}, ErrCatalogPRDScopedTeardown
+		return nil, store.ScopedCompletedTeardownRecoveryPlan{}, CatalogWorkInventory{}, errors.Join(ErrCatalogPRDScopedTeardown, err)
 	}
 	return authority, plan, work, nil
 }
@@ -217,13 +248,13 @@ func InspectCatalogPRDScopedTeardown(ctx context.Context, plan PRDUpgradePlan, s
 	stage := "bindings"
 	defer func() {
 		if resultErr != nil {
-			resultErr = fmt.Errorf("%w: failure_stage=%s", ErrCatalogPRDScopedTeardown, stage)
+			resultErr = scopedTeardownFailure(stage, resultErr, false)
 		}
 	}()
 	if ctx == nil || ValidateCatalogPRDScopedTeardownRequest(request, false) != nil {
 		return CatalogPRDScopedTeardownReport{}, ErrCatalogPRDScopedTeardown
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	before, err := readScopedCatalogBinding(ctx, plan, service, request)
 	if err != nil || validateScopedRuntimeArchiveInput(plan, request) != nil {
@@ -244,7 +275,7 @@ func InspectCatalogPRDScopedTeardown(ctx context.Context, plan PRDUpgradePlan, s
 	_, inventory, work, readErr := readScopedStorePlan(ctx, database, pair)
 	closeErr := database.Close()
 	if readErr != nil || closeErr != nil {
-		return CatalogPRDScopedTeardownReport{}, ErrCatalogPRDScopedTeardown
+		return CatalogPRDScopedTeardownReport{}, errors.Join(ErrCatalogPRDScopedTeardown, readErr, closeErr)
 	}
 	stage = "peer_ownership"
 	ownership, err := hostruntime.ReadMacScopedTeardownOwnership(ctx, plan.Namespace.Workspaces, string(pair.SessionID), scopedRuntimeSessions(inventory))
@@ -304,13 +335,13 @@ func recoverCatalogPRDScopedTeardownWith(ctx context.Context, plan PRDUpgradePla
 	stage := "bindings"
 	defer func() {
 		if resultErr != nil {
-			resultErr = fmt.Errorf("%w: failure_stage=%s; recovery incomplete; inspect exact target state", ErrCatalogPRDScopedTeardown, stage)
+			resultErr = scopedTeardownFailure(stage, resultErr, true)
 		}
 	}()
 	if ctx == nil || ValidateCatalogPRDScopedTeardownRequest(request, true) != nil || !guards.attested || guards.readBinding == nil || guards.requireStopped == nil || guards.validateBackup == nil {
 		return CatalogPRDScopedTeardownReport{}, ErrCatalogPRDScopedTeardown
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	before, err := guards.readBinding(ctx, plan, service, request)
 	if err != nil || before.active {
@@ -344,7 +375,7 @@ func recoverCatalogPRDScopedTeardownWith(ctx context.Context, plan PRDUpgradePla
 	pair, _ := scopedTeardownPair(request.TeardownPair)
 	authority, inventory, work, err := readScopedStorePlan(ctx, database, pair)
 	if err != nil || inventory.PreservedInventorySHA256 != request.ExpectedPreservedInventorySHA256 {
-		return CatalogPRDScopedTeardownReport{}, ErrCatalogPRDScopedTeardown
+		return CatalogPRDScopedTeardownReport{}, errors.Join(ErrCatalogPRDScopedTeardown, err)
 	}
 	stage = "peer_ownership"
 	ownership, err := hostruntime.ReadMacScopedTeardownOwnership(ctx, plan.Namespace.Workspaces, string(pair.SessionID), scopedRuntimeSessions(inventory))
@@ -415,7 +446,7 @@ func recoverCatalogPRDScopedTeardownWith(ctx context.Context, plan PRDUpgradePla
 				return CatalogPRDScopedTeardownReport{}, ErrCatalogPRDScopedTeardown
 			}
 			if err := authority.ConfirmScopedCompletedTeardownRecovery(ctx, pair, request.ExpectedPreservedInventorySHA256); err != nil {
-				return CatalogPRDScopedTeardownReport{}, ErrCatalogPRDScopedTeardown
+				return CatalogPRDScopedTeardownReport{}, errors.Join(ErrCatalogPRDScopedTeardown, err)
 			}
 			if guards.checkpoint != nil && guards.checkpoint("after_release") != nil {
 				return report, ErrCatalogPRDScopedTeardown
@@ -429,7 +460,7 @@ func recoverCatalogPRDScopedTeardownWith(ctx context.Context, plan PRDUpgradePla
 			return report, ErrCatalogPRDScopedTeardown
 		}
 		if err := authority.CompleteScopedCompletedTeardownRecoveryFinalization(ctx, pair, request.ExpectedPreservedInventorySHA256); err != nil {
-			return CatalogPRDScopedTeardownReport{}, ErrCatalogPRDScopedTeardown
+			return CatalogPRDScopedTeardownReport{}, errors.Join(ErrCatalogPRDScopedTeardown, err)
 		}
 	}
 	stage = "postflight"
