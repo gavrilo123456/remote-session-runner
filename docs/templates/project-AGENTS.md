@@ -22,7 +22,8 @@ The following read-only programs may run directly in the canonical checkout:
 | --- | --- |
 | Discover and read code | `pwd`, `ls`, `rg --files`, `rg`, print-only `sed`, `cat`, `nl -ba`, `head -n`, `tail -n`, `wc -l` |
 | Inspect metadata | `stat` on an explicit non-secret path |
-| Inspect Git | `git status`, `git diff`, `git diff --stat`, `git diff --name-only`, `git diff --name-status`, `git diff --check`, `git log`, `git show`, `git show --check`, `git rev-parse`, `git merge-base --is-ancestor`, `git ls-files`, `git check-ignore -v`, `git worktree list` |
+| Fingerprint source bytes | `shasum -a 256 -- <explicit non-secret source file>` |
+| Inspect Git | `git status`, `git diff`, `git diff --stat`, `git diff --name-only`, `git diff --name-status`, `git diff --check`, `git log`, `git show`, `git show --check`, `git rev-parse`, `git merge-base --is-ancestor`, `git ls-files`, `git check-ignore -v`, `git worktree list`, `git remote get-url {{GIT_REMOTE}}` |
 | Inspect JSON | Read-only `jq` |
 
 Source and documentation edits may use native `apply_patch` or a local editor.
@@ -31,14 +32,31 @@ Use `sed` only for printing; never use `-i`, `e`, `r`, `w` or a sourced script.
 For `jq`, do not use filter files, `input`, `inputs`, `--rawfile` or other
 options that read another file.
 
-Invoke allowed read-only programs directly through the harness, with arguments
-supplied directly. Do not wrap them in `sh`, `bash`, `zsh`, a shell `-c`,
-a shell function or a helper script. Shell composition is executable work
-and must use the mailbox.
+Prefer a tool accepting a program and argument array. If the available tool
+is shell-text `exec_command`, a **single literal invocation** of an allowlisted
+program is permitted. Supply the checkout through the tool's `workdir` and
+use `login: false` when available. The tool's implicit shell is transport;
+it does not itself violate this rule. For example, `cmd: "git status --short"`
+with `workdir: "{{PROJECT_ROOT}}"` is allowed. Quote literal paths as needed.
+Do not add explicit shell wrappers, operators, pipes, redirection, command
+lists, assignments, substitutions, globs, functions or helper scripts.
+Composition and other executable work use the mailbox. Allowing
+`git remote get-url` does not allow `git remote set-url` or configuration writes.
 
 Do not directly run tests, builds, formatters, package managers, scripts,
 network clients, SSH, service/deployment/cleanup commands or Git mutations
 in the Mac shell.
+
+## What reviewed means
+
+The working agent reviews its exact request script, paths, intended effects
+and current owner authorization against this file. For Git writes, it also
+inspects the diff/staged file list, branch and approved remote, preserving
+unrelated changes. Record a short scope/effect summary before publication.
+Routine review is the agent's responsibility; it does not require a new human
+approval unless an existing protected-action rule says so. Configuration,
+service, recovery and permission exceptions belong to the Runner maintainer
+and any applicable owner approval; the project agent cannot waive them.
 
 ## File-only execution mailbox
 
@@ -125,11 +143,20 @@ Runner maintainer; never weaken permissions or remove Runner lock files.
 For each new operation:
 
 1. Create complete JSON at `{{MAILBOX_ROOT}}/inbox/<request_id>.json`
-   as an owner-owned, regular non-symlink file at exact `0644`.
+   as an owner-owned, regular non-symlink file, preferably exact `0644`.
 2. Read and validate it before publication.
 3. Create the empty `{{MAILBOX_ROOT}}/inbox/<request_id>.ready`
-   as an owner-owned regular `0644` file **last**.
+   as an owner-owned regular `0644` (or native `0600`) file **last**.
 4. Never change either request file after the marker exists.
+
+Exact `0600` is also accepted for native-created request/ACK JSON and markers;
+it needs no correction. Other modes are invalid. Inspect the unpublished JSON
+with `stat`; if needed, use the native editor's permission control before
+creating the marker. If no such control exists, hand the exact draft path to
+the maintainer and do not publish. If a marker already exists or has the wrong
+mode, leave the pair untouched for supported inspection/repair; do not chmod,
+replace or recreate it. These input rules never permit changing directory,
+response, event or diagnostic permissions.
 
 Use new safe request IDs and idempotency keys for new operations. Scripts
 must be bounded and non-interactive; use `set -euo pipefail` where appropriate.
@@ -156,8 +183,13 @@ After a terminal response, create `{{MAILBOX_ROOT}}/acks/<request_id>.json`
 with its exact `request_id`, `response_revision` and advertised
 `available_event_sequence`. Omit the optional cursor field if the terminal
 response does not advertise one; do not invent zero. Read and validate the
-ACK, then create its empty matching `0644` `.ready` marker last.
+ACK, then create its empty matching `0644` (or native `0600`) `.ready` marker last.
 Do not ACK an ingress diagnostic or an `accepted`/nonterminal response.
+Terminal `indeterminate` **may** be ACKed after preserving the exact terminal
+response and any advertised event prefix. This records receipt of an unknown
+outcome, not successful execution, process exit or cleanup. Keep the unresolved
+work in the task record and obtain a supported diagnosis; ACK does not permit
+replay or capacity release. No terminal response means no ACK.
 
 Preserve an accepted or uncertain request's identity. Do not duplicate,
 replay, redispatch, restore markers, cancel, release capacity or restart Runner
@@ -171,3 +203,17 @@ environment through the default mailbox route. Remote commands must not
 directly edit tracked source in a remote checkout or make it the canonical
 source tree. Do not assume this mailbox provisions a remote checkout,
 dependencies, credentials or special hardware.
+
+For small non-secret source sets, use the reviewed
+[source-snapshot procedure](runner/mailbox-/docs/source-delivery.md): read the
+Mac files, record their SHA-256 values, stage those exact bytes in a fresh
+`source/` child of Runner's Linux session workspace, and test within the same
+request. Print the actual `pwd` and hashes. This is the approved scratch
+working directory; there is no implicit `/home/ubuntu/projects/{{PROJECT_NAME}}`
+checkout. Closed teardown removes that workspace. An identity probe is not
+proof that project source was transferred or tested.
+
+Do not invent a persistent checkout, remote Git synchronization, source alias
+or mirror URL. For sources beyond the bounded snapshot limits, the maintainer
+must establish and verify a supported transfer before Linux source tests are
+ready. This setup does not enable automatic `git_revision` delivery.

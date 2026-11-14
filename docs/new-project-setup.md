@@ -11,6 +11,12 @@ It does not provision a machine or deploy a new Runner release.
 
 The Git-only Mac restriction is project operator policy. Runner's `mac-local`
 permission itself is not a command filter or a sandbox.
+The working project agent performs routine review of the exact request, scope,
+files and effects against the owner task and project policy. Git review also
+covers staged paths, branch and remote. It records a short review summary;
+this is not a new human-approval gate. Existing protected-action approvals
+still apply. The Runner maintainer owns configuration/service/recovery changes
+and publication-permission exceptions.
 
 ## 1. Choose the project and route
 
@@ -39,6 +45,33 @@ worker. A legacy environment label such as `sandbox-dev` can name a policy on
 make a name look right. Those changes can break historical status reads or
 make maintenance probes ambiguous.
 
+### Choose source delivery and the Linux working directory
+
+A mailbox route does **not** synchronize the Mac checkout. Record this part of
+onboarding separately from executor readiness. For small non-secret source
+sets on the current `empty`-source route, use the
+[source-snapshot procedure](templates/mailbox-docs/source-delivery.md): the
+project agent reads and SHA-256-hashes the exact approved Mac files, embeds a
+reviewed manifest in one bounded `run.script`, then verifies and stages those
+bytes under a fresh `source/` child of Runner's Linux session workspace.
+Tests run from that child in the **same request**. Record the actual `pwd`,
+file hashes and command outcome. Source editing remains on the Mac; creating
+this disposable, untracked snapshot is permitted remote execution, not editing
+a Linux Git checkout.
+
+There is no implicit `/home/ubuntu/projects/my-project` working tree. Each
+session gets its own workspace, removed after confirmed closed teardown.
+`repository_alias` does not change that. Keep secrets and unreviewed files out
+of snapshots; include the complete source/build inputs needed for the test.
+The decoded script limit is 128 KiB and serialized request limit is 1 MiB.
+An identity probe alone never proves source delivery or project tests.
+
+For a larger project, record a separately supported transfer, immutable source
+identity and working-directory procedure before declaring Linux source
+validation ready. Do not guess a mirror, authorize remote Git mutations by
+implication, or assume `git_revision` is enabled: the current live route and
+production wiring do not provide that automatic source-delivery path.
+
 ## 2. Add the project files
 
 Copy [the complete AGENTS.md template](templates/project-AGENTS.md) into the
@@ -54,13 +87,22 @@ and these Git settings:
 Do not assume GitHub or copy another project's branch/key. Adding `AGENTS.md`
 alone does not register a mailbox.
 
-Also render [the mailbox handbook template](templates/mailbox-docs/README.md)
-with the same reviewed values. Keep this staged copy outside the live mailbox
-until step 4. Every new project receives the complete handbook at
-`{{MAILBOX_ROOT}}/docs/README.md`; its `AGENTS.md` links there. For the
-standard layout this is `runner/mailbox-/docs/README.md`. Adjust the
+Also render both files in
+[the mailbox handbook template](templates/mailbox-docs/README.md), including
+[source delivery](templates/mailbox-docs/source-delivery.md), with the same
+reviewed values. Keep these staged copies outside the live mailbox until step 4.
+Every new project receives the handbook at
+`{{MAILBOX_ROOT}}/docs/README.md` and its adjacent `source-delivery.md`;
+its `AGENTS.md` links to both. For the standard layout the handbook is at
+`runner/mailbox-/docs/README.md`. Adjust the
 relative link for a different approved root. The agent reads this handbook on
 first use or when it needs detail, rather than on every request.
+
+The template explicitly permits single literal allowlisted reads through a
+shell-text `exec_command` tool, using `workdir` and `login: false` when
+available. This covers tools without an argument-array interface; it does not
+permit shell composition. It also names `git remote get-url` for remote checks
+and `shasum -a 256 -- <explicit non-secret source file>` for snapshot hashes.
 
 Create `runner/.gitignore` with:
 
@@ -151,12 +193,12 @@ the maintenance record to the actual selected release and candidate hash.
    new lifecycle registry entry, directory ownership/modes and existing-lane
    and retained-work invariants. A healthy API alone does not pass mailbox
    execution acceptance.
-7. Install the reviewed rendered handbook as a regular owner-owned `0644`
-   `docs/README.md`, with a real owner-owned `0700` `docs` directory alongside
-   `inbox/`, not inside it.
+7. Install the reviewed rendered `docs/README.md` and `docs/source-delivery.md`
+   as regular owner-owned `0644` files, with a real owner-owned `0700`
+   `docs` directory alongside `inbox/`, not inside it.
    Preserve the mailbox root and its five existing directories at `0700`.
    Use no symlinks and publish no `.ready` marker for documentation. Verify
-   all placeholders are resolved and the project's `AGENTS.md` link opens it.
+   all placeholders are resolved and the project's `AGENTS.md` links open them.
    A documentation-only update on an already configured mailbox needs no
    service restart, selector change or new request.
 
@@ -193,7 +235,12 @@ relax maintenance guards to repair documentation.
 Replace `my-project` and `UNIQUE` below. Create the JSON at
 `runner/mailbox-/inbox/<request_id>.json`, read/validate it, then create the
 empty matching `<request_id>.ready` **last**. Both files must be regular,
-owner-owned and exact `0644`. Omit both selection fields to test the default:
+owner-owned and preferably exact `0644`; native-created exact `0600` is also
+valid for request/ACK JSON and markers. Other modes require native metadata
+correction while still an unpublished draft, or maintainer assistance. Once a
+marker exists, preserve the pair and request supported inspection rather than
+chmod/replacing it. Never relax result or directory permissions.
+Omit both selection fields to test the default:
 
 ```json
 {
@@ -218,8 +265,14 @@ if no cursor was advertised, omit that optional field rather than inventing one.
 Confirm `terminal_acknowledged` through the maintainer's supported lifecycle
 query. Root/children stay `0700`; Runner outputs/events/diagnostics stay `0600`.
 See [the mailbox protocol](mailbox.md) for full schemas and failure handling.
+An actual terminal `indeterminate` response may be acknowledged after its
+response and any advertised events are preserved; the ACK acknowledges receipt
+of uncertainty, not success or cleanup. Keep the unresolved work recorded and
+do not replay it. An `accepted`/nonterminal exchange is never ACK-eligible.
 
 Record the route, accepted release, config/backup hashes, test IDs, result,
 cursor and ACK proof. Linux acceptance does not prove the optional Mac Git
-execution path; report that separately. The project is ready when these checks
-pass; external clients are resumed by their owner.
+execution path or project source delivery; report those separately. To declare
+source validation ready, also verify the chosen snapshot/transfer with known
+Mac bytes, expected hashes, actual Linux working directory and terminal test
+result. External clients are resumed by their owner.

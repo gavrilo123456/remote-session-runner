@@ -34,6 +34,27 @@ A remote script must explicitly `cd` to an approved Linux directory when
 needed. This mailbox does not provision a remote checkout or special hardware,
 and the Mac source path must not be assumed to exist on Linux.
 
+For project validation, follow [source delivery](source-delivery.md). The
+current route supplies a fresh Linux session workspace, not a synchronized
+project checkout. Small reviewed source snapshots can be staged and tested
+there within one request; record the actual working directory and hashes.
+
+### Reads and review
+
+An allowlisted Mac read may use one literal command through shell-text
+`exec_command`, with the checkout in `workdir` and `login: false` when available.
+Do not add explicit shell wrappers, pipes, redirection, operators,
+substitutions, globs or a second command. `git remote get-url {{GIT_REMOTE}}`
+and `shasum -a 256 -- <explicit non-secret source file>` are allowed reads.
+Remote/configuration writes remain restricted by `AGENTS.md`.
+
+The working agent performs routine review: check the exact script, files,
+scope and effects against the owner task and `AGENTS.md`; for Git, check the
+diff/staged list, branch and remote too. Record a short review summary. A
+separate human approval is needed only where an existing protected-action rule
+requires it. Maintainer-only configuration, service and recovery work remains
+separate; calling a request reviewed does not expand its authority.
+
 ## 1. Publish a bounded Linux request
 
 Use native workspace file editing. Do not publish using a shell, redirection,
@@ -62,9 +83,10 @@ positive integer in seconds, not a guarantee of successful teardown.
 
 Publish in this order:
 
-1. Create the complete JSON as an owner-owned regular non-symlink `0644` file.
+1. Create the complete JSON as an owner-owned regular non-symlink file,
+   preferably `0644` (native `0600` is also accepted).
 2. Read and parse it; check the identity, script, timeout and selection fields.
-3. Create an empty regular `0644` file named
+3. Create an empty regular `0644` (or native `0600`) file named
    `{{MAILBOX_ROOT}}/inbox/req-{{PROJECT_NAME}}-identity-UNIQUE.ready` **last**.
 4. Never edit either published file or restore a consumed marker.
 
@@ -73,6 +95,21 @@ accepted input pair may disappear; that does not prove command success.
 Keep the request ID, idempotency key and purpose in your task record.
 Never put secrets, tokens, certificate/key contents or credential-bearing URLs
 in requests or expected output. Use only approved credential references.
+
+### If the editor creates different permissions
+
+Runner accepts exact `0600` or `0644` for owner-owned regular input JSON and
+markers; native `0600` is already valid. Use `stat` on the exact path to inspect
+it. For another mode on an unpublished JSON draft, use the native editor's
+permission setting **before** creating its marker. If the editor has no mode
+control, give the maintainer the exact draft path and do not publish.
+
+If a marker already exists or was created with an invalid mode, preserve the
+pair and ask the maintainer to inspect its lifecycle before any repair. Do not
+chmod, replace, restore or recreate that pair to activate it. Do not run a
+shell permission-repair script or submit another request to fix publication.
+This exception for safe input modes never permits relaxing mailbox directory
+or Runner-produced result/event/diagnostic permissions.
 
 ## 2. Mac-only example: push an already reviewed commit
 
@@ -144,11 +181,12 @@ ingress rejection. If neither exists, preserve the request and ask the Runner
 maintainer to inspect its supported lifecycle status. Do not query SQLite,
 restart Runner, remove locks or resend the work to obtain an answer.
 
-## 4. ACK only the verified terminal response
+## 4. ACK the preserved terminal response
 
 First preserve the terminal response and advertised events needed for the
-task. Then create `{{MAILBOX_ROOT}}/acks/<request_id>.json` with the exact
-request ID, latest terminal `response_revision` and advertised cursor.
+task. Verify terminality and the actual evidence, even when the outcome is
+failure or uncertainty. Then create `{{MAILBOX_ROOT}}/acks/<request_id>.json`
+with the exact request ID, latest terminal `response_revision` and advertised cursor.
 For example, **only if the actual response advertises revision 2 and cursor 5**:
 
 ```json
@@ -171,9 +209,18 @@ field. For example, **only if its actual terminal revision is 2**:
 
 Do not substitute cursor zero or copy example numbers into an ACK without
 checking the actual response. Read/validate the regular owner-owned `0644`
-ACK JSON, then create its empty regular `0644`
-`{{MAILBOX_ROOT}}/acks/<request_id>.ready` marker **last**.
+(or native `0600`) ACK JSON, then create its empty regular `0644` (or native
+`0600`) `{{MAILBOX_ROOT}}/acks/<request_id>.ready` marker **last**.
 Never ACK an `accepted`/nonterminal response or an ingress diagnostic.
+
+**Terminal `indeterminate` is ACK-eligible.** Preserve its exact terminal
+response and any advertised event prefix first, then ACK that response's
+revision/cursor using the same rules. This acknowledges receipt of an unknown
+outcome; it does not establish successful execution, exit, teardown or free
+capacity. Keep the unresolved mutation/cleanup in your task record and obtain
+a supported diagnosis. ACK never authorizes replay. A merely uncertain
+`accepted` request, missing terminal response or unavailable advertised events
+is **not** an ACK candidate; preserve it for the maintainer.
 
 Runner may consume valid ACK files. Their disappearance alone is not durable
 ACK proof; the maintainer can confirm `terminal_acknowledged` through the
@@ -188,11 +235,11 @@ existing ACK draft or marker: ask the maintainer to reconcile that exact pair.
 | Accepted/queued with no terminal cursor | Keep observing the same request; record any job, session and command IDs. |
 | `queue_blocked_reason: lost_capacity_recovery_pending` | Preserve the exchange and ask the maintainer; this is nonterminal capacity evidence, not permission to recover. |
 | Terminal failure/rejection | Preserve the reason/result. Correct a separately authorized new operation using a new request ID and key. |
-| Unknown result of a mutation | Do not replay, replace, redispatch or change its identity. Obtain a supported diagnosis first. |
+| Unknown result of a mutation | Do not replay, replace, redispatch or change its identity. Obtain a supported diagnosis. ACK is allowed only if an actual terminal response and its advertised events have been preserved. |
 | LOST teardown, retained capacity or unreachable result | Ask the maintainer for scoped recovery; do not cancel, signal processes, release capacity or restart services. |
 | Private output cannot be read | Ask for an appropriately scoped read capability or operator evidence; do not weaken permissions. |
 
 Mailbox directories remain owner-only `0700`; Runner-produced results,
 events and diagnostics remain private `0600`. The reference documentation
-does not change those access boundaries. Never ACK uncertain work, restore
+does not change those access boundaries. Never ACK nonterminal work, restore
 request markers, or treat missing files as proof of execution or cleanup.

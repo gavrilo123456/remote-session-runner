@@ -112,8 +112,10 @@ The proposed workflow is:
    approved credential references. Offer registered choices instead of guessing
    environment labels, branches or SSH identities.
 2. **Generate:** a complete candidate based on the selected lane's current
-   configuration, the project's `AGENTS.md`, the linked handbook at
-   mailbox-root `docs/README.md`, and its mailbox runtime Git exclusion. Pin the
+   configuration, the project's `AGENTS.md`, the linked mailbox-root handbook
+   at `docs/README.md` and `docs/source-delivery.md`, and its mailbox runtime Git
+   exclusion. Record the source-transfer method and working-directory contract;
+   mailbox execution readiness alone does not prove project source delivery. Pin the
    handbook template version with the other generation inputs. Preserve
    existing mailboxes and policies. Existing project files
    need a reviewed diff; never silently overwrite custom instructions.
