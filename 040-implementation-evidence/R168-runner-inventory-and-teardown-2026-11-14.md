@@ -45,14 +45,37 @@ reproduced by this successful cut. Their generic errors do not establish a
 cause; duration alone is insufficient to call them timeouts. The independently
 identified diagnostic defect is missing safe boundary/category information,
 tracked as [BUG-032](../050-bugs/032-retained-work-inventory-failure-omits-safe-boundary.md).
-Source qualification and operator-tool delivery are pending at this checkpoint.
+The diagnostic correction is source `cedf7100bcad20f84ab1e085f686450ce15b7720`.
 
 Mac qualification for this diagnostic correction passed using Go 1.27.1 and
 the shared Go/module caches: the focused inventory/BUG-027 regressions and
 native vet passed; complete changed-package tests passed for `laneinstall`
-(50.593 seconds) and `runner-lane` (4.957 seconds). Native Ubuntu checks and
-the separately built operator executable are still pending. No runtime
-acceptance or cleanup is inferred from source tests.
+(50.593 seconds) and `runner-lane` (4.957 seconds).
+
+All three clean Ubuntu `dev` checkouts pulled the exact Gitea/GitHub source.
+Go 1.27.1, native CGO-enabled changed-package tests, vet and attested
+`runner-lane` builds passed on each host:
+
+| Host | Platform | laneinstall tests | runner-lane tests |
+| --- | --- | --- | --- |
+| Linux | linux/amd64 | 47.908 s | 14.210 s |
+| Sandbox | linux/arm64 | 90.677 s | 7.651 s |
+| Factory | linux/amd64 | 39.884 s | 12.395 s |
+
+The separately built Mac diagnostic SHA-256 is
+`3f151e1f59cd89cd63298d3a3933f966e7c8e01f1eddecf98b4ce1a96358e4c8`.
+It was installed at the documented owner-private `bin/runner-lane` path,
+mode `0700`, preserving the original executable in the private evidence
+directory. No selected service binary was rebuilt or replaced.
+
+At 19:15:05 UTC, the installed corrected tool returned exit 0 with complete
+schema-40 inventory in 4,425 ms. The target reservation remained held, its
+command slot remained released, and all eight older retained-pair rows matched
+the initial baseline. Original response/events hashes and absent ACK files
+were verified unchanged. `safe_to_resume=not_established` and
+`recovery_authorized=false` remained intact. Private qualification, install
+and postflight manifests accompany this report. This operator acceptance
+does not establish a cause for the two earlier generic failures.
 
 ## Teardown cause and current process observation
 
@@ -89,4 +112,7 @@ Fresh health is ready, but readiness and the absent observed group do not clear
 this exact reservation or authorize Factory resumption. Resolving only this
 pair while preserving older holds needs a separately qualified exact-subset
 recovery capability; a broader retained-set cleanup needs its own reviewed
-authorization. Pending owner clarification does not authorize either path.
+authorization. The owner confirmed PRD publishers/clients paused and chose
+**keep the exact scope; prepare a scoped recovery correction**. This authorizes
+source preparation for that separate capability; it does not authorize
+recovering any of the eight older holds or treating this pair as cleared.

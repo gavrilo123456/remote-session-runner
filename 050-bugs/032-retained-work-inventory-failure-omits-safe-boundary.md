@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — NATIVE/OPERATOR VERIFICATION PENDING` |
+| Status | `FIXED — NATIVE/OPERATOR VERIFIED` — historical failures remain unclassified |
 | Severity | Medium — obstructs supported recovery diagnosis |
 | Priority | High for the exact R168 investigation |
 | Reported | 2026-11-14 |
@@ -12,8 +12,8 @@
 | Owner | Remote Session Runner |
 | Affected component/path | `runner-lane catalog-work-inventory --details`, selected-authority read-only diagnostics |
 | Affected revision | Installed standalone diagnostic `883e2af0373b7de94f172df31909434f9a23c38d`; source inspected at `b07e199ef85b27c027ef8e2fbb728a4d409347b1` |
-| Fixed revision | This source correction; qualification and delivery recorded in the linked evidence |
-| Verification | Pending native checks and read-only operator qualification; no service release or recovery assigned by this diagnostic fix |
+| Fixed revision | `cedf7100bcad20f84ab1e085f686450ce15b7720` |
+| Verification | Changed-package tests, vet and native builds passed on Mac and all three Ubuntu hosts; installed operator returned a complete schema-40 inventory in 4.425 seconds. Historical failure cause is still unproven; no service release or recovery was performed. |
 
 ## Reported behavior
 
@@ -71,6 +71,14 @@ are preserved. Tests cover private-error and partial-row suppression,
 deadline/cancellation, size limits, schema/history, sidecar refusal and elapsed
 metadata. Native qualification and installed diagnostic results are recorded
 separately from the original exchange's unresolved recovery.
+
+The qualified standalone operator was installed owner-only at the documented
+Mac path, preserving its exact prior executable. Its SHA-256 is
+`3f151e1f59cd89cd63298d3a3933f966e7c8e01f1eddecf98b4ce1a96358e4c8`.
+The selected service release and configuration remained unchanged. Live
+acceptance covered a complete successful read; refusal stage/category and
+redaction were proven on disposable fixtures. No naturally failing live read
+was observed, and no production guard was deliberately broken to manufacture one.
 
 ## History
 
