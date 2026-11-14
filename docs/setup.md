@@ -247,6 +247,13 @@ fresh `doctor` invocation does not identify that existing LaunchAgent. A
 
 ## 3. Upgrade to version 2 or add an inbox
 
+For a new project on **catalog-selected PRD**, follow
+[Set up Runner for a new project](new-project-setup.md), including its
+[AGENTS.md template](templates/project-AGENTS.md). The legacy installer below
+refuses an installation with a `current` catalog selector. Its V1→V2 procedure
+is retained for legacy installations; it is not the current catalog mailbox
+activation path.
+
 ### Mac — `tomasz.walczuk`
 
 Use a reviewed candidate, not an in-place edit of the active config. Create

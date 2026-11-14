@@ -61,6 +61,7 @@ installed sandbox control and its limits.
 Start with [the post-implementation documentation index](docs/README.md):
 
 - [From a code change to production: Dev → QAS → PRD](docs/promotion-guide.md)
+- [Set up Runner for a new project, including AGENTS.md](docs/new-project-setup.md)
 - [Architecture](docs/architecture.md)
 - [Configuration reference](docs/configuration.md)
 - [Setup and upgrade runbook](docs/setup.md)

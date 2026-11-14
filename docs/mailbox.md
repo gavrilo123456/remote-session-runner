@@ -1,5 +1,9 @@
 # File mailbox guide
 
+To register a mailbox for another repository, start with
+[the new-project setup guide](new-project-setup.md) and its reusable
+[AGENTS.md template](templates/project-AGENTS.md).
+
 The mailbox is an owner-only **Mac ingress and response projection** for a
 file-producing automation integration. It is not a shell, a terminal, or an
 execution authority. It can submit Mac-local work and, when the permanent
