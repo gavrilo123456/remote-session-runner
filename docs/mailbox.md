@@ -45,6 +45,15 @@ $MAILBOX_ROOT/
 └── diagnostics/  <request_id>.json, private ingress diagnostic projected by Runner
 ```
 
+New project setup also installs an owner-owned reference folder
+`docs/README.md` beside `inbox/`, linked from the project's `AGENTS.md`. It
+contains complete client examples for first use or occasional reference. Requests and
+markers belong directly in `inbox/`; `docs/` is reference material outside
+the ingress directories. Its maintained source is the
+[mailbox handbook template](templates/mailbox-docs/README.md).
+See [setup and maintenance](new-project-setup.md#documentation-during-mailbox-maintenance)
+for maintaining it across a mailbox handoff.
+
 The root and its five children are selected-user-owned `0700`. Client request
 and ACK JSON plus their empty `.ready` markers must be selected-user-owned,
 regular non-symlink files at exact `0600` (native publisher) or exact `0644`

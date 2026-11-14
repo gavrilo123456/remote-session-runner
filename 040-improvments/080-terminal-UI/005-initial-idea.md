@@ -101,7 +101,8 @@ listener, privileged account or monitoring service is required by this idea.
 Add a **New project** wizard that prepares and applies a complete onboarding
 package, including deploying `AGENTS.md` into the canonical Mac project.
 Reuse the [onboarding procedure](../../docs/new-project-setup.md) and
-[versioned AGENTS.md template](../../docs/templates/project-AGENTS.md).
+[versioned AGENTS.md template](../../docs/templates/project-AGENTS.md), together
+with the [mailbox handbook template](../../docs/templates/mailbox-docs/README.md).
 This phase uses existing machines and lanes; it does not provision new hosts.
 
 The proposed workflow is:
@@ -111,8 +112,10 @@ The proposed workflow is:
    approved credential references. Offer registered choices instead of guessing
    environment labels, branches or SSH identities.
 2. **Generate:** a complete candidate based on the selected lane's current
-   configuration, the project's `AGENTS.md`, and its mailbox runtime Git
-   exclusion. Preserve existing mailboxes and policies. Existing project files
+   configuration, the project's `AGENTS.md`, the linked handbook at
+   mailbox-root `docs/README.md`, and its mailbox runtime Git exclusion. Pin the
+   handbook template version with the other generation inputs. Preserve
+   existing mailboxes and policies. Existing project files
    need a reviewed diff; never silently overwrite custom instructions.
 3. **Preview:** show redacted file changes, target lane/machine, required
    maintenance, validation results and output hashes before applying anything.

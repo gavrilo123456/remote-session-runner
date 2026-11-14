@@ -11,7 +11,7 @@ selection, or automatic fallback.
 | Document | Use it for |
 | --- | --- |
 | [From a code change to production](promotion-guide.md) | Short, plain-language Dev → QAS → PRD guide: build once, test, approve, deploy and recover. |
-| [Set up Runner for a new project](new-project-setup.md) | Project mailbox, reusable AGENTS.md template, existing Linux routing, catalog PRD activation and a terminal-response/event/ACK check. |
+| [Set up Runner for a new project](new-project-setup.md) | Project mailbox, AGENTS.md and local handbook templates, existing Linux routing, catalog PRD activation and a terminal-response/event/ACK check. |
 | [Architecture](architecture.md) | Components, trust boundaries, multi-inbox routing, diagrams, and supported scope. |
 | [Configuration reference](configuration.md) | Exact paths, V1 compatibility, V2 registries, active policy, secret handling, and limits. |
 | [Setup and upgrade runbook](setup.md) | First install, V1→V2 upgrade, safe external mailbox roots, deliberate mailbox retirement, service deployment, bridge setup, and P157 onboarding. |

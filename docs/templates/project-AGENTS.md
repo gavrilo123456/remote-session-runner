@@ -45,6 +45,16 @@ in the Mac shell.
 Mailbox root: `{{MAILBOX_ROOT}}`.
 Mailbox ID and repository alias: `{{PROJECT_NAME}}`.
 
+Detailed instructions, complete request/ACK examples and result checks are in
+[the local mailbox handbook](runner/mailbox-/docs/README.md).
+Read it before first use, or whenever request syntax, results or recovery are
+unclear. Familiar clients need not reload it for every request; the rules in
+this `AGENTS.md` always apply. If the handbook is missing, ask the Runner
+maintainer to restore the generated copy; do not guess the protocol.
+The link assumes the standard `runner/mailbox-` layout; adjust it if the
+reviewed mailbox root differs. The mailbox's `docs/` is reference material,
+not a request directory. Publish request JSON and markers directly in `inbox/`.
+
 Normal requests omit both `environment` and `execution_target`. They use:
 
 ```text

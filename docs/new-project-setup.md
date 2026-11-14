@@ -54,6 +54,14 @@ and these Git settings:
 Do not assume GitHub or copy another project's branch/key. Adding `AGENTS.md`
 alone does not register a mailbox.
 
+Also render [the mailbox handbook template](templates/mailbox-docs/README.md)
+with the same reviewed values. Keep this staged copy outside the live mailbox
+until step 4. Every new project receives the complete handbook at
+`{{MAILBOX_ROOT}}/docs/README.md`; its `AGENTS.md` links there. For the
+standard layout this is `runner/mailbox-/docs/README.md`. Adjust the
+relative link for a different approved root. The agent reads this handbook on
+first use or when it needs detail, rather than on every request.
+
 Create `runner/.gitignore` with:
 
 ```gitignore
@@ -66,6 +74,12 @@ immediate parent must belong to `tomasz.walczuk`. Do not chmod shared ancestors
 as a shortcut. **Let Runner create the mailbox root and its children during
 activation.** The repository alias is audit metadata; it does not create or
 select a Linux checkout. Source editing remains on the Mac.
+
+The versioned templates in this Runner repository are the maintained source.
+The deployed handbook lives inside ignored mailbox runtime data; do not commit
+the mailbox tree, responses or ACKs to the project. Record the template revision
+and rendered file hash in the setup evidence. Regenerate and review a copy when
+the protocol or project route changes; do not silently overwrite custom text.
 
 ## 3. Prepare the Runner configuration
 
@@ -137,6 +151,14 @@ the maintenance record to the actual selected release and candidate hash.
    new lifecycle registry entry, directory ownership/modes and existing-lane
    and retained-work invariants. A healthy API alone does not pass mailbox
    execution acceptance.
+7. Install the reviewed rendered handbook as a regular owner-owned `0644`
+   `docs/README.md`, with a real owner-owned `0700` `docs` directory alongside
+   `inbox/`, not inside it.
+   Preserve the mailbox root and its five existing directories at `0700`.
+   Use no symlinks and publish no `.ready` marker for documentation. Verify
+   all placeholders are resolved and the project's `AGENTS.md` link opens it.
+   A documentation-only update on an already configured mailbox needs no
+   service restart, selector change or new request.
 
 After startup may have registered the mailbox, **repair forward with its stanza
 retained**. Do not restore an older config or DB to erase partial activation.
@@ -145,6 +167,24 @@ Do not hand-call `--activate-mailbox-set`. The legacy
 `prd-stop`/`prd-start` affect both Mac components and are not this ingress-only
 refresh. If the change needs different executor policy, schema, trust or
 service bytes, stop and prepare that separate change under its own procedure.
+
+### Documentation during mailbox maintenance
+
+Keep documentation at the mailbox root, **outside `inbox/` and `acks/`**.
+Although normal intake ignores a literal `inbox/docs/` folder, retirement and
+strict ingress snapshots reject unexpected inbox entries; ownership handoff
+also archives and replaces the inbox. The sibling `docs/` layout avoids these
+conflicts and never grants new execution permissions. Keep examples as fenced
+JSON in Markdown; do not create example request files or `.ready` markers.
+
+Runner does not generate or update this reference directory automatically.
+The maintainer installs it as part of every new-project setup. Its source is
+the versioned template, so it can be restored without copying runtime work.
+Catalog DB/configuration backups do not automatically include external
+mailbox documentation; preserve the rendered copy and its hash separately.
+After a handoff or route change, verify the handbook still matches the selected
+authority and project policy before using it. Do not change mailbox state or
+relax maintenance guards to repair documentation.
 
 ## 5. Prove the mailbox works
 
