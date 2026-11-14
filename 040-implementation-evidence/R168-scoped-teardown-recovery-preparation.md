@@ -1,5 +1,7 @@
 # R168 exact scoped teardown recovery — source preparation
 
+**Execution update:** the owner subsequently approved this exact scope; recovery and restarted-authority postflight are complete. See [the execution closeout](R168-scoped-teardown-recovery-closeout-2026-11-14.md). This preparation record preserves its original checkpoints and qualifications.
+
 **Assignment:** owner confirmed PRD clients/publishers paused and selected
 “Keep exact scope; prepare a scoped recovery correction” on 2026-11-14.
 This preparation does not authorize an expanded retained-set cleanup or live

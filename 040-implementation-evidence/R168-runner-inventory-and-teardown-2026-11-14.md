@@ -1,5 +1,7 @@
 # R168 Runner inventory and completed-command teardown
 
+**Latest status, 2026-11-14: exact Runner cleanup/capacity cleared after owner-approved scoped recovery and same-binary restart.** See [the execution closeout](R168-scoped-teardown-recovery-closeout-2026-11-14.md). Original failed result and unACKed exchange and all eight older holds remain preserved. Earlier blocked/preparation checkpoints below are historical.
+
 ## Scope and exact exchange
 
 Owner requested supported inventory restoration and disposition of only:

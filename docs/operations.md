@@ -1110,9 +1110,10 @@ executor with an ad hoc recovery executable. Preserving unrelated retained
 holds requires a separately qualified exact-subset recovery capability; the
 current whole-set guard is not that capability.
 
-### Scoped completed-teardown operator preparation
+### Scoped completed-teardown operator procedure
 
-**Status: source preparation; not a live recovery authorization.** The new
+**Status: qualified; executed for exact R168 with separate owner approval.**
+[The closeout](../040-implementation-evidence/R168-scoped-teardown-recovery-closeout-2026-11-14.md) records target-only recovery and preserved older holds. Future live applications need their own exact scope and approval; this procedure is not blanket authorization. The
 `catalog-prd-recover-scoped-teardown` command is a separate, explicitly
 qualified schema-40 operator boundary for one ordinary completed command.
 It leaves the existing whole-set commands unchanged. It never falls back to
