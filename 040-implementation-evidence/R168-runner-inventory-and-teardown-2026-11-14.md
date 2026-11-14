@@ -116,3 +116,16 @@ authorization. The owner confirmed PRD publishers/clients paused and chose
 **keep the exact scope; prepare a scoped recovery correction**. This authorizes
 source preparation for that separate capability; it does not authorize
 recovering any of the eight older holds or treating this pair as cleared.
+
+
+## Scoped correction preparation checkpoint
+
+The owner confirmed the Mac PRD publisher/client pause and requested preparation
+of an exact-scoped correction, preserving the eight older holds. The operator
+source, measured-history correction, qualification and read-only applicability
+are recorded in [the scoped preparation record](R168-scoped-teardown-recovery-preparation.md).
+Its live read-only plan passed with exact target exit proof. The original
+FAILED exit-1 response, revision 4/event 8, response/event digests and absent ACK
+files remain unchanged. No live teardown/capacity recovery has run; route
+clearance remains STILL BLOCKED pending execution of the prepared maintenance
+package. The older whole-set command was not bypassed or used on the peer set.

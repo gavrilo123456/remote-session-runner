@@ -142,3 +142,80 @@ runner-lane 2.811 s. Vet passed. Required native validation of this narrow
 follow-up is recorded below separately from full-package results at 03c942c.
 The supported backup and forensic copy reads are preparation, not teardown
 recovery, release of capacity or route clearance.
+
+## Four-host qualification and live read-only applicability
+
+Full changed-package suites at source
+`03c942cff846899ec16f113783cbd448b090a3b0` passed on all four hosts.
+These are the five affected packages, not a claim of a full repository suite.
+All used Go 1.27.1, native CGO, normal shared/account caches and task-owned temp
+builds. Darwin-only native libproc/startup fixtures ran on Mac; Linux runs skip
+those and retain portable store/runtime/operator/CLI coverage.
+
+| Host | Platform | store | runtime | laneinstall | runnerlocald | runner-lane |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Mac | darwin/arm64 | 32.706 s | 20.139 s | 49.549 s | 8.338 s | 4.541 s |
+| replacement Linux | linux/amd64 | 72.792 s | 11.603 s | 34.407 s | 12.700 s | 4.292 s |
+| Sandbox | linux/arm64 | 196.230 s | 12.993 s | 90.858 s | 26.166 s | 7.935 s |
+| Factory | linux/amd64 | 65.891 s | 11.715 s | 34.904 s | 11.792 s | 3.409 s |
+
+Native vet and attested operator builds passed on all four hosts. Required
+primary push, exact automatic GitHub mirror and clean explicit-key Ubuntu
+fast-forwards were verified at that source. Ubuntu temporary binaries were
+removed by their task-owned EXIT traps; no lane service executable was installed.
+
+The narrow follow-up source is
+`1c9252308ebaa81e4fafc88ae608cce4258d3fe3` (measured stream budget,
+bounded deadlines and safe error categories). Mac focused tests/vet/native
+attested build passed; its primary and exact mirror SHA were verified.
+The Mac operator is private and standalone, not selected or service-installed:
+`/private/tmp/rsr-mac-exact-teardown-20261114-url98z29/runner-lane-scoped-1c92523`,
+SHA-256 `15ffeb6da011052b2b6fc909241fdf43422f52c2ea996348397de53dd931a872`.
+
+At 20:04:11 UTC its public `--plan` passed in 2.319 s. It bound the exact
+selected PRD release/configuration/schema, all eight preserved peers, the
+immutable target/workspace and the full preserved metadata cut. Native
+read-only proof found the selected root absent and group empty. It reported
+`applied=false`, `target_reservation_released=false` and
+`safe_to_resume=not_established`; work remained nine reservations and one old
+command slot. That observation is not a cleanup stamp or capacity disposition.
+
+At 20:07 UTC the original failed exit-1 response remained revision 4/cursor 8,
+complete and untruncated, with both original file digests unchanged and neither
+ACK JSON nor marker present. No request, ACK, replay, service stop/start,
+selector/configuration change or Factory recovery occurred.
+
+The concrete owner-reviewable package is
+`/private/tmp/rsr-mac-exact-teardown-20261114-url98z29/MAINTENANCE.md`.
+It includes the exact operator/service/pair/fingerprints, preserved backup,
+fresh-backup requirement, supported stop/apply/postflight/restart order and the
+shared-stop implications for older executor-owned descriptors. The owner asked
+to **prepare** this new scoped boundary. It has not been executed; the exact
+reservation remains held and Runner route clearance is **STILL BLOCKED**.
+
+### Narrow follow-up native closeout
+
+At exact `1c9252308ebaa81e4fafc88ae608cce4258d3fe3`, the changed scoped
+store/operator/CLI regressions, native vet and attested native builds passed on
+all three Ubuntu hosts after clean explicit-key fast-forwards. Full-suite
+results above stay bound to 03c942c; only the actual narrow follow-up checks are
+claimed for 1c92523. No eligibility predicate changed in this follow-up.
+
+| Host | Focused stage including compile | Native vet | Native build |
+| --- | ---: | ---: | ---: |
+| replacement Linux | 120 s | 9 s | 32 s |
+| Sandbox | 104.803 s | 9.535 s | 31.743 s |
+| Factory | 100.36 s | 9.77 s | 30.61 s |
+
+Linux and Factory independently produced operator SHA-256
+`7159c3366c3ed96165ad5f289dd06a703023090e1e340f7e3f11fd308eb53321`.
+Their final free space was 4,175,620 KiB on Linux /tmp and 4,194,228 KiB on
+Factory /tmp; Sandbox remained above 1.46 GB before task-owned build cleanup.
+All normal caches and preserved live data remain intact. Native logs and
+structured results are private in the R168 evidence directory.
+
+Independent final procedure review found no hidden whole-set prerequisite in
+supported `prd-stop`/`prd-start` and no implicit peer recovery in this new
+command. The restart fixture covers unchanged executor startup with those eight
+preserved terminal holds. Live apply remains **NOT RUN**; the owner execution
+decision is separate from completed source qualification and delivery.
