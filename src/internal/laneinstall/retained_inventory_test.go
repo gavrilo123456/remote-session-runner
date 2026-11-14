@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/store"
@@ -226,10 +227,75 @@ func TestCatalogRetainedInventoryMissingWALPairNeverOpensSQLite(t *testing.T) {
 			if !errors.Is(err, ErrCatalogRetainedInventory) || report.InventoryComplete || readerCalled {
 				t.Fatalf("missing sidecars reached SQLite metadata read: complete=%t reader=%t err=%v", report.InventoryComplete, readerCalled, err)
 			}
+			diagnostic, ok := CatalogRetainedInventoryDiagnostics(err)
+			if !ok || diagnostic.Stage != "sidecar_identity" || diagnostic.Category != "guard_refused" {
+				t.Fatalf("sidecar refusal lost its safe failure boundary: %+v present=%t", diagnostic, ok)
+			}
 			if after := retainedInventoryFixtureHashes(t, fixture); !reflect.DeepEqual(before, after) {
 				t.Fatal("refusal created or changed database/sidecar files")
 			}
 		})
+	}
+}
+
+func TestCatalogRetainedInventoryFailureDiagnosticsClassifyReadWithoutLeakingCauses(t *testing.T) {
+	for _, test := range []struct {
+		name, category string
+		cause          error
+		cancelRead     bool
+	}{
+		{"private-query", "operation_failed", errors.New("SQL or /private/unrelated/payload must-not-escape"), false},
+		{"deadline", "deadline_exceeded", context.DeadlineExceeded, false},
+		{"cancelled", "cancelled", context.Canceled, false},
+		{"cancelled-driver-error", "cancelled", errors.New("private driver interruption must-not-escape"), true},
+		{"limit", "limit_exceeded", store.ErrRetainedWorkInventoryLimit, false},
+		{"schema", "schema_incompatible", store.ErrSchemaVersion, false},
+		{"history", "schema_incompatible", store.ErrSchemaHistory, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := retainedInventoryFixture(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			report, err := readCatalogRetainedWorkInventoryAt(ctx, fixture.layout,
+				func(context.Context) (bool, error) { return true, nil }, func() error { return nil }, 0,
+				func(context.Context, *sql.DB, int) (store.RetainedWorkInventory, error) {
+					if test.cancelRead {
+						cancel()
+					}
+					return store.RetainedWorkInventory{Complete: true, Sessions: []store.RetainedWorkSession{{SessionID: "private-partial-row-must-not-escape"}}}, test.cause
+				})
+			if !errors.Is(err, ErrCatalogRetainedInventory) || !reflect.DeepEqual(report, CatalogRetainedWorkInventoryReport{}) {
+				t.Fatalf("read failure returned usable rows or lost compatibility: %+v err=%v", report, err)
+			}
+			diagnostic, ok := CatalogRetainedInventoryDiagnostics(err)
+			if !ok || diagnostic.Stage != "inventory_read" || diagnostic.Category != test.category || diagnostic.ElapsedMilliseconds < 0 {
+				t.Fatalf("wrong safe read diagnostic: %+v present=%t", diagnostic, ok)
+			}
+			raw, marshalErr := json.Marshal(diagnostic)
+			if marshalErr != nil || strings.Contains(string(raw), "must-not-escape") || strings.Contains(err.Error(), "must-not-escape") || errors.Is(err, test.cause) {
+				t.Fatalf("private cause or payload escaped: diagnostic=%s err=%v", raw, err)
+			}
+		})
+	}
+}
+
+func TestCatalogRetainedInventoryDiagnosticsPreserveElapsedAndRejectUnrecognizedMetadata(t *testing.T) {
+	err := retainedInventoryFailure("inventory_read", time.Now().Add(-15*time.Millisecond), context.DeadlineExceeded)
+	diagnostic, ok := CatalogRetainedInventoryDiagnostics(errors.Join(errors.New("private-wrapper-must-not-escape"), err))
+	if !ok || diagnostic.ElapsedMilliseconds < 15 || diagnostic.Stage != "inventory_read" || diagnostic.Category != "deadline_exceeded" {
+		t.Fatalf("elapsed or wrapped diagnostic lost: %+v present=%t", diagnostic, ok)
+	}
+	for _, bad := range []CatalogRetainedInventoryDiagnostic{
+		{Stage: "private-path-must-not-escape", Category: "guard_refused"},
+		{Stage: "inventory_read", Category: "raw-SQL-must-not-escape"},
+		{Stage: "inventory_read", Category: "guard_refused", ElapsedMilliseconds: -1},
+	} {
+		if diagnostic, ok := CatalogRetainedInventoryDiagnostics(&catalogRetainedInventoryError{bad}); ok || diagnostic != (CatalogRetainedInventoryDiagnostic{}) {
+			t.Fatalf("unrecognized metadata was exported: %+v present=%t", diagnostic, ok)
+		}
+	}
+	if _, ok := CatalogRetainedInventoryDiagnostics(errors.New("private arbitrary error")); ok {
+		t.Fatal("arbitrary errors were accepted as a safe failure diagnostic")
 	}
 }
 

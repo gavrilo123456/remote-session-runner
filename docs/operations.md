@@ -904,6 +904,18 @@ schema, missing required tables, a query failure, or the row/output limit makes
 the export fail rather than claim an empty or complete inventory. There is no
 pagination that could silently omit work.
 
+On failure, a qualified diagnostic with the safe-failure correction additionally
+reports fixed `failure_stage`, `error_category` and measured `elapsed_ms`.
+Categories distinguish `deadline_exceeded`, `cancelled`, `limit_exceeded`,
+`schema_incompatible`, `guard_refused` and `operation_failed`. Stages identify
+the reader boundary, such as `sidecar_identity`, `database_open`,
+`inventory_read` or `service_revalidation`. An unclassified failure reports
+`unknown`/`unavailable` without inventing elapsed timing. These fields do not
+include raw database errors, SQL, private paths, payloads or partial rows.
+The ten-second whole-read bound and every consistency/completeness guard remain
+unchanged. Historical generic failures cannot be assigned a cause from their
+duration alone; capture a fresh supported read and preserve the original failure.
+
 The detailed command requires an existing private WAL/SHM pair. If those
 read-coordination files are unavailable it refuses before opening SQLite,
 rather than create them. Ordinary SQLite reader coordination may update SHM
@@ -1089,6 +1101,14 @@ selected-byte readiness and the original failed/succeeded result and ACK state
 through read-only status. This recovery does not publish a new request or ACK,
 replay work, or release any Factory reservation. It establishes Runner's
 supported cleanup boundary; it does not grant separate Factory eligibility.
+
+This installed recovery boundary cannot select one completed teardown while
+leaving other retained session reservations or a lost command slot in place.
+Do not stop services merely to reach this already-known refusal, select
+unrelated holds without their separate disposition, or replace the sealed
+executor with an ad hoc recovery executable. Preserving unrelated retained
+holds requires a separately qualified exact-subset recovery capability; the
+current whole-set guard is not that capability.
 
 ### Linux-only queue-preserving online retained-capacity recovery
 

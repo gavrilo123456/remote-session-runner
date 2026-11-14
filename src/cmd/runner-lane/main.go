@@ -2047,11 +2047,17 @@ func writeRetainedWorkInventory(stdout io.Writer, inventory laneinstall.CatalogR
 		inventory.RecoveryAuthorized || inventory.SafeToResume != "not_established" {
 		// Never publish rows from an incomplete export. Even a caller that only
 		// reads stdout must see that this observation is not usable for recovery.
-		if err := writeJSON(stdout, map[string]any{
+		failure := map[string]any{
 			"format_version": 1, "inventory_complete": false,
 			"safe_to_resume": "not_established", "recovery_authorized": false,
-			"error": "retained_work_inventory_unavailable",
-		}); err != nil {
+			"error": "retained_work_inventory_unavailable", "failure_stage": "unknown", "error_category": "unavailable",
+		}
+		if diagnostic, ok := laneinstall.CatalogRetainedInventoryDiagnostics(readErr); ok {
+			failure["failure_stage"] = diagnostic.Stage
+			failure["error_category"] = diagnostic.Category
+			failure["elapsed_ms"] = diagnostic.ElapsedMilliseconds
+		}
+		if err := writeJSON(stdout, failure); err != nil {
 			return err
 		}
 		return errors.New("retained-work inventory is incomplete or unavailable; no recovery is authorized")

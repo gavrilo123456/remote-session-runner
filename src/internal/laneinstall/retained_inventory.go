@@ -22,6 +22,85 @@ import (
 // contain SQL or paths unrelated to the selected metadata authority.
 var ErrCatalogRetainedInventory = errors.New("selected retained-work inventory is unavailable or incomplete")
 
+// CatalogRetainedInventoryDiagnostic identifies only an allowlisted failure
+// boundary. It never carries the underlying error, SQL, paths or identity rows.
+type CatalogRetainedInventoryDiagnostic struct {
+	Stage               string `json:"failure_stage"`
+	Category            string `json:"error_category"`
+	ElapsedMilliseconds int64  `json:"elapsed_ms"`
+}
+
+type catalogRetainedInventoryError struct {
+	diagnostic CatalogRetainedInventoryDiagnostic
+}
+
+func (e *catalogRetainedInventoryError) Error() string { return ErrCatalogRetainedInventory.Error() }
+func (e *catalogRetainedInventoryError) Unwrap() error { return ErrCatalogRetainedInventory }
+
+// CatalogRetainedInventoryDiagnostics returns safe metadata only for errors
+// produced by this reader. Generic errors retain the existing unknown failure.
+func CatalogRetainedInventoryDiagnostics(err error) (CatalogRetainedInventoryDiagnostic, bool) {
+	var failure *catalogRetainedInventoryError
+	if !errors.As(err, &failure) || failure == nil || failure.diagnostic.ElapsedMilliseconds < 0 ||
+		!validRetainedInventoryStage(failure.diagnostic.Stage) || !validRetainedInventoryCategory(failure.diagnostic.Category) {
+		return CatalogRetainedInventoryDiagnostic{}, false
+	}
+	return failure.diagnostic, true
+}
+
+func retainedInventoryFailure(stage string, started time.Time, cause error) error {
+	category := "operation_failed"
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		category = "deadline_exceeded"
+	case errors.Is(cause, context.Canceled):
+		category = "cancelled"
+	case errors.Is(cause, store.ErrRetainedWorkInventoryLimit):
+		category = "limit_exceeded"
+	case errors.Is(cause, store.ErrSchemaVersion), errors.Is(cause, store.ErrSchemaHistory):
+		category = "schema_incompatible"
+	case errors.Is(cause, ErrCatalogRetainedInventory):
+		category = "guard_refused"
+	}
+	elapsed := time.Since(started).Milliseconds()
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return &catalogRetainedInventoryError{CatalogRetainedInventoryDiagnostic{
+		Stage: stage, Category: category, ElapsedMilliseconds: elapsed,
+	}}
+}
+
+// Some SQLite/helpers return a driver-specific interruption error rather than
+// wrap the operation context. Observe it before deferred cancel runs, so an
+// expired operation is classified without mislabelling ordinary failures.
+func retainedInventoryOperationError(ctx context.Context, cause error) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return cause
+}
+
+func validRetainedInventoryStage(stage string) bool {
+	switch stage {
+	case "scope", "catalog_root", "layout", "authority", "selection", "configuration", "database_identity", "sidecar_identity",
+		"service_status", "database_open", "database_binding", "inventory_read", "database_close", "database_revalidation",
+		"configuration_revalidation", "selection_revalidation", "service_revalidation", "artifact_schema":
+		return true
+	default:
+		return false
+	}
+}
+
+func validRetainedInventoryCategory(category string) bool {
+	switch category {
+	case "guard_refused", "operation_failed", "deadline_exceeded", "cancelled", "limit_exceeded", "schema_incompatible":
+		return true
+	default:
+		return false
+	}
+}
+
 // CatalogRetainedDatabaseIdentity binds the read cut to the selected private
 // authority file. It is not a content hash: live SQLite files can change while
 // a read transaction retains its coherent WAL snapshot.
@@ -69,7 +148,7 @@ type CatalogRetainedWorkInventoryReport struct {
 // services and retained holds may remain present. It has no mutation path.
 func ReadCatalogRetainedWorkInventory(ctx context.Context, plan Plan, service SimpleServiceProbe, maxRows int) (CatalogRetainedWorkInventoryReport, error) {
 	if validateSimplePlan(plan) != nil || service == nil || !retainedInventoryAccountAndPlatform(plan.HostID, plan.Namespace.Account) {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+		return CatalogRetainedWorkInventoryReport{}, retainedInventoryFailure("scope", time.Now(), ErrCatalogRetainedInventory)
 	}
 	validate := func() error {
 		_, err := loadSimpleLaneAuthority(plan)
@@ -84,7 +163,7 @@ func ReadCatalogRetainedWorkInventory(ctx context.Context, plan Plan, service Si
 // without entering PRD preflight, backup, installation or recovery commands.
 func ReadCatalogPRDRetainedWorkInventory(ctx context.Context, plan PRDUpgradePlan, service PRDServiceProbe, maxRows int) (CatalogRetainedWorkInventoryReport, error) {
 	if validatePRDPlan(plan) != nil || service == nil || !retainedInventoryAccountAndPlatform(plan.HostID, plan.Namespace.Account) {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+		return CatalogRetainedWorkInventoryReport{}, retainedInventoryFailure("scope", time.Now(), ErrCatalogRetainedInventory)
 	}
 	catalogPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
 	return readCatalogRetainedWorkInventoryForPlan(ctx, catalogPlan, func(ctx context.Context) (bool, error) {
@@ -105,16 +184,17 @@ func retainedInventoryAccountAndPlatform(hostID, account string) bool {
 }
 
 func readCatalogRetainedWorkInventoryForPlan(ctx context.Context, plan Plan, serviceStatus func(context.Context) (bool, error), validateAuthority func() error, maxRows int) (CatalogRetainedWorkInventoryReport, error) {
+	started := time.Now()
 	if validateCatalogPlan(plan) != nil || serviceStatus == nil || validateAuthority == nil {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+		return CatalogRetainedWorkInventoryReport{}, retainedInventoryFailure("scope", started, ErrCatalogRetainedInventory)
 	}
 	root, err := DefaultCatalogRootForPlan(plan)
 	if err != nil {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+		return CatalogRetainedWorkInventoryReport{}, retainedInventoryFailure("catalog_root", started, err)
 	}
 	layout, err := catalogSelectorLayoutForPlan(plan, root)
 	if err != nil {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+		return CatalogRetainedWorkInventoryReport{}, retainedInventoryFailure("layout", started, err)
 	}
 	return readCatalogRetainedWorkInventoryAt(ctx, layout, serviceStatus, validateAuthority, maxRows, store.ReadRetainedWorkInventory)
 }
@@ -123,7 +203,17 @@ type retainedInventoryReader func(context.Context, *sql.DB, int) (store.Retained
 
 // The injectable reader is limited to this private fixture seam. Public
 // commands always use the store's schema-40, single-cut metadata reader.
-func readCatalogRetainedWorkInventoryAt(ctx context.Context, layout catalogSelectorLayout, serviceStatus func(context.Context) (bool, error), validateAuthority func() error, maxRows int, readInventory retainedInventoryReader) (CatalogRetainedWorkInventoryReport, error) {
+func readCatalogRetainedWorkInventoryAt(ctx context.Context, layout catalogSelectorLayout, serviceStatus func(context.Context) (bool, error), validateAuthority func() error, maxRows int, readInventory retainedInventoryReader) (report CatalogRetainedWorkInventoryReport, resultErr error) {
+	started := time.Now()
+	stage := "layout"
+	defer func() {
+		if resultErr != nil {
+			// Discard partial rows and raw causes at this boundary. The safe
+			// classification is computed before the raw cause is dropped.
+			report = CatalogRetainedWorkInventoryReport{}
+			resultErr = retainedInventoryFailure(stage, started, resultErr)
+		}
+	}()
 	if validateCatalogSelectorLayout(layout) != nil || serviceStatus == nil || validateAuthority == nil || readInventory == nil ||
 		maxRows < 0 || maxRows > store.MaxRetainedWorkInventoryRows {
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
@@ -134,17 +224,24 @@ func readCatalogRetainedWorkInventoryAt(ctx context.Context, layout catalogSelec
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if validateAuthority() != nil {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+	stage = "authority"
+	if err := validateAuthority(); err != nil {
+		return CatalogRetainedWorkInventoryReport{}, err
 	}
+	stage = "selection"
 	selected, err := inspectCatalogSelector(layout)
-	if err != nil || selected.Kind == "unselected" {
+	if err != nil {
+		return CatalogRetainedWorkInventoryReport{}, err
+	}
+	if selected.Kind == "unselected" {
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
 	}
+	stage = "configuration"
 	configurationSHA, err := hashCatalogConfiguration(layout.configFile)
 	if err != nil {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+		return CatalogRetainedWorkInventoryReport{}, err
 	}
+	stage = "database_identity"
 	identity, err := retainedInventoryDatabaseIdentity(layout.databasePath)
 	if err != nil {
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
@@ -153,45 +250,82 @@ func readCatalogRetainedWorkInventoryAt(ctx context.Context, layout catalogSelec
 	// are absent. This diagnostic accepts only an already-open WAL authority
 	// with its complete private sidecar pair; it never uses immutable=1, which
 	// would hide committed WAL work and invalidate the inventory.
+	stage = "sidecar_identity"
 	sidecars, err := retainedInventorySidecarIdentities(layout.databasePath)
 	if err != nil {
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
 	}
+	stage = "service_status"
 	active, err := serviceStatus(ctx)
 	if err != nil {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+		return CatalogRetainedWorkInventoryReport{}, retainedInventoryOperationError(ctx, err)
 	}
+	stage = "database_open"
 	database, err := store.OpenExistingCurrentReadOnly(ctx, layout.databasePath)
 	if err != nil {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+		return CatalogRetainedWorkInventoryReport{}, retainedInventoryOperationError(ctx, err)
 	}
+	stage = "database_binding"
 	openedIdentity, err := retainedInventoryDatabaseIdentity(layout.databasePath)
 	openedSidecars, sidecarErr := retainedInventorySidecarIdentities(layout.databasePath)
 	if err != nil || openedIdentity != identity || sidecarErr != nil || openedSidecars != sidecars {
 		_ = database.Close()
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
 	}
+	stage = "inventory_read"
 	inventory, readErr := readInventory(ctx, database, maxRows)
 	closeErr := database.Close()
-	if readErr != nil || closeErr != nil || !inventory.Complete || inventory.SchemaVersion != 40 || ctx.Err() != nil {
+	if readErr != nil {
+		return CatalogRetainedWorkInventoryReport{}, retainedInventoryOperationError(ctx, readErr)
+	}
+	if closeErr != nil {
+		stage = "database_close"
+		return CatalogRetainedWorkInventoryReport{}, closeErr
+	}
+	if !inventory.Complete {
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
 	}
+	if inventory.SchemaVersion != 40 {
+		return CatalogRetainedWorkInventoryReport{}, store.ErrSchemaVersion
+	}
+	if ctx.Err() != nil {
+		return CatalogRetainedWorkInventoryReport{}, ctx.Err()
+	}
+	stage = "database_revalidation"
 	finalIdentity, err := retainedInventoryDatabaseIdentity(layout.databasePath)
 	finalSidecars, sidecarErr := retainedInventorySidecarIdentities(layout.databasePath)
 	if err != nil || finalIdentity != identity || sidecarErr != nil || finalSidecars != sidecars {
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
 	}
+	stage = "configuration_revalidation"
 	finalConfigurationSHA, err := hashCatalogConfiguration(layout.configFile)
-	if err != nil || finalConfigurationSHA != configurationSHA || validateAuthority() != nil {
+	if err != nil {
+		return CatalogRetainedWorkInventoryReport{}, err
+	}
+	if finalConfigurationSHA != configurationSHA {
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
 	}
+	if err := validateAuthority(); err != nil {
+		return CatalogRetainedWorkInventoryReport{}, err
+	}
+	stage = "selection_revalidation"
 	finalSelection, err := inspectCatalogSelector(layout)
-	if err != nil || !reflect.DeepEqual(selected, finalSelection) {
+	if err != nil {
+		return CatalogRetainedWorkInventoryReport{}, err
+	}
+	if !reflect.DeepEqual(selected, finalSelection) {
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
 	}
+	stage = "service_revalidation"
 	finalActive, err := serviceStatus(ctx)
-	if err != nil || active != finalActive || ctx.Err() != nil {
+	if err != nil {
+		return CatalogRetainedWorkInventoryReport{}, retainedInventoryOperationError(ctx, err)
+	}
+	if active != finalActive {
 		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+	}
+	if ctx.Err() != nil {
+		return CatalogRetainedWorkInventoryReport{}, ctx.Err()
 	}
 	artifact := CatalogRetainedSelectedArtifact{
 		Kind: selected.Kind, SelectorTarget: selected.Target, BundleSHA256: selected.Bundle.BundleSHA256,
@@ -206,8 +340,9 @@ func readCatalogRetainedWorkInventoryAt(ctx context.Context, layout catalogSelec
 		artifact.ReadSchemaMax = selected.Release.Database.ReadSchemaMax
 		artifact.Toolchain = selected.Release.Toolchain
 	}
+	stage = "artifact_schema"
 	if inventory.SchemaVersion < artifact.ReadSchemaMin || inventory.SchemaVersion > artifact.ReadSchemaMax {
-		return CatalogRetainedWorkInventoryReport{}, ErrCatalogRetainedInventory
+		return CatalogRetainedWorkInventoryReport{}, store.ErrSchemaVersion
 	}
 	return CatalogRetainedWorkInventoryReport{
 		FormatVersion: 1, InventoryComplete: true, SafeToResume: "not_established", RecoveryAuthorized: false,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -40,6 +41,34 @@ func TestBUG027IncompleteInventoryEmitsNoPartialIdentityOrUnderlyingError(t *tes
 	}
 	if strings.Contains(stdout.String(), "must-not-escape") || strings.Contains(err.Error(), "must-not-escape") {
 		t.Fatal("partial identity or underlying error leaked from incomplete report")
+	}
+	if report["failure_stage"] != "unknown" || report["error_category"] != "unavailable" {
+		t.Fatalf("generic failure claimed an identified cause: %s", stdout.String())
+	}
+	if _, present := report["elapsed_ms"]; present {
+		t.Fatal("generic failure invented an elapsed observation")
+	}
+}
+
+func TestBUG027IncompleteInventoryEmitsOnlyRecognizedSafeFailureDiagnostics(t *testing.T) {
+	_, readErr := laneinstall.ReadCatalogPRDRetainedWorkInventory(context.Background(), laneinstall.PRDUpgradePlan{}, nil, 0)
+	if readErr == nil {
+		t.Fatal("invalid fixture unexpectedly opened an authority")
+	}
+	var stdout bytes.Buffer
+	partial := laneinstall.CatalogRetainedWorkInventoryReport{HostID: "partial-authority-must-not-escape"}
+	err := writeRetainedWorkInventory(&stdout, partial, errors.Join(errors.New("private-wrapper-must-not-escape"), readErr))
+	var report map[string]any
+	if err == nil || json.Unmarshal(stdout.Bytes(), &report) != nil || report["inventory_complete"] != false ||
+		report["failure_stage"] != "scope" || report["error_category"] != "guard_refused" ||
+		report["recovery_authorized"] != false || report["safe_to_resume"] != "not_established" {
+		t.Fatalf("wrong safe diagnostic output: %s err=%v", stdout.String(), err)
+	}
+	if elapsed, ok := report["elapsed_ms"].(float64); !ok || elapsed < 0 {
+		t.Fatalf("missing measured elapsed field: %s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "must-not-escape") || strings.Contains(err.Error(), "must-not-escape") {
+		t.Fatal("partial rows or raw wrapper escaped through diagnostic output")
 	}
 }
 
