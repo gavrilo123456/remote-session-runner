@@ -1110,6 +1110,64 @@ executor with an ad hoc recovery executable. Preserving unrelated retained
 holds requires a separately qualified exact-subset recovery capability; the
 current whole-set guard is not that capability.
 
+### Scoped completed-teardown operator preparation
+
+**Status: source preparation; not a live recovery authorization.** The new
+`catalog-prd-recover-scoped-teardown` command is a separate, explicitly
+qualified schema-40 operator boundary for one ordinary completed command.
+It leaves the existing whole-set commands unchanged. It never falls back to
+those commands or sends signals to make a live runtime exit.
+
+This named procedure is an amendment to the selected-sealed-executor-only
+rule above: a separately qualified, attested operator executable performs
+the scoped transaction and no-signal exit proof. It does not install or
+select service bytes, invoke an unsupported executor flag or migrate a DB.
+Do not replace it with direct SQL, a `go run` recovery or an arbitrary helper.
+
+Before execution, prepare a concrete owner-reviewable maintenance package:
+
+1. Record the exact operator source/hash, selected release/bundle/configuration,
+   schema and the one session/command/job/request identity. Run its read-only
+   `--plan` to obtain the preserved-inventory, peer-ownership and immutable
+   target/workspace fingerprints. Preserve the original response/events and
+   ACK state independently. Plan output never authorizes recovery.
+2. Confirm the authority's publisher pause and take a fresh verified consistent
+   catalog backup. Include that exact backup, the fingerprints, supported
+   stop/restart steps and all remaining preconditions in the reviewed package.
+3. Obtain approval for this exact new maintenance boundary before executing it.
+   Then use supported `prd-stop`; the scoped command additionally requires
+   both exact Mac labels and private sockets absent, plus exclusive catalog
+   and lifecycle locks. A known unsupported precondition must be resolved
+   before stopping merely to encounter its refusal.
+4. Use `--apply` with exactly one `--teardown-pair` and all reviewed hashes.
+   It must prove the original target exited and its process group empty,
+   retain all peer ownership and result records, stamp only target proof,
+   atomically release only its reservation, and finalize only its owned
+   workspace/marker. An unknown/live/reused target or changed preservation
+   binding refuses. No request, ACK, replay or Factory-state action occurs.
+5. If interrupted, retain the original target archive and fingerprints.
+   A stale catalog backup needs a fresh verified backup; bind the original
+   runtime archive separately with `--runtime-archive-dir` and
+   `--runtime-archive-manifest-sha256`, never invent a replacement baseline.
+   Retry only this scoped command; a durably released target resumes
+   finalization without repeated PID inspection, signalling or release.
+   A replaced workspace inode is not the original workspace, even at the
+   same path. Never regenerate a convenient baseline to hide drift.
+   Workspace bytes are revalidated against their original archive after exit
+   proof. A crash during proof staging can leave an extra target-only temporary
+   file; an archive mismatch safely refuses and needs preserved-artifact review,
+   not automatic deletion or replacement of the archived baseline.
+6. Verify the expected target-only delta and zero target finalization work,
+   unchanged original exchange and unchanged peer hashes/counts. Nonzero
+   preserved LOST holds are expected. The report still says
+   `safe_to_resume=not_established` while services are stopped. Only after
+   successful postflight use supported `prd-start`, then obtain fresh
+   selected-byte readiness, detailed inventory and route evidence. Keep
+   Runner clearance distinct from any separate Factory qualification.
+
+The exact R168 preparation, required fixtures and live-execution status are
+recorded in [its preparation record](../040-implementation-evidence/R168-scoped-teardown-recovery-preparation.md).
+
 ### Linux-only queue-preserving online retained-capacity recovery
 
 This procedure is only for the selected Ubuntu `runnerd` authority and its

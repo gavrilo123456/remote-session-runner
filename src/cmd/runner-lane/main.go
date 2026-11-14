@@ -184,6 +184,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCatalogPRDBackup(ctx, args[1:], stdout, stderr)
 	case "catalog-prd-recover":
 		err = runCatalogPRDRecover(ctx, args[1:], stdout, stderr)
+	case "catalog-prd-recover-scoped-teardown":
+		err = runCatalogPRDScopedTeardown(ctx, args[1:], stdout, stderr)
 	case "catalog-probe-prepare":
 		err = runCatalogProbePrepare(args[1:], stdout, stderr)
 	case "catalog-probe-disposition":
