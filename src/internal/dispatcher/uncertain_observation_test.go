@@ -72,8 +72,10 @@ func TestUncertainRemoteObservationFailuresNeverReplayOrChangeLifecycle(t *testi
 				}
 				if mode == "changed_during_read" {
 					// The source read began after expiry, but another actor changed
-					// the lifecycle before the observation could be committed.
-					if _, err := authority.TransitionLocalIntent(ctx, intent.IntentID, store.LocalIntentNotDelivered, "concurrent_disposition"); err != nil {
+					// the lifecycle before the observation could be committed. That
+					// independent control transaction does not inherit the SSH GET's
+					// short observation context.
+					if _, err := authority.TransitionLocalIntent(context.Background(), intent.IntentID, store.LocalIntentNotDelivered, "concurrent_disposition"); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -92,13 +94,23 @@ func TestUncertainRemoteObservationFailuresNeverReplayOrChangeLifecycle(t *testi
 				}
 				return sshbridge.ReplyFrame{ProtocolVersion: 1, RequestID: frame.RequestID, ResponseType: kind, Payload: payload}, nil
 			}}
-			driver, err := NewRemoteDriverWithClock(authority, caller, "observer", time.Minute, func() time.Time { return now }, RemoteObservationOptions{Timeout: 10 * time.Millisecond})
+			// Only the timeout case needs an artificially short read budget.
+			// Other cases exercise the normal shipped observer and must prove
+			// their intended guard rather than pass through an accidental timeout.
+			options := RemoteObservationOptions{}
+			if mode == "timeout" {
+				options.Timeout = 10 * time.Millisecond
+			}
+			driver, err := NewRemoteDriverWithClock(authority, caller, "observer", time.Minute, func() time.Time { return now }, options)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, _, err = driver.ObserveUncertainIntent(context.Background(), intent.IntentID)
 			if err == nil {
 				t.Fatal("failed observation accepted")
+			}
+			if mode == "changed_during_read" && !errors.Is(err, store.ErrLocalIntentLeaseLost) {
+				t.Fatalf("concurrent disposition did not reach the stale-observation guard: %v", err)
 			}
 			if mode == "active_lease" || mode == "expired" {
 				if calls != 0 {
@@ -108,10 +120,16 @@ func TestUncertainRemoteObservationFailuresNeverReplayOrChangeLifecycle(t *testi
 				t.Fatalf("calls=%d", calls)
 			}
 			after, _ := authority.ListLocalIntentLifecycle(context.Background(), intent.IntentID)
+			if mode == "changed_during_read" && (len(after) != len(before)+1 || after[len(after)-1].Reason != "concurrent_disposition") {
+				t.Fatalf("observer changed the concurrent writer's lifecycle evidence: %+v", after)
+			}
 			if mode != "changed_during_read" && !reflect.DeepEqual(before, after) {
 				t.Fatalf("failure changed lifecycle: before=%+v after=%+v", before, after)
 			}
 			stored, _ := authority.GetLocalIntent(context.Background(), intent.IntentID)
+			if mode == "changed_during_read" && stored.DeliveryState != store.LocalIntentNotDelivered {
+				t.Fatalf("observer overwrote the concurrent disposition: %+v", stored)
+			}
 			if stored.AttemptCount != 1 || store.HasRemoteTerminalProof(stored) {
 				t.Fatalf("fabricated attempt/proof: %+v", stored)
 			}
