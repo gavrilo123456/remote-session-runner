@@ -2,20 +2,21 @@
 
 ## Status
 
-**FIXED — DEV VERIFIED; QAS/PRD SERVICE DEPLOYMENT PENDING.** The automatic
-observer and release-gate contract corrections are sealed in
-rr-20261117-bug033-fd20b1e, source fd20b1e. Full native test/vet/build/smoke
-qualification passed on four hosts. Dev operation
-3b02eecc610445438a61f2387457bde5 completed with eight passing cohort gates and
-identical released receipts. Fresh postflight verified four active selections,
-schema 40, empty work, readiness and unchanged QAS/PRD identities. See
-[Dev deployment evidence](../040-implementation-evidence/BUG-033-dev-deployment-2026-11-17.md).
+**FIXED — DEV/QAS VERIFIED; PRD SERVICE DEPLOYMENT PENDING.** Release
+rr-20261117-bug033-fd20b1e (source fd20b1e) passed full native qualification
+on four hosts and all eight cohort gates in Dev then QAS using identical
+bundle bytes. QAS operation 14cc57668bfd47768a1d49fe49c68440 completed with
+admissions released, identical receipts and source-marker synchronization.
+Fresh postflight verified four active selections, schema40, empty work,
+readiness and unchanged Dev/PRD identities. See the
+[QAS evidence](../040-implementation-evidence/BUG-033-qas-deployment-2026-11-17.md)
+and [Dev evidence](../040-implementation-evidence/BUG-033-dev-deployment-2026-11-17.md).
 
 The historical GPU exchange remains administratively indeterminate; deployment
 does not establish its execution or teardown. It was not replayed, replaced or
-ACKed by this rollout. Uncertainty/no-replay behavior is proven by disposable
-regressions; no live lost-reply fault was injected. QAS/PRD service promotion
-and filesystem-mailbox acceptance remain NOT RUN for this release.
+ACKed by these rollouts. Uncertainty/no-replay behavior is proven by disposable
+regressions; no live lost-reply fault was injected. PRD service promotion and
+filesystem-mailbox acceptance remain NOT RUN for this release.
 
 ## Observed behavior
 
