@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"remote-session-runner/src/internal/catalogprobe"
 	"remote-session-runner/src/internal/config"
 	"remote-session-runner/src/internal/domain"
 	"remote-session-runner/src/internal/store"
@@ -27,8 +28,8 @@ import (
 const catalogProbeScopeFormat = 3
 
 const (
-	CatalogMaintenanceProbeTokenHeader  = "X-Runner-Catalog-Maintenance-Token"
-	CatalogMaintenanceProbeDigestHeader = "X-Runner-Catalog-Maintenance-Request-SHA256"
+	CatalogMaintenanceProbeTokenHeader  = catalogprobe.TokenHeader
+	CatalogMaintenanceProbeDigestHeader = catalogprobe.RequestDigestHeader
 )
 
 type CatalogProbeTransport string
@@ -39,7 +40,9 @@ const (
 	CatalogProbeMacLocal   CatalogProbeTransport = "mac-local"
 )
 
-var ErrCatalogProbeAdmission = errors.New("catalog maintenance probe admission refused")
+var ErrCatalogProbeAdmission = catalogprobe.ErrAdmission
+
+var _ catalogprobe.Guard = (*CatalogMaintenanceProbeGuard)(nil)
 
 var probeEnvironmentName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 

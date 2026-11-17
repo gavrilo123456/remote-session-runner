@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,8 +23,8 @@ import (
 	"time"
 
 	"remote-session-runner/src/internal/audit"
+	"remote-session-runner/src/internal/catalogprobe"
 	"remote-session-runner/src/internal/domain"
-	"remote-session-runner/src/internal/laneinstall"
 	"remote-session-runner/src/internal/lifecycle"
 	"remote-session-runner/src/internal/mailbox"
 	"remote-session-runner/src/internal/opshealth"
@@ -57,7 +58,7 @@ type ServerOptions struct {
 	// MaintenanceAdmissionClosed leaves read-only health/status available while
 	// refusing local submissions and control mutations for a catalog cohort.
 	MaintenanceAdmissionClosed bool
-	MaintenanceProbeGuard      *laneinstall.CatalogMaintenanceProbeGuard
+	MaintenanceProbeGuard      catalogprobe.Guard
 	MaintenanceProbeDispatch   func(context.Context, string, string) error
 }
 
@@ -78,7 +79,7 @@ type Server struct {
 	healthReport               func(context.Context) opshealth.Report
 	mailboxLifecycleStatus     MailboxLifecycleStatusProvider
 	maintenanceAdmissionClosed bool
-	maintenanceProbeGuard      *laneinstall.CatalogMaintenanceProbeGuard
+	maintenanceProbeGuard      catalogprobe.Guard
 	maintenanceProbeDispatch   func(context.Context, string, string) error
 	// afterIntentCommit is a private crash-test seam. The production service
 	// composition never sets it; package tests use it to stop the real HTTP
@@ -124,7 +125,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		healthReport:               options.HealthReport,
 		mailboxLifecycleStatus:     options.MailboxLifecycleStatus,
 		maintenanceAdmissionClosed: options.MaintenanceAdmissionClosed,
-		maintenanceProbeGuard:      options.MaintenanceProbeGuard,
+		maintenanceProbeGuard:      normalizeMaintenanceProbeGuard(options.MaintenanceProbeGuard),
 		maintenanceProbeDispatch:   options.MaintenanceProbeDispatch,
 	}, nil
 }
@@ -148,12 +149,25 @@ func (s *Server) SetMaintenanceAdmissionClosed(closed bool) {
 
 // SetMaintenanceProbe installs the held-cohort, one-time Mac-local probe
 // scope. It does not open ordinary local API or Router admission.
-func (s *Server) SetMaintenanceProbe(guard *laneinstall.CatalogMaintenanceProbeGuard, dispatch func(context.Context, string, string) error) {
+func (s *Server) SetMaintenanceProbe(guard catalogprobe.Guard, dispatch func(context.Context, string, string) error) {
 	if s == nil {
 		return
 	}
-	s.maintenanceProbeGuard = guard
+	s.maintenanceProbeGuard = normalizeMaintenanceProbeGuard(guard)
 	s.maintenanceProbeDispatch = dispatch
+}
+
+func normalizeMaintenanceProbeGuard(guard catalogprobe.Guard) catalogprobe.Guard {
+	// The service composition passes a nil concrete guard when no scope is
+	// installed. Preserve the original pointer's nil semantics after moving
+	// the adapter to an interface, including not reading held request bodies.
+	if guard != nil {
+		value := reflect.ValueOf(guard)
+		if value.Kind() == reflect.Pointer && value.IsNil() {
+			return nil
+		}
+	}
+	return guard
 }
 
 func (s *Server) Listen() error {
@@ -438,12 +452,12 @@ func (s *Server) serveHTTP(response http.ResponseWriter, request *http.Request) 
 			key := request.Header.Get("Idempotency-Key")
 			if readErr != nil || s.validateMacLocalMaintenanceProbe(key, body) != nil ||
 				s.maintenanceProbeGuard.ReserveCatalogMaintenanceProbeForController(domain.ControllerTypeLocalUser, string(s.owner.ID()),
-					request.Header.Get(laneinstall.CatalogMaintenanceProbeTokenHeader), key, body, time.Now().UTC()) != nil {
+					request.Header.Get(catalogprobe.TokenHeader), key, body, time.Now().UTC()) != nil {
 				writeError(response, http.StatusServiceUnavailable, "maintenance_admission_closed", "local submissions and mutations are closed for cohort maintenance")
 				return
 			}
 			request.Body = io.NopCloser(bytes.NewReader(body))
-			request = request.WithContext(context.WithValue(request.Context(), localMaintenanceProbeContextKey{}, request.Header.Get(laneinstall.CatalogMaintenanceProbeTokenHeader)))
+			request = request.WithContext(context.WithValue(request.Context(), localMaintenanceProbeContextKey{}, request.Header.Get(catalogprobe.TokenHeader)))
 		} else if request.Method != http.MethodGet {
 			writeError(response, http.StatusServiceUnavailable, "maintenance_admission_closed", "local submissions and mutations are closed for cohort maintenance")
 			return
@@ -515,24 +529,24 @@ type localMaintenanceProbeContextKey struct{}
 
 func (s *Server) validateMacLocalMaintenanceProbe(idempotencyKey string, body []byte) error {
 	if idempotencyKey == "" || len(body) == 0 || domain.ValidateSerializedRequest(body) != nil {
-		return laneinstall.ErrCatalogProbeAdmission
+		return catalogprobe.ErrAdmission
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var input createJobRequest
 	if decoder.Decode(&input) != nil {
-		return laneinstall.ErrCatalogProbeAdmission
+		return catalogprobe.ErrAdmission
 	}
 	var trailing any
 	if decoder.Decode(&trailing) != io.EOF || input.Script == nil || input.Limits != nil || input.Policy != nil {
-		return laneinstall.ErrCatalogProbeAdmission
+		return catalogprobe.ErrAdmission
 	}
 	if input.Source == nil || input.Source.Mode != "empty" {
-		return laneinstall.ErrCatalogProbeAdmission
+		return catalogprobe.ErrAdmission
 	}
 	seconds, _, err := parseTimeoutSeconds(input.TimeoutSeconds)
 	if err != nil || seconds != 5 {
-		return laneinstall.ErrCatalogProbeAdmission
+		return catalogprobe.ErrAdmission
 	}
 	return s.maintenanceProbeGuard.ValidateFixedProbeRequestForController(input.Environment, input.ExecutionTarget.Kind, input.ExecutionTarget.Profile,
 		input.Source.Mode, *input.Script, seconds, domain.ControllerTypeLocalUser, string(s.owner.ID()))
