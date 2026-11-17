@@ -19,6 +19,15 @@ legacy rollback compatibility input. Never commit that file or its credentials.
 SSH private-key files may use mode `0400` or `0600`; group/world-readable or
 writable keys are rejected, and existing key permissions should be preserved.
 
+Direct API identity comes from trusted, mapped client certificates and lane
+bindings. A client's public IP may change while its certificate identity stays
+the same. Source-IP firewall filters can block a connection before TLS. For a
+dynamic client address, establish an owner-approved network policy or stable
+network path before maintenance, while retaining TLS 1.3, required client
+certificates and endpoint/identity verification. Persist network policy
+separately from release artifacts and scope changes to the selected lane.
+Changing a client IP does not require rebuilding an immutable release.
+
 ## Freeze and publish once
 
 On the Mac, inspect a source plan first. `--branch` captures a primary Gitea

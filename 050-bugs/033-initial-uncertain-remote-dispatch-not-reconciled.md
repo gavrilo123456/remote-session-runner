@@ -2,17 +2,20 @@
 
 ## Status
 
-**FIXED — SOURCE/OPERATOR QUALIFIED; SERVICE DEPLOYMENT PENDING.** Source
-`ba80fc1` and its fixture-only correction `11461dc` passed the recorded native
-checks on Mac and all three Ubuntu hosts. Gitea and the exact GitHub mirror
-delivered both revisions before native validation. The exact supported live
-plan passed without effects. The owner subsequently approved the exact
-unknown-outcome closeout and confirmed PRD clients paused. That maintenance
-completed: the original exchange is terminal indeterminate revision 3,
-unACKed and unreplayed; Mac PRD is ready on the same accepted service bytes
-and all unrelated holds/metadata are preserved. The command's historical
-execution and teardown remain unknown. The corrected automatic observer is
-not installed by source qualification or this standalone maintenance.
+**FIXED — DEV VERIFIED; QAS/PRD SERVICE DEPLOYMENT PENDING.** The automatic
+observer and release-gate contract corrections are sealed in
+rr-20261117-bug033-fd20b1e, source fd20b1e. Full native test/vet/build/smoke
+qualification passed on four hosts. Dev operation
+3b02eecc610445438a61f2387457bde5 completed with eight passing cohort gates and
+identical released receipts. Fresh postflight verified four active selections,
+schema 40, empty work, readiness and unchanged QAS/PRD identities. See
+[Dev deployment evidence](../040-implementation-evidence/BUG-033-dev-deployment-2026-11-17.md).
+
+The historical GPU exchange remains administratively indeterminate; deployment
+does not establish its execution or teardown. It was not replayed, replaced or
+ACKed by this rollout. Uncertainty/no-replay behavior is proven by disposable
+regressions; no live lost-reply fault was injected. QAS/PRD service promotion
+and filesystem-mailbox acceptance remain NOT RUN for this release.
 
 ## Observed behavior
 
