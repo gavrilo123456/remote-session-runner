@@ -1103,6 +1103,7 @@ func (s *Service) runCycle(ctx context.Context, dispatchGate *lifecycle.Gate, st
 		if gateErr == nil {
 			reconciledRemoteWork = true
 			err := errors.Join(
+				s.remoteDriver.ReconcileUncertainRemoteIntents(ctx, defaultDrainLimit),
 				s.remoteDriver.ReconcileAcceptedRemoteSubmits(ctx, defaultDrainLimit),
 				s.remoteDriver.ReconcileAcceptedRemoteRuns(ctx, defaultDrainLimit),
 			)

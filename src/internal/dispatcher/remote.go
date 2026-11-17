@@ -52,17 +52,18 @@ type RemoteCaller interface {
 // SSH bridge. It does not create IDs or send caller-supplied payloads: every
 // frame is reconstructed from the committed immutable local intent.
 type RemoteDriver struct {
-	authority     *store.AuthorityStore
-	resolver      RemoteCallerResolver
-	owner         string
-	leaseDuration time.Duration
-	now           func() time.Time
-	sessionMu     sync.RWMutex
-	sessionStates map[remoteSessionKey]domain.SessionState
-	reconcileMu   sync.Mutex
-	runCursor     *store.RemoteIntentCursor
-	submitCursor  *store.RemoteIntentCursor
-	observations  RemoteObservationOptions
+	authority       *store.AuthorityStore
+	resolver        RemoteCallerResolver
+	owner           string
+	leaseDuration   time.Duration
+	now             func() time.Time
+	sessionMu       sync.RWMutex
+	sessionStates   map[remoteSessionKey]domain.SessionState
+	reconcileMu     sync.Mutex
+	runCursor       *store.RemoteIntentCursor
+	submitCursor    *store.RemoteIntentCursor
+	uncertainCursor *store.RemoteIntentCursor
+	observations    RemoteObservationOptions
 }
 
 // NewRemoteDriver constructs a lease-owning remote driver.
