@@ -2,21 +2,18 @@
 
 ## Status
 
-**FIXED — DEV/QAS VERIFIED; PRD SERVICE DEPLOYMENT PENDING.** Release
-rr-20261117-bug033-fd20b1e (source fd20b1e) passed full native qualification
-on four hosts and all eight cohort gates in Dev then QAS using identical
-bundle bytes. QAS operation 14cc57668bfd47768a1d49fe49c68440 completed with
-admissions released, identical receipts and source-marker synchronization.
-Fresh postflight verified four active selections, schema40, empty work,
-readiness and unchanged Dev/PRD identities. See the
-[QAS evidence](../040-implementation-evidence/BUG-033-qas-deployment-2026-11-17.md)
-and [Dev evidence](../040-implementation-evidence/BUG-033-dev-deployment-2026-11-17.md).
+**FIXED — DEV/QAS/PRD VERIFIED.** The same sealed release `rr-20261117-bug033-fd20b1e`
+(source fd20b1e) passed four-host native qualification and all eight cohort gates
+in Dev → QAS → PRD. PRD operation `820eb31f30304d379403b3ff8b8529a3` completed, admissions are released,
+source-marker synchronization and fresh four-host postflight passed, and Dev/QAS
+identities were preserved. See [PRD evidence](../040-implementation-evidence/BUG-033-prd-deployment-2026-11-17.md).
 
-The historical GPU exchange remains administratively indeterminate; deployment
-does not establish its execution or teardown. It was not replayed, replaced or
-ACKed by these rollouts. Uncertainty/no-replay behavior is proven by disposable
-regressions; no live lost-reply fault was injected. PRD service promotion and
-filesystem-mailbox acceptance remain NOT RUN for this release.
+Only the separately owner-approved nine historical Mac holds were recovered;
+original command outcomes/event prefixes and eight unACKed plus R183's existing
+ACK were preserved. The historical GPU exchange remains administratively
+indeterminate and was not replayed, replaced or ACKed. Live lost-reply fault
+injection and filesystem-mailbox acceptance remain NOT RUN; this deployment
+does not prove an uncertain historical execution or teardown.
 
 ## Observed behavior
 
