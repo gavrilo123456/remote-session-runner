@@ -6,10 +6,13 @@
 `ba80fc1` and its fixture-only correction `11461dc` passed the recorded native
 checks on Mac and all three Ubuntu hosts. Gitea and the exact GitHub mirror
 delivered both revisions before native validation. The exact supported live
-plan passed without effects. The request remains accepted/uncertain and needs
-an explicit unknown-outcome decision and current Mac PRD client pause before
-the prepared maintenance. The corrected service is not installed by source
-qualification or this standalone maintenance.
+plan passed without effects. The owner subsequently approved the exact
+unknown-outcome closeout and confirmed PRD clients paused. That maintenance
+completed: the original exchange is terminal indeterminate revision 3,
+unACKed and unreplayed; Mac PRD is ready on the same accepted service bytes
+and all unrelated holds/metadata are preserved. The command's historical
+execution and teardown remain unknown. The corrected automatic observer is
+not installed by source qualification or this standalone maintenance.
 
 ## Observed behavior
 
@@ -87,6 +90,24 @@ remain outside scope. Do not repurpose the older hardcoded QAS closeout tool.
 
 The user's uncommitted GPU project evidence remains unchanged. No request
 replay, replacement, ACK or synthetic acceptance is part of this correction.
+
+## Exact request closeout — 2026-11-17
+
+The approved operator preserved the original revision-2 response and a
+consistent authority backup, then appended the supported
+`owner_abandoned_indeterminate` local-intent disposition. The original
+request/job/session/command IDs remain intact. Its current terminal response
+is revision 3 with error code `transport_uncertain`, message
+`owner administrative closeout; execution outcome unknown`, retryable false,
+and no advertised event cursor, output, exit code or teardown assertion.
+
+The lifecycle API confirms terminal/unacknowledged. Both Mac PRD components
+returned HTTP 200/ready after the same-binary restart. Complete before/after
+metadata comparisons preserved all nine older retained pairs, nine session
+reservations, two command slots and every peer intent; only this GPU intent
+left the unsettled inventory. No capacity was released, and no command or ACK
+was published. The smoke is not a passing validation and must not be replayed
+from this administrative disposition.
 
 ## Evidence
 
