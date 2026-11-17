@@ -2,11 +2,14 @@
 
 ## Status
 
-**FIXED — PENDING VERIFICATION.** The source correction and incident-scoped
-operator passed Mac affected-package tests and vet. Native delivery,
-installed-service acceptance and the exact request's disposition remain
-separate unfinished gates. Source tests alone do not establish either live
-outcome.
+**FIXED — SOURCE/OPERATOR QUALIFIED; SERVICE DEPLOYMENT PENDING.** Source
+`ba80fc1` and its fixture-only correction `11461dc` passed the recorded native
+checks on Mac and all three Ubuntu hosts. Gitea and the exact GitHub mirror
+delivered both revisions before native validation. The exact supported live
+plan passed without effects. The request remains accepted/uncertain and needs
+an explicit unknown-outcome decision and current Mac PRD client pause before
+the prepared maintenance. The corrected service is not installed by source
+qualification or this standalone maintenance.
 
 ## Observed behavior
 
