@@ -272,11 +272,15 @@ func TestBUG034LongerProofStillRejectsMissingOrChangedTerminalEvidence(t *testin
 			authority := p068Authority(t)
 			intent := bug034AcceptedRun(t, authority, name)
 			inner := &p149RecoveryCaller{intent: intent}
-			paced := &bug034PacedCaller{inner: inner, delay: 15 * time.Millisecond}
-			caller := bug029Caller{call: paced.Call, stream: paced.Stream}
+			// These cases test invalid evidence, not scheduling deadlines. The
+			// paced budget regressions cover timing separately; use normal read
+			// budgets so starvation cannot select an earlier timeout instead of
+			// the terminal-evidence guard under test.
+			observations := &bug034PacedCaller{inner: inner}
+			caller := bug029Caller{call: observations.Call, stream: observations.Stream}
 			if missingEvent {
 				caller.stream = func(ctx context.Context, frame sshbridge.RequestFrame, receive func(sshbridge.ReplyFrame) error) error {
-					return paced.Stream(ctx, frame, func(reply sshbridge.ReplyFrame) error {
+					return observations.Stream(ctx, frame, func(reply sshbridge.ReplyFrame) error {
 						var event struct {
 							Type string `json:"type"`
 						}
@@ -293,8 +297,7 @@ func TestBUG034LongerProofStillRejectsMissingOrChangedTerminalEvidence(t *testin
 					}
 				}
 			}
-			driver, err := NewRemoteDriverWithClock(authority, caller, "router-bug034-refusal", time.Minute, time.Now,
-				RemoteObservationOptions{Timeout: 150 * time.Millisecond, BatchTimeout: 5 * time.Millisecond})
+			driver, err := NewRemoteDriver(authority, caller, "router-bug034-refusal", time.Minute)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -304,8 +307,8 @@ func TestBUG034LongerProofStillRejectsMissingOrChangedTerminalEvidence(t *testin
 				t.Fatalf("invalid proof lost its safe failure stage: error=%v issues=%+v", err, issues)
 			}
 			current, readErr := authority.GetLocalIntent(context.Background(), intent.IntentID)
-			if readErr != nil || current.DeliveryState != store.LocalIntentAccepted || store.HasRemoteTerminalProof(current) || current.AttemptCount != intent.AttemptCount || paced.mutations != 0 {
-				t.Fatalf("invalid evidence changed original acceptance: intent=%+v mutations=%d err=%v", current, paced.mutations, readErr)
+			if readErr != nil || current.DeliveryState != store.LocalIntentAccepted || store.HasRemoteTerminalProof(current) || current.AttemptCount != intent.AttemptCount || observations.mutations != 0 {
+				t.Fatalf("invalid evidence changed original acceptance: intent=%+v mutations=%d err=%v", current, observations.mutations, readErr)
 			}
 		})
 	}

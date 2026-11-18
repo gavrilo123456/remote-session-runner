@@ -13,8 +13,6 @@ import (
 )
 
 func TestBUG029ReadTimeoutPersistsDiagnosticWithoutReplaying(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
 	authority := p068Authority(t)
 	intent := bug029AcceptIntent(t, authority, "timeout", false)
 	caller := bug029Caller{call: func(readCtx context.Context, frame sshbridge.RequestFrame) (sshbridge.ReplyFrame, error) {
@@ -25,6 +23,11 @@ func TestBUG029ReadTimeoutPersistsDiagnosticWithoutReplaying(t *testing.T) {
 		return sshbridge.ReplyFrame{}, readCtx.Err()
 	}}
 	driver := bug029Driver(t, authority, caller)
+	// Bound the observation and assertions, not SQLite fixture construction.
+	// The short read deadline remains the behavior under test; a CPU-starved
+	// host must not accidentally test expiration of the parent instead.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	err := driver.ReconcileAcceptedRun(ctx, intent.IntentID)
 	if !errors.Is(err, ErrRemoteObservationTimeout) || !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 		t.Fatalf("error=%v parent=%v, want only the observation deadline", err, ctx.Err())
