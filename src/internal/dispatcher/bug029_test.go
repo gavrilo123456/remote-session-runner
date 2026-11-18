@@ -175,8 +175,6 @@ func TestBUG029BatchDeadlinePreservesUnattemptedTail(t *testing.T) {
 }
 
 func TestBUG029SubmitEventTimeoutKeepsProjectionStale(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
 	authority := p068Authority(t)
 	intent := bug029AcceptIntent(t, authority, "submit-stream", true)
 	inner := &p149RecoveryCaller{intent: intent}
@@ -185,6 +183,10 @@ func TestBUG029SubmitEventTimeoutKeepsProjectionStale(t *testing.T) {
 		return readCtx.Err()
 	}}
 	driver := bug029Driver(t, authority, caller)
+	// The event read's 100 ms deadline is under test, not the time taken to
+	// construct the SQLite fixture on a CPU-starved native worker.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	err := driver.ReconcileAcceptedRemoteSubmits(ctx, 1)
 	if !errors.Is(err, ErrRemoteObservationTimeout) || ctx.Err() != nil {
 		t.Fatalf("event timeout error=%v parent=%v", err, ctx.Err())

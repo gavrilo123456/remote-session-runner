@@ -214,8 +214,9 @@ func (c *bug034PacedCaller) Stream(ctx context.Context, frame sshbridge.RequestF
 
 // The longest existing proof path includes the independent terminal read
 // after a history gap. Runs also normalize the command and re-read the job.
-// Every exchange fits its own deadline even though five/three allowances
-// would truncate these six/four-exchange paths.
+// Check the actual exchange count and inherited aggregate budget without
+// making success depend on subsecond scheduling margins. The separate paced
+// regression proves that an admitted proof outlives the batch window.
 func TestBUG034AcceptedGapProofFinishesItsBoundedReadSequence(t *testing.T) {
 	for _, submit := range []bool{false, true} {
 		name := "run"
@@ -225,27 +226,55 @@ func TestBUG034AcceptedGapProofFinishesItsBoundedReadSequence(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			authority := p068Authority(t)
 			intent := bug029AcceptIntent(t, authority, "bug034-gap-"+name, submit)
-			// Keep enough wall-clock headroom for real SQLite work on the
-			// native workers while still exceeding the old five/three limits.
-			caller := &bug034PacedCaller{inner: &p149RecoveryCaller{intent: intent, gap: true}, delay: 875 * time.Millisecond}
+			observations := &bug034PacedCaller{inner: &p149RecoveryCaller{intent: intent, gap: true}}
+			var proofDeadlines []time.Time
+			captureBudget := func(readCtx context.Context) {
+				deadline, _ := readCtx.Value(remoteObservationDeadlineKey{}).(time.Time)
+				proofDeadlines = append(proofDeadlines, deadline)
+			}
+			caller := bug029Caller{
+				call: func(readCtx context.Context, frame sshbridge.RequestFrame) (sshbridge.ReplyFrame, error) {
+					captureBudget(readCtx)
+					return observations.Call(readCtx, frame)
+				},
+				stream: func(readCtx context.Context, frame sshbridge.RequestFrame, receive func(sshbridge.ReplyFrame) error) error {
+					captureBudget(readCtx)
+					return observations.Stream(readCtx, frame, receive)
+				},
+			}
 			driver, err := NewRemoteDriverWithClock(authority, caller, "router-bug034-gap", time.Minute, time.Now,
-				RemoteObservationOptions{Timeout: time.Second, BatchTimeout: 110 * time.Millisecond})
+				RemoteObservationOptions{Timeout: time.Minute, BatchTimeout: 110 * time.Millisecond})
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			before := time.Now()
 			if submit {
 				err = driver.ReconcileAcceptedRemoteSubmits(ctx, 1)
 			} else {
 				err = driver.ReconcileAcceptedRemoteRuns(ctx, 1)
 			}
+			after := time.Now()
 			if err != nil {
-				t.Fatalf("healthy %s gap proof was cut short: %v", name, err)
+				t.Fatalf("healthy %s gap proof was cut short: %v issues=%+v parent=%v", name, err, RemoteReconciliationIssues(err), ctx.Err())
+			}
+			reads := 6
+			if submit {
+				reads = 4
+			}
+			if len(proofDeadlines) != reads {
+				t.Fatalf("%s gap proof used %d reads, want %d", name, len(proofDeadlines), reads)
+			}
+			budget := time.Duration(reads) * time.Minute
+			for _, deadline := range proofDeadlines {
+				if !deadline.Equal(proofDeadlines[0]) || deadline.Before(before.Add(budget)) || deadline.After(after.Add(budget)) {
+					t.Fatalf("%s proof lost its finite %d-read budget: deadlines=%v interval=[%v,%v]", name, reads, proofDeadlines, before.Add(budget), after.Add(budget))
+				}
 			}
 			current, err := authority.GetLocalIntent(ctx, intent.IntentID)
-			if err != nil || !store.HasRemoteTerminalProof(current) || current.AttemptCount != intent.AttemptCount || caller.mutations != 0 {
-				t.Fatalf("gap proof or no-replay boundary failed: intent=%+v mutations=%d err=%v", current, caller.mutations, err)
+			if err != nil || !store.HasRemoteTerminalProof(current) || current.AttemptCount != intent.AttemptCount || observations.mutations != 0 {
+				t.Fatalf("gap proof or no-replay boundary failed: intent=%+v mutations=%d err=%v", current, observations.mutations, err)
 			}
 			gap, err := authority.GetRemoteEventGap(ctx, intent.CommandID)
 			if err != nil || gap.AvailableSequence != 1 || gap.FinalSequence != 4 || gap.MissingFrom != 2 || gap.MissingTo != 4 {
@@ -255,7 +284,7 @@ func TestBUG034AcceptedGapProofFinishesItsBoundedReadSequence(t *testing.T) {
 			if err != nil || command.OutputComplete || command.OutputUnavailableReason != "remote_event_gap" {
 				t.Fatalf("gap lost incomplete-output qualification: command=%+v err=%v", command, err)
 			}
-			p149AssertReadFrames(t, caller.inner.frames, caller.inner.streamFrames)
+			p149AssertReadFrames(t, observations.inner.frames, observations.inner.streamFrames)
 		})
 	}
 }
