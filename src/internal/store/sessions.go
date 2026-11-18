@@ -257,14 +257,33 @@ func (s *AuthorityStore) GetSession(ctx context.Context, id domain.SessionID) (S
 // ID query is fully consumed and closed before each snapshot is re-read so the
 // sqlite connection never has an open result set while validating a record.
 func (s *AuthorityStore) ListSessions(ctx context.Context) ([]SessionRecord, error) {
+	return s.listSessions(ctx, `
+SELECT session_id FROM exec_sessions ORDER BY created_at, session_id
+`)
+}
+
+const listNonterminalSessionsQuery = `
+SELECT session_id FROM exec_sessions
+WHERE state IN (?, ?, ?, ?, ?)
+ORDER BY created_at, session_id
+`
+
+// ListNonterminalSessions selects policy candidates before decoding their full
+// records. Terminal history, including lost sessions with retained capacity,
+// remains available through ListSessions and the exact recovery read paths.
+func (s *AuthorityStore) ListNonterminalSessions(ctx context.Context) ([]SessionRecord, error) {
+	return s.listSessions(ctx, listNonterminalSessionsQuery,
+		string(domain.SessionStateRequested), string(domain.SessionStateCreating),
+		string(domain.SessionStateReady), string(domain.SessionStateBusy), string(domain.SessionStateClosing))
+}
+
+func (s *AuthorityStore) listSessions(ctx context.Context, query string, args ...any) ([]SessionRecord, error) {
 	connection, err := s.db.Conn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire session list connection: %w", err)
 	}
 	defer connection.Close()
-	rows, err := connection.QueryContext(ctx, `
-SELECT session_id FROM exec_sessions ORDER BY created_at, session_id
-`)
+	rows, err := connection.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query sessions: %w", err)
 	}

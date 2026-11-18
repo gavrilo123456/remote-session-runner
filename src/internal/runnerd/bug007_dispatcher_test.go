@@ -1117,6 +1117,12 @@ func bug007WaitForTerminalJob(t *testing.T, authority *store.AuthorityStore, job
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The final read can observe completion after the last timed poll.
+	// Apply the same predicate to that fresh snapshot before reporting failure.
+	switch job.Phase {
+	case store.JobPhaseComplete, store.JobPhaseFailed, store.JobPhaseLost:
+		return job
+	}
 	t.Fatalf("job %s did not reach a terminal phase: %+v", jobID, job)
 	return store.JobRecord{}
 }

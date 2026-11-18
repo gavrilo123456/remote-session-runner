@@ -33,7 +33,7 @@ func (s *Service) EnforcePolicies(ctx context.Context) (PolicySweepReport, error
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 
-	sessions, err := s.store.ListSessions(ctx)
+	sessions, err := s.store.ListNonterminalSessions(ctx)
 	if err != nil {
 		return PolicySweepReport{}, err
 	}

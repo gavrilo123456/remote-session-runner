@@ -10,8 +10,8 @@
 | Affected component | Mac remote-run observation, strict terminal reconciliation and mailbox delivery |
 | Incident runtime | PRD `rr-20261117-bug033-fd20b1e`, source `fd20b1ebb5b551a1e9d143082101ae5d8843dd7b` |
 | Investigation checkout | `ce4761db8bd5cb5819f834559d2fdba8c7437a63` |
-| Fixed revision | Not yet available |
-| Verification | Reproduction failed before the fix; corrected regressions pass; final source gates in progress and no new lane acceptance |
+| Fixed revision | Source correction `cb7ccf34222ce24b951829c881d4550bc8c61b80`; fixture checkpoint `d240edfe9e86ab15b40ff3cefd5ba0150ecd028b`; combined BUG-034/035 source commit pending |
+| Verification | Reproduction failed before the fix. Linux `de19498` ended NOT PASS after three fixture failures and a scoped source-test SIGTERM. Historical `d240edf` passed Mac/Sandbox/Factory full gates; Linux was never launched at that revision. Combined-source Mac full qualification passed; fresh Ubuntu qualification pending. No release built or lane accepted |
 
 ## Reported behavior
 
@@ -32,6 +32,16 @@ pinned bridge GET-only observation recovered both authoritative snapshots and
 contiguous event streams. The final mailbox read at 15:15 UTC still showed
 revision 2 and no event files or ACK artifacts. This establishes a delivery
 failure, not its precise underlying cause.
+
+
+A later **19:39:39 UTC** read-only follow-up found both original PRD outboxes
+still `accepted`, revision **2**, without an advertised event cursor. Their
+response hashes were unchanged: API test `6a062d30…474e`, checkout observation
+`1a312425…c013`. The earlier incident and 17:33:10 UTC checkpoints remain
+preserved in the evidence. This confirms that terminal delivery is still
+unresolved; it does not establish fresh teardown or capacity clearance. No
+request, ACK, replay, service or mailbox change accompanied the read.
+Private proof: `/private/tmp/rsr-bug034-original-outboxes-readonly-6tn5nbum/states.json`.
 
 ## Original execution evidence
 
@@ -94,6 +104,12 @@ after its own read bound. Initial uncertain-dispatch observation is unchanged.
 Allowlisted stage/category diagnostics distinguish future failures without
 printing nested errors or credential-bearing transport text.
 
+The aggregate is elapsed time: between-read SQLite work and host scheduling
+consume it too. Six/four read allowances are finite ceilings, not a guarantee
+that individually timely reads complete under arbitrary host delay. Timeouts
+remain possible, and this source reproduction does not establish an exclusive
+cause of the historical live failure.
+
 ## Correction and verification plan
 
 1. Reproduce the failure on disposable fixtures, checking immutable identity,
@@ -131,5 +147,10 @@ applied to the original production code; the corrected source must pass.
 | --- | --- |
 | 2026-11-18 | Registered before source correction; original results and unresolved PRD delivery/cleanup boundaries recorded. |
 | 2026-11-18 | Reproduced shared-budget starvation, implemented separate finite proof/read budgets and safe diagnostics; corrected dispatcher and disposable mailbox regressions pass. |
+| 2026-11-18 | Preserved Linux's 20-minute interruption and later timing-sensitive assertion failures, then stopped only the exact failed source-test group. Test-only correction `de19498` passed Mac full gates; repeated Ubuntu qualification pending. Production guards and original PRD exchanges remain unchanged. |
+| 2026-11-18 | Further timing-fixture correction `d240edf` preserves runtime guards; deterministic gap-budget/read-count checks reject five/three-read negative overlays. Mac/Sandbox/Factory full native gates passed; Linux remains gated while the prior failed full suite finishes. No release or lane deployment. |
+| 2026-11-18 19:52 UTC | Prior failed `de19498` full run recorded additional unchanged-package passes, including `localapi` after 938.509 seconds. CPU steal was measured at 93.07%; the final result is still pending and Linux `d240edf` remains gated. No cancellation applied or new source qualification inferred. |
+| 2026-11-18 20:25 UTC | Preserved all three failed assertions and source logs, then sent SIGTERM only to the exact failed Go test group. Its supervisor recorded test exit `-15` after 5,986.183 seconds and no live group members. Later gates did not run. No Runner runtime was signalled. |
+| 2026-11-18 20:29 UTC | BUG-035's history-preserving policy selection and the BUG-009 test-helper final-read correction join the next source candidate. Linux `d240edf` was never launched; its three valid historical host receipts remain preserved. Combined-source Mac full gates subsequently passed; final commit and Ubuntu qualification remain pending. |
 
 Qualification and Git delivery are recorded in [BUG-034 evidence](../040-implementation-evidence/BUG-034.md).
