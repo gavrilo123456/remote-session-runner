@@ -6,10 +6,14 @@ import (
 	"time"
 
 	"remote-session-runner/src/internal/sshbridge"
+	"remote-session-runner/src/internal/sshclient"
+	"remote-session-runner/src/internal/store"
 )
 
 // Read-only observations and each rotating reconciliation batch have their own
-// budgets. They never replace command limits or mutation-delivery contexts.
+// budgets. BatchTimeout limits starting new attempts; an admitted proof gets
+// enough time for its finite sequence of individually bounded reads. These
+// budgets never replace command limits or mutation-delivery contexts.
 const (
 	DefaultRemoteObservationTimeout      = 15 * time.Second
 	DefaultRemoteObservationBatchTimeout = 15 * time.Second
@@ -47,6 +51,83 @@ func remoteObservationOptions(options []RemoteObservationOptions) (RemoteObserva
 
 type remoteObservationDeadlineKey struct{}
 
+// remoteObservationStageError keeps transport details in the error chain for
+// errors.Is/As without exposing them through an operational error string.
+type remoteObservationStageError struct {
+	stage string
+	cause error
+}
+
+func (e *remoteObservationStageError) Error() string { return "remote observation failed" }
+
+func (e *remoteObservationStageError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func remoteObservationStageFailure(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &remoteObservationStageError{stage: safeRemoteObservationStage(stage), cause: err}
+}
+
+func safeRemoteObservationStage(stage string) string {
+	switch stage {
+	case "initial_job", "command", "events", "gap_command_refresh", "final_job":
+		return stage
+	default:
+		return "not_applicable"
+	}
+}
+
+func remoteObservationErrorStage(err error) string {
+	var observation *remoteObservationStageError
+	if errors.As(err, &observation) && observation != nil {
+		return safeRemoteObservationStage(observation.stage)
+	}
+	return "not_applicable"
+}
+
+func remoteObservationErrorCategory(err error) string {
+	switch {
+	case errors.Is(err, ErrRemoteObservationTimeout):
+		return "timeout"
+	case errors.Is(err, sshclient.ErrTransport):
+		return "transport"
+	case errors.Is(err, ErrRemoteRouteUnavailable):
+		return "route_unavailable"
+	case errors.Is(err, store.ErrRemoteProjectionInvalid), errors.Is(err, store.ErrRemoteProjectionConflict):
+		return "projection_invalid"
+	case errors.Is(err, ErrRemoteEventHistoryUnavailable):
+		return "event_history_unavailable"
+	case errors.Is(err, ErrRemoteEventCursor):
+		return "event_cursor_invalid"
+	case errors.Is(err, ErrRemoteTerminalUnconfirmed):
+		return "terminal_unconfirmed"
+	case errors.Is(err, ErrRemoteEventStream), errors.Is(err, ErrRemoteEventCallerUnavailable):
+		return "event_stream"
+	case errors.Is(err, ErrRemoteDriverConfiguration):
+		return "configuration"
+	case errors.Is(err, ErrRemoteResponse):
+		return "invalid_response"
+	default:
+		return "observation_failed"
+	}
+}
+
+func safeRemoteObservationCategory(category string) string {
+	switch category {
+	case "timeout", "transport", "route_unavailable", "projection_invalid", "event_history_unavailable",
+		"event_cursor_invalid", "terminal_unconfirmed", "event_stream", "configuration", "invalid_response", "observation_failed":
+		return category
+	default:
+		return "not_applicable"
+	}
+}
+
 // The aggregate deadline is metadata, not a cancellation of the caller's
 // context. Only read-only transport calls derive a cancellable child from it;
 // local failure/staleness bookkeeping must remain possible after a read times
@@ -73,6 +154,22 @@ func (d *RemoteDriver) observationBatchTimeout() time.Duration {
 		return d.observations.BatchTimeout
 	}
 	return DefaultRemoteObservationBatchTimeout
+}
+
+// A run proof needs at most six reads (job, command, events, gap terminal
+// confirmation and normalization, final job); a submit proof needs at most
+// four. Keep this aggregate finite without spending every read's allowance on
+// the first SSH handshake. With defaults a run proof has 90s and a submit proof
+// 60s. A batch may finish one admitted proof after its 15s scheduling deadline,
+// at most 105s for runs plus local bookkeeping. Parent cancellation still
+// bounds every child read.
+func (d *RemoteDriver) withObservationProofBudget(ctx context.Context, maximumReads int) context.Context {
+	const maximumDuration = time.Duration(1<<63 - 1)
+	budget := maximumDuration
+	if d.observationTimeout() <= maximumDuration/time.Duration(maximumReads) {
+		budget = d.observationTimeout() * time.Duration(maximumReads)
+	}
+	return withRemoteObservationDeadline(ctx, time.Now().Add(budget))
 }
 
 func (d *RemoteDriver) observationContext(ctx context.Context) (context.Context, context.CancelFunc) {

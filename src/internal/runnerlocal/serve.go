@@ -1338,9 +1338,9 @@ func (s *Service) logRemoteReconciliationError(stderr io.Writer, err error) {
 }
 
 func (s *Service) writeRemoteReconciliationIssue(stderr io.Writer, issue dispatcher.RemoteReconciliationIssue, mailboxID, requestID string) {
-	fmt.Fprintf(stderr, "runner-local: remote_reconciliation mailbox=%s request_id=%s operation=%s intent_id=%s job_id=%s session_id=%s command_id=%s target_profile=%s endpoint=%s failure_class=%s retry_count=%d\n",
+	fmt.Fprintf(stderr, "runner-local: remote_reconciliation mailbox=%s request_id=%s operation=%s intent_id=%s job_id=%s session_id=%s command_id=%s target_profile=%s endpoint=%s failure_class=%s retry_count=%d stage=%s observation_category=%s\n",
 		mailboxID, requestID, issue.Operation, issue.IntentID, issue.JobID, issue.SessionID, issue.CommandID,
-		issue.TargetProfile, s.remoteEndpoint(issue.TargetProfile), issue.FailureClass, issue.RetryCount)
+		issue.TargetProfile, s.remoteEndpoint(issue.TargetProfile), issue.FailureClass, issue.RetryCount, issue.Stage, issue.ObservationCategory)
 }
 
 // mailboxRecordsForRemoteIssue correlates a queued remote intent with its

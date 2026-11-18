@@ -47,7 +47,6 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteRuns(ctx context.Context, limit in
 		return err
 	}
 	deadline := time.Now().Add(d.observationBatchTimeout())
-	observationCtx := withRemoteObservationDeadline(ctx, deadline)
 	var result error
 	for _, intent := range intents {
 		if err := ctx.Err(); err != nil {
@@ -57,7 +56,7 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteRuns(ctx context.Context, limit in
 			break
 		}
 		d.runCursor = &store.RemoteIntentCursor{CreatedAt: intent.CreatedAt, IntentID: intent.IntentID}
-		if err := d.ReconcileAcceptedRun(observationCtx, intent.IntentID); err != nil {
+		if err := d.ReconcileAcceptedRun(ctx, intent.IntentID); err != nil {
 			result = errors.Join(result, remoteReconciliationIssueFor(intent, "run", err))
 		}
 	}
@@ -78,7 +77,6 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteSubmits(ctx context.Context, limit
 		return err
 	}
 	deadline := time.Now().Add(d.observationBatchTimeout())
-	observationCtx := withRemoteObservationDeadline(ctx, deadline)
 	var result error
 	for _, intent := range intents {
 		if err := ctx.Err(); err != nil {
@@ -88,7 +86,7 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteSubmits(ctx context.Context, limit
 			break
 		}
 		d.submitCursor = &store.RemoteIntentCursor{CreatedAt: intent.CreatedAt, IntentID: intent.IntentID}
-		if err := d.ReconcileAcceptedRemoteSubmit(observationCtx, intent.IntentID); err != nil {
+		if err := d.ReconcileAcceptedRemoteSubmit(ctx, intent.IntentID); err != nil {
 			result = errors.Join(result, remoteReconciliationIssueFor(intent, "submit_command", err))
 		}
 	}
@@ -140,7 +138,7 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteSubmit(ctx context.Context, id dom
 	if !d.configured() {
 		return ErrRemoteDriverConfiguration
 	}
-	ctx = withRemoteObservationDeadline(ctx, time.Now().Add(d.observationTimeout()))
+	ctx = d.withObservationProofBudget(ctx, 4)
 	intent, err := d.authority.GetLocalIntent(ctx, id)
 	if err != nil {
 		return err
@@ -157,7 +155,7 @@ func (d *RemoteDriver) ReconcileAcceptedRemoteSubmit(ctx context.Context, id dom
 func (d *RemoteDriver) reconcileAcceptedRemoteSubmit(ctx context.Context, intent store.LocalIntentRecord) error {
 	command, err := d.refreshCommandProjectionForIntent(ctx, intent)
 	if err != nil {
-		return err
+		return remoteObservationStageFailure("command", err)
 	}
 	_, gapErr := d.authority.GetRemoteEventGap(ctx, command.CommandID)
 	if gapErr != nil && !errors.Is(gapErr, store.ErrRemoteGapNotFound) {
@@ -165,7 +163,7 @@ func (d *RemoteDriver) reconcileAcceptedRemoteSubmit(ctx context.Context, intent
 	}
 	if errors.Is(gapErr, store.ErrRemoteGapNotFound) && command.OutputUnavailableReason != "retention_expired" {
 		if _, err := d.mirrorCommandEventsForIntent(ctx, intent); err != nil {
-			return err
+			return remoteObservationStageFailure("events", err)
 		}
 	}
 
@@ -173,13 +171,13 @@ func (d *RemoteDriver) reconcileAcceptedRemoteSubmit(ctx context.Context, intent
 	// stored projection and terminal boundary are tied to one target view.
 	command, err = d.refreshCommandProjectionForIntent(ctx, intent)
 	if err != nil {
-		return err
+		return remoteObservationStageFailure("command", err)
 	}
 	if !command.State.IsTerminal() {
 		return nil
 	}
 	if err := d.requireTerminalCommandEventBoundary(ctx, command); err != nil {
-		return err
+		return remoteObservationStageFailure("events", err)
 	}
 	return d.transitionAcceptedIntentReconciled(ctx, intent, "remote_terminal_command_reconciled")
 }
@@ -192,7 +190,7 @@ func (d *RemoteDriver) ReconcileAcceptedRun(ctx context.Context, id domain.Inten
 	if !d.configured() {
 		return ErrRemoteDriverConfiguration
 	}
-	ctx = withRemoteObservationDeadline(ctx, time.Now().Add(d.observationTimeout()))
+	ctx = d.withObservationProofBudget(ctx, 6)
 	intent, err := d.authority.GetLocalIntent(ctx, id)
 	if err != nil {
 		return err
@@ -242,7 +240,7 @@ func (d *RemoteDriver) ReconcileAcceptedRun(ctx context.Context, id domain.Inten
 func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.LocalIntentRecord) error {
 	job, err := d.refreshJobProjectionForIntent(ctx, intent)
 	if err != nil {
-		return err
+		return remoteObservationStageFailure("initial_job", err)
 	}
 	if provenPreSessionTerminalRemoteJob(job) {
 		// The Linux authority durably proved that the accepted request failed
@@ -252,7 +250,7 @@ func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.Lo
 		return d.transitionAcceptedIntentReconciled(ctx, intent, "remote_pre_session_failure_reconciled")
 	}
 	if remoteRunTerminalTeardownUnconfirmed(job) {
-		return fmt.Errorf("%w: terminal one-off job has no confirmed teardown", ErrRemoteResponse)
+		return remoteObservationStageFailure("initial_job", fmt.Errorf("%w: terminal one-off job has no confirmed teardown", ErrRemoteResponse))
 	}
 	if !terminalRemoteJob(job) {
 		return nil
@@ -260,7 +258,7 @@ func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.Lo
 
 	command, err := d.refreshCommandProjectionForIntent(ctx, intent)
 	if err != nil {
-		return err
+		return remoteObservationStageFailure("command", err)
 	}
 	_, gapErr := d.authority.GetRemoteEventGap(ctx, command.CommandID)
 	if gapErr != nil && !errors.Is(gapErr, store.ErrRemoteGapNotFound) {
@@ -269,7 +267,7 @@ func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.Lo
 	if errors.Is(gapErr, store.ErrRemoteGapNotFound) && command.OutputUnavailableReason != "retention_expired" {
 		mirror, err := d.mirrorCommandEventsForIntent(ctx, intent)
 		if err != nil {
-			return err
+			return remoteObservationStageFailure("events", err)
 		}
 		if mirror.Gap != nil {
 			// The target's GET response does not know that the Mac lost an
@@ -277,7 +275,7 @@ func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.Lo
 			// normalization becomes the projection consumed by the mailbox.
 			command, err = d.refreshCommandProjectionForIntent(ctx, intent)
 			if err != nil {
-				return err
+				return remoteObservationStageFailure("gap_command_refresh", err)
 			}
 		}
 	}
@@ -287,19 +285,19 @@ func (d *RemoteDriver) reconcileAcceptedRun(ctx context.Context, intent store.Lo
 	// prevents a stale job status from settling the local intent.
 	job, err = d.refreshJobProjectionForIntent(ctx, intent)
 	if err != nil {
-		return err
+		return remoteObservationStageFailure("final_job", err)
 	}
 	if remoteRunTerminalTeardownUnconfirmed(job) {
-		return fmt.Errorf("%w: terminal one-off job has no confirmed teardown", ErrRemoteResponse)
+		return remoteObservationStageFailure("final_job", fmt.Errorf("%w: terminal one-off job has no confirmed teardown", ErrRemoteResponse))
 	}
 	if !terminalRemoteJob(job) {
 		return nil
 	}
 	if err := validateTerminalRunSnapshot(job, command); err != nil {
-		return err
+		return remoteObservationStageFailure("final_job", err)
 	}
 	if err := d.requireTerminalCommandEventBoundary(ctx, command); err != nil {
-		return err
+		return remoteObservationStageFailure("events", err)
 	}
 	return d.transitionAcceptedIntentReconciled(ctx, intent, "remote_terminal_run_reconciled")
 }

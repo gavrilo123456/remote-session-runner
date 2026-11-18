@@ -308,11 +308,11 @@ func (d *RemoteDriver) confirmRemoteTerminal(ctx context.Context, commandID doma
 	}
 	object, err := d.readRemoteProjectionObject(ctx, intent, request, "terminal command")
 	if err != nil {
-		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: %v", ErrRemoteTerminalUnconfirmed, err)
+		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: %w", ErrRemoteTerminalUnconfirmed, err)
 	}
 	projection, err := strictRemoteCommandProjectionFromReadReply(intent, object, d.now())
 	if err != nil {
-		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: %v", ErrRemoteTerminalUnconfirmed, err)
+		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: %w", ErrRemoteTerminalUnconfirmed, err)
 	}
 	if !projection.State.IsTerminal() || projection.FinalEventSequence == nil || *projection.FinalEventSequence <= available {
 		return store.RemoteEventGapRecord{}, fmt.Errorf("%w: final event sequence does not extend available prefix", ErrRemoteTerminalUnconfirmed)

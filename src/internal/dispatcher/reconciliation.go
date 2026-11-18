@@ -12,17 +12,19 @@ import (
 // error because that error can contain arbitrary remote output or credentials.
 // Unwrap remains available to code that needs the original error class.
 type RemoteReconciliationIssue struct {
-	Operation      string
-	IntentID       string
-	JobID          string
-	SessionID      string
-	CommandID      string
-	TargetProfile  string
-	ControllerType string
-	ControllerID   string
-	FailureClass   string
-	RetryCount     int
-	cause          error
+	Operation           string
+	IntentID            string
+	JobID               string
+	SessionID           string
+	CommandID           string
+	TargetProfile       string
+	ControllerType      string
+	ControllerID        string
+	FailureClass        string
+	RetryCount          int
+	Stage               string
+	ObservationCategory string
+	cause               error
 }
 
 func (e *RemoteReconciliationIssue) Error() string {
@@ -47,7 +49,8 @@ func remoteReconciliationIssue(intent store.LocalIntentRecord, operation, failur
 		Operation: operation, IntentID: string(intent.IntentID), JobID: string(intent.JobID),
 		SessionID: string(intent.SessionID), CommandID: string(intent.CommandID),
 		TargetProfile: intent.Target.Profile(), ControllerType: string(intent.Controller.Type()), ControllerID: string(intent.Controller.ID()), FailureClass: failureClass,
-		RetryCount: retryCount, cause: cause,
+		RetryCount: retryCount, Stage: remoteObservationErrorStage(cause),
+		ObservationCategory: remoteObservationErrorCategory(cause), cause: cause,
 	}
 }
 
@@ -110,6 +113,7 @@ func RemoteReconciliationIssues(err error) []RemoteReconciliationIssue {
 				SessionID: issue.SessionID, CommandID: issue.CommandID, TargetProfile: issue.TargetProfile,
 				ControllerType: issue.ControllerType, ControllerID: issue.ControllerID,
 				FailureClass: issue.FailureClass, RetryCount: issue.RetryCount,
+				Stage: safeRemoteObservationStage(issue.Stage), ObservationCategory: safeRemoteObservationCategory(issue.ObservationCategory),
 			})
 			return
 		}

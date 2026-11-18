@@ -682,16 +682,37 @@ read may restore an active projection. Runner publishes a terminal response
 only when identity, target, teardown, and the retained event boundary agree.
 
 Releases containing the [BUG-029 correction](../050-bugs/029-unbounded-ssh-observer-blocks-mailbox-processing.md)
-bound an accepted remote run or submit observation to a default 15-second
-aggregate I/O budget. Run and submit reconciliation also have independent
-15-second rotating batch I/O budgets, so a stalled observer releases the loop
-and an unattempted page tail remains eligible next time. A timeout preserves
-the accepted identity, records unavailable status or a stale projection, and
-allows local bookkeeping to finish. It does not cancel the remote command,
-resend execution, invent a terminal result, or publish an ACK. A later
-qualified read can restore the existing result. Check the selected lane's
-release before relying on this behavior; the BUG-029 source checkpoint has
-not changed the installed E3 services.
+bound remote observations rather than waiting indefinitely on SSH. The later
+[BUG-034 correction](../050-bugs/034-accepted-remote-terminal-results-not-delivered.md)
+keeps the default **15-second limit for each read** and separates it from the
+time required to verify a result. A terminal run needs four sequential reads;
+event-gap verification can need six. A started run proof therefore has a finite
+90-second I/O budget, and a submit proof has 60 seconds for up to four reads.
+Parent cancellation remains immediate. A single stalled read still times out
+after 15 seconds; a later stalled read can follow earlier successful reads.
+
+The rotating batch stops starting new intents after 15 seconds, while allowing
+its current proof to finish within that separate limit. Consequently a run
+batch can take up to roughly 105 seconds, and a submit batch 75 seconds, plus
+local bookkeeping. The unattempted tail stays eligible for the next batch.
+This tradeoff allows slow, valid reads to finish one strict proof instead of
+restarting it forever. Check the selected release: BUG-029-only runtimes still
+use the earlier shared 15-second proof/batch limit.
+
+The service currently runs uncertain, submit and run observations serially.
+If every category consumes its maximum allowance, that whole observation
+portion can take roughly 195 seconds, plus local bookkeeping. The budgets
+limit transport I/O; they are not a wall-clock guarantee for a complete mailbox
+cycle or for command execution.
+
+A timeout preserves the accepted identity, records unavailable status or a
+stale projection, and allows local bookkeeping to finish. It does not cancel
+the remote command, resend execution, invent a terminal result, or publish an
+ACK. A later qualified read can restore the existing result. BUG-034 logs add
+allowlisted `stage` and `observation_category` fields to identify the failed
+read without exposing scripts, credentials or arbitrary SSH errors. Older
+`remote_status_unavailable` records alone do not identify the precise cause.
+Delivering a truthful LOST result does not confirm cleanup or release capacity.
 
 If strict remote reads are malformed, contradictory, or unavailable after an
 accepted one-off run, Runner records the first failure and continues only
