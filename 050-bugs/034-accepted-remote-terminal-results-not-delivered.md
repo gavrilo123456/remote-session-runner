@@ -4,14 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — source correction; installed-lane verification pending |
+| Status | `FIXED — DEV/QAS ACCEPTED; PRD PENDING` — original PRD delivery acceptance remains pending |
 | Severity | High |
 | Reported | 2026-11-18 |
 | Affected component | Mac remote-run observation, strict terminal reconciliation and mailbox delivery |
 | Incident runtime | PRD `rr-20261117-bug033-fd20b1e`, source `fd20b1ebb5b551a1e9d143082101ae5d8843dd7b` |
 | Investigation checkout | `ce4761db8bd5cb5819f834559d2fdba8c7437a63` |
 | Fixed revision | Runtime-code correction `cb7ccf3`; historical fixture checkpoint `d240edf`; exact combined source `7b11dbc08ad09eb5783c8ab3e5b33917ad2901d6` |
-| Verification | Exact combined source passed full native test/vet/build/smoke on Mac, Linux, Sandbox and Factory, uncached; Linux supplied its own full suite. Earlier fixture failures, interruptions and excluded harness outcomes remain preserved. Corrective binaries are not installed; original PRD result delivery and live acceptance remain pending |
+| Verification | Exact combined source passed four-host full native gates, including Linux's own full suite; the same sealed release passed all eight Dev then QAS gates. Original PRD result delivery and cleanup remain pending; BUG-037 blocks the first cleanup backup. Earlier failures remain preserved |
+
+Current rollout evidence: [completed Dev/QAS deployment](../040-implementation-evidence/BUG-034-035-dev-qas-deployment-2026-11-19.md).
 
 ## Reported behavior
 

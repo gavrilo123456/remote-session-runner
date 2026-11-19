@@ -4,15 +4,17 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — source correction ready; corrective binaries not installed |
+| Status | `FIXED — DEV/QAS ACCEPTED; PRD PENDING` |
 | Severity | High |
 | Reported | 2026-11-18 |
 | Affected component | Shared execution policy sweep and authority session selection |
 | Observed runtime | Linux PRD `rr-20261117-bug033-fd20b1e`, source `fd20b1ebb5b551a1e9d143082101ae5d8843dd7b` |
 | Investigation source | `d240edfe9e86ab15b40ff3cefd5ba0150ecd028b` |
 | Corrective revision | Combined BUG-034/035 source `7b11dbc08ad09eb5783c8ab3e5b33917ad2901d6` |
-| Verification | Focused regressions and full native test/vet/build/smoke on Mac, Linux, Sandbox and Factory passed on exact `7b11dbc`; Linux own full suite. Corrective binaries are uninstalled; installed acceptance and live CPU comparison remain pending. No purge or deployment |
+| Verification | Four-host full native gates passed on exact `7b11dbc`, including Linux's own suite. The same sealed release passed all eight Dev then QAS gates. PRD and its historical-load CPU comparison remain pending. No purge or retention change |
 | Owner decision | Fix the history scan and retain records; do not force-purge history |
+
+Current rollout evidence: [completed Dev/QAS deployment](../040-implementation-evidence/BUG-034-035-dev-qas-deployment-2026-11-19.md).
 
 ## Evidence and limits
 

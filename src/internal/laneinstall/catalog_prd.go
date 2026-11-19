@@ -1221,6 +1221,43 @@ func currentFreshInstallBaseline(plan PRDUpgradePlan) (CatalogFreshInstallBaseli
 	return evidence, true, nil
 }
 
+// currentArtifactFreshInstallBaseline classifies only whether artifact capture
+// or installation may omit a predecessor unit. Historical bootstrap evidence
+// remains immutable; it is not a current empty-work requirement after adoption.
+func currentArtifactFreshInstallBaseline(plan PRDUpgradePlan) (CatalogFreshInstallBaseline, bool, error) {
+	if plan.HostID != "linux-host" {
+		return CatalogFreshInstallBaseline{}, false, nil
+	}
+	catalogPlan := Plan{HostID: plan.HostID, Lane: config.ReleaseLanePRD, Namespace: plan.Namespace}
+	root, err := DefaultCatalogRootForPlan(catalogPlan)
+	if err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	layout, err := catalogSelectorLayoutForPlan(catalogPlan, root)
+	if err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	return artifactFreshInstallBaselineAt(layout, func() (CatalogFreshInstallBaseline, bool, error) {
+		return currentFreshInstallBaseline(plan)
+	})
+}
+
+func artifactFreshInstallBaselineAt(layout catalogSelectorLayout, baseline func() (CatalogFreshInstallBaseline, bool, error)) (CatalogFreshInstallBaseline, bool, error) {
+	selector, err := inspectCatalogSelector(layout)
+	if err != nil {
+		return CatalogFreshInstallBaseline{}, false, err
+	}
+	if selector.Kind == "catalog" && selector.Release != nil {
+		// The installed predecessor is already a fully verified catalog release.
+		// Its service unit must be captured, even if historical first-install
+		// evidence records an originally empty namespace.
+		return CatalogFreshInstallBaseline{}, false, nil
+	}
+	// Unselected and legacy states retain the original bootstrap comparison;
+	// this does not make a stale/nonempty first installation acceptable.
+	return baseline()
+}
+
 // ReadCatalogFreshInstallBaseline reports the verified first-install
 // predecessor for the only supported replacement worker. It is read-only and
 // does not create a namespace, open a database for migration, or infer
@@ -1288,7 +1325,7 @@ func installPRDCatalogServiceArtifacts(ctx context.Context, plan PRDUpgradePlan,
 	freshInstall := false
 	var err error
 	if plan.HostID == "linux-host" {
-		_, freshInstall, err = currentFreshInstallBaseline(plan)
+		_, freshInstall, err = currentArtifactFreshInstallBaseline(plan)
 		if err != nil {
 			return err
 		}

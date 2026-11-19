@@ -246,7 +246,7 @@ func createPRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string,
 	}
 	freshInstall := false
 	if plan.HostID == "linux-host" {
-		baseline, valid, baselineErr := currentFreshInstallBaseline(plan)
+		baseline, valid, baselineErr := currentArtifactFreshInstallBaseline(plan)
 		if baselineErr != nil {
 			return PRDBackupReceipt{}, baselineErr
 		}
@@ -260,6 +260,14 @@ func createPRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string,
 	if err := ensurePRDBackupCapacity(plan, plan.Namespace.Database); err != nil {
 		return PRDBackupReceipt{}, err
 	}
+	return capturePRDBackupSnapshot(ctx, plan, bundleSHA, catalogManaged, database, schema, freshInstall, prdServiceArtifactPaths(plan))
+}
+
+// capturePRDBackupSnapshot is the filesystem/SQLite snapshot core. The public
+// caller verifies the canonical plan, configuration, schema, selector state and
+// capacity before entering it; no service or selector is changed here.
+func capturePRDBackupSnapshot(ctx context.Context, plan PRDUpgradePlan, bundleSHA string, catalogManaged bool,
+	database *sql.DB, schema int, freshInstall bool, servicePaths []string) (PRDBackupReceipt, error) {
 	for _, path := range []string{plan.Namespace.ServiceRoot, plan.Namespace.Binaries, filepath.Join(plan.Namespace.ServiceRoot, "config"), filepath.Join(plan.Namespace.ServiceRoot, "secrets")} {
 		if err := ensurePRDPrivateDirectory(path); err != nil {
 			return PRDBackupReceipt{}, err
@@ -295,7 +303,7 @@ func createPRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string,
 		}
 		manifest.Files = append(manifest.Files, files...)
 	}
-	for _, servicePath := range prdServiceArtifactPaths(plan) {
+	for _, servicePath := range servicePaths {
 		if freshInstall && servicePath == filepath.Join("/etc/systemd/system", plan.Namespace.RunnerUnit) {
 			if _, err := os.Lstat(servicePath); errors.Is(err, os.ErrNotExist) {
 				// A fresh replacement has no predecessor service unit. The
@@ -313,6 +321,7 @@ func createPRDBackup(ctx context.Context, plan PRDUpgradePlan, bundleSHA string,
 	}
 	sort.Slice(manifest.Files, func(i, j int) bool { return manifest.Files[i].TargetPath < manifest.Files[j].TargetPath })
 	manifest.DatabaseBackupPath = filepath.Join(directory, "state.db.online")
+	var err error
 	if err := store.CreateExistingOnlineBackup(ctx, database, manifest.DatabaseBackupPath); err != nil {
 		return PRDBackupReceipt{}, fmt.Errorf("create consistent existing-PRD SQLite online backup: %w", err)
 	}
@@ -785,6 +794,20 @@ func prdExistingFileSize(path string, optional bool) (uint64, error) {
 }
 
 func estimatePRDFileBackupBytes(plan PRDUpgradePlan) (uint64, error) {
+	return estimatePRDFileBackupBytesUsing(plan, func() (CatalogFreshInstallBaseline, bool, error) {
+		return currentArtifactFreshInstallBaseline(plan)
+	}, prdServiceArtifactPaths(plan))
+}
+
+func estimatePRDFileBackupBytesUsing(plan PRDUpgradePlan, baseline func() (CatalogFreshInstallBaseline, bool, error), servicePaths []string) (uint64, error) {
+	_, freshInstall, err := baseline()
+	if err != nil {
+		return 0, err
+	}
+	return estimatePRDFileBackupBytesForState(plan, freshInstall, servicePaths)
+}
+
+func estimatePRDFileBackupBytesForState(plan PRDUpgradePlan, freshInstall bool, servicePaths []string) (uint64, error) {
 	var total uint64
 	for _, root := range []string{plan.Namespace.Binaries, filepath.Join(plan.Namespace.ServiceRoot, "config"), filepath.Join(plan.Namespace.ServiceRoot, "secrets")} {
 		_, err := os.Lstat(root)
@@ -815,15 +838,7 @@ func estimatePRDFileBackupBytes(plan PRDUpgradePlan) (uint64, error) {
 			return 0, fmt.Errorf("estimate existing PRD backup payload: %w", err)
 		}
 	}
-	freshInstall := false
-	var err error
-	if plan.HostID == "linux-host" {
-		_, freshInstall, err = currentFreshInstallBaseline(plan)
-		if err != nil {
-			return 0, err
-		}
-	}
-	for _, path := range prdServiceArtifactPaths(plan) {
+	for _, path := range servicePaths {
 		info, err := os.Lstat(path)
 		if freshInstall && path == filepath.Join("/etc/systemd/system", plan.Namespace.RunnerUnit) && errors.Is(err, os.ErrNotExist) {
 			continue
