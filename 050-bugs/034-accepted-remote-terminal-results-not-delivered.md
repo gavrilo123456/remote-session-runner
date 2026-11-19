@@ -10,8 +10,8 @@
 | Affected component | Mac remote-run observation, strict terminal reconciliation and mailbox delivery |
 | Incident runtime | PRD `rr-20261117-bug033-fd20b1e`, source `fd20b1ebb5b551a1e9d143082101ae5d8843dd7b` |
 | Investigation checkout | `ce4761db8bd5cb5819f834559d2fdba8c7437a63` |
-| Fixed revision | Source correction `cb7ccf34222ce24b951829c881d4550bc8c61b80`; fixture checkpoint `d240edfe9e86ab15b40ff3cefd5ba0150ecd028b`; combined BUG-034/035 source commit pending |
-| Verification | Reproduction failed before the fix. Linux `de19498` ended NOT PASS after three fixture failures and a scoped source-test SIGTERM. Historical `d240edf` passed Mac/Sandbox/Factory full gates; Linux was never launched at that revision. Combined-source Mac full qualification passed; fresh Ubuntu qualification pending. No release built or lane accepted |
+| Fixed revision | Runtime-code correction `cb7ccf3`; historical fixture checkpoint `d240edf`; exact combined source `7b11dbc08ad09eb5783c8ab3e5b33917ad2901d6` |
+| Verification | Exact combined source passed full native test/vet/build/smoke on Mac, Linux, Sandbox and Factory, uncached; Linux supplied its own full suite. Earlier fixture failures, interruptions and excluded harness outcomes remain preserved. Corrective binaries are not installed; original PRD result delivery and live acceptance remain pending |
 
 ## Reported behavior
 
@@ -152,5 +152,6 @@ applied to the original production code; the corrected source must pass.
 | 2026-11-18 19:52 UTC | Prior failed `de19498` full run recorded additional unchanged-package passes, including `localapi` after 938.509 seconds. CPU steal was measured at 93.07%; the final result is still pending and Linux `d240edf` remains gated. No cancellation applied or new source qualification inferred. |
 | 2026-11-18 20:25 UTC | Preserved all three failed assertions and source logs, then sent SIGTERM only to the exact failed Go test group. Its supervisor recorded test exit `-15` after 5,986.183 seconds and no live group members. Later gates did not run. No Runner runtime was signalled. |
 | 2026-11-18 20:29 UTC | BUG-035's history-preserving policy selection and the BUG-009 test-helper final-read correction join the next source candidate. Linux `d240edf` was never launched; its three valid historical host receipts remain preserved. Combined-source Mac full gates subsequently passed; final commit and Ubuntu qualification remain pending. |
+| 2026-11-19 | Exact combined source `7b11dbc` passed all four native gates on all four hosts. Earlier partial/failing results remain preserved. Separate owner-approved Linux/Mac stops changed runtime availability without installing the fix; original requests and capacity remain preserved. |
 
 Qualification and Git delivery are recorded in [BUG-034 evidence](../040-implementation-evidence/BUG-034.md).

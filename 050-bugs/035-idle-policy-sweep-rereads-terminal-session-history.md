@@ -4,14 +4,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING VERIFICATION` — source correction ready; no runtime change |
+| Status | `FIXED — PENDING VERIFICATION` — source correction ready; corrective binaries not installed |
 | Severity | High |
 | Reported | 2026-11-18 |
 | Affected component | Shared execution policy sweep and authority session selection |
 | Observed runtime | Linux PRD `rr-20261117-bug033-fd20b1e`, source `fd20b1ebb5b551a1e9d143082101ae5d8843dd7b` |
 | Investigation source | `d240edfe9e86ab15b40ff3cefd5ba0150ecd028b` |
-| Corrective revision | Combined BUG-034/035 source commit pending |
-| Verification | Deterministic focused tests/vet and combined-source full Mac gates passed. Fresh Ubuntu qualification, installed acceptance and live CPU comparison pending |
+| Corrective revision | Combined BUG-034/035 source `7b11dbc08ad09eb5783c8ab3e5b33917ad2901d6` |
+| Verification | Focused regressions and full native test/vet/build/smoke on Mac, Linux, Sandbox and Factory passed on exact `7b11dbc`; Linux own full suite. Corrective binaries are uninstalled; installed acceptance and live CPU comparison remain pending. No purge or deployment |
 | Owner decision | Fix the history scan and retain records; do not force-purge history |
 
 ## Evidence and limits
@@ -64,8 +64,8 @@ repeated scanning cost.
 Private observations: `/private/tmp/rsr-linux-prd-idle-cpu-readonly-rf30sdm0/`.
 The initial readiness GETs updated only health-probe timestamps; that limitation
 is recorded in `READ-ONLY-QUALIFICATION.json`. Subsequent database counts used
-read-only connections. No project work, capacity, service, selector or
-configuration was changed.
+read-only connections. At that initial diagnostic checkpoint, no project work, capacity, service,
+selector or configuration was changed; later owner-approved stops are recorded below.
 
 ## Source correction
 
@@ -101,8 +101,9 @@ limit. No production limit was changed.
 A separate private-copy comparison retains all 314 historical sessions. Its
 full inventory returns 314; the corrected policy query returns zero candidates.
 Mac query timing corroborates the reduced work, but does not establish live
-PRD CPU reduction or installed acceptance. Full qualification is pending on
-the combined BUG-034/035 source cut.
+PRD CPU reduction or installed acceptance. Exact combined-source full qualification passed on all four hosts, as recorded
+in the evidence. It does not establish installed performance. Separate owner-approved
+Linux/Mac stops and their limits are recorded in that current checkpoint.
 
 See [BUG-035 evidence](../040-implementation-evidence/BUG-035.md) for exact
 commands, timings, source boundaries and private evidence paths.
