@@ -2,11 +2,12 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — PENDING NATIVE/OPERATOR VERIFICATION` — Mac checks passed; delivery and Ubuntu/live checks pending |
+| Status | `FIXED — NATIVE/OPERATOR AND LIVE BACKUP VERIFIED` |
 | Severity | High |
 | Reported | 2026-11-19 |
 | Affected area | PRD catalog backup, capacity estimate and replacement classification |
 | Observed operator | `6dae3e8c3ab62748e443eed065886c13159a7027` |
+| Fixed operator | `0bb2e4f00a13df410f0d5e7855682047ce5bd28e`; affected native checks passed on all four hosts |
 | Runtime boundary | Preserve sealed release `rr-20261119-bug034035-7b11dbc` and its accepted Dev/QAS bytes |
 
 ## Observed failure
@@ -23,9 +24,9 @@ runner-lane catalog-prd-backup failed: invalid or inconsistent catalog selector 
 
 The command finished at 2026-11-19 06:37:23 UTC with no backup receipt. No
 recovery command ran, no new backup directory was created, and the reservation
-and command slot remain held. No result was replayed or ACKed.
+and command slot remained held at that refusal checkpoint. No result was replayed or ACKed.
 
-The selected PRD predecessor is the valid catalog release
+At that 06:37 checkpoint, the selected PRD predecessor was the valid catalog release
 `rr-20261117-bug033-fd20b1e`. Its service is inactive/dead, MainPID and
 ControlPID are zero, and its cgroup is empty. Configuration and schema 40
 still match the replacement bootstrap evidence. Its original empty-work
@@ -36,14 +37,14 @@ because the retained LOST pair has one reservation and one slot.
 
 ## Cause
 
-`createPRDBackup` and `estimatePRDFileBackupBytes` call
-`currentFreshInstallBaseline` for every `linux-host` backup. That reader
+In the observed operator, `createPRDBackup` and `estimatePRDFileBackupBytes`
+called `currentFreshInstallBaseline` for every `linux-host` backup. That reader
 correctly requires the original bootstrap's empty work/configuration/schema
 identity. It is being used after catalog adoption, when it is no longer the
 current predecessor. A retained reservation therefore prevents taking the
 very backup needed for its supported recovery.
 
-`installPRDCatalogServiceArtifacts` has the same unconditional first-install
+`installPRDCatalogServiceArtifacts` had the same unconditional first-install
 classification. Keep explicit bootstrap, absence, rollback and root-repair
 validation unchanged; those paths still need their original strict evidence.
 
@@ -82,5 +83,20 @@ Selected-catalog backup now preserves the LOST records, event history,
 reservation, slot, selector and bootstrap receipt. Invalid catalog selections,
 missing/symlink service units and unselected nonempty baselines still refuse.
 Mac affected-package tests/vet and a compilation-only native build passed.
-The corrected operator must be built with its delivered source attestation
-and pass native checks on the three Ubuntu hosts before operational use.
+At that earlier Mac-only checkpoint, delivered-source attestation and the
+three Ubuntu native checks were still prerequisites; their later completion
+is recorded below.
+
+## Verified closeout — 2026-11-19
+
+Operator source `0bb2e4f` passed uncached affected-package tests, vet and
+attested three-operator builds/help/version on Mac and all three Ubuntu hosts.
+This is `operator-affected-packages-native-v1`; a new full-repository suite for
+`0bb2e4f` was **NOT RUN** and the sealed service release was not rebuilt.
+The corrected operator created the actual consistent Linux backup at 07:08:10
+UTC. The original approved recovery operator then released exactly one
+reservation and one slot at **07:08:13 UTC**, preserving LOST history, all
+other records, the original approval and the archived workspace/marker.
+[BUG-037 evidence](../040-implementation-evidence/BUG-037.md#four-host-operator-and-live-backup-closeout--2026-11-19)
+records the proof. The same sealed service later completed PRD promotion;
+this correction did not install new service bytes.

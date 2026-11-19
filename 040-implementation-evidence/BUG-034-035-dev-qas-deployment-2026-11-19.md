@@ -1,10 +1,10 @@
-# BUG-034/035 — completed Dev and QAS deployment
+# BUG-034/035 — Dev/QAS rollout and PRD closeout
 
 ## Release and source
 
-The same sealed release passed Dev and then QAS on the existing Mac, Linux,
-Sandbox and Factory hosts. All project clients/publishers remain owner-paused
-until the requested Dev → QAS → PRD rollout is complete.
+The same sealed release passed Dev → QAS → PRD on the existing Mac, Linux,
+Sandbox and Factory hosts. Fresh postflights support route clearance; clients
+were left paused and were not resumed by this rollout.
 
 | Identity | Value |
 | --- | --- |
@@ -76,10 +76,10 @@ without repeating deployment. Its CLI exited 0 with `completed`; the completed
 record was observed at 06:31:31 UTC. The record's `updated_utc` retains the
 earlier pending event timestamp, so it is not used as a mirror-completion time.
 
-## PRD and historical-request boundary
+## Earlier PRD and historical-request checkpoint — before cleanup/promotion
 
-PRD remains on `rr-20261117-bug033-fd20b1e`. No new PRD cohort operation,
-selector change, service restart or deployment acceptance has occurred.
+At that Dev/QAS checkpoint, PRD remained on `rr-20261117-bug033-fd20b1e`. No new PRD cohort operation,
+selector change, service restart or deployment acceptance had occurred.
 Its read-only plan found capacity verified on all four hosts; Linux alone had
 nonempty work because one original GPU LOST pair retains one reservation and
 one command slot. Mac/Linux PRD remain stopped from the approved investigation;
@@ -110,3 +110,106 @@ CPU comparison remain pending. BUG-036 is TRIAGED and unfixed.
   `~/projects-runtime/runner-release-operations/maintenance/bug034-linux-lostpair-approval-20261119/`.
 
 This checkpoint introduces no new service source qualification or rebuild.
+
+## PRD closeout — 2026-11-19
+
+The same sealed release/bundle hashes above are selected and active on all
+four PRD hosts. Controller `0bb2e4f` includes the separately qualified BUG-037
+maintenance correction; no service bundle was rebuilt. Operation
+`31ab741f3e7f44ffbd2aa2c0ed90ebdd` passed all eight `catalog-functional-v1`
+gates at **07:53:14 UTC**, evidence SHA256
+`6e6d7f7e9e5824dc75c25cbfd76dc485af76d9ae788b6d6bed4d2cc16f360571`.
+Runtime release completed at **07:56:36 UTC**. The operation and branch sync
+were freshly observed complete at **07:57:09 UTC**; completed-operation SHA256
+is `319d38a874ebe9baecbfd2c13a43d2b491fc7881f108ec69a3ec2665f685c548`.
+Its `updated_utc` retains the 07:56:40 pending-event timestamp, which is not
+used as the completion time. Branch-only synchronization resolved the pending
+marker; deployment was not repeated.
+
+The released cohort receipt is identical on all four hosts, with **20
+transitions**, SHA256
+`6488e8de6ca7266b9836d19f5fbd7f21510c6c29206cc037710bf77e58fbd1a0`.
+Fresh native checks confirmed the exact selectors/bundles, active services,
+schema40, empty active-work inventories, complete detailed exports, open
+admissions and ready Mac ingress/executor plus worker Unix endpoints. The
+Sandbox details read initially exceeded its 10-second deadline (**NOT PASS**);
+a focused **08:01:49 UTC** retry passed with the exact source/schema/selection
+and empty work, SHA256
+`c76865a563486828d3123bf18528fac8795ea694ec24e5f3cda764da5205ec50`.
+Sandbox free space was **958,377,984 bytes**, above the measured **584,208,480**
+restore budget; only the archived diagnostic executable was temporarily
+restored and removed after its reads exited.
+
+Authenticated TLS1.3 health GETs returned HTTP200/ready for all three workers,
+using configured CA, client identity and hostname verification plus the
+previously verified leaf pin. The first system-curl attempt failed locally
+because that curl did not support TLS1.3; its failure is preserved. The existing
+native Go helper then passed the strict configured transport checks.
+
+The **07:41:50 UTC** Factory `after_send` acceptance failure remains preserved.
+A later read-only check found its scope ready/unaccepted and expired at
+07:43:37 UTC, with fresh work empty. Supported resume of the **same operation**
+succeeded. A restricted-shell lock `EPERM` refusal occurred before effect;
+the authorized native-context resume then proceeded. Neither failure was
+relabeled PASS or used to justify a guard bypass or a duplicate operation.
+
+Before PRD promotion, separately approved exact Linux cleanup released one
+reservation and one slot at **07:08:13 UTC**, preserving original history,
+other records and the workspace/marker archive; see [BUG-037](BUG-037.md#four-host-operator-and-live-backup-closeout--2026-11-19).
+At **07:57:41 UTC**, existing GPU outboxes reconciled at revision3: the API test
+remains LOST/no exit/cursor24/incomplete capture-boundary output/LOST teardown;
+the checkout observation succeeded/exit0/cursor7/complete output/CLOSED teardown.
+Both exact event prefixes passed and both exchanges remain terminal/unACKed.
+This restores truthful delivery and does not turn the LOST result into test
+success. No original request was replayed, replaced or ACKed. Historical remote
+intent records were preserved; their projections may advance through normal
+GET-only observation.
+
+No new project/filesystem-mailbox request or ACK was published. New synthetic
+filesystem-mailbox acceptance is **NOT RUN**. PRD clients were left paused;
+resumption clearance rests on the completed operation and fresh postflights,
+not readiness alone. The bounded BUG-035 CPU observation below is separate
+from functional acceptance; BUG-036 remains TRIAGED and unfixed.
+
+### Bounded Linux idle CPU observation
+
+From **08:04:34.242387–08:05:04.250639 UTC**, the actual sealed `runnerd`
+PID217781/start3497039 used **3 ticks at HZ100** over **30.00824164 seconds**:
+0.03 CPU seconds, **0.0999725% of one CPU** (about 0.10%). Its sealed
+log-capture supervisor (systemd MainPID217770/start3497031) used zero ticks.
+Both component hashes, UID1001, direct parent/cgroup, selector, boot and process
+incarnations stayed stable; the unit was active with NRestarts0. Separate
+aggregate steal was **6.8335254%**, on two CPUs. No history was purged; this
+sampler opened no database and sent no signal. The first private observer
+refused its MainPID-as-daemon assumption; only the observer was corrected.
+This is a bounded observation, not a controlled before/after benchmark or an
+explanation of changed steal. BUG-036's separate startup cost is still unfixed.
+CPU proof: `/private/tmp/rsr-bug037-operator-qualification-7zuvmrjt/linux-idle-cpu-v2-20261119T080433Z/sample.json`,
+SHA256 `98ac31e3545a6681f83ccb08b5ff6d673b7864dd9e9352158b80acf2dd31dca4`.
+
+The combined `PRD-POSTFLIGHT-COMPLETE.json` proof is SHA256
+`43e6306f48f460f3e7268d14adaf8ed06fc74eda0147d93141b4d1504cfca8d4`.
+It retains the initial native summary's failed Sandbox detail flag and accepts
+only the separately preserved successful focused retry; the initial summary
+is not relabeled PASS.
+
+Private runtime proof: `native-prd-postflight-0a9011aa/summary.json`,
+`sandbox-details-retry-478bf426/summary.json` and
+`postflight-go-tls-summary.json` under
+`/private/tmp/rsr-bug034035-dev-qas-prd-20261119-2_ejnmmy/`.
+Original GPU proof: `/private/tmp/rsr-bug034-gpu-delivery-90m0or7y/summary.json`,
+SHA256 `e6e72b2061ddcbc1895d59dbba640dc9a24d21ae2f042c93f2bb11ef6879d616`.
+The owner-only durable final-evidence archive is
+`~/projects-runtime/runner-release-operations/maintenance/bug034035-prd-promotion-20261119/final-evidence-20261119/`:
+133 verified files / 13,273,848 bytes, `MANIFEST.json` SHA256
+`4ba1e556c1a3210a485eab59386a4a58a9585f4e223df97b87ff1a4aa452feb0`.
+It preserves operation/acceptance records, postflights and the focused Sandbox
+retry, original GPU response/events, TLS/curl failures, both CPU observations
+and operator qualification proofs. Original runtime/source/backup/cache data
+remain untouched by this archival copy.
+
+Durable approval/proof and final documentation-delivery record are under
+`~/projects-runtime/runner-release-operations/maintenance/bug034035-prd-promotion-20261119/`;
+`FINAL-GIT-DELIVERY.json` records the final primary/mirror/clean Ubuntu SHA
+checks after this documentation commit. Documentation finalization does not
+rebuild or reactivate any service.

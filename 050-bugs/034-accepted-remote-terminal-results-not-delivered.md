@@ -4,16 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | `FIXED — DEV/QAS ACCEPTED; PRD PENDING` — original PRD delivery acceptance remains pending |
+| Status | `FIXED — DEV/QAS/PRD AND ORIGINAL DELIVERY VERIFIED` |
 | Severity | High |
 | Reported | 2026-11-18 |
 | Affected component | Mac remote-run observation, strict terminal reconciliation and mailbox delivery |
 | Incident runtime | PRD `rr-20261117-bug033-fd20b1e`, source `fd20b1ebb5b551a1e9d143082101ae5d8843dd7b` |
 | Investigation checkout | `ce4761db8bd5cb5819f834559d2fdba8c7437a63` |
 | Fixed revision | Runtime-code correction `cb7ccf3`; historical fixture checkpoint `d240edf`; exact combined source `7b11dbc08ad09eb5783c8ab3e5b33917ad2901d6` |
-| Verification | Exact combined source passed four-host full native gates, including Linux's own full suite; the same sealed release passed all eight Dev then QAS gates. Original PRD result delivery and cleanup remain pending; BUG-037 blocks the first cleanup backup. Earlier failures remain preserved |
+| Verification | Qualified service source `7b11dbc` and the same sealed bytes passed all eight gates in Dev, QAS and PRD. Both original responses are delivered at revision 3 with verified cursors 24/7 and remain unACKed; the first result stays LOST. Exact Linux cleanup released only its reservation/slot. Earlier failures remain preserved |
 
-Current rollout evidence: [completed Dev/QAS deployment](../040-implementation-evidence/BUG-034-035-dev-qas-deployment-2026-11-19.md).
+Current rollout evidence: [Dev/QAS rollout and completed PRD closeout](../040-implementation-evidence/BUG-034-035-dev-qas-deployment-2026-11-19.md).
 
 ## Reported behavior
 
@@ -45,7 +45,7 @@ unresolved; it does not establish fresh teardown or capacity clearance. No
 request, ACK, replay, service or mailbox change accompanied the read.
 Private proof: `/private/tmp/rsr-bug034-original-outboxes-readonly-6tn5nbum/states.json`.
 
-## Original execution evidence
+## Original execution and inventory evidence — 2026-11-18
 
 1. API tests started at 14:44:20 UTC. Original output proves the GPU checkout
    fast-forwarded to `4ea84758f5c86c21dec1150acf286fb294432af1`, with two test
@@ -58,7 +58,7 @@ Private proof: `/private/tmp/rsr-bug034-original-outboxes-readonly-6tn5nbum/stat
    **0**, cursor **7**, complete/untruncated output, **closed** teardown. Its
    original output reports a clean GPU checkout on `dev` at the same exact SHA.
 
-The supported Mac inventory completed. A subsequent supported Linux inventory
+At the original incident checkpoint, the supported Mac inventory completed. A subsequent supported Linux inventory
 exceeded its bounded observation; exact current worker capacity disposition
 therefore remains unverified. Nothing was released. No replay, replacement,
 ACK, service change, configuration change or recovery was performed.
@@ -157,3 +157,23 @@ applied to the original production code; the corrected source must pass.
 | 2026-11-19 | Exact combined source `7b11dbc` passed all four native gates on all four hosts. Earlier partial/failing results remain preserved. Separate owner-approved Linux/Mac stops changed runtime availability without installing the fix; original requests and capacity remain preserved. |
 
 Qualification and Git delivery are recorded in [BUG-034 evidence](../040-implementation-evidence/BUG-034.md).
+
+## PRD delivery closeout — 2026-11-19
+
+PRD operation `31ab741f3e7f44ffbd2aa2c0ed90ebdd` completed with branch sync;
+the unchanged `rr-20261119-bug034035-7b11dbc` release is selected on all four
+hosts. Fresh postflights passed after the preserved Sandbox inventory retry.
+At **07:57:41 UTC**, both original identities delivered `complete/reconciled`
+responses at revision **3**, with stable response hashes and contiguous events:
+
+| Original request | Command outcome | Advertised/final cursor | Output / teardown |
+| --- | --- | ---: | --- |
+| `req-gpu-f04-wait-tests-20261118-b1` | LOST; no exit code | 24 / 24 | Incomplete, untruncated; `capture_boundary_unconfirmed`; LOST teardown |
+| `req-gpu-runner-checkout-observe-20261118-h3` | Succeeded; exit 0 | 7 / 7 | Complete, untruncated; CLOSED teardown |
+
+Both supported lifecycle reads returned `terminal_unacknowledged`, with
+`acknowledged:false`. The separately approved Linux cleanup released only the
+first pair's one reservation/slot; it did not change its LOST history or prove
+overall test success. No request was replayed, replaced or ACKed. Fresh synthetic
+filesystem-mailbox acceptance remains **NOT RUN**. See the [common closeout](../040-implementation-evidence/BUG-034-035-dev-qas-deployment-2026-11-19.md#prd-closeout--2026-11-19)
+for recovery, released receipts, postflight and Git-delivery evidence.
