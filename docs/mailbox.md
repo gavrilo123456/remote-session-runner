@@ -32,6 +32,7 @@ field.
 | `analytics` | `/Users/tomasz.walczuk/Library/Application Support/RemoteSessionRunner/mailboxes/analytics` | `analytics-dbt` | `mac-local` | `mac-local`, `ubuntu-current`, `ubuntu-sandbox` |
 | `slidestud-io` | `/Users/tomasz.walczuk/projects/slidestud.io/tmp/mailbox-` | `slidestud-io` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local`, `ubuntu-current` |
 | `agents-work-dispatcher` | `/Users/tomasz.walczuk/projects/agents-work-dispatcher/tmp/mailbox-` | `agents-work-dispatcher` | `ubuntu-current` | `ubuntu-current`, `mac-local` |
+| `gpu-services` | `/Users/tomasz.walczuk/projects/gpu-services/runner/mailbox-` | `gpu-services` | `ubuntu-sandbox` | `ubuntu-sandbox`, `mac-local` |
 | `agentic-software-factory-runner-direct` | `/Users/tomasz.walczuk/projects/agentic-software-factory/runner/mailbox-` | `agentic-software-factory` | `ubuntu-factory-sandbox` | `ubuntu-factory-sandbox`, `mac-local` |
 
 Every root has this independent layout:
