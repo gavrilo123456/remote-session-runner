@@ -29,13 +29,16 @@ const (
 )
 
 var (
-	ErrConfiguration  = errors.New("mailbox client configuration is invalid")
-	ErrRequest        = errors.New("mailbox request file is invalid")
-	ErrResponse       = errors.New("mailbox response file is invalid")
-	ErrDiagnostic     = errors.New("mailbox ingress diagnostic file is invalid")
-	ErrEvents         = errors.New("mailbox event file is invalid")
-	ErrAcknowledgment = errors.New("mailbox acknowledgment is invalid")
-	requestIDPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	ErrConfiguration = errors.New("mailbox client configuration is invalid")
+	ErrRequest       = errors.New("mailbox request file is invalid")
+	// ErrRequestIDRetained means an existing result or diagnostic reserves the
+	// requested identity; callers must read it rather than republish that ID.
+	ErrRequestIDRetained = errors.New("mailbox request ID is retained; read the existing response or diagnostic and use a fresh request ID for new work")
+	ErrResponse          = errors.New("mailbox response file is invalid")
+	ErrDiagnostic        = errors.New("mailbox ingress diagnostic file is invalid")
+	ErrEvents            = errors.New("mailbox event file is invalid")
+	ErrAcknowledgment    = errors.New("mailbox acknowledgment is invalid")
+	requestIDPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 )
 
 type Client struct {
@@ -151,7 +154,11 @@ func New(root string) (*Client, error) {
 }
 
 // WriteRequest publishes immutable JSON first and an empty .ready marker
-// last. The client only touches the mailbox filesystem.
+// last. The client only touches the mailbox filesystem. A retained response
+// or diagnostic reserves its request ID, even for an otherwise exact retry:
+// read the existing result instead, and use a fresh ID for new work. The
+// server remains authoritative for retained IDs without a visible artifact
+// and for results published concurrently with this filesystem check.
 func (c *Client) WriteRequest(requestID string, raw []byte) error {
 	if c == nil || !validRequestID(requestID) || len(raw) == 0 || len(raw) > maxRequestBytes || !json.Valid(raw) {
 		return ErrRequest
@@ -465,7 +472,42 @@ func (c *Client) WriteAcknowledgment(requestID string, response Response) error 
 // mailboxfence pins all writes to the root descriptor guarded by its shared
 // migration lock.
 func publishIngressPair(root, directory, logicalID string, raw []byte) error {
-	return mailboxfence.PublishReadyPair(context.Background(), root, directory, logicalID, raw)
+	lock, err := mailboxfence.AcquireShared(context.Background(), root)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if directory == "inbox" {
+		if err := requireUnretainedRequestID(root, logicalID); err != nil {
+			return err
+		}
+	}
+	return lock.PublishReadyPair(directory, logicalID, raw)
+}
+
+// requireUnretainedRequestID is deliberately presence-based: malformed,
+// unreadable or symlink entries cannot be treated as permission to reuse an
+// identity. It never reads, follows or modifies a retained artifact.
+func requireUnretainedRequestID(root, requestID string) error {
+	for _, name := range []string{"outbox", "diagnostics"} {
+		directory := filepath.Join(root, name)
+		if _, err := os.Lstat(directory); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("%w: retained result directory cannot be inspected", ErrRequest)
+		}
+		if err := validateOwnerDirectory(directory); err != nil {
+			return fmt.Errorf("%w: retained result directory is unsafe", ErrRequest)
+		}
+		_, err := os.Lstat(filepath.Join(directory, requestID+".json"))
+		if err == nil {
+			return ErrRequestIDRetained
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: retained result state cannot be inspected", ErrRequest)
+		}
+	}
+	return nil
 }
 
 func validRequestID(value string) bool {

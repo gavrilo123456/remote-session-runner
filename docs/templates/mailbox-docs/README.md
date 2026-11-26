@@ -62,6 +62,14 @@ a publisher script, SSH, a direct Runner API or SQLite. Choose a fresh safe
 request ID and idempotency key for each new operation; replace `UNIQUE` below.
 Keep the request ID consistent with both filenames.
 
+Never reuse an earlier request ID for different instructions. An old success
+belongs to the old request. On Runner versions with BUG-039, conflicting
+publications are preserved under
+`{{MAILBOX_ROOT}}/conflicts/<request_id>/<input_sha256>/`, with a separate
+`request_id_conflict` diagnostic; they are not executed or ACKed. Read that
+diagnostic and the original result, recheck project state, then use a fresh ID
+and idempotency key. Do not edit or remove the conflict archive yourself.
+
 Create `{{MAILBOX_ROOT}}/inbox/req-{{PROJECT_NAME}}-identity-UNIQUE.json`:
 
 ```json

@@ -161,6 +161,7 @@ type ingressHandlingResult struct {
 
 type ingressDiagnosticHandler func(context.Context, ingressDiagnosticCandidate) (ingressHandlingResult, error)
 type retainedIngressHandler func(context.Context, Request, ingressDiagnosticCandidate) (handled bool, outcome ingressHandlingResult, err error)
+type requestConflictHandler func(context.Context, Request, ingressDiagnosticCandidate) (ingressHandlingResult, error)
 
 type mailboxRequestValidationError struct {
 	code         store.MailboxIngressDiagnosticCode
@@ -304,7 +305,7 @@ func (i *Importer) importWithIngressHandlers(ctx context.Context, handler durabl
 // safely marked work after diagnostic recovery failed without letting ordinary
 // draft cleanup erase an unmarked JSON remnant from that interrupted recovery.
 // Direct importer users always retain the historical cleanup-first behavior.
-func (i *Importer) importWithIngressHandlersAfterRecovery(ctx context.Context, handler durableHandler, diagnosticHandler ingressDiagnosticHandler, retainedHandler retainedIngressHandler, cleanupUnmarkedDrafts bool) ([]Result, error) {
+func (i *Importer) importWithIngressHandlersAfterRecovery(ctx context.Context, handler durableHandler, diagnosticHandler ingressDiagnosticHandler, retainedHandler retainedIngressHandler, cleanupUnmarkedDrafts bool, conflicts ...requestConflictHandler) ([]Result, error) {
 	if i == nil || i.schema == nil || i.inbox == "" {
 		return nil, ErrImporterConfiguration
 	}
@@ -335,7 +336,7 @@ func (i *Importer) importWithIngressHandlersAfterRecovery(ctx context.Context, h
 			// their marker is safely published.
 			continue
 		}
-		result, importErr := i.importMarkerWithIngressHandlers(ctx, name, handler, diagnosticHandler, retainedHandler)
+		result, importErr := i.importMarkerWithIngressHandlers(ctx, name, handler, diagnosticHandler, retainedHandler, conflicts...)
 		if importErr != nil {
 			if ctx.Err() != nil {
 				return results, ctx.Err()
@@ -356,7 +357,7 @@ func (i *Importer) importMarker(ctx context.Context, markerName string, handler 
 	return i.importMarkerWithIngressHandlers(ctx, markerName, handler, nil, nil)
 }
 
-func (i *Importer) importMarkerWithIngressHandlers(ctx context.Context, markerName string, handler durableHandler, diagnosticHandler ingressDiagnosticHandler, retainedHandler retainedIngressHandler) (Result, error) {
+func (i *Importer) importMarkerWithIngressHandlers(ctx context.Context, markerName string, handler durableHandler, diagnosticHandler ingressDiagnosticHandler, retainedHandler retainedIngressHandler, conflicts ...requestConflictHandler) (Result, error) {
 	result := Result{Filename: markerName, MarkerPath: filepath.Join(i.inbox, markerName), Status: ResultRejected}
 	requestID, ok := safeRequestID(strings.TrimSuffix(markerName, ReadySuffix))
 	if !ok {
@@ -441,6 +442,15 @@ func (i *Importer) importMarkerWithIngressHandlers(ctx context.Context, markerNa
 	}
 	if handler != nil {
 		durable, err := handler(ctx, request)
+		if errors.Is(err, store.ErrMailboxExchangeConflict) && len(conflicts) == 1 && conflicts[0] != nil {
+			// A conflicting publication has its own fingerprint-bound outcome.
+			// Never send it through ordinary removeMailboxPair: a publisher may
+			// have replaced the source names after the rejected bytes were read.
+			outcome, conflictErr := conflicts[0](ctx, request, candidate)
+			result.Status, result.Reason, result.Request = ResultRejected, requestConflictMessage, nil
+			result.Durable, result.PairRemoved = outcome.Durable, outcome.PairRemoved
+			return result, conflictErr
+		}
 		result.Durable = durable
 		if err != nil {
 			result.Status = ResultRejected

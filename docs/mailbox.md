@@ -585,6 +585,30 @@ A mutation retry that is uncertain uses a **new** `request_id`, the same
 An altered payload with the same key is an `idempotency_conflict`. A request ID
 is single-use while retained.
 
+### Conflicting request-ID reuse (BUG-039)
+
+On releases containing BUG-039, a different request under an already retained
+ID is never executed. Runner preserves the newer input separately at
+`conflicts/<request_id>/<input_sha256>/request.json` and writes a private
+`diagnostic.json` beside it with `code: "request_id_conflict"`,
+`accepted: false`, and `executed: false`. After that preservation is durable,
+it withdraws only the fingerprint-matched conflicting pair from the inbox.
+The `retired` marker in that archive confirms completed withdrawal. Interrupted
+cleanup is retried before ordinary unmarked-draft collection.
+
+The original outbox response, events and ACK state retain their meaning for
+the **original** request; an old success never proves the newer instructions
+ran. Conflict diagnostics have no ACK protocol. Read the original outcome,
+recheck any affected project state, and use a fresh request ID and idempotency
+key for different work. Unsafe or changed input remains preserved for review.
+
+The native client's `WriteRequest` also refuses an ID with an already visible
+outbox result or ingress diagnostic (`ErrRequestIDRetained`). Read the existing
+result instead of republishing it. This client check does not replace the
+server's authoritative binding checks, and direct file writers must still
+use fresh IDs. Canonical-equivalent retries retain the server's existing
+idempotency behavior.
+
 ## Interpret responses, events, and ACKs
 
 A new-work response includes the selected namespace and resolved execution

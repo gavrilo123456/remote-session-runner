@@ -100,7 +100,8 @@ func safeIngressDiagnosticFailureClass(value string) bool {
 		store.MailboxIngressDiagnosticRequestIdentityMismatch,
 		store.MailboxIngressDiagnosticInvalidScript,
 		store.MailboxIngressDiagnosticRequestTooLarge,
-		store.MailboxIngressDiagnosticRequestIDReusedAfterReject:
+		store.MailboxIngressDiagnosticRequestIDReusedAfterReject,
+		requestConflictCode:
 		return true
 	case "recovery_failed":
 		return true

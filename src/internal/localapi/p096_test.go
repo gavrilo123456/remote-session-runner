@@ -2,7 +2,9 @@ package localapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,9 +93,23 @@ func TestP096D05M08MailboxRetryConflictAndOutputExpiry(t *testing.T) {
 		"request_id": "req-p096-original", "idempotency_key": "key-p096-original", "operation": "submit_command",
 		"session_id": sessionID, "script": "echo changed", "timeout_seconds": 30,
 	})
+	newerPath := filepath.Join(h.importer.InboxPath(), "req-p096-original.json")
+	newerBytes, err := os.ReadFile(newerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	reuseResults, err := h.processor.Import(ctx)
-	if err != nil || len(reuseResults) != 1 || reuseResults[0].Durable || reuseResults[0].PairRemoved {
-		t.Fatalf("reused request ID results=%+v err=%v, want it rejected without replacing the response", reuseResults, err)
+	if err != nil || len(reuseResults) != 1 || reuseResults[0].Status != mailbox.ResultRejected || !reuseResults[0].Durable || !reuseResults[0].PairRemoved {
+		t.Fatalf("reused request ID results=%+v err=%v, want separately preserved rejection without replacing the response", reuseResults, err)
+	}
+	archive := filepath.Join(filepath.Dir(h.importer.InboxPath()), "conflicts", "req-p096-original", fmt.Sprintf("%x", sha256.Sum256(newerBytes)))
+	if preserved, err := os.ReadFile(filepath.Join(archive, "request.json")); err != nil || string(preserved) != string(newerBytes) {
+		t.Fatalf("conflicting publication was not preserved: equal=%t err=%v", string(preserved) == string(newerBytes), err)
+	}
+	for _, path := range []string{newerPath, filepath.Join(h.importer.InboxPath(), "req-p096-original.ready")} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("conflicting publication remains in ingress: %s: %v", path, err)
+		}
 	}
 	unchangedBytes, err = h.outbox.Read("req-p096-original")
 	if err != nil || string(unchangedBytes) != string(originalBytes) {

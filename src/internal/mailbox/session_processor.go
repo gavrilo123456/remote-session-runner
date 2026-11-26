@@ -189,6 +189,7 @@ type SessionProcessor struct {
 	operations                         SessionOperations
 	projector                          Projector
 	diagnostics                        *DiagnosticFiles
+	conflicts                          *requestConflictFiles
 	executionResolver                  MailboxExecutionResolver
 	now                                func() time.Time
 	uncertaintyWindow                  time.Duration
@@ -248,10 +249,15 @@ func NewSessionProcessor(options SessionProcessorOptions) (*SessionProcessor, er
 	if diagnostics.root == "" || filepath.Dir(diagnostics.root) != options.Importer.root {
 		return nil, fmt.Errorf("%w: diagnostics root", ErrSessionProcessorConfiguration)
 	}
+	conflicts, err := newRequestConflictFiles(options.Importer.root)
+	if err != nil {
+		return nil, fmt.Errorf("%w: request conflict files", ErrSessionProcessorConfiguration)
+	}
 	return &SessionProcessor{
 		mailboxID: mailboxID, importer: options.Importer, authority: options.Authority, controller: controller,
 		operations: options.Operations, projector: Projector{MailboxID: mailboxID, Authority: options.Authority, Outbox: options.Outbox, EventFiles: options.EventFiles},
 		diagnostics:       diagnostics,
+		conflicts:         conflicts,
 		executionResolver: options.ExecutionResolver, now: options.Now, uncertaintyWindow: options.RemoteUncertaintyWindow,
 		terminalArtifactRecoveryBatchLimit: options.TerminalArtifactRecoveryBatchLimit,
 		deferTerminalArtifactRecovery:      options.DeferTerminalArtifactRecovery,
@@ -321,6 +327,13 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	// ordinary unmarked-draft cleanup, otherwise that cleanup could erase the
 	// only fingerprint-bound recovery evidence.
 	diagnosticRecoveryReady := true
+	if err := p.recoverRequestConflicts(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		diagnosticRecoveryReady = false
+		result = errors.Join(result, mailboxStageError(p.mailboxID, "request_conflict", err))
+	}
 	if err := p.recoverIngressDiagnostics(ctx); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -332,7 +345,7 @@ func (p *SessionProcessor) Import(ctx context.Context) ([]Result, error) {
 	// work but defer ordinary unmarked-draft cleanup. A crash after the marker
 	// unlink leaves an unmarked source JSON whose fingerprint-bound recovery
 	// must get another chance before generic age cleanup can remove it.
-	results, err := p.importer.importWithIngressHandlersAfterRecovery(ctx, p.process, p.processIngressDiagnostic, p.processRetainedIngressDiagnostic, diagnosticRecoveryReady)
+	results, err := p.importer.importWithIngressHandlersAfterRecovery(ctx, p.process, p.processIngressDiagnostic, p.processRetainedIngressDiagnostic, diagnosticRecoveryReady, p.processRequestConflict)
 	if err != nil {
 		if ctx.Err() != nil {
 			return results, ctx.Err()
