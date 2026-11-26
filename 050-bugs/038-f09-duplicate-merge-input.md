@@ -1,5 +1,10 @@
 # BUG-038 — Retire the conflicting Turn 10 merge input
 
+**Status: RESOLVED — exact duplicate retired on 2026-11-26.** The newer JSON
+and ready marker are archived outside the inbox. The original acknowledged
+success and all seven events are unchanged, and Mac PRD is ready on the same
+release. See [the live evidence](../040-implementation-evidence/BUG-038.md).
+
 ## Incident
 
 On 2026-11-26 a second, different merge request reused an acknowledged successful request ID in the `gpu-services` Mac mailbox. Runner kept its original result and left the newer JSON and ready marker in the inbox. The lifecycle query reported `publishable_pair`, `terminal_acknowledged` and action `none`. The merge slot stayed reserved. The separate API-host preflight has its own recovery record.
@@ -40,3 +45,26 @@ go build -o /tmp/mailbox-retire-f09-duplicate ./src/cmd/mailbox-retire-f09-dupli
 ```
 
 A private Mac fixture also exercised the exported retirement function with byte-for-byte copies of the four incident artifacts. Inspection returned `ready`, apply returned `retired`, and repeat returned `retired`. The fixture preserved the original outbox hash `5bceb42a6650dbff812fe35605877c2105e0e967cf9eaeb13bb8df34afc25709` and event-stream hash `7179a02c40ce22ce8fc10ffd5632cb598c05a4dec51600062a60d3dc6f097909` at each step. Live retirement and the Git slot decision are separate operational outcomes.
+
+## Live retirement — 2026-11-26
+
+The owner confirmed PRD users paused and authorized the shared maintenance.
+An earlier Mac command finished successfully before the fresh complete
+inventory confirmed no remaining live work. The maintainer used the supported
+Mac PRD stop, the tested `003c912` operator, and the supported start of the
+unchanged `rr-20261119-bug034035-7b11dbc` release.
+
+Apply and both subsequent inspections returned `retired`. The exact newer
+JSON and marker retain their original inodes in the private `retired-input`
+archive; neither name remains in the inbox. The original response and event
+hashes are unchanged. The live lifecycle endpoint reports request input
+`absent`, durable state `terminal_acknowledged`, and `acknowledged: true`.
+Both services passed readiness; no capacity or recovery finalizations remain.
+Configuration, selectors, schema and peer lanes were preserved.
+
+The owner-requested notices were queued once each to Astra and Terra. The CLI
+could not automatically resume their threads, so queueing is not proof of
+receipt or project resumption. Terra retains the Git-tip recheck, fresh-ID
+submission and project booking decisions. The separate API preflight remains
+on hold. This closes this exact incident; it does not add automatic retirement
+of future conflicting request IDs to the installed service.
