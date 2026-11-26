@@ -1,6 +1,10 @@
 # BUG-039 — Conflicting reuse of a retained request ID remains publishable
 
-**Status: IN PROGRESS — permanent source correction; not deployed.**
+**Status: FIXED — affected native verification passed; not deployed.**
+
+Source correction: `26216a086cda6cae2486e5f0c4391888b9e0cb37`.
+Affected tests, vet, native builds and source-version checks passed on Mac,
+Linux, Sandbox and Factory. See [BUG-039 evidence](../040-implementation-evidence/BUG-039.md).
 
 ## Problem
 
@@ -57,3 +61,25 @@ deployment and acceptance remain separate owner-authorized stages.
 
 - [BUG-038 incident and operator](038-f09-duplicate-merge-input.md)
 - [Verified exact retirement](../040-implementation-evidence/BUG-038.md)
+
+## Implemented behavior
+
+After the store refuses a conflicting binding, the normal importer preserves
+the newer bytes and a separate `request_id_conflict` diagnostic under
+`conflicts/<request_id>/<input_sha256>/`. It makes that evidence and its
+unfinished-work index durable before fingerprint- and inode-checked withdrawal
+of the marker and JSON. Interrupted cleanup resumes before ordinary draft
+collection. The original exchange, result, events, acknowledgement and capacity
+are not changed by conflict handling; independent work can continue.
+
+The native client also refuses publication when a retained response or ingress
+diagnostic already visibly reserves the ID. Existing response reads and ACK
+publication remain available. Server-side canonical-equivalent retry and
+new-ID idempotency behavior remain intact. Direct file writers must still use
+fresh IDs and inspect the separate conflict diagnostic rather than interpreting
+an old success as a new execution.
+
+This source correction needs the normal build and Dev → QAS → PRD qualification
+before it changes live behavior. No lane deployment or live conflict probe was
+performed for BUG-039. BUG-038's original acknowledged success and archive, and
+the separate GPU API preflight hold, remain outside this source change.
