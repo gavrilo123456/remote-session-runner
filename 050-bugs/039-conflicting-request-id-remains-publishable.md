@@ -1,6 +1,12 @@
 # BUG-039 — Conflicting reuse of a retained request ID remains publishable
 
-**Status: FIXED — affected native verification passed; not deployed.**
+**Status: FIXED — Dev verified; QAS/PRD deployment pending.**
+
+Release `rr-20261126-bug039-54920f5` is running on all four Dev hosts.
+Full native source gates, all eight cohort acceptance gates, and the dedicated
+live conflicting-publication regression passed. Dev admissions are open.
+QAS and PRD remain unchanged. See the
+[Dev deployment closeout](../040-implementation-evidence/BUG-039-dev-deployment-2026-11-26.md).
 
 Source correction: `26216a086cda6cae2486e5f0c4391888b9e0cb37`.
 Affected tests, vet, native builds and source-version checks passed on Mac,
@@ -79,7 +85,7 @@ new-ID idempotency behavior remain intact. Direct file writers must still use
 fresh IDs and inspect the separate conflict diagnostic rather than interpreting
 an old success as a new execution.
 
-This source correction needs the normal build and Dev → QAS → PRD qualification
-before it changes live behavior. No lane deployment or live conflict probe was
-performed for BUG-039. BUG-038's original acknowledged success and archive, and
-the separate GPU API preflight hold, remain outside this source change.
+The normal build and Dev qualification are complete; QAS and owner-approved
+PRD promotion remain separate stages using the same sealed release.
+BUG-038's original acknowledged success and archive, and the separate GPU API
+preflight hold, remain outside this change.
