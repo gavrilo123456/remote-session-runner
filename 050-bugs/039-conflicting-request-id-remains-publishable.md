@@ -1,0 +1,59 @@
+# BUG-039 — Conflicting reuse of a retained request ID remains publishable
+
+**Status: IN PROGRESS — permanent source correction; not deployed.**
+
+## Problem
+
+When a client publishes different instructions under a request ID already
+bound to a retained mailbox exchange, Runner refuses to execute the conflicting
+instructions. However, the newer JSON and `.ready` marker remain in the inbox,
+without a distinct durable conflict disposition. The ordinary lifecycle view
+can show the original acknowledged success beside a publishable newer pair.
+Clients cannot safely treat that old success as the result of the new input.
+
+BUG-038 recorded and resolved one occurrence using a tested incident-specific
+maintenance operator. This bug tracks the permanent handling of future
+occurrences. The completed BUG-038 retirement and original evidence remain
+unchanged.
+
+## Reproduction and cause
+
+1. Complete and acknowledge a request.
+2. Publish different valid request contents with the same request ID.
+3. The store returns `ErrMailboxExchangeConflict` before creating another
+   exchange or invoking execution. The importer retains the newer pair because
+   no durable decision was recorded for those bytes.
+
+The malformed-input diagnostic ledger cannot be reused for this case: it
+deliberately excludes identities already owned by accepted exchanges.
+
+## Required correction
+
+- Never execute or replay the conflicting input, or overwrite the original
+  response, events, acknowledgement, identity or capacity state.
+- Give the newer bytes a separate, fingerprint-bound conflict disposition and
+  preserve them outside active ingress before withdrawing their exact marker
+  and JSON. Make the reason and the fresh-ID requirement visible to clients.
+- Keep exact retries idempotent. Preserve unrelated mailbox work and configured
+  ownership, file-safety and publisher coordination boundaries.
+- Recover safely from interruption; changed bytes, replaced inodes, unsafe
+  paths or uncertain evidence must not authorize withdrawal of another input.
+- Handle the normal intake path without requiring an incident-specific binary
+  or a shared PRD restart for each future conflict.
+
+## Verification and delivery
+
+Use disposable fixtures for the acknowledged-success reproduction, exact
+retries, cross-mailbox isolation, crash/retry boundaries, filesystem races and
+unsafe inputs. Prove that the original result/events/ACK remain unchanged and
+that no second execution occurs. Run affected native tests, vet and build
+checks on Mac and all three Ubuntu workers through the required Git delivery.
+
+Registration and source work do not deploy a release, restart a lane, publish
+a live request or ACK, or resolve the separate GPU API preflight. Dev/QAS/PRD
+deployment and acceptance remain separate owner-authorized stages.
+
+## Related evidence
+
+- [BUG-038 incident and operator](038-f09-duplicate-merge-input.md)
+- [Verified exact retirement](../040-implementation-evidence/BUG-038.md)

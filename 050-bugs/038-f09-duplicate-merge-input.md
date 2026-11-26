@@ -4,6 +4,8 @@
 and ready marker are archived outside the inbox. The original acknowledged
 success and all seven events are unchanged, and Mac PRD is ready on the same
 release. See [the live evidence](../040-implementation-evidence/BUG-038.md).
+The permanent correction for future occurrences is tracked separately as
+[BUG-039](039-conflicting-request-id-remains-publishable.md).
 
 ## Incident
 
